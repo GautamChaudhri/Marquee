@@ -25,7 +25,7 @@ target_metadata = Base.metadata
 
 def run_migrations_offline() -> None:
     """Run migrations in 'offline' mode (generate SQL without connecting)."""
-    url = settings.DB_URL
+    url = settings.db_url_resolved
     context.configure(
         url=url,
         target_metadata=target_metadata,
@@ -45,7 +45,7 @@ def do_run_migrations(connection):
 
 async def run_migrations_online() -> None:
     """Run migrations in 'online' mode (connect to the database)."""
-    connectable = create_async_engine(settings.DB_URL)
+    connectable = create_async_engine(settings.db_url_resolved)
 
     async with connectable.connect() as connection:
         await connection.run_sync(do_run_migrations)

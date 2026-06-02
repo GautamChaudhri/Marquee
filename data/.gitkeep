@@ -1,0 +1,2 @@
+# This directory holds the SQLite database, poster cache, and staging files.
+# It must exist at runtime — the app creates subdirectories automatically.

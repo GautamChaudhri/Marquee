@@ -51,18 +51,19 @@ def _get_engine():
             conn_args["check_same_thread"] = False
 
         _engine = create_async_engine(
-            settings.DB_URL,
+            settings.db_url_resolved,
             echo=settings.DEBUG,
             connect_args=conn_args or None,
         )
 
-        # Enable foreign key constraints for SQLite
-        if settings.DB_URL.startswith("sqlite"):
+        # Enable foreign key constraints and WAL mode for SQLite
+        if settings.db_url_resolved.startswith("sqlite"):
 
             @event.listens_for(_engine.sync_engine, "connect")
             def _set_sqlite_pragma(dbapi_connection, _connection_record):
                 cursor = dbapi_connection.cursor()
                 cursor.execute("PRAGMA foreign_keys=ON")
+                cursor.execute("PRAGMA journal_mode=WAL")
                 cursor.close()
 
     return _engine
