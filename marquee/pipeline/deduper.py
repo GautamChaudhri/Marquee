@@ -1,0 +1,311 @@
+"""Poster deduplication — two-stage pipeline.
+
+Stage 2 of the poster pipeline.  Removes duplicate posters before the
+expensive OCR and AI scoring stages.
+
+  **Stage 2a — SHA-256 exact dedup:**
+  Hashes every file's raw bytes.  Identical files (same poster downloaded
+  from different URLs, or redownloaded) are caught here.  Among duplicates,
+  the highest-resolution version is kept.
+
+  **Stage 2b — pHash perceptual dedup:**
+  Computes a perceptual hash for each survivor.  Posters with Hamming
+  distance ≤ ``DEDUP_PHASH_THRESHOLD`` (default 6) are considered
+  near-duplicates — same visual composition but different compression,
+  colour-space, or minor edits.  The highest-resolution version is kept.
+
+Both stages are resolution-aware: when duplicates are found, the poster
+with the largest width×height survives.
+
+Salvaged from ``experiments/filtering/deduplicate_posters.py`` (SHA-256)
+and extended with pHash.
+
+Usage::
+
+    from marquee.pipeline.deduper import PosterDeduper
+
+    deduper = PosterDeduper()
+    result = deduper.deduplicate(poster_paths)
+    print(f"{result.initial} → sha256 removed {result.sha256_removed} "
+          f"→ phash removed {result.phash_removed} → {result.final} survivors")
+"""
+
+from __future__ import annotations
+
+import hashlib
+import logging
+from dataclasses import dataclass, field
+from pathlib import Path
+
+import imagehash
+from PIL import Image, ImageFile
+
+from marquee.config import settings
+
+logger = logging.getLogger(__name__)
+
+ImageFile.LOAD_TRUNCATED_IMAGES = True
+
+
+# ---------------------------------------------------------------------------
+# Result type
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class DedupResult:
+    """Stats and survivors from a dedup run."""
+
+    initial: int = 0                # input count
+    survivors: list[Path] = field(default_factory=list)
+
+    # Stage 2a
+    sha256_removed: int = 0
+    sha256_groups_found: int = 0
+
+    # Stage 2b
+    phash_removed: int = 0
+    phash_groups_found: int = 0
+
+    # Pre-filter
+    size_filter_removed: int = 0    # removed by DEDUP_MIN_POSTER_WIDTH
+
+    @property
+    def final(self) -> int:
+        return len(self.survivors)
+
+
+# ---------------------------------------------------------------------------
+# Deduper
+# ---------------------------------------------------------------------------
+
+
+class PosterDeduper:
+    """Two-stage poster deduplication: SHA-256 exact → pHash perceptual.
+
+    Constructor arguments are optional — defaults come from config.
+
+    Args:
+        sha256_only: If True, skip pHash stage (debug / dry-run).
+        min_width: Minimum poster width in pixels (default from config).
+        phash_threshold: Hamming distance ≤ this → near-duplicate.
+    """
+
+    def __init__(
+        self,
+        *,
+        sha256_only: bool = False,
+        min_width: int | None = None,
+        phash_threshold: int | None = None,
+    ):
+        self._sha256_only = sha256_only
+        self._min_width = (
+            min_width if min_width is not None
+            else settings.DEDUP_MIN_POSTER_WIDTH
+        )
+        self._phash_threshold = (
+            phash_threshold if phash_threshold is not None
+            else settings.DEDUP_PHASH_THRESHOLD
+        )
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def deduplicate(self, poster_paths: list[Path]) -> DedupResult:
+        """Run both dedup stages and return survivors with stats.
+
+        Args:
+            poster_paths: Paths to poster candidate images.
+
+        Returns:
+            ``DedupResult`` with survivors and per-stage counts.
+        """
+        result = DedupResult(initial=len(poster_paths))
+
+        # --- Size pre-filter ---
+        paths = self._filter_by_size(poster_paths, result)
+
+        # --- Stage 2a: SHA-256 exact ---
+        paths = self._sha256_dedup(paths, result)
+
+        # --- Stage 2b: pHash perceptual ---
+        if not self._sha256_only:
+            paths = self._phash_dedup(paths, result)
+        else:
+            logger.info("pHash stage skipped (sha256_only=True)")
+
+        result.survivors = paths
+
+        logger.info(
+            "Dedup complete: %d → sha256 -%d → phash -%d → %d survivors",
+            result.initial,
+            result.sha256_removed,
+            result.phash_removed,
+            result.final,
+        )
+
+        return result
+
+    # ------------------------------------------------------------------
+    # Size filter
+    # ------------------------------------------------------------------
+
+    def _filter_by_size(
+        self, paths: list[Path], result: DedupResult
+    ) -> list[Path]:
+        """Remove candidates narrower than min_width pixels."""
+        if self._min_width <= 0:
+            return list(paths)
+
+        kept: list[Path] = []
+        for p in paths:
+            try:
+                with Image.open(p) as img:
+                    w = img.width
+            except Exception:
+                logger.warning("Could not read dimensions for %s — keeping", p.name)
+                kept.append(p)
+                continue
+
+            if w >= self._min_width:
+                kept.append(p)
+            else:
+                result.size_filter_removed += 1
+                logger.debug(
+                    "Size-filtered %s: width=%d < min=%d",
+                    p.name, w, self._min_width,
+                )
+
+        if result.size_filter_removed:
+            logger.info(
+                "Size filter removed %d poster(s) below %dpx width",
+                result.size_filter_removed, self._min_width,
+            )
+
+        return kept
+
+    # ------------------------------------------------------------------
+    # Stage 2a: SHA-256 exact dedup
+    # ------------------------------------------------------------------
+
+    def _sha256_dedup(
+        self, paths: list[Path], result: DedupResult
+    ) -> list[Path]:
+        """Hash every file. Group by hash. Keep highest res per group."""
+        hashes: dict[str, list[Path]] = {}
+
+        for p in paths:
+            file_hash = self._hash_file(p)
+            hashes.setdefault(file_hash, []).append(p)
+
+        survivors: list[Path] = []
+        for file_hash, group in hashes.items():
+            if len(group) > 1:
+                result.sha256_groups_found += 1
+                result.sha256_removed += len(group) - 1
+                logger.debug(
+                    "SHA-256 dupe group (x%d): %s",
+                    len(group), {g.name for g in group},
+                )
+            survivors.append(self._pick_best_resolution(group))
+
+        return survivors
+
+    @staticmethod
+    def _hash_file(filepath: Path) -> str:
+        """Compute SHA-256 hash of a file (64 KB chunked reading)."""
+        hasher = hashlib.sha256()
+        with open(filepath, "rb") as f:
+            for chunk in iter(lambda: f.read(65536), b""):
+                hasher.update(chunk)
+        return hasher.hexdigest()
+
+    # ------------------------------------------------------------------
+    # Stage 2b: pHash perceptual dedup
+    # ------------------------------------------------------------------
+
+    def _phash_dedup(
+        self, paths: list[Path], result: DedupResult
+    ) -> list[Path]:
+        """Compute pHash for each survivor. Group near-duplicates. Keep best res."""
+        # Compute hashes upfront
+        scored: list[tuple[str, Path]] = []
+        for p in paths:
+            try:
+                ph = str(imagehash.phash(Image.open(p)))
+            except Exception as exc:
+                logger.warning("pHash failed for %s: %s — keeping", p.name, exc)
+                ph = None
+            scored.append((ph, p))
+
+        # Greedy clustering: for each image, find all near-duplicates
+        # not already assigned to a group
+        assigned: set[int] = set()
+        groups: list[list[Path]] = []
+
+        for i, (ph_i, path_i) in enumerate(scored):
+            if i in assigned or ph_i is None:
+                continue
+
+            group = [path_i]
+            assigned.add(i)
+
+            for j, (ph_j, path_j) in enumerate(scored):
+                if j in assigned or ph_j is None:
+                    continue
+                dist = imagehash.hex_to_hash(ph_i) - imagehash.hex_to_hash(ph_j)
+                if dist <= self._phash_threshold:
+                    group.append(path_j)
+                    assigned.add(j)
+
+            groups.append(group)
+
+        # Add any unassigned (pHash-failed) as singletons
+        for i in range(len(scored)):
+            if i not in assigned:
+                groups.append([scored[i][1]])
+
+        # Keep best resolution per group
+        survivors: list[Path] = []
+        for group in groups:
+            if len(group) > 1:
+                result.phash_groups_found += 1
+                result.phash_removed += len(group) - 1
+                logger.debug(
+                    "pHash near-dupe group (x%d): %s",
+                    len(group), {g.name for g in group},
+                )
+            survivors.append(self._pick_best_resolution(group))
+
+        return survivors
+
+    # ------------------------------------------------------------------
+    # Resolution tiebreaker
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _pick_best_resolution(paths: list[Path]) -> Path:
+        """Return the poster with the largest width×height.
+
+        If dimensions can't be read, the path is still included (sorted
+        last).  If only one path, return it directly.
+        """
+        if len(paths) == 1:
+            return paths[0]
+
+        scored: list[tuple[int, Path]] = []
+        for p in paths:
+            try:
+                with Image.open(p) as img:
+                    scored.append((img.width * img.height, p))
+            except Exception:
+                scored.append((0, p))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+        best = scored[0][1]
+        logger.debug(
+            "Resolution tiebreak: kept %s (%d px²) from %d candidates",
+            best.name, scored[0][0], len(paths),
+        )
+        return best

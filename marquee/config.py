@@ -309,28 +309,57 @@ class Settings(BaseSettings):
     # AI / ML
     # ------------------------------------------------------------------
     AI_MODEL: str = Field(
-        default="clip-vit-b-32",
-        description="CLIP variant: clip-vit-b-32 | clip-vit-b-16 | clip-vit-l-14",
+        default="clip-vit-b-16",
+        description="CLIP variant for poster embeddings and taste matching: "
+        "clip-vit-b-32 | clip-vit-b-16 | clip-vit-l-14",
     )
-    VLM_ENABLED: bool = Field(
-        default=False,
-        description="Enable optional Vision Language Model for descriptive analysis",
+
+    # Taste scoring weights (emb vs color)
+    TASTE_EMB_WEIGHT: float = Field(
+        default=0.8,
+        description="Weight for CLIP visual similarity in taste scoring",
     )
-    VLM_MODEL: str = Field(
-        default="qwen2.5-vl-3b",
-        description="VLM model when VLM_ENABLED is true",
+    TASTE_COLOR_WEIGHT: float = Field(
+        default=0.2,
+        description="Weight for LAB color histogram similarity in taste scoring",
+    )
+
+    # Zero-shot negative prompting
+    NEGATIVE_PROMPTS: list[str] = Field(
+        default=[
+            "A crowded movie poster with floating heads",
+            "A generic Hollywood poster with actor faces arranged in a grid",
+            "A poster dominated by photos of actors' faces",
+        ],
+        description="Text prompts for CLIP zero-shot negative filtering. "
+        "Any candidate with cosine similarity > NEGATIVE_PROMPT_THRESHOLD "
+        "to any prompt is rejected.",
+    )
+    NEGATIVE_PROMPT_THRESHOLD: float = Field(
+        default=0.25,
+        description="Cosine similarity above this to any negative prompt → reject candidate",
     )
 
     # ------------------------------------------------------------------
     # OCR Filtering
     # ------------------------------------------------------------------
     OCR_WORKERS: int = Field(
-        default=4,
+        default=6,
         description="Number of parallel PaddleOCR worker processes",
     )
     OCR_CONFIDENCE_THRESHOLD: float = Field(
         default=0.75,
-        description="Minimum OCR confidence score for full-image text",
+        description="Minimum OCR confidence for full-image text regions",
+    )
+    OCR_STRIP_CONFIDENCE_THRESHOLD: float = Field(
+        default=0.65,
+        description="Minimum OCR confidence for top-strip text (4K/UHD badges)",
+    )
+    OCR_BOTTOM_CONFIDENCE_THRESHOLD: float = Field(
+        default=0.50,
+        description="Minimum OCR confidence for bottom-strip text (credits). "
+        "Lower than top strip because fine-print credits on complex backgrounds "
+        "reliably score below 0.65.",
     )
 
     # ------------------------------------------------------------------

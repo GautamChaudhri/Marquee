@@ -304,22 +304,32 @@ def test_resolve_movie_poster_with_basename():
 
 def test_resolve_series_poster():
     """Series poster should use SERIES_POSTER_FORMAT."""
+    from marquee.config import settings
+
     series = Series(
         id=1, title="Breaking Bad", year=2008, series_path="/tv/Breaking Bad"
     )
-    with patch("marquee.core.sync_service.safe_translate_and_validate",
-               return_value=Path("/tv/Breaking Bad")):
+    with (
+        patch("marquee.core.sync_service.safe_translate_and_validate",
+              return_value=Path("/tv/Breaking Bad")),
+        patch.object(settings, "SERIES_POSTER_FORMAT", "poster.jpg"),
+    ):
         result = _resolve_poster_path(series)
     assert result == Path("/tv/Breaking Bad/poster.jpg")
 
 
 def test_resolve_season_poster():
     """Season poster should use SEASON_POSTER_FORMAT with season number."""
+    from marquee.config import settings
+
     series = Series(series_path="/tv/Breaking Bad")
     season = Season(series_id=1, season_number=3)
 
-    with patch("marquee.core.sync_service.safe_translate_and_validate",
-               return_value=Path("/tv/Breaking Bad")):
+    with (
+        patch("marquee.core.sync_service.safe_translate_and_validate",
+              return_value=Path("/tv/Breaking Bad")),
+        patch.object(settings, "SEASON_POSTER_FORMAT", "season{season:02d}-poster.jpg"),
+    ):
         result = _resolve_poster_path(season, series=series)
     assert result == Path("/tv/Breaking Bad/season03-poster.jpg")
 
