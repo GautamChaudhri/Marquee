@@ -51,3 +51,6 @@ coverage.xml
 
 # Marquee specific
 marquee/**/__pycache__/
+
+# Training Data
+experiments/data

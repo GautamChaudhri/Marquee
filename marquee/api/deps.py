@@ -1,0 +1,46 @@
+"""FastAPI dependency helpers.
+
+Inject external API clients (Radarr, Sonarr, TMDB) into route handlers.
+Each dependency checks that the client is configured and raises 503 if not.
+"""
+
+from __future__ import annotations
+
+from fastapi import HTTPException, Request
+
+from marquee.core.arr_clients.radarr_client import RadarrClient
+from marquee.core.arr_clients.sonarr_client import SonarrClient
+from marquee.core.poster_sources.tmdb import TMDBClient
+
+
+def get_radarr(request: Request) -> RadarrClient:
+    """Return the Radarr client, or 503 if not configured."""
+    client = request.app.state.radarr_client
+    if client is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Radarr is not configured — set RADARR_URL and RADARR_API_KEY",
+        )
+    return client
+
+
+def get_sonarr(request: Request) -> SonarrClient:
+    """Return the Sonarr client, or 503 if not configured."""
+    client = request.app.state.sonarr_client
+    if client is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Sonarr is not configured — set SONARR_URL and SONARR_API_KEY",
+        )
+    return client
+
+
+def get_tmdb(request: Request) -> TMDBClient:
+    """Return the TMDB client, or 503 if not configured."""
+    client = request.app.state.tmdb_client
+    if client is None:
+        raise HTTPException(
+            status_code=503,
+            detail="TMDB is not configured — set TMDB_READ_ACCESS_TOKEN",
+        )
+    return client

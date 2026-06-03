@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     PORT: int = 3165
     DEBUG: bool = False
     LOG_LEVEL: str = "INFO"
+    LOG_FORMAT: str = "text"  # "text" | "json" — switch point for structured logging
 
     # ------------------------------------------------------------------
     # Database
@@ -77,14 +78,6 @@ class Settings(BaseSettings):
     SHUTDOWN_TIMEOUT_SECONDS: int = Field(
         default=10,
         description="Max seconds to wait for clients to disconnect during shutdown.",
-    )
-
-    # ------------------------------------------------------------------
-    # Path Validation
-    # ------------------------------------------------------------------
-    MEDIA_ROOTS: list[str] = Field(
-        default=["/media", "/tvshows"],
-        description="Allowed root directories for media filesystem operations.",
     )
 
     # ------------------------------------------------------------------
@@ -156,38 +149,132 @@ class Settings(BaseSettings):
         return self.SONARR_URL is not None and self.SONARR_API_KEY is not None
 
     # ------------------------------------------------------------------
-    # Path Mapping (cross-host / Docker setups)
+    # Radarr Path Mapping (cross-host / Docker setups)
     #
-    # Sonarr/Radarr report paths using their own mount namespace.
-    # When Marquee runs on a different machine or in a container with
-    # different volume mounts, these settings translate *arr paths to
-    # local filesystem paths.  Bazarr uses the same pattern.
+    # Radarr reports paths using its own mount namespace.  When Marquee
+    # runs on a different machine with different volume mounts, these
+    # settings translate Radarr paths to local filesystem paths.
     #
     # Example:
-    #   Sonarr sees:  /data/media/Shows/Breaking Bad/
-    #   Marquee sees: /media/Shows/Breaking Bad/
-    #   → ARR_PATH_PREFIX=/data/media  LOCAL_PATH_PREFIX=/media
+    #   Radarr sees:  /plunder/movies/Dune (2021)/
+    #   Marquee sees: /Volumes/PLUNDER/Media/Movies/Dune (2021)/
+    #   → RADARR_PATH_PREFIX=/plunder/movies
+    #     RADARR_MEDIA_PATH=/Volumes/PLUNDER/Media/Movies
     # ------------------------------------------------------------------
-    ARR_PATH_PREFIX: Optional[str] = Field(
+    RADARR_PATH_PREFIX: Optional[str] = Field(
         default=None,
-        description="Path prefix used by Sonarr/Radarr (e.g. /data/media)",
+        description="Path prefix used by Radarr (e.g. /plunder/movies)",
     )
-    LOCAL_PATH_PREFIX: Optional[str] = Field(
+    RADARR_MEDIA_PATH: Optional[str] = Field(
         default=None,
-        description="Path prefix as mounted in Marquee (e.g. /media)",
+        description="Corresponding path prefix as mounted in Marquee "
+        "(e.g. /Volumes/PLUNDER/Media/Movies)",
     )
 
     @property
-    def path_mapping_configured(self) -> bool:
-        return self.ARR_PATH_PREFIX is not None and self.LOCAL_PATH_PREFIX is not None
+    def radarr_path_configured(self) -> bool:
+        return (
+            self.RADARR_PATH_PREFIX is not None
+            and self.RADARR_MEDIA_PATH is not None
+        )
 
-    def translate_arr_path(self, arr_path: str) -> str:
-        """Translate a path from the *arr's mount namespace to Marquee's."""
-        if not arr_path or not self.ARR_PATH_PREFIX:
+    def translate_radarr_path(self, arr_path: str) -> str:
+        """Translate a path from Radarr's mount namespace to Marquee's.
+
+        Returns the path untranslated if no mapping is configured or the
+        path doesn't start with the configured prefix (caller should log).
+        """
+        if not arr_path or not self.RADARR_PATH_PREFIX:
             return arr_path
-        if arr_path.startswith(self.ARR_PATH_PREFIX):
-            return self.LOCAL_PATH_PREFIX + arr_path[len(self.ARR_PATH_PREFIX):]
+        if arr_path.startswith(self.RADARR_PATH_PREFIX):
+            return self.RADARR_MEDIA_PATH + arr_path[len(self.RADARR_PATH_PREFIX):]
         return arr_path
+
+    # ------------------------------------------------------------------
+    # Sonarr Path Mapping
+    #
+    # Same pattern as Radarr — translate Sonarr paths to local filesystem.
+    #
+    # Example:
+    #   Sonarr sees:  /plunder/tv/Breaking Bad/
+    #   Marquee sees: /Volumes/PLUNDER/Media/TV/Breaking Bad/
+    #   → SONARR_PATH_PREFIX=/plunder/tv
+    #     SONARR_MEDIA_PATH=/Volumes/PLUNDER/Media/TV
+    # ------------------------------------------------------------------
+    SONARR_PATH_PREFIX: Optional[str] = Field(
+        default=None,
+        description="Path prefix used by Sonarr (e.g. /plunder/tv)",
+    )
+    SONARR_MEDIA_PATH: Optional[str] = Field(
+        default=None,
+        description="Corresponding path prefix as mounted in Marquee "
+        "(e.g. /Volumes/PLUNDER/Media/TV)",
+    )
+
+    @property
+    def sonarr_path_configured(self) -> bool:
+        return (
+            self.SONARR_PATH_PREFIX is not None
+            and self.SONARR_MEDIA_PATH is not None
+        )
+
+    def translate_sonarr_path(self, arr_path: str) -> str:
+        """Translate a path from Sonarr's mount namespace to Marquee's.
+
+        Returns the path untranslated if no mapping is configured or the
+        path doesn't start with the configured prefix (caller should log).
+        """
+        if not arr_path or not self.SONARR_PATH_PREFIX:
+            return arr_path
+        if arr_path.startswith(self.SONARR_PATH_PREFIX):
+            return self.SONARR_MEDIA_PATH + arr_path[len(self.SONARR_PATH_PREFIX):]
+        return arr_path
+
+    # ------------------------------------------------------------------
+    # Path Validation — Media Roots
+    #
+    # ``effective_media_roots`` auto-derives allowed roots from the
+    # configured Radarr/Sonarr media paths plus any manual overrides in
+    # MEDIA_ROOTS.  Roots are resolved to their canonical path so symlink
+    # aliases don't defeat the check.
+    #
+    # Default (MEDIA_ROOTS=[] + no path mapping): no enforcement.
+    # ------------------------------------------------------------------
+    MEDIA_ROOTS: list[str] = Field(
+        default=[],
+        description="Additional allowed root directories.  Radarr/Sonarr "
+        "media paths are automatically included.  Empty + no path mapping "
+        "= allow all paths.",
+    )
+
+    @property
+    def effective_media_roots(self) -> list[Path]:
+        """Canonical set of allowed root directories.
+
+        Built from: ``RADARR_MEDIA_PATH``, ``SONARR_MEDIA_PATH``,
+        and any manual ``MEDIA_ROOTS`` entries.  Each is resolved to
+        its real path so symlinks don't break the ``startswith`` check.
+        """
+        roots: set[Path] = set()
+        for raw in self.MEDIA_ROOTS:
+            try:
+                roots.add(Path(raw).resolve())
+            except (OSError, RuntimeError):
+                pass  # unresolvable → skip
+
+        if self.RADARR_MEDIA_PATH:
+            try:
+                roots.add(Path(self.RADARR_MEDIA_PATH).resolve())
+            except (OSError, RuntimeError):
+                pass
+
+        if self.SONARR_MEDIA_PATH:
+            try:
+                roots.add(Path(self.SONARR_MEDIA_PATH).resolve())
+            except (OSError, RuntimeError):
+                pass
+
+        return sorted(roots)
 
     # ------------------------------------------------------------------
     # Sync
@@ -195,6 +282,11 @@ class Settings(BaseSettings):
     SYNC_INTERVAL_MINUTES: int = Field(
         default=15,
         description="Minutes between periodic *arr syncs",
+    )
+    SYNC_COOLDOWN_SECONDS: int = Field(
+        default=300,
+        description="Minimum seconds between manual sync triggers (rate limit). "
+        "Default 300 = 5 minutes.",
     )
     HEAL_INTERVAL_MINUTES: int = Field(
         default=30,
@@ -239,6 +331,29 @@ class Settings(BaseSettings):
     OCR_CONFIDENCE_THRESHOLD: float = Field(
         default=0.75,
         description="Minimum OCR confidence score for full-image text",
+    )
+
+    # ------------------------------------------------------------------
+    # Poster Filename Formats
+    #
+    # Template variables:
+    #   {movie_basename} — movie filename without extension (movies only)
+    #   {season}         — season number (seasons only)
+    #   {season:02d}     — zero-padded season number (seasons only)
+    # ------------------------------------------------------------------
+    MOVIE_POSTER_FORMAT: str = Field(
+        default="poster.jpg",
+        description="Filename for movie posters. Use {movie_basename} "
+        "to derive from the media file (e.g. '{movie_basename}.jpg').",
+    )
+    SERIES_POSTER_FORMAT: str = Field(
+        default="poster.jpg",
+        description="Filename for TV series posters.",
+    )
+    SEASON_POSTER_FORMAT: str = Field(
+        default="season{season:02d}-poster.jpg",
+        description="Filename for season posters. {season} = season number. "
+        "Example: 'season{season:02d}-poster.jpg' → 'season01-poster.jpg'",
     )
 
     # ------------------------------------------------------------------

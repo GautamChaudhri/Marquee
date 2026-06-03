@@ -16,25 +16,24 @@
 - [x] Config system with Pydantic-settings
 - [x] Database layer (async SQLAlchemy + SQLite + WAL mode)
 
-### Phase 1: Core Infrastructure — current
+### Phase 1: Core Infrastructure ✅ DONE
 
-- [ ] Implement new model schema: `Movie`, `Series`, `Season`, `Episode` + `ArtworkMixin`
-- [ ] Path hardening (`safe_translate_and_validate()`)
-- [ ] Fix DB/cache/staging paths to resolve relative to project root
-- [ ] Tests for all models
-- [ ] **→ See `design/todos.md` § Phase 1 for full list**
+- [x] Implement new model schema
+- [x] Path hardening
+- [x] Fix DB/cache/staging paths
+- [x] Tests for all models
 
-### Phase 2: Integration Layer
+### Phase 2: Integration Layer ✅ DONE
 
-- [ ] Arr clients (salvage pattern from old code, adapt for new models)
-- [ ] TMDB client (extend with TV/season endpoints and `/find`)
-- [ ] Sync service for Movie + Series + Season + Episode
-- [ ] API route stubs
-- [ ] Request logging middleware
-- [ ] API rate limiting
-- [ ] **→ See `design/todos.md` § Phase 2 for full list**
+- [x] Arr clients salvaged + adapted
+- [x] TMDB client extended
+- [x] Sync service
+- [x] API route stubs + working sync endpoint
+- [x] Request logging middleware
+- [x] API rate limiting
+- [x] Verified against real Sonarr/Radarr (489 movies, 103 series, 455 seasons, 9255 episodes)
 
-### Phase 3: AI Pipeline
+### Phase 3: AI Pipeline ← CURRENT
 
 - [ ] CLIP ONNX export script (adapt from DINOv2 pattern)
 - [ ] CLIP embedding extraction

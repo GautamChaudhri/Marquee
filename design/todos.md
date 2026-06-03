@@ -4,40 +4,40 @@ Organized by the phase when attention is needed. Reference `design/03-migration-
 
 ---
 
-## Phase 1 — Core Infrastructure (current)
+## Phase 1 — Core Infrastructure ✅ COMPLETE
 
 - [x] ~~CORS middleware~~ — added in `main.py`
 - [x] ~~DB-probing health check~~ — added in `main.py`
 - [x] ~~Graceful shutdown timeout~~ — added in `main.py`
 - [x] ~~WAL mode for SQLite~~ — added in `database.py`
-- [ ] **Implement new model schema.** `Movie`, `Series`, `Season`, `Episode` with `ArtworkMixin` per `design/02-model-schema.md`.
-- [ ] **Add `ModelName` to `pyproject.toml` classifiers** once the model naming is finalized.
-- [ ] **Path translation hardening.** Implement `safe_translate_and_validate()` from `design/03-config-and-paths.md`.
-- [ ] **Fix DB path** — resolve relative to project root, not CWD.
-- [ ] **Fix cache/staging paths** — same treatment as DB path.
+- [x] ~~Implement new model schema.~~ — Movie, Series, Season, Episode + ArtworkMixin in `marquee/models/`
+- [x] ~~Path translation hardening.~~ — `safe_translate_and_validate()` in `marquee/core/path_utils.py`
+- [x] ~~Fix DB path~~ — `db_url_resolved` property resolves relative to project root
+- [x] ~~Fix cache/staging paths~~ — `poster_cache_path` / `poster_staging_path` properties
 
 ---
 
-## Phase 2 — Integration Layer
+## Phase 2 — Integration Layer ✅ COMPLETE
 
-- [ ] **Request logging middleware.** Log method, path, status code, and duration for every HTTP request.
-- [ ] **Structured/JSON logging.** Switch from `basicConfig` text format to JSON for production-readiness. Keep text format for dev.
-- [ ] **API rate limiting.** Sync and pipeline trigger routes should enforce a cooldown (5 min minimum between syncs). Return 429 if too frequent.
-- [ ] **Init *arr clients.** Connect Radarr/Sonarr/TMDB clients at startup, store on `app.state`.
-- [ ] **Sync service.** Implement full *arr → DB sync for movies, series, seasons, and episodes.
-- [ ] **API route stubs.** Create all route files with placeholder endpoints.
+- [x] ~~Request logging middleware.~~ — added in `main.py`
+- [x] ~~Structured/JSON logging.~~ — setup in `marquee/logging.py`; `LOG_FORMAT=text|json` config; `JsonFormatter` ready; log messages unified across all modules
+- [x] ~~API rate limiting.~~ — `RateLimiter` class in `marquee/core/rate_limit.py`; applied to `POST /api/sync/all` with `SYNC_COOLDOWN_SECONDS` config
+- [x] ~~Init *arr clients.~~ — Radarr, Sonarr, and TMDB clients wired in `main.py` lifespan
+- [x] ~~Sync service.~~ — implemented in `marquee/core/sync_service.py`
+- [x] ~~API route stubs.~~ — library, pipeline, and webhook stubs created; sync route is working
 
 ---
 
-## Phase 3 — AI Pipeline
+## Phase 3 — AI Pipeline ← CURRENT
 
 - [ ] **PaddleOCR integration.** Wire `PosterTextFilter` into the pipeline as a stage.
-- [ ] **CLIP ONNX export.** Adapt `export_dinov2.py` pattern for CLIP.
-- [ ] **CLIP embedding extraction.** Wrap ONNX inference for embedding generation.
+- [ ] **CLIP embedding extraction.** Wrap inference for embedding generation (replaces DINOv2 from old project).
 - [ ] **SHA-256 + pHash dedup.** Two-stage deduplication integrated into the pipeline.
 - [ ] **Taste profile trainer/scorer.** Train from existing posters, score candidates.
 - [ ] **Pipeline orchestrator.** Connect all stages: fetch → dedup → OCR → AI → select → deploy.
 - [ ] **File write path validation.** Before writing poster files, validate destination is within `MEDIA_ROOTS`. Reject writes outside allowed paths.
+- [ ] **Expose poster counts in sync report.** Add `posters_found` / `posters_missing` to sync API response.
+- [ ] **Fix stale poster_path on file deletion.** `_check_existing_poster` should set `poster_path = NULL` when the file no longer exists on disk (heal behavior). Currently it silently preserves the old value.
 
 ---
 
@@ -80,6 +80,7 @@ Organized by the phase when attention is needed. Reference `design/03-migration-
 ## Phase N — Deferred Features (no target phase yet)
 
 - [ ] **Additional poster sources.** Fanart.tv, TheTVDB, TVmaze. TMDB is sole source for initial pipeline.
+- [ ] **TMDB ID resolution for series.** Currently series use `tvdb_id` as primary key. When adding more poster sources, resolve `tmdb_id` via TMDB `/find` endpoint (using `tvdb_id` or `imdb_id`). Also populate `Season.tmdb_id` for season poster lookups.
 - [ ] **HDR/DV tracking.** Quality profile syncing, media info comparison, missing HDR/DV flagging.
 - [ ] **Backdrops, logos, banners.** Additional artwork types per `design/02-model-schema.md` Section 8 — Path A (columns) or Path B (artwork table).
 - [ ] **Health check hardening.** Add more probes (external API reachability, disk space, etc.).
