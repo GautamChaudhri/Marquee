@@ -147,7 +147,7 @@ def _load_ocr() -> object:
         use_textline_orientation=True,  # handle rotated/upside-down text
         lang="en",
         device="cpu",                   # no GPU on Mac; CPU uses ARM NEON
-        text_det_box_thresh=0.4,        # default 0.6 — lower catches faint text
+        text_det_box_thresh=0.3,        # default 0.6 — lower catches faint/gothic text
         text_det_unclip_ratio=2.0,      # default 1.5 — expand for tight/small text
     )
     logger.debug("Worker PaddleOCR ready.")
@@ -317,16 +317,18 @@ class PosterTextFilter:
     # ------------------------------------------------------------------
 
     def filter_batch(
-        self, paths: list[Path],
-    ) -> tuple[list[Path], list[tuple[Path, str]]]:
+        self, paths: list[Path], *, include_texts: bool = False,
+    ) -> tuple[list[Path], list[tuple[Path, str]]] | tuple[list[Path], list[tuple[Path, str]], dict[Path, str]]:
         """Filter a batch of poster images using multiprocessing.
 
         Args:
             paths: Paths to poster candidate images.
+            include_texts: If True, also return a dict mapping accepted
+                paths to their normalised detected text.
 
         Returns:
             ``(accepted_paths, [(rejected_path, reason), ...])``.
-            ``reason`` is the normalised detected text that caused rejection.
+            If ``include_texts=True``, also returns ``{accepted_path: text}``.
         """
         if not paths:
             return ([], [])
@@ -340,6 +342,7 @@ class PosterTextFilter:
         img_map = {p.name: p for p in paths}
 
         accepted: list[Path] = []
+        accepted_texts: dict[Path, str] = {}
         rejected: list[tuple[Path, str]] = []
 
         with ctx.Pool(
@@ -351,11 +354,13 @@ class PosterTextFilter:
                 _process_image, [str(p) for p in paths],
             ):
                 if is_ok is None:
-                    # OCR error — treat as accepted (don't block on errors)
                     logger.warning("OCR error for %s: %s — accepting", name, text)
                     accepted.append(img_map[name])
+                    accepted_texts[img_map[name]] = ""
                 elif is_ok:
                     accepted.append(img_map[name])
+                    if include_texts:
+                        accepted_texts[img_map[name]] = text
                     logger.debug("ACCEPTED  %s", name)
                 else:
                     rejected.append((img_map[name], text))
@@ -369,6 +374,8 @@ class PosterTextFilter:
             len(accepted), len(rejected), len(paths),
         )
 
+        if include_texts:
+            return (accepted, rejected, accepted_texts)
         return (accepted, rejected)
 
     # ------------------------------------------------------------------
@@ -414,7 +421,7 @@ class PosterTextFilter:
     def _check_text(self, normed_text: str) -> bool:
         """Check normalised text against instance tokens (single-image mode)."""
         if not normed_text:
-            return True
+            return True  # text-free poster → accept
 
         words = set(normed_text.split())
 

@@ -183,11 +183,13 @@ async def log_requests(request: Request, call_next):
 from marquee.api.routes.library import router as library_router      # noqa: E402
 from marquee.api.routes.pipeline import router as pipeline_router    # noqa: E402
 from marquee.api.routes.sync import router as sync_router            # noqa: E402
+from marquee.api.routes.test_pipeline import router as test_pipeline_router  # noqa: E402
 from marquee.api.routes.webhooks import router as webhooks_router    # noqa: E402
 
 app.include_router(sync_router)
 app.include_router(library_router)
 app.include_router(pipeline_router)
+app.include_router(test_pipeline_router)
 app.include_router(webhooks_router)
 
 

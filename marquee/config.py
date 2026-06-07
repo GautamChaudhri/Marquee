@@ -344,7 +344,7 @@ class Settings(BaseSettings):
     # OCR Filtering
     # ------------------------------------------------------------------
     OCR_WORKERS: int = Field(
-        default=6,
+        default=5,
         description="Number of parallel PaddleOCR worker processes",
     )
     OCR_CONFIDENCE_THRESHOLD: float = Field(
@@ -389,9 +389,9 @@ class Settings(BaseSettings):
     # Deduplication
     # ------------------------------------------------------------------
     DEDUP_PHASH_THRESHOLD: int = Field(
-        default=6,
+        default=8,
         description="Hamming distance ≤ N means visual near-duplicate. "
-        "0 = identical, <6 = near-dupe, 6-10 = similar, >10 = different.",
+        "0 = identical, <8 = near-dupe, 8-12 = similar, >12 = different.",
     )
     DEDUP_MIN_POSTER_WIDTH: int = Field(
         default=500,

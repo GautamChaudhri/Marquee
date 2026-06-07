@@ -12,6 +12,7 @@ Organized by the phase when attention is needed. Reference `design/03-migration-
 - [x] ~~WAL mode for SQLite~~ — added in `database.py`
 - [x] ~~Implement new model schema.~~ — Movie, Series, Season, Episode + ArtworkMixin in `marquee/models/`
 - [x] ~~Path translation hardening.~~ — `safe_translate_and_validate()` in `marquee/core/path_utils.py`
+- [x] ~~Per-source path mapping.~~ — `RADARR_PATH_PREFIX`/`RADARR_MEDIA_PATH`, `SONARR_PATH_PREFIX`/`SONARR_MEDIA_PATH`, auto-derived `effective_media_roots`
 - [x] ~~Fix DB path~~ — `db_url_resolved` property resolves relative to project root
 - [x] ~~Fix cache/staging paths~~ — `poster_cache_path` / `poster_staging_path` properties
 
@@ -20,24 +21,35 @@ Organized by the phase when attention is needed. Reference `design/03-migration-
 ## Phase 2 — Integration Layer ✅ COMPLETE
 
 - [x] ~~Request logging middleware.~~ — added in `main.py`
-- [x] ~~Structured/JSON logging.~~ — setup in `marquee/logging.py`; `LOG_FORMAT=text|json` config; `JsonFormatter` ready; log messages unified across all modules
-- [x] ~~API rate limiting.~~ — `RateLimiter` class in `marquee/core/rate_limit.py`; applied to `POST /api/sync/all` with `SYNC_COOLDOWN_SECONDS` config
-- [x] ~~Init *arr clients.~~ — Radarr, Sonarr, and TMDB clients wired in `main.py` lifespan
+- [x] ~~Structured/JSON logging.~~ — setup in `marquee/logging.py`
+- [x] ~~API rate limiting.~~ — `RateLimiter` class in `marquee/core/rate_limit.py`
+- [x] ~~Init *arr clients.~~ — Radarr, Sonarr, TMDB clients wired in `main.py` lifespan
 - [x] ~~Sync service.~~ — implemented in `marquee/core/sync_service.py`
-- [x] ~~API route stubs.~~ — library, pipeline, and webhook stubs created; sync route is working
+- [x] ~~API route stubs.~~ — library, pipeline, webhook stubs created; sync route working
+- [x] ~~Test pipeline endpoint.~~ — `POST /api/test/pipeline/movie/{id}` built for visual validation
 
 ---
 
 ## Phase 3 — AI Pipeline ← CURRENT
 
-- [ ] **PaddleOCR integration.** Wire `PosterTextFilter` into the pipeline as a stage.
-- [ ] **CLIP embedding extraction.** Wrap inference for embedding generation (replaces DINOv2 from old project).
-- [ ] **SHA-256 + pHash dedup.** Two-stage deduplication integrated into the pipeline.
-- [ ] **Taste profile trainer/scorer.** Train from existing posters, score candidates.
+- [x] ~~**PaddleOCR integration.**~~ — `PosterTextFilter` class built: 3-pass OCR, FORMAT_BLOCKLIST, fuzzy matching, multiprocessed. In `marquee/pipeline/ocr_filter.py`.
+- [x] ~~**CLIP embedding extraction.**~~ — ViT-B/16 exported to ONNX (329 MB, CoreML active). `CLIPImageEncoder` with platform-agnostic providers. In `marquee/ml/embedding.py`.
+- [x] ~~**SHA-256 + pHash dedup.**~~ — `PosterDeduper` two-stage dedup with resolution tiebreaker. In `marquee/pipeline/deduper.py`.
+- [x] ~~**Taste profile trainer/scorer.**~~ — `taste_trainer.py` trains from 430 posters (mean=0.76, std=0.06). `TasteScorer` with CLIP+LAB 80/20 scoring + negative filter. `TasteStore` abstraction with `NumpyTasteStore` + ChromaDB stub. In `marquee/ml/`.
 - [ ] **Pipeline orchestrator.** Connect all stages: fetch → dedup → OCR → AI → select → deploy.
-- [ ] **File write path validation.** Before writing poster files, validate destination is within `MEDIA_ROOTS`. Reject writes outside allowed paths.
+- [ ] **File write path validation.** Before writing poster files, validate destination is within `MEDIA_ROOTS`.
 - [ ] **Expose poster counts in sync report.** Add `posters_found` / `posters_missing` to sync API response.
-- [ ] **Fix stale poster_path on file deletion.** `_check_existing_poster` should set `poster_path = NULL` when the file no longer exists on disk (heal behavior). Currently it silently preserves the old value.
+- [ ] **Fix stale poster_path on file deletion.** `_check_existing_poster` should set `poster_path = NULL` when file no longer exists.
+
+---
+
+## Open Tuning Questions (Phase 3)
+
+- [ ] PaddleOCR can't read stylized/gothic titles at w500 (Nosferatu). Need to evaluate `text_det_box_thresh=0.3` effectiveness.
+- [ ] pHash threshold at 8 — needs more movie testing to confirm
+- [ ] Negative filter (floating heads) currently disabled — user undecided
+- [ ] OCR-first vs pHash-first pipeline order — both tested, results in `experiments/ocr-first/` and `experiments/data/`
+- [ ] Text-free poster repositioning: posters with <3 chars detected text pushed to end of CLIP ranking
 
 ---
 
@@ -80,8 +92,9 @@ Organized by the phase when attention is needed. Reference `design/03-migration-
 ## Phase N — Deferred Features (no target phase yet)
 
 - [ ] **Additional poster sources.** Fanart.tv, TheTVDB, TVmaze. TMDB is sole source for initial pipeline.
-- [ ] **TMDB ID resolution for series.** Currently series use `tvdb_id` as primary key. When adding more poster sources, resolve `tmdb_id` via TMDB `/find` endpoint (using `tvdb_id` or `imdb_id`). Also populate `Season.tmdb_id` for season poster lookups.
+- [ ] **TMDB ID resolution for series.** Currently series use `tvdb_id` as primary key. When adding more poster sources, resolve `tmdb_id` via TMDB `/find` endpoint.
+- [ ] **Director info for OCR.** TMDB credits endpoint needed — currently director defaults to `None`.
 - [ ] **HDR/DV tracking.** Quality profile syncing, media info comparison, missing HDR/DV flagging.
-- [ ] **Backdrops, logos, banners.** Additional artwork types per `design/02-model-schema.md` Section 8 — Path A (columns) or Path B (artwork table).
+- [ ] **Backdrops, logos, banners.** Additional artwork types per `design/02-model-schema.md`.
 - [ ] **Health check hardening.** Add more probes (external API reachability, disk space, etc.).
-- [ ] **Document async session autoflush behavior.** SQLAlchemy sessions have `autoflush=False` — developers must call `await db.flush()` explicitly before queries that depend on uncommitted state.
+- [ ] **ChromaDB integration.** Replace `NumpyTasteStore` with `ChromaTasteStore` for incremental approval feature.

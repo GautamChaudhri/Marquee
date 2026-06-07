@@ -55,3 +55,4 @@ marquee/**/__pycache__/
 # Training Data
 experiments/data
 marquee/ml/models/
+marquee/experiments/
