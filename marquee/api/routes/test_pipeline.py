@@ -1,513 +1,613 @@
-"""Test pipeline endpoint — end-to-end stage-by-stage testing.
-
-Downloads all TMDB posters for a movie, then runs each pipeline stage
-sequentially, copying survivors into nested subdirectories for inspection.
-
-  POST /api/test/pipeline/movie/{movie_id}
-
-After completion, the output directory structure is::
-
-    experiments/data/<movie_title>/
-    ├── <all_downloaded_posters>.jpg
-    └── sha256/
-        ├── <sha256_survivors>.jpg
-        └── phash/
-            ├── <phash_survivors>.jpg
-            └── ocr/
-                ├── <ocr_survivors>.jpg
-                └── clip/
-                    ├── 1.jpg  (highest taste score)
-                    ├── 2.jpg
-                    ├── 3.jpg
-                    ├── 4.jpg
-                    └── 5.jpg
-"""
+"""Inspectable movie-only endpoint for the revised poster pipeline."""
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 import shutil
 import time
+from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Annotated
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.api.deps import get_tmdb
-from marquee.config import settings
+from marquee.core.pipeline_config import pipeline_settings
 from marquee.core.poster_sources.tmdb import PosterCandidate, TMDBClient
 from marquee.database import get_db
 from marquee.models import Movie
-from marquee.ml.scorer import TasteScorer
-from marquee.pipeline.deduper import PosterDeduper
+from marquee.pipeline.deduper import DedupRemoval, PosterDeduper
+from marquee.pipeline.features import FeatureExtractor
+from marquee.pipeline.gate import PosterGate
 from marquee.pipeline.ocr_filter import PosterTextFilter
+from marquee.pipeline.output import place_gated, place_ranked
+from marquee.pipeline.scorer import WeightedScorer
+from marquee.pipeline.types import CandidateScore, OCRCandidateResult
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/test", tags=["test"])
 
-# ---------------------------------------------------------------------------
-# Paths
-# ---------------------------------------------------------------------------
-_EXPERIMENTS_DATA = Path(__file__).parent.parent.parent / "experiments" / "ocr-first"
-
-# Concurrency limit for TMDB poster downloads
+_EXPERIMENTS_DATA = Path(__file__).resolve().parents[3] / "experiments" / "ocr-first"
 _DOWNLOAD_SEMAPHORE = asyncio.Semaphore(5)
-_DOWNLOAD_SIZE = "w500"  # fast processing — top 5 re-downloaded at original
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+_DOWNLOAD_SIZE = "w500"
+_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff"}
+_GENERATED_DIR_NAMES = {
+    "sha256",
+    "sha256_rejected",
+    "phash",
+    "phash_rejected",
+    "ocr",
+    "ocr_rejected",
+    "gated",
+    "ranked",
+    "ranked_lower",
+    "errored",
+    "clip",
+    "clip_rejected",
+}
 
 
 def _sanitise_filename(name: str) -> str:
-    """Replace filesystem-unsafe characters in a directory name."""
     return re.sub(r'[<>:"/\\|?*]', "_", name).strip()
 
 
-def _log_stage(name: str, start: float) -> None:
-    """Log stage completion with elapsed time."""
-    elapsed = time.monotonic() - start
-    logger.info("=" * 60)
-    logger.info("  STAGE: %s — completed in %.1fs", name, elapsed)
-    logger.info("=" * 60)
+def _candidate_filename(candidate: PosterCandidate) -> str:
+    return candidate.file_path.lstrip("/").split("/")[-1]
+
+
+def _clear_generated_outputs(out_dir: Path) -> None:
+    """Remove stale stage artifacts while retaining flat w500 downloads."""
+    for child in out_dir.iterdir():
+        if child.is_dir() and child.name in _GENERATED_DIR_NAMES:
+            shutil.rmtree(child)
+        elif child.is_file() and child.name in {"pipeline.log", "pipeline_run.json"}:
+            child.unlink()
+
+
+def _add_run_file_handler(log_path: Path) -> logging.FileHandler:
+    handler = logging.FileHandler(log_path, encoding="utf-8")
+    handler.setFormatter(
+        logging.Formatter(
+            "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
+        )
+    )
+    logging.getLogger("marquee").addHandler(handler)
+    return handler
+
+
+def _remove_run_file_handler(handler: logging.FileHandler) -> None:
+    logging.getLogger("marquee").removeHandler(handler)
+    handler.close()
+
+
+def _root_images(out_dir: Path) -> list[Path]:
+    return sorted(
+        path
+        for path in out_dir.iterdir()
+        if path.is_file() and path.suffix.lower() in _IMAGE_EXTENSIONS
+    )
+
+
+def _copy_with_reason(path: Path, destination: Path, reason: str) -> Path:
+    destination.mkdir(parents=True, exist_ok=True)
+    safe_reason = re.sub(r"[^a-z0-9_]+", "_", reason.lower()).strip("_")
+    output = destination / f"{safe_reason}__{path.name}"
+    shutil.copy2(path, output)
+    return output
+
+
+def _stage_done(
+    name: str,
+    started: float,
+    timings: dict[str, float],
+    *,
+    survivors: int,
+) -> None:
+    elapsed = time.perf_counter() - started
+    timings[name] = round(elapsed, 3)
+    logger.info(
+        "STAGE END | %s | survivors=%d | elapsed=%.3fs",
+        name,
+        survivors,
+        elapsed,
+    )
+
+
+def _log_dedup_removal(removal: DedupRemoval) -> None:
+    logger.info(
+        "DEDUP REMOVE | file=%s | reason=%s | kept=%s | removed_hash=%s | "
+        "kept_hash=%s | distance=%s",
+        removal.removed.name,
+        removal.reason,
+        removal.kept.name if removal.kept else None,
+        removal.removed_hash,
+        removal.kept_hash,
+        removal.distance,
+    )
+
+
+def _write_run_json(
+    path: Path,
+    *,
+    movie: Movie,
+    started_at: str,
+    status: str,
+    timings: dict[str, float],
+    records: dict[str, CandidateScore],
+    total_duration: float,
+    error: str | None = None,
+) -> None:
+    payload = {
+        "movie_id": movie.id,
+        "title": movie.title,
+        "tmdb_id": movie.tmdb_id,
+        "started_at": started_at,
+        "completed_at": datetime.now(UTC).isoformat(),
+        "status": status,
+        "error": error,
+        "model_name": pipeline_settings.AI_MODEL,
+        "config": pipeline_settings.snapshot(),
+        "stage_timings_seconds": timings,
+        "total_duration_seconds": round(total_duration, 3),
+        "candidates": [
+            records[name].to_dict()
+            for name in sorted(records)
+        ],
+    }
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
 async def _download_poster(
     poster: PosterCandidate,
-    dest_dir: Path,
+    destination: Path,
     client: httpx.AsyncClient,
-) -> str:
-    """Download one poster. Returns 'downloaded', 'skipped', or error string."""
-    filename = poster.file_path.lstrip("/").split("/")[-1]
-    dest = dest_dir / filename
-
-    if dest.exists():
-        return "skipped"
-
-    url = poster.url(size=_DOWNLOAD_SIZE)
+) -> tuple[str, str | None]:
+    if destination.exists():
+        return "skipped", None
     try:
         async with _DOWNLOAD_SEMAPHORE:
-            resp = await client.get(url)
-            resp.raise_for_status()
-            dest.write_bytes(resp.content)
-        return "downloaded"
+            response = await client.get(poster.url(size=_DOWNLOAD_SIZE))
+            response.raise_for_status()
+            destination.write_bytes(response.content)
+        return "downloaded", None
     except Exception as exc:
-        return f"{filename}: {exc}"
-
-
-# ---------------------------------------------------------------------------
-# Endpoint
-# ---------------------------------------------------------------------------
+        return "error", str(exc)
 
 
 @router.post("/pipeline/movie/{movie_id}")
 async def test_pipeline_movie(
     movie_id: int,
-    request: Request,
-    db: AsyncSession = Depends(get_db),
-    tmdb: TMDBClient = Depends(get_tmdb),
+    db: Annotated[AsyncSession, Depends(get_db)],
+    tmdb: Annotated[TMDBClient, Depends(get_tmdb)],
 ):
-    """Run the full poster pipeline on one movie for testing and tuning.
-
-    1. Look up movie by Marquee ID → get title + TMDB ID
-    2. Download every poster TMDB returns
-    3. SHA-256 dedup → survivors copied to ``sha256/``
-    4. pHash dedup → survivors copied to ``phash/``
-    5. OCR text filter → survivors copied to ``ocr/``
-    6. CLIP taste scoring → top-5 copied to ``clip/``, renamed 1–5
-
-    All intermediate results are preserved in nested subdirectories for
-    manual inspection and threshold tuning.
-    """
-    t_total = time.monotonic()
-
-    # ── 1. Look up movie ──────────────────────────────────────────────
+    """Run Fetch -> Dedup -> OCR -> Features -> Gate -> Rank -> Output."""
     movie = (
         await db.execute(select(Movie).where(Movie.id == movie_id))
     ).scalar_one_or_none()
-
     if movie is None:
-        # Check if ANY movies exist — suggest sync if DB is empty
-        count = (await db.execute(select(Movie))).scalars().all()
-        total = len(count)
-        if total == 0:
+        movies = (await db.execute(select(Movie).order_by(Movie.id))).scalars().all()
+        if not movies:
             raise HTTPException(
                 status_code=400,
-                detail=f"No movies in database — run POST /api/sync/all first",
+                detail="No movies in database - run POST /api/sync/all first",
             )
         raise HTTPException(
             status_code=404,
-            detail=f"Movie id={movie_id} not found. Database has {total} movies "
-            f"(id range: {count[0].id}–{count[-1].id}).",
+            detail=(
+                f"Movie id={movie_id} not found. Database has {len(movies)} movies "
+                f"(id range: {movies[0].id}-{movies[-1].id})."
+            ),
         )
     if movie.tmdb_id is None:
         raise HTTPException(
             status_code=400,
-            detail=f"Movie '{movie.title}' (id={movie_id}) has no tmdb_id — run sync first",
+            detail=f"Movie {movie.title!r} has no TMDB ID - run sync first",
         )
 
-    logger.info("")
-    logger.info("╔══════════════════════════════════════════════════════════════╗")
-    logger.info("║  TEST PIPELINE — %s (id=%d, tmdb=%d)", movie.title, movie_id, movie.tmdb_id)
-    logger.info("╚══════════════════════════════════════════════════════════════╝")
-    logger.info("")
-
-    # ── 2. Create output directory ──────────────────────────────────
-    safe_title = _sanitise_filename(movie.title)
-    out_dir = _EXPERIMENTS_DATA / safe_title
+    run_started = time.perf_counter()
+    started_at = datetime.now(UTC).isoformat()
+    out_dir = _EXPERIMENTS_DATA / _sanitise_filename(movie.title)
     out_dir.mkdir(parents=True, exist_ok=True)
-    logger.info("Output directory: %s", out_dir)
+    _clear_generated_outputs(out_dir)
+    log_path = out_dir / "pipeline.log"
+    json_path = out_dir / "pipeline_run.json"
+    file_handler = _add_run_file_handler(log_path)
 
-    # ── 3. Fetch TMDB posters ────────────────────────────────────────
-    t_fetch = time.monotonic()
-    logger.info("Fetching posters from TMDB for tmdb_id=%d ...", movie.tmdb_id)
-
-    candidates = await tmdb.get_movie_images(movie.tmdb_id)
-    logger.info("TMDB returned %d poster candidates", len(candidates))
-
-    # ── 4. Download all posters ──────────────────────────────────────
-    logger.info("Downloading %d posters (size=%s, concurrency=5) ...",
-                len(candidates), _DOWNLOAD_SIZE)
-
-    downloaded = 0
-    skipped = 0
-    errors: list[str] = []
-    # Map filename → PosterCandidate for re-download at original size later
+    timings: dict[str, float] = {}
+    records: dict[str, CandidateScore] = {}
     candidate_map: dict[str, PosterCandidate] = {}
 
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        tasks = [_download_poster(p, out_dir, client) for p in candidates]
-        results = await asyncio.gather(*tasks)
-
-    for i, r in enumerate(results):
-        filename = candidates[i].file_path.lstrip("/").split("/")[-1]
-        candidate_map[filename] = candidates[i]
-        if r == "downloaded":
-            downloaded += 1
-        elif r == "skipped":
-            skipped += 1
-        else:
-            errors.append(r)
-
-    for e in errors:
-        logger.error("  Download error: %s", e)
-
-    fetch_duration = time.monotonic() - t_fetch
-    logger.info(
-        "Download complete: %d new, %d cached, %d errors (%.1fs)",
-        downloaded, skipped, len(errors), fetch_duration,
-    )
-
-    # Get all downloaded files (including previously cached)
-    all_files = sorted(
-        p for p in out_dir.iterdir()
-        if p.is_file() and p.suffix.lower() in
-        {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff"}
-    )
-
-    if not all_files:
-        raise HTTPException(
-            status_code=500,
-            detail="No posters were downloaded or found in output directory",
-        )
-
-    logger.info("Total posters available: %d\n", len(all_files))
-
-    # ── 5. Stage 2a: SHA-256 dedup ────────────────────────────────────
-    t_sha = time.monotonic()
-    sha_dir = out_dir / "sha256"
-    sha_dir.mkdir(exist_ok=True)
-    sha_rej_dir = out_dir / "sha256_rejected"
-    sha_rej_dir.mkdir(exist_ok=True)
-
-    logger.info("--- SHA-256 dedup: %d input ---", len(all_files))
-    deduper_sha = PosterDeduper(sha256_only=True)
-    sha_result = deduper_sha.deduplicate(all_files)
-
-    for p in sha_result.survivors:
-        shutil.copy2(p, sha_dir / p.name)
-
-    # Copy rejected
-    survivor_names = {p.name for p in sha_result.survivors}
-    sha_rejected = [p for p in all_files if p.name not in survivor_names]
-    for p in sha_rejected:
-        shutil.copy2(p, sha_rej_dir / p.name)
-
-    _log_stage("SHA-256 dedup", t_sha)
-    logger.info(
-        "  Input:      %d\n"
-        "  Removed:    %d (size: %d)\n"
-        "  SHA groups: %d\n"
-        "  Survivors:  %d → %s/\n"
-        "  Rejected:   %d → %s/",
-        len(all_files),
-        sha_result.sha256_removed + sha_result.size_filter_removed,
-        sha_result.size_filter_removed,
-        sha_result.sha256_groups_found,
-        sha_result.final,
-        sha_dir.name,
-        len(sha_rejected),
-        sha_rej_dir.name,
-    )
-
-    sha_files = sorted(p for p in sha_dir.iterdir() if p.is_file())
-
-    # ── 6. Stage 3: OCR filter ────────────────────────────────────────
-    t_ocr = time.monotonic()
-    ocr_dir = sha_dir / "ocr"
-    ocr_dir.mkdir(exist_ok=True)
-    ocr_rej_dir = sha_dir / "ocr_rejected"
-    ocr_rej_dir.mkdir(exist_ok=True)
-
-    # Silence PaddleOCR model-loading noise
-    import os as _os
-    import sys as _sys
-    _stashed_stderr = _sys.stderr
-    _stashed_stdout = _sys.stdout
-    _sys.stderr = open(_os.devnull, "w")
-    _sys.stdout = open(_os.devnull, "w")
-    import warnings
-    warnings.filterwarnings("ignore", message="No ccache found")
     try:
-        logger.info("--- OCR filter: %d input (title=%r) ---", len(sha_files), movie.title)
-        ocr_filter = PosterTextFilter(movie.title, director=None)
-        ocr_accepted, ocr_rejected, accepted_texts = ocr_filter.filter_batch(
-            sha_files, include_texts=True,
-        )
-        # Track text-free posters for CLIP penalty (require ≥ 3 chars to count)
-        text_free_posters: set[str] = {
-            p.name for p, t in accepted_texts.items() if len(t.strip()) < 3
-        }
+        logger.info("=" * 80)
         logger.info(
-            "  Text-free accepted: %d (of %d total)",
-            len(text_free_posters), len(ocr_accepted),
+            "RUN START | movie=%s | movie_id=%d | tmdb_id=%d | timestamp=%s",
+            movie.title,
+            movie.id,
+            movie.tmdb_id,
+            started_at,
         )
-    finally:
-        _sys.stderr.close()
-        _sys.stdout.close()
-        _sys.stderr = _stashed_stderr
-        _sys.stdout = _stashed_stdout
+        logger.info("CONFIG | %s", json.dumps(pipeline_settings.snapshot(), sort_keys=True))
 
-    for p in ocr_accepted:
-        shutil.copy2(p, ocr_dir / p.name)
-    for p, _ in ocr_rejected:
-        shutil.copy2(p, ocr_rej_dir / p.name)
-
-    _log_stage("OCR filter", t_ocr)
-    logger.info(
-        "  Input:    %d\n"
-        "  Accepted: %d\n"
-        "  Rejected: %d\n"
-        "  → %s/%s/\n"
-        "  Rejected → %s/%s/",
-        len(sha_files),
-        len(ocr_accepted),
-        len(ocr_rejected),
-        sha_dir.name, ocr_dir.name,
-        sha_dir.name, ocr_rej_dir.name,
-    )
-
-    # Sample rejection reasons
-    rejection_samples: list[dict] = []
-    for path, text in ocr_rejected[:5]:
-        logger.info("  REJECTED: %s — \"%s\"", path.name, text[:100])
-        rejection_samples.append({"file": path.name, "text": text[:120]})
-
-    ocr_files = sorted(p for p in ocr_dir.iterdir() if p.is_file())
-
-    # ── 7. Stage 2b: pHash dedup (now after OCR) ─────────────────────
-    t_phash = time.monotonic()
-    phash_dir = ocr_dir / "phash"
-    phash_dir.mkdir(exist_ok=True)
-    phash_rej_dir = ocr_dir / "phash_rejected"
-    phash_rej_dir.mkdir(exist_ok=True)
-
-    logger.info("--- pHash dedup: %d input ---", len(ocr_files))
-    deduper_phash = PosterDeduper()
-    phash_result = deduper_phash.deduplicate(ocr_files)
-
-    for p in phash_result.survivors:
-        shutil.copy2(p, phash_dir / p.name)
-
-    # Copy rejected
-    phash_survivor_names = {p.name for p in phash_result.survivors}
-    phash_rejected = [p for p in ocr_files if p.name not in phash_survivor_names]
-    for p in phash_rejected:
-        shutil.copy2(p, phash_rej_dir / p.name)
-
-    _log_stage("pHash dedup", t_phash)
-    logger.info(
-        "  Input:      %d\n"
-        "  pH removed: %d\n"
-        "  pH groups:  %d\n"
-        "  Survivors:  %d → %s/%s/%s/\n"
-        "  Rejected:   %d → %s/%s/",
-        len(ocr_files),
-        phash_result.phash_removed,
-        phash_result.phash_groups_found,
-        phash_result.final,
-        sha_dir.name, ocr_dir.name, phash_dir.name,
-        len(phash_rejected),
-        sha_dir.name, phash_rej_dir.name,
-    )
-
-    phash_files = sorted(p for p in phash_dir.iterdir() if p.is_file())
-
-    # ── 8. Stage 4: CLIP scoring ──────────────────────────────────────
-    t_clip = time.monotonic()
-    clip_dir = phash_dir / "clip"
-    clip_dir.mkdir(exist_ok=True)
-    clip_rej_dir = phash_dir / "clip_rejected"
-    clip_rej_dir.mkdir(exist_ok=True)
-
-    logger.info("--- CLIP scoring: %d input (negative filter DISABLED) ---", len(phash_files))
-
-    scorer = TasteScorer(neg_threshold=2.0)
-    clip_result = scorer.rank(phash_files)
-
-    # Apply text-free penalty: push text-free posters to the end of the
-    # ranked list.  They are only selected if fewer than 5 posters with
-    # text survive.  Keep their relative CLIP ordering among themselves.
-    if text_free_posters:
-        with_text = [s for s in clip_result.accepted if s.image_path.name not in text_free_posters]
-        without_text = [s for s in clip_result.accepted if s.image_path.name in text_free_posters]
-
-        # Log which posters are classified as text-free vs with-text
-        logger.info("  --- CLIP classification ---")
-        for s in clip_result.accepted:
-            is_free = s.image_path.name in text_free_posters
-            label = "TEXT-FREE → end" if is_free else "with-text  ✓"
-            logger.info(
-                "    %s  score=%.4f  emb=%.4f  color=%.4f  %s",
-                label, s.final_score, s.emb_similarity,
-                s.color_similarity, s.image_path.name,
+        # Stage 1: fetch and download.
+        stage_started = time.perf_counter()
+        logger.info("STAGE START | fetch")
+        candidates = await tmdb.get_movie_images(movie.tmdb_id)
+        for candidate in candidates:
+            filename = _candidate_filename(candidate)
+            candidate_map[filename] = candidate
+            records[filename] = CandidateScore(
+                image_path=out_dir / filename,
+                orig_filename=filename,
+                stage_reached="fetch",
             )
+        resolution_by_name = {
+            filename: (candidate.width, candidate.height)
+            for filename, candidate in candidate_map.items()
+        }
 
-        clip_result.accepted = with_text + without_text
-        logger.info(
-            "  --- Repositioned: %d kept, %d text-free moved to end ---",
-            len(with_text), len(without_text),
+        downloaded = 0
+        skipped = 0
+        download_errors = 0
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            results = await asyncio.gather(
+                *[
+                    _download_poster(
+                        candidate,
+                        out_dir / _candidate_filename(candidate),
+                        client,
+                    )
+                    for candidate in candidates
+                ]
+            )
+        for candidate, (status, error) in zip(candidates, results, strict=True):
+            filename = _candidate_filename(candidate)
+            if status == "downloaded":
+                downloaded += 1
+            elif status == "skipped":
+                skipped += 1
+            else:
+                download_errors += 1
+                records[filename].rejection_reason = f"download_error: {error}"
+                logger.error("FETCH ERROR | file=%s | error=%s", filename, error)
+
+        cached_root_files = {path.name: path for path in _root_images(out_dir)}
+        all_files = sorted(
+            cached_root_files[filename]
+            for filename in candidate_map
+            if filename in cached_root_files
+        )
+        if not all_files:
+            raise RuntimeError("No poster files were downloaded or found in the cache")
+        _stage_done("fetch", stage_started, timings, survivors=len(all_files))
+
+        # Stage 2a: exact SHA-256 dedup.
+        stage_started = time.perf_counter()
+        logger.info("STAGE START | sha256 | input=%d", len(all_files))
+        sha_dir = out_dir / "sha256"
+        sha_rejected_dir = sha_dir / "sha256_rejected"
+        sha_dir.mkdir(parents=True)
+        sha_rejected_dir.mkdir()
+        sha_result = PosterDeduper(
+            sha256_only=True,
+            resolution_by_name=resolution_by_name,
+        ).deduplicate(all_files)
+        sha_survivor_names = {path.name for path in sha_result.survivors}
+        for removal in sha_result.removals:
+            _log_dedup_removal(removal)
+            record = records[removal.removed.name]
+            record.stage_reached = "dedup"
+            record.rejection_reason = f"dedup_{removal.reason}"
+            record.image_path = _copy_with_reason(
+                removal.removed,
+                sha_rejected_dir,
+                removal.reason,
+            )
+        for path in sha_result.survivors:
+            destination = sha_dir / path.name
+            shutil.copy2(path, destination)
+            records[path.name].image_path = destination
+            records[path.name].stage_reached = "dedup"
+        _stage_done("sha256", stage_started, timings, survivors=len(sha_survivor_names))
+
+        # Stage 2b: perceptual dedup.
+        stage_started = time.perf_counter()
+        sha_files = sorted(sha_dir.glob("*.*"))
+        logger.info("STAGE START | phash | input=%d", len(sha_files))
+        phash_dir = sha_dir / "phash"
+        phash_rejected_dir = phash_dir / "phash_rejected"
+        phash_dir.mkdir()
+        phash_rejected_dir.mkdir()
+        phash_result = PosterDeduper(
+            min_width=0,
+            resolution_by_name=resolution_by_name,
+        ).deduplicate(sha_files)
+        for removal in phash_result.removals:
+            if removal.reason != "phash":
+                continue
+            _log_dedup_removal(removal)
+            record = records[removal.removed.name]
+            record.stage_reached = "dedup"
+            record.rejection_reason = "dedup_phash"
+            record.image_path = _copy_with_reason(
+                removal.removed,
+                phash_rejected_dir,
+                "phash",
+            )
+        for path in phash_result.survivors:
+            destination = phash_dir / path.name
+            shutil.copy2(path, destination)
+            records[path.name].image_path = destination
+        _stage_done("phash", stage_started, timings, survivors=phash_result.final)
+
+        # Stage 3: OCR text gate and geometry emission.
+        stage_started = time.perf_counter()
+        phash_files = sorted(phash_dir.glob("*.*"))
+        logger.info("STAGE START | ocr | input=%d", len(phash_files))
+        ocr_dir = phash_dir / "ocr"
+        ocr_rejected_dir = ocr_dir / "ocr_rejected"
+        errored_dir = ocr_dir / "errored"
+        ocr_dir.mkdir()
+        ocr_rejected_dir.mkdir()
+        errored_dir.mkdir()
+        ocr_results = PosterTextFilter(movie.title, director=None).filter_batch(
+            phash_files
+        )
+        ocr_survivors: list[OCRCandidateResult] = []
+        for result in ocr_results:
+            record = records[result.image_path.name]
+            record.stage_reached = "ocr"
+            logger.info(
+                "OCR | file=%s | accepted=%s | reason=%s | text=%r | "
+                "title_bbox=%s | residual_boxes=%d",
+                result.image_path.name,
+                result.accepted,
+                result.reason,
+                result.detected_text,
+                result.title_bbox,
+                len(result.residual_boxes),
+            )
+            if not result.accepted:
+                reason = result.reason or "ocr_rejected"
+                record.rejection_reason = reason
+                destination_dir = (
+                    errored_dir if reason.startswith("ocr_error") else ocr_rejected_dir
+                )
+                record.image_path = _copy_with_reason(
+                    result.image_path,
+                    destination_dir,
+                    reason.split(":", 1)[0],
+                )
+                continue
+            destination = ocr_dir / result.image_path.name
+            shutil.copy2(result.image_path, destination)
+            record.image_path = destination
+            ocr_survivors.append(replace(result, image_path=destination))
+        _stage_done("ocr", stage_started, timings, survivors=len(ocr_survivors))
+
+        # Stage 4: feature extraction. Preflight failures are systemic.
+        stage_started = time.perf_counter()
+        logger.info("STAGE START | features | input=%d", len(ocr_survivors))
+        feature_extractor = FeatureExtractor()
+        feature_extractor.preflight()
+        diagnostic_scorer = WeightedScorer()
+        featured: list[CandidateScore] = []
+        for ocr_result in ocr_survivors:
+            filename = ocr_result.image_path.name
+            record = records[filename]
+            candidate = candidate_map[filename]
+            record.stage_reached = "features"
+            try:
+                record.features = feature_extractor.extract(ocr_result, candidate)
+            except Exception as exc:
+                record.rejection_reason = f"feature_error: {exc}"
+                record.image_path = _copy_with_reason(
+                    ocr_result.image_path,
+                    errored_dir,
+                    "feature_error",
+                )
+                logger.exception(
+                    "FEATURE ERROR | file=%s | error=%s",
+                    filename,
+                    exc,
+                )
+                continue
+            featured.append(record)
+            _, record.contributions = diagnostic_scorer.score(record.features)
+            logger.info(
+                "FEATURES | file=%s | raw=%s",
+                filename,
+                json.dumps(record.features.raw_values(), sort_keys=True),
+            )
+        _stage_done("features", stage_started, timings, survivors=len(featured))
+
+        # Stage 5: hard global gates.
+        stage_started = time.perf_counter()
+        logger.info("STAGE START | gate | input=%d", len(featured))
+        gate = PosterGate()
+        gated: list[CandidateScore] = []
+        passed: list[CandidateScore] = []
+        for record in featured:
+            candidate = candidate_map[record.orig_filename]
+            decision = gate.evaluate(
+                record.features,
+                original_width=candidate.width,
+            )
+            record.stage_reached = "gate"
+            record.gate_decision = "passed" if decision.passed else "gated"
+            record.gate_reason = decision.reason
+            if decision.passed:
+                passed.append(record)
+                logger.info("GATE PASS | file=%s", record.orig_filename)
+            else:
+                record.rejection_reason = decision.reason
+                gated.append(record)
+                logger.info(
+                    "GATE REJECT | file=%s | reason=%s | detail=%s",
+                    record.orig_filename,
+                    decision.reason,
+                    decision.detail,
+                )
+        gated_dir = ocr_dir / "gated"
+        place_gated(gated, gated_dir)
+        _stage_done("gate", stage_started, timings, survivors=len(passed))
+
+        status = "completed"
+        ranked: list[CandidateScore] = []
+        output_result = None
+        if not passed:
+            status = "flagged_manual"
+            logger.warning("RUN FLAGGED | all candidates removed before ranking")
+        else:
+            # Stage 6: within-movie ranking.
+            stage_started = time.perf_counter()
+            logger.info("STAGE START | rank | input=%d", len(passed))
+            ranked = diagnostic_scorer.rank(passed)
+            total_weight = sum(
+                weight
+                for weight in pipeline_settings.scorer_weights.values()
+                if weight > 0
+            )
+            for record in ranked:
+                logger.info(
+                    "RANK | rank=%d | file=%s | final_score=%.4f",
+                    record.rank,
+                    record.orig_filename,
+                    record.final_score,
+                )
+                for feature_name, raw_value in record.features.raw_values().items():
+                    normalized = record.features.normalized[feature_name]
+                    configured_weight = pipeline_settings.scorer_weights[feature_name]
+                    effective_weight = (
+                        configured_weight / total_weight
+                        if configured_weight > 0
+                        else 0.0
+                    )
+                    logger.info(
+                        "RANK DETAIL | file=%s | feature=%s | raw=%.6f | "
+                        "normalized=%.6f | weight=%.6f | contribution=%.6f",
+                        record.orig_filename,
+                        feature_name,
+                        raw_value,
+                        normalized,
+                        effective_weight,
+                        record.contributions.get(feature_name, 0.0),
+                    )
+            _stage_done("rank", stage_started, timings, survivors=len(ranked))
+
+            # Stage 7: inspectable output and best-effort original downloads.
+            stage_started = time.perf_counter()
+            logger.info("STAGE START | output | input=%d", len(ranked))
+            output_result = await place_ranked(
+                ranked,
+                candidate_map=candidate_map,
+                ranked_dir=ocr_dir / "ranked",
+                lower_dir=ocr_dir / "ranked_lower",
+            )
+            for record in ranked[:5]:
+                logger.info(
+                    "OUTPUT TOP | rank=%d | file=%s | score=%.4f | "
+                    "original_download=%s | path=%s",
+                    record.rank,
+                    record.orig_filename,
+                    record.final_score,
+                    record.original_download,
+                    record.image_path,
+                )
+            _stage_done("output", stage_started, timings, survivors=len(ranked))
+
+        total_duration = time.perf_counter() - run_started
+        _write_run_json(
+            json_path,
+            movie=movie,
+            started_at=started_at,
+            status=status,
+            timings=timings,
+            records=records,
+            total_duration=total_duration,
         )
 
-    scorer.print_ranked_table(clip_result, top_n=5)
-
-    # Copy top-5, rename, re-download at original
-    for rank, s in enumerate(clip_result.ranked[:5], 1):
-        dest = clip_dir / f"{rank}.jpg"
-        shutil.copy2(s.image_path, dest)
-
-    # Copy rank 6+ to clip_rejected
-    for s in clip_result.ranked[5:]:
-        shutil.copy2(s.image_path, clip_rej_dir / s.image_path.name)
-
-    # Re-download top 5 at original resolution
-    logger.info("  Re-downloading top-5 at original size ...")
-    re_dl = 0
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        for rank, s in enumerate(clip_result.ranked[:5], 1):
-            orig_filename = s.image_path.name
-            if orig_filename in candidate_map:
-                url = candidate_map[orig_filename].url(size="original")
-                dest = clip_dir / f"{rank}.jpg"
-                try:
-                    resp = await client.get(url)
-                    resp.raise_for_status()
-                    dest.write_bytes(resp.content)
-                    re_dl += 1
-                except Exception as exc:
-                    logger.warning("  Failed to re-download #%d at original: %s", rank, exc)
-    logger.info("  Re-downloaded %d/5 at original size", re_dl)
-
-    _log_stage("CLIP scoring", t_clip)
-    logger.info(
-        "  Input:           %d\n"
-        "  Top-5 → %s/%s/%s/%s/ (renamed 1.jpg–5.jpg)\n"
-        "  Rank 6+ → %s/%s/%s/",
-        len(phash_files),
-        sha_dir.name, ocr_dir.name, phash_dir.name, clip_dir.name,
-        sha_dir.name, ocr_dir.name, clip_rej_dir.name,
-    )
-
-    # Log top-5 scores
-    for rank, s in enumerate(clip_result.ranked[:5], 1):
         logger.info(
-            "  #%d: %s → score=%.4f  emb=%.4f  color=%.4f  neg=%.4f",
-            rank, s.image_path.name,
-            s.final_score, s.emb_similarity,
-            s.color_similarity, s.neg_sim_max,
+            "RUN SUMMARY | status=%s | top5=%s | total=%.3fs | timings=%s",
+            status,
+            [
+                {
+                    "rank": record.rank,
+                    "file": record.orig_filename,
+                    "score": record.final_score,
+                    "original_download": record.original_download,
+                }
+                for record in ranked[:5]
+            ],
+            total_duration,
+            timings,
         )
+        logger.info("RUN END | output=%s", out_dir)
+        logger.info("=" * 80)
 
-    # ── 9. Build response ─────────────────────────────────────────────
-    total_duration = time.monotonic() - t_total
-
-    response = {
-        "movie_id": movie.id,
-        "title": movie.title,
-        "tmdb_id": movie.tmdb_id,
-        "output_dir": str(out_dir),
-        "total_duration_s": round(total_duration, 1),
-        "stages": {
+        return {
+            "movie_id": movie.id,
+            "title": movie.title,
+            "tmdb_id": movie.tmdb_id,
+            "status": status,
+            "output_dir": str(out_dir),
+            "pipeline_log": str(log_path),
+            "pipeline_run_json": str(json_path),
+            "total_duration_s": round(total_duration, 3),
+            "stage_timings_s": timings,
             "fetch": {
                 "posters_found": len(candidates),
                 "downloaded": downloaded,
                 "skipped": skipped,
-                "errors": len(errors),
-                "total_available": len(all_files),
-                "duration_s": round(fetch_duration, 1),
+                "errors": download_errors,
             },
-            "sha256": {
-                "input": len(all_files),
-                "survivors": sha_result.final,
-                "removed": sha_result.sha256_removed,
-                "size_filtered": sha_result.size_filter_removed,
-                "groups_found": sha_result.sha256_groups_found,
-                "duration_s": round(time.monotonic() - t_sha, 1),
+            "counts": {
+                "sha256_survivors": sha_result.final,
+                "phash_survivors": phash_result.final,
+                "ocr_survivors": len(ocr_survivors),
+                "feature_survivors": len(featured),
+                "gated": len(gated),
+                "ranked": len(ranked),
             },
-            "phash": {
-                "input": len(sha_files),
-                "survivors": phash_result.final,
-                "removed": phash_result.phash_removed,
-                "groups_found": phash_result.phash_groups_found,
-                "duration_s": round(time.monotonic() - t_phash, 1),
-            },
-            "ocr": {
-                "input": len(phash_files),
-                "survivors": len(ocr_accepted),
-                "removed": len(ocr_rejected),
-                "duration_s": round(time.monotonic() - t_ocr, 1),
-                "sample_rejections": rejection_samples,
-            },
-            "clip": {
-                "input": len(ocr_files),
-                "accepted": len(clip_result.accepted),
-                "neg_filter_disabled": True,
-                "duration_s": round(time.monotonic() - t_clip, 1),
-                "top5": [
-                    {
-                        "rank": i + 1,
-                        "score": round(s.final_score, 4),
-                        "emb_similarity": round(s.emb_similarity, 4),
-                        "color_similarity": round(s.color_similarity, 4),
-                        "neg_sim_max": round(s.neg_sim_max, 4),
-                        "original_file": s.image_path.name,
-                    }
-                    for i, s in enumerate(clip_result.ranked[:5])
-                ],
-            },
-        },
-    }
-
-    logger.info("")
-    logger.info("╔══════════════════════════════════════════════════════════════╗")
-    logger.info("║  PIPELINE COMPLETE — total %.1fs", total_duration)
-    logger.info("║  Output: %s", out_dir)
-    logger.info("╚══════════════════════════════════════════════════════════════╝")
-    logger.info("")
-
-    return response
+            "top5": [
+                {
+                    "rank": record.rank,
+                    "score": record.final_score,
+                    "original_file": record.orig_filename,
+                    "output_file": record.image_path.name,
+                    "original_download": record.original_download,
+                }
+                for record in ranked[:5]
+            ],
+            "original_download_errors": (
+                output_result.download_errors if output_result else []
+            ),
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        total_duration = time.perf_counter() - run_started
+        logger.exception("RUN FAILED | systemic_error=%s", exc)
+        _write_run_json(
+            json_path,
+            movie=movie,
+            started_at=started_at,
+            status="failed",
+            timings=timings,
+            records=records,
+            total_duration=total_duration,
+            error=str(exc),
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"Pipeline infrastructure failure: {exc}",
+        ) from exc
+    finally:
+        _remove_run_file_handler(file_handler)

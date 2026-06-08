@@ -40,7 +40,7 @@ from pathlib import Path
 import imagehash
 from PIL import Image, ImageFile
 
-from marquee.config import settings
+from marquee.core.pipeline_config import pipeline_settings
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +50,18 @@ ImageFile.LOAD_TRUNCATED_IMAGES = True
 # ---------------------------------------------------------------------------
 # Result type
 # ---------------------------------------------------------------------------
+
+
+@dataclass
+class DedupRemoval:
+    """One candidate removed by an exact, perceptual, or size decision."""
+
+    removed: Path
+    kept: Path | None
+    reason: str
+    removed_hash: str | None = None
+    kept_hash: str | None = None
+    distance: int | None = None
 
 
 @dataclass
@@ -69,6 +81,7 @@ class DedupResult:
 
     # Pre-filter
     size_filter_removed: int = 0    # removed by DEDUP_MIN_POSTER_WIDTH
+    removals: list[DedupRemoval] = field(default_factory=list)
 
     @property
     def final(self) -> int:
@@ -97,16 +110,18 @@ class PosterDeduper:
         sha256_only: bool = False,
         min_width: int | None = None,
         phash_threshold: int | None = None,
+        resolution_by_name: dict[str, tuple[int, int]] | None = None,
     ):
         self._sha256_only = sha256_only
         self._min_width = (
             min_width if min_width is not None
-            else settings.DEDUP_MIN_POSTER_WIDTH
+            else pipeline_settings.DEDUP_MIN_POSTER_WIDTH
         )
         self._phash_threshold = (
             phash_threshold if phash_threshold is not None
-            else settings.DEDUP_PHASH_THRESHOLD
+            else pipeline_settings.DEDUP_PHASH_THRESHOLD
         )
+        self._resolution_by_name = resolution_by_name or {}
 
     # ------------------------------------------------------------------
     # Public API
@@ -172,6 +187,13 @@ class PosterDeduper:
                 kept.append(p)
             else:
                 result.size_filter_removed += 1
+                result.removals.append(
+                    DedupRemoval(
+                        removed=p,
+                        kept=None,
+                        reason="min_width",
+                    )
+                )
                 logger.debug(
                     "Size-filtered %s: width=%d < min=%d",
                     p.name, w, self._min_width,
@@ -201,14 +223,27 @@ class PosterDeduper:
 
         survivors: list[Path] = []
         for file_hash, group in hashes.items():
+            kept = self._pick_best_resolution(group)
             if len(group) > 1:
                 result.sha256_groups_found += 1
                 result.sha256_removed += len(group) - 1
+                for path in group:
+                    if path != kept:
+                        result.removals.append(
+                            DedupRemoval(
+                                removed=path,
+                                kept=kept,
+                                reason="sha256",
+                                removed_hash=file_hash,
+                                kept_hash=file_hash,
+                                distance=0,
+                            )
+                        )
                 logger.debug(
                     "SHA-256 dupe group (x%d): %s",
                     len(group), {g.name for g in group},
                 )
-            survivors.append(self._pick_best_resolution(group))
+            survivors.append(kept)
 
         return survivors
 
@@ -242,13 +277,13 @@ class PosterDeduper:
         # Greedy clustering: for each image, find all near-duplicates
         # not already assigned to a group
         assigned: set[int] = set()
-        groups: list[list[Path]] = []
+        groups: list[list[tuple[str, Path, int]]] = []
 
         for i, (ph_i, path_i) in enumerate(scored):
             if i in assigned or ph_i is None:
                 continue
 
-            group = [path_i]
+            group = [(ph_i, path_i, 0)]
             assigned.add(i)
 
             for j, (ph_j, path_j) in enumerate(scored):
@@ -256,7 +291,7 @@ class PosterDeduper:
                     continue
                 dist = imagehash.hex_to_hash(ph_i) - imagehash.hex_to_hash(ph_j)
                 if dist <= self._phash_threshold:
-                    group.append(path_j)
+                    group.append((ph_j, path_j, dist))
                     assigned.add(j)
 
             groups.append(group)
@@ -264,19 +299,35 @@ class PosterDeduper:
         # Add any unassigned (pHash-failed) as singletons
         for i in range(len(scored)):
             if i not in assigned:
-                groups.append([scored[i][1]])
+                groups.append([(scored[i][0], scored[i][1], 0)])
 
         # Keep best resolution per group
         survivors: list[Path] = []
         for group in groups:
+            paths = [item[1] for item in group]
+            kept = self._pick_best_resolution(paths)
+            kept_hash = next(item[0] for item in group if item[1] == kept)
             if len(group) > 1:
                 result.phash_groups_found += 1
                 result.phash_removed += len(group) - 1
+                for phash, path, _distance in group:
+                    if path != kept:
+                        result.removals.append(
+                            DedupRemoval(
+                                removed=path,
+                                kept=kept,
+                                reason="phash",
+                                removed_hash=phash,
+                                kept_hash=kept_hash,
+                                distance=imagehash.hex_to_hash(phash)
+                                - imagehash.hex_to_hash(kept_hash),
+                            )
+                        )
                 logger.debug(
                     "pHash near-dupe group (x%d): %s",
-                    len(group), {g.name for g in group},
+                    len(group), {path.name for _, path, _ in group},
                 )
-            survivors.append(self._pick_best_resolution(group))
+            survivors.append(kept)
 
         return survivors
 
@@ -284,8 +335,7 @@ class PosterDeduper:
     # Resolution tiebreaker
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _pick_best_resolution(paths: list[Path]) -> Path:
+    def _pick_best_resolution(self, paths: list[Path]) -> Path:
         """Return the poster with the largest width×height.
 
         If dimensions can't be read, the path is still included (sorted
@@ -296,6 +346,10 @@ class PosterDeduper:
 
         scored: list[tuple[int, Path]] = []
         for p in paths:
+            original = self._resolution_by_name.get(p.name)
+            if original is not None:
+                scored.append((original[0] * original[1], p))
+                continue
             try:
                 with Image.open(p) as img:
                     scored.append((img.width * img.height, p))

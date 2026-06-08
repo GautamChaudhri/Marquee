@@ -41,6 +41,7 @@ dependencies = [
     "opencv-python>=4.8,<5.0",
     # AI / ML (Phase 3+)
     "numpy>=1.24,<3.0",
+    "onnxruntime>=1.19,<2.0",
     # "paddlepaddle>=3.0",       # uncomment in Phase 3
     # "paddleocr>=2.9",           # uncomment in Phase 3
     # "onnxruntime>=1.19",        # uncomment in Phase 3
@@ -61,11 +62,11 @@ dev = [
 
 ml = [
     "paddlepaddle>=3.0",
-    "paddleocr>=2.9",
-    "onnxruntime>=1.19",
+    "paddleocr>=3.0",
     "onnx>=1.16",
     "torch>=2.0",
     "torchvision>=0.15",
+    "transformers>=4.40",
     "tqdm>=4.65",
 ]
 

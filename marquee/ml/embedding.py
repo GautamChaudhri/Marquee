@@ -1,13 +1,4 @@
-"""CLIP image encoder via ONNX Runtime.
-
-Platform-agnostic inference — uses the fastest available execution provider:
-  - macOS Apple Silicon → CoreMLExecutionProvider (ANE/GPU/CPU)
-  - Intel CPU/iGPU    → OpenVINOExecutionProvider  (if installed)
-  - NVIDIA GPU         → CUDAExecutionProvider      (if installed)
-  - Fallback           → CPUExecutionProvider       (always available)
-
-The ONNX model is produced by ``clip_export.py`` (one-time, requires torch).
-"""
+"""CLIP ViT-B/32 image embeddings via ONNX Runtime."""
 
 from __future__ import annotations
 
@@ -16,129 +7,90 @@ from pathlib import Path
 
 import numpy as np
 import onnxruntime as ort
+from PIL import Image
 
-from marquee.ml.preprocessing import CLIP_INPUT_SIZE
+from marquee.core.pipeline_config import pipeline_settings
+from marquee.ml.preprocessing import preprocess_image
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Default paths (resolved relative to this module)
-# ---------------------------------------------------------------------------
-_MODELS_DIR = Path(__file__).parent / "models"
 
-
-def _choose_providers() -> list[str]:
-    """Return the best available execution providers for this platform."""
+def choose_execution_providers(override: str | None = None) -> list[str]:
+    """Choose an available provider with a portable CPU fallback."""
     available = ort.get_available_providers()
-    preferred = []
-    for p in ("CoreMLExecutionProvider", "OpenVINOExecutionProvider",
-               "CUDAExecutionProvider"):
-        if p in available:
-            preferred.append(p)
-    preferred.append("CPUExecutionProvider")
-    return preferred
+    requested = override or pipeline_settings.EXECUTION_PROVIDER
 
+    if requested and requested.lower() != "auto":
+        if requested not in available:
+            raise RuntimeError(
+                f"Requested ONNX execution provider {requested!r} is unavailable; "
+                f"available providers: {available}"
+            )
+        return [requested, "CPUExecutionProvider"] if requested != "CPUExecutionProvider" else [
+            "CPUExecutionProvider"
+        ]
 
-# ---------------------------------------------------------------------------
-# ONNX session factory
-# ---------------------------------------------------------------------------
+    preferred = (
+        "OpenVINOExecutionProvider",
+        "CoreMLExecutionProvider",
+        "CPUExecutionProvider",
+    )
+    return [provider for provider in preferred if provider in available]
 
 
 def create_onnx_session(
     model_path: str | Path | None = None,
+    *,
+    execution_provider: str | None = None,
 ) -> ort.InferenceSession:
-    """Create an ONNX Runtime session for CLIP image encoding.
-
-    Args:
-        model_path: Path to the .onnx file.  Defaults to
-            ``marquee/ml/models/clip_vit_b16.onnx``.
-
-    Returns:
-        An ``ort.InferenceSession`` ready for ``encode()`` calls.
-
-    Raises:
-        FileNotFoundError: If the model file does not exist (run
-            ``clip_export.py`` first).
-    """
-    if model_path is None:
-        model_path = _MODELS_DIR / "clip_vit_b16.onnx"
-    model_path = Path(model_path)
-
-    if not model_path.exists():
+    path = Path(model_path or pipeline_settings.CLIP_MODEL_PATH)
+    if not path.exists():
         raise FileNotFoundError(
-            f"CLIP ONNX model not found: {model_path}\n"
-            "Run `python marquee/ml/clip_export.py` first to generate it."
+            f"CLIP B/32 ONNX model not found: {path}. "
+            "Run `python -m marquee.ml.clip_export` first."
         )
 
-    providers = _choose_providers()
-    session = ort.InferenceSession(str(model_path), providers=providers)
-
-    active = session.get_providers()
-    logger.info("ONNX session created — providers: %s", active)
+    providers = choose_execution_providers(execution_provider)
+    session = ort.InferenceSession(str(path), providers=providers)
+    logger.info("CLIP ONNX providers: %s", session.get_providers())
     return session
 
 
-# ---------------------------------------------------------------------------
-# Encoder
-# ---------------------------------------------------------------------------
-
-
 class CLIPImageEncoder:
-    """Encode images to 512-dim CLIP embeddings via ONNX Runtime.
+    """Lazily loaded CLIP B/32 image encoder."""
 
-    Usage::
-
-        encoder = CLIPImageEncoder()
-        emb = encoder.encode(pixel_values)   # pixel_values from preprocess_image()
-
-    The session is created lazily on first ``encode()`` call, so importing
-    this module does not require the ONNX file to exist yet.
-    """
+    model_name = "clip-vit-b-32"
+    embedding_dim = 512
 
     def __init__(
         self,
         model_path: str | Path | None = None,
+        *,
+        execution_provider: str | None = None,
         session: ort.InferenceSession | None = None,
     ):
-        """Create an encoder.
-
-        Args:
-            model_path: Path to .onnx file (default: models/clip_vit_b16.onnx).
-            session: Pre-created ``ort.InferenceSession``. If provided,
-                ``model_path`` is ignored.
-        """
-        self._model_path = Path(model_path) if model_path else None
+        self._model_path = Path(model_path or pipeline_settings.CLIP_MODEL_PATH)
+        self._execution_provider = execution_provider
         self._session = session
 
     @property
     def session(self) -> ort.InferenceSession:
-        """The ONNX Runtime session (created lazily)."""
         if self._session is None:
-            self._session = create_onnx_session(self._model_path)
+            self._session = create_onnx_session(
+                self._model_path,
+                execution_provider=self._execution_provider,
+            )
         return self._session
 
-    def encode(self, pixel_values: np.ndarray) -> np.ndarray:
-        """Run CLIP inference and return a 512-dim L2-normalised embedding.
+    def encode(self, image_or_pixels: Image.Image | np.ndarray) -> np.ndarray:
+        if isinstance(image_or_pixels, Image.Image):
+            pixel_values = preprocess_image(image_or_pixels)
+        else:
+            pixel_values = image_or_pixels
 
-        Args:
-            pixel_values: float32 ndarray of shape (1, 3, 224, 224)
-                as produced by ``preprocess_image()``.
-
-        Returns:
-            float32 ndarray of shape (512,) — the CLIP image embedding,
-            L2-normalised for cosine similarity.
-        """
         input_name = self.session.get_inputs()[0].name
-        outputs = self.session.run(None, {input_name: pixel_values})
-        vec = outputs[0][0]  # (512,)
-
-        # L2-normalise for cosine similarity
-        norm = np.linalg.norm(vec)
-        if norm > 1e-10:
-            vec = vec / norm
-
-        return vec.astype(np.float32)
-
-    @property
-    def embedding_dim(self) -> int:
-        return 512
+        vec = self.session.run(None, {input_name: pixel_values.astype(np.float32)})[0][0]
+        norm = float(np.linalg.norm(vec))
+        if norm <= 1e-10:
+            raise RuntimeError("CLIP produced a zero-length embedding")
+        return (vec / norm).astype(np.float32)

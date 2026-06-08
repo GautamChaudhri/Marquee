@@ -306,63 +306,6 @@ class Settings(BaseSettings):
     )
 
     # ------------------------------------------------------------------
-    # AI / ML
-    # ------------------------------------------------------------------
-    AI_MODEL: str = Field(
-        default="clip-vit-b-16",
-        description="CLIP variant for poster embeddings and taste matching: "
-        "clip-vit-b-32 | clip-vit-b-16 | clip-vit-l-14",
-    )
-
-    # Taste scoring weights (emb vs color)
-    TASTE_EMB_WEIGHT: float = Field(
-        default=0.8,
-        description="Weight for CLIP visual similarity in taste scoring",
-    )
-    TASTE_COLOR_WEIGHT: float = Field(
-        default=0.2,
-        description="Weight for LAB color histogram similarity in taste scoring",
-    )
-
-    # Zero-shot negative prompting
-    NEGATIVE_PROMPTS: list[str] = Field(
-        default=[
-            "A crowded movie poster with floating heads",
-            "A generic Hollywood poster with actor faces arranged in a grid",
-            "A poster dominated by photos of actors' faces",
-        ],
-        description="Text prompts for CLIP zero-shot negative filtering. "
-        "Any candidate with cosine similarity > NEGATIVE_PROMPT_THRESHOLD "
-        "to any prompt is rejected.",
-    )
-    NEGATIVE_PROMPT_THRESHOLD: float = Field(
-        default=0.25,
-        description="Cosine similarity above this to any negative prompt → reject candidate",
-    )
-
-    # ------------------------------------------------------------------
-    # OCR Filtering
-    # ------------------------------------------------------------------
-    OCR_WORKERS: int = Field(
-        default=5,
-        description="Number of parallel PaddleOCR worker processes",
-    )
-    OCR_CONFIDENCE_THRESHOLD: float = Field(
-        default=0.75,
-        description="Minimum OCR confidence for full-image text regions",
-    )
-    OCR_STRIP_CONFIDENCE_THRESHOLD: float = Field(
-        default=0.65,
-        description="Minimum OCR confidence for top-strip text (4K/UHD badges)",
-    )
-    OCR_BOTTOM_CONFIDENCE_THRESHOLD: float = Field(
-        default=0.50,
-        description="Minimum OCR confidence for bottom-strip text (credits). "
-        "Lower than top strip because fine-print credits on complex backgrounds "
-        "reliably score below 0.65.",
-    )
-
-    # ------------------------------------------------------------------
     # Poster Filename Formats
     #
     # Template variables:
@@ -383,20 +326,6 @@ class Settings(BaseSettings):
         default="season{season:02d}-poster.jpg",
         description="Filename for season posters. {season} = season number. "
         "Example: 'season{season:02d}-poster.jpg' → 'season01-poster.jpg'",
-    )
-
-    # ------------------------------------------------------------------
-    # Deduplication
-    # ------------------------------------------------------------------
-    DEDUP_PHASH_THRESHOLD: int = Field(
-        default=8,
-        description="Hamming distance ≤ N means visual near-duplicate. "
-        "0 = identical, <8 = near-dupe, 8-12 = similar, >12 = different.",
-    )
-    DEDUP_MIN_POSTER_WIDTH: int = Field(
-        default=500,
-        description="Skip poster candidates narrower than this in pixels. "
-        "TMDB minimum poster width is 500px.",
     )
 
     # ------------------------------------------------------------------
