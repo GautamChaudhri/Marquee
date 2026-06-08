@@ -1,7 +1,7 @@
 # Marquee — Agent Build Instructions
 
 Instructions for a coding agent (Claude Code / Codex) to implement the revised poster pipeline.
-Read `06-revised-pipeline-design.md` first for the *why*; this document is the *how*. Implement to
+Read `04-revised-pipeline-design.md` first for the *why*; this document is the *how*. Implement to
 this spec. Where this document and the older `04-*`/`05-*` docs disagree, **this document wins**.
 
 ---
@@ -70,28 +70,25 @@ junk.
 
 ### Directory layout under the new design
 
-Reuse the nested-accepted / sibling-rejected pattern. Final folders rename to reflect ranking, not
-filtering:
+The reject folders use a flat, sequentially-numbered structure at the movie root so you can
+see the pipeline order just by listing the directory:
 
 ```
-experiments/ocr-first/<Movie>/
-├── <all w500 downloads>.jpg
-├── sha256/                         survivors of exact dedup
-│   ├── sha256_rejected/            (dupes)
-│   └── phash/                      survivors of near-dupe dedup
-│       ├── phash_rejected/
-│       └── ocr/                    OCR-accepted
-│           ├── ocr_rejected/       (text-heavy / no-text, reason in log+json)
-│           ├── gated/         ★    hard-gate rejects, reason in FILENAME + log+json
-│           ├── ranked/        ★★   FINAL top-5, renamed, original resolution
-│           └── ranked_lower/  ★    rank 6+, renamed, w500 (kept, not discarded)
+experiments/runs/<Movie>/
+├── 0-originals/                    all w500 downloads land here
+├── 1-sha256-rejected/              SHA-256 exact-duplicate rejects
+├── 2-phash-rejected/               pHash near-duplicate rejects
+├── 3-ocr-rejected/                 OCR text-filter rejects
+├── errored/                   ★    per-candidate failures
+├── gated/                     ★    hard-gate rejects, reason in FILENAME + log+json
+├── ranked/                    ★★   ALL ranked posters, renamed, original-res on top-5
 ├── pipeline.log                    human-readable run log
 └── pipeline_run.json               machine-readable per-candidate record
 ```
 
-`gated/` files are named `{reason}__{orig_basename}.jpg` (e.g. `aesthetic_floor__gnb54....jpg`).
-`ranked_lower/` files use the same `{rank}__{score}__{orig}` scheme as `ranked/` so the full
-ordering is inspectable.
+`0-originals/` survives re-runs (Stage 1 skips existing files). All other directories are
+regenerated. Rejected files are named `{reason}__{orig_basename}.jpg` (e.g.
+`aesthetic_floor__gnb54....jpg`). Ranked files use `{rank}__{score:.4f}__{orig_basename}.jpg`.
 
 ---
 
@@ -134,9 +131,13 @@ backbone for the aesthetic head.
 
 `embedding.py` selects the execution provider with auto-detection and fallback, order:
 `OpenVINOExecutionProvider` → `CoreMLExecutionProvider` → `CPUExecutionProvider`, overridable via
-config. Preprocess: RGB, resize 224×224 (bicubic/LANCZOS), normalize with CLIP mean
-`[0.48145466, 0.4578275, 0.40821073]` / std `[0.26862954, 0.26130258, 0.27577711]`. L2-normalize
-the output.
+config. **The selection must skip providers that are not available on the current machine and fall
+through to the next — never raise.** Current development is on an M3 Pro Mac (36 GB RAM): OpenVINO
+is not present on macOS, so selection falls through to CoreML, which is the provider that should
+activate here. Nothing needs to be installed for OpenVINO until the homelab deployment; size all
+model artifacts to run on the Mac for now. Preprocess: RGB, resize 224×224 (bicubic/LANCZOS),
+normalize with CLIP mean `[0.48145466, 0.4578275, 0.40821073]` / std
+`[0.26862954, 0.26130258, 0.27577711]`. L2-normalize the output.
 
 ### 3b. Aesthetic head
 
@@ -199,7 +200,7 @@ the fewest images, and cache it keyed by orig filename + model name):
 | `knn_sim` | mean of `taste_store.query_similar(emb, k=K_NEIGHBORS)` |
 | `aesthetic` | `aesthetic.py(emb)` |
 | `title_colorfulness` | Hasler–Süsstrunk on the `title_bbox` crop; 0 if no title box |
-| `text_residual` | normalized blend of residual box count and total residual area / image area |
+| `text_residual` | raw clutter blend of residual box count and area (formula below) | 0–1 |
 | `resolution` | `width*height` from `PosterCandidate` (original dims), in megapixels |
 | `sharpness` | variance of `cv2.Laplacian(gray_w500, CV_64F)` |
 | `face_area` | from `face.py` |
@@ -212,6 +213,14 @@ rg = R - G
 yb = 0.5*(R + G) - B
 colorfulness = sqrt(std(rg)^2 + std(yb)^2) + 0.3*sqrt(mean(rg)^2 + mean(yb)^2)
 ```
+
+**Raw `text_residual` blend** (the constants are config values, not literals):
+```
+raw_text_residual = W_COUNT * min(box_count / RESIDUAL_COUNT_SAT, 1) + W_AREA * area_fraction
+```
+Defaults: `RESIDUAL_COUNT_SAT = 5`, `W_COUNT = 0.5`, `W_AREA = 0.5`, where `area_fraction` =
+total residual-text-box area / image area. The blend caps at 1, so normalization is simply
+`1 - raw` (see §6). `box_count` and `area_fraction` are 0 for a clean title-only poster.
 
 **Provenance shrinkage:** `adjusted = (v/(v+m))*R + (m/(v+m))*C`, with `R=vote_average`,
 `v=vote_count`, `C=PROV_PRIOR_MEAN` (default 6.5), `m=PROV_CONFIDENCE` (default 25). Normalize
@@ -244,29 +253,41 @@ class PosterScorer(ABC):
     def score(self, feat: FeatureVector) -> tuple[float, dict[str, float]]:
         """Returns (final_score_0_to_1, per_feature_contributions)."""
 ```
-Phase-0 implementation `WeightedScorer`: `score = Σ wᵢ · normalizedᵢ`, then clamp/scale to 0–1.
-Return the per-feature contribution dict for logging. Default weights (all in config, all
-tunable — tune these from the contribution logs):
+Phase-0 implementation `WeightedScorer`: `final_score = Σ wᵢ · normalizedᵢ`. Return the
+per-feature contribution dict for logging.
 
-| Feature | Weight | Sign |
+**One scoring convention — every feature oriented so higher = better, every weight positive. No
+mixed signs.** The two "penalty" features are inverted at normalization (§6) so they point the
+same way as everything else: `text_residual` becomes *cleanliness* (`1 - raw`) and `face_area`
+becomes *face-absence* (`1 - face_area`). Do not implement either as identity-plus-negative-weight
+— two conventions in one scorer is what caused the original sign bug.
+
+Default weights (all in config, all tunable from the contribution logs):
+
+| Feature | Weight | Orientation |
 |---|---|---|
-| `knn_sim` | 0.30 | + |
-| `aesthetic` | 0.20 | + |
-| `title_colorfulness` | 0.15 | + |
-| `face_area` | 0.15 | − (penalty) |
-| `text_residual` | 0.10 | − (penalty) |
-| `provenance` | 0.07 | + |
-| `sharpness` | 0.03 | + |
+| `knn_sim` | 0.30 | higher = more on-style |
+| `aesthetic` | 0.20 | higher = better quality |
+| `title_colorfulness` | 0.15 | higher = more colored/stylized title |
+| `face_area` | 0.15 | normalized as face-**absence** (`1 - face_area`); higher = fewer faces |
+| `text_residual` | 0.10 | normalized as **cleanliness** (`1 - raw`); higher = less clutter |
+| `provenance` | 0.07 | higher = more official/popular |
+| `sharpness` | 0.03 | higher = sharper |
+
+**Score range is free under this convention.** Every normalized feature is in [0,1] and the active
+weights sum to 1.0 (0.30 + 0.20 + 0.15 + 0.15 + 0.10 + 0.07 + 0.03 = 1.00), so `final_score` is
+already in [0,1]. **No clamp/scale step, no theoretical-min/max mapping.** Guard: if any weight is
+changed, or if `resolution`/`lang_match` are given nonzero weights, divide the sum by the total of
+the active weights so the score stays in [0,1].
 
 (`resolution` and `lang_match` act mainly via the gate / a small tiebreak; expose weights for them
-too, default ~0.) Rank survivors by `final_score` descending; top-5 to `ranked/`, rest to
-`ranked_lower/`.
+too, default ~0.) Rank survivors by `final_score` descending; all ranked posters go to `ranked/`.
 
 ### Stage 7 — Output (`output.py`, modified Stage 5)
 
-For the top-5: copy to `ranked/` as `{rank}__{score:.4f}__{orig_basename}.jpg`, then re-download at
-`"original"` resolution via `candidate_map[score.orig_filename].url("original")`, overwriting.
-Rank 6+ to `ranked_lower/` with the same naming, left at w500.
+All ranked posters are copied to `ranked/` as `{rank}__{score:.4f}__{orig_basename}.jpg`.
+For the top-5: re-download at `"original"` resolution via
+`candidate_map[score.orig_filename].url("original")`, overwriting.
 
 ---
 
@@ -284,16 +305,21 @@ class FeatureVector:
 class CandidateScore:
     image_path: Path                      # current file (may be renamed)
     orig_filename: str                    # TMDB basename — for re-download lookup
-    features: FeatureVector
-    final_score: float                    # 0–1
-    contributions: dict[str, float]       # feature → weighted contribution
-    gate_decision: str                    # "passed" | "gated"
+    features: FeatureVector | None        # None for pre-feature rejects (dedup/ocr/errored)
+    final_score: float | None             # 0–1; None if it never reached ranking
+    contributions: dict[str, float] | None
+    gate_decision: str                    # "passed" | "gated" | "rejected" | "errored"
     gate_reason: str | None               # e.g. "aesthetic_floor"
-    rank: int | None                      # 1-based among passed; None if gated
-    stage_reached: str                    # "dedup"|"ocr"|"features"|"gate"|"ranked"
+    error: str | None                     # "ocr_error" | "feature_error", else None
+    rank: int | None                      # 1-based among passed; None otherwise
+    original_download: bool | None        # top-5 only: True if original-res fetch succeeded
+    stage_reached: str                    # "dedup"|"ocr"|"features"|"gate"|"ranked"|"errored"
 ```
 
-Drop the old `emb_similarity`, `color_similarity`, `neg_sim_max` fields.
+Drop the old `emb_similarity`, `color_similarity`, `neg_sim_max` fields. **Feature fields are
+nullable:** any candidate whose `stage_reached` is earlier than `features` (dedup dupes, OCR
+rejects, per-candidate errors) carries `features = None` and `final_score = None`, with its
+`gate_reason`/`error` and `stage_reached` populated. Every candidate still gets a record (§7).
 
 ---
 
@@ -308,10 +334,10 @@ only the ranking scorer consumes normalized values.
 | `knn_sim` | `(x-0.4)/(0.9-0.4)` | [0,1] |
 | `aesthetic` | `x/10` | [0,1] |
 | `title_colorfulness` | `x/60` | [0,1] |
-| `text_residual` | `1 - min(x,1)` already 0–1, invert so less text → higher | [0,1] |
+| `text_residual` | `1 - raw` → *cleanliness* (raw already 0–1, see §4 blend; higher = less text) | [0,1] |
 | `resolution` | `x_megapixels/6` | [0,1] |
 | `sharpness` | `log1p(x)/log1p(2000)` | [0,1] |
-| `face_area` | identity (already 0–1) | [0,1] |
+| `face_area` | `1 - face_area` → *face-absence* (higher = fewer faces) | [0,1] |
 | `provenance` | identity (already 0–1) | [0,1] |
 | `lang_match` | identity | [0,1] |
 
@@ -356,7 +382,8 @@ One module holding every knob, each with the documented default and a one-line c
 `AI_MODEL` (default `clip-vit-b-32`), `EXECUTION_PROVIDER` (auto), `K_NEIGHBORS` (10 — **note in a
 comment: lower = more permissive/multimodal/noisier; higher = smoother/more conservative, blur
 returns**), the normalization ranges (§6), the scorer weights (§4 Stage 6), the gate thresholds
-(§4 Stage 5), `PREFERRED_LANG` (`en`), `PROV_PRIOR_MEAN` (6.5), `PROV_CONFIDENCE` (25),
+(§4 Stage 5), `RESIDUAL_COUNT_SAT` (5), `W_COUNT` (0.5), `W_AREA` (0.5) for the text-residual blend,
+`PREFERRED_LANG` (`en`), `PROV_PRIOR_MEAN` (6.5), `PROV_CONFIDENCE` (25),
 `DEDUP_PHASH_THRESHOLD` (6), `DEDUP_MIN_POSTER_WIDTH` (500), and the model file paths.
 
 ---
@@ -399,3 +426,31 @@ dimensionality, and the LAION B/32 aesthetic head produces garbage on any other 
 3. The aesthetic head must always match the backbone; swap them together.
 4. On load, verify the store's `model_name` equals the configured model and **fail loudly** on
    mismatch rather than scoring against a stale space.
+
+---
+
+## 12. Run robustness — failures, re-runs, re-download
+
+**Per-candidate failures reject only that candidate; systemic failures abort the run.**
+
+- A per-candidate data problem (corrupt image, decode error, an OCR or feature-extraction crash on
+  one file) skips just that candidate: set `error = "ocr_error"` or `"feature_error"`,
+  `stage_reached = "errored"`, route the file to `errored/` named `{error}__{orig_basename}.jpg`,
+  include the record in `pipeline_run.json`, and continue with the remaining candidates.
+- An infrastructure failure that affects every candidate — model fails to load, taste store
+  missing, or the `model_name` mismatch guard (§11) trips — **aborts the whole run loudly**. Do not
+  silently skip every candidate. Per-candidate problems are data; environment problems stop
+  everything.
+
+**Re-runs are idempotent.** At the start of a run, delete the generated stage subdirectories
+(`1-sha256-rejected/`, `2-phash-rejected/`, `3-ocr-rejected/`, `gated/`, `errored/`, `ranked/`,
+and any legacy `sha256/`, `phash/`, `ocr/`, `ranked_lower/` folders from prior runs) and the
+previous `pipeline.log` / `pipeline_run.json`, then regenerate. **Do not delete the
+`0-originals/` w500 downloads** — Stage 1 already skips existing files, so retaining them avoids
+re-fetching from the CDN. A re-run must never mix stale results with fresh ones.
+
+**Original-resolution re-download is best-effort.** The w500 copy in `ranked/` is already a valid
+usable poster. If the original-resolution re-download for a top-5 item fails (CDN blip, network
+error), keep the w500 copy, log the failure, and set `original_download = false` on that item's
+record so it is visible which of the five are full-resolution. A failed re-download never loses the
+pick or aborts the run; successful ones set `original_download = true`.

@@ -35,21 +35,29 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/test", tags=["test"])
 
-_EXPERIMENTS_DATA = Path(__file__).resolve().parents[3] / "experiments" / "ocr-first"
+_EXPERIMENTS_DATA = Path(__file__).resolve().parents[2] / "experiments" / "runs"
 _DOWNLOAD_SEMAPHORE = asyncio.Semaphore(5)
 _DOWNLOAD_SIZE = "w500"
 _IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff"}
 _GENERATED_DIR_NAMES = {
-    "sha256",
-    "sha256_rejected",
-    "phash",
-    "phash_rejected",
-    "ocr",
-    "ocr_rejected",
+    # Current flat reject/output structure
+    "1-sha256-rejected",
+    "2-ocr-rejected",
+    "3-phash-rejected",
     "gated",
     "ranked",
-    "ranked_lower",
     "errored",
+    # Legacy names (cleanup of prior runs with old stage ordering)
+    "2-phash-rejected",
+    "3-ocr-rejected",
+    # Older legacy nested names
+    "sha256",
+    "phash",
+    "ocr",
+    "sha256_rejected",
+    "phash_rejected",
+    "ocr_rejected",
+    "ranked_lower",
     "clip",
     "clip_rejected",
 }
@@ -188,7 +196,7 @@ async def test_pipeline_movie(
     db: Annotated[AsyncSession, Depends(get_db)],
     tmdb: Annotated[TMDBClient, Depends(get_tmdb)],
 ):
-    """Run Fetch -> Dedup -> OCR -> Features -> Gate -> Rank -> Output."""
+    """Run Fetch -> SHA-256 Dedup -> OCR -> pHash Dedup -> Features -> Gate -> Rank -> Output."""
     movie = (
         await db.execute(select(Movie).where(Movie.id == movie_id))
     ).scalar_one_or_none()
@@ -217,6 +225,8 @@ async def test_pipeline_movie(
     out_dir = _EXPERIMENTS_DATA / _sanitise_filename(movie.title)
     out_dir.mkdir(parents=True, exist_ok=True)
     _clear_generated_outputs(out_dir)
+    originals_dir = out_dir / "0-originals"
+    originals_dir.mkdir(parents=True, exist_ok=True)
     log_path = out_dir / "pipeline.log"
     json_path = out_dir / "pipeline_run.json"
     file_handler = _add_run_file_handler(log_path)
@@ -244,7 +254,7 @@ async def test_pipeline_movie(
             filename = _candidate_filename(candidate)
             candidate_map[filename] = candidate
             records[filename] = CandidateScore(
-                image_path=out_dir / filename,
+                image_path=originals_dir / filename,
                 orig_filename=filename,
                 stage_reached="fetch",
             )
@@ -261,7 +271,7 @@ async def test_pipeline_movie(
                 *[
                     _download_poster(
                         candidate,
-                        out_dir / _candidate_filename(candidate),
+                        originals_dir / _candidate_filename(candidate),
                         client,
                     )
                     for candidate in candidates
@@ -278,7 +288,7 @@ async def test_pipeline_movie(
                 records[filename].rejection_reason = f"download_error: {error}"
                 logger.error("FETCH ERROR | file=%s | error=%s", filename, error)
 
-        cached_root_files = {path.name: path for path in _root_images(out_dir)}
+        cached_root_files = {path.name: path for path in _root_images(originals_dir)}
         all_files = sorted(
             cached_root_files[filename]
             for filename in candidate_map
@@ -291,9 +301,7 @@ async def test_pipeline_movie(
         # Stage 2a: exact SHA-256 dedup.
         stage_started = time.perf_counter()
         logger.info("STAGE START | sha256 | input=%d", len(all_files))
-        sha_dir = out_dir / "sha256"
-        sha_rejected_dir = sha_dir / "sha256_rejected"
-        sha_dir.mkdir(parents=True)
+        sha_rejected_dir = out_dir / "1-sha256-rejected"
         sha_rejected_dir.mkdir()
         sha_result = PosterDeduper(
             sha256_only=True,
@@ -311,54 +319,22 @@ async def test_pipeline_movie(
                 removal.reason,
             )
         for path in sha_result.survivors:
-            destination = sha_dir / path.name
-            shutil.copy2(path, destination)
-            records[path.name].image_path = destination
+            records[path.name].image_path = path
             records[path.name].stage_reached = "dedup"
         _stage_done("sha256", stage_started, timings, survivors=len(sha_survivor_names))
 
-        # Stage 2b: perceptual dedup.
-        stage_started = time.perf_counter()
-        sha_files = sorted(sha_dir.glob("*.*"))
-        logger.info("STAGE START | phash | input=%d", len(sha_files))
-        phash_dir = sha_dir / "phash"
-        phash_rejected_dir = phash_dir / "phash_rejected"
-        phash_dir.mkdir()
-        phash_rejected_dir.mkdir()
-        phash_result = PosterDeduper(
-            min_width=0,
-            resolution_by_name=resolution_by_name,
-        ).deduplicate(sha_files)
-        for removal in phash_result.removals:
-            if removal.reason != "phash":
-                continue
-            _log_dedup_removal(removal)
-            record = records[removal.removed.name]
-            record.stage_reached = "dedup"
-            record.rejection_reason = "dedup_phash"
-            record.image_path = _copy_with_reason(
-                removal.removed,
-                phash_rejected_dir,
-                "phash",
-            )
-        for path in phash_result.survivors:
-            destination = phash_dir / path.name
-            shutil.copy2(path, destination)
-            records[path.name].image_path = destination
-        _stage_done("phash", stage_started, timings, survivors=phash_result.final)
-
         # Stage 3: OCR text gate and geometry emission.
+        # Runs on SHA-256 survivors before pHash so that when near-duplicate
+        # variants differ in text content, OCR (not resolution) decides the winner.
         stage_started = time.perf_counter()
-        phash_files = sorted(phash_dir.glob("*.*"))
-        logger.info("STAGE START | ocr | input=%d", len(phash_files))
-        ocr_dir = phash_dir / "ocr"
-        ocr_rejected_dir = ocr_dir / "ocr_rejected"
-        errored_dir = ocr_dir / "errored"
-        ocr_dir.mkdir()
+        sha_files = sorted(sha_result.survivors)
+        logger.info("STAGE START | ocr | input=%d", len(sha_files))
+        ocr_rejected_dir = out_dir / "2-ocr-rejected"
+        errored_dir = out_dir / "errored"
         ocr_rejected_dir.mkdir()
         errored_dir.mkdir()
         ocr_results = PosterTextFilter(movie.title, director=None).filter_batch(
-            phash_files
+            sha_files
         )
         ocr_survivors: list[OCRCandidateResult] = []
         for result in ocr_results:
@@ -386,11 +362,39 @@ async def test_pipeline_movie(
                     reason.split(":", 1)[0],
                 )
                 continue
-            destination = ocr_dir / result.image_path.name
-            shutil.copy2(result.image_path, destination)
-            record.image_path = destination
-            ocr_survivors.append(replace(result, image_path=destination))
+            record.image_path = result.image_path
+            ocr_survivors.append(replace(result, image_path=result.image_path))
         _stage_done("ocr", stage_started, timings, survivors=len(ocr_survivors))
+
+        # Stage 2b: perceptual dedup on OCR survivors.
+        # Placed after OCR so text-variant near-duplicates are resolved by the OCR
+        # gate rather than a resolution tiebreak (see design §9 pHash placement).
+        stage_started = time.perf_counter()
+        ocr_survivor_paths = [r.image_path for r in ocr_survivors]
+        logger.info("STAGE START | phash | input=%d", len(ocr_survivor_paths))
+        phash_rejected_dir = out_dir / "3-phash-rejected"
+        phash_rejected_dir.mkdir()
+        phash_result = PosterDeduper(
+            min_width=0,
+            resolution_by_name=resolution_by_name,
+        ).deduplicate(ocr_survivor_paths)
+        phash_survivor_names = {path.name for path in phash_result.survivors}
+        for removal in phash_result.removals:
+            if removal.reason != "phash":
+                continue
+            _log_dedup_removal(removal)
+            record = records[removal.removed.name]
+            record.stage_reached = "phash"
+            record.rejection_reason = "dedup_phash"
+            record.image_path = _copy_with_reason(
+                removal.removed,
+                phash_rejected_dir,
+                "phash",
+            )
+        # Filter ocr_survivors down to pHash survivors so features stage sees the
+        # correct set (with their title_bbox / residual_boxes intact).
+        ocr_survivors = [r for r in ocr_survivors if r.image_path.name in phash_survivor_names]
+        _stage_done("phash", stage_started, timings, survivors=len(ocr_survivors))
 
         # Stage 4: feature extraction. Preflight failures are systemic.
         stage_started = time.perf_counter()
@@ -455,7 +459,7 @@ async def test_pipeline_movie(
                     decision.reason,
                     decision.detail,
                 )
-        gated_dir = ocr_dir / "gated"
+        gated_dir = out_dir / "gated"
         place_gated(gated, gated_dir)
         _stage_done("gate", stage_started, timings, survivors=len(passed))
 
@@ -508,8 +512,7 @@ async def test_pipeline_movie(
             output_result = await place_ranked(
                 ranked,
                 candidate_map=candidate_map,
-                ranked_dir=ocr_dir / "ranked",
-                lower_dir=ocr_dir / "ranked_lower",
+                ranked_dir=out_dir / "ranked",
             )
             for record in ranked[:5]:
                 logger.info(
@@ -570,8 +573,8 @@ async def test_pipeline_movie(
             },
             "counts": {
                 "sha256_survivors": sha_result.final,
-                "phash_survivors": phash_result.final,
                 "ocr_survivors": len(ocr_survivors),
+                "phash_survivors": phash_result.final,
                 "feature_survivors": len(featured),
                 "gated": len(gated),
                 "ranked": len(ranked),

@@ -3,7 +3,7 @@
 Supersedes the scoring design in `04-pipeline-design.md` and `04-taste-profile-design.md`.
 This document is the conceptual reference: what the pipeline does, why, what every tool is for,
 and everything that can be tuned or swapped. The companion document
-`07-agent-build-instructions.md` tells a coding agent how to build it.
+`04-agent-build-instructions.md` tells a coding agent how to build it.
 
 ---
 
@@ -69,31 +69,34 @@ Stages marked **[NOW]** are built in the current phase (inside the test endpoint
 **[TODO]** are documented here but deferred.
 
 ```
-[NOW]  Stage 1 — FETCH        TMDB → staging, download all at w500
-                              PosterCandidate already carries:
-                              width, height, vote_average, vote_count, language
-[NOW]  Stage 2 — DEDUP        SHA-256 (exact) + pHash (near-dupe)
-[NOW]  Stage 3 — OCR          PaddleOCR — GATE text-heavy/no-text
-                              AND emit: title bbox, residual-text boxes
-[NOW]  Stage 4 — FEATURES     compute the full scalar vector on OCR survivors
-                              (embedding step runs here — last, on fewest images)
-[NOW]  Stage 5 — GATE         hard floors: resolution, aesthetic, off-style
-                              gated-out copied to a visible bucket with reasons
-[NOW]  Stage 6 — RANK         Phase-0 weighted head over normalized features
-                              → sort → top-5
-[NOW]  Stage 7 — OUTPUT       top-5 renamed rank__score__orig, re-download at
-                              original resolution; rank 6+ kept in lower bucket
-[TODO] Stage 8 — DEPLOY       write to media library, update DB
-[TODO] Stage 9 — FEEDBACK     user approves #1 or picks another from top-5
-                              → positive + override-negative labels
-                              → only manually-approved joins the taste profile
-[TODO] Stage 10 — RETRAIN     learned head trained on accumulated labels
+[NOW]  Stage 1  — FETCH        TMDB → staging, download all at w500
+                               PosterCandidate already carries:
+                               width, height, vote_average, vote_count, language
+[NOW]  Stage 2a — SHA-256      exact-duplicate removal (cheap, no OCR needed)
+[NOW]  Stage 3  — OCR          PaddleOCR — GATE text-heavy/no-text
+                               AND emit: title bbox, residual-text boxes
+[NOW]  Stage 2b — pHash        near-dupe removal on OCR survivors
+[NOW]  Stage 4  — FEATURES     compute the full scalar vector on pHash survivors
+                               (embedding step runs here — last, on fewest images)
+[NOW]  Stage 5  — GATE         hard floors: resolution, aesthetic, off-style
+                               gated-out copied to a visible bucket with reasons
+[NOW]  Stage 6  — RANK         Phase-0 weighted head over normalized features
+                               → sort → top-5
+[NOW]  Stage 7  — OUTPUT       all ranked posters renamed rank__score__orig into a single
+                               `ranked/` folder; top-5 re-downloaded at original resolution
+[TODO] Stage 8  — DEPLOY       write to media library, update DB
+[TODO] Stage 9  — FEEDBACK     user approves #1 or picks another from top-5
+                               → positive + override-negative labels
+                               → only manually-approved joins the taste profile
+[TODO] Stage 10 — RETRAIN      learned head trained on accumulated labels
 ```
 
-Why this order: dedup and OCR are cheap removals that shrink the set before the expensive
-feature extraction (CLIP embedding, aesthetic, face detection) runs. Features run only on OCR
-survivors. Resolution is known from TMDB metadata before download, so the cheapest gate signal
-is available earliest.
+Why this order: SHA-256 exact dedup is byte-cheap and unambiguous so it runs first. OCR then
+runs on the thinned set. pHash runs *after* OCR — not before — so that when near-duplicate
+variants differ only in text content (e.g. one version has a tagline overlay, another is clean),
+the OCR gate decides which survives rather than a resolution tiebreak (see §9). Features run
+only on pHash survivors. Resolution is known from TMDB metadata before download, so the cheapest
+gate signal is available earliest.
 
 ---
 
@@ -196,10 +199,29 @@ The "head" is the small model on top of the frozen feature extractors. It maps t
 vector → one score. Built as a **pluggable interface** so the implementation can change without
 touching the pipeline.
 
-**Phase 0 — hand-weighted [NOW].** `score = Σ wᵢ · normalizedᵢ`, weights set by intuition, all in
-config. Works on day one with zero labels. The detailed logs (§ in agent doc) print the
+**Phase 0 — hand-weighted [NOW].** `final_score = Σ wᵢ · normalizedᵢ`, weights set by intuition,
+all in config. Works on day one with zero labels. The detailed logs (§ in agent doc) print the
 per-feature contribution so you can see why each poster ranked where it did and re-tune the
 weights from evidence.
+
+**One scoring convention — no exceptions.** Every feature is oriented so that **higher = better**,
+and **every weight is positive**. There are no mixed signs in the scorer. The two features that
+read as "penalties" are inverted at normalization so they point the same way as everything else:
+
+- `text_residual` is normalized as `1 - raw`, so the value means *cleanliness* (high = little
+  residual text), with a positive weight.
+- `face_area` is normalized as `1 - face_area`, so the value means *face-absence* (high = few/no
+  faces), with a positive weight.
+
+Mixing identity-plus-negative-weight with invert-plus-positive-weight in the same scorer is exactly
+the inconsistency that produces double-negative sign bugs — so it is banned.
+
+**Score range is free under this convention.** Every normalized feature is in [0,1] and the active
+weights sum to 1.0 (0.30 + 0.20 + 0.15 + 0.15 + 0.10 + 0.07 + 0.03 = 1.00), so the weighted sum is
+already a value in [0,1]. There is **no theoretical-min/max mapping and no separate scaling step**.
+The only guard: if any weight changes, or if currently-zero-weight features (`resolution`,
+`lang_match`) are given nonzero weights, divide the sum by the total of the active weights to keep
+the score in [0,1].
 
 **Phase 1 — logistic regression [TODO].** Once the feedback loop has accumulated ~50–100
 approvals: each shown candidate gets a label (approved/selected → 1; the overridden auto-pick →
@@ -265,12 +287,17 @@ not need B/16's finer detail.
 **Execution provider is environment-dependent and must be configurable** with auto-detection and
 a CPU fallback:
 
-- **Dev (Apple Mac):** `CoreMLExecutionProvider` (Apple Neural Engine).
+- **Dev (Apple Mac):** `CoreMLExecutionProvider` (Apple Neural Engine). Current development is on
+  an M3 Pro Mac with 36 GB RAM, so the model artifacts must be sized to run there for now; on this
+  machine CoreML is the provider that activates.
 - **Production target (Intel iGPU homelab):** `OpenVINOExecutionProvider`. This is the piece that
   makes CLIP and the face detector run well on the Plex/QSV crowd's hardware with no dedicated GPU.
 - **Fallback everywhere:** `CPUExecutionProvider`.
 
 The ONNX model is portable across all three; only the provider at session creation changes.
+**Provider selection must skip providers that are not available on the current machine and fall
+through to the next, never raise.** OpenVINO is not present on macOS, so on the dev Mac selection
+falls through to CoreML — nothing needs to be installed for OpenVINO until the homelab deployment.
 
 **On-demand vs batch** (current mode: on-demand): on-demand means a human waits, so per-movie
 latency is user-facing and biases toward the light B/32. Batch (overnight, whole library) hides
@@ -300,9 +327,13 @@ Everything here is a knob, not a commitment.
   too coarse, swap the *embedding* to DINOv2 and keep CLIP **only** as the aesthetic head's input
   (the aesthetic head is CLIP-specific). Costs a second model per poster — justify it before
   adding it on an iGPU.
-- **pHash placement:** currently dedup before OCR (cheaper, OCR runs on fewer). Moving pHash after
-  OCR is an experiment; it makes OCR run on more images for marginal dedup quality. Not
-  recommended unless you have a reason.
+- **pHash placement:** pHash now runs *after* OCR (adopted). Near-duplicate variants sometimes
+  differ only in text content — one version has a tagline or credits overlay, another is clean.
+  With pHash before OCR, the resolution tiebreak kept the higher-res text-heavy version, then OCR
+  rejected it, silently eliminating a valid poster design. Moving pHash after OCR lets the OCR gate
+  arbitrate the pair first: if one passes and one fails, the clean version survives. The cost is
+  OCR running on all SHA-256 survivors (not the pHash-thinned set), but near-duplicate groups are
+  typically small so the overhead is modest.
 - **Genre as a soft feature:** §6. Append genre one-hot to the vector if conditional preferences
   emerge. Never as a hard bucket.
 - **title_colorfulness glyph isolation:** default measures colorfulness over the whole title crop;
@@ -355,3 +386,29 @@ Consequences that are mandatory, not optional:
    other.
 4. On load, the pipeline must verify the store's `model_name` matches the configured model and
    refuse to run (loud error) on a mismatch, rather than silently scoring against a stale space.
+
+---
+
+## 13. Run robustness (operational contract)
+
+How the pipeline behaves around failures and re-runs. A single bad poster must never sink a movie,
+but a broken environment must never be papered over.
+
+**Per-candidate failures are tolerated; systemic failures abort.** If one candidate fails OCR or
+feature extraction (corrupt image, decode error, an OCR crash on that file), reject only that
+candidate, record the reason (`ocr_error` / `feature_error`) on its record, route the file to a
+visible bucket for inspection, and continue with the rest. If a failure affects every candidate —
+model fails to load, taste store missing, or the `model_name` mismatch guard trips — abort the
+whole run loudly. Per-candidate problems are data; environment problems are infrastructure, and the
+two are handled differently.
+
+**Re-runs are idempotent.** At the start of a run, clear the generated stage directories and the
+previous run artifacts (`pipeline.log`, `pipeline_run.json`), then regenerate. Do not delete the
+`0-originals/` w500 downloads — Stage 1 already skips existing files, so keeping them avoids
+re-fetching from the CDN. A re-run must never mix stale results with fresh ones.
+
+**Original-resolution re-download is best-effort.** The top-5 are re-downloaded at original
+resolution, but the w500 copy is already a valid usable poster. If an original re-download fails
+(CDN blip, network error), keep the w500 copy, log the failure, and record the per-item resolution
+status in `pipeline_run.json` (`original_download: false`) so it is visible which of the five are
+full-resolution. A failed re-download never loses the pick or aborts the run.

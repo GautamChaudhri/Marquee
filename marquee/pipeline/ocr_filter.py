@@ -5,9 +5,13 @@ from __future__ import annotations
 import difflib
 import logging
 import multiprocessing
+import os
+import queue
 import re
+import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, NoReturn
 
 import numpy as np
 from PIL import Image
@@ -33,6 +37,11 @@ _DIGIT_WORDS = {
 _worker_ocr = None
 _worker_title_tokens: set[str] = set()
 _worker_director_tokens: set[str] = set()
+_WORKER_READY = "ready"
+_WORKER_RESULT = "result"
+_WORKER_INIT_ERROR = "init_error"
+_WORKER_POLL_SECONDS = 0.5
+_WORKER_SHUTDOWN_SECONDS = 15.0
 
 
 @dataclass(frozen=True)
@@ -181,6 +190,44 @@ def _init_worker(title_tokens: set[str], director_tokens: set[str]) -> None:
     _worker_ocr = _load_ocr()
 
 
+def _exit_worker(result_queue: Any, exit_code: int) -> NoReturn:
+    """Flush pending messages without invoking Paddle's native destructors."""
+    result_queue.close()
+    result_queue.join_thread()
+    os._exit(exit_code)
+
+
+def _worker_main(
+    task_queue: Any,
+    result_queue: Any,
+    title_tokens: set[str],
+    director_tokens: set[str],
+) -> NoReturn:
+    try:
+        _init_worker(title_tokens, director_tokens)
+    except BaseException as exc:
+        result_queue.put(
+            (
+                _WORKER_INIT_ERROR,
+                os.getpid(),
+                f"{type(exc).__name__}: {exc}",
+            )
+        )
+        task_queue.cancel_join_thread()
+        _exit_worker(result_queue, 1)
+
+    result_queue.put((_WORKER_READY, os.getpid(), None))
+    while True:
+        task = task_queue.get()
+        if task is None:
+            break
+        index, path_string = task
+        result_queue.put((_WORKER_RESULT, index, _process_image(path_string)))
+
+    task_queue.cancel_join_thread()
+    _exit_worker(result_queue, 0)
+
+
 def _process_image(path_string: str) -> OCRCandidateResult:
     path = Path(path_string)
     if _worker_ocr is None:
@@ -280,19 +327,139 @@ class PosterTextFilter:
     def filter_batch(self, paths: list[Path]) -> list[OCRCandidateResult]:
         if not paths:
             return []
+
         context = multiprocessing.get_context("spawn")
-        with context.Pool(
-            processes=self.num_workers,
-            initializer=_init_worker,
-            initargs=(self.title_tokens, self.director_tokens),
-        ) as pool:
-            results = list(pool.imap(_process_image, [str(path) for path in paths]))
+        worker_count = min(self.num_workers, len(paths))
+        task_queue = context.Queue()
+        result_queue = context.Queue()
+        workers = [
+            context.Process(
+                target=_worker_main,
+                args=(
+                    task_queue,
+                    result_queue,
+                    self.title_tokens,
+                    self.director_tokens,
+                ),
+                name=f"poster-ocr-{index + 1}",
+            )
+            for index in range(worker_count)
+        ]
+
+        try:
+            for worker in workers:
+                worker.start()
+            self._wait_for_workers_ready(result_queue, workers)
+
+            for index, path in enumerate(paths):
+                task_queue.put((index, str(path)))
+            for _ in workers:
+                task_queue.put(None)
+
+            ordered_results: list[OCRCandidateResult | None] = [None] * len(paths)
+            remaining = len(paths)
+            while remaining:
+                message_type, key, payload = self._get_worker_message(
+                    result_queue,
+                    workers,
+                )
+                if message_type == _WORKER_RESULT:
+                    ordered_results[key] = payload
+                    remaining -= 1
+                elif message_type == _WORKER_INIT_ERROR:
+                    raise RuntimeError(
+                        f"OCR worker {key} failed to initialize: {payload}"
+                    )
+
+            self._join_workers(workers)
+            results = [result for result in ordered_results if result is not None]
+        finally:
+            self._stop_workers(workers)
+            self._close_queue(task_queue)
+            self._close_queue(result_queue)
+
         logger.info(
             "OCR complete: %d accepted, %d rejected",
             sum(result.accepted for result in results),
             sum(not result.accepted for result in results),
         )
         return results
+
+    @staticmethod
+    def _wait_for_workers_ready(result_queue: Any, workers: list[Any]) -> None:
+        ready_workers = 0
+        while ready_workers < len(workers):
+            message_type, key, payload = PosterTextFilter._get_worker_message(
+                result_queue,
+                workers,
+            )
+            if message_type == _WORKER_READY:
+                ready_workers += 1
+            elif message_type == _WORKER_INIT_ERROR:
+                raise RuntimeError(f"OCR worker {key} failed to initialize: {payload}")
+
+    @staticmethod
+    def _get_worker_message(result_queue: Any, workers: list[Any]) -> tuple[Any, ...]:
+        while True:
+            try:
+                return result_queue.get(timeout=_WORKER_POLL_SECONDS)
+            except queue.Empty:
+                failed = [
+                    worker for worker in workers if worker.exitcode not in (None, 0)
+                ]
+                if failed:
+                    details = ", ".join(
+                        f"{worker.name}={worker.exitcode}" for worker in failed
+                    )
+                    raise RuntimeError(
+                        f"OCR worker exited unexpectedly: {details}"
+                    ) from None
+                if all(worker.exitcode is not None for worker in workers):
+                    raise RuntimeError(
+                        "OCR workers exited before returning all results"
+                    ) from None
+
+    @staticmethod
+    def _join_workers(workers: list[Any]) -> None:
+        deadline = time.monotonic() + _WORKER_SHUTDOWN_SECONDS
+        for worker in workers:
+            worker.join(max(0.0, deadline - time.monotonic()))
+
+        hung = [worker for worker in workers if worker.is_alive()]
+        if hung:
+            logger.warning(
+                "Forcing shutdown of unresponsive OCR workers: %s",
+                ", ".join(worker.name for worker in hung),
+            )
+            for worker in hung:
+                worker.terminate()
+            for worker in hung:
+                worker.join()
+
+        failed = [
+            worker
+            for worker in workers
+            if worker not in hung and worker.exitcode != 0
+        ]
+        if failed:
+            details = ", ".join(
+                f"{worker.name}={worker.exitcode}" for worker in failed
+            )
+            raise RuntimeError(f"OCR worker shutdown failed: {details}")
+
+    @staticmethod
+    def _stop_workers(workers: list[Any]) -> None:
+        for worker in workers:
+            if worker.is_alive():
+                worker.terminate()
+        for worker in workers:
+            if worker.pid is not None:
+                worker.join()
+
+    @staticmethod
+    def _close_queue(worker_queue: Any) -> None:
+        worker_queue.close()
+        worker_queue.join_thread()
 
     def is_acceptable(self, path: Path) -> OCRCandidateResult:
         _init_worker(self.title_tokens, self.director_tokens)

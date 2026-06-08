@@ -16,7 +16,7 @@ from marquee.ml.embedding import CLIPImageEncoder
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 _DEFAULT_TRAINING_DIR = (
-    Path(__file__).resolve().parents[2] / "experiments" / "data" / "training_data"
+    Path(__file__).resolve().parents[1] / "experiments" / "training_data"
 )
 _IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff"}
 

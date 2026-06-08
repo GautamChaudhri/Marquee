@@ -17,8 +17,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class OutputResult:
-    top_count: int = 0
-    lower_count: int = 0
+    placed_count: int = 0
     gated_count: int = 0
     original_downloads: int = 0
     download_errors: list[str] = field(default_factory=list)
@@ -52,22 +51,16 @@ async def place_ranked(
     *,
     candidate_map: dict[str, PosterCandidate],
     ranked_dir: Path,
-    lower_dir: Path,
     top_n: int = 5,
 ) -> OutputResult:
     ranked_dir.mkdir(parents=True, exist_ok=True)
-    lower_dir.mkdir(parents=True, exist_ok=True)
     result = OutputResult()
 
     for score in ranked:
-        destination_dir = ranked_dir if (score.rank or 0) <= top_n else lower_dir
-        destination = destination_dir / ranked_filename(score)
+        destination = ranked_dir / ranked_filename(score)
         shutil.copy2(score.image_path, destination)
         score.image_path = destination
-        if destination_dir == ranked_dir:
-            result.top_count += 1
-        else:
-            result.lower_count += 1
+        result.placed_count += 1
 
     async with httpx.AsyncClient(timeout=60.0) as client:
         for score in ranked[:top_n]:

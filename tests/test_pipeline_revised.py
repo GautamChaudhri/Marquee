@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from marquee.api.routes.test_pipeline import _clear_generated_outputs
+from marquee.api.routes.test_pipeline import _EXPERIMENTS_DATA, _clear_generated_outputs
 from marquee.core.pipeline_config import PipelineSettings
 from marquee.core.poster_sources.tmdb import PosterCandidate
 from marquee.ml.colorfulness import hasler_susstrunk
@@ -164,20 +164,32 @@ def test_provider_selection_skips_unavailable_openvino(monkeypatch: pytest.Monke
 
 
 def test_repeat_run_cleanup_retains_flat_downloads(tmp_path: Path):
-    cached = tmp_path / "poster.jpg"
+    originals = tmp_path / "0-originals"
+    originals.mkdir()
+    cached = originals / "poster.jpg"
     cached.write_bytes(b"cached")
     (tmp_path / "pipeline.log").write_text("old")
     (tmp_path / "pipeline_run.json").write_text("{}")
-    generated = tmp_path / "sha256" / "phash" / "ocr" / "ranked"
-    generated.mkdir(parents=True)
+    generated = tmp_path / "ranked"
+    generated.mkdir()
     (generated / "old.jpg").write_bytes(b"stale")
 
     _clear_generated_outputs(tmp_path)
 
     assert cached.read_bytes() == b"cached"
-    assert not (tmp_path / "sha256").exists()
+    assert not (tmp_path / "ranked").exists()
     assert not (tmp_path / "pipeline.log").exists()
     assert not (tmp_path / "pipeline_run.json").exists()
+
+
+def test_pipeline_run_root_is_inside_marquee_experiments():
+    expected = (
+        Path(__file__).resolve().parents[1]
+        / "marquee"
+        / "experiments"
+        / "runs"
+    )
+    assert expected == _EXPERIMENTS_DATA
 
 
 def test_dedup_tiebreak_uses_original_tmdb_resolution(tmp_path: Path):
@@ -220,6 +232,30 @@ def test_ocr_rejects_no_text_candidate(
     assert not result.accepted
     assert result.reason == "no_text"
     assert result.title_bbox is None
+
+
+def test_ocr_worker_flushes_results_before_native_teardown(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls: list[object] = []
+
+    class FakeQueue:
+        def close(self) -> None:
+            calls.append("close")
+
+        def join_thread(self) -> None:
+            calls.append("join_thread")
+
+    def fake_exit(code: int) -> None:
+        calls.append(("exit", code))
+        raise RuntimeError("worker exited")
+
+    monkeypatch.setattr(ocr_filter.os, "_exit", fake_exit)
+
+    with pytest.raises(RuntimeError, match="worker exited"):
+        ocr_filter._exit_worker(FakeQueue(), 0)
+
+    assert calls == ["close", "join_thread", ("exit", 0)]
 
 
 def test_pre_feature_record_serializes_null_feature_blocks(tmp_path: Path):
@@ -281,7 +317,6 @@ async def test_original_download_failure_keeps_w500(
         [score],
         candidate_map={"source.jpg": candidate},
         ranked_dir=tmp_path / "ranked",
-        lower_dir=tmp_path / "lower",
     )
 
     assert score.image_path.read_bytes() == b"w500"
