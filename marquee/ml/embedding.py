@@ -31,6 +31,7 @@ def choose_execution_providers(override: str | None = None) -> list[str]:
         ]
 
     preferred = (
+        "CUDAExecutionProvider",
         "OpenVINOExecutionProvider",
         "CoreMLExecutionProvider",
         "CPUExecutionProvider",

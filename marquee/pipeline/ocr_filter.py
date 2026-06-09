@@ -67,10 +67,18 @@ def _add_digit_words(tokens: set[str]) -> None:
 def _load_ocr() -> object:
     from paddleocr import PaddleOCR
 
+    # engine="paddle_dynamic" uses eager execution (safetensors weights) instead of
+    # the static Paddle Inference API, which has a PIR+oneDNN bug on Intel 13th-gen CPUs.
+    # paddle_dynamic works identically on macOS and Linux.
+    # PP-OCRv5_mobile_det is used instead of the default server_det because the server
+    # model is ~15× slower in dynamic mode (~1s vs 15s/image on CPU) with no meaningful
+    # accuracy improvement for the title-detection task.
     return PaddleOCR(
         use_textline_orientation=True,
         lang="en",
         device="cpu",
+        engine="paddle_dynamic",
+        text_detection_model_name="PP-OCRv5_mobile_det",
         text_det_box_thresh=0.3,
         text_det_unclip_ratio=2.0,
     )
@@ -103,7 +111,9 @@ def _detect_boxes(
     scale: float = 1.0,
     y_offset: float = 0.0,
 ) -> list[_DetectedBox]:
-    result = ocr.predict(image)
+    import paddle
+    with paddle.no_grad():
+        result = ocr.predict(image)
     if not result:
         return []
     first = result[0]

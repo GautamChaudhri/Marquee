@@ -41,7 +41,8 @@ dependencies = [
     "opencv-python>=4.8,<5.0",
     # AI / ML (Phase 3+)
     "numpy>=1.24,<3.0",
-    "onnxruntime>=1.19,<2.0",
+    "onnxruntime>=1.19,<2.0; sys_platform == 'darwin'",
+    "onnxruntime-gpu>=1.19,<2.0; sys_platform == 'linux'",
     # "paddlepaddle>=3.0",       # uncomment in Phase 3
     # "paddleocr>=2.9",           # uncomment in Phase 3
     # "onnxruntime>=1.19",        # uncomment in Phase 3
