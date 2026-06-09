@@ -34,7 +34,9 @@ torch>=2.0.0
 torchvision>=0.15.0
 transformers>=4.40.0
 tqdm>=4.65.0
-paddlepaddle>=3.0
+# GPU (Linux): pip install paddlepaddle-gpu==3.3.1 -i https://www.paddlepaddle.org.cn/packages/stable/cu126/
+# CPU / macOS: pip install paddlepaddle>=3.0
+paddlepaddle>=3.0; sys_platform == 'darwin'
 paddleocr>=3.0
 
 # Development
