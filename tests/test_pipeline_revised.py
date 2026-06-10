@@ -102,7 +102,10 @@ def test_pipeline_config_rejects_negative_weights():
     ("overrides", "width", "reason"),
     [
         ({}, 499, "resolution_floor"),
-        ({"aesthetic": 4.49}, 500, "aesthetic_floor"),
+        # aesthetic below rescue floor — gated even with high knn_sim
+        ({"aesthetic": 1.9, "knn_sim": 0.65}, 500, "aesthetic_floor"),
+        # aesthetic in 2–4.5 range but knn_sim too low to trigger rescue
+        ({"aesthetic": 3.5, "knn_sim": 0.40}, 500, "aesthetic_floor"),
         ({"knn_sim": 0.44}, 500, "off_style_floor"),
     ],
 )
@@ -118,6 +121,25 @@ def test_gate_passes_candidate_at_thresholds():
         original_width=500,
     )
     assert result.passed
+
+
+def test_gate_aesthetic_rescue_by_knn_sim():
+    """High knn_sim rescues a poster with aesthetic below 4.5 but above the rescued floor."""
+    result = PosterGate().evaluate(
+        _features(aesthetic=3.0, knn_sim=0.65),
+        original_width=500,
+    )
+    assert result.passed
+
+
+def test_gate_aesthetic_rescue_requires_min_rescued_floor():
+    """knn_sim rescue doesn't apply if aesthetic is below the rescued floor (2.0)."""
+    result = PosterGate().evaluate(
+        _features(aesthetic=1.9, knn_sim=0.65),
+        original_width=500,
+    )
+    assert not result.passed
+    assert result.reason == "aesthetic_floor"
 
 
 def test_taste_store_queries_top_k_and_checks_model(tmp_path: Path):
@@ -212,10 +234,11 @@ def test_dedup_tiebreak_uses_original_tmdb_resolution(tmp_path: Path):
     assert result.removals[0].removed == lower
 
 
-def test_ocr_rejects_no_text_candidate(
+def test_ocr_accepts_no_text_candidate_by_default(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
+    """With OCR_ACCEPT_NO_TEXT=True (default), stylized/unreadable posters pass."""
     image_path = tmp_path / "blank.jpg"
     Image.new("RGB", (500, 750), color="black").save(image_path)
 
@@ -226,6 +249,33 @@ def test_ocr_rejects_no_text_candidate(
     monkeypatch.setattr(ocr_filter, "_worker_ocr", EmptyOCR())
     monkeypatch.setattr(ocr_filter, "_worker_title_tokens", {"blank"})
     monkeypatch.setattr(ocr_filter, "_worker_director_tokens", set())
+    monkeypatch.setattr(ocr_filter.pipeline_settings, "OCR_ACCEPT_NO_TEXT", True)
+    monkeypatch.setattr(ocr_filter.pipeline_settings, "OCR_ENHANCE_RETRY", False)
+
+    result = ocr_filter._process_image(str(image_path))
+
+    assert result.accepted
+    assert result.reason is None
+    assert result.title_bbox is None
+
+
+def test_ocr_rejects_no_text_when_configured(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """With OCR_ACCEPT_NO_TEXT=False, no_text results are rejected (opt-in strict mode)."""
+    image_path = tmp_path / "blank.jpg"
+    Image.new("RGB", (500, 750), color="black").save(image_path)
+
+    class EmptyOCR:
+        def predict(self, _image):
+            return []
+
+    monkeypatch.setattr(ocr_filter, "_worker_ocr", EmptyOCR())
+    monkeypatch.setattr(ocr_filter, "_worker_title_tokens", {"blank"})
+    monkeypatch.setattr(ocr_filter, "_worker_director_tokens", set())
+    monkeypatch.setattr(ocr_filter.pipeline_settings, "OCR_ACCEPT_NO_TEXT", False)
+    monkeypatch.setattr(ocr_filter.pipeline_settings, "OCR_ENHANCE_RETRY", False)
 
     result = ocr_filter._process_image(str(image_path))
 

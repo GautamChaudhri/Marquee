@@ -27,12 +27,20 @@ class PosterGate:
                 f"width={original_width} < {self.config.GATE_MIN_WIDTH}",
             )
         if features.aesthetic < self.config.GATE_MIN_AESTHETIC:
-            return GateResult(
-                False,
-                "aesthetic_floor",
-                f"aesthetic={features.aesthetic:.4f} < "
-                f"{self.config.GATE_MIN_AESTHETIC:.4f}",
+            # High knn_sim means the taste profile validates this poster — relax the
+            # aesthetic floor for stylized/graphic designs that score low on a
+            # photographic-quality model but are on-brand.
+            rescued = (
+                features.knn_sim >= self.config.GATE_AESTHETIC_RESCUE_KNN
+                and features.aesthetic >= self.config.GATE_MIN_AESTHETIC_RESCUED
             )
+            if not rescued:
+                return GateResult(
+                    False,
+                    "aesthetic_floor",
+                    f"aesthetic={features.aesthetic:.4f} < "
+                    f"{self.config.GATE_MIN_AESTHETIC:.4f}",
+                )
         if features.knn_sim < self.config.GATE_MIN_KNN_SIM:
             return GateResult(
                 False,

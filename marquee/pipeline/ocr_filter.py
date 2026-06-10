@@ -168,14 +168,58 @@ def _matches_allowed(text: str, allowed_tokens: set[str]) -> bool:
     if not words:
         return False
     for word in words:
-        if word in allowed_tokens:
-            continue
-        if difflib.get_close_matches(word, allowed_tokens, n=1, cutoff=0.70):
-            continue
-        if any(token in word for token in allowed_tokens if len(token) >= 3):
+        if _word_matches_token(word, allowed_tokens):
             continue
         return False
     return True
+
+
+def _word_matches_token(word: str, allowed_tokens: set[str]) -> bool:
+    """Return True if *word* is explainable by any token in *allowed_tokens*.
+
+    Checks (in order):
+    1. Exact match
+    2. Fuzzy similarity ≥ OCR_FUZZY_CUTOFF (catches garbled reads like "latef")
+    3. A title token is a substring of the word (e.g. "reloaded" inside "thereloaded")
+    4. The word is a substring of a title token (e.g. "redem" inside "redemption")
+    """
+    if word in allowed_tokens:
+        return True
+    cutoff = pipeline_settings.OCR_FUZZY_CUTOFF
+    if difflib.get_close_matches(word, allowed_tokens, n=1, cutoff=cutoff):
+        return True
+    if any(token in word for token in allowed_tokens if len(token) >= 3):
+        return True
+    if any(word in token for token in allowed_tokens if len(word) >= 3):
+        return True
+    return False
+
+
+def _is_significant_residual_word(word: str, allowed_tokens: set[str]) -> bool:
+    """Return True if *word* is unambiguously non-title and long enough to matter.
+
+    A word must be ≥ 4 characters AND not composed solely of digits to be
+    considered significant.  Pure-digit strings (catalog numbers, years, VHS
+    labels) are noise, not promotional text.
+    """
+    if _word_matches_token(word, allowed_tokens):
+        return False
+    return len(word) >= 4 and not word.isdigit()
+
+
+def _bbox_center_distance(b1: BoundingBox, b2: BoundingBox) -> float:
+    """Euclidean distance (pixels) between the centres of two bounding boxes."""
+    c1x = sum(p[0] for p in b1) / 4
+    c1y = sum(p[1] for p in b1) / 4
+    c2x = sum(p[0] for p in b2) / 4
+    c2y = sum(p[1] for p in b2) / 4
+    return ((c1x - c2x) ** 2 + (c1y - c2y) ** 2) ** 0.5
+
+
+def _enhance_contrast(image: np.ndarray) -> np.ndarray:
+    """Return a contrast-boosted copy of *image* to help OCR find low-contrast text."""
+    from PIL import ImageEnhance
+    return np.asarray(ImageEnhance.Contrast(Image.fromarray(image)).enhance(2.0))
 
 
 def _title_match_score(text: str, title_tokens: set[str]) -> float:
@@ -278,8 +322,28 @@ def _process_image(path_string: str) -> OCRCandidateResult:
 
     boxes = _dedupe_boxes(full + top + bottom)
     detected_text = _normalise(" ".join(box.text for box in boxes))
+
     if not detected_text:
-        return OCRCandidateResult(path, False, "", "no_text", None)
+        # RC-1 fix: before giving up, retry on a contrast-enhanced image.
+        # Many stylized title fonts (embossed, low-contrast, metallic) are
+        # invisible to the base model but emerge after a 2× contrast boost.
+        if pipeline_settings.OCR_ENHANCE_RETRY:
+            enhanced = _enhance_contrast(image)
+            retry_boxes = _detect_boxes(
+                _worker_ocr,
+                enhanced,
+                pipeline_settings.OCR_CONFIDENCE_THRESHOLD,
+            )
+            if retry_boxes:
+                boxes = _dedupe_boxes(retry_boxes)
+                detected_text = _normalise(" ".join(box.text for box in boxes))
+
+    if not detected_text:
+        # Even after retry, OCR found nothing.  Accept if OCR_ACCEPT_NO_TEXT is
+        # set (the poster is likely a stylized/artistic title-only layout that
+        # the model cannot read); reject otherwise.
+        accepted = pipeline_settings.OCR_ACCEPT_NO_TEXT
+        return OCRCandidateResult(path, accepted, "", "no_text" if not accepted else None, None)
 
     all_tokens = _worker_title_tokens | _worker_director_tokens
     words = set(detected_text.split())
@@ -304,11 +368,29 @@ def _process_image(path_string: str) -> OCRCandidateResult:
         for box in boxes
         if not _matches_allowed(box.text, all_tokens)
     ]
-    significant_residual = [
-        box
-        for box in residual
-        if any(len(word) >= 4 for word in _normalise(box.text).split())
-    ]
+
+    # RC-2 + RC-3 + RC-4 fix: evaluate significance at the *word* level, not
+    # the box level.  A box that mixes title words with noise fragments (e.g.
+    # "1917 ll6l") used to fail the box-level _matches_allowed check entirely,
+    # causing the title words inside to trigger significant_residual.  Now:
+    #   • each word is individually classified against title/director tokens
+    #   • pure-digit strings (catalog numbers, scan labels) are not significant
+    #   • boxes whose centre lies within OCR_TITLE_PROXIMITY_PIXELS of the
+    #     title bbox are treated as OCR fragments of the title and skipped
+    prox = pipeline_settings.OCR_TITLE_PROXIMITY_PIXELS
+    significant_residual: list[OCRTextBox] = []
+    for box in residual:
+        # Spatial proximity discount: artifacts adjacent to the title area are
+        # almost always OCR noise from the stylized title typography itself.
+        if title_box is not None:
+            if _bbox_center_distance(box.bbox, title_box.bbox) <= prox:
+                continue
+        # Word-level significance: only flag the box if it contains at least
+        # one word that is clearly non-title (4+ chars, not all-digit).
+        words_in_box = _normalise(box.text).split()
+        if any(_is_significant_residual_word(w, all_tokens) for w in words_in_box):
+            significant_residual.append(box)
+
     accepted = not significant_residual
     return OCRCandidateResult(
         image_path=path,

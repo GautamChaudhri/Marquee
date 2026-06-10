@@ -56,6 +56,12 @@ class PipelineSettings(BaseSettings):
     GATE_FAN_JUNK_MAX_AESTHETIC: float = 5.0
     GATE_FAN_JUNK_MAX_PROVENANCE: float = 0.55
     GATE_FAN_JUNK_MAX_RESOLUTION_MP: float = 1.0
+    # Aesthetic rescue: if knn_sim >= GATE_AESTHETIC_RESCUE_KNN the taste profile
+    # validates the poster, so relax the aesthetic floor to GATE_MIN_AESTHETIC_RESCUED.
+    # Stylized/graphic-design posters score lower on photographic-quality models but
+    # are on-brand — the taste profile is the higher-quality signal here.
+    GATE_AESTHETIC_RESCUE_KNN: float = 0.55
+    GATE_MIN_AESTHETIC_RESCUED: float = 2.0
 
     PROV_PRIOR_MEAN: float = 6.5
     PROV_CONFIDENCE: float = 25.0
@@ -70,6 +76,20 @@ class PipelineSettings(BaseSettings):
     OCR_CONFIDENCE_THRESHOLD: float = 0.75
     OCR_STRIP_CONFIDENCE_THRESHOLD: float = 0.65
     OCR_BOTTOM_CONFIDENCE_THRESHOLD: float = 0.50
+    # Fuzzy-match cutoff for classifying an OCR word as a title token.
+    # Lower = more lenient (fewer garbled partial-reads become residual).
+    OCR_FUZZY_CUTOFF: float = 0.60
+    # Residual boxes whose center falls within this many pixels of the
+    # identified title bbox are treated as OCR fragments of the title,
+    # not independent text.
+    OCR_TITLE_PROXIMITY_PIXELS: float = 30.0
+    # If set, no_text results are accepted rather than rejected.  Addresses
+    # the large class of posters with stylized title fonts that PP-OCRv5_mobile
+    # cannot read.  The contrast-enhanced retry runs first; this flag is the
+    # fallback for when even the retry finds nothing.
+    OCR_ACCEPT_NO_TEXT: bool = True
+    # Try a contrast-enhanced image pass before concluding no_text.
+    OCR_ENHANCE_RETRY: bool = True
 
     FACE_CONFIDENCE_THRESHOLD: float = 0.5
     FACE_NMS_THRESHOLD: float = 0.4
