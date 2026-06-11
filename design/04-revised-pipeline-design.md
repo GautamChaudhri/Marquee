@@ -268,7 +268,7 @@ experiment, off by default.
 |---|---|---|---|
 | **CLIP ViT-B/32** (ONNX) | OpenAI image-text encoder, 512-dim | the embedding behind `knn_sim` and the aesthetic head | ONNX Runtime |
 | **LAION aesthetic head** | `nn.Linear(512,1)` trained on B/32 CLIP embeddings (`sa_0_4_vit_b_32_linear.pth`) | the `aesthetic` scalar | numpy/torch, one matmul |
-| **PaddleOCR** | text detection + recognition | OCR gate; emits title box + residual-text boxes | CPU/GPU |
+| **PaddleOCR** | text detection + recognition | OCR gate; emits title box + residual-text boxes | GPU (auto-detect: CUDA if available, else CPU); uses paddle_dynamic engine + PP-OCRv5_mobile_det |
 | **OpenCV** | classic CV | colorfulness, Laplacian sharpness, crops | CPU |
 | **face detector** (ONNX) | lightweight detector (SCRFD / RetinaFace / OpenCV res10 SSD) | the `face_area` scalar | ONNX Runtime |
 | **imagehash** | pHash | near-duplicate dedup | CPU |
@@ -287,6 +287,8 @@ not need B/16's finer detail.
 **Execution provider is environment-dependent and must be configurable** with auto-detection and
 a CPU fallback:
 
+- **Linux with NVIDIA GPU (RTX 3070+):** `CUDAExecutionProvider`. The top priority when
+  `onnxruntime-gpu` is installed. Runs CLIP, the aesthetic head, and the face detector on the GPU.
 - **Dev (Apple Mac):** `CoreMLExecutionProvider` (Apple Neural Engine). Current development is on
   an M3 Pro Mac with 36 GB RAM, so the model artifacts must be sized to run there for now; on this
   machine CoreML is the provider that activates.
@@ -294,10 +296,12 @@ a CPU fallback:
   makes CLIP and the face detector run well on the Plex/QSV crowd's hardware with no dedicated GPU.
 - **Fallback everywhere:** `CPUExecutionProvider`.
 
-The ONNX model is portable across all three; only the provider at session creation changes.
+The ONNX model is portable across all four; only the provider at session creation changes.
 **Provider selection must skip providers that are not available on the current machine and fall
 through to the next, never raise.** OpenVINO is not present on macOS, so on the dev Mac selection
-falls through to CoreML — nothing needs to be installed for OpenVINO until the homelab deployment.
+falls through to CoreML; CUDA only appears when `onnxruntime-gpu` is installed on a Linux host
+with an NVIDIA GPU — nothing needs to be installed for any provider until the host that needs it
+is set up.
 
 **On-demand vs batch** (current mode: on-demand): on-demand means a human waits, so per-movie
 latency is user-facing and biases toward the light B/32. Batch (overnight, whole library) hides
@@ -319,6 +323,12 @@ Everything here is a knob, not a commitment.
   failure.
 - **Combined fan-junk gate:** (low aesthetic AND low votes AND low resolution) as a single hard
   reject. Off by default; turn on if fan art still slips through.
+- **OCR contrast-enhance retry:** when the base OCR pass finds no text on a stylized poster, a
+  2× contrast-boosted retry recovers low-contrast/metallic/embossed title text. On by default.
+- **OCR accept-no-text:** when even the retry finds nothing, accept the poster as a stylized
+  title-only design (vs rejecting it). The poster lands at the end of the ranking. On by default.
+- **OCR workers and GPU:** PaddleOCR now auto-detects CUDA (paddle_dynamic engine) and uses
+  PP-OCRv5_mobile_det for throughput. Worker count configurable via OCR_WORKERS (default 5).
 - **L/14 upgrade:** if B/32's style discrimination proves too crude, upgrade to CLIP ViT-L/14
   (768-dim, richer) and switch to the improved LAION MLP aesthetic head (L/14). Heavier — pair it
   with batch mode so the latency is hidden. Requires rebuilding the exemplar store (different

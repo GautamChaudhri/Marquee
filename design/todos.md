@@ -32,11 +32,11 @@ Organized by the phase when attention is needed. Reference `design/03-migration-
 
 ## Phase 3 — AI Pipeline ← CURRENT
 
-- [x] ~~**PaddleOCR integration.**~~ — `PosterTextFilter` class built: 3-pass OCR, FORMAT_BLOCKLIST, fuzzy matching, multiprocessed. In `marquee/pipeline/ocr_filter.py`.
-- [x] ~~**CLIP embedding extraction.**~~ — ViT-B/16 exported to ONNX (329 MB, CoreML active). `CLIPImageEncoder` with platform-agnostic providers. In `marquee/ml/embedding.py`.
+- [x] ~~**PaddleOCR integration.**~~ — `PosterTextFilter` class built: 3-pass OCR, FORMAT_BLOCKLIST, fuzzy matching, multiprocessed, GPU auto-detect, contrast-enhance retry, text-free accept. In `marquee/pipeline/ocr_filter.py`.
+- [x] ~~**CLIP embedding extraction.**~~ — ViT-B/32 exported to ONNX (~150 MB). `CLIPImageEncoder` with CUDA > OpenVINO > CoreML > CPU providers. In `marquee/ml/embedding.py`.
 - [x] ~~**SHA-256 + pHash dedup.**~~ — `PosterDeduper` two-stage dedup with resolution tiebreaker. In `marquee/pipeline/deduper.py`.
-- [x] ~~**Taste profile trainer/scorer.**~~ — `taste_trainer.py` trains from 430 posters (mean=0.76, std=0.06). `TasteScorer` with CLIP+LAB 80/20 scoring + negative filter. `TasteStore` abstraction with `NumpyTasteStore` + ChromaDB stub. In `marquee/ml/`.
-- [ ] **Pipeline orchestrator.** Connect all stages: fetch → dedup → OCR → AI → select → deploy.
+- [x] ~~**Taste profile trainer/scorer.**~~ — `taste_trainer.py` trains from 430 posters using CLIP B/32 ONNX. k-NN over exemplars (k=10), LAB color dropped, centroid diagnostics-only. `NumpyTasteStore` with model-name validation. In `marquee/ml/`.
+- [x] ~~**Pipeline test endpoint.**~~ Full end-to-end pipeline (fetch → SHA-256 → OCR → pHash → Features → Gate → Rank → Output) working in `POST /api/test/pipeline/movie/{id}`. Production route still pending.
 - [ ] **File write path validation.** Before writing poster files, validate destination is within `MEDIA_ROOTS`.
 - [ ] **Expose poster counts in sync report.** Add `posters_found` / `posters_missing` to sync API response.
 - [ ] **Fix stale poster_path on file deletion.** `_check_existing_poster` should set `poster_path = NULL` when file no longer exists.
@@ -45,11 +45,13 @@ Organized by the phase when attention is needed. Reference `design/03-migration-
 
 ## Open Tuning Questions (Phase 3)
 
-- [ ] PaddleOCR can't read stylized/gothic titles at w500 (Nosferatu). Need to evaluate `text_det_box_thresh=0.3` effectiveness.
-- [ ] pHash threshold at 8 — needs more movie testing to confirm
-- [ ] Negative filter (floating heads) currently disabled — user undecided
-- [ ] OCR-first vs pHash-first pipeline order — both tested, results in `experiments/ocr-first/` and `experiments/data/`
-- [ ] Text-free poster repositioning: posters with <3 chars detected text pushed to end of CLIP ranking
+- [x] ~~Stylized title recovery: contrast-enhance retry implemented (OCR_ENHANCE_RETRY), 2× contrast boost on no-text detection. text_det_box_thresh=0.3 active. Pending visual validation on gothic/stylized posters.~~
+- [ ] pHash threshold at 6 (default in pipeline_config) — needs more movie testing to confirm
+- [x] ~~Floating-head handling: moved from CLIP negative prompts (deleted) to face_area scalar in the feature vector. Active as a ranking penalty.~~
+- [x] ~~Pipeline order decided: OCR runs BEFORE pHash (adopted). When near-duplicate variants differ only in text content, OCR gate arbitrates.~~
+- [x] ~~Text-free posters: handled by OCR_ACCEPT_NO_TEXT flag (default true). If OCR finds no text even after contrast retry, the poster is accepted rather than rejected — lands at end of ranking as a fallback.~~
+- [ ] Aesthetic rescue gate: knn_sim threshold relaxes aesthetic floor for stylized posters. Needs tuning (currently knn≥0.55, aesthetic≥2.0).
+- [x] ~~NVIDIA GPU support: CUDAExecutionProvider added to provider chain. PaddleOCR auto-detects CUDA via paddle_dynamic engine. CLIP/face ONNX models run on GPU.~~
 
 ---
 

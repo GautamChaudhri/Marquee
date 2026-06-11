@@ -480,10 +480,10 @@ CLIP (Contrastive Language-Image Pretraining) by OpenAI is a model that generate
 
 #### Training Phase (runs once on existing library, then incrementally)
 
-1. **Scan** the user's media directories for existing poster files (`poster.jpg`, `folder.jpg`, etc.)
-2. **Embed** each poster through CLIP to get its embedding vector
-3. **Store** the embeddings in a vector store (ChromaDB, Qdrant, or simply a numpy array on disk — at the scale of a personal media library, the entire embedding database fits in RAM trivially)
-4. **Compute** a "mean preference vector" by averaging all chosen poster embeddings — this represents the user's overall aesthetic center
+1. **Curate** a set of hand-picked poster exemplars (~430 posters, one per movie) representing the user's taste
+2. **Embed** each exemplar through CLIP ViT-B/32 ONNX to get 512-dim L2-normalized embeddings
+3. **Store** embeddings in a `taste_profile.clip-vit-b-32.npz` file (numpy array on disk — at the scale of a personal media library, the entire store fits in RAM trivially; no vector database needed)
+4. **Score** candidates via k-NN: the style feature is the mean cosine similarity to the k nearest exemplars (k≈10), not cosine to a centroid. k-NN over individual exemplars handles multimodal taste (a horror cluster and an animation cluster coexist) without the centroid's blur
 
 #### Inference Phase (when new media arrives)
 
@@ -527,22 +527,16 @@ Use CLIP as the fast primary ranker (sub-second per image, runs on any GPU). Opt
 
 All CLIP variants are tiny compared to LLMs. Even the largest (ViT-L/14) uses well under 1 GB of VRAM. The bottleneck for hardware compatibility is the optional VLM, not CLIP.
 
-### 7.4 Cosine Similarity Scoring
+### 7.4 Scoring Architecture: GATE then RANK
 
-Cosine similarity between two embedding vectors ranges from -1 to 1 (in practice, CLIP embeddings tend to range from 0 to 1). Higher values indicate greater visual/semantic similarity.
+The pipeline makes two distinct kinds of decisions:
 
-```python
-import numpy as np
+- **GATE** — absolute, hard, per-candidate. Fixed thresholds reject invalid or junk posters: resolution floor, aesthetic floor, off-style floor. Gated-out posters land in a visible bucket with their reason recorded.
+- **RANK** — relative, soft, within-movie. Survivors are scored on a 9-dimensional feature vector (one embedding-derived scalar + 8 explicit scalars) and ranked. The best available wins, even if all candidates are mediocre. A low rank does NOT remove a candidate.
 
-def cosine_similarity(a, b):
-    return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
+The embedding itself is reduced to one scalar (k-NN similarity to taste exemplars) — the raw 512-dim vector is not concatenated into the feature vector. This keeps the ranking head small, trainable on few labels, and interpretable.
 
-# Score each candidate against the user's mean preference vector
-scores = [cosine_similarity(candidate_embedding, preference_vector) for candidate_embedding in candidates]
-best_index = np.argmax(scores)
-```
-
-For a more advanced approach, train a small logistic regression or MLP classifier on the user's chosen vs. rejected embeddings using scikit-learn. This captures more nuanced preferences than a simple mean vector.
+Phase 0 uses hand-tuned positive weights (all features oriented higher=better, no mixed signs). Phase 1+ will train logistic regression or LightGBM on accumulated user feedback (approved vs overridden picks).
 
 ---
 
@@ -830,16 +824,26 @@ For a v1, direct PyTorch in a single container is recommended for simplicity.
 
 ## 13. GPU and Model Compatibility
 
-### 13.1 CLIP (Required)
+### 13.1 CLIP (Required) — ONNX Runtime with Multi-Provider Support
 
-CLIP is the core AI component and runs on essentially any GPU (and even CPU, just slower).
+CLIP is the core AI component and runs on essentially any GPU (and even CPU, just slower). The current pipeline uses **CLIP ViT-B/32** exported to ONNX (~150 MB) with automatic provider selection:
 
-| GPU | CLIP ViT-B/32 | CLIP ViT-L/14 | Notes |
+| Priority | Provider | Hardware | Notes |
 |---|---|---|---|
-| RTX 3070 (8 GB) | Easily | Easily | Well under 1 GB VRAM |
-| Intel Arc A310 (6 GB) | Easily | Easily | Via IPEX or OpenVINO |
-| RTX 3060 (12 GB) | Easily | Easily | — |
-| CPU only | Yes (slower) | Yes (slower) | Viable for small libraries |
+| 1 | CUDAExecutionProvider | NVIDIA GPU (RTX 3070+) | Requires onnxruntime-gpu |
+| 2 | OpenVINOExecutionProvider | Intel iGPU (Arc, UHD) | Plex/QSV crowd hardware |
+| 3 | CoreMLExecutionProvider | Apple Silicon (M-series) | Current dev platform |
+| 4 | CPUExecutionProvider | Any CPU | Universal fallback |
+
+The ONNX model is portable across all providers — only the session configuration changes. Providers not available on the current machine are automatically skipped (e.g., CUDA is not present on macOS).
+
+| GPU | CLIP ViT-B/32 | PaddleOCR | Notes |
+|---|---|---|---|
+| RTX 3070 (8 GB) | CUDA (GPU) | GPU (paddle_dynamic) | Active deployment target |
+| Intel Arc A310 (6 GB) | OpenVINO | CPU | Via IPEX or OpenVINO |
+| RTX 3060 (12 GB) | CUDA (GPU) | GPU | — |
+| Apple M-series | CoreML | CPU | Dev machine |
+| CPU only | CPU | CPU | Viable for small libraries |
 
 ### 13.2 VLM (Optional Enhancement)
 
@@ -901,12 +905,13 @@ Marquee should support configurable model selection via environment variable, al
 
 1. Fetch all poster candidates from TMDB, Fanart.tv, TheTVDB, TVmaze
 2. Stage 1 dedup: SHA-256 exact hash, discard byte-identical duplicates
-3. Stage 2 dedup: pHash perceptual hash, discard visual near-duplicates (Hamming distance < 6), keep higher resolution version
-4. Compute CLIP embeddings for all surviving unique candidates
-5. Score each candidate by cosine similarity to the user's mean preference vector
-6. Auto-select the highest-scoring candidate (or present top N in UI for confirmation)
-7. Save selected poster to the media folder AND the cache
-8. Update database with poster path, source, embedding, and hashes
+3. OCR text filtering: reject text-heavy posters using PaddleOCR; emit title bbox + residual text boxes
+4. Stage 2 dedup: pHash perceptual hash on OCR survivors, discard visual near-duplicates (Hamming distance < 6), keep higher resolution version
+5. Extract 9-dimensional feature vector per candidate (CLIP k-NN style similarity, aesthetic quality, title colorfulness, text cleanliness, resolution, sharpness, face area, provenance, language match)
+6. Hard gate: reject candidates below quality floors (resolution, aesthetic, off-style)
+7. Rank survivors by learned weighted score (Phase 0: hand-tuned weights; Phase 1+: logistic/LightGBM trained on feedback)
+8. Deploy top-ranked poster to the media folder AND the cache
+9. Update database with poster path, source, embedding, and hashes
 
 ### 14.4 New Media Arrival
 
@@ -955,15 +960,19 @@ Marquee should support configurable model selection via environment variable, al
 | Language | Python 3.11+ |
 | Backend Framework | FastAPI |
 | Database | SQLite |
-| AI - Embeddings | OpenAI CLIP (via `openai/CLIP` or `open_clip`) |
+| AI - Embeddings | CLIP ViT-B/32 via ONNX Runtime (multi-provider: CUDA/OpenVINO/CoreML/CPU) |
+| AI - Aesthetic | LAION B/32 linear head (`nn.Linear(512,1)`) on CLIP embedding |
+| AI - Face Detection | SCRFD ONNX (`scrfd_500m_bnkps.onnx`) |
 | AI - VLM (optional) | Qwen2.5-VL / DeepSeek Janus / Llama 3.2 Vision (via Ollama or direct PyTorch) |
-| Image Hashing | `imagehash` (pHash, dHash) + `hashlib` (SHA-256) |
+| OCR | PaddleOCR (PP-OCRv5_mobile_det, paddle_dynamic engine, GPU auto-detect) |
+| Image Hashing | `imagehash` (pHash) + `hashlib` (SHA-256) |
 | Filename Parsing | `guessit` |
-| Filesystem Watching | `watchdog` |
-| Vector Storage | ChromaDB, Qdrant, or numpy arrays on disk |
-| Image Processing | Pillow (PIL) |
-| HTTP Client | `httpx` or `requests` |
+| Taste Storage | NumPy .npz (k-NN over exemplars, no vector DB needed at current scale) |
+| Image Processing | Pillow (PIL) + OpenCV |
+| HTTP Client | `httpx` |
+| Backend | FastAPI + SQLAlchemy 2.0 async + aiosqlite |
 | Frontend | React / Vue / plain HTML+JS |
 | Containerization | Docker + Docker Compose |
-| GPU Support (NVIDIA) | NVIDIA Container Toolkit |
-| GPU Support (Intel) | Intel IPEX / OpenVINO |
+| GPU Support (NVIDIA) | ONNX Runtime CUDA + PaddlePaddle CUDA |
+| GPU Support (Apple) | ONNX Runtime CoreML |
+| GPU Support (Intel) | ONNX Runtime OpenVINO |

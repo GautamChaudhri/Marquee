@@ -12,16 +12,17 @@
 
 ## Current State
 
-| Item | macOS (current) | Linux (target) |
+| Item | macOS (current) | Linux (theforge — current) |
 |---|---|---|
 | Hostname | Mac (Apple Silicon) | theforge |
 | CPU | Apple M-series | Intel 13600KF (12c) |
 | GPU | Apple GPU (MPS/CoreML) | RTX 3070 (8GB, CUDA 13.2) |
 | Python | 3.13 (Homebrew) | 3.14.5 (system) |
-| ONNX providers | CoreML > CPU | **CUDA** > CPU |
-| venv | Set up, all deps | Empty venv |
-| Model files | Present | Missing |
-| .env | macOS paths | Needs Linux paths |
+| ONNX providers | CoreML > CPU | **CUDA** > CPU ✅ |
+| venv | Set up, all deps | Set up, CUDA packages installed ✅ |
+| Model files | Present | Present ✅ |
+| .env | macOS paths | Linux paths configured ✅ |
+| PaddleOCR | CPU only (4 workers) | GPU auto-detect (paddle_dynamic), default 5 workers ✅ |
 
 ---
 
@@ -173,24 +174,11 @@ import numpy; print('NumPy:', numpy.__version__)
 
 ---
 
-### Task 2: Update Provider Selection Logic
+### Task 2: Update Provider Selection Logic ✅ DONE
 
 **Objective:** Add `CUDAExecutionProvider` to the auto-detection chain so ONNX models use the GPU.
 
-**Files:**
-- Modify: `marquee/ml/embedding.py:18-38` (`choose_execution_providers`)
-
-**Step 1: Update `choose_execution_providers()`**
-
-Change the `preferred` tuple from:
-```python
-preferred = (
-    "OpenVINOExecutionProvider",
-    "CoreMLExecutionProvider",
-    "CPUExecutionProvider",
-)
-```
-To:
+**Status:** Complete. The `choose_execution_providers()` function now uses:
 ```python
 preferred = (
     "CUDAExecutionProvider",
@@ -200,18 +188,9 @@ preferred = (
 )
 ```
 
-No other changes needed. The function already filters to only available providers. When running on macOS, CUDA won't be in `ort.get_available_providers()` so it's harmlessly skipped. When running on Linux with `onnxruntime-gpu`, CUDA is available and gets priority.
+CUDA is the top priority when `onnxruntime-gpu` is installed on NVIDIA hardware. Falls through safely on macOS/CoreML where CUDA is not available. Same provider logic is also used by the face detector (`marquee/ml/face.py`).
 
-**Step 2: Verify the change**
-```bash
-python -c "
-from marquee.ml.embedding import choose_execution_providers
-providers = choose_execution_providers('auto')
-print('Selected providers:', providers)
-assert 'CUDAExecutionProvider' in providers, 'CUDA should be first on this machine'
-print('OK: CUDA prioritized')
-"
-```
+**Verification:** Checked — CUDAExecutionProvider is active on theforge. CLIP encoding benchmarks show GPU acceleration.
 
 ---
 
@@ -386,7 +365,7 @@ Expected: Pipeline completes successfully. Check logs for CUDA provider usage. R
 
 1. **PyTorch CUDA version mismatch**: The driver is CUDA 13.2, but PyTorch ships CUDA 12.4 libraries. This is fine — the CUDA driver is forward-compatible. PyTorch's bundled CUDA 12.4 libs work on any driver ≥ 525.60.13.
 2. **onnxruntime vs onnxruntime-gpu**: These are different PyPI packages. The import is the same (`import onnxruntime`), but `onnxruntime-gpu` includes CUDA/CuDNN/TensorRT providers. Installing both in the same venv causes conflicts — use `onnxruntime-gpu` exclusively on Linux.
-3. **PaddleOCR GPU**: Not attempted in this plan. CPU with 6-8 workers on 12 cores should be 2-3× faster than Mac's 4 workers. GPU PaddleOCR requires PaddlePaddle-GPU with specific CUDA/cuDNN versions — fragile and not worth it yet.
+3. **PaddleOCR GPU**: Now auto-detected via `paddle.device.is_compiled_with_cuda()`. Uses `paddle_dynamic` engine (eager execution, avoids static PIR+oneDNN bug on Intel 13th-gen) and PP-OCRv5_mobile_det model. Default 5 workers (configurable via `OCR_WORKERS`). GPU acceleration is active on theforge.
 4. **Model files are platform-agnostic**: ONNX models work identically on any platform. The `.pth` file loads on CPU regardless. No re-export needed.
 5. **Taste profile is NumPy**: `.npz` files are platform-agnostic. Same file works everywhere.
 6. **VRAM headroom**: RTX 3070 has 8GB. CLIP B/32 ONNX uses ~150MB. SCRFD ONNX uses ~2MB. Plenty of room for batch processing later.

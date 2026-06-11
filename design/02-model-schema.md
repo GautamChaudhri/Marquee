@@ -1,6 +1,6 @@
 # Marquee — Model Schema Design
 
-**Status:** Phase 1 design — approved, not yet implemented  
+**Status:** Phase 1 design — approved, implemented (see marquee/models/)  
 **Date:** 2026-06-02  
 **Rationale:** Separate tables for movies, series, seasons, and episodes; shared `ArtworkMixin` for poster state; future-proofed for additional artwork types.
 

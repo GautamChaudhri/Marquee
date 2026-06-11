@@ -77,8 +77,8 @@ see the pipeline order just by listing the directory:
 experiments/runs/<Movie>/
 ├── 0-originals/                    all w500 downloads land here
 ├── 1-sha256-rejected/              SHA-256 exact-duplicate rejects
-├── 2-phash-rejected/               pHash near-duplicate rejects
-├── 3-ocr-rejected/                 OCR text-filter rejects
+├── 2-ocr-rejected/                 OCR text-filter rejects
+├── 3-phash-rejected/               pHash near-duplicate rejects (on OCR survivors)
 ├── errored/                   ★    per-candidate failures
 ├── gated/                     ★    hard-gate rejects, reason in FILENAME + log+json
 ├── ranked/                    ★★   ALL ranked posters, renamed, original-res on top-5
@@ -443,7 +443,7 @@ dimensionality, and the LAION B/32 aesthetic head produces garbage on any other 
   everything.
 
 **Re-runs are idempotent.** At the start of a run, delete the generated stage subdirectories
-(`1-sha256-rejected/`, `2-phash-rejected/`, `3-ocr-rejected/`, `gated/`, `errored/`, `ranked/`,
+(`1-sha256-rejected/`, `2-ocr-rejected/`, `3-phash-rejected/`, `gated/`, `errored/`, `ranked/`,
 and any legacy `sha256/`, `phash/`, `ocr/`, `ranked_lower/` folders from prior runs) and the
 previous `pipeline.log` / `pipeline_run.json`, then regenerate. **Do not delete the
 `0-originals/` w500 downloads** — Stage 1 already skips existing files, so retaining them avoids
