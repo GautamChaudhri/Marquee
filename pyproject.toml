@@ -41,12 +41,10 @@ dependencies = [
     "opencv-python>=4.8,<5.0",
     # AI / ML (Phase 3+)
     "numpy>=1.24,<3.0",
+    # macOS always gets the universal package (CoreML + CPU providers).
+    # On Linux, pick exactly ONE accelerator extra: [cpu], [nvidia], or [intel]
+    # — the three onnxruntime packages install the same module and conflict.
     "onnxruntime>=1.19,<2.0; sys_platform == 'darwin'",
-    "onnxruntime-gpu>=1.19,<2.0; sys_platform == 'linux'",
-    # "paddlepaddle>=3.0",       # uncomment in Phase 3
-    # "paddleocr>=2.9",           # uncomment in Phase 3
-    # "onnxruntime>=1.19",        # uncomment in Phase 3
-    # "onnx>=1.16",               # uncomment in Phase 3 (export only)
     # Utilities
     "python-dotenv>=1.0,<2.0",
     "python-multipart>=0.0.12,<1.0",
@@ -61,8 +59,25 @@ dev = [
     "ruff>=0.9,<1.0",
 ]
 
+# --- Pick exactly one accelerator extra on Linux ------------------------
+# CPU-only hosts (Intel N150 and friends):       pip install -e ".[cpu]"
+# NVIDIA GPUs (RTX 3070, 3060, ...):             pip install -e ".[nvidia]"
+# Intel iGPU / Arc dGPU (A310, UHD via OpenVINO): pip install -e ".[intel]"
+# Apple Silicon needs no extra (CoreML ships in the base onnxruntime).
+cpu = [
+    "onnxruntime>=1.19,<2.0",
+]
+nvidia = [
+    "onnxruntime-gpu>=1.19,<2.0",
+]
+intel = [
+    "onnxruntime-openvino>=1.19,<2.0",
+]
+
 ml = [
-    # Linux GPU: pip install paddlepaddle-gpu==3.3.1 -i https://www.paddlepaddle.org.cn/packages/stable/cu126/
+    # OCR runtime + model-export tooling. PaddleOCR is required to run the
+    # pipeline; torch/transformers are only needed to export models.
+    # Linux NVIDIA: pip install paddlepaddle-gpu==3.3.1 -i https://www.paddlepaddle.org.cn/packages/stable/cu126/
     "paddlepaddle>=3.0; sys_platform == 'darwin'",
     "paddleocr>=3.0",
     "onnx>=1.16",

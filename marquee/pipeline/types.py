@@ -38,11 +38,16 @@ class FeatureVector:
     face_area: float
     provenance: float
     lang_match: float
+    # False when OCR found no title box: title_colorfulness is then unknown
+    # and normalization substitutes a neutral value instead of punishing the
+    # poster as if it had a plain white title.
+    title_found: bool = True
     normalized: dict[str, float] = field(default_factory=dict)
 
     def raw_values(self) -> dict[str, float]:
         values = asdict(self)
         values.pop("normalized")
+        values.pop("title_found")
         return values
 
 

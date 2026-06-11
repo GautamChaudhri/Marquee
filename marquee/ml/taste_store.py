@@ -1,4 +1,19 @@
-"""Taste exemplar storage backed by model-tagged NumPy embeddings."""
+"""Taste exemplar storage backed by model-tagged NumPy embeddings.
+
+Two upgrades over the plain top-k mean:
+
+  - **Similarity-weighted k-NN** (``KNN_WEIGHTING=softmax``): the k nearest
+    exemplars are combined with softmax weights so the closest neighbours
+    dominate. This sharpens multimodal taste — a candidate sitting on top of
+    your horror cluster is not diluted by 9 weaker neighbours from other
+    clusters — without the noise of k=1.
+  - **Negative exemplars** (optional ``neg_embeddings`` in the profile): a
+    second store of posters you explicitly dislike (floating heads, fan junk).
+    A candidate is penalized only when it is *closer to the disliked set than
+    to the liked set*: ``score = pos - w * max(0, neg - pos)``. This leaves
+    ordinary candidates untouched (no global shift, gate thresholds stay
+    valid) while pushing look-alikes of known junk down hard.
+"""
 
 from __future__ import annotations
 
@@ -11,6 +26,28 @@ import numpy as np
 from marquee.core.pipeline_config import pipeline_settings
 
 logger = logging.getLogger(__name__)
+
+
+def weighted_topk_mean(
+    similarities: np.ndarray,
+    k: int,
+    *,
+    weighting: str | None = None,
+    temperature: float | None = None,
+) -> float:
+    """Combine the top-k cosine similarities into one style scalar."""
+    if similarities.size == 0:
+        return 0.0
+    count = min(max(k, 1), int(similarities.size))
+    top = np.partition(similarities, -count)[-count:]
+    mode = weighting or pipeline_settings.KNN_WEIGHTING
+    if mode == "softmax" and count > 1:
+        temp = temperature or pipeline_settings.KNN_SOFTMAX_TEMP
+        logits = (top - top.max()) / temp
+        weights = np.exp(logits)
+        weights /= weights.sum()
+        return float(np.dot(weights, top))
+    return float(top.mean())
 
 
 class TasteStore(ABC):
@@ -29,6 +66,9 @@ class TasteStore(ABC):
     def query_similar(self, embedding: np.ndarray, k: int = 10) -> list[float]: ...
 
     @abstractmethod
+    def style_score(self, embedding: np.ndarray, k: int = 10) -> float: ...
+
+    @abstractmethod
     def get_all(self) -> tuple[np.ndarray, list[dict | None]]: ...
 
 
@@ -42,6 +82,7 @@ class NumpyTasteStore(TasteStore):
         self.profile_path = Path(profile_path or pipeline_settings.TASTE_PROFILE_PATH)
         self.expected_model_name = expected_model_name or pipeline_settings.AI_MODEL
         self._embeddings: np.ndarray | None = None
+        self._neg_embeddings: np.ndarray | None = None
         self._metadata: list[dict | None] = []
         self._centroid: np.ndarray | None = None
 
@@ -76,7 +117,19 @@ class NumpyTasteStore(TasteStore):
                     "Taste profile poster_names length does not match embeddings"
                 )
             self._metadata = [{"filename": str(name)} for name in names]
-        logger.info("Loaded %d B/32 taste exemplars from %s", self.size, self.profile_path)
+            if "neg_embeddings" in data:
+                negatives = np.asarray(data["neg_embeddings"], dtype=np.float32)
+                if negatives.ndim != 2 or negatives.shape[1] != 512:
+                    raise RuntimeError(
+                        f"Invalid negative embedding shape: {negatives.shape}"
+                    )
+                self._neg_embeddings = negatives
+        logger.info(
+            "Loaded %d taste exemplars (%d negative) from %s",
+            self.size,
+            self.negative_size,
+            self.profile_path,
+        )
 
     @property
     def centroid_emb(self) -> np.ndarray:
@@ -87,6 +140,13 @@ class NumpyTasteStore(TasteStore):
     def size(self) -> int:
         self._ensure_loaded()
         return int(self._embeddings.shape[0])  # type: ignore[union-attr]
+
+    @property
+    def negative_size(self) -> int:
+        self._ensure_loaded()
+        if self._neg_embeddings is None:
+            return 0
+        return int(self._neg_embeddings.shape[0])
 
     def add(self, embedding: np.ndarray, *, metadata: dict | None = None) -> None:
         self._ensure_loaded()
@@ -105,6 +165,20 @@ class NumpyTasteStore(TasteStore):
         count = min(max(k, 1), self.size)
         indices = np.argsort(similarities)[::-1][:count]
         return [float(similarities[index]) for index in indices]
+
+    def style_score(self, embedding: np.ndarray, k: int = 10) -> float:
+        """The knn_sim scalar: weighted positive k-NN minus junk-proximity penalty."""
+        self._ensure_loaded()
+        vector = np.asarray(embedding, dtype=np.float32).reshape(512)
+        positive = weighted_topk_mean(self._embeddings @ vector, k)  # type: ignore[operator]
+        if self._neg_embeddings is None or pipeline_settings.TASTE_NEG_WEIGHT <= 0:
+            return positive
+        negative = weighted_topk_mean(
+            self._neg_embeddings @ vector,
+            min(k, self.negative_size),
+        )
+        penalty = pipeline_settings.TASTE_NEG_WEIGHT * max(0.0, negative - positive)
+        return positive - penalty
 
     def get_all(self) -> tuple[np.ndarray, list[dict | None]]:
         self._ensure_loaded()

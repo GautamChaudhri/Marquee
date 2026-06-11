@@ -177,12 +177,67 @@ def test_colorfulness_distinguishes_gray_from_color():
 
 
 def test_provider_selection_skips_unavailable_openvino(monkeypatch: pytest.MonkeyPatch):
+    from marquee.ml import hardware
+
     monkeypatch.setattr(
-        "marquee.ml.embedding.ort.get_available_providers",
+        "marquee.ml.hardware.ort.get_available_providers",
         lambda: ["CoreMLExecutionProvider", "CPUExecutionProvider"],
     )
-    providers = choose_execution_providers()
-    assert providers == ["CoreMLExecutionProvider", "CPUExecutionProvider"]
+    hardware.detect_hardware.cache_clear()
+    try:
+        providers = choose_execution_providers()
+        assert providers == ["CoreMLExecutionProvider", "CPUExecutionProvider"]
+    finally:
+        hardware.detect_hardware.cache_clear()
+
+
+def test_hardware_profile_resolves_tiers(monkeypatch: pytest.MonkeyPatch):
+    from marquee.ml import hardware
+
+    monkeypatch.setattr(
+        "marquee.ml.hardware.ort.get_available_providers",
+        lambda: ["CUDAExecutionProvider", "CPUExecutionProvider"],
+    )
+    hardware.detect_hardware.cache_clear()
+    try:
+        profile = hardware.detect_hardware()
+        assert profile.tier == "cuda"
+        assert profile.providers[0] == "CUDAExecutionProvider"
+        assert profile.clip_batch_size == 32
+        assert profile.ocr_workers >= 1
+    finally:
+        hardware.detect_hardware.cache_clear()
+
+
+def test_hardware_openvino_alias_forces_cpu_device(monkeypatch: pytest.MonkeyPatch):
+    from marquee.ml import hardware
+
+    monkeypatch.setattr(
+        "marquee.ml.hardware.ort.get_available_providers",
+        lambda: ["OpenVINOExecutionProvider", "CPUExecutionProvider"],
+    )
+    hardware.detect_hardware.cache_clear()
+    try:
+        profile = hardware.detect_hardware("openvino-cpu")
+        assert profile.tier == "openvino-cpu"
+        assert profile.provider_options[0] == {"device_type": "CPU"}
+    finally:
+        hardware.detect_hardware.cache_clear()
+
+
+def test_hardware_explicit_unavailable_provider_raises(monkeypatch: pytest.MonkeyPatch):
+    from marquee.ml import hardware
+
+    monkeypatch.setattr(
+        "marquee.ml.hardware.ort.get_available_providers",
+        lambda: ["CPUExecutionProvider"],
+    )
+    hardware.detect_hardware.cache_clear()
+    try:
+        with pytest.raises(RuntimeError, match="unavailable"):
+            hardware.detect_hardware("cuda")
+    finally:
+        hardware.detect_hardware.cache_clear()
 
 
 def test_repeat_run_cleanup_retains_flat_downloads(tmp_path: Path):
@@ -372,3 +427,322 @@ async def test_original_download_failure_keeps_w500(
     assert score.image_path.read_bytes() == b"w500"
     assert score.original_download is False
     assert result.original_download_status == {"source.jpg": False}
+
+
+# ---------------------------------------------------------------------------
+# Taste scoring: weighted k-NN and negative exemplars
+# ---------------------------------------------------------------------------
+
+
+def test_weighted_topk_mean_softmax_favors_nearest():
+    from marquee.ml.taste_store import weighted_topk_mean
+
+    sims = np.asarray([0.9, 0.5, 0.5, 0.5], dtype=np.float32)
+    plain = weighted_topk_mean(sims, k=4, weighting="mean")
+    weighted = weighted_topk_mean(sims, k=4, weighting="softmax", temperature=0.1)
+    assert plain == pytest.approx(0.6)
+    assert weighted > plain  # the close neighbour dominates
+    assert weighted < 0.9  # but it is not a hard max
+
+
+def _write_profile(
+    path: Path,
+    embeddings: np.ndarray,
+    *,
+    neg_embeddings: np.ndarray | None = None,
+) -> None:
+    centroid = embeddings.mean(axis=0)
+    centroid /= np.linalg.norm(centroid)
+    payload = {
+        "embeddings": embeddings,
+        "poster_names": np.asarray(
+            [f"{i}.jpg" for i in range(len(embeddings))], dtype=object
+        ),
+        "centroid_emb": centroid,
+        "model_name": np.asarray("clip-vit-b-32"),
+    }
+    if neg_embeddings is not None:
+        payload["neg_embeddings"] = neg_embeddings
+        payload["neg_poster_names"] = np.asarray(
+            [f"neg{i}.jpg" for i in range(len(neg_embeddings))], dtype=object
+        )
+    np.savez(path, **payload)
+
+
+def test_style_score_without_negatives_matches_positive_knn(tmp_path: Path):
+    profile = tmp_path / "taste_profile.clip-vit-b-32.npz"
+    embeddings = np.eye(3, 512, dtype=np.float32)
+    _write_profile(profile, embeddings)
+
+    store = NumpyTasteStore(profile)
+    query = embeddings[0]
+    assert store.negative_size == 0
+    assert store.style_score(query, k=1) == pytest.approx(1.0)
+
+
+def test_style_score_penalizes_junk_lookalikes(tmp_path: Path):
+    profile = tmp_path / "taste_profile.clip-vit-b-32.npz"
+    positives = np.eye(2, 512, dtype=np.float32)
+    # One negative exemplar along a third axis: a query matching it exactly
+    # is closer to the disliked set than the liked set.
+    negative = np.zeros((1, 512), dtype=np.float32)
+    negative[0, 2] = 1.0
+    _write_profile(profile, positives, neg_embeddings=negative)
+
+    store = NumpyTasteStore(profile)
+    junk_query = negative[0]
+    liked_query = positives[0]
+
+    assert store.negative_size == 1
+    # Liked query: closer to positives, no penalty applies.
+    assert store.style_score(liked_query, k=1) == pytest.approx(1.0)
+    # Junk query: pos knn = 0, neg knn = 1 -> penalized below the raw pos score.
+    assert store.style_score(junk_query, k=1) < 0.0
+
+
+# ---------------------------------------------------------------------------
+# OCR text-heavy gate thresholds
+# ---------------------------------------------------------------------------
+
+
+def _fake_ocr_with_boxes(boxes: list[tuple[str, float, list[list[float]]]]):
+    class FakeOCR:
+        def predict(self, _image):
+            return [
+                {
+                    "rec_texts": [text for text, _, _ in boxes],
+                    "rec_scores": [score for _, score, _ in boxes],
+                    "rec_polys": [np.asarray(poly, dtype=np.float32) for _, _, poly in boxes],
+                }
+            ]
+
+    return FakeOCR()
+
+
+def _poly(x: float, y: float, w: float, h: float) -> list[list[float]]:
+    return [[x, y], [x + w, y], [x + w, y + h], [x, y + h]]
+
+
+def _run_ocr_with_boxes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    boxes: list[tuple[str, float, list[list[float]]]],
+):
+    image_path = tmp_path / "poster.jpg"
+    Image.new("RGB", (500, 750), color="navy").save(image_path)
+    monkeypatch.setattr(ocr_filter, "_worker_ocr", _fake_ocr_with_boxes(boxes))
+    monkeypatch.setattr(ocr_filter, "_worker_title_tokens", {"inception"})
+    monkeypatch.setattr(ocr_filter, "_worker_director_tokens", set())
+    monkeypatch.setattr(ocr_filter.pipeline_settings, "OCR_DETAIL_PASSES", False)
+    monkeypatch.setattr(ocr_filter.pipeline_settings, "OCR_ENHANCE_RETRY", False)
+    return ocr_filter._process_image(str(image_path))
+
+
+def test_ocr_default_is_strict_title_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Project target: ONLY the movie title as text. One tagline box gates."""
+    result = _run_ocr_with_boxes(
+        tmp_path,
+        monkeypatch,
+        [
+            ("INCEPTION", 0.95, _poly(100, 600, 300, 50)),
+            ("your mind is the scene of the crime", 0.9, _poly(100, 100, 250, 20)),
+        ],
+    )
+    assert not result.accepted
+    assert result.reason == "text_heavy"
+    assert result.title_bbox is not None
+
+
+def test_ocr_title_only_poster_passes_strict_gate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    result = _run_ocr_with_boxes(
+        tmp_path,
+        monkeypatch,
+        [("INCEPTION", 0.95, _poly(100, 600, 300, 50))],
+    )
+    assert result.accepted
+    assert result.title_bbox is not None
+    assert not result.residual_boxes
+
+
+def test_ocr_residual_threshold_knob_tolerates_taglines(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Raising OCR_MAX_RESIDUAL_BOXES demotes a tagline to a rank penalty."""
+    monkeypatch.setattr(ocr_filter.pipeline_settings, "OCR_MAX_RESIDUAL_BOXES", 2)
+    result = _run_ocr_with_boxes(
+        tmp_path,
+        monkeypatch,
+        [
+            ("INCEPTION", 0.95, _poly(100, 600, 300, 50)),
+            ("your mind is the scene of the crime", 0.9, _poly(100, 100, 250, 20)),
+        ],
+    )
+    assert result.accepted
+    assert len(result.residual_boxes) == 1
+
+
+def test_ocr_many_residual_boxes_still_gate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    boxes = [("INCEPTION", 0.95, _poly(100, 600, 300, 50))]
+    boxes += [
+        (f"completely unrelated promotional words {i}", 0.9, _poly(50, 50 + i * 60, 300, 25))
+        for i in range(4)
+    ]
+    result = _run_ocr_with_boxes(tmp_path, monkeypatch, boxes)
+    assert not result.accepted
+    assert result.reason == "text_heavy"
+
+
+def test_ocr_large_residual_area_gates(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A single huge text block (credits wall) exceeds the area threshold."""
+    result = _run_ocr_with_boxes(
+        tmp_path,
+        monkeypatch,
+        [
+            ("INCEPTION", 0.95, _poly(100, 600, 300, 50)),
+            # 400x100 = 40,000 px on a 500x750 image -> ~10.7% > 4% default
+            ("warner bros pictures presents legendary pictures", 0.9, _poly(50, 100, 400, 100)),
+        ],
+    )
+    assert not result.accepted
+    assert result.reason == "text_heavy"
+
+
+# ---------------------------------------------------------------------------
+# Normalization: neutral title colorfulness when no title box was found
+# ---------------------------------------------------------------------------
+
+
+def test_no_title_box_normalizes_to_neutral_colorfulness():
+    found = _features(title_colorfulness=0.0)
+    missing = _features(title_colorfulness=0.0)
+    missing.title_found = False
+
+    normalize_features(found)
+    normalize_features(missing)
+
+    assert found.normalized["title_colorfulness"] == 0.0
+    assert missing.normalized["title_colorfulness"] == pytest.approx(0.5)
+
+
+def test_title_found_is_not_a_scorer_feature():
+    features = _features()
+    assert "title_found" not in features.raw_values()
+
+
+# ---------------------------------------------------------------------------
+# Aesthetic head: numpy sidecar (no torch at runtime)
+# ---------------------------------------------------------------------------
+
+
+def test_aesthetic_head_loads_npz_without_torch(tmp_path: Path):
+    from marquee.ml.aesthetic import AestheticPredictor
+
+    weight = np.zeros(512, dtype=np.float32)
+    weight[0] = 5.0
+    np.savez(tmp_path / "head.npz", weight=weight, bias=np.float32(2.0))
+
+    predictor = AestheticPredictor(tmp_path / "head.npz")
+    embedding = np.zeros(512, dtype=np.float32)
+    embedding[0] = 1.0
+    assert predictor.score(embedding) == pytest.approx(7.0)
+    batch = predictor.score_batch(np.stack([embedding, -embedding]))
+    assert batch == pytest.approx([7.0, -3.0])
+
+
+# ---------------------------------------------------------------------------
+# CLIP encoder: batching with fixed-batch fallback
+# ---------------------------------------------------------------------------
+
+
+class _FakeOnnxSession:
+    def __init__(self, batch_dim: object):
+        self._batch_dim = batch_dim
+        self.run_calls: list[int] = []
+
+    def get_inputs(self):
+        class _Input:
+            name = "pixel_values"
+            shape = [self._batch_dim, 3, 224, 224]
+
+        _Input.shape = [self._batch_dim, 3, 224, 224]
+        return [_Input()]
+
+    def run(self, _outputs, feed):
+        batch = feed["pixel_values"].shape[0]
+        if isinstance(self._batch_dim, int):
+            assert batch <= self._batch_dim
+        self.run_calls.append(batch)
+        vectors = np.tile(
+            np.arange(1, 513, dtype=np.float32), (batch, 1)
+        )
+        return [vectors]
+
+
+def test_encode_batch_falls_back_to_loop_on_fixed_batch_model():
+    from marquee.ml.embedding import CLIPImageEncoder
+
+    session = _FakeOnnxSession(batch_dim=1)
+    encoder = CLIPImageEncoder(session=session)
+    pixels = [np.zeros((1, 3, 224, 224), dtype=np.float32) for _ in range(3)]
+
+    result = encoder.encode_batch(pixels)
+
+    assert result.shape == (3, 512)
+    assert session.run_calls == [1, 1, 1]
+    assert np.linalg.norm(result, axis=1) == pytest.approx([1.0, 1.0, 1.0])
+
+
+def test_encode_batch_uses_dynamic_batching(monkeypatch: pytest.MonkeyPatch):
+    from marquee.ml.embedding import CLIPImageEncoder
+
+    monkeypatch.setattr(
+        "marquee.ml.embedding.effective_clip_batch_size", lambda: 2
+    )
+    session = _FakeOnnxSession(batch_dim="batch")
+    encoder = CLIPImageEncoder(session=session)
+    pixels = [np.zeros((1, 3, 224, 224), dtype=np.float32) for _ in range(5)]
+
+    result = encoder.encode_batch(pixels)
+
+    assert result.shape == (5, 512)
+    assert session.run_calls == [2, 2, 1]
+
+
+# ---------------------------------------------------------------------------
+# Gate split: stage-appropriate evaluation
+# ---------------------------------------------------------------------------
+
+
+def test_gate_metadata_only_needs_width():
+    gate = PosterGate()
+    assert not gate.evaluate_metadata(original_width=499).passed
+    assert gate.evaluate_metadata(original_width=500).passed
+
+
+def test_gate_style_does_not_consider_resolution():
+    """Style gating runs before detail features; width is gated separately."""
+    result = PosterGate().evaluate_style(_features(aesthetic=6.0, knn_sim=0.65))
+    assert result.passed
+
+
+def test_gate_detail_fan_junk_combo():
+    config = PipelineSettings(GATE_FAN_JUNK_ENABLED=True)
+    gate = PosterGate(config)
+    junk = _features(aesthetic=4.6, provenance=0.3, resolution=0.5)
+    good = _features(aesthetic=6.5, provenance=0.3, resolution=0.5)
+    assert not gate.evaluate_detail(junk).passed
+    assert gate.evaluate_detail(junk).reason == "fan_junk_combo"
+    assert gate.evaluate_detail(good).passed

@@ -14,7 +14,6 @@ import logging
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -183,6 +182,16 @@ class SyncService:
         for data in raw_series:
             sonarr_id = data["id"]
             try:
+                # Guard before creating the row: a half-initialized Series
+                # with a NULL title would fail the NOT NULL constraint at
+                # commit time and abort the whole sync, not just this entry.
+                if not data.get("title"):
+                    logger.warning(
+                        "Skipping series sonarr_id=%s — missing title", sonarr_id
+                    )
+                    result.series.errors += 1
+                    continue
+
                 series = existing.get(sonarr_id)
                 if series is None:
                     series = Series(sonarr_id=sonarr_id)
@@ -329,6 +338,10 @@ class SyncService:
         """Check if a poster already exists on disk for *entity*.
 
         If found, sets ``poster_path`` to the validated absolute path.
+        If a previously recorded poster file no longer exists (e.g. Radarr
+        deleted the folder during an upgrade), ``poster_path`` is cleared so
+        the NULL-means-needs-poster invariant holds and the item is queued
+        for re-selection instead of silently staying "complete".
         Does NOT set ``poster_ai_selected`` (the pipeline didn't pick it).
         """
         try:
@@ -336,11 +349,16 @@ class SyncService:
         except ValueError:
             return  # path validation failed — skip
 
-        if expected is None:
+        if expected is not None and expected.exists():
+            entity.poster_path = str(expected)
             return
 
-        if expected.exists():
-            entity.poster_path = str(expected)
+        if entity.poster_path and not Path(entity.poster_path).exists():
+            logger.info(
+                "Poster file missing on disk — clearing stale poster_path: %s",
+                entity.poster_path,
+            )
+            entity.poster_path = None
 
 
 # ---------------------------------------------------------------------------

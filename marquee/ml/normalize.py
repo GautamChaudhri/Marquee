@@ -25,8 +25,10 @@ def normalize_features(
             else 0.0
         ),
         "aesthetic": _clip(features.aesthetic / config.NORM_AESTHETIC_MAX),
-        "title_colorfulness": _clip(
-            features.title_colorfulness / config.NORM_TITLE_COLORFULNESS_MAX
+        "title_colorfulness": (
+            _clip(features.title_colorfulness / config.NORM_TITLE_COLORFULNESS_MAX)
+            if features.title_found
+            else _clip(config.NORM_TITLE_COLORFULNESS_NEUTRAL)
         ),
         "text_residual": _clip(1.0 - features.text_residual),
         "resolution": _clip(features.resolution / config.NORM_RESOLUTION_MAX_MP),

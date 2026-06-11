@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -29,11 +30,11 @@ def _get_rate_limiter(request: Request) -> RateLimiter:
 @router.post("/all")
 async def sync_all(
     request: Request,
-    db: AsyncSession = Depends(get_db),
-    radarr: RadarrClient = Depends(get_radarr),
-    sonarr: SonarrClient = Depends(get_sonarr),
-    tmdb: TMDBClient = Depends(get_tmdb),
-    rate_limiter: RateLimiter = Depends(_get_rate_limiter),
+    db: Annotated[AsyncSession, Depends(get_db)],
+    radarr: Annotated[RadarrClient, Depends(get_radarr)],
+    sonarr: Annotated[SonarrClient, Depends(get_sonarr)],
+    tmdb: Annotated[TMDBClient, Depends(get_tmdb)],
+    rate_limiter: Annotated[RateLimiter, Depends(_get_rate_limiter)],
 ):
     """Sync all movies and TV shows from Radarr/Sonarr into the database.
 

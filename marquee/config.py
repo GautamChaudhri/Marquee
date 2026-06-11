@@ -6,8 +6,8 @@ Pydantic-settings handles type coercion, validation, and defaults.
 
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
-from typing import Optional
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -83,7 +83,7 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------
     # TMDB
     # ------------------------------------------------------------------
-    TMDB_READ_ACCESS_TOKEN: Optional[str] = Field(
+    TMDB_READ_ACCESS_TOKEN: str | None = Field(
         default=None,
         description="TMDB API v3 Read Access Token (Bearer token)",
     )
@@ -95,7 +95,7 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------
     # Fanart.tv
     # ------------------------------------------------------------------
-    FANART_API_KEY: Optional[str] = Field(
+    FANART_API_KEY: str | None = Field(
         default=None,
         description="Fanart.tv personal API key",
     )
@@ -107,7 +107,7 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------
     # TheTVDB
     # ------------------------------------------------------------------
-    TVDB_API_KEY: Optional[str] = Field(
+    TVDB_API_KEY: str | None = Field(
         default=None,
         description="TheTVDB API key (v4)",
     )
@@ -119,11 +119,11 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------
     # Radarr
     # ------------------------------------------------------------------
-    RADARR_URL: Optional[str] = Field(
+    RADARR_URL: str | None = Field(
         default=None,
         description="Radarr base URL (e.g. http://localhost:7878)",
     )
-    RADARR_API_KEY: Optional[str] = Field(
+    RADARR_API_KEY: str | None = Field(
         default=None,
         description="Radarr API key",
     )
@@ -135,11 +135,11 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------
     # Sonarr
     # ------------------------------------------------------------------
-    SONARR_URL: Optional[str] = Field(
+    SONARR_URL: str | None = Field(
         default=None,
         description="Sonarr base URL (e.g. http://localhost:8989)",
     )
-    SONARR_API_KEY: Optional[str] = Field(
+    SONARR_API_KEY: str | None = Field(
         default=None,
         description="Sonarr API key",
     )
@@ -161,11 +161,11 @@ class Settings(BaseSettings):
     #   → RADARR_PATH_PREFIX=/plunder/movies
     #     RADARR_MEDIA_PATH=/Volumes/PLUNDER/Media/Movies
     # ------------------------------------------------------------------
-    RADARR_PATH_PREFIX: Optional[str] = Field(
+    RADARR_PATH_PREFIX: str | None = Field(
         default=None,
         description="Path prefix used by Radarr (e.g. /plunder/movies)",
     )
-    RADARR_MEDIA_PATH: Optional[str] = Field(
+    RADARR_MEDIA_PATH: str | None = Field(
         default=None,
         description="Corresponding path prefix as mounted in Marquee "
         "(e.g. /Volumes/PLUNDER/Media/Movies)",
@@ -201,11 +201,11 @@ class Settings(BaseSettings):
     #   → SONARR_PATH_PREFIX=/plunder/tv
     #     SONARR_MEDIA_PATH=/Volumes/PLUNDER/Media/TV
     # ------------------------------------------------------------------
-    SONARR_PATH_PREFIX: Optional[str] = Field(
+    SONARR_PATH_PREFIX: str | None = Field(
         default=None,
         description="Path prefix used by Sonarr (e.g. /plunder/tv)",
     )
-    SONARR_MEDIA_PATH: Optional[str] = Field(
+    SONARR_MEDIA_PATH: str | None = Field(
         default=None,
         description="Corresponding path prefix as mounted in Marquee "
         "(e.g. /Volumes/PLUNDER/Media/TV)",
@@ -256,23 +256,12 @@ class Settings(BaseSettings):
         its real path so symlinks don't break the ``startswith`` check.
         """
         roots: set[Path] = set()
-        for raw in self.MEDIA_ROOTS:
-            try:
+        candidates = [*self.MEDIA_ROOTS, self.RADARR_MEDIA_PATH, self.SONARR_MEDIA_PATH]
+        for raw in candidates:
+            if not raw:
+                continue
+            with contextlib.suppress(OSError, RuntimeError):  # unresolvable → skip
                 roots.add(Path(raw).resolve())
-            except (OSError, RuntimeError):
-                pass  # unresolvable → skip
-
-        if self.RADARR_MEDIA_PATH:
-            try:
-                roots.add(Path(self.RADARR_MEDIA_PATH).resolve())
-            except (OSError, RuntimeError):
-                pass
-
-        if self.SONARR_MEDIA_PATH:
-            try:
-                roots.add(Path(self.SONARR_MEDIA_PATH).resolve())
-            except (OSError, RuntimeError):
-                pass
 
         return sorted(roots)
 

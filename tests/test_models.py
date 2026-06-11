@@ -1,12 +1,12 @@
 """Tests for the ORM models: Movie, Series, Season, Episode."""
 
 import pytest
-from sqlalchemy import inspect, select, text
+from sqlalchemy import inspect, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from marquee.database import Base, _get_engine
+from marquee.database import _get_engine
 from marquee.models import Episode, Movie, Season, Series
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -161,7 +161,7 @@ async def test_season_unique_constraint(db: AsyncSession):
     s2 = Season(series_id=series.id, season_number=1)
     db.add_all([s1, s2])
 
-    with pytest.raises(Exception):  # IntegrityError
+    with pytest.raises(IntegrityError):
         await db.flush()
 
 
@@ -175,7 +175,7 @@ async def test_season_fk_enforced(db: AsyncSession):
     """Season with invalid series_id should fail."""
     season = Season(series_id=99999, season_number=1)
     db.add(season)
-    with pytest.raises(Exception):
+    with pytest.raises(IntegrityError):
         await db.flush()
 
 
@@ -184,7 +184,7 @@ async def test_episode_fk_enforced(db: AsyncSession):
     """Episode with invalid series_id should fail."""
     episode = Episode(series_id=99999, season_number=1, episode_number=1)
     db.add(episode)
-    with pytest.raises(Exception):
+    with pytest.raises(IntegrityError):
         await db.flush()
 
 

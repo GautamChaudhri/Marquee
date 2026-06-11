@@ -16,11 +16,27 @@ class PipelineSettings(BaseSettings):
     """All tunable knobs for the GATE-then-RANK poster pipeline."""
 
     AI_MODEL: str = "clip-vit-b-32"
-    # "auto" selects the best provider for the current host.
+    # "auto" selects the best provider for the current host.  Friendly aliases
+    # are accepted: cuda/nvidia, openvino/intel, openvino-cpu, coreml/apple,
+    # cpu, tensorrt — as well as raw ONNX Runtime provider names.
     EXECUTION_PROVIDER: str = "auto"
+    # CLIP images per ONNX run. 0 = auto by hardware tier (GPU 32, CPU 8).
+    # Only takes effect with a dynamic-batch export; fixed-batch models loop.
+    CLIP_BATCH_SIZE: int = 0
     # Lower is more permissive/multimodal/noisier; higher is smoother and
     # more conservative, with centroid-like blur returning at large values.
     K_NEIGHBORS: int = 10
+    # How the k nearest exemplar similarities are combined into knn_sim:
+    # "mean" = plain average; "softmax" = similarity-weighted average, which
+    # favours the closest exemplars and sharpens multimodal taste clusters.
+    KNN_WEIGHTING: str = "softmax"
+    # Softmax temperature for KNN_WEIGHTING="softmax". Smaller = the nearest
+    # exemplar dominates; larger = approaches the plain mean.
+    KNN_SOFTMAX_TEMP: float = 0.1
+    # Penalty multiplier when a candidate is closer to the negative (disliked)
+    # exemplars than the positive ones: knn_sim -= w * max(0, neg - pos).
+    # Only active when the taste profile contains negative exemplars.
+    TASTE_NEG_WEIGHT: float = 1.0
     PREFERRED_LANG: str = "en"
 
     CLIP_MODEL_PATH: Path = _MODELS_DIR / "clip-vit-b-32.onnx"
@@ -34,6 +50,10 @@ class PipelineSettings(BaseSettings):
     NORM_KNN_MAX: float = 0.9
     NORM_AESTHETIC_MAX: float = 10.0
     NORM_TITLE_COLORFULNESS_MAX: float = 60.0
+    # Normalized title_colorfulness when OCR found no title box at all
+    # (stylized/unreadable typography). Neutral instead of 0 so posters whose
+    # title the OCR cannot read are not punished as if they had a white title.
+    NORM_TITLE_COLORFULNESS_NEUTRAL: float = 0.5
     NORM_RESOLUTION_MAX_MP: float = 6.0
     NORM_SHARPNESS_MAX: float = 2000.0
 
@@ -72,7 +92,20 @@ class PipelineSettings(BaseSettings):
     DEDUP_PHASH_THRESHOLD: int = 6
     DEDUP_MIN_POSTER_WIDTH: int = 500
 
-    OCR_WORKERS: int = 5
+    # 0 = auto-size from the hardware profile (cpu_count based, capped).
+    OCR_WORKERS: int = 0
+    # Run the extra top-strip and 2x-upscaled bottom-strip OCR passes.
+    # Disable on very weak CPUs (e.g. Intel N150) to cut OCR time ~60% at the
+    # cost of occasionally missing faint credit-block text.
+    OCR_DETAIL_PASSES: bool = True
+    # Text-heavy gate thresholds. A poster is rejected when it has MORE
+    # significant residual boxes than OCR_MAX_RESIDUAL_BOXES OR their total
+    # area exceeds OCR_MAX_RESIDUAL_AREA_FRACTION of the image.
+    # Default 0 = STRICT title-only: any significant non-title text rejects
+    # the poster (the current project target). Raise to 1-2 later to tolerate
+    # taglines as a text_residual rank penalty instead of a rejection.
+    OCR_MAX_RESIDUAL_BOXES: int = 0
+    OCR_MAX_RESIDUAL_AREA_FRACTION: float = 0.04
     OCR_CONFIDENCE_THRESHOLD: float = 0.75
     OCR_STRIP_CONFIDENCE_THRESHOLD: float = 0.65
     OCR_BOTTOM_CONFIDENCE_THRESHOLD: float = 0.50
@@ -104,6 +137,13 @@ class PipelineSettings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_pipeline_settings(self) -> PipelineSettings:
+        # Keep model-specific artifacts in sync with AI_MODEL unless the user
+        # pinned an explicit path (e.g. AI_MODEL=clip-vit-b-32-int8 picks up
+        # clip-vit-b-32-int8.onnx and taste_profile.clip-vit-b-32-int8.npz).
+        if self.CLIP_MODEL_PATH == _MODELS_DIR / "clip-vit-b-32.onnx":
+            self.CLIP_MODEL_PATH = _MODELS_DIR / f"{self.AI_MODEL}.onnx"
+        if self.TASTE_PROFILE_PATH == _ML_DIR / "taste_profile.clip-vit-b-32.npz":
+            self.TASTE_PROFILE_PATH = _ML_DIR / f"taste_profile.{self.AI_MODEL}.npz"
         for field_name in (
             "CLIP_MODEL_PATH",
             "AESTHETIC_MODEL_PATH",
@@ -116,6 +156,16 @@ class PipelineSettings(BaseSettings):
                 setattr(self, field_name, (_PROJECT_ROOT / path).resolve())
         if self.K_NEIGHBORS < 1:
             raise ValueError("K_NEIGHBORS must be at least 1")
+        if self.KNN_WEIGHTING not in ("mean", "softmax"):
+            raise ValueError("KNN_WEIGHTING must be 'mean' or 'softmax'")
+        if self.KNN_SOFTMAX_TEMP <= 0:
+            raise ValueError("KNN_SOFTMAX_TEMP must be positive")
+        if self.TASTE_NEG_WEIGHT < 0:
+            raise ValueError("TASTE_NEG_WEIGHT cannot be negative")
+        if self.OCR_MAX_RESIDUAL_BOXES < 0:
+            raise ValueError("OCR_MAX_RESIDUAL_BOXES cannot be negative")
+        if not 0 <= self.OCR_MAX_RESIDUAL_AREA_FRACTION <= 1:
+            raise ValueError("OCR_MAX_RESIDUAL_AREA_FRACTION must be in [0, 1]")
         if self.RESIDUAL_COUNT_SAT < 1:
             raise ValueError("RESIDUAL_COUNT_SAT must be at least 1")
         if self.RESIDUAL_WEIGHT_COUNT < 0 or self.RESIDUAL_WEIGHT_AREA < 0:
@@ -156,7 +206,11 @@ class PipelineSettings(BaseSettings):
         return {
             "ai_model": self.AI_MODEL,
             "execution_provider": self.EXECUTION_PROVIDER,
+            "clip_batch_size": self.CLIP_BATCH_SIZE,
             "k_neighbors": self.K_NEIGHBORS,
+            "knn_weighting": self.KNN_WEIGHTING,
+            "knn_softmax_temp": self.KNN_SOFTMAX_TEMP,
+            "taste_neg_weight": self.TASTE_NEG_WEIGHT,
             "preferred_lang": self.PREFERRED_LANG,
             "weights": self.scorer_weights,
             "gates": {
@@ -167,6 +221,12 @@ class PipelineSettings(BaseSettings):
                 "fan_junk_max_aesthetic": self.GATE_FAN_JUNK_MAX_AESTHETIC,
                 "fan_junk_max_provenance": self.GATE_FAN_JUNK_MAX_PROVENANCE,
                 "fan_junk_max_resolution_mp": self.GATE_FAN_JUNK_MAX_RESOLUTION_MP,
+            },
+            "ocr": {
+                "workers": self.OCR_WORKERS,
+                "detail_passes": self.OCR_DETAIL_PASSES,
+                "max_residual_boxes": self.OCR_MAX_RESIDUAL_BOXES,
+                "max_residual_area_fraction": self.OCR_MAX_RESIDUAL_AREA_FRACTION,
             },
             "dedup_phash_threshold": self.DEDUP_PHASH_THRESHOLD,
             "dedup_min_poster_width": self.DEDUP_MIN_POSTER_WIDTH,

@@ -129,7 +129,7 @@ async def lifespan(app: FastAPI):
         await asyncio.wait_for(
             _cleanup(), timeout=settings.SHUTDOWN_TIMEOUT_SECONDS
         )
-    except asyncio.TimeoutError:
+    except TimeoutError:
         logger.error(
             "Shutdown timed out after %ss — forcing exit.",
             settings.SHUTDOWN_TIMEOUT_SECONDS,
@@ -180,11 +180,11 @@ async def log_requests(request: Request, call_next):
 # Routers
 # ---------------------------------------------------------------------------
 
-from marquee.api.routes.library import router as library_router      # noqa: E402
-from marquee.api.routes.pipeline import router as pipeline_router    # noqa: E402
-from marquee.api.routes.sync import router as sync_router            # noqa: E402
+from marquee.api.routes.library import router as library_router  # noqa: E402
+from marquee.api.routes.pipeline import router as pipeline_router  # noqa: E402
+from marquee.api.routes.sync import router as sync_router  # noqa: E402
 from marquee.api.routes.test_pipeline import router as test_pipeline_router  # noqa: E402
-from marquee.api.routes.webhooks import router as webhooks_router    # noqa: E402
+from marquee.api.routes.webhooks import router as webhooks_router  # noqa: E402
 
 app.include_router(sync_router)
 app.include_router(library_router)

@@ -11,13 +11,13 @@ Tests cover:
 
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
 from marquee.core.path_utils import PathValidationError, safe_translate_and_validate
-
 
 # ---------------------------------------------------------------------------
 # Layer 1 — Null byte rejection
@@ -141,12 +141,14 @@ def test_no_warning_when_not_configured(caplog):
 def test_collapses_dot_dot():
     """../../etc/passwd should resolve outside media — caught by Layer 4."""
     settings = _mock_settings(media_roots=["/Volumes/PLUNDER/Media/Movies"])
-    with patch("marquee.core.path_utils.settings", settings):
-        with pytest.raises(PathValidationError, match="not within any allowed"):
-            safe_translate_and_validate(
-                "/Volumes/PLUNDER/Media/Movies/../../etc/passwd",
-                source="radarr",
-            )
+    with (
+        patch("marquee.core.path_utils.settings", settings),
+        pytest.raises(PathValidationError, match="not within any allowed"),
+    ):
+        safe_translate_and_validate(
+            "/Volumes/PLUNDER/Media/Movies/../../etc/passwd",
+            source="radarr",
+        )
 
 
 def test_resolves_symlinks():
@@ -177,9 +179,11 @@ def test_resolves_symlinks():
 
 def test_rejects_path_outside_media_roots():
     settings = _mock_settings(media_roots=["/Volumes/PLUNDER/Media/Movies"])
-    with patch("marquee.core.path_utils.settings", settings):
-        with pytest.raises(PathValidationError, match="not within any allowed"):
-            safe_translate_and_validate("/etc/hosts", source="radarr")
+    with (
+        patch("marquee.core.path_utils.settings", settings),
+        pytest.raises(PathValidationError, match="not within any allowed"),
+    ):
+        safe_translate_and_validate("/etc/hosts", source="radarr")
 
 
 def test_accepts_path_within_media_roots():
@@ -250,11 +254,13 @@ def test_auto_derived_roots_reject_wrong_path():
         radarr_media_path="/Volumes/PLUNDER/Media/Movies",
         media_roots=[],
     )
-    with patch("marquee.core.path_utils.settings", settings):
-        with pytest.raises(PathValidationError):
-            safe_translate_and_validate(
-                "/Volumes/PLUNDER/Media/TV/Breaking Bad", source="sonarr"
-            )
+    with (
+        patch("marquee.core.path_utils.settings", settings),
+        pytest.raises(PathValidationError),
+    ):
+        safe_translate_and_validate(
+            "/Volumes/PLUNDER/Media/TV/Breaking Bad", source="sonarr"
+        )
 
 
 def test_manual_and_auto_roots_combined():
@@ -308,10 +314,12 @@ def test_full_flow_sonarr_happy_path():
 def test_full_flow_unresolvable_path():
     """Unresolvable paths should raise."""
     settings = _mock_settings()
-    with patch("marquee.core.path_utils.settings", settings):
-        with patch("pathlib.Path.resolve", side_effect=OSError("disk missing")):
-            with pytest.raises(PathValidationError, match=r"Could not resolve"):
-                safe_translate_and_validate("/some/path", source="radarr")
+    with (
+        patch("marquee.core.path_utils.settings", settings),
+        patch("pathlib.Path.resolve", side_effect=OSError("disk missing")),
+        pytest.raises(PathValidationError, match=r"Could not resolve"),
+    ):
+        safe_translate_and_validate("/some/path", source="radarr")
 
 
 # ---------------------------------------------------------------------------
@@ -361,21 +369,16 @@ def _mock_settings(
         @property
         def effective_media_roots(self) -> list[Path]:
             roots: set[Path] = set()
-            for raw in self.MEDIA_ROOTS:
-                try:
+            candidates = [
+                *self.MEDIA_ROOTS,
+                self.RADARR_MEDIA_PATH,
+                self.SONARR_MEDIA_PATH,
+            ]
+            for raw in candidates:
+                if not raw:
+                    continue
+                with contextlib.suppress(OSError, RuntimeError):
                     roots.add(Path(raw).resolve())
-                except (OSError, RuntimeError):
-                    pass
-            if self.RADARR_MEDIA_PATH:
-                try:
-                    roots.add(Path(self.RADARR_MEDIA_PATH).resolve())
-                except (OSError, RuntimeError):
-                    pass
-            if self.SONARR_MEDIA_PATH:
-                try:
-                    roots.add(Path(self.SONARR_MEDIA_PATH).resolve())
-                except (OSError, RuntimeError):
-                    pass
             return sorted(roots)
 
     return MockSettings()

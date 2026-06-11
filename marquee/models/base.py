@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Index, Integer, LargeBinary, String, Text, func, text
+from sqlalchemy import Boolean, DateTime, LargeBinary, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 

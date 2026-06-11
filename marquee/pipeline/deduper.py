@@ -175,13 +175,19 @@ class PosterDeduper:
 
         kept: list[Path] = []
         for p in paths:
-            try:
-                with Image.open(p) as img:
-                    w = img.width
-            except Exception:
-                logger.warning("Could not read dimensions for %s — keeping", p.name)
-                kept.append(p)
-                continue
+            original = self._resolution_by_name.get(p.name)
+            if original is not None:
+                # TMDB metadata carries the original dimensions — no need to
+                # decode the file just to read its width.
+                w = original[0]
+            else:
+                try:
+                    with Image.open(p) as img:
+                        w = img.width
+                except Exception:
+                    logger.warning("Could not read dimensions for %s — keeping", p.name)
+                    kept.append(p)
+                    continue
 
             if w >= self._min_width:
                 kept.append(p)
@@ -264,11 +270,13 @@ class PosterDeduper:
         self, paths: list[Path], result: DedupResult
     ) -> list[Path]:
         """Compute pHash for each survivor. Group near-duplicates. Keep best res."""
-        # Compute hashes upfront
-        scored: list[tuple[str, Path]] = []
+        # Compute hash objects once upfront (parsing them per-comparison was
+        # the old O(n^2) hot spot).
+        scored: list[tuple[imagehash.ImageHash | None, Path]] = []
         for p in paths:
             try:
-                ph = str(imagehash.phash(Image.open(p)))
+                with Image.open(p) as img:
+                    ph = imagehash.phash(img)
             except Exception as exc:
                 logger.warning("pHash failed for %s: %s — keeping", p.name, exc)
                 ph = None
@@ -277,7 +285,7 @@ class PosterDeduper:
         # Greedy clustering: for each image, find all near-duplicates
         # not already assigned to a group
         assigned: set[int] = set()
-        groups: list[list[tuple[str, Path, int]]] = []
+        groups: list[list[tuple[imagehash.ImageHash, Path, int]]] = []
 
         for i, (ph_i, path_i) in enumerate(scored):
             if i in assigned or ph_i is None:
@@ -289,7 +297,7 @@ class PosterDeduper:
             for j, (ph_j, path_j) in enumerate(scored):
                 if j in assigned or ph_j is None:
                     continue
-                dist = imagehash.hex_to_hash(ph_i) - imagehash.hex_to_hash(ph_j)
+                dist = ph_i - ph_j
                 if dist <= self._phash_threshold:
                     group.append((ph_j, path_j, dist))
                     assigned.add(j)
@@ -317,10 +325,13 @@ class PosterDeduper:
                                 removed=path,
                                 kept=kept,
                                 reason="phash",
-                                removed_hash=phash,
-                                kept_hash=kept_hash,
-                                distance=imagehash.hex_to_hash(phash)
-                                - imagehash.hex_to_hash(kept_hash),
+                                removed_hash=str(phash) if phash is not None else None,
+                                kept_hash=str(kept_hash) if kept_hash is not None else None,
+                                distance=(
+                                    phash - kept_hash
+                                    if phash is not None and kept_hash is not None
+                                    else None
+                                ),
                             )
                         )
                 logger.debug(

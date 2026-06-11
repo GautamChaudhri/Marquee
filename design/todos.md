@@ -52,6 +52,15 @@ Organized by the phase when attention is needed. Reference `design/03-migration-
 - [x] ~~Text-free posters: handled by OCR_ACCEPT_NO_TEXT flag (default true). If OCR finds no text even after contrast retry, the poster is accepted rather than rejected — lands at end of ranking as a fallback.~~
 - [ ] Aesthetic rescue gate: knn_sim threshold relaxes aesthetic floor for stylized posters. Needs tuning (currently knn≥0.55, aesthetic≥2.0).
 - [x] ~~NVIDIA GPU support: CUDAExecutionProvider added to provider chain. PaddleOCR auto-detects CUDA via paddle_dynamic engine. CLIP/face ONNX models run on GPU.~~
+- [x] ~~Cheapest-signal-first reorder: resolution gate from metadata, batched CLIP + style gates BEFORE OCR. OCR only sees on-style candidates.~~
+- [x] ~~Text-heavy gate made threshold-configurable (OCR_MAX_RESIDUAL_BOXES / OCR_MAX_RESIDUAL_AREA_FRACTION). Default 0 = strict title-only text (project target). Raise to 1-2 later to tolerate taglines as a rank penalty.~~
+- [x] ~~No-title posters: title_colorfulness normalizes to neutral 0.5 when no title box found (title_found flag).~~
+- [x] ~~Taste sharpening: softmax-weighted k-NN (KNN_WEIGHTING/KNN_SOFTMAX_TEMP) + negative exemplars (negative_data/ + TASTE_NEG_WEIGHT junk-proximity penalty).~~
+- [x] ~~Multi-platform hardware module (ml/hardware.py): CUDA/OpenVINO-GPU/OpenVINO-CPU/CoreML/CPU tiers, CUDA lib preloading from pip nvidia packages, auto CLIP batch + OCR worker sizing. Docker per-tier profiles in docker/. See design/06.~~
+- [x] ~~Torch removed from runtime: aesthetic head loads from .npz sidecar; torch needed only for model export.~~
+- [ ] Validate the strict title-only OCR gate (OCR_MAX_RESIDUAL_BOXES=0) across more movies; when the target relaxes, revisit 1-2 boxes + 4% area.
+- [ ] Populate `marquee/experiments/negative_data/` with disliked posters and rebuild profile to activate the junk penalty.
+- [ ] Optional INT8 CLIP for N150-class hosts (`clip_export --quantize`, AI_MODEL=clip-vit-b-32-int8 + profile rebuild) — needs accuracy spot-check against fp32 ranking.
 
 ---
 

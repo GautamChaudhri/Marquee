@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from sqlalchemy import select
@@ -11,7 +11,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.core.sync_service import SyncService, _resolve_poster_path
 from marquee.models import Episode, Movie, Season, Series
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -139,14 +138,20 @@ async def test_sync_movies_updates_existing(db: AsyncSession):
 
 
 @pytest.mark.asyncio
-async def test_sync_movies_never_overwrites_poster(db: AsyncSession):
-    """Poster columns set by the pipeline must survive a sync."""
+async def test_sync_movies_never_overwrites_poster(db: AsyncSession, tmp_path: Path):
+    """Poster columns set by the pipeline must survive a sync.
+
+    The pipeline-deployed poster exists on disk at a path that differs from
+    the sync-derived expected location — sync must leave it alone.
+    """
+    deployed = tmp_path / "poster.jpg"
+    deployed.write_bytes(b"poster")
     movie = Movie(
         radarr_id=1,
         title="Dune",
         year=2021,
         folder_path="/movies/Dune",
-        poster_path="/movies/Dune/poster.jpg",
+        poster_path=str(deployed),
         poster_ai_selected=True,
         poster_source="tmdb",
     )
@@ -160,9 +165,61 @@ async def test_sync_movies_never_overwrites_poster(db: AsyncSession):
     await svc.sync_all()
 
     await db.refresh(movie)
-    assert movie.poster_path == "/movies/Dune/poster.jpg"
+    assert movie.poster_path == str(deployed)
     assert movie.poster_ai_selected is True
     assert movie.poster_source == "tmdb"
+
+
+@pytest.mark.asyncio
+async def test_sync_movies_clears_stale_poster_path(db: AsyncSession):
+    """A recorded poster whose file no longer exists must be NULLed.
+
+    Radarr upgrades delete and recreate the movie folder; if sync keeps the
+    stale path, the item stays "complete" forever and is never queued for
+    re-selection (NULL poster_path = needs poster).
+    """
+    movie = Movie(
+        radarr_id=1,
+        title="Dune",
+        year=2021,
+        folder_path="/movies/Dune",
+        poster_path="/movies/Dune (2021)/poster-that-was-deleted.jpg",
+        poster_ai_selected=True,
+    )
+    db.add(movie)
+    await db.flush()
+
+    radarr = AsyncMock()
+    radarr.get_movies.return_value = [_radarr_movie()]
+
+    svc = SyncService(db, radarr=radarr)
+    await svc.sync_all()
+
+    await db.refresh(movie)
+    assert movie.poster_path is None
+    assert movie.needs_poster
+
+
+@pytest.mark.asyncio
+async def test_sync_series_missing_title_does_not_poison_commit(db: AsyncSession):
+    """A title-less Sonarr entry must be skipped, not abort the whole sync."""
+    sonarr = AsyncMock()
+    sonarr.get_series.return_value = [
+        {"id": 200, "title": None, "path": "/tv/Broken"},
+        _sonarr_series(),
+    ]
+    sonarr.get_episodes.return_value = [_sonarr_episode()]
+    sonarr.get_episode_files.return_value = [_sonarr_episode_file()]
+
+    svc = SyncService(db, sonarr=sonarr)
+    report = await svc.sync_all()
+
+    assert report.series.errors == 1
+    assert report.series.created == 1  # the valid one still lands
+    series = (
+        await db.execute(select(Series).where(Series.sonarr_id == 100))
+    ).scalar_one()
+    assert series.title == "Breaking Bad"
 
 
 @pytest.mark.asyncio

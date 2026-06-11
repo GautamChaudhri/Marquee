@@ -1,0 +1,72 @@
+# Marquee — one compose file, one profile per hardware tier.
+#
+#   docker compose -f docker/docker-compose.yml --profile cpu    up -d
+#   docker compose -f docker/docker-compose.yml --profile nvidia up -d
+#   docker compose -f docker/docker-compose.yml --profile intel  up -d
+#
+# All profiles share the same .env (API keys, *arr URLs, pipeline knobs).
+# EXECUTION_PROVIDER=auto picks the right ONNX provider inside each image;
+# nothing else changes between tiers.
+
+x-marquee-common: &marquee-common
+  env_file:
+    - ../.env
+  environment:
+    - EXECUTION_PROVIDER=auto
+  volumes:
+    - ../config:/config
+    - ../marquee/ml/models:/app/marquee/ml/models:ro
+    - ../marquee/ml/taste_profile.clip-vit-b-32.npz:/app/marquee/ml/taste_profile.clip-vit-b-32.npz:ro
+    - ../data:/app/data
+    # Media libraries — adjust to your mounts:
+    # - /mnt/media/movies:/movies
+    # - /mnt/media/tv:/tvshows
+  ports:
+    - "3165:3165"
+  restart: unless-stopped
+
+services:
+  # Universal CPU tier — Intel N150 and anything else without a usable GPU.
+  marquee-cpu:
+    <<: *marquee-common
+    profiles: ["cpu"]
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      args:
+        MARQUEE_HW: cpu
+    image: marquee:cpu
+    container_name: marquee
+
+  # NVIDIA tier — RTX 3060/3070 and up via the NVIDIA Container Toolkit.
+  marquee-nvidia:
+    <<: *marquee-common
+    profiles: ["nvidia"]
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      args:
+        MARQUEE_HW: nvidia
+    image: marquee:nvidia
+    container_name: marquee
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  # Intel tier — iGPU (UHD/QSV crowd) and Arc dGPU (A310+) via OpenVINO.
+  marquee-intel:
+    <<: *marquee-common
+    profiles: ["intel"]
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      args:
+        MARQUEE_HW: intel
+    image: marquee:intel
+    container_name: marquee
+    devices:
+      - /dev/dri:/dev/dri

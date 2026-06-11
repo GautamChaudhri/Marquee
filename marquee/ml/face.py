@@ -10,7 +10,7 @@ import numpy as np
 import onnxruntime as ort
 
 from marquee.core.pipeline_config import pipeline_settings
-from marquee.ml.embedding import choose_execution_providers
+from marquee.ml.hardware import create_onnx_session
 
 logger = logging.getLogger(__name__)
 
@@ -36,11 +36,10 @@ class FaceDetector:
         if self._session is None:
             if not self.model_path.exists():
                 raise FileNotFoundError(f"SCRFD model not found: {self.model_path}")
-            self._session = ort.InferenceSession(
-                str(self.model_path),
-                providers=choose_execution_providers(self.execution_provider),
+            self._session = create_onnx_session(
+                self.model_path,
+                execution_provider=self.execution_provider,
             )
-            logger.info("SCRFD ONNX providers: %s", self._session.get_providers())
         return self._session
 
     def detect(self, image_bgr: np.ndarray) -> list[tuple[float, float, float, float]]:

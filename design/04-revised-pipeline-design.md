@@ -69,34 +69,43 @@ Stages marked **[NOW]** are built in the current phase (inside the test endpoint
 **[TODO]** are documented here but deferred.
 
 ```
-[NOW]  Stage 1  — FETCH        TMDB → staging, download all at w500
-                               PosterCandidate already carries:
-                               width, height, vote_average, vote_count, language
-[NOW]  Stage 2a — SHA-256      exact-duplicate removal (cheap, no OCR needed)
-[NOW]  Stage 3  — OCR          PaddleOCR — GATE text-heavy/no-text
-                               AND emit: title bbox, residual-text boxes
-[NOW]  Stage 2b — pHash        near-dupe removal on OCR survivors
-[NOW]  Stage 4  — FEATURES     compute the full scalar vector on pHash survivors
-                               (embedding step runs here — last, on fewest images)
-[NOW]  Stage 5  — GATE         hard floors: resolution, aesthetic, off-style
-                               gated-out copied to a visible bucket with reasons
-[NOW]  Stage 6  — RANK         Phase-0 weighted head over normalized features
-                               → sort → top-5
-[NOW]  Stage 7  — OUTPUT       all ranked posters renamed rank__score__orig into a single
-                               `ranked/` folder; top-5 re-downloaded at original resolution
-[TODO] Stage 8  — DEPLOY       write to media library, update DB
-[TODO] Stage 9  — FEEDBACK     user approves #1 or picks another from top-5
-                               → positive + override-negative labels
-                               → only manually-approved joins the taste profile
-[TODO] Stage 10 — RETRAIN      learned head trained on accumulated labels
+[NOW]  Stage 1  — FETCH          TMDB → staging, download all at w500
+                                 PosterCandidate already carries:
+                                 width, height, vote_average, vote_count, language
+[NOW]  Stage 2a — SHA-256        exact-duplicate removal (cheap, no OCR needed)
+[NOW]  Gate 1   — RESOLUTION     hard floor from TMDB metadata — zero inference spent
+[NOW]  Stage 4a — STYLE FEATURES batched CLIP → knn_sim + aesthetic, plus the
+                                 metadata scalars (resolution, provenance, lang_match)
+[NOW]  Gate 2   — STYLE          aesthetic floor (with knn rescue), off-style floor
+[NOW]  Stage 3  — OCR            PaddleOCR — GATE text-heavy/no-text (threshold-based)
+                                 AND emit: title bbox, residual-text boxes
+                                 runs ONLY on style-gate survivors
+[NOW]  Stage 2b — pHash          near-dupe removal on OCR survivors
+[NOW]  Stage 4b — DETAIL FEATURES face_area, title_colorfulness, sharpness,
+                                 text_residual — survivors only
+[NOW]  Gate 3   — FAN-JUNK       optional combo gate (off by default)
+[NOW]  Stage 6  — RANK           Phase-0 weighted head over normalized features
+                                 → sort → top-5
+[NOW]  Stage 7  — OUTPUT         all ranked posters renamed rank__score__orig into a single
+                                 `ranked/` folder; top-5 re-downloaded at original resolution
+[TODO] Stage 8  — DEPLOY         write to media library, update DB
+[TODO] Stage 9  — FEEDBACK       user approves #1 or picks another from top-5
+                                 → positive + override-negative labels
+                                 → only manually-approved joins the taste profile
+[TODO] Stage 10 — RETRAIN        learned head trained on accumulated labels
 ```
 
-Why this order: SHA-256 exact dedup is byte-cheap and unambiguous so it runs first. OCR then
-runs on the thinned set. pHash runs *after* OCR — not before — so that when near-duplicate
-variants differ only in text content (e.g. one version has a tagline overlay, another is clean),
-the OCR gate decides which survives rather than a resolution tiebreak (see §9). Features run
-only on pHash survivors. Resolution is known from TMDB metadata before download, so the cheapest
-gate signal is available earliest.
+Why this order: **cheapest signal first.** SHA-256 exact dedup is byte-cheap and unambiguous so
+it runs first. The resolution gate needs only TMDB metadata, so it fires before any inference.
+The CLIP embedding (batched through one ONNX call, disk-cached by model name) is 20-50× cheaper
+than the multi-pass OCR, so the embedding-driven gates (aesthetic, off-style) run *before* OCR —
+OCR then only sees candidates that are already on-style and above the quality floor. pHash still
+runs *after* OCR — not before — so that when near-duplicate variants differ only in text content
+(e.g. one version has a tagline overlay, another is clean), the OCR gate decides which survives
+rather than a resolution tiebreak (see §9). The remaining detail features (face detection,
+title colorfulness, sharpness) run only on pHash survivors. The gate decision semantics are
+unchanged — only the evaluation order moved; a candidate that fails both an embedding gate and
+OCR is removed either way, just ~20-50× cheaper now.
 
 ---
 
@@ -115,14 +124,36 @@ Revised from `04-taste-profile-design.md`.
 | `poster_names` | (N,) | Original filenames |
 | `centroid_emb` | (512,) | Mean direction — **diagnostics only**, not used for scoring |
 | `model_name` | scalar | `"clip-vit-b-32"` — which model produced these (see §12) |
+| `neg_embeddings` | (M, 512) | *Optional.* Embeddings of explicitly disliked posters (see below) |
+| `neg_poster_names` | (M,) | *Optional.* Negative exemplar filenames |
 
 **Removed from the old design:** `color_hists`, `centroid_color`. The LAB color signal is gone;
 title colorfulness replaces it.
 
-**How it scores:** the style feature for a candidate is **the mean cosine similarity to its
-k nearest exemplars** (k≈10), not cosine to the centroid. k-NN over individual exemplars handles
-multimodal taste (a horror cluster and an animation cluster coexist) without the centroid's
-blur, and without manual genre buckets.
+**How it scores:** the style feature for a candidate is **the similarity-weighted mean cosine to
+its k nearest exemplars** (k≈10), not cosine to the centroid. k-NN over individual exemplars
+handles multimodal taste (a horror cluster and an animation cluster coexist) without the
+centroid's blur, and without manual genre buckets. With `KNN_WEIGHTING=softmax` (default), the
+k neighbours are combined with softmax weights (`KNN_SOFTMAX_TEMP`, default 0.1) so the closest
+exemplars dominate — a candidate sitting on top of one taste cluster is not diluted by weaker
+neighbours from other clusters. `KNN_WEIGHTING=mean` restores the plain average.
+
+### Negative exemplars (junk contrast)
+
+Drop posters you explicitly dislike into `marquee/experiments/negative_data/` (sibling of
+`training_data/`) and rebuild the profile — the trainer embeds them automatically. When negatives
+exist, the style score becomes:
+
+```
+knn_sim = pos_knn − TASTE_NEG_WEIGHT · max(0, neg_knn − pos_knn)
+```
+
+The penalty fires **only when the candidate is closer to the disliked set than the liked set** —
+ordinary candidates are untouched (no global score shift, so the gate thresholds and
+normalization ranges stay valid), while look-alikes of known junk drop hard. This is the
+strongest pre-feedback-loop signal for keeping fan junk and floating-head composites out of the
+top ranks. The trainer prints a separation diagnostic; if negatives sit closer to the positives
+than to each other, the set is too ambiguous to help.
 
 ### The k parameter
 
@@ -303,6 +334,19 @@ falls through to CoreML; CUDA only appears when `onnxruntime-gpu` is installed o
 with an NVIDIA GPU — nothing needs to be installed for any provider until the host that needs it
 is set up.
 
+**Implemented in `marquee/ml/hardware.py`** — the single module that resolves the execution plan
+(provider chain + provider options + tier performance defaults: CLIP batch size, OCR worker
+count, OMP threads per worker) for every ONNX session in the pipeline. It also distinguishes
+OpenVINO GPU vs CPU devices by querying OpenVINO, and preloads CUDA libraries from pip-installed
+`nvidia-*-cu12` packages so `onnxruntime-gpu` works without LD_LIBRARY_PATH setup. The full
+deployment matrix (bare metal + Docker per tier, INT8 CPU variant) lives in
+`06-multi-platform-deployment.md`.
+
+**Batching:** the CLIP export carries a dynamic batch axis; the whole candidate set is embedded
+in one (chunked) `session.run`. Fixed-batch legacy exports still work via a per-image loop.
+**The aesthetic head loads from a numpy sidecar** (`.npz`, auto-converted from the LAION `.pth`
+once) — PyTorch is an export-time dependency only, not a runtime one.
+
 **On-demand vs batch** (current mode: on-demand): on-demand means a human waits, so per-movie
 latency is user-facing and biases toward the light B/32. Batch (overnight, whole library) hides
 latency and would let you afford a heavier model. Profile end-to-end before optimizing — PaddleOCR
@@ -327,8 +371,22 @@ Everything here is a knob, not a commitment.
   2× contrast-boosted retry recovers low-contrast/metallic/embossed title text. On by default.
 - **OCR accept-no-text:** when even the retry finds nothing, accept the poster as a stylized
   title-only design (vs rejecting it). The poster lands at the end of the ranking. On by default.
-- **OCR workers and GPU:** PaddleOCR now auto-detects CUDA (paddle_dynamic engine) and uses
-  PP-OCRv5_mobile_det for throughput. Worker count configurable via OCR_WORKERS (default 5).
+- **OCR text-heavy thresholds:** the gate rejects when the significant residual boxes exceed
+  `OCR_MAX_RESIDUAL_BOXES` **or** their total area exceeds `OCR_MAX_RESIDUAL_AREA_FRACTION`
+  (default 0.04) of the image. **Default `OCR_MAX_RESIDUAL_BOXES=0` = strict title-only text:
+  any significant non-title box rejects the poster — this is the current project target.**
+  When the target later relaxes (e.g. tolerate official taglines), raise it to 1-2 and the
+  tagline becomes a `text_residual` rank penalty instead of a rejection; no code change needed.
+- **No-title neutral colorfulness:** when OCR finds no title box at all, `title_colorfulness`
+  normalizes to `NORM_TITLE_COLORFULNESS_NEUTRAL` (default 0.5) instead of 0 — posters with
+  stylized titles the OCR cannot read are not punished as if they had plain white text.
+- **OCR workers and GPU:** PaddleOCR auto-detects CUDA (paddle_dynamic engine) and uses
+  PP-OCRv5_mobile_det for throughput. `OCR_WORKERS=0` (default) auto-sizes the pool from the
+  hardware profile and budgets OMP threads per worker so workers × threads ≈ cores.
+  `OCR_DETAIL_PASSES=false` skips the top/bottom strip passes (~60% OCR time) for weak CPUs.
+- **k-NN weighting:** `KNN_WEIGHTING` softmax (default) vs mean; `KNN_SOFTMAX_TEMP` controls how
+  much the nearest exemplars dominate (§3).
+- **Negative exemplars:** `TASTE_NEG_WEIGHT` scales the junk-proximity penalty (§3).
 - **L/14 upgrade:** if B/32's style discrimination proves too crude, upgrade to CLIP ViT-L/14
   (768-dim, richer) and switch to the improved LAION MLP aesthetic head (L/14). Heavier — pair it
   with batch mode so the latency is hidden. Requires rebuilding the exemplar store (different

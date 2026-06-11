@@ -24,12 +24,17 @@ class OutputResult:
     original_download_status: dict[str, bool] = field(default_factory=dict)
 
 
+def _orig_suffix(orig_filename: str) -> str:
+    """Preserve the source extension so PNG/WebP bytes aren't labelled .jpg."""
+    return Path(orig_filename).suffix or ".jpg"
+
+
 def ranked_filename(score: CandidateScore) -> str:
     if score.rank is None or score.final_score is None:
         raise ValueError("Ranked output requires rank and final score")
     return (
         f"{score.rank}__{score.final_score:.4f}__"
-        f"{Path(score.orig_filename).stem}.jpg"
+        f"{Path(score.orig_filename).stem}{_orig_suffix(score.orig_filename)}"
     )
 
 
@@ -40,7 +45,10 @@ def place_gated(
     gated_dir.mkdir(parents=True, exist_ok=True)
     for candidate in candidates:
         reason = candidate.gate_reason or "unknown_gate"
-        destination = gated_dir / f"{reason}__{Path(candidate.orig_filename).stem}.jpg"
+        destination = gated_dir / (
+            f"{reason}__{Path(candidate.orig_filename).stem}"
+            f"{_orig_suffix(candidate.orig_filename)}"
+        )
         shutil.copy2(candidate.image_path, destination)
         candidate.image_path = destination
     return len(candidates)

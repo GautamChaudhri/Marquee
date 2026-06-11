@@ -1,4 +1,18 @@
-"""Inspectable movie-only endpoint for the revised poster pipeline."""
+"""Inspectable movie-only endpoint for the revised poster pipeline.
+
+Stage order (cheapest signal first — see design 04 §2):
+
+  FETCH -> SHA-256 -> GATE:resolution (TMDB metadata)
+        -> STYLE FEATURES (batched CLIP: knn_sim, aesthetic, metadata scalars)
+        -> GATE:style (aesthetic floor + rescue, off-style floor)
+        -> OCR (text gate + title/residual geometry, style survivors only)
+        -> pHash -> DETAIL FEATURES (face, colorfulness, sharpness, residual)
+        -> GATE:fan-junk -> RANK -> OUTPUT
+
+Running the embedding gates before OCR means the expensive multi-pass OCR
+only sees candidates that are already on-style and above the quality floor —
+on a typical movie that cuts OCR volume by a third or more.
+"""
 
 from __future__ import annotations
 
@@ -8,7 +22,7 @@ import logging
 import re
 import shutil
 import time
-from dataclasses import replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
@@ -190,13 +204,317 @@ async def _download_poster(
         return "error", str(exc)
 
 
+@dataclass
+class _SyncOutcome:
+    """Everything the CPU/GPU-bound stages produce, handed back to the async edge."""
+
+    status: str = "completed"
+    ranked: list[CandidateScore] = field(default_factory=list)
+    counts: dict[str, int] = field(default_factory=dict)
+
+
+def _run_sync_stages(
+    *,
+    movie_title: str,
+    out_dir: Path,
+    records: dict[str, CandidateScore],
+    candidate_map: dict[str, PosterCandidate],
+    all_files: list[Path],
+    resolution_by_name: dict[str, tuple[int, int]],
+    timings: dict[str, float],
+) -> _SyncOutcome:
+    """All CPU/GPU-bound stages, run off the event loop via asyncio.to_thread."""
+    outcome = _SyncOutcome()
+    gate = PosterGate()
+    gated: list[CandidateScore] = []
+    errored_dir = out_dir / "errored"
+    errored_dir.mkdir(exist_ok=True)
+
+    # Stage 2a: exact SHA-256 dedup.
+    stage_started = time.perf_counter()
+    logger.info("STAGE START | sha256 | input=%d", len(all_files))
+    sha_rejected_dir = out_dir / "1-sha256-rejected"
+    sha_rejected_dir.mkdir()
+    sha_result = PosterDeduper(
+        sha256_only=True,
+        resolution_by_name=resolution_by_name,
+    ).deduplicate(all_files)
+    for removal in sha_result.removals:
+        _log_dedup_removal(removal)
+        record = records[removal.removed.name]
+        record.stage_reached = "dedup"
+        record.rejection_reason = f"dedup_{removal.reason}"
+        record.image_path = _copy_with_reason(
+            removal.removed,
+            sha_rejected_dir,
+            removal.reason,
+        )
+    for path in sha_result.survivors:
+        records[path.name].image_path = path
+        records[path.name].stage_reached = "dedup"
+    outcome.counts["sha256_survivors"] = sha_result.final
+    _stage_done("sha256", stage_started, timings, survivors=sha_result.final)
+
+    # Gate 1: resolution floor — pure TMDB metadata, so it runs before any
+    # OCR or model inference is spent on candidates that can never pass.
+    stage_started = time.perf_counter()
+    logger.info("STAGE START | gate-resolution | input=%d", sha_result.final)
+    resolution_survivors: list[Path] = []
+    for path in sorted(sha_result.survivors):
+        record = records[path.name]
+        candidate = candidate_map[path.name]
+        decision = gate.evaluate_metadata(original_width=candidate.width)
+        if decision.passed:
+            resolution_survivors.append(path)
+            continue
+        record.stage_reached = "gate"
+        record.gate_decision = "gated"
+        record.gate_reason = decision.reason
+        record.rejection_reason = decision.reason
+        gated.append(record)
+        logger.info(
+            "GATE REJECT | file=%s | reason=%s | detail=%s",
+            path.name,
+            decision.reason,
+            decision.detail,
+        )
+    outcome.counts["resolution_gated"] = len(gated)
+    _stage_done(
+        "gate-resolution",
+        stage_started,
+        timings,
+        survivors=len(resolution_survivors),
+    )
+
+    # Stage 4a: style features (batched CLIP) — embedding-driven scalars only.
+    # Preflight failures are systemic and abort the run.
+    stage_started = time.perf_counter()
+    logger.info("STAGE START | style-features | input=%d", len(resolution_survivors))
+    feature_extractor = FeatureExtractor()
+    feature_extractor.preflight()
+    style_items = [
+        (path, candidate_map[path.name]) for path in resolution_survivors
+    ]
+    style_results = feature_extractor.extract_style_batch(style_items)
+    styled: list[Path] = []
+    for (path, _candidate), result in zip(style_items, style_results, strict=True):
+        record = records[path.name]
+        record.stage_reached = "features"
+        if isinstance(result, Exception):
+            record.rejection_reason = f"feature_error: {result}"
+            record.image_path = _copy_with_reason(path, errored_dir, "feature_error")
+            logger.error("FEATURE ERROR | file=%s | error=%s", path.name, result)
+            continue
+        record.features = result
+        styled.append(path)
+        logger.info(
+            "STYLE FEATURES | file=%s | knn_sim=%.4f | aesthetic=%.4f",
+            path.name,
+            result.knn_sim,
+            result.aesthetic,
+        )
+    _stage_done("style-features", stage_started, timings, survivors=len(styled))
+
+    # Gate 2: style gates (aesthetic floor with rescue, off-style floor) —
+    # removes off-style/junk candidates BEFORE the expensive OCR stage.
+    stage_started = time.perf_counter()
+    logger.info("STAGE START | gate-style | input=%d", len(styled))
+    style_survivors: list[Path] = []
+    style_gated = 0
+    for path in styled:
+        record = records[path.name]
+        decision = gate.evaluate_style(record.features)
+        if decision.passed:
+            style_survivors.append(path)
+            continue
+        record.stage_reached = "gate"
+        record.gate_decision = "gated"
+        record.gate_reason = decision.reason
+        record.rejection_reason = decision.reason
+        gated.append(record)
+        style_gated += 1
+        logger.info(
+            "GATE REJECT | file=%s | reason=%s | detail=%s",
+            path.name,
+            decision.reason,
+            decision.detail,
+        )
+    outcome.counts["style_gated"] = style_gated
+    _stage_done("gate-style", stage_started, timings, survivors=len(style_survivors))
+
+    # Stage 3: OCR text gate and geometry emission — style survivors only.
+    stage_started = time.perf_counter()
+    logger.info("STAGE START | ocr | input=%d", len(style_survivors))
+    ocr_rejected_dir = out_dir / "2-ocr-rejected"
+    ocr_rejected_dir.mkdir()
+    ocr_results = PosterTextFilter(movie_title, director=None).filter_batch(
+        style_survivors
+    )
+    ocr_survivors: list[OCRCandidateResult] = []
+    for result in ocr_results:
+        record = records[result.image_path.name]
+        record.stage_reached = "ocr"
+        logger.info(
+            "OCR | file=%s | accepted=%s | reason=%s | text=%r | "
+            "title_bbox=%s | residual_boxes=%d",
+            result.image_path.name,
+            result.accepted,
+            result.reason,
+            result.detected_text,
+            result.title_bbox,
+            len(result.residual_boxes),
+        )
+        if not result.accepted:
+            reason = result.reason or "ocr_rejected"
+            record.rejection_reason = reason
+            destination_dir = (
+                errored_dir if reason.startswith("ocr_error") else ocr_rejected_dir
+            )
+            record.image_path = _copy_with_reason(
+                result.image_path,
+                destination_dir,
+                reason.split(":", 1)[0],
+            )
+            continue
+        record.image_path = result.image_path
+        ocr_survivors.append(replace(result, image_path=result.image_path))
+    outcome.counts["ocr_survivors"] = len(ocr_survivors)
+    _stage_done("ocr", stage_started, timings, survivors=len(ocr_survivors))
+
+    # Stage 2b: perceptual dedup on OCR survivors.
+    # Placed after OCR so text-variant near-duplicates are resolved by the OCR
+    # gate rather than a resolution tiebreak (see design §9 pHash placement).
+    stage_started = time.perf_counter()
+    ocr_survivor_paths = [r.image_path for r in ocr_survivors]
+    logger.info("STAGE START | phash | input=%d", len(ocr_survivor_paths))
+    phash_rejected_dir = out_dir / "3-phash-rejected"
+    phash_rejected_dir.mkdir()
+    phash_result = PosterDeduper(
+        min_width=0,
+        resolution_by_name=resolution_by_name,
+    ).deduplicate(ocr_survivor_paths)
+    phash_survivor_names = {path.name for path in phash_result.survivors}
+    for removal in phash_result.removals:
+        if removal.reason != "phash":
+            continue
+        _log_dedup_removal(removal)
+        record = records[removal.removed.name]
+        record.stage_reached = "phash"
+        record.rejection_reason = "dedup_phash"
+        record.image_path = _copy_with_reason(
+            removal.removed,
+            phash_rejected_dir,
+            "phash",
+        )
+    ocr_survivors = [
+        r for r in ocr_survivors if r.image_path.name in phash_survivor_names
+    ]
+    outcome.counts["phash_survivors"] = len(ocr_survivors)
+    _stage_done("phash", stage_started, timings, survivors=len(ocr_survivors))
+
+    # Stage 4b: detail features (face, title colorfulness, sharpness,
+    # text_residual) — survivors only, then the remaining hard gate.
+    stage_started = time.perf_counter()
+    logger.info("STAGE START | detail-features | input=%d", len(ocr_survivors))
+    diagnostic_scorer = WeightedScorer()
+    passed: list[CandidateScore] = []
+    for ocr_result in ocr_survivors:
+        filename = ocr_result.image_path.name
+        record = records[filename]
+        record.stage_reached = "features"
+        try:
+            record.features = feature_extractor.complete(record.features, ocr_result)
+        except Exception as exc:
+            record.rejection_reason = f"feature_error: {exc}"
+            record.image_path = _copy_with_reason(
+                ocr_result.image_path,
+                errored_dir,
+                "feature_error",
+            )
+            logger.exception("FEATURE ERROR | file=%s | error=%s", filename, exc)
+            continue
+        _, record.contributions = diagnostic_scorer.score(record.features)
+        logger.info(
+            "FEATURES | file=%s | raw=%s",
+            filename,
+            json.dumps(record.features.raw_values(), sort_keys=True),
+        )
+
+        record.stage_reached = "gate"
+        decision = gate.evaluate_detail(record.features)
+        record.gate_decision = "passed" if decision.passed else "gated"
+        record.gate_reason = decision.reason
+        if decision.passed:
+            passed.append(record)
+            logger.info("GATE PASS | file=%s", record.orig_filename)
+        else:
+            record.rejection_reason = decision.reason
+            gated.append(record)
+            logger.info(
+                "GATE REJECT | file=%s | reason=%s | detail=%s",
+                record.orig_filename,
+                decision.reason,
+                decision.detail,
+            )
+    outcome.counts["feature_survivors"] = len(passed)
+    _stage_done("detail-features", stage_started, timings, survivors=len(passed))
+
+    gated_dir = out_dir / "gated"
+    place_gated(gated, gated_dir)
+    outcome.counts["gated"] = len(gated)
+
+    if not passed:
+        outcome.status = "flagged_manual"
+        logger.warning("RUN FLAGGED | all candidates removed before ranking")
+        return outcome
+
+    # Stage 6: within-movie ranking.
+    stage_started = time.perf_counter()
+    logger.info("STAGE START | rank | input=%d", len(passed))
+    ranked = diagnostic_scorer.rank(passed)
+    total_weight = sum(
+        weight
+        for weight in pipeline_settings.scorer_weights.values()
+        if weight > 0
+    )
+    for record in ranked:
+        logger.info(
+            "RANK | rank=%d | file=%s | final_score=%.4f",
+            record.rank,
+            record.orig_filename,
+            record.final_score,
+        )
+        for feature_name, raw_value in record.features.raw_values().items():
+            normalized = record.features.normalized[feature_name]
+            configured_weight = pipeline_settings.scorer_weights[feature_name]
+            effective_weight = (
+                configured_weight / total_weight
+                if configured_weight > 0
+                else 0.0
+            )
+            logger.info(
+                "RANK DETAIL | file=%s | feature=%s | raw=%.6f | "
+                "normalized=%.6f | weight=%.6f | contribution=%.6f",
+                record.orig_filename,
+                feature_name,
+                raw_value,
+                normalized,
+                effective_weight,
+                record.contributions.get(feature_name, 0.0),
+            )
+    outcome.ranked = ranked
+    outcome.counts["ranked"] = len(ranked)
+    _stage_done("rank", stage_started, timings, survivors=len(ranked))
+    return outcome
+
+
 @router.post("/pipeline/movie/{movie_id}")
 async def test_pipeline_movie(
     movie_id: int,
     db: Annotated[AsyncSession, Depends(get_db)],
     tmdb: Annotated[TMDBClient, Depends(get_tmdb)],
 ):
-    """Run Fetch -> SHA-256 Dedup -> OCR -> pHash Dedup -> Features -> Gate -> Rank -> Output."""
+    """Run Fetch -> SHA -> Gate(res) -> Style features -> Gate(style) -> OCR -> pHash -> Detail features -> Gate -> Rank -> Output."""
     movie = (
         await db.execute(select(Movie).where(Movie.id == movie_id))
     ).scalar_one_or_none()
@@ -298,215 +616,24 @@ async def test_pipeline_movie(
             raise RuntimeError("No poster files were downloaded or found in the cache")
         _stage_done("fetch", stage_started, timings, survivors=len(all_files))
 
-        # Stage 2a: exact SHA-256 dedup.
-        stage_started = time.perf_counter()
-        logger.info("STAGE START | sha256 | input=%d", len(all_files))
-        sha_rejected_dir = out_dir / "1-sha256-rejected"
-        sha_rejected_dir.mkdir()
-        sha_result = PosterDeduper(
-            sha256_only=True,
+        # Stages 2-6 are CPU/GPU-bound: run them off the event loop so the
+        # API (health checks, other requests) stays responsive.
+        outcome = await asyncio.to_thread(
+            _run_sync_stages,
+            movie_title=movie.title,
+            out_dir=out_dir,
+            records=records,
+            candidate_map=candidate_map,
+            all_files=all_files,
             resolution_by_name=resolution_by_name,
-        ).deduplicate(all_files)
-        sha_survivor_names = {path.name for path in sha_result.survivors}
-        for removal in sha_result.removals:
-            _log_dedup_removal(removal)
-            record = records[removal.removed.name]
-            record.stage_reached = "dedup"
-            record.rejection_reason = f"dedup_{removal.reason}"
-            record.image_path = _copy_with_reason(
-                removal.removed,
-                sha_rejected_dir,
-                removal.reason,
-            )
-        for path in sha_result.survivors:
-            records[path.name].image_path = path
-            records[path.name].stage_reached = "dedup"
-        _stage_done("sha256", stage_started, timings, survivors=len(sha_survivor_names))
-
-        # Stage 3: OCR text gate and geometry emission.
-        # Runs on SHA-256 survivors before pHash so that when near-duplicate
-        # variants differ in text content, OCR (not resolution) decides the winner.
-        stage_started = time.perf_counter()
-        sha_files = sorted(sha_result.survivors)
-        logger.info("STAGE START | ocr | input=%d", len(sha_files))
-        ocr_rejected_dir = out_dir / "2-ocr-rejected"
-        errored_dir = out_dir / "errored"
-        ocr_rejected_dir.mkdir()
-        errored_dir.mkdir()
-        ocr_results = PosterTextFilter(movie.title, director=None).filter_batch(
-            sha_files
+            timings=timings,
         )
-        ocr_survivors: list[OCRCandidateResult] = []
-        for result in ocr_results:
-            record = records[result.image_path.name]
-            record.stage_reached = "ocr"
-            logger.info(
-                "OCR | file=%s | accepted=%s | reason=%s | text=%r | "
-                "title_bbox=%s | residual_boxes=%d",
-                result.image_path.name,
-                result.accepted,
-                result.reason,
-                result.detected_text,
-                result.title_bbox,
-                len(result.residual_boxes),
-            )
-            if not result.accepted:
-                reason = result.reason or "ocr_rejected"
-                record.rejection_reason = reason
-                destination_dir = (
-                    errored_dir if reason.startswith("ocr_error") else ocr_rejected_dir
-                )
-                record.image_path = _copy_with_reason(
-                    result.image_path,
-                    destination_dir,
-                    reason.split(":", 1)[0],
-                )
-                continue
-            record.image_path = result.image_path
-            ocr_survivors.append(replace(result, image_path=result.image_path))
-        _stage_done("ocr", stage_started, timings, survivors=len(ocr_survivors))
+        status = outcome.status
+        ranked = outcome.ranked
 
-        # Stage 2b: perceptual dedup on OCR survivors.
-        # Placed after OCR so text-variant near-duplicates are resolved by the OCR
-        # gate rather than a resolution tiebreak (see design §9 pHash placement).
-        stage_started = time.perf_counter()
-        ocr_survivor_paths = [r.image_path for r in ocr_survivors]
-        logger.info("STAGE START | phash | input=%d", len(ocr_survivor_paths))
-        phash_rejected_dir = out_dir / "3-phash-rejected"
-        phash_rejected_dir.mkdir()
-        phash_result = PosterDeduper(
-            min_width=0,
-            resolution_by_name=resolution_by_name,
-        ).deduplicate(ocr_survivor_paths)
-        phash_survivor_names = {path.name for path in phash_result.survivors}
-        for removal in phash_result.removals:
-            if removal.reason != "phash":
-                continue
-            _log_dedup_removal(removal)
-            record = records[removal.removed.name]
-            record.stage_reached = "phash"
-            record.rejection_reason = "dedup_phash"
-            record.image_path = _copy_with_reason(
-                removal.removed,
-                phash_rejected_dir,
-                "phash",
-            )
-        # Filter ocr_survivors down to pHash survivors so features stage sees the
-        # correct set (with their title_bbox / residual_boxes intact).
-        ocr_survivors = [r for r in ocr_survivors if r.image_path.name in phash_survivor_names]
-        _stage_done("phash", stage_started, timings, survivors=len(ocr_survivors))
-
-        # Stage 4: feature extraction. Preflight failures are systemic.
-        stage_started = time.perf_counter()
-        logger.info("STAGE START | features | input=%d", len(ocr_survivors))
-        feature_extractor = FeatureExtractor()
-        feature_extractor.preflight()
-        diagnostic_scorer = WeightedScorer()
-        featured: list[CandidateScore] = []
-        for ocr_result in ocr_survivors:
-            filename = ocr_result.image_path.name
-            record = records[filename]
-            candidate = candidate_map[filename]
-            record.stage_reached = "features"
-            try:
-                record.features = feature_extractor.extract(ocr_result, candidate)
-            except Exception as exc:
-                record.rejection_reason = f"feature_error: {exc}"
-                record.image_path = _copy_with_reason(
-                    ocr_result.image_path,
-                    errored_dir,
-                    "feature_error",
-                )
-                logger.exception(
-                    "FEATURE ERROR | file=%s | error=%s",
-                    filename,
-                    exc,
-                )
-                continue
-            featured.append(record)
-            _, record.contributions = diagnostic_scorer.score(record.features)
-            logger.info(
-                "FEATURES | file=%s | raw=%s",
-                filename,
-                json.dumps(record.features.raw_values(), sort_keys=True),
-            )
-        _stage_done("features", stage_started, timings, survivors=len(featured))
-
-        # Stage 5: hard global gates.
-        stage_started = time.perf_counter()
-        logger.info("STAGE START | gate | input=%d", len(featured))
-        gate = PosterGate()
-        gated: list[CandidateScore] = []
-        passed: list[CandidateScore] = []
-        for record in featured:
-            candidate = candidate_map[record.orig_filename]
-            decision = gate.evaluate(
-                record.features,
-                original_width=candidate.width,
-            )
-            record.stage_reached = "gate"
-            record.gate_decision = "passed" if decision.passed else "gated"
-            record.gate_reason = decision.reason
-            if decision.passed:
-                passed.append(record)
-                logger.info("GATE PASS | file=%s", record.orig_filename)
-            else:
-                record.rejection_reason = decision.reason
-                gated.append(record)
-                logger.info(
-                    "GATE REJECT | file=%s | reason=%s | detail=%s",
-                    record.orig_filename,
-                    decision.reason,
-                    decision.detail,
-                )
-        gated_dir = out_dir / "gated"
-        place_gated(gated, gated_dir)
-        _stage_done("gate", stage_started, timings, survivors=len(passed))
-
-        status = "completed"
-        ranked: list[CandidateScore] = []
+        # Stage 7: inspectable output and best-effort original downloads.
         output_result = None
-        if not passed:
-            status = "flagged_manual"
-            logger.warning("RUN FLAGGED | all candidates removed before ranking")
-        else:
-            # Stage 6: within-movie ranking.
-            stage_started = time.perf_counter()
-            logger.info("STAGE START | rank | input=%d", len(passed))
-            ranked = diagnostic_scorer.rank(passed)
-            total_weight = sum(
-                weight
-                for weight in pipeline_settings.scorer_weights.values()
-                if weight > 0
-            )
-            for record in ranked:
-                logger.info(
-                    "RANK | rank=%d | file=%s | final_score=%.4f",
-                    record.rank,
-                    record.orig_filename,
-                    record.final_score,
-                )
-                for feature_name, raw_value in record.features.raw_values().items():
-                    normalized = record.features.normalized[feature_name]
-                    configured_weight = pipeline_settings.scorer_weights[feature_name]
-                    effective_weight = (
-                        configured_weight / total_weight
-                        if configured_weight > 0
-                        else 0.0
-                    )
-                    logger.info(
-                        "RANK DETAIL | file=%s | feature=%s | raw=%.6f | "
-                        "normalized=%.6f | weight=%.6f | contribution=%.6f",
-                        record.orig_filename,
-                        feature_name,
-                        raw_value,
-                        normalized,
-                        effective_weight,
-                        record.contributions.get(feature_name, 0.0),
-                    )
-            _stage_done("rank", stage_started, timings, survivors=len(ranked))
-
-            # Stage 7: inspectable output and best-effort original downloads.
+        if ranked:
             stage_started = time.perf_counter()
             logger.info("STAGE START | output | input=%d", len(ranked))
             output_result = await place_ranked(
@@ -571,14 +698,7 @@ async def test_pipeline_movie(
                 "skipped": skipped,
                 "errors": download_errors,
             },
-            "counts": {
-                "sha256_survivors": sha_result.final,
-                "ocr_survivors": len(ocr_survivors),
-                "phash_survivors": phash_result.final,
-                "feature_survivors": len(featured),
-                "gated": len(gated),
-                "ranked": len(ranked),
-            },
+            "counts": outcome.counts,
             "top5": [
                 {
                     "rank": record.rank,

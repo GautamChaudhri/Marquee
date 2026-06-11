@@ -17,6 +17,7 @@ import numpy as np
 from PIL import Image
 
 from marquee.core.pipeline_config import pipeline_settings
+from marquee.ml.hardware import effective_ocr_omp_threads, effective_ocr_workers
 from marquee.pipeline.types import BoundingBox, OCRCandidateResult, OCRTextBox
 
 logger = logging.getLogger(__name__)
@@ -190,9 +191,7 @@ def _word_matches_token(word: str, allowed_tokens: set[str]) -> bool:
         return True
     if any(token in word for token in allowed_tokens if len(token) >= 3):
         return True
-    if any(word in token for token in allowed_tokens if len(word) >= 3):
-        return True
-    return False
+    return any(word in token for token in allowed_tokens if len(word) >= 3)
 
 
 def _is_significant_residual_word(word: str, allowed_tokens: set[str]) -> bool:
@@ -259,7 +258,13 @@ def _worker_main(
     result_queue: Any,
     title_tokens: set[str],
     director_tokens: set[str],
+    omp_threads: int = 0,
 ) -> NoReturn:
+    if omp_threads > 0:
+        # Must be set before paddle is imported: workers x threads ~= cores,
+        # otherwise every worker spawns one thread per core and they thrash.
+        os.environ.setdefault("OMP_NUM_THREADS", str(omp_threads))
+        os.environ.setdefault("OPENBLAS_NUM_THREADS", str(omp_threads))
     try:
         _init_worker(title_tokens, director_tokens)
     except BaseException as exc:
@@ -298,24 +303,27 @@ def _process_image(path_string: str) -> OCRCandidateResult:
             image,
             pipeline_settings.OCR_CONFIDENCE_THRESHOLD,
         )
-        top = _detect_boxes(
-            _worker_ocr,
-            image[:strip_rows],
-            pipeline_settings.OCR_STRIP_CONFIDENCE_THRESHOLD,
-        )
-        bottom_image = np.asarray(
-            Image.fromarray(image[height - strip_rows:]).resize(
-                (image.shape[1] * 2, strip_rows * 2),
-                Image.Resampling.LANCZOS,
+        top: list[_DetectedBox] = []
+        bottom: list[_DetectedBox] = []
+        if pipeline_settings.OCR_DETAIL_PASSES:
+            top = _detect_boxes(
+                _worker_ocr,
+                image[:strip_rows],
+                pipeline_settings.OCR_STRIP_CONFIDENCE_THRESHOLD,
             )
-        )
-        bottom = _detect_boxes(
-            _worker_ocr,
-            bottom_image,
-            pipeline_settings.OCR_BOTTOM_CONFIDENCE_THRESHOLD,
-            scale=2.0,
-            y_offset=height - strip_rows,
-        )
+            bottom_image = np.asarray(
+                Image.fromarray(image[height - strip_rows:]).resize(
+                    (image.shape[1] * 2, strip_rows * 2),
+                    Image.Resampling.LANCZOS,
+                )
+            )
+            bottom = _detect_boxes(
+                _worker_ocr,
+                bottom_image,
+                pipeline_settings.OCR_BOTTOM_CONFIDENCE_THRESHOLD,
+                scale=2.0,
+                y_offset=height - strip_rows,
+            )
     except Exception as exc:
         logger.warning("OCR failed for %s: %s", path.name, exc)
         return OCRCandidateResult(path, False, "", f"ocr_error: {exc}", None)
@@ -323,20 +331,19 @@ def _process_image(path_string: str) -> OCRCandidateResult:
     boxes = _dedupe_boxes(full + top + bottom)
     detected_text = _normalise(" ".join(box.text for box in boxes))
 
-    if not detected_text:
-        # RC-1 fix: before giving up, retry on a contrast-enhanced image.
-        # Many stylized title fonts (embossed, low-contrast, metallic) are
-        # invisible to the base model but emerge after a 2× contrast boost.
-        if pipeline_settings.OCR_ENHANCE_RETRY:
-            enhanced = _enhance_contrast(image)
-            retry_boxes = _detect_boxes(
-                _worker_ocr,
-                enhanced,
-                pipeline_settings.OCR_CONFIDENCE_THRESHOLD,
-            )
-            if retry_boxes:
-                boxes = _dedupe_boxes(retry_boxes)
-                detected_text = _normalise(" ".join(box.text for box in boxes))
+    # RC-1 fix: before giving up, retry on a contrast-enhanced image.
+    # Many stylized title fonts (embossed, low-contrast, metallic) are
+    # invisible to the base model but emerge after a 2× contrast boost.
+    if not detected_text and pipeline_settings.OCR_ENHANCE_RETRY:
+        enhanced = _enhance_contrast(image)
+        retry_boxes = _detect_boxes(
+            _worker_ocr,
+            enhanced,
+            pipeline_settings.OCR_CONFIDENCE_THRESHOLD,
+        )
+        if retry_boxes:
+            boxes = _dedupe_boxes(retry_boxes)
+            detected_text = _normalise(" ".join(box.text for box in boxes))
 
     if not detected_text:
         # Even after retry, OCR found nothing.  Accept if OCR_ACCEPT_NO_TEXT is
@@ -382,16 +389,32 @@ def _process_image(path_string: str) -> OCRCandidateResult:
     for box in residual:
         # Spatial proximity discount: artifacts adjacent to the title area are
         # almost always OCR noise from the stylized title typography itself.
-        if title_box is not None:
-            if _bbox_center_distance(box.bbox, title_box.bbox) <= prox:
-                continue
+        if (
+            title_box is not None
+            and _bbox_center_distance(box.bbox, title_box.bbox) <= prox
+        ):
+            continue
         # Word-level significance: only flag the box if it contains at least
         # one word that is clearly non-title (4+ chars, not all-digit).
         words_in_box = _normalise(box.text).split()
         if any(_is_significant_residual_word(w, all_tokens) for w in words_in_box):
             significant_residual.append(box)
 
-    accepted = not significant_residual
+    # Gate on validity, rank on taste: one tagline is normal on official
+    # posters and is handled by the text_residual rank penalty. Only reject
+    # when the poster is genuinely text-heavy — many significant boxes or a
+    # large fraction of the image covered by non-title text.
+    image_area = float(image.shape[0] * image.shape[1])
+    significant_area_fraction = (
+        sum(box.area for box in significant_residual) / image_area
+        if image_area > 0
+        else 0.0
+    )
+    accepted = (
+        len(significant_residual) <= pipeline_settings.OCR_MAX_RESIDUAL_BOXES
+        and significant_area_fraction
+        <= pipeline_settings.OCR_MAX_RESIDUAL_AREA_FRACTION
+    )
     return OCRCandidateResult(
         image_path=path,
         accepted=accepted,
@@ -414,7 +437,8 @@ class PosterTextFilter:
         self.title = _normalise(title)
         self.director = _normalise(director) if director else ""
         self.media_type = media_type
-        self.num_workers = num_workers or pipeline_settings.OCR_WORKERS
+        # Explicit argument > OCR_WORKERS env > hardware-profile auto-sizing.
+        self.num_workers = num_workers or effective_ocr_workers()
         self.title_tokens = set(self.title.split())
         _add_digit_words(self.title_tokens)
         self.director_tokens = set(self.director.split())
@@ -425,6 +449,7 @@ class PosterTextFilter:
 
         context = multiprocessing.get_context("spawn")
         worker_count = min(self.num_workers, len(paths))
+        omp_threads = effective_ocr_omp_threads(worker_count)
         task_queue = context.Queue()
         result_queue = context.Queue()
         workers = [
@@ -435,6 +460,7 @@ class PosterTextFilter:
                     result_queue,
                     self.title_tokens,
                     self.director_tokens,
+                    omp_threads,
                 ),
                 name=f"poster-ocr-{index + 1}",
             )
