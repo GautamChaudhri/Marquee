@@ -38,16 +38,31 @@ class FeatureVector:
     face_area: float
     provenance: float
     lang_match: float
+    # New top-level scorer features. None = not computed (model absent,
+    # disabled by flag, or CPU tier for dino) — the scorer renormalizes
+    # around missing features.
+    dino_knn: float | None = None
+    taste_typicality: float | None = None
+    quality_artifacts: float | None = None
     # False when OCR found no title box: title_colorfulness is then unknown
     # and normalization substitutes a neutral value instead of punishing the
     # poster as if it had a plain white title.
     title_found: bool = True
+    # Fine-grained raw values behind taste_typicality and quality_artifacts
+    # (darkness, saturation, title geometry, zero-shot axes, blockiness, ...).
+    # Logged and serialized for cross-referencing and future head training.
+    extended: dict[str, float] = field(default_factory=dict)
+    # Per-feature KDE typicality detail (feature -> 0..1), for the logs/JSON.
+    typicality_detail: dict[str, float] = field(default_factory=dict)
     normalized: dict[str, float] = field(default_factory=dict)
 
     def raw_values(self) -> dict[str, float]:
+        """The scorer-level raw features (excludes bookkeeping fields)."""
         values = asdict(self)
         values.pop("normalized")
         values.pop("title_found")
+        values.pop("extended")
+        values.pop("typicality_detail")
         return values
 
 
@@ -70,6 +85,10 @@ class CandidateScore:
             "orig_filename": self.orig_filename,
             "image_path": str(self.image_path),
             "raw_features": self.features.raw_values() if self.features else None,
+            "extended_features": self.features.extended if self.features else None,
+            "typicality_detail": (
+                self.features.typicality_detail if self.features else None
+            ),
             "normalized_features": self.features.normalized if self.features else None,
             "contributions": self.contributions,
             "gate_decision": self.gate_decision,

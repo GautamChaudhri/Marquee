@@ -61,6 +61,9 @@ Organized by the phase when attention is needed. Reference `design/03-migration-
 - [ ] Validate the strict title-only OCR gate (OCR_MAX_RESIDUAL_BOXES=0) across more movies; when the target relaxes, revisit 1-2 boxes + 4% area.
 - [ ] Populate `marquee/experiments/negative_data/` with disliked posters and rebuild profile to activate the junk penalty.
 - [ ] Optional INT8 CLIP for N150-class hosts (`clip_export --quantize`, AI_MODEL=clip-vit-b-32-int8 + profile rebuild) — needs accuracy spot-check against fp32 ranking.
+- [x] ~~Extended features (recs 1-6, design/07): zero-shot CLIP axes, classic-CV palette/composition pack, title/face geometry, exemplar-calibrated KDE typicality, DINOv2 second k-NN (auto on GPU tiers), quality artifacts + YOLO person detector (EXTRA_QUALITY_ENABLED flag), Phase-1 learned head plumbing (SCORER=auto + head_trainer + labels.jsonl).~~
+- [ ] Tune WEIGHT_TASTE_TYPICALITY / WEIGHT_DINO_KNN from RANK DETAIL + TYPICALITY logs after a few weeks of runs.
+- [ ] Feedback UI writes `experiments/feedback/labels.jsonl`; at ~50-100 labels run `python -m marquee.ml.head_trainer` to activate the learned head (rec 7 / L14 / VLM still deferred).
 
 ---
 

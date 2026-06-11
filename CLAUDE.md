@@ -52,14 +52,14 @@ Marquee is a FastAPI service that fetches movie/TV posters from external sources
 | GATE:style | `pipeline/gate.py` | Aesthetic floor (with knn rescue), off-style floor — before OCR |
 | OCR | `pipeline/ocr_filter.py` | PaddleOCR gate — strict title-only text by default (`OCR_MAX_RESIDUAL_BOXES=0`); emits title bbox + residual boxes |
 | pHash | `pipeline/deduper.py` | Near-dupe removal on OCR survivors |
-| DETAIL FEATURES | `pipeline/features.py` | face_area, title colorfulness, sharpness, text_residual on survivors |
+| DETAIL FEATURES | `pipeline/features.py` | DINOv2 k-NN (GPU tiers, batched), face/person geometry, CV palette/composition pack, quality artifacts, title geometry, exemplar-calibrated typicality |
 | GATE:fan-junk | `pipeline/gate.py` | Optional combo gate (off by default) |
-| RANK | `pipeline/scorer.py` | Weighted sum over normalized features → `CandidateScore` list |
+| RANK | `pipeline/scorer.py` | `select_scorer()`: Phase-0 weighted sum or Phase-1 learned logistic head (`SCORER=auto`) over normalized features |
 | OUTPUT | `pipeline/output.py` | Rename ranked files; re-download top-5 at full resolution |
 
 **`pipeline/types.py`** defines the shared data records: `OCRCandidateResult`, `FeatureVector`, `CandidateScore`. These flow between all stages.
 
-**`marquee/ml/`** — ML inference wrappers: hardware/provider selection (`hardware.py` — every ONNX session goes through it; `EXECUTION_PROVIDER=auto` resolves CUDA/OpenVINO/CoreML/CPU and sizes the CLIP batch + OCR worker pool), CLIP embedding (`embedding.py`, batched), aesthetic scorer (`aesthetic.py`, numpy sidecar — torch is export-only), face detector (`face.py`), colorfulness (`colorfulness.py`), taste profile store (`taste_store.py` — weighted k-NN + optional negative exemplars), normalization (`normalize.py`). Model files live in `marquee/ml/models/` (not committed; export/download required). Deployment matrix: `design/06-multi-platform-deployment.md`.
+**`marquee/ml/`** — ML inference wrappers: hardware/provider selection (`hardware.py` — every ONNX session goes through it; `EXECUTION_PROVIDER=auto` resolves CUDA/OpenVINO/CoreML/CPU and sizes the CLIP batch + OCR worker pool), CLIP embedding (`embedding.py`, batched), DINOv2 second style opinion (`dino.py`, auto-on for GPU tiers), aesthetic scorer (`aesthetic.py`, numpy sidecar — torch is export-only), face detector (`face.py`), person detector (`person.py`, YOLO11n), classic-CV features (`visual_features.py`), CLIP zero-shot style axes (`zeroshot.py`), exemplar-calibrated normalization (`calibration.py` — KDE typicality against the taste profile's per-feature distributions), taste profile store (`taste_store.py` — weighted k-NN, negative exemplars, DINO space, calibration arrays), learned ranking head (`learned_head.py` + `head_trainer.py`), normalization (`normalize.py`). Model files live in `marquee/ml/models/` (not committed; export/download required). Deployment matrix: `design/06-multi-platform-deployment.md`; extended features: `design/07-extended-features-and-calibration.md`.
 
 **`marquee/models/`** — SQLAlchemy ORM models (`Movie`, `Series`, `Season`, `Episode`) backed by async SQLite (`aiosqlite`). `marquee/database.py` manages the engine/session factory singleton.
 

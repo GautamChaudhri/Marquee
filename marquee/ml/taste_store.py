@@ -1,18 +1,20 @@
 """Taste exemplar storage backed by model-tagged NumPy embeddings.
 
-Two upgrades over the plain top-k mean:
+The profile carries up to four kinds of taste signal:
 
-  - **Similarity-weighted k-NN** (``KNN_WEIGHTING=softmax``): the k nearest
-    exemplars are combined with softmax weights so the closest neighbours
-    dominate. This sharpens multimodal taste — a candidate sitting on top of
-    your horror cluster is not diluted by 9 weaker neighbours from other
-    clusters — without the noise of k=1.
-  - **Negative exemplars** (optional ``neg_embeddings`` in the profile): a
-    second store of posters you explicitly dislike (floating heads, fan junk).
-    A candidate is penalized only when it is *closer to the disliked set than
-    to the liked set*: ``score = pos - w * max(0, neg - pos)``. This leaves
-    ordinary candidates untouched (no global shift, gate thresholds stay
-    valid) while pushing look-alikes of known junk down hard.
+  - **CLIP embeddings** (positive + optional negative) for the primary
+    ``knn_sim`` style score, combined with softmax-weighted k-NN.
+  - **DINOv2 embeddings** (optional, positive + negative) for the
+    ``dino_knn`` second style opinion — texture/medium similarity that CLIP's
+    content-dominated space blurs. Same k-NN machinery, separate space.
+  - **Negative exemplars**: a candidate closer to the disliked set than the
+    liked set is penalized (``score = pos - w * max(0, neg - pos)``) without
+    shifting scores for ordinary candidates.
+  - **Calibration arrays**: per-feature raw values over the exemplars,
+    powering exemplar-calibrated normalization (see ``calibration.py``).
+
+Every embedding space is model-tagged; a mismatch between artifact and
+configured model fails loudly (design 04 §12).
 """
 
 from __future__ import annotations
@@ -24,8 +26,11 @@ from pathlib import Path
 import numpy as np
 
 from marquee.core.pipeline_config import pipeline_settings
+from marquee.ml.calibration import TasteCalibration
 
 logger = logging.getLogger(__name__)
+
+DINO_SELF_KNN_KEY = "dino_self_knn"
 
 
 def weighted_topk_mean(
@@ -83,6 +88,11 @@ class NumpyTasteStore(TasteStore):
         self.expected_model_name = expected_model_name or pipeline_settings.AI_MODEL
         self._embeddings: np.ndarray | None = None
         self._neg_embeddings: np.ndarray | None = None
+        self._dino_embeddings: np.ndarray | None = None
+        self._neg_dino_embeddings: np.ndarray | None = None
+        self._dino_model_name: str | None = None
+        self._dino_self_knn: np.ndarray | None = None
+        self._calibration: TasteCalibration | None = None
         self._metadata: list[dict | None] = []
         self._centroid: np.ndarray | None = None
 
@@ -117,6 +127,7 @@ class NumpyTasteStore(TasteStore):
                     "Taste profile poster_names length does not match embeddings"
                 )
             self._metadata = [{"filename": str(name)} for name in names]
+
             if "neg_embeddings" in data:
                 negatives = np.asarray(data["neg_embeddings"], dtype=np.float32)
                 if negatives.ndim != 2 or negatives.shape[1] != 512:
@@ -124,12 +135,48 @@ class NumpyTasteStore(TasteStore):
                         f"Invalid negative embedding shape: {negatives.shape}"
                     )
                 self._neg_embeddings = negatives
+
+            # Optional DINOv2 space (second style opinion).
+            if "dino_embeddings" in data:
+                self._dino_embeddings = np.asarray(
+                    data["dino_embeddings"], dtype=np.float32
+                )
+                self._dino_model_name = str(
+                    np.asarray(data["dino_model_name"]).item()
+                )
+                if self._dino_embeddings.shape[0] != self._embeddings.shape[0]:
+                    raise RuntimeError(
+                        "dino_embeddings count does not match CLIP exemplar count"
+                    )
+                if "neg_dino_embeddings" in data:
+                    self._neg_dino_embeddings = np.asarray(
+                        data["neg_dino_embeddings"], dtype=np.float32
+                    )
+                if DINO_SELF_KNN_KEY in data:
+                    self._dino_self_knn = np.asarray(
+                        data[DINO_SELF_KNN_KEY], dtype=np.float64
+                    )
+
+            # Optional exemplar-calibration arrays.
+            self._calibration = TasteCalibration.from_profile_arrays(data)
+
         logger.info(
-            "Loaded %d taste exemplars (%d negative) from %s",
+            "Loaded taste profile %s: %d exemplars (%d negative), "
+            "dino=%s, calibration=%s",
+            self.profile_path.name,
             self.size,
             self.negative_size,
-            self.profile_path,
+            self._dino_model_name or "absent",
+            (
+                f"{len(self._calibration.calibrated_features)} features"
+                if self._calibration
+                else "absent"
+            ),
         )
+
+    # ------------------------------------------------------------------
+    # Introspection
+    # ------------------------------------------------------------------
 
     @property
     def centroid_emb(self) -> np.ndarray:
@@ -148,6 +195,36 @@ class NumpyTasteStore(TasteStore):
             return 0
         return int(self._neg_embeddings.shape[0])
 
+    @property
+    def has_dino(self) -> bool:
+        self._ensure_loaded()
+        return self._dino_embeddings is not None
+
+    @property
+    def dino_model_name(self) -> str | None:
+        self._ensure_loaded()
+        return self._dino_model_name
+
+    @property
+    def calibration(self) -> TasteCalibration | None:
+        self._ensure_loaded()
+        return self._calibration
+
+    def dino_knn_norm_range(self) -> tuple[float, float] | None:
+        """p5/p95 of the exemplars' own dino k-NN sims — the empirically
+        correct normalization range for dino_knn on this profile."""
+        self._ensure_loaded()
+        if self._dino_self_knn is None or self._dino_self_knn.size < 5:
+            return None
+        p5, p95 = np.percentile(self._dino_self_knn, [5, 95])
+        if p95 - p5 <= 1e-6:
+            return None
+        return float(p5), float(p95)
+
+    # ------------------------------------------------------------------
+    # Mutation
+    # ------------------------------------------------------------------
+
     def add(self, embedding: np.ndarray, *, metadata: dict | None = None) -> None:
         self._ensure_loaded()
         vector = np.asarray(embedding, dtype=np.float32).reshape(1, 512)
@@ -155,6 +232,10 @@ class NumpyTasteStore(TasteStore):
         self._embeddings = np.concatenate((self._embeddings, vector), axis=0)  # type: ignore[arg-type]
         self._metadata.append(metadata)
         self._centroid = _compute_centroid(self._embeddings)
+
+    # ------------------------------------------------------------------
+    # Scoring
+    # ------------------------------------------------------------------
 
     def query_similar(self, embedding: np.ndarray, k: int = 10) -> list[float]:
         self._ensure_loaded()
@@ -169,13 +250,42 @@ class NumpyTasteStore(TasteStore):
     def style_score(self, embedding: np.ndarray, k: int = 10) -> float:
         """The knn_sim scalar: weighted positive k-NN minus junk-proximity penalty."""
         self._ensure_loaded()
-        vector = np.asarray(embedding, dtype=np.float32).reshape(512)
-        positive = weighted_topk_mean(self._embeddings @ vector, k)  # type: ignore[operator]
-        if self._neg_embeddings is None or pipeline_settings.TASTE_NEG_WEIGHT <= 0:
+        return self._contrastive_knn(
+            np.asarray(embedding, dtype=np.float32).reshape(512),
+            self._embeddings,  # type: ignore[arg-type]
+            self._neg_embeddings,
+            k,
+        )
+
+    def dino_style_score(self, dino_embedding: np.ndarray, k: int = 10) -> float:
+        """Second-opinion style score in the DINOv2 space (same contrastive k-NN)."""
+        self._ensure_loaded()
+        if self._dino_embeddings is None:
+            raise RuntimeError(
+                "Taste profile has no DINOv2 embeddings — rebuild it with "
+                "`python -m marquee.ml.taste_trainer` after exporting the model."
+            )
+        dim = self._dino_embeddings.shape[1]
+        return self._contrastive_knn(
+            np.asarray(dino_embedding, dtype=np.float32).reshape(dim),
+            self._dino_embeddings,
+            self._neg_dino_embeddings,
+            k,
+        )
+
+    @staticmethod
+    def _contrastive_knn(
+        vector: np.ndarray,
+        positives: np.ndarray,
+        negatives: np.ndarray | None,
+        k: int,
+    ) -> float:
+        positive = weighted_topk_mean(positives @ vector, k)
+        if negatives is None or pipeline_settings.TASTE_NEG_WEIGHT <= 0:
             return positive
         negative = weighted_topk_mean(
-            self._neg_embeddings @ vector,
-            min(k, self.negative_size),
+            negatives @ vector,
+            min(k, int(negatives.shape[0])),
         )
         penalty = pipeline_settings.TASTE_NEG_WEIGHT * max(0.0, negative - positive)
         return positive - penalty

@@ -45,6 +45,34 @@ class PipelineSettings(BaseSettings):
     TASTE_PROFILE_PATH: Path = _ML_DIR / "taste_profile.clip-vit-b-32.npz"
     EMBEDDING_CACHE_DIR: Path = _PROJECT_ROOT / "data" / "cache" / "embeddings"
 
+    # ── Extended features (recs 1-6) ─────────────────────────────────
+    # DINOv2 second style opinion: "auto" enables it on GPU tiers (cuda,
+    # openvino-gpu, coreml) and disables it on CPU tiers; "on"/"off" force.
+    DINO_ENABLED: str = "auto"
+    DINO_MODEL_PATH: Path = _MODELS_DIR / "dinov2-vits14.onnx"
+    # Rec 5 master switch: quality-artifact metrics (blockiness + sensor
+    # noise) and the person detector. Easy A/B: EXTRA_QUALITY_ENABLED=false.
+    EXTRA_QUALITY_ENABLED: bool = True
+    PERSON_MODEL_PATH: Path = _MODELS_DIR / "yolo11n.onnx"
+    PERSON_CONFIDENCE_THRESHOLD: float = 0.40
+    # Exemplar-calibrated normalization (rec 2): score each taste-band
+    # feature by KDE typicality against the taste profile's per-feature
+    # distributions instead of fixed higher-is-better ramps.
+    CALIBRATION_ENABLED: bool = True
+    # Bandwidth multiplier for the per-feature KDE. >1 = smoother/more
+    # forgiving taste bands; <1 = sharper peaks around exemplar clusters.
+    CALIBRATION_BANDWIDTH_SCALE: float = 1.0
+    # Minimum non-NaN exemplar samples before a feature is calibrated;
+    # below this the fixed normalization fallback is used.
+    CALIBRATION_MIN_SAMPLES: int = 20
+    # Zero-shot CLIP axes artifact (text-prompt directions). Built once via
+    # `python -m marquee.ml.zeroshot`; skipped with a warning if absent.
+    ZEROSHOT_AXES_PATH: Path = _ML_DIR / "zeroshot_axes.clip-vit-b-32.npz"
+    # Scorer selection: "auto" uses the learned head when a trained artifact
+    # exists, otherwise the Phase-0 weighted scorer. "weighted"/"learned" force.
+    SCORER: str = "auto"
+    LEARNED_HEAD_PATH: Path = _MODELS_DIR / "learned_head.clip-vit-b-32.npz"
+
     # Fixed Phase-0 normalization ranges.
     NORM_KNN_MIN: float = 0.4
     NORM_KNN_MAX: float = 0.9
@@ -57,7 +85,9 @@ class PipelineSettings(BaseSettings):
     NORM_RESOLUTION_MAX_MP: float = 6.0
     NORM_SHARPNESS_MAX: float = 2000.0
 
-    # Phase-0 scorer weights.
+    # Phase-0 scorer weights. The scorer renormalizes by the total of the
+    # weights whose features are actually available, so the new features can
+    # be toggled off (or their models absent) without breaking the [0,1] range.
     WEIGHT_KNN_SIM: float = 0.30
     WEIGHT_AESTHETIC: float = 0.20
     WEIGHT_TITLE_COLORFULNESS: float = 0.15
@@ -67,6 +97,35 @@ class PipelineSettings(BaseSettings):
     WEIGHT_SHARPNESS: float = 0.03
     WEIGHT_RESOLUTION: float = 0.0
     WEIGHT_LANG_MATCH: float = 0.0
+    # New scorer features (recs 1-5). dino_knn only participates on GPU
+    # tiers; taste_typicality is the mean KDE typicality over
+    # TYPICALITY_FEATURES; quality_artifacts is monotonic (clean = 1).
+    WEIGHT_DINO_KNN: float = 0.10
+    WEIGHT_TASTE_TYPICALITY: float = 0.10
+    WEIGHT_QUALITY_ARTIFACTS: float = 0.03
+
+    # Fine-grained features aggregated into taste_typicality. Each is scored
+    # by closeness to the taste profile's own distribution of that feature.
+    TYPICALITY_FEATURES: list[str] = [
+        # palette / mood
+        "darkness", "mean_saturation", "hue_entropy", "global_colorfulness",
+        "contrast_rms",
+        # composition
+        "negative_space_frac", "edge_density", "visual_entropy", "symmetry",
+        # typography geometry
+        "title_height_frac", "title_y_center", "title_centeredness",
+        # subject / faces / people
+        "face_count", "largest_face_frac", "person_count", "person_area_frac",
+        # CLIP zero-shot style axes
+        "axis_illustrated", "axis_minimalist", "axis_vintage",
+        # personalized quality band
+        "aesthetic",
+    ]
+
+    # Quality-artifact raw blend saturation points (values at which each
+    # component is considered fully bad).
+    QUALITY_BLOCKINESS_SAT: float = 6.0
+    QUALITY_NOISE_SAT: float = 12.0
 
     # Hard gate thresholds.
     GATE_MIN_WIDTH: int = 500
@@ -166,6 +225,14 @@ class PipelineSettings(BaseSettings):
             raise ValueError("OCR_MAX_RESIDUAL_BOXES cannot be negative")
         if not 0 <= self.OCR_MAX_RESIDUAL_AREA_FRACTION <= 1:
             raise ValueError("OCR_MAX_RESIDUAL_AREA_FRACTION must be in [0, 1]")
+        if self.DINO_ENABLED not in ("auto", "on", "off"):
+            raise ValueError("DINO_ENABLED must be 'auto', 'on', or 'off'")
+        if self.SCORER not in ("auto", "weighted", "learned"):
+            raise ValueError("SCORER must be 'auto', 'weighted', or 'learned'")
+        if self.CALIBRATION_BANDWIDTH_SCALE <= 0:
+            raise ValueError("CALIBRATION_BANDWIDTH_SCALE must be positive")
+        if self.CALIBRATION_MIN_SAMPLES < 2:
+            raise ValueError("CALIBRATION_MIN_SAMPLES must be at least 2")
         if self.RESIDUAL_COUNT_SAT < 1:
             raise ValueError("RESIDUAL_COUNT_SAT must be at least 1")
         if self.RESIDUAL_WEIGHT_COUNT < 0 or self.RESIDUAL_WEIGHT_AREA < 0:
@@ -199,6 +266,9 @@ class PipelineSettings(BaseSettings):
             "sharpness": self.WEIGHT_SHARPNESS,
             "resolution": self.WEIGHT_RESOLUTION,
             "lang_match": self.WEIGHT_LANG_MATCH,
+            "dino_knn": self.WEIGHT_DINO_KNN,
+            "taste_typicality": self.WEIGHT_TASTE_TYPICALITY,
+            "quality_artifacts": self.WEIGHT_QUALITY_ARTIFACTS,
         }
 
     def snapshot(self) -> dict[str, object]:
@@ -227,6 +297,14 @@ class PipelineSettings(BaseSettings):
                 "detail_passes": self.OCR_DETAIL_PASSES,
                 "max_residual_boxes": self.OCR_MAX_RESIDUAL_BOXES,
                 "max_residual_area_fraction": self.OCR_MAX_RESIDUAL_AREA_FRACTION,
+            },
+            "extended_features": {
+                "dino_enabled": self.DINO_ENABLED,
+                "extra_quality_enabled": self.EXTRA_QUALITY_ENABLED,
+                "calibration_enabled": self.CALIBRATION_ENABLED,
+                "calibration_bandwidth_scale": self.CALIBRATION_BANDWIDTH_SCALE,
+                "typicality_features": self.TYPICALITY_FEATURES,
+                "scorer": self.SCORER,
             },
             "dedup_phash_threshold": self.DEDUP_PHASH_THRESHOLD,
             "dedup_min_poster_width": self.DEDUP_MIN_POSTER_WIDTH,

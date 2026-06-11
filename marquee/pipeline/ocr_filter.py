@@ -243,7 +243,11 @@ def _init_worker(title_tokens: set[str], director_tokens: set[str]) -> None:
     global _worker_ocr, _worker_title_tokens, _worker_director_tokens
     _worker_title_tokens = title_tokens
     _worker_director_tokens = director_tokens
-    _worker_ocr = _load_ocr()
+    # Idempotent on the model load: the taste trainer re-initializes the
+    # tokens once per exemplar (every poster has a different title) and must
+    # not reload PaddleOCR 430 times. Workers only ever call this once.
+    if _worker_ocr is None:
+        _worker_ocr = _load_ocr()
 
 
 def _exit_worker(result_queue: Any, exit_code: int) -> NoReturn:

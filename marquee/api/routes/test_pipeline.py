@@ -42,7 +42,7 @@ from marquee.pipeline.features import FeatureExtractor
 from marquee.pipeline.gate import PosterGate
 from marquee.pipeline.ocr_filter import PosterTextFilter
 from marquee.pipeline.output import place_gated, place_ranked
-from marquee.pipeline.scorer import WeightedScorer
+from marquee.pipeline.scorer import select_scorer
 from marquee.pipeline.types import CandidateScore, OCRCandidateResult
 
 logger = logging.getLogger(__name__)
@@ -141,6 +141,65 @@ def _stage_done(
         survivors,
         elapsed,
     )
+
+
+def _log_detail_features(
+    feature_extractor: FeatureExtractor,
+    record: CandidateScore,
+) -> None:
+    """Per-candidate decision trace: every measured value, every typicality.
+
+    Cross-reference key: the calibration bands (median/p10/p90 per feature)
+    are logged once at preflight; this logs each candidate's raw value and
+    its typicality against those bands.
+    """
+    features = record.features
+    raw = {
+        name: (round(value, 6) if value is not None else None)
+        for name, value in features.raw_values().items()
+    }
+    logger.info(
+        "FEATURES | file=%s | raw=%s",
+        record.orig_filename,
+        json.dumps(raw, sort_keys=True),
+    )
+    if features.extended:
+        logger.info(
+            "FEATURES EXTENDED | file=%s | %s",
+            record.orig_filename,
+            json.dumps(
+                {k: round(v, 6) for k, v in features.extended.items()},
+                sort_keys=True,
+            ),
+        )
+    calibration = getattr(feature_extractor, "_calibration", None)
+    if features.typicality_detail and calibration is not None:
+        entries = []
+        for name in sorted(features.typicality_detail):
+            value = (
+                features.aesthetic
+                if name == "aesthetic"
+                else features.extended.get(name)
+            )
+            band = calibration.band(name)
+            band_text = (
+                f"[p10={band.p10:.3f} med={band.median:.3f} p90={band.p90:.3f}]"
+                if band
+                else "[?]"
+            )
+            entries.append(
+                f"{name}={value:.4f}->{features.typicality_detail[name]:.3f} {band_text}"
+            )
+        logger.info(
+            "TYPICALITY | file=%s | mean=%s | %s",
+            record.orig_filename,
+            (
+                f"{features.taste_typicality:.4f}"
+                if features.taste_typicality is not None
+                else "n/a"
+            ),
+            " | ".join(entries),
+        )
 
 
 def _log_dedup_removal(removal: DedupRemoval) -> None:
@@ -308,10 +367,14 @@ def _run_sync_stages(
         record.features = result
         styled.append(path)
         logger.info(
-            "STYLE FEATURES | file=%s | knn_sim=%.4f | aesthetic=%.4f",
+            "STYLE FEATURES | file=%s | knn_sim=%.4f | aesthetic=%.4f | axes=%s",
             path.name,
             result.knn_sim,
             result.aesthetic,
+            json.dumps(
+                {k: round(v, 4) for k, v in result.extended.items()},
+                sort_keys=True,
+            ),
         )
     _stage_done("style-features", stage_started, timings, survivors=len(styled))
 
@@ -412,33 +475,35 @@ def _run_sync_stages(
     outcome.counts["phash_survivors"] = len(ocr_survivors)
     _stage_done("phash", stage_started, timings, survivors=len(ocr_survivors))
 
-    # Stage 4b: detail features (face, title colorfulness, sharpness,
-    # text_residual) — survivors only, then the remaining hard gate.
+    # Stage 4b: detail features (DINOv2 batched, face/person geometry, CV
+    # palette/composition pack, quality artifacts, calibrated typicality)
+    # — survivors only, then the remaining hard gate.
     stage_started = time.perf_counter()
     logger.info("STAGE START | detail-features | input=%d", len(ocr_survivors))
-    diagnostic_scorer = WeightedScorer()
+    diagnostic_scorer = select_scorer()
     passed: list[CandidateScore] = []
-    for ocr_result in ocr_survivors:
+    detail_items = [
+        (records[r.image_path.name].features, r) for r in ocr_survivors
+    ]
+    detail_results = feature_extractor.complete_batch(detail_items)
+    for ocr_result, detail_result in zip(ocr_survivors, detail_results, strict=True):
         filename = ocr_result.image_path.name
         record = records[filename]
         record.stage_reached = "features"
-        try:
-            record.features = feature_extractor.complete(record.features, ocr_result)
-        except Exception as exc:
-            record.rejection_reason = f"feature_error: {exc}"
+        if isinstance(detail_result, Exception):
+            record.rejection_reason = f"feature_error: {detail_result}"
             record.image_path = _copy_with_reason(
                 ocr_result.image_path,
                 errored_dir,
                 "feature_error",
             )
-            logger.exception("FEATURE ERROR | file=%s | error=%s", filename, exc)
+            logger.error(
+                "FEATURE ERROR | file=%s | error=%s", filename, detail_result
+            )
             continue
+        record.features = detail_result
         _, record.contributions = diagnostic_scorer.score(record.features)
-        logger.info(
-            "FEATURES | file=%s | raw=%s",
-            filename,
-            json.dumps(record.features.raw_values(), sort_keys=True),
-        )
+        _log_detail_features(feature_extractor, record)
 
         record.stage_reached = "gate"
         decision = gate.evaluate_detail(record.features)
@@ -470,26 +535,42 @@ def _run_sync_stages(
 
     # Stage 6: within-movie ranking.
     stage_started = time.perf_counter()
-    logger.info("STAGE START | rank | input=%d", len(passed))
-    ranked = diagnostic_scorer.rank(passed)
-    total_weight = sum(
-        weight
-        for weight in pipeline_settings.scorer_weights.values()
-        if weight > 0
+    logger.info(
+        "STAGE START | rank | input=%d | scorer=%s",
+        len(passed),
+        diagnostic_scorer.name,
     )
+    ranked = diagnostic_scorer.rank(passed)
     for record in ranked:
         logger.info(
-            "RANK | rank=%d | file=%s | final_score=%.4f",
+            "RANK | rank=%d | file=%s | final_score=%.4f | scorer=%s",
             record.rank,
             record.orig_filename,
             record.final_score,
+            diagnostic_scorer.name,
+        )
+        # Per-feature decomposition. Optional features that were not
+        # computed this run (dino on CPU, quality pack off) log as absent.
+        configured_weights = pipeline_settings.scorer_weights
+        active_total = sum(
+            weight
+            for name, weight in configured_weights.items()
+            if weight > 0 and name in record.features.normalized
         )
         for feature_name, raw_value in record.features.raw_values().items():
-            normalized = record.features.normalized[feature_name]
-            configured_weight = pipeline_settings.scorer_weights[feature_name]
+            normalized = record.features.normalized.get(feature_name)
+            if normalized is None:
+                logger.info(
+                    "RANK DETAIL | file=%s | feature=%s | absent (not computed "
+                    "this run — weight redistributed)",
+                    record.orig_filename,
+                    feature_name,
+                )
+                continue
+            configured_weight = configured_weights.get(feature_name, 0.0)
             effective_weight = (
-                configured_weight / total_weight
-                if configured_weight > 0
+                configured_weight / active_total
+                if configured_weight > 0 and active_total > 0
                 else 0.0
             )
             logger.info(
@@ -497,7 +578,7 @@ def _run_sync_stages(
                 "normalized=%.6f | weight=%.6f | contribution=%.6f",
                 record.orig_filename,
                 feature_name,
-                raw_value,
+                raw_value if raw_value is not None else float("nan"),
                 normalized,
                 effective_weight,
                 record.contributions.get(feature_name, 0.0),
