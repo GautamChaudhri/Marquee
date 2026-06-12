@@ -56,3 +56,6 @@ marquee/**/__pycache__/
 experiments/data
 marquee/ml/models/
 marquee/experiments/
+
+
+.claude/
