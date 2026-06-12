@@ -95,5 +95,13 @@ def normalize_features(
         # Raw value is a 0..1 badness blend; invert to cleanliness.
         normalized["quality_artifacts"] = _clip(1.0 - features.quality_artifacts)
 
+    if features.official_family is not None:
+        official_span = config.NORM_OFFICIAL_MAX - config.NORM_OFFICIAL_MIN
+        normalized["official_family"] = _clip(
+            (features.official_family - config.NORM_OFFICIAL_MIN) / official_span
+            if official_span > 0
+            else 0.0
+        )
+
     features.normalized = normalized
     return normalized

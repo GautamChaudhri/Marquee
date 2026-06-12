@@ -369,14 +369,31 @@ Everything here is a knob, not a commitment.
   reject. Off by default; turn on if fan art still slips through.
 - **OCR contrast-enhance retry:** when the base OCR pass finds no text on a stylized poster, a
   2× contrast-boosted retry recovers low-contrast/metallic/embossed title text. On by default.
-- **OCR accept-no-text:** when even the retry finds nothing, accept the poster as a stylized
-  title-only design (vs rejecting it). The poster lands at the end of the ranking. On by default.
+- **OCR no-text / no-title handling:** posters with no detected text (`no_text`) or text that
+  never matches the title (`no_title`, gated by `OCR_REQUIRE_TITLE`, default on) are **rejected
+  per image** — the project target is title-only posters, and textless character art must not
+  reach ranking (validated on Avengers: Age of Ultron, where 19 textless posters previously
+  ranked as high as #2). `OCR_ACCEPT_NO_TEXT` (default on) is a **batch-level fallback only**:
+  when an entire movie has zero titled survivors (title typography defeats OCR everywhere), the
+  no_text/no_title rejects are rescued — logged loudly as `OCR FALLBACK` — so the movie still
+  gets a poster. Rescued posters never compete against titled ones.
 - **OCR text-heavy thresholds:** the gate rejects when the significant residual boxes exceed
   `OCR_MAX_RESIDUAL_BOXES` **or** their total area exceeds `OCR_MAX_RESIDUAL_AREA_FRACTION`
   (default 0.04) of the image. **Default `OCR_MAX_RESIDUAL_BOXES=0` = strict title-only text:
   any significant non-title box rejects the poster — this is the current project target.**
   When the target later relaxes (e.g. tolerate official taglines), raise it to 1-2 and the
   tagline becomes a `text_residual` rank penalty instead of a rejection; no code change needed.
+- **OCR residual significance (2026-06-11):** a residual box is significant if it contains a
+  clearly non-title word (4+ chars, non-digit) **or** — geometry rule — it is big
+  (`OCR_RESIDUAL_SIGNIFICANT_AREA_FRACTION` ≥ 0.5% of the image, or wider than 40% of it)
+  AND confident (full-pass confidence ≥ 0.75) AND geometrically valid. The geometry rule
+  catches big text the recognizer garbles ("70MM" → "mm", "DIRECTED BY CHRISTOPHER NOLAN" →
+  "r"); the confidence/validity guards keep it away from the low-confidence strip passes
+  (which hallucinate boxes on truck grilles and ferns) and from rotated-frame vertical reads.
+  The top strip is now 2×-upscaled like the bottom strip (catches small header credits).
+  **Vertical-textline reads** (rotated, out-of-bounds polygons) keep their TEXT — vertical
+  titles like Interstellar's teaser are only readable through that pathway — but are flagged
+  `geometry_valid=False` and excluded from all size/position decisions.
 - **No-title neutral colorfulness:** when OCR finds no title box at all, `title_colorfulness`
   normalizes to `NORM_TITLE_COLORFULNESS_NEUTRAL` (default 0.5) instead of 0 — posters with
   stylized titles the OCR cannot read are not punished as if they had plain white text.
@@ -402,6 +419,16 @@ Everything here is a knob, not a commitment.
   arbitrate the pair first: if one passes and one fails, the clean version survives. The cost is
   OCR running on all SHA-256 survivors (not the pHash-thinned set), but near-duplicate groups are
   typically small so the overhead is modest.
+- **pHash representative selection (preference-aware):** within a near-dupe group, the survivor
+  is chosen by `(title found, fewest residual text boxes, knn_sim)`, with resolution only as the
+  final tiebreak — pure resolution used to keep the *worst* variant of a group (e.g. the member
+  with a "MARVEL STUDIOS" overlay over the clean title-only member, observed on Age of Ultron's
+  12-member official-art cluster). Each keep decision is logged as `DEDUP KEEP` with the winning
+  preference tuple. SHA-256 groups still use resolution (members are byte-identical). Note:
+  title-*position* variants of the same art usually land **beyond** the pHash threshold (the
+  title is high-contrast structure), so they survive as separate ranked candidates by design;
+  raising `DEDUP_PHASH_THRESHOLD` merges more of them, and with preference-aware selection that
+  is now safe — the cleanest member wins, not the largest.
 - **Genre as a soft feature:** §6. Append genre one-hot to the vector if conditional preferences
   emerge. Never as a hard bucket.
 - **title_colorfulness glyph isolation:** default measures colorfulness over the whole title crop;

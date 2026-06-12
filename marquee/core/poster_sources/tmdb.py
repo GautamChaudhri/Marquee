@@ -160,6 +160,20 @@ class TMDBClient:
         )
         return self._parse_posters(data)
 
+    async def get_movie_primary_poster(self, tmdb_id: int) -> str | None:
+        """Return the filename of the movie's TMDB primary poster.
+
+        The primary poster (the movie detail's ``poster_path``) is the
+        community-selected representative image — in practice almost always
+        the official key art. Used as the anchor for the pipeline's
+        ``official_family`` signal.
+        """
+        data = await self._get(f"/movie/{tmdb_id}")
+        poster_path = data.get("poster_path") if isinstance(data, dict) else None
+        if not poster_path:
+            return None
+        return poster_path.lstrip("/").split("/")[-1]
+
     # ── TV Endpoints ─────────────────────────────────────────────────
 
     async def get_tv_images(

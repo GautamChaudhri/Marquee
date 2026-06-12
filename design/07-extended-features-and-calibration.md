@@ -122,6 +122,41 @@ features.
 `EXTRA_QUALITY_ENABLED=false` turns off both artifact metrics and the
 person detector in one flag for A/B testing.
 
+### Official key-art family (2026-06-11 — `official_family`)
+
+The single strongest kept-vs-flagged discriminator measured on three labeled
+movies (Avengers/Interstellar/Strange Darling): **CLIP cosine to the movie's
+TMDB primary poster** (the movie detail's `poster_path`, community-selected
+and in practice the official key art). Fan art diverges from the primary
+(med ~0.75-0.85); official variants — including clean title-only versions of
+a text-heavy primary — cluster at 0.90+. Costs nothing: the primary is
+already in the candidate set, its embedding already computed in the style
+batch.
+
+- Raw feature on every candidate, ramped through `NORM_OFFICIAL_MIN/MAX`
+  (0.60/0.95), weight `WEIGHT_OFFICIAL_FAMILY = 0.12`.
+- The primary's filename also joins the pHash preference tuple
+  `(title_found, -residual_boxes, is_primary, knn_sim)` — when the official
+  primary is in a near-dupe group it wins the group (fixed Interstellar,
+  where the clean official primary used to lose its cluster to a fan
+  variant on resolution).
+- The primary itself is often OCR-rejected (official theatrical one-sheets
+  carry billing text) — that is correct under the title-only target; its
+  art family still inherits the boost.
+- Degrades loudly: primary missing from TMDB, never downloaded, or gated
+  before embedding → `OFFICIAL | ... disabled` log, weight redistributed.
+- Validated empirically; independently confirmed by a preview learned head
+  trained on the 78 reconstructed labels (official_family got the largest
+  positive weight; aesthetic was zeroed — LAION's head loves slick fan art,
+  hence its scorer weight dropped 0.20 → 0.12, provenance 0.07 → 0.02 since
+  TMDB poster votes are almost all zero).
+
+Future authority anchors (designed, not built): Wikipedia film-infobox
+poster via imdb_id → Wikidata → enwiki pageimage (free, no key; the infobox
+image is virtually always the official theatrical one-sheet) and Fanart.tv
+movieposter likes as a weaker prior. Both would extend `official_family` to
+`max(cos to any authority image)` rather than introduce new features.
+
 ## 3. Profile build (`marquee/ml/taste_trainer.py`)
 
 The trainer now measures everything on the exemplars, matching pipeline
@@ -200,5 +235,7 @@ per candidate — the future training dataset grows with every run.
 | `CALIBRATION_BANDWIDTH_SCALE` | 1.0 | taste-band width multiplier |
 | `CALIBRATION_MIN_SAMPLES` | 20 | floor before a band activates |
 | `TYPICALITY_FEATURES` | (list) | which features vote in taste_typicality |
-| `WEIGHT_DINO_KNN / _TASTE_TYPICALITY / _QUALITY_ARTIFACTS` | .10/.10/.03 | new scorer weights |
+| `WEIGHT_DINO_KNN / _TASTE_TYPICALITY / _QUALITY_ARTIFACTS` | .12/.12/.03 | new scorer weights |
+| `WEIGHT_OFFICIAL_FAMILY` | 0.12 | CLIP cosine to TMDB primary poster |
+| `NORM_OFFICIAL_MIN / _MAX` | 0.60 / 0.95 | official_family cosine ramp |
 | `SCORER` | auto | auto/weighted/learned |

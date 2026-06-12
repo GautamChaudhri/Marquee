@@ -12,10 +12,13 @@ expensive OCR and AI scoring stages.
   Computes a perceptual hash for each survivor.  Posters with Hamming
   distance ≤ ``DEDUP_PHASH_THRESHOLD`` (default 6) are considered
   near-duplicates — same visual composition but different compression,
-  colour-space, or minor edits.  The highest-resolution version is kept.
+  colour-space, or minor edits.
 
-Both stages are resolution-aware: when duplicates are found, the poster
-with the largest width×height survives.
+Group representative selection: an optional ``preference_by_name`` sort key
+(title found, fewest residual text boxes, taste similarity) decides which
+member of a duplicate group survives; resolution breaks remaining ties.
+Without preference data the largest width×height wins (SHA-256 stage, where
+duplicates are byte-identical anyway).
 
 Salvaged from ``experiments/filtering/deduplicate_posters.py`` (SHA-256)
 and extended with pHash.
@@ -102,6 +105,11 @@ class PosterDeduper:
         sha256_only: If True, skip pHash stage (debug / dry-run).
         min_width: Minimum poster width in pixels (default from config).
         phash_threshold: Hamming distance ≤ this → near-duplicate.
+        preference_by_name: Optional sort key per filename (higher tuple wins)
+            used to pick the cluster representative BEFORE the resolution
+            tiebreak.  The pipeline passes (title_found, -residual_boxes,
+            knn_sim) so a near-dupe group keeps its cleanest, most on-taste
+            member instead of just the largest file.
     """
 
     def __init__(
@@ -111,6 +119,7 @@ class PosterDeduper:
         min_width: int | None = None,
         phash_threshold: int | None = None,
         resolution_by_name: dict[str, tuple[int, int]] | None = None,
+        preference_by_name: dict[str, tuple] | None = None,
     ):
         self._sha256_only = sha256_only
         self._min_width = (
@@ -122,6 +131,7 @@ class PosterDeduper:
             else pipeline_settings.DEDUP_PHASH_THRESHOLD
         )
         self._resolution_by_name = resolution_by_name or {}
+        self._preference_by_name = preference_by_name or {}
 
     # ------------------------------------------------------------------
     # Public API
@@ -347,30 +357,39 @@ class PosterDeduper:
     # ------------------------------------------------------------------
 
     def _pick_best_resolution(self, paths: list[Path]) -> Path:
-        """Return the poster with the largest width×height.
+        """Return the preferred group representative.
 
-        If dimensions can't be read, the path is still included (sorted
-        last).  If only one path, return it directly.
+        Sort key is (preference tuple, width×height): the caller-supplied
+        preference (title found, fewest residual boxes, taste similarity)
+        decides first; resolution only breaks remaining ties.  Without
+        preference data this degrades to the original pure-resolution pick.
+        If dimensions can't be read, the path is still included (sorted last).
         """
         if len(paths) == 1:
             return paths[0]
 
-        scored: list[tuple[int, Path]] = []
+        scored: list[tuple[tuple, int, Path]] = []
         for p in paths:
+            preference = self._preference_by_name.get(p.name, ())
             original = self._resolution_by_name.get(p.name)
             if original is not None:
-                scored.append((original[0] * original[1], p))
+                scored.append((preference, original[0] * original[1], p))
                 continue
             try:
                 with Image.open(p) as img:
-                    scored.append((img.width * img.height, p))
+                    scored.append((preference, img.width * img.height, p))
             except Exception:
-                scored.append((0, p))
+                scored.append((preference, 0, p))
 
-        scored.sort(key=lambda x: x[0], reverse=True)
-        best = scored[0][1]
-        logger.debug(
-            "Resolution tiebreak: kept %s (%d px²) from %d candidates",
-            best.name, scored[0][0], len(paths),
+        scored.sort(key=lambda x: (x[0], x[1]), reverse=True)
+        best = scored[0][2]
+        log = logger.info if any(x[0] for x in scored) else logger.debug
+        log(
+            "DEDUP KEEP | file=%s | preference=%s | resolution=%dpx2 | "
+            "group_size=%d",
+            best.name,
+            scored[0][0] or None,
+            scored[0][1],
+            len(paths),
         )
         return best

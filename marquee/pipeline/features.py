@@ -206,11 +206,18 @@ class FeatureExtractor:
     def extract_style_batch(
         self,
         items: list[tuple[Path, PosterCandidate]],
+        *,
+        primary_name: str | None = None,
     ) -> list[FeatureVector | Exception]:
         """Compute the embedding-driven and metadata scalars for many posters.
 
         Per-item failures (corrupt image, decode error) are returned as the
         exception in that slot; a session-level failure raises (systemic).
+
+        When ``primary_name`` (the movie's TMDB primary poster filename) is
+        among the items, every candidate additionally gets
+        ``official_family`` — its CLIP cosine to that primary, the "official
+        key-art family" signal.
         """
         results: list[FeatureVector | Exception] = [
             Exception("not computed") for _ in items
@@ -237,10 +244,43 @@ class FeatureExtractor:
                 embeddings[index] = vector
                 self._save_cached_embedding(items[index][0].name, vector)
 
+        primary_embedding: np.ndarray | None = None
+        if primary_name is not None:
+            primary_embedding = next(
+                (
+                    embeddings[index]
+                    for index, (image_path, _candidate) in enumerate(items)
+                    if image_path.name == primary_name and index in embeddings
+                ),
+                None,
+            )
+            if primary_embedding is None:
+                logger.warning(
+                    "OFFICIAL | primary poster %s not embedded this run — "
+                    "official_family disabled (weight redistributed)",
+                    primary_name,
+                )
+            else:
+                logger.info(
+                    "OFFICIAL | primary=%s — scoring official_family for %d "
+                    "candidate(s)",
+                    primary_name,
+                    len(embeddings),
+                )
+
         for index, (_image_path, candidate) in enumerate(items):
             if index not in embeddings:
                 continue
-            results[index] = self._style_features(embeddings[index], candidate)
+            official_family = (
+                float(np.dot(embeddings[index], primary_embedding))
+                if primary_embedding is not None
+                else None
+            )
+            results[index] = self._style_features(
+                embeddings[index],
+                candidate,
+                official_family=official_family,
+            )
         return results
 
     def extract_style(
@@ -258,6 +298,8 @@ class FeatureExtractor:
         self,
         embedding: np.ndarray,
         candidate: PosterCandidate,
+        *,
+        official_family: float | None = None,
     ) -> FeatureVector:
         vote_count = max(candidate.vote_count, 0)
         adjusted_vote = (
@@ -282,6 +324,7 @@ class FeatureExtractor:
             face_area=0.0,
             provenance=max(0.0, min(adjusted_vote / 10.0, 1.0)),
             lang_match=self._language_match(candidate.language),
+            official_family=official_family,
             title_found=False,
         )
         if self._zeroshot is not None:

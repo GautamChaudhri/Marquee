@@ -281,6 +281,7 @@ def _run_sync_stages(
     all_files: list[Path],
     resolution_by_name: dict[str, tuple[int, int]],
     timings: dict[str, float],
+    primary_name: str | None = None,
 ) -> _SyncOutcome:
     """All CPU/GPU-bound stages, run off the event loop via asyncio.to_thread."""
     outcome = _SyncOutcome()
@@ -354,7 +355,9 @@ def _run_sync_stages(
     style_items = [
         (path, candidate_map[path.name]) for path in resolution_survivors
     ]
-    style_results = feature_extractor.extract_style_batch(style_items)
+    style_results = feature_extractor.extract_style_batch(
+        style_items, primary_name=primary_name
+    )
     styled: list[Path] = []
     for (path, _candidate), result in zip(style_items, style_results, strict=True):
         record = records[path.name]
@@ -447,14 +450,29 @@ def _run_sync_stages(
     # Stage 2b: perceptual dedup on OCR survivors.
     # Placed after OCR so text-variant near-duplicates are resolved by the OCR
     # gate rather than a resolution tiebreak (see design §9 pHash placement).
+    # The representative of each near-dupe group is chosen by preference —
+    # title found, fewest residual text boxes, TMDB primary poster, then
+    # taste similarity — so the cleanest on-taste (and official, when the
+    # primary is in the group) variant survives instead of the largest file.
     stage_started = time.perf_counter()
     ocr_survivor_paths = [r.image_path for r in ocr_survivors]
     logger.info("STAGE START | phash | input=%d", len(ocr_survivor_paths))
     phash_rejected_dir = out_dir / "3-phash-rejected"
     phash_rejected_dir.mkdir()
+    dedup_preference = {
+        r.image_path.name: (
+            1 if r.title_bbox is not None else 0,
+            -len(r.residual_boxes),
+            1 if r.image_path.name == primary_name else 0,
+            records[r.image_path.name].features.knn_sim,
+        )
+        for r in ocr_survivors
+        if records[r.image_path.name].features is not None
+    }
     phash_result = PosterDeduper(
         min_width=0,
         resolution_by_name=resolution_by_name,
+        preference_by_name=dedup_preference,
     ).deduplicate(ocr_survivor_paths)
     phash_survivor_names = {path.name for path in phash_result.survivors}
     for removal in phash_result.removals:
@@ -649,6 +667,16 @@ async def test_pipeline_movie(
         stage_started = time.perf_counter()
         logger.info("STAGE START | fetch")
         candidates = await tmdb.get_movie_images(movie.tmdb_id)
+        try:
+            primary_name = await tmdb.get_movie_primary_poster(movie.tmdb_id)
+        except Exception as exc:
+            primary_name = None
+            logger.warning(
+                "FETCH | primary poster lookup failed (%s) — "
+                "official_family disabled this run",
+                exc,
+            )
+        logger.info("FETCH | primary_poster=%s", primary_name)
         for candidate in candidates:
             filename = _candidate_filename(candidate)
             candidate_map[filename] = candidate
@@ -708,6 +736,7 @@ async def test_pipeline_movie(
             all_files=all_files,
             resolution_by_name=resolution_by_name,
             timings=timings,
+            primary_name=primary_name,
         )
         status = outcome.status
         ranked = outcome.ranked

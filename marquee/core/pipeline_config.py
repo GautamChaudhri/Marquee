@@ -84,25 +84,42 @@ class PipelineSettings(BaseSettings):
     NORM_TITLE_COLORFULNESS_NEUTRAL: float = 0.5
     NORM_RESOLUTION_MAX_MP: float = 6.0
     NORM_SHARPNESS_MAX: float = 2000.0
+    # official_family CLIP-cosine ramp. Measured on Avengers/Interstellar/
+    # Strange Darling (2026-06-11): same-art-family candidates sit at
+    # 0.90+, official alternates 0.75-0.90, fan art 0.60-0.80.
+    NORM_OFFICIAL_MIN: float = 0.60
+    NORM_OFFICIAL_MAX: float = 0.95
 
     # Phase-0 scorer weights. The scorer renormalizes by the total of the
     # weights whose features are actually available, so the new features can
     # be toggled off (or their models absent) without breaking the [0,1] range.
+    # 2026-06-11 rebalance from 3-movie labeled evidence: aesthetic
+    # anti-discriminates (LAION head loves slick fan art) so it dropped;
+    # provenance is nearly constant (TMDB poster votes are ~all zero) so it
+    # dropped; official_family (CLIP cosine to the TMDB primary poster) was
+    # the strongest single discriminator and dino/typicality both separated
+    # kept-vs-flagged, so they absorbed the freed weight.
     WEIGHT_KNN_SIM: float = 0.30
-    WEIGHT_AESTHETIC: float = 0.20
+    WEIGHT_AESTHETIC: float = 0.12
     WEIGHT_TITLE_COLORFULNESS: float = 0.15
     WEIGHT_FACE_AREA: float = 0.15
     WEIGHT_TEXT_RESIDUAL: float = 0.10
-    WEIGHT_PROVENANCE: float = 0.07
+    WEIGHT_PROVENANCE: float = 0.02
     WEIGHT_SHARPNESS: float = 0.03
     WEIGHT_RESOLUTION: float = 0.0
     WEIGHT_LANG_MATCH: float = 0.0
     # New scorer features (recs 1-5). dino_knn only participates on GPU
     # tiers; taste_typicality is the mean KDE typicality over
     # TYPICALITY_FEATURES; quality_artifacts is monotonic (clean = 1).
-    WEIGHT_DINO_KNN: float = 0.10
-    WEIGHT_TASTE_TYPICALITY: float = 0.10
+    WEIGHT_DINO_KNN: float = 0.12
+    WEIGHT_TASTE_TYPICALITY: float = 0.12
     WEIGHT_QUALITY_ARTIFACTS: float = 0.03
+    # CLIP cosine to the movie's TMDB primary poster — "is this the official
+    # key-art family?". Fan art diverges from the primary; official variants
+    # (including clean title-only versions of a text-heavy primary) cluster
+    # around it. None (weight redistributed) when the primary was never
+    # embedded this run.
+    WEIGHT_OFFICIAL_FAMILY: float = 0.12
 
     # Fine-grained features aggregated into taste_typicality. Each is scored
     # by closeness to the taste profile's own distribution of that feature.
@@ -173,12 +190,29 @@ class PipelineSettings(BaseSettings):
     OCR_FUZZY_CUTOFF: float = 0.60
     # Residual boxes whose center falls within this many pixels of the
     # identified title bbox are treated as OCR fragments of the title,
-    # not independent text.
+    # not independent text. Only applies to SMALL boxes — a box past either
+    # geometry threshold below is real text even when it hugs the title
+    # (studio branding, directed-by lines, taglines).
     OCR_TITLE_PROXIMITY_PIXELS: float = 30.0
-    # If set, no_text results are accepted rather than rejected.  Addresses
-    # the large class of posters with stylized title fonts that PP-OCRv5_mobile
-    # cannot read.  The contrast-enhanced retry runs first; this flag is the
-    # fallback for when even the retry finds nothing.
+    # Geometry-based residual significance: recognition often garbles small
+    # or stylized non-title text into 1-2 char fragments ("70MM" -> "mm",
+    # "DIRECTED BY CHRISTOPHER NOLAN" -> "r") which the 4+ char word rule
+    # then ignores. The DETECTION box still spans the visible text, so a
+    # residual box covering >= this fraction of image area, or wider than
+    # this fraction of image width, is significant regardless of what the
+    # recognizer read.
+    OCR_RESIDUAL_SIGNIFICANT_AREA_FRACTION: float = 0.005
+    OCR_RESIDUAL_SIGNIFICANT_WIDTH_FRACTION: float = 0.40
+    # The project target is "movie title and nothing else", so a poster must
+    # have an identified title box to pass OCR.  Posters whose detected text
+    # never fuzzy-matches the title are rejected with reason=no_title.
+    # Disable only if a movie's title typography defeats OCR entirely AND the
+    # batch-level fallback below is not enough.
+    OCR_REQUIRE_TITLE: bool = True
+    # Batch-level FALLBACK ONLY: textless / no-title posters are rejected per
+    # image, but when an entire movie has zero titled survivors the rejected
+    # no_text/no_title posters are rescued so the movie still gets a poster.
+    # They never compete against titled candidates in ranking.
     OCR_ACCEPT_NO_TEXT: bool = True
     # Try a contrast-enhanced image pass before concluding no_text.
     OCR_ENHANCE_RETRY: bool = True
@@ -269,6 +303,7 @@ class PipelineSettings(BaseSettings):
             "dino_knn": self.WEIGHT_DINO_KNN,
             "taste_typicality": self.WEIGHT_TASTE_TYPICALITY,
             "quality_artifacts": self.WEIGHT_QUALITY_ARTIFACTS,
+            "official_family": self.WEIGHT_OFFICIAL_FAMILY,
         }
 
     def snapshot(self) -> dict[str, object]:
@@ -297,6 +332,8 @@ class PipelineSettings(BaseSettings):
                 "detail_passes": self.OCR_DETAIL_PASSES,
                 "max_residual_boxes": self.OCR_MAX_RESIDUAL_BOXES,
                 "max_residual_area_fraction": self.OCR_MAX_RESIDUAL_AREA_FRACTION,
+                "require_title": self.OCR_REQUIRE_TITLE,
+                "accept_no_text_fallback": self.OCR_ACCEPT_NO_TEXT,
             },
             "extended_features": {
                 "dino_enabled": self.DINO_ENABLED,

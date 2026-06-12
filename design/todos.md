@@ -46,10 +46,10 @@ Organized by the phase when attention is needed. Reference `design/03-migration-
 ## Open Tuning Questions (Phase 3)
 
 - [x] ~~Stylized title recovery: contrast-enhance retry implemented (OCR_ENHANCE_RETRY), 2× contrast boost on no-text detection. text_det_box_thresh=0.3 active. Pending visual validation on gothic/stylized posters.~~
-- [ ] pHash threshold at 6 (default in pipeline_config) — needs more movie testing to confirm
+- [ ] pHash threshold at 6 (default in pipeline_config) — needs more movie testing to confirm. Representative selection is now preference-aware (title found > fewest residual boxes > knn_sim > resolution), so raising the threshold to merge title-position variants is safe if ranked output feels redundant.
 - [x] ~~Floating-head handling: moved from CLIP negative prompts (deleted) to face_area scalar in the feature vector. Active as a ranking penalty.~~
 - [x] ~~Pipeline order decided: OCR runs BEFORE pHash (adopted). When near-duplicate variants differ only in text content, OCR gate arbitrates.~~
-- [x] ~~Text-free posters: handled by OCR_ACCEPT_NO_TEXT flag (default true). If OCR finds no text even after contrast retry, the poster is accepted rather than rejected — lands at end of ranking as a fallback.~~
+- [x] ~~Text-free posters: REVISED 2026-06-11 — no_text/no_title posters are now rejected per image (19 textless posters were ranking on Age of Ultron, one at #2). OCR_ACCEPT_NO_TEXT is a batch-level fallback only: rescues them when a movie has zero titled survivors. OCR_REQUIRE_TITLE (default true) also rejects text-without-title-match posters.~~
 - [ ] Aesthetic rescue gate: knn_sim threshold relaxes aesthetic floor for stylized posters. Needs tuning (currently knn≥0.55, aesthetic≥2.0).
 - [x] ~~NVIDIA GPU support: CUDAExecutionProvider added to provider chain. PaddleOCR auto-detects CUDA via paddle_dynamic engine. CLIP/face ONNX models run on GPU.~~
 - [x] ~~Cheapest-signal-first reorder: resolution gate from metadata, batched CLIP + style gates BEFORE OCR. OCR only sees on-style candidates.~~
@@ -63,7 +63,11 @@ Organized by the phase when attention is needed. Reference `design/03-migration-
 - [ ] Optional INT8 CLIP for N150-class hosts (`clip_export --quantize`, AI_MODEL=clip-vit-b-32-int8 + profile rebuild) — needs accuracy spot-check against fp32 ranking.
 - [x] ~~Extended features (recs 1-6, design/07): zero-shot CLIP axes, classic-CV palette/composition pack, title/face geometry, exemplar-calibrated KDE typicality, DINOv2 second k-NN (auto on GPU tiers), quality artifacts + YOLO person detector (EXTRA_QUALITY_ENABLED flag), Phase-1 learned head plumbing (SCORER=auto + head_trainer + labels.jsonl).~~
 - [ ] Tune WEIGHT_TASTE_TYPICALITY / WEIGHT_DINO_KNN from RANK DETAIL + TYPICALITY logs after a few weeks of runs.
-- [ ] Feedback UI writes `experiments/feedback/labels.jsonl`; at ~50-100 labels run `python -m marquee.ml.head_trainer` to activate the learned head (rec 7 / L14 / VLM still deferred).
+- [ ] Feedback UI writes `experiments/feedback/labels.jsonl`; at ~50-100 labels run `python -m marquee.ml.head_trainer` to activate the learned head (rec 7 / L14 / VLM still deferred). 78 labels exist (2026-06-11, reconstructed from manual sorting of Avengers/Interstellar/Strange Darling); preview head confirmed official_family as strongest signal but 3-movie diversity is too thin to activate — label 2-3 more movies first.
+- [x] ~~official_family (2026-06-11): CLIP cosine to TMDB primary poster as scorer feature (0.12) + primary wins its pHash group. Weights rebalanced: aesthetic 0.20→0.12, provenance 0.07→0.02, dino/typicality 0.10→0.12. See design/07.~~
+- [ ] Extend official_family to multiple authority anchors: Wikipedia film-infobox poster (imdb_id → Wikidata → enwiki pageimage), Fanart.tv likes. See design/07.
+- [ ] GPU VRAM growth across many pipeline runs in one server process (per-run FeatureExtractor ONNX sessions) — OOM observed after ~8 consecutive runs on the RTX 3070. Restarting the server clears it; consider a process-lifetime extractor singleton or explicit session release.
+- [ ] Re-running a movie wipes `ranked/` including any manual sorting folders inside it — sort into `experiments/feedback/labels.jsonl` instead (or move folders out before rerunning).
 
 ---
 

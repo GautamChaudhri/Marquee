@@ -22,7 +22,7 @@ from marquee.pipeline.features import calculate_text_residual
 from marquee.pipeline.gate import PosterGate
 from marquee.pipeline.output import place_ranked
 from marquee.pipeline.scorer import WeightedScorer
-from marquee.pipeline.types import CandidateScore, FeatureVector
+from marquee.pipeline.types import CandidateScore, FeatureVector, OCRCandidateResult
 
 
 def _features(**overrides: float) -> FeatureVector:
@@ -289,11 +289,12 @@ def test_dedup_tiebreak_uses_original_tmdb_resolution(tmp_path: Path):
     assert result.removals[0].removed == lower
 
 
-def test_ocr_accepts_no_text_candidate_by_default(
+def test_ocr_rejects_no_text_per_image(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """With OCR_ACCEPT_NO_TEXT=True (default), stylized/unreadable posters pass."""
+    """Textless posters are always rejected per image — OCR_ACCEPT_NO_TEXT is
+    a batch-level fallback, never a per-image accept."""
     image_path = tmp_path / "blank.jpg"
     Image.new("RGB", (500, 750), color="black").save(image_path)
 
@@ -309,34 +310,163 @@ def test_ocr_accepts_no_text_candidate_by_default(
 
     result = ocr_filter._process_image(str(image_path))
 
-    assert result.accepted
-    assert result.reason is None
-    assert result.title_bbox is None
-
-
-def test_ocr_rejects_no_text_when_configured(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-):
-    """With OCR_ACCEPT_NO_TEXT=False, no_text results are rejected (opt-in strict mode)."""
-    image_path = tmp_path / "blank.jpg"
-    Image.new("RGB", (500, 750), color="black").save(image_path)
-
-    class EmptyOCR:
-        def predict(self, _image):
-            return []
-
-    monkeypatch.setattr(ocr_filter, "_worker_ocr", EmptyOCR())
-    monkeypatch.setattr(ocr_filter, "_worker_title_tokens", {"blank"})
-    monkeypatch.setattr(ocr_filter, "_worker_director_tokens", set())
-    monkeypatch.setattr(ocr_filter.pipeline_settings, "OCR_ACCEPT_NO_TEXT", False)
-    monkeypatch.setattr(ocr_filter.pipeline_settings, "OCR_ENHANCE_RETRY", False)
-
-    result = ocr_filter._process_image(str(image_path))
-
     assert not result.accepted
     assert result.reason == "no_text"
     assert result.title_bbox is None
+
+
+def test_ocr_rejects_text_without_title_match(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A poster whose detected text never matches the title is not a titled
+    poster (OCR_REQUIRE_TITLE) even when the residual is insignificant."""
+    image_path = tmp_path / "poster.jpg"
+    Image.new("RGB", (500, 750), color="black").save(image_path)
+
+    class FragmentOCR:
+        def predict(self, _image):
+            # One short, insignificant fragment (< 4 chars) — previously
+            # accepted with title_bbox=None despite showing no title.
+            return [{
+                "rec_texts": ["may"],
+                "rec_scores": [0.99],
+                "rec_polys": [[[10, 10], [60, 10], [60, 30], [10, 30]]],
+            }]
+
+    monkeypatch.setattr(ocr_filter, "_worker_ocr", FragmentOCR())
+    monkeypatch.setattr(ocr_filter, "_worker_title_tokens", {"avengers"})
+    monkeypatch.setattr(ocr_filter, "_worker_director_tokens", set())
+    monkeypatch.setattr(ocr_filter.pipeline_settings, "OCR_ENHANCE_RETRY", False)
+    monkeypatch.setattr(ocr_filter.pipeline_settings, "OCR_DETAIL_PASSES", False)
+
+    result = ocr_filter._process_image(str(image_path))
+    assert not result.accepted
+    assert result.reason == "no_title"
+
+    monkeypatch.setattr(ocr_filter.pipeline_settings, "OCR_REQUIRE_TITLE", False)
+    result = ocr_filter._process_image(str(image_path))
+    assert result.accepted
+
+
+def _ocr_result(name: str, *, accepted: bool, reason: str | None) -> OCRCandidateResult:
+    return OCRCandidateResult(
+        image_path=Path(name),
+        accepted=accepted,
+        detected_text="",
+        reason=reason,
+        title_bbox=None,
+    )
+
+
+def test_no_text_fallback_rescues_only_when_nothing_titled(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(ocr_filter.pipeline_settings, "OCR_ACCEPT_NO_TEXT", True)
+
+    all_textless = [
+        _ocr_result("a.jpg", accepted=False, reason="no_text"),
+        _ocr_result("b.jpg", accepted=False, reason="no_title"),
+        _ocr_result("c.jpg", accepted=False, reason="text_heavy"),
+    ]
+    rescued = ocr_filter.PosterTextFilter._apply_no_text_fallback(all_textless)
+    assert [r.accepted for r in rescued] == [True, True, False]
+    assert rescued[0].reason == "no_text_fallback"
+    assert rescued[1].reason == "no_title_fallback"
+    assert rescued[2].reason == "text_heavy"
+
+
+def test_no_text_fallback_skipped_when_titled_survivor_exists(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(ocr_filter.pipeline_settings, "OCR_ACCEPT_NO_TEXT", True)
+
+    mixed = [
+        _ocr_result("titled.jpg", accepted=True, reason=None),
+        _ocr_result("textless.jpg", accepted=False, reason="no_text"),
+    ]
+    results = ocr_filter.PosterTextFilter._apply_no_text_fallback(mixed)
+    assert [r.accepted for r in results] == [True, False]
+
+
+def test_no_text_fallback_disabled(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(ocr_filter.pipeline_settings, "OCR_ACCEPT_NO_TEXT", False)
+
+    results = ocr_filter.PosterTextFilter._apply_no_text_fallback(
+        [_ocr_result("a.jpg", accepted=False, reason="no_text")]
+    )
+    assert not results[0].accepted
+
+
+def test_normalize_official_family_ramp():
+    features = _features()
+    features.official_family = 0.95
+    normalized = normalize_features(features, PipelineSettings())
+    assert normalized["official_family"] == pytest.approx(1.0)
+
+    features.official_family = 0.60
+    assert normalize_features(features, PipelineSettings())[
+        "official_family"
+    ] == pytest.approx(0.0)
+
+    features.official_family = None
+    assert "official_family" not in normalize_features(features, PipelineSettings())
+
+
+def test_ocr_big_residual_box_is_significant_despite_garbled_text(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A huge detected box whose text was garbled to 'mm' (the 70MM watermark
+    case) must reject the poster — geometry significance, not word length."""
+    image_path = tmp_path / "poster.jpg"
+    Image.new("RGB", (500, 750), color="black").save(image_path)
+
+    class WatermarkOCR:
+        def predict(self, _image):
+            return [{
+                "rec_texts": ["avengers", "mm"],
+                "rec_scores": [0.95, 0.92],
+                "rec_polys": [
+                    [[50, 20], [450, 20], [450, 70], [50, 70]],      # title
+                    [[40, 300], [460, 300], [460, 380], [40, 380]],  # watermark
+                ],
+            }]
+
+    monkeypatch.setattr(ocr_filter, "_worker_ocr", WatermarkOCR())
+    monkeypatch.setattr(ocr_filter, "_worker_title_tokens", {"avengers"})
+    monkeypatch.setattr(ocr_filter, "_worker_director_tokens", set())
+    monkeypatch.setattr(ocr_filter.pipeline_settings, "OCR_ENHANCE_RETRY", False)
+    monkeypatch.setattr(ocr_filter.pipeline_settings, "OCR_DETAIL_PASSES", False)
+
+    result = ocr_filter._process_image(str(image_path))
+    assert not result.accepted
+    assert result.reason == "text_heavy"
+
+
+def test_dedup_preference_beats_resolution(tmp_path: Path):
+    """A titled, on-taste near-dupe survives over a larger textless one."""
+    textless_large = tmp_path / "textless.png"
+    titled_small = tmp_path / "titled.png"
+    image = Image.new("RGB", (500, 750), color="navy")
+    image.save(textless_large)
+    image.save(titled_small)
+
+    result = PosterDeduper(
+        sha256_only=True,
+        min_width=0,
+        resolution_by_name={
+            textless_large.name: (2000, 3000),
+            titled_small.name: (1000, 1500),
+        },
+        preference_by_name={
+            textless_large.name: (0, 0, 0.86),
+            titled_small.name: (1, 0, 0.81),
+        },
+    ).deduplicate([textless_large, titled_small])
+
+    assert result.survivors == [titled_small]
+    assert result.removals[0].removed == textless_large
 
 
 def test_ocr_worker_flushes_results_before_native_teardown(

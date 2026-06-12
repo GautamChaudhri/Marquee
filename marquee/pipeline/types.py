@@ -15,6 +15,9 @@ class OCRTextBox:
     confidence: float
     bbox: BoundingBox
     area: float
+    # False for rotated-frame (vertical-textline) reads whose coordinates
+    # cannot be trusted for size/position decisions.
+    geometry_valid: bool = True
 
 
 @dataclass
@@ -44,6 +47,9 @@ class FeatureVector:
     dino_knn: float | None = None
     taste_typicality: float | None = None
     quality_artifacts: float | None = None
+    # CLIP cosine to the movie's TMDB primary poster ("official key-art
+    # family"). None when the primary was not embedded this run.
+    official_family: float | None = None
     # False when OCR found no title box: title_colorfulness is then unknown
     # and normalization substitutes a neutral value instead of punishing the
     # poster as if it had a plain white title.
