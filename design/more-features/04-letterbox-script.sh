@@ -145,7 +145,7 @@ if (( RUN_DETECT )); then
                 -frames:v 1 -q:v 2 "$tmpf"
 
             for fuzz in 5 15 25; do
-                dims=$(convert "$tmpf" \
+                dims=$(magick "$tmpf" \
                     -fuzz "${fuzz}%" -trim +repage \
                     -format "%wx%h+%X+%Y" info:)
                 dims="${dims//++/+}"

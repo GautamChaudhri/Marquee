@@ -1000,3 +1000,52 @@ done
    any `tagged` file silently remuxed by another tool and re-applies from state.
 8. On an ultrawide, Plex Desktop now renders The Matrix edge-to-edge; `--remove`
    / `POST …/remove` reverts instantly with zero quality cost.
+
+---
+
+# Part 3 — Build Status (Phase 1)
+
+Backend implemented and unit-tested (no media binaries needed in CI — the
+engine is exercised from captured `cropdetect` stderr + fabricated state). 36
+new tests; full suite 223 passing; `ruff check` clean.
+
+**Shipped**
+
+- `marquee/media/` — `binaries.py` (lazy, cached binary resolution + availability
+  probe + checked runner), `probe.py` (ffprobe + the §4 pre-filter, pure),
+  `letterbox_detect.py` (both `cropdetect` and `trim` backends + §12.3 consensus),
+  `letterbox_manager.py` (batch jobs, bounded CPU pool, SSE), `letterbox_preview.py`
+  (before/after webp frames).
+- `marquee/core/letterbox_service.py` — the single validated write path
+  (eligibility §20 → `mkvpropedit` → verify → `LetterboxState` + `LetterboxEvent`).
+- `marquee/core/letterbox_heal.py` — tag-drift scan (periodic + `POST /api/letterbox/heal`).
+- `marquee/models/letterbox.py` — `LetterboxState` + `LetterboxEvent`; new
+  `movies.video_width/height/container` columns.
+- `marquee/api/routes/letterbox.py` — the 12 endpoints in §18, registered in `main.py`.
+- Alembic migration `fd3dee2ea0da` (down-rev `14e34b6bd956`), verified up→down→up
+  on a throwaway DB. **Not yet applied to the live DB** — run `alembic upgrade head`
+  when ready (live DB is currently at `14e34b6bd956`).
+- Sync captures Radarr `movieFile.mediaInfo` resolution; the upgrade webhook
+  re-queues detection (clears stale applied-crop, flips row to `candidate`).
+- Config knobs §19; periodic heal loop wired into the lifespan.
+- Standalone script: `04-letterbox-script-v2.sh` (both backends, safe-by-default,
+  `bash -n` clean). The original `04-letterbox-script.sh` is left untouched.
+
+**Decisions honored:** `cropdetect` default + `trim` fallback (`LETTERBOX_DETECT_METHOD`);
+movies-only MKV; manual-confirm apply (`LETTERBOX_AUTO_APPLY_HIGH=False`).
+
+**⚠️ Two items to verify on the GPU box (coded defensively, not yet run against real binaries):**
+
+1. **`cropdetect` option spelling.** We emit `cropdetect=limit=24:round=2:reset=1`
+   with a fallback that retries without `reset` if the build rejects it. Confirm
+   the installed ffmpeg accepts it and that detection returns sane crops on a
+   known scope film.
+2. **`mkvmerge -J` crop surfacing.** `read_applied_crop` scans track `properties`
+   for crop keys; if this build doesn't expose them it returns "unknown", so the
+   DB stays the source of truth for applied crop and the **tag-drift heal can't
+   verify drift** (it logs `unverifiable` and leaves files alone). If drift
+   detection matters, confirm the property name or switch to an `mkvinfo`
+   text-parse fallback.
+
+**Not in Phase 1 (as planned):** TV per-episode + season cascade; auto-apply;
+the asymmetric default (available via `LETTERBOX_ASYMMETRIC`).
