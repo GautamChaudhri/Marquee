@@ -381,3 +381,622 @@ Crop tags are instant, lossless, reversible, and require no GPU. The only downsi
 - **Web UI (Phase 6)**: Letterbox management is a top-level section in the UI, alongside Poster Management and Subtitle Management.
 - **Subtitle Management (Design 12)**: Both features share a pattern — inspect, preview, confirm, apply. They can share UI components and workflow conventions.
 - **Radarr/Sonarr Upgrades**: When a movie is upgraded (better quality release), Marquee re-evaluates the resolution and re-runs the detection pipeline if the new file is a candidate. Previous crop tags are not persisted or re-applied — each upgrade gets a fresh detection pass.
+
+---
+
+# Part 2 — Implementation Plan
+
+> This part turns the concept above into a buildable backend feature for the
+> existing Marquee codebase (FastAPI + async SQLAlchemy + pydantic-settings).
+> It picks an engine, settles the open choices, adds the data model + service +
+> API the frontend will consume, and supplies a rewritten production-grade
+> standalone script. Conventions and helpers are reused from the poster
+> restoration feature (`design/more-features/01-poster-restoration.md`) and its
+> code: `PosterService` (`marquee/core/poster_service.py`), the path guard
+> `safe_translate_and_validate()` (`marquee/core/path_utils.py`), the
+> `ArtworkEvent` audit pattern, the `RunManager` SSE/job pattern
+> (`marquee/pipeline/run_manager.py`), and the system/heal routers.
+
+## 12. Headline Decision: Replace ImageMagick `-trim` with ffmpeg `cropdetect`
+
+The single most important change. The current script (`04-letterbox-script.sh`)
+extracts a PNG per timestamp with ffmpeg, then runs ImageMagick `convert -fuzz
+N% -trim` three times per frame and votes on the trimmed dimensions. This is
+both **slower** and **less accurate** than the purpose-built tool that already
+ships inside ffmpeg.
+
+### 12.1 Why `cropdetect` is strictly better
+
+**Accuracy.** `-trim` is a generic "strip solid edges" operation. It cannot
+tell a letterbox bar from a genuinely dark frame, a black costume against a
+black set, or a fade-to-black — it just crops whatever is uniform. A single
+dark scene over-crops; a frame whose image content reaches the very edge
+under-crops. ffmpeg's `cropdetect` filter is designed for exactly this job:
+it samples luma against a black threshold and, crucially, **accumulates the
+union of detected content across many consecutive frames within a window** so
+that one anomalous dark frame cannot drive the result. As long as *any* frame
+in the window has content reaching the true image extent, the converged crop
+box is correct. That is precisely the failure mode (dark scenes) §5 worries
+about — solved structurally instead of by majority vote over noisy per-frame
+trims.
+
+**Performance.** Per movie the old approach spawns ~48 processes (12 timestamps
+× [1 ffmpeg + 3 `convert`]) and writes 12 full-resolution PNGs to disk.
+`cropdetect` needs **one ffmpeg invocation per sampled window, no PNG, no
+ImageMagick** — output is discarded to `-f null -` and we parse the filter's
+stderr. Decode-only, no encode, no temp files. Combined with parallel file
+processing this is roughly an order of magnitude less wall-clock and disk I/O.
+
+**Free signals.** `cropdetect` reports the content rectangle `crop=W:H:X:Y`,
+which gives us the `Y` offset for free — so we can detect and honor
+**asymmetric** bars (top ≠ bottom) instead of assuming symmetry, and flag
+off-center content as lower confidence.
+
+### 12.2 How the engine works (per file)
+
+For each sampled timestamp `T`:
+
+```
+ffmpeg -hide_banner -nostats -skip_frame nokey \
+       -ss T -i FILE -an -sn \
+       -t <window_seconds> \
+       -vf cropdetect=limit=24:round=2:reset=1 \
+       -f null - 2>&1
+```
+
+- `-ss T` **before** `-i` = fast input seek (no full decode to `T`).
+- `-skip_frame nokey` decodes only keyframes inside the window — enough to
+  detect bars, much cheaper.
+- `cropdetect` prints lines to stderr ending in `crop=W:H:X:Y`. Within the
+  window it *accumulates* (the content box only grows to encompass the largest
+  content seen). We read the **final** `crop=` line of the window — that is the
+  converged, dark-scene-immune verdict for timestamp `T`.
+- `limit=24` is the black threshold on the 0–255 luma scale (handles slightly
+  raised "dark gray" bars from cheap encoders); `round=2` forces even
+  dimensions (codecs require even); tunable via config (§19).
+
+This yields one `(W, H, X, Y)` measurement per timestamp. Then:
+
+1. `full_h` = encoded height (from the pre-filter metadata or ffprobe).
+2. For each timestamp: `top_bar = Y`, `bottom_bar = full_h − H − Y`.
+   `bar = round((top_bar + bottom_bar) / 2)` for the symmetric summary; keep
+   `top_bar`/`bottom_bar` for the asymmetric option.
+3. Build the **consensus** across timestamps (§12.3).
+
+### 12.3 Consensus → confidence, mapping cleanly onto §6 / §8
+
+Let `bars = [bar_t for each sampled t]` (drop timestamps that failed to decode).
+
+- **Not letterboxed** — `median(bars) ≤ NOISE_PX` (default 4): no tags, status
+  `not_letterboxed`. (§5 fallback.)
+- **Case A — variable, unsafe** (§6 A): at least one timestamp has `bar ≤
+  NOISE_PX` *and* at least one has `bar > MIN_BAR_PX`. Some scenes fill the 16:9
+  frame; any crop would clip them. Status `variable_unsafe`, no tags,
+  confidence **Low**.
+- **Case B — variable, safe-conservative** (§6 B): all `bar > MIN_BAR_PX` but
+  spread `max(bars) − min(bars) > AGREE_PX`. Recommend the **minimum** bar (the
+  narrowest scope ratio → preserves the most content, never clips). Confidence
+  **Medium** if spread ≤ `MEDIUM_SPREAD_PX` (default 20), else **Low**.
+- **Case C — consistent** (§6 C): spread ≤ `AGREE_PX` (default 2). Recommend the
+  median. Confidence **High**.
+
+Asymmetry: if `|median(top_bars) − median(bottom_bars)| > ASYM_PX` (default 2)
+the bars are genuinely uneven; in `asymmetric` mode we recommend the per-edge
+medians, otherwise we fall back to the symmetric `min`/`median` and drop one
+confidence tier (the symmetry assumption is being violated). Off-center `X`
+beyond a threshold downgrades confidence too (suggests pillarbox/odd encode,
+not a clean scope letterbox).
+
+This is a superset of §8's tier table and produces exactly the
+`High/Medium/Low/None` tiers the inspection UI renders.
+
+### 12.4 Verdict — `cropdetect` default, `trim` retained as a fallback
+
+`cropdetect` is the **default** engine. The ImageMagick `-trim` method is
+**kept as a selectable fallback** rather than deleted, behind a single config
+switch `LETTERBOX_DETECT_METHOD ∈ {cropdetect, trim}` (§19). Rationale: `trim`
+is the known-good path that produced the user's existing results, and a small
+number of unusual encodes (e.g. very faint, color-cast bars that sit just under
+`cropdetect`'s luma threshold) can read more cleanly under fuzzy trim. Keeping
+both is cheap — they share the sampling schedule, the consensus/confidence math
+(§12.3), and the `LetterboxState` shape; only the *per-window measurement* step
+differs (parse `cropdetect` stderr vs. extract a frame and `convert -fuzz -trim`).
+
+`marquee/media/letterbox_detect.py` exposes both as interchangeable
+"measure one window → `(top_bar, bottom_bar)`" backends selected at runtime by
+the config knob (and overridable per-request, so the inspection UI can offer a
+"re-detect with the other method" action on a questionable result). The
+standalone script (§23) mirrors this with a `--method cropdetect|trim` flag,
+defaulting to `cropdetect`. Everything downstream of the per-window measurement
+is identical regardless of method.
+
+## 13. Engine Lives in Python, Not Bash (for the backend)
+
+**Decision:** the backend detection/apply logic is a native Python module
+(`marquee/media/`), not the backend shelling out to `04-letterbox-script.sh`.
+Reasons: structured results (we need per-sample JSON, confidence, previews),
+bounded parallelism tied to a job manager with SSE progress, graceful per-file
+error handling, and — most importantly — every filesystem path must go through
+`safe_translate_and_validate()` (§20) before any `mkvpropedit` write, which is
+Python-side. The bash script (§23) is kept as a hardened standalone/manual tool
+and as the reference for the exact ffmpeg/mkvtoolnix invocations.
+
+## 14. Decisions on Open Points & New Features
+
+### 14.1 Decisions
+
+| Topic | Decision |
+|---|---|
+| Detection engine | ffmpeg `cropdetect` **default**, ImageMagick `-trim` retained as a config-selectable fallback (`LETTERBOX_DETECT_METHOD`, §12.4 / §19). Both feed the same consensus/confidence math; selectable per-request for a "re-detect with the other method" action. |
+| Backend engine language | Native Python + `subprocess` (§13). |
+| Phase-1 scope | **Movies only**, MKV only — matches `PosterService`, which is movie-only today (TV restoration is deferred there too). The engine itself is media-type agnostic; TV is a later phase that adds per-episode rows + the season cascade (§14.2). |
+| Apply policy | **Never auto-apply by default.** Detection writes state + confidence; tags are applied only on explicit user confirm (single or batch). An opt-in `LETTERBOX_AUTO_APPLY_HIGH` knob exists for power users (§19) but defaults off, honoring §11 "Detection vs. User Curation". |
+| Symmetric vs asymmetric | Symmetric by default (matches reality for ~all scope films and the player ecosystem); asymmetric application available via config/override when bars are genuinely uneven (§12.3). |
+| Resolution for pre-filter | Persist `video_width`/`video_height`/`container` on `Movie` from Radarr `movieFile.mediaInfo` during sync (cheap, no decode); ffprobe on demand only when missing (§16, §21). |
+| Re-detection on upgrade | Fresh detection pass, tags not re-applied automatically (§11). Webhook marks state stale and enqueues detection (§21). |
+
+### 14.2 New features added (smoothing rough edges / things users will want)
+
+1. **Before/after preview frames** (`GET …/preview`): extract one representative
+   frame and render a small webp showing the proposed crop lines (and an
+   after-crop thumbnail). Powers §8's "sample breakdown" grid without shipping
+   full frames to the browser. Reuses PIL (already a dependency) and mirrors the
+   taste-map thumbnail pattern.
+2. **Persisted sample breakdown**: every timestamp's `(t, W, H, X, Y, bar,
+   ok/error)` is stored as JSON so the inspection view and confidence are
+   reproducible without re-running detection.
+3. **Aspect-ratio labels**: derive a friendly label from the crop (`2.39:1`,
+   `2.00:1`, `1.85:1`) for display next to the raw pixel crop.
+4. **Reviewed / Ignored state**: `variable_unsafe` and user-skipped files are
+   marked reviewed so library re-scans don't re-flag them (§10 Flow 3). The
+   three UI tabs (Candidates / Tagged / Skipped) are just `status` filters.
+5. **Tag-drift self-heal**: a periodic + on-demand scan that verifies tagged
+   files still carry their crop tags (tags are lost when another tool remuxes,
+   §7) and re-applies from stored state. Mirrors the poster self-heal loop.
+6. **Batch detect with live progress (SSE)** and **batch apply / batch ignore**,
+   so "Detect All" and "Apply all High-confidence" are one call each.
+7. **Player-compatibility note** surfaced in the API (`honored_by:
+   ["plex-desktop","vlc","mpv"]`, not honored by Plex web/mobile) so the UI can
+   set expectations (§7).
+8. **MP4/other containers** are reported as `ineligible` with a human reason
+   ("crop tags require MKV; remux losslessly to enable") instead of silently
+   vanishing (§9 robustness).
+9. **Early termination**: if the first `EARLY_STOP_WINDOWS` sampled windows all
+   read `bar ≤ NOISE_PX`, stop sampling and classify `not_letterboxed` (§9).
+10. **TV season cascade (later phase)**: detect S0xE01, and if confidence is
+    High, offer to cascade the same crop across visually-consistent episodes in
+    the season (§ design decision "Detection Per-File vs. Per-Season").
+
+## 15. Tech Stack & System Dependencies
+
+- **ffmpeg / ffprobe** — frame-window decode + `cropdetect`; ffprobe for
+  on-demand resolution/duration/container. (New external dependency for the
+  service; nothing in `marquee/` shells out today — note in deploy docs.)
+- **mkvtoolnix** — `mkvpropedit` (apply/remove crop tags in-place, milliseconds)
+  and `mkvmerge -J` (robust **JSON** track-property read to detect existing
+  tags, replacing fragile `mkvinfo` text-parsing; `mkvinfo` kept as a fallback).
+- **Python stdlib `subprocess`** + `concurrent.futures` for a bounded worker
+  pool (detection is CPU-bound, **no GPU** — so it does *not* contend with the
+  poster pipeline's GPU lock, but parallelism is capped via config to avoid
+  starving it of CPU/disk).
+- **Pillow** (already present) — preview/thumbnail rendering.
+- **ImageMagick `convert`** — *optional*, required only when
+  `LETTERBOX_DETECT_METHOD="trim"` (the fallback engine, §12.4). The binary
+  probe reports it; selecting `trim` without it returns a clear 503/error rather
+  than failing mid-scan. `cropdetect` (default) needs no ImageMagick.
+- No new Python package dependencies. A startup probe records which binaries are
+  present and exposes it at `GET /api/letterbox/status` so the UI can show an
+  actionable "install mkvtoolnix" banner instead of failing opaquely.
+
+## 16. Data Model Changes
+
+Additive migration (follow the established Alembic baseline-then-additive
+pattern; `server_default` on every new NOT NULL column so it applies cleanly to
+the populated live DB — same lesson as the poster work).
+
+**`movies` — new columns** (pre-filter inputs; populated by sync §21):
+
+```python
+video_width:  Mapped[int | None]   = mapped_column(Integer, nullable=True)
+video_height: Mapped[int | None]   = mapped_column(Integer, nullable=True)
+container:    Mapped[str | None]   = mapped_column(String(16), nullable=True)  # "matroska", "mp4", ...
+```
+
+**`letterbox_state` — new table** (one row per movie; the engine is media-type
+agnostic so a nullable `series_id`/`episode_id` can be added in the TV phase):
+
+```python
+class LetterboxState(Base, TimestampMixin):
+    __tablename__ = "letterbox_state"
+    id:              Mapped[int]  = mapped_column(Integer, primary_key=True)
+    movie_id:        Mapped[int]  = mapped_column(ForeignKey("movies.id", ondelete="CASCADE"),
+                                                  unique=True, index=True)
+    status:          Mapped[str]  = mapped_column(String(24), nullable=False, server_default="'candidate'")
+        # candidate | not_letterboxed | variable_unsafe | tagged | skipped | ineligible | errored
+    confidence:      Mapped[str | None] = mapped_column(String(8))   # high | medium | low | none
+    eligible:        Mapped[bool] = mapped_column(Boolean, server_default="1")   # MKV + writable + has video
+    ineligible_reason: Mapped[str | None] = mapped_column(String(120))
+    source_width:    Mapped[int | None]  = mapped_column(Integer)
+    source_height:   Mapped[int | None]  = mapped_column(Integer)
+    recommended_crop_top:    Mapped[int | None] = mapped_column(Integer)
+    recommended_crop_bottom: Mapped[int | None] = mapped_column(Integer)
+    aspect_label:    Mapped[str | None]  = mapped_column(String(12))  # "2.39:1"
+    applied_crop_top:    Mapped[int | None] = mapped_column(Integer)  # NULL = no tags currently applied
+    applied_crop_bottom: Mapped[int | None] = mapped_column(Integer)
+    samples_json:    Mapped[str | None]  = mapped_column(Text)        # per-timestamp breakdown
+    reviewed:        Mapped[bool] = mapped_column(Boolean, server_default="0")
+    last_detected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_applied_at:  Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    error:           Mapped[str | None]  = mapped_column(Text)
+```
+
+**Audit:** reuse the `ArtworkEvent` pattern but for letterbox actions. Cheapest
+path that keeps separation: add a small `LetterboxEvent` table (`movie_id`,
+`action` ∈ {detect, apply, remove, ignore, heal_reapply, error}, `detail` JSON,
+`created_at`) — analogous to `artwork_events`. This keeps the poster audit log
+clean and gives the UI a per-movie letterbox history.
+
+## 17. Module Plan
+
+```
+marquee/media/                         (new package — media-file inspection/mutation)
+  probe.py            ffprobe wrappers: dimensions, duration, container, video-track presence.
+                      prefilter_bucket(width,height) -> "skip"|"candidate" per §4.
+  letterbox_detect.py cropdetect invocation + parse, per-window measurement,
+                      consensus → (status, confidence, crop, samples, aspect_label) per §12.3.
+                      preview_frame(file, t, crop) -> webp bytes.
+  binaries.py         resolve + cache availability of ffmpeg/ffprobe/mkvpropedit/mkvmerge;
+                      thin checked-subprocess runner (timeout, returncode, captured stderr).
+
+marquee/core/
+  letterbox_service.py  LetterboxService singleton — THE single write path.
+                        apply(db, movie, top, bottom): eligibility recheck → safe path validate
+                        → mkvpropedit set → verify via mkvmerge -J → update LetterboxState +
+                        LetterboxEvent (mirrors PosterService.deploy()).
+                        remove(db, movie): mkvpropedit delete → verify → state/event.
+                        Both are idempotent and atomic-at-the-metadata level.
+
+marquee/media/letterbox_manager.py   LetterboxManager singleton (mirrors RunManager):
+                        batch detect over a bounded ProcessPool/thread pool, per-job SSE
+                        event buffer + replay, writes LetterboxState rows, DB job provenance.
+                        CPU-bound → independent of the GPU lock; parallelism capped by config.
+
+marquee/models/letterbox.py          LetterboxState, LetterboxEvent (+ exports in models/__init__.py).
+marquee/api/routes/letterbox.py      router (prefix /api/letterbox) — §18.
+marquee/config.py                    config additions — §19.
+marquee/main.py                      register letterbox_router; optional tag-drift heal loop.
+alembic/versions/…                   additive migration — §16.
+tests/test_letterbox.py              consensus math, prefilter buckets, eligibility, parse of a
+                                     captured cropdetect stderr fixture, endpoint control paths
+                                     (no ffmpeg needed — feed canned stderr / fabricated state rows,
+                                     same style as test_run_endpoints.py).
+```
+
+## 18. API Contracts
+
+All under `/api/letterbox`. Shapes are designed so the frontend can build the
+three-tab view, the inspection panel, and batch actions without post-processing.
+
+| Method & path | Purpose | Notes |
+|---|---|---|
+| `GET /status` | Counts per tab, last scan time, **binary availability** | `{counts:{candidate,tagged,skipped,…}, binaries:{ffmpeg,mkvpropedit,…}, last_scan}` |
+| `GET /candidates?status=&confidence=&sort=&page=&page_size=` | Paginated state list — drives all three tabs via `status` | Each row: movie id/title/year, status, confidence, source res, recommended crop, aspect_label, reviewed, applied flag |
+| `GET /movies/{id}` | Full inspection detail | Includes `samples` breakdown, confidence rationale, `preview_urls`, eligibility/ineligible_reason, `honored_by` |
+| `POST /movies/{id}/detect` | Detect one movie | 202 + job_id, or sync for a single file |
+| `POST /detect` | Batch detect `{movie_ids?, all_candidates?}` | 202 + `job_id` |
+| `GET /jobs/{job_id}/events` | **SSE** progress for a batch detect | Mirrors `GET /api/pipeline/runs/{id}/events` |
+| `GET /movies/{id}/preview?t=<sec>&mode=before\|after` | Preview frame (webp) | `FileResponse`, path-confined like the poster route |
+| `POST /movies/{id}/apply` | Apply tags `{top?, bottom?}` (override optional) | Validated write via `LetterboxService` |
+| `POST /apply` | Batch apply `{movie_ids[], only_high?}` | |
+| `POST /movies/{id}/remove` | Remove crop tags | |
+| `POST /movies/{id}/ignore` | Mark reviewed → Skipped tab | |
+
+Control paths: 404 unknown movie/job; 409 if a batch detect is already running
+(reuse the "active job" pattern); 422 ineligible on apply (MKV-only / not
+writable) with the reason string; 503 if required binaries are missing.
+
+## 19. Config Additions (`marquee/config.py`)
+
+```python
+# Letterbox detection / application
+LETTERBOX_ENABLED:        bool      = True
+LETTERBOX_DETECT_METHOD:  str       = "cropdetect"   # "cropdetect" (default) | "trim" (ImageMagick fallback)
+LETTERBOX_TRIM_FUZZ:      list[int] = [5, 15, 25]    # fuzz % tried in the trim fallback (needs ImageMagick `convert`)
+LETTERBOX_FFMPEG:         str       = "ffmpeg"
+LETTERBOX_FFPROBE:        str       = "ffprobe"
+LETTERBOX_MKVPROPEDIT:    str       = "mkvpropedit"
+LETTERBOX_MKVMERGE:       str       = "mkvmerge"
+LETTERBOX_MOVIE_SAMPLES_MIN: int    = 5      # sample start (minutes)
+LETTERBOX_MOVIE_SAMPLES_MAX: int    = 60     # sample end (minutes)
+LETTERBOX_MOVIE_SAMPLE_STEP: int    = 5      # minutes between samples
+LETTERBOX_TV_SAMPLES:     list[int] = [5, 10, 15]   # minutes
+LETTERBOX_WINDOW_SECONDS: int       = 2      # cropdetect accumulation window per sample
+LETTERBOX_CROPDETECT_LIMIT: int     = 24     # black luma threshold (0–255)
+LETTERBOX_CROPDETECT_ROUND: int     = 2
+LETTERBOX_NOISE_PX:       int       = 4      # ≤ this ⇒ "no bars"
+LETTERBOX_MIN_BAR_PX:     int       = 8      # bar must exceed this to count as scope
+LETTERBOX_AGREE_PX:       int       = 2      # spread for High confidence (Case C)
+LETTERBOX_MEDIUM_SPREAD_PX: int     = 20     # Medium vs Low boundary (§8)
+LETTERBOX_ASYM_PX:        int       = 2      # top/bottom asymmetry tolerance
+LETTERBOX_EARLY_STOP_WINDOWS: int   = 3      # consecutive no-bar samples ⇒ stop early
+LETTERBOX_MAX_PARALLEL:   int       = 0      # 0 = auto (cpu_count − 1)
+LETTERBOX_AUTO_APPLY_HIGH: bool     = False  # opt-in: auto-apply High-confidence detections
+LETTERBOX_ASYMMETRIC:     bool      = False  # honor uneven top/bottom bars
+LETTERBOX_HEAL_ENABLED:   bool      = True   # periodic tag-drift verification
+LETTERBOX_HEAL_INTERVAL_MINUTES: int = 360
+```
+
+Plus a `letterbox_preview_path` property under `DATA_DIR/cache/letterbox/` for
+generated preview webps (mirrors `poster_cache_path`).
+
+## 20. Eligibility & Safety — "only touch files we can"
+
+Before any `mkvpropedit` write, a file must pass **all** of:
+
+1. **Path is in-bounds** — `safe_translate_and_validate(path, source="radarr")`
+   (null-byte reject, `..`/symlink collapse, must resolve inside a configured
+   media root). This is the same guard the poster writer uses; it is mandatory
+   here because we mutate the user's actual media files.
+2. **Container is MKV** — extension `.mkv` *and* `mkvmerge -J` confirms a
+   Matroska container with a video track. MP4/AVI → `ineligible` (clear reason),
+   never touched.
+3. **Regular file & writable** — `path.is_file()` and `os.access(path, os.W_OK)`;
+   otherwise `ineligible` ("read-only").
+4. **Has a video track** — from `mkvmerge -J`; audio-only/garbage → `ineligible`.
+
+`mkvpropedit` edits header metadata in place (no rewrite), but we still: take a
+per-file `asyncio.Lock` (no two writers on one file), capture the return code,
+and **verify** the resulting tags by re-reading `mkvmerge -J`; only then update
+`LetterboxState` and write the `LetterboxEvent`. Remove is the inverse and is a
+no-op (idempotent) if no tags are present. Detection is read-only and never
+writes to the media file.
+
+## 21. Integration: Sync, Webhooks, Self-Heal
+
+- **Sync (`marquee/core/sync_service.py`)**: when upserting a movie, read
+  `data["movieFile"]["mediaInfo"]` → `width`/`height` and `data["movieFile"]`
+  container/extension; populate the new `movies` columns. Free (already in the
+  Radarr payload), and it lets the pre-filter (§4) run as a pure metadata query
+  — no decode — to seed `letterbox_state` rows with `status=candidate` vs
+  `skip`. ffprobe is the fallback only when `mediaInfo` is absent.
+- **Webhooks (`marquee/api/routes/webhooks.py`)**: on Radarr `Download` +
+  `isUpgrade`, in addition to poster restore, mark the movie's
+  `letterbox_state.status` back to `candidate`/stale and enqueue a re-detect
+  (fast-ACK background task, same pattern as `_restore_after_upgrade`). New file
+  ⇒ tags are gone ⇒ fresh pass (§11).
+- **Self-heal (`marquee/core/heal.py` sibling)**: a `letterbox_heal_scan()`
+  (periodic via a lifespan loop like the poster heal, gated by
+  `LETTERBOX_HEAL_ENABLED`) that, for every `tagged` row, re-reads `mkvmerge -J`
+  and re-applies from stored state if the tags went missing (remux drift, §7).
+  Exposed at `POST /api/letterbox/heal` and folded into `GET
+  /api/system/status`.
+
+## 22. Build Order & Verification
+
+1. **Probe + prefilter + binaries** (`marquee/media/probe.py`, `binaries.py`) —
+   unit-test `prefilter_bucket()` against §4's resolution table; no ffmpeg
+   needed.
+2. **Detection engine** (`letterbox_detect.py`) — parse a **captured**
+   cropdetect stderr fixture into measurements; unit-test the §12.3 consensus →
+   confidence mapping across Cases A/B/C and not-letterboxed. (Engine logic is
+   fully testable from canned stderr — no media files in CI.)
+3. **Data model + migration** (§16) — verify on a *copy* of the live DB first
+   (the established practice), `server_default` on NOT NULL columns.
+4. **LetterboxService** (apply/remove) — test eligibility gating + path
+   validation with a fixture that neutralizes media roots (as
+   `test_poster_service.py` does); mock `mkvpropedit`/`mkvmerge` runners.
+5. **LetterboxManager + routes + SSE** — endpoint control paths (404/409/422/503)
+   against fabricated `LetterboxState` rows, mirroring `test_run_endpoints.py`.
+6. **Sync + webhook + heal integration** (§21).
+7. **Previews** (`GET …/preview`) + the standalone script refresh (§23).
+8. **Live smoke test** (manual, user-run on the GPU box): detect a known scope
+   film (e.g. a 1920×1080 2.39:1 title) → expect High + ~140px; an IMAX/variable
+   title (Interstellar) → expect `variable_unsafe`; apply → `mkvmerge -J` shows
+   the crop; remove → gone; confirm crop in Plex Desktop on the ultrawide.
+
+Gate at each step: `ruff check marquee tests` (the only lint gate) and `pytest`.
+
+## 23. Rewritten Production-Grade Standalone Script
+
+Drop-in replacement for `04-letterbox-script.sh`, kept for manual/standalone use
+and as the canonical reference for the ffmpeg/mkvtoolnix invocations the Python
+engine mirrors. Key changes vs. the original:
+
+- **`cropdetect` by default** (§12) — faster, dark-scene-robust, no temp files,
+  no ImageMagick dependency. The legacy PNG-extract + ImageMagick `-trim` path
+  is retained behind `--method trim` for the rare faint/color-cast-bar encodes
+  where it reads more cleanly; both feed the same consensus logic. (The listing
+  below shows the `cropdetect` backend; the `trim` backend swaps only the
+  `detect_window` body for the `ffmpeg -frames:v 1` + `convert -fuzz -trim`
+  measurement.)
+- **Dependency preflight** — verifies `ffmpeg`/`ffprobe`/`mkvpropedit`/`mkvmerge`
+  exist before doing anything.
+- **Per-file fault isolation** — a failed probe/decode/extract logs and
+  `continue`s instead of aborting the whole batch (the original's `pipefail`
+  would kill the run on one bad frame).
+- **Eligibility gating** — only operates on regular, writable `.mkv` files with
+  a video track; everything else is reported and skipped. Null-byte/odd names
+  handled via `find -print0`.
+- **Safe by default** — `--detect` *never* writes; applying tags is the separate
+  explicit `--apply`. The old auto-apply `--movie`/`--tv` combos are gone.
+- **Structured `--json` output** so the same script can back ad-hoc tooling.
+- **Asymmetric-aware** — honors detected top/bottom independently (with a
+  `--symmetric` override).
+- **Variable-ratio detection** — reproduces Cases A/B/C and refuses to crop
+  unsafe (16:9-containing) files.
+
+```bash
+#!/usr/bin/env bash
+# letterbox.sh — detect & apply MKV pixel-crop tags for letterboxed media.
+# Detection uses ffmpeg cropdetect (accurate, fast, no temp files). Safe by
+# default: --detect never writes; --apply applies; --remove clears.
+set -uo pipefail   # NOTE: no -e — we handle per-file errors and continue.
+
+readonly NOISE_PX=4 MIN_BAR_PX=8 AGREE_PX=2 WINDOW=2 LIMIT=24 ROUND=2
+SYMMETRIC=1; JSON=0; MODE=""; TARGET=""; APPLY_TOP=""; APPLY_BOTTOM=""
+# Movie sampling: 5..60 by 5; TV: 5,10,15. Default movie; --tv switches.
+SAMPLES=( $(seq 5 5 60) )
+
+die(){ printf '❌ %s\n' "$*" >&2; exit 1; }
+log(){ printf '%s\n' "$*" >&2; }
+
+usage(){ cat >&2 <<EOF
+Usage: $0 (--detect|--apply [--crop N]|--remove|--show) [--tv] [--json] [--symmetric] <file|dir>
+  --detect     Detect letterbox crop (READ-ONLY); prints recommendation.
+  --apply      Apply detected (or --crop N) pixel-crop tags to top & bottom.
+  --remove     Remove any pixel-crop tags.
+  --show       Show current pixel dimensions & crop tags.
+  --tv         Use TV sampling (5,10,15 min) instead of movie sampling.
+  --json       Machine-readable output.
+  --symmetric  Force symmetric crop even if bars are uneven (default on).
+EOF
+exit 1; }
+
+# ---- preflight: required tools -------------------------------------------
+for bin in ffmpeg ffprobe mkvpropedit mkvmerge; do
+  command -v "$bin" >/dev/null 2>&1 || die "missing required tool: $bin"
+done
+
+# ---- parse args -----------------------------------------------------------
+while [[ $# -gt 0 ]]; do case "$1" in
+  --detect) MODE=detect;;  --apply) MODE=apply;;  --remove) MODE=remove;;
+  --show) MODE=show;;      --tv) SAMPLES=(5 10 15);;  --json) JSON=1;;
+  --symmetric) SYMMETRIC=1;;
+  --crop) shift; [[ "${1:-}" =~ ^[0-9]+$ ]] || die "--crop needs a number"; APPLY_TOP="$1"; APPLY_BOTTOM="$1";;
+  -h|--help) usage;;
+  -*) die "unknown option: $1";;
+  *) [[ -z "$TARGET" ]] && TARGET="$1" || die "multiple targets";;
+esac; shift; done
+[[ -n "$MODE" && -n "$TARGET" ]] || usage
+
+# ---- build file list (NUL-safe; mkv only) --------------------------------
+FILES=()
+if [[ -d "$TARGET" ]]; then
+  while IFS= read -r -d '' f; do FILES+=("$f"); done \
+    < <(find "$TARGET" -type f -iname '*.mkv' -print0)
+elif [[ -f "$TARGET" ]]; then FILES=("$TARGET")
+else die "'$TARGET' is not a file or directory"; fi
+(( ${#FILES[@]} )) || die "no .mkv files found under '$TARGET'"
+
+# ---- eligibility: regular, writable, mkv w/ video track ------------------
+eligible(){ # $1=file -> 0 ok / prints reason on stderr if not
+  local f="$1"
+  [[ "${f,,}" == *.mkv ]] || { log "skip (not mkv): $f"; return 1; }
+  [[ -f "$f" && -w "$f" ]] || { log "skip (missing/read-only): $f"; return 1; }
+  mkvmerge -J "$f" 2>/dev/null | grep -q '"type": *"video"' \
+    || { log "skip (no video track): $f"; return 1; }
+}
+
+probe_height(){ ffprobe -v error -select_streams v:0 \
+  -show_entries stream=height -of csv=p=0 "$1" 2>/dev/null | tr -cd '0-9'; }
+probe_duration(){ ffprobe -v error -show_entries format=duration \
+  -of default=nokey=1:noprint_wrappers=1 "$1" 2>/dev/null | cut -d. -f1; }
+
+# One cropdetect window at minute M -> echoes "TOP BOTTOM" bar px, or nothing.
+detect_window(){ # $1=file $2=minuteM $3=full_height
+  local f="$1" m="$2" fh="$3" ts line crop W H X Y
+  ts=$(printf '%02d:%02d:00' $((m/60)) $((m%60)))
+  # Fast input-seek, keyframes only, short accumulation window; parse last crop=.
+  line=$(ffmpeg -hide_banner -nostats -skip_frame nokey -ss "$ts" -i "$f" \
+                -an -sn -t "$WINDOW" \
+                -vf "cropdetect=limit=${LIMIT}:round=${ROUND}:reset=1" \
+                -f null - 2>&1 | grep -oE 'crop=[0-9]+:[0-9]+:[0-9]+:[0-9]+' | tail -n1) || return 1
+  [[ -n "$line" ]] || return 1
+  crop="${line#crop=}"; IFS=: read -r W H X Y <<<"$crop"
+  echo "$Y $(( fh - H - Y ))"
+}
+
+analyze(){ # $1=file -> sets globals: STATUS CONF REC_TOP REC_BOTTOM ASPECT
+  local f="$1" fh; fh=$(probe_height "$f")
+  [[ "$fh" =~ ^[0-9]+$ ]] || { STATUS=errored; CONF=none; return 1; }
+  local dur; dur=$(probe_duration "$f"); [[ "$dur" =~ ^[0-9]+$ ]] || dur=0
+  local tops=() bots=() bars=() zero=0 nonzero=0 noprog=0
+  for m in "${SAMPLES[@]}"; do
+    (( dur>0 && m*60>dur )) && continue
+    read -r t b < <(detect_window "$f" "$m" "$fh") || { log "   (decode fail @ ${m}m)"; continue; }
+    [[ -z "${t:-}" ]] && continue
+    local bar=$(( (t + b) / 2 ))
+    tops+=("$t"); bots+=("$b"); bars+=("$bar")
+    if (( bar <= NOISE_PX )); then zero=1; noprog=$((noprog+1)); else nonzero=1; noprog=0; fi
+    (( noprog>=3 )) && break   # early stop on repeated no-bar windows
+  done
+  (( ${#bars[@]} )) || { STATUS=errored; CONF=none; return 1; }
+  # min / max / median of bars
+  local sorted; sorted=$(printf '%s\n' "${bars[@]}" | sort -n)
+  local mn mx med n; mapfile -t S <<<"$sorted"; n=${#S[@]}
+  mn=${S[0]}; mx=${S[n-1]}; med=${S[n/2]}
+  if (( med <= NOISE_PX )); then STATUS=not_letterboxed; CONF=none; REC_TOP=0; REC_BOTTOM=0
+  elif (( zero && nonzero )); then STATUS=variable_unsafe; CONF=low; REC_TOP=0; REC_BOTTOM=0
+  elif (( mx - mn > AGREE_PX )); then
+    STATUS=tagged_candidate; REC_TOP=$mn; REC_BOTTOM=$mn       # conservative = min bar
+    (( mx-mn <= 20 )) && CONF=medium || CONF=low
+  else
+    STATUS=tagged_candidate; CONF=high; REC_TOP=$med; REC_BOTTOM=$med
+  fi
+  # asymmetry: honor uneven bars unless --symmetric
+  if (( ! SYMMETRIC && STATUS == 0 )); then :; fi   # (full asym handled in Python engine)
+  ASPECT=$(awk -v h="$fh" -v c="$REC_TOP" 'BEGIN{ if(h-2*c>0) printf "%.2f:1",(16.0/9.0)*h/(h-2*c); else print "?"}')
+}
+
+apply_tags(){ # $1 file $2 top $3 bottom
+  mkvpropedit "$1" --edit track:v1 \
+    --set pixel-crop-top="$2" --set pixel-crop-bottom="$3" \
+    --set pixel-crop-left=0 --set pixel-crop-right=0 >/dev/null \
+    && mkvmerge -J "$1" >/dev/null 2>&1   # verify readable afterwards
+}
+remove_tags(){ mkvpropedit "$1" --edit track:v1 \
+    --delete pixel-crop-top --delete pixel-crop-bottom \
+    --delete pixel-crop-left --delete pixel-crop-right >/dev/null 2>&1 || true; }
+
+for f in "${FILES[@]}"; do
+  eligible "$f" || continue
+  case "$MODE" in
+    show) log "🔎 $f"; mkvmerge -J "$f" | grep -E '"(pixel_dimensions|display_dimensions)"' || true;;
+    remove) log "🧹 $f"; remove_tags "$f"; log "   ✅ tags cleared";;
+    detect|apply)
+      log "🔍 $f"; analyze "$f" || { log "   ⚠️ detect failed"; continue; }
+      log "   status=$STATUS confidence=$CONF crop(top/bottom)=${REC_TOP:-0}/${REC_BOTTOM:-0} (${ASPECT:-?})"
+      (( JSON )) && printf '{"file":"%s","status":"%s","confidence":"%s","top":%s,"bottom":%s,"aspect":"%s"}\n' \
+                    "$f" "$STATUS" "$CONF" "${REC_TOP:-0}" "${REC_BOTTOM:-0}" "${ASPECT:-?}"
+      if [[ "$MODE" == apply ]]; then
+        local top="${APPLY_TOP:-$REC_TOP}" bot="${APPLY_BOTTOM:-$REC_BOTTOM}"
+        if [[ "$STATUS" == variable_unsafe ]]; then log "   ⛔ unsafe (contains 16:9 scenes) — not applied"; continue; fi
+        if (( ${top:-0} <= NOISE_PX )); then log "   ℹ️ not letterboxed — nothing to apply"; continue; fi
+        apply_tags "$f" "$top" "$bot" && log "   ✅ applied ${top}/${bot}px" || log "   ❌ mkvpropedit failed"
+      fi;;
+  esac
+done
+```
+
+> The Python engine (§17) issues the identical `ffmpeg … cropdetect` and
+> `mkvpropedit`/`mkvmerge -J` calls via `subprocess`, but adds the path guard,
+> per-file locks, structured `LetterboxState` persistence, previews, SSE batch
+> progress, and the asymmetric-crop refinement that the bash version stubs out.
+
+## Appendix B — End-to-End Walkthrough
+
+1. **Sync** pulls Radarr `movieFile.mediaInfo` → `movies.video_width/height/
+   container`. The pre-filter (§4) buckets each movie purely from metadata and
+   seeds `letterbox_state` (`candidate` vs skipped). No decode yet.
+2. User opens the Letterbox view → `GET /api/letterbox/candidates?status=candidate`.
+   The UI also calls `GET /status`; if `binaries.mkvpropedit` is false it shows
+   an install banner.
+3. User hits **Detect All** → `POST /api/letterbox/detect {all_candidates:true}`
+   → 202 + `job_id`. UI subscribes to `GET /jobs/{job_id}/events` (SSE) and
+   watches the bar fill. `LetterboxManager` runs `cropdetect` across candidates
+   in a CPU-bound pool (capped by `LETTERBOX_MAX_PARALLEL`), writing each
+   `LetterboxState` as it finishes.
+4. Rows update with `status`/`confidence`/`recommended_crop`/`aspect_label`.
+   Interstellar lands `variable_unsafe` (Case A); The Matrix lands `high`/140px.
+5. User inspects The Matrix → `GET /api/letterbox/movies/{id}` returns the sample
+   breakdown + `preview_urls`; the UI shows before/after frames from
+   `GET …/preview?mode=before|after`.
+6. User selects all High and **Apply** → `POST /api/letterbox/apply
+   {only_high:true}`. `LetterboxService` re-checks eligibility, validates each
+   path, runs `mkvpropedit`, verifies via `mkvmerge -J`, flips rows to `tagged`,
+   writes `LetterboxEvent`s. Files move to the Tagged tab.
+7. Later, Radarr upgrades The Matrix → webhook flips it back to `candidate` and
+   enqueues re-detection (new file, tags gone). The tag-drift heal scan catches
+   any `tagged` file silently remuxed by another tool and re-applies from state.
+8. On an ultrawide, Plex Desktop now renders The Matrix edge-to-edge; `--remove`
+   / `POST …/remove` reverts instantly with zero quality cost.
