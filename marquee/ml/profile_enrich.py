@@ -1,0 +1,169 @@
+"""Retrofit genres/years/tmdb_ids into an existing taste profile (design 11).
+
+Adds the ``genres``, ``years``, and ``tmdb_ids`` keys to the profile ``.npz``
+without re-embedding. Resolution order per poster (``"Title (Year).jpg"``):
+
+  1. memoized cache (``training_data/.genre_cache.json``)
+  2. the Marquee DB (``movies`` — synced from Radarr)
+  3. TMDB ``/search/movie`` (one-time, only if a token is configured)
+
+Usage:  python -m marquee.ml.profile_enrich [--no-tmdb]
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+import re
+import sqlite3
+from pathlib import Path
+
+import numpy as np
+
+from marquee.config import settings
+from marquee.core.pipeline_config import pipeline_settings
+
+logger = logging.getLogger(__name__)
+
+_YEAR = re.compile(r"\((\d{4})\)")
+_YEAR_SUFFIX = re.compile(r"\s*\(\d{4}\)\s*$")
+
+
+def _parse_name(name: str) -> tuple[str, int | None]:
+    stem = Path(name).stem
+    year_match = _YEAR.search(stem)
+    year = int(year_match.group(1)) if year_match else None
+    title = _YEAR_SUFFIX.sub("", stem).strip()
+    title = re.sub(r"\s*-\s*\d+$", "", title).strip()  # drop " - 2" dedup suffix
+    return title, year
+
+
+def _db_index() -> dict[str, tuple[list[str], int | None, int | None]]:
+    """{lower title: (genres, year, tmdb_id)} from the Marquee DB."""
+    db_path = settings._project_root / settings.DATA_DIR / "marquee.db"
+    if not db_path.exists():
+        return {}
+    index: dict[str, tuple[list[str], int | None, int | None]] = {}
+    conn = sqlite3.connect(str(db_path))
+    try:
+        for title, year, genres_json, tmdb_id in conn.execute(
+            "SELECT title, year, genres, tmdb_id FROM movies"
+        ):
+            try:
+                genres = json.loads(genres_json) if genres_json else []
+            except (json.JSONDecodeError, TypeError):
+                genres = []
+            index[str(title).lower()] = (genres or [], year, tmdb_id)
+    finally:
+        conn.close()
+    return index
+
+
+def _tmdb_lookup(title: str, year: int | None) -> tuple[list[str], int | None] | None:
+    token = settings.TMDB_READ_ACCESS_TOKEN
+    if not token:
+        return None
+    import httpx  # noqa: PLC0415
+
+    # TMDB genre ids → names (movie list, stable).
+    genre_map = {
+        28: "Action", 12: "Adventure", 16: "Animation", 35: "Comedy",
+        80: "Crime", 99: "Documentary", 18: "Drama", 10751: "Family",
+        14: "Fantasy", 36: "History", 27: "Horror", 10402: "Music",
+        9648: "Mystery", 10749: "Romance", 878: "Science Fiction",
+        10770: "TV Movie", 53: "Thriller", 10752: "War", 37: "Western",
+    }
+    try:
+        params = {"query": title}
+        if year:
+            params["year"] = str(year)
+        resp = httpx.get(
+            "https://api.themoviedb.org/3/search/movie",
+            params=params,
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=15.0,
+        )
+        resp.raise_for_status()
+        results = resp.json().get("results", [])
+        if not results:
+            return None
+        top = results[0]
+        genres = [genre_map[g] for g in top.get("genre_ids", []) if g in genre_map]
+        return genres, top.get("id")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("TMDB lookup failed for %s: %s", title, exc)
+        return None
+
+
+def enrich(*, use_tmdb: bool = True) -> Path:
+    profile_path = Path(pipeline_settings.TASTE_PROFILE_PATH)
+    with np.load(profile_path, allow_pickle=True) as data:
+        payload = {key: data[key] for key in data.files}
+    names = [str(n) for n in payload["poster_names"].tolist()]
+
+    cache_path = Path(pipeline_settings.TRAINING_DATA_DIR) / ".genre_cache.json"
+    cache = {}
+    if cache_path.exists():
+        try:
+            cache = json.loads(cache_path.read_text())
+        except json.JSONDecodeError:
+            cache = {}
+
+    db_index = _db_index()
+    genres_out: list[list[str]] = []
+    years_out: list[int | None] = []
+    tmdb_out: list[int | None] = []
+    tmdb_calls = 0
+
+    for name in names:
+        title, year = _parse_name(name)
+        key = f"{title.lower()}|{year}"
+        if key in cache:
+            entry = cache[key]
+        elif title.lower() in db_index:
+            genres, db_year, tmdb_id = db_index[title.lower()]
+            entry = {"genres": genres, "year": year or db_year, "tmdb_id": tmdb_id}
+        elif use_tmdb and (result := _tmdb_lookup(title, year)) is not None:
+            tmdb_calls += 1
+            genres, tmdb_id = result
+            entry = {"genres": genres, "year": year, "tmdb_id": tmdb_id}
+        else:
+            entry = {"genres": [], "year": year, "tmdb_id": None}
+        cache[key] = entry
+        genres_out.append(entry["genres"])
+        years_out.append(entry["year"] if entry["year"] is not None else 0)
+        tmdb_out.append(entry["tmdb_id"] if entry["tmdb_id"] is not None else 0)
+
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_path.write_text(json.dumps(cache, indent=2), encoding="utf-8")
+
+    payload["genres"] = np.asarray(genres_out, dtype=object)
+    payload["years"] = np.asarray(years_out, dtype=np.int64)
+    payload["tmdb_ids"] = np.asarray(tmdb_out, dtype=np.int64)
+
+    import os  # noqa: PLC0415
+
+    tmp = profile_path.with_name(profile_path.name + ".tmp.npz")
+    np.savez(tmp, **payload)
+    os.replace(tmp, profile_path)
+
+    resolved = sum(1 for g in genres_out if g)
+    logger.info(
+        "ENRICH | %d posters: %d with genres (%d TMDB calls)",
+        len(names), resolved, tmdb_calls,
+    )
+    return profile_path
+
+
+def main() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--no-tmdb", action="store_true", help="DB + cache only")
+    args = parser.parse_args()
+    path = enrich(use_tmdb=not args.no_tmdb)
+    print(f"[INFO] Enriched profile written to {path}")
+
+
+if __name__ == "__main__":
+    main()

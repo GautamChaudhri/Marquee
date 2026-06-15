@@ -1,8 +1,29 @@
 # Marquee — Feedback Loop Design
 
-**Status:** Design phase — not yet implemented  
+**Status:** Implemented (API endpoints, label store, incremental profile updates, auto-retrain)  
 **Date:** 2026-06-12  
 **Purpose:** Define how the system learns from user interactions, what happens in every override scenario, and how the UI consumes pipeline decisions.
+
+---
+
+## Implementation Summary
+
+The feedback loop is fully implemented (2026-06-15). Key components:
+
+- **Feedback API** (`POST /api/feedback` in `marquee/api/routes/feedback.py`): handles approve/override/reject_all/undo actions, writes v2 labels, deploys via PosterService, appends to taste profile, auto-retrains learned head
+- **Label store** (`marquee/ml/feedback_store.py`): append-only JSONL with embedded feature vectors (v2 format) — no dependency on run directories surviving re-runs; backward-compatible with v1 (title+filename join)
+- **Profile updater** (`marquee/ml/profile_updater.py`): incremental add/remove of single exemplars to the taste profile `.npz` without a full rebuild (CLIP embedding + DINOv2 + calibration column append)
+- **Retroactive features** (`marquee/pipeline/retro_features.py`): when a user selects a poster rejected before its detail features were computed, computes missing features at feedback time (rare one-off cost)
+- **Learned head auto-retrain** (`marquee/ml/head_trainer.py`): `train_from_labels()` called after each feedback event when `HEAD_AUTO_RETRAIN=true` and thresholds met
+- **Gate override tracking**: every override records which gate rejected the poster; at `FEEDBACK_GATE_ALERT_THRESHOLD` (default 5), the taste status API surfaces a tuning suggestion
+- **Deployment**: `PosterService.deploy()` (`marquee/core/poster_service.py`) renders filename, validates path, writes atomically, populates cache, logs ArtworkEvent
+
+The golden rule (§2) is enforced: only explicitly approved posters join the taste profile.
+Labels v2 embed the full feature vector at feedback time so training never depends on a run's working directory.
+
+This design doc remains the authoritative reference for the scenarios and data model;
+the code at `marquee/api/routes/feedback.py` and related modules is the source of truth for implementation details.
+
 
 ---
 

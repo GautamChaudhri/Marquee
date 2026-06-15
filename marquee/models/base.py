@@ -86,6 +86,27 @@ class ArtworkMixin:
         comment="Perceptual hash of the deployed poster",
     )
 
+    poster_user_approved: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default="0",
+        comment="True = a human approved this poster (vs an unreviewed AI pick)",
+    )
+
+    poster_deployed_filename: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+        comment="Filename written into the media folder (e.g. poster.jpg) — "
+        "restoration re-uses this exact name",
+    )
+
+    poster_deployed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        comment="When the poster was last deployed to the media folder",
+    )
+
     @property
     def needs_poster(self) -> bool:
         """True when this entity still needs a poster."""

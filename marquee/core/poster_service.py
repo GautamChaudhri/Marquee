@@ -1,0 +1,270 @@
+"""PosterService — the single path that writes a poster to a media folder.
+
+Both deployment (pipeline auto-deploy, feedback approve/override) and
+restoration (Radarr upgrade webhook, self-heal scan) go through here, so
+filename rendering, path validation, atomic writes, cache population, DB
+state, and the artwork-events audit trail can never drift apart.
+
+Cache layout (design 10 §12):
+    data/cache/posters/movies/{tmdb_id}.jpg          ← exact deployed bytes
+    data/cache/posters/movies/{tmdb_id}.meta.json    ← provenance for fallback
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import logging
+import os
+import shutil
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
+
+import httpx
+import imagehash
+from PIL import Image
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from marquee.config import settings
+from marquee.core.path_utils import PathValidationError, safe_translate_and_validate
+from marquee.models import ArtworkEvent, Movie
+
+logger = logging.getLogger(__name__)
+
+_TMDB_ORIGINAL = "https://image.tmdb.org/t/p/original"
+
+
+@dataclass
+class DeployResult:
+    deployed_path: str
+    cache_path: str
+    sha256: str
+
+
+@dataclass
+class RestoreResult:
+    restored: bool
+    source: str  # "cache" | "download" | "none"
+    path: str | None = None
+    error: str | None = None
+
+
+def render_filename(movie: Movie) -> str:
+    """Render the configured movie poster filename (handles {movie_basename})."""
+    fmt = settings.MOVIE_POSTER_FORMAT
+    if "{movie_basename}" in fmt:
+        basename = (
+            Path(movie.movie_file_path).stem if movie.movie_file_path else "poster"
+        )
+        return fmt.format(movie_basename=basename)
+    return fmt
+
+
+def _cache_dir() -> Path:
+    return settings.poster_cache_path / "movies"
+
+
+def cache_paths(tmdb_id: int) -> tuple[Path, Path]:
+    base = _cache_dir()
+    return base / f"{tmdb_id}.jpg", base / f"{tmdb_id}.meta.json"
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    digest.update(path.read_bytes())
+    return digest.hexdigest()
+
+
+def _phash(path: Path) -> str | None:
+    try:
+        with Image.open(path) as image:
+            return str(imagehash.phash(image))
+    except Exception as exc:  # noqa: BLE001 — phash is advisory
+        logger.warning("phash failed for %s: %s", path, exc)
+        return None
+
+
+def _atomic_copy(source: Path, dest: Path) -> None:
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.parent / f".{dest.name}.tmp"
+    shutil.copy2(source, tmp)
+    os.replace(tmp, dest)
+
+
+def _atomic_write_bytes(data: bytes, dest: Path) -> None:
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.parent / f".{dest.name}.tmp"
+    tmp.write_bytes(data)
+    os.replace(tmp, dest)
+
+
+async def _log_event(db: AsyncSession, movie_id: int, action: str, source: str, detail: dict) -> None:
+    db.add(
+        ArtworkEvent(
+            movie_id=movie_id,
+            action=action,
+            source=source,
+            detail=json.dumps(detail, default=str),
+        )
+    )
+
+
+class PosterService:
+    """Deploy + restore posters through one validated, audited path."""
+
+    async def deploy(
+        self,
+        db: AsyncSession,
+        movie: Movie,
+        source_file: Path,
+        *,
+        source: str = "pipeline",
+        ai_selected: bool = True,
+        user_approved: bool = False,
+        poster_source: str | None = "tmdb",
+        poster_source_url: str | None = None,
+    ) -> DeployResult:
+        """Write ``source_file`` into the movie folder + cache + DB + event."""
+        if not source_file.is_file():
+            raise FileNotFoundError(f"Poster source file missing: {source_file}")
+
+        filename = render_filename(movie)
+        folder = safe_translate_and_validate(movie.folder_path, source="radarr")
+        if not folder.is_dir():
+            raise PathValidationError(f"Movie folder does not exist: {folder}")
+        dest = folder / filename
+
+        _atomic_copy(source_file, dest)
+
+        sha256 = _sha256(dest)
+        phash = _phash(dest)
+
+        # Cache exact deployed bytes + provenance sidecar.
+        cache_file = cache_meta = None
+        if movie.tmdb_id is not None:
+            cache_file, cache_meta = cache_paths(movie.tmdb_id)
+            _atomic_copy(dest, cache_file)
+            with Image.open(dest) as image:
+                width, height = image.size
+            cache_meta.write_text(
+                json.dumps(
+                    {
+                        "source": poster_source,
+                        "source_url": poster_source_url,
+                        "sha256": sha256,
+                        "phash": phash,
+                        "deployed_filename": filename,
+                        "deployed_at": datetime.now(UTC).isoformat(),
+                        "width": width,
+                        "height": height,
+                    },
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+
+        movie.poster_path = str(dest)
+        movie.poster_source = poster_source
+        if poster_source_url:
+            movie.poster_source_url = poster_source_url
+        movie.poster_ai_selected = ai_selected
+        movie.poster_user_approved = user_approved
+        movie.poster_deployed_filename = filename
+        movie.poster_deployed_at = datetime.now(UTC)
+        movie.poster_sha256 = sha256
+        if phash:
+            movie.poster_phash = phash
+
+        await _log_event(
+            db, movie.id, "deploy", source,
+            {"path": str(dest), "cache": str(cache_file) if cache_file else None,
+             "user_approved": user_approved},
+        )
+        await db.commit()
+
+        logger.info("POSTER DEPLOYED | movie=%s | path=%s | source=%s", movie.title, dest, source)
+        return DeployResult(
+            deployed_path=str(dest),
+            cache_path=str(cache_file) if cache_file else "",
+            sha256=sha256,
+        )
+
+    async def restore(
+        self,
+        db: AsyncSession,
+        movie: Movie,
+        *,
+        new_folder: str | None = None,
+        source: str = "webhook",
+    ) -> RestoreResult:
+        """Restore the deployed poster to the (new) movie folder."""
+        if movie.poster_path is None and movie.poster_source_url is None:
+            return RestoreResult(restored=False, source="none", error="movie never had a poster")
+
+        folder_raw = new_folder or movie.folder_path
+        try:
+            folder = safe_translate_and_validate(folder_raw, source="radarr")
+        except PathValidationError as exc:
+            await _log_event(db, movie.id, "restore_failed", source, {"error": str(exc)})
+            await db.commit()
+            return RestoreResult(restored=False, source="none", error=str(exc))
+
+        filename = movie.poster_deployed_filename or render_filename(movie)
+        dest = folder / filename
+
+        # Primary: restore from the local cache (verify integrity if we can).
+        cache_file = None
+        if movie.tmdb_id is not None:
+            cache_file, _ = cache_paths(movie.tmdb_id)
+        if cache_file and cache_file.is_file():
+            if movie.poster_sha256 and _sha256(cache_file) != movie.poster_sha256:
+                logger.warning("RESTORE | cache sha mismatch for %s — using it anyway", movie.title)
+            try:
+                _atomic_copy(cache_file, dest)
+                await self._finalize_restore(db, movie, dest, folder_raw, source, "cache")
+                return RestoreResult(restored=True, source="cache", path=str(dest))
+            except OSError as exc:
+                logger.warning("RESTORE | cache copy failed (%s) — trying download", exc)
+
+        # Fallback: re-download from the stored source URL.
+        if movie.poster_source_url:
+            try:
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    response = await client.get(movie.poster_source_url)
+                    response.raise_for_status()
+                _atomic_write_bytes(response.content, dest)
+                await self._finalize_restore(db, movie, dest, folder_raw, source, "download")
+                return RestoreResult(restored=True, source="download", path=str(dest))
+            except Exception as exc:  # noqa: BLE001
+                error = f"download failed: {exc}"
+        else:
+            error = "cache missing and no source URL"
+
+        movie.poster_path = None  # flag for re-pipeline (needs_poster index)
+        await _log_event(db, movie.id, "restore_failed", source, {"error": error})
+        await db.commit()
+        logger.error("POSTER RESTORE FAILED | movie=%s | %s", movie.title, error)
+        return RestoreResult(restored=False, source="none", error=error)
+
+    async def _finalize_restore(
+        self, db, movie, dest: Path, folder_raw: str, source: str, via: str
+    ) -> None:
+        movie.poster_path = str(dest)
+        movie.folder_path = folder_raw
+        movie.poster_deployed_at = datetime.now(UTC)
+        await _log_event(
+            db, movie.id,
+            "restore" if source != "heal" else "heal_restore",
+            source, {"path": str(dest), "via": via},
+        )
+        await db.commit()
+        logger.info("POSTER RESTORED | movie=%s | via=%s | path=%s", movie.title, via, dest)
+
+
+poster_service = PosterService()
+
+
+def tmdb_original_url(orig_filename: str) -> str:
+    """Reconstruct the TMDB original-size URL from a candidate filename."""
+    return f"{_TMDB_ORIGINAL}/{orig_filename.lstrip('/')}"

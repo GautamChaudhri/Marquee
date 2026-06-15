@@ -147,6 +147,11 @@ class SyncService:
                 movie.imdb_id = data.get("imdbId")
                 movie.folder_path = data.get("path") or ""
 
+                # Radarr returns genres as a list of strings; store the whole
+                # list (powers label diversity + the taste map).
+                genres = data.get("genres")
+                movie.genres = genres if isinstance(genres, list) else None
+
                 # ── Filesystem ────────────────────────────────────────
                 movie_file = data.get("movieFile") or {}
                 movie.movie_file_path = movie_file.get("relativePath")

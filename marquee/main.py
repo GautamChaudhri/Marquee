@@ -36,6 +36,21 @@ logger = logging.getLogger(__name__)
 _sync_rate_limiter = RateLimiter(cooldown_seconds=settings.SYNC_COOLDOWN_SECONDS)
 
 
+async def _heal_loop() -> None:
+    """Periodically run the self-heal poster existence scan."""
+    from marquee.core.heal import heal_scan
+
+    interval = max(60, settings.HEAL_INTERVAL_MINUTES * 60)
+    while True:
+        try:
+            await asyncio.sleep(interval)
+            await heal_scan()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("Self-heal scan failed", exc_info=True)
+
+
 # ---------------------------------------------------------------------------
 # Application Lifespan
 # ---------------------------------------------------------------------------
@@ -102,7 +117,18 @@ async def lifespan(app: FastAPI):
     # Rate limiter — shared across requests
     app.state.sync_rate_limiter = _sync_rate_limiter
 
+    # Self-heal scan — periodically restore posters missing from disk.
+    heal_task: asyncio.Task | None = None
+    if settings.HEAL_ENABLED:
+        heal_task = asyncio.create_task(_heal_loop())
+        logger.info(
+            "Self-heal scan enabled (every %d min)", settings.HEAL_INTERVAL_MINUTES
+        )
+
     yield  # ── application runs here ──
+
+    if heal_task is not None:
+        heal_task.cancel()
 
     # ── SHUTDOWN ─────────────────────────────────────────────────────
     logger.info(
@@ -180,15 +206,25 @@ async def log_requests(request: Request, call_next):
 # Routers
 # ---------------------------------------------------------------------------
 
+from marquee.api.routes.config import router as config_router  # noqa: E402
+from marquee.api.routes.feedback import router as feedback_router  # noqa: E402
 from marquee.api.routes.library import router as library_router  # noqa: E402
+from marquee.api.routes.pipeline import movies_router  # noqa: E402
 from marquee.api.routes.pipeline import router as pipeline_router  # noqa: E402
 from marquee.api.routes.sync import router as sync_router  # noqa: E402
+from marquee.api.routes.system import router as system_router  # noqa: E402
+from marquee.api.routes.taste import router as taste_router  # noqa: E402
 from marquee.api.routes.test_pipeline import router as test_pipeline_router  # noqa: E402
 from marquee.api.routes.webhooks import router as webhooks_router  # noqa: E402
 
 app.include_router(sync_router)
 app.include_router(library_router)
 app.include_router(pipeline_router)
+app.include_router(movies_router)
+app.include_router(feedback_router)
+app.include_router(taste_router)
+app.include_router(config_router)
+app.include_router(system_router)
 app.include_router(test_pipeline_router)
 app.include_router(webhooks_router)
 

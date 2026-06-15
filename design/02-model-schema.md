@@ -105,6 +105,7 @@ One row per movie in the user's library. Identified by Radarr sync or standalone
 | `year` | INTEGER | No | Release year |
 | `tmdb_id` | INTEGER | Yes (UNIQUE) | Universal poster lookup key |
 | `imdb_id` | TEXT | Yes | e.g. "tt1234567" |
+| `genres` | TEXT (JSON) | Yes | JSON array synced from Radarr (e.g. `["Action","Thriller"]`) — powers label-diversity tracking and taste-map genre coloring |
 | `folder_path` | TEXT | No | Full path to movie folder |
 | `movie_file_path` | TEXT | Yes | Filename within folder |
 | `radarr_id` | INTEGER | Yes (UNIQUE) | Radarr's internal ID — sync dedup + webhook matching |
@@ -174,6 +175,39 @@ One row per episode file. No poster state — episodes don't get posters.
 
 ---
 
+## 3.5 PipelineRun
+
+One row per pipeline execution. Written during execution (status=running) and updated on completion. Survives re-runs of the same movie via stable run_id.
+
+| Column | Type | Nullable | Notes |
+|---|---|---|---|
+| `run_id` | VARCHAR(32) PK | No | UUID4 hex — stable identifier for results, events, feedback |
+| `movie_id` | INTEGER FK | No | References `movies.id` |
+| `status` | VARCHAR(20) | No | `running` | `completed` | `flagged_manual` | `failed` |
+| `started_at` | TIMESTAMP | No | Auto |
+| `completed_at` | TIMESTAMP | Yes | Set on completion |
+| `scorer_name` | VARCHAR(20) | Yes | `weighted` (Phase 0) or `learned` (Phase 1) |
+| `counts_json` | TEXT | Yes | Stage survivor counts |
+| `archive_path` | TEXT | Yes | Path to archived `pipeline_run.json` (survives re-runs) |
+| `output_dir` | TEXT | Yes | Working directory under `experiments/runs/<title>/` |
+| `feedback_event_id` | VARCHAR(32) | Yes | Set when feedback is submitted |
+| `error` | TEXT | Yes | Error message if failed |
+
+## 3.6 ArtworkEvent
+
+Append-only audit trail of poster lifecycle events — deployments, restorations, and webhook activity.
+
+| Column | Type | Nullable | Notes |
+|---|---|---|---|
+| `id` | INTEGER PK | No | Auto-increment |
+| `movie_id` | INTEGER FK | No | References `movies.id` |
+| `action` | VARCHAR(20) | No | `deploy` | `restore` | `restore_failed` | `heal_restore` | `webhook_noop` | `webhook_error` |
+| `source` | VARCHAR(20) | No | `pipeline` | `feedback` | `webhook` | `heal` | `manual` |
+| `detail` | TEXT | Yes | JSON: old/new paths, cache hit/miss, error |
+| `created_at` | TIMESTAMP | No | Auto |
+
+---
+
 ## 4. ArtworkMixin
 
 A SQLAlchemy mixin providing poster state for `Movie`, `Series`, and `Season`.
@@ -186,14 +220,18 @@ class ArtworkMixin:
     poster_source: Mapped[str | None]      # "tmdb" | "fanart" | "tvdb" | "tvmaze"
     poster_source_url: Mapped[str | None]  # original URL for reference
     poster_ai_selected: Mapped[bool]       # did the AI engine choose this?
-    poster_embedding: Mapped[bytes | None] # serialised numpy CLIP embedding
+    poster_user_approved: Mapped[bool]     # True = human approved (vs unreviewed AI pick)
     poster_sha256: Mapped[str | None]      # SHA-256 of deployed poster
     poster_phash: Mapped[str | None]       # perceptual hash
+    poster_deployed_filename: Mapped[str | None]  # filename in media folder (e.g. "poster.jpg")
+    poster_deployed_at: Mapped[datetime | None]   # when last deployed
 
     @property
     def needs_poster(self) -> bool:
         return self.poster_path is None
 ```
+
+**Changes from the initial design:** `poster_embedding` was removed (embeddings live in the taste profile `.npz` and per-run caches, not the DB). Added `poster_user_approved`, `poster_deployed_filename`, and `poster_deployed_at` for the poster restoration and feedback loop features (designs 09-10).
 
 **Naming convention:** All columns are prefixed with `poster_`. This makes a future extraction to a separate `artwork` table a clean find-and-replace. See Section 8.
 

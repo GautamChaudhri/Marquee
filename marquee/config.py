@@ -64,6 +64,15 @@ class Settings(BaseSettings):
         """Absolute path to the staging directory for downloaded candidates."""
         return self._project_root / self.DATA_DIR / "staging"
 
+    @property
+    def runs_archive_path(self) -> Path:
+        """Where per-run pipeline_run.json copies are archived by run_id.
+
+        Survives re-runs of the same movie (the experiments/runs/<title>/
+        working dir is overwritten on re-run; this archive is not).
+        """
+        return self._project_root / self.DATA_DIR / "runs" / "archive"
+
     # ------------------------------------------------------------------
     # CORS (for web UI development in Phase 6)
     # ------------------------------------------------------------------
@@ -280,6 +289,22 @@ class Settings(BaseSettings):
     HEAL_INTERVAL_MINUTES: int = Field(
         default=30,
         description="Minutes between self-healing poster existence scans",
+    )
+    HEAL_ENABLED: bool = Field(
+        default=True,
+        description="Run the periodic self-heal poster existence scan.",
+    )
+
+    # ------------------------------------------------------------------
+    # Webhooks (Radarr/Sonarr → poster restoration)
+    # ------------------------------------------------------------------
+    WEBHOOK_TOKEN: str | None = Field(
+        default=None,
+        description="When set, webhook requests must carry ?token=<this>.",
+    )
+    WEBHOOK_DRY_RUN: bool = Field(
+        default=False,
+        description="Log + record webhook events without touching the filesystem.",
     )
 
     # ------------------------------------------------------------------

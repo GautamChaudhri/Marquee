@@ -128,17 +128,28 @@ These balance the 13 features in the Phase-0 weighted scorer. The scorer renorma
 
 ---
 
-## Group E — Learned ranking head (Phase 1)
+## Group E — Learned ranking head (Phase 1) ✅ IMPLEMENTED
 
-Once ~150+ labels exist across 5+ diverse movies:
+Training is now driven by `train_from_labels()` in `marquee/ml/head_trainer.py`, which reads both v1 (legacy title+filename join) and v2 (self-contained embedded feature vector) labels from `feedback_store.read_all()`. Activation thresholds are configurable:
+
+| Knob | Default | What it does |
+|---|---|---|
+| `HEAD_MIN_LABELS` | 150 | Minimum labels before the head replaces hand weights |
+| `HEAD_MIN_MOVIES` | 5 | Minimum distinct movies (avoids head overfitting to one movie) |
+| `HEAD_AUTO_RETRAIN` | `true` | Auto-retrain after each feedback event when thresholds met |
+
+Invoke training via API or CLI:
 
 ```bash
-python -m marquee.ml.head_trainer    # trains logistic head from labels.jsonl
+python -m marquee.ml.head_trainer                          # train from labels.jsonl
+python -m marquee.ml.head_trainer --min-labels 10          # override safety floor for testing
 ```
 
-Activate with `SCORER=auto` (picks up the artifact automatically) or force with `SCORER=learned`. The learned head replaces Group D's hand-tuned weights with a data-driven logistic regression over the same normalized features.
+The feedback endpoint calls `train_from_labels()` directly after each event when `HEAD_AUTO_RETRAIN=true`. Activate with `SCORER=auto` (picks up the artifact automatically) or force with `SCORER=learned`.
 
-Current state: 78 labels (3 movies), preview accuracy 75.6% — too thin to activate. See `todos.md`.
+**Labels v2 format** embeds the full normalized feature vector per row, so training is a direct read — no dependency on a run's working directory surviving a re-run. The same module (`feedback_store`) handles append/read/remove/undo.
+
+Current state: 78 labels (3 movies) — too thin to activate (below `HEAD_MIN_LABELS: 150`). The gate override tracking (`FEEDBACK_GATE_ALERT_THRESHOLD: 5`) surfaces tuning suggestions in the taste status API when a gate blocks posters you consistently override.
 
 ---
 

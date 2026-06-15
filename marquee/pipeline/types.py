@@ -85,6 +85,10 @@ class CandidateScore:
     stage_reached: str = "fetch"
     rejection_reason: str | None = None
     original_download: bool | None = None
+    # When this candidate was removed as a SHA/pHash near-duplicate, the
+    # filename of the survivor it collapsed into (used by the feedback
+    # endpoint to remap a dedup-twin override onto its survivor).
+    dedup_kept: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -104,4 +108,5 @@ class CandidateScore:
             "stage_reached": self.stage_reached,
             "rejection_reason": self.rejection_reason,
             "original_download": self.original_download,
+            "dedup_kept": self.dedup_kept,
         }

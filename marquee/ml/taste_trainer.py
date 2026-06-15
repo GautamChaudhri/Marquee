@@ -303,6 +303,33 @@ def print_diagnostics(
 # ---------------------------------------------------------------------------
 
 
+def rebuild_profile(
+    *,
+    training_dir: Path | None = None,
+    negative_dir: Path | None = None,
+    model: Path | None = None,
+    output: Path | None = None,
+    skip_ocr: bool = False,
+    skip_dino: bool = False,
+) -> Path:
+    """Build the taste profile from the training folders and save it.
+
+    Callable entry point behind ``POST /api/taste/retrain`` and the CLI. All
+    arguments default to the configured paths.
+    """
+    from argparse import Namespace
+
+    args = Namespace(
+        training_dir=training_dir or _DEFAULT_TRAINING_DIR,
+        negative_dir=negative_dir,
+        model=model or pipeline_settings.CLIP_MODEL_PATH,
+        output=output or pipeline_settings.TASTE_PROFILE_PATH,
+        skip_ocr=skip_ocr,
+        skip_dino=skip_dino,
+    )
+    return _run_build(args)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--training-dir", type=Path, default=_DEFAULT_TRAINING_DIR)
@@ -328,7 +355,10 @@ def main() -> None:
         help="Skip DINOv2 embeddings even if the model file exists",
     )
     args = parser.parse_args()
+    _run_build(args)
 
+
+def _run_build(args) -> Path:
     negative_dir = args.negative_dir
     if negative_dir is None:
         candidate = args.training_dir.parent / "negative_data"
@@ -443,6 +473,7 @@ def main() -> None:
         dino_self_knn=dino_self_knn,
     )
     print(f"[INFO] Completed in {time.perf_counter() - started:.1f}s")
+    return Path(args.output)
 
 
 if __name__ == "__main__":

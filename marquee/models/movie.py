@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from sqlalchemy import Boolean, Index, Integer, String, Text, text
+from sqlalchemy import JSON, Boolean, Index, Integer, String, Text, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from marquee.database import Base
@@ -29,6 +29,11 @@ class Movie(Base, TimestampMixin, ArtworkMixin):
         Integer, unique=True, index=True, nullable=True
     )
     imdb_id: Mapped[str | None] = mapped_column(String(20), nullable=True)
+
+    # ── Genres ───────────────────────────────────────────────────────
+    # JSON array synced from Radarr (e.g. ["Action", "Thriller"]). Powers
+    # label-diversity tracking (design 09) and the taste map (design 11).
+    genres: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
 
     # ── Filesystem ───────────────────────────────────────────────────
     folder_path: Mapped[str] = mapped_column(Text, nullable=False)

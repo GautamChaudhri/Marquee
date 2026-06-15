@@ -88,11 +88,14 @@ Stages marked **[NOW]** are built in the current phase (inside the test endpoint
                                  → sort → top-5
 [NOW]  Stage 7  — OUTPUT         all ranked posters renamed rank__score__orig into a single
                                  `ranked/` folder; top-5 re-downloaded at original resolution
-[TODO] Stage 8  — DEPLOY         write to media library, update DB
-[TODO] Stage 9  — FEEDBACK       user approves #1 or picks another from top-5
-                                 → positive + override-negative labels
-                                 → only manually-approved joins the taste profile
-[TODO] Stage 10 — RETRAIN        learned head trained on accumulated labels
+[NOW]  Stage 8  — DEPLOY         PosterService writes to media library, updates DB + cache
+                                 (called from feedback approve/override endpoint)
+[NOW]  Stage 9  — FEEDBACK       API at POST /api/feedback — approve/override/reject/undo
+                                 → labels written to labels.jsonl (v2: embedded feature vectors)
+                                 → selected poster joins taste profile incrementally
+                                 → learned head auto-retrains at threshold
+[NOW]  Stage 10 — RETRAIN        train_from_labels() reads v1+v2 labels from feedback_store,
+                                 trains LogisticHead, saves to learned_head.npz when thresholds met
 ```
 
 Why this order: **cheapest signal first.** SHA-256 exact dedup is byte-cheap and unambiguous so

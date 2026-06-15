@@ -11,7 +11,14 @@ from marquee.database import (
     _get_session_factory,
     close_db,
 )
-from marquee.models import Episode, Movie, Season, Series
+from marquee.models import (
+    ArtworkEvent,
+    Episode,
+    Movie,
+    PipelineRun,
+    Season,
+    Series,
+)
 
 
 @pytest_asyncio.fixture(scope="session", autouse=True)
@@ -44,8 +51,8 @@ async def db():
 
     factory = _get_session_factory()
     async with factory() as session:
-        # Clean all rows from previous tests
-        for model in (Episode, Season, Series, Movie):
+        # Clean all rows from previous tests (children before parents).
+        for model in (ArtworkEvent, PipelineRun, Episode, Season, Series, Movie):
             await session.execute(delete(model))
         await session.commit()
 

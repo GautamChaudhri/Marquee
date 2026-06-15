@@ -90,8 +90,17 @@ ml = [
     "tqdm>=4.65",
 ]
 
+# Taste-map visualization (design 11). UMAP gives meaningful projections +
+# HDBSCAN clustering; without it the API falls back to a numpy-SVD PCA with
+# no clustering. umap-learn pulls scikit-learn (HDBSCAN lives there too), so
+# this adds no packages beyond umap-learn itself.
+viz = [
+    "umap-learn>=0.5.7",
+    "scikit-learn>=1.5",
+]
+
 all = [
-    "marquee[dev,ml]",
+    "marquee[dev,ml,viz]",
 ]
 
 [tool.hatch.build.targets.wheel]

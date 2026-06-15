@@ -207,6 +207,37 @@ That's all the dedup config needs for now. SHA-256 exact dedup has no configurab
 
 ---
 
+## 5. Additional Config Fields (Phase 3/4)
+
+The following were added during implementation of the feedback loop, webhooks, and self-heal features:
+
+### marquee/config.py
+
+| Field | Default | Purpose |
+|---|---|---|
+| `runs_archive_path` | (derived) `data/runs/archive/` | Per-run `pipeline_run.json` copies survive movie re-runs |
+| `HEAL_ENABLED` | `True` | Run the periodic self-heal poster existence scan |
+| `WEBHOOK_TOKEN` | `None` | When set, webhook requests must carry `?token=<this>` |
+| `WEBHOOK_DRY_RUN` | `False` | Log webhook events without touching the filesystem |
+
+### marquee/core/pipeline_config.py
+
+| Field | Default | Purpose |
+|---|---|---|
+| `FEEDBACK_LABELS_PATH` | `marquee/experiments/feedback/labels.jsonl` | Append-only JSONL of user feedback labels |
+| `NEGATIVE_DATA_DIR` | `marquee/experiments/negative_data/` | Disliked exemplars directory |
+| `TRAINING_DATA_DIR` | `marquee/experiments/training_data/` | Positive exemplars directory |
+| `FEEDBACK_GATE_ALERT_THRESHOLD` | `5` | Gate override count before surfacing a tuning suggestion |
+| `FEEDBACK_NEGATIVES_FROM_OVERRIDES` | `False` | Copy overridden auto-pick to negative data dir |
+| `FEEDBACK_DEPLOY_DEFAULT` | `True` | Approve/override deploys the selected poster |
+| `HEAD_MIN_LABELS` | `150` | Minimum labels to activate learned head |
+| `HEAD_MIN_MOVIES` | `5` | Minimum distinct movies with labels |
+| `HEAD_AUTO_RETRAIN` | `True` | Auto-retrain learned head after each feedback event |
+
+UI knob overrides layer on top of env/.env via `data/pipeline_overrides.json` (loaded by `load_overrides()` / `save_overrides()`).
+
+---
+
 ## Summary of Changes Needed
 
 | File | Change |

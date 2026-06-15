@@ -62,7 +62,7 @@ Queries multiple free artwork databases (TMDB, Fanart.tv, TheTVDB, TVmaze) to re
 
 ### 2.3 AI Preference Learning Engine
 
-Uses CLIP (Contrastive Language-Image Pretraining) to generate image embeddings for all posters. Learns the user's visual preferences by analyzing their existing poster choices. Ranks new poster candidates by similarity to the user's preference profile. Optionally uses a small Vision Language Model (VLM) for deeper analysis of top candidates.
+Uses CLIP ViT-B/32 (ONNX) to generate image embeddings for all poster candidates. The taste profile is a k-NN store of ~430 hand-picked exemplar embeddings; a candidate's style score is the similarity-weighted mean cosine to its k nearest exemplars (not cosine to a centroid), which handles multimodal taste natively. Extended features (DINOv2 second-opinion k-NN, aesthetic via LAION head, face/person geometry via SCRFD/YOLO, classical-CV palette/composition pack, quality artifacts, title geometry, exemplar-calibrated KDE typicality, zero-shot style axes, official-family proximity) expand the feature vector to 13+ dimensions. The pipeline uses a GATE-then-RANK architecture: hard absolute thresholds remove invalid/junk candidates first, then relative scoring ranks survivors within each movie. Phase 0 uses hand-tuned weights; Phase 1 (implemented) trains a logistic-regression head from user-feedback labels (SCORER=auto activates it automatically at threshold).
 
 ### 2.4 Poster Cache and Restoration System
 
@@ -531,12 +531,14 @@ All CLIP variants are tiny compared to LLMs. Even the largest (ViT-L/14) uses we
 
 The pipeline makes two distinct kinds of decisions:
 
-- **GATE** — absolute, hard, per-candidate. Fixed thresholds reject invalid or junk posters: resolution floor, aesthetic floor, off-style floor. Gated-out posters land in a visible bucket with their reason recorded.
-- **RANK** — relative, soft, within-movie. Survivors are scored on a 9-dimensional feature vector (one embedding-derived scalar + 8 explicit scalars) and ranked. The best available wins, even if all candidates are mediocre. A low rank does NOT remove a candidate.
+- **GATE** — absolute, hard, per-candidate. Fixed thresholds reject invalid or junk posters: resolution floor, aesthetic floor (with knn rescue for stylized posters), off-style floor. Gated-out posters land in a visible bucket with their reason recorded.
+- **RANK** — relative, soft, within-movie. Survivors are scored on a 13+ dimensional feature vector (k-NN style similarity, aesthetic quality, DINOv2 style second opinion, title colorfulness, text residual, face area, resolution, sharpness, provenance, language match, zero-shot style axes, taste typicality, quality artifacts, official-family proximity) and ranked. The best available wins, even if all candidates are mediocre. A low rank does NOT remove a candidate.
 
 The embedding itself is reduced to one scalar (k-NN similarity to taste exemplars) — the raw 512-dim vector is not concatenated into the feature vector. This keeps the ranking head small, trainable on few labels, and interpretable.
 
-Phase 0 uses hand-tuned positive weights (all features oriented higher=better, no mixed signs). Phase 1+ will train logistic regression or LightGBM on accumulated user feedback (approved vs overridden picks).
+Pipeline stage order (cheapest signal first): FETCH → SHA-256 dedup → RESOLUTION gate (TMDB metadata, no inference) → STYLE FEATURES (batched CLIP) → STYLE gate (aesthetic + off-style) → OCR (title-only text gate, style survivors only) → pHash dedup → DETAIL FEATURES (face, colorfulness, sharpness, extended) → optional FAN-JUNK gate → RANK → OUTPUT (top-5 re-downloaded at original resolution).
+
+Phase 0 uses hand-tuned positive weights (all features oriented higher=better, no mixed signs). Phase 1 trains a logistic regression head from accumulated user feedback (approved vs overridden picks) — activated automatically via `SCORER=auto` when threshold label counts are met.
 
 ---
 
@@ -548,31 +550,57 @@ SQLite — appropriate for the scale of a personal media library (hundreds to lo
 
 ### 8.2 Schema
 
-Single `media` table. No separate "complete" and "incomplete" tables — that would require DELETE + INSERT across tables when status changes (not atomic without transactions, data loss risk on crash, requires UNION for "show all" queries, duplicates schema). No boolean `has_poster` column — that's derived state computable from whether `poster_path` is null, and storing it separately creates a synchronization hazard for zero benefit.
+### 8.2 Schema
 
-Instead, the presence or absence of a value in `poster_path` is the completion status. NULL means incomplete, non-null means complete.
+The actual schema (implemented) uses separate tables per entity type — `movies`, `series`, `seasons`, `episodes` — all inheriting from `ArtworkMixin` / `TimestampMixin`. Plus `pipeline_runs` (one row per pipeline execution with status, scorer, counts, archive path) and `artwork_events` (append-only audit trail of poster deployments, restorations, webhook events).
 
 ```sql
-CREATE TABLE media (
+CREATE TABLE movies (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    title           TEXT NOT NULL,
     tmdb_id         INTEGER UNIQUE,
-    tvdb_id         INTEGER,
     imdb_id         TEXT,
-    media_type      TEXT NOT NULL CHECK(media_type IN ('movie', 'show')),
-    file_path       TEXT NOT NULL,
-    identified_by   TEXT NOT NULL CHECK(identified_by IN ('radarr', 'sonarr', 'standalone')),
-    radarr_id       INTEGER,            -- Radarr's internal ID (for API callbacks)
-    sonarr_id       INTEGER,            -- Sonarr's internal ID (for API callbacks)
+    title           TEXT NOT NULL,
+    year            INTEGER,
+    genres          TEXT,               -- JSON array synced from Radarr
+    radarr_id       INTEGER,
+    folder_path     TEXT NOT NULL,
+    movie_file_path TEXT,
+    -- ArtworkMixin columns
     poster_path     TEXT,               -- NULL = needs poster
-    poster_source   TEXT,               -- which database the poster came from (tmdb, fanart, tvdb, tvmaze)
-    poster_url      TEXT,               -- original source URL for reference
-    ai_selected     BOOLEAN DEFAULT 0,  -- did AI pick this poster?
-    embedding       BLOB,               -- CLIP embedding vector (for preference learning)
-    sha256          TEXT,               -- SHA-256 hash of the selected poster file
-    phash           TEXT,               -- Perceptual hash of the selected poster
+    poster_source   VARCHAR(20),
+    poster_source_url TEXT,
+    poster_ai_selected BOOLEAN DEFAULT 0,
+    poster_user_approved BOOLEAN DEFAULT 0,
+    poster_sha256   VARCHAR(64),
+    poster_phash    VARCHAR(16),
+    poster_deployed_filename VARCHAR(255),
+    poster_deployed_at DATETIME,
+    -- Timestamps
     created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE pipeline_runs (
+    run_id          VARCHAR(32) PRIMARY KEY,
+    movie_id        INTEGER REFERENCES movies(id) ON DELETE CASCADE,
+    status          VARCHAR(20) DEFAULT 'running',
+    started_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    completed_at    TIMESTAMP,
+    scorer_name     VARCHAR(20),
+    counts_json     TEXT,
+    archive_path    TEXT,
+    output_dir      TEXT,
+    feedback_event_id VARCHAR(32),
+    error           TEXT
+);
+
+CREATE TABLE artwork_events (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    movie_id        INTEGER REFERENCES movies(id) ON DELETE CASCADE,
+    action          VARCHAR(20),        -- deploy, restore, restore_failed, heal_restore, webhook_noop
+    source          VARCHAR(20),        -- pipeline, feedback, webhook, heal, manual
+    detail          TEXT,               -- JSON: old/new paths, cache hit/miss, error
+    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 ```
 
@@ -618,38 +646,36 @@ CREATE TABLE poster_candidates (
 
 ---
 
-## 9. Poster Caching and Restoration
+## 9. Poster Caching and Restoration ✅ IMPLEMENTED
 
-### 9.1 The Problem
+`marquee/core/poster_service.py` — the single write path for all poster deployment and restoration. `PosterService` handles:
 
-Radarr (and Sonarr) delete and recreate the entire movie folder when upgrading media quality. Any poster artwork stored in that folder is destroyed. The user must manually re-select posters.
+- **Deployment** (pipeline auto-deploy, feedback approve/override): filename rendering from `MOVIE_POSTER_FORMAT`, path validation via `safe_translate_and_validate()`, atomic write via temp-file + `os.replace()`, cache population (exact deployed bytes under `data/cache/posters/movies/{tmdb_id}.jpg` + `meta.json` sidecar), DB state update, `artwork_events` audit row
+- **Restoration** (webhook upgrade, self-heal scan): cache-hit path (verify SHA-256, copy to new folder), cache-miss fallback (re-download from `poster_source_url` at original size), path-translation through Radarr/Sonarr mount namespaces
 
-### 9.2 Cache Architecture
+### 9.1 Cache Architecture
 
-Maintain a local copy of every selected poster, keyed by TMDB ID (not folder name, because folders may change but TMDB IDs never will):
+Maintain a local copy of every deployed poster, keyed by TMDB ID (not folder name, because folders may change but TMDB IDs never will):
 
 ```
-/config/cache/posters/
+data/cache/posters/
 ├── movies/
-│   ├── 550/poster.jpg          # Fight Club
-│   ├── 120/poster.jpg          # LOTR: Fellowship
-│   └── 13475/poster.jpg        # Star Trek
-└── shows/
-    ├── 1399/poster.jpg         # Game of Thrones
-    └── 63639/poster.jpg        # The Expanse
+│   ├── 562.jpg               # Die Hard — exact deployed bytes, full resolution
+│   └── 562.meta.json          # provenance: source URL, sha256, phash, deployed_filename, deployed_at
+└── series/                    # (future: series/season posters)
 ```
 
-### 9.3 Storage Considerations
+### 9.2 Storage Considerations
 
-A typical movie poster at full resolution is 1-3 MB as JPEG. For a library of 1,000 movies, the total cache is 1-3 GB. This is negligible on a server with TB+ of media storage. There is no need to compress cached posters — the added code complexity and quality loss provide no practical benefit at this scale. Store the originals as-is.
+A typical movie poster at full resolution is 1-3 MB as JPEG. For a library of 1,000 movies, the total cache is 1-3 GB. Cache grows linearly with library size.
 
-### 9.4 Cache Population
+### 9.3 Cache Population
 
-When a poster is selected (either by AI or manually by the user):
+Cache is written at deployment time — when the pipeline auto-deploys the winner, or when the user approves/overrides via the feedback endpoint. Every poster in the cache represents a deliberate choice.
 
-1. Save the poster to the media folder (where Plex/Jellyfin expects it)
-2. Copy the poster to the cache directory keyed by TMDB ID
-3. Update the database row with the poster path, source, and hash information
+### 9.4 Self-Healing Scan ✅ IMPLEMENTED
+
+`marquee/core/heal.py` — an asyncio task started in the app lifespan that periodically (configurable `HEAL_INTERVAL_MINUTES`, default 30) walks movies with non-null `poster_path`, stats the file, and on a miss calls `PosterService.restore`. Exposed on demand as `POST /api/system/heal`. Also catches: deletions while Marquee was down, Plex agent overwrites, manual cleanup.
 
 ### 9.5 Why Not Re-Download from the Source API?
 
@@ -661,63 +687,49 @@ Three reasons:
 
 ---
 
-## 10. Radarr/Sonarr Integration
+## 10. Radarr/Sonarr Integration ✅ IMPLEMENTED
 
-### 10.1 Webhook Integration (Real-Time)
+### 10.1 Webhook Integration (Real-Time) ✅ IMPLEMENTED
 
-Radarr and Sonarr both have a built-in Connect/Webhook system. In Radarr's settings under Connect, add a webhook pointing to Marquee's endpoint.
-
-#### Marquee Endpoints
-
-```
-POST /api/webhooks/radarr
-POST /api/webhooks/sonarr
-```
+Radarr and Sonarr both have a built-in Connect/Webhook system. `POST /api/webhooks/radarr` and `POST /api/webhooks/sonarr` are implemented in `marquee/api/routes/webhooks.py`.
 
 #### Radarr Webhook Configuration
 
-- **Event Triggers**: "On Movie File Upgraded", "On Movie Renamed"
-- **URL**: `http://marquee:8080/api/webhooks/radarr` (or whatever hostname/port Marquee runs on)
+- **Event Triggers**: "On Movie File Upgraded", "On Movie Renamed", "On Movie File Deleted" — all routed to the same endpoint
+- **URL**: `http://marquee:3165/api/webhooks/radarr`
 - **Method**: POST
+- **Auth**: Optional `WEBHOOK_TOKEN` env var; when set, append `?token=...` to the URL
 
-#### Radarr Webhook Payload (Example)
+#### Event Handling
 
-```json
-{
-  "eventType": "MovieFileUpgraded",
-  "movie": {
-    "id": 1,
-    "title": "Fight Club",
-    "tmdbId": 550,
-    "folderPath": "/movies/Fight Club (1999)"
-  },
-  "movieFile": {
-    "relativePath": "Fight Club (1999).mkv",
-    "path": "/movies/Fight Club (1999)/Fight Club (1999).mkv"
-  }
-}
-```
+| Event | Action |
+|---|---|
+| `Test` | 200 — allows the user to save the webhook config |
+| `Download` + `isUpgrade:true` | Fast-ACK background restore via PosterService |
+| `Rename` | Update `folder_path` in DB |
+| `MovieFileDelete` | Ignored (fires before upgrade's Download — would race the restore) |
+| `Download` + `isUpgrade:false` | Log info (new movie, no poster to restore yet) |
 
 #### Restoration Logic
 
-1. Receive webhook event
-2. Extract `movie.tmdbId` and `movie.folderPath` from payload
-3. Look up TMDB ID in cache directory
-4. Copy cached poster to the new folder path
-5. Update the database with the new file path
-6. Log the restoration event
+1. Receive webhook → Fast ACK (202 immediately, restore runs in background task)
+2. Look up movie by `radarr_id` or `tmdbId` in DB
+3. If `poster_path` file still exists on disk → skip (poster survived in-place upgrade)
+4. Otherwise → `PosterService.restore()` from cache or re-download
+5. Per-movie `asyncio.Lock` prevents races on rapid double-upgrades
+6. Retry backoff (0.1s / 0.5s / 1s / 3s) for the race window where the new folder isn't finalized
 
-Sonarr works identically — equivalent webhook events for series and episode upgrades with TVDB/TMDB IDs in the payload. The payload structure differs slightly but contains the same essential information.
+#### Dry-Run Mode
 
-### 10.2 Periodic Filesystem Scan (Safety Net)
+Set `WEBHOOK_DRY_RUN=true` to log and record `artwork_events` without touching the filesystem.
 
-Webhooks can fail (app was down during upgrade, network timeout, etc.). As a safety net, run a periodic scan (configurable interval, default 15-30 minutes, or on-demand via the UI):
+### 10.2 Sonarr
 
-1. Walk the database, checking each `poster_path` for file existence on disk
-2. If file is missing AND cached → restore from cache automatically, log the restoration
-3. If file is missing AND NOT cached → mark as incomplete, queue for AI re-selection
+Sonarr's file-level upgrades don't delete series/season posters, so full restoration is deferred. The webhook handler parses Sonarr's payload and handles `Test`/`Rename` events so the webhook can be configured today without errors.
 
-This self-healing mechanism catches anything the webhook missed.
+### 10.3 Periodic Self-Healing Scan ✅ IMPLEMENTED
+
+An asyncio task in the app lifespan (every `HEAL_INTERVAL_MINUTES`, default 30) walks the database checking `poster_path` existence. Missing files trigger `PosterService.restore`. Also exposed on demand as `POST /api/system/heal`. See Section 9.4 for details.
 
 ### 10.3 Filesystem Watcher (Optional Enhancement)
 
@@ -901,17 +913,19 @@ Marquee should support configurable model selection via environment variable, al
 3. Resolves each title to a TMDB ID via the TMDB search API
 4. Same poster existence check, CLIP embedding, and caching steps as above
 
-### 14.3 Poster Selection (For Items Missing Posters)
+### 14.3 Poster Selection (For Items Missing Posters) ✅ IMPLEMENTED
 
-1. Fetch all poster candidates from TMDB, Fanart.tv, TheTVDB, TVmaze
+1. Fetch all poster candidates from TMDB (primary source)
 2. Stage 1 dedup: SHA-256 exact hash, discard byte-identical duplicates
-3. OCR text filtering: reject text-heavy posters using PaddleOCR; emit title bbox + residual text boxes
-4. Stage 2 dedup: pHash perceptual hash on OCR survivors, discard visual near-duplicates (Hamming distance < 6), keep higher resolution version
-5. Extract 9-dimensional feature vector per candidate (CLIP k-NN style similarity, aesthetic quality, title colorfulness, text cleanliness, resolution, sharpness, face area, provenance, language match)
-6. Hard gate: reject candidates below quality floors (resolution, aesthetic, off-style)
-7. Rank survivors by learned weighted score (Phase 0: hand-tuned weights; Phase 1+: logistic/LightGBM trained on feedback)
-8. Deploy top-ranked poster to the media folder AND the cache
-9. Update database with poster path, source, embedding, and hashes
+3. Gate: resolution floor from TMDB metadata (no inference spent)
+4. Style features: batched CLIP → knn_sim + aesthetic + metadata scalars
+5. Gate: style — aesthetic floor (with knn rescue for stylized posters), off-style floor
+6. OCR text filtering: PaddleOCR — title-only text gate, emit title bbox + residual text boxes. Runs only on style-gate survivors
+7. Stage 2 dedup: pHash perceptual hash on OCR survivors
+8. Detail features: face/person detection, title colorfulness, sharpness, text residual, DINOv2 k-NN, palette/composition pack, quality artifacts, taste typicality, official family, zero-shot style axes
+9. Optional gate: fan-junk combo (off by default)
+10. Rank survivors by weighted score (Phase 0: hand-tuned weights; Phase 1: learned logistic head via `SCORER=auto`)
+11. Output: rename ranked files, re-download top-5 at full original resolution
 
 ### 14.4 New Media Arrival
 
@@ -943,13 +957,16 @@ Marquee should support configurable model selection via environment variable, al
 3. If missing + cached → restore from cache, log it
 4. If missing + not cached → mark as incomplete, queue for re-selection
 
-### 14.7 User Override
+### 14.7 User Override ✅ IMPLEMENTED (API)
 
-1. User opens Marquee web UI, browses to a media item
-2. Views all fetched poster candidates with AI's pick highlighted
-3. Clicks a different poster to override
-4. Marquee saves the new selection to the media folder and cache
-5. Updates the preference model with this explicit feedback
+1. User opens Marquee web UI (or calls API), views candidates for a pipeline run
+2. Can approve the auto-pick (writes positive label), override with a different ranked/rejected poster (writes negative + positive labels), or reject all (writes negative)
+3. Labels are written to `marquee/experiments/feedback/labels.jsonl` (append-only JSONL, v2 format embeds full feature vectors)
+4. The approved poster's CLIP embedding joins the taste profile (incremental append to `.npz` without full rebuild)
+5. The system deploys the selected poster to the media folder via `PosterService`
+6. When threshold counts are met, the learned head auto-retrains (`HEAD_AUTO_RETRAIN=true`)
+
+See `POST /api/feedback` in `marquee/api/routes/feedback.py` and `design/09-feedback-loop-design.md`.
 
 ---
 
@@ -970,7 +987,7 @@ Marquee should support configurable model selection via environment variable, al
 | Taste Storage | NumPy .npz (k-NN over exemplars, no vector DB needed at current scale) |
 | Image Processing | Pillow (PIL) + OpenCV |
 | HTTP Client | `httpx` |
-| Backend | FastAPI + SQLAlchemy 2.0 async + aiosqlite |
+| Backend | FastAPI + SQLAlchemy 2.0 async + aiosqlite + Alembic |
 | Frontend | React / Vue / plain HTML+JS |
 | Containerization | Docker + Docker Compose |
 | GPU Support (NVIDIA) | ONNX Runtime CUDA + PaddlePaddle CUDA |

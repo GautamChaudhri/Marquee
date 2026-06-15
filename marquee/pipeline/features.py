@@ -67,6 +67,31 @@ def calculate_text_residual(
     )
 
 
+def load_cached_embedding(
+    orig_filename: str,
+    config: PipelineSettings = pipeline_settings,
+) -> np.ndarray | None:
+    """Load a candidate's CLIP embedding from the on-disk run cache.
+
+    The pipeline persists every candidate's embedding here during the style
+    stage, so the feedback path can add an approved poster to the taste
+    profile without re-encoding on the GPU. Returns None if not cached.
+    """
+    key = hashlib.sha256(f"{config.AI_MODEL}:{orig_filename}".encode()).hexdigest()
+    cache_path = config.EMBEDDING_CACHE_DIR / config.AI_MODEL / f"{key}.npz"
+    if not cache_path.exists():
+        return None
+    try:
+        with np.load(cache_path, allow_pickle=False) as cached:
+            model_name = str(np.asarray(cached["model_name"]).item())
+            cached_filename = str(np.asarray(cached["orig_filename"]).item())
+            if model_name == config.AI_MODEL and cached_filename == orig_filename:
+                return np.asarray(cached["embedding"], dtype=np.float32)
+    except (OSError, ValueError, KeyError):
+        logger.warning("Discarding invalid embedding cache: %s", cache_path)
+    return None
+
+
 class FeatureExtractor:
     """Compute and normalize the complete feature vector."""
 

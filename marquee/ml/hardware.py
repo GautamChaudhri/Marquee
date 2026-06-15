@@ -29,6 +29,15 @@ from marquee.core.pipeline_config import pipeline_settings
 
 logger = logging.getLogger(__name__)
 
+# PaddlePaddle's default GPU allocator pre-reserves a large fraction of the
+# card (observed: 7.65 GB reserved while only 93 MB in use on an 8 GB 3070),
+# which starves a second Paddle process — e.g. the OCR workers when a taste
+# rebuild is also resident. ``auto_growth`` makes Paddle allocate on demand
+# instead, so jobs coexist on a small card. Must be set before paddle is
+# imported anywhere; this module is imported early (via embedding/hardware)
+# and re-imported in spawned OCR workers, so it lands ahead of every import.
+os.environ.setdefault("FLAGS_allocator_strategy", "auto_growth")
+
 # Friendly aliases accepted in EXECUTION_PROVIDER, beyond raw ORT names.
 _PROVIDER_ALIASES: dict[str, str] = {
     "cuda": "CUDAExecutionProvider",

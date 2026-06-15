@@ -73,6 +73,34 @@ class PipelineSettings(BaseSettings):
     SCORER: str = "auto"
     LEARNED_HEAD_PATH: Path = _MODELS_DIR / "learned_head.clip-vit-b-32.npz"
 
+    # ── Feedback loop (design 09) ─────────────────────────────────────
+    # JSONL of self-contained labels written by the feedback endpoint. The
+    # single training source of truth (append-only, hand-editable).
+    FEEDBACK_LABELS_PATH: Path = (
+        _PROJECT_ROOT / "marquee" / "experiments" / "feedback" / "labels.jsonl"
+    )
+    # Directory of disliked exemplars (negative taste). Copied into here when
+    # FEEDBACK_NEGATIVES_FROM_OVERRIDES is on.
+    NEGATIVE_DATA_DIR: Path = (
+        _PROJECT_ROOT / "marquee" / "experiments" / "negative_data"
+    )
+    # Source-of-truth folder for positive exemplars (the 430 hand-picked +
+    # any approved/overridden posters appended by the feedback loop).
+    TRAINING_DATA_DIR: Path = (
+        _PROJECT_ROOT / "marquee" / "experiments" / "training_data"
+    )
+    # After this many overrides of the same gate (at the current threshold),
+    # the taste status surfaces a tuning suggestion.
+    FEEDBACK_GATE_ALERT_THRESHOLD: int = 5
+    # When on, the rank-1 poster the user overrode is copied to NEGATIVE_DATA_DIR.
+    FEEDBACK_NEGATIVES_FROM_OVERRIDES: bool = False
+    # Approve/override deploys the selected poster to the media folder by default.
+    FEEDBACK_DEPLOY_DEFAULT: bool = True
+    # Learned-head activation thresholds (design 09 §10) and auto-retrain.
+    HEAD_MIN_LABELS: int = 150
+    HEAD_MIN_MOVIES: int = 5
+    HEAD_AUTO_RETRAIN: bool = True
+
     # Fixed Phase-0 normalization ranges.
     NORM_KNN_MIN: float = 0.4
     NORM_KNN_MAX: float = 0.9
@@ -348,4 +376,37 @@ class PipelineSettings(BaseSettings):
         }
 
 
-pipeline_settings = PipelineSettings()
+def _overrides_path() -> Path:
+    return _PROJECT_ROOT / "data" / "pipeline_overrides.json"
+
+
+def load_overrides() -> dict:
+    """Persisted UI knob overrides, layered on top of env/.env at startup."""
+    import json  # noqa: PLC0415
+
+    path = _overrides_path()
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text())
+        return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def save_overrides(overrides: dict) -> None:
+    """Atomically persist the current UI knob overrides."""
+    import json  # noqa: PLC0415
+    import os  # noqa: PLC0415
+
+    path = _overrides_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(overrides, indent=2, default=str), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+try:
+    pipeline_settings = PipelineSettings(**load_overrides())
+except Exception:  # noqa: BLE001 — a bad overrides file must not block startup
+    pipeline_settings = PipelineSettings()

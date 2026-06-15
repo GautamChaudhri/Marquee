@@ -9,6 +9,7 @@ import os
 import queue
 import re
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, NoReturn
@@ -284,6 +285,10 @@ def _worker_main(
     director_tokens: set[str],
     omp_threads: int = 0,
 ) -> NoReturn:
+    # Grow GPU memory on demand instead of pre-reserving most of the card, so
+    # OCR workers can start even when other GPU jobs are resident (set before
+    # paddle is imported in this spawned process).
+    os.environ.setdefault("FLAGS_allocator_strategy", "auto_growth")
     if omp_threads > 0:
         # Must be set before paddle is imported: workers x threads ~= cores,
         # otherwise every worker spawns one thread per core and they thrash.
@@ -511,7 +516,12 @@ class PosterTextFilter:
         _add_digit_words(self.title_tokens)
         self.director_tokens = set(self.director.split())
 
-    def filter_batch(self, paths: list[Path]) -> list[OCRCandidateResult]:
+    def filter_batch(
+        self,
+        paths: list[Path],
+        *,
+        progress: Callable[[int, int], None] | None = None,
+    ) -> list[OCRCandidateResult]:
         if not paths:
             return []
 
@@ -555,6 +565,8 @@ class PosterTextFilter:
                 if message_type == _WORKER_RESULT:
                     ordered_results[key] = payload
                     remaining -= 1
+                    if progress is not None:
+                        progress(len(paths) - remaining, len(paths))
                 elif message_type == _WORKER_INIT_ERROR:
                     raise RuntimeError(
                         f"OCR worker {key} failed to initialize: {payload}"
