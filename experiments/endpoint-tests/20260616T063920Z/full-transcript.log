@@ -1,0 +1,41 @@
+=== Starting test run 20260616T063920Z ===
+Timestamp: Tue Jun 16 06:39:20 AM UTC 2026
+=== Health response ===
+{"status":"ok","project":"Marquee","version":"0.1.0","database":"connected"}
+=== Test root ready ===
+total 8
+drwxrwsr-x+ 9 quartermaster builders 4096 Jun 15 23:39 .
+drwxrwsr-x+ 3 quartermaster builders   30 Jun 15 23:39 ..
+drwxrwsr-x+ 2 quartermaster builders    6 Jun 15 23:39 binaries
+-rw-rw-r--+ 1 quartermaster builders  211 Jun 15 23:39 full-transcript.log
+drwxrwsr-x+ 2 quartermaster builders    6 Jun 15 23:39 headers
+drwxrwsr-x+ 2 quartermaster builders    6 Jun 15 23:39 requests
+drwxrwsr-x+ 2 quartermaster builders    6 Jun 15 23:39 responses
+drwxrwsr-x+ 2 quartermaster builders    6 Jun 15 23:39 sse
+drwxrwsr-x+ 2 quartermaster builders   91 Jun 15 23:39 state
+drwxrwsr-x+ 2 quartermaster builders    6 Jun 15 23:39 verify
+
+=== Media roots ===
+Cache: {
+  "posters": 0,
+  "bytes": 0
+}
+Heal: {
+  "last_run": "2026-06-16T06:33:43.581477+00:00",
+  "checked": 441,
+  "restored": 0,
+  "failed": 0
+}
+Webhook: {
+  "last_received": null,
+  "last_event": null
+}
+Tools: {
+  "ffmpeg": true,
+  "ffprobe": true,
+  "mkvpropedit": true,
+  "mkvmerge": true,
+  "convert": true
+}
+
+__HERMES_CWD_5c2e8ab362af__/forge/Marquee__HERMES_CWD_5c2e8ab362af__

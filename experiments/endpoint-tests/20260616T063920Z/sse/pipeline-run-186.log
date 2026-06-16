@@ -1,0 +1,27 @@
+data: {"run_id": "bd31eb49604d4797877106bfbb8e09be", "stage": "fetch", "state": "start", "done": null, "total": null, "survivors": null, "elapsed_s": null}
+
+data: {"run_id": "bd31eb49604d4797877106bfbb8e09be", "stage": "fetch", "state": "end", "done": null, "total": null, "survivors": 61, "elapsed_s": 6.367}
+
+data: {"run_id": "bd31eb49604d4797877106bfbb8e09be", "stage": "sha256", "state": "start", "done": null, "total": 61, "survivors": null, "elapsed_s": null}
+
+data: {"run_id": "bd31eb49604d4797877106bfbb8e09be", "stage": "sha256", "state": "end", "done": null, "total": null, "survivors": 61, "elapsed_s": 0.009}
+
+data: {"run_id": "bd31eb49604d4797877106bfbb8e09be", "stage": "gate-resolution", "state": "start", "done": null, "total": 61, "survivors": null, "elapsed_s": null}
+
+data: {"run_id": "bd31eb49604d4797877106bfbb8e09be", "stage": "gate-resolution", "state": "end", "done": null, "total": null, "survivors": 61, "elapsed_s": 0.0}
+
+data: {"run_id": "bd31eb49604d4797877106bfbb8e09be", "stage": "style-features", "state": "start", "done": null, "total": 61, "survivors": null, "elapsed_s": null}
+
+data: {"run_id": "bd31eb49604d4797877106bfbb8e09be", "stage": "style-features", "state": "end", "done": null, "total": null, "survivors": 61, "elapsed_s": 0.398}
+
+data: {"run_id": "bd31eb49604d4797877106bfbb8e09be", "stage": "gate-style", "state": "start", "done": null, "total": 61, "survivors": null, "elapsed_s": null}
+
+data: {"run_id": "bd31eb49604d4797877106bfbb8e09be", "stage": "gate-style", "state": "end", "done": null, "total": null, "survivors": 61, "elapsed_s": 0.0}
+
+data: {"run_id": "bd31eb49604d4797877106bfbb8e09be", "stage": "ocr", "state": "start", "done": null, "total": 61, "survivors": null, "elapsed_s": null}
+
+data: {"run_id": "bd31eb49604d4797877106bfbb8e09be", "stage": "run", "state": "end", "status": "failed", "elapsed_s": 22.614, "error": "OCR worker 542888 failed to initialize: MemoryError: \n\n--------------------------------------\nC++ Traceback (most recent call last):\n--------------------------------------\n0   paddle::Tensor::copy_to(phi::Place const&, bool) const\n1   paddle::experimental::copy_to(paddle::Tensor const&, phi::Place const&, bool, paddle::optional<paddle::Tensor*>)\n2   paddle::experimental::copy_to_impl(paddle::Tensor const&, phi::Place, bool)\n3   paddle::experimental::copy(paddle::Tensor const&, phi::Place const&, bool, paddle::Tensor*)\n4   void phi::Copy<phi::DeviceContext>(phi::DeviceContext const&, phi::DenseTensor const&, phi::Place, bool, phi::DenseTensor*)\n5   phi::DeviceContext::Alloc(phi::TensorBase*, phi::DataType, unsigned long, bool, bool) const\n6   phi::DenseTensor::AllocateFrom(phi::Allocator*, phi::DataType, unsigned long, bool)\n7   paddle::memory::allocation::Allocator::Allocate(unsigned long)\n8   paddle::memory::allocation::StatAllocator::AllocateImpl(unsigned long)\n9   paddle::memory::allocation::Allocator::Allocate(unsigned long)\n10  paddle::memory::allocation::Allocator::Allocate(unsigned long)\n11  paddle::memory::allocation::Allocator::Allocate(unsigned long)\n12  paddle::memory::allocation::Allocator::Allocate(unsigned long)\n13  std::string phi::enforce::GetCompleteTraceBackString<std::string >(std::string&&, char const*, int)\n14  common::enforce::GetCurrentTraceBackString[abi:cxx11](bool)\n\n----------------------\nError Message Summary:\n----------------------\nResourceExhaustedError: \n\nOut of memory error on GPU 0. Cannot allocate 4.500000MB memory on GPU 0, 7.646790GB memory has been allocated(actual using allocated memory 187.815674MB) and available memory is only 5.500000MB.\n\nPlease check whether there is any other process using GPU 0.\n1. If yes, please stop them, or start PaddlePaddle on another GPU.\n2. If no, please decrease the batch size of your model. \n (at /paddle/paddle/phi/core/memory/allocation/cuda_allocator.cc:76)\n"}
+
+event: done
+data: {}
+

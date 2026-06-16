@@ -1,0 +1,1 @@
+{"enabled":true,"method":"cropdetect","counts":{"candidate":114,"not_letterboxed":26,"prefilter_candidate":3,"prefilter_skipped":330},"binaries":{"ffmpeg":true,"ffprobe":true,"mkvpropedit":true,"mkvmerge":true,"convert":true},"honored_by":["plex-desktop","vlc","mpv"],"not_honored_by":["plex-web","plex-mobile"],"last_scan":"2026-06-16T03:59:27.161512","batch_active":null}

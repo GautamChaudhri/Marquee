@@ -1,0 +1,18 @@
+{
+  "movies": 489,
+  "movies_with_tmdb": 489,
+  "movies_with_file": 473,
+  "series": 103,
+  "seasons": 457,
+  "episodes": 9263,
+  "media_files": 15217,
+  "media_files_active": 15217,
+  "subtitle_inventories": 0,
+  "letterbox_states": 473,
+  "letterbox_detector_truth": 140,
+  "letterbox_prefilter": 330,
+  "pipeline_runs": 0,
+  "media_jobs": 0,
+  "subtitle_policies": 0,
+  "artwork_events": 0
+}

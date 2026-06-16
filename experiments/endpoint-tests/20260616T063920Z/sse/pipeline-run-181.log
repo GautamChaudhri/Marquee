@@ -1,0 +1,115 @@
+data: {"run_id": "2375c6786ce847e5afd5d6a784636ef4", "stage": "fetch", "state": "start", "done": null, "total": null, "survivors": null, "elapsed_s": null}
+
+data: {"run_id": "2375c6786ce847e5afd5d6a784636ef4", "stage": "fetch", "state": "end", "done": null, "total": null, "survivors": 35, "elapsed_s": 3.689}
+
+data: {"run_id": "2375c6786ce847e5afd5d6a784636ef4", "stage": "sha256", "state": "start", "done": null, "total": 35, "survivors": null, "elapsed_s": null}
+
+data: {"run_id": "2375c6786ce847e5afd5d6a784636ef4", "stage": "sha256", "state": "end", "done": null, "total": null, "survivors": 35, "elapsed_s": 0.011}
+
+data: {"run_id": "2375c6786ce847e5afd5d6a784636ef4", "stage": "gate-resolution", "state": "start", "done": null, "total": 35, "survivors": null, "elapsed_s": null}
+
+data: {"run_id": "2375c6786ce847e5afd5d6a784636ef4", "stage": "gate-resolution", "state": "end", "done": null, "total": null, "survivors": 35, "elapsed_s": 0.0}
+
+data: {"run_id": "2375c6786ce847e5afd5d6a784636ef4", "stage": "style-features", "state": "start", "done": null, "total": 35, "survivors": null, "elapsed_s": null}
+
+data: {"run_id": "2375c6786ce847e5afd5d6a784636ef4", "stage": "style-features", "state": "end", "done": null, "total": null, "survivors": 35, "elapsed_s": 0.259}
+
+data: {"run_id": "2375c6786ce847e5afd5d6a784636ef4", "stage": "gate-style", "state": "start", "done": null, "total": 35, "survivors": null, "elapsed_s": null}
+
+data: {"run_id": "2375c6786ce847e5afd5d6a784636ef4", "stage": "gate-style", "state": "end", "done": null, "total": null, "survivors": 35, "elapsed_s": 0.0}
+
+data: {"run_id": "2375c6786ce847e5afd5d6a784636ef4", "stage": "ocr", "state": "start", "done": null, "total": 35, "survivors": null, "elapsed_s": null}
+
+data: {"run_id": "2375c6786ce847e5afd5d6a784636ef4", "stage": "ocr", "state": "progress", "done": 1, "total": 35, "survivors": null, "elapsed_s": null}
+
+data: {"run_id": "2375c6786ce847e5afd5d6a784636ef4", "stage": "ocr", "state": "progress", "done": 2, "total": 35, "survivors": null, "elapsed_s": null}
+
+data: {"run_id": "2375c6786ce847e5afd5d6a784636ef4", "stage": "ocr", "state": "progress", "done": 3, "total": 35, "survivors": null, "elapsed_s": null}
+
+data: {"run_id": "2375c6786ce847e5afd5d6a784636ef4", "stage": "ocr", "state": "progress", "done": 4, "total": 35, "survivors": null, "elapsed_s": null}
+
+data: {"run_id": "2375c6786ce847e5afd5d6a784636ef4", "stage": "ocr", "state": "progress", "done": 5, "total": 35, "survivors": null, "elapsed_s": null}
+
+data: {"run_id": "2375c6786ce847e5afd5d6a784636ef4", "stage": "ocr", "state": "progress", "done": 6, "total": 35, "survivors": null, "elapsed_s": null}
+
+data: {"run_id": "2375c6786ce847e5afd5d6a784636ef4", "stage": "ocr", "state": "progress", "done": 7, "total": 35, "survivors": null, "elapsed_s": null}
+
+data: {"run_id": "2375c6786ce847e5afd5d6a784636ef4", "stage": "ocr", "state": "progress", "done": 8, "total": 35, "survivors": null, "elapsed_s": null}
+
+data: {"run_id": "2375c6786ce847e5afd5d6a784636ef4", "stage": "ocr", "state": "progress", "done": 9, "total": 35, "survivors": null, "elapsed_s": null}
+
+data: {"run_id": "2375c6786ce847e5afd5d6a784636ef4", "stage": "ocr", "state": "progress", "done": 10, "total": 35, "survivors": null, "elapsed_s": null}
+
+data: {"run_id": "2375c6786ce847e5afd5d6a784636ef4", "stage": "ocr", "state": "progress", "done": 11, "total": 35, "survivors": null, "elapsed_s": null}
+
+data: {"run_id": "2375c6786ce847e5afd5d6a784636ef4", "stage": "ocr", "state": "progress", "done": 12, "total": 35, "survivors": null, "elapsed_s": null}
+
+data: {"run_id": "2375c6786ce847e5afd5d6a784636ef4", "stage": "ocr", "state": "progress", "done": 13, "total": 35, "survivors": null, "elapsed_s": null}
+
+data: {"run_id": "2375c6786ce847e5afd5d6a784636ef4", "stage": "ocr", "state": "progress", "done": 14, "total": 35, "survivors": null, "elapsed_s": null}
+
+data: {"run_id": "2375c6786ce847e5afd5d6a784636ef4", "stage": "ocr", "state": "progress", "done": 15, "total": 35, "survivors": null, "elapsed_s": null}
+
+data: {"run_id": "2375c6786ce847e5afd5d6a784636ef4", "stage": "ocr", "state": "progress", "done": 16, "total": 35, "survivors": null, "elapsed_s": null}
+
+data: {"run_id": "2375c6786ce847e5afd5d6a784636ef4", "stage": "ocr", "state": "progress", "done": 17, "total": 35, "survivors": null, "elapsed_s": null}
+
+data: {"run_id": "2375c6786ce847e5afd5d6a784636ef4", "stage": "ocr", "state": "progress", "done": 18, "total": 35, "survivors": null, "elapsed_s": null}
+
+data: {"run_id": "2375c6786ce847e5afd5d6a784636ef4", "stage": "ocr", "state": "progress", "done": 19, "total": 35, "survivors": null, "elapsed_s": null}
+
+data: {"run_id": "2375c6786ce847e5afd5d6a784636ef4", "stage": "ocr", "state": "progress", "done": 20, "total": 35, "survivors": null, "elapsed_s": null}
+
+data: {"run_id": "2375c6786ce847e5afd5d6a784636ef4", "stage": "ocr", "state": "progress", "done": 21, "total": 35, "survivors": null, "elapsed_s": null}
+
+data: {"run_id": "2375c6786ce847e5afd5d6a784636ef4", "stage": "ocr", "state": "progress", "done": 22, "total": 35, "survivors": null, "elapsed_s": null}
+
+data: {"run_id": "2375c6786ce847e5afd5d6a784636ef4", "stage": "ocr", "state": "progress", "done": 23, "total": 35, "survivors": null, "elapsed_s": null}
+
+data: {"run_id": "2375c6786ce847e5afd5d6a784636ef4", "stage": "ocr", "state": "progress", "done": 24, "total": 35, "survivors": null, "elapsed_s": null}
+
+data: {"run_id": "2375c6786ce847e5afd5d6a784636ef4", "stage": "ocr", "state": "progress", "done": 25, "total": 35, "survivors": null, "elapsed_s": null}
+
+data: {"run_id": "2375c6786ce847e5afd5d6a784636ef4", "stage": "ocr", "state": "progress", "done": 26, "total": 35, "survivors": null, "elapsed_s": null}
+
+data: {"run_id": "2375c6786ce847e5afd5d6a784636ef4", "stage": "ocr", "state": "progress", "done": 27, "total": 35, "survivors": null, "elapsed_s": null}
+
+data: {"run_id": "2375c6786ce847e5afd5d6a784636ef4", "stage": "ocr", "state": "progress", "done": 28, "total": 35, "survivors": null, "elapsed_s": null}
+
+data: {"run_id": "2375c6786ce847e5afd5d6a784636ef4", "stage": "ocr", "state": "progress", "done": 29, "total": 35, "survivors": null, "elapsed_s": null}
+
+data: {"run_id": "2375c6786ce847e5afd5d6a784636ef4", "stage": "ocr", "state": "progress", "done": 30, "total": 35, "survivors": null, "elapsed_s": null}
+
+data: {"run_id": "2375c6786ce847e5afd5d6a784636ef4", "stage": "ocr", "state": "progress", "done": 31, "total": 35, "survivors": null, "elapsed_s": null}
+
+data: {"run_id": "2375c6786ce847e5afd5d6a784636ef4", "stage": "ocr", "state": "progress", "done": 32, "total": 35, "survivors": null, "elapsed_s": null}
+
+data: {"run_id": "2375c6786ce847e5afd5d6a784636ef4", "stage": "ocr", "state": "progress", "done": 33, "total": 35, "survivors": null, "elapsed_s": null}
+
+data: {"run_id": "2375c6786ce847e5afd5d6a784636ef4", "stage": "ocr", "state": "progress", "done": 34, "total": 35, "survivors": null, "elapsed_s": null}
+
+data: {"run_id": "2375c6786ce847e5afd5d6a784636ef4", "stage": "ocr", "state": "progress", "done": 35, "total": 35, "survivors": null, "elapsed_s": null}
+
+data: {"run_id": "2375c6786ce847e5afd5d6a784636ef4", "stage": "ocr", "state": "end", "done": null, "total": null, "survivors": 2, "elapsed_s": 16.076}
+
+data: {"run_id": "2375c6786ce847e5afd5d6a784636ef4", "stage": "phash", "state": "start", "done": null, "total": 2, "survivors": null, "elapsed_s": null}
+
+data: {"run_id": "2375c6786ce847e5afd5d6a784636ef4", "stage": "phash", "state": "end", "done": null, "total": null, "survivors": 2, "elapsed_s": 0.008}
+
+data: {"run_id": "2375c6786ce847e5afd5d6a784636ef4", "stage": "detail-features", "state": "start", "done": null, "total": 2, "survivors": null, "elapsed_s": null}
+
+data: {"run_id": "2375c6786ce847e5afd5d6a784636ef4", "stage": "detail-features", "state": "end", "done": null, "total": null, "survivors": 2, "elapsed_s": 0.068}
+
+data: {"run_id": "2375c6786ce847e5afd5d6a784636ef4", "stage": "rank", "state": "start", "done": null, "total": 2, "survivors": null, "elapsed_s": null}
+
+data: {"run_id": "2375c6786ce847e5afd5d6a784636ef4", "stage": "rank", "state": "end", "done": null, "total": null, "survivors": 2, "elapsed_s": 0.001}
+
+data: {"run_id": "2375c6786ce847e5afd5d6a784636ef4", "stage": "output", "state": "start", "done": null, "total": 2, "survivors": null, "elapsed_s": null}
+
+data: {"run_id": "2375c6786ce847e5afd5d6a784636ef4", "stage": "output", "state": "end", "done": null, "total": null, "survivors": 2, "elapsed_s": 0.076}
+
+data: {"run_id": "2375c6786ce847e5afd5d6a784636ef4", "stage": "run", "state": "end", "status": "completed", "elapsed_s": 20.191, "error": null}
+
+event: done
+data: {}
+
