@@ -348,6 +348,10 @@ The endpoints needed to connect the frontend to this design. Details deferred to
 
 ## 12. Open Questions for Refinement
 
+> **All questions below are resolved by the decisions in §13.**
+> This section is retained for historical context only; see §13 for the
+> implemented answers.
+
 These are design decisions that need discussion before implementation:
 
 1. **Reject-all without alternative (Scenario D):** Currently just records a negative. Should it also surface suggestions? ("Loosen OCR gate — 15 posters were rejected there"). This adds complexity but improves UX.

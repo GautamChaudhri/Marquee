@@ -611,18 +611,29 @@ class LetterboxState(Base, TimestampMixin):
     id:              Mapped[int]  = mapped_column(Integer, primary_key=True)
     movie_id:        Mapped[int]  = mapped_column(ForeignKey("movies.id", ondelete="CASCADE"),
                                                   unique=True, index=True)
-    status:          Mapped[str]  = mapped_column(String(24), nullable=False, server_default="'candidate'")
-        # candidate | not_letterboxed | variable_unsafe | tagged | skipped | ineligible | errored
+    status:          Mapped[str]  = mapped_column(String(24), nullable=False, server_default=text("'prefilter_candidate'"))
+        # prefilter_candidate | prefilter_unknown | prefilter_skipped
+        #   | candidate | not_letterboxed | variable_unsafe | tagged | skipped
+        #   | ineligible | errored
     confidence:      Mapped[str | None] = mapped_column(String(8))   # high | medium | low | none
     eligible:        Mapped[bool] = mapped_column(Boolean, server_default="1")   # MKV + writable + has video
     ineligible_reason: Mapped[str | None] = mapped_column(String(120))
     source_width:    Mapped[int | None]  = mapped_column(Integer)
     source_height:   Mapped[int | None]  = mapped_column(Integer)
+
+    # Cheap resolution-only stage-1 triage (separate from detector verdict).
+    prefilter_bucket:       Mapped[str | None]      = mapped_column(String(24))    # skip | candidate | unknown
+    prefilter_reason:       Mapped[str | None]      = mapped_column(String(64))
+    prefilter_aspect_ratio: Mapped[float | None]    = mapped_column(Float)
+    last_prefiltered_at:    Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
     recommended_crop_top:    Mapped[int | None] = mapped_column(Integer)
     recommended_crop_bottom: Mapped[int | None] = mapped_column(Integer)
     aspect_label:    Mapped[str | None]  = mapped_column(String(12))  # "2.39:1"
     applied_crop_top:    Mapped[int | None] = mapped_column(Integer)  # NULL = no tags currently applied
     applied_crop_bottom: Mapped[int | None] = mapped_column(Integer)
+
+    detect_method:   Mapped[str | None]  = mapped_column(String(16))  # cropdetect | trim
     samples_json:    Mapped[str | None]  = mapped_column(Text)        # per-timestamp breakdown
     reviewed:        Mapped[bool] = mapped_column(Boolean, server_default="0")
     last_detected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -638,6 +649,13 @@ clean and gives the UI a per-movie letterbox history.
 
 ## 17. Module Plan
 
+> **Implementation note:** `LetterboxManager` (batch detection, SSE, bounded CPU
+> pool) lives at `marquee/media/letterbox_manager.py`, not under
+> `marquee/core/`. `LetterboxService` (the single validated write path) is at
+> `marquee/core/letterbox_service.py` as planned. The `marquee/media/` package
+> houses detection + binary helpers; `marquee/core/` houses the service and
+> heal loop.
+
 ```
 marquee/media/                         (new package — media-file inspection/mutation)
   probe.py            ffprobe wrappers: dimensions, duration, container, video-track presence.
@@ -647,6 +665,10 @@ marquee/media/                         (new package — media-file inspection/mu
                       preview_frame(file, t, crop) -> webp bytes.
   binaries.py         resolve + cache availability of ffmpeg/ffprobe/mkvpropedit/mkvmerge;
                       thin checked-subprocess runner (timeout, returncode, captured stderr).
+  letterbox_manager.py   LetterboxManager singleton (mirrors RunManager):
+                      batch detect over a bounded ProcessPool/thread pool, per-job SSE
+                      event buffer + replay, writes LetterboxState rows, DB job provenance.
+                      CPU-bound → independent of the GPU lock; parallelism capped by config.
 
 marquee/core/
   letterbox_service.py  LetterboxService singleton — THE single write path.
@@ -655,11 +677,6 @@ marquee/core/
                         LetterboxEvent (mirrors PosterService.deploy()).
                         remove(db, movie): mkvpropedit delete → verify → state/event.
                         Both are idempotent and atomic-at-the-metadata level.
-
-marquee/media/letterbox_manager.py   LetterboxManager singleton (mirrors RunManager):
-                        batch detect over a bounded ProcessPool/thread pool, per-job SSE
-                        event buffer + replay, writes LetterboxState rows, DB job provenance.
-                        CPU-bound → independent of the GPU lock; parallelism capped by config.
 
 marquee/models/letterbox.py          LetterboxState, LetterboxEvent (+ exports in models/__init__.py).
 marquee/api/routes/letterbox.py      router (prefix /api/letterbox) — §18.
@@ -1029,7 +1046,11 @@ new tests; full suite 223 passing; `ruff check` clean.
   re-queues detection (clears stale applied-crop, flips row to `candidate`).
 - Config knobs §19; periodic heal loop wired into the lifespan.
 - Standalone script: `04-letterbox-script-v2.sh` (both backends, safe-by-default,
-  `bash -n` clean). The original `04-letterbox-script.sh` is left untouched.
+  `bash -n` clean). **V2 enhancement:** HDR-aware black-bar threshold handling
+  — when the source file uses HDR10/HLG transfer characteristics, the script
+  (and `cropdetect` engine) adjusts the luma threshold to account for the
+  different black level in PQ (Perceptual Quantizer) encoding. The original
+  `04-letterbox-script.sh` is left untouched.
 
 **Decisions honored:** `cropdetect` default + `trim` fallback (`LETTERBOX_DETECT_METHOD`);
 movies-only MKV; manual-confirm apply (`LETTERBOX_AUTO_APPLY_HIGH=False`).

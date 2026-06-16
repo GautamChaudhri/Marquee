@@ -104,7 +104,7 @@ Organized by the phase when attention is needed. Reference `design/03-migration-
 
 ## Phase 7 — Docker & Release
 
-- [x] ~~**Alembic migrations.**~~ — Infrastructure exists in `alembic/` (env.py, versions/, script.py.mako). Not yet wired into startup (`create_all()` still used).
+- [x] ~~**Alembic migrations.**~~ — Infrastructure exists in `alembic/` (env.py, versions/, script.py.mako). Migrations are properly tracked with revision history (letterbox + subtitle prefilter migrations are committed). `create_all()` is still used at startup as a safety net, but the canonical schema evolution path is Alembic.
 - [ ] **Dockerfile.** Multi-stage build, non-root user, health check.
 - [ ] **Docker Compose.** Service definition, volume mounts, GPU passthrough (NVIDIA + Intel).
 - [ ] **User documentation.** README, setup guide, configuration reference.
@@ -120,3 +120,5 @@ Organized by the phase when attention is needed. Reference `design/03-migration-
 - [ ] **Backdrops, logos, banners.** Additional artwork types per `design/02-model-schema.md`.
 - [ ] **Health check hardening.** Add more probes (external API reachability, disk space, etc.).
 - [ ] **ChromaDB integration.** Replace `NumpyTasteStore` with `ChromaTasteStore` for incremental approval feature.
+- [x] ~~**Subtitle management (design §16-22).**~~ — Fully built: `subtitle_inventories`/`subtitle_tracks` for snapshotting, `managed_subtitle_assets`/`managed_subtitle_bindings` for restore-on-upgrade caching, `subtitle_policies`/`subtitle_policy_bindings` for language-cleanup policies, durable `media_jobs`/`media_batches`/`media_job_events` for the mutation queue, `media_files`/`episode_media_files` for physical file tracking, and `media_backups` for pre-mutation copies. See `marquee/models/` and `design/more-features/03-subtitle-management.md`.
+- [x] ~~**Letterbox cropping (design 04-letterbox).**~~ — Fully built: `letterbox_state`/`letterbox_events` models, `marquee/media/letterbox_detect.py` (cropdetect + ImageMagick trim backends), `marquee/media/letterbox_manager.py` (tag application/removal), `marquee/core/letterbox_service.py` (orchestration), `marquee/api/routes/letterbox.py` (REST API), ~25 `LETTERBOX_*` config knobs, letterbox heal scan, resolution pre-filter using `movie.video_width`/`video_height`/`container`. See `design/more-features/04-letterbox-cropping.md`.

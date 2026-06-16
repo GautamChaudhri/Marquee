@@ -203,6 +203,15 @@ range:
 | `face_area` | floating-head penalty | face detector ONNX, Σ face-box area / image | 0–1 |
 | `provenance` | official-vs-fan, popular-vs-obscure | TMDB `vote_average`/`vote_count` (shrinkage) | 0–1 |
 | `lang_match` | title language matches preference | TMDB `language` field | 0/0.5/1 |
+| `dino_knn` | second style opinion (texture/medium similarity) | DINOv2 ONNX k-NN to taste exemplars | ~0.4–0.9 (GPU tiers only) |
+| `taste_typicality` | how taste-typical across calibrated features | KDE over 21 features (palette, composition, geometry, style axes) | 0–1 |
+| `quality_artifacts` | blockiness/noise — "digital vs film" | inverse blend of JPEG blockiness and noise variance | 0–1 (1=clean) |
+| `official_family` | closeness to TMDB primary poster | CLIP cosine to the movie's official key-art | ~0.4–0.95 |
+
+Optional features (`dino_knn`, `taste_typicality`, `quality_artifacts`, `official_family`) are
+`None` when the required models are absent or disabled; the scorer renormalizes around missing
+features. The embedding contributes multiple scalars (knn_sim, aesthetic, dino_knn, official_family)
+rather than a single similarity score — CLIP is demoted from judge to one signal among many.
 
 Notes on the non-obvious ones:
 
@@ -220,10 +229,11 @@ Notes on the non-obvious ones:
   (`vote_average × vote_count`). **TMDB and the future TVDB use different scales — normalize each
   source independently to 0–1 before it enters the vector.**
 
-The embedding itself is **reduced to one scalar** (`knn_sim`) for the scorer — the raw 512-dim
-vector is *not* concatenated into the feature vector. With only hundreds of labels (Phase 1), a
-head over 512+9 dims would overfit; reducing the embedding to its task-relevant scalar keeps the
-head ~9-dimensional, trainable, and interpretable.
+The embedding is used for **multiple scalars**: `knn_sim` (k-NN to taste exemplars), `aesthetic`
+(LAION quality head), `dino_knn` (DINOv2 second style opinion on GPU tiers), and `official_family`
+(CLIP cosine to TMDB primary poster). The raw 512-dim vector is *not* concatenated into the feature
+vector — with only hundreds of labels (Phase 1), a head over 512+N dims would overfit; reducing the
+embedding to task-relevant scalars keeps the head ~13-dimensional, trainable, and interpretable.
 
 ---
 
@@ -250,18 +260,16 @@ read as "penalties" are inverted at normalization so they point the same way as 
 Mixing identity-plus-negative-weight with invert-plus-positive-weight in the same scorer is exactly
 the inconsistency that produces double-negative sign bugs — so it is banned.
 
-**Score range is free under this convention.** Every normalized feature is in [0,1] and the active
-weights sum to 1.0 (0.30 + 0.20 + 0.15 + 0.15 + 0.10 + 0.07 + 0.03 = 1.00), so the weighted sum is
-already a value in [0,1]. There is **no theoretical-min/max mapping and no separate scaling step**.
-The only guard: if any weight changes, or if currently-zero-weight features (`resolution`,
-`lang_match`) are given nonzero weights, divide the sum by the total of the active weights to keep
-the score in [0,1].
+**Score range is free under this convention.** The scorer divides the weighted sum by the total of
+the *available* active weights per candidate. Optional features (`dino_knn` on CPU tiers,
+`quality_artifacts` when toggled off) simply drop out — the score stays in [0,1] without any
+clamp or scale step. The guard: features with zero weight (`resolution`, `lang_match`) consume
+no weight budget and contribute nothing.
 
-**Phase 1 — logistic regression [TODO].** Once the feedback loop has accumulated ~50–100
-approvals: each shown candidate gets a label (approved/selected → 1; the overridden auto-pick →
-0; others unlabeled). Logistic regression learns weights so `σ(w·x + b) ≈ P(I'd pick this)`. The
-learned weights *are* a readout of your taste. Beats hand weights because they come from your
-actual behavior.
+**Phase 1 — logistic regression [NOW].** The feedback loop has accumulated labels; each shown
+candidate gets a label (approved/selected → 1; the overridden auto-pick → 0; others unlabeled).
+Logistic regression learns weights so `σ(w·x + b) ≈ P(I'd pick this)`. The learned weights *are* a
+readout of your taste. Auto-retrains when `HEAD_AUTO_RETRAIN=true` and label thresholds are met.
 
 **Phase 2 — LightGBM, then learning-to-rank [TODO].** Trees capture non-linear feature
 interactions, stay robust on small tabular data, run in milliseconds on CPU, and expose feature
@@ -283,9 +291,10 @@ middle. The defenses, in priority order:
 2. **Explicit scalars are genre-agnostic.** "Colored title," "high aesthetic," "low face area"
    are good regardless of genre, so they carry the consistent part of your taste with no blur at
    all.
-3. **Feedback hygiene [TODO].** Only manually-approved posters join the profile. Auto-picks that
+3. **Feedback hygiene [NOW].** Only manually-approved posters join the profile. Auto-picks that
    are never reviewed must never feed back, or the model reinforces its own unverified guesses
-   and collapses. Override events generate an explicit negative.
+   and collapses. Override events generate an explicit negative. Incremental profile updates
+   via `profile_updater.py` keep the profile current between full `taste_trainer` rebuilds.
 
 **Genres are deliberately NOT used as buckets.** Hard genre buckets fragment your feedback data
 (each bucket would need its own 50–100 approvals before a per-bucket head could train), and genre
@@ -444,14 +453,12 @@ Everything here is a knob, not a commitment.
 
 ## 10. Future work (explicitly deferred)
 
-- The **feedback loop** (Stage 9): approval/override capture, label generation, appending approved
-  embeddings to the profile.
-- The **learned head** (Phase 1/2): training job, scheduled retrain, model versioning.
-- **Deploy to library** (Stage 8): write the chosen poster into the media tree, update DB.
 - **TVDB** for TV shows: a second source with its own metadata; provenance must be normalized
   separately from TMDB (§4).
-- **VLM-as-judge** as an optional high-tier re-ranker over the top-5 for users with a dedicated
-  GPU.
+- **VLM-as-judge** as an optional high-tier re-ranker over the top-5 for users with a dedicated GPU.
+- **LightGBM (Phase 2)** learning-to-rank head as a drop-in replacement for the logistic head
+  when enough pairwise preference labels accumulate.
+- **ChromaDB / FAISS** — only at the scale thresholds in §3.
 
 ---
 

@@ -487,7 +487,7 @@ For daily use after the user trusts the tool, backup can stay off to avoid doubl
 
 # Part 2 - Implementation-Ready Backend Design
 
-**Status:** Proposed for discussion before build
+**Status:** Implemented (all models, services, routes, adapters built)
 **Date:** 2026-06-15
 **Scope:** Backend foundation and API contracts for the future frontend
 **Primary code references:** `marquee/models/`, `marquee/core/sync_service.py`,
@@ -1430,6 +1430,12 @@ Library list filters are server-side query parameters, not frontend scans:
 
 ### 25.3 Batches and policies
 
+> **Implementation note:** Batch routes are partially available via
+> `subtitle_policies.py` (audit + apply creates `MediaBatch` records through the
+> job manager), but dedicated per-batch CRUD, pause/resume, and cancel endpoints
+> are not yet built. The batch-plan/confirm workflow described in §22 is the
+> design target; current code focuses on policy-driven batch operations.
+
 | Method | Endpoint | Purpose |
 |---|---|---|
 | POST | `/api/subtitle-batches/plan` | Build per-file child plans and aggregate warnings |
@@ -1529,6 +1535,13 @@ Update `marquee/models/__init__.py` and test cleanup fixtures.
 
 ### New core modules
 
+> **Implementation note:** `types.py` does not exist as a separate module.
+> Protocol types and shared dataclasses are embedded in the modules that
+> use them (e.g., generator protocol in `generators/base.py`, plan/mutation
+> types in `mutation.py`). The implementation also added `backup.py`,
+> `coverage.py`, `generation.py`, `mutation.py`, and `restore.py` — modules
+> that cover logic the design spread across multiple planned files.
+
 ```
 marquee/core/media_files.py
 marquee/core/media_jobs/
@@ -1539,14 +1552,18 @@ marquee/core/media_jobs/
 marquee/core/subtitles/
     __init__.py
     config.py
-    types.py
     languages.py
     external.py
     probe.py
     capabilities.py
+    coverage.py
     policy.py
     service.py
+    mutation.py
     validation.py
+    backup.py
+    restore.py
+    generation.py
     adapters/
         __init__.py
         base.py
@@ -1560,9 +1577,13 @@ marquee/core/subtitles/
 
 ### New routes
 
+> **Implementation note:** The planned `media_files.py` route file was
+> consolidated into `subtitles.py`. Media-file resolution, subtitle inspection,
+> preview, and download endpoints all live under the subtitles router. The job,
+> policy, and generator routers match the plan.
+
 ```
-marquee/api/routes/media_files.py
-marquee/api/routes/subtitles.py
+marquee/api/routes/subtitles.py           (consolidates media-file subtitle routes)
 marquee/api/routes/media_jobs.py
 marquee/api/routes/subtitle_policies.py
 marquee/api/routes/subtitle_generators.py

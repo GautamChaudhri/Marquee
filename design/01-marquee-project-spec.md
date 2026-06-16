@@ -310,7 +310,7 @@ environment:
   - RADARR_API_KEY=your_radarr_api_key
   - SONARR_URL=http://sonarr:8989
   - SONARR_API_KEY=your_sonarr_api_key
-  - SYNC_INTERVAL=15  # minutes
+  - SYNC_INTERVAL_MINUTES=15  # minutes
 ```
 
 ### 4.2 Mode 2: Standalone Filesystem Scan (Fallback)
@@ -550,7 +550,7 @@ SQLite — appropriate for the scale of a personal media library (hundreds to lo
 
 ### 8.2 Schema
 
-### 8.2 Schema
+> **Important:** The SQL schema shown below is a simplified representation. The actual implementation uses separate tables per entity type (`movies`, `series`, `seasons`, `episodes`) plus `pipeline_runs`, `artwork_events`, `letterbox_state`, `letterbox_events`, `media_files`, `episode_media_files`, `media_batches`, `media_jobs`, `media_job_events`, `media_backups`, `subtitle_inventories`, `subtitle_tracks`, `managed_subtitle_assets`, `managed_subtitle_bindings`, `subtitle_policies`, and `subtitle_policy_bindings`. See **[design/02-model-schema.md](02-model-schema.md)** for the complete, up-to-date schema with all tables, columns, and indexes.
 
 The actual schema (implemented) uses separate tables per entity type — `movies`, `series`, `seasons`, `episodes` — all inheriting from `ArtworkMixin` / `TimestampMixin`. Plus `pipeline_runs` (one row per pipeline execution with status, scorer, counts, archive path) and `artwork_events` (append-only audit trail of poster deployments, restorations, webhook events).
 
@@ -766,10 +766,10 @@ services:
     image: marquee:latest
     container_name: marquee
     ports:
-      - "8080:8080"
+      - "3165:3165"
     environment:
       # Artwork API Keys
-      - TMDB_API_KEY=${TMDB_API_KEY}
+      - TMDB_READ_ACCESS_TOKEN=${TMDB_READ_ACCESS_TOKEN}
       - FANART_API_KEY=${FANART_API_KEY}
       - TVDB_API_KEY=${TVDB_API_KEY}
       # Radarr/Sonarr Integration (preferred identification mode)
@@ -777,13 +777,10 @@ services:
       - RADARR_API_KEY=${RADARR_API_KEY}
       - SONARR_URL=http://sonarr:8989
       - SONARR_API_KEY=${SONARR_API_KEY}
-      - SYNC_INTERVAL=15            # minutes, for *arr API sync
-      # Standalone scan settings (fallback mode)
-      - SCAN_INTERVAL=30            # minutes, for filesystem scan
+      - SYNC_INTERVAL_MINUTES=15     # minutes, for *arr API sync
       # AI settings
-      - AI_MODEL=clip-vit-l-14      # or clip-vit-b-32, etc.
-      - VLM_ENABLED=false           # enable optional VLM
-      - VLM_MODEL=qwen2.5-vl-7b    # if VLM is enabled
+      - AI_MODEL=clip-vit-b-32       # or clip-vit-b-32-int8, etc.
+      - EXECUTION_PROVIDER=auto      # auto | cuda | openvino | coreml | cpu
     volumes:
       - ./config:/config                    # App config, database, poster cache
       - /path/to/movies:/movies:ro          # Media library (read-only)

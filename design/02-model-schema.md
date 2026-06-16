@@ -117,6 +117,16 @@ One row per movie in the user's library. Identified by Radarr sync or standalone
 
 Plus `ArtworkMixin` columns.
 
+**Additional fields (letterbox pre-filter, added Phase N):**
+
+| Column | Type | Nullable | Notes |
+|---|---|---|---|
+| `video_width` | INTEGER | Yes | Encoded video width from Radarr `movieFile.mediaInfo` |
+| `video_height` | INTEGER | Yes | Encoded video height from Radarr `movieFile.mediaInfo` |
+| `container` | VARCHAR(16) | Yes | Container/extension (`matroska`, `mp4`, …) |
+
+These three fields are populated during Radarr sync and used by the letterbox resolution pre-filter to triage candidates without frame decode. See `design/more-features/04-letterbox-cropping.md`.
+
 ### 3.2 Series
 
 One row per TV show.
@@ -231,9 +241,297 @@ class ArtworkMixin:
         return self.poster_path is None
 ```
 
-**Changes from the initial design:** `poster_embedding` was removed (embeddings live in the taste profile `.npz` and per-run caches, not the DB). Added `poster_user_approved`, `poster_deployed_filename`, and `poster_deployed_at` for the poster restoration and feedback loop features (designs 09-10).
+**Changes from the initial design:** `poster_embedding` is defined in the base model (`marquee/models/base.py`) as `LargeBinary` but is currently unused — embeddings live in the taste profile `.npz` and per-run caches, not the DB. Added `poster_user_approved`, `poster_deployed_filename`, and `poster_deployed_at` for the poster restoration and feedback loop features (designs 09-10).
 
 **Naming convention:** All columns are prefixed with `poster_`. This makes a future extraction to a separate `artwork` table a clean find-and-replace. See Section 8.
+
+---
+
+## 4b. Letterbox Tables (Added Phase N)
+
+`marquee/models/letterbox.py` — per-movie crop-detection state + audit trail.
+
+### 4b.1 `letterbox_state`
+
+One row per movie. Tracks detection verdict, recommended/applied crop, confidence, and workflow status (Candidates / Tagged / Skipped).
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | INTEGER PK | Auto-increment |
+| `movie_id` | INTEGER FK UNIQUE | References `movies.id` |
+| `status` | VARCHAR(24) | `prefilter_candidate`, `candidate`, `not_letterboxed`, `variable_unsafe`, `tagged`, `skipped`, `ineligible`, `errored` |
+| `confidence` | VARCHAR(8) | `high`, `medium`, `low`, `none` |
+| `eligible` | BOOL | MKV + writable + has video track |
+| `ineligible_reason` | VARCHAR(120) | Why `eligible=false` |
+| `source_width` | INTEGER | Encoded width (sync metadata / ffprobe) |
+| `source_height` | INTEGER | Encoded height |
+| `prefilter_bucket` | VARCHAR(24) | Resolution-only stage-1 triage |
+| `prefilter_reason` | VARCHAR(64) | Triage reason |
+| `prefilter_aspect_ratio` | FLOAT | Calculated aspect ratio |
+| `last_prefiltered_at` | TIMESTAMP | |
+| `recommended_crop_top` | INTEGER | Recommended crop px (top) |
+| `recommended_crop_bottom` | INTEGER | Recommended crop px (bottom) |
+| `aspect_label` | VARCHAR(12) | e.g. `1.78:1`, `2.00:1` |
+| `applied_crop_top` | INTEGER | Currently applied (NULL = no tags) |
+| `applied_crop_bottom` | INTEGER | Currently applied (NULL = no tags) |
+| `detect_method` | VARCHAR(16) | `cropdetect` or `trim` |
+| `samples_json` | TEXT (JSON) | Per-timestamp breakdown |
+| `reviewed` | BOOL | User-reviewed (no re-flag on rescans) |
+| `last_detected_at` | TIMESTAMP | |
+| `last_applied_at` | TIMESTAMP | |
+| `error` | TEXT | |
+
+### 4b.2 `letterbox_events`
+
+Append-only audit trail (detect / apply / remove / ignore / heal_reapply / error).
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | INTEGER PK | Auto-increment |
+| `movie_id` | INTEGER FK | References `movies.id` |
+| `action` | VARCHAR(20) | Lifecycle step |
+| `source` | VARCHAR(20) | `detect`, `api`, `webhook`, `heal`, `manual` |
+| `detail` | TEXT | JSON detail |
+| `created_at` | TIMESTAMP | Auto |
+
+---
+
+## 4c. Media File Tables (Added Phase N)
+
+`marquee/models/media_file.py` — the physical-file unit of work for subtitle/letterbox mutations.
+
+### 4c.1 `media_files`
+
+One row per physical media file tracked from Radarr/Sonarr (or standalone).
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | INTEGER PK | Auto-increment |
+| `source` | VARCHAR(20) | `radarr`, `sonarr`, `standalone` |
+| `source_key` | VARCHAR(200) UNIQUE | `radarr:movie-file:1234` |
+| `source_file_id` | INTEGER | Native *arr file ID |
+| `movie_id` | INTEGER FK | References `movies.id` |
+| `path` | TEXT | Source-app namespace path (never trusted directly) |
+| `relative_path` | TEXT | |
+| `size_bytes` | BIGINT | |
+| `container` | VARCHAR(20) | |
+| `is_active` | BOOL | Current vs historical |
+| `last_seen_at` | TIMESTAMP | |
+| `last_resolved_path` | TEXT | Diagnostic only |
+
+### 4c.2 `episode_media_files`
+
+Association: which Episode rows live in which physical file. Double-episode files map two rows to one `media_file_id`.
+
+| Column | Type | Notes |
+|---|---|---|
+| `episode_id` | INTEGER PK (FK) | References `episodes.id` |
+| `media_file_id` | INTEGER PK (FK) | References `media_files.id` |
+| `created_at` | TIMESTAMP | Auto |
+
+---
+
+## 4d. Media Job Tables (Added Phase N)
+
+`marquee/models/media_job.py` — durable mutation queue that survives restarts.
+
+### 4d.1 `media_batches`
+
+A durable job batch grouping child media jobs (e.g., a library-wide policy apply).
+
+| Column | Type | Notes |
+|---|---|---|
+| `batch_id` | VARCHAR(32) PK | UUID4 hex |
+| `operation` | VARCHAR(30) | |
+| `status` | VARCHAR(20) | `planned`, `running`, `completed`, … |
+| `requested_count` | INTEGER | |
+| `completed_count` | INTEGER | |
+| `failed_count` | INTEGER | |
+| `request_json` | JSON | |
+| `summary_json` | JSON | |
+| `paused` | BOOL | |
+| `cancel_requested` | BOOL | |
+| `created_at` | TIMESTAMP | Auto |
+| `updated_at` | TIMESTAMP | Auto on update |
+
+### 4d.2 `media_jobs`
+
+One durable media-file operation (subtitle_scan / remove / embed / extract / …).
+
+| Column | Type | Notes |
+|---|---|---|
+| `job_id` | VARCHAR(32) PK | UUID4 hex |
+| `batch_id` | VARCHAR(32) FK | References `media_batches.batch_id` |
+| `media_file_id` | INTEGER FK | References `media_files.id` |
+| `operation` | VARCHAR(30) | Mutation type |
+| `status` | VARCHAR(16) | `planned`, `queued`, `running`, `succeeded`, `failed`, `cancelled`, `interrupted` |
+| `stage` | VARCHAR(30) | Current stage |
+| `progress_done` | INTEGER | |
+| `progress_total` | INTEGER | |
+| `trigger` | VARCHAR(12) | `manual`, `batch`, `policy`, `webhook` |
+| `request_json` | JSON | |
+| `plan_json` | JSON | |
+| `result_json` | JSON | |
+| `error_json` | JSON | |
+| `input_signature` | VARCHAR(128) | |
+| `idempotency_key` | VARCHAR(200) UNIQUE | |
+| `cancel_requested` | BOOL | |
+| `attempts` | INTEGER | |
+| `created_at` | TIMESTAMP | Auto |
+| `updated_at` | TIMESTAMP | Auto on update |
+
+### 4d.3 `media_job_events`
+
+Append-only progress event for a media job (durable SSE backing for the UI).
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | INTEGER PK | Auto-increment |
+| `job_id` | VARCHAR(32) FK | References `media_jobs.job_id` |
+| `stage` | VARCHAR(30) | |
+| `state` | VARCHAR(20) | |
+| `message` | TEXT | |
+| `progress_json` | JSON | |
+| `created_at` | TIMESTAMP | Auto |
+
+### 4d.4 `media_backups`
+
+Pre-mutation copies of media files, tracked under a hidden `.marquee/backups/` dir.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | VARCHAR(32) PK | |
+| `job_id` | VARCHAR(32) FK | References `media_jobs.job_id` |
+| `media_file_id` | INTEGER FK | References `media_files.id` |
+| `original_path` | TEXT | |
+| `backup_path` | TEXT | |
+| `original_signature` | VARCHAR(128) | |
+| `size_bytes` | BIGINT | |
+| `status` | VARCHAR(12) | `available`, `restored`, `deleted`, `missing` |
+| `created_at` | TIMESTAMP | Auto |
+| `updated_at` | TIMESTAMP | Auto on update |
+
+---
+
+## 4e. Subtitle Tables (Added Phase N)
+
+`marquee/models/subtitle_inventory.py`, `subtitle_managed.py`, `subtitle_policy.py`.
+
+### 4e.1 `subtitle_inventories`
+
+Current subtitle/container snapshot for one media file — a cached view of tracks plus container-level facts.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | INTEGER PK | Auto-increment |
+| `media_file_id` | INTEGER FK UNIQUE | References `media_files.id` |
+| `file_signature` | VARCHAR(128) | Cheap path+size+mtime+edge-block hash for stale-plan detection |
+| `container` | VARCHAR(20) | |
+| `duration_seconds` | FLOAT | |
+| `audio_streams_json` | JSON | |
+| `chapters_count` | INTEGER | |
+| `attachments_count` | INTEGER | |
+| `coverage_json` | JSON | Language coverage summary |
+| `probe_tool_versions_json` | JSON | |
+| `scanned_at` | TIMESTAMP | Auto |
+| `error` | TEXT | |
+
+### 4e.2 `subtitle_tracks`
+
+One subtitle track (embedded stream or external sidecar). Versioned by parent inventory.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | VARCHAR(32) PK | |
+| `inventory_id` | INTEGER FK | References `subtitle_inventories.id` |
+| `source` | VARCHAR(10) | `embedded`, `external` |
+| `stream_index` | INTEGER | |
+| `tool_track_id` | INTEGER | |
+| `external_path` | TEXT | |
+| `paired_path` | TEXT | |
+| `codec` | VARCHAR(40) | |
+| `kind` | VARCHAR(20) | `text`, `bitmap`, `teletext`, `unknown` |
+| `language_raw` | VARCHAR(40) | |
+| `language_tag` | VARCHAR(40) | BCP 47 tag |
+| `language_source` | VARCHAR(20) | `metadata`, `filename`, `user`, `unknown` |
+| `title` | TEXT | |
+| `is_default` | BOOL | |
+| `is_forced` | BOOL | |
+| `is_sdh` | BOOL | |
+| `is_commentary` | BOOL | |
+| `is_generated` | BOOL | |
+| `size_bytes` | BIGINT | |
+| `content_sha256` | VARCHAR(64) | |
+| `metadata_json` | JSON | |
+
+### 4e.3 `managed_subtitle_assets`
+
+A cached subtitle Marquee can re-embed after a media-file replacement (subtitle equivalent of PosterService restore).
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | VARCHAR(32) PK | |
+| `cache_path` | TEXT | Cached bytes on disk |
+| `content_sha256` | VARCHAR(64) | |
+| `language_tag` | VARCHAR(40) | |
+| `title` | TEXT | |
+| `kind` | VARCHAR(20) | `text` |
+| `is_default` | BOOL | |
+| `is_forced` | BOOL | |
+| `is_sdh` | BOOL | |
+| `is_commentary` | BOOL | |
+| `source` | VARCHAR(20) | `external`, `generated`, `extracted` |
+| `provenance_json` | JSON | |
+| `restore_on_replacement` | BOOL | |
+| `active` | BOOL | |
+| `created_at` | TIMESTAMP | Auto |
+| `last_restored_at` | TIMESTAMP | |
+
+### 4e.4 `managed_subtitle_bindings`
+
+Binds a managed asset to a logical owner (movie or episode).
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | INTEGER PK | Auto-increment |
+| `asset_id` | VARCHAR(32) FK | References `managed_subtitle_assets.id` |
+| `owner_type` | VARCHAR(10) | `movie`, `episode` |
+| `owner_id` | INTEGER | PK of the owning row |
+
+### 4e.5 `subtitle_policies`
+
+A language-cleanup policy (allowlist/blocklist over normalized language tags).
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | INTEGER PK | Auto-increment |
+| `name` | VARCHAR(120) | |
+| `enabled` | BOOL | |
+| `revision` | INTEGER | Incremented on edit (invalidates stale plans) |
+| `mode` | VARCHAR(12) | `allowlist`, `blocklist` |
+| `languages_json` | JSON | Language tag list |
+| `unknown_action` | VARCHAR(10) | `keep`, `review`, `remove` |
+| `protect_forced` | BOOL | |
+| `protect_default` | BOOL | |
+| `protect_last_full_dialogue` | BOOL | |
+| `include_external` | BOOL | |
+| `auto_apply` | BOOL | |
+| `audit_only` | BOOL | |
+| `hardlink_action` | VARCHAR(12) | `block`, `allow_break` |
+| `backup_mode` | VARCHAR(16) | `none`, `keep_original` |
+| `created_at` | TIMESTAMP | Auto |
+| `updated_at` | TIMESTAMP | Auto on update |
+
+### 4e.6 `subtitle_policy_bindings`
+
+Binds a policy to a scope (global / movies / tv / series / item). Resolves most-specific-first.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | INTEGER PK | Auto-increment |
+| `policy_id` | INTEGER FK | References `subtitle_policies.id` |
+| `scope_type` | VARCHAR(20) | `global`, `movies`, `tv`, `series`, `movie`, `episode`, `media_file` |
+| `scope_id` | INTEGER | FK to the scoped entity |
 
 ---
 

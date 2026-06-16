@@ -17,12 +17,17 @@ this spec. Where this document and the older `04-*`/`05-*` docs disagree, **this
 - The expanded score record, the GATE/RANK split, detailed logging, and the renamed output with
   original-resolution re-download.
 
-**Do NOT build (mark as TODO stubs / comments):**
+**Subsequently built (Phase 1, designs 09-11):**
 
-- The approval / override / feedback capture loop.
-- The learned head (logistic / LightGBM) and any training or retraining job.
-- Deploy-to-media-library and DB writes for production.
-- TVDB / TV-show support (the test endpoint is movies-only).
+- ✅ The approval / override / feedback capture loop — `POST /api/feedback` in `marquee/api/routes/feedback.py`
+- ✅ The learned head (logistic) and auto-retrain — `marquee/ml/head_trainer.py`
+- ✅ Deploy-to-media-library and DB writes — `marquee/core/poster_service.py`
+- ✅ Artwork event tracking — `marquee/models/artwork_event.py`
+- ✅ Pipeline run provenance — `marquee/pipeline/run_manager.py`
+- ✅ Taste map visualization — `marquee/ml/taste_map.py`
+- ✅ Subtitle management — `marquee/core/subtitles/`
+- ✅ Letterbox cropping — `marquee/media/letterbox_*.py`
+- TVDB / TV-show support remains deferred.
 
 The scorer must be built as a **pluggable interface** so the learned head drops in later without
 touching the pipeline. The taste store must be the existing `TasteStore` ABC so a Chroma backend
@@ -75,9 +80,9 @@ see the pipeline order just by listing the directory:
 
 ```
 experiments/runs/<Movie>/
-├── 0-originals/                    all w500 downloads land here
+├── 0-originals/                 ★  all w500 downloads land here
 ├── 1-sha256-rejected/              SHA-256 exact-duplicate rejects
-├── 2-ocr-rejected/                 OCR text-filter rejects
+├── 2-ocr-rejected/                 OCR text-filter rejects (on style-gate survivors only)
 ├── 3-phash-rejected/               pHash near-duplicate rejects (on OCR survivors)
 ├── errored/                   ★    per-candidate failures
 ├── gated/                     ★    hard-gate rejects, reason in FILENAME + log+json
@@ -85,6 +90,9 @@ experiments/runs/<Movie>/
 ├── pipeline.log                    human-readable run log
 └── pipeline_run.json               machine-readable per-candidate record
 ```
+
+The actual stage ordering interleaves gates with stages:
+`SHA-256 → Gate:resolution → Style features (CLIP) → Gate:style → OCR → pHash → Detail features → Gate:fan-junk → Rank → Output`.
 
 `0-originals/` survives re-runs (Stage 1 skips existing files). All other directories are
 regenerated. Rejected files are named `{reason}__{orig_basename}.jpg` (e.g.
@@ -99,23 +107,69 @@ Extend the existing layout. New/changed modules:
 ```
 marquee/
 ├── pipeline/
+│   ├── runner.py            NEW  Extracted pipeline execution core (793 lines)
+│   ├── run_manager.py       NEW  Process-lifetime singleton, concurrent guard, SSE
+│   ├── retro_features.py    NEW  Compute missing features for feedback-selected rejects
 │   ├── deduper.py            Stage 2 (SHA + pHash) — keep
 │   ├── ocr_filter.py         Stage 3 — MODIFY: emit title bbox + residual boxes
-│   ├── features.py     NEW   Stage 4 — compute the scalar vector
-│   ├── gate.py         NEW   Stage 5 — hard floors
+│   ├── features.py           Stage 4 — compute scalar vector (style + detail phases)
+│   ├── gate.py               Stage 5 — hard floors (resolution, style, fan-junk)
 │   ├── scorer.py             Stage 6 — REPLACE: pluggable head, Phase-0 weights
 │   └── output.py             Stage 7 — MODIFY: rename + original re-download
 ├── ml/
 │   ├── clip_export.py        export openai/clip-vit-base-patch32 → ONNX
 │   ├── embedding.py          CLIP B/32 inference, EP-configurable
-│   ├── aesthetic.py    NEW   LAION B/32 linear head
-│   ├── face.py         NEW   face detector inference
+│   ├── preprocessing.py      CLIP image preprocessing (B/32/B/16 compatible)
+│   ├── aesthetic.py   NEW   LAION B/32 linear head (from numpy sidecar)
+│   ├── face.py        NEW   SCRFD ONNX face detector → face_area
+│   ├── person.py      NEW   YOLO11n person detector (CPU only)
 │   ├── colorfulness.py NEW   Hasler–Süsstrunk on title crop
-│   ├── taste_store.py        TasteStore ABC + NumpyTasteStore (k-NN)
-│   ├── taste_trainer.py      MODIFY: B/32, drop LAB, store all embeddings
-│   └── normalize.py    NEW   raw → 0–1 per feature
+│   ├── taste_store.py        TasteStore ABC + NumpyTasteStore (CLIP+DINO+calibration)
+│   ├── taste_trainer.py      MODIFY: B/32 + DINOv2, drop LAB, store all embeddings
+│   ├── profile_updater.py NEW Incremental exemplar add/remove (no full rebuild)
+│   ├── profile_enrich.py NEW Genre/years/tmdb_ids retrofit for taste profile
+│   ├── taste_map.py     NEW  3D/2D UMAP projection + HDBSCAN clustering
+│   ├── feedback_store.py NEW Labels v2 JSONL store (append/read/remove)
+│   ├── head_trainer.py  NEW  LogisticHead training from feedback labels
+│   ├── calibration.py   NEW  KDE exemplar-calibrated typicality
+│   ├── zeroshot.py      NEW  CLIP zero-shot style axes
+│   ├── visual_features.py NEW Classic-CV palette/composition pack
+│   ├── dino.py          NEW  DINOv2 second style opinion (GPU tiers only)
+│   ├── learned_head.py  NEW  LogisticHead (Phase 1)
+│   └── normalize.py     NEW  raw → 0–1 per feature
+├── core/
+│   ├── pipeline_config.py NEW  all weights/thresholds/ranges in one place
+│   ├── poster_service.py NEW  deploy/restore/cache (single write path)
+│   └── heal.py            NEW  self-heal poster existence scan
+├── api/
+│   ├── routes/
+│   │   ├── feedback.py   NEW  approve/override/reject/undo
+│   │   ├── taste.py      NEW  status, retrain, map endpoints
+│   │   ├── config.py     NEW  pipeline config endpoints
+│   │   ├── pipeline.py   NEW  production pipeline trigger + SSE
+│   │   ├── system.py     NEW  status, heal endpoints
+│   │   └── library.py    NEW  library CRUD routes
+│   ├── explanations.py   NEW  Score explanations helper
+│   └── results.py        NEW  API response models
+├── models/
+│   ├── artwork_event.py  NEW  Deploy/restore audit trail
+│   ├── pipeline_run.py   NEW  Per-execution provenance + archive
+│   └── ... (see 02-model-schema.md for full model listing)
+├── media/
+│   ├── letterbox_detect.py    NEW  ffmpeg cropdetect engine
+│   ├── letterbox_manager.py   NEW  two-phase prefilter → detect pipeline
+│   ├── letterbox_preview.py   NEW  grid thumbnails for UI
+│   ├── probe.py               NEW  ffprobe media inspection
+│   └── binaries.py            NEW  Tool discovery (ffmpeg, ffprobe, mkvtoolnix)
 └── core/
-    └── pipeline_config.py NEW  all weights/thresholds/ranges in one place
+    └── subtitles/              NEW  Subtitle management
+        ├── service.py         plan → confirm → execute mutation flow
+        ├── mutation.py        container-level subtitle operations
+        ├── policy.py          language-cleanup policy evaluation
+        ├── generation.py       external generation dispatch
+        ├── probe.py           ffprobe subtitle extraction
+        ├── backup.py          pre-mutation file backup
+        └── restore.py         backup restoration + hardlink protection
 ```
 
 ---
@@ -158,54 +212,124 @@ Run on the w500 image. Config key for the model path so it is swappable.
 Modify `taste_trainer.py`:
 
 - Embed all `experiments/data/training_data/` posters with **CLIP B/32**, L2-normalized.
+- Optionally embed with **DINOv2** for the second style opinion (`dino_knn`, GPU tiers only).
 - **Drop** LAB color histograms and `centroid_color` entirely.
-- Save `taste_profile.clip-vit-b-32.npz` with keys: `embeddings (N,512)`, `poster_names (N,)`,
-  `centroid_emb (512,)` (diagnostics only), `model_name="clip-vit-b-32"`.
+- Save `taste_profile.clip-vit-b-32.npz` with keys:
+  - `embeddings (N,512)` — CLIP B/32 embeddings, L2-normalized
+  - `poster_names (N,)` — original filenames
+  - `centroid_emb (512,)` — mean direction (diagnostics only)
+  - `model_name` (scalar) — the embedding model identifier
+  - `neg_embeddings (M,512)` — *Optional.* Embeddings of explicitly disliked posters
+  - `neg_poster_names (M,)` — *Optional.* Negative exemplar filenames
+  - `dino_embeddings (N,D)` — *Optional.* DINOv2 embeddings
+  - `dino_model_name` — *Optional.* Which DINOv2 variant produced these
+  - `dino_self_knn` — *Optional.* Self k-NN diagnostics for normalization range
+  - Calibration arrays — per-feature raw values over exemplars for KDE typicality
 - Keep the diagnostics print (mean/std cosine to centroid, top-5 / bottom-5). Add: mean
   top-k-neighbor similarity across the set, as a cohesion read for the k-NN scorer.
 
-`NumpyTasteStore.query_similar(embedding, k)` returns the top-k cosine similarities. On load,
-**assert `model_name` matches the configured model**; raise a loud error on mismatch (see §11).
+`NumpyTasteStore` loads all optional arrays lazily; `has_dino`, `has_calibration`, etc. expose
+availability. `.style_score(emb, k)` returns the contrastive k-NN score (positives minus
+negative-exemplar penalty). `.dino_style_score(dino_emb, k)` provides the DINOv2 second
+opinion. On load, **assert `model_name` matches the configured model**; raise a loud error
+on mismatch (see §11). The `profile_updater.py` module handles incremental add/remove of single
+exemplars between full rebuilds.
 
 ---
 
-## 4. The new guts, stage by stage
+## 4. The new guts, stage by stage (revised GATE/RANK order)
 
-### Stage 2 — Dedup (keep)
+The pipeline follows "cheapest signal first" ordering: SHA-256 → Resolution gate (metadata only)
+→ Style features (batched CLIP) → Style gate → OCR → pHash → Detail features → Fan-junk gate
+→ Rank → Output. CLIP runs BEFORE OCR so the aesthetic/off-style gates cull candidates
+before the expensive multi-pass OCR. pHash runs AFTER OCR so the OCR gate can arbitrate
+near-duplicate groups whose members differ only in text content.
 
-SHA-256 exact then pHash (`imagehash`, Hamming ≤ `DEDUP_PHASH_THRESHOLD`, default 6). Among
-dupes/near-dupes keep the highest resolution. Log each removal with the file it duplicates and the
-hashes.
+### Stage 2a — SHA-256 dedup
+
+SHA-256 exact-duplicate removal (cheap, no inference needed).
+
+### Gate 1 — Resolution floor
+
+From TMDB metadata only — zero inference. Rejects if `width < GATE_MIN_WIDTH` (default 500).
+
+### Stage 4a — Style features (batched CLIP)
+
+The CLIP B/32 embedding runs on resolution survivors. `FeatureExtractor.extract_style_batch()`
+computes `knn_sim` (k-NN to taste exemplars), `aesthetic` (LAION head), and CLIP zero-shot style
+axes. Also computes `provenance`, `lang_match`, and `resolution` from metadata here. Embeddings
+are disk-cached by SHA-256 of the image bytes to avoid recomputation across runs.
+
+### Gate 2 — Style gate
+
+Evaluated on style-feature results. Two gates:
+
+| Gate | Condition (reject if) | Default |
+|---|---|---|
+| aesthetic floor | `aesthetic < GATE_MIN_AESTHETIC` | 4.5 |
+| aesthetic rescue | if `knn_sim >= GATE_AESTHETIC_RESCUE_KNN` (0.55), relax aesthetic floor to `GATE_MIN_AESTHETIC_RESCUED` (2.0) |
+| off-style floor | `knn_sim < GATE_MIN_KNN_SIM` | 0.45 |
+
+The aesthetic rescue gate prevents taste-profile-validated stylized/graphic posters from
+being penalized by a photographic-quality model.
 
 ### Stage 3 — OCR (modify to emit features)
 
-Keep the proven 3-pass PaddleOCR algorithm and the text-filtering logic. **Change the return type**
-so that for every poster it produces, in addition to the accept/reject gate decision:
+Same PaddleOCR algorithm, but **change the return type** to emit title bbox + residual boxes
+in addition to the accept/reject gate decision. Runs only on style-gate survivors (the
+expensive OCR is skipped on already-gated candidates).
 
-- `title_bbox`: the OCR detection box whose recognized text best matches the title tokens (reuse
-  the existing title-token matching). `None` if no title text found.
-- `residual_boxes`: detected text boxes remaining after removing title/director tokens, with their
-  areas.
+- `title_bbox`: the OCR detection box whose recognized text best matches the title tokens.
+  `None` if no title text found.
+- `residual_boxes`: detected text boxes remaining after removing title/director tokens.
 
-Accept/reject (the gate) is unchanged: text-heavy or no-text → reject to `ocr_rejected/` with the
-detected text logged as the reason. Survivors carry their `title_bbox` and `residual_boxes` forward.
+OCR gate: text-heavy → reject to `2-ocr-rejected/`. No text / no title → handled per
+`OCR_REQUIRE_TITLE` and `OCR_ACCEPT_NO_TEXT` (batch-level fallback). Title-format blocklist
+still applies.
 
-### Stage 4 — Feature extraction (`features.py`)
+### Stage 2b — pHash dedup
 
-For each OCR survivor, compute the raw scalars (this is where the CLIP embedding runs — last, on
-the fewest images, and cache it keyed by orig filename + model name):
+Near-duplicate removal on OCR survivors. Hamming distance threshold `DEDUP_PHASH_THRESHOLD`
+(default 6). **Preference-aware selection** among near-duplicate groups: the survivor is
+chosen by `(title_found, fewest_residual_boxes, is_primary, knn_sim)`, with resolution as
+the final tiebreak. Each decision is logged as `DEDUP KEEP` with the winning preference
+tuple. SHA-256 groups still use pure resolution (members are byte-identical).
+
+### Stage 4b — Detail features
+
+Computed only on pHash survivors (the fewest images). These are the lighter, per-image
+features: `face_area`, `title_colorfulness`, `sharpness`, and `text_residual`. Also computes
+optional extended features: `dino_knn` (DINOv2 second style opinion, GPU tiers only),
+`taste_typicality` (KDE typicality over calibrated features), `quality_artifacts`
+(blockiness/noise), and `official_family` (CLIP cosine to TMDB primary poster).
+
+### Gate 3 — Fan-junk combo
+
+Optional combo gate (off by default): `aesthetic < threshold AND provenance < threshold AND
+resolution < threshold`. Enable to catch low-quality fan art.
+
+### Stage 6 — Rank (`scorer.py`)
 
 | Scalar | Computation |
 |---|---|
-| `knn_sim` | mean of `taste_store.query_similar(emb, k=K_NEIGHBORS)` |
+| `knn_sim` | mean of `taste_store.style_score(emb, k=K_NEIGHBORS)` |
 | `aesthetic` | `aesthetic.py(emb)` |
-| `title_colorfulness` | Hasler–Süsstrunk on the `title_bbox` crop; 0 if no title box |
-| `text_residual` | raw clutter blend of residual box count and area (formula below) | 0–1 |
+| `title_colorfulness` | Hasler–Süsstrunk on the `title_bbox` crop; neutral 0.5 if no title box |
+| `text_residual` | raw clutter blend of residual box count and area (formula below) |
 | `resolution` | `width*height` from `PosterCandidate` (original dims), in megapixels |
 | `sharpness` | variance of `cv2.Laplacian(gray_w500, CV_64F)` |
-| `face_area` | from `face.py` |
+| `face_area` | from `face.py` — photographic face detector that misses illustrated faces |
 | `provenance` | shrinkage average of vote_average/vote_count (see below), normalized |
 | `lang_match` | `language == PREFERRED_LANG → 1.0`; `None → 0.5`; else `0.2` |
+| `dino_knn` | DINOv2 k-NN to taste exemplars — second style opinion (None on CPU tiers) |
+| `taste_typicality` | mean KDE typicality over TYPICALITY_FEATURES (palette, composition, style axes) |
+| `quality_artifacts` | inverse blend of blockiness and noise estimates (1.0 = clean) |
+| `official_family` | CLIP cosine to TMDB primary poster — "is this the official key-art family?" |
+
+The expanded feature vector (13 scalars) is defined in `marquee/pipeline/types.py`.
+Optional features (`dino_knn`, `taste_typicality`, `quality_artifacts`, `official_family`)
+are `None` when the required models are absent or disabled; the scorer renormalizes
+around missing features.
 
 **Hasler–Süsstrunk colorfulness** on a crop:
 ```
@@ -226,18 +350,9 @@ total residual-text-box area / image area. The blend caps at 1, so normalization
 `v=vote_count`, `C=PROV_PRIOR_MEAN` (default 6.5), `m=PROV_CONFIDENCE` (default 25). Normalize
 `adjusted/10` to 0–1. Keep this per-source (TMDB only now; TVDB will need its own constants).
 
-Store both raw and normalized values on the record (normalization in §6).
-
-### Stage 5 — Gate (`gate.py`)
-
-Hard rejects, evaluated on **raw** values against fixed thresholds:
-
-| Gate | Condition (reject if) | Default |
-|---|---|---|
-| resolution floor | `width < GATE_MIN_WIDTH` | 500 |
-| aesthetic floor | `aesthetic < GATE_MIN_AESTHETIC` | 4.5 |
-| off-style floor | `knn_sim < GATE_MIN_KNN_SIM` | 0.45 |
-| fan-junk combo (OFF by default) | `aesthetic < a AND provenance < p AND resolution < r` | disabled |
+Store both raw and normalized values on the record (normalization in §6). The actual gate
+logic is described above in the stage-by-stage walkthrough: Gate 1 (resolution), Gate 2 (style:
+aesthetic + rescue + off-style), and Gate 3 (fan-junk combo, off by default).
 
 Gated-out → `gated/` named `{reason}__{orig}.jpg`, reason recorded in log + json. Keep the
 off-style floor **conservative** so it rarely fires; over-gating reintroduces fallback-to-junk.
@@ -267,21 +382,23 @@ Default weights (all in config, all tunable from the contribution logs):
 | Feature | Weight | Orientation |
 |---|---|---|
 | `knn_sim` | 0.30 | higher = more on-style |
-| `aesthetic` | 0.20 | higher = better quality |
+| `aesthetic` | 0.12 | higher = better quality (reduced 2026-06-11: LAION head loves slick fan art) |
 | `title_colorfulness` | 0.15 | higher = more colored/stylized title |
 | `face_area` | 0.15 | normalized as face-**absence** (`1 - face_area`); higher = fewer faces |
 | `text_residual` | 0.10 | normalized as **cleanliness** (`1 - raw`); higher = less clutter |
-| `provenance` | 0.07 | higher = more official/popular |
+| `provenance` | 0.02 | higher = more official/popular (reduced: TMDB votes typically zero) |
 | `sharpness` | 0.03 | higher = sharper |
+| `dino_knn` | 0.12 | higher = closer to taste exemplars in DINOv2 space (GPU tiers only) |
+| `taste_typicality` | 0.12 | higher = more taste-typical across 21 calibrated features |
+| `quality_artifacts` | 0.03 | higher = cleaner (less blockiness / noise) |
+| `official_family` | 0.12 | higher = closer in CLIP space to TMDB primary poster |
+| `resolution` | 0.0 | gate-only, not weighted |
+| `lang_match` | 0.0 | gate-only, not weighted |
 
-**Score range is free under this convention.** Every normalized feature is in [0,1] and the active
-weights sum to 1.0 (0.30 + 0.20 + 0.15 + 0.15 + 0.10 + 0.07 + 0.03 = 1.00), so `final_score` is
-already in [0,1]. **No clamp/scale step, no theoretical-min/max mapping.** Guard: if any weight is
-changed, or if `resolution`/`lang_match` are given nonzero weights, divide the sum by the total of
-the active weights so the score stays in [0,1].
-
-(`resolution` and `lang_match` act mainly via the gate / a small tiebreak; expose weights for them
-too, default ~0.) Rank survivors by `final_score` descending; all ranked posters go to `ranked/`.
+**Score range is free under this convention.** The scorer divides the weighted sum by the total of
+the *available* active weights per candidate. Optional features (`dino_knn` on CPU tiers,
+`quality_artifacts` when toggled off) simply drop out — the score stays in [0,1] without any
+clamp or scale step. The pairwise gate decision semantics are unchanged.
 
 ### Stage 7 — Output (`output.py`, modified Stage 5)
 
@@ -299,7 +416,13 @@ class FeatureVector:
     knn_sim: float; aesthetic: float; title_colorfulness: float
     text_residual: float; resolution: float; sharpness: float
     face_area: float; provenance: float; lang_match: float
+    # Extended features (None when unavailable):
+    dino_knn: float | None = None
+    taste_typicality: float | None = None
+    quality_artifacts: float | None = None
+    official_family: float | None = None
     normalized: dict[str, float]          # feature → 0–1
+    extended: dict[str, float] = field(default_factory=dict)  # zero-shot axes etc.
 
 @dataclass
 class CandidateScore:
