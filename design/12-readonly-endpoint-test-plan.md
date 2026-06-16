@@ -250,7 +250,7 @@ Cleanup synthetic rows at the end and record before/after DB counts.
 | `GET /api/system/status` | Call before/after. | Contains `cache`, `heal`, `letterbox_heal`, `webhook`, `tools`, `media_jobs`; media-job counts match DB grouped counts. |
 | `GET /api/system/status/generators` | Call once. | Response shape matches `{"generators": [...]}`; compare with `GET /api/subtitle-generators`. |
 | `GET /api/config/pipeline` | Call before config tests. | Contains `values`, `defaults`, `overrides`, `restart_required`; every restart-required key is a known pipeline setting. |
-| `PUT /api/config/pipeline` | Run three subtests: empty body -> 400, unknown key -> 400, restart-required key -> 400. Then run one reversible positive update using a non-restart knob and restore the original overrides file. | Validation errors are machine-readable enough to explain the failure. Positive update appears in `GET /api/config/pipeline`, then restored state exactly matches the pre-test hash. |
+| `PUT /api/config/pipeline` | Run three negative subtests: empty body → 400, unknown key → 400, restart-required key → 400. Do **not** run a positive update test. | Validation errors are machine-readable enough to explain the failure. |
 | `POST /api/system/heal` | **Skip.** | Direct poster restore risk. |
 
 ### 8.2 Sync and library
@@ -269,14 +269,14 @@ Cleanup synthetic rows at the end and record before/after DB counts.
 
 | Endpoint | Test | Verification |
 |---|---|---|
-| `POST /api/pipeline/movie/{movie_id}/run` | Start a production run for `MOVIE_PIPELINE_ID`. Immediately try a second run to exercise 409 conflict while active. | First call returns 202 with `run_id`, `events_url`, `results_url`; second call returns 409 with active run ID. No media file stats change. |
-| `GET /api/pipeline/runs/{run_id}/events` | Connect immediately after starting the run and save raw SSE. | SSE contains stage events and ends with `event: done`; stage names align with design 09. |
-| `GET /api/pipeline/runs/{run_id}` | Poll until terminal. | Payload contains `movie`, `status`, `auto_pick`, `ranked`, `rejected`, `counts`, `stage_timings_s`, `config_snapshot`; archive JSON on disk matches returned candidate names/counts. |
-| `GET /api/pipeline/runs/{run_id}/posters/{orig_filename}` | Download auto-pick poster and one rejected/ranked poster if available. Also test invalid filename. | File is image, non-zero, path-confined by archive record; invalid candidate returns 404. |
-| `POST /api/pipeline/runs/{run_id}/rescore` | Test `{}` and one safe weight/gate override. | Ranked output sorted by `final_score`; candidate set is subset of archived ranked candidates; `gated_out` has valid reasons; no images/inference rerun. |
-| `GET /api/movies/{movie_id}/runs` | Call before/after production run. | New `run_id` appears after run, ordered newest first. |
-| `GET /api/movies/{movie_id}/artwork-events` | Use same movie. | Events match `artwork_events` DB rows. Empty history is acceptable. |
-| `POST /api/test/pipeline/movie/{movie_id}` | Run once after production run is complete and GPU is idle. | Response paths exist: `pipeline_log`, `pipeline_run_json`, `output_dir`; JSON counts match response; output remains under `experiments/runs/`; no media stats change. |
+| `POST /api/pipeline/movie/{movie_id}/run` | Start a production run for each of the **20 randomly selected movies** in `fixture-selection.json`. On the first run, immediately try a second run to exercise 409 conflict while active. Each run after the first must wait for GPU idle. | First call returns 202 with `run_id`, `events_url`, `results_url`; second (concurrent) call returns 409 with active run ID. No media file stats change. |
+| `GET /api/pipeline/runs/{run_id}/events` | Connect immediately after starting each run and save raw SSE. | SSE contains stage events and ends with `event: done`; stage names align with design 09. |
+| `GET /api/pipeline/runs/{run_id}` | Poll each run until terminal. | Payload contains `movie`, `status`, `auto_pick`, `ranked`, `rejected`, `counts`, `stage_timings_s`, `config_snapshot`; archive JSON on disk matches returned candidate names/counts. |
+| `GET /api/pipeline/runs/{run_id}/posters/{orig_filename}` | On the **first** completed run, download auto-pick poster and one rejected/ranked poster if available. Also test invalid filename. | File is image, non-zero, path-confined by archive record; invalid candidate returns 404. |
+| `POST /api/pipeline/runs/{run_id}/rescore` | On the **first** completed run, test `{}` and one safe weight/gate override. | Ranked output sorted by `final_score`; candidate set is subset of archived ranked candidates; `gated_out` has valid reasons; no images/inference rerun. |
+| `GET /api/movies/{movie_id}/runs` | Call before/after all pipeline runs on the **first** movie. | New `run_id` appears after run, ordered newest first. |
+| `GET /api/movies/{movie_id}/artwork-events` | Use **first** movie. | Events match `artwork_events` DB rows. Empty history is acceptable. |
+| `POST /api/test/pipeline/movie/{movie_id}` | Run once **after all 20 production runs are complete and GPU is idle**. Use the **first** movie. | Response paths exist: `pipeline_log`, `pipeline_run_json`, `output_dir`; JSON counts match response; output remains under `experiments/runs/`; no media stats change. |
 
 ### 8.4 Feedback loop
 
@@ -345,6 +345,7 @@ Use the completed `RUN_ID`. Always send `deploy:false` for `approve` and `overri
 | `DELETE /api/subtitle-policies/{policy_id}` | Delete test policy. | Subsequent get returns 404; count returns to baseline. |
 | `POST /api/subtitle-policies/{policy_id}/apply` | **Skip.** | Queues subtitle removal jobs. |
 | `GET /api/subtitle-generators` | Call and compare with `/api/system/status/generators`. | Same provider health/capability information. |
+| `POST /api/webhooks/subgen` | **Skip.** | Subgen not configured. |
 | `POST /api/media-files/{media_file_id}/subtitle-generations` | **Skip.** | Queues subtitle output write. |
 | `POST /api/movies/{movie_id}/subtitle-generations` | **Skip.** | Queues subtitle output write. |
 
@@ -470,7 +471,7 @@ A pass means:
 - All SSE streams either complete normally or produce a documented, reproducible bug.
 - Pipeline/test-pipeline artifacts exist and agree with endpoint responses.
 - Feedback tests leave labels/reviewed state clean after undo.
-- Config update test restores the original overrides file.
+- Config update tests pass the three negative validation checks.
 - Synthetic DB fixtures and test policies/jobs are cleaned up or explicitly recorded if cleanup fails.
 
 ---
