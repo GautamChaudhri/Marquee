@@ -80,8 +80,17 @@ Organized by the phase when attention is needed. Reference `design/03-migration-
 - [x] ~~**Taste profile routes.**~~ — `GET /api/taste/status`, `POST /api/taste/retrain` in `marquee/api/routes/taste.py`. Taste-map endpoints at `GET /api/taste/map`, `POST /api/taste/map/candidates`, `GET /api/taste/map/rebuild`, exemplar image/neighbors endpoints.
 - [x] ~~**Settings routes.**~~ — `GET /api/config/pipeline`, `PUT /api/config/pipeline` with restart-required validation. Persisted via `data/pipeline_overrides.json`.
 - [x] ~~**System routes.**~~ — `GET /api/system/status` (cache stats, heal state, webhook state), `POST /api/system/heal`.
-- [x] ~~**Artwork events feed.**~~ — `GET /api/movies/{movie_id}/artwork-events` (deploy/restore history), `POST /api/movies/{movie_id}/poster/restore`.
+- [x] ~~**Artwork events feed.**~~ — `GET /api/movies/{movie_id}/artwork-events` (deploy/restore history).
 - [x] ~~**Feedback routes.**~~ — `POST /api/feedback` (approve/override/reject_all), `POST /api/feedback/undo`. Full scenarios A–D implemented.
+
+### API design drift follow-ups
+
+- [ ] **Reconcile poster restore endpoint docs.** `design/more-features/01-poster-restoration.md` mentions `POST /api/movies/{movie_id}/poster/restore`, but no such route is currently implemented.
+- [ ] **Reconcile subtitle batch endpoint docs.** `design/more-features/03-subtitle-management.md` lists dedicated `/api/subtitle-batches/...` endpoints as design targets, but current implementation has no dedicated batch routes.
+- [ ] **Update subtitle scan API wording.** The subtitle design says `POST /api/media-files/{id}/subtitles/scan` queues a forced refresh, but current code performs an inline forced scan.
+- [ ] **Update library filter API docs or implement filters.** The subtitle design mentions server-side library filters (`language`, `missing_language`, etc.), but current `library.py` list endpoints only expose pagination.
+- [ ] **Update letterbox preview query docs.** The letterbox design table says preview uses `t=<sec>`, but current implementation uses `minute=<int>`.
+- [ ] **Update letterbox single-detect contract docs.** The letterbox design allows `POST /api/letterbox/movies/{id}/detect` to return `202 + job_id` or sync; current implementation is synchronous and returns the updated state directly.
 
 ---
 
