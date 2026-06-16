@@ -14,15 +14,16 @@ from datetime import UTC, datetime
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 
 from marquee.core.letterbox_service import _resolve_media_file, letterbox_service
 from marquee.core.path_utils import PathValidationError
 from marquee.main import app
 from marquee.media import binaries
 from marquee.media import letterbox_detect as ld
-from marquee.media.letterbox_manager import letterbox_manager
+from marquee.media.letterbox_manager import JobState, letterbox_manager
 from marquee.media.probe import prefilter_bucket
-from marquee.models import LetterboxState, Movie
+from marquee.models import LetterboxEvent, LetterboxState, Movie
 
 
 @pytest.fixture
@@ -290,6 +291,33 @@ async def test_detect_and_store_persists_and_auto_reviews(db, monkeypatch):
     assert state.reviewed is True  # auto-reviewed → leaves the candidate queue
 
 
+@pytest.mark.asyncio
+async def test_detect_and_store_v1_records_v1_source(db, monkeypatch):
+    movie = Movie(title="Scope", year=2015, folder_path="/m/Scope", tmdb_id=9001)
+    db.add(movie)
+    await db.commit()
+    await db.refresh(movie)
+
+    monkeypatch.setattr(
+        letterbox_manager,
+        "detect_movie_blocking_v1",
+        lambda m: {
+            "status": "candidate", "confidence": "high", "eligible": True,
+            "ineligible_reason": None, "source_width": 3840, "source_height": 2160,
+            "recommended_crop_top": 280, "recommended_crop_bottom": 280,
+            "aspect_label": "2.40:1", "detect_method": "v1_script",
+            "samples_json": "{}", "error": None, "_container": "mkv",
+        },
+    )
+
+    state = await letterbox_manager.detect_and_store(db, movie, detector="v1")
+    assert state.status == "candidate"
+    event = (await db.execute(select(LetterboxEvent).where(LetterboxEvent.movie_id == movie.id))).scalar_one()
+    assert event.source == "detect_v1"
+    detail = json.loads(event.detail)
+    assert detail["detector"] == "v1"
+
+
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
@@ -436,6 +464,7 @@ async def test_find_candidate_movies_prefilters_radarr_resolutions(client, db):
         "already_analyzed": 1,
         "will_detect_in_all_candidates_batch": 2,
     }
+    assert body["movie_ids"] == [candidate.id, unknown.id]
     assert body["candidate_movie_ids"] == [candidate.id]
     assert body["unknown_resolution_movie_ids"] == [unknown.id]
     assert body["detectable_movie_ids"] == [candidate.id, unknown.id]
@@ -462,7 +491,9 @@ async def test_find_candidate_movies_prefilters_radarr_resolutions(client, db):
     analyzed_resp = await client.get(
         "/api/letterbox/movies/find-candidates?include_analyzed=true"
     )
-    analyzed_items = {item["movie_id"]: item for item in analyzed_resp.json()["items"]}
+    analyzed_body = analyzed_resp.json()
+    analyzed_items = {item["movie_id"]: item for item in analyzed_body["items"]}
+    assert analyzed_body["movie_ids"] == [candidate.id, unknown.id, analyzed_false_positive.id]
     assert analyzed_false_positive.id in analyzed_items
     assert analyzed_items[analyzed_false_positive.id]["already_analyzed"] is True
     assert (
@@ -529,6 +560,19 @@ async def test_ignore_moves_to_skipped(client, db):
 async def test_job_events_404_unknown(client):
     resp = await client.get("/api/letterbox/jobs/nope/events")
     assert resp.status_code == 404
+
+
+def test_job_state_summary_tracks_requested_totals():
+    state = JobState(job_id="job", total=5, detector="v1")
+    for status in ["candidate", "candidate", "not_letterboxed", "variable_unsafe", "missing"]:
+        state.record_status(status)
+    assert state.summary(completed=5) == {
+        "candidate": 2,
+        "not_letterboxed": 1,
+        "variable": 1,
+        "total": 5,
+        "completed": 5,
+    }
 
 
 @pytest.mark.asyncio

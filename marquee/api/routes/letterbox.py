@@ -359,6 +359,7 @@ async def find_candidate_movies(
         raise
 
     items = []
+    returned_movie_ids = []
     candidate_movie_ids = []
     unknown_resolution_movie_ids = []
     detectable_movie_ids = []
@@ -412,6 +413,7 @@ async def find_candidate_movies(
             continue
         if category in {"candidate", "unknown_resolution"} or include_skipped:
             items.append(item)
+            returned_movie_ids.append(movie.id)
 
     await db.commit()
     return {
@@ -420,6 +422,7 @@ async def find_candidate_movies(
         "include_skipped": include_skipped,
         "include_analyzed": include_analyzed,
         "counts": counts,
+        "movie_ids": returned_movie_ids,
         "candidate_movie_ids": candidate_movie_ids,
         "unknown_resolution_movie_ids": unknown_resolution_movie_ids,
         "detectable_movie_ids": detectable_movie_ids,
@@ -460,6 +463,56 @@ class BatchDetectRequest(BaseModel):
     all_candidates: bool = False
 
 
+async def _resolve_batch_movie_ids(
+    body: BatchDetectRequest, db: AsyncSession
+) -> list[int]:
+    if body.movie_ids:
+        return body.movie_ids
+    if body.all_candidates:
+        rows = (
+            await db.execute(
+                select(Movie, LetterboxState)
+                .outerjoin(LetterboxState, LetterboxState.movie_id == Movie.id)
+                .where(Movie.movie_file_path.is_not(None))
+            )
+        ).all()
+        movie_ids = [
+            movie.id
+            for movie, state in rows
+            if _should_enqueue_for_detection(movie, state)
+        ]
+        return movie_ids
+    raise HTTPException(
+        status_code=400, detail="Provide movie_ids or set all_candidates=true"
+    )
+
+
+async def _start_detect_job(
+    body: BatchDetectRequest,
+    db: AsyncSession,
+    *,
+    detector: str,
+) -> dict:
+    movie_ids = await _resolve_batch_movie_ids(body, db)
+    if not movie_ids:
+        raise HTTPException(status_code=400, detail="No matching candidate movies")
+
+    try:
+        job_id = await letterbox_manager.start_batch(movie_ids, detector=detector)
+    except BatchInProgressError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"message": "A letterbox batch is already running", "job_id": exc.active_job_id},
+        ) from exc
+
+    return {
+        "job_id": job_id,
+        "detector": detector,
+        "total": len(movie_ids),
+        "events_url": f"/api/letterbox/jobs/{job_id}/events",
+    }
+
+
 @router.post("/movies/{movie_id}/detect")
 async def detect_one(movie_id: int, db: Annotated[AsyncSession, Depends(get_db)]):
     """Detect a single movie synchronously and return its updated state."""
@@ -475,42 +528,7 @@ async def detect_batch(
 ):
     """Start a background batch detect (SSE progress). 202 + job_id, or 409."""
     _require_ffmpeg()
-
-    if body.movie_ids:
-        movie_ids = body.movie_ids
-    elif body.all_candidates:
-        rows = (
-            await db.execute(
-                select(Movie, LetterboxState)
-                .outerjoin(LetterboxState, LetterboxState.movie_id == Movie.id)
-                .where(Movie.movie_file_path.is_not(None))
-            )
-        ).all()
-        movie_ids = [
-            movie.id
-            for movie, state in rows
-            if _should_enqueue_for_detection(movie, state)
-        ]
-    else:
-        raise HTTPException(
-            status_code=400, detail="Provide movie_ids or set all_candidates=true"
-        )
-
-    if not movie_ids:
-        raise HTTPException(status_code=400, detail="No matching candidate movies")
-
-    try:
-        job_id = await letterbox_manager.start_batch(movie_ids)
-    except BatchInProgressError as exc:
-        raise HTTPException(
-            status_code=409,
-            detail={"message": "A letterbox batch is already running", "job_id": exc.active_job_id},
-        ) from exc
-    return {
-        "job_id": job_id,
-        "total": len(movie_ids),
-        "events_url": f"/api/letterbox/jobs/{job_id}/events",
-    }
+    return await _start_detect_job(body, db, detector="v2")
 
 
 @router.get("/jobs/{job_id}/events")

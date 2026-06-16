@@ -21,6 +21,8 @@ import contextlib
 import json
 import logging
 import os
+import re
+import subprocess
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from uuid import uuid4
@@ -37,6 +39,9 @@ from marquee.models import LetterboxEvent, LetterboxState, Movie
 logger = logging.getLogger(__name__)
 
 _SENTINEL = object()
+_V1_VERTICAL_CROP_RE = re.compile(r"Vertical crop amount \(per-file\):\s*(\d+)")
+_V1_NOT_LETTERBOXED_RE = re.compile(r"\bis not letterboxed\b", re.IGNORECASE)
+_V1_RECOMMENDED_RE = re.compile(r"Recommended crop for .*?:\s*(\d+)x(\d+)\+(-?\d+)\+(-?\d+)")
 
 
 class BatchInProgressError(Exception):
@@ -51,9 +56,13 @@ class BatchInProgressError(Exception):
 class JobState:
     job_id: str
     total: int
+    detector: str = "v2"
     events: list[dict] = field(default_factory=list)
     subscribers: list[asyncio.Queue] = field(default_factory=list)
     done: bool = False
+    candidate_count: int = 0
+    not_letterboxed_count: int = 0
+    variable_count: int = 0
 
     def publish(self, event: dict) -> None:
         self.events.append(event)
@@ -77,6 +86,23 @@ class JobState:
     def unsubscribe(self, queue: asyncio.Queue) -> None:
         with contextlib.suppress(ValueError):
             self.subscribers.remove(queue)
+
+    def record_status(self, status: str) -> None:
+        if status == "candidate":
+            self.candidate_count += 1
+        elif status == "not_letterboxed":
+            self.not_letterboxed_count += 1
+        elif status == "variable_unsafe":
+            self.variable_count += 1
+
+    def summary(self, *, completed: int | None = None) -> dict:
+        return {
+            "candidate": self.candidate_count,
+            "not_letterboxed": self.not_letterboxed_count,
+            "variable": self.variable_count,
+            "total": self.total,
+            "completed": self.total if completed is None else completed,
+        }
 
 
 def _max_parallel() -> int:
@@ -151,9 +177,161 @@ class LetterboxManager:
             "_container": container,
         }
 
-    async def detect_and_store(self, db: AsyncSession, movie: Movie) -> LetterboxState:
+    def detect_movie_blocking_v1(self, movie: Movie) -> dict:
+        """Run the original v1 shell detector for one movie."""
+        eligibility = letterbox_service.check_eligibility(movie)
+        path = eligibility.path
+        if path is None:
+            return {
+                "status": "ineligible",
+                "eligible": False,
+                "ineligible_reason": eligibility.reason,
+                "error": eligibility.reason,
+            }
+
+        info = probe.probe_video(path)
+        width = info.width if info else movie.video_width
+        height = info.height if info else movie.video_height
+        container = info.container if info else movie.container
+        duration = info.duration_s if info else None
+
+        if not width or not height:
+            return {
+                "status": "errored",
+                "eligible": eligibility.eligible,
+                "ineligible_reason": eligibility.reason,
+                "error": "could not determine video dimensions",
+                "source_width": width,
+                "source_height": height,
+                "_container": container,
+            }
+
+        script_path = settings._project_root / "design" / "more-features" / "04-letterbox-script.sh"
+        try:
+            completed = subprocess.run(
+                ["bash", str(script_path), "--movie-detect-crop", str(path)],
+                capture_output=True,
+                text=True,
+                timeout=max(120, int(duration or 0) + 120),
+                check=False,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "status": "errored",
+                "confidence": "none",
+                "eligible": eligibility.eligible,
+                "ineligible_reason": eligibility.reason,
+                "source_width": width,
+                "source_height": height,
+                "recommended_crop_top": 0,
+                "recommended_crop_bottom": 0,
+                "aspect_label": None,
+                "detect_method": "v1_script",
+                "samples_json": None,
+                "error": f"v1 detector failed to start: {exc}",
+                "_container": container,
+            }
+
+        stdout = completed.stdout or ""
+        stderr = completed.stderr or ""
+        combined = "\n".join(part for part in [stdout.strip(), stderr.strip()] if part).strip()
+        if completed.returncode != 0:
+            return {
+                "status": "errored",
+                "confidence": "none",
+                "eligible": eligibility.eligible,
+                "ineligible_reason": eligibility.reason,
+                "source_width": width,
+                "source_height": height,
+                "recommended_crop_top": 0,
+                "recommended_crop_bottom": 0,
+                "aspect_label": None,
+                "detect_method": "v1_script",
+                "samples_json": None,
+                "error": f"v1 detector exited {completed.returncode}: {combined[:300]}",
+                "_container": container,
+            }
+
+        crop_match = _V1_VERTICAL_CROP_RE.search(combined)
+        if crop_match:
+            crop = int(crop_match.group(1))
+            effective_height = max(1, height - (crop * 2))
+            return {
+                "status": "candidate",
+                "confidence": "high",
+                "eligible": eligibility.eligible,
+                "ineligible_reason": eligibility.reason,
+                "source_width": width,
+                "source_height": height,
+                "recommended_crop_top": crop,
+                "recommended_crop_bottom": crop,
+                "aspect_label": letterbox_detect.aspect_label(width, effective_height),
+                "detect_method": "v1_script",
+                "samples_json": "[]",
+                "error": None,
+                "_container": container,
+            }
+
+        if _V1_NOT_LETTERBOXED_RE.search(combined):
+            return {
+                "status": "not_letterboxed",
+                "confidence": "none",
+                "eligible": eligibility.eligible,
+                "ineligible_reason": eligibility.reason,
+                "source_width": width,
+                "source_height": height,
+                "recommended_crop_top": 0,
+                "recommended_crop_bottom": 0,
+                "aspect_label": None,
+                "detect_method": "v1_script",
+                "samples_json": "[]",
+                "error": None,
+                "_container": container,
+            }
+
+        dims = _V1_RECOMMENDED_RE.search(combined)
+        if dims:
+            trimmed_height = int(dims.group(2))
+            crop = max(0, round((height - trimmed_height) / 2))
+            effective_height = max(1, height - (crop * 2))
+            return {
+                "status": "candidate",
+                "confidence": "high",
+                "eligible": eligibility.eligible,
+                "ineligible_reason": eligibility.reason,
+                "source_width": width,
+                "source_height": height,
+                "recommended_crop_top": crop,
+                "recommended_crop_bottom": crop,
+                "aspect_label": letterbox_detect.aspect_label(width, effective_height),
+                "detect_method": "v1_script",
+                "samples_json": "[]",
+                "error": None,
+                "_container": container,
+            }
+
+        return {
+            "status": "errored",
+            "confidence": "none",
+            "eligible": eligibility.eligible,
+            "ineligible_reason": eligibility.reason,
+            "source_width": width,
+            "source_height": height,
+            "recommended_crop_top": 0,
+            "recommended_crop_bottom": 0,
+            "aspect_label": None,
+            "detect_method": "v1_script",
+            "samples_json": "[]",
+            "error": f"could not parse v1 detector output: {combined[:300]}",
+            "_container": container,
+        }
+
+    async def detect_and_store(
+        self, db: AsyncSession, movie: Movie, *, detector: str = "v2"
+    ) -> LetterboxState:
         """Detect one movie and persist its ``LetterboxState`` + event."""
-        updates = await asyncio.to_thread(self.detect_movie_blocking, movie)
+        detect_fn = self.detect_movie_blocking_v1 if detector == "v1" else self.detect_movie_blocking
+        updates = await asyncio.to_thread(detect_fn, movie)
         container = updates.pop("_container", None)
         if container and not movie.container:
             movie.container = container
@@ -177,13 +355,14 @@ class LetterboxManager:
             LetterboxEvent(
                 movie_id=movie.id,
                 action="detect",
-                source="detect",
+                source="detect_v1" if detector == "v1" else "detect",
                 detail=json.dumps(
                     {
                         "status": updates["status"],
                         "confidence": updates.get("confidence"),
                         "top": updates.get("recommended_crop_top"),
                         "bottom": updates.get("recommended_crop_bottom"),
+                        "detector": detector,
                     }
                 ),
             )
@@ -202,12 +381,12 @@ class LetterboxManager:
     def get_state(self, job_id: str) -> JobState | None:
         return self._jobs.get(job_id)
 
-    async def start_batch(self, movie_ids: list[int]) -> str:
+    async def start_batch(self, movie_ids: list[int], *, detector: str = "v2") -> str:
         if self._active_job_id is not None:
             raise BatchInProgressError(self._active_job_id)
         job_id = uuid4().hex
         self._active_job_id = job_id
-        self._jobs[job_id] = JobState(job_id=job_id, total=len(movie_ids))
+        self._jobs[job_id] = JobState(job_id=job_id, total=len(movie_ids), detector=detector)
         asyncio.create_task(self._execute_batch(job_id, movie_ids))
         return job_id
 
@@ -229,13 +408,14 @@ class LetterboxManager:
                         if movie is None:
                             result_status = "missing"
                         else:
-                            stored = await self.detect_and_store(db, movie)
+                            stored = await self.detect_and_store(db, movie, detector=state.detector)
                             result_status = stored.status
                 except Exception as exc:  # noqa: BLE001 — one bad file mustn't kill the batch
                     logger.exception("letterbox detect failed for movie %s", movie_id)
                     result_status = f"error: {exc}"
                 async with lock:
                     completed += 1
+                    state.record_status(result_status)
                     state.publish(
                         {
                             "job_id": job_id,
@@ -243,6 +423,7 @@ class LetterboxManager:
                             "completed": completed,
                             "total": state.total,
                             "status": result_status,
+                            "detector": state.detector,
                         }
                     )
 
@@ -250,7 +431,14 @@ class LetterboxManager:
             await asyncio.gather(*(worker(mid) for mid in movie_ids))
         finally:
             state.publish(
-                {"job_id": job_id, "state": "done", "completed": completed, "total": state.total}
+                {
+                    "job_id": job_id,
+                    "state": "done",
+                    "completed": completed,
+                    "total": state.total,
+                    "detector": state.detector,
+                    "summary": state.summary(completed=completed),
+                }
             )
             state.finish()
             self._active_job_id = None
