@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # letterbox-v2.sh — detect & apply MKV pixel-crop tags for letterboxed media.
 #
+# Status: reference prototype, not application code. Keep behavior aligned with
+# design/more-features/04-letterbox-cropping.md when editing.
+#
 # Production-grade rewrite of 04-letterbox-script.sh (design 04-letterbox §23).
 # Default detection uses ffmpeg `cropdetect` (accurate, fast, no temp files);
 # `--method trim` keeps the ImageMagick fallback for faint/color-cast bars.

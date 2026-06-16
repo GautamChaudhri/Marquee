@@ -1,4 +1,15 @@
 #!/usr/bin/env bash
+# Status: historical prototype.
+#
+# This script is kept as design/reference material only. The implemented
+# backend source of truth is:
+# - marquee/media/letterbox_detect.py
+# - marquee/media/letterbox_manager.py
+# - marquee/core/letterbox_service.py
+#
+# Prefer design/more-features/04-letterbox-script-v2.sh for a script-shaped
+# reference. This original version uses ImageMagick trim and older auto-apply
+# modes that do not match the current backend API contract.
 set -euo pipefail
 
 usage() {

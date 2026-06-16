@@ -1,204 +1,135 @@
-# Marquee Pipeline Tuning Reference
+# Marquee — Pipeline Tuning Knobs
 
-Knob groups, what they control, and how to test each one.
-All knobs live in `marquee/core/pipeline_config.py` and are overridable via `.env`.
+**Status:** Reconciled with the codebase on 2026-06-16.
 
----
+All poster-pipeline knobs live in `marquee/core/pipeline_config.py`. Most can
+be set in `.env`; many non-restart knobs can also be updated at runtime through
+`GET/PUT /api/config/pipeline`, which persists overrides to
+`data/pipeline_overrides.json`.
 
-## The method: hold-out cross-validation
+## Taste Retrieval
 
-Before touching anything, understand what "better" means:
+| Knob | Default | Purpose |
+|---|---:|---|
+| `K_NEIGHBORS` | `10` | Number of positive/negative nearest exemplars |
+| `KNN_WEIGHTING` | `softmax` | `softmax` or `mean` aggregation |
+| `KNN_SOFTMAX_TEMP` | `0.1` | Lower values make nearest exemplars dominate |
+| `TASTE_NEG_WEIGHT` | `1.0` | Penalty when closer to negative than positive exemplars |
+| `PREFERRED_LANG` | `en` | Preferred TMDB poster language |
 
-```bash
-.venv/bin/python -m marquee.ml.knn_eval          # offline k-NN sweep, <1 second
-.venv/bin/python -m marquee.ml.knn_eval --dino   # also sweep DINOv2 space
-```
+## Gates
 
-The evaluator reports three numbers per config:
+| Knob | Default | Purpose |
+|---|---:|---|
+| `GATE_MIN_WIDTH` | `500` | Metadata width floor |
+| `GATE_MIN_AESTHETIC` | `4.5` | Aesthetic floor |
+| `GATE_MIN_KNN_SIM` | `0.45` | Style floor |
+| `GATE_AESTHETIC_RESCUE_KNN` | `0.55` | Relax aesthetic floor for on-style candidates |
+| `GATE_MIN_AESTHETIC_RESCUED` | `2.0` | Rescued aesthetic floor |
+| `GATE_FAN_JUNK_ENABLED` | `False` | Optional combo gate |
+| `GATE_FAN_JUNK_MAX_AESTHETIC` | `5.0` | Fan-junk aesthetic bound |
+| `GATE_FAN_JUNK_MAX_PROVENANCE` | `0.55` | Fan-junk provenance bound |
+| `GATE_FAN_JUNK_MAX_RESOLUTION_MP` | `1.0` | Fan-junk resolution bound |
 
-| Column | What it means | Direction |
-|---|---|---|
-| `ho_mean` / `ho_p5` | Held-out liked posters' average / 5th-pct knn_sim | Higher |
-| `gate_miss` | Fraction of held-out liked posters below `GATE_MIN_KNN_SIM` | Must stay 0% |
-| `AUC` | P(random kept poster outscores random flagged one) — from `labels.jsonl` | Higher, 1.0 = perfect |
+## Weights
 
-**Golden rule**: `gate_miss > 0%` means you've overtightened something — the gate is absolute, those posters are unrecoverable. Never chase AUC at the cost of gate_miss.
+Weights are positive. Features are normalized so higher is better.
 
-More labels = more decisive AUC. Add movies to `marquee/experiments/feedback/labels.jsonl` (see todos.md) and the evaluator sharpens automatically.
+| Feature knob | Default |
+|---|---:|
+| `WEIGHT_KNN_SIM` | `0.30` |
+| `WEIGHT_AESTHETIC` | `0.12` |
+| `WEIGHT_TITLE_COLORFULNESS` | `0.15` |
+| `WEIGHT_FACE_AREA` | `0.15` |
+| `WEIGHT_TEXT_RESIDUAL` | `0.10` |
+| `WEIGHT_PROVENANCE` | `0.02` |
+| `WEIGHT_SHARPNESS` | `0.03` |
+| `WEIGHT_RESOLUTION` | `0.0` |
+| `WEIGHT_LANG_MATCH` | `0.0` |
+| `WEIGHT_DINO_KNN` | `0.12` |
+| `WEIGHT_TASTE_TYPICALITY` | `0.12` |
+| `WEIGHT_QUALITY_ARTIFACTS` | `0.03` |
+| `WEIGHT_OFFICIAL_FAMILY` | `0.12` |
 
----
+The scorer renormalizes by available active weights, so optional missing
+features do not drag scores down.
 
-## Tuning order
+## Normalization
 
-Groups are listed in dependency order — later groups consume signals produced by earlier ones.
+| Knob | Default | Feature |
+|---|---:|---|
+| `NORM_KNN_MIN` / `NORM_KNN_MAX` | `0.4` / `0.9` | `knn_sim` |
+| `NORM_AESTHETIC_MAX` | `10.0` | `aesthetic` |
+| `NORM_TITLE_COLORFULNESS_MAX` | `60.0` | `title_colorfulness` |
+| `NORM_TITLE_COLORFULNESS_NEUTRAL` | `0.5` | no-title fallback |
+| `NORM_RESOLUTION_MAX_MP` | `6.0` | `resolution` |
+| `NORM_SHARPNESS_MAX` | `2000.0` | `sharpness` |
+| `NORM_OFFICIAL_MIN` / `NORM_OFFICIAL_MAX` | `0.60` / `0.95` | `official_family` |
 
-```
-A (Taste retrieval)
-    ↓
-B (Gates)       C (Normalization)
-         ↓
-         D (Scorer weights)
-              ↓
-              E (Learned head — Phase 1)
+## Optional Features
 
-OCR / Dedup: orthogonal tracks, tune independently
-```
+| Knob | Default | Purpose |
+|---|---:|---|
+| `DINO_ENABLED` | `auto` | `auto`, `on`, or `off` |
+| `EXTRA_QUALITY_ENABLED` | `True` | Artifact metrics and person detector |
+| `PERSON_CONFIDENCE_THRESHOLD` | `0.40` | YOLO person threshold |
+| `CALIBRATION_ENABLED` | `True` | KDE taste typicality |
+| `CALIBRATION_BANDWIDTH_SCALE` | `1.0` | KDE bandwidth scale |
+| `CALIBRATION_MIN_SAMPLES` | `20` | Minimum samples for a calibrated band |
+| `SCORER` | `auto` | `auto`, `weighted`, or `learned` |
 
-Change one group, validate, commit, then move to the next.
+## OCR
 
----
+| Knob | Default | Purpose |
+|---|---:|---|
+| `OCR_DEVICE` | `auto` | `auto`, `cpu`, or `gpu` |
+| `OCR_WORKERS` | `0` | Auto-sized when zero |
+| `OCR_DETAIL_PASSES` | `True` | Extra strip/upscale passes |
+| `OCR_MAX_RESIDUAL_BOXES` | `0` | Strict title-only by default |
+| `OCR_MAX_RESIDUAL_AREA_FRACTION` | `0.04` | Residual text area guard |
+| `OCR_CONFIDENCE_THRESHOLD` | `0.75` | Full-image threshold |
+| `OCR_STRIP_CONFIDENCE_THRESHOLD` | `0.65` | Strip-pass threshold |
+| `OCR_BOTTOM_CONFIDENCE_THRESHOLD` | `0.50` | Bottom-strip threshold |
+| `OCR_FUZZY_CUTOFF` | `0.60` | Title fuzzy-match cutoff |
+| `OCR_REQUIRE_TITLE` | `True` | Reject if no title match |
+| `OCR_ACCEPT_NO_TEXT` | `True` | Batch-level fallback only |
+| `OCR_ENHANCE_RETRY` | `True` | Contrast-enhanced retry |
 
-## Group A — Taste retrieval (k-NN)
+## Dedup
 
-These knobs control how the 430 exemplar embeddings are combined into a single `knn_sim` scalar for each candidate, and the matching `dino_knn` in the DINOv2 space.
+| Knob | Default | Purpose |
+|---|---:|---|
+| `DEDUP_PHASH_THRESHOLD` | `6` | pHash Hamming threshold |
+| `DEDUP_MIN_POSTER_WIDTH` | `500` | Dedup width floor |
 
-| Knob | Default | What it does |
-|---|---|---|
-| `K_NEIGHBORS` | 10 | How many nearest exemplars to look at |
-| `KNN_WEIGHTING` | `softmax` | `softmax` = nearest exemplars dominate; `mean` = plain average |
-| `KNN_SOFTMAX_TEMP` | 0.1 | Smaller = nearest exemplar dominates more; larger → approaches `mean` |
-| `TASTE_NEG_WEIGHT` | 1.0 | Penalty when closer to disliked exemplars than liked ones (only fires with `negative_data/`) |
+## Feedback and Learned Head
 
-**k and temperature are coupled** — k barely matters at temp 0.03 (softmax always picks the single best match anyway); k matters a lot with `mean` weighting. Always tune them together.
+| Knob | Default | Purpose |
+|---|---:|---|
+| `FEEDBACK_LABELS_PATH` | `marquee/experiments/feedback/labels.jsonl` | Label store |
+| `NEGATIVE_DATA_DIR` | `marquee/experiments/negative_data` | Negative exemplars |
+| `TRAINING_DATA_DIR` | `marquee/experiments/training_data` | Positive exemplars |
+| `FEEDBACK_GATE_ALERT_THRESHOLD` | `5` | Gate alert threshold |
+| `FEEDBACK_NEGATIVES_FROM_OVERRIDES` | `False` | Copy overridden auto-picks to negatives |
+| `FEEDBACK_DEPLOY_DEFAULT` | `True` | Deploy approve/override by default |
+| `HEAD_MIN_LABELS` | `150` | Learned-head minimum labels |
+| `HEAD_MIN_MOVIES` | `5` | Learned-head minimum movies |
+| `HEAD_AUTO_RETRAIN` | `True` | Retrain after feedback when eligible |
 
-**How to test**: `knn_eval` offline. Watch `ho_p5` (no held-out liked poster should approach 0.45), `ho_min`, and AUC. The 2026-06-12 sweep showed zero gate misses at all k from 1–50 and AUC variation of only ±0.015 across the entire grid — meaning k is not a big lever yet. More labels will change this.
+## Evaluation Commands
 
-**After changing**: if you change `K_NEIGHBORS`, rebuild the taste profile (`python -m marquee.ml.taste_trainer`) — the DINOv2 normalization range (p5/p95 of `dino_self_knn`) is baked in at training time and must stay consistent.
-
----
-
-## Group B — Style gates
-
-Hard thresholds. Anything below these is rejected and cannot be rescued by ranking.
-
-| Knob | Default | What it does |
-|---|---|---|
-| `GATE_MIN_KNN_SIM` | 0.45 | Style floor — poster must resemble your liked exemplars |
-| `GATE_MIN_AESTHETIC` | 4.5 | Aesthetic floor (LAION head) |
-| `GATE_AESTHETIC_RESCUE_KNN` | 0.55 | If `knn_sim ≥` this, relax the aesthetic floor — stylized posters the taste profile endorses shouldn't be penalized |
-| `GATE_MIN_AESTHETIC_RESCUED` | 2.0 | Aesthetic floor for taste-profile-rescued posters |
-| `GATE_FAN_JUNK_ENABLED` | `false` | Combo gate (off by default) rejecting low-aesthetic + low-provenance + low-resolution combos |
-
-**How to test**: `knn_eval --ks <target> --temps <target>` to confirm `gate_miss` stays 0% at the new threshold. Then rerun a labeled movie and check `GATE REJECT` log lines — any rejection of a poster you've labeled 1 is a false rejection. Raise thresholds conservatively (≤0.02 steps on `GATE_MIN_KNN_SIM`).
-
----
-
-## Group C — Normalization ranges
-
-These determine the mapping from a raw feature value to a [0, 1] score fed into the ranking formula. Wrong ranges compress everything to the same score.
-
-| Knob | Default | Controls |
-|---|---|---|
-| `NORM_KNN_MIN` / `NORM_KNN_MAX` | 0.4 / 0.9 | knn_sim ramp (cosine → score) |
-| `NORM_OFFICIAL_MIN` / `NORM_OFFICIAL_MAX` | 0.60 / 0.95 | official_family ramp; measured on Avengers/Interstellar/SD: official 0.90+, fan art 0.60–0.80 |
-| `NORM_AESTHETIC_MAX` | 10.0 | LAION aesthetic head max |
-| `NORM_SHARPNESS_MAX` | 2000.0 | Laplacian variance max |
-| `NORM_RESOLUTION_MAX_MP` | 6.0 | Resolution ceiling in megapixels |
-| `NORM_TITLE_COLORFULNESS_MAX` | 60.0 | Title colorfulness ceiling |
-| `CALIBRATION_BANDWIDTH_SCALE` | 1.0 | KDE bandwidth multiplier for exemplar-calibrated normalization; >1 = wider/more forgiving taste bands |
-| `CALIBRATION_MIN_SAMPLES` | 20 | Minimum exemplar samples before KDE calibration activates (falls back to fixed ramp below this) |
-
-**How to test**: add `WEIGHT_*` logging or look at `RANK DETAIL` log lines in pipeline runs to see what normalized values features are actually producing. If everything clusters at 0.0 or 1.0, the range is too tight or too loose. The official_family range was measured empirically from 3 movies' cached embeddings — recalibrate after adding more labeled movies.
-
----
-
-## Group D — Scorer weights
-
-These balance the 13 features in the Phase-0 weighted scorer. The scorer renormalizes by the total of *available* weights so toggling a feature off (or its model being absent) doesn't break the [0, 1] output range.
-
-| Knob | Default | Notes |
-|---|---|---|
-| `WEIGHT_KNN_SIM` | 0.30 | Primary style signal — usually the strongest single feature |
-| `WEIGHT_OFFICIAL_FAMILY` | 0.12 | CLIP cosine to TMDB primary poster; strongest discriminator in labeled data |
-| `WEIGHT_TITLE_COLORFULNESS` | 0.15 | Colorfulness of the title text area |
-| `WEIGHT_FACE_AREA` | 0.15 | Floating-head penalty (large face → lower score) |
-| `WEIGHT_DINO_KNN` | 0.12 | DINOv2 second style opinion (texture/medium, GPU tiers only) |
-| `WEIGHT_TASTE_TYPICALITY` | 0.12 | Mean KDE typicality across `TYPICALITY_FEATURES` |
-| `WEIGHT_AESTHETIC` | 0.12 | LAION aesthetic head — was 0.20, reduced 2026-06-11 (loves slick fan art) |
-| `WEIGHT_TEXT_RESIDUAL` | 0.10 | Non-title text penalty |
-| `WEIGHT_SHARPNESS` | 0.03 | Laplacian variance (image sharpness) |
-| `WEIGHT_QUALITY_ARTIFACTS` | 0.03 | Blockiness + sensor noise (clean = 1) |
-| `WEIGHT_PROVENANCE` | 0.02 | TMDB poster votes — was 0.07, reduced 2026-06-11 (votes are nearly all zero) |
-| `WEIGHT_RESOLUTION` | 0.0 | Off — resolution is a gate, not a scoring signal |
-| `WEIGHT_LANG_MATCH` | 0.0 | Off — irrelevant once OCR gates foreign-text posters |
-
-**`TYPICALITY_FEATURES`** (list knob): the per-feature KDE typicality contributors — palette, composition, typography geometry, face/person geometry, CLIP zero-shot axes, aesthetic. Each feature's contribution to `taste_typicality` is weighted equally; the list is configurable.
-
-**How to test**: offline re-rank using saved `pipeline_run.json` and the labels. Or rerun labeled movies and compare rank lists against labels — did flagged posters move down, kept posters stay up? The preview learned head (2026-06-12) independently confirmed: `official_family` +1.71 (strongest), `aesthetic` −0.01 (near-zero) — which is consistent with the current weights. This is the group most directly replaced by the learned head once enough labels exist.
-
----
-
-## Group E — Learned ranking head (Phase 1) ✅ IMPLEMENTED
-
-Training is now driven by `train_from_labels()` in `marquee/ml/head_trainer.py`, which reads both v1 (legacy title+filename join) and v2 (self-contained embedded feature vector) labels from `feedback_store.read_all()`. Activation thresholds are configurable:
-
-| Knob | Default | What it does |
-|---|---|---|
-| `HEAD_MIN_LABELS` | 150 | Minimum labels before the head replaces hand weights |
-| `HEAD_MIN_MOVIES` | 5 | Minimum distinct movies (avoids head overfitting to one movie) |
-| `HEAD_AUTO_RETRAIN` | `true` | Auto-retrain after each feedback event when thresholds met |
-
-Invoke training via API or CLI:
+Implemented helper:
 
 ```bash
-python -m marquee.ml.head_trainer                          # train from labels.jsonl
-python -m marquee.ml.head_trainer --min-labels 10          # override safety floor for testing
-```
-
-The feedback endpoint calls `train_from_labels()` directly after each event when `HEAD_AUTO_RETRAIN=true`. Activate with `SCORER=auto` (picks up the artifact automatically) or force with `SCORER=learned`.
-
-**Labels v2 format** embeds the full normalized feature vector per row, so training is a direct read — no dependency on a run's working directory surviving a re-run. The same module (`feedback_store`) handles append/read/remove/undo.
-
-Current state: 78 labels (3 movies) — too thin to activate (below `HEAD_MIN_LABELS: 150`). The gate override tracking (`FEEDBACK_GATE_ALERT_THRESHOLD: 5`) surfaces tuning suggestions in the taste status API when a gate blocks posters you consistently override.
-
----
-
-## OCR track (independent)
-
-| Knob | Default | What it does |
-|---|---|---|
-| `OCR_MAX_RESIDUAL_BOXES` | 0 | 0 = strict title-only; raise to 1–2 to tolerate taglines as a rank penalty |
-| `OCR_MAX_RESIDUAL_AREA_FRACTION` | 0.04 | Secondary area guard |
-| `OCR_REQUIRE_TITLE` | `true` | Reject posters whose text never matches the title |
-| `OCR_ACCEPT_NO_TEXT` | `true` | Batch-level fallback: rescue textless posters only when zero titled survive |
-| `OCR_CONFIDENCE_THRESHOLD` | 0.75 | Full-image detection confidence |
-| `OCR_STRIP_CONFIDENCE_THRESHOLD` | 0.65 | Top/bottom strip detection confidence |
-| `OCR_BOTTOM_CONFIDENCE_THRESHOLD` | 0.50 | Bottom strip (credits block) confidence |
-| `OCR_FUZZY_CUTOFF` | 0.60 | Title token fuzzy-match cutoff |
-| `OCR_TITLE_PROXIMITY_PIXELS` | 30.0 | Residual boxes within this distance of the title are treated as title fragments (small boxes only) |
-| `OCR_RESIDUAL_SIGNIFICANT_AREA_FRACTION` | 0.005 | Geometry-based significance: a confident box ≥ this fraction of image area is real text even when the recognizer garbled it |
-| `OCR_RESIDUAL_SIGNIFICANT_WIDTH_FRACTION` | 0.40 | Same rule, width-based |
-| `OCR_DETAIL_PASSES` | `true` | Top-strip and 2× bottom-strip passes; disable on N150-class CPUs |
-
-**How to test**: rerun a movie, check `OCR REJECT` / `OCR ACCEPT` log lines. Any poster you labeled as kept and that got rejected is a false rejection — loosen the threshold that caused it. Any poster you labeled as flagged (because it has non-title text) and that passed is a false accept — tighten. Cross-reference with the `reason=` field (`no_text`, `no_title`, `text_heavy`).
-
----
-
-## Dedup track (independent)
-
-| Knob | Default | What it does |
-|---|---|---|
-| `DEDUP_PHASH_THRESHOLD` | 6 | pHash Hamming distance — variants ≤ this are treated as the same image |
-| `DEDUP_MIN_POSTER_WIDTH` | 500 | Minimum width to even enter dedup |
-
-Preference tuple (how the "winner" is chosen from a pHash cluster): `(title_found, -residual_boxes, is_primary, knn_sim)` then resolution as final tiebreak. Raising the threshold to 8–10 merges more title-position variants — use `DEDUP KEEP` log lines to verify the right variant is winning its cluster.
-
----
-
-## Quick reference: run the evaluator
-
-```bash
-# Full sweep across all k / weighting / temperature combos
 .venv/bin/python -m marquee.ml.knn_eval
-
-# Targeted sweep after narrowing down
-.venv/bin/python -m marquee.ml.knn_eval --ks 3,5,7,10 --temps 0.05,0.1,0.2
-
-# Include DINOv2 space (uses profile, not embedding cache)
 .venv/bin/python -m marquee.ml.knn_eval --dino
-
-# Change k without editing .env: set env var inline
-K_NEIGHBORS=5 KNN_SOFTMAX_TEMP=0.05 .venv/bin/python -m marquee.ml.knn_eval --ks 5 --temps 0.05
 ```
 
-The evaluator reads from `marquee/ml/taste_profile.clip-vit-b-32.npz` and `data/cache/embeddings/clip-vit-b-32/`. No GPU required.
+Use archived run JSON plus `POST /api/pipeline/runs/{run_id}/rescore` for
+interactive weight/gate experiments without re-running inference.
+
+## Live Count Rule
+
+Do not publish hardcoded current label counts in this doc. Query
+`GET /api/taste/status` for live counts when tuning, reporting, or deciding
+whether a calibrated/taste-weighted profile is ready.
