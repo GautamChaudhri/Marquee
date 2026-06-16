@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sys
+import types
 from pathlib import Path
 
 import httpx
@@ -96,6 +98,11 @@ def test_weighted_scorer_is_weight_normalized():
 def test_pipeline_config_rejects_negative_weights():
     with pytest.raises(ValueError, match="non-negative"):
         PipelineSettings(WEIGHT_FACE_AREA=-0.1)
+
+
+def test_pipeline_config_rejects_invalid_ocr_device():
+    with pytest.raises(ValueError, match="OCR_DEVICE"):
+        PipelineSettings(OCR_DEVICE="cuda")
 
 
 @pytest.mark.parametrize(
@@ -205,6 +212,26 @@ def test_hardware_profile_resolves_tiers(monkeypatch: pytest.MonkeyPatch):
         assert profile.providers[0] == "CUDAExecutionProvider"
         assert profile.clip_batch_size == 32
         assert profile.ocr_workers >= 1
+    finally:
+        hardware.detect_hardware.cache_clear()
+
+
+def test_effective_ocr_workers_caps_cuda_unless_gpu_forced(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from marquee.ml import hardware
+
+    monkeypatch.setattr(
+        "marquee.ml.hardware.ort.get_available_providers",
+        lambda: ["CUDAExecutionProvider", "CPUExecutionProvider"],
+    )
+    monkeypatch.setattr(hardware.pipeline_settings, "OCR_WORKERS", 10)
+    monkeypatch.setattr(hardware.pipeline_settings, "OCR_DEVICE", "cpu")
+    hardware.detect_hardware.cache_clear()
+    try:
+        assert hardware.effective_ocr_workers() == hardware.detect_hardware().ocr_workers
+        monkeypatch.setattr(hardware.pipeline_settings, "OCR_DEVICE", "gpu")
+        assert hardware.effective_ocr_workers() == 10
     finally:
         hardware.detect_hardware.cache_clear()
 
@@ -396,6 +423,122 @@ def test_no_text_fallback_disabled(monkeypatch: pytest.MonkeyPatch):
         [_ocr_result("a.jpg", accepted=False, reason="no_text")]
     )
     assert not results[0].accepted
+
+
+def test_load_ocr_respects_cpu_device_when_paddle_cuda_exists(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    created: dict[str, object] = {}
+
+    class FakePaddleOCR:
+        def __init__(self, **kwargs):
+            created.update(kwargs)
+
+    fake_paddle = types.SimpleNamespace(
+        device=types.SimpleNamespace(is_compiled_with_cuda=lambda: True)
+    )
+    fake_paddleocr = types.SimpleNamespace(PaddleOCR=FakePaddleOCR)
+    monkeypatch.setitem(sys.modules, "paddle", fake_paddle)
+    monkeypatch.setitem(sys.modules, "paddleocr", fake_paddleocr)
+    monkeypatch.setattr(ocr_filter.pipeline_settings, "OCR_DEVICE", "cpu")
+
+    ocr_filter._load_ocr()
+
+    assert created["device"] == "cpu"
+
+
+def test_load_ocr_auto_uses_gpu_when_paddle_cuda_exists(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    created: dict[str, object] = {}
+
+    class FakePaddleOCR:
+        def __init__(self, **kwargs):
+            created.update(kwargs)
+
+    fake_paddle = types.SimpleNamespace(
+        device=types.SimpleNamespace(is_compiled_with_cuda=lambda: True)
+    )
+    fake_paddleocr = types.SimpleNamespace(PaddleOCR=FakePaddleOCR)
+    monkeypatch.setitem(sys.modules, "paddle", fake_paddle)
+    monkeypatch.setitem(sys.modules, "paddleocr", fake_paddleocr)
+    monkeypatch.setattr(ocr_filter.pipeline_settings, "OCR_DEVICE", "auto")
+
+    ocr_filter._load_ocr()
+
+    assert created["device"] == "gpu"
+
+
+def test_load_ocr_rejects_forced_gpu_without_paddle_cuda(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    class FakePaddleOCR:
+        def __init__(self, **_kwargs):
+            raise AssertionError("PaddleOCR should not be constructed")
+
+    fake_paddle = types.SimpleNamespace(
+        device=types.SimpleNamespace(is_compiled_with_cuda=lambda: False)
+    )
+    fake_paddleocr = types.SimpleNamespace(PaddleOCR=FakePaddleOCR)
+    monkeypatch.setitem(sys.modules, "paddle", fake_paddle)
+    monkeypatch.setitem(sys.modules, "paddleocr", fake_paddleocr)
+    monkeypatch.setattr(ocr_filter.pipeline_settings, "OCR_DEVICE", "gpu")
+
+    with pytest.raises(RuntimeError, match="Paddle CUDA is unavailable"):
+        ocr_filter._load_ocr()
+
+
+class _FakeWorker:
+    def __init__(self, name: str, pid: int, *, alive: bool, exitcode: int | None = 0):
+        self.name = name
+        self.pid = pid
+        self.exitcode = exitcode
+        self._alive = alive
+        self.terminated = False
+
+    def is_alive(self):
+        return self._alive
+
+    def terminate(self):
+        self.terminated = True
+        self._alive = False
+        self.exitcode = -15
+
+    def join(self, _timeout: float | None = None):
+        return None
+
+
+def test_join_workers_surfaces_forced_shutdown():
+    worker = _FakeWorker("poster-ocr-1", 999999, alive=True, exitcode=None)
+
+    with pytest.raises(RuntimeError, match="forced shutdown"):
+        ocr_filter.PosterTextFilter._join_workers([worker])
+
+    assert worker.terminated
+
+
+def test_system_ocr_status_shape(monkeypatch: pytest.MonkeyPatch):
+    from marquee.api.routes import system
+
+    monkeypatch.setattr(system.pipeline_settings, "OCR_DEVICE", "auto")
+    monkeypatch.setattr(system.pipeline_settings, "OCR_WORKERS", 0)
+    monkeypatch.setattr(system, "effective_ocr_workers", lambda: 3)
+    monkeypatch.setattr(system, "paddle_cuda_available", lambda: False)
+    monkeypatch.setattr(
+        system,
+        "active_worker_status",
+        lambda: {"active": [], "stale_reaped": []},
+    )
+
+    status = system._ocr_status()
+
+    assert status == {
+        "device": "auto",
+        "configured_workers": 0,
+        "effective_workers": 3,
+        "paddle_cuda_available": False,
+        "workers": {"active": [], "stale_reaped": []},
+    }
 
 
 def test_normalize_official_family_ramp():

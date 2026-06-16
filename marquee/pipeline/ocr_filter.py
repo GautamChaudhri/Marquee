@@ -8,6 +8,7 @@ import multiprocessing
 import os
 import queue
 import re
+import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, replace
@@ -44,6 +45,7 @@ _WORKER_RESULT = "result"
 _WORKER_INIT_ERROR = "init_error"
 _WORKER_POLL_SECONDS = 0.5
 _WORKER_SHUTDOWN_SECONDS = 15.0
+_active_worker_pids: dict[int, str] = {}
 
 
 @dataclass(frozen=True)
@@ -71,8 +73,73 @@ def _add_digit_words(tokens: set[str]) -> None:
             tokens.add(digit)
 
 
+def _resolve_ocr_device(*, paddle_cuda_available: bool) -> str:
+    requested = pipeline_settings.OCR_DEVICE
+    if requested == "cpu":
+        return "cpu"
+    if requested == "gpu":
+        if not paddle_cuda_available:
+            raise RuntimeError("OCR_DEVICE=gpu requested but Paddle CUDA is unavailable")
+        return "gpu"
+    return "gpu" if paddle_cuda_available else "cpu"
+
+
+def paddle_cuda_available() -> bool:
+    if "paddle" not in sys.modules:
+        return False
+    try:
+        import paddle
+
+        return bool(paddle.device.is_compiled_with_cuda())
+    except Exception:  # noqa: BLE001 - status/debug path must stay lightweight
+        return False
+
+
+def active_worker_status() -> dict:
+    alive: list[dict[str, object]] = []
+    stale: list[dict[str, object]] = []
+    for pid, name in list(_active_worker_pids.items()):
+        entry = {"pid": pid, "name": name}
+        if _pid_alive(pid):
+            alive.append(entry)
+        else:
+            stale.append(entry)
+            _active_worker_pids.pop(pid, None)
+    return {"active": alive, "stale_reaped": stale}
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _register_worker(worker: Any) -> None:
+    if worker.pid is None:
+        return
+    _active_worker_pids[int(worker.pid)] = worker.name
+    logger.info("OCR worker started: name=%s pid=%s", worker.name, worker.pid)
+
+
+def _unregister_worker(worker: Any) -> None:
+    if worker.pid is None:
+        return
+    _active_worker_pids.pop(int(worker.pid), None)
+    logger.info(
+        "OCR worker exited: name=%s pid=%s exitcode=%s",
+        worker.name,
+        worker.pid,
+        worker.exitcode,
+    )
+
+
 def _load_ocr() -> object:
-    import paddle
     from paddleocr import PaddleOCR
 
     # engine="paddle_dynamic" uses eager execution (safetensors weights) instead of
@@ -82,7 +149,8 @@ def _load_ocr() -> object:
     # model is ~15× slower in dynamic mode on CPU with no meaningful accuracy improvement
     # for the title-detection task. On GPU the difference is smaller but mobile is still
     # the better choice for throughput across many workers.
-    device = "gpu" if paddle.device.is_compiled_with_cuda() else "cpu"
+    device = _resolve_ocr_device(paddle_cuda_available=paddle_cuda_available())
+    logger.info("Loading PaddleOCR on device=%s", device)
     return PaddleOCR(
         use_textline_orientation=True,
         lang="en",
@@ -548,6 +616,7 @@ class PosterTextFilter:
         try:
             for worker in workers:
                 worker.start()
+                _register_worker(worker)
             self._wait_for_workers_ready(result_queue, workers)
 
             for index, path in enumerate(paths):
@@ -670,6 +739,11 @@ class PosterTextFilter:
                 worker.terminate()
             for worker in hung:
                 worker.join()
+            details = ", ".join(
+                f"{worker.name}=pid:{worker.pid} exit:{worker.exitcode}"
+                for worker in hung
+            )
+            raise RuntimeError(f"OCR worker forced shutdown: {details}")
 
         failed = [
             worker
@@ -681,15 +755,35 @@ class PosterTextFilter:
                 f"{worker.name}={worker.exitcode}" for worker in failed
             )
             raise RuntimeError(f"OCR worker shutdown failed: {details}")
+        for worker in workers:
+            if worker.pid is not None and _pid_alive(worker.pid):
+                raise RuntimeError(
+                    f"OCR worker survived shutdown: {worker.name}=pid:{worker.pid}"
+                )
+            _unregister_worker(worker)
 
     @staticmethod
     def _stop_workers(workers: list[Any]) -> None:
+        cleanup_failures = []
         for worker in workers:
             if worker.is_alive():
+                logger.warning(
+                    "Terminating live OCR worker during cleanup: name=%s pid=%s",
+                    worker.name,
+                    worker.pid,
+                )
                 worker.terminate()
         for worker in workers:
             if worker.pid is not None:
                 worker.join()
+                if _pid_alive(worker.pid):
+                    cleanup_failures.append(f"{worker.name}=pid:{worker.pid}")
+                else:
+                    _unregister_worker(worker)
+        if cleanup_failures:
+            raise RuntimeError(
+                "OCR worker cleanup failed: " + ", ".join(cleanup_failures)
+            )
 
     @staticmethod
     def _close_queue(worker_queue: Any) -> None:

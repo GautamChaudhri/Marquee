@@ -196,6 +196,10 @@ class PipelineSettings(BaseSettings):
     DEDUP_PHASH_THRESHOLD: int = 6
     DEDUP_MIN_POSTER_WIDTH: int = 500
 
+    # "auto" keeps the intended GPU-first OCR path: PaddleOCR uses GPU when
+    # Paddle CUDA is available, otherwise CPU. Worker caps below keep that
+    # from spawning enough GPU contexts to strand VRAM on 8GB cards.
+    OCR_DEVICE: str = "auto"
     # 0 = auto-size from the hardware profile (cpu_count based, capped).
     OCR_WORKERS: int = 0
     # Run the extra top-strip and 2x-upscaled bottom-strip OCR passes.
@@ -283,10 +287,14 @@ class PipelineSettings(BaseSettings):
             raise ValueError("KNN_SOFTMAX_TEMP must be positive")
         if self.TASTE_NEG_WEIGHT < 0:
             raise ValueError("TASTE_NEG_WEIGHT cannot be negative")
+        if self.OCR_WORKERS < 0:
+            raise ValueError("OCR_WORKERS cannot be negative")
         if self.OCR_MAX_RESIDUAL_BOXES < 0:
             raise ValueError("OCR_MAX_RESIDUAL_BOXES cannot be negative")
         if not 0 <= self.OCR_MAX_RESIDUAL_AREA_FRACTION <= 1:
             raise ValueError("OCR_MAX_RESIDUAL_AREA_FRACTION must be in [0, 1]")
+        if self.OCR_DEVICE not in ("auto", "cpu", "gpu"):
+            raise ValueError("OCR_DEVICE must be 'auto', 'cpu', or 'gpu'")
         if self.DINO_ENABLED not in ("auto", "on", "off"):
             raise ValueError("DINO_ENABLED must be 'auto', 'on', or 'off'")
         if self.SCORER not in ("auto", "weighted", "learned"):
@@ -356,6 +364,7 @@ class PipelineSettings(BaseSettings):
                 "fan_junk_max_resolution_mp": self.GATE_FAN_JUNK_MAX_RESOLUTION_MP,
             },
             "ocr": {
+                "device": self.OCR_DEVICE,
                 "workers": self.OCR_WORKERS,
                 "detail_passes": self.OCR_DETAIL_PASSES,
                 "max_residual_boxes": self.OCR_MAX_RESIDUAL_BOXES,

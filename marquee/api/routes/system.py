@@ -14,9 +14,12 @@ from marquee.api.routes.webhooks import webhook_state
 from marquee.config import settings
 from marquee.core.heal import heal_scan, heal_state
 from marquee.core.letterbox_heal import letterbox_heal_state
+from marquee.core.pipeline_config import pipeline_settings
 from marquee.database import get_db
 from marquee.media import binaries
+from marquee.ml.hardware import effective_ocr_workers
 from marquee.models import MediaJob
+from marquee.pipeline.ocr_filter import active_worker_status, paddle_cuda_available
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +37,16 @@ def _cache_stats() -> dict:
     return {"posters": count, "bytes": total_bytes}
 
 
+def _ocr_status() -> dict:
+    return {
+        "device": pipeline_settings.OCR_DEVICE,
+        "configured_workers": pipeline_settings.OCR_WORKERS,
+        "effective_workers": effective_ocr_workers(),
+        "paddle_cuda_available": paddle_cuda_available(),
+        "workers": active_worker_status(),
+    }
+
+
 @router.get("/status")
 async def system_status(db: Annotated[AsyncSession, Depends(get_db)]):
     queue_rows = (
@@ -46,6 +59,7 @@ async def system_status(db: Annotated[AsyncSession, Depends(get_db)]):
         "webhook": webhook_state,
         "tools": binaries.availability(),
         "media_jobs": dict(queue_rows),
+        "ocr": _ocr_status(),
     }
 
 
