@@ -60,3 +60,5 @@ marquee/experiments/
 # Agents
 .claude/
 AGENTS.md
+.brv/
+.serena/
