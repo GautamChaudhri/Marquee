@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 
 from sqlalchemy import select
@@ -23,7 +24,14 @@ from marquee.core.arr_clients.radarr_client import RadarrClient
 from marquee.core.arr_clients.sonarr_client import SonarrClient
 from marquee.core.path_utils import safe_translate_and_validate
 from marquee.core.poster_sources.tmdb import TMDBClient
-from marquee.models import Episode, Movie, Season, Series
+from marquee.models import (
+    Episode,
+    EpisodeMediaFile,
+    MediaFile,
+    Movie,
+    Season,
+    Series,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -156,11 +164,23 @@ class SyncService:
                 movie_file = data.get("movieFile") or {}
                 movie.movie_file_path = movie_file.get("relativePath")
 
+                # ── Encoded video (letterbox pre-filter, design 04) ───
+                width, height, container = _extract_media_info(movie_file)
+                if width and height:
+                    movie.video_width = width
+                    movie.video_height = height
+                if container:
+                    movie.container = container
+
                 # ── Quality ───────────────────────────────────────────
                 movie.quality_profile_id = data.get("qualityProfileId")
 
                 # ── Poster existence ──────────────────────────────────
                 await self._check_existing_poster(movie)
+
+                # ── Physical media-file row (design 03 §19.3) ─────────
+                await self.db.flush()  # assign movie.id for new rows
+                await _upsert_movie_media_file(self.db, movie, movie_file)
 
             except Exception:
                 logger.error(
@@ -330,6 +350,10 @@ class SyncService:
             if file_id and file_id in file_by_id:
                 episode.episode_file_path = file_by_id[file_id].get("path")
 
+        # ── Physical media-file rows + episode associations (§19.3) ──
+        await self.db.flush()  # assign episode.id for new rows
+        await _upsert_episode_media_files(self.db, raw_episodes, file_by_id)
+
         return result
 
     # ── Poster existence check ───────────────────────────────────────
@@ -405,6 +429,140 @@ def _resolve_poster_path(
     if folder is None:
         return None
     return folder / settings.SERIES_POSTER_FORMAT
+
+
+async def _upsert_movie_media_file(db: AsyncSession, movie: Movie, movie_file: dict) -> None:
+    """Upsert the active ``MediaFile`` for a movie from its Radarr ``movieFile``.
+
+    Keyed by the native ``movieFile.id`` when available, falling back to a
+    path-derived key. One active row per movie; older rows are marked inactive.
+    """
+    file_id = movie_file.get("id")
+    path = movie_file.get("path")
+    relative = movie_file.get("relativePath")
+    if not path and movie.folder_path and relative:
+        path = str(Path(movie.folder_path) / relative)
+    if not path:
+        return  # no file yet (movie monitored but not downloaded)
+
+    source_key = (
+        f"radarr:movie-file:{file_id}" if file_id else f"radarr:movie:{movie.id}"
+    )
+    container = Path(path).suffix.lstrip(".").lower() or None
+    size = movie_file.get("size")
+
+    existing = (
+        await db.execute(
+            select(MediaFile).where(
+                MediaFile.movie_id == movie.id, MediaFile.is_active.is_(True)
+            )
+        )
+    ).scalars().all()
+
+    current = next((m for m in existing if m.path == path), None)
+    for other in existing:
+        if other is not current:
+            other.is_active = False  # replaced/old file → keep for history
+
+    if current is None:
+        current = MediaFile(movie_id=movie.id, source="radarr", source_key=source_key, path=path)
+        db.add(current)
+    current.source_key = source_key
+    current.source_file_id = file_id
+    current.path = path
+    current.relative_path = relative
+    current.container = container
+    current.size_bytes = size
+    current.is_active = True
+    current.last_seen_at = datetime.now(UTC)
+
+
+async def _upsert_episode_media_files(
+    db: AsyncSession, raw_episodes: list[dict], file_by_id: dict[int, dict]
+) -> None:
+    """Upsert one MediaFile per Sonarr episode-file and associate every Episode.
+
+    Correctly represents multi-episode files (many Episode rows → one file).
+    """
+    # Map each episode-file id to the set of Episode rows that reference it.
+    eps_by_file: dict[int, list[Episode]] = {}
+    for edata in raw_episodes:
+        file_id = edata.get("episodeFileId")
+        if not file_id or file_id not in file_by_id:
+            continue
+        ep = (
+            await db.execute(
+                select(Episode).where(Episode.sonarr_episode_id == edata["id"])
+            )
+        ).scalar_one_or_none()
+        if ep is not None:
+            eps_by_file.setdefault(file_id, []).append(ep)
+
+    for file_id, episodes in eps_by_file.items():
+        fdata = file_by_id[file_id]
+        path = fdata.get("path")
+        if not path:
+            continue
+        source_key = f"sonarr:episode-file:{file_id}"
+        media_file = (
+            await db.execute(select(MediaFile).where(MediaFile.source_key == source_key))
+        ).scalar_one_or_none()
+        if media_file is None:
+            media_file = MediaFile(source="sonarr", source_key=source_key, path=path)
+            db.add(media_file)
+        media_file.source_file_id = file_id
+        media_file.path = path
+        media_file.relative_path = fdata.get("relativePath")
+        media_file.container = Path(path).suffix.lstrip(".").lower() or None
+        media_file.size_bytes = fdata.get("size")
+        media_file.is_active = True
+        media_file.last_seen_at = datetime.now(UTC)
+        await db.flush()  # assign media_file.id
+
+        for ep in episodes:
+            link = (
+                await db.execute(
+                    select(EpisodeMediaFile).where(
+                        EpisodeMediaFile.episode_id == ep.id,
+                        EpisodeMediaFile.media_file_id == media_file.id,
+                    )
+                )
+            ).scalar_one_or_none()
+            if link is None:
+                db.add(
+                    EpisodeMediaFile(episode_id=ep.id, media_file_id=media_file.id)
+                )
+
+
+def _extract_media_info(movie_file: dict) -> tuple[int | None, int | None, str | None]:
+    """Pull encoded width/height + container from a Radarr ``movieFile``.
+
+    Radarr's ``mediaInfo`` may carry ``width``/``height`` directly or only a
+    ``resolution`` string like ``"1920x1080"``; the container is derived from
+    the file extension. All fields are best-effort — missing data just leaves
+    the pre-filter to fall back to an on-demand ffprobe.
+    """
+    media_info = movie_file.get("mediaInfo") or {}
+    width = media_info.get("width")
+    height = media_info.get("height")
+    if (not width or not height) and isinstance(media_info.get("resolution"), str):
+        parts = media_info["resolution"].lower().split("x")
+        if len(parts) == 2 and parts[0].strip().isdigit() and parts[1].strip().isdigit():
+            width, height = int(parts[0].strip()), int(parts[1].strip())
+
+    try:
+        width = int(width) if width else None
+        height = int(height) if height else None
+    except (TypeError, ValueError):
+        width = height = None
+
+    container = None
+    rel = movie_file.get("relativePath") or movie_file.get("path")
+    if rel:
+        suffix = Path(rel).suffix.lstrip(".").lower()
+        container = suffix or None
+
+    return width, height, container
 
 
 def _validate_folder(raw_path: str, *, source: str = "radarr") -> Path | None:

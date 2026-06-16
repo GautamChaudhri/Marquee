@@ -18,6 +18,7 @@ upgrades don't destroy posters).
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from pathlib import Path
 from typing import Annotated
@@ -137,6 +138,47 @@ async def _restore_after_upgrade(radarr_id: int | None, tmdb_id: int | None, new
             await poster_service.restore(db, movie, new_folder=new_folder, source="webhook")
 
 
+async def _letterbox_stale_after_upgrade(radarr_id: int | None, tmdb_id: int | None) -> None:
+    """An upgrade replaces the file → its crop tags are gone. Re-queue detection.
+
+    Cheap and write-free on the media file: clears the recorded applied crop and
+    flips the row back to a fresh ``candidate`` so it reappears in the queue. The
+    actual re-detect is left to the user / batch scan (it spends ffmpeg time).
+    """
+    if not settings.LETTERBOX_ENABLED or settings.WEBHOOK_DRY_RUN:
+        return
+    from marquee.models import LetterboxEvent, LetterboxState  # noqa: PLC0415
+
+    factory = _get_session_factory()
+    async with factory() as db:
+        stmt = select(Movie)
+        stmt = stmt.where(
+            Movie.radarr_id == radarr_id if radarr_id is not None else Movie.tmdb_id == tmdb_id
+        )
+        movie = (await db.execute(stmt)).scalar_one_or_none()
+        if movie is None:
+            return
+        state = (
+            await db.execute(
+                select(LetterboxState).where(LetterboxState.movie_id == movie.id)
+            )
+        ).scalar_one_or_none()
+        if state is None:
+            return
+        state.applied_crop_top = None
+        state.applied_crop_bottom = None
+        state.status = "candidate"
+        state.reviewed = False
+        db.add(
+            LetterboxEvent(
+                movie_id=movie.id, action="detect", source="webhook",
+                detail='{"reason": "stale after upgrade — re-detect queued"}',
+            )
+        )
+        await db.commit()
+        logger.info("WEBHOOK | letterbox state staled for %s (upgrade)", movie.title)
+
+
 @router.post("/radarr")
 async def radarr_webhook(
     payload: RadarrWebhookPayload,
@@ -168,9 +210,70 @@ async def radarr_webhook(
                 payload.movie.id, payload.movie.tmdbId, payload.movie.folderPath
             )
         )
+        # The new file has no crop tags — re-queue letterbox detection.
+        asyncio.create_task(
+            _letterbox_stale_after_upgrade(payload.movie.id, payload.movie.tmdbId)
+        )
+        # Queue a durable subtitle inventory scan for the (new) file.
+        asyncio.create_task(
+            _schedule_subtitle_scan(payload.movie.id, payload.movie.tmdbId)
+        )
         return {"status": "restore_scheduled", "movie": payload.movie.title}
 
     return {"status": "ignored", "eventType": event}
+
+
+@router.post("/subgen")
+async def subgen_callback(payload: dict, token: str | None = None):
+    """Subgen completion callback (design §24.4) — an optimization, not the SoT.
+
+    The generation worker reconciles via the filesystem regardless; this just
+    records the callback so we have an audit trail and can surface it.
+    """
+    from datetime import UTC, datetime  # noqa: PLC0415
+
+    from marquee.core.subtitles.config import subtitle_settings  # noqa: PLC0415
+
+    if subtitle_settings.SUBGEN_CALLBACK_TOKEN and token != subtitle_settings.SUBGEN_CALLBACK_TOKEN:
+        raise HTTPException(status_code=401, detail="Invalid Subgen callback token")
+    webhook_state.update(
+        last_received=datetime.now(UTC).isoformat(), last_event="subgen_callback"
+    )
+    logger.info("WEBHOOK | subgen callback: %s", json.dumps(payload, default=str)[:300])
+    return {"ok": True}
+
+
+async def _schedule_subtitle_scan(radarr_id: int | None, tmdb_id: int | None) -> None:
+    """Durable subtitle scan job for an imported/upgraded movie (§26.1)."""
+    from marquee.core.media_files import ensure_media_file_for_movie  # noqa: PLC0415
+    from marquee.core.media_jobs import media_job_manager  # noqa: PLC0415
+    from marquee.core.subtitles.config import subtitle_settings  # noqa: PLC0415
+
+    from marquee.models import MediaJob  # noqa: PLC0415
+
+    if not subtitle_settings.SUBTITLE_ENABLED:
+        return
+    factory = _get_session_factory()
+    async with factory() as db:
+        stmt = select(Movie).where(
+            Movie.radarr_id == radarr_id if radarr_id is not None else Movie.tmdb_id == tmdb_id
+        )
+        movie = (await db.execute(stmt)).scalar_one_or_none()
+        if movie is None:
+            return
+        media_file = await ensure_media_file_for_movie(db, movie)
+        if media_file is None:
+            return
+        key = f"radarr:{movie.id}:subtitle-scan:{media_file.path}"
+        existing = (
+            await db.execute(select(MediaJob).where(MediaJob.idempotency_key == key))
+        ).scalar_one_or_none()
+        if existing is not None:
+            return  # collapse duplicate import webhooks
+        await media_job_manager.create_job(
+            db, operation="subtitle_scan", media_file_id=media_file.id,
+            trigger="webhook", status="queued", idempotency_key=key,
+        )
 
 
 @router.post("/sonarr")

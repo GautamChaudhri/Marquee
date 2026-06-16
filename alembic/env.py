@@ -1,16 +1,21 @@
-"""Alembic environment configuration for async SQLAlchemy + SQLite."""
+"""Alembic environment configuration.
 
-import asyncio
+The application uses SQLAlchemy's async engine at runtime, but migrations run
+through a synchronous engine. Alembic's operations are synchronous anyway, and
+using the sync SQLite driver avoids event-loop/thread issues in constrained
+execution environments while targeting the same database file.
+"""
+
 from logging.config import fileConfig
 
-from alembic import context
-from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy import create_engine
 
-from marquee.config import settings
-from marquee.database import Base
+from alembic import context
 
 # Import all models so Alembic can detect schema changes
 from marquee import models  # noqa: F401
+from marquee.config import settings
+from marquee.database import Base
 
 # Alembic Config object
 config = context.config
@@ -43,17 +48,24 @@ def do_run_migrations(connection):
         context.run_migrations()
 
 
-async def run_migrations_online() -> None:
+def _sync_url(url: str) -> str:
+    """Convert app async DB URLs to equivalent sync URLs for Alembic."""
+    if url.startswith("sqlite+aiosqlite:"):
+        return url.replace("sqlite+aiosqlite:", "sqlite:", 1)
+    return url
+
+
+def run_migrations_online() -> None:
     """Run migrations in 'online' mode (connect to the database)."""
-    connectable = create_async_engine(settings.db_url_resolved)
+    connectable = create_engine(_sync_url(settings.db_url_resolved))
 
-    async with connectable.connect() as connection:
-        await connection.run_sync(do_run_migrations)
+    with connectable.connect() as connection:
+        do_run_migrations(connection)
 
-    await connectable.dispose()
+    connectable.dispose()
 
 
 if context.is_offline_mode():
     run_migrations_offline()
 else:
-    asyncio.run(run_migrations_online())
+    run_migrations_online()

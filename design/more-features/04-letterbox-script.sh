@@ -120,6 +120,7 @@ if (( RUN_DETECT )); then
 
     declare -A counts
     for file in "${FILES[@]}"; do
+        SECONDS=0
         echo
         echo "🔍 Processing: $file"
         base=$(basename "$file" .mkv)
@@ -195,9 +196,9 @@ if (( RUN_DETECT )); then
         echo
         # Per-file vertical-only check: declare not letterboxed when vertical crop = 0
         if (( vertical_crop_file == 0 )); then
-            echo "✅ ${base} is not letterboxed → no crop tags applied."
+            echo "✅ ${base} is not letterboxed → no crop tags applied.  ⏱ ${SECONDS}s"
         else
-            echo "✅ Recommended crop for ${base} (picked ${best_file_count}×): ${best_file}"
+            echo "✅ Recommended crop for ${base} (picked ${best_file_count}×): ${best_file}  ⏱ ${SECONDS}s"
             echo "   Vertical crop amount (per-file): ${VCROP_MAP["$file"]}"
         fi
     done

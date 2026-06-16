@@ -51,6 +51,21 @@ async def _heal_loop() -> None:
             logger.warning("Self-heal scan failed", exc_info=True)
 
 
+async def _letterbox_heal_loop() -> None:
+    """Periodically re-apply crop tags that drifted off tagged MKV files."""
+    from marquee.core.letterbox_heal import letterbox_heal_scan
+
+    interval = max(60, settings.LETTERBOX_HEAL_INTERVAL_MINUTES * 60)
+    while True:
+        try:
+            await asyncio.sleep(interval)
+            await letterbox_heal_scan()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("Letterbox tag-drift scan failed", exc_info=True)
+
+
 # ---------------------------------------------------------------------------
 # Application Lifespan
 # ---------------------------------------------------------------------------
@@ -125,10 +140,30 @@ async def lifespan(app: FastAPI):
             "Self-heal scan enabled (every %d min)", settings.HEAL_INTERVAL_MINUTES
         )
 
+    # Letterbox tag-drift scan — re-apply crop tags lost to foreign remuxes.
+    letterbox_heal_task: asyncio.Task | None = None
+    if settings.LETTERBOX_ENABLED and settings.LETTERBOX_HEAL_ENABLED:
+        letterbox_heal_task = asyncio.create_task(_letterbox_heal_loop())
+        logger.info(
+            "Letterbox tag-drift scan enabled (every %d min)",
+            settings.LETTERBOX_HEAL_INTERVAL_MINUTES,
+        )
+
+    # Durable media-job worker — restart-safe subtitle scan/mutation/generation.
+    from marquee.core.media_jobs import media_job_manager  # noqa: PLC0415
+    from marquee.core.subtitles.config import subtitle_settings  # noqa: PLC0415
+
+    if subtitle_settings.SUBTITLE_ENABLED:
+        await media_job_manager.start()
+
     yield  # ── application runs here ──
 
     if heal_task is not None:
         heal_task.cancel()
+    if letterbox_heal_task is not None:
+        letterbox_heal_task.cancel()
+    if subtitle_settings.SUBTITLE_ENABLED:
+        await media_job_manager.stop()
 
     # ── SHUTDOWN ─────────────────────────────────────────────────────
     logger.info(
@@ -208,9 +243,15 @@ async def log_requests(request: Request, call_next):
 
 from marquee.api.routes.config import router as config_router  # noqa: E402
 from marquee.api.routes.feedback import router as feedback_router  # noqa: E402
+from marquee.api.routes.letterbox import router as letterbox_router  # noqa: E402
 from marquee.api.routes.library import router as library_router  # noqa: E402
+from marquee.api.routes.media_jobs import router as media_jobs_router  # noqa: E402
 from marquee.api.routes.pipeline import movies_router  # noqa: E402
 from marquee.api.routes.pipeline import router as pipeline_router  # noqa: E402
+from marquee.api.routes.subtitle_generators import router as subtitle_generators_router  # noqa: E402
+from marquee.api.routes.subtitle_policies import router as subtitle_policies_router  # noqa: E402
+from marquee.api.routes.subtitles import movies_router as subtitle_movies_router  # noqa: E402
+from marquee.api.routes.subtitles import router as subtitles_router  # noqa: E402
 from marquee.api.routes.sync import router as sync_router  # noqa: E402
 from marquee.api.routes.system import router as system_router  # noqa: E402
 from marquee.api.routes.taste import router as taste_router  # noqa: E402
@@ -225,6 +266,12 @@ app.include_router(feedback_router)
 app.include_router(taste_router)
 app.include_router(config_router)
 app.include_router(system_router)
+app.include_router(letterbox_router)
+app.include_router(subtitles_router)
+app.include_router(subtitle_movies_router)
+app.include_router(media_jobs_router)
+app.include_router(subtitle_policies_router)
+app.include_router(subtitle_generators_router)
 app.include_router(test_pipeline_router)
 app.include_router(webhooks_router)
 

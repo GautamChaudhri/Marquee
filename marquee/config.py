@@ -73,6 +73,11 @@ class Settings(BaseSettings):
         """
         return self._project_root / self.DATA_DIR / "runs" / "archive"
 
+    @property
+    def letterbox_preview_path(self) -> Path:
+        """Where generated letterbox preview/thumbnail frames (webp) live."""
+        return self._project_root / self.DATA_DIR / "cache" / "letterbox"
+
     # ------------------------------------------------------------------
     # CORS (for web UI development in Phase 6)
     # ------------------------------------------------------------------
@@ -305,6 +310,85 @@ class Settings(BaseSettings):
     WEBHOOK_DRY_RUN: bool = Field(
         default=False,
         description="Log + record webhook events without touching the filesystem.",
+    )
+
+    # ------------------------------------------------------------------
+    # Letterbox crop detection / tag application (design 04-letterbox)
+    # ------------------------------------------------------------------
+    LETTERBOX_ENABLED: bool = Field(
+        default=True, description="Enable the letterbox crop-detection feature."
+    )
+    LETTERBOX_DETECT_METHOD: str = Field(
+        default="cropdetect",
+        description="Detection backend: 'cropdetect' (ffmpeg, default) or "
+        "'trim' (ImageMagick fallback for faint/color-cast bars).",
+    )
+    LETTERBOX_TRIM_FUZZ: list[int] = Field(
+        default=[5, 15, 25],
+        description="Fuzz percentages tried by the 'trim' backend (needs ImageMagick).",
+    )
+    LETTERBOX_FFMPEG: str = Field(default="ffmpeg", description="ffmpeg binary path/name.")
+    LETTERBOX_FFPROBE: str = Field(default="ffprobe", description="ffprobe binary path/name.")
+    LETTERBOX_MKVPROPEDIT: str = Field(
+        default="mkvpropedit", description="mkvpropedit binary path/name."
+    )
+    LETTERBOX_MKVMERGE: str = Field(
+        default="mkvmerge", description="mkvmerge binary path/name."
+    )
+    LETTERBOX_CONVERT: str = Field(
+        default="convert", description="ImageMagick 'convert' binary (trim backend only)."
+    )
+    LETTERBOX_MOVIE_SAMPLES_MIN: int = Field(default=5, description="Movie sampling start (minutes).")
+    LETTERBOX_MOVIE_SAMPLES_MAX: int = Field(default=60, description="Movie sampling end (minutes).")
+    LETTERBOX_MOVIE_SAMPLE_STEP: int = Field(default=5, description="Minutes between movie samples.")
+    LETTERBOX_TV_SAMPLES: list[int] = Field(
+        default=[5, 10, 15], description="Sample timestamps for TV episodes (minutes)."
+    )
+    LETTERBOX_WINDOW_SECONDS: int = Field(
+        default=2, description="cropdetect accumulation window per sample (seconds)."
+    )
+    LETTERBOX_CROPDETECT_LIMIT: int = Field(
+        default=24, description="cropdetect black-luma threshold (0-255)."
+    )
+    LETTERBOX_CROPDETECT_HDR_LIMIT: int = Field(
+        default=80,
+        description="cropdetect black-luma threshold for HDR/PQ/HLG sources.",
+    )
+    LETTERBOX_CROPDETECT_ROUND: int = Field(
+        default=2, description="cropdetect dimension rounding (must be even for codecs)."
+    )
+    LETTERBOX_NOISE_PX: int = Field(
+        default=4, description="Bars at or below this many px count as 'no bars'."
+    )
+    LETTERBOX_MIN_BAR_PX: int = Field(
+        default=8, description="A bar must exceed this to count as a real scope bar."
+    )
+    LETTERBOX_AGREE_PX: int = Field(
+        default=2, description="Max spread across samples for High confidence (Case C)."
+    )
+    LETTERBOX_MEDIUM_SPREAD_PX: int = Field(
+        default=20, description="Spread boundary between Medium and Low confidence."
+    )
+    LETTERBOX_ASYM_PX: int = Field(
+        default=2, description="Top/bottom asymmetry tolerance (px) before honoring uneven bars."
+    )
+    LETTERBOX_EARLY_STOP_WINDOWS: int = Field(
+        default=3, description="Consecutive no-bar samples that trigger early termination."
+    )
+    LETTERBOX_MAX_PARALLEL: int = Field(
+        default=0, description="Batch-detect worker count; 0 = auto (cpu_count - 1)."
+    )
+    LETTERBOX_AUTO_APPLY_HIGH: bool = Field(
+        default=False, description="Opt-in: auto-apply High-confidence detections after a scan."
+    )
+    LETTERBOX_ASYMMETRIC: bool = Field(
+        default=False, description="Honor uneven top/bottom bars instead of forcing symmetry."
+    )
+    LETTERBOX_HEAL_ENABLED: bool = Field(
+        default=True, description="Run the periodic letterbox tag-drift verification scan."
+    )
+    LETTERBOX_HEAL_INTERVAL_MINUTES: int = Field(
+        default=360, description="Minutes between letterbox tag-drift scans."
     )
 
     # ------------------------------------------------------------------

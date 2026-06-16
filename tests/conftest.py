@@ -14,10 +14,24 @@ from marquee.database import (
 from marquee.models import (
     ArtworkEvent,
     Episode,
+    EpisodeMediaFile,
+    LetterboxEvent,
+    LetterboxState,
+    ManagedSubtitleAsset,
+    ManagedSubtitleBinding,
+    MediaBackup,
+    MediaBatch,
+    MediaFile,
+    MediaJob,
+    MediaJobEvent,
     Movie,
     PipelineRun,
     Season,
     Series,
+    SubtitleInventory,
+    SubtitlePolicy,
+    SubtitlePolicyBinding,
+    SubtitleTrack,
 )
 
 
@@ -52,7 +66,28 @@ async def db():
     factory = _get_session_factory()
     async with factory() as session:
         # Clean all rows from previous tests (children before parents).
-        for model in (ArtworkEvent, PipelineRun, Episode, Season, Series, Movie):
+        for model in (
+            ArtworkEvent,
+            LetterboxEvent,
+            LetterboxState,
+            PipelineRun,
+            MediaJobEvent,
+            MediaBackup,
+            MediaJob,
+            MediaBatch,
+            SubtitleTrack,
+            SubtitleInventory,
+            ManagedSubtitleBinding,
+            ManagedSubtitleAsset,
+            SubtitlePolicyBinding,
+            SubtitlePolicy,
+            EpisodeMediaFile,
+            MediaFile,
+            Episode,
+            Season,
+            Series,
+            Movie,
+        ):
             await session.execute(delete(model))
         await session.commit()
 

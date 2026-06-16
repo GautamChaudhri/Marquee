@@ -39,6 +39,15 @@ class Movie(Base, TimestampMixin, ArtworkMixin):
     folder_path: Mapped[str] = mapped_column(Text, nullable=False)
     movie_file_path: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # ── Encoded video (letterbox pre-filter, design 04-letterbox §4) ──
+    # Populated from Radarr movieFile.mediaInfo during sync; lets the
+    # resolution pre-filter triage candidates with no frame decode.
+    video_width: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    video_height: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    container: Mapped[str | None] = mapped_column(
+        String(16), nullable=True, comment="Container/extension: matroska, mp4, ..."
+    )
+
     # ── Origin ───────────────────────────────────────────────────────
     radarr_id: Mapped[int | None] = mapped_column(
         Integer, unique=True, index=True, nullable=True

@@ -48,6 +48,12 @@ dependencies = [
     # Utilities
     "python-dotenv>=1.0,<2.0",
     "python-multipart>=0.0.12,<1.0",
+    # Subtitle management (design 03). System media tools are installed through
+    # the OS package manager; these are the lightweight Python parsing pieces.
+    "pysubs2>=1.6,<2.0",
+    "langcodes>=3.4,<4.0",
+    "language_data>=1.2,<2.0",
+    "charset-normalizer>=3.0,<4.0",
 ]
 
 [project.optional-dependencies]
@@ -99,8 +105,17 @@ viz = [
     "scikit-learn>=1.5",
 ]
 
+# Subtitle management (design 03). Text-subtitle parsing/preview/validation,
+# language-tag normalization + display names, and legacy-encoding detection.
+# System tools (ffmpeg, ffprobe, mkvtoolnix) are NOT pip-installable — install
+# them via the OS package manager (see the feature's install notes).
+subtitles = [
+    # Kept as a named extra for scripts/docs that already use .[subtitles].
+    # The deps are in the base install because subtitle routes import at app startup.
+]
+
 all = [
-    "marquee[dev,ml,viz]",
+    "marquee[dev,ml,viz,subtitles]",
 ]
 
 [tool.hatch.build.targets.wheel]

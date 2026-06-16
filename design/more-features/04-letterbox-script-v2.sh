@@ -13,11 +13,12 @@ set -uo pipefail
 
 # ── tunables (mirror marquee config LETTERBOX_*) ───────────────────────────
 NOISE_PX=4 MIN_BAR_PX=8 AGREE_PX=2 MEDIUM_SPREAD_PX=20
-WINDOW=2 LIMIT=24 ROUND=2
+WINDOW=2 LIMIT=24 HDR_LIMIT=80 ROUND=2
 TRIM_FUZZ=(5 15 25)
 
 SYMMETRIC=1 JSON=0 METHOD="cropdetect" MODE="" TARGET="" APPLY_TOP="" APPLY_BOTTOM=""
 SAMPLES=()   # filled after parsing (movie default vs --tv)
+CROP_LIMIT="$LIMIT"
 
 die(){ printf '❌ %s\n' "$*" >&2; exit 1; }
 log(){ printf '%s\n' "$*" >&2; }
@@ -31,6 +32,8 @@ Usage: $0 (--detect|--apply [--crop N]|--remove|--show) [options] <file|dir>
 Options:
   --tv                TV sampling (5,10,15 min) instead of movie (5..60 by 5).
   --method M          Detection backend: cropdetect (default) | trim.
+  --cropdetect-limit N      cropdetect black threshold for SDR (default: 24).
+  --cropdetect-hdr-limit N  cropdetect black threshold for HDR/PQ/HLG (default: 80).
   --crop N            Force N px crop (with --apply); skips detection.
   --symmetric         Force symmetric crop even if bars are uneven (default).
   --json              Emit one JSON object per file (detect/apply).
@@ -43,6 +46,8 @@ while [[ $# -gt 0 ]]; do case "$1" in
   --detect) MODE=detect;;  --apply) MODE=apply;;  --remove) MODE=remove;;  --show) MODE=show;;
   --tv) SAMPLES=(5 10 15);;
   --method) shift; METHOD="${1:-}";;
+  --cropdetect-limit) shift; [[ "${1:-}" =~ ^[0-9]+$ ]] || die "--cropdetect-limit needs a number"; LIMIT="$1";;
+  --cropdetect-hdr-limit) shift; [[ "${1:-}" =~ ^[0-9]+$ ]] || die "--cropdetect-hdr-limit needs a number"; HDR_LIMIT="$1";;
   --crop) shift; [[ "${1:-}" =~ ^[0-9]+$ ]] || die "--crop needs a number"; APPLY_TOP="$1"; APPLY_BOTTOM="$1";;
   --symmetric) SYMMETRIC=1;;
   --json) JSON=1;;
@@ -86,6 +91,16 @@ probe_height(){ ffprobe -v error -select_streams v:0 -show_entries stream=height
   -of csv=p=0 "$1" 2>/dev/null | tr -cd '0-9'; }
 probe_duration(){ ffprobe -v error -show_entries format=duration \
   -of default=nokey=1:noprint_wrappers=1 "$1" 2>/dev/null | cut -d. -f1; }
+probe_transfer(){ ffprobe -v error -select_streams v:0 -show_entries stream=color_transfer \
+  -of csv=p=0 "$1" 2>/dev/null | head -n1 | tr -d '\r,'; }
+
+cropdetect_limit_for(){ local transfer
+  transfer="$(probe_transfer "$1")"
+  case "${transfer,,}" in
+    smpte2084|arib-std-b67) printf '%s\n' "$HDR_LIMIT";;
+    *) printf '%s\n' "$LIMIT";;
+  esac
+}
 
 ts_of(){ printf '%02d:%02d:00' $(( $1/60 )) $(( $1%60 )); }
 
@@ -93,7 +108,7 @@ ts_of(){ printf '%02d:%02d:00' $(( $1/60 )) $(( $1%60 )); }
 win_cropdetect(){ local f="$1" m="$2" fh="$3" line W H X Y
   line=$(ffmpeg -hide_banner -nostats -ss "$(ts_of "$m")" -i "$f" \
                 -an -sn -t "$WINDOW" \
-                -vf "cropdetect=limit=${LIMIT}:round=${ROUND}:reset=1" \
+                -vf "cropdetect=limit=${CROP_LIMIT}:round=${ROUND}:reset=1" \
                 -f null - 2>&1 | grep -oE 'crop=[0-9]+:[0-9]+:[0-9]+:[0-9]+' | tail -n1)
   [[ -n "$line" ]] || return 1
   IFS=: read -r W H X Y <<<"${line#crop=}"
@@ -159,13 +174,19 @@ remove_tags(){ mkvpropedit "$1" --edit track:v1 \
 # ── main loop ──────────────────────────────────────────────────────────────
 for f in "${FILES[@]}"; do
   eligible "$f" || continue
+  limit_note=""
+  if [[ "$METHOD" == cropdetect ]]; then
+    CROP_LIMIT="$(cropdetect_limit_for "$f")"
+    limit_note=" limit=$CROP_LIMIT"
+  fi
   case "$MODE" in
     show) log "🔎 $f"; mkvmerge -J "$f" | grep -iE 'crop|pixel_dimensions|display_dimensions' || log "   (no crop info)";;
     remove) log "🧹 $f"; remove_tags "$f"; log "   ✅ crop tags cleared";;
     detect|apply)
-      log "🔍 $f  [method=$METHOD]"
+      SECONDS=0
+      log "🔍 $f  [method=$METHOD${limit_note}]"
       if ! analyze "$f"; then log "   ⚠️ detection failed"; continue; fi
-      log "   status=$STATUS confidence=$CONF crop(top/bottom)=${REC_TOP:-0}/${REC_BOTTOM:-0} (${ASPECT:-?})"
+      log "   status=$STATUS confidence=$CONF crop(top/bottom)=${REC_TOP:-0}/${REC_BOTTOM:-0} (${ASPECT:-?})  ⏱ ${SECONDS}s"
       (( JSON )) && printf '{"file":"%s","method":"%s","status":"%s","confidence":"%s","top":%s,"bottom":%s,"aspect":"%s"}\n' \
                     "$f" "$METHOD" "$STATUS" "$CONF" "${REC_TOP:-0}" "${REC_BOTTOM:-0}" "${ASPECT:-?}"
       if [[ "$MODE" == apply ]]; then

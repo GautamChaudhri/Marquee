@@ -1,15 +1,22 @@
-"""System routes — poster cache stats, webhook/heal state, manual heal."""
+"""System routes — cache stats, tool capabilities, queue + generator health."""
 
 from __future__ import annotations
 
 import logging
 import os
+from typing import Annotated
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.api.routes.webhooks import webhook_state
 from marquee.config import settings
 from marquee.core.heal import heal_scan, heal_state
+from marquee.core.letterbox_heal import letterbox_heal_state
+from marquee.database import get_db
+from marquee.media import binaries
+from marquee.models import MediaJob
 
 logger = logging.getLogger(__name__)
 
@@ -28,12 +35,26 @@ def _cache_stats() -> dict:
 
 
 @router.get("/status")
-async def system_status():
+async def system_status(db: Annotated[AsyncSession, Depends(get_db)]):
+    queue_rows = (
+        await db.execute(select(MediaJob.status, func.count()).group_by(MediaJob.status))
+    ).all()
     return {
         "cache": _cache_stats(),
         "heal": heal_state,
+        "letterbox_heal": letterbox_heal_state,
         "webhook": webhook_state,
+        "tools": binaries.availability(),
+        "media_jobs": dict(queue_rows),
     }
+
+
+@router.get("/status/generators")
+async def generator_health():
+    """Subtitle-generation provider health + capabilities."""
+    from marquee.core.subtitles.generation import list_generators  # noqa: PLC0415
+
+    return {"generators": await list_generators()}
 
 
 @router.post("/heal")
