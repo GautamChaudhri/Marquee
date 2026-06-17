@@ -75,3 +75,14 @@ async def generator_health():
 async def trigger_heal():
     """Run the self-heal poster existence scan on demand."""
     return await heal_scan()
+
+
+@router.post("/release-gpu")
+async def release_gpu_resources():
+    """Drop Marquee's process-local ML caches before another GPU workload."""
+    from marquee.pipeline.run_manager import run_manager  # noqa: PLC0415
+
+    busy = run_manager.gpu_busy()
+    if busy is not None:
+        return {"status": "busy", "active": busy}
+    return {"status": "released", **run_manager.release_gpu_resources()}

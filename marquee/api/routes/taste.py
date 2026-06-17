@@ -7,6 +7,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import multiprocessing
+import os
+import queue
+import time
 from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
@@ -27,8 +31,26 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/taste", tags=["taste"])
 
-# Simple in-process state for the background rebuild (polled via /status).
-_rebuild_state: dict = {"running": False, "started_at": None, "finished_at": None, "error": None}
+_REBUILD_TIMEOUT_SECONDS = int(os.getenv("MARQUEE_TASTE_REBUILD_TIMEOUT_SECONDS", "1800"))
+_REBUILD_POLL_SECONDS = 1.0
+
+
+def _new_rebuild_state() -> dict:
+    return {
+        "status": "idle",
+        "running": False,
+        "started_at": None,
+        "finished_at": None,
+        "stage": None,
+        "processed": 0,
+        "total": 0,
+        "error": None,
+        "duration_s": None,
+    }
+
+
+# In-process state for the background rebuild monitor (polled via /status).
+_rebuild_state: dict = _new_rebuild_state()
 
 
 def _exemplar_stats() -> dict:
@@ -103,29 +125,145 @@ async def taste_status(db: Annotated[AsyncSession, Depends(get_db)]):
     }
 
 
-async def _run_rebuild() -> None:
+def _rebuild_worker(progress_queue) -> None:
     from marquee.ml.head_trainer import train_from_labels  # noqa: PLC0415
     from marquee.ml.taste_trainer import rebuild_profile  # noqa: PLC0415
+
+    def emit(payload: dict) -> None:
+        progress_queue.put({"type": "progress", **payload})
+
+    try:
+        rebuild_profile(progress_callback=emit)
+        if pipeline_settings.HEAD_AUTO_RETRAIN:
+            emit({"stage": "learned-head", "processed": 0, "total": 1})
+            _head, info = train_from_labels()
+            emit({"stage": "learned-head", "processed": 1, "total": 1, "head": info})
+        progress_queue.put({"type": "done"})
+    except Exception as exc:  # noqa: BLE001
+        progress_queue.put({"type": "error", "error": str(exc)})
+        raise
+
+
+def _start_rebuild_process():
+    context = multiprocessing.get_context("spawn")
+    progress_queue = context.Queue()
+    process = context.Process(
+        target=_rebuild_worker,
+        args=(progress_queue,),
+        name="marquee-taste-rebuild",
+    )
+    process.start()
+    return process, progress_queue
+
+
+def _mark_rebuild_started() -> float:
+    now = datetime.now(UTC).isoformat()
+    _rebuild_state.clear()
+    _rebuild_state.update(
+        {
+            **_new_rebuild_state(),
+            "status": "running",
+            "running": True,
+            "started_at": now,
+            "stage": "queued",
+        }
+    )
+    return time.monotonic()
+
+
+def _apply_rebuild_progress(message: dict) -> None:
+    _rebuild_state.update(
+        {
+            key: message[key]
+            for key in ("stage", "processed", "total")
+            if key in message
+        }
+    )
+
+
+def _finish_rebuild(status: str, started_monotonic: float, error: str | None = None) -> None:
+    _rebuild_state.update(
+        {
+            "status": status,
+            "running": False,
+            "finished_at": datetime.now(UTC).isoformat(),
+            "error": error,
+            "duration_s": round(time.monotonic() - started_monotonic, 3),
+        }
+    )
+
+
+async def _monitor_rebuild_process(process, progress_queue, started_monotonic: float) -> None:
     from marquee.pipeline.run_manager import run_manager  # noqa: PLC0415
 
-    _rebuild_state.update(
-        running=True, started_at=datetime.now(UTC).isoformat(), finished_at=None, error=None
-    )
+    terminal_status: str | None = None
+    terminal_error: str | None = None
     try:
-        # Hold the GPU against pipeline runs for the duration of the rebuild.
-        run_manager.begin_rebuild()
-        try:
-            await asyncio.to_thread(rebuild_profile)
-            run_manager.reset_extractor()
-            if pipeline_settings.HEAD_AUTO_RETRAIN:
-                await asyncio.to_thread(train_from_labels)
-        finally:
-            run_manager.end_rebuild()
+        deadline = started_monotonic + _REBUILD_TIMEOUT_SECONDS
+        while True:
+            while True:
+                try:
+                    message = progress_queue.get_nowait()
+                except queue.Empty:
+                    break
+                if message.get("type") == "progress":
+                    _apply_rebuild_progress(message)
+                elif message.get("type") == "done":
+                    terminal_status = "completed"
+                elif message.get("type") == "error":
+                    terminal_status = "failed"
+                    terminal_error = message.get("error") or "taste rebuild failed"
+
+            if terminal_status is not None:
+                process.join(timeout=10)
+                if process.is_alive():
+                    terminal_status = "timeout"
+                    terminal_error = "rebuild process did not exit after reporting completion"
+                    process.terminate()
+                    process.join(timeout=10)
+                    if process.is_alive():
+                        process.kill()
+                        process.join(timeout=10)
+                break
+            if not process.is_alive():
+                if process.exitcode == 0:
+                    terminal_status = "completed"
+                else:
+                    terminal_status = "failed"
+                    terminal_error = terminal_error or f"rebuild process exited {process.exitcode}"
+                break
+            if time.monotonic() >= deadline:
+                terminal_status = "timeout"
+                terminal_error = f"taste rebuild exceeded {_REBUILD_TIMEOUT_SECONDS}s"
+                logger.error(terminal_error)
+                process.terminate()
+                process.join(timeout=10)
+                if process.is_alive():
+                    process.kill()
+                    process.join(timeout=10)
+                break
+            await asyncio.sleep(_REBUILD_POLL_SECONDS)
+    except asyncio.CancelledError:
+        terminal_status = "cancelled"
+        terminal_error = "taste rebuild monitor cancelled"
+        if process.is_alive():
+            process.terminate()
+            process.join(timeout=10)
+        raise
     except Exception as exc:  # noqa: BLE001
-        logger.exception("taste rebuild failed")
-        _rebuild_state["error"] = str(exc)
+        logger.exception("taste rebuild monitor failed")
+        terminal_status = "failed"
+        terminal_error = str(exc)
+        if process.is_alive():
+            process.terminate()
+            process.join(timeout=10)
     finally:
-        _rebuild_state.update(running=False, finished_at=datetime.now(UTC).isoformat())
+        if terminal_status == "completed":
+            run_manager.reset_extractor()
+        _finish_rebuild(terminal_status or "failed", started_monotonic, terminal_error)
+        run_manager.end_rebuild()
+        run_manager.release_gpu_resources()
+        progress_queue.close()
 
 
 @router.post("/retrain", status_code=202)
@@ -141,7 +279,16 @@ async def retrain_taste():
             status_code=409,
             detail={"message": "GPU is busy — cannot rebuild now", "active": busy},
         )
-    asyncio.create_task(_run_rebuild())
+    run_manager.begin_rebuild()
+    started_monotonic = _mark_rebuild_started()
+    run_manager.release_gpu_resources()
+    try:
+        process, progress_queue = _start_rebuild_process()
+    except Exception:
+        run_manager.end_rebuild()
+        _finish_rebuild("failed", started_monotonic, "could not start rebuild process")
+        raise
+    asyncio.create_task(_monitor_rebuild_process(process, progress_queue, started_monotonic))
     return {"status": "started", "poll": "/api/taste/status"}
 
 

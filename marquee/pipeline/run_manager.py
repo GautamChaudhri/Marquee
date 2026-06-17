@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import gc
 import json
 import logging
 import time
@@ -151,6 +152,36 @@ class RunManager:
         """Drop the cached extractor so the next run reloads the taste profile."""
         self._extractor = None
         logger.info("RunManager | extractor reset — next run reloads the taste profile")
+
+    def release_gpu_resources(self) -> dict:
+        """Drop process-local model caches and ask Python to release memory.
+
+        This is intentionally conservative: it only clears caches owned by this
+        process. CUDA/ORT/Paddle native allocators may still keep pools alive,
+        but clearing these references is the best safe in-process release path
+        before handing the GPU to another component.
+        """
+        had_extractor = self._extractor is not None
+        self._extractor = None
+
+        ocr_cleared = False
+        try:
+            from marquee.pipeline import ocr_filter  # noqa: PLC0415
+
+            if getattr(ocr_filter, "_worker_ocr", None) is not None:
+                ocr_cleared = True
+            ocr_filter._worker_ocr = None
+        except Exception:  # noqa: BLE001
+            logger.exception("RunManager | failed to clear OCR singleton")
+
+        collected = gc.collect()
+        result = {
+            "extractor_cleared": had_extractor,
+            "ocr_cleared": ocr_cleared,
+            "gc_collected": collected,
+        }
+        logger.info("RunManager | released GPU resources | %s", result)
+        return result
 
     # ------------------------------------------------------------------
     # Public API

@@ -30,6 +30,7 @@ from __future__ import annotations
 import argparse
 import re
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 import cv2
@@ -66,6 +67,12 @@ _DEFAULT_TRAINING_DIR = (
 )
 _IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff"}
 _YEAR_SUFFIX = re.compile(r"\s*\(\d{4}\)\s*$")
+ProgressCallback = Callable[[dict], None]
+
+
+def _emit_progress(callback: ProgressCallback | None, **payload) -> None:
+    if callback is not None:
+        callback(payload)
 
 
 def scan_images(directory: Path) -> list[Path]:
@@ -93,6 +100,8 @@ def extract_embeddings(
     encoder,
     *,
     label: str,
+    progress_callback: ProgressCallback | None = None,
+    stage: str | None = None,
 ) -> tuple[np.ndarray, list[Path]]:
     """Batch-embed images; returns embeddings + the paths that succeeded."""
     embeddings: list[np.ndarray] = []
@@ -106,9 +115,21 @@ def extract_embeddings(
         for vector in encoder.encode_batch(batch):
             embeddings.append(vector)
         kept.extend(batch_paths)
+        _emit_progress(
+            progress_callback,
+            stage=stage or f"embedding {label}",
+            processed=len(kept),
+            total=len(paths),
+        )
         batch.clear()
         batch_paths.clear()
 
+    _emit_progress(
+        progress_callback,
+        stage=stage or f"embedding {label}",
+        processed=0,
+        total=len(paths),
+    )
     for path in tqdm(paths, desc=f"Embedding {label}", unit="poster"):
         try:
             with Image.open(path) as image:
@@ -140,6 +161,7 @@ def measure_exemplar_features(
     face_detector: FaceDetector | None,
     person_detector: PersonDetector | None,
     run_ocr: bool,
+    progress_callback: ProgressCallback | None = None,
 ) -> tuple[list[str], np.ndarray]:
     """Measure every calibratable feature on each positive exemplar.
 
@@ -154,6 +176,13 @@ def measure_exemplar_features(
 
     aesthetic_scores = aesthetic.score_batch(clip_embeddings)
 
+    total = len(paths)
+    _emit_progress(
+        progress_callback,
+        stage="calibration",
+        processed=0,
+        total=total,
+    )
     for index, path in enumerate(tqdm(paths, desc="Measuring features", unit="poster")):
         features: dict[str, float] = {"aesthetic": float(aesthetic_scores[index])}
 
@@ -196,6 +225,14 @@ def measure_exemplar_features(
                 tqdm.write(f"[WARN] OCR title geometry failed for {path.name}: {exc}")
 
         rows.append(features)
+        processed = index + 1
+        if processed == total or processed % 10 == 0:
+            _emit_progress(
+                progress_callback,
+                stage="calibration",
+                processed=processed,
+                total=total,
+            )
 
     feature_names = sorted({name for row in rows for name in row})
     matrix = np.full((len(feature_names), len(paths)), np.nan, dtype=np.float64)
@@ -311,6 +348,7 @@ def rebuild_profile(
     output: Path | None = None,
     skip_ocr: bool = False,
     skip_dino: bool = False,
+    progress_callback: ProgressCallback | None = None,
 ) -> Path:
     """Build the taste profile from the training folders and save it.
 
@@ -326,6 +364,7 @@ def rebuild_profile(
         output=output or pipeline_settings.TASTE_PROFILE_PATH,
         skip_ocr=skip_ocr,
         skip_dino=skip_dino,
+        progress_callback=progress_callback,
     )
     return _run_build(args)
 
@@ -365,15 +404,28 @@ def _run_build(args) -> Path:
         negative_dir = candidate if candidate.is_dir() else None
 
     started = time.perf_counter()
+    progress_callback = getattr(args, "progress_callback", None)
+    _emit_progress(progress_callback, stage="starting", processed=0, total=0)
     encoder = CLIPImageEncoder(args.model)
     paths = scan_images(args.training_dir)
-    embeddings, kept_paths = extract_embeddings(paths, encoder, label="positives (CLIP)")
+    embeddings, kept_paths = extract_embeddings(
+        paths,
+        encoder,
+        label="positives (CLIP)",
+        progress_callback=progress_callback,
+        stage="clip",
+    )
 
     neg_embeddings: np.ndarray | None = None
     neg_paths: list[Path] = []
     if negative_dir is not None and scan_images(negative_dir):
+        neg_paths_all = scan_images(negative_dir)
         neg_embeddings, neg_paths = extract_embeddings(
-            scan_images(negative_dir), encoder, label="negatives (CLIP)"
+            neg_paths_all,
+            encoder,
+            label="negatives (CLIP)",
+            progress_callback=progress_callback,
+            stage="clip-negatives",
         )
 
     # ── DINOv2 space (optional) ──────────────────────────────────────
@@ -391,7 +443,11 @@ def _run_build(args) -> Path:
         )
     else:
         dino_embeddings, dino_kept = extract_embeddings(
-            kept_paths, dino_encoder, label="positives (DINOv2)"
+            kept_paths,
+            dino_encoder,
+            label="positives (DINOv2)",
+            progress_callback=progress_callback,
+            stage="dino",
         )
         if dino_kept != kept_paths:
             raise RuntimeError(
@@ -404,7 +460,11 @@ def _run_build(args) -> Path:
         )
         if neg_paths:
             neg_dino, neg_dino_kept = extract_embeddings(
-                neg_paths, dino_encoder, label="negatives (DINOv2)"
+                neg_paths,
+                dino_encoder,
+                label="negatives (DINOv2)",
+                progress_callback=progress_callback,
+                stage="dino-negatives",
             )
             if neg_dino_kept != neg_paths:
                 raise RuntimeError(
@@ -432,9 +492,11 @@ def _run_build(args) -> Path:
         face_detector=face_detector,
         person_detector=person_detector,
         run_ocr=not args.skip_ocr,
+        progress_callback=progress_callback,
     )
 
     # ── Save ─────────────────────────────────────────────────────────
+    _emit_progress(progress_callback, stage="saving", processed=len(kept_paths), total=len(kept_paths))
     args.output.parent.mkdir(parents=True, exist_ok=True)
     payload: dict[str, np.ndarray] = {
         "embeddings": embeddings,
@@ -473,6 +535,7 @@ def _run_build(args) -> Path:
         dino_self_knn=dino_self_knn,
     )
     print(f"[INFO] Completed in {time.perf_counter() - started:.1f}s")
+    _emit_progress(progress_callback, stage="completed", processed=len(kept_paths), total=len(kept_paths))
     return Path(args.output)
 
 

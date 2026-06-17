@@ -272,6 +272,28 @@ def test_gpu_busy_reports_run_and_rebuild():
     assert run_manager.gpu_busy() is None
 
 
+def test_release_gpu_resources_clears_cached_extractor():
+    run_manager._extractor = object()
+    result = run_manager.release_gpu_resources()
+    assert run_manager._extractor is None
+    assert result["extractor_cleared"] is True
+
+    result = run_manager.release_gpu_resources()
+    assert result["extractor_cleared"] is False
+
+
+@pytest.mark.asyncio
+async def test_release_gpu_endpoint_reports_busy(client):
+    run_manager.begin_rebuild()
+    try:
+        resp = await client.post("/api/system/release-gpu")
+    finally:
+        run_manager.end_rebuild()
+
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "busy"
+
+
 @pytest.mark.asyncio
 async def test_run_refused_during_rebuild(client, db):
     movie = Movie(title="Tron", year=1982, folder_path="/m/Tron", tmdb_id=97)
@@ -299,3 +321,70 @@ async def test_retrain_refused_during_run(client, db):
         assert "busy" in resp.json()["detail"]["active"]
     finally:
         run_manager._active_run_id = None
+
+
+class _FakeQueue:
+    def __init__(self, messages=None):
+        self._messages = list(messages or [])
+        self.closed = False
+
+    def get_nowait(self):
+        import queue
+
+        if not self._messages:
+            raise queue.Empty
+        return self._messages.pop(0)
+
+    def close(self):
+        self.closed = True
+
+
+class _FakeProcess:
+    def __init__(self, exitcode=0):
+        self.exitcode = exitcode
+
+    def is_alive(self):
+        return False
+
+    def terminate(self):
+        raise AssertionError("dead process should not be terminated")
+
+    def kill(self):
+        raise AssertionError("dead process should not be killed")
+
+    def join(self, timeout=None):
+        return None
+
+
+@pytest.mark.asyncio
+async def test_taste_rebuild_monitor_marks_completed(monkeypatch):
+    from marquee.api.routes import taste as taste_route
+
+    monkeypatch.setattr(run_manager, "release_gpu_resources", lambda: {})
+    run_manager.begin_rebuild()
+    started = taste_route._mark_rebuild_started()
+
+    await taste_route._monitor_rebuild_process(_FakeProcess(0), _FakeQueue(), started)
+
+    assert taste_route._rebuild_state["status"] == "completed"
+    assert taste_route._rebuild_state["running"] is False
+    assert taste_route._rebuild_state["finished_at"]
+    assert run_manager.gpu_busy() is None
+
+
+@pytest.mark.asyncio
+async def test_taste_rebuild_monitor_records_failure(monkeypatch):
+    from marquee.api.routes import taste as taste_route
+
+    monkeypatch.setattr(run_manager, "release_gpu_resources", lambda: {})
+    run_manager.begin_rebuild()
+    started = taste_route._mark_rebuild_started()
+    queue = _FakeQueue([{"type": "error", "error": "boom"}])
+
+    await taste_route._monitor_rebuild_process(_FakeProcess(1), queue, started)
+
+    assert taste_route._rebuild_state["status"] == "failed"
+    assert taste_route._rebuild_state["running"] is False
+    assert taste_route._rebuild_state["error"] == "boom"
+    assert taste_route._rebuild_state["finished_at"]
+    assert run_manager.gpu_busy() is None
