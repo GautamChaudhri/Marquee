@@ -43,6 +43,7 @@ ERRORS_FILE = OUTPUT_DIR / "gauntlet_errors.jsonl"
 SUMMARY_FILE = OUTPUT_DIR / "gauntlet_summary.json"
 ENDPOINTS_FILE = OUTPUT_DIR / "endpoint_inventory.json"
 GPU_FILE = OUTPUT_DIR / "gpu_snapshots.jsonl"
+DB_DELTA_FILE = OUTPUT_DIR / "db_delta_report.json"
 DB_PATH = Path(os.getenv("GAUNTLET_DB_PATH", "/forge/Marquee/data/marquee.db"))
 
 PIPELINE_SCOPE = os.getenv("GAUNTLET_PIPELINE_SCOPE", "representative").strip().lower()
@@ -56,6 +57,15 @@ RUN_WEBHOOK_DOWNLOAD = os.getenv("GAUNTLET_WEBHOOK_DOWNLOAD", "0") == "1"
 WEBHOOK_TOKEN = os.getenv("MARQUEE_WEBHOOK_TOKEN")
 
 JSON_SENTINEL = object()
+EXPECTED_MUTATION_TABLES = {
+    "letterbox_events",
+    "media_batches",
+    "media_job_events",
+    "media_jobs",
+    "pipeline_runs",
+    "subtitle_inventories",
+    "subtitle_tracks",
+}
 
 
 # Lab movie fixtures. These mirror the curated gauntlet set: mixed age,
@@ -411,6 +421,68 @@ class Gauntlet:
         except Exception as exc:  # noqa: BLE001 - snapshot must not abort gauntlet
             return {"error": str(exc)}
 
+    def classify_db_deltas(
+        self,
+        db_before: dict[str, Any],
+        db_after: dict[str, Any],
+    ) -> dict[str, Any]:
+        report: dict[str, Any] = {
+            "generated_at": datetime.now(UTC).isoformat(),
+            "database": str(DB_PATH),
+            "expected_tables": sorted(EXPECTED_MUTATION_TABLES),
+            "tables": [],
+            "unexpected_tables": [],
+            "notes": [
+                "The gauntlet is a live integration exercise and does not delete durable audit/provenance rows.",
+                "Rows in expected tables are classified as intentional test residue; unrelated table deltas need review.",
+            ],
+        }
+        if "error" in db_before or "error" in db_after:
+            report["status"] = "snapshot_error"
+            report["error"] = {
+                "before": db_before.get("error"),
+                "after": db_after.get("error"),
+            }
+            return report
+
+        for table in sorted(set(db_before) | set(db_after)):
+            before = db_before.get(table, 0)
+            after = db_after.get(table, 0)
+            if not isinstance(before, int) or not isinstance(after, int) or before == after:
+                continue
+            delta = after - before
+            expected = table in EXPECTED_MUTATION_TABLES
+            entry = {
+                "table": table,
+                "before": before,
+                "after": after,
+                "delta": delta,
+                "expected": expected,
+                "reason": self.db_delta_reason(table, delta) if expected else "Table is not part of the gauntlet's expected mutation set.",
+            }
+            report["tables"].append(entry)
+            if not expected:
+                report["unexpected_tables"].append(entry)
+
+        report["status"] = "ok" if not report["unexpected_tables"] else "needs_review"
+        report["expected_change_count"] = sum(1 for entry in report["tables"] if entry["expected"])
+        report["unexpected_change_count"] = len(report["unexpected_tables"])
+        return report
+
+    @staticmethod
+    def db_delta_reason(table: str, delta: int) -> str:
+        reasons = {
+            "letterbox_events": "Letterbox detect/apply/remove/heal endpoints append audit events.",
+            "media_batches": "Subtitle generation creates media batch records.",
+            "media_job_events": "Subtitle plan/generation jobs append lifecycle events.",
+            "media_jobs": "Subtitle plan/generation endpoints create durable job records.",
+            "pipeline_runs": "Poster pipeline tests create durable run provenance.",
+            "subtitle_inventories": "Subtitle inventory scans persist one inventory per scanned media file.",
+            "subtitle_tracks": "Subtitle inventory scans persist discovered embedded and external tracks.",
+        }
+        direction = "increased" if delta > 0 else "changed"
+        return f"{reasons.get(table, 'Expected gauntlet mutation table.')} Row count {direction} by {delta:+d}."
+
     @staticmethod
     def save_json(path: Path, payload: Any) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -668,27 +740,19 @@ class Gauntlet:
 
     def pass_subtitle_inventory(self) -> None:
         self.section("PASS 7: SUBTITLE INVENTORY, PREVIEW, DOWNLOAD")
-        external_tracks: list[tuple[int, str]] = []
-        embedded_tracks: list[tuple[int, str]] = []
-
         for movie_id, movie in MOVIES.items():
             media_file_id = movie["media_file_id"]
             inventory = self.request("GET", f"/api/media-files/{media_file_id}/subtitles", expected={200, 422, 404}, label=f"subtitles-{movie_id}")
             if inventory.status == 200 and isinstance(inventory.body, dict):
                 self.inventories[media_file_id] = inventory.body
-                for track in inventory.body.get("tracks", []):
-                    track_id = track.get("id")
-                    if not track_id:
-                        continue
-                    if track.get("source") == "external":
-                        external_tracks.append((media_file_id, track_id))
-                    else:
-                        embedded_tracks.append((media_file_id, track_id))
 
         for movie_id in MOVIES_WITH_SRT[:5]:
             media_file_id = MOVIES[movie_id]["media_file_id"]
-            self.request("POST", f"/api/media-files/{media_file_id}/subtitles/scan", expected={200, 422}, label=f"subtitle-force-scan-{movie_id}")
+            scan = self.request("POST", f"/api/media-files/{media_file_id}/subtitles/scan", expected={200, 422}, label=f"subtitle-force-scan-{movie_id}")
+            if scan.status == 200 and isinstance(scan.body, dict):
+                self.inventories[media_file_id] = scan.body
 
+        external_tracks, embedded_tracks = self.current_subtitle_tracks()
         for media_file_id, track_id in external_tracks[:8]:
             self.request("GET", f"/api/media-files/{media_file_id}/subtitles/{track_id}/preview", label=f"subtitle-preview-{track_id}")
             self.request("GET", f"/api/media-files/{media_file_id}/subtitles/{track_id}/download", expected={200, 404}, label=f"subtitle-download-{track_id}")
@@ -700,6 +764,20 @@ class Gauntlet:
         self.request("GET", f"/api/media-files/{first_media}/subtitles/not-a-track/download", expected={404}, label="subtitle-download-404")
         for movie_id in MOVIES_WITH_SRT[:3]:
             self.request("POST", f"/api/movies/{movie_id}/subtitles/inspect", expected={200, 422}, label=f"movie-subtitle-inspect-{movie_id}")
+
+    def current_subtitle_tracks(self) -> tuple[list[tuple[int, str]], list[tuple[int, str]]]:
+        external_tracks: list[tuple[int, str]] = []
+        embedded_tracks: list[tuple[int, str]] = []
+        for media_file_id, inventory in self.inventories.items():
+            for track in inventory.get("tracks", []):
+                track_id = track.get("id")
+                if not track_id:
+                    continue
+                if track.get("source") == "external":
+                    external_tracks.append((media_file_id, track_id))
+                else:
+                    embedded_tracks.append((media_file_id, track_id))
+        return external_tracks, embedded_tracks
 
     def pass_subtitle_plans_jobs(self) -> None:
         self.section("PASS 8: SUBTITLE PLANS, MEDIA JOBS, POLICIES")
@@ -1053,12 +1131,16 @@ class Gauntlet:
         db_after = self.db_snapshot()
         self.save_json(OUTPUT_DIR / "db_final.json", db_after)
         print("  DB snapshot saved: db_final.json")
+        db_delta_report = self.classify_db_deltas(db_before, db_after)
+        self.save_json(DB_DELTA_FILE, db_delta_report)
+        print("  DB delta report saved: db_delta_report.json")
         print("  DB changes:")
         for table in sorted(set(db_before) | set(db_after)):
             before = db_before.get(table, 0)
             after = db_after.get(table, 0)
             if isinstance(before, int) and isinstance(after, int) and before != after:
-                print(f"    {table}: {before} -> {after} ({after - before:+d})")
+                marker = "expected" if table in EXPECTED_MUTATION_TABLES else "needs review"
+                print(f"    {table}: {before} -> {after} ({after - before:+d}, {marker})")
 
         finished = datetime.now(UTC)
         summary = {
@@ -1076,6 +1158,7 @@ class Gauntlet:
             "feedback_events": self.feedback_events,
             "db_before": db_before,
             "db_after": db_after,
+            "db_delta_report": db_delta_report,
         }
         self.save_json(SUMMARY_FILE, summary)
 
@@ -1084,7 +1167,9 @@ class Gauntlet:
         print(f"  Expected non-2xx:      {self.expected_non_2xx}")
         print(f"  Unexpected errors:     {self.unexpected_errors}")
         print(f"  Completed runs:        {len(self.completed_runs)}")
+        print(f"  DB delta status:       {db_delta_report.get('status')}")
         print(f"  Summary file:          {SUMMARY_FILE}")
+        print(f"  DB delta report:       {DB_DELTA_FILE}")
         print(f"  Results file:          {RESULTS_FILE}")
         print(f"  Errors file:           {ERRORS_FILE}")
         return 0 if self.unexpected_errors == 0 else 1
