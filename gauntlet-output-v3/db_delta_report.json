@@ -1,0 +1,63 @@
+{
+  "generated_at": "2026-06-17T08:19:08.336564+00:00",
+  "database": "/forge/Marquee/data/marquee.db",
+  "expected_tables": [
+    "letterbox_events",
+    "media_batches",
+    "media_job_events",
+    "media_jobs",
+    "pipeline_runs",
+    "subtitle_inventories",
+    "subtitle_tracks"
+  ],
+  "tables": [
+    {
+      "table": "letterbox_events",
+      "before": 36,
+      "after": 62,
+      "delta": 26,
+      "expected": true,
+      "reason": "Letterbox detect/apply/remove/heal endpoints append audit events. Row count increased by +26."
+    },
+    {
+      "table": "media_batches",
+      "before": 1,
+      "after": 2,
+      "delta": 1,
+      "expected": true,
+      "reason": "Subtitle generation creates media batch records. Row count increased by +1."
+    },
+    {
+      "table": "media_job_events",
+      "before": 9,
+      "after": 12,
+      "delta": 3,
+      "expected": true,
+      "reason": "Subtitle plan/generation jobs append lifecycle events. Row count increased by +3."
+    },
+    {
+      "table": "media_jobs",
+      "before": 5,
+      "after": 8,
+      "delta": 3,
+      "expected": true,
+      "reason": "Subtitle plan/generation endpoints create durable job records. Row count increased by +3."
+    },
+    {
+      "table": "pipeline_runs",
+      "before": 7,
+      "after": 13,
+      "delta": 6,
+      "expected": true,
+      "reason": "Poster pipeline tests create durable run provenance. Row count increased by +6."
+    }
+  ],
+  "unexpected_tables": [],
+  "notes": [
+    "The gauntlet is a live integration exercise and does not delete durable audit/provenance rows.",
+    "Rows in expected tables are classified as intentional test residue; unrelated table deltas need review."
+  ],
+  "status": "ok",
+  "expected_change_count": 5,
+  "unexpected_change_count": 0
+}

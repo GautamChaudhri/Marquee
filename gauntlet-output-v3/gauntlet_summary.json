@@ -1,0 +1,188 @@
+{
+  "started_at": "2026-06-17T06:44:55.681378+00:00",
+  "finished_at": "2026-06-17T08:19:08.336845+00:00",
+  "elapsed_s": 5652.7,
+  "total_calls": 524,
+  "successful_or_expected": 520,
+  "expected_non_2xx": 51,
+  "unexpected_errors": 4,
+  "passes": {
+    "Baseline": {
+      "calls": 5,
+      "unexpected_errors": 0,
+      "elapsed_s": 0.1
+    },
+    "Library": {
+      "calls": 44,
+      "unexpected_errors": 0,
+      "elapsed_s": 0.1
+    },
+    "Sync Webhooks": {
+      "calls": 7,
+      "unexpected_errors": 1,
+      "elapsed_s": 26.6
+    },
+    "Poster Pipeline": {
+      "calls": 217,
+      "unexpected_errors": 0,
+      "elapsed_s": 5009.7
+    },
+    "Feedback": {
+      "calls": 12,
+      "unexpected_errors": 0,
+      "elapsed_s": 1.4
+    },
+    "Taste": {
+      "calls": 79,
+      "unexpected_errors": 1,
+      "elapsed_s": 358.7
+    },
+    "Subtitle Inventory": {
+      "calls": 50,
+      "unexpected_errors": 0,
+      "elapsed_s": 1.6
+    },
+    "Subtitle Plans Jobs Policies": {
+      "calls": 32,
+      "unexpected_errors": 0,
+      "elapsed_s": 0.2
+    },
+    "Subtitle Generation": {
+      "calls": 10,
+      "unexpected_errors": 2,
+      "elapsed_s": 136.1
+    },
+    "Letterbox": {
+      "calls": 57,
+      "unexpected_errors": 0,
+      "elapsed_s": 118.1
+    },
+    "System Config": {
+      "calls": 11,
+      "unexpected_errors": 0,
+      "elapsed_s": 0.1
+    }
+  },
+  "completed_pipeline_runs": [
+    "c2d5fd3da54849ca9706d8e09e8570ff",
+    "4ccd8c16867646fc881e7214a7cf1525",
+    "a46d6c85ad52483abf0e661a644c2e6e",
+    "5c6ced1bc1e343b28757640c311a7d02",
+    "59ad5ab8844d4377803a45cbc0ec2d3c",
+    "ce1c1b9c5e3a4fd6a273f4b79a6fdb8c"
+  ],
+  "failed_pipeline_runs": [],
+  "primary_run_id": "c2d5fd3da54849ca9706d8e09e8570ff",
+  "feedback_events": [
+    "e7730d01a5f843c8ad14bd20c1d06f01",
+    "aae864eb71b34e528918f2862f807046",
+    "00f2992500f6457785c20279ba651946"
+  ],
+  "db_before": {
+    "artwork_events": 0,
+    "episode_media_files": 7542,
+    "episodes": 9263,
+    "letterbox_events": 36,
+    "letterbox_state": 473,
+    "managed_subtitle_assets": 0,
+    "managed_subtitle_bindings": 0,
+    "media_backups": 0,
+    "media_batches": 1,
+    "media_files": 7845,
+    "media_job_events": 9,
+    "media_jobs": 5,
+    "movies": 489,
+    "pipeline_runs": 7,
+    "seasons": 457,
+    "series": 103,
+    "subtitle_inventories": 23,
+    "subtitle_policies": 0,
+    "subtitle_policy_bindings": 0,
+    "subtitle_tracks": 305
+  },
+  "db_after": {
+    "artwork_events": 0,
+    "episode_media_files": 7542,
+    "episodes": 9263,
+    "letterbox_events": 62,
+    "letterbox_state": 473,
+    "managed_subtitle_assets": 0,
+    "managed_subtitle_bindings": 0,
+    "media_backups": 0,
+    "media_batches": 2,
+    "media_files": 7845,
+    "media_job_events": 12,
+    "media_jobs": 8,
+    "movies": 489,
+    "pipeline_runs": 13,
+    "seasons": 457,
+    "series": 103,
+    "subtitle_inventories": 23,
+    "subtitle_policies": 0,
+    "subtitle_policy_bindings": 0,
+    "subtitle_tracks": 305
+  },
+  "db_delta_report": {
+    "generated_at": "2026-06-17T08:19:08.336564+00:00",
+    "database": "/forge/Marquee/data/marquee.db",
+    "expected_tables": [
+      "letterbox_events",
+      "media_batches",
+      "media_job_events",
+      "media_jobs",
+      "pipeline_runs",
+      "subtitle_inventories",
+      "subtitle_tracks"
+    ],
+    "tables": [
+      {
+        "table": "letterbox_events",
+        "before": 36,
+        "after": 62,
+        "delta": 26,
+        "expected": true,
+        "reason": "Letterbox detect/apply/remove/heal endpoints append audit events. Row count increased by +26."
+      },
+      {
+        "table": "media_batches",
+        "before": 1,
+        "after": 2,
+        "delta": 1,
+        "expected": true,
+        "reason": "Subtitle generation creates media batch records. Row count increased by +1."
+      },
+      {
+        "table": "media_job_events",
+        "before": 9,
+        "after": 12,
+        "delta": 3,
+        "expected": true,
+        "reason": "Subtitle plan/generation jobs append lifecycle events. Row count increased by +3."
+      },
+      {
+        "table": "media_jobs",
+        "before": 5,
+        "after": 8,
+        "delta": 3,
+        "expected": true,
+        "reason": "Subtitle plan/generation endpoints create durable job records. Row count increased by +3."
+      },
+      {
+        "table": "pipeline_runs",
+        "before": 7,
+        "after": 13,
+        "delta": 6,
+        "expected": true,
+        "reason": "Poster pipeline tests create durable run provenance. Row count increased by +6."
+      }
+    ],
+    "unexpected_tables": [],
+    "notes": [
+      "The gauntlet is a live integration exercise and does not delete durable audit/provenance rows.",
+      "Rows in expected tables are classified as intentional test residue; unrelated table deltas need review."
+    ],
+    "status": "ok",
+    "expected_change_count": 5,
+    "unexpected_change_count": 0
+  }
+}

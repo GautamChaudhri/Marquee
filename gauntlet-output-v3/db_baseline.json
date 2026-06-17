@@ -1,0 +1,22 @@
+{
+  "artwork_events": 0,
+  "episode_media_files": 7542,
+  "episodes": 9263,
+  "letterbox_events": 36,
+  "letterbox_state": 473,
+  "managed_subtitle_assets": 0,
+  "managed_subtitle_bindings": 0,
+  "media_backups": 0,
+  "media_batches": 1,
+  "media_files": 7845,
+  "media_job_events": 9,
+  "media_jobs": 5,
+  "movies": 489,
+  "pipeline_runs": 7,
+  "seasons": 457,
+  "series": 103,
+  "subtitle_inventories": 23,
+  "subtitle_policies": 0,
+  "subtitle_policy_bindings": 0,
+  "subtitle_tracks": 305
+}
