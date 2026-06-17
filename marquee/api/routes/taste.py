@@ -10,6 +10,7 @@ import logging
 import multiprocessing
 import os
 import queue
+import threading
 import time
 from collections import Counter
 from datetime import UTC, datetime
@@ -383,7 +384,7 @@ async def get_taste_map(recompute: bool = False):
     from marquee.ml.taste_map import load_map  # noqa: PLC0415
 
     try:
-        return await asyncio.to_thread(load_map, recompute)
+        return load_map(recompute)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -395,15 +396,19 @@ async def rebuild_map(
     """Force a taste-map rebuild in the background."""
     enforce_rate_limit(limiter, "taste_map_rebuild", settings.RATE_TASTE_MAP_REBUILD_SECONDS)
 
-    async def _run():
+    def _run() -> None:
         from marquee.ml.taste_map import build_map  # noqa: PLC0415
 
         try:
-            await asyncio.to_thread(build_map)
+            build_map()
         except Exception:  # noqa: BLE001
             logger.exception("taste map rebuild failed")
 
-    asyncio.create_task(_run())
+    threading.Thread(
+        target=_run,
+        name="marquee-taste-map-rebuild",
+        daemon=True,
+    ).start()
     limiter.record("taste_map_rebuild")
     return {"status": "started", "poll": "/api/taste/map"}
 
@@ -446,7 +451,7 @@ async def overlay_candidates(
 
     import numpy as np  # noqa: PLC0415
 
-    projections = await asyncio.to_thread(project, np.stack(embeddings))
+    projections = project(np.stack(embeddings))
     return {
         "run_id": body.run_id,
         "candidates": [
@@ -488,7 +493,7 @@ async def exemplar_neighbors(name: str):
     from marquee.ml.taste_map import neighbors_of  # noqa: PLC0415
 
     name = _safe_exemplar_name(name)
-    result = await asyncio.to_thread(neighbors_of, name)
+    result = neighbors_of(name)
     if result is None:
         raise HTTPException(status_code=404, detail=f"Exemplar {name!r} not in profile")
     return {"name": name, "neighbors": result}

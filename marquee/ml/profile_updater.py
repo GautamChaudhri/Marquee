@@ -19,13 +19,19 @@ calibration already tolerates. A full rebuild fills them in.
 from __future__ import annotations
 
 import logging
-import os
 import re
 from pathlib import Path
 
 import numpy as np
 
 from marquee.core.pipeline_config import pipeline_settings
+from marquee.ml.artifact_codec import (
+    decode_unicode_list,
+    ensure_safe_artifact,
+    load_npz_safe,
+    save_npz_atomic,
+    unicode_array,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -68,16 +74,13 @@ def _load_profile() -> dict[str, np.ndarray]:
     path = _profile_path()
     if not path.exists():
         raise FileNotFoundError(f"Taste profile not found: {path}")
-    with np.load(path, allow_pickle=True) as data:
+    ensure_safe_artifact(path, "taste_profile")
+    with load_npz_safe(path) as data:
         return {key: data[key] for key in data.files}
 
 
 def _save_profile(payload: dict[str, np.ndarray]) -> None:
-    path = _profile_path()
-    # tmp ends in .npz so np.savez writes it verbatim (no extension append).
-    tmp = path.with_name(path.name + ".tmp.npz")
-    np.savez(tmp, **payload)
-    os.replace(tmp, path)
+    save_npz_atomic(_profile_path(), payload)
 
 
 def add_exemplar(
@@ -110,14 +113,14 @@ def add_exemplar(
     vector /= np.maximum(np.linalg.norm(vector, axis=1, keepdims=True), 1e-10)
     embeddings = np.concatenate((profile["embeddings"], vector), axis=0)
     profile["embeddings"] = embeddings
-    profile["poster_names"] = np.asarray(
-        [*profile["poster_names"].tolist(), target.name], dtype=object
+    profile["poster_names"] = unicode_array(
+        [*decode_unicode_list(profile["poster_names"]), target.name]
     )
     profile["centroid_emb"] = _compute_centroid(embeddings)
 
     # 3. Append a calibration column reindexed to the profile's feature names.
     if CALIB_NAMES_KEY in profile and CALIB_VALUES_KEY in profile:
-        calib_names = [str(n) for n in profile[CALIB_NAMES_KEY].tolist()]
+        calib_names = decode_unicode_list(profile[CALIB_NAMES_KEY])
         measured = _measure_single(target, vector[0])
         column = np.asarray(
             [measured.get(name, np.nan) for name in calib_names], dtype=np.float64
@@ -142,14 +145,14 @@ def add_exemplar(
 def remove_exemplar(poster_name: str) -> bool:
     """Remove an exemplar by training_data filename (undo). Returns True if found."""
     profile = _load_profile()
-    names = [str(n) for n in profile["poster_names"].tolist()]
+    names = decode_unicode_list(profile["poster_names"])
     if poster_name not in names:
         return False
     index = names.index(poster_name)
 
     keep = [i for i in range(len(names)) if i != index]
     profile["embeddings"] = profile["embeddings"][keep]
-    profile["poster_names"] = np.asarray([names[i] for i in keep], dtype=object)
+    profile["poster_names"] = unicode_array([names[i] for i in keep])
     profile["centroid_emb"] = _compute_centroid(profile["embeddings"])
 
     from marquee.ml.calibration import CALIB_VALUES_KEY  # noqa: PLC0415

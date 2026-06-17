@@ -9,6 +9,7 @@ import pytest
 from PIL import Image
 
 from marquee.core.pipeline_config import PipelineSettings
+from marquee.ml.artifact_codec import unicode_array
 from marquee.ml.calibration import TasteCalibration
 from marquee.ml.learned_head import LogisticHead
 from marquee.ml.normalize import normalize_features, quality_artifact_raw
@@ -113,10 +114,10 @@ def test_calibration_from_profile_arrays_roundtrip(tmp_path: Path):
     values = np.array([[0.5, 0.6, 0.55] * 10, [0.9, 0.92, 0.88] * 10])
     np.savez(
         tmp_path / "p.npz",
-        calib_feature_names=np.asarray(names, dtype=object),
+        calib_feature_names=unicode_array(names),
         calib_feature_values=values,
     )
-    with np.load(tmp_path / "p.npz", allow_pickle=True) as data:
+    with np.load(tmp_path / "p.npz", allow_pickle=False) as data:
         config = PipelineSettings(CALIBRATION_MIN_SAMPLES=5)
         calibration = TasteCalibration.from_profile_arrays(data, config=config)
     assert calibration is not None

@@ -27,6 +27,15 @@ from pathlib import Path
 import numpy as np
 
 from marquee.core.pipeline_config import pipeline_settings
+from marquee.ml.artifact_codec import (
+    decode_unicode_list,
+    decode_unicode_scalar,
+    ensure_safe_artifact,
+    load_npz_safe,
+    save_npz_atomic,
+    unicode_array,
+    unicode_scalar,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -100,8 +109,9 @@ class ZeroShotAxes:
                 artifact,
             )
             return None
-        with np.load(artifact, allow_pickle=True) as data:
-            stored_model = str(np.asarray(data["model_name"]).item())
+        ensure_safe_artifact(artifact, "zeroshot_axes")
+        with load_npz_safe(artifact) as data:
+            stored_model = decode_unicode_scalar(data["model_name"])
             # int8-quantized variants share the fp32 text tower's space
             # closely enough for soft rank features.
             if not expected.startswith(stored_model) and not stored_model.startswith(
@@ -114,7 +124,7 @@ class ZeroShotAxes:
                     expected,
                 )
                 return None
-            names = [str(n) for n in data["axis_names"].tolist()]
+            names = decode_unicode_list(data["axis_names"])
             directions = np.asarray(data["directions"], dtype=np.float32)
         logger.info("ZEROSHOT | loaded %d style axes from %s", len(names), artifact.name)
         return cls(names, directions, stored_model)
@@ -159,12 +169,13 @@ def build_axes(output: Path | None = None) -> Path:
         directions.append(direction)
         print(f"[INFO] Built {name} from {len(positive)}+{len(negative)} prompts")
 
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    np.savez(
+    save_npz_atomic(
         output_path,
-        axis_names=np.asarray(names, dtype=object),
-        directions=np.stack(directions),
-        model_name=np.asarray("clip-vit-b-32"),
+        {
+            "axis_names": unicode_array(names),
+            "directions": np.stack(directions),
+            "model_name": unicode_scalar("clip-vit-b-32"),
+        },
     )
     print(f"[INFO] Saved {len(names)} axes to {output_path}")
     return output_path

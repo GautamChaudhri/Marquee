@@ -13,6 +13,7 @@ from httpx import ASGITransport, AsyncClient
 
 from marquee.core.pipeline_config import pipeline_settings
 from marquee.main import app
+from marquee.ml.artifact_codec import unicode_array, unicode_scalar
 
 
 @pytest.fixture
@@ -29,7 +30,7 @@ def synthetic_profile(tmp_path, monkeypatch):
     n = 12
     embeddings = rng.standard_normal((n, 512)).astype(np.float32)
     embeddings /= np.linalg.norm(embeddings, axis=1, keepdims=True)
-    names = np.asarray([f"Movie {i} (200{i % 10}).jpg" for i in range(n)], dtype=object)
+    names = unicode_array([f"Movie {i} (200{i % 10}).jpg" for i in range(n)])
     centroid = embeddings.mean(0)
     centroid /= np.linalg.norm(centroid)
 
@@ -39,7 +40,7 @@ def synthetic_profile(tmp_path, monkeypatch):
         embeddings=embeddings,
         poster_names=names,
         centroid_emb=centroid.astype(np.float32),
-        model_name=np.asarray("clip-vit-b-32"),
+        model_name=unicode_scalar("clip-vit-b-32"),
     )
 
     monkeypatch.setattr(pipeline_settings, "TASTE_PROFILE_PATH", profile_path)

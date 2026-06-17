@@ -26,6 +26,14 @@ from pathlib import Path
 import numpy as np
 
 from marquee.core.pipeline_config import pipeline_settings
+from marquee.ml.artifact_codec import (
+    GENRES_JSON_KEY,
+    decode_json_string_array,
+    decode_unicode_list,
+    decode_unicode_scalar,
+    ensure_safe_artifact,
+    load_npz_safe,
+)
 from marquee.ml.calibration import TasteCalibration
 
 logger = logging.getLogger(__name__)
@@ -104,8 +112,9 @@ class NumpyTasteStore(TasteStore):
                 f"Taste profile not found: {self.profile_path}. "
                 "Rebuild it with `python -m marquee.ml.taste_trainer`."
             )
-        with np.load(self.profile_path, allow_pickle=True) as data:
-            stored_model = str(np.asarray(data["model_name"]).item())
+        ensure_safe_artifact(self.profile_path, "taste_profile")
+        with load_npz_safe(self.profile_path) as data:
+            stored_model = decode_unicode_scalar(data["model_name"])
             if stored_model != self.expected_model_name:
                 raise RuntimeError(
                     f"Taste profile model mismatch: artifact={stored_model!r}, "
@@ -113,7 +122,7 @@ class NumpyTasteStore(TasteStore):
                 )
             self._embeddings = np.asarray(data["embeddings"], dtype=np.float32)
             self._centroid = np.asarray(data["centroid_emb"], dtype=np.float32)
-            names = data["poster_names"].tolist()
+            names = decode_unicode_list(data["poster_names"])
             if self._embeddings.ndim != 2 or self._embeddings.shape[1] != 512:
                 raise RuntimeError(
                     f"Invalid taste embedding shape: {self._embeddings.shape}"
@@ -141,9 +150,7 @@ class NumpyTasteStore(TasteStore):
                 self._dino_embeddings = np.asarray(
                     data["dino_embeddings"], dtype=np.float32
                 )
-                self._dino_model_name = str(
-                    np.asarray(data["dino_model_name"]).item()
-                )
+                self._dino_model_name = decode_unicode_scalar(data["dino_model_name"])
                 if self._dino_embeddings.shape[0] != self._embeddings.shape[0]:
                     raise RuntimeError(
                         "dino_embeddings count does not match CLIP exemplar count"
@@ -156,9 +163,10 @@ class NumpyTasteStore(TasteStore):
                     self._dino_self_knn = np.asarray(
                         data[DINO_SELF_KNN_KEY], dtype=np.float64
                     )
-
-            # Optional exemplar-calibration arrays.
-            self._calibration = TasteCalibration.from_profile_arrays(data)
+            profile_arrays = {key: data[key] for key in data.files}
+            if GENRES_JSON_KEY in profile_arrays:
+                profile_arrays["genres"] = decode_json_string_array(profile_arrays[GENRES_JSON_KEY])
+            self._calibration = TasteCalibration.from_profile_arrays(profile_arrays)
 
         logger.info(
             "Loaded taste profile %s: %d exemplars (%d negative), "

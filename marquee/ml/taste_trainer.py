@@ -41,6 +41,11 @@ from tqdm import tqdm
 
 from marquee.core.pipeline_config import pipeline_settings
 from marquee.ml.aesthetic import AestheticPredictor
+from marquee.ml.artifact_codec import (
+    save_npz_atomic,
+    unicode_array,
+    unicode_scalar,
+)
 from marquee.ml.calibration import (
     CALIB_NAMES_KEY,
     CALIB_VALUES_KEY,
@@ -580,27 +585,24 @@ def _run_build(args) -> Path:
         total=len(kept_paths),
         message="Saving rebuilt taste profile.",
     )
-    args.output.parent.mkdir(parents=True, exist_ok=True)
     payload: dict[str, np.ndarray] = {
         "embeddings": embeddings,
-        "poster_names": np.asarray([p.name for p in kept_paths], dtype=object),
+        "poster_names": unicode_array([p.name for p in kept_paths]),
         "centroid_emb": compute_centroid(embeddings),
-        "model_name": np.asarray(pipeline_settings.AI_MODEL),
-        CALIB_NAMES_KEY: np.asarray(calib_names, dtype=object),
+        "model_name": unicode_scalar(pipeline_settings.AI_MODEL),
+        CALIB_NAMES_KEY: unicode_array(calib_names),
         CALIB_VALUES_KEY: calib_values,
     }
     if neg_embeddings is not None and len(neg_embeddings):
         payload["neg_embeddings"] = neg_embeddings
-        payload["neg_poster_names"] = np.asarray(
-            [p.name for p in neg_paths], dtype=object
-        )
+        payload["neg_poster_names"] = unicode_array([p.name for p in neg_paths])
     if dino_embeddings is not None:
         payload["dino_embeddings"] = dino_embeddings
-        payload["dino_model_name"] = np.asarray(dino_model_name)
+        payload["dino_model_name"] = unicode_scalar(dino_model_name)
         payload[DINO_SELF_KNN_KEY] = dino_self_knn
         if neg_dino is not None:
             payload["neg_dino_embeddings"] = neg_dino
-    np.savez(args.output, **payload)
+    save_npz_atomic(args.output, payload)
     negatives = 0 if neg_embeddings is None else len(neg_embeddings)
     print(
         f"[INFO] Saved {len(kept_paths)} exemplars (+{negatives} negatives, "

@@ -14,6 +14,7 @@ from PIL import Image
 from marquee.api.routes.test_pipeline import _EXPERIMENTS_DATA, _clear_generated_outputs
 from marquee.core.pipeline_config import PipelineSettings
 from marquee.core.poster_sources.tmdb import PosterCandidate
+from marquee.ml.artifact_codec import unicode_array, unicode_scalar
 from marquee.ml.colorfulness import hasler_susstrunk
 from marquee.ml.embedding import choose_execution_providers
 from marquee.ml.normalize import normalize_features
@@ -157,9 +158,9 @@ def test_taste_store_queries_top_k_and_checks_model(tmp_path: Path):
     np.savez(
         profile,
         embeddings=embeddings,
-        poster_names=np.asarray(["a.jpg", "b.jpg", "c.jpg"], dtype=object),
+        poster_names=unicode_array(["a.jpg", "b.jpg", "c.jpg"]),
         centroid_emb=centroid,
-        model_name=np.asarray("clip-vit-b-32"),
+        model_name=unicode_scalar("clip-vit-b-32"),
     )
 
     store = NumpyTasteStore(profile)
@@ -728,16 +729,14 @@ def _write_profile(
     centroid /= np.linalg.norm(centroid)
     payload = {
         "embeddings": embeddings,
-        "poster_names": np.asarray(
-            [f"{i}.jpg" for i in range(len(embeddings))], dtype=object
-        ),
+        "poster_names": unicode_array([f"{i}.jpg" for i in range(len(embeddings))]),
         "centroid_emb": centroid,
-        "model_name": np.asarray("clip-vit-b-32"),
+        "model_name": unicode_scalar("clip-vit-b-32"),
     }
     if neg_embeddings is not None:
         payload["neg_embeddings"] = neg_embeddings
-        payload["neg_poster_names"] = np.asarray(
-            [f"neg{i}.jpg" for i in range(len(neg_embeddings))], dtype=object
+        payload["neg_poster_names"] = unicode_array(
+            [f"neg{i}.jpg" for i in range(len(neg_embeddings))]
         )
     np.savez(path, **payload)
 

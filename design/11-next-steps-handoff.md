@@ -209,19 +209,13 @@ Only do this after verifying the app works correctly behind a proxy (check that
 `request.client.host` still resolves correctly for the `AUTH_ALLOW_LOCAL` loopback check
 — behind a proxy you may need `X-Forwarded-For` trust config).
 
-### allow_pickle → safetensors migration (risky, track separately)
+### allow_pickle hardening
 
-`marquee/ml/` loads taste profile artifacts with `np.load(..., allow_pickle=True)`.
-`allow_pickle=True` executes arbitrary Python on load — if an attacker can write to
-`marquee/ml/models/`, they get RCE.
-
-Current mitigation: filesystem permissions (model dir should be writable only by the
-service user). The full fix is migrating to `safetensors` format, but this:
-- Requires regenerating all existing taste artifacts
-- May require changes to `taste_store.py`, `calibration.py`, `learned_head.py`
-- Should be its own isolated PR with artifact regeneration instructions
-
-Do NOT mix this with other changes.
+The old `allow_pickle=True` artifact risk is closed by keeping `.npz` files but normalizing all
+live Marquee runtime artifacts to pure numeric/Unicode arrays and `genres_json` rows. Runtime
+loads now use `allow_pickle=False`, and known live legacy artifacts auto-migrate in place on
+startup or first load. Old `taste_map_history/` snapshots are intentionally left as legacy
+archives and should not block the app.
 
 ### Full CSP
 

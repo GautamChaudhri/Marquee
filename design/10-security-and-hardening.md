@@ -137,16 +137,13 @@ keys live in `.env` (`marquee/config.py:100,112,124,140,158`), which is currentl
 Radarr/Sonarr. **Fix:** `.env` readable only by the service user (`chmod 600`, revisit the
 group-readable change), confirm gitignored, never log secrets, provide a `.env.example`.
 
-### T6 — Untrusted deserialization of model artifacts. **(Medium — supply chain / local trust)**
-Many loaders use `np.load(..., allow_pickle=True)` — taste profile, learned head, taste map,
-zeroshot axes: `marquee/ml/taste_store.py:107`, `learned_head.py:170`,
-`taste_map.py:128/215/228/320`, `zeroshot.py:103`, `profile_updater.py:71`. `allow_pickle=True`
-**executes whatever Python is pickled inside the file on load** → arbitrary code execution if
-an attacker can replace the file, or if a taste profile is ever loaded from an untrusted source.
-(The feature *cache* correctly uses `allow_pickle=False`: `marquee/pipeline/features.py:85,545`.)
-**Fix:** treat `marquee/ml/models/` + taste artifacts as a trust boundary (only the service
-user writes them); never load artifacts from untrusted sources; longer term, store as pure
-arrays and flip to `allow_pickle=False`. *(Deferred — needs an artifact-format change.)*
+### T6 — Untrusted deserialization of model artifacts. **(Fixed — 2026-06)**
+Taste-profile, learned-head, zero-shot-axis, and taste-map artifacts now store strings as
+Unicode arrays and ragged genres metadata as `genres_json`, so normal runtime loads use
+`np.load(..., allow_pickle=False)` only. Legacy live artifacts under `data/ml/` and the
+current taste-map cache auto-migrate in place; old taste-map history snapshots are intentionally
+left untouched. The trust-boundary guidance still applies: only the service user should be able
+to replace Marquee's runtime/model artifacts.
 
 ### T7 — Interactive API docs are open. **(Low)**
 FastAPI serves `/docs`, `/redoc`, `/openapi.json` unauthenticated by default — a full

@@ -25,6 +25,18 @@ import numpy as np
 
 from marquee.config import settings
 from marquee.core.pipeline_config import pipeline_settings
+from marquee.ml.artifact_codec import (
+    GENRES_JSON_KEY,
+    decode_json_string_array,
+    decode_unicode_list,
+    decode_unicode_scalar,
+    ensure_safe_artifact,
+    json_string_array,
+    load_npz_safe,
+    save_npz_atomic,
+    unicode_array,
+    unicode_scalar,
+)
 from marquee.ml.calibration import CALIB_NAMES_KEY, CALIB_VALUES_KEY
 from marquee.ml.taste_store import weighted_topk_mean
 
@@ -125,20 +137,23 @@ def _load_profile_arrays() -> dict:
     path = Path(pipeline_settings.TASTE_PROFILE_PATH)
     if not path.exists():
         raise FileNotFoundError(f"Taste profile not found: {path}")
-    with np.load(path, allow_pickle=True) as data:
+    ensure_safe_artifact(path, "taste_profile")
+    with load_npz_safe(path) as data:
         result = {
             "embeddings": np.asarray(data["embeddings"], dtype=np.float32),
-            "poster_names": [str(n) for n in data["poster_names"].tolist()],
+            "poster_names": decode_unicode_list(data["poster_names"]),
             "mtime": path.stat().st_mtime,
         }
-        for key in ("genres", "years", "tmdb_ids"):
+        if GENRES_JSON_KEY in data.files:
+            result["genres"] = decode_json_string_array(data[GENRES_JSON_KEY])
+        for key in ("years", "tmdb_ids"):
             if key in data.files:
                 result[key] = data[key].tolist()
         if "neg_embeddings" in data.files:
             result["neg_embeddings"] = np.asarray(data["neg_embeddings"], dtype=np.float32)
         # Per-exemplar aesthetic / colorfulness from the calibration arrays.
         if CALIB_NAMES_KEY in data.files and CALIB_VALUES_KEY in data.files:
-            names = [str(n) for n in data[CALIB_NAMES_KEY].tolist()]
+            names = decode_unicode_list(data[CALIB_NAMES_KEY])
             values = np.asarray(data[CALIB_VALUES_KEY], dtype=np.float64)
             for feat in ("aesthetic", "global_colorfulness"):
                 if feat in names:
@@ -179,28 +194,27 @@ def build_map() -> dict:
     payload: dict = {
         "coords_3d": coords_3d,
         "coords_2d": coords_2d,
-        "poster_names": np.asarray(profile["poster_names"], dtype=object),
+        "poster_names": unicode_array(profile["poster_names"]),
         "self_knn": self_knn,
-        "projection_method": np.asarray(method),
+        "projection_method": unicode_scalar(method),
         "profile_mtime": np.float64(profile["mtime"]),
-        "computed_at": np.asarray(datetime.now(UTC).isoformat()),
+        "computed_at": unicode_scalar(datetime.now(UTC).isoformat()),
     }
     if labels is not None:
         payload["cluster_labels"] = labels
-        payload["cluster_names"] = np.asarray(
-            [f"{cid}:{name}" for cid, name in names_map.items()], dtype=object
+        payload["cluster_names"] = unicode_array(
+            [f"{cid}:{name}" for cid, name in names_map.items()]
         )
-    for key in ("genres", "years", "tmdb_ids", "aesthetic", "global_colorfulness"):
+    if "genres" in profile:
+        payload[GENRES_JSON_KEY] = json_string_array(profile["genres"])
+    for key in ("years", "tmdb_ids"):
         if key in profile:
-            payload[key] = np.asarray(profile[key], dtype=object)
+            payload[key] = np.asarray(profile[key], dtype=np.int64)
+    for key in ("aesthetic", "global_colorfulness"):
+        if key in profile:
+            payload[key] = np.asarray(profile[key], dtype=np.float64)
 
-    map_path.parent.mkdir(parents=True, exist_ok=True)
-    import os  # noqa: PLC0415
-
-    # tmp ends in .npz so np.savez writes it verbatim (no extension append).
-    tmp = map_path.with_name(map_path.name + ".tmp.npz")
-    np.savez(tmp, **payload)
-    os.replace(tmp, map_path)
+    save_npz_atomic(map_path, payload)
 
     _generate_thumbnails(profile["poster_names"])
     logger.info("TASTE MAP | built %d points (%s), %d clusters", n, method, len(names_map))
@@ -212,9 +226,10 @@ def _is_stale() -> bool:
     if not map_path.exists():
         return True
     try:
-        with np.load(map_path, allow_pickle=True) as data:
+        ensure_safe_artifact(map_path, "taste_map")
+        with load_npz_safe(map_path) as data:
             map_mtime = float(np.asarray(data["profile_mtime"]).item())
-    except (OSError, ValueError, KeyError):
+    except Exception:
         return True
     profile_path = Path(pipeline_settings.TASTE_PROFILE_PATH)
     return profile_path.exists() and profile_path.stat().st_mtime > map_mtime + 1e-6
@@ -225,18 +240,23 @@ def load_map(recompute: bool = False) -> dict:
     if recompute or _is_stale():
         return build_map()
 
-    with np.load(_map_path(), allow_pickle=True) as data:
-        names = [str(n) for n in data["poster_names"].tolist()]
+    ensure_safe_artifact(_map_path(), "taste_map")
+    with load_npz_safe(_map_path()) as data:
+        names = decode_unicode_list(data["poster_names"])
         coords_3d = data["coords_3d"]
         coords_2d = data["coords_2d"]
         labels = data["cluster_labels"].tolist() if "cluster_labels" in data.files else None
         cluster_names = (
-            [str(s) for s in data["cluster_names"].tolist()]
+            decode_unicode_list(data["cluster_names"])
             if "cluster_names" in data.files
             else []
         )
         self_knn = data["self_knn"].tolist()
-        genres = data["genres"].tolist() if "genres" in data.files else None
+        genres = (
+            decode_json_string_array(data[GENRES_JSON_KEY])
+            if GENRES_JSON_KEY in data.files
+            else None
+        )
         years = data["years"].tolist() if "years" in data.files else None
         aesthetic = data["aesthetic"].tolist() if "aesthetic" in data.files else None
         colorfulness = (
@@ -244,8 +264,8 @@ def load_map(recompute: bool = False) -> dict:
             if "global_colorfulness" in data.files
             else None
         )
-        method = str(np.asarray(data["projection_method"]).item())
-        computed_at = str(np.asarray(data["computed_at"]).item())
+        method = decode_unicode_scalar(data["projection_method"])
+        computed_at = decode_unicode_scalar(data["computed_at"])
 
     points = []
     for i, name in enumerate(names):
@@ -317,7 +337,8 @@ def project(embeddings: np.ndarray, k: int | None = None) -> list[dict]:
         np.linalg.norm(profile_emb, axis=1, keepdims=True), 1e-10
     )
     names = profile["poster_names"]
-    with np.load(_map_path(), allow_pickle=True) as data:
+    ensure_safe_artifact(_map_path(), "taste_map")
+    with load_npz_safe(_map_path()) as data:
         coords = np.asarray(data["coords_3d"], dtype=np.float64)
 
     temp = pipeline_settings.KNN_SOFTMAX_TEMP

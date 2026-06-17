@@ -23,6 +23,13 @@ import numpy as np
 
 from marquee.config import settings
 from marquee.core.pipeline_config import pipeline_settings
+from marquee.ml.artifact_codec import (
+    decode_unicode_list,
+    ensure_safe_artifact,
+    json_string_array,
+    load_npz_safe,
+    save_npz_atomic,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -98,9 +105,10 @@ def _tmdb_lookup(title: str, year: int | None) -> tuple[list[str], int | None] |
 
 def enrich(*, use_tmdb: bool = True) -> Path:
     profile_path = Path(pipeline_settings.TASTE_PROFILE_PATH)
-    with np.load(profile_path, allow_pickle=True) as data:
+    ensure_safe_artifact(profile_path, "taste_profile")
+    with load_npz_safe(profile_path) as data:
         payload = {key: data[key] for key in data.files}
-    names = [str(n) for n in payload["poster_names"].tolist()]
+    names = decode_unicode_list(payload["poster_names"])
 
     cache_path = Path(pipeline_settings.TRAINING_DATA_DIR) / ".genre_cache.json"
     cache = {}
@@ -138,15 +146,11 @@ def enrich(*, use_tmdb: bool = True) -> Path:
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     cache_path.write_text(json.dumps(cache, indent=2), encoding="utf-8")
 
-    payload["genres"] = np.asarray(genres_out, dtype=object)
+    payload["genres_json"] = json_string_array(genres_out)
     payload["years"] = np.asarray(years_out, dtype=np.int64)
     payload["tmdb_ids"] = np.asarray(tmdb_out, dtype=np.int64)
-
-    import os  # noqa: PLC0415
-
-    tmp = profile_path.with_name(profile_path.name + ".tmp.npz")
-    np.savez(tmp, **payload)
-    os.replace(tmp, profile_path)
+    payload.pop("genres", None)
+    save_npz_atomic(profile_path, payload)
 
     resolved = sum(1 for g in genres_out if g)
     logger.info(

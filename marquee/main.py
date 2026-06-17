@@ -22,6 +22,7 @@ from marquee.core.pipeline_config import migrate_legacy_runtime_state
 from marquee.core.rate_limit import RateLimiter
 from marquee.database import _get_engine, close_db, init_db
 from marquee.logging import setup_logging
+from marquee.ml.migrate_artifacts import migrate_live_artifacts
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -108,6 +109,9 @@ async def lifespan(app: FastAPI):
     migrated_paths = migrate_legacy_runtime_state()
     for moved in migrated_paths:
         logger.info("Runtime state migrated to data/: %s", moved)
+    migrated_artifacts = migrate_live_artifacts()
+    for moved in migrated_artifacts:
+        logger.info("Legacy .npz artifact migrated: %s", moved)
 
     # Radarr
     if settings.radarr_configured:

@@ -34,6 +34,11 @@ from pathlib import Path
 import numpy as np
 
 from marquee.core.pipeline_config import pipeline_settings
+from marquee.ml.artifact_codec import (
+    decode_unicode_list,
+    ensure_safe_artifact,
+    load_npz_safe,
+)
 from marquee.ml.taste_store import weighted_topk_mean
 
 DEFAULT_KS = [1, 2, 3, 4, 5, 7, 10, 15, 20, 30, 50]
@@ -52,9 +57,12 @@ def load_profile(path: Path) -> dict[str, np.ndarray]:
             "Rebuild it with `python -m marquee.ml.taste_trainer`."
         )
     out: dict[str, np.ndarray] = {}
-    with np.load(path, allow_pickle=True) as data:
+    ensure_safe_artifact(path, "taste_profile")
+    with load_npz_safe(path) as data:
         out["embeddings"] = np.asarray(data["embeddings"], dtype=np.float32)
-        out["poster_names"] = np.asarray(data["poster_names"])
+        out["poster_names"] = np.asarray(
+            decode_unicode_list(data["poster_names"]), dtype=np.str_
+        )
         if "dino_embeddings" in data:
             out["dino_embeddings"] = np.asarray(data["dino_embeddings"], dtype=np.float32)
     return out

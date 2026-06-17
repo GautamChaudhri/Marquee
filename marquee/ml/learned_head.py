@@ -28,6 +28,15 @@ from pathlib import Path
 import numpy as np
 
 from marquee.core.pipeline_config import pipeline_settings
+from marquee.ml.artifact_codec import (
+    decode_unicode_list,
+    decode_unicode_scalar,
+    ensure_safe_artifact,
+    load_npz_safe,
+    save_npz_atomic,
+    unicode_array,
+    unicode_scalar,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -143,16 +152,17 @@ class LogisticHead:
 
     def save(self, path: str | Path | None = None) -> Path:
         artifact = Path(path or pipeline_settings.LEARNED_HEAD_PATH)
-        artifact.parent.mkdir(parents=True, exist_ok=True)
-        np.savez(
+        save_npz_atomic(
             artifact,
-            feature_names=np.asarray(self.feature_names, dtype=object),
-            weights=self.weights,
-            bias=np.float64(self.bias),
-            model_name=np.asarray(self.model_name),
-            n_samples=np.int64(self.n_samples),
-            train_accuracy=np.float64(self.train_accuracy),
-            trained_at=np.asarray(self.trained_at),
+            {
+                "feature_names": unicode_array(self.feature_names),
+                "weights": self.weights,
+                "bias": np.float64(self.bias),
+                "model_name": unicode_scalar(self.model_name),
+                "n_samples": np.int64(self.n_samples),
+                "train_accuracy": np.float64(self.train_accuracy),
+                "trained_at": unicode_scalar(self.trained_at),
+            },
         )
         logger.info("Saved learned head (%d samples) to %s", self.n_samples, artifact)
         return artifact
@@ -167,8 +177,9 @@ class LogisticHead:
         artifact = Path(path or pipeline_settings.LEARNED_HEAD_PATH)
         if not artifact.exists():
             raise FileNotFoundError(f"Learned head not found: {artifact}")
-        with np.load(artifact, allow_pickle=True) as data:
-            stored_model = str(np.asarray(data["model_name"]).item())
+        ensure_safe_artifact(artifact, "learned_head")
+        with load_npz_safe(artifact) as data:
+            stored_model = decode_unicode_scalar(data["model_name"])
             expected = expected_model_name or pipeline_settings.AI_MODEL
             if stored_model != expected:
                 raise RuntimeError(
@@ -176,11 +187,11 @@ class LogisticHead:
                     f"configured={expected!r}. Retrain the head."
                 )
             return cls(
-                feature_names=[str(n) for n in data["feature_names"].tolist()],
+                feature_names=decode_unicode_list(data["feature_names"]),
                 weights=np.asarray(data["weights"], dtype=np.float64),
                 bias=float(data["bias"]),
                 model_name=stored_model,
                 n_samples=int(data["n_samples"]),
                 train_accuracy=float(data["train_accuracy"]),
-                trained_at=str(np.asarray(data["trained_at"]).item()),
+                trained_at=decode_unicode_scalar(data["trained_at"]),
             )
