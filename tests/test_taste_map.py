@@ -52,6 +52,13 @@ def synthetic_profile(tmp_path, monkeypatch):
         "poster_cache_path",
         property(lambda self: tmp_path / "cache" / "posters"),
     )
+
+    from marquee.ml import taste_map
+
+    def reduce_with_pca(matrix: np.ndarray, n: int) -> tuple[np.ndarray, str]:
+        return taste_map._pca(matrix, n), "pca"
+
+    monkeypatch.setattr(taste_map, "_reduce", reduce_with_pca)
     return embeddings, [str(x) for x in names.tolist()]
 
 

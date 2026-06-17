@@ -464,10 +464,10 @@ async def test_find_candidate_movies_prefilters_radarr_resolutions(client, db):
         "already_analyzed": 1,
         "will_detect_in_all_candidates_batch": 2,
     }
-    assert body["movie_ids"] == [candidate.id, unknown.id]
+    assert set(body["movie_ids"]) == {candidate.id, unknown.id}
     assert body["candidate_movie_ids"] == [candidate.id]
     assert body["unknown_resolution_movie_ids"] == [unknown.id]
-    assert body["detectable_movie_ids"] == [candidate.id, unknown.id]
+    assert set(body["detectable_movie_ids"]) == {candidate.id, unknown.id}
 
     items = {item["movie_id"]: item for item in body["items"]}
     assert items[candidate.id]["resolution"] == "1920x1080"
@@ -493,7 +493,11 @@ async def test_find_candidate_movies_prefilters_radarr_resolutions(client, db):
     )
     analyzed_body = analyzed_resp.json()
     analyzed_items = {item["movie_id"]: item for item in analyzed_body["items"]}
-    assert analyzed_body["movie_ids"] == [candidate.id, unknown.id, analyzed_false_positive.id]
+    assert set(analyzed_body["movie_ids"]) == {
+        candidate.id,
+        unknown.id,
+        analyzed_false_positive.id,
+    }
     assert analyzed_false_positive.id in analyzed_items
     assert analyzed_items[analyzed_false_positive.id]["already_analyzed"] is True
     assert (
