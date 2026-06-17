@@ -1,0 +1,1 @@
+{"ts": "2026-06-16T22:55:48.953219+00:00", "seq": 69, "method": "DB-QUERY", "url": "subtitle_tracks", "status": 0, "elapsed_s": 0, "body": "", "error": "no such column: st.media_file_id"}

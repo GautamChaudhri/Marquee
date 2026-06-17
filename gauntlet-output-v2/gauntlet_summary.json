@@ -1,0 +1,125 @@
+{
+  "started_at": "2026-06-17T00:40:34.620913+00:00",
+  "finished_at": "2026-06-17T02:09:43.609987+00:00",
+  "elapsed_s": 5349.0,
+  "total_calls": 507,
+  "successful_or_expected": 500,
+  "expected_non_2xx": 55,
+  "unexpected_errors": 7,
+  "passes": {
+    "Baseline": {
+      "calls": 5,
+      "unexpected_errors": 0,
+      "elapsed_s": 0.1
+    },
+    "Library": {
+      "calls": 44,
+      "unexpected_errors": 0,
+      "elapsed_s": 0.1
+    },
+    "Sync Webhooks": {
+      "calls": 5,
+      "unexpected_errors": 0,
+      "elapsed_s": 0.0
+    },
+    "Poster Pipeline": {
+      "calls": 214,
+      "unexpected_errors": 0,
+      "elapsed_s": 4896.2
+    },
+    "Feedback": {
+      "calls": 12,
+      "unexpected_errors": 0,
+      "elapsed_s": 1.5
+    },
+    "Taste": {
+      "calls": 68,
+      "unexpected_errors": 1,
+      "elapsed_s": 304.6
+    },
+    "Subtitle Inventory": {
+      "calls": 50,
+      "unexpected_errors": 4,
+      "elapsed_s": 3.3
+    },
+    "Subtitle Plans Jobs Policies": {
+      "calls": 32,
+      "unexpected_errors": 0,
+      "elapsed_s": 0.1
+    },
+    "Subtitle Generation": {
+      "calls": 9,
+      "unexpected_errors": 2,
+      "elapsed_s": 15.1
+    },
+    "Letterbox": {
+      "calls": 57,
+      "unexpected_errors": 0,
+      "elapsed_s": 128.0
+    },
+    "System Config": {
+      "calls": 11,
+      "unexpected_errors": 0,
+      "elapsed_s": 0.1
+    }
+  },
+  "completed_pipeline_runs": [
+    "d7511a44b4184563a56e985af7f7a407",
+    "e7eeb61ad0664457bd7ca8d744465654",
+    "aeb30b1f632440f8b55b2f22669fc905",
+    "2d656762d50e4fcb94fd1599fab9c933",
+    "622d607628aa431b8d0763cdd46e0201",
+    "28442ee0499f4d98b530fcb8a5695773"
+  ],
+  "failed_pipeline_runs": [],
+  "primary_run_id": "d7511a44b4184563a56e985af7f7a407",
+  "feedback_events": [
+    "e193967c4204474aa098bf94dad1f553",
+    "247b608ceb2f4fafab24582534e8e063",
+    "5d909ac8e2134dbeabb3f8e01eea6413"
+  ],
+  "db_before": {
+    "artwork_events": 0,
+    "episode_media_files": 7542,
+    "episodes": 9263,
+    "letterbox_events": 8,
+    "letterbox_state": 473,
+    "managed_subtitle_assets": 0,
+    "managed_subtitle_bindings": 0,
+    "media_backups": 0,
+    "media_batches": 0,
+    "media_files": 7845,
+    "media_job_events": 6,
+    "media_jobs": 2,
+    "movies": 489,
+    "pipeline_runs": 1,
+    "seasons": 457,
+    "series": 103,
+    "subtitle_inventories": 5,
+    "subtitle_policies": 0,
+    "subtitle_policy_bindings": 0,
+    "subtitle_tracks": 84
+  },
+  "db_after": {
+    "artwork_events": 0,
+    "episode_media_files": 7542,
+    "episodes": 9263,
+    "letterbox_events": 34,
+    "letterbox_state": 473,
+    "managed_subtitle_assets": 0,
+    "managed_subtitle_bindings": 0,
+    "media_backups": 0,
+    "media_batches": 1,
+    "media_files": 7845,
+    "media_job_events": 9,
+    "media_jobs": 5,
+    "movies": 489,
+    "pipeline_runs": 7,
+    "seasons": 457,
+    "series": 103,
+    "subtitle_inventories": 23,
+    "subtitle_policies": 0,
+    "subtitle_policy_bindings": 0,
+    "subtitle_tracks": 305
+  }
+}
