@@ -13,6 +13,9 @@ Environment knobs:
   GAUNTLET_OUTPUT_DIR=/forge/Marquee/gauntlet-output
   GAUNTLET_PIPELINE_SCOPE=representative  # smoke | representative | all
   GAUNTLET_PIPELINE_TIMEOUT_SECONDS=1800
+  GAUNTLET_RUN_TASTE_RETRAIN=0
+  GAUNTLET_TASTE_RETRAIN_MODE=skip  # skip | start-only | wait
+  GAUNTLET_TASTE_NO_UPDATE_SECONDS=1200
   GAUNTLET_SUBGEN_TIMEOUT_SECONDS=1800
   GAUNTLET_CONFIRM_SUBTITLE_MUTATIONS=0
   GAUNTLET_APPLY_LETTERBOX=1
@@ -50,11 +53,16 @@ DB_PATH = Path(os.getenv("GAUNTLET_DB_PATH", "/forge/Marquee/data/marquee.db"))
 PIPELINE_SCOPE = os.getenv("GAUNTLET_PIPELINE_SCOPE", "representative").strip().lower()
 PIPELINE_TIMEOUT = int(os.getenv("GAUNTLET_PIPELINE_TIMEOUT_SECONDS", "1800"))
 TASTE_TIMEOUT = int(os.getenv("GAUNTLET_TASTE_TIMEOUT_SECONDS", "1800"))
+TASTE_NO_UPDATE_SECONDS = int(os.getenv("GAUNTLET_TASTE_NO_UPDATE_SECONDS", "1200"))
+RUN_TASTE_RETRAIN = os.getenv("GAUNTLET_RUN_TASTE_RETRAIN", "0") == "1"
+TASTE_RETRAIN_MODE = os.getenv("GAUNTLET_TASTE_RETRAIN_MODE", "skip").strip().lower()
 SUBGEN_TIMEOUT = int(os.getenv("GAUNTLET_SUBGEN_TIMEOUT_SECONDS", "1800"))
 CONFIRM_SUBTITLE_MUTATIONS = os.getenv("GAUNTLET_CONFIRM_SUBTITLE_MUTATIONS", "0") == "1"
 APPLY_LETTERBOX = os.getenv("GAUNTLET_APPLY_LETTERBOX", "1") == "1"
 RUN_SYNC = os.getenv("GAUNTLET_RUN_SYNC", "1") == "1"
 RUN_WEBHOOK_DOWNLOAD = os.getenv("GAUNTLET_WEBHOOK_DOWNLOAD", "0") == "1"
+if TASTE_RETRAIN_MODE not in {"skip", "start-only", "wait"}:
+    TASTE_RETRAIN_MODE = "skip"
 
 JSON_SENTINEL = object()
 EXPECTED_MUTATION_TABLES = {
@@ -131,6 +139,7 @@ class Gauntlet:
         self.feedback_events: list[str] = []
         self.inventories: dict[int, dict[str, Any]] = {}
         self.pass_results: dict[str, dict[str, Any]] = {}
+        self.abort_remaining = False
 
     # ------------------------------------------------------------------
     # HTTP + logging
@@ -697,42 +706,103 @@ class Gauntlet:
         if self.primary_run_id:
             self.request("POST", "/api/taste/map/candidates", data={"run_id": self.primary_run_id}, expected={200, 404}, label="taste-map-candidates")
         self.request("POST", "/api/taste/map/candidates", data={"run_id": "does-not-exist"}, expected={404}, label="taste-map-candidates-404")
-        self.request("POST", "/api/taste/map/rebuild", expected={202}, label="taste-map-rebuild")
+        taste_retrain_enabled = RUN_TASTE_RETRAIN and TASTE_RETRAIN_MODE != "skip"
+        if taste_retrain_enabled and TASTE_RETRAIN_MODE == "wait":
+            print("  Taste map rebuild skipped before full retrain soak")
+        else:
+            self.request("POST", "/api/taste/map/rebuild", expected={202}, label="taste-map-rebuild")
+        if not taste_retrain_enabled:
+            print("  Taste retrain skipped (set GAUNTLET_RUN_TASTE_RETRAIN=1 to enable)")
+            self.request("GET", "/api/taste/exemplars/default/image", expected={200, 404}, binary=True, label="taste-exemplar-image")
+            self.request("GET", "/api/taste/exemplars/default/neighbors", expected={200, 404}, label="taste-exemplar-neighbors")
+            return
         self.release_marquee_gpu_resources("before-taste-retrain")
         retrain = self.request("POST", "/api/taste/retrain", expected={202, 409}, label="taste-retrain")
         if retrain.status == 202:
-            self.poll_taste_rebuild()
+            if TASTE_RETRAIN_MODE == "start-only":
+                self.request("GET", "/api/taste/status", label="taste-rebuild-started-status")
+                self.cancel_taste_rebuild("taste-rebuild-start-only")
+            else:
+                self.poll_taste_rebuild()
         self.request("GET", "/api/taste/exemplars/default/image", expected={200, 404}, binary=True, label="taste-exemplar-image")
         self.request("GET", "/api/taste/exemplars/default/neighbors", expected={200, 404}, label="taste-exemplar-neighbors")
+
+    @staticmethod
+    def taste_liveness_marker(rebuild: dict[str, Any]) -> tuple[Any, ...]:
+        return (
+            rebuild.get("updated_at"),
+            rebuild.get("stage"),
+            rebuild.get("substage"),
+            rebuild.get("current_item"),
+            rebuild.get("processed"),
+            rebuild.get("total"),
+            rebuild.get("message"),
+        )
+
+    def cancel_taste_rebuild(self, label: str) -> None:
+        self.request("POST", "/api/taste/retrain/cancel", expected={200}, label=label)
+        deadline = time.monotonic() + 60
+        while time.monotonic() < deadline:
+            status = self.request("GET", "/api/taste/status", label=f"{label}-poll")
+            if not status.json().get("rebuild", {}).get("running"):
+                return
+            time.sleep(2)
+        self._manual_failure(label, "Taste rebuild did not stop within 60s after cancel")
 
     def poll_taste_rebuild(self) -> None:
         deadline = time.monotonic() + TASTE_TIMEOUT
         attempt = 0
-        last_progress: tuple[Any, Any, Any] | None = None
+        last_progress: tuple[Any, ...] | None = None
         last_progress_at = time.monotonic()
+        snapshots: list[dict[str, Any]] = []
         while time.monotonic() < deadline:
             status = self.request("GET", "/api/taste/status", label=f"taste-rebuild-poll-{attempt}")
             rebuild = status.json().get("rebuild", {})
-            progress = (
-                rebuild.get("stage"),
-                rebuild.get("processed"),
-                rebuild.get("total"),
-            )
+            progress = self.taste_liveness_marker(rebuild)
             if progress != last_progress:
                 last_progress = progress
                 last_progress_at = time.monotonic()
+            snapshots.append(
+                {
+                    key: rebuild.get(key)
+                    for key in (
+                        "status",
+                        "stage",
+                        "substage",
+                        "current_item",
+                        "processed",
+                        "total",
+                        "updated_at",
+                        "message",
+                    )
+                }
+            )
+            snapshots = snapshots[-5:]
             rebuild_status = rebuild.get("status")
             if rebuild_status in {"failed", "timeout", "cancelled"}:
                 self._manual_failure("taste-rebuild-failed", f"Taste rebuild ended with {rebuild_status}: {rebuild.get('error')}")
+                self.abort_remaining = True
                 return
             if not rebuild.get("running"):
                 return
-            if time.monotonic() - last_progress_at > 300:
-                self._manual_failure("taste-rebuild-no-progress", f"Taste rebuild made no progress for 300s: {rebuild}")
+            if time.monotonic() - last_progress_at > TASTE_NO_UPDATE_SECONDS:
+                self._manual_failure(
+                    "taste-rebuild-no-progress",
+                    f"Taste rebuild made no progress for {TASTE_NO_UPDATE_SECONDS}s: "
+                    f"{json.dumps(snapshots, ensure_ascii=False)}",
+                )
+                self.cancel_taste_rebuild("taste-rebuild-cancel-no-progress")
+                self.abort_remaining = True
                 return
             attempt += 1
             time.sleep(5)
-        self._manual_failure("taste-rebuild-timeout", f"Taste rebuild still running after {TASTE_TIMEOUT}s")
+        self._manual_failure(
+            "taste-rebuild-timeout",
+            f"Taste rebuild still running after {TASTE_TIMEOUT}s: "
+            f"{json.dumps(snapshots, ensure_ascii=False)}",
+        )
+        self.cancel_taste_rebuild("taste-rebuild-cancel-timeout")
+        self.abort_remaining = True
 
     def pass_subtitle_inventory(self) -> None:
         self.section("PASS 7: SUBTITLE INVENTORY, PREVIEW, DOWNLOAD")
@@ -1085,6 +1155,11 @@ class Gauntlet:
         print(f"  Target: {BASE_URL}")
         print(f"  API auth: {'configured' if MARQUEE_API_KEY else 'not configured'}")
         print(f"  Subgen: {SUBGEN_URL}")
+        print(
+            "  Taste retrain: "
+            f"{'enabled' if RUN_TASTE_RETRAIN else 'disabled'} "
+            f"(mode={TASTE_RETRAIN_MODE}, no-update={TASTE_NO_UPDATE_SECONDS}s)"
+        )
         print(f"  Lab movies: {len(MOVIES)} (MKV={len(MKV_MOVIES)}, MP4={len(MP4_MOVIES)}, sidecar-set={len(MOVIES_WITH_SRT)})")
         print(f"  Output: {OUTPUT_DIR}")
 
@@ -1123,6 +1198,9 @@ class Gauntlet:
                 "elapsed_s": round(elapsed, 1),
             }
             print(f"\n  Pass done: {pass_name} - {self.call_count - before_calls} calls, {elapsed:.1f}s")
+            if self.abort_remaining:
+                print("  Aborting remaining passes after unrecovered taste rebuild soak failure")
+                break
 
         self.section("FINAL DB SNAPSHOT")
         db_after = self.db_snapshot()

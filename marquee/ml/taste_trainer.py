@@ -28,6 +28,7 @@ what you like, not diluted by what you don't.
 from __future__ import annotations
 
 import argparse
+import logging
 import re
 import time
 from collections.abc import Callable
@@ -61,6 +62,7 @@ from marquee.ml.visual_features import (
 from marquee.ml.zeroshot import ZeroShotAxes
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
+logger = logging.getLogger(__name__)
 
 _DEFAULT_TRAINING_DIR = (
     Path(__file__).resolve().parents[1] / "experiments" / "training_data"
@@ -170,6 +172,8 @@ def measure_exemplar_features(
     """
     rows: list[dict[str, float]] = []
 
+    started = time.perf_counter()
+    logger.info("Taste calibration starting for %d exemplars", len(paths))
     ocr_filter_module = None
     if run_ocr:
         from marquee.pipeline import ocr_filter as ocr_filter_module  # noqa: PLC0415
@@ -180,16 +184,39 @@ def measure_exemplar_features(
     _emit_progress(
         progress_callback,
         stage="calibration",
+        substage="starting",
         processed=0,
         total=total,
+        message=f"Starting calibration for {total} exemplars.",
     )
+    ocr_logged = False
     for index, path in enumerate(tqdm(paths, desc="Measuring features", unit="poster")):
+        display_index = index + 1
         features: dict[str, float] = {"aesthetic": float(aesthetic_scores[index])}
+        item_label = path.name
 
         if axes is not None:
+            _emit_progress(
+                progress_callback,
+                stage="calibration",
+                substage="zeroshot",
+                current_item=item_label,
+                processed=index,
+                total=total,
+                message=f"Measuring zero-shot axes for {item_label}.",
+            )
             features.update(axes.scores(clip_embeddings[index]))
 
         try:
+            _emit_progress(
+                progress_callback,
+                stage="calibration",
+                substage="cv",
+                current_item=item_label,
+                processed=index,
+                total=total,
+                message=f"Measuring CV features for {item_label}.",
+            )
             image_bgr = cv2.imread(str(path), cv2.IMREAD_COLOR)
             if image_bgr is None:
                 raise ValueError("unreadable image")
@@ -199,6 +226,15 @@ def measure_exemplar_features(
             features.update(quality_artifact_features(standardized))
 
             if face_detector is not None:
+                _emit_progress(
+                    progress_callback,
+                    stage="calibration",
+                    substage="face",
+                    current_item=item_label,
+                    processed=index,
+                    total=total,
+                    message=f"Detecting faces for {item_label}.",
+                )
                 boxes = face_detector.detect(standardized)
                 features.update(
                     face_geometry(
@@ -207,12 +243,33 @@ def measure_exemplar_features(
                 )
 
             if person_detector is not None:
+                _emit_progress(
+                    progress_callback,
+                    stage="calibration",
+                    substage="person",
+                    current_item=item_label,
+                    processed=index,
+                    total=total,
+                    message=f"Detecting people for {item_label}.",
+                )
                 features.update(person_detector.person_features(standardized))
         except Exception as exc:
             tqdm.write(f"[WARN] CV features failed for {path.name}: {exc}")
 
         if ocr_filter_module is not None:
             try:
+                if not ocr_logged:
+                    logger.info("Taste calibration loading OCR on first exemplar")
+                    ocr_logged = True
+                _emit_progress(
+                    progress_callback,
+                    stage="calibration",
+                    substage="ocr",
+                    current_item=item_label,
+                    processed=index,
+                    total=total,
+                    message=f"Measuring OCR title geometry for {item_label}.",
+                )
                 title = title_from_filename(path)
                 text_filter = ocr_filter_module.PosterTextFilter(title)
                 result = text_filter.is_acceptable(path)
@@ -225,14 +282,21 @@ def measure_exemplar_features(
                 tqdm.write(f"[WARN] OCR title geometry failed for {path.name}: {exc}")
 
         rows.append(features)
-        processed = index + 1
-        if processed == total or processed % 10 == 0:
-            _emit_progress(
-                progress_callback,
-                stage="calibration",
-                processed=processed,
-                total=total,
-            )
+        logger.info(
+            "Taste calibration exemplar %d/%d complete: %s",
+            display_index,
+            total,
+            item_label,
+        )
+        _emit_progress(
+            progress_callback,
+            stage="calibration",
+            substage="complete",
+            current_item=item_label,
+            processed=display_index,
+            total=total,
+            message=f"Calibrated {display_index}/{total}: {item_label}.",
+        )
 
     feature_names = sorted({name for row in rows for name in row})
     matrix = np.full((len(feature_names), len(paths)), np.nan, dtype=np.float64)
@@ -241,6 +305,11 @@ def measure_exemplar_features(
             value = row.get(name)
             if value is not None and np.isfinite(value):
                 matrix[feature_index, column] = float(value)
+    logger.info(
+        "Taste calibration completed for %d exemplars in %.1fs",
+        total,
+        time.perf_counter() - started,
+    )
     return feature_names, matrix
 
 
@@ -405,7 +474,14 @@ def _run_build(args) -> Path:
 
     started = time.perf_counter()
     progress_callback = getattr(args, "progress_callback", None)
-    _emit_progress(progress_callback, stage="starting", processed=0, total=0)
+    _emit_progress(
+        progress_callback,
+        stage="starting",
+        processed=0,
+        total=0,
+        message="Starting taste profile rebuild.",
+    )
+    logger.info("Taste profile rebuild starting")
     encoder = CLIPImageEncoder(args.model)
     paths = scan_images(args.training_dir)
     embeddings, kept_paths = extract_embeddings(
@@ -415,6 +491,7 @@ def _run_build(args) -> Path:
         progress_callback=progress_callback,
         stage="clip",
     )
+    logger.info("Taste profile CLIP embeddings complete: %d exemplars", len(kept_paths))
 
     neg_embeddings: np.ndarray | None = None
     neg_paths: list[Path] = []
@@ -458,6 +535,7 @@ def _run_build(args) -> Path:
         dino_self_knn = compute_dino_self_knn(
             dino_embeddings, pipeline_settings.K_NEIGHBORS
         )
+        logger.info("Taste profile DINO embeddings complete: %d exemplars", len(dino_kept))
         if neg_paths:
             neg_dino, neg_dino_kept = extract_embeddings(
                 neg_paths,
@@ -496,7 +574,14 @@ def _run_build(args) -> Path:
     )
 
     # ── Save ─────────────────────────────────────────────────────────
-    _emit_progress(progress_callback, stage="saving", processed=len(kept_paths), total=len(kept_paths))
+    _emit_progress(
+        progress_callback,
+        stage="saving",
+        substage="profile",
+        processed=len(kept_paths),
+        total=len(kept_paths),
+        message="Saving rebuilt taste profile.",
+    )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     payload: dict[str, np.ndarray] = {
         "embeddings": embeddings,
@@ -535,7 +620,17 @@ def _run_build(args) -> Path:
         dino_self_knn=dino_self_knn,
     )
     print(f"[INFO] Completed in {time.perf_counter() - started:.1f}s")
-    _emit_progress(progress_callback, stage="completed", processed=len(kept_paths), total=len(kept_paths))
+    elapsed = time.perf_counter() - started
+    logger.info("Taste profile rebuild completed in %.1fs", elapsed)
+    _emit_progress(
+        progress_callback,
+        stage="completed",
+        substage=None,
+        current_item=None,
+        processed=len(kept_paths),
+        total=len(kept_paths),
+        message=f"Taste profile rebuild completed in {elapsed:.1f}s.",
+    )
     return Path(args.output)
 
 

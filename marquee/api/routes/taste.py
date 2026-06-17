@@ -43,8 +43,14 @@ def _new_rebuild_state() -> dict:
         "status": "idle",
         "running": False,
         "started_at": None,
+        "updated_at": None,
+        "stage_started_at": None,
         "finished_at": None,
         "stage": None,
+        "substage": None,
+        "current_item": None,
+        "message": None,
+        "pid": None,
         "processed": 0,
         "total": 0,
         "error": None,
@@ -54,6 +60,8 @@ def _new_rebuild_state() -> dict:
 
 # In-process state for the background rebuild monitor (polled via /status).
 _rebuild_state: dict = _new_rebuild_state()
+_active_rebuild_process = None
+_rebuild_cancel_requested: str | None = None
 
 
 def _exemplar_stats() -> dict:
@@ -168,28 +176,47 @@ def _mark_rebuild_started() -> float:
             "status": "running",
             "running": True,
             "started_at": now,
+            "updated_at": now,
+            "stage_started_at": now,
             "stage": "queued",
+            "message": "Taste profile rebuild queued.",
         }
     )
     return time.monotonic()
 
 
 def _apply_rebuild_progress(message: dict) -> None:
+    now = datetime.now(UTC).isoformat()
+    previous_stage = _rebuild_state.get("stage")
+    stage = message.get("stage", previous_stage)
     _rebuild_state.update(
         {
             key: message[key]
-            for key in ("stage", "processed", "total")
+            for key in (
+                "stage",
+                "substage",
+                "current_item",
+                "message",
+                "pid",
+                "processed",
+                "total",
+            )
             if key in message
         }
     )
+    _rebuild_state["updated_at"] = now
+    if stage != previous_stage:
+        _rebuild_state["stage_started_at"] = now
 
 
 def _finish_rebuild(status: str, started_monotonic: float, error: str | None = None) -> None:
+    now = datetime.now(UTC).isoformat()
     _rebuild_state.update(
         {
             "status": status,
             "running": False,
-            "finished_at": datetime.now(UTC).isoformat(),
+            "updated_at": now,
+            "finished_at": now,
             "error": error,
             "duration_s": round(time.monotonic() - started_monotonic, 3),
         }
@@ -199,11 +226,22 @@ def _finish_rebuild(status: str, started_monotonic: float, error: str | None = N
 async def _monitor_rebuild_process(process, progress_queue, started_monotonic: float) -> None:
     from marquee.pipeline.run_manager import run_manager  # noqa: PLC0415
 
+    global _active_rebuild_process, _rebuild_cancel_requested
     terminal_status: str | None = None
     terminal_error: str | None = None
     try:
         deadline = started_monotonic + _REBUILD_TIMEOUT_SECONDS
         while True:
+            if _rebuild_cancel_requested:
+                terminal_status = "cancelled"
+                terminal_error = _rebuild_cancel_requested
+                if process.is_alive():
+                    process.terminate()
+                    process.join(timeout=10)
+                    if process.is_alive():
+                        process.kill()
+                        process.join(timeout=10)
+                break
             while True:
                 try:
                     message = progress_queue.get_nowait()
@@ -267,6 +305,8 @@ async def _monitor_rebuild_process(process, progress_queue, started_monotonic: f
         run_manager.end_rebuild()
         run_manager.release_gpu_resources()
         progress_queue.close()
+        _active_rebuild_process = None
+        _rebuild_cancel_requested = None
 
 
 @router.post("/retrain", status_code=202)
@@ -276,6 +316,7 @@ async def retrain_taste(
     """Trigger a full taste-profile rebuild + head retrain in the background."""
     from marquee.pipeline.run_manager import run_manager  # noqa: PLC0415
 
+    global _active_rebuild_process
     enforce_rate_limit(limiter, "taste_retrain", settings.RATE_TASTE_RETRAIN_SECONDS)
     if _rebuild_state["running"]:
         return {"status": "already_running", "started_at": _rebuild_state["started_at"]}
@@ -294,9 +335,37 @@ async def retrain_taste(
         run_manager.end_rebuild()
         _finish_rebuild("failed", started_monotonic, "could not start rebuild process")
         raise
+    _active_rebuild_process = process
+    _apply_rebuild_progress(
+        {
+            "stage": "queued",
+            "pid": process.pid,
+            "message": "Taste profile rebuild process started.",
+        }
+    )
     asyncio.create_task(_monitor_rebuild_process(process, progress_queue, started_monotonic))
     limiter.record("taste_retrain")
-    return {"status": "started", "poll": "/api/taste/status"}
+    return {"status": "started", "poll": "/api/taste/status", "pid": process.pid}
+
+
+@router.post("/retrain/cancel")
+async def cancel_retrain_taste():
+    """Request cancellation of an active taste-profile rebuild."""
+    global _rebuild_cancel_requested
+
+    if not _rebuild_state.get("running"):
+        return {"status": "not_running", "rebuild": _rebuild_state}
+    _rebuild_cancel_requested = "taste rebuild cancelled by operator"
+    process = _active_rebuild_process
+    if process is not None and process.is_alive():
+        process.terminate()
+    _apply_rebuild_progress(
+        {
+            "message": "Taste profile rebuild cancellation requested.",
+            "substage": "cancelling",
+        }
+    )
+    return {"status": "cancelling", "poll": "/api/taste/status", "rebuild": _rebuild_state}
 
 
 # ---------------------------------------------------------------------------

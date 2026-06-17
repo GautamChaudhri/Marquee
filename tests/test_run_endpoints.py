@@ -10,9 +10,12 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
+import numpy as np
 import pytest
 from httpx import ASGITransport, AsyncClient
+from PIL import Image
 
 from marquee.api.explanations import (
     explain_rejection,
@@ -356,6 +359,58 @@ class _FakeProcess:
         return None
 
 
+class _AliveFakeProcess:
+    def __init__(self):
+        self.exitcode = None
+        self.terminated = False
+        self.killed = False
+        self.pid = 12345
+
+    def is_alive(self):
+        return not (self.terminated or self.killed)
+
+    def terminate(self):
+        self.terminated = True
+        self.exitcode = -15
+
+    def kill(self):
+        self.killed = True
+        self.exitcode = -9
+
+    def join(self, timeout=None):
+        return None
+
+
+def test_taste_rebuild_progress_preserves_old_fields_and_adds_liveness():
+    from marquee.api.routes import taste as taste_route
+
+    taste_route._mark_rebuild_started()
+    taste_route._apply_rebuild_progress(
+        {
+            "stage": "calibration",
+            "substage": "ocr",
+            "current_item": "poster.jpg",
+            "processed": 2,
+            "total": 430,
+            "message": "Measuring OCR title geometry for poster.jpg.",
+            "pid": 123,
+        }
+    )
+
+    rebuild = taste_route._rebuild_state
+    assert rebuild["status"] == "running"
+    assert rebuild["running"] is True
+    assert rebuild["stage"] == "calibration"
+    assert rebuild["processed"] == 2
+    assert rebuild["total"] == 430
+    assert rebuild["substage"] == "ocr"
+    assert rebuild["current_item"] == "poster.jpg"
+    assert rebuild["message"]
+    assert rebuild["pid"] == 123
+    assert rebuild["updated_at"]
+    assert rebuild["stage_started_at"]
+
+
 @pytest.mark.asyncio
 async def test_taste_rebuild_monitor_marks_completed(monkeypatch):
     from marquee.api.routes import taste as taste_route
@@ -369,6 +424,25 @@ async def test_taste_rebuild_monitor_marks_completed(monkeypatch):
     assert taste_route._rebuild_state["status"] == "completed"
     assert taste_route._rebuild_state["running"] is False
     assert taste_route._rebuild_state["finished_at"]
+    assert run_manager.gpu_busy() is None
+
+
+@pytest.mark.asyncio
+async def test_taste_rebuild_monitor_records_cancelled(monkeypatch):
+    from marquee.api.routes import taste as taste_route
+
+    process = _AliveFakeProcess()
+    monkeypatch.setattr(run_manager, "release_gpu_resources", lambda: {})
+    run_manager.begin_rebuild()
+    started = taste_route._mark_rebuild_started()
+    taste_route._rebuild_cancel_requested = "cancelled by test"
+
+    await taste_route._monitor_rebuild_process(process, _FakeQueue(), started)
+
+    assert process.terminated is True
+    assert taste_route._rebuild_state["status"] == "cancelled"
+    assert taste_route._rebuild_state["running"] is False
+    assert taste_route._rebuild_state["error"] == "cancelled by test"
     assert run_manager.gpu_busy() is None
 
 
@@ -388,3 +462,80 @@ async def test_taste_rebuild_monitor_records_failure(monkeypatch):
     assert taste_route._rebuild_state["error"] == "boom"
     assert taste_route._rebuild_state["finished_at"]
     assert run_manager.gpu_busy() is None
+
+
+@pytest.mark.asyncio
+async def test_cancel_retrain_endpoint_requests_process_stop(client, monkeypatch):
+    from marquee.api.routes import taste as taste_route
+
+    process = _AliveFakeProcess()
+    monkeypatch.setattr(taste_route, "_active_rebuild_process", process)
+    run_manager.begin_rebuild()
+    taste_route._mark_rebuild_started()
+    try:
+        resp = await client.post("/api/taste/retrain/cancel")
+    finally:
+        run_manager.end_rebuild()
+        taste_route._active_rebuild_process = None
+        taste_route._rebuild_cancel_requested = None
+
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "cancelling"
+    assert process.terminated is True
+    assert taste_route._rebuild_state["substage"] == "cancelling"
+
+
+def test_measure_exemplar_features_reports_substage_progress(tmp_path, monkeypatch):
+    from marquee.ml import taste_trainer
+    from marquee.pipeline.types import OCRCandidateResult
+
+    image_path = tmp_path / "Example Movie (2024).jpg"
+    Image.new("RGB", (32, 48), color="navy").save(image_path)
+    events: list[dict] = []
+
+    class FakeAesthetic:
+        def score_batch(self, embeddings):
+            return np.asarray([1.5], dtype=np.float32)
+
+    class FakeAxes:
+        def scores(self, embedding):
+            return {"axis_fake": 0.25}
+
+    class FakeFaceDetector:
+        def detect(self, image):
+            return []
+
+    class FakePersonDetector:
+        def person_features(self, image):
+            return {"person_count": 0.0, "person_area_frac": 0.0}
+
+    class FakePosterTextFilter:
+        def __init__(self, title):
+            self.title = title
+
+        def is_acceptable(self, path: Path):
+            return OCRCandidateResult(path, True, "example movie", None, None)
+
+    from marquee.pipeline import ocr_filter
+
+    monkeypatch.setattr(ocr_filter, "PosterTextFilter", FakePosterTextFilter)
+    names, matrix = taste_trainer.measure_exemplar_features(
+        [image_path],
+        np.zeros((1, 512), dtype=np.float32),
+        aesthetic=FakeAesthetic(),
+        axes=FakeAxes(),
+        face_detector=FakeFaceDetector(),
+        person_detector=FakePersonDetector(),
+        run_ocr=True,
+        progress_callback=events.append,
+    )
+
+    substages = [event.get("substage") for event in events]
+    assert "cv" in substages
+    assert "face" in substages
+    assert "person" in substages
+    assert "ocr" in substages
+    assert events[-1]["processed"] == 1
+    assert events[-1]["current_item"] == image_path.name
+    assert "aesthetic" in names
+    assert matrix.shape[1] == 1
