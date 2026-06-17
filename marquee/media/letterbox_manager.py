@@ -33,7 +33,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from marquee.config import settings
 from marquee.core.letterbox_service import letterbox_service
 from marquee.database import _get_session_factory
-from marquee.media import letterbox_detect, probe
+from marquee.media import binaries, letterbox_detect, probe
 from marquee.models import LetterboxEvent, LetterboxState, Movie
 
 logger = logging.getLogger(__name__)
@@ -209,7 +209,7 @@ class LetterboxManager:
         script_path = settings._project_root / "design" / "more-features" / "04-letterbox-script.sh"
         try:
             completed = subprocess.run(
-                ["bash", str(script_path), "--movie-detect-crop", str(path)],
+                ["bash", str(script_path), "--movie-detect-crop", binaries.safe_media_path(path)],
                 capture_output=True,
                 text=True,
                 timeout=max(120, int(duration or 0) + 120),

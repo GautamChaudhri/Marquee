@@ -48,6 +48,16 @@ async def isolated_database(tmp_path_factory):
         settings.DATA_DIR = original_data_dir
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _auth_disabled_in_tests():
+    """Run the suite with DEBUG=True so the global API-key gate is bypassed.
+    Auth enforcement itself is covered explicitly in test_auth.py."""
+    original = settings.DEBUG
+    settings.DEBUG = True
+    yield
+    settings.DEBUG = original
+
+
 @pytest.fixture
 async def db():
     """Yield a clean async database session.

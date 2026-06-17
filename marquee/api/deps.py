@@ -8,9 +8,11 @@ from __future__ import annotations
 
 from fastapi import HTTPException, Request
 
+from marquee.config import settings
 from marquee.core.arr_clients.radarr_client import RadarrClient
 from marquee.core.arr_clients.sonarr_client import SonarrClient
 from marquee.core.poster_sources.tmdb import TMDBClient
+from marquee.core.rate_limit import RateLimiter
 
 
 def get_radarr(request: Request) -> RadarrClient:
@@ -44,3 +46,25 @@ def get_tmdb(request: Request) -> TMDBClient:
             detail="TMDB is not configured — set TMDB_READ_ACCESS_TOKEN",
         )
     return client
+
+
+def get_rate_limiter(request: Request) -> RateLimiter:
+    """Shared limiter for expensive endpoints (created in the app lifespan)."""
+    return request.app.state.op_rate_limiter
+
+
+def enforce_rate_limit(limiter: RateLimiter, key: str, cooldown: float) -> None:
+    """Raise 429 if *key* is still within *cooldown*. No-op when DEBUG is on.
+
+    Call ``limiter.record(key)`` only after the work succeeds, so a failed
+    attempt doesn't start the cooldown.
+    """
+    if settings.DEBUG:
+        return
+    if not limiter.check(key, cooldown):
+        retry = limiter.remaining(key, cooldown)
+        raise HTTPException(
+            status_code=429,
+            detail=f"Rate limited — retry in {retry:.0f}s.",
+            headers={"Retry-After": str(int(retry) + 1)},
+        )

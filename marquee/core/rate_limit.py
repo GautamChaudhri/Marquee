@@ -24,26 +24,31 @@ class RateLimiter:
         self._cooldown = cooldown_seconds
         self._last_call: dict[str, float] = {}
 
-    def check(self, key: str) -> bool:
+    def check(self, key: str, cooldown: float | None = None) -> bool:
         """Return True if the operation is allowed to run.
 
         Does NOT record the call — call ``record()`` after a successful
         run so a failed attempt doesn't block retries.
+
+        ``cooldown`` overrides the instance default for this key, so one
+        shared limiter can enforce a different window per operation.
         """
+        window = self._cooldown if cooldown is None else cooldown
         last = self._last_call.get(key, 0)
         if last == 0:
             return True
         elapsed = time.monotonic() - last
-        return elapsed >= self._cooldown
+        return elapsed >= window
 
     def record(self, key: str) -> None:
         """Mark the operation as having just completed."""
         self._last_call[key] = time.monotonic()
 
-    def remaining(self, key: str) -> float:
+    def remaining(self, key: str, cooldown: float | None = None) -> float:
         """Seconds until the operation is allowed again. 0 = ready now."""
+        window = self._cooldown if cooldown is None else cooldown
         last = self._last_call.get(key, 0)
         if last == 0:
             return 0.0
         elapsed = time.monotonic() - last
-        return max(0.0, self._cooldown - elapsed)
+        return max(0.0, window - elapsed)

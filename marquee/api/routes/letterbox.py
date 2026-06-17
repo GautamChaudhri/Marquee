@@ -21,8 +21,10 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from marquee.api.deps import enforce_rate_limit, get_rate_limiter
 from marquee.config import settings
 from marquee.core.letterbox_service import IneligibleError, letterbox_service
+from marquee.core.rate_limit import RateLimiter
 from marquee.database import get_db
 from marquee.media import binaries, letterbox_preview
 from marquee.media.letterbox_manager import BatchInProgressError, letterbox_manager
@@ -514,21 +516,32 @@ async def _start_detect_job(
 
 
 @router.post("/movies/{movie_id}/detect")
-async def detect_one(movie_id: int, db: Annotated[AsyncSession, Depends(get_db)]):
+async def detect_one(
+    movie_id: int,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    limiter: Annotated[RateLimiter, Depends(get_rate_limiter)],
+):
     """Detect a single movie synchronously and return its updated state."""
     _require_ffmpeg()
+    enforce_rate_limit(limiter, f"lb_detect:{movie_id}", settings.RATE_LETTERBOX_DETECT_SECONDS)
     movie = await _load_movie(db, movie_id)
     state = await letterbox_manager.detect_and_store(db, movie)
+    limiter.record(f"lb_detect:{movie_id}")
     return _state_to_dict(state, movie)
 
 
 @router.post("/detect", status_code=202)
 async def detect_batch(
-    body: BatchDetectRequest, db: Annotated[AsyncSession, Depends(get_db)]
+    body: BatchDetectRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    limiter: Annotated[RateLimiter, Depends(get_rate_limiter)],
 ):
     """Start a background batch detect (SSE progress). 202 + job_id, or 409."""
     _require_ffmpeg()
-    return await _start_detect_job(body, db, detector="v2")
+    enforce_rate_limit(limiter, "lb_detect_batch", settings.RATE_LETTERBOX_BATCH_SECONDS)
+    result = await _start_detect_job(body, db, detector="v2")
+    limiter.record("lb_detect_batch")
+    return result
 
 
 @router.get("/jobs/{job_id}/events")

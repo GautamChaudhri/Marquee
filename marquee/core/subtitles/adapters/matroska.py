@@ -15,6 +15,7 @@ from marquee.core.subtitles.adapters.base import (
     RemovePlan,
     UnsupportedContainerError,
 )
+from marquee.media import binaries
 
 
 def _yesno(flag: bool) -> str:
@@ -30,7 +31,7 @@ class MatroskaAdapter:
             raise UnsupportedContainerError(
                 "Matroska subtitle removal requires mkvmerge track IDs; rescan with mkvmerge installed"
             )
-        args = ["-o", str(out)]
+        args = ["-o", binaries.safe_media_path(out)]
         if plan.keep_tool_track_ids:
             args += ["--subtitle-tracks", ",".join(str(i) for i in plan.keep_tool_track_ids)]
         elif plan.remove_tool_track_ids:
@@ -38,12 +39,12 @@ class MatroskaAdapter:
             args += ["--subtitle-tracks", "!" + ",".join(str(i) for i in plan.remove_tool_track_ids)]
         else:
             args += ["--no-subtitles"]
-        args += [str(src)]
+        args += ["--", binaries.safe_media_path(src)]
         return args
 
     def build_embed(self, src: Path, out: Path, sources: list[EmbedSource]) -> list[str]:
         """Copy the source then append each external subtitle as a new track."""
-        args = ["-o", str(out), str(src)]
+        args = ["-o", binaries.safe_media_path(out), binaries.safe_media_path(src)]
         for source in sources:
             # Flags target track 0 of each appended subtitle input.
             args += ["--language", f"0:{source.language_tag}"]
@@ -53,12 +54,12 @@ class MatroskaAdapter:
             args += ["--forced-track", f"0:{_yesno(source.is_forced)}"]
             if source.is_sdh:
                 args += ["--hearing-impaired-flag", "0:yes"]
-            args += [str(source.path)]
+            args += [binaries.safe_media_path(source.path)]
         return args
 
     def build_metadata(self, src: Path, out: Path, edits: list[MetadataEdit]) -> list[str]:
         """Remux applying per-track metadata (track_ref = mkvmerge track id)."""
-        args = ["-o", str(out)]
+        args = ["-o", binaries.safe_media_path(out)]
         for edit in edits:
             ref = edit.track_ref
             if edit.language_tag is not None:
@@ -71,7 +72,7 @@ class MatroskaAdapter:
                 args += ["--forced-track", f"{ref}:{_yesno(edit.is_forced)}"]
             if edit.is_sdh is not None:
                 args += ["--hearing-impaired-flag", f"{ref}:{_yesno(edit.is_sdh)}"]
-        args += [str(src)]
+        args += ["--", binaries.safe_media_path(src)]
         return args
 
     def build_extract(
@@ -79,4 +80,8 @@ class MatroskaAdapter:
     ) -> tuple[str, list[str]]:
         """Extract one subtitle track via ``mkvextract`` (track-id based)."""
         track = tool_track_id if tool_track_id is not None else stream_index
-        return "mkvextract", [str(src), "tracks", f"{track}:{out}"]
+        return "mkvextract", [
+            binaries.safe_media_path(src),
+            "tracks",
+            f"{track}:{binaries.safe_media_path(out)}",
+        ]

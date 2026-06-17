@@ -10,11 +10,12 @@ import asyncio
 import time
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
 from marquee import __version__
+from marquee.api.auth import require_api_key
 from marquee.config import settings
 from marquee.core.rate_limit import RateLimiter
 from marquee.database import _get_engine, close_db, init_db
@@ -34,6 +35,8 @@ logger = logging.getLogger(__name__)
 # Rate Limiter (module-level — shared across requests)
 # ---------------------------------------------------------------------------
 _sync_rate_limiter = RateLimiter(cooldown_seconds=settings.SYNC_COOLDOWN_SECONDS)
+# Shared limiter for expensive endpoints; callers pass an explicit per-op cooldown.
+_op_rate_limiter = RateLimiter()
 
 
 async def _heal_loop() -> None:
@@ -87,6 +90,18 @@ async def lifespan(app: FastAPI):
     # ── STARTUP ──────────────────────────────────────────────────────
     logger.info("Starting %s v%s", settings.APP_NAME, __version__)
     logger.info("Debug: %s  |  Log level: %s", settings.DEBUG, settings.LOG_LEVEL)
+    if settings.DEBUG:
+        logger.warning(
+            "DEBUG is on: API authentication and rate limits are DISABLED. "
+            "Never run with DEBUG=true on a reachable host."
+        )
+    elif not settings.API_KEY:
+        logger.warning(
+            "No API_KEY set and DEBUG is off — protected endpoints will return 503. "
+            "Set API_KEY in .env to enable the API."
+        )
+    else:
+        logger.info("API-key authentication enabled.")
 
     # Radarr
     if settings.radarr_configured:
@@ -129,8 +144,9 @@ async def lifespan(app: FastAPI):
     await init_db()
     logger.info("Database ready.")
 
-    # Rate limiter — shared across requests
+    # Rate limiters — shared across requests
     app.state.sync_rate_limiter = _sync_rate_limiter
+    app.state.op_rate_limiter = _op_rate_limiter
 
     # Self-heal scan — periodically restore posters missing from disk.
     heal_task: asyncio.Task | None = None
@@ -206,7 +222,18 @@ app = FastAPI(
     title=settings.APP_NAME,
     version=__version__,
     lifespan=lifespan,
+    # Every route requires the API key (see marquee.api.auth); /health is exempt
+    # inside the dependency, and DEBUG bypasses it.
+    dependencies=[Depends(require_api_key)],
+    # Interactive docs exist only in debug — no unauthenticated API map in prod.
+    docs_url="/docs" if settings.DEBUG else None,
+    redoc_url="/redoc" if settings.DEBUG else None,
+    openapi_url="/openapi.json" if settings.DEBUG else None,
 )
+
+# Shared op limiter on app.state — set here (not only in the lifespan) so it's
+# available even when startup is skipped (e.g. ASGITransport in tests).
+app.state.op_rate_limiter = _op_rate_limiter
 
 # ---------------------------------------------------------------------------
 # Middleware
@@ -219,6 +246,16 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# Baseline security headers (full CSP arrives with the web UI).
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    return response
 
 
 # Request logging — method, path, status, duration
@@ -248,7 +285,9 @@ from marquee.api.routes.library import router as library_router  # noqa: E402
 from marquee.api.routes.media_jobs import router as media_jobs_router  # noqa: E402
 from marquee.api.routes.pipeline import movies_router  # noqa: E402
 from marquee.api.routes.pipeline import router as pipeline_router  # noqa: E402
-from marquee.api.routes.subtitle_generators import router as subtitle_generators_router  # noqa: E402
+from marquee.api.routes.subtitle_generators import (  # noqa: E402
+    router as subtitle_generators_router,
+)
 from marquee.api.routes.subtitle_policies import router as subtitle_policies_router  # noqa: E402
 from marquee.api.routes.subtitles import movies_router as subtitle_movies_router  # noqa: E402
 from marquee.api.routes.subtitles import router as subtitles_router  # noqa: E402

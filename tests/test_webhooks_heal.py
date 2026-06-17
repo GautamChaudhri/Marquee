@@ -34,7 +34,6 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "SONARR_MEDIA_PATH", None)
     monkeypatch.setattr(settings, "RADARR_PATH_PREFIX", None)
     monkeypatch.setattr(settings, "MEDIA_ROOTS", [])
-    monkeypatch.setattr(settings, "WEBHOOK_TOKEN", None)
     monkeypatch.setattr(settings, "WEBHOOK_DRY_RUN", False)
     yield
 
@@ -69,15 +68,6 @@ async def test_webhook_test_event(client):
     resp = await client.post("/api/webhooks/radarr", json={"eventType": "Test"})
     assert resp.status_code == 200
     assert resp.json()["ok"] is True
-
-
-@pytest.mark.asyncio
-async def test_webhook_token_enforced(client, monkeypatch):
-    monkeypatch.setattr(settings, "WEBHOOK_TOKEN", "secret")
-    resp = await client.post("/api/webhooks/radarr", json={"eventType": "Test"})
-    assert resp.status_code == 401
-    ok = await client.post("/api/webhooks/radarr?token=secret", json={"eventType": "Test"})
-    assert ok.status_code == 200
 
 
 @pytest.mark.asyncio

@@ -22,7 +22,10 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from marquee.api.deps import enforce_rate_limit, get_rate_limiter
+from marquee.config import settings
 from marquee.core.pipeline_config import pipeline_settings
+from marquee.core.rate_limit import RateLimiter
 from marquee.database import get_db
 from marquee.ml import feedback_store
 from marquee.models import Movie
@@ -267,10 +270,13 @@ async def _monitor_rebuild_process(process, progress_queue, started_monotonic: f
 
 
 @router.post("/retrain", status_code=202)
-async def retrain_taste():
+async def retrain_taste(
+    limiter: Annotated[RateLimiter, Depends(get_rate_limiter)],
+):
     """Trigger a full taste-profile rebuild + head retrain in the background."""
     from marquee.pipeline.run_manager import run_manager  # noqa: PLC0415
 
+    enforce_rate_limit(limiter, "taste_retrain", settings.RATE_TASTE_RETRAIN_SECONDS)
     if _rebuild_state["running"]:
         return {"status": "already_running", "started_at": _rebuild_state["started_at"]}
     busy = run_manager.gpu_busy()
@@ -289,6 +295,7 @@ async def retrain_taste():
         _finish_rebuild("failed", started_monotonic, "could not start rebuild process")
         raise
     asyncio.create_task(_monitor_rebuild_process(process, progress_queue, started_monotonic))
+    limiter.record("taste_retrain")
     return {"status": "started", "poll": "/api/taste/status"}
 
 
@@ -313,8 +320,11 @@ async def get_taste_map(recompute: bool = False):
 
 
 @router.post("/map/rebuild", status_code=202)
-async def rebuild_map():
+async def rebuild_map(
+    limiter: Annotated[RateLimiter, Depends(get_rate_limiter)],
+):
     """Force a taste-map rebuild in the background."""
+    enforce_rate_limit(limiter, "taste_map_rebuild", settings.RATE_TASTE_MAP_REBUILD_SECONDS)
 
     async def _run():
         from marquee.ml.taste_map import build_map  # noqa: PLC0415
@@ -325,6 +335,7 @@ async def rebuild_map():
             logger.exception("taste map rebuild failed")
 
     asyncio.create_task(_run())
+    limiter.record("taste_map_rebuild")
     return {"status": "started", "poll": "/api/taste/map"}
 
 

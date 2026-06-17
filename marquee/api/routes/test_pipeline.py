@@ -21,8 +21,10 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from marquee.api.deps import get_tmdb
+from marquee.api.deps import enforce_rate_limit, get_rate_limiter, get_tmdb
+from marquee.config import settings
 from marquee.core.poster_sources.tmdb import TMDBClient
+from marquee.core.rate_limit import RateLimiter
 from marquee.database import get_db
 from marquee.models import Movie
 from marquee.pipeline.features import FeatureExtractor
@@ -49,6 +51,7 @@ async def test_pipeline_movie(
     movie_id: int,
     db: Annotated[AsyncSession, Depends(get_db)],
     tmdb: Annotated[TMDBClient, Depends(get_tmdb)],
+    limiter: Annotated[RateLimiter, Depends(get_rate_limiter)],
 ):
     """Run Fetch -> SHA -> Gate(res) -> Style -> Gate(style) -> OCR -> pHash -> Detail -> Gate -> Rank -> Output."""
     movie = (
@@ -83,6 +86,9 @@ async def test_pipeline_movie(
         raise HTTPException(
             status_code=409, detail=f"GPU is busy ({busy}) — try again when it's idle"
         )
+
+    enforce_rate_limit(limiter, f"pipeline:{movie_id}", settings.RATE_PIPELINE_RUN_SECONDS)
+    limiter.record(f"pipeline:{movie_id}")
 
     run_started = time.perf_counter()
     started_at = datetime.now(UTC).isoformat()

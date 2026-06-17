@@ -19,6 +19,7 @@ import shutil
 import subprocess
 from dataclasses import dataclass
 from functools import cache
+from pathlib import Path
 
 from marquee.config import settings
 
@@ -111,3 +112,18 @@ def run(name: str, args: list[str], *, timeout: float = 120.0) -> CommandResult:
         stdout=completed.stdout or "",
         stderr=completed.stderr or "",
     )
+
+
+def safe_media_path(path: str | Path) -> str:
+    """Return ``str(path)`` for use as a media-tool argument, guaranteed safe.
+
+    Media paths are always absolute (validated Radarr/Sonarr roots, or temp
+    files we create), so a leading ``-`` — which a tool could misread as an
+    option (argument injection) — cannot occur. Reject anything relative as
+    defence-in-depth, and pair this with a literal ``--`` separator wherever
+    the file is the trailing positional argument.
+    """
+    p = Path(path)
+    if not p.is_absolute():
+        raise BinaryError(f"Refusing non-absolute media path: {str(path)!r}")
+    return str(p)

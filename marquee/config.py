@@ -32,6 +32,30 @@ class Settings(BaseSettings):
     LOG_FORMAT: str = "text"  # "text" | "json" — switch point for structured logging
 
     # ------------------------------------------------------------------
+    # Security / Authentication
+    #
+    # A single static API key guards every endpoint (except /health).
+    # Send it as ``Authorization: Bearer <key>``, ``X-Api-Key: <key>``,
+    # or ``?apikey=<key>`` (the query form lets Radarr/Sonarr webhook URLs
+    # and the browser carry it).
+    #
+    #   DEBUG=true                → auth is bypassed entirely (local dev).
+    #   DEBUG=false + API_KEY set → key required (loopback may be exempt).
+    #   DEBUG=false + no API_KEY  → protected endpoints fail closed (503).
+    # ------------------------------------------------------------------
+    API_KEY: str | None = Field(
+        default=None,
+        description="Static API key required on all endpoints except /health. "
+        "Generate one with: python -c \"import secrets; print(secrets.token_urlsafe(32))\".",
+    )
+    AUTH_ALLOW_LOCAL: bool = Field(
+        default=True,
+        description="When true, loopback requests (127.0.0.1/::1) skip the API key "
+        "even outside DEBUG. Tailscale (100.64.0.0/10) and LAN addresses always "
+        "require the key.",
+    )
+
+    # ------------------------------------------------------------------
     # Database
     # ------------------------------------------------------------------
     DB_URL: str = "sqlite+aiosqlite:///./data/marquee.db"
@@ -301,12 +325,27 @@ class Settings(BaseSettings):
     )
 
     # ------------------------------------------------------------------
+    # Rate Limiting — cooldowns for expensive endpoints (skipped when DEBUG)
+    # ------------------------------------------------------------------
+    RATE_PIPELINE_RUN_SECONDS: int = Field(
+        default=15, description="Per-movie cooldown between poster-pipeline runs."
+    )
+    RATE_LETTERBOX_DETECT_SECONDS: int = Field(
+        default=20, description="Per-movie cooldown between single letterbox detections."
+    )
+    RATE_LETTERBOX_BATCH_SECONDS: int = Field(
+        default=300, description="Cooldown between batch letterbox detections."
+    )
+    RATE_TASTE_RETRAIN_SECONDS: int = Field(
+        default=60, description="Cooldown between learned-head retrains."
+    )
+    RATE_TASTE_MAP_REBUILD_SECONDS: int = Field(
+        default=300, description="Cooldown between taste-map rebuilds."
+    )
+
+    # ------------------------------------------------------------------
     # Webhooks (Radarr/Sonarr → poster restoration)
     # ------------------------------------------------------------------
-    WEBHOOK_TOKEN: str | None = Field(
-        default=None,
-        description="When set, webhook requests must carry ?token=<this>.",
-    )
     WEBHOOK_DRY_RUN: bool = Field(
         default=False,
         description="Log + record webhook events without touching the filesystem.",

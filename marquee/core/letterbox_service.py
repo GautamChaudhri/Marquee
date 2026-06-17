@@ -98,7 +98,7 @@ def read_applied_crop(path: Path | str) -> tuple[int, int] | None:
     """
     if binaries.resolve("mkvmerge") is None:
         return None
-    result = binaries.run("mkvmerge", ["-J", str(path)], timeout=30.0)
+    result = binaries.run("mkvmerge", ["-J", "--", binaries.safe_media_path(path)], timeout=30.0)
     if not result.ok:
         return None
     try:
@@ -140,7 +140,7 @@ class LetterboxService:
 
         # Confirm it's a Matroska container with a video track.
         if binaries.resolve("mkvmerge") is not None:
-            result = binaries.run("mkvmerge", ["-J", str(path)], timeout=30.0)
+            result = binaries.run("mkvmerge", ["-J", "--", binaries.safe_media_path(path)], timeout=30.0)
             if result.ok:
                 try:
                     data = json.loads(result.stdout)
@@ -193,7 +193,7 @@ class LetterboxService:
                 binaries.run,
                 "mkvpropedit",
                 [
-                    str(path), "--edit", "track:v1",
+                    binaries.safe_media_path(path), "--edit", "track:v1",
                     "--set", f"pixel-crop-top={top}",
                     "--set", f"pixel-crop-bottom={bottom}",
                     "--set", "pixel-crop-left=0",
@@ -241,7 +241,7 @@ class LetterboxService:
                 binaries.run,
                 "mkvpropedit",
                 [
-                    str(path), "--edit", "track:v1",
+                    binaries.safe_media_path(path), "--edit", "track:v1",
                     "--delete", "pixel-crop-top",
                     "--delete", "pixel-crop-bottom",
                     "--delete", "pixel-crop-left",

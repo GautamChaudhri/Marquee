@@ -8,6 +8,7 @@ failures, and keeps GPU-heavy phases serialized.
 
 Environment knobs:
   MARQUEE_BASE_URL=http://localhost:3165
+  MARQUEE_API_KEY=...  # optional; sent as X-Api-Key to Marquee only
   SUBGEN_URL=http://localhost:9000
   GAUNTLET_OUTPUT_DIR=/forge/Marquee/gauntlet-output
   GAUNTLET_PIPELINE_SCOPE=representative  # smoke | representative | all
@@ -28,7 +29,6 @@ import sys
 import time
 import traceback
 import urllib.error
-import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -36,6 +36,7 @@ from pathlib import Path
 from typing import Any
 
 BASE_URL = os.getenv("MARQUEE_BASE_URL", "http://localhost:3165").rstrip("/")
+MARQUEE_API_KEY = os.getenv("MARQUEE_API_KEY")
 SUBGEN_URL = os.getenv("SUBGEN_URL", "http://localhost:9000").rstrip("/")
 OUTPUT_DIR = Path(os.getenv("GAUNTLET_OUTPUT_DIR", "/forge/Marquee/gauntlet-output"))
 RESULTS_FILE = OUTPUT_DIR / "gauntlet_results.jsonl"
@@ -54,7 +55,6 @@ CONFIRM_SUBTITLE_MUTATIONS = os.getenv("GAUNTLET_CONFIRM_SUBTITLE_MUTATIONS", "0
 APPLY_LETTERBOX = os.getenv("GAUNTLET_APPLY_LETTERBOX", "1") == "1"
 RUN_SYNC = os.getenv("GAUNTLET_RUN_SYNC", "1") == "1"
 RUN_WEBHOOK_DOWNLOAD = os.getenv("GAUNTLET_WEBHOOK_DOWNLOAD", "0") == "1"
-WEBHOOK_TOKEN = os.getenv("MARQUEE_WEBHOOK_TOKEN")
 
 JSON_SENTINEL = object()
 EXPECTED_MUTATION_TABLES = {
@@ -150,6 +150,8 @@ class Gauntlet:
     ) -> APIResult:
         url = path_or_url if external else f"{BASE_URL}{path_or_url}"
         headers: dict[str, str] = {}
+        if MARQUEE_API_KEY and not external:
+            headers["X-Api-Key"] = MARQUEE_API_KEY
         payload = None
         if data is not JSON_SENTINEL:
             headers["Content-Type"] = "application/json"
@@ -555,22 +557,16 @@ class Gauntlet:
                 "folderPath": "/mnt/lab/movies/4K/2001 - A Space Odyssey (1968)",
             },
         }
-        self.request("POST", self._webhook_path("/api/webhooks/radarr"), data=radarr_test, expected={200, 401}, label="webhook-radarr-test")
-        self.request("POST", self._webhook_path("/api/webhooks/radarr"), data=ignored, expected={200, 401}, label="webhook-radarr-ignored")
-        self.request("POST", self._webhook_path("/api/webhooks/radarr"), data=rename, expected={200, 401}, label="webhook-radarr-rename")
+        self.request("POST", "/api/webhooks/radarr", data=radarr_test, expected={200}, label="webhook-radarr-test")
+        self.request("POST", "/api/webhooks/radarr", data=ignored, expected={200}, label="webhook-radarr-ignored")
+        self.request("POST", "/api/webhooks/radarr", data=rename, expected={200}, label="webhook-radarr-rename")
         if RUN_WEBHOOK_DOWNLOAD:
             download = {**rename, "eventType": "Download", "isUpgrade": True}
-            self.request("POST", self._webhook_path("/api/webhooks/radarr"), data=download, expected={200, 401}, label="webhook-radarr-download")
+            self.request("POST", "/api/webhooks/radarr", data=download, expected={200}, label="webhook-radarr-download")
         else:
             print("  Radarr Download webhook skipped (GAUNTLET_WEBHOOK_DOWNLOAD=0)")
-        self.request("POST", self._webhook_path("/api/webhooks/sonarr"), data=sonarr_test, expected={200, 401}, label="webhook-sonarr-test")
-        self.request("POST", self._webhook_path("/api/webhooks/subgen"), data={"status": "complete", "path": "gauntlet"}, expected={200, 401}, label="webhook-subgen-callback")
-
-    @staticmethod
-    def _webhook_path(path: str) -> str:
-        if not WEBHOOK_TOKEN:
-            return path
-        return f"{path}?token={urllib.parse.quote(WEBHOOK_TOKEN)}"
+        self.request("POST", "/api/webhooks/sonarr", data=sonarr_test, expected={200}, label="webhook-sonarr-test")
+        self.request("POST", "/api/webhooks/subgen", data={"status": "complete", "path": "gauntlet"}, expected={200}, label="webhook-subgen-callback")
 
     def pass_pipeline(self) -> None:
         self.section("PASS 4: POSTER PIPELINE, RESULTS, RESCORE")
@@ -1087,6 +1083,7 @@ class Gauntlet:
         start = datetime.now(UTC)
         print(f"Marquee gauntlet starting at {start.isoformat()}")
         print(f"  Target: {BASE_URL}")
+        print(f"  API auth: {'configured' if MARQUEE_API_KEY else 'not configured'}")
         print(f"  Subgen: {SUBGEN_URL}")
         print(f"  Lab movies: {len(MOVIES)} (MKV={len(MKV_MOVIES)}, MP4={len(MP4_MOVIES)}, sidecar-set={len(MOVIES_WITH_SRT)})")
         print(f"  Output: {OUTPUT_DIR}")

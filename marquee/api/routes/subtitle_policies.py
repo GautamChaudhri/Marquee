@@ -23,7 +23,7 @@ from marquee.core.media_files import (
     resolve_media_file,
 )
 from marquee.core.media_jobs import media_job_manager
-from marquee.core.subtitles import mutation, service
+from marquee.core.subtitles import service
 from marquee.core.subtitles.policy import evaluate_policy
 from marquee.database import get_db
 from marquee.models import MediaBatch, Movie, SubtitlePolicy

@@ -171,7 +171,7 @@ def _align_mkv_track_ids(path: Path | str, subs: list[EmbeddedSub]) -> None:
     """
     if binaries.resolve("mkvmerge") is None:
         return
-    result = binaries.run("mkvmerge", ["-J", str(path)], timeout=30.0)
+    result = binaries.run("mkvmerge", ["-J", "--", binaries.safe_media_path(path)], timeout=30.0)
     if not result.ok:
         return
     try:

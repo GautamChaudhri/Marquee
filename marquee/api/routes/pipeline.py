@@ -13,15 +13,17 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from marquee.api.deps import get_tmdb
+from marquee.api.deps import enforce_rate_limit, get_rate_limiter, get_tmdb
 from marquee.api.results import (
     build_results_payload,
     feature_vector_from_archive,
     find_candidate,
     poster_url,
 )
+from marquee.config import settings
 from marquee.core.pipeline_config import PipelineSettings, pipeline_settings
 from marquee.core.poster_sources.tmdb import TMDBClient
+from marquee.core.rate_limit import RateLimiter
 from marquee.database import get_db
 from marquee.models import ArtworkEvent, Movie, PipelineRun
 from marquee.pipeline.gate import PosterGate
@@ -45,6 +47,7 @@ async def run_pipeline(
     movie_id: int,
     db: Annotated[AsyncSession, Depends(get_db)],
     tmdb: Annotated[TMDBClient, Depends(get_tmdb)],
+    limiter: Annotated[RateLimiter, Depends(get_rate_limiter)],
 ):
     """Start a pipeline run for a movie. 202 + run_id, or 409 if one is active."""
     movie = (
@@ -57,6 +60,7 @@ async def run_pipeline(
             status_code=400, detail=f"Movie {movie.title!r} has no TMDB ID — run sync"
         )
 
+    enforce_rate_limit(limiter, f"pipeline:{movie_id}", settings.RATE_PIPELINE_RUN_SECONDS)
     try:
         run_id = await run_manager.start(tmdb=tmdb, movie=movie)
     except RunInProgressError as exc:
@@ -68,6 +72,7 @@ async def run_pipeline(
             },
         ) from exc
 
+    limiter.record(f"pipeline:{movie_id}")
     return {
         "run_id": run_id,
         "events_url": f"/api/pipeline/runs/{run_id}/events",

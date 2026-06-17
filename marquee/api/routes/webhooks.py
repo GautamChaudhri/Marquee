@@ -61,11 +61,6 @@ class RadarrWebhookPayload(BaseModel):
     movie: _ArrMovie | None = None
 
 
-def _check_token(token: str | None) -> None:
-    if settings.WEBHOOK_TOKEN and token != settings.WEBHOOK_TOKEN:
-        raise HTTPException(status_code=401, detail="Invalid or missing webhook token")
-
-
 async def _lookup_movie(db: AsyncSession, payload_movie: _ArrMovie) -> Movie | None:
     if payload_movie.id is not None:
         movie = (
@@ -183,10 +178,8 @@ async def _letterbox_stale_after_upgrade(radarr_id: int | None, tmdb_id: int | N
 async def radarr_webhook(
     payload: RadarrWebhookPayload,
     db: Annotated[AsyncSession, Depends(get_db)],
-    token: str | None = None,
 ):
     """Receive Radarr events; restore posters on upgrade (fast ACK)."""
-    _check_token(token)
     from datetime import UTC, datetime  # noqa: PLC0415
 
     event = payload.eventType
@@ -248,7 +241,6 @@ async def _schedule_subtitle_scan(radarr_id: int | None, tmdb_id: int | None) ->
     from marquee.core.media_files import ensure_media_file_for_movie  # noqa: PLC0415
     from marquee.core.media_jobs import media_job_manager  # noqa: PLC0415
     from marquee.core.subtitles.config import subtitle_settings  # noqa: PLC0415
-
     from marquee.models import MediaJob  # noqa: PLC0415
 
     if not subtitle_settings.SUBTITLE_ENABLED:
@@ -280,7 +272,6 @@ async def _schedule_subtitle_scan(radarr_id: int | None, tmdb_id: int | None) ->
 async def sonarr_webhook(
     payload: RadarrWebhookPayload,
     db: Annotated[AsyncSession, Depends(get_db)],
-    token: str | None = None,
 ):
     """Receive Sonarr events. Currently path-updates on Rename only.
 
@@ -288,7 +279,6 @@ async def sonarr_webhook(
     full restoration is deferred; the payload is parsed and Test/Rename are
     handled so the webhook can be configured today.
     """
-    _check_token(token)
     from datetime import UTC, datetime  # noqa: PLC0415
 
     webhook_state.update(
