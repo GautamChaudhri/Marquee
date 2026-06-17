@@ -1,1 +1,0 @@
-{"generators":[{"id":"subgen-default","name":"Subgen","provider":"subgen","mode":"transcribe","model_label":"unknown","healthy":false,"version":null,"detail":"SUBGEN_URL not configured","supports_language_hint":true,"supports_per_request_model":false,"supports_percent_progress":false,"transport":"shared_path"}]}

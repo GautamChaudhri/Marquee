@@ -1,6 +1,0 @@
-{"ts": "2026-06-17T00:40:34.621668+00:00", "label": "baseline-start", "available": true, "query": "NVIDIA GeForce RTX 3070, 1199, 8192, 0", "compute_apps": "76231, /forge/Marquee/.venv/bin/python, 1182", "error": null}
-{"ts": "2026-06-17T00:40:34.769467+00:00", "label": "before-poster-pipeline", "available": true, "query": "NVIDIA GeForce RTX 3070, 1199, 8192, 0", "compute_apps": "76231, /forge/Marquee/.venv/bin/python, 1182", "error": null}
-{"ts": "2026-06-17T02:02:10.875856+00:00", "label": "after-poster-pipeline", "available": true, "query": "NVIDIA GeForce RTX 3070, 2239, 8192, 27", "compute_apps": "76231, /forge/Marquee/.venv/bin/python, 2222", "error": null}
-{"ts": "2026-06-17T02:07:20.352978+00:00", "label": "before-subgen", "available": true, "query": "NVIDIA GeForce RTX 3070, 1503, 8192, 0", "compute_apps": "76231, /forge/Marquee/.venv/bin/python, 1486", "error": null}
-{"ts": "2026-06-17T02:07:35.422026+00:00", "label": "after-subgen", "available": true, "query": "NVIDIA GeForce RTX 3070, 1503, 8192, 0", "compute_apps": "76231, /forge/Marquee/.venv/bin/python, 1486", "error": null}
-{"ts": "2026-06-17T02:09:43.518135+00:00", "label": "final", "available": true, "query": "NVIDIA GeForce RTX 3070, 1503, 8192, 0", "compute_apps": "76231, /forge/Marquee/.venv/bin/python, 1486", "error": null}

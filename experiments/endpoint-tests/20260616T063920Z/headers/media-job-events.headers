@@ -1,8 +1,0 @@
-HTTP/1.1 200 OK
-date: Tue, 16 Jun 2026 07:14:30 GMT
-server: uvicorn
-cache-control: no-cache
-x-accel-buffering: no
-content-type: text/event-stream; charset=utf-8
-transfer-encoding: chunked
-

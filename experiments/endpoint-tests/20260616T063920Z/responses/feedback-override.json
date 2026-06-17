@@ -1,1 +1,0 @@
-{"event_id":"1d4a4f655d94456d9c01422eb16a7b23","labels_written":2,"exemplar_added":null,"remapped_to":null,"gate_override":null,"head":{"retrained":false,"reason":"need 5 movies / 150 labels; have 4 movies / 2 labels","n_samples":2,"n_movies":4,"min_labels":150,"min_movies":5,"activated":false},"deployed_to":null,"deploy_error":null}

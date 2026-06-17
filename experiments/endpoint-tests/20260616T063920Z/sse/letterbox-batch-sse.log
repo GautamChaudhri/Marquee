@@ -1,7 +1,0 @@
-data: {"job_id": "4c220844af51477ea6114e99c3873ab7", "movie_id": 372, "completed": 1, "total": 1, "status": "variable_unsafe", "detector": "v2"}
-
-data: {"job_id": "4c220844af51477ea6114e99c3873ab7", "state": "done", "completed": 1, "total": 1, "detector": "v2", "summary": {"candidate": 0, "not_letterboxed": 0, "variable": 1, "total": 1, "completed": 1}}
-
-event: done
-data: {}
-

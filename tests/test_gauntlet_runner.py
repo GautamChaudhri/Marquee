@@ -6,7 +6,7 @@ from pathlib import Path
 
 
 def _load_gauntlet_module():
-    path = Path(__file__).resolve().parents[1] / "gauntlet-output" / "gauntlet_runner.py"
+    path = Path(__file__).resolve().parents[1] / "experiments" / "gauntlet_runner.py"
     spec = importlib.util.spec_from_file_location("gauntlet_runner_for_tests", path)
     assert spec is not None
     assert spec.loader is not None

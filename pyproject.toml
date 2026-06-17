@@ -63,6 +63,7 @@ dev = [
     "pytest-cov>=5.0,<6.0",
     "httpx>=0.28,<1.0",       # for TestClient
     "ruff>=0.9,<1.0",
+    "tqdm>=4.65,<5.0",
 ]
 
 # --- Pick exactly one accelerator extra on Linux ------------------------

@@ -53,12 +53,13 @@ coverage.xml
 marquee/**/__pycache__/
 
 # Training Data
-experiments/data
+experiments/*
+!experiments/gauntlet_runner.py
 marquee/ml/models/
-marquee/experiments/
 
 # Agents
 .claude/
 AGENTS.md
+CLAUDE.md
 .brv/
 .serena/

@@ -11,6 +11,7 @@ import re
 import sys
 import time
 from collections.abc import Callable
+from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, NoReturn
@@ -189,8 +190,13 @@ def _detect_boxes(
     scale: float = 1.0,
     y_offset: float = 0.0,
 ) -> list[_DetectedBox]:
-    import paddle
-    with paddle.no_grad():
+    try:
+        import paddle
+    except ModuleNotFoundError:
+        paddle = None
+
+    grad_context = paddle.no_grad() if paddle is not None else nullcontext()
+    with grad_context:
         result = ocr.predict(image)
     if not result:
         return []
