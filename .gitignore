@@ -59,7 +59,8 @@ marquee/ml/models/
 
 # Agents
 .claude/
-AGENTS.md
 CLAUDE.md
+.codex/
+AGENTS.md
 .brv/
 .serena/

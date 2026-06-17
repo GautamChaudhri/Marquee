@@ -17,6 +17,8 @@ from sqlalchemy import text
 from marquee import __version__
 from marquee.api.auth import require_api_key
 from marquee.config import settings
+from marquee.core.backup import backup_service
+from marquee.core.pipeline_config import migrate_legacy_runtime_state
 from marquee.core.rate_limit import RateLimiter
 from marquee.database import _get_engine, close_db, init_db
 from marquee.logging import setup_logging
@@ -103,6 +105,10 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("API-key authentication enabled.")
 
+    migrated_paths = migrate_legacy_runtime_state()
+    for moved in migrated_paths:
+        logger.info("Runtime state migrated to data/: %s", moved)
+
     # Radarr
     if settings.radarr_configured:
         from marquee.core.arr_clients.radarr_client import RadarrClient
@@ -172,12 +178,23 @@ async def lifespan(app: FastAPI):
     if subtitle_settings.SUBTITLE_ENABLED:
         await media_job_manager.start()
 
+    backup_task: asyncio.Task | None = None
+    if not settings.DEBUG and settings.BACKUP_INTERVAL_HOURS > 0:
+        backup_task = asyncio.create_task(backup_service.scheduler_loop())
+        logger.info(
+            "Internal backup scheduler enabled (every %s hours, initial delay %ss)",
+            settings.BACKUP_INTERVAL_HOURS,
+            settings.BACKUP_INITIAL_DELAY_SECONDS,
+        )
+
     yield  # ── application runs here ──
 
     if heal_task is not None:
         heal_task.cancel()
     if letterbox_heal_task is not None:
         letterbox_heal_task.cancel()
+    if backup_task is not None:
+        backup_task.cancel()
     if subtitle_settings.SUBTITLE_ENABLED:
         await media_job_manager.stop()
 
@@ -278,6 +295,7 @@ async def log_requests(request: Request, call_next):
 # Routers
 # ---------------------------------------------------------------------------
 
+from marquee.api.routes.backup import router as backup_router  # noqa: E402
 from marquee.api.routes.config import router as config_router  # noqa: E402
 from marquee.api.routes.feedback import router as feedback_router  # noqa: E402
 from marquee.api.routes.letterbox import router as letterbox_router  # noqa: E402
@@ -304,6 +322,7 @@ app.include_router(movies_router)
 app.include_router(feedback_router)
 app.include_router(taste_router)
 app.include_router(config_router)
+app.include_router(backup_router)
 app.include_router(system_router)
 app.include_router(letterbox_router)
 app.include_router(subtitles_router)

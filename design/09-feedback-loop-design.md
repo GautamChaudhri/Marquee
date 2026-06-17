@@ -30,7 +30,7 @@ previous deployed poster.
 ## Label Records
 
 Labels are append-only JSONL records under `FEEDBACK_LABELS_PATH`
-(`marquee/experiments/feedback/labels.jsonl` by default).
+(`data/feedback/labels.jsonl` by default).
 
 Version 2 records include:
 

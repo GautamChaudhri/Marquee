@@ -11,12 +11,52 @@ feedback/rescore paths can reuse the same lookups.
 from __future__ import annotations
 
 from collections import Counter
+from dataclasses import asdict, dataclass
 
 from marquee.api.explanations import (
     explain_rejection,
     explain_top_contributions,
     suggest_for_summary,
 )
+
+
+@dataclass(frozen=True)
+class BackupResult:
+    backup_id: str
+    created_at: str
+    backup_dir: str
+    db_path: str
+    state_path: str
+    manifest_path: str
+    db_size: int
+    state_size: int
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class BackupInfo:
+    backup_id: str
+    created_at: str
+    backup_dir: str
+    db_size: int
+    state_size: int
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class RestoreResult:
+    backup_id: str
+    restored: bool
+    restored_db: bool
+    restored_state: bool
+    restart_required: bool
+
+    def to_dict(self) -> dict:
+        return asdict(self)
 
 
 def _rejection_base(reason: str | None) -> str | None:

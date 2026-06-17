@@ -106,9 +106,9 @@ features do not drag scores down.
 
 | Knob | Default | Purpose |
 |---|---:|---|
-| `FEEDBACK_LABELS_PATH` | `marquee/experiments/feedback/labels.jsonl` | Label store |
-| `NEGATIVE_DATA_DIR` | `marquee/experiments/negative_data` | Negative exemplars |
-| `TRAINING_DATA_DIR` | `marquee/experiments/training_data` | Positive exemplars |
+| `FEEDBACK_LABELS_PATH` | `data/feedback/labels.jsonl` | Label store |
+| `NEGATIVE_DATA_DIR` | `data/training/negative` | Negative exemplars |
+| `TRAINING_DATA_DIR` | `data/training/positive` | Positive exemplars |
 | `FEEDBACK_GATE_ALERT_THRESHOLD` | `5` | Gate alert threshold |
 | `FEEDBACK_NEGATIVES_FROM_OVERRIDES` | `False` | Copy overridden auto-picks to negatives |
 | `FEEDBACK_DEPLOY_DEFAULT` | `True` | Deploy approve/override by default |

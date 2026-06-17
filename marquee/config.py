@@ -9,7 +9,7 @@ from __future__ import annotations
 import contextlib
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # ---------------------------------------------------------------------------
@@ -79,14 +79,21 @@ class Settings(BaseSettings):
         return f"sqlite+aiosqlite:///{db_path}"
 
     @property
+    def data_dir_path(self) -> Path:
+        """Absolute path to the runtime data directory."""
+        path = self._project_root / self.DATA_DIR
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    @property
     def poster_cache_path(self) -> Path:
         """Absolute path to the poster cache directory."""
-        return self._project_root / self.DATA_DIR / "cache" / "posters"
+        return self.data_dir_path / "cache" / "posters"
 
     @property
     def poster_staging_path(self) -> Path:
         """Absolute path to the staging directory for downloaded candidates."""
-        return self._project_root / self.DATA_DIR / "staging"
+        return self.data_dir_path / "staging"
 
     @property
     def runs_archive_path(self) -> Path:
@@ -95,12 +102,51 @@ class Settings(BaseSettings):
         Survives re-runs of the same movie (the experiments/runs/<title>/
         working dir is overwritten on re-run; this archive is not).
         """
-        return self._project_root / self.DATA_DIR / "runs" / "archive"
+        return self.data_dir_path / "runs" / "archive"
 
     @property
     def letterbox_preview_path(self) -> Path:
         """Where generated letterbox preview/thumbnail frames (webp) live."""
-        return self._project_root / self.DATA_DIR / "cache" / "letterbox"
+        return self.data_dir_path / "cache" / "letterbox"
+
+    # ------------------------------------------------------------------
+    # Internal Backups
+    # ------------------------------------------------------------------
+    BACKUP_INTERVAL_HOURS: int = Field(
+        default=24,
+        validation_alias=AliasChoices(
+            "BACKUP_INTERVAL_HOURS", "MARQUEE_BACKUP_INTERVAL_HOURS"
+        ),
+        description="Hours between automatic backups. Set to 0 to disable scheduled backups.",
+    )
+    BACKUP_RETENTION_DAYS: int = Field(
+        default=7,
+        validation_alias=AliasChoices(
+            "BACKUP_RETENTION_DAYS", "MARQUEE_BACKUP_RETENTION_DAYS"
+        ),
+        description="Number of daily backup directories to retain after rotation.",
+    )
+    BACKUP_INITIAL_DELAY_SECONDS: int = Field(
+        default=300,
+        validation_alias=AliasChoices(
+            "BACKUP_INITIAL_DELAY_SECONDS", "MARQUEE_BACKUP_INITIAL_DELAY_SECONDS"
+        ),
+        description="Seconds to wait after startup before the first scheduled backup.",
+    )
+    BACKUP_DIR: str = Field(
+        default="data/backups",
+        validation_alias=AliasChoices("BACKUP_DIR", "MARQUEE_BACKUP_DIR"),
+        description="Directory for internal backup artifacts.",
+    )
+
+    @property
+    def backup_dir_path(self) -> Path:
+        """Absolute path to the internal backup directory."""
+        path = Path(self.BACKUP_DIR)
+        if not path.is_absolute():
+            path = self._project_root / path
+        path.mkdir(parents=True, exist_ok=True)
+        return path
 
     # ------------------------------------------------------------------
     # CORS (for web UI development in Phase 6)

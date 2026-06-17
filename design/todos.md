@@ -60,7 +60,7 @@ Organized by the phase when attention is needed. Reference `design/03-migration-
 - [x] ~~Multi-platform hardware module: CUDA/OpenVINO/CoreML/CPU tiers.~~
 - [x] ~~Torch removed from runtime: aesthetic head from .npz sidecar.~~
 - [ ] Validate strict title-only OCR gate (OCR_MAX_RESIDUAL_BOXES=0) across more movies.
-- [ ] Populate `marquee/experiments/negative_data/` with disliked posters and rebuild profile.
+- [ ] Populate `data/training/negative/` with disliked posters and rebuild profile.
 - [ ] Optional INT8 CLIP for N150-class hosts — needs accuracy spot-check.
 - [x] ~~Extended features (design/07): zero-shot CLIP axes, CV palette/composition pack, title/face geometry, KDE typicality, DINOv2 k-NN, quality artifacts, YOLO person, Phase-1 learned head plumbing.~~
 - [ ] Tune WEIGHT_TASTE_TYPICALITY / WEIGHT_DINO_KNN from RANK DETAIL logs after a few weeks.
@@ -68,7 +68,7 @@ Organized by the phase when attention is needed. Reference `design/03-migration-
 - [x] ~~official_family: CLIP cosine to TMDB primary poster as scorer feature (0.12) + primary wins pHash group.~~
 - [ ] Extend official_family to multiple authority anchors: Wikipedia film-infobox poster, Fanart.tv likes.
 - [x] ~~GPU VRAM growth fixed: RunManager owns a process-lifetime FeatureExtractor instead of per-run sessions. OOM from ~8 runs no longer occurs.~~
-- [ ] Re-running a movie wipes `ranked/` — sort into `experiments/feedback/labels.jsonl` instead.
+- [ ] Re-running a movie wipes `ranked/` — sort accepted posters into `data/training/positive/` instead.
 
 ---
 
@@ -131,3 +131,4 @@ Organized by the phase when attention is needed. Reference `design/03-migration-
 - [ ] **ChromaDB integration.** Replace `NumpyTasteStore` with `ChromaTasteStore` for incremental approval feature.
 - [x] ~~**Subtitle management (design §16-22).**~~ — Fully built: `subtitle_inventories`/`subtitle_tracks` for snapshotting, `managed_subtitle_assets`/`managed_subtitle_bindings` for restore-on-upgrade caching, `subtitle_policies`/`subtitle_policy_bindings` for language-cleanup policies, durable `media_jobs`/`media_batches`/`media_job_events` for the mutation queue, `media_files`/`episode_media_files` for physical file tracking, and `media_backups` for pre-mutation copies. See `marquee/models/` and `design/more-features/03-subtitle-management.md`.
 - [x] ~~**Letterbox cropping (design 04-letterbox).**~~ — Fully built: `letterbox_state`/`letterbox_events` models, `marquee/media/letterbox_detect.py` (cropdetect + ImageMagick trim backends), `marquee/media/letterbox_manager.py` (tag application/removal), `marquee/core/letterbox_service.py` (orchestration), `marquee/api/routes/letterbox.py` (REST API), ~25 `LETTERBOX_*` config knobs, letterbox heal scan, resolution pre-filter using `movie.video_width`/`video_height`/`container`. See `design/more-features/04-letterbox-cropping.md`.
+- [x] ~~**Internal backup system.**~~ Local backup snapshots (DB + managed state archive) with rotation, REST API, restore, and startup migration to `data/`. See `design/14-internal-backup-strategy.md`.

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 from pydantic import model_validator
@@ -10,6 +11,11 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _ML_DIR = _PROJECT_ROOT / "marquee" / "ml"
 _MODELS_DIR = _ML_DIR / "models"
+_DATA_DIR = _PROJECT_ROOT / "data"
+_DATA_ML_DIR = _DATA_DIR / "ml"
+_DATA_FEEDBACK_DIR = _DATA_DIR / "feedback"
+_DATA_TRAINING_DIR = _DATA_DIR / "training"
+_LEGACY_EXPERIMENTS_DIR = _PROJECT_ROOT / "experiments"
 
 
 class PipelineSettings(BaseSettings):
@@ -42,7 +48,7 @@ class PipelineSettings(BaseSettings):
     CLIP_MODEL_PATH: Path = _MODELS_DIR / "clip-vit-b-32.onnx"
     AESTHETIC_MODEL_PATH: Path = _MODELS_DIR / "sa_0_4_vit_b_32_linear.pth"
     FACE_MODEL_PATH: Path = _MODELS_DIR / "scrfd_500m_bnkps.onnx"
-    TASTE_PROFILE_PATH: Path = _ML_DIR / "taste_profile.clip-vit-b-32.npz"
+    TASTE_PROFILE_PATH: Path = _DATA_ML_DIR / "taste_profile.clip-vit-b-32.npz"
     EMBEDDING_CACHE_DIR: Path = _PROJECT_ROOT / "data" / "cache" / "embeddings"
 
     # ── Extended features (recs 1-6) ─────────────────────────────────
@@ -67,27 +73,27 @@ class PipelineSettings(BaseSettings):
     CALIBRATION_MIN_SAMPLES: int = 20
     # Zero-shot CLIP axes artifact (text-prompt directions). Built once via
     # `python -m marquee.ml.zeroshot`; skipped with a warning if absent.
-    ZEROSHOT_AXES_PATH: Path = _ML_DIR / "zeroshot_axes.clip-vit-b-32.npz"
+    ZEROSHOT_AXES_PATH: Path = _DATA_ML_DIR / "zeroshot_axes.clip-vit-b-32.npz"
     # Scorer selection: "auto" uses the learned head when a trained artifact
     # exists, otherwise the Phase-0 weighted scorer. "weighted"/"learned" force.
     SCORER: str = "auto"
-    LEARNED_HEAD_PATH: Path = _MODELS_DIR / "learned_head.clip-vit-b-32.npz"
+    LEARNED_HEAD_PATH: Path = _DATA_ML_DIR / "learned_head.clip-vit-b-32.npz"
 
     # ── Feedback loop (design 09) ─────────────────────────────────────
     # JSONL of self-contained labels written by the feedback endpoint. The
     # single training source of truth (append-only, hand-editable).
     FEEDBACK_LABELS_PATH: Path = (
-        _PROJECT_ROOT / "marquee" / "experiments" / "feedback" / "labels.jsonl"
+        _DATA_FEEDBACK_DIR / "labels.jsonl"
     )
     # Directory of disliked exemplars (negative taste). Copied into here when
     # FEEDBACK_NEGATIVES_FROM_OVERRIDES is on.
     NEGATIVE_DATA_DIR: Path = (
-        _PROJECT_ROOT / "marquee" / "experiments" / "negative_data"
+        _DATA_TRAINING_DIR / "negative"
     )
     # Source-of-truth folder for positive exemplars (the 430 hand-picked +
     # any approved/overridden posters appended by the feedback loop).
     TRAINING_DATA_DIR: Path = (
-        _PROJECT_ROOT / "marquee" / "experiments" / "training_data"
+        _DATA_TRAINING_DIR / "positive"
     )
     # After this many overrides of the same gate (at the current threshold),
     # the taste status surfaces a tuning suggestion.
@@ -267,13 +273,22 @@ class PipelineSettings(BaseSettings):
         # clip-vit-b-32-int8.onnx and taste_profile.clip-vit-b-32-int8.npz).
         if self.CLIP_MODEL_PATH == _MODELS_DIR / "clip-vit-b-32.onnx":
             self.CLIP_MODEL_PATH = _MODELS_DIR / f"{self.AI_MODEL}.onnx"
-        if self.TASTE_PROFILE_PATH == _ML_DIR / "taste_profile.clip-vit-b-32.npz":
-            self.TASTE_PROFILE_PATH = _ML_DIR / f"taste_profile.{self.AI_MODEL}.npz"
+        if self.TASTE_PROFILE_PATH == _DATA_ML_DIR / "taste_profile.clip-vit-b-32.npz":
+            self.TASTE_PROFILE_PATH = _DATA_ML_DIR / f"taste_profile.{self.AI_MODEL}.npz"
+        if self.ZEROSHOT_AXES_PATH == _DATA_ML_DIR / "zeroshot_axes.clip-vit-b-32.npz":
+            self.ZEROSHOT_AXES_PATH = _DATA_ML_DIR / f"zeroshot_axes.{self.AI_MODEL}.npz"
+        if self.LEARNED_HEAD_PATH == _DATA_ML_DIR / "learned_head.clip-vit-b-32.npz":
+            self.LEARNED_HEAD_PATH = _DATA_ML_DIR / f"learned_head.{self.AI_MODEL}.npz"
         for field_name in (
             "CLIP_MODEL_PATH",
             "AESTHETIC_MODEL_PATH",
             "FACE_MODEL_PATH",
             "TASTE_PROFILE_PATH",
+            "ZEROSHOT_AXES_PATH",
+            "LEARNED_HEAD_PATH",
+            "FEEDBACK_LABELS_PATH",
+            "NEGATIVE_DATA_DIR",
+            "TRAINING_DATA_DIR",
             "EMBEDDING_CACHE_DIR",
         ):
             path = getattr(self, field_name)
@@ -419,3 +434,54 @@ try:
     pipeline_settings = PipelineSettings(**load_overrides())
 except Exception:  # noqa: BLE001 — a bad overrides file must not block startup
     pipeline_settings = PipelineSettings()
+
+
+def _legacy_training_path(name: str) -> Path:
+    return _LEGACY_EXPERIMENTS_DIR / name
+
+
+def migrate_legacy_runtime_state() -> list[str]:
+    """Move legacy mutable state into ``data/`` when the new path is empty.
+
+    Returns human-readable messages describing any performed migration.
+    Raises RuntimeError on path conflicts that need manual operator attention.
+    """
+    migrations: list[tuple[Path, Path]] = [
+        (
+            _legacy_training_path("feedback") / "labels.jsonl",
+            Path(pipeline_settings.FEEDBACK_LABELS_PATH),
+        ),
+        (
+            _legacy_training_path("training_data"),
+            Path(pipeline_settings.TRAINING_DATA_DIR),
+        ),
+        (
+            _legacy_training_path("negative_data"),
+            Path(pipeline_settings.NEGATIVE_DATA_DIR),
+        ),
+        (
+            _ML_DIR / f"taste_profile.{pipeline_settings.AI_MODEL}.npz",
+            Path(pipeline_settings.TASTE_PROFILE_PATH),
+        ),
+        (
+            _ML_DIR / f"zeroshot_axes.{pipeline_settings.AI_MODEL}.npz",
+            Path(pipeline_settings.ZEROSHOT_AXES_PATH),
+        ),
+        (
+            _MODELS_DIR / f"learned_head.{pipeline_settings.AI_MODEL}.npz",
+            Path(pipeline_settings.LEARNED_HEAD_PATH),
+        ),
+    ]
+    messages: list[str] = []
+    for legacy, current in migrations:
+        if not legacy.exists():
+            continue
+        if current.exists():
+            raise RuntimeError(
+                "Legacy runtime-state migration conflict: both paths exist "
+                f"({legacy} and {current}). Resolve manually, then restart Marquee."
+            )
+        current.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(legacy), str(current))
+        messages.append(f"{legacy} -> {current}")
+    return messages

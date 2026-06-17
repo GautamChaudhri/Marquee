@@ -13,7 +13,7 @@ two measurable meanings here:
   1. Held-out exemplars are known-liked posters the profile has never seen.
      They should score HIGH — and none should fall below GATE_MIN_KNN_SIM,
      or the style gate would reject a poster we know we like.
-  2. The labeled feedback set (experiments/feedback/labels.jsonl) holds real
+  2. The labeled feedback set (`data/feedback/labels.jsonl` by default) holds real
      pipeline candidates the user kept (label=1) or flagged (label=0). A good
      combo separates them: AUC = probability a random kept poster outscores a
      random flagged one (1.0 = perfect, 0.5 = coin flip).
@@ -163,7 +163,7 @@ def run_sweep(args: argparse.Namespace) -> None:
     profile = load_profile(pipeline_settings.TASTE_PROFILE_PATH)
     embeddings = profile["embeddings"]
     kept, flagged, missing = load_labeled_embeddings(
-        Path("marquee/experiments/feedback/labels.jsonl")
+        Path(pipeline_settings.FEEDBACK_LABELS_PATH)
     )
     gate = pipeline_settings.GATE_MIN_KNN_SIM
 

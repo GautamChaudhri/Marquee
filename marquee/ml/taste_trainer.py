@@ -64,9 +64,7 @@ from marquee.ml.zeroshot import ZeroShotAxes
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 logger = logging.getLogger(__name__)
 
-_DEFAULT_TRAINING_DIR = (
-    Path(__file__).resolve().parents[1] / "experiments" / "training_data"
-)
+_DEFAULT_TRAINING_DIR = Path(pipeline_settings.TRAINING_DATA_DIR)
 _IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff"}
 _YEAR_SUFFIX = re.compile(r"\s*\(\d{4}\)\s*$")
 ProgressCallback = Callable[[dict], None]

@@ -105,16 +105,18 @@ Create `.github/workflows/ci.yml` with:
 
 ### 6. Database backup strategy
 
-`data/marquee.db` is the only stateful artifact. No DB = no letterbox state, no subtitle
-job history, no taste feedback, no pipeline run history.
+**Superseded by `design/14-internal-backup-strategy.md`** — which defines a full
+internal backup system (DB snapshot + state archive, REST API, rotation, restore).
 
-Options (pick one):
-- **Cron + sqlite3 `.backup`**: `sqlite3 data/marquee.db ".backup data/backups/marquee-$(date +%Y%m%d).db"` daily via cron or systemd timer
-- **WAL checkpoint + rsync**: checkpoint first (`PRAGMA wal_checkpoint(TRUNCATE)`), then rsync to NAS
-- **Litestream** (streaming replication to S3/local): zero-RPO, runs as a sidecar
+The three options originally listed here (cron + sqlite3 `.backup`, WAL checkpoint +
+rsync, Litestream) are analyzed and rejected in that document. Summary of why:
+- Cron + `.backup`: DB-only, requires external scheduling, no REST API
+- WAL checkpoint + rsync: requires NAS/secondary target, not point-in-time atomic
+- Litestream: solves a different problem (disaster recovery), DB-only, external sidecar
 
-The `data/` directory already has `.gitkeep` so it's tracked but contents are gitignored.
-Backups should go somewhere outside the repo.
+The chosen approach: in-process `VACUUM INTO` for DB snapshot + gzipped tarball for
+managed non-DB state, stored as per-backup directories under `data/backups/`, with
+rotation and REST API.
 
 ---
 
