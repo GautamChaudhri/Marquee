@@ -72,7 +72,59 @@ export interface LetterboxDetail {
 	error: string | null;
 	prefilter_bucket: string | null;
 	prefilter_reason: string | null;
+	prefilter_aspect_ratio?: number | null;
+	last_prefiltered_at?: string | null;
+	title?: string;
+	year?: number | null;
+	samples?: LetterboxSample[];
+	preview_minute?: number;
 	preview_urls?: { before: string; after: string };
+}
+
+export interface LetterboxSample {
+	minute: number;
+	ok: boolean;
+	top_bar?: number;
+	bottom_bar?: number;
+	bar?: number;
+	error?: string | null;
+}
+
+/** One row in a kanban column (from GET /letterbox/candidates items). */
+export interface LetterboxColumnItem extends LetterboxDetail {
+	title: string;
+	year: number | null;
+}
+
+export interface LetterboxColumn {
+	items: LetterboxColumnItem[];
+	total: number;
+}
+
+export interface LetterboxStatus {
+	enabled: boolean;
+	method: string;
+	counts: Record<string, number>;
+	binaries: Record<string, boolean>;
+	honored_by?: string[];
+	not_honored_by?: string[];
+	last_scan: string | null;
+	batch_active: string | null;
+}
+
+export interface LetterboxJobRef {
+	job_id: string;
+	detector?: string;
+	total: number;
+	events_url: string;
+}
+
+export interface LetterboxAnalyzeSummary {
+	candidate: number;
+	not_letterboxed: number;
+	variable: number;
+	total: number;
+	completed: number;
 }
 
 export interface SystemMetrics {

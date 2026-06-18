@@ -41,16 +41,24 @@ export function toneVar(tone: Tone): string {
 
 export function letterboxMeta(status: string): { label: string; tone: Tone } | null {
 	const map: Record<string, { label: string; tone: Tone }> = {
-		candidate: { label: 'Candidate', tone: 'warn' },
-		prefilter_candidate: { label: 'Candidate', tone: 'warn' },
-		not_letterboxed: { label: 'Clean', tone: 'muted' },
+		candidate: { label: 'Detected', tone: 'warn' },
+		prefilter_candidate: { label: 'Candidate', tone: 'gold' },
+		prefilter_unknown: { label: 'Needs probe', tone: 'gold' },
+		not_letterboxed: { label: 'Not letterboxed', tone: 'muted' },
 		tagged: { label: 'Tagged', tone: 'good' },
 		variable_unsafe: { label: 'Unsafe', tone: 'bad' },
 		skipped: { label: 'Skipped', tone: 'muted' },
+		ineligible: { label: 'Ineligible', tone: 'low' },
 		errored: { label: 'Error', tone: 'bad' }
 	};
 	if (status === 'none') return null;
 	return map[status] ?? { label: status, tone: 'info' };
+}
+
+/** Aspect ratio from source dims, e.g. 1.85. */
+export function aspectRatio(w?: number | null, h?: number | null): string | null {
+	if (!w || !h) return null;
+	return (w / h).toFixed(2);
 }
 
 export function bytesH(n: number | null | undefined): string {
