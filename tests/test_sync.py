@@ -171,6 +171,59 @@ async def test_sync_movies_never_overwrites_poster(db: AsyncSession, tmp_path: P
 
 
 @pytest.mark.asyncio
+async def test_sync_movies_populates_hdr_dv(db: AsyncSession):
+    """videoDynamicRangeType from Radarr mediaInfo sets has_hdr / has_dv."""
+    radarr = AsyncMock()
+    radarr.get_movies.return_value = [
+        _radarr_movie(
+            movieFile={
+                "relativePath": "Dune (2021).mkv",
+                "mediaInfo": {
+                    "width": 3840,
+                    "height": 1600,
+                    "videoDynamicRangeType": "DV HDR10",
+                },
+            }
+        )
+    ]
+
+    svc = SyncService(db, radarr=radarr)
+    await svc.sync_all()
+
+    movie = (await db.execute(select(Movie).where(Movie.radarr_id == 1))).scalar_one()
+    assert movie.has_dv is True
+    assert movie.has_hdr is True
+    assert movie.video_width == 3840
+
+
+@pytest.mark.asyncio
+async def test_sync_movies_hdr_sdr_vs_unknown(db: AsyncSession):
+    """Explicit SDR → False/False; absent dynamic-range info → NULL (unchecked)."""
+    radarr = AsyncMock()
+    radarr.get_movies.return_value = [
+        _radarr_movie(
+            title="SDR Film",
+            movieFile={"relativePath": "a.mkv", "mediaInfo": {"videoDynamicRange": "SDR"}},
+        ),
+        _radarr_movie(
+            id=2, title="Unknown Film", tmdbId=2,
+            movieFile={"relativePath": "b.mkv"},  # no mediaInfo
+        ),
+    ]
+
+    svc = SyncService(db, radarr=radarr)
+    await svc.sync_all()
+
+    sdr = (await db.execute(select(Movie).where(Movie.title == "SDR Film"))).scalar_one()
+    assert sdr.has_hdr is False
+    assert sdr.has_dv is False
+
+    unknown = (await db.execute(select(Movie).where(Movie.title == "Unknown Film"))).scalar_one()
+    assert unknown.has_hdr is None
+    assert unknown.has_dv is None
+
+
+@pytest.mark.asyncio
 async def test_sync_movies_clears_stale_poster_path(db: AsyncSession):
     """A recorded poster whose file no longer exists must be NULLed.
 

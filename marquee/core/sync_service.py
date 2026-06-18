@@ -172,6 +172,12 @@ class SyncService:
                 if container:
                     movie.container = container
 
+                # ── HDR / Dolby Vision (frontend G2 badges) ───────────
+                has_hdr, has_dv = _extract_hdr(movie_file)
+                if has_hdr is not None:
+                    movie.has_hdr = has_hdr
+                    movie.has_dv = has_dv
+
                 # ── Quality ───────────────────────────────────────────
                 movie.quality_profile_id = data.get("qualityProfileId")
 
@@ -563,6 +569,33 @@ def _extract_media_info(movie_file: dict) -> tuple[int | None, int | None, str |
         container = suffix or None
 
     return width, height, container
+
+
+def _extract_hdr(movie_file: dict) -> tuple[bool | None, bool | None]:
+    """Derive ``(has_hdr, has_dv)`` from a Radarr ``movieFile.mediaInfo``.
+
+    Radarr exposes ``videoDynamicRangeType`` (e.g. ``"DV"``, ``"HDR10"``,
+    ``"HDR10Plus"``, ``"HLG"``, ``"PQ"``, ``"DV HDR10"``) and/or
+    ``videoDynamicRange`` (``"HDR"``/``"SDR"``/``""``). Returns ``(None, None)``
+    when nothing is reported, leaving the columns NULL ("not checked") rather
+    than asserting SDR. Booleans can't distinguish HDR10+ from HDR10.
+    """
+    media_info = movie_file.get("mediaInfo") or {}
+    range_type = (media_info.get("videoDynamicRangeType") or "").upper()
+    range_str = (media_info.get("videoDynamicRange") or "").upper()
+
+    if not range_type and not range_str:
+        return None, None
+
+    has_dv = "DV" in range_type or "DOLBY" in range_type
+    has_hdr = (
+        any(tag in range_type for tag in ("HDR10", "HLG", "PQ", "HDR"))
+        or range_str == "HDR"
+    )
+    if not has_dv and not has_hdr:
+        # Explicitly reported and neither HDR nor DV → SDR.
+        return False, False
+    return has_hdr, has_dv
 
 
 def _validate_folder(raw_path: str, *, source: str = "radarr") -> Path | None:

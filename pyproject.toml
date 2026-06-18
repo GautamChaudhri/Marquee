@@ -48,6 +48,9 @@ dependencies = [
     # Utilities
     "python-dotenv>=1.0,<2.0",
     "python-multipart>=0.0.12,<1.0",
+    # Host telemetry for the dashboard (CPU/RAM/disk/uptime). GPU metrics use
+    # nvidia-ml-py, which ships in the [nvidia] extra.
+    "psutil>=5.9,<8.0",
     # Subtitle management (design 03). System media tools are installed through
     # the OS package manager; these are the lightweight Python parsing pieces.
     "pysubs2>=1.6,<2.0",
@@ -76,6 +79,8 @@ cpu = [
 ]
 nvidia = [
     "onnxruntime-gpu>=1.19,<2.0",
+    # NVML bindings for dashboard GPU metrics (util/VRAM/temp/power/enc).
+    "nvidia-ml-py>=12.0,<13.0",
 ]
 intel = [
     "onnxruntime-openvino>=1.19,<2.0",
