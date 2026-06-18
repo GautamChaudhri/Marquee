@@ -76,6 +76,7 @@ export interface LetterboxDetail {
 	last_prefiltered_at?: string | null;
 	variable_ar?: boolean;
 	variable_ar_note?: string | null;
+	dolby_vision?: DolbyVisionInfo;
 	title?: string;
 	year?: number | null;
 	samples?: LetterboxSample[];
@@ -127,6 +128,113 @@ export interface LetterboxAnalyzeSummary {
 	variable: number;
 	total: number;
 	completed: number;
+}
+
+export interface DolbyVisionInfo {
+	present: boolean;
+	profile: number | null;
+	level: number | null;
+	el_present: boolean | null;
+	bl_signal_compatibility_id: number | null;
+	preservation: { status: string; supported: boolean; reason: string | null };
+}
+
+/** A planned permanent re-encode (POST /letterbox/movies/{id}/reencode-plan). */
+export interface ReencodePlan {
+	job_id: string;
+	status: string;
+	expires_at: string;
+	method: string;
+	crop: { top: number; bottom: number; output_height: number };
+	source: {
+		path: string;
+		size_bytes: number;
+		codec: string | null;
+		width: number;
+		height: number;
+		pix_fmt: string | null;
+		color_transfer: string | null;
+		color_primaries: string | null;
+		color_space: string | null;
+		has_hdr: boolean;
+		has_dovi: boolean;
+		dovi_profile: number | null;
+	};
+	encoder: {
+		codec: string;
+		encoder: string;
+		family: string;
+		quality: number;
+		preset: string | null;
+		available_encoders: string[];
+		used_cpu_fallback: boolean;
+	};
+	hdr: { status: string };
+	// Flattened preservation fields + profile/level (see build_plan).
+	dovi: {
+		status: string;
+		supported: boolean;
+		reason: string | null;
+		profile: number | null;
+		level: number | null;
+		el_present: boolean | null;
+	};
+	storage: {
+		estimated_temp_bytes: number;
+		free_bytes: number;
+		original_preserved_by_default: boolean;
+		replace_original_after_review: boolean;
+	};
+	warnings: ReencodeWarning[];
+	confirmation_required: boolean;
+	input_signature: string;
+}
+
+export interface ReencodeWarning {
+	code: string;
+	message: string;
+	requires_confirmation: boolean;
+}
+
+/** Overrides sent to the re-encode plan endpoint. */
+export interface ReencodeOptions {
+	top?: number | null;
+	bottom?: number | null;
+	allow_cpu_fallback?: boolean | null;
+	encoder?: string | null;
+	quality?: number | null;
+	preset?: string | null;
+	codec?: string | null;
+}
+
+export interface ReencodeArtifact {
+	id: number;
+	job_id: string | null;
+	movie_id: number;
+	status: string;
+	original_path: string;
+	candidate_path: string | null;
+	saved_original_path: string | null;
+	original_size_bytes: number | null;
+	candidate_size_bytes: number | null;
+	encoder: string | null;
+	encoder_family: string | null;
+	codec: string | null;
+	crop_top: number;
+	crop_bottom: number;
+	hdr_status: string | null;
+	dovi_status: string | null;
+	created_at: string | null;
+}
+
+export interface ReencodeArtifactList {
+	summary: {
+		counts: Record<string, number>;
+		candidate_bytes: number;
+		saved_original_bytes: number;
+		total_bytes: number;
+	};
+	items: ReencodeArtifact[];
 }
 
 export interface SystemMetrics {

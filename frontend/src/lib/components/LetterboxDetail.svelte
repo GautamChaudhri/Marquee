@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { letterboxMeta, toneVar, aspectRatio } from '$lib/display';
 	import { toast } from '$lib/toast';
-	import type { LetterboxDetail } from '$lib/api/types';
+	import type { LetterboxDetail, ReencodePlan, ReencodeArtifact } from '$lib/api/types';
 	import {
 		getLetterboxState,
 		detectLetterbox,
@@ -9,10 +9,48 @@
 		ignoreLetterbox,
 		removeLetterbox,
 		confirmLetterbox,
-		reprocessLetterbox
+		reprocessLetterbox,
+		createReencodePlan,
+		confirmJob,
+		listReencodeArtifacts,
+		replaceOriginal,
+		deleteArtifact
 	} from '$lib/api/letterbox';
+	import { subscribe } from '$lib/sse';
 	import StatusDot from './StatusDot.svelte';
+	import ProgressBar from './ProgressBar.svelte';
 	import Icon from './Icon.svelte';
+
+	// Encoders the re-encode backend actually drives; intersected with the
+	// FFmpeg build's available list to populate the encoder dropdown.
+	const KNOWN_ENCODERS = [
+		'hevc_nvenc',
+		'h264_nvenc',
+		'hevc_qsv',
+		'h264_qsv',
+		'hevc_vaapi',
+		'h264_vaapi',
+		'libx265',
+		'libx264'
+	];
+	const NVENC_PRESETS = ['p1', 'p2', 'p3', 'p4', 'p5', 'p6', 'p7'];
+	const CPU_PRESETS = [
+		'ultrafast',
+		'superfast',
+		'veryfast',
+		'faster',
+		'fast',
+		'medium',
+		'slow',
+		'slower',
+		'veryslow'
+	];
+
+	function fmtBytes(n: number | null | undefined): string {
+		if (!n) return '—';
+		const gb = n / 1e9;
+		return gb >= 1 ? `${gb.toFixed(2)} GB` : `${(n / 1e6).toFixed(0)} MB`;
+	}
 
 	let {
 		movieId,
@@ -80,6 +118,29 @@
 		return w && ah ? (w / ah).toFixed(2) + ':1' : null;
 	});
 
+	// Tray accent for the selected movie's stage → colors the panel's top border.
+	const panelAccent = $derived(
+		(
+			{
+				candidate: 'var(--warn)',
+				detected: 'var(--info)',
+				preview: 'var(--dovi)',
+				clean: 'var(--bad)',
+				processed: 'var(--good)'
+			} as Record<string, string>
+		)[stage] ?? 'var(--muted)'
+	);
+
+	// Both aspect ratios for a variable-AR film, parsed from the detector's note
+	// (format owned by consensus(): "...alternates between 1.90:1 (4 samples),
+	// 2.39:1 (8 samples)...").
+	const variableRatios = $derived.by(() => {
+		if (!detail?.variable_ar) return null;
+		const found = detail.variable_ar_note?.match(/\d+\.\d{2}:1/g) ?? [];
+		const unique = [...new Set(found)];
+		return unique.length >= 2 ? unique.join(' / ') : (afterAR ?? null);
+	});
+
 	// Override preview URLs when the user clicks a sample frame row.
 	const activeMinute = $derived(previewMinute ?? detail?.preview_minute ?? 5);
 	const beforeUrl = $derived(
@@ -96,6 +157,7 @@
 	// Assign a stable color per unique bar value so each group gets its own icon color.
 	const BAR_COLORS = ['var(--gold)', 'var(--info)', 'var(--good)', 'var(--warn)', 'var(--bad)', 'var(--muted)'];
 	function barColorMap(samples: LetterboxDetail['samples']): Map<number, string> {
+		// eslint-disable-next-line svelte/prefer-svelte-reactivity -- transient lookup, recomputed per render
 		const seen = new Map<number, string>();
 		for (const s of samples ?? []) {
 			if (!s.ok) continue;
@@ -128,9 +190,173 @@
 	}
 
 	const id = $derived(movieId);
+
+	// ── Permanent re-encode flow ────────────────────────────────────────────────
+	type Method = 'quick' | 'permanent';
+	let method = $state<Method>('quick');
+	let showAdvanced = $state(false);
+
+	// User-editable settings (null/'' = use plan default).
+	let setEncoder = $state('auto');
+	let setQuality = $state<number | null>(null);
+	let setPreset = $state('');
+	let setCodec = $state('preserve');
+	let setAllowCpu = $state(true);
+	let cropTopOverride = $state<number | null>(null);
+	let cropBottomOverride = $state<number | null>(null);
+
+	let plan = $state<ReencodePlan | null>(null);
+	let planError = $state<string | null>(null);
+	let planLoading = $state(false);
+	let encoding = $state(false);
+	let encodeProgress = $state(0);
+	let encodeStage = $state<string | null>(null);
+	let artifact = $state<ReencodeArtifact | null>(null);
+	let unsub: (() => void) | null = null;
+
+	const presetOptions = $derived(
+		plan?.encoder.family === 'nvidia'
+			? NVENC_PRESETS
+			: plan?.encoder.family === 'cpu'
+				? CPU_PRESETS
+				: []
+	);
+	const encoderOptions = $derived(plan?.encoder.available_encoders.filter((e) => KNOWN_ENCODERS.includes(e)) ?? []);
+
+	// Reset the re-encode sub-state whenever the selected movie changes.
+	$effect(() => {
+		void movieId;
+		method = 'quick';
+		showAdvanced = false;
+		plan = null;
+		planError = null;
+		artifact = null;
+		encoding = false;
+		encodeProgress = 0;
+		setEncoder = 'auto';
+		setQuality = null;
+		setPreset = '';
+		setCodec = 'preserve';
+		setAllowCpu = true;
+		cropTopOverride = null;
+		cropBottomOverride = null;
+		if (unsub) {
+			unsub();
+			unsub = null;
+		}
+	});
+
+	async function loadPlan() {
+		if (id == null) return;
+		planLoading = true;
+		planError = null;
+		try {
+			plan = await createReencodePlan(fetch, id, {
+				top: cropTopOverride,
+				bottom: cropBottomOverride,
+				allow_cpu_fallback: setAllowCpu,
+				encoder: setEncoder === 'auto' ? null : setEncoder,
+				quality: setQuality,
+				preset: setPreset || null,
+				codec: setCodec
+			});
+		} catch (e) {
+			plan = null;
+			const body = (e as { body?: { detail?: { message?: string } } })?.body;
+			planError = body?.detail?.message ?? (e instanceof Error ? e.message : 'Could not plan re-encode');
+		} finally {
+			planLoading = false;
+		}
+	}
+
+	function selectMethod(m: Method) {
+		method = m;
+		if (m === 'permanent' && !plan && !planLoading) loadPlan();
+	}
+
+	async function startEncode() {
+		if (!plan || id == null) return;
+		encoding = true;
+		encodeProgress = 0;
+		encodeStage = 'queued';
+		artifact = null;
+		try {
+			await confirmJob(fetch, plan.job_id);
+		} catch (e) {
+			encoding = false;
+			toast(e instanceof Error ? e.message : 'Could not start encode', 'bad');
+			return;
+		}
+		const jobId = plan.job_id;
+		unsub = subscribe(`/api/media-jobs/${jobId}/events`, ['message', 'done'], async (type, data) => {
+			if (type === 'done') {
+				if (unsub) {
+					unsub();
+					unsub = null;
+				}
+				await finishEncode();
+				return;
+			}
+			const ev = data as { stage?: string; state?: string; progress?: { percent?: number } | null };
+			if (ev.stage) encodeStage = ev.stage;
+			if (ev.progress?.percent != null) encodeProgress = ev.progress.percent;
+		});
+	}
+
+	async function finishEncode() {
+		if (id == null) return;
+		try {
+			const list = await listReencodeArtifacts(fetch, { movie_id: id });
+			const ready = list.items.find((a) => a.status === 'candidate_ready' || a.status === 'kept');
+			if (ready) {
+				artifact = ready;
+				encodeProgress = 100;
+				toast('Re-encode complete — review the candidate', 'good');
+			} else {
+				toast('Re-encode finished but no candidate was produced (check job log)', 'bad');
+			}
+		} catch (e) {
+			toast(e instanceof Error ? e.message : 'Could not load candidate', 'bad');
+		} finally {
+			encoding = false;
+		}
+	}
+
+	async function doReplace() {
+		if (!artifact || busy) return;
+		busy = true;
+		try {
+			await replaceOriginal(fetch, artifact.id);
+			toast('Original replaced — re-encode applied', 'good');
+			lastId = null;
+			onChanged();
+		} catch (e) {
+			toast(e instanceof Error ? e.message : 'Replace failed', 'bad');
+		} finally {
+			busy = false;
+		}
+	}
+
+	async function doDiscard() {
+		if (!artifact || busy) return;
+		busy = true;
+		try {
+			await deleteArtifact(fetch, artifact.id);
+			toast('Candidate discarded', 'good');
+			artifact = null;
+			plan = null;
+			method = 'quick';
+		} catch (e) {
+			toast(e instanceof Error ? e.message : 'Discard failed', 'bad');
+		} finally {
+			busy = false;
+		}
+	}
 </script>
 
-<div class="panel">
+<svelte:window onbeforeunload={() => unsub?.()} />
+
+<div class="panel" style="--panel-accent:{panelAccent}">
 	{#if movieId == null}
 		<div class="empty">
 			<Icon name="letterbox" size={32} stroke={1} />
@@ -182,28 +408,182 @@
 			<div class="actions det-actions">
 				<div class="alabel">Actions</div>
 				{#if stage === 'detected'}
-					<div class="fix-card active">
-						<div class="fix-head">⚡ Quick · Crop Tag <span class="fix-on">Active</span></div>
+					<button
+						class="fix-card"
+						class:active={method === 'quick'}
+						onclick={() => selectMethod('quick')}
+					>
+						<div class="fix-head">
+							⚡ Quick · Crop Tag
+							{#if method === 'quick'}<span class="fix-on">Active</span>{/if}
+						</div>
 						<div class="fix-body">MKV pixel-crop tag. Instant & reversible. No quality loss.</div>
-					</div>
-					<div class="fix-card disabled">
-						<div class="fix-head">🛠 Permanent · Re-encode</div>
-						<div class="fix-body">FFmpeg re-encode. Coming soon.</div>
-					</div>
-					<button
-						class="btn-gold"
-						disabled={busy}
-						onclick={() => run(() => applyLetterbox(fetch, id!), 'Crop tag applied')}
-					>
-						Apply crop tag →
 					</button>
 					<button
-						class="btn-ghost"
-						disabled={busy}
-						onclick={() => run(() => ignoreLetterbox(fetch, id!), 'Skipped')}
+						class="fix-card"
+						class:active={method === 'permanent'}
+						onclick={() => selectMethod('permanent')}
 					>
-						Skip
+						<div class="fix-head">
+							🛠 Permanent · Re-encode
+							{#if method === 'permanent'}<span class="fix-on">Active</span>{/if}
+						</div>
+						<div class="fix-body">
+							FFmpeg re-encode. Works on all clients. Higher quality cost; original is
+							preserved.
+						</div>
 					</button>
+
+					{#if method === 'quick'}
+						<button
+							class="btn-gold"
+							disabled={busy}
+							onclick={() => run(() => applyLetterbox(fetch, id!), 'Crop tag applied')}
+						>
+							Apply crop tag →
+						</button>
+						<button
+							class="btn-ghost"
+							disabled={busy}
+							onclick={() => run(() => ignoreLetterbox(fetch, id!), 'Skipped')}
+						>
+							Skip
+						</button>
+					{:else if artifact}
+						<!-- Encode finished: candidate ready for review -->
+						<div class="applied-card">
+							<div class="alabel">Candidate ready</div>
+							<dl class="enc-summary">
+								<dt>Encoder</dt>
+								<dd class="mono">{artifact.encoder ?? '—'} · {artifact.codec ?? '—'}</dd>
+								<dt>Size</dt>
+								<dd class="mono">
+									{fmtBytes(artifact.candidate_size_bytes)}
+									<span class="crop-note">(was {fmtBytes(artifact.original_size_bytes)})</span>
+								</dd>
+								{#if artifact.dovi_status}
+									<dt>Dolby Vision</dt>
+									<dd class="mono">{artifact.dovi_status}</dd>
+								{/if}
+							</dl>
+						</div>
+						<button class="btn-gold" disabled={busy} onclick={doReplace}>
+							Replace original →
+						</button>
+						<button class="btn-ghost" disabled={busy} onclick={doDiscard}>Discard candidate</button>
+						<div class="note good">
+							The original is preserved under <span class="mono">.marquee/backups</span> after
+							replacement — reversible later.
+						</div>
+					{:else if encoding}
+						<div class="applied-card">
+							<div class="alabel">Encoding · {encodeStage ?? 'working'}</div>
+							<ProgressBar value={encodeProgress} tone="gold" />
+							<div class="crop-note" style="margin-top:6px">{Math.round(encodeProgress)}%</div>
+						</div>
+					{:else if planLoading}
+						<div class="note">Planning re-encode…</div>
+					{:else if planError}
+						<div class="note err">{planError}</div>
+						<button class="btn-sec" onclick={loadPlan}>Retry plan</button>
+					{:else if plan}
+						<!-- Most-relevant settings (always visible) -->
+						<div class="settings">
+							<label class="field">
+								<span>Quality (CQ/CRF) · lower = better</span>
+								<input
+									type="number"
+									min="0"
+									max="51"
+									placeholder={String(plan.encoder.quality)}
+									bind:value={setQuality}
+									onchange={loadPlan}
+								/>
+							</label>
+							<label class="field">
+								<span>Encoder</span>
+								<select bind:value={setEncoder} onchange={loadPlan}>
+									<option value="auto">Auto ({plan.encoder.encoder})</option>
+									{#each encoderOptions as enc (enc)}
+										<option value={enc}>{enc}</option>
+									{/each}
+								</select>
+							</label>
+							<div class="field-row">
+								<label class="field">
+									<span>Crop top</span>
+									<input
+										type="number"
+										min="0"
+										placeholder={String(detail.recommended_crop_top ?? 0)}
+										bind:value={cropTopOverride}
+										onchange={loadPlan}
+									/>
+								</label>
+								<label class="field">
+									<span>Crop bottom</span>
+									<input
+										type="number"
+										min="0"
+										placeholder={String(detail.recommended_crop_bottom ?? 0)}
+										bind:value={cropBottomOverride}
+										onchange={loadPlan}
+									/>
+								</label>
+							</div>
+
+							<button class="adv-toggle" onclick={() => (showAdvanced = !showAdvanced)}>
+								{showAdvanced ? '▾' : '▸'} Advanced settings
+							</button>
+							{#if showAdvanced}
+								{#if presetOptions.length > 0}
+									<label class="field">
+										<span>Preset (speed ↔ quality)</span>
+										<select bind:value={setPreset} onchange={loadPlan}>
+											<option value="">Default ({plan.encoder.preset ?? 'auto'})</option>
+											{#each presetOptions as p (p)}
+												<option value={p}>{p}</option>
+											{/each}
+										</select>
+									</label>
+								{/if}
+								<label class="field">
+									<span>Target codec</span>
+									<select bind:value={setCodec} onchange={loadPlan}>
+										<option value="preserve">Preserve ({plan.source.codec ?? '—'})</option>
+										<option value="hevc">HEVC (H.265)</option>
+										<option value="h264">H.264</option>
+									</select>
+								</label>
+								<label class="field checkbox">
+									<input type="checkbox" bind:checked={setAllowCpu} onchange={loadPlan} />
+									<span>Allow CPU encoding fallback</span>
+								</label>
+								<dl class="enc-summary">
+									<dt>Resolved encoder</dt>
+									<dd class="mono">{plan.encoder.encoder} · {plan.encoder.family}</dd>
+									<dt>HDR</dt>
+									<dd class="mono">{plan.hdr.status}</dd>
+									<dt>Dolby Vision</dt>
+									<dd class="mono">{plan.dovi.status}{#if plan.dovi.reason} · {plan.dovi.reason}{/if}</dd>
+									<dt>Est. temp size</dt>
+									<dd class="mono">
+										{fmtBytes(plan.storage.estimated_temp_bytes)}
+										<span class="crop-note">/ {fmtBytes(plan.storage.free_bytes)} free</span>
+									</dd>
+								</dl>
+							{/if}
+						</div>
+
+						{#each plan.warnings as w (w.code)}
+							<div class="note {w.requires_confirmation ? 'warn' : ''}">{w.message}</div>
+						{/each}
+
+						<button class="btn-gold" disabled={busy} onclick={startEncode}>
+							Confirm & encode →
+						</button>
+						<button class="btn-ghost" onclick={() => selectMethod('quick')}>Cancel</button>
+					{/if}
 				{:else if stage === 'preview'}
 					<div class="applied-card">
 						<div class="alabel">MKV pixel-crop value</div>
@@ -266,12 +646,17 @@
 						<dt>Dimensions</dt>
 						<dd class="mono">{detail.source_width}×{afterHeight}</dd>
 					{/if}
-					{#if afterAR}
+					{#if detail.variable_ar && variableRatios}
+						<dt class="dt-variable">Variable aspect ratio</dt>
+						<dd class="mono variable">{variableRatios}</dd>
+					{:else if afterAR}
 						<dt>Aspect ratio</dt>
 						<dd class="mono">{afterAR}</dd>
 					{/if}
 					<dt>Crop T / B</dt>
-					<dd class="mono gold">{cropLabel}</dd>
+					<dd class="mono gold">
+						{cropLabel}{#if detail.variable_ar}<span class="crop-note"> · defaulting to smaller crop</span>{/if}
+					</dd>
 					{#if detail.confidence && detail.confidence !== 'none'}
 						<dt>Confidence</dt>
 						<dd>
@@ -286,9 +671,6 @@
 						</dd>
 					{/if}
 				</dl>
-				{#if detail.variable_ar_note}
-					<div class="note warn">{detail.variable_ar_note}</div>
-				{/if}
 				{#if showConf}
 					<div class="conf-expand">
 						{#if detail.samples && detail.samples.length > 0}
@@ -363,7 +745,10 @@
 						<dt>Dimensions</dt>
 						<dd class="mono">{detail.source_width}×{detail.source_height}</dd>
 					{/if}
-					{#if aspectRatio(detail.source_width, detail.source_height)}
+					{#if detail.variable_ar && variableRatios}
+						<dt class="dt-variable">Variable aspect ratio</dt>
+						<dd class="mono variable">{variableRatios}</dd>
+					{:else if aspectRatio(detail.source_width, detail.source_height)}
 						<dt>Aspect ratio</dt>
 						<dd class="mono">{aspectRatio(detail.source_width, detail.source_height)}:1</dd>
 					{/if}
@@ -373,9 +758,6 @@
 				{/if}
 				{#if detail.error}
 					<div class="note err">{detail.error}</div>
-				{/if}
-				{#if detail.variable_ar_note}
-					<div class="note warn">{detail.variable_ar_note}</div>
 				{/if}
 			</div>
 
@@ -446,6 +828,7 @@
 <style>
 	.panel {
 		border: 1px solid var(--line);
+		border-top: 2px solid var(--panel-accent, var(--line));
 		border-radius: var(--radius);
 		background: var(--panel);
 		padding: 18px;
@@ -641,6 +1024,20 @@
 	dd.gold {
 		color: var(--gold);
 	}
+	dt.dt-variable {
+		color: var(--gold);
+	}
+	dd.variable {
+		color: var(--gold);
+		font-weight: 600;
+	}
+	.crop-note {
+		font-size: 10.5px;
+		font-weight: 400;
+		color: var(--muted);
+		text-transform: none;
+		letter-spacing: 0;
+	}
 
 	/* preview (used by single-row layout) */
 	.preview {
@@ -704,16 +1101,22 @@
 		font-weight: 700;
 	}
 	.fix-card {
+		display: block;
+		width: 100%;
+		text-align: left;
 		border: 1px solid var(--line2);
 		border-radius: var(--radius-sm);
 		padding: 10px 12px;
+		background: transparent;
+		color: inherit;
+		cursor: pointer;
+	}
+	.fix-card:hover {
+		border-color: var(--faint);
 	}
 	.fix-card.active {
 		border-color: var(--gold);
 		background: var(--gold-soft);
-	}
-	.fix-card.disabled {
-		opacity: 0.5;
 	}
 	.fix-head {
 		font-size: 12.5px;
@@ -735,6 +1138,57 @@
 		color: var(--muted);
 		margin-top: 4px;
 		line-height: 1.4;
+	}
+	.settings {
+		display: flex;
+		flex-direction: column;
+		gap: 9px;
+		border: 1px solid var(--line2);
+		border-radius: var(--radius-sm);
+		padding: 11px 12px;
+		background: var(--ink2);
+	}
+	.field {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+		font-size: 11px;
+		color: var(--muted);
+	}
+	.field input[type='number'],
+	.field select {
+		font-size: 12.5px;
+		padding: 5px 7px;
+		border: 1px solid var(--line2);
+		border-radius: 6px;
+		background: var(--panel);
+		color: var(--text);
+		font-family: var(--font-mono);
+	}
+	.field-row {
+		display: grid;
+		grid-template-columns: 1fr 1fr;
+		gap: 8px;
+	}
+	.field.checkbox {
+		flex-direction: row;
+		align-items: center;
+		gap: 7px;
+	}
+	.adv-toggle {
+		align-self: flex-start;
+		background: transparent;
+		border: none;
+		color: var(--info);
+		font-size: 11.5px;
+		font-weight: 600;
+		cursor: pointer;
+		padding: 2px 0;
+	}
+	.enc-summary {
+		margin-top: 2px;
+		padding-top: 8px;
+		border-top: 1px solid var(--line2);
 	}
 	.applied-card {
 		border: 1px solid var(--line2);

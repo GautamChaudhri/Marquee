@@ -3,7 +3,11 @@ import type {
 	LetterboxColumn,
 	LetterboxDetail,
 	LetterboxJobRef,
-	LetterboxStatus
+	LetterboxStatus,
+	ReencodeArtifact,
+	ReencodeArtifactList,
+	ReencodeOptions,
+	ReencodePlan
 } from './types';
 
 // ── Single-movie state + actions (also used by the film detail hub) ──────────
@@ -95,4 +99,57 @@ export function healDrift(fetchFn: Fetch): Promise<{ checked: number; reapplied:
 /** Apply recommended crop tags to many movies at once. */
 export function applyBatch(fetchFn: Fetch, movieIds: number[]): Promise<unknown> {
 	return apiSend(fetchFn, 'POST', '/letterbox/apply', { movie_ids: movieIds });
+}
+
+// ── Permanent re-encode (media-job workflow) ─────────────────────────────────
+
+/** Plan a permanent cropped re-encode. Returns the resolved encoder/quality/
+ *  HDR-DV plan + a planned job id. No media is written until confirmed. */
+export function createReencodePlan(
+	fetchFn: Fetch,
+	movieId: number,
+	opts: ReencodeOptions = {}
+): Promise<ReencodePlan> {
+	return apiSend<ReencodePlan>(fetchFn, 'POST', `/letterbox/movies/${movieId}/reencode-plan`, opts);
+}
+
+/** Confirm a planned media job → queues it for the durable worker. */
+export function confirmJob(fetchFn: Fetch, jobId: string): Promise<{ job_id: string; status: string }> {
+	return apiSend(fetchFn, 'POST', `/media-jobs/${jobId}/confirm`, {});
+}
+
+export function listReencodeArtifacts(
+	fetchFn: Fetch,
+	q: { movie_id?: number; status?: string } = {}
+): Promise<ReencodeArtifactList> {
+	return apiGet<ReencodeArtifactList>(fetchFn, '/letterbox/reencode-artifacts', {
+		movie_id: q.movie_id,
+		status: q.status
+	});
+}
+
+export function replaceOriginal(fetchFn: Fetch, artifactId: number): Promise<ReencodeArtifact> {
+	return apiSend<ReencodeArtifact>(
+		fetchFn,
+		'POST',
+		`/letterbox/reencode-artifacts/${artifactId}/replace-original`,
+		{}
+	);
+}
+
+export function restoreOriginal(
+	fetchFn: Fetch,
+	artifactId: number,
+	keepCandidate = false
+): Promise<ReencodeArtifact> {
+	return apiSend<ReencodeArtifact>(
+		fetchFn,
+		'POST',
+		`/letterbox/reencode-artifacts/${artifactId}/restore-original`,
+		{ keep_candidate: keepCandidate }
+	);
+}
+
+export function deleteArtifact(fetchFn: Fetch, artifactId: number): Promise<unknown> {
+	return apiSend(fetchFn, 'DELETE', `/letterbox/reencode-artifacts/${artifactId}`);
 }
