@@ -15,7 +15,9 @@ x-marquee-common: &marquee-common
     - EXECUTION_PROVIDER=auto
   volumes:
     - ../marquee/ml/models:/app/marquee/ml/models:ro
-    - ../data:/app/data
+    # Clean runtime state lives in a Docker volume so the container starts
+    # with an empty DB and fresh cache/training/backups directories.
+    - marquee-data:/app/data
     # Media libraries — adjust to your mounts:
     # - /mnt/media/movies:/movies
     # - /mnt/media/tv:/tvshows
@@ -68,3 +70,6 @@ services:
     container_name: marquee
     devices:
       - /dev/dri:/dev/dri
+
+volumes:
+  marquee-data:

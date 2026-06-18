@@ -26,6 +26,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libgl1 \
         libglib2.0-0 \
         libgomp1 \
+        ffmpeg \
+        imagemagick \
+        mkvtoolnix \
     && if [ "${MARQUEE_HW}" = "intel" ]; then \
         apt-get install -y --no-install-recommends \
             intel-opencl-icd \
@@ -34,6 +37,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
+RUN mkdir -p /app/marquee/ml/models /app/data
 COPY pyproject.toml README.md ./
 COPY marquee ./marquee
 COPY alembic ./alembic

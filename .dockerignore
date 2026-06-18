@@ -19,6 +19,7 @@ data/**
 !data/.gitkeep
 !data/**/
 !data/**/.gitkeep
+marquee/ml/models/**
 experiments/**
 !experiments/gauntlet_runner.py
 design/**
