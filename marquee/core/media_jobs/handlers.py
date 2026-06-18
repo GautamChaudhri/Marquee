@@ -99,6 +99,12 @@ async def _restore(db: AsyncSession, job: MediaJob, emit) -> dict:
     return await restore_managed_assets(db, job, emit)
 
 
+async def _letterbox_reencode(db: AsyncSession, job: MediaJob, emit) -> dict:
+    from marquee.core.letterbox_reencode import execute_job  # noqa: PLC0415
+
+    return await execute_job(db, job, emit)
+
+
 _HANDLERS = {
     "subtitle_scan": _scan,
     "subtitle_remove": _mutate,
@@ -108,4 +114,5 @@ _HANDLERS = {
     "subtitle_generate": _generate,
     "subtitle_policy": _policy,
     "subtitle_restore": _restore,
+    "letterbox_reencode": _letterbox_reencode,
 }

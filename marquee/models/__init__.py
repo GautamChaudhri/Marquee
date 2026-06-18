@@ -4,6 +4,7 @@ from marquee.models.artwork_event import ArtworkEvent
 from marquee.models.base import ArtworkMixin, TimestampMixin
 from marquee.models.episode import Episode
 from marquee.models.letterbox import LetterboxEvent, LetterboxState
+from marquee.models.letterbox_reencode import LetterboxReencodeArtifact
 from marquee.models.media_backup import MediaBackup
 from marquee.models.media_file import EpisodeMediaFile, MediaFile
 from marquee.models.media_job import MediaBatch, MediaJob, MediaJobEvent
@@ -24,6 +25,7 @@ __all__ = [
     "TimestampMixin",
     "LetterboxEvent",
     "LetterboxState",
+    "LetterboxReencodeArtifact",
     "EpisodeMediaFile",
     "MediaFile",
     "MediaBatch",

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated
 
@@ -23,13 +23,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.api.deps import enforce_rate_limit, get_rate_limiter
 from marquee.config import settings
+from marquee.core import letterbox_reencode
 from marquee.core.letterbox_service import IneligibleError, letterbox_service
+from marquee.core.media_files import (
+    MediaFileNotFoundError,
+    MediaFileUnavailableError,
+    ensure_media_file_for_movie,
+    resolve_media_file,
+)
+from marquee.core.media_jobs import media_job_manager
 from marquee.core.rate_limit import RateLimiter
 from marquee.database import get_db
 from marquee.media import binaries, letterbox_preview
 from marquee.media.letterbox_manager import BatchInProgressError, letterbox_manager
 from marquee.media.probe import prefilter_bucket
-from marquee.models import LetterboxEvent, LetterboxState, Movie
+from marquee.models import LetterboxEvent, LetterboxReencodeArtifact, LetterboxState, Movie
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +56,7 @@ _DETECTOR_TRUTH_STATUSES = {
     "not_letterboxed",
     "variable_unsafe",
     "tagged",
+    "reencoded",
     "skipped",
     "ineligible",
 }
@@ -215,6 +224,18 @@ def _letterbox_state_summary(state: LetterboxState | None) -> dict | None:
     }
 
 
+async def _dolby_vision_for_movie(db: AsyncSession, movie: Movie) -> dict:
+    try:
+        media_file = await ensure_media_file_for_movie(db, movie)
+        if media_file is None:
+            return letterbox_reencode.dovi_info(None)
+        resolved = await resolve_media_file(db, media_file.id)
+    except (MediaFileNotFoundError, MediaFileUnavailableError):
+        return letterbox_reencode.dovi_info(None)
+    source = letterbox_reencode.inspect_source(resolved.path)
+    return letterbox_reencode.dovi_info(source)
+
+
 def _prefilter_movie_to_dict(movie: Movie, state: LetterboxState | None) -> dict:
     category, prefilter = _prefilter_category(movie)
     has_file = bool(movie.movie_file_path)
@@ -229,6 +250,7 @@ def _prefilter_movie_to_dict(movie: Movie, state: LetterboxState | None) -> dict
         "movie_file_path": movie.movie_file_path,
         "has_file": has_file,
         "container": movie.container,
+        "has_dv": movie.has_dv,
         "source_width": movie.video_width,
         "source_height": movie.video_height,
         "resolution": _resolution_label(movie.video_width, movie.video_height),
@@ -447,6 +469,7 @@ async def get_movie_detail(
     detail["samples"] = samples
     detail["honored_by"] = _HONORED_BY
     detail["not_honored_by"] = _NOT_HONORED_BY
+    detail["dolby_vision"] = await _dolby_vision_for_movie(db, movie)
     detail["preview_minute"] = preview_minute
     detail["preview_urls"] = {
         "before": f"/api/letterbox/movies/{movie_id}/preview?mode=before&minute={preview_minute}",
@@ -527,7 +550,9 @@ async def detect_one(
     movie = await _load_movie(db, movie_id)
     state = await letterbox_manager.detect_and_store(db, movie)
     limiter.record(f"lb_detect:{movie_id}")
-    return _state_to_dict(state, movie)
+    detail = _state_to_dict(state, movie)
+    detail["dolby_vision"] = await _dolby_vision_for_movie(db, movie)
+    return detail
 
 
 @router.post("/detect", status_code=202)
@@ -626,6 +651,16 @@ class BatchApplyRequest(BaseModel):
     only_high: bool = False
 
 
+class ReencodePlanRequest(BaseModel):
+    top: int | None = None
+    bottom: int | None = None
+    allow_cpu_fallback: bool | None = None
+
+
+class RestoreReencodeRequest(BaseModel):
+    keep_candidate: bool = False
+
+
 @router.post("/movies/{movie_id}/apply")
 async def apply_one(
     movie_id: int,
@@ -689,6 +724,149 @@ async def apply_batch(
             results.append({"movie_id": movie_id, "applied": False, "reason": exc.reason})
     applied = sum(1 for r in results if r["applied"])
     return {"applied": applied, "total": len(body.movie_ids), "results": results}
+
+
+def _map_reencode_error(exc: letterbox_reencode.ReencodePlanError) -> HTTPException:
+    return HTTPException(
+        status_code=422,
+        detail={"code": exc.code, "message": str(exc), "warnings": exc.warnings},
+    )
+
+
+async def _load_reencode_artifact(
+    db: AsyncSession, artifact_id: int
+) -> LetterboxReencodeArtifact:
+    artifact = await db.get(LetterboxReencodeArtifact, artifact_id)
+    if artifact is None:
+        raise HTTPException(status_code=404, detail=f"Re-encode artifact {artifact_id} not found")
+    return artifact
+
+
+@router.post("/movies/{movie_id}/reencode-plan", status_code=201)
+async def create_reencode_plan(
+    movie_id: int,
+    body: ReencodePlanRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    """Plan a permanent cropped re-encode. No media file is written here."""
+    _require_ffmpeg()
+    movie = await _load_movie(db, movie_id)
+    state = await _load_state(db, movie_id)
+    if state.status == "variable_unsafe":
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "variable_unsafe", "message": "Variable aspect ratio is unsafe to crop permanently."},
+        )
+    top = body.top if body.top is not None else state.recommended_crop_top
+    bottom = body.bottom if body.bottom is not None else state.recommended_crop_bottom
+    if not top and not bottom:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "missing_crop", "message": "No crop to apply (recommendation is 0)."},
+        )
+    media_file = await ensure_media_file_for_movie(db, movie)
+    if media_file is None:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "missing_media_file", "message": "Movie has no media file path."},
+        )
+    try:
+        resolved = await resolve_media_file(db, media_file.id)
+        plan = await letterbox_reencode.build_plan(
+            db,
+            resolved,
+            top=top or 0,
+            bottom=bottom or 0,
+            allow_cpu_fallback=body.allow_cpu_fallback,
+        )
+    except (MediaFileNotFoundError, MediaFileUnavailableError) as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "file_unavailable", "message": str(exc)},
+        ) from exc
+    except letterbox_reencode.ReencodePlanError as exc:
+        raise _map_reencode_error(exc) from exc
+
+    expires_at = datetime.now(UTC) + timedelta(hours=2)
+    job = await media_job_manager.create_job(
+        db,
+        operation="letterbox_reencode",
+        media_file_id=media_file.id,
+        trigger="manual",
+        request={
+            "movie_id": movie_id,
+            "top": top or 0,
+            "bottom": bottom or 0,
+            "allow_cpu_fallback": body.allow_cpu_fallback,
+        },
+        plan=plan,
+        status="planned",
+        input_signature=resolved.signature,
+        plan_expires_at=expires_at,
+    )
+    return {
+        "job_id": job.job_id,
+        "status": "planned",
+        "expires_at": expires_at.isoformat(),
+        **plan,
+    }
+
+
+@router.get("/reencode-artifacts")
+async def list_reencode_artifacts(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    status: str | None = None,
+    movie_id: int | None = None,
+    limit: int = Query(100, ge=1, le=500),
+):
+    query = select(LetterboxReencodeArtifact).order_by(
+        LetterboxReencodeArtifact.created_at.desc()
+    ).limit(limit)
+    if status:
+        query = query.where(LetterboxReencodeArtifact.status == status)
+    if movie_id:
+        query = query.where(LetterboxReencodeArtifact.movie_id == movie_id)
+    rows = (await db.execute(query)).scalars().all()
+    return {
+        "summary": await letterbox_reencode.artifact_summary(db),
+        "items": [letterbox_reencode.artifact_to_dict(row) for row in rows],
+    }
+
+
+@router.post("/reencode-artifacts/{artifact_id}/replace-original")
+async def replace_reencode_original(
+    artifact_id: int,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    artifact = await _load_reencode_artifact(db, artifact_id)
+    try:
+        return await letterbox_reencode.replace_original(db, artifact)
+    except letterbox_reencode.ReencodePlanError as exc:
+        raise _map_reencode_error(exc) from exc
+
+
+@router.post("/reencode-artifacts/{artifact_id}/restore-original")
+async def restore_reencode_original(
+    artifact_id: int,
+    body: RestoreReencodeRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    artifact = await _load_reencode_artifact(db, artifact_id)
+    try:
+        return await letterbox_reencode.restore_original(
+            db, artifact, keep_candidate=body.keep_candidate
+        )
+    except letterbox_reencode.ReencodePlanError as exc:
+        raise _map_reencode_error(exc) from exc
+
+
+@router.delete("/reencode-artifacts/{artifact_id}")
+async def delete_reencode_artifact(
+    artifact_id: int,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    artifact = await _load_reencode_artifact(db, artifact_id)
+    return await letterbox_reencode.delete_artifact_files(db, artifact)
 
 
 @router.post("/movies/{movie_id}/remove")
