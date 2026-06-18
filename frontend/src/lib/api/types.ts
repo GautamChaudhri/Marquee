@@ -1,0 +1,72 @@
+/** Types mirroring the REAL backend shapes (design/MARQUEE_API.md).
+ *  Field names match the API exactly — map to display models in components. */
+
+export interface Paginated<T> {
+	total: number;
+	page: number;
+	page_size: number;
+	items: T[];
+}
+
+export type PosterStatus = 'missing' | 'review' | 'approved' | 'deployed';
+/** Backend currently emits dovi | hdr10 | sdr | null; hdr10p reserved for the badge. */
+export type HdrKind = 'dovi' | 'hdr10' | 'hdr10p' | 'sdr';
+export type SubtitleStatus = 'ok' | 'gap';
+
+export interface MovieListItem {
+	id: number;
+	title: string;
+	year: number;
+	tmdb_id: number | null;
+	genres: string[] | null;
+	container: string | null;
+	video_width: number | null;
+	video_height: number | null;
+	resolution: string | null;
+	poster_status: PosterStatus;
+	poster_url: string | null;
+	hdr: HdrKind | null;
+	letterbox_status: string;
+	subtitle_status: SubtitleStatus | null;
+	media_file_id: number | null;
+	subtitle_coverage: Record<string, unknown> | null;
+}
+
+export interface MovieDetail extends MovieListItem {
+	media_file_path: string | null;
+}
+
+export interface MovieQuery {
+	page?: number;
+	page_size?: number;
+	q?: string;
+	poster_status?: PosterStatus;
+	hdr?: HdrKind | 'unknown';
+	letterbox_status?: string;
+	sort?: 'title' | 'year';
+}
+
+export interface SystemMetrics {
+	cpu: {
+		model: string;
+		cores: number | null;
+		threads: number | null;
+		avg: number;
+		freq: number | null;
+		load: number | null;
+		temp: number | null;
+	};
+	gpu: {
+		model: string;
+		util: number;
+		vramUsed: number;
+		vramTotal: number;
+		temp: number;
+		power: number | null;
+		enc: number | null;
+	} | null;
+	ram: { used: number; total: number; pct: number };
+	disk: { used: number | null; total: number | null; pct: number | null };
+	workers: { active: number; queued: number };
+	uptime: string;
+}
