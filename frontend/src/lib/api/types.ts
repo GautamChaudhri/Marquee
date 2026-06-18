@@ -43,7 +43,36 @@ export interface MovieQuery {
 	poster_status?: PosterStatus;
 	hdr?: HdrKind | 'unknown';
 	letterbox_status?: string;
-	sort?: 'title' | 'year';
+	sort?: 'title' | 'year' | 'added';
+}
+
+export interface PipelineRunRef {
+	run_id: string;
+	events_url: string;
+	results_url: string;
+}
+
+export interface LetterboxDetail {
+	movie_id: number;
+	status: string;
+	confidence: string | null;
+	eligible: boolean | null;
+	ineligible_reason: string | null;
+	source_width: number | null;
+	source_height: number | null;
+	recommended_crop_top: number | null;
+	recommended_crop_bottom: number | null;
+	aspect_label: string | null;
+	applied_crop_top: number | null;
+	applied_crop_bottom: number | null;
+	detect_method: string | null;
+	reviewed: boolean | null;
+	last_detected_at: string | null;
+	last_applied_at: string | null;
+	error: string | null;
+	prefilter_bucket: string | null;
+	prefilter_reason: string | null;
+	preview_urls?: { before: string; after: string };
 }
 
 export interface SystemMetrics {

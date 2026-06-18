@@ -92,7 +92,12 @@ async def list_movies(
         await db.execute(select(func.count()).select_from(base.subquery()))
     ).scalar_one()
 
-    order_col = Movie.year.desc() if sort == "year" else Movie.title
+    if sort == "year":
+        order_col = Movie.year.desc()
+    elif sort == "added":
+        order_col = Movie.created_at.desc()
+    else:
+        order_col = Movie.title
     rows = (
         await db.execute(
             base.order_by(order_col).limit(page_size).offset((page - 1) * page_size)
