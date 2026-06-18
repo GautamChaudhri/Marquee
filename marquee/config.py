@@ -460,6 +460,15 @@ class Settings(BaseSettings):
     LETTERBOX_CONVERT: str = Field(
         default="convert", description="ImageMagick 'convert' binary (trim backend only)."
     )
+    LETTERBOX_DOVI_TOOL: str = Field(
+        default="dovi_tool", description="dovi_tool binary path/name for Dolby Vision RPU handling."
+    )
+    LETTERBOX_REENCODE_ALLOW_CPU_FALLBACK: bool = Field(
+        default=True, description="Allow CPU encoding when no supported GPU encoder is available."
+    )
+    LETTERBOX_REENCODE_STRICT_DOVI: bool = Field(
+        default=False, description="Fail permanent re-encode plans when Dolby Vision cannot be preserved."
+    )
     LETTERBOX_MOVIE_SAMPLES_MIN: int = Field(default=5, description="Movie sampling start (minutes).")
     LETTERBOX_MOVIE_SAMPLES_MAX: int = Field(default=60, description="Movie sampling end (minutes).")
     LETTERBOX_MOVIE_SAMPLE_STEP: int = Field(default=5, description="Minutes between movie samples.")

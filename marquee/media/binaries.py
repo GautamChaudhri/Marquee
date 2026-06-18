@@ -32,6 +32,7 @@ _BINARY_SETTINGS = {
     "mkvpropedit": "LETTERBOX_MKVPROPEDIT",
     "mkvmerge": "LETTERBOX_MKVMERGE",
     "convert": "LETTERBOX_CONVERT",
+    "dovi_tool": "LETTERBOX_DOVI_TOOL",
 }
 
 
