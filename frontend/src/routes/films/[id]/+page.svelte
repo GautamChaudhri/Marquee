@@ -28,6 +28,7 @@
 
 	function setTab(id: string) {
 		tab = id;
+		// eslint-disable-next-line svelte/prefer-svelte-reactivity -- transient query builder, not reactive state
 		const sp = new URLSearchParams(page.url.searchParams);
 		sp.set('tab', id);
 		goto(`/films/${movie?.id}?${sp.toString()}`, {
@@ -304,7 +305,7 @@
 							</div>
 							{#if pipeEvents.length > 0}
 								<ul class="event-list">
-									{#each pipeEvents.slice(-12) as ev}
+									{#each pipeEvents.slice(-12) as ev, i (i)}
 										<li>{ev}</li>
 									{/each}
 								</ul>
@@ -381,7 +382,7 @@
 							<div class="sub-row head">
 								<span>Language</span><span>Status</span><span>Tracks</span>
 							</div>
-							{#each subRows() as row}
+							{#each subRows() as row (row.lang)}
 								<div class="sub-row">
 									<span class="mono">{row.lang}</span>
 									<span class="cell-status">

@@ -593,6 +593,9 @@ async def movie_preview(
 
     import asyncio  # noqa: PLC0415
 
+    samples = json.loads(state.samples_json) if state.samples_json else []
+    candidate_minutes = [s["minute"] for s in samples if s.get("ok")]
+
     out = await asyncio.to_thread(
         letterbox_preview.generate_preview,
         eligibility.path,
@@ -601,6 +604,8 @@ async def movie_preview(
         mode=mode,
         crop_top=state.recommended_crop_top or 0,
         crop_bottom=state.recommended_crop_bottom or 0,
+        height=state.source_height,
+        candidate_minutes=candidate_minutes,
     )
     if out is None:
         raise HTTPException(status_code=404, detail="Could not generate preview")
