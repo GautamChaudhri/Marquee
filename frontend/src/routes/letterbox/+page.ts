@@ -13,8 +13,10 @@ function filterReviewed(col: LetterboxColumn, reviewed: boolean): LetterboxColum
 	return { items, total: items.length === col.items.length ? col.total : items.length };
 }
 
-export const load: PageLoad = async ({ fetch }) => {
+export const load: PageLoad = async ({ fetch, url }) => {
 	const safe = <T>(p: Promise<T>, fallback: T): Promise<T> => p.catch(() => fallback);
+	const dsort = url.searchParams.get('dsort');
+	const detectedDesc = dsort !== 'asc';
 
 	const [status, candidates, detected, previewRaw, notLb, processedRaw] = await Promise.all([
 		safe<LetterboxStatus | null>(getLetterboxStatus(fetch), null),
@@ -26,7 +28,15 @@ export const load: PageLoad = async ({ fetch }) => {
 			}),
 			EMPTY
 		),
-		safe(listColumn(fetch, { status: 'candidate', sort: 'confidence', page_size: CAP }), EMPTY),
+		safe(
+			listColumn(fetch, {
+				status: 'candidate',
+				sort: 'confidence',
+				desc: detectedDesc,
+				page_size: CAP
+			}),
+			EMPTY
+		),
 		safe(
 			listColumn(fetch, {
 				status: 'tagged',
@@ -55,6 +65,7 @@ export const load: PageLoad = async ({ fetch }) => {
 	return {
 		status,
 		error: reachedBackend ? null : 'Could not reach the letterbox service.',
+		detectedDesc,
 		columns: {
 			candidates,
 			detected,

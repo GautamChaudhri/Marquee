@@ -169,7 +169,9 @@
 
 			<!-- Row 1, Col 2: before image -->
 			<div class="frame-cell">
-				{#if beforeUrl}
+				{#if stage === 'processed'}
+					<div class="frame unanalyzed"><span class="ph">Previews cleared after confirmation</span></div>
+				{:else if beforeUrl}
 					<img class="frame" src={beforeUrl} alt="before crop" loading="lazy" />
 				{:else}
 					<div class="frame unanalyzed"><span class="ph">No preview</span></div>
@@ -284,6 +286,9 @@
 						</dd>
 					{/if}
 				</dl>
+				{#if detail.variable_ar_note}
+					<div class="note warn">{detail.variable_ar_note}</div>
+				{/if}
 				{#if showConf}
 					<div class="conf-expand">
 						{#if detail.samples && detail.samples.length > 0}
@@ -332,7 +337,9 @@
 
 			<!-- Row 2, Col 2: after image — defines the row's height -->
 			<div class="frame-cell">
-				{#if afterUrl}
+				{#if stage === 'processed'}
+					<div class="frame unanalyzed"><span class="ph">Previews cleared after confirmation</span></div>
+				{:else if afterUrl}
 					<img class="frame good" src={afterUrl} alt="after crop" loading="lazy" />
 				{:else}
 					<div class="frame unanalyzed"><span class="ph">No preview</span></div>
@@ -366,6 +373,9 @@
 				{/if}
 				{#if detail.error}
 					<div class="note err">{detail.error}</div>
+				{/if}
+				{#if detail.variable_ar_note}
+					<div class="note warn">{detail.variable_ar_note}</div>
 				{/if}
 			</div>
 

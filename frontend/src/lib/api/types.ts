@@ -74,6 +74,8 @@ export interface LetterboxDetail {
 	prefilter_reason: string | null;
 	prefilter_aspect_ratio?: number | null;
 	last_prefiltered_at?: string | null;
+	variable_ar?: boolean;
+	variable_ar_note?: string | null;
 	title?: string;
 	year?: number | null;
 	samples?: LetterboxSample[];

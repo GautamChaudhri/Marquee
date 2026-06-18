@@ -33,7 +33,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from marquee.config import settings
 from marquee.core.letterbox_service import letterbox_service
 from marquee.database import _get_session_factory
-from marquee.media import binaries, letterbox_detect, probe
+from marquee.media import binaries, letterbox_detect, letterbox_preview, probe
 from marquee.models import LetterboxEvent, LetterboxState, Movie
 
 logger = logging.getLogger(__name__)
@@ -174,6 +174,9 @@ class LetterboxManager:
             "detect_method": result.method,
             "samples_json": json.dumps(result.samples),
             "error": result.error,
+            "variable_ar": result.variable_ar,
+            "variable_ar_note": result.variable_ar_note,
+            "_source_path": str(path),
             "_container": container,
         }
 
@@ -229,6 +232,7 @@ class LetterboxManager:
                 "detect_method": "v1_script",
                 "samples_json": None,
                 "error": f"v1 detector failed to start: {exc}",
+                "_source_path": str(path),
                 "_container": container,
             }
 
@@ -249,6 +253,7 @@ class LetterboxManager:
                 "detect_method": "v1_script",
                 "samples_json": None,
                 "error": f"v1 detector exited {completed.returncode}: {combined[:300]}",
+                "_source_path": str(path),
                 "_container": container,
             }
 
@@ -269,6 +274,7 @@ class LetterboxManager:
                 "detect_method": "v1_script",
                 "samples_json": "[]",
                 "error": None,
+                "_source_path": str(path),
                 "_container": container,
             }
 
@@ -286,6 +292,7 @@ class LetterboxManager:
                 "detect_method": "v1_script",
                 "samples_json": "[]",
                 "error": None,
+                "_source_path": str(path),
                 "_container": container,
             }
 
@@ -307,6 +314,7 @@ class LetterboxManager:
                 "detect_method": "v1_script",
                 "samples_json": "[]",
                 "error": None,
+                "_source_path": str(path),
                 "_container": container,
             }
 
@@ -323,6 +331,7 @@ class LetterboxManager:
             "detect_method": "v1_script",
             "samples_json": "[]",
             "error": f"could not parse v1 detector output: {combined[:300]}",
+            "_source_path": str(path),
             "_container": container,
         }
 
@@ -333,6 +342,7 @@ class LetterboxManager:
         detect_fn = self.detect_movie_blocking_v1 if detector == "v1" else self.detect_movie_blocking
         updates = await asyncio.to_thread(detect_fn, movie)
         container = updates.pop("_container", None)
+        source_path = updates.pop("_source_path", None)
         if container and not movie.container:
             movie.container = container
 
@@ -368,6 +378,20 @@ class LetterboxManager:
             )
         )
         await db.commit()
+        if state.status == "candidate" and source_path and state.samples_json:
+            try:
+                samples = json.loads(state.samples_json)
+            except json.JSONDecodeError:
+                samples = []
+            await asyncio.to_thread(
+                letterbox_preview.warm_movie_previews,
+                source_path,
+                movie_id=movie.id,
+                samples=samples,
+                crop_top=state.recommended_crop_top or 0,
+                crop_bottom=state.recommended_crop_bottom or 0,
+                height=state.source_height,
+            )
         return state
 
     # ------------------------------------------------------------------

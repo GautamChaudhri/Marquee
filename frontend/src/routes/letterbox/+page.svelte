@@ -39,6 +39,13 @@
 		goto(`/letterbox?${sp.toString()}`, { replaceState: true, keepFocus: true, noScroll: true });
 	}
 
+	function toggleDsort() {
+		// eslint-disable-next-line svelte/prefer-svelte-reactivity -- transient query builder, not reactive state
+		const sp = new URLSearchParams(page.url.searchParams);
+		sp.set('dsort', data.detectedDesc ? 'asc' : 'desc');
+		goto(`/letterbox?${sp.toString()}`, { keepFocus: true, noScroll: true });
+	}
+
 	// ── Board actions ──────────────────────────────────────────────────────────
 	let scanning = $state(false);
 	let healing = $state(false);
@@ -353,6 +360,13 @@
 			<div class="tray-title-row">
 				<span class="tray-title">Detected</span>
 				<span class="tray-count">{cols.detected.total}</span>
+				<button
+					class="sort-toggle"
+					onclick={toggleDsort}
+					title={data.detectedDesc ? 'Confidence: high → low' : 'Confidence: low → high'}
+				>
+					conf {data.detectedDesc ? '▼' : '▲'}
+				</button>
 				<span class="spacer"></span>
 				<span class="tray-note ready">{detectedTotal}/{detectedTotal} ready</span>
 			</div>
@@ -631,6 +645,20 @@
 	}
 	.spacer {
 		flex: 1;
+	}
+	.sort-toggle {
+		font-family: var(--font-mono);
+		font-size: 10.5px;
+		color: var(--faint);
+		background: transparent;
+		border: 1px solid var(--panel2);
+		border-radius: 6px;
+		padding: 1px 6px;
+		cursor: pointer;
+	}
+	.sort-toggle:hover {
+		color: var(--text);
+		border-color: var(--faint);
 	}
 	.tray-note {
 		font-size: 11px;

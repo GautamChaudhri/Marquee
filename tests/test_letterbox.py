@@ -16,10 +16,11 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
+from marquee.config import settings
 from marquee.core.letterbox_service import _resolve_media_file, letterbox_service
 from marquee.core.path_utils import PathValidationError
 from marquee.main import app
-from marquee.media import binaries
+from marquee.media import binaries, letterbox_preview
 from marquee.media import letterbox_detect as ld
 from marquee.media.letterbox_manager import JobState, letterbox_manager
 from marquee.media.probe import prefilter_bucket
@@ -159,6 +160,56 @@ def test_consensus_case_b_conservative_min():
     assert r.confidence == "medium"
 
 
+def test_consensus_single_outlier_frame_stays_high():
+    # 11/12 frames agree at 120; one anomalous frame (e.g. end-credits graphic)
+    # measures 120/480 (bar=300). The outlier is too small a cluster (1 sample)
+    # to count as a second aspect ratio, so it shouldn't trigger variable_ar —
+    # the agreement-based logic should still call this High confidence.
+    measurements = [_w(m, 120, 120) for m in range(5, 56, 5)] + [_w(60, 120, 480)]
+    r = ld.consensus(measurements, width=3840, height=2160)
+    assert r.status == "candidate"
+    assert r.confidence == "high"
+    assert r.recommended_crop_top == 120
+    assert r.variable_ar is False
+
+
+def test_consensus_minor_jitter_merges_one_cluster():
+    # 11/12 frames at 278; one frame at 278/304 (bar=291, only 13px from the
+    # median) — within LETTERBOX_VARIABLE_GAP_PX, so it merges into the same
+    # cluster rather than forming a second aspect-ratio group.
+    measurements = [_w(m, 278, 278) for m in range(5, 56, 5)] + [_w(40, 278, 304)]
+    r = ld.consensus(measurements, width=3840, height=2160)
+    assert r.status == "candidate"
+    assert r.confidence == "high"
+    assert r.recommended_crop_top == 278
+    assert r.variable_ar is False
+
+
+def test_consensus_variable_ar_two_wide_clusters():
+    # 8 frames at 276/276 (2.40:1) and 4 frames at 68/68 (1.90:1) — two
+    # well-supported, mutually disagreeing clusters, neither near 16:9.
+    # Should be flagged variable_ar and recommend the smaller (safer) crop.
+    measurements = [_w(m, 276, 276) for m in (5, 15, 25, 35, 40, 45, 50, 60)] + [
+        _w(m, 68, 68) for m in (10, 20, 30, 55)
+    ]
+    r = ld.consensus(measurements, width=3840, height=2160)
+    assert r.status == "candidate"
+    assert r.confidence == "low"
+    assert r.recommended_crop_top == 68
+    assert r.recommended_crop_bottom == 68
+    assert r.variable_ar is True
+    assert "1.90:1" in r.variable_ar_note
+    assert "2.39:1" in r.variable_ar_note
+    assert "68px" in r.variable_ar_note
+
+
+def test_consensus_case_a_variable_unsafe_has_note():
+    r = ld.consensus([_w(5, 140, 140), _w(10, 0, 0), _w(15, 140, 140)], width=1920, height=1080)
+    assert r.status == "variable_unsafe"
+    assert r.variable_ar is True
+    assert "16:9" in r.variable_ar_note
+
+
 def test_consensus_not_letterboxed():
     r = ld.consensus([_w(5, 1, 1), _w(10, 0, 0), _w(15, 2, 2)], width=1920, height=1080)
     assert r.status == "not_letterboxed"
@@ -226,6 +277,11 @@ def _movie_with_file(tmp_path, name="Movie (2020).mkv"):
         title="Movie", year=2020, folder_path=str(folder),
         movie_file_path=name, tmdb_id=111,
     ), media
+
+
+def _preview_root(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "DATA_DIR", str(tmp_path / "data"))
+    return settings.letterbox_preview_path
 
 
 def test_eligibility_mkv_ok_without_mkvmerge(tmp_path, monkeypatch):
@@ -317,6 +373,71 @@ async def test_detect_and_store_v1_records_v1_source(db, monkeypatch):
     assert event.source == "detect_v1"
     detail = json.loads(event.detail)
     assert detail["detector"] == "v1"
+
+
+def test_warm_movie_previews_renders_every_ok_sample(tmp_path, monkeypatch):
+    preview_root = _preview_root(tmp_path, monkeypatch)
+    stale = preview_root / "7_before_99_legacy.webp"
+    stale.parent.mkdir(parents=True, exist_ok=True)
+    stale.write_bytes(b"stale")
+
+    monkeypatch.setattr(binaries, "resolve", lambda name: "/usr/bin/ffmpeg")
+    calls = []
+
+    def fake_generate_preview(
+        source,
+        *,
+        movie_id,
+        minute,
+        mode,
+        crop_top,
+        crop_bottom,
+        height=None,
+        candidate_minutes=None,
+        force=False,
+    ):
+        calls.append(
+            {
+                "source": source,
+                "movie_id": movie_id,
+                "minute": minute,
+                "mode": mode,
+                "crop_top": crop_top,
+                "crop_bottom": crop_bottom,
+                "height": height,
+                "candidate_minutes": list(candidate_minutes or []),
+                "force": force,
+            }
+        )
+        out = letterbox_preview.preview_path(movie_id, mode, minute)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_bytes(f"{minute}:{mode}".encode())
+        return out
+
+    monkeypatch.setattr(letterbox_preview, "generate_preview", fake_generate_preview)
+    samples = [
+        {"minute": 5, "ok": True},
+        {"minute": 10, "ok": True},
+        {"minute": 15, "ok": False},
+    ]
+
+    outputs = letterbox_preview.warm_movie_previews(
+        "/movie.mkv",
+        movie_id=7,
+        samples=samples,
+        crop_top=140,
+        crop_bottom=140,
+        height=2160,
+    )
+
+    assert stale.exists() is False
+    assert len(calls) == 4
+    assert {call["minute"] for call in calls} == {5, 10}
+    assert {call["mode"] for call in calls} == {"before", "after"}
+    assert all(call["candidate_minutes"] == [5, 10] for call in calls)
+    assert all(call["force"] is True for call in calls)
+    assert len(outputs) == 4
+    assert all(path.exists() for path in outputs)
 
 
 # ---------------------------------------------------------------------------
@@ -559,6 +680,117 @@ async def test_ignore_moves_to_skipped(client, db):
     assert resp.status_code == 200
     assert resp.json()["status"] == "skipped"
     assert resp.json()["reviewed"] is True
+
+
+@pytest.mark.asyncio
+async def test_confirm_purges_previews_and_marks_reviewed(client, db):
+    preview_root = settings.letterbox_preview_path
+    movie = Movie(title="Confirm", year=2000, folder_path="/m/cf", tmdb_id=8)
+    db.add(movie)
+    await db.commit()
+    await db.refresh(movie)
+    db.add(
+        LetterboxState(
+            movie_id=movie.id,
+            status="tagged",
+            confidence="high",
+            recommended_crop_top=140,
+            recommended_crop_bottom=140,
+            applied_crop_top=140,
+            applied_crop_bottom=140,
+            reviewed=False,
+        )
+    )
+    await db.commit()
+
+    before = letterbox_preview.preview_path(movie.id, "before", 5)
+    after = letterbox_preview.preview_path(movie.id, "after", 5)
+    before.parent.mkdir(parents=True, exist_ok=True)
+    before.write_bytes(b"before")
+    after.write_bytes(b"after")
+
+    resp = await client.post(f"/api/letterbox/movies/{movie.id}/confirm")
+    assert resp.status_code == 200
+    assert resp.json()["reviewed"] is True
+    assert before.exists() is False
+    assert after.exists() is False
+    assert list(preview_root.glob(f"{movie.id}_*.webp")) == []
+
+
+@pytest.mark.asyncio
+async def test_ignore_purges_previews(client, db):
+    preview_root = settings.letterbox_preview_path
+    movie = Movie(title="Ignore", year=2000, folder_path="/m/ig", tmdb_id=9)
+    db.add(movie)
+    await db.commit()
+    await db.refresh(movie)
+    db.add(
+        LetterboxState(
+            movie_id=movie.id,
+            status="candidate",
+            confidence="high",
+            reviewed=False,
+        )
+    )
+    await db.commit()
+
+    before = letterbox_preview.preview_path(movie.id, "before", 10)
+    after = letterbox_preview.preview_path(movie.id, "after", 10)
+    before.parent.mkdir(parents=True, exist_ok=True)
+    before.write_bytes(b"before")
+    after.write_bytes(b"after")
+
+    resp = await client.post(f"/api/letterbox/movies/{movie.id}/ignore")
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "skipped"
+    assert resp.json()["reviewed"] is True
+    assert before.exists() is False
+    assert after.exists() is False
+    assert list(preview_root.glob(f"{movie.id}_*.webp")) == []
+
+
+@pytest.mark.asyncio
+async def test_preview_route_does_not_regenerate_for_reviewed_movie(
+    client, db, monkeypatch
+):
+    preview_root = settings.letterbox_preview_path
+    movie = Movie(title="Reviewed", year=2000, folder_path="/m/rev", tmdb_id=10)
+    db.add(movie)
+    await db.commit()
+    await db.refresh(movie)
+    db.add(
+        LetterboxState(
+            movie_id=movie.id,
+            status="tagged",
+            confidence="high",
+            recommended_crop_top=140,
+            recommended_crop_bottom=140,
+            applied_crop_top=140,
+            applied_crop_bottom=140,
+            reviewed=True,
+            samples_json=json.dumps([
+                {"minute": 5, "ok": True},
+                {"minute": 10, "ok": True},
+            ]),
+        )
+    )
+    await db.commit()
+
+    letterbox_preview.purge_movie_previews(movie.id)
+    assert list(preview_root.glob(f"{movie.id}_*.webp")) == []
+
+    called = False
+
+    def fail_generate(*args, **kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("preview generation should not run for reviewed movies")
+
+    monkeypatch.setattr(letterbox_preview, "generate_preview", fail_generate)
+
+    resp = await client.get(f"/api/letterbox/movies/{movie.id}/preview?mode=before&minute=5")
+    assert resp.status_code == 404
+    assert called is False
 
 
 @pytest.mark.asyncio

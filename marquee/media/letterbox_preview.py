@@ -35,6 +35,10 @@ def preview_path(movie_id: int, mode: str, minute: int) -> Path:
     return settings.letterbox_preview_path / f"{movie_id}_{mode}_{minute}_{_CACHE_VERSION}.webp"
 
 
+def _movie_preview_glob(movie_id: int) -> str:
+    return f"{movie_id}_*.webp"
+
+
 def _timestamp(minute: int) -> str:
     return f"{minute // 60:02d}:{minute % 60:02d}:00"
 
@@ -82,6 +86,22 @@ def _pick_bright_minute(
         if luma is not None and luma > best_luma:
             best_minute, best_luma = m, luma
     return best_minute
+
+
+def purge_movie_previews(movie_id: int) -> int:
+    """Delete all cached preview files for one movie."""
+    root = settings.letterbox_preview_path
+    if not root.exists():
+        return 0
+
+    removed = 0
+    for path in root.glob(_movie_preview_glob(movie_id)):
+        try:
+            path.unlink(missing_ok=True)
+            removed += 1
+        except OSError as exc:
+            logger.warning("preview purge failed for movie %s (%s): %s", movie_id, path.name, exc)
+    return removed
 
 
 def generate_preview(
@@ -137,3 +157,48 @@ def generate_preview(
         logger.warning("preview generation failed for movie %s: %s", movie_id, result.stderr.strip()[:200])
         return None
     return out
+
+
+def warm_movie_previews(
+    source: Path | str,
+    *,
+    movie_id: int,
+    samples: list[dict] | None,
+    crop_top: int,
+    crop_bottom: int,
+    height: int | None = None,
+) -> list[Path]:
+    """Pre-render all preview frames for the sampled minutes of one movie."""
+    if binaries.resolve("ffmpeg") is None:
+        return []
+
+    purge_movie_previews(movie_id)
+
+    minutes: list[int] = []
+    for sample in samples or []:
+        if not sample.get("ok"):
+            continue
+        minute = sample.get("minute")
+        if isinstance(minute, int) and minute not in minutes:
+            minutes.append(minute)
+
+    generated: list[Path] = []
+    if not minutes:
+        return generated
+
+    for minute in minutes:
+        for mode in ("before", "after"):
+            out = generate_preview(
+                source,
+                movie_id=movie_id,
+                minute=minute,
+                mode=mode,
+                crop_top=crop_top,
+                crop_bottom=crop_bottom,
+                height=height,
+                candidate_minutes=minutes,
+                force=True,
+            )
+            if out is not None:
+                generated.append(out)
+    return generated

@@ -104,6 +104,15 @@ class LetterboxState(Base, TimestampMixin):
     )
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # True when the detector found two or more well-supported, mutually
+    # disagreeing bar clusters in one file (e.g. IMAX 1.90:1 expansion scenes
+    # mixed with 2.40:1 scope, or full-frame 16:9 scenes mixed with letterboxed
+    # ones). `variable_ar_note` is a human-readable explanation for the UI.
+    variable_ar: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("0")
+    )
+    variable_ar_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     def __repr__(self) -> str:
         return (
             f"<LetterboxState(movie_id={self.movie_id}, status={self.status!r}, "
@@ -124,7 +133,7 @@ class LetterboxEvent(Base):
         nullable=False,
     )
 
-    # detect | apply | remove | ignore | heal_reapply | error
+    # detect | apply | remove | ignore | confirm | heal_reapply | error
     action: Mapped[str] = mapped_column(String(20), nullable=False)
 
     # detect | api | webhook | heal | manual
