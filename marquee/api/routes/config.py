@@ -100,7 +100,8 @@ async def put_pipeline_config(update: ConfigUpdate):
     try:
         PipelineSettings(**merged)
     except Exception as exc:  # noqa: BLE001 — surface the validation error
-        raise HTTPException(status_code=400, detail=f"Invalid configuration: {exc}") from exc
+        logger.exception("CONFIG | invalid update %s", sorted(new_values))
+        raise HTTPException(status_code=400, detail="Invalid configuration") from exc
 
     # Apply to the live singleton (gates/scorers read attributes at call time).
     for key, value in new_values.items():

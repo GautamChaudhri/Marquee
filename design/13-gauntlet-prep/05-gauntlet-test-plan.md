@@ -25,8 +25,8 @@ Implemented endpoint families:
 
 Expected gaps:
 
-- manual poster restore endpoint;
-- subtitle-batches endpoints;
+- deferred manual poster restore endpoint;
+- deferred subtitle-batches endpoints;
 - library filters beyond pagination.
 
 ## Suggested Passes

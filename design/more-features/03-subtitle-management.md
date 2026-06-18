@@ -51,7 +51,8 @@ Server-side library filters beyond pagination are `[PLANNED]`.
 | POST | `/api/media-jobs/{job_id}/restore` | Restore tracked backup when available |
 | DELETE | `/api/media-jobs/{job_id}/backup` | Delete tracked backup |
 
-Dedicated `/api/subtitle-batches/...` routes are not implemented. Policy apply
+Dedicated `/api/subtitle-batches/...` routes are not implemented yet and are
+deferred for a later pass. Policy apply
 creates a `MediaBatch` and child `MediaJob` rows instead.
 
 ### Policies and Generation
@@ -87,9 +88,9 @@ Implemented safeguards:
 - Per-media-file job locks.
 - Restart recovery marks crashed `running` jobs as `interrupted`.
 
-## Planned or Partial
+## Deferred or Partial
 
-- `[PLANNED]` Dedicated subtitle batch CRUD/pause/resume/cancel routes.
+- `[DEFERRED]` Dedicated subtitle batch CRUD/pause/resume/cancel routes.
 - `[PLANNED]` Server-side library filter query parameters.
 - `[PLANNED]` Radarr/Sonarr rescan commands after every mutation are described
   in older designs but not implemented in current clients.

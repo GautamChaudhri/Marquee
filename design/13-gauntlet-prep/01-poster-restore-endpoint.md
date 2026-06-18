@@ -1,6 +1,6 @@
-# 01 — Planned Manual Poster Restore Endpoint
+# 01 — Deferred Manual Poster Restore Endpoint
 
-**Status:** `[PLANNED]` route. Not implemented in the current codebase.
+**Status:** `[DEFERRED]` route. Not implemented in the current codebase.
 
 The codebase has `PosterService.restore()` and uses it from webhook/self-heal
 flows, but it does not expose:
@@ -8,6 +8,9 @@ flows, but it does not expose:
 ```text
 POST /api/movies/{movie_id}/poster/restore
 ```
+
+This is intentionally postponed for now. Keep the design here for the later
+implementation pass, but do not treat it as part of the current backend scope.
 
 ## Existing Building Blocks
 

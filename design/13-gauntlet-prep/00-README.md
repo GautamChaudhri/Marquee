@@ -20,15 +20,15 @@ Implemented and gauntlet-testable:
 
 Not implemented:
 
-- `POST /api/movies/{movie_id}/poster/restore`;
+- `[DEFERRED]` `POST /api/movies/{movie_id}/poster/restore`;
 - server-side library filters beyond pagination;
-- `/api/subtitle-batches/...` routes.
+- `[DEFERRED]` `/api/subtitle-batches/...` routes.
 
 ## File Index
 
 | File | Current status |
 |---|---|
-| `01-poster-restore-endpoint.md` | `[PLANNED]` code brief; route is not implemented |
+| `01-poster-restore-endpoint.md` | `[DEFERRED]` code brief; route is intentionally postponed |
 | `02-library-filters.md` | `[PLANNED]` code brief; filters are not implemented |
 | `03-doc-reconciliation.md` | Historical reconciliation checklist; superseded by this pass |
 | `04-gauntlet-readiness.md` | Readiness checklist, updated to distinguish implemented vs planned |

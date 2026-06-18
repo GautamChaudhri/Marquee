@@ -67,7 +67,7 @@ The heal scan restores missing deployed posters from the same service path.
 | `GET /api/movies/{movie_id}/artwork-events` | Yes | Movie poster event history |
 | `POST /api/system/heal` | Yes | On-demand poster heal |
 | `GET /api/system/status` | Yes | Cache/heal/webhook status |
-| `POST /api/movies/{movie_id}/poster/restore` | No | `[PLANNED]` manual restore button |
+| `POST /api/movies/{movie_id}/poster/restore` | No | `[DEFERRED]` manual restore button |
 
 ## Cache Layout
 
@@ -78,9 +78,9 @@ data/cache/posters/movies/{tmdb_id}.meta.json
 
 The cache stores exact deployed bytes, not a resized proxy.
 
-## Planned
+## Deferred / Planned
 
-- `[PLANNED]` Manual movie restore endpoint. Planned semantics: return `409`
+- `[DEFERRED]` Manual movie restore endpoint. Planned semantics: return `409`
   with a structured response when there is nothing to restore.
 - `[PLANNED]` Series/season poster deployment and restoration.
 - `[PLANNED]` Cache management UI.

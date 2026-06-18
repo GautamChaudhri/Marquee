@@ -259,7 +259,7 @@ by your changes are regressions.
 
 | Item | State | Notes |
 |------|-------|-------|
-| 1. Gauntlet harness sends key | ⚠️ Verify | `experiments/gauntlet_runner.py` exists — confirm it sends `X-Api-Key` |
+| 1. Gauntlet harness sends key | ✅ Done | `experiments/gauntlet_runner.py` now wraps the real runner and sends `X-Api-Key` from `MARQUEE_API_KEY` |
 | 2. `API_KEY` in `.env` + webhook URLs | ⚠️ Your action | `.env` is present; cannot read/confirm |
 | 3. Fix 4 pre-existing test failures | ⚠️ Verify | Run `pytest` to confirm |
 | 4. pip-audit | ⚠️ Verify | No lockfile evidence yet |

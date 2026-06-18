@@ -85,12 +85,12 @@ Organized by the phase when attention is needed. Reference `design/03-migration-
 
 ### API design drift follow-ups
 
-- [ ] **Reconcile poster restore endpoint docs.** `design/more-features/01-poster-restoration.md` mentions `POST /api/movies/{movie_id}/poster/restore`, but no such route is currently implemented.
-- [ ] **Reconcile subtitle batch endpoint docs.** `design/more-features/03-subtitle-management.md` lists dedicated `/api/subtitle-batches/...` endpoints as design targets, but current implementation has no dedicated batch routes.
-- [ ] **Update subtitle scan API wording.** The subtitle design says `POST /api/media-files/{id}/subtitles/scan` queues a forced refresh, but current code performs an inline forced scan.
-- [ ] **Update library filter API docs or implement filters.** The subtitle design mentions server-side library filters (`language`, `missing_language`, etc.), but current `library.py` list endpoints only expose pagination.
-- [ ] **Update letterbox preview query docs.** The letterbox design table says preview uses `t=<sec>`, but current implementation uses `minute=<int>`.
-- [ ] **Update letterbox single-detect contract docs.** The letterbox design allows `POST /api/letterbox/movies/{id}/detect` to return `202 + job_id` or sync; current implementation is synchronous and returns the updated state directly.
+- [ ] **[DEFERRED] Reconcile poster restore endpoint docs.** `design/more-features/01-poster-restoration.md` mentions `POST /api/movies/{movie_id}/poster/restore`, but that route stays postponed for now.
+- [ ] **[DEFERRED] Reconcile subtitle batch endpoint docs.** `design/more-features/03-subtitle-management.md` lists dedicated `/api/subtitle-batches/...` endpoints as design targets, but current implementation has no dedicated batch routes.
+- [x] ~~**Update subtitle scan API wording.**~~ — The subtitle docs now match the code: `POST /api/media-files/{id}/subtitles/scan` is an inline forced rescan that returns the inventory directly.
+- [x] ~~**Update library filter API docs or implement filters.**~~ — The subtitle docs now match the code: `library.py` list endpoints expose pagination only and the filters remain planned.
+- [x] ~~**Update letterbox preview query docs.**~~ — The letterbox docs now match the code: preview uses `minute=<int>`.
+- [x] ~~**Update letterbox single-detect contract docs.**~~ — The letterbox docs now match the code: single-movie detect is synchronous, while batch detect uses `/api/letterbox/detect` and returns `202 + job_id`.
 
 ---
 

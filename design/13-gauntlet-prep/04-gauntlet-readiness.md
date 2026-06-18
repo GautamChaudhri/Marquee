@@ -16,10 +16,10 @@ Use this before running a write-enabled endpoint gauntlet.
 | Subtitle policies | `/api/subtitle-policies/{id}/apply` |
 | Subtitle generation | `/api/media-files/{id}/subtitle-generations`, requires `SUBGEN_URL` |
 
-Do not test planned routes as if they exist:
+Do not test deferred or planned routes as if they exist:
 
-- `POST /api/movies/{movie_id}/poster/restore`
-- `/api/subtitle-batches/...`
+- `[DEFERRED]` `POST /api/movies/{movie_id}/poster/restore`
+- `[DEFERRED]` `/api/subtitle-batches/...`
 - library filters beyond pagination
 
 ## Required Preflight

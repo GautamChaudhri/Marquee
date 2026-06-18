@@ -13,7 +13,7 @@ Remaining current-code facts:
 - Letterbox preview uses `minute=<int>`, not `t=<sec>`.
 - `POST /api/letterbox/movies/{movie_id}/detect` is synchronous; batch detect
   is `POST /api/letterbox/detect` and returns `202`.
-- Manual poster restore and library filters are still planned, not shipped.
+- Manual poster restore is deferred; library filters remain planned, not shipped.
 
 ## Needs Verification
 
