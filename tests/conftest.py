@@ -16,6 +16,7 @@ from marquee.models import (
     Episode,
     EpisodeMediaFile,
     LetterboxEvent,
+    LetterboxReencodeArtifact,
     LetterboxState,
     ManagedSubtitleAsset,
     ManagedSubtitleBinding,
@@ -79,6 +80,7 @@ async def db():
         for model in (
             ArtworkEvent,
             LetterboxEvent,
+            LetterboxReencodeArtifact,
             LetterboxState,
             PipelineRun,
             MediaJobEvent,

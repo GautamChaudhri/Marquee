@@ -219,10 +219,11 @@ class MediaJobManager:
                     await db.commit()
                 except Exception as exc:  # noqa: BLE001 — recorded on the job
                     logger.exception("media job %s failed", job_id)
-                    job.status = "failed"
+                    code = getattr(exc, "code", None)
+                    job.status = "cancelled" if code == "cancelled" else "failed"
                     job.error_json = json.dumps({"error": str(exc), "code": getattr(exc, "code", None)})
                     await db.commit()
-                    await self.emit(db, job_id, "error", "failed", message=str(exc))
+                    await self.emit(db, job_id, "error", job.status, message=str(exc))
                 finally:
                     if job.batch_id:
                         await self._update_batch(db, job.batch_id)
