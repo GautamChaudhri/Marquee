@@ -97,7 +97,24 @@
 	<select value={data.query.sort ?? 'title'} onchange={(e) => apply({ sort: selectVal(e) }, false)}>
 		<option value="title">Sort: Title</option>
 		<option value="year">Sort: Year</option>
+		<option value="added">Sort: Added</option>
 	</select>
+</div>
+
+<div class="quick-filters">
+	<button
+		class="qf-pill"
+		class:on={data.query.poster_status === 'review'}
+		onclick={() =>
+			apply({
+				poster_status: data.query.poster_status === 'review' ? undefined : 'review'
+			})}
+	>
+		Needs review
+		{#if data.query.poster_status === 'review' && data.data}
+			<span class="qf-count">{data.data.total}</span>
+		{/if}
+	</button>
 </div>
 
 {#if data.error}
@@ -230,5 +247,40 @@
 	.pager button:disabled {
 		opacity: 0.4;
 		cursor: not-allowed;
+	}
+	.quick-filters {
+		display: flex;
+		gap: 8px;
+		flex-wrap: wrap;
+		margin-bottom: 14px;
+	}
+	.qf-pill {
+		display: inline-flex;
+		align-items: center;
+		gap: 6px;
+		padding: 5px 12px;
+		border-radius: 99px;
+		border: 1px solid var(--line2);
+		background: var(--panel);
+		color: var(--muted);
+		font-size: 12.5px;
+		font-weight: 500;
+		transition: background 0.1s, color 0.1s;
+	}
+	.qf-pill:hover {
+		color: var(--text);
+		background: var(--panel2);
+	}
+	.qf-pill.on {
+		background: var(--gold);
+		border-color: var(--gold-deep);
+		color: var(--on-gold);
+	}
+	.qf-count {
+		font-family: var(--font-mono);
+		font-size: 11px;
+		padding: 0 5px;
+		border-radius: 99px;
+		background: color-mix(in srgb, currentColor 18%, transparent);
 	}
 </style>

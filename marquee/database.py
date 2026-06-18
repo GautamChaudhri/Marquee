@@ -52,7 +52,7 @@ def _get_engine():
 
         _engine = create_async_engine(
             settings.db_url_resolved,
-            echo=settings.DEBUG,
+            echo=False,
             connect_args=conn_args or None,
         )
 
