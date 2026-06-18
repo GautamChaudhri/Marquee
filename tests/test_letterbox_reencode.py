@@ -34,6 +34,57 @@ def test_choose_encoder_rejects_cpu_when_disabled(monkeypatch):
     assert exc.value.code == "encoder_unavailable"
 
 
+def test_choose_encoder_defaults_set_family_preset(monkeypatch):
+    monkeypatch.setattr(lr, "ffmpeg_encoders", lambda: {"hevc_nvenc", "libx265"})
+    choice = lr.choose_encoder("hevc", allow_cpu=True)
+    assert choice["preset"] == "p7"  # nvidia default
+    assert choice["quality"] == 16
+
+
+def test_choose_encoder_honors_explicit_encoder_override(monkeypatch):
+    monkeypatch.setattr(lr, "ffmpeg_encoders", lambda: {"hevc_nvenc", "libx265"})
+    # Source is HEVC and NVENC is available, but the user forces CPU libx265.
+    choice = lr.choose_encoder("hevc", allow_cpu=True, requested_encoder="libx265")
+    assert choice["encoder"] == "libx265"
+    assert choice["family"] == "cpu"
+    assert choice["used_cpu_fallback"] is True
+
+
+def test_choose_encoder_honors_quality_and_preset_override(monkeypatch):
+    monkeypatch.setattr(lr, "ffmpeg_encoders", lambda: {"hevc_nvenc"})
+    choice = lr.choose_encoder(
+        "hevc", allow_cpu=True, requested_quality=22, requested_preset="p4"
+    )
+    assert choice["quality"] == 22
+    assert choice["preset"] == "p4"
+
+
+def test_choose_encoder_rejects_unavailable_override(monkeypatch):
+    monkeypatch.setattr(lr, "ffmpeg_encoders", lambda: {"libx265"})
+    with pytest.raises(lr.ReencodePlanError) as exc:
+        lr.choose_encoder("hevc", allow_cpu=True, requested_encoder="hevc_nvenc")
+    assert exc.value.code == "encoder_unavailable"
+
+
+def test_choose_encoder_codec_override_targets_h264(monkeypatch):
+    monkeypatch.setattr(lr, "ffmpeg_encoders", lambda: {"h264_nvenc", "hevc_nvenc"})
+    # Source HEVC but user forces H.264 output.
+    choice = lr.choose_encoder("hevc", allow_cpu=True, requested_codec="h264")
+    assert choice["codec"] == "h264"
+    assert choice["encoder"] == "h264_nvenc"
+
+
+def test_build_ffmpeg_args_honors_custom_preset(tmp_path):
+    plan = {
+        "crop": {"top": 100, "bottom": 100},
+        "source": {"has_hdr": False, "pix_fmt": "yuv420p"},
+        "encoder": {"encoder": "libx265", "family": "cpu", "quality": 20, "preset": "veryslow"},
+    }
+    args = lr.build_ffmpeg_args(tmp_path / "in.mkv", tmp_path / "out.mkv", plan)
+    assert args[args.index("-preset") + 1] == "veryslow"
+    assert args[args.index("-crf") + 1] == "20"
+
+
 def test_build_ffmpeg_args_reencodes_video_and_copies_other_streams(tmp_path):
     src = tmp_path / "input.mkv"
     out = tmp_path / "out.mkv"

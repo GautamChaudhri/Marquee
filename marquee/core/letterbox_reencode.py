@@ -190,33 +190,83 @@ def _target_codec(source_codec: str | None) -> str:
     return "hevc"
 
 
-def choose_encoder(source_codec: str | None, *, allow_cpu: bool) -> dict:
-    target = _target_codec(source_codec)
+# Known video encoders → (family, default CQ/CRF, output codec). Drives both the
+# auto-selection preference order and validation of an explicit user override.
+_ENCODER_TABLE: dict[str, tuple[str, int, str]] = {
+    "h264_nvenc": ("nvidia", 16, "h264"),
+    "hevc_nvenc": ("nvidia", 16, "hevc"),
+    "h264_qsv": ("intel_qsv", 18, "h264"),
+    "hevc_qsv": ("intel_qsv", 18, "hevc"),
+    "h264_vaapi": ("intel_vaapi", 18, "h264"),
+    "hevc_vaapi": ("intel_vaapi", 18, "hevc"),
+    "libx264": ("cpu", 16, "h264"),
+    "libx265": ("cpu", 16, "hevc"),
+}
+
+# Per-family default speed/quality preset (None = encoder applies its own default).
+_FAMILY_DEFAULT_PRESET: dict[str, str | None] = {
+    "nvidia": "p7",
+    "cpu": "slow",
+    "intel_qsv": None,
+    "intel_vaapi": None,
+}
+
+# Preference order per target codec (best hardware first, CPU last).
+_CANDIDATES: dict[str, list[str]] = {
+    "h264": ["h264_nvenc", "h264_qsv", "h264_vaapi", "libx264"],
+    "hevc": ["hevc_nvenc", "hevc_qsv", "hevc_vaapi", "libx265"],
+}
+
+
+def choose_encoder(
+    source_codec: str | None,
+    *,
+    allow_cpu: bool,
+    requested_encoder: str | None = None,
+    requested_quality: int | None = None,
+    requested_codec: str | None = None,
+    requested_preset: str | None = None,
+) -> dict:
     available = ffmpeg_encoders()
-    if target == "h264":
-        candidates = [
-            ("h264_nvenc", "nvidia", 16),
-            ("h264_qsv", "intel_qsv", 18),
-            ("h264_vaapi", "intel_vaapi", 18),
-            ("libx264", "cpu", 16),
-        ]
-    else:
-        candidates = [
-            ("hevc_nvenc", "nvidia", 16),
-            ("hevc_qsv", "intel_qsv", 18),
-            ("hevc_vaapi", "intel_vaapi", 18),
-            ("libx265", "cpu", 16),
-        ]
-    for encoder, family, quality in candidates:
+
+    def _build(encoder: str, family: str, default_quality: int, codec: str) -> dict:
+        return {
+            "codec": codec,
+            "encoder": encoder,
+            "family": family,
+            "quality": requested_quality if requested_quality is not None else default_quality,
+            "preset": requested_preset or _FAMILY_DEFAULT_PRESET.get(family),
+            "available_encoders": sorted(available),
+            "used_cpu_fallback": family == "cpu",
+        }
+
+    # Explicit encoder override: honor it directly if known and available.
+    if requested_encoder and requested_encoder != "auto":
+        spec = _ENCODER_TABLE.get(requested_encoder)
+        if spec is None:
+            raise ReencodePlanError(
+                "encoder_unavailable", f"Unknown encoder {requested_encoder!r}."
+            )
+        family, default_quality, codec = spec
+        if requested_encoder not in available:
+            raise ReencodePlanError(
+                "encoder_unavailable",
+                f"Encoder {requested_encoder!r} is not available in this FFmpeg build.",
+            )
+        if family == "cpu" and not allow_cpu:
+            raise ReencodePlanError(
+                "encoder_unavailable",
+                "CPU encoding is disabled; enable CPU fallback to use a software encoder.",
+            )
+        return _build(requested_encoder, family, default_quality, codec)
+
+    # Auto-select by preference. Target codec follows an explicit codec override,
+    # else preserves the source codec.
+    target = requested_codec if requested_codec in {"h264", "hevc"} else _target_codec(source_codec)
+    for encoder in _CANDIDATES[target]:
+        family, default_quality, codec = _ENCODER_TABLE[encoder]
         if encoder in available and (family != "cpu" or allow_cpu):
-            return {
-                "codec": target,
-                "encoder": encoder,
-                "family": family,
-                "quality": quality,
-                "available_encoders": sorted(available),
-                "used_cpu_fallback": family == "cpu",
-            }
+            return _build(encoder, family, default_quality, codec)
     raise ReencodePlanError(
         "encoder_unavailable",
         "No supported FFmpeg encoder was found for permanent letterbox re-encode.",
@@ -328,11 +378,19 @@ async def build_plan(
     top: int,
     bottom: int,
     allow_cpu_fallback: bool | None = None,
+    encoder: str | None = None,
+    quality: int | None = None,
+    preset: str | None = None,
+    codec: str | None = None,
 ) -> dict:
     if resolved.path.suffix.lower() != ".mkv":
         raise ReencodePlanError("not_mkv", "Permanent letterbox re-encode supports MKV files only for now.")
     if top < 0 or bottom < 0 or (top == 0 and bottom == 0):
         raise ReencodePlanError("missing_crop", "A non-zero crop recommendation is required.")
+    if quality is not None and not 0 <= quality <= 51:
+        raise ReencodePlanError("invalid_quality", "Quality (CQ/CRF) must be between 0 and 51.")
+    if codec is not None and codec not in {"preserve", "h264", "hevc"}:
+        raise ReencodePlanError("invalid_codec", "Codec must be 'preserve', 'h264', or 'hevc'.")
     source = inspect_source(resolved.path)
     if source is None:
         raise ReencodePlanError("probe_failed", "Could not inspect the source video.")
@@ -340,9 +398,17 @@ async def build_plan(
         raise ReencodePlanError("invalid_crop", "Crop values remove the full video height.")
 
     allow_cpu = settings.LETTERBOX_REENCODE_ALLOW_CPU_FALLBACK if allow_cpu_fallback is None else allow_cpu_fallback
-    encoder = choose_encoder(source.codec, allow_cpu=allow_cpu)
-    dovi, warnings = _dovi_plan(source, encoder["codec"])
-    if encoder["used_cpu_fallback"]:
+    requested_codec = None if codec in {None, "preserve"} else codec
+    encoder_plan = choose_encoder(
+        source.codec,
+        allow_cpu=allow_cpu,
+        requested_encoder=encoder,
+        requested_quality=quality,
+        requested_codec=requested_codec,
+        requested_preset=preset,
+    )
+    dovi, warnings = _dovi_plan(source, encoder_plan["codec"])
+    if encoder_plan["used_cpu_fallback"]:
         warnings.append(
             {
                 "code": "cpu_fallback",
@@ -382,7 +448,7 @@ async def build_plan(
             "dovi_el_present": source.dovi_el_present,
             "dovi_bl_signal_compatibility_id": source.dovi_bl_signal_compatibility_id,
         },
-        "encoder": encoder,
+        "encoder": encoder_plan,
         "hdr": {"status": "preserve_required" if source.has_hdr else "not_present"},
         "dovi": {
             **dovi,
@@ -434,12 +500,14 @@ def build_ffmpeg_args(source: Path, output: Path, plan: dict) -> list[str]:
         "-filter:v:0",
         crop_filter,
     ]
+    quality = str(plan["encoder"]["quality"])
+    preset = plan["encoder"].get("preset")
     if family == "nvidia":
-        args.extend(["-preset", "p7", "-tune", "hq", "-rc", "vbr", "-cq", str(plan["encoder"]["quality"])])
+        args.extend(["-preset", preset or "p7", "-tune", "hq", "-rc", "vbr", "-cq", quality])
     elif family in {"intel_qsv", "intel_vaapi"}:
-        args.extend(["-global_quality", str(plan["encoder"]["quality"])])
+        args.extend(["-global_quality", quality])
     elif encoder in {"libx265", "libx264"}:
-        args.extend(["-preset", "slow", "-crf", str(plan["encoder"]["quality"])])
+        args.extend(["-preset", preset or "slow", "-crf", quality])
     if plan["source"].get("color_primaries"):
         args.extend(["-color_primaries", str(plan["source"]["color_primaries"])])
     if plan["source"].get("color_transfer"):

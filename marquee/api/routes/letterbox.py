@@ -307,6 +307,9 @@ async def letterbox_status(db: Annotated[AsyncSession, Depends(get_db)]):
     last_scan = (
         await db.execute(select(func.max(LetterboxState.last_detected_at)))
     ).scalar_one_or_none()
+    # Re-probe binaries so a tool installed after server start (the resolve()
+    # cache is per-process) shows up on the next status poll without a restart.
+    binaries.reset_cache()
     return {
         "enabled": settings.LETTERBOX_ENABLED,
         "method": settings.LETTERBOX_DETECT_METHOD,
@@ -681,6 +684,10 @@ class ReencodePlanRequest(BaseModel):
     top: int | None = None
     bottom: int | None = None
     allow_cpu_fallback: bool | None = None
+    encoder: str | None = None
+    quality: int | None = None
+    preset: str | None = None
+    codec: str | None = None
 
 
 class RestoreReencodeRequest(BaseModel):
@@ -819,6 +826,10 @@ async def create_reencode_plan(
             top=top or 0,
             bottom=bottom or 0,
             allow_cpu_fallback=body.allow_cpu_fallback,
+            encoder=body.encoder,
+            quality=body.quality,
+            preset=body.preset,
+            codec=body.codec,
         )
     except (MediaFileNotFoundError, MediaFileUnavailableError) as exc:
         raise HTTPException(
@@ -963,6 +974,8 @@ def _wipe_detection(state: LetterboxState, now: datetime) -> None:
     state.samples_json = None
     state.error = None
     state.reviewed = False
+    state.variable_ar = False
+    state.variable_ar_note = None
     state.last_detected_at = None
     state.last_applied_at = None
     state.last_prefiltered_at = now
@@ -973,6 +986,20 @@ async def dev_reset_not_letterboxed(db: Annotated[AsyncSession, Depends(get_db)]
     """Dev: move all not_letterboxed / variable_unsafe / skipped back to Candidates."""
     result = await db.execute(
         select(LetterboxState).where(LetterboxState.status.in_(list(_NOT_LB_STATUSES)))
+    )
+    states = result.scalars().all()
+    now = datetime.now(UTC)
+    for state in states:
+        _wipe_detection(state, now)
+    await db.commit()
+    return {"reset": len(states)}
+
+
+@router.post("/dev/reset-detected")
+async def dev_reset_detected(db: Annotated[AsyncSession, Depends(get_db)]):
+    """Dev: move all detected (candidate) movies back to Candidates."""
+    result = await db.execute(
+        select(LetterboxState).where(LetterboxState.status == "candidate")
     )
     states = result.scalars().all()
     now = datetime.now(UTC)
