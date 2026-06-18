@@ -10,22 +10,24 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.api.deps import enforce_rate_limit, get_rate_limiter, get_tmdb
+from marquee.api.library_serializers import enrich_movie
 from marquee.api.results import (
     build_results_payload,
     feature_vector_from_archive,
     find_candidate,
     poster_url,
 )
+from marquee.api.routes.library import _coverage_by_media_file
 from marquee.config import settings
 from marquee.core.pipeline_config import PipelineSettings, pipeline_settings
 from marquee.core.poster_sources.tmdb import TMDBClient
 from marquee.core.rate_limit import RateLimiter
 from marquee.database import get_db
-from marquee.models import ArtworkEvent, Movie, PipelineRun
+from marquee.models import ArtworkEvent, LetterboxState, MediaFile, Movie, PipelineRun
 from marquee.pipeline.gate import PosterGate
 from marquee.pipeline.run_manager import RunInProgressError, run_manager
 from marquee.pipeline.scorer import WeightedScorer
@@ -34,6 +36,8 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/pipeline", tags=["pipeline"])
 movies_router = APIRouter(prefix="/api/movies", tags=["movies"])
+
+_REVIEW_QUEUE_STATUSES = {"completed", "flagged_manual"}
 
 
 # ---------------------------------------------------------------------------
@@ -267,6 +271,93 @@ async def rescore_run(
 # ---------------------------------------------------------------------------
 # Run history (per movie)
 # ---------------------------------------------------------------------------
+
+
+@router.get("/review-queue")
+async def review_queue(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    page: int = 1,
+    page_size: int = 50,
+):
+    """Latest unreviewed poster-pipeline run per movie for the review page."""
+    page = max(page, 1)
+    page_size = min(max(page_size, 1), 200)
+
+    latest = (
+        select(
+            PipelineRun.movie_id.label("movie_id"),
+            func.max(PipelineRun.started_at).label("started_at"),
+        )
+        .where(
+            PipelineRun.feedback_event_id.is_(None),
+            PipelineRun.status.in_(_REVIEW_QUEUE_STATUSES),
+        )
+        .group_by(PipelineRun.movie_id)
+        .subquery()
+    )
+    base = (
+        select(PipelineRun, Movie, LetterboxState)
+        .join(latest, (latest.c.movie_id == PipelineRun.movie_id) & (latest.c.started_at == PipelineRun.started_at))
+        .join(Movie, Movie.id == PipelineRun.movie_id)
+        .outerjoin(LetterboxState, LetterboxState.movie_id == Movie.id)
+        .where(
+            PipelineRun.feedback_event_id.is_(None),
+            PipelineRun.status.in_(_REVIEW_QUEUE_STATUSES),
+        )
+    )
+    total = (await db.execute(select(func.count()).select_from(latest))).scalar_one()
+    rows = (
+        await db.execute(
+            base.order_by(PipelineRun.started_at.desc())
+            .limit(page_size)
+            .offset((page - 1) * page_size)
+        )
+    ).all()
+
+    movies = [movie for _, movie, _ in rows]
+    movie_ids = [movie.id for movie in movies]
+    media_rows = (
+        (
+            await db.execute(
+                select(MediaFile).where(
+                    MediaFile.movie_id.in_(movie_ids),
+                    MediaFile.is_active.is_(True),
+                )
+            )
+        )
+        .scalars()
+        .all()
+        if movie_ids
+        else []
+    )
+    mf_by_movie = {mf.movie_id: mf for mf in media_rows}
+    coverage = await _coverage_by_media_file(db, [mf.id for mf in media_rows])
+
+    items = []
+    for run, movie, lb in rows:
+        mf = mf_by_movie.get(movie.id)
+        items.append(
+            {
+                "movie": enrich_movie(
+                    movie,
+                    mf,
+                    coverage.get(mf.id) if mf else None,
+                    lb.status if lb else None,
+                ),
+                "run": {
+                    "run_id": run.run_id,
+                    "status": run.status,
+                    "started_at": run.started_at.isoformat() if run.started_at else None,
+                    "completed_at": run.completed_at.isoformat() if run.completed_at else None,
+                    "scorer_name": run.scorer_name,
+                    "counts": json.loads(run.counts_json) if run.counts_json else None,
+                    "reviewed": False,
+                },
+                "results_url": f"/api/pipeline/runs/{run.run_id}",
+            }
+        )
+
+    return {"total": total, "page": page, "page_size": page_size, "items": items}
 
 
 @movies_router.get("/{movie_id}/runs")
