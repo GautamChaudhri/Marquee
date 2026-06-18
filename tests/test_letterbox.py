@@ -151,11 +151,12 @@ def test_consensus_case_a_variable_unsafe():
 
 
 def test_consensus_case_b_conservative_min():
-    # All letterboxed but varying → recommend the smallest bar (most content).
+    # All letterboxed but varying → recommend the median bar size (majority wins).
+    # 2/3 samples within medium_spread of median (100) → medium confidence.
     r = ld.consensus([_w(5, 140, 140), _w(10, 80, 80), _w(15, 100, 100)], width=1920, height=1080)
     assert r.status == "candidate"
-    assert r.recommended_crop_top == 80
-    assert r.confidence == "low"  # spread 60 > medium_spread (20)
+    assert r.recommended_crop_top == 100
+    assert r.confidence == "medium"
 
 
 def test_consensus_not_letterboxed():

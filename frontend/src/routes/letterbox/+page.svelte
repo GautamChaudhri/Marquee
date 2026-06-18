@@ -8,9 +8,10 @@
 		analyzeAll,
 		healDrift,
 		applyBatch,
-		confirmLetterbox
+		confirmLetterbox,
+		listColumn
 	} from '$lib/api/letterbox';
-	import type { LetterboxAnalyzeSummary } from '$lib/api/types';
+	import type { LetterboxAnalyzeSummary, LetterboxColumnItem } from '$lib/api/types';
 	import SectionHeader from '$lib/components/SectionHeader.svelte';
 	import StatusDot from '$lib/components/StatusDot.svelte';
 	import ProgressBar from '$lib/components/ProgressBar.svelte';
@@ -20,6 +21,8 @@
 	import type { PageData } from './$types';
 
 	let { data }: { data: PageData } = $props();
+
+	type Variant = 'candidates' | 'detected' | 'preview' | 'notlb' | 'processed';
 
 	// ── Selection (URL-driven) ─────────────────────────────────────────────────
 	const cols = $derived(data.columns);
@@ -171,6 +174,72 @@
 
 	const st = $derived(data.status);
 	const detectedTotal = $derived(cols.detected.total);
+
+	// ── "View all" modal ───────────────────────────────────────────────────────
+	interface ModalCfg {
+		variant: Variant;
+		status: string;
+		reviewed?: boolean;
+		sort: 'title' | 'confidence' | 'crop' | 'recent';
+		label: string;
+	}
+	let modal = $state<ModalCfg | null>(null);
+	let modalItems = $state<LetterboxColumnItem[]>([]);
+	let modalLoading = $state(false);
+
+	async function openModal(cfg: ModalCfg) {
+		modal = cfg;
+		modalItems = [];
+		modalLoading = true;
+		try {
+			const r = await listColumn(fetch, {
+				status: cfg.status,
+				reviewed: cfg.reviewed,
+				sort: cfg.sort,
+				page_size: 200
+			});
+			modalItems = r.items;
+		} catch {
+			// silently degrade
+		} finally {
+			modalLoading = false;
+		}
+	}
+
+	function closeModal() {
+		modal = null;
+		modalItems = [];
+	}
+
+	const MODAL_CFGS: Record<Variant, ModalCfg> = {
+		candidates: {
+			variant: 'candidates',
+			status: 'prefilter_candidate,prefilter_unknown',
+			sort: 'confidence',
+			label: 'Candidates'
+		},
+		detected: { variant: 'detected', status: 'candidate', sort: 'confidence', label: 'Detected' },
+		preview: {
+			variant: 'preview',
+			status: 'tagged',
+			reviewed: false,
+			sort: 'recent',
+			label: 'Preview & Confirm'
+		},
+		notlb: {
+			variant: 'notlb',
+			status: 'not_letterboxed,variable_unsafe,skipped',
+			sort: 'recent',
+			label: 'Not Letterboxed'
+		},
+		processed: {
+			variant: 'processed',
+			status: 'tagged',
+			reviewed: true,
+			sort: 'recent',
+			label: 'Processed'
+		}
+	};
 </script>
 
 <SectionHeader title="Letterbox" subtitle="Black-bar detection & crop tagging">
@@ -241,14 +310,18 @@
 	<span class="pill" style="--c:var(--good)">Done</span>
 </div>
 
-{#snippet rows(items: typeof cols.candidates.items, total: number, variant: 'candidates' | 'detected' | 'preview' | 'notlb' | 'processed')}
+{#snippet rows(items: typeof cols.candidates.items, total: number, variant: Variant)}
 	{#if items.length === 0}
 		<div class="tray-empty">—</div>
 	{:else}
 		{#each items as item (item.movie_id)}
 			<LetterboxCard {item} {variant} selected={item.movie_id === selected} onSelect={select} />
 		{/each}
-		{#if total > items.length}<div class="tray-more">view all {total}</div>{/if}
+	{/if}
+	{#if total > items.length}
+		<button class="tray-more" onclick={() => openModal(MODAL_CFGS[variant])}>
+			view all {total}
+		</button>
 	{/if}
 {/snippet}
 
@@ -334,6 +407,44 @@
 		<div class="tray-body">{@render rows(cols.processed.items, cols.processed.total, 'processed')}</div>
 	</section>
 </div>
+
+<!-- "View all" modal -->
+{#if modal}
+	<div
+		class="modal-backdrop"
+		role="dialog"
+		aria-modal="true"
+		aria-label={modal.label}
+		tabindex="-1"
+		onclick={(e) => { if (e.target === e.currentTarget) closeModal(); }}
+		onkeydown={(e) => e.key === 'Escape' && closeModal()}
+	>
+		<div class="modal-card">
+			<div class="modal-head">
+				<span class="modal-title">{modal.label}</span>
+				<button class="modal-close" onclick={closeModal} aria-label="Close">
+					<Icon name="x" size={16} />
+				</button>
+			</div>
+			<div class="modal-body">
+				{#if modalLoading}
+					<div class="modal-loading">Loading…</div>
+				{:else if modalItems.length === 0}
+					<div class="modal-loading">No items found.</div>
+				{:else}
+					{#each modalItems as item (item.movie_id)}
+						<LetterboxCard
+							{item}
+							variant={modal.variant}
+							selected={item.movie_id === selected}
+							onSelect={(id) => { select(id); closeModal(); }}
+						/>
+					{/each}
+				{/if}
+			</div>
+		</div>
+	</div>
+{/if}
 
 <style>
 	.statusbar {
@@ -578,6 +689,8 @@
 		display: flex;
 		flex-direction: column;
 		min-height: 60px;
+		max-height: 390px;
+		overflow-y: auto;
 	}
 	.tray-empty {
 		text-align: center;
@@ -586,11 +699,23 @@
 		padding: 20px 0;
 	}
 	.tray-more {
+		position: sticky;
+		bottom: 0;
+		flex-shrink: 0;
+		width: 100%;
 		text-align: center;
 		font-size: 11.5px;
 		color: var(--muted);
 		padding: 8px 0;
+		border: none;
 		border-top: 1px solid var(--panel2);
+		background: var(--panel);
+		box-shadow: 0 -4px 10px rgba(0, 0, 0, 0.2);
+		cursor: pointer;
+	}
+	.tray-more:hover {
+		color: var(--text);
+		background: var(--panel2);
 	}
 
 	.btn-sec {
@@ -618,5 +743,65 @@
 	.spin {
 		display: inline-block;
 		animation: spin 1s linear infinite;
+	}
+
+	/* modal */
+	.modal-backdrop {
+		position: fixed;
+		inset: 0;
+		background: color-mix(in srgb, var(--bg) 60%, transparent);
+		backdrop-filter: blur(4px);
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		z-index: 100;
+	}
+	.modal-card {
+		background: var(--panel);
+		border: 1px solid var(--line);
+		border-radius: var(--radius);
+		width: 100%;
+		max-width: 480px;
+		max-height: 70vh;
+		display: flex;
+		flex-direction: column;
+		box-shadow: 0 24px 64px rgba(0, 0, 0, 0.5);
+	}
+	.modal-head {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		padding: 14px 16px;
+		border-bottom: 1px solid var(--line);
+	}
+	.modal-title {
+		font-size: 14px;
+		font-weight: 700;
+		color: var(--text);
+	}
+	.modal-close {
+		display: grid;
+		place-items: center;
+		width: 28px;
+		height: 28px;
+		border: none;
+		background: transparent;
+		color: var(--muted);
+		border-radius: 6px;
+		cursor: pointer;
+	}
+	.modal-close:hover {
+		background: var(--panel2);
+		color: var(--text);
+	}
+	.modal-body {
+		flex: 1;
+		overflow-y: auto;
+	}
+	.modal-loading {
+		text-align: center;
+		color: var(--faint);
+		font-size: 13px;
+		padding: 32px 0;
 	}
 </style>

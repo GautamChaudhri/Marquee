@@ -49,9 +49,9 @@
 		<span class="sub mono">{sub}</span>
 	</span>
 
-	{#if variant === 'candidates'}
-		<span class="ar mono">{arLabel}</span>
-	{:else if variant === 'detected' || variant === 'preview' || variant === 'processed'}
+	{#if variant === 'detected'}
+		<span class="ar mono">{item.aspect_label ?? arLabel}</span>
+	{:else if variant === 'preview' || variant === 'processed'}
 		<span class="badge mono">⚡ Quick · Tag</span>
 	{:else if variant === 'notlb'}
 		<span class="dot" style="background:{toneVar(notlbTone)}"></span>
