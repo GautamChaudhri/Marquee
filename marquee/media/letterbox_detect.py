@@ -78,6 +78,8 @@ class DetectionResult:
     samples: list[dict] = field(default_factory=list)
     method: str = "cropdetect"
     error: str | None = None
+    variable_ar: bool = False
+    variable_ar_note: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -265,6 +267,18 @@ def aspect_label(width: int, effective_height: int) -> str | None:
     return f"{width / effective_height:.2f}:1"
 
 
+def _cluster_bars(bars: list[int], gap: int) -> list[list[int]]:
+    """Group sorted bar values into clusters; a jump > *gap* starts a new cluster."""
+    ordered = sorted(bars)
+    clusters: list[list[int]] = [[ordered[0]]]
+    for b in ordered[1:]:
+        if b - clusters[-1][-1] <= gap:
+            clusters[-1].append(b)
+        else:
+            clusters.append([b])
+    return clusters
+
+
 def consensus(
     measurements: list[WindowMeasurement],
     *,
@@ -307,7 +321,9 @@ def consensus(
     zero_present = any(b <= noise for b in bars)
     nonzero_present = any(b > min_bar for b in bars)
 
-    def result(status, conf, top, bottom) -> DetectionResult:
+    def result(
+        status, conf, top, bottom, *, variable_ar: bool = False, variable_ar_note: str | None = None
+    ) -> DetectionResult:
         eff = height - top - bottom
         return DetectionResult(
             status=status, confidence=conf,
@@ -315,15 +331,50 @@ def consensus(
             source_width=width, source_height=height,
             aspect_label=aspect_label(width, eff) if top or bottom else None,
             samples=samples, method=method,
+            variable_ar=variable_ar, variable_ar_note=variable_ar_note,
         )
 
     if med <= noise:
         return result(STATUS_NOT_LETTERBOXED, CONF_NONE, 0, 0)
     if zero_present and nonzero_present:
         # Some scenes fill the 16:9 frame — any crop would clip them (Case A).
-        return result(STATUS_VARIABLE_UNSAFE, CONF_LOW, 0, 0)
+        other_bar = round(statistics.median([b for b in bars if b > min_bar]))
+        other_ar = aspect_label(width, height - 2 * other_bar)
+        note = (
+            "This movie alternates between full-frame (16:9) scenes and "
+            f"{other_ar or f'{other_bar}px-bar'} scenes — no safe crop exists, so it's "
+            "treated as not letterboxed."
+        )
+        return result(
+            STATUS_VARIABLE_UNSAFE, CONF_LOW, 0, 0, variable_ar=True, variable_ar_note=note
+        )
 
-    # Letterboxed. Base confidence on how many samples agree with the median
+    # Bimodal/variable aspect-ratio check: two or more well-supported, mutually
+    # disagreeing bar clusters mean genuinely different theatrical ARs in one
+    # file (e.g. IMAX 1.90:1 expansion scenes vs 2.40:1 scope) — not just
+    # measurement noise around a single bar size. Small/outlier clusters are
+    # filtered out so a single anomalous frame can't trigger this (Case D).
+    clusters = _cluster_bars(bars, config.LETTERBOX_VARIABLE_GAP_PX)
+    min_cluster_size = max(2, round(config.LETTERBOX_VARIABLE_MIN_FRACTION * len(bars)))
+    significant = [c for c in clusters if len(c) >= min_cluster_size]
+    if len(significant) >= 2:
+        reps = sorted((round(statistics.median(c)), len(c)) for c in significant)
+        mn_rep = reps[0][0]
+        parts = [
+            f"{aspect_label(width, height - 2 * bar) or f'{bar}px'} ({count} samples)"
+            for bar, count in reps
+        ]
+        note = (
+            "Variable aspect ratio detected: alternates between "
+            + ", ".join(parts)
+            + f". Defaulting to the smaller crop ({mn_rep}px) to avoid clipping the "
+            "wider-aspect-ratio scenes."
+        )
+        return result(
+            STATUS_CANDIDATE, CONF_LOW, mn_rep, mn_rep, variable_ar=True, variable_ar_note=note
+        )
+
+    # Single-cluster letterboxed content. Base confidence on how many samples agree with the median
     # (robust to single outlier frames) rather than raw min/max spread.
     n_agree = sum(1 for b in bars if abs(b - med) <= agree)
     agreement = n_agree / len(bars)

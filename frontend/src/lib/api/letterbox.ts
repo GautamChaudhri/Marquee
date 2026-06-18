@@ -61,6 +61,7 @@ export interface ColumnQuery {
 	status: string; // comma-separated
 	reviewed?: boolean;
 	sort?: 'confidence' | 'title' | 'crop' | 'recent';
+	desc?: boolean; // confidence sort direction: true = high→low
 	page_size?: number;
 }
 
@@ -69,6 +70,7 @@ export function listColumn(fetchFn: Fetch, q: ColumnQuery): Promise<LetterboxCol
 		status: q.status,
 		reviewed: q.reviewed,
 		sort: q.sort ?? 'confidence',
+		desc: q.desc ?? true,
 		page: 1,
 		page_size: q.page_size ?? 25
 	});

@@ -500,6 +500,14 @@ class Settings(BaseSettings):
     LETTERBOX_MEDIUM_SPREAD_PX: int = Field(
         default=20, description="Spread boundary between Medium and Low confidence."
     )
+    LETTERBOX_VARIABLE_GAP_PX: int = Field(
+        default=40,
+        description="Bar-value gap (px) that separates two distinct aspect-ratio clusters.",
+    )
+    LETTERBOX_VARIABLE_MIN_FRACTION: float = Field(
+        default=0.2,
+        description="Min fraction of samples a bar cluster needs to count as a real AR (not an outlier).",
+    )
     LETTERBOX_ASYM_PX: int = Field(
         default=2, description="Top/bottom asymmetry tolerance (px) before honoring uneven bars."
     )

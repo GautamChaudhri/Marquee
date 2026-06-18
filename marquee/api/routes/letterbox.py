@@ -17,7 +17,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -108,6 +108,8 @@ def _state_to_dict(state: LetterboxState, movie: Movie | None = None) -> dict:
         "prefilter_reason": state.prefilter_reason,
         "prefilter_aspect_ratio": state.prefilter_aspect_ratio,
         "last_prefiltered_at": _iso_or_none(state.last_prefiltered_at),
+        "variable_ar": state.variable_ar,
+        "variable_ar_note": state.variable_ar_note,
     }
     if movie is not None:
         data["title"] = movie.title
@@ -221,6 +223,8 @@ def _letterbox_state_summary(state: LetterboxState | None) -> dict | None:
         "prefilter_reason": state.prefilter_reason,
         "prefilter_aspect_ratio": state.prefilter_aspect_ratio,
         "last_prefiltered_at": _iso_or_none(state.last_prefiltered_at),
+        "variable_ar": state.variable_ar,
+        "variable_ar_note": state.variable_ar_note,
     }
 
 
@@ -321,6 +325,7 @@ async def list_candidates(
     status: str | None = None,
     confidence: str | None = None,
     sort: str = "confidence",
+    desc: bool = Query(True, description="confidence sort direction: True = high→low"),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
 ):
@@ -335,15 +340,20 @@ async def list_candidates(
         await db.execute(select(func.count()).select_from(query.subquery()))
     ).scalar_one()
 
-    # Sort: confidence (high→low), title, or crop size.
+    # Sort: confidence (rank-ordered high→low or low→high), title, or crop size.
     if sort == "title":
         query = query.order_by(Movie.title)
     elif sort == "crop":
         query = query.order_by(LetterboxState.recommended_crop_top.desc().nullslast())
     else:  # confidence
-        order = func.coalesce(
-            func.nullif(LetterboxState.confidence, ""), "zzz"
+        rank = case(
+            (LetterboxState.confidence == "high", 0),
+            (LetterboxState.confidence == "medium", 1),
+            (LetterboxState.confidence == "low", 2),
+            (LetterboxState.confidence == "none", 3),
+            else_=4,
         )
+        order = rank if desc else rank.desc()
         query = query.order_by(order, Movie.title)
 
     query = query.limit(page_size).offset((page - 1) * page_size)
@@ -479,10 +489,11 @@ async def get_movie_detail(
     detail["not_honored_by"] = _NOT_HONORED_BY
     detail["dolby_vision"] = await _dolby_vision_for_movie(db, movie)
     detail["preview_minute"] = preview_minute
-    detail["preview_urls"] = {
-        "before": f"/api/letterbox/movies/{movie_id}/preview?mode=before&minute={preview_minute}",
-        "after": f"/api/letterbox/movies/{movie_id}/preview?mode=after&minute={preview_minute}",
-    }
+    if not state.reviewed:
+        detail["preview_urls"] = {
+            "before": f"/api/letterbox/movies/{movie_id}/preview?mode=before&minute={preview_minute}",
+            "after": f"/api/letterbox/movies/{movie_id}/preview?mode=after&minute={preview_minute}",
+        }
     return detail
 
 
@@ -617,9 +628,11 @@ async def movie_preview(
     mode: str = "before",
     minute: int = 5,
 ):
-    _require_ffmpeg()
     movie = await _load_movie(db, movie_id)
     state = await _load_state(db, movie_id)
+    if state.reviewed:
+        raise HTTPException(status_code=404, detail="Preview unavailable after confirmation")
+    _require_ffmpeg()
     eligibility = letterbox_service.check_eligibility(movie)
     if eligibility.path is None:
         raise HTTPException(status_code=404, detail="Media file unavailable for preview")
@@ -737,6 +750,21 @@ async def apply_batch(
             results.append({"movie_id": movie_id, "applied": False, "reason": exc.reason})
     applied = sum(1 for r in results if r["applied"])
     return {"applied": applied, "total": len(body.movie_ids), "results": results}
+
+
+@router.post("/movies/{movie_id}/confirm")
+async def confirm_one(movie_id: int, db: Annotated[AsyncSession, Depends(get_db)]):
+    """Mark a tagged movie reviewed so it moves to Processed."""
+    await _load_movie(db, movie_id)
+    state = await _load_state(db, movie_id)
+    if state.status != "tagged" and not state.reviewed:
+        raise HTTPException(status_code=422, detail="Can only confirm a tagged movie.")
+    state.reviewed = True
+    response = _state_to_dict(state)
+    db.add(LetterboxEvent(movie_id=movie_id, action="confirm", source="api", detail="{}"))
+    await db.commit()
+    letterbox_preview.purge_movie_previews(movie_id)
+    return response
 
 
 def _map_reencode_error(exc: letterbox_reencode.ReencodePlanError) -> HTTPException:
@@ -900,9 +928,11 @@ async def ignore_one(movie_id: int, db: Annotated[AsyncSession, Depends(get_db)]
     state = await _load_state(db, movie_id)
     state.status = "skipped"
     state.reviewed = True
+    response = _state_to_dict(state)
     db.add(LetterboxEvent(movie_id=movie_id, action="ignore", source="api", detail="{}"))
     await db.commit()
-    return _state_to_dict(state)
+    letterbox_preview.purge_movie_previews(movie_id)
+    return response
 
 
 @router.post("/heal")
