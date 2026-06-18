@@ -14,9 +14,7 @@ x-marquee-common: &marquee-common
   environment:
     - EXECUTION_PROVIDER=auto
   volumes:
-    - ../config:/config
     - ../marquee/ml/models:/app/marquee/ml/models:ro
-    - ../marquee/ml/taste_profile.clip-vit-b-32.npz:/app/marquee/ml/taste_profile.clip-vit-b-32.npz:ro
     - ../data:/app/data
     # Media libraries — adjust to your mounts:
     # - /mnt/media/movies:/movies

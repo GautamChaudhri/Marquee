@@ -89,10 +89,15 @@ def _exemplar_stats() -> dict:
 
 
 def _head_status() -> dict:
-    from marquee.ml.head_trainer import _RUNS_DIR, build_training_data  # noqa: PLC0415
+    from marquee.ml.head_trainer import (  # noqa: PLC0415
+        _LEGACY_RUNS_DIRS,
+        build_training_data,
+    )
 
     rows = feedback_store.read_all()
-    _x, targets, _names, n_movies = build_training_data(rows, _RUNS_DIR)
+    _x, targets, _names, n_movies = build_training_data(
+        rows, (settings.runs_work_path, *_LEGACY_RUNS_DIRS)
+    )
     n_samples = int(len(targets))
     active = Path(pipeline_settings.LEARNED_HEAD_PATH).exists()
     return {

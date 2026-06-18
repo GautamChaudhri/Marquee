@@ -37,7 +37,6 @@ from marquee.database import _get_session_factory
 from marquee.models import Movie, PipelineRun
 from marquee.pipeline.features import FeatureExtractor
 from marquee.pipeline.runner import (
-    _EXPERIMENTS_DATA,
     ProgressEvent,
     _add_run_file_handler,
     _clear_generated_outputs,
@@ -205,7 +204,7 @@ class RunManager:
         self._active_run_id = run_id  # set synchronously — closes the race
         self._runs[run_id] = RunState(run_id=run_id)
 
-        out_dir = _EXPERIMENTS_DATA / _sanitise_filename(movie.title)
+        out_dir = settings.runs_work_path / _sanitise_filename(movie.title)
 
         # Persist the run row immediately so GET /runs/{id} works mid-run.
         factory = _get_session_factory()
@@ -253,7 +252,7 @@ class RunManager:
                 state.publish, {"run_id": run_id, **event.to_dict()}
             )
 
-        out_dir = _EXPERIMENTS_DATA / _sanitise_filename(movie_title)
+        out_dir = settings.runs_work_path / _sanitise_filename(movie_title)
         out_dir.mkdir(parents=True, exist_ok=True)
         _clear_generated_outputs(out_dir)
         originals_dir = out_dir / "0-originals"

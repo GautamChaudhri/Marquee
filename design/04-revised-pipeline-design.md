@@ -56,7 +56,7 @@ output
 Details:
 
 1. `fetch`: TMDB movie images are fetched, candidate metadata is recorded, and
-   w500 images are downloaded to `marquee/experiments/runs/<title>/0-originals`.
+   w500 images are downloaded to `data/runs/work/<title>/0-originals`.
 2. `sha256`: exact duplicate removal.
 3. `gate-resolution`: rejects candidates below `GATE_MIN_WIDTH` using TMDB
    metadata before inference.

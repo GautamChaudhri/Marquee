@@ -87,6 +87,8 @@ Expected artifact locations:
 | Person model | `marquee/ml/models/yolo11n.onnx` |
 | Taste profile | `marquee/ml/taste_profile.<AI_MODEL>.npz` |
 | Zero-shot axes | `marquee/ml/zeroshot_axes.clip-vit-b-32.npz` |
+| Live run work dir | `data/runs/work/<Movie>/` |
+| Run archive | `data/runs/archive/{run_id}.json` |
 
 Required artifacts are CLIP, aesthetic head, face model, and taste profile.
 DINO/person/zero-shot/learned-head artifacts are optional feature enhancers.

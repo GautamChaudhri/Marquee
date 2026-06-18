@@ -6,7 +6,7 @@ SSE progress + run history). The actual stage logic lives in the runner; this
 route builds a one-off ``FeatureExtractor`` and runs the stages inline so it
 stays independent of the ``RunManager`` singleton.
 
-``_EXPERIMENTS_DATA`` and ``_clear_generated_outputs`` are re-exported here
+``_RUNS_WORK_DATA`` and ``_clear_generated_outputs`` are re-exported here
 because the test suite imports them from this module.
 """
 
@@ -29,7 +29,7 @@ from marquee.database import get_db
 from marquee.models import Movie
 from marquee.pipeline.features import FeatureExtractor
 from marquee.pipeline.runner import (  # noqa: F401 — re-exported for tests
-    _EXPERIMENTS_DATA,
+    _RUNS_WORK_DATA,
     _add_run_file_handler,
     _clear_generated_outputs,
     _remove_run_file_handler,
@@ -92,7 +92,7 @@ async def test_pipeline_movie(
 
     run_started = time.perf_counter()
     started_at = datetime.now(UTC).isoformat()
-    out_dir = _EXPERIMENTS_DATA / _sanitise_filename(movie.title)
+    out_dir = settings.runs_work_path / _sanitise_filename(movie.title)
     out_dir.mkdir(parents=True, exist_ok=True)
     _clear_generated_outputs(out_dir)
     originals_dir = out_dir / "0-originals"

@@ -63,7 +63,7 @@ fetch -> sha256 -> gate-resolution -> style-features -> gate-style
 Run artifacts are written under:
 
 ```text
-marquee/experiments/runs/<Movie>/
+data/runs/work/<Movie>/
 ```
 
 Important folders/files:

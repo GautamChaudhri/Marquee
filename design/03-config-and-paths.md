@@ -29,6 +29,7 @@ Other derived paths are also project-root anchored:
 |---|---|
 | `poster_cache_path` | `<project>/data/cache/posters` |
 | `poster_staging_path` | `<project>/data/staging` |
+| `runs_work_path` | `<project>/data/runs/work` |
 | `runs_archive_path` | `<project>/data/runs/archive` |
 | `letterbox_preview_path` | `<project>/data/cache/letterbox` |
 

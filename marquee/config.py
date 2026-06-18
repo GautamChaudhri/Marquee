@@ -54,6 +54,19 @@ class Settings(BaseSettings):
         "even outside DEBUG. Tailscale (100.64.0.0/10) and LAN addresses always "
         "require the key.",
     )
+    AUTH_BRUTE_LOCKOUT_ATTEMPTS: int = Field(
+        default=10,
+        description="Failed auth attempts from one IP within AUTH_BRUTE_WINDOW_SECONDS "
+        "before that IP is locked out.",
+    )
+    AUTH_BRUTE_WINDOW_SECONDS: int = Field(
+        default=60,
+        description="Rolling window (seconds) used to count auth failures per IP.",
+    )
+    AUTH_BRUTE_LOCKOUT_SECONDS: int = Field(
+        default=300,
+        description="How long (seconds) a locked-out IP must wait before retrying.",
+    )
 
     # ------------------------------------------------------------------
     # Database
@@ -99,10 +112,15 @@ class Settings(BaseSettings):
     def runs_archive_path(self) -> Path:
         """Where per-run pipeline_run.json copies are archived by run_id.
 
-        Survives re-runs of the same movie (the experiments/runs/<title>/
+        Survives re-runs of the same movie (the data/runs/work/<title>/
         working dir is overwritten on re-run; this archive is not).
         """
         return self.data_dir_path / "runs" / "archive"
+
+    @property
+    def runs_work_path(self) -> Path:
+        """Where live pipeline working output for each movie is written."""
+        return self.data_dir_path / "runs" / "work"
 
     @property
     def letterbox_preview_path(self) -> Path:
@@ -368,6 +386,15 @@ class Settings(BaseSettings):
     HEAL_ENABLED: bool = Field(
         default=True,
         description="Run the periodic self-heal poster existence scan.",
+    )
+
+    # ------------------------------------------------------------------
+    # Request size cap
+    # ------------------------------------------------------------------
+    MAX_REQUEST_BODY_BYTES: int = Field(
+        default=1_048_576,
+        description="Maximum Content-Length for any request body (bytes). Default 1 MB. "
+        "Raise only if file-upload endpoints are added.",
     )
 
     # ------------------------------------------------------------------

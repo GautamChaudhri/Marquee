@@ -56,11 +56,9 @@ ENV LD_LIBRARY_PATH=/usr/local/lib/python3.12/site-packages/nvidia/cuda_runtime/
 
 # Model files are NOT baked into the image — mount them:
 #   ./marquee/ml/models          -> /app/marquee/ml/models
-#   ./marquee/ml/taste_profile.* -> /app/marquee/ml/
-VOLUME ["/config"]
 
 EXPOSE 3165
 HEALTHCHECK --interval=60s --timeout=10s --start-period=30s \
     CMD python -c "import httpx; httpx.get('http://localhost:3165/health').raise_for_status()"
 
-CMD ["uvicorn", "marquee.main:app", "--host", "0.0.0.0", "--port", "3165"]
+CMD ["uvicorn", "marquee.main:app", "--host", "0.0.0.0", "--port", "3165", "--no-access-log"]

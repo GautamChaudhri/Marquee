@@ -2,7 +2,7 @@
 
 A run is identified by a stable ``run_id`` (uuid4 hex) so its results,
 event stream, and any feedback labels written against it survive a re-run
-of the same movie (the working directory under ``experiments/runs/`` is
+of the same movie (the working directory under ``data/runs/work/`` is
 per-title and gets overwritten; this row + the archived JSON do not).
 """
 
@@ -50,7 +50,7 @@ class PipelineRun(Base):
     # data/runs/archive/{run_id}.json — survives re-runs of the same movie.
     archive_path: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    # Working directory under experiments/runs/<title>/.
+    # Working directory under data/runs/work/<title>/.
     output_dir: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Set once feedback is submitted for this run — the UI shows reviewed state.

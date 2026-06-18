@@ -39,6 +39,7 @@ from pathlib import Path
 
 import httpx
 
+from marquee.config import settings
 from marquee.core.pipeline_config import pipeline_settings
 from marquee.core.poster_sources.tmdb import PosterCandidate, TMDBClient
 from marquee.models import Movie
@@ -52,7 +53,8 @@ from marquee.pipeline.types import CandidateScore, OCRCandidateResult
 
 logger = logging.getLogger(__name__)
 
-_EXPERIMENTS_DATA = Path(__file__).resolve().parents[1] / "experiments" / "runs"
+_RUNS_WORK_DATA = settings.runs_work_path
+_EXPERIMENTS_DATA = _RUNS_WORK_DATA
 _DOWNLOAD_SEMAPHORE = asyncio.Semaphore(5)
 _DOWNLOAD_SIZE = "w500"
 _IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff"}

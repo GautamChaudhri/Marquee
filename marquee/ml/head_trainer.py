@@ -4,7 +4,8 @@ Labels v2 (written by the feedback endpoint) embed the full normalized
 feature vector per row, so training is a direct read — no dependency on a
 run's working directory surviving a re-run. Legacy v1 rows
 (``{title, orig_filename, label}``) are still supported via the original
-join against ``experiments/runs/*/pipeline_run.json``.
+join against ``data/runs/work/*/pipeline_run.json`` and the historical
+``experiments/runs/*/pipeline_run.json`` trees.
 
 Semantics (design 04 §5): 1 = approved/selected; 0 = overrode/rejected.
 
@@ -26,43 +27,51 @@ from pathlib import Path
 
 import numpy as np
 
+from marquee.config import settings
 from marquee.core.pipeline_config import pipeline_settings
 from marquee.ml import feedback_store
 from marquee.ml.learned_head import LogisticHead
 
-_RUNS_DIR = Path(__file__).resolve().parents[1] / "experiments" / "runs"
+_RUNS_DIR = settings.runs_work_path
+_LEGACY_RUNS_DIRS = (
+    Path(__file__).resolve().parents[2] / "experiments" / "runs",
+    Path(__file__).resolve().parents[1] / "experiments" / "runs",
+)
 
 
 def collect_v1_samples(
-    runs_dir: Path,
+    runs_dirs: tuple[Path, ...],
     labels: dict[tuple[str, str], int],
 ) -> list[tuple[dict[str, float], int]]:
     """Join v1 labels against the recorded normalized features of every run."""
     samples: list[tuple[dict[str, float], int]] = []
     if not labels:
         return samples
-    for run_json in sorted(runs_dir.glob("*/pipeline_run.json")):
-        try:
-            payload = json.loads(run_json.read_text())
-        except (OSError, json.JSONDecodeError) as exc:
-            print(f"[WARN] Skipping unreadable {run_json}: {exc}")
+    for runs_dir in runs_dirs:
+        if not runs_dir.exists():
             continue
-        title = payload.get("title", "")
-        if payload.get("model_name") != pipeline_settings.AI_MODEL:
-            continue
-        for candidate in payload.get("candidates", []):
-            key = (title, candidate.get("orig_filename", ""))
-            if key not in labels:
+        for run_json in sorted(runs_dir.glob("*/pipeline_run.json")):
+            try:
+                payload = json.loads(run_json.read_text())
+            except (OSError, json.JSONDecodeError) as exc:
+                print(f"[WARN] Skipping unreadable {run_json}: {exc}")
                 continue
-            normalized = candidate.get("normalized_features")
-            if normalized:
-                samples.append((normalized, labels[key]))
+            title = payload.get("title", "")
+            if payload.get("model_name") != pipeline_settings.AI_MODEL:
+                continue
+            for candidate in payload.get("candidates", []):
+                key = (title, candidate.get("orig_filename", ""))
+                if key not in labels:
+                    continue
+                normalized = candidate.get("normalized_features")
+                if normalized:
+                    samples.append((normalized, labels[key]))
     return samples
 
 
 def build_training_data(
     rows: list[dict],
-    runs_dir: Path,
+    runs_dirs: tuple[Path, ...],
 ) -> tuple[np.ndarray, np.ndarray, list[str], int]:
     """Combine v2 (embedded features) + v1 (run-join) rows into a matrix.
 
@@ -89,7 +98,7 @@ def build_training_data(
             except (KeyError, ValueError, TypeError):
                 continue
 
-    samples.extend(collect_v1_samples(runs_dir, v1_labels))
+    samples.extend(collect_v1_samples(runs_dirs, v1_labels))
 
     if not samples:
         return np.empty((0, 0)), np.empty(0), [], len(movies)
@@ -104,7 +113,7 @@ def build_training_data(
 
 def train_from_labels(
     *,
-    runs_dir: Path = _RUNS_DIR,
+    runs_dir: Path | None = None,
     min_labels: int | None = None,
     min_movies: int | None = None,
     l2: float = 1.0,
@@ -113,9 +122,11 @@ def train_from_labels(
     """Train + (optionally) save the head. Returns (head|None, info)."""
     min_labels = pipeline_settings.HEAD_MIN_LABELS if min_labels is None else min_labels
     min_movies = pipeline_settings.HEAD_MIN_MOVIES if min_movies is None else min_movies
+    current_runs_dir = runs_dir or _RUNS_DIR
+    runs_dirs = (current_runs_dir, *_LEGACY_RUNS_DIRS)
 
     rows = feedback_store.read_all()
-    features, targets, names, n_movies = build_training_data(rows, runs_dir)
+    features, targets, names, n_movies = build_training_data(rows, runs_dirs)
     n_samples = int(len(targets))
     info = {
         "n_samples": n_samples,
@@ -149,14 +160,14 @@ def train_from_labels(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--runs-dir", type=Path, default=_RUNS_DIR)
+    parser.add_argument("--runs-dir", type=Path, default=None)
     parser.add_argument("--min-labels", type=int, default=pipeline_settings.HEAD_MIN_LABELS)
     parser.add_argument("--min-movies", type=int, default=pipeline_settings.HEAD_MIN_MOVIES)
     parser.add_argument("--l2", type=float, default=1.0)
     args = parser.parse_args()
 
     head, info = train_from_labels(
-        runs_dir=args.runs_dir,
+        runs_dir=args.runs_dir or settings.runs_work_path,
         min_labels=args.min_labels,
         min_movies=args.min_movies,
         l2=args.l2,

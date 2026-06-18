@@ -276,7 +276,7 @@ Cleanup synthetic rows at the end and record before/after DB counts.
 | `POST /api/pipeline/runs/{run_id}/rescore` | On the **first** completed run, test `{}` and one safe weight/gate override. | Ranked output sorted by `final_score`; candidate set is subset of archived ranked candidates; `gated_out` has valid reasons; no images/inference rerun. |
 | `GET /api/movies/{movie_id}/runs` | Call before/after all pipeline runs on the **first** movie. | New `run_id` appears after run, ordered newest first. |
 | `GET /api/movies/{movie_id}/artwork-events` | Use **first** movie. | Events match `artwork_events` DB rows. Empty history is acceptable. |
-| `POST /api/test/pipeline/movie/{movie_id}` | Run once **after all 20 production runs are complete and GPU is idle**. Use the **first** movie. | Response paths exist: `pipeline_log`, `pipeline_run_json`, `output_dir`; JSON counts match response; output remains under `experiments/runs/`; no media stats change. |
+| `POST /api/test/pipeline/movie/{movie_id}` | Run once **after all 20 production runs are complete and GPU is idle**. Use the **first** movie. | Response paths exist: `pipeline_log`, `pipeline_run_json`, `output_dir`; JSON counts match response; output remains under `data/runs/work/`; no media stats change. |
 
 ### 8.4 Feedback loop
 

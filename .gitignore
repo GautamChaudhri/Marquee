@@ -28,8 +28,10 @@ env/
 *.db-wal
 
 # Data directories — keep .gitkeep, ignore generated runtime files
-data/*
+data/**
 !data/.gitkeep
+!data/**/
+!data/**/.gitkeep
 
 # OS
 .DS_Store

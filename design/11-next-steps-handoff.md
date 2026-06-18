@@ -250,3 +250,150 @@ pytest                          # 252 pass, 4 pre-existing failures (see §3 abo
 
 The 4 pre-existing failures are known and documented above. Any new failures introduced
 by your changes are regressions.
+
+---
+
+## Phase 1 close-out audit (2026-06-17)
+
+### Actual status of 11-next-steps items
+
+| Item | State | Notes |
+|------|-------|-------|
+| 1. Gauntlet harness sends key | ⚠️ Verify | `experiments/gauntlet_runner.py` exists — confirm it sends `X-Api-Key` |
+| 2. `API_KEY` in `.env` + webhook URLs | ⚠️ Your action | `.env` is present; cannot read/confirm |
+| 3. Fix 4 pre-existing test failures | ⚠️ Verify | Run `pytest` to confirm |
+| 4. pip-audit | ⚠️ Verify | No lockfile evidence yet |
+| 5. CI (GitHub Actions) | ✅ Done | `.github/workflows/ci.yml` exists |
+| 6. Backup strategy | ✅ Done | `marquee/core/backup.py` + `marquee/api/routes/backup.py` + design 14 |
+| Pickle hardening | ✅ Done | `marquee/ml/artifact_codec.py` — all live reads use `allow_pickle=False`; `=True` only inside the legacy migration reader |
+| Docker | ✅ Already scaffolded | `docker/Dockerfile` + `docker/docker-compose.yml` with cpu/nvidia/intel profiles |
+
+---
+
+## Big Task: API security audit & hardening
+
+### Already correct (do NOT re-do)
+
+- **No endpoint serializes the secret-bearing `settings`.** Radarr/Sonarr URLs+keys,
+  TMDB/Fanart/TVDB tokens live in `Settings` (`marquee/config.py`) and are **never** returned
+  from any route. `GET /api/config/pipeline` only dumps `PipelineSettings` (a separate model:
+  gate thresholds, scorer weights, model paths). The one `settings.RADARR_URL` reference in
+  routes (`sync.py:53`) is a log string, not a response. This is exactly the Huntarr mistake
+  avoided — a `curl` to any endpoint cannot leak a connected-service URL or key.
+
+- **Global auth on every router** — `dependencies=[Depends(require_api_key)]` on the `FastAPI`
+  app (`main.py:248`), inherited by all 18 routers. Exempt set is **exact-match** (`/health`,
+  `/api/webhooks/subgen`), so no prefix-bypass attack. `subgen` has its own
+  `SUBGEN_CALLBACK_TOKEN`. Constant-time compare. Fail-closed 503 when key is unset. Clean.
+
+- **File-serving endpoints are traversal-safe.** Every `FileResponse` resolves from a *recorded
+  database record* (not the user-supplied string) and confines with `resolve()` + `startswith`:
+  - Pipeline posters → `_EXPERIMENTS_DATA` (`pipeline.py:168`)
+  - Letterbox previews → `letterbox_preview_path` (`letterbox.py:609`)
+  - Subtitle downloads → media file's own directory (`subtitles.py:128`)
+  - Taste exemplars → `_safe_exemplar_name()` sanitizer (`taste.py:478`)
+
+### Things to implement before frontend
+
+**1. Global exception handler** — two spots return raw exception strings today:
+- `PUT /api/config/pipeline` → `detail=f"Invalid configuration: {exc}"` (`config.py:103`)
+- Unknown-key echo returns field names (`config.py:86`)
+
+These leak internal structure, not secrets — low severity, but a `@app.exception_handler(Exception)`
+that logs full detail server-side and returns `{"detail":"Internal error"}` makes this airtight
+and gives one logging chokepoint. Add it to `marquee/main.py`.
+
+**2. Strip `?apikey=` from uvicorn access logs** — `log_requests` middleware logs
+`request.url.path` only (not query string), which is correct. But **uvicorn's own access logger**
+logs the full URL including `?apikey=`. Deploy with `--no-access-log` (the custom middleware
+already covers it) or the key ends up in your log files.
+
+**3. Request body size cap** — no limit today; a multi-GB POST to any endpoint is an easy DoS.
+Add a small middleware rejecting `Content-Length > 10_485_760` (10 MB). Explicitly deferred from
+Phase 1, now due.
+
+```python
+# In marquee/main.py — add before the router includes
+@app.middleware("http")
+async def limit_body_size(request: Request, call_next):
+    max_bytes = 10 * 1024 * 1024  # 10 MB
+    content_length = request.headers.get("content-length")
+    if content_length and int(content_length) > max_bytes:
+        return Response(status_code=413, content='{"detail":"Request body too large"}',
+                        media_type="application/json")
+    return await call_next(request)
+```
+
+**4. CORS lockdown for cookie phase** — current `CORSMiddleware` uses `allow_methods=["*"]`
+and `allow_headers=["*"]`. When httpOnly-cookie login is added, browsers reject `*` with
+credentials. Plan: gate CORS on `DEBUG` for dev server only; same-origin serving in prod means
+CORS is irrelevant there. Add `allow_credentials=True` and narrow `allow_methods` when enabling
+cookie auth.
+
+**5. Verify subtitle preview path confinement** — `GET .../subtitles/{track_id}/preview` calls
+`service.text_preview(track.external_path)` (`subtitles.py:99`). The download path re-verifies
+against the media file's directory; confirm `text_preview` does the same or refuses non-`data/`
+paths.
+
+**6. Brute-force throttle on auth failures** — 401 is cheap to spam. Low urgency given
+LAN/Tailscale exposure, but can add a per-IP counter to the existing `RateLimiter` in
+`marquee/core/rate_limit.py`.
+
+### API versioning decision
+
+Do **not** add a `/v1/` prefix to the UI-facing API. Frontend and backend ship in the same repo
+and deploy together — they're always in lockstep. Instead:
+
+- **Version the whole app** (`__version__` already exists) — expose it at
+  `GET /api/system/status` so the UI can assert compatibility.
+- **Freeze the webhook contract** — `/api/webhooks/radarr`, `/api/webhooks/sonarr`, and
+  `/api/webhooks/subgen` are configured inside *arr. Treat these three paths as a stable,
+  never-rename contract. Everything else is internal.
+- **Export OpenAPI as a contract doc** — since docs are `DEBUG`-only, add a script/CI step
+  that dumps `app.openapi()` to `design/api-schema.json` for a reviewable, diffable API spec
+  without exposing it in prod.
+- If the API is ever opened to third-party clients, introduce `/api/v1/` via a parent router
+  prefix (a one-line change). Not now.
+
+---
+
+## Big Task: Directory cleanup & Docker
+
+### Current Status
+
+The cleanup is implemented in the codebase:
+
+- Root `.dockerignore` excludes the repo-heavy build context junk.
+- The Dockerfile no longer declares an orphan `/config` volume.
+- Compose no longer mounts a stale taste-profile file directly.
+- Live pipeline working output now writes to `data/runs/work/`.
+- `data/` has tracked `.gitkeep` placeholders for the runtime directories.
+
+Operational verification still matters:
+
+- Build the CPU/NVIDIA/Intel images from `docker/docker-compose.yml`.
+- Confirm `GET /api/system/status` reports `ocr.paddle_cuda_available: true` on NVIDIA.
+- Confirm `GET /api/config/pipeline` still reports the expected execution provider.
+- Keep historical `experiments/` output in place for now; it is no longer part of the live runtime path.
+
+---
+
+## Remaining items before starting the frontend
+
+1. Global exception handler + body-size-cap middleware + uvicorn `--no-access-log` — closes
+   API hardening gaps.
+2. Build & GPU-test the nvidia image; verify `GET /api/system/status` shows
+   `paddle_cuda_available: true`.
+3. Run `pytest` + `pip-audit` to close the verification items.
+4. Lock the login/CSRF design (httpOnly `SameSite=Strict` cookie, double-submit CSRF, 
+   `POST /api/auth/login` + `POST /api/auth/logout`, extension point already in
+   `marquee/api/auth.py`) — **then start the frontend.**
+
+### TLS via tailscale serve — one known gotcha
+
+When `tailscale serve https / http://localhost:3165` is enabled, uvicorn sees the proxy as the
+client, not the real caller. The `AUTH_ALLOW_LOCAL` loopback check (`auth.py:58`) uses
+`request.client.host` — behind Tailscale's proxy this will be `127.0.0.1` (the proxy), making
+the loopback bypass fire for *all* Tailscale requests. Before enabling TLS proxy:
+- Run uvicorn with `--proxy-headers --forwarded-allow-ips 127.0.0.1`
+- Or disable `AUTH_ALLOW_LOCAL` when behind a proxy (`AUTH_ALLOW_LOCAL=false` in `.env`)

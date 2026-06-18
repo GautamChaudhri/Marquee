@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from marquee.api.routes.test_pipeline import _EXPERIMENTS_DATA, _clear_generated_outputs
+from marquee.api.routes.test_pipeline import _RUNS_WORK_DATA, _clear_generated_outputs
 from marquee.core.pipeline_config import PipelineSettings
 from marquee.core.poster_sources.tmdb import PosterCandidate
 from marquee.ml.artifact_codec import unicode_array, unicode_scalar
@@ -287,14 +287,9 @@ def test_repeat_run_cleanup_retains_flat_downloads(tmp_path: Path):
     assert not (tmp_path / "pipeline_run.json").exists()
 
 
-def test_pipeline_run_root_is_inside_marquee_experiments():
-    expected = (
-        Path(__file__).resolve().parents[1]
-        / "marquee"
-        / "experiments"
-        / "runs"
-    )
-    assert expected == _EXPERIMENTS_DATA
+def test_pipeline_run_root_is_inside_data():
+    project_root = Path(__file__).resolve().parents[1]
+    assert project_root / "data" / "runs" / "work" == _RUNS_WORK_DATA
 
 
 def test_dedup_tiebreak_uses_original_tmdb_resolution(tmp_path: Path):

@@ -28,7 +28,6 @@ from marquee.database import get_db
 from marquee.models import ArtworkEvent, Movie, PipelineRun
 from marquee.pipeline.gate import PosterGate
 from marquee.pipeline.run_manager import RunInProgressError, run_manager
-from marquee.pipeline.runner import _EXPERIMENTS_DATA
 from marquee.pipeline.scorer import WeightedScorer
 
 logger = logging.getLogger(__name__)
@@ -163,9 +162,18 @@ async def get_run_poster(
         )
 
     image_path = Path(candidate["image_path"]).resolve()
-    # Confine served files to the experiments runs tree — never accept the
-    # filename as a path, always resolve from the recorded record.
-    if not str(image_path).startswith(str(_EXPERIMENTS_DATA.resolve())):
+    # Confine served files to the live run tree or the legacy experiments
+    # trees — never accept the filename as a path; always resolve from the
+    # recorded record.
+    legacy_roots = [
+        settings.runs_work_path,
+        Path(__file__).resolve().parents[2] / "experiments" / "runs",
+        Path(__file__).resolve().parents[1] / "experiments" / "runs",
+    ]
+    if not any(
+        str(image_path).startswith(str(root.resolve()))
+        for root in legacy_roots
+    ):
         raise HTTPException(status_code=403, detail="Poster path outside run tree")
     if not image_path.is_file():
         raise HTTPException(status_code=404, detail="Poster file no longer on disk")
