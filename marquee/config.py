@@ -73,6 +73,9 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------
     DB_URL: str = "sqlite+aiosqlite:///./data/marquee.db"
     DATA_DIR: str = "data"
+    # Filesystem the dashboard disk gauge reports on. Defaults to the volume
+    # holding DATA_DIR; point it at the media volume for a more useful number.
+    METRICS_DISK_PATH: str | None = None
 
     @property
     def _project_root(self) -> Path:
@@ -97,6 +100,13 @@ class Settings(BaseSettings):
         path = self._project_root / self.DATA_DIR
         path.mkdir(parents=True, exist_ok=True)
         return path
+
+    @property
+    def metrics_disk_path(self) -> Path:
+        """Filesystem path the dashboard disk gauge reports on."""
+        if self.METRICS_DISK_PATH:
+            return Path(self.METRICS_DISK_PATH)
+        return self.data_dir_path
 
     @property
     def poster_cache_path(self) -> Path:

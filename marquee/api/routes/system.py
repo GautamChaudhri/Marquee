@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.api.routes.webhooks import webhook_state
 from marquee.config import settings
+from marquee.core import system_metrics
 from marquee.core.heal import heal_scan, heal_state
 from marquee.core.letterbox_heal import letterbox_heal_state
 from marquee.core.pipeline_config import pipeline_settings
@@ -61,6 +62,33 @@ async def system_status(db: Annotated[AsyncSession, Depends(get_db)]):
         "media_jobs": dict(queue_rows),
         "ocr": _ocr_status(),
     }
+
+
+_ACTIVE_JOB_STATUSES = {"running", "in_progress", "processing"}
+_QUEUED_JOB_STATUSES = {"queued", "pending"}
+
+
+async def _worker_counts(db: AsyncSession) -> dict[str, int]:
+    rows = (
+        await db.execute(select(MediaJob.status, func.count()).group_by(MediaJob.status))
+    ).all()
+    counts = {str(status): n for status, n in rows}
+    return {
+        "active": sum(n for s, n in counts.items() if s in _ACTIVE_JOB_STATUSES),
+        "queued": sum(n for s, n in counts.items() if s in _QUEUED_JOB_STATUSES),
+    }
+
+
+@router.get("/metrics")
+async def system_metrics_endpoint(db: Annotated[AsyncSession, Depends(get_db)]):
+    """Host telemetry for the dashboard CPU/GPU/RAM cards (frontend G1).
+
+    Point-in-time readings; the frontend accumulates sparkline history from
+    successive polls. ``gpu`` is ``null`` on hosts without an NVIDIA GPU.
+    """
+    data = system_metrics.collect(settings.metrics_disk_path)
+    data["workers"] = await _worker_counts(db)
+    return data
 
 
 @router.get("/status/generators")
