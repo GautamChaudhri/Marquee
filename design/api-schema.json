@@ -31,7 +31,7 @@
           "library"
         ],
         "summary": "List Movies",
-        "description": "List movies with their active media-file id + subtitle coverage.",
+        "description": "List movies with media-file id, subtitle coverage, and derived display fields.\n\nOptional filters map to real columns. ``subtitle_status`` is derived from\nJSON coverage and is intentionally *not* a server-side filter \u2014 the frontend\nfilters subtitle gaps within the returned page.",
         "operationId": "list_movies_api_library_movies_get",
         "parameters": [
           {
@@ -56,6 +56,90 @@
               "default": 50,
               "title": "Page Size"
             }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Case-insensitive title search",
+              "title": "Q"
+            },
+            "description": "Case-insensitive title search"
+          },
+          {
+            "name": "poster_status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter: missing | review | approved | deployed",
+              "title": "Poster Status"
+            },
+            "description": "Filter: missing | review | approved | deployed"
+          },
+          {
+            "name": "hdr",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter: dovi | hdr10 | sdr | unknown",
+              "title": "Hdr"
+            },
+            "description": "Filter: dovi | hdr10 | sdr | unknown"
+          },
+          {
+            "name": "letterbox_status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter on LetterboxState.status, or 'none' for unanalyzed",
+              "title": "Letterbox Status"
+            },
+            "description": "Filter on LetterboxState.status, or 'none' for unanalyzed"
+          },
+          {
+            "name": "sort",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "Sort: title | year",
+              "default": "title",
+              "title": "Sort"
+            },
+            "description": "Sort: title | year"
           }
         ],
         "responses": {
@@ -1117,6 +1201,26 @@
         ],
         "summary": "System Status",
         "operationId": "system_status_api_system_status_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/system/metrics": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "summary": "System Metrics Endpoint",
+        "description": "Host telemetry for the dashboard CPU/GPU/RAM cards (frontend G1).\n\nPoint-in-time readings; the frontend accumulates sparkline history from\nsuccessive polls. ``gpu`` is ``null`` on hosts without an NVIDIA GPU.",
+        "operationId": "system_metrics_endpoint_api_system_metrics_get",
         "responses": {
           "200": {
             "description": "Successful Response",
