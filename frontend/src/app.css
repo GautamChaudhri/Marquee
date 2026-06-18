@@ -1,0 +1,163 @@
+/* Marquee design tokens + base — from design/MARQUEE_HANDOFF.md §1.
+   Dark-first; [data-theme="light"] overrides on the <html> root. */
+
+:root {
+	/* surfaces */
+	--ink: #0c0d11;
+	--ink2: #0f1116;
+	--panel: #15171e;
+	--panel2: #1c1f28;
+
+	/* borders */
+	--line: #272b36;
+	--line2: #323744;
+
+	/* text */
+	--text: #e8e9ef;
+	--muted: #8a909f;
+	--faint: #5b6170;
+	--faint2: #3f4452;
+
+	/* brand accent */
+	--gold: #ffc24b;
+	--gold-deep: #e3a01f;
+	--gold-soft: rgba(255, 194, 75, 0.14);
+	--on-gold: #241a04;
+
+	/* semantic */
+	--good: #46d18a;
+	--warn: #fbbf24;
+	--low: #fb923c;
+	--bad: #f87171;
+	--info: #5ca8fb;
+	--dovi: #b794f6;
+
+	/* system */
+	--cpu: #4a8cf0;
+	--gpu: #5ad17a;
+
+	--shadow: rgba(0, 0, 0, 0.7);
+	--poster-shade: rgba(0, 0, 0, 0.34);
+
+	--font-sans:
+		ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+	--font-mono: ui-monospace, 'SF Mono', Menlo, Monaco, 'Cascadia Code', Consolas, monospace;
+
+	--radius: 10px;
+	--radius-sm: 7px;
+	--sidebar-w: 220px;
+	--sidebar-w-collapsed: 52px;
+	--header-h: 56px;
+}
+
+[data-theme='light'] {
+	--ink: #e7eaf0;
+	--ink2: #eef1f6;
+	--panel: #ffffff;
+	--panel2: #f1f3f7;
+	--line: #dce0e8;
+	--line2: #c6ccd7;
+	--text: #191d25;
+	--muted: #5c6473;
+	--faint: #8b93a3;
+	--faint2: #aab1bf;
+	--gold: #b9810c;
+	--gold-deep: #9c6c08;
+	--gold-soft: rgba(185, 129, 12, 0.13);
+	--on-gold: #2a1d02;
+	--good: #1f9d57;
+	--warn: #b9810c;
+	--low: #d2731a;
+	--bad: #d4453f;
+	--info: #2a6fd4;
+	--dovi: #7c52e0;
+	--shadow: rgba(20, 28, 48, 0.18);
+	--cpu: #2f6fd6;
+	--gpu: #1f9d57;
+}
+
+* {
+	box-sizing: border-box;
+}
+
+html,
+body {
+	margin: 0;
+	padding: 0;
+	height: 100%;
+}
+
+body {
+	background: var(--ink);
+	color: var(--text);
+	font-family: var(--font-sans);
+	font-size: 14px;
+	line-height: 1.45;
+	-webkit-font-smoothing: antialiased;
+}
+
+a {
+	color: inherit;
+	text-decoration: none;
+}
+
+button {
+	font: inherit;
+	color: inherit;
+	cursor: pointer;
+}
+
+:focus-visible {
+	outline: 2px solid var(--gold);
+	outline-offset: 2px;
+}
+
+/* thin scrollbars to match the mockup's dense surfaces */
+* {
+	scrollbar-width: thin;
+	scrollbar-color: var(--line2) transparent;
+}
+*::-webkit-scrollbar {
+	width: 10px;
+	height: 10px;
+}
+*::-webkit-scrollbar-thumb {
+	background: var(--line2);
+	border-radius: 8px;
+	border: 2px solid transparent;
+	background-clip: content-box;
+}
+
+/* ── motion (handoff §7) ───────────────────────────────────────── */
+@keyframes mq-rise {
+	from {
+		opacity: 0;
+		transform: translateY(12px);
+	}
+	to {
+		opacity: 1;
+		transform: translateY(0);
+	}
+}
+@keyframes mq-pulse {
+	0%,
+	100% {
+		opacity: 0.55;
+	}
+	50% {
+		opacity: 1;
+	}
+}
+
+.mq-rise {
+	animation: mq-rise 0.2s cubic-bezier(0.2, 0.7, 0.3, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+	*,
+	*::before,
+	*::after {
+		animation-duration: 0.001ms !important;
+		transition-duration: 0.001ms !important;
+	}
+}

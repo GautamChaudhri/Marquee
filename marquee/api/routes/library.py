@@ -12,6 +12,7 @@ import json
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import FileResponse
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -124,6 +125,17 @@ async def list_movies(
             )
         )
     return {"total": total, "page": page, "page_size": page_size, "items": items}
+
+
+@router.get("/movies/{movie_id}/poster")
+async def get_movie_poster(movie_id: int, db: Annotated[AsyncSession, Depends(get_db)]):
+    movie = (await db.execute(select(Movie).where(Movie.id == movie_id))).scalar_one_or_none()
+    if movie is None or not movie.poster_path:
+        raise HTTPException(status_code=404, detail="No poster available")
+    import os
+    if not os.path.isfile(movie.poster_path):
+        raise HTTPException(status_code=404, detail="Poster file not found on disk")
+    return FileResponse(movie.poster_path, media_type="image/jpeg")
 
 
 @router.get("/movies/{movie_id}")

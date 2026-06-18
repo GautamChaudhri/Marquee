@@ -139,6 +139,7 @@ def enrich_movie(
         "video_height": movie.video_height,
         "resolution": resolution_label(movie.video_width, movie.video_height),
         "poster_status": poster_status(movie),
+        "poster_url": f"/api/library/movies/{movie.id}/poster" if movie.poster_path else None,
         "hdr": hdr_label(movie.has_hdr, movie.has_dv),
         "letterbox_status": lb_status or "none",
         "subtitle_status": subtitle_status(coverage),
