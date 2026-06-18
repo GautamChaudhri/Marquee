@@ -62,11 +62,41 @@ tailscale serve https / http://localhost:3165
 gives a valid certificate for `<host>.<tailnet>.ts.net` with no public exposure.
 Otherwise put a reverse proxy (Caddy/nginx/Traefik) in front.
 
+## Stable API contracts
+
+The following webhook paths are **frozen** — they are configured directly inside Radarr and
+Sonarr and cannot be renamed without requiring all operators to update their *arr settings:
+
+- `POST /api/webhooks/radarr`
+- `POST /api/webhooks/sonarr`
+- `POST /api/webhooks/subgen` (authenticated by `SUBGEN_CALLBACK_TOKEN`, exempt from global key)
+
+All other `/api/...` routes may change between versions. The committed
+`design/api-schema.json` (regenerate with `python scripts/export_openapi.py`) is the
+reviewable, diffable contract for the full API surface.
+
+## Running the server
+
+**Always pass `--no-access-log`** when Marquee is started with a real `API_KEY` set. The
+custom request logger (`log_requests` middleware) records method + path only, but uvicorn's
+own access log includes the full URL — which leaks `?apikey=<key>` to disk.
+
+```bash
+# Production / Docker (--no-access-log is already in the Dockerfile CMD)
+uvicorn marquee.main:app --host 0.0.0.0 --port 3165 --no-access-log
+
+# Dev (DEBUG=true → key not in use, but good habit)
+uvicorn marquee.main:app --reload --no-access-log
+```
+
 ## Secret hygiene
 
 - `.env` holds your TMDB/Radarr/Sonarr keys. Keep it readable only by the service
   user (`chmod 600 .env`). It is gitignored — never commit it.
 - API keys are never written to logs (the request logger records only the path).
+- After 10 failed authentication attempts from the same IP within 60 seconds, that
+  IP is locked out for 5 minutes (`AUTH_BRUTE_LOCKOUT_ATTEMPTS` / `AUTH_BRUTE_WINDOW_SECONDS`
+  / `AUTH_BRUTE_LOCKOUT_SECONDS` are all configurable).
 
 ## Model artifacts
 

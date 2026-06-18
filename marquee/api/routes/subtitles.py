@@ -96,7 +96,15 @@ async def preview_track(
         raise HTTPException(status_code=404, detail="Track not found")
 
     if track.source == "external" and track.external_path:
-        return service.text_preview(track.external_path)
+        # Confine to the media file's own directory — mirrors download_track().
+        try:
+            resolved = await resolve_media_file(db, media_file_id)
+        except (MediaFileNotFoundError, MediaFileUnavailableError) as exc:
+            raise _map_resolve_error(exc) from exc
+        path = Path(track.external_path).resolve()
+        if path.parent != resolved.path.parent or not path.is_file():
+            raise HTTPException(status_code=404, detail="Subtitle file not found on disk")
+        return service.text_preview(path)
 
     # Embedded: extracting a cue preview requires ffmpeg extraction — deferred
     # to the extract job. Report previewability so the UI can offer "extract".

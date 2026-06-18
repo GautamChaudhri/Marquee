@@ -1,0 +1,3484 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Marquee",
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/api/sync/all": {
+      "post": {
+        "tags": [
+          "sync"
+        ],
+        "summary": "Sync All",
+        "description": "Sync all movies and TV shows from Radarr/Sonarr into the database.\n\nRate-limited: only one sync allowed per cooldown window\n(default 5 minutes).  Returns 429 if triggered too soon.",
+        "operationId": "sync_all_api_sync_all_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/library/movies": {
+      "get": {
+        "tags": [
+          "library"
+        ],
+        "summary": "List Movies",
+        "description": "List movies with their active media-file id + subtitle coverage.",
+        "operationId": "list_movies_api_library_movies_get",
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 1,
+              "title": "Page"
+            }
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "default": 50,
+              "title": "Page Size"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/library/movies/{movie_id}": {
+      "get": {
+        "tags": [
+          "library"
+        ],
+        "summary": "Get Movie",
+        "operationId": "get_movie_api_library_movies__movie_id__get",
+        "parameters": [
+          {
+            "name": "movie_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Movie Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/library/series": {
+      "get": {
+        "tags": [
+          "library"
+        ],
+        "summary": "List Series",
+        "operationId": "list_series_api_library_series_get",
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 1,
+              "title": "Page"
+            }
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "default": 50,
+              "title": "Page Size"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/library/series/{series_id}": {
+      "get": {
+        "tags": [
+          "library"
+        ],
+        "summary": "Get Series",
+        "operationId": "get_series_api_library_series__series_id__get",
+        "parameters": [
+          {
+            "name": "series_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Series Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/library/series/{series_id}/seasons": {
+      "get": {
+        "tags": [
+          "library"
+        ],
+        "summary": "List Seasons",
+        "operationId": "list_seasons_api_library_series__series_id__seasons_get",
+        "parameters": [
+          {
+            "name": "series_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Series Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/library/episodes/{episode_id}": {
+      "get": {
+        "tags": [
+          "library"
+        ],
+        "summary": "Get Episode",
+        "description": "Episode detail + the shared media-file id (multi-episode files share one).",
+        "operationId": "get_episode_api_library_episodes__episode_id__get",
+        "parameters": [
+          {
+            "name": "episode_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Episode Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/pipeline/movie/{movie_id}/run": {
+      "post": {
+        "tags": [
+          "pipeline"
+        ],
+        "summary": "Run Pipeline",
+        "description": "Start a pipeline run for a movie. 202 + run_id, or 409 if one is active.",
+        "operationId": "run_pipeline_api_pipeline_movie__movie_id__run_post",
+        "parameters": [
+          {
+            "name": "movie_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Movie Id"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/pipeline/runs/{run_id}/events": {
+      "get": {
+        "tags": [
+          "pipeline"
+        ],
+        "summary": "Stream Events",
+        "description": "SSE stream of live stage progress. Replays history, then live, then done.",
+        "operationId": "stream_events_api_pipeline_runs__run_id__events_get",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/pipeline/runs/{run_id}": {
+      "get": {
+        "tags": [
+          "pipeline"
+        ],
+        "summary": "Get Run Results",
+        "description": "Full results payload for a run (auto-pick, ranked, rejected-by-stage).",
+        "operationId": "get_run_results_api_pipeline_runs__run_id__get",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/pipeline/runs/{run_id}/posters/{orig_filename}": {
+      "get": {
+        "tags": [
+          "pipeline"
+        ],
+        "summary": "Get Run Poster",
+        "description": "Serve a candidate's image file from inside the run's working dir.",
+        "operationId": "get_run_poster_api_pipeline_runs__run_id__posters__orig_filename__get",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          },
+          {
+            "name": "orig_filename",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Orig Filename"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/pipeline/runs/{run_id}/rescore": {
+      "post": {
+        "tags": [
+          "pipeline"
+        ],
+        "summary": "Rescore Run",
+        "description": "Re-rank an archived run's candidates under new weights/gate floors.\n\nPure arithmetic over the archived feature vectors \u2014 no images, no\ninference. This is the engine behind live knob sliders in the UI.",
+        "operationId": "rescore_run_api_pipeline_runs__run_id__rescore_post",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RescoreRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/movies/{movie_id}/runs": {
+      "get": {
+        "tags": [
+          "movies"
+        ],
+        "summary": "List Movie Runs",
+        "description": "Run history for a movie, newest first.",
+        "operationId": "list_movie_runs_api_movies__movie_id__runs_get",
+        "parameters": [
+          {
+            "name": "movie_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Movie Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/movies/{movie_id}/artwork-events": {
+      "get": {
+        "tags": [
+          "movies"
+        ],
+        "summary": "List Artwork Events",
+        "description": "Deploy/restore history for a movie, newest first.",
+        "operationId": "list_artwork_events_api_movies__movie_id__artwork_events_get",
+        "parameters": [
+          {
+            "name": "movie_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Movie Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/feedback": {
+      "post": {
+        "tags": [
+          "feedback"
+        ],
+        "summary": "Submit Feedback",
+        "operationId": "submit_feedback_api_feedback_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FeedbackRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/feedback/undo": {
+      "post": {
+        "tags": [
+          "feedback"
+        ],
+        "summary": "Undo Feedback",
+        "operationId": "undo_feedback_api_feedback_undo_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UndoRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/taste/status": {
+      "get": {
+        "tags": [
+          "taste"
+        ],
+        "summary": "Taste Status",
+        "operationId": "taste_status_api_taste_status_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/taste/retrain": {
+      "post": {
+        "tags": [
+          "taste"
+        ],
+        "summary": "Retrain Taste",
+        "description": "Trigger a full taste-profile rebuild + head retrain in the background.",
+        "operationId": "retrain_taste_api_taste_retrain_post",
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/taste/retrain/cancel": {
+      "post": {
+        "tags": [
+          "taste"
+        ],
+        "summary": "Cancel Retrain Taste",
+        "description": "Request cancellation of an active taste-profile rebuild.",
+        "operationId": "cancel_retrain_taste_api_taste_retrain_cancel_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/taste/map": {
+      "get": {
+        "tags": [
+          "taste"
+        ],
+        "summary": "Get Taste Map",
+        "description": "3D/2D projection of the taste profile, with clusters + outliers.",
+        "operationId": "get_taste_map_api_taste_map_get",
+        "parameters": [
+          {
+            "name": "recompute",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Recompute"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/taste/map/rebuild": {
+      "post": {
+        "tags": [
+          "taste"
+        ],
+        "summary": "Rebuild Map",
+        "description": "Force a taste-map rebuild in the background.",
+        "operationId": "rebuild_map_api_taste_map_rebuild_post",
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/taste/map/candidates": {
+      "post": {
+        "tags": [
+          "taste"
+        ],
+        "summary": "Overlay Candidates",
+        "description": "Project a run's ranked candidates into the taste-map space.",
+        "operationId": "overlay_candidates_api_taste_map_candidates_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CandidateOverlayRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/taste/exemplars/{name}/image": {
+      "get": {
+        "tags": [
+          "taste"
+        ],
+        "summary": "Exemplar Image",
+        "description": "Serve an exemplar's thumbnail (webp) or full-size training image.",
+        "operationId": "exemplar_image_api_taste_exemplars__name__image_get",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Name"
+            }
+          },
+          {
+            "name": "size",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "thumb",
+              "title": "Size"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/taste/exemplars/{name}/neighbors": {
+      "get": {
+        "tags": [
+          "taste"
+        ],
+        "summary": "Exemplar Neighbors",
+        "description": "The k nearest exemplars to this one (click-to-explore).",
+        "operationId": "exemplar_neighbors_api_taste_exemplars__name__neighbors_get",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Name"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/config/pipeline": {
+      "get": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Get Pipeline Config",
+        "operationId": "get_pipeline_config_api_config_pipeline_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Put Pipeline Config",
+        "operationId": "put_pipeline_config_api_config_pipeline_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConfigUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/system/backup": {
+      "post": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Create Backup",
+        "description": "Create a local rollback backup of managed Marquee state.",
+        "operationId": "create_backup_api_system_backup_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/system/backups": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "summary": "List Backups",
+        "description": "List available local rollback backups.",
+        "operationId": "list_backups_api_system_backups_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/system/restore": {
+      "post": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Restore Backup",
+        "description": "Restore a backup and signal that a process restart is required.",
+        "operationId": "restore_backup_api_system_restore_post",
+        "parameters": [
+          {
+            "name": "backup_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Backup Id"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/system/backups/{backup_id}": {
+      "delete": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Delete Backup",
+        "description": "Delete a single local rollback backup directory.",
+        "operationId": "delete_backup_api_system_backups__backup_id__delete",
+        "parameters": [
+          {
+            "name": "backup_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Backup Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/system/status": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "summary": "System Status",
+        "operationId": "system_status_api_system_status_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/system/status/generators": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Generator Health",
+        "description": "Subtitle-generation provider health + capabilities.",
+        "operationId": "generator_health_api_system_status_generators_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/system/heal": {
+      "post": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Trigger Heal",
+        "description": "Run the self-heal poster existence scan on demand.",
+        "operationId": "trigger_heal_api_system_heal_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/system/release-gpu": {
+      "post": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Release Gpu Resources",
+        "description": "Drop Marquee's process-local ML caches before another GPU workload.",
+        "operationId": "release_gpu_resources_api_system_release_gpu_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/letterbox/status": {
+      "get": {
+        "tags": [
+          "letterbox"
+        ],
+        "summary": "Letterbox Status",
+        "operationId": "letterbox_status_api_letterbox_status_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/letterbox/candidates": {
+      "get": {
+        "tags": [
+          "letterbox"
+        ],
+        "summary": "List Candidates",
+        "description": "Paginated letterbox state, joined to movie identity. Drives all 3 tabs.",
+        "operationId": "list_candidates_api_letterbox_candidates_get",
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "name": "confidence",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Confidence"
+            }
+          },
+          {
+            "name": "sort",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "confidence",
+              "title": "Sort"
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 1,
+              "title": "Page"
+            }
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "default": 50,
+              "title": "Page Size"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/letterbox/movies/find-candidates": {
+      "get": {
+        "tags": [
+          "letterbox"
+        ],
+        "summary": "Find Candidate Movies",
+        "description": "Classify all movies by stored Radarr resolution; no ffmpeg, no media writes.",
+        "operationId": "find_candidate_movies_api_letterbox_movies_find_candidates_get",
+        "parameters": [
+          {
+            "name": "include_skipped",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "Include movies rejected by the resolution pre-filter.",
+              "default": false,
+              "title": "Include Skipped"
+            },
+            "description": "Include movies rejected by the resolution pre-filter."
+          },
+          {
+            "name": "include_analyzed",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "Include movies that already have detector truth in letterbox_state.",
+              "default": false,
+              "title": "Include Analyzed"
+            },
+            "description": "Include movies that already have detector truth in letterbox_state."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/letterbox/movies/{movie_id}": {
+      "get": {
+        "tags": [
+          "letterbox"
+        ],
+        "summary": "Get Movie Detail",
+        "operationId": "get_movie_detail_api_letterbox_movies__movie_id__get",
+        "parameters": [
+          {
+            "name": "movie_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Movie Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/letterbox/movies/{movie_id}/detect": {
+      "post": {
+        "tags": [
+          "letterbox"
+        ],
+        "summary": "Detect One",
+        "description": "Detect a single movie synchronously and return its updated state.",
+        "operationId": "detect_one_api_letterbox_movies__movie_id__detect_post",
+        "parameters": [
+          {
+            "name": "movie_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Movie Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/letterbox/detect": {
+      "post": {
+        "tags": [
+          "letterbox"
+        ],
+        "summary": "Detect Batch",
+        "description": "Start a background batch detect (SSE progress). 202 + job_id, or 409.",
+        "operationId": "detect_batch_api_letterbox_detect_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BatchDetectRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/letterbox/jobs/{job_id}/events": {
+      "get": {
+        "tags": [
+          "letterbox"
+        ],
+        "summary": "Job Events",
+        "description": "SSE stream of batch-detect progress (history replay \u2192 live \u2192 done).",
+        "operationId": "job_events_api_letterbox_jobs__job_id__events_get",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/letterbox/movies/{movie_id}/preview": {
+      "get": {
+        "tags": [
+          "letterbox"
+        ],
+        "summary": "Movie Preview",
+        "operationId": "movie_preview_api_letterbox_movies__movie_id__preview_get",
+        "parameters": [
+          {
+            "name": "movie_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Movie Id"
+            }
+          },
+          {
+            "name": "mode",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "before",
+              "title": "Mode"
+            }
+          },
+          {
+            "name": "minute",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 5,
+              "title": "Minute"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/letterbox/movies/{movie_id}/apply": {
+      "post": {
+        "tags": [
+          "letterbox"
+        ],
+        "summary": "Apply One",
+        "operationId": "apply_one_api_letterbox_movies__movie_id__apply_post",
+        "parameters": [
+          {
+            "name": "movie_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Movie Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApplyRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/letterbox/apply": {
+      "post": {
+        "tags": [
+          "letterbox"
+        ],
+        "summary": "Apply Batch",
+        "description": "Apply recommended crops to several movies (e.g. all High-confidence).",
+        "operationId": "apply_batch_api_letterbox_apply_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BatchApplyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/letterbox/movies/{movie_id}/remove": {
+      "post": {
+        "tags": [
+          "letterbox"
+        ],
+        "summary": "Remove One",
+        "operationId": "remove_one_api_letterbox_movies__movie_id__remove_post",
+        "parameters": [
+          {
+            "name": "movie_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Movie Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/letterbox/movies/{movie_id}/ignore": {
+      "post": {
+        "tags": [
+          "letterbox"
+        ],
+        "summary": "Ignore One",
+        "description": "Mark a movie reviewed \u2192 Skipped tab; won't be re-flagged on re-scan.",
+        "operationId": "ignore_one_api_letterbox_movies__movie_id__ignore_post",
+        "parameters": [
+          {
+            "name": "movie_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Movie Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/letterbox/heal": {
+      "post": {
+        "tags": [
+          "letterbox"
+        ],
+        "summary": "Letterbox Heal",
+        "description": "Re-apply crop tags that drifted off tagged files (tag-drift scan).",
+        "operationId": "letterbox_heal_api_letterbox_heal_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/media-files/{media_file_id}/subtitles": {
+      "get": {
+        "tags": [
+          "subtitles"
+        ],
+        "summary": "Get Subtitles",
+        "description": "Inventory, coverage, capabilities, and per-track actions for a file.",
+        "operationId": "get_subtitles_api_media_files__media_file_id__subtitles_get",
+        "parameters": [
+          {
+            "name": "media_file_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Media File Id"
+            }
+          },
+          {
+            "name": "force",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Force"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/media-files/{media_file_id}/subtitles/scan": {
+      "post": {
+        "tags": [
+          "subtitles"
+        ],
+        "summary": "Scan Subtitles",
+        "description": "Force a fresh inventory scan (inline for a single file).",
+        "operationId": "scan_subtitles_api_media_files__media_file_id__subtitles_scan_post",
+        "parameters": [
+          {
+            "name": "media_file_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Media File Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/media-files/{media_file_id}/subtitles/{track_id}/preview": {
+      "get": {
+        "tags": [
+          "subtitles"
+        ],
+        "summary": "Preview Track",
+        "description": "First N text cues for a text track; a notice for bitmap subtitles.",
+        "operationId": "preview_track_api_media_files__media_file_id__subtitles__track_id__preview_get",
+        "parameters": [
+          {
+            "name": "media_file_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Media File Id"
+            }
+          },
+          {
+            "name": "track_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Track Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/media-files/{media_file_id}/subtitles/{track_id}/download": {
+      "get": {
+        "tags": [
+          "subtitles"
+        ],
+        "summary": "Download Track",
+        "description": "Safely serve an external (or extracted) subtitle file by track id.",
+        "operationId": "download_track_api_media_files__media_file_id__subtitles__track_id__download_get",
+        "parameters": [
+          {
+            "name": "media_file_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Media File Id"
+            }
+          },
+          {
+            "name": "track_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Track Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/media-files/{media_file_id}/subtitle-plans": {
+      "post": {
+        "tags": [
+          "subtitles"
+        ],
+        "summary": "Create Subtitle Plan",
+        "description": "Persist an expiring before/after plan as a ``planned`` job (no writes).",
+        "operationId": "create_subtitle_plan_api_media_files__media_file_id__subtitle_plans_post",
+        "parameters": [
+          {
+            "name": "media_file_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Media File Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlanRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/movies/{movie_id}/subtitles/inspect": {
+      "post": {
+        "tags": [
+          "subtitles"
+        ],
+        "summary": "Inspect Movie Subtitles",
+        "description": "Resolve a movie's file, probe it, and return its full subtitle inventory.\n\nRead-only. Creates the MediaFile row on demand so it works without a fresh\nsync. This is the safe way to exercise the feature on one title.",
+        "operationId": "inspect_movie_subtitles_api_movies__movie_id__subtitles_inspect_post",
+        "parameters": [
+          {
+            "name": "movie_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Movie Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/media-jobs/{job_id}/confirm": {
+      "post": {
+        "tags": [
+          "media-jobs"
+        ],
+        "summary": "Confirm Job",
+        "description": "Revalidate a planned job against the live file, then queue it (\u00a723.2).",
+        "operationId": "confirm_job_api_media_jobs__job_id__confirm_post",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/media-jobs/{job_id}": {
+      "get": {
+        "tags": [
+          "media-jobs"
+        ],
+        "summary": "Get Job",
+        "operationId": "get_job_api_media_jobs__job_id__get",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/media-jobs/{job_id}/events": {
+      "get": {
+        "tags": [
+          "media-jobs"
+        ],
+        "summary": "Job Events",
+        "description": "SSE: replay persisted events, then stream live ones until completion.",
+        "operationId": "job_events_api_media_jobs__job_id__events_get",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/media-jobs/{job_id}/cancel": {
+      "post": {
+        "tags": [
+          "media-jobs"
+        ],
+        "summary": "Cancel Job",
+        "operationId": "cancel_job_api_media_jobs__job_id__cancel_post",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/media-jobs": {
+      "get": {
+        "tags": [
+          "media-jobs"
+        ],
+        "summary": "List Jobs",
+        "operationId": "list_jobs_api_media_jobs_get",
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "name": "operation",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Operation"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 100,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/media-jobs/{job_id}/restore": {
+      "post": {
+        "tags": [
+          "media-jobs"
+        ],
+        "summary": "Restore Backup",
+        "description": "Restore a tracked backup / quarantined sidecar from a job (\u00a716.7).",
+        "operationId": "restore_backup_api_media_jobs__job_id__restore_post",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/media-jobs/{job_id}/backup": {
+      "delete": {
+        "tags": [
+          "media-jobs"
+        ],
+        "summary": "Delete Backup",
+        "description": "Permanently delete a job's tracked backup (explicit; never automatic).",
+        "operationId": "delete_backup_api_media_jobs__job_id__backup_delete",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/subtitle-policies": {
+      "get": {
+        "tags": [
+          "subtitle-policies"
+        ],
+        "summary": "List Policies",
+        "operationId": "list_policies_api_subtitle_policies_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "subtitle-policies"
+        ],
+        "summary": "Create Policy",
+        "operationId": "create_policy_api_subtitle_policies_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PolicyBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/subtitle-policies/{policy_id}": {
+      "get": {
+        "tags": [
+          "subtitle-policies"
+        ],
+        "summary": "Get Policy",
+        "operationId": "get_policy_api_subtitle_policies__policy_id__get",
+        "parameters": [
+          {
+            "name": "policy_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Policy Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "subtitle-policies"
+        ],
+        "summary": "Update Policy",
+        "operationId": "update_policy_api_subtitle_policies__policy_id__put",
+        "parameters": [
+          {
+            "name": "policy_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Policy Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PolicyBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "subtitle-policies"
+        ],
+        "summary": "Delete Policy",
+        "operationId": "delete_policy_api_subtitle_policies__policy_id__delete",
+        "parameters": [
+          {
+            "name": "policy_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Policy Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/subtitle-policies/{policy_id}/audit": {
+      "post": {
+        "tags": [
+          "subtitle-policies"
+        ],
+        "summary": "Audit Policy",
+        "description": "Dry-run the policy across a movie selection (read-only).",
+        "operationId": "audit_policy_api_subtitle_policies__policy_id__audit_post",
+        "parameters": [
+          {
+            "name": "policy_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Policy Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SelectionBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/subtitle-policies/{policy_id}/apply": {
+      "post": {
+        "tags": [
+          "subtitle-policies"
+        ],
+        "summary": "Apply Policy",
+        "description": "Create a batch of confirmed remove jobs from a (re-evaluated) selection.",
+        "operationId": "apply_policy_api_subtitle_policies__policy_id__apply_post",
+        "parameters": [
+          {
+            "name": "policy_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Policy Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SelectionBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/subtitle-generators": {
+      "get": {
+        "tags": [
+          "subtitle-generators"
+        ],
+        "summary": "List Generators",
+        "description": "Provider health + actual capabilities for the frontend to choose from.",
+        "operationId": "list_generators_api_subtitle_generators_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/media-files/{media_file_id}/subtitle-generations": {
+      "post": {
+        "tags": [
+          "subtitle-generators"
+        ],
+        "summary": "Generate For Media File",
+        "description": "Queue a generation job for a media file (runs on the durable worker).",
+        "operationId": "generate_for_media_file_api_media_files__media_file_id__subtitle_generations_post",
+        "parameters": [
+          {
+            "name": "media_file_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Media File Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GenerateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/movies/{movie_id}/subtitle-generations": {
+      "post": {
+        "tags": [
+          "subtitle-generators"
+        ],
+        "summary": "Generate For Movie",
+        "description": "Convenience: queue generation for a movie (resolves its media file).",
+        "operationId": "generate_for_movie_api_movies__movie_id__subtitle_generations_post",
+        "parameters": [
+          {
+            "name": "movie_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Movie Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GenerateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/test/pipeline/movie/{movie_id}": {
+      "post": {
+        "tags": [
+          "test"
+        ],
+        "summary": "Test Pipeline Movie",
+        "description": "Run Fetch -> SHA -> Gate(res) -> Style -> Gate(style) -> OCR -> pHash -> Detail -> Gate -> Rank -> Output.",
+        "operationId": "test_pipeline_movie_api_test_pipeline_movie__movie_id__post",
+        "parameters": [
+          {
+            "name": "movie_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Movie Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/webhooks/radarr": {
+      "post": {
+        "tags": [
+          "webhooks"
+        ],
+        "summary": "Radarr Webhook",
+        "description": "Receive Radarr events; restore posters on upgrade (fast ACK).",
+        "operationId": "radarr_webhook_api_webhooks_radarr_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RadarrWebhookPayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/webhooks/subgen": {
+      "post": {
+        "tags": [
+          "webhooks"
+        ],
+        "summary": "Subgen Callback",
+        "description": "Subgen completion callback (design \u00a724.4) \u2014 an optimization, not the SoT.\n\nThe generation worker reconciles via the filesystem regardless; this just\nrecords the callback so we have an audit trail and can surface it.",
+        "operationId": "subgen_callback_api_webhooks_subgen_post",
+        "parameters": [
+          {
+            "name": "token",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Payload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/webhooks/sonarr": {
+      "post": {
+        "tags": [
+          "webhooks"
+        ],
+        "summary": "Sonarr Webhook",
+        "description": "Receive Sonarr events. Currently path-updates on Rename only.\n\nSonarr's file-level upgrades don't delete the series/season posters, so\nfull restoration is deferred; the payload is parsed and Test/Rename are\nhandled so the webhook can be configured today.",
+        "operationId": "sonarr_webhook_api_webhooks_sonarr_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RadarrWebhookPayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "summary": "Health Check",
+        "description": "Health check \u2014 probes the database connection.\n\nReturns 200 when healthy, 503 when the database is unreachable.\nDocker health checks and load balancers depend on this endpoint.",
+        "operationId": "health_check_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "ApplyRequest": {
+        "properties": {
+          "top": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Top"
+          },
+          "bottom": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bottom"
+          }
+        },
+        "type": "object",
+        "title": "ApplyRequest"
+      },
+      "BatchApplyRequest": {
+        "properties": {
+          "movie_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Movie Ids"
+          },
+          "only_high": {
+            "type": "boolean",
+            "title": "Only High",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "movie_ids"
+        ],
+        "title": "BatchApplyRequest"
+      },
+      "BatchDetectRequest": {
+        "properties": {
+          "movie_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "integer"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Movie Ids"
+          },
+          "all_candidates": {
+            "type": "boolean",
+            "title": "All Candidates",
+            "default": false
+          }
+        },
+        "type": "object",
+        "title": "BatchDetectRequest"
+      },
+      "CandidateOverlayRequest": {
+        "properties": {
+          "run_id": {
+            "type": "string",
+            "title": "Run Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "run_id"
+        ],
+        "title": "CandidateOverlayRequest"
+      },
+      "ConfigUpdate": {
+        "properties": {
+          "values": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Values"
+          }
+        },
+        "type": "object",
+        "required": [
+          "values"
+        ],
+        "title": "ConfigUpdate"
+      },
+      "FeedbackRequest": {
+        "properties": {
+          "run_id": {
+            "type": "string",
+            "title": "Run Id"
+          },
+          "action": {
+            "type": "string",
+            "title": "Action"
+          },
+          "selected_filename": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Selected Filename"
+          },
+          "deploy": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deploy"
+          }
+        },
+        "type": "object",
+        "required": [
+          "run_id",
+          "action"
+        ],
+        "title": "FeedbackRequest"
+      },
+      "GenerateRequest": {
+        "properties": {
+          "generator_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Generator Id"
+          },
+          "language_hint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Language Hint"
+          },
+          "output": {
+            "type": "string",
+            "title": "Output",
+            "default": "external"
+          }
+        },
+        "type": "object",
+        "title": "GenerateRequest"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "PlanRequest": {
+        "properties": {
+          "operation": {
+            "type": "string",
+            "title": "Operation"
+          },
+          "track_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Track Ids",
+            "default": []
+          },
+          "edits": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Edits",
+            "default": []
+          },
+          "backup": {
+            "type": "boolean",
+            "title": "Backup",
+            "default": false
+          },
+          "allow_break": {
+            "type": "boolean",
+            "title": "Allow Break",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "operation"
+        ],
+        "title": "PlanRequest"
+      },
+      "PolicyBody": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "mode": {
+            "type": "string",
+            "title": "Mode",
+            "default": "blocklist"
+          },
+          "languages": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Languages",
+            "default": []
+          },
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled",
+            "default": false
+          },
+          "unknown_action": {
+            "type": "string",
+            "title": "Unknown Action",
+            "default": "keep"
+          },
+          "protect_forced": {
+            "type": "boolean",
+            "title": "Protect Forced",
+            "default": true
+          },
+          "protect_default": {
+            "type": "boolean",
+            "title": "Protect Default",
+            "default": true
+          },
+          "protect_last_full_dialogue": {
+            "type": "boolean",
+            "title": "Protect Last Full Dialogue",
+            "default": true
+          },
+          "include_external": {
+            "type": "boolean",
+            "title": "Include External",
+            "default": false
+          },
+          "auto_apply": {
+            "type": "boolean",
+            "title": "Auto Apply",
+            "default": false
+          },
+          "audit_only": {
+            "type": "boolean",
+            "title": "Audit Only",
+            "default": true
+          },
+          "hardlink_action": {
+            "type": "string",
+            "title": "Hardlink Action",
+            "default": "block"
+          },
+          "backup_mode": {
+            "type": "string",
+            "title": "Backup Mode",
+            "default": "none"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "title": "PolicyBody"
+      },
+      "RadarrWebhookPayload": {
+        "properties": {
+          "eventType": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Eventtype"
+          },
+          "isUpgrade": {
+            "type": "boolean",
+            "title": "Isupgrade",
+            "default": false
+          },
+          "movie": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/_ArrMovie"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "title": "RadarrWebhookPayload"
+      },
+      "RescoreRequest": {
+        "properties": {
+          "weights": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "number"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Weights"
+          },
+          "gates": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "number"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gates"
+          }
+        },
+        "type": "object",
+        "title": "RescoreRequest"
+      },
+      "SelectionBody": {
+        "properties": {
+          "movie_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Movie Ids",
+            "default": []
+          }
+        },
+        "type": "object",
+        "title": "SelectionBody"
+      },
+      "UndoRequest": {
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "title": "Event Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "event_id"
+        ],
+        "title": "UndoRequest"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      },
+      "_ArrMovie": {
+        "properties": {
+          "id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "year": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Year"
+          },
+          "tmdbId": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tmdbid"
+          },
+          "folderPath": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Folderpath"
+          }
+        },
+        "type": "object",
+        "title": "_ArrMovie"
+      }
+    }
+  }
+}

@@ -12,6 +12,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, Response
 from sqlalchemy import text
 
 from marquee import __version__
@@ -260,13 +261,30 @@ app.state.op_rate_limiter = _op_rate_limiter
 # Middleware
 # ---------------------------------------------------------------------------
 
-# CORS — needed for web UI dev (Phase 6)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=settings.CORS_ORIGINS,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# CORS — dev only (DEBUG=True). In production the frontend is served same-origin
+# so no CORS headers are needed. Wildcards are narrowed here so adding
+# allow_credentials=True for cookie auth later won't break browsers.
+if settings.DEBUG:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.CORS_ORIGINS,
+        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+        allow_headers=["Authorization", "X-Api-Key", "Content-Type"],
+        allow_credentials=False,
+    )
+
+
+# Reject oversized bodies before they reach any handler.
+@app.middleware("http")
+async def limit_body_size(request: Request, call_next):
+    cl = request.headers.get("content-length")
+    if cl and int(cl) > settings.MAX_REQUEST_BODY_BYTES:
+        return Response(
+            status_code=413,
+            content='{"detail":"Request body too large"}',
+            media_type="application/json",
+        )
+    return await call_next(request)
 
 
 # Baseline security headers (full CSP arrives with the web UI).
@@ -336,6 +354,18 @@ app.include_router(subtitle_policies_router)
 app.include_router(subtitle_generators_router)
 app.include_router(test_pipeline_router)
 app.include_router(webhooks_router)
+
+
+# ---------------------------------------------------------------------------
+# Exception Handler
+# ---------------------------------------------------------------------------
+
+# FastAPI's own HTTPException handler takes priority — this only fires for
+# genuinely unhandled exceptions so internal details never reach the client.
+@app.exception_handler(Exception)
+async def _unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    logger.exception("Unhandled error on %s %s", request.method, request.url.path)
+    return JSONResponse(status_code=500, content={"detail": "Internal error"})
 
 
 # ---------------------------------------------------------------------------

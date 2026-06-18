@@ -25,6 +25,8 @@ time, so toggling ``DEBUG``/``API_KEY`` (e.g. in tests) takes effect immediately
 from __future__ import annotations
 
 import secrets
+import time
+from collections import defaultdict
 
 from fastapi import HTTPException, Request
 
@@ -39,6 +41,36 @@ _EXEMPT_PATHS = frozenset({"/health", "/api/webhooks/subgen"})
 # Hosts treated as same-machine for the AUTH_ALLOW_LOCAL bypass. Tailscale
 # (100.64.0.0/10) and LAN addresses are deliberately NOT here.
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
+
+# ---------------------------------------------------------------------------
+# Brute-force throttle (in-memory, per-IP, skipped in DEBUG and for loopback)
+# ---------------------------------------------------------------------------
+_failure_times: dict[str, list[float]] = defaultdict(list)
+_lockout_until: dict[str, float] = {}
+
+
+def _check_brute_force(ip: str) -> None:
+    """Raise 429 if the IP is currently locked out."""
+    if time.monotonic() < _lockout_until.get(ip, 0):
+        raise HTTPException(status_code=429, detail="Too many failed authentication attempts.")
+
+
+def _record_failure(ip: str) -> None:
+    """Record one failed attempt; apply lockout when the threshold is crossed."""
+    now = time.monotonic()
+    window = settings.AUTH_BRUTE_WINDOW_SECONDS
+    times = [t for t in _failure_times[ip] if now - t <= window]
+    times.append(now)
+    _failure_times[ip] = times
+    if len(times) >= settings.AUTH_BRUTE_LOCKOUT_ATTEMPTS:
+        _lockout_until[ip] = now + settings.AUTH_BRUTE_LOCKOUT_SECONDS
+        _failure_times[ip] = []
+
+
+def _clear_failure(ip: str) -> None:
+    """Reset the failure counter after a successful authentication."""
+    _failure_times.pop(ip, None)
+    _lockout_until.pop(ip, None)
 
 
 def _presented_key(request: Request) -> str | None:
@@ -63,7 +95,8 @@ def _is_loopback(request: Request) -> bool:
 async def require_api_key(request: Request) -> None:
     """Global dependency enforcing the static API key.
 
-    Raises ``401`` (missing/wrong key) or ``503`` (no key configured).
+    Raises ``401`` (missing/wrong key), ``429`` (brute-force lockout),
+    or ``503`` (no key configured).
     """
     # 1. Local development: auth disabled wholesale.
     if settings.DEBUG:
@@ -74,24 +107,36 @@ async def require_api_key(request: Request) -> None:
         return
 
     # 3. Same-host tooling may be exempt; tailnet/LAN never is.
-    if settings.AUTH_ALLOW_LOCAL and _is_loopback(request):
+    is_loopback = _is_loopback(request)
+    if settings.AUTH_ALLOW_LOCAL and is_loopback:
         return
 
-    # 4. Frontend phase will accept a valid httpOnly session cookie here,
+    # 4. Brute-force check (skip for loopback so same-host tooling can't self-lockout).
+    ip = request.client.host if request.client else None
+    if ip and not is_loopback:
+        _check_brute_force(ip)
+
+    # 5. Frontend phase will accept a valid httpOnly session cookie here,
     #    before falling through to the API-key check.
 
-    # 5. Fail closed when the operator hasn't configured a key.
+    # 6. Fail closed when the operator hasn't configured a key.
     if not settings.API_KEY:
         raise HTTPException(
             status_code=503,
             detail="API key not configured — set API_KEY (or run with DEBUG=true).",
         )
 
-    # 6. Validate the presented credential (constant-time).
+    # 7. Validate the presented credential (constant-time).
     presented = _presented_key(request)
     if presented is None or not secrets.compare_digest(presented, settings.API_KEY):
+        if ip and not is_loopback:
+            _record_failure(ip)
         raise HTTPException(
             status_code=401,
             detail="Missing or invalid API key.",
             headers={"WWW-Authenticate": "Bearer"},
         )
+
+    # Valid key — reset any failure counter for this IP.
+    if ip and not is_loopback:
+        _clear_failure(ip)

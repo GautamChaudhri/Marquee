@@ -53,7 +53,13 @@ jobs:
         run: python -m pip check
 
       - name: Lint
-        run: ruff check marquee tests
+        run: ruff check marquee tests scripts
 
       - name: Test
         run: pytest -q
+
+      - name: Check OpenAPI schema is up to date
+        run: |
+          python scripts/export_openapi.py
+          git diff --exit-code design/api-schema.json || \
+            (echo "::error::design/api-schema.json is stale — run: python scripts/export_openapi.py" && exit 1)

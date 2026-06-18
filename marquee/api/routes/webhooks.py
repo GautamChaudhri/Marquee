@@ -1,3 +1,11 @@
+# STABLE CONTRACT — do not rename these three paths.
+# They are configured directly inside Radarr / Sonarr (Settings → Connect).
+# Renaming them requires every operator to reconfigure their *arr installs.
+#
+#   POST /api/webhooks/radarr
+#   POST /api/webhooks/sonarr
+#   POST /api/webhooks/subgen  (authenticated by SUBGEN_CALLBACK_TOKEN, not global key)
+
 """Webhook routes — Radarr/Sonarr events, poster restoration on upgrade.
 
 Radarr fires ``POST /api/webhooks/radarr`` on every significant event. We
