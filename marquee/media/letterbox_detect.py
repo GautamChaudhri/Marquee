@@ -302,9 +302,8 @@ def consensus(
         )
 
     bars = [m.bar for m in ok]
-    mn, mx = min(bars), max(bars)
+    mn = min(bars)
     med = round(statistics.median(bars))
-    spread = mx - mn
     zero_present = any(b <= noise for b in bars)
     nonzero_present = any(b > min_bar for b in bars)
 
@@ -324,14 +323,19 @@ def consensus(
         # Some scenes fill the 16:9 frame — any crop would clip them (Case A).
         return result(STATUS_VARIABLE_UNSAFE, CONF_LOW, 0, 0)
 
-    # Letterboxed. Conservative recommendation when ratios vary (Case B);
-    # the consensus median when they agree (Case C).
-    if spread > agree:
-        rec = mn  # narrowest bars → preserves the most content, never clips
-        conf = CONF_MEDIUM if spread <= medium_spread else CONF_LOW
-    else:
+    # Letterboxed. Base confidence on how many samples agree with the median
+    # (robust to single outlier frames) rather than raw min/max spread.
+    n_agree = sum(1 for b in bars if abs(b - med) <= agree)
+    agreement = n_agree / len(bars)
+    if agreement >= 0.8:
         rec = med
         conf = CONF_HIGH
+    elif sum(1 for b in bars if abs(b - med) <= medium_spread) / len(bars) >= 0.5:
+        rec = med  # majority wins; use median so the dominant bar size is applied
+        conf = CONF_MEDIUM
+    else:
+        rec = mn
+        conf = CONF_LOW
 
     top_med = round(statistics.median([max(0, m.top_bar) for m in ok]))
     bottom_med = round(statistics.median([max(0, m.bottom_bar) for m in ok]))

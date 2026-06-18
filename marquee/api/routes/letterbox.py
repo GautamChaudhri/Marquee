@@ -378,6 +378,14 @@ async def find_candidate_movies(
     for movie, state in rows:
         if not movie.movie_file_path:
             counts["missing_file_path"] += 1
+            if state is None:
+                state = LetterboxState(movie_id=movie.id)
+                db.add(state)
+            if not _state_has_detector_truth(state):
+                state.status = "prefilter_skipped"
+                state.prefilter_bucket = "no_file"
+                state.prefilter_reason = "missing_movie_file_path"
+                state.last_prefiltered_at = now
             continue
 
         if state is None:
@@ -725,3 +733,57 @@ async def letterbox_heal():
     from marquee.core.letterbox_heal import letterbox_heal_scan  # noqa: PLC0415
 
     return await letterbox_heal_scan()
+
+
+# ---------------------------------------------------------------------------
+# Dev / debug helpers — bulk and per-movie state resets
+# ---------------------------------------------------------------------------
+
+_NOT_LB_STATUSES = {"not_letterboxed", "variable_unsafe", "skipped"}
+
+
+def _wipe_detection(state: LetterboxState, now: datetime) -> None:
+    """Clear all detection and application fields; set status to prefilter_candidate."""
+    state.status = "prefilter_candidate"
+    state.confidence = None
+    state.recommended_crop_top = None
+    state.recommended_crop_bottom = None
+    state.applied_crop_top = None
+    state.applied_crop_bottom = None
+    state.aspect_label = None
+    state.detect_method = None
+    state.samples_json = None
+    state.error = None
+    state.reviewed = False
+    state.last_detected_at = None
+    state.last_applied_at = None
+    state.last_prefiltered_at = now
+
+
+@router.post("/dev/reset-not-letterboxed")
+async def dev_reset_not_letterboxed(db: Annotated[AsyncSession, Depends(get_db)]):
+    """Dev: move all not_letterboxed / variable_unsafe / skipped back to Candidates."""
+    result = await db.execute(
+        select(LetterboxState).where(LetterboxState.status.in_(list(_NOT_LB_STATUSES)))
+    )
+    states = result.scalars().all()
+    now = datetime.now(UTC)
+    for state in states:
+        _wipe_detection(state, now)
+    await db.commit()
+    return {"reset": len(states)}
+
+
+@router.post("/movies/{movie_id}/reset")
+async def dev_reset_movie(movie_id: int, db: Annotated[AsyncSession, Depends(get_db)]):
+    """Dev: fully clear all letterbox data for one movie → back to Candidates."""
+    await _load_movie(db, movie_id)
+    result = await db.execute(
+        select(LetterboxState).where(LetterboxState.movie_id == movie_id)
+    )
+    state = result.scalar_one_or_none()
+    if state is None:
+        raise HTTPException(status_code=404, detail="No letterbox state found for this movie")
+    _wipe_detection(state, datetime.now(UTC))
+    await db.commit()
+    return {"reset": True, "movie_id": movie_id}
