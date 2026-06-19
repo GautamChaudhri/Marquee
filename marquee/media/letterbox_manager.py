@@ -34,9 +34,32 @@ from marquee.config import settings
 from marquee.core.letterbox_service import letterbox_service
 from marquee.database import _get_session_factory
 from marquee.media import binaries, letterbox_detect, letterbox_preview, probe
+from marquee.media.concurrency import gated
 from marquee.models import LetterboxEvent, LetterboxState, Movie
 
 logger = logging.getLogger(__name__)
+
+# Strong references to fire-and-forget preview-warm tasks so the event loop
+# doesn't garbage-collect them mid-run; discarded on completion.
+_warm_tasks: set[asyncio.Task] = set()
+
+
+def _schedule_preview_warm(source_path: str, **kwargs) -> None:
+    """Warm a movie's previews in the background, bounded by the ffmpeg gate.
+
+    Detection must return as soon as its state is committed — warming up to
+    ~44 frames inline blocked the HTTP response for minutes and produced 502s.
+    """
+
+    async def _run() -> None:
+        try:
+            await gated(letterbox_preview.warm_movie_previews, source_path, **kwargs)
+        except Exception:  # noqa: BLE001 — best-effort cache warm; never crash the loop
+            logger.warning("preview warm failed for movie %s", kwargs.get("movie_id"), exc_info=True)
+
+    task = asyncio.create_task(_run())
+    _warm_tasks.add(task)
+    task.add_done_callback(_warm_tasks.discard)
 
 _SENTINEL = object()
 _V1_VERTICAL_CROP_RE = re.compile(r"Vertical crop amount \(per-file\):\s*(\d+)")
@@ -340,7 +363,7 @@ class LetterboxManager:
     ) -> LetterboxState:
         """Detect one movie and persist its ``LetterboxState`` + event."""
         detect_fn = self.detect_movie_blocking_v1 if detector == "v1" else self.detect_movie_blocking
-        updates = await asyncio.to_thread(detect_fn, movie)
+        updates = await gated(detect_fn, movie)
         container = updates.pop("_container", None)
         source_path = updates.pop("_source_path", None)
         if container and not movie.container:
@@ -383,8 +406,9 @@ class LetterboxManager:
                 samples = json.loads(state.samples_json)
             except json.JSONDecodeError:
                 samples = []
-            await asyncio.to_thread(
-                letterbox_preview.warm_movie_previews,
+            # Fire-and-forget: warming ~44 frames inline blocked the response
+            # for minutes (502s). On-demand /preview renders what the user opens.
+            _schedule_preview_warm(
                 source_path,
                 movie_id=movie.id,
                 samples=samples,

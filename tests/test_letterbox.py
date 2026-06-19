@@ -9,8 +9,10 @@ binaries monkeypatched, mirroring ``test_run_endpoints.py`` /
 
 from __future__ import annotations
 
+import asyncio
 import json
 import shutil
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -630,6 +632,40 @@ async def test_detect_and_store_v1_records_v1_source(db, monkeypatch):
     assert detail["detector"] == "v1"
 
 
+@pytest.mark.asyncio
+async def test_detect_and_store_schedules_warm_off_request_path(db, monkeypatch):
+    """Warming ~44 frames inline blocked the detect response (502s); it must be
+    scheduled as a background task, not awaited before the function returns."""
+    movie = Movie(title="Warm", year=2022, folder_path="/m/Warm", tmdb_id=4242)
+    db.add(movie)
+    await db.commit()
+    await db.refresh(movie)
+
+    monkeypatch.setattr(
+        letterbox_manager, "detect_movie_blocking",
+        lambda m: {
+            "status": "candidate", "confidence": "high", "eligible": True,
+            "ineligible_reason": None, "source_width": 3840, "source_height": 2160,
+            "recommended_crop_top": 280, "recommended_crop_bottom": 280,
+            "aspect_label": "2.40:1", "detect_method": "cropdetect",
+            "samples_json": json.dumps([{"minute": 5, "ok": True}]),
+            "error": None, "_container": "mkv", "_source_path": "/m.mkv",
+        },
+    )
+    warmed = asyncio.Event()
+    monkeypatch.setattr(
+        letterbox_preview, "warm_movie_previews",
+        lambda *a, **k: warmed.set() or [],
+    )
+
+    state = await letterbox_manager.detect_and_store(db, movie)
+    assert state.status == "candidate"
+    # Returned without awaiting the warm — the background task hasn't run yet.
+    assert warmed.is_set() is False
+    # ...but it is scheduled and runs once the loop yields.
+    await asyncio.wait_for(warmed.wait(), timeout=2.0)
+
+
 def test_warm_movie_previews_renders_every_ok_sample(tmp_path, monkeypatch):
     preview_root = _preview_root(tmp_path, monkeypatch)
     stale = preview_root / "7_before_99_legacy.webp"
@@ -740,6 +776,92 @@ def test_exact_preview_uses_requested_minute_without_substitution(tmp_path, monk
 
     assert out is not None
     assert timestamps == ["00:10:00"]
+
+
+def test_measure_luma_returns_none_on_binary_error(monkeypatch):
+    """A slow/timed-out probe must degrade to None, not raise — otherwise it
+    bubbles out of generate_preview and 500s the whole preview request."""
+    monkeypatch.setattr(binaries, "resolve", lambda name: "/usr/bin/ffmpeg")
+
+    def boom(name, args, timeout=None):
+        raise binaries.BinaryError(f"{name} timed out after {timeout}s")
+
+    monkeypatch.setattr(binaries, "run", boom)
+    assert letterbox_preview._measure_luma("/movie.mkv", 5) is None
+
+
+def test_pick_bright_minute_falls_back_when_probes_fail(monkeypatch):
+    """When every luma probe fails, fall back to the requested minute."""
+    letterbox_preview._bright_minute_cache.clear()
+    monkeypatch.setattr(letterbox_preview, "_measure_luma", lambda *a, **k: None)
+    chosen = letterbox_preview._pick_bright_minute("/m.mkv", 7, [3, 11, 19], movie_id=42)
+    assert chosen == 7
+
+
+def test_pick_bright_minute_caps_probe_count(monkeypatch):
+    """At most _MAX_BRIGHT_PROBES decodes run for one pick, no matter how many
+    candidate minutes are offered (each decode is expensive on 4K)."""
+    letterbox_preview._bright_minute_cache.clear()
+    probed: list[int] = []
+
+    def fake_measure(source, minute):
+        probed.append(minute)
+        return 0.0  # always too dark, forcing the candidate sweep
+
+    monkeypatch.setattr(letterbox_preview, "_measure_luma", fake_measure)
+    letterbox_preview._pick_bright_minute(
+        "/m.mkv", 5, [10, 15, 20, 25, 30, 35, 40], movie_id=1
+    )
+    assert len(probed) <= letterbox_preview._MAX_BRIGHT_PROBES
+
+
+def test_pick_bright_minute_caches_decision(monkeypatch):
+    """The before/after pair (same movie + minute) must not each re-probe."""
+    letterbox_preview._bright_minute_cache.clear()
+    calls = {"n": 0}
+
+    def fake_measure(source, minute):
+        calls["n"] += 1
+        return 200.0  # bright enough, keeps the requested minute
+
+    monkeypatch.setattr(letterbox_preview, "_measure_luma", fake_measure)
+    first = letterbox_preview._pick_bright_minute("/m.mkv", 5, [10], movie_id=9)
+    second = letterbox_preview._pick_bright_minute("/m.mkv", 5, [10], movie_id=9)
+    assert first == second == 5
+    assert calls["n"] == 1  # second call served from cache
+
+
+def test_purge_clears_bright_minute_cache(tmp_path, monkeypatch):
+    _preview_root(tmp_path, monkeypatch)
+    letterbox_preview._bright_minute_cache[(3, 5)] = 5
+    letterbox_preview._bright_minute_cache[(4, 5)] = 5
+    letterbox_preview.purge_movie_previews(3)
+    assert (3, 5) not in letterbox_preview._bright_minute_cache
+    assert (4, 5) in letterbox_preview._bright_minute_cache  # other movie untouched
+
+
+@pytest.mark.asyncio
+async def test_ffmpeg_gate_serializes_to_limit(monkeypatch):
+    """The shared gate caps concurrent request-path ffmpeg work at the
+    configured limit so probes/previews can't dogpile the disk."""
+    from marquee.media import concurrency
+
+    monkeypatch.setattr(settings, "LETTERBOX_FFMPEG_CONCURRENCY", 2)
+    monkeypatch.setattr(concurrency, "_semaphore", None)  # rebuild at new limit
+
+    active = 0
+    peak = 0
+
+    def work():
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        time.sleep(0.02)
+        active -= 1
+        return True
+
+    await asyncio.gather(*(concurrency.gated(work) for _ in range(8)))
+    assert peak <= 2
 
 
 # ---------------------------------------------------------------------------

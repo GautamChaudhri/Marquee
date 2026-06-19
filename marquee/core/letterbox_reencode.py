@@ -23,6 +23,7 @@ from marquee.core.media_files import (
     resolve_media_file,
 )
 from marquee.media import binaries
+from marquee.media.concurrency import gated
 from marquee.models import (
     LetterboxReencodeArtifact,
     LetterboxState,
@@ -430,7 +431,7 @@ async def build_plan(
         raise ReencodePlanError("invalid_codec", "Codec must be 'preserve', 'h264', or 'hevc'.")
     # ffprobe/ffmpeg are blocking subprocesses — offload so planning never
     # freezes the event loop (the API is single-worker).
-    source = await asyncio.to_thread(inspect_source, resolved.path)
+    source = await gated(inspect_source, resolved.path)
     if source is None:
         raise ReencodePlanError("probe_failed", "Could not inspect the source video.")
     if source.height - top - bottom <= 0:
@@ -438,7 +439,7 @@ async def build_plan(
 
     allow_cpu = settings.LETTERBOX_REENCODE_ALLOW_CPU_FALLBACK if allow_cpu_fallback is None else allow_cpu_fallback
     requested_codec = None if codec in {None, "preserve"} else codec
-    encoder_plan = await asyncio.to_thread(
+    encoder_plan = await gated(
         choose_encoder,
         source.codec,
         allow_cpu=allow_cpu,
@@ -642,7 +643,7 @@ async def execute_job(db: AsyncSession, job: MediaJob, emit) -> dict:
         encoded_out.unlink(missing_ok=True)
         ffmpeg_out = encoded_out
 
-    source_info = await asyncio.to_thread(inspect_source, resolved.path)
+    source_info = await gated(inspect_source, resolved.path)
     if source_info is None:
         raise ReencodePlanError("probe_failed", "could not inspect source before encoding")
     await emit(db, job.job_id, "encode", "start", message=f"Running {plan['encoder']['encoder']}")
@@ -705,7 +706,7 @@ async def execute_job(db: AsyncSession, job: MediaJob, emit) -> dict:
             encoded_out.unlink(missing_ok=True)
 
     await emit(db, job.job_id, "validate", "start")
-    validation = await asyncio.to_thread(validate_candidate, resolved.path, out, plan, source_info)
+    validation = await gated(validate_candidate, resolved.path, out, plan, source_info)
     if validation:
         out.unlink(missing_ok=True)
         raise ReencodePlanError("validation_failed", "; ".join(validation))

@@ -517,6 +517,14 @@ class Settings(BaseSettings):
     LETTERBOX_MAX_PARALLEL: int = Field(
         default=0, description="Batch-detect worker count; 0 = auto (cpu_count - 1)."
     )
+    LETTERBOX_FFMPEG_CONCURRENCY: int = Field(
+        default=2,
+        description=(
+            "Max concurrent request-path ffmpeg/ffprobe ops (preview, single detect, "
+            "inspect). Bounds disk contention so probes don't dogpile or starve each "
+            "other while an encode runs. The encode worker is serialized separately."
+        ),
+    )
     LETTERBOX_AUTO_APPLY_HIGH: bool = Field(
         default=False, description="Opt-in: auto-apply High-confidence detections after a scan."
     )

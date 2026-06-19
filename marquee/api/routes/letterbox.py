@@ -41,6 +41,7 @@ from marquee.core.media_jobs import media_job_manager
 from marquee.core.rate_limit import RateLimiter
 from marquee.database import get_db
 from marquee.media import binaries, letterbox_preview
+from marquee.media.concurrency import gated
 from marquee.media.letterbox_manager import BatchInProgressError, letterbox_manager
 from marquee.models import (
     LetterboxEvent,
@@ -57,7 +58,13 @@ router = APIRouter(prefix="/api/letterbox", tags=["letterbox"])
 # MKV pixel-crop tags are honored by these players only (design §7).
 _HONORED_BY = ["plex-desktop", "vlc", "mpv"]
 _NOT_HONORED_BY = ["plex-web", "plex-mobile"]
-_ACTIVE_REENCODE_STATUSES = ("planned", "queued", "running")
+# Job statuses worth surfacing on the movie detail so the re-encode card stays
+# visible. `interrupted` is included: a worker restart (deploy, crash, dev
+# --reload) marks the running job interrupted, but the user still needs to see
+# it — and recover it — rather than have it silently vanish into the candidate
+# view. Only the *latest* job is surfaced, so discarding it never resurfaces an
+# older interrupted run.
+_SURFACED_REENCODE_STATUSES = ("planned", "queued", "running", "interrupted")
 
 
 def _is_prefilter_schema_error(exc: OperationalError) -> bool:
@@ -226,16 +233,20 @@ async def _latest_reencode_snapshot(db: AsyncSession, movie: Movie) -> dict | No
     if media_file is None:
         return None
 
+    # Take the single most-recent job for this file, then surface it only if its
+    # status is one we show. Filtering by status *before* ordering would let
+    # discarding the latest interrupted run resurface an older interrupted one.
     job_result = await db.execute(
         select(MediaJob)
         .where(
             MediaJob.operation == "letterbox_reencode",
             MediaJob.media_file_id == media_file.id,
-            MediaJob.status.in_(_ACTIVE_REENCODE_STATUSES),
         )
         .order_by(MediaJob.created_at.desc(), MediaJob.job_id.desc())
+        .limit(1)
     )
-    job = job_result.scalars().first()
+    latest = job_result.scalars().first()
+    job = latest if latest is not None and latest.status in _SURFACED_REENCODE_STATUSES else None
     artifact_result = await db.execute(
         select(LetterboxReencodeArtifact)
         .where(LetterboxReencodeArtifact.movie_id == movie.id)
@@ -660,7 +671,10 @@ async def movie_preview(
     samples = json.loads(state.samples_json) if state.samples_json else []
     candidate_minutes = [s["minute"] for s in samples if s.get("ok")]
 
-    out = await asyncio.to_thread(
+    # Bound concurrent ffmpeg work so the before/after pair (and any other
+    # in-flight previews/detects) don't dogpile the disk; the gate offloads
+    # off the event loop too.
+    out = await gated(
         letterbox_preview.generate_preview,
         eligibility.path,
         movie_id=movie_id,
