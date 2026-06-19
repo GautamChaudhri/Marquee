@@ -24,8 +24,18 @@ logger = logging.getLogger(__name__)
 # A frame whose average luma (YAVG, 0-255) is below this is too dark to show the
 # black-bar boundary clearly, so we look for a brighter timestamp instead.
 _MIN_LUMA = 60.0
-_MAX_BRIGHT_PROBES = 6
+# Each probe is a full-frame decode (slow on 4K HDR over a busy disk), so keep
+# the count and per-probe timeout tight — a "good enough" bright frame beats a
+# perfect one that times out and 500s the preview.
+_MAX_BRIGHT_PROBES = 3
+_LUMA_PROBE_TIMEOUT = 10.0
 _YAVG_RE = re.compile(r"YAVG=([0-9.]+)")
+
+# Process-local cache of the bright-minute decision, keyed by (movie_id, minute).
+# The before/after pair render at the same minute, so this lets the second
+# request reuse the first's pick instead of re-probing, and makes repeat views
+# instant. Cleared per-movie by purge_movie_previews.
+_bright_minute_cache: dict[tuple[int, int], int] = {}
 
 # Bump when the render recipe changes so stale cached frames are regenerated.
 _CACHE_VERSION = "v3"
@@ -49,34 +59,52 @@ def _timestamp(minute: int) -> str:
 
 
 def _measure_luma(source: Path | str, minute: int) -> float | None:
-    """Average luma (YAVG, 0-255) of one frame at *minute*, or None on failure."""
-    result = binaries.run(
-        "ffmpeg",
-        [
-            "-hide_banner", "-loglevel", "info", "-nostats",
-            "-ss", _timestamp(minute),
-            "-i", str(source),
-            "-frames:v", "1",
-            "-vf", "signalstats,metadata=print",
-            "-f", "null", "-",
-        ],
-        timeout=30.0,
-    )
+    """Average luma (YAVG, 0-255) of one frame at *minute*, or None on failure.
+
+    A slow/timed-out probe (common on 4K HDR over a busy disk) returns None
+    rather than raising — brightness selection is best-effort, so the caller
+    falls back to the requested minute instead of failing the whole preview.
+    """
+    try:
+        result = binaries.run(
+            "ffmpeg",
+            [
+                "-hide_banner", "-loglevel", "info", "-nostats",
+                "-ss", _timestamp(minute),
+                "-i", str(source),
+                "-frames:v", "1",
+                "-vf", "signalstats,metadata=print",
+                "-f", "null", "-",
+            ],
+            timeout=_LUMA_PROBE_TIMEOUT,
+        )
+    except binaries.BinaryError as exc:
+        logger.debug("luma probe failed at minute %s: %s", minute, exc)
+        return None
     match = _YAVG_RE.search(result.stderr)
     return float(match.group(1)) if match else None
 
 
 def _pick_bright_minute(
-    source: Path | str, minute: int, candidates: list[int] | None
+    source: Path | str, minute: int, candidates: list[int] | None, *, movie_id: int
 ) -> int:
     """Choose the brightest timestamp so the black bars stay visible.
 
     Measures the requested minute first; if it's bright enough, keep it.
     Otherwise probe the candidate minutes (capped) and return whichever frame
     has the highest average luma — falling back to the original minute.
+
+    The decision is cached per ``(movie_id, minute)`` so the before/after pair
+    (same minute) doesn't probe twice and repeat views are instant.
     """
+    cache_key = (movie_id, minute)
+    cached = _bright_minute_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
     base = _measure_luma(source, minute)
     if base is not None and base >= _MIN_LUMA:
+        _bright_minute_cache[cache_key] = minute
         return minute
 
     options: list[int] = []
@@ -90,11 +118,18 @@ def _pick_bright_minute(
         luma = base if m == minute else _measure_luma(source, m)
         if luma is not None and luma > best_luma:
             best_minute, best_luma = m, luma
+    _bright_minute_cache[cache_key] = best_minute
     return best_minute
 
 
 def purge_movie_previews(movie_id: int) -> int:
     """Delete all cached preview files for one movie."""
+    # Drop any cached bright-minute decisions for this movie so a re-detect
+    # (new crop / new samples) re-probes instead of reusing a stale pick. Done
+    # before the directory check since the cache is independent of the files.
+    for key in [k for k in _bright_minute_cache if k[0] == movie_id]:
+        del _bright_minute_cache[key]
+
     root = settings.letterbox_preview_path
     if not root.exists():
         return 0
@@ -136,7 +171,11 @@ def generate_preview(
         return out
     out.parent.mkdir(parents=True, exist_ok=True)
 
-    src_minute = minute if exact else _pick_bright_minute(source, minute, candidate_minutes)
+    src_minute = (
+        minute
+        if exact
+        else _pick_bright_minute(source, minute, candidate_minutes, movie_id=movie_id)
+    )
 
     if mode == "after" and (crop_top or crop_bottom):
         vf = f"crop=iw:ih-{crop_top + crop_bottom}:0:{crop_top}"
