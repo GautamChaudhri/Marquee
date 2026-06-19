@@ -4,7 +4,6 @@
 	import { subscribe } from '$lib/sse';
 	import { toast } from '$lib/toast';
 	import {
-		scanLibrary,
 		analyzeAll,
 		healDrift,
 		applyBatch,
@@ -47,23 +46,9 @@
 	}
 
 	// ── Board actions ──────────────────────────────────────────────────────────
-	let scanning = $state(false);
 	let healing = $state(false);
 	let processing = $state(false);
 	let confirming = $state(false);
-
-	async function doScan() {
-		scanning = true;
-		try {
-			await scanLibrary(fetch);
-			toast('Library scanned', 'good');
-			await invalidateAll();
-		} catch (e) {
-			toast(e instanceof Error ? e.message : 'Scan failed', 'bad');
-		} finally {
-			scanning = false;
-		}
-	}
 
 	async function doHeal() {
 		healing = true;
@@ -158,7 +143,7 @@
 		if (result) {
 			const nlb = result.not_letterboxed;
 			toast(
-				`Analysis complete — ${result.candidate} detected${nlb ? `, ${nlb} not letterboxed` : ''}`,
+				`Analysis complete — ${result.candidate} staged${nlb ? `, ${nlb} cleared` : ''}`,
 				'good'
 			);
 		} else {
@@ -225,7 +210,7 @@
 			sort: 'confidence',
 			label: 'Candidates'
 		},
-		detected: { variant: 'detected', status: 'candidate', sort: 'confidence', label: 'Detected' },
+		detected: { variant: 'detected', status: 'candidate', sort: 'confidence', label: 'Staging' },
 		preview: {
 			variant: 'preview',
 			status: 'tagged',
@@ -235,9 +220,9 @@
 		},
 		notlb: {
 			variant: 'notlb',
-			status: 'not_letterboxed,variable_unsafe,skipped',
+			status: 'not_letterboxed',
 			sort: 'recent',
-			label: 'Not Letterboxed'
+			label: 'Cleared Candidates'
 		},
 		processed: {
 			variant: 'processed',
@@ -264,6 +249,7 @@
 			{st.enabled ? 'Detection enabled' : 'Disabled'}
 		</span>
 		<span class="chip mono">method: {st.method}</span>
+		<span class="chip mono">Full Frame: {st.full_frame ?? 0}</span>
 		{#each Object.entries(st.binaries) as [name, ok] (name)}
 			<span class="chip mono" class:bad={!ok}>{name} {ok ? '✓' : '✗'}</span>
 		{/each}
@@ -308,9 +294,9 @@
 <div class="flow">
 	<span class="pill" style="--c:var(--warn)">Candidates</span>
 	<span class="arrow">→ analyze →</span>
-	<span class="pill" style="--c:var(--bad)">Not Letterboxed</span>
+	<span class="pill" style="--c:var(--bad)">Cleared Candidates</span>
 	<span class="dotsep">·</span>
-	<span class="pill" style="--c:var(--info)">Detected</span>
+	<span class="pill" style="--c:var(--info)">Staging</span>
 	<span class="arrow">→ select fix → process →</span>
 	<span class="pill" style="--c:var(--dovi)">Preview &amp; Confirm</span>
 	<span class="arrow">→ confirm →</span>
@@ -332,7 +318,7 @@
 	{/if}
 {/snippet}
 
-<!-- Top trays: Candidates | Detected | Preview & Confirm -->
+<!-- Top trays: Candidates | Staging | Preview & Confirm -->
 <div class="trays top">
 	<section class="tray" style="--accent:var(--warn)">
 		<div class="tray-head">
@@ -343,10 +329,6 @@
 				<span class="tray-note">res probe</span>
 			</div>
 			<div class="tray-actions">
-				<button class="tb sec" onclick={doScan} disabled={scanning}>
-					<Icon name="refresh" size={13} />
-					{scanning ? 'Scanning…' : 'Scan library'}
-				</button>
 				<button class="tb gold" onclick={doAnalyze} disabled={analyzing}>
 					{analyzing ? 'Analyzing…' : 'Analyze →'}
 				</button>
@@ -358,7 +340,7 @@
 	<section class="tray" style="--accent:var(--info)">
 		<div class="tray-head">
 			<div class="tray-title-row">
-				<span class="tray-title">Detected</span>
+				<span class="tray-title">Staging</span>
 				<span class="tray-count">{cols.detected.total}</span>
 				<button
 					class="sort-toggle"
@@ -399,14 +381,21 @@
 	</section>
 </div>
 
-<!-- Bottom trays: Not Letterboxed | Processed -->
+<!-- Bottom trays: Cleared Candidates | Processed -->
 <div class="trays bottom">
 	<section class="tray" style="--accent:var(--bad)">
 		<div class="tray-head simple">
-			<span class="tray-title">Not Letterboxed</span>
+			<span class="tray-title">Cleared Candidates</span>
+			<span
+				class="info-dot"
+				title="These movies looked like possible letterbox candidates from their resolution, but analysis verified no crop is needed."
+				aria-label="These movies looked like possible letterbox candidates from their resolution, but analysis verified no crop is needed."
+			>
+				i
+			</span>
 			<span class="tray-count">{cols.notLetterboxed.total}</span>
 			<span class="spacer"></span>
-			<span class="tray-note">no fix needed</span>
+			<span class="tray-note">verified clear · Full Frame {st?.full_frame ?? 0}</span>
 		</div>
 		<div class="tray-body">
 			{@render rows(cols.notLetterboxed.items, cols.notLetterboxed.total, 'notlb')}
@@ -642,6 +631,19 @@
 		color: var(--accent);
 		padding: 1px 7px;
 		border-radius: 7px;
+	}
+	.info-dot {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 16px;
+		height: 16px;
+		border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line));
+		border-radius: 50%;
+		color: var(--accent);
+		font-family: var(--font-mono);
+		font-size: 10px;
+		cursor: help;
 	}
 	.spacer {
 		flex: 1;

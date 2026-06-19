@@ -48,7 +48,7 @@ export const load: PageLoad = async ({ fetch, url }) => {
 		),
 		safe(
 			listColumn(fetch, {
-				status: 'not_letterboxed,variable_unsafe,skipped',
+				status: 'not_letterboxed',
 				sort: 'recent',
 				page_size: CAP
 			}),

@@ -53,7 +53,7 @@ class LetterboxState(Base, TimestampMixin):
         String(24), nullable=False, server_default=text("'prefilter_candidate'")
     )
 
-    # high | medium | low | none
+    # high | medium | variable | low | none
     confidence: Mapped[str | None] = mapped_column(String(8), nullable=True)
 
     # Eligibility for tag application (MKV + writable + has a video track).

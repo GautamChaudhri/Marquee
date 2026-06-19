@@ -7,6 +7,7 @@
 		detectLetterbox,
 		applyLetterbox,
 		ignoreLetterbox,
+		markNotLetterboxed,
 		removeLetterbox,
 		confirmLetterbox,
 		reprocessLetterbox,
@@ -154,15 +155,19 @@
 			: null
 	);
 
-	// Assign a stable color per unique bar value so each group gets its own icon color.
+	// Assign a stable color per unique top/bottom pair so each group gets its own icon color.
 	const BAR_COLORS = ['var(--gold)', 'var(--info)', 'var(--good)', 'var(--warn)', 'var(--bad)', 'var(--muted)'];
-	function barColorMap(samples: LetterboxDetail['samples']): Map<number, string> {
+	function pairKey(s: NonNullable<LetterboxDetail['samples']>[number]): string {
+		return `${s.top_bar ?? '?'}:${s.bottom_bar ?? '?'}`;
+	}
+
+	function pairColorMap(samples: LetterboxDetail['samples']): Map<string, string> {
 		// eslint-disable-next-line svelte/prefer-svelte-reactivity -- transient lookup, recomputed per render
-		const seen = new Map<number, string>();
+		const seen = new Map<string, string>();
 		for (const s of samples ?? []) {
 			if (!s.ok) continue;
-			const bar = Math.round(((s.top_bar ?? 0) + (s.bottom_bar ?? 0)) / 2);
-			if (!seen.has(bar)) seen.set(bar, BAR_COLORS[seen.size % BAR_COLORS.length]);
+			const key = pairKey(s);
+			if (!seen.has(key)) seen.set(key, BAR_COLORS[seen.size % BAR_COLORS.length]);
 		}
 		return seen;
 	}
@@ -170,6 +175,7 @@
 	function confidenceTone(c: string | null | undefined): string {
 		if (!c || c === 'none') return 'var(--faint)';
 		if (c === 'high') return 'var(--good)';
+		if (c === 'variable') return 'var(--info)';
 		if (c === 'low') return 'var(--bad)';
 		return 'var(--warn)';
 	}
@@ -443,6 +449,14 @@
 							Apply crop tag →
 						</button>
 						<button
+							class="btn-sec"
+							disabled={busy}
+							onclick={() =>
+								run(() => markNotLetterboxed(fetch, id!), 'Marked as not letterboxed')}
+						>
+							Set as not letterboxed
+						</button>
+						<button
 							class="btn-ghost"
 							disabled={busy}
 							onclick={() => run(() => ignoreLetterbox(fetch, id!), 'Skipped')}
@@ -675,10 +689,10 @@
 					<div class="conf-expand">
 						{#if detail.samples && detail.samples.length > 0}
 							{@const okSamples = detail.samples.filter((s) => s.ok)}
-							{@const sampleBars = okSamples.map((s) => Math.round(((s.top_bar ?? 0) + (s.bottom_bar ?? 0)) / 2))}
-							{@const barMed = sampleBars.length > 0 ? [...sampleBars].sort((a, b) => a - b)[Math.floor(sampleBars.length / 2)] : 0}
-							{@const agreeCount = sampleBars.filter((b) => Math.abs(b - barMed) <= 2).length}
-							{@const colorMap = barColorMap(detail.samples)}
+							{@const pairCounts = okSamples.reduce((map, s) => map.set(pairKey(s), (map.get(pairKey(s)) ?? 0) + 1), new Map<string, number>())}
+							{@const dominantPair = [...pairCounts.entries()].sort((a, b) => b[1] - a[1])[0]}
+							{@const agreeCount = dominantPair?.[1] ?? 0}
+							{@const colorMap = pairColorMap(detail.samples)}
 							<div class="ce-summary">
 								{#if agreeCount === okSamples.length && okSamples.length > 0}
 									All {okSamples.length} agree
@@ -688,8 +702,8 @@
 								<span class="ce-hint">· click to preview that frame</span>
 							</div>
 							{#each detail.samples as s (s.minute)}
-								{@const bar = s.ok ? Math.round(((s.top_bar ?? 0) + (s.bottom_bar ?? 0)) / 2) : null}
-								{@const barColor = bar != null ? (colorMap.get(bar) ?? 'var(--faint)') : 'var(--faint)'}
+								{@const key = s.ok ? pairKey(s) : null}
+								{@const barColor = key != null ? (colorMap.get(key) ?? 'var(--faint)') : 'var(--faint)'}
 								{@const isActive = s.minute === activeMinute}
 								<button
 									class="ce-row"

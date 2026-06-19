@@ -41,10 +41,10 @@ export function toneVar(tone: Tone): string {
 
 export function letterboxMeta(status: string): { label: string; tone: Tone } | null {
 	const map: Record<string, { label: string; tone: Tone }> = {
-		candidate: { label: 'Detected', tone: 'warn' },
+		candidate: { label: 'Staging', tone: 'warn' },
 		prefilter_candidate: { label: 'Candidate', tone: 'gold' },
 		prefilter_unknown: { label: 'Needs probe', tone: 'gold' },
-		not_letterboxed: { label: 'Not letterboxed', tone: 'muted' },
+		not_letterboxed: { label: 'Cleared candidate', tone: 'muted' },
 		tagged: { label: 'Tagged', tone: 'good' },
 		variable_unsafe: { label: 'Not letterboxed (variable)', tone: 'muted' },
 		skipped: { label: 'Skipped', tone: 'muted' },

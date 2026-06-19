@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from marquee.config import settings
 from marquee.core.arr_clients.radarr_client import RadarrClient
 from marquee.core.arr_clients.sonarr_client import SonarrClient
+from marquee.core.letterbox_prefilter import refresh_letterbox_prefilter_for_movie
 from marquee.core.path_utils import safe_translate_and_validate
 from marquee.core.poster_sources.tmdb import TMDBClient
 from marquee.models import (
@@ -187,6 +188,7 @@ class SyncService:
                 # ── Physical media-file row (design 03 §19.3) ─────────
                 await self.db.flush()  # assign movie.id for new rows
                 await _upsert_movie_media_file(self.db, movie, movie_file)
+                await refresh_letterbox_prefilter_for_movie(self.db, movie)
 
             except Exception:
                 logger.error(
