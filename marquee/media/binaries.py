@@ -55,14 +55,17 @@ class CommandResult:
         return self.returncode == 0
 
 
+def _configured_path(name: str) -> str:
+    return getattr(settings, _BINARY_SETTINGS.get(name, ""), name) or name
+
+
 @cache
 def resolve(name: str) -> str | None:
     """Absolute path to *name*'s executable, or None if not found.
 
     Cached: call ``reset_cache()`` if the environment changes at runtime.
     """
-    configured = getattr(settings, _BINARY_SETTINGS.get(name, ""), name) or name
-    return shutil.which(configured)
+    return shutil.which(_configured_path(name))
 
 
 def reset_cache() -> None:
@@ -71,8 +74,13 @@ def reset_cache() -> None:
 
 
 def availability() -> dict[str, bool]:
-    """Map each known binary name to whether it is resolvable on PATH."""
-    return {name: resolve(name) is not None for name in _BINARY_SETTINGS}
+    """Map each known binary name to whether it is resolvable on PATH.
+
+    Deliberately bypasses the ``resolve()`` cache: this backs the dashboard's
+    status chips, which should reflect a binary that was just installed (e.g.
+    a freshly-built ``dovi_tool``) without requiring a server restart.
+    """
+    return {name: shutil.which(_configured_path(name)) is not None for name in _BINARY_SETTINGS}
 
 
 def require(*names: str) -> None:

@@ -46,6 +46,7 @@ export function letterboxMeta(status: string): { label: string; tone: Tone } | n
 		prefilter_unknown: { label: 'Needs probe', tone: 'gold' },
 		not_letterboxed: { label: 'Cleared candidate', tone: 'muted' },
 		tagged: { label: 'Tagged', tone: 'good' },
+		reencoded: { label: 'Re-encoded', tone: 'good' },
 		variable_unsafe: { label: 'Not letterboxed (variable)', tone: 'muted' },
 		skipped: { label: 'Skipped', tone: 'muted' },
 		ineligible: { label: 'Ineligible', tone: 'low' },

@@ -1,7 +1,12 @@
 <script lang="ts">
 	import { letterboxMeta, toneVar, aspectRatio } from '$lib/display';
 	import { toast } from '$lib/toast';
-	import type { LetterboxDetail, ReencodePlan, ReencodeArtifact } from '$lib/api/types';
+	import type {
+		LetterboxDetail,
+		MediaJobSnapshot,
+		ReencodeArtifact,
+		ReencodePlan
+	} from '$lib/api/types';
 	import {
 		getLetterboxState,
 		detectLetterbox,
@@ -13,6 +18,8 @@
 		reprocessLetterbox,
 		createReencodePlan,
 		confirmJob,
+		cancelJob,
+		getMediaJob,
 		listReencodeArtifacts,
 		replaceOriginal,
 		deleteArtifact
@@ -72,6 +79,34 @@
 	let showConf = $state(false);
 	let previewMinute = $state<number | null>(null);
 
+	function stopEncodeStream() {
+		if (unsub) {
+			unsub();
+			unsub = null;
+		}
+	}
+
+	function resetReencodeState() {
+		stopEncodeStream();
+		method = 'quick';
+		showAdvanced = false;
+		plan = null;
+		jobId = null;
+		planError = null;
+		planLoading = false;
+		artifact = null;
+		encoding = false;
+		encodeProgress = 0;
+		encodeStage = null;
+		setEncoder = 'auto';
+		setQuality = null;
+		setPreset = '';
+		setCodec = 'preserve';
+		setAllowCpu = true;
+		cropTopOverride = null;
+		cropBottomOverride = null;
+	}
+
 	let lastId = $state<number | null>(null);
 	$effect(() => {
 		if (movieId === lastId) return;
@@ -80,10 +115,14 @@
 		loadError = null;
 		showConf = false;
 		previewMinute = null;
+		resetReencodeState();
 		if (movieId == null) return;
 		loading = true;
 		getLetterboxState(fetch, movieId)
-			.then((d) => (detail = d))
+			.then((d) => {
+				detail = d;
+				hydrateReencodeState(d);
+			})
 			.catch((e) => (loadError = e instanceof Error ? e.message : 'Failed to load'))
 			.finally(() => (loading = false));
 	});
@@ -94,6 +133,7 @@
 		if (s.startsWith('prefilter')) return 'candidate';
 		if (s === 'candidate') return 'detected';
 		if (s === 'tagged') return detail?.reviewed ? 'processed' : 'preview';
+		if (s === 'reencoded') return 'processed';
 		if (s === 'not_letterboxed' || s === 'variable_unsafe' || s === 'skipped') return 'clean';
 		return 'other';
 	});
@@ -217,6 +257,10 @@
 	let cropBottomOverride = $state<number | null>(null);
 
 	let plan = $state<ReencodePlan | null>(null);
+	// The canonical media-job id, sourced from the job snapshot on hydration or
+	// the plan response on fresh planning. Never read job_id off `plan` — the
+	// stored plan_json doesn't carry it, so a hydrated plan's job_id is undefined.
+	let jobId = $state<string | null>(null);
 	let planError = $state<string | null>(null);
 	let planLoading = $state(false);
 	let encoding = $state(false);
@@ -225,40 +269,82 @@
 	let artifact = $state<ReencodeArtifact | null>(null);
 	let unsub: (() => void) | null = null;
 
+	const reencodeMode = $derived.by(() => {
+		const jobStatus = detail?.reencode?.job?.status;
+		const artifactStatus = detail?.reencode?.artifact?.status;
+		if (jobStatus === 'planned') return 'planned';
+		if (jobStatus === 'queued' || jobStatus === 'running') return 'encoding';
+		if (artifactStatus === 'candidate_ready' || artifactStatus === 'kept') return 'ready';
+		return null;
+	});
+
 	const presetOptions = $derived(
 		plan?.encoder.family === 'nvidia'
 			? NVENC_PRESETS
 			: plan?.encoder.family === 'cpu'
 				? CPU_PRESETS
-				: []
+			: []
 	);
 	const encoderOptions = $derived(plan?.encoder.available_encoders.filter((e) => KNOWN_ENCODERS.includes(e)) ?? []);
 
-	// Reset the re-encode sub-state whenever the selected movie changes.
-	$effect(() => {
-		void movieId;
-		method = 'quick';
-		showAdvanced = false;
+	function subscribeToEncode(jobId: string) {
+		stopEncodeStream();
+		unsub = subscribe(`/api/media-jobs/${jobId}/events`, ['message', 'done'], async (type, data) => {
+			if (type === 'done') {
+				stopEncodeStream();
+				await finishEncode(jobId);
+				return;
+			}
+			const ev = data as { stage?: string; state?: string; progress?: { percent?: number } | null };
+			if (ev.stage) encodeStage = ev.stage;
+			if (ev.progress?.percent != null) encodeProgress = ev.progress.percent;
+		});
+	}
+
+	function hydrateReencodeState(snapshot: LetterboxDetail | null) {
+		stopEncodeStream();
 		plan = null;
+		jobId = null;
 		planError = null;
+		planLoading = false;
 		artifact = null;
 		encoding = false;
 		encodeProgress = 0;
-		setEncoder = 'auto';
-		setQuality = null;
-		setPreset = '';
-		setCodec = 'preserve';
-		setAllowCpu = true;
-		cropTopOverride = null;
-		cropBottomOverride = null;
-		if (unsub) {
-			unsub();
-			unsub = null;
+		encodeStage = null;
+
+		const reencode = snapshot?.reencode;
+		if (!reencode) {
+			method = 'quick';
+			return;
 		}
-	});
+
+		method = 'permanent';
+		const job: MediaJobSnapshot | null = reencode.job;
+		if (job?.plan) {
+			plan = job.plan;
+		}
+		jobId = job?.job_id ?? null;
+
+		if (job?.status === 'planned') {
+			planError = job.error?.error ?? null;
+			return;
+		}
+
+		if (job?.status === 'queued' || job?.status === 'running') {
+			encoding = true;
+			encodeStage = job.stage ?? job.status;
+			encodeProgress = job.progress_total > 0 ? (job.progress_done / job.progress_total) * 100 : 0;
+			subscribeToEncode(job.job_id);
+			return;
+		}
+
+		if (reencode.artifact?.status === 'candidate_ready' || reencode.artifact?.status === 'kept') {
+			artifact = reencode.artifact;
+		}
+	}
 
 	async function loadPlan() {
-		if (id == null) return;
+		if (id == null || reencodeMode !== null) return;
 		planLoading = true;
 		planError = null;
 		try {
@@ -271,8 +357,10 @@
 				preset: setPreset || null,
 				codec: setCodec
 			});
+			jobId = plan.job_id;
 		} catch (e) {
 			plan = null;
+			jobId = null;
 			const body = (e as { body?: { detail?: { message?: string } } })?.body;
 			planError = body?.detail?.message ?? (e instanceof Error ? e.message : 'Could not plan re-encode');
 		} finally {
@@ -281,40 +369,39 @@
 	}
 
 	function selectMethod(m: Method) {
+		if (reencodeMode !== null) return;
 		method = m;
 		if (m === 'permanent' && !plan && !planLoading) loadPlan();
 	}
 
 	async function startEncode() {
-		if (!plan || id == null) return;
+		if (!plan || !jobId || id == null) return;
+		const confirmId = jobId;
 		encoding = true;
 		encodeProgress = 0;
 		encodeStage = 'queued';
 		artifact = null;
 		try {
-			await confirmJob(fetch, plan.job_id);
+			await confirmJob(fetch, confirmId);
 		} catch (e) {
 			encoding = false;
 			toast(e instanceof Error ? e.message : 'Could not start encode', 'bad');
 			return;
 		}
-		const jobId = plan.job_id;
-		unsub = subscribe(`/api/media-jobs/${jobId}/events`, ['message', 'done'], async (type, data) => {
-			if (type === 'done') {
-				if (unsub) {
-					unsub();
-					unsub = null;
-				}
-				await finishEncode();
-				return;
-			}
-			const ev = data as { stage?: string; state?: string; progress?: { percent?: number } | null };
-			if (ev.stage) encodeStage = ev.stage;
-			if (ev.progress?.percent != null) encodeProgress = ev.progress.percent;
-		});
+		subscribeToEncode(confirmId);
 	}
 
-	async function finishEncode() {
+	async function discardPlan() {
+		if (!jobId) {
+			resetReencodeState();
+			return;
+		}
+		// run() reloads the detail + re-hydrates, so the now-cancelled job drops
+		// out of the active snapshot and the method picker reappears.
+		await run(() => cancelJob(fetch, jobId!), 'Plan discarded');
+	}
+
+	async function finishEncode(jobId: string) {
 		if (id == null) return;
 		try {
 			const list = await listReencodeArtifacts(fetch, { movie_id: id });
@@ -324,12 +411,22 @@
 				encodeProgress = 100;
 				toast('Re-encode complete — review the candidate', 'good');
 			} else {
-				toast('Re-encode finished but no candidate was produced (check job log)', 'bad');
+				toast(await describeFailedJob(jobId), 'bad');
 			}
 		} catch (e) {
 			toast(e instanceof Error ? e.message : 'Could not load candidate', 'bad');
 		} finally {
 			encoding = false;
+		}
+	}
+
+	async function describeFailedJob(jobId: string): Promise<string> {
+		const fallback = 'Re-encode finished but no candidate was produced (check job log)';
+		try {
+			const job = await getMediaJob(fetch, jobId);
+			return job.error?.error ?? fallback;
+		} catch {
+			return fallback;
 		}
 	}
 
@@ -357,6 +454,10 @@
 			artifact = null;
 			plan = null;
 			method = 'quick';
+			encodeStage = null;
+			encodeProgress = 0;
+			lastId = null;
+			onChanged();
 		} catch (e) {
 			toast(e instanceof Error ? e.message : 'Discard failed', 'bad');
 		} finally {
@@ -365,7 +466,7 @@
 	}
 </script>
 
-<svelte:window onbeforeunload={() => unsub?.()} />
+<svelte:window onbeforeunload={() => stopEncodeStream()} />
 
 <div class="panel" style="--panel-accent:{panelAccent}">
 	{#if movieId == null}
@@ -419,33 +520,35 @@
 			<div class="actions det-actions">
 				<div class="alabel">Actions</div>
 				{#if stage === 'detected'}
-					<button
-						class="fix-card"
-						class:active={method === 'quick'}
-						onclick={() => selectMethod('quick')}
-					>
-						<div class="fix-head">
-							⚡ Quick · Crop Tag
-							{#if method === 'quick'}<span class="fix-on">Active</span>{/if}
-						</div>
-						<div class="fix-body">MKV pixel-crop tag. Instant & reversible. No quality loss.</div>
-					</button>
-					<button
-						class="fix-card"
-						class:active={method === 'permanent'}
-						onclick={() => selectMethod('permanent')}
-					>
-						<div class="fix-head">
-							🛠 Permanent · Re-encode
-							{#if method === 'permanent'}<span class="fix-on">Active</span>{/if}
-						</div>
-						<div class="fix-body">
-							FFmpeg re-encode. Works on all clients. Higher quality cost; original is
-							preserved.
-						</div>
-					</button>
+					{#if reencodeMode === null}
+						<button
+							class="fix-card"
+							class:active={method === 'quick'}
+							onclick={() => selectMethod('quick')}
+						>
+							<div class="fix-head">
+								⚡ Quick · Crop Tag
+								{#if method === 'quick'}<span class="fix-on">Active</span>{/if}
+							</div>
+							<div class="fix-body">MKV pixel-crop tag. Instant & reversible. No quality loss.</div>
+						</button>
+						<button
+							class="fix-card"
+							class:active={method === 'permanent'}
+							onclick={() => selectMethod('permanent')}
+						>
+							<div class="fix-head">
+								🛠 Permanent · Re-encode
+								{#if method === 'permanent'}<span class="fix-on">Active</span>{/if}
+							</div>
+							<div class="fix-body">
+								FFmpeg re-encode. Works on all clients. Higher quality cost; original is
+								preserved.
+							</div>
+						</button>
+					{/if}
 
-					{#if method === 'quick'}
+					{#if reencodeMode === null && method === 'quick'}
 						<button
 							class="btn-gold"
 							disabled={busy}
@@ -498,6 +601,40 @@
 							<div class="alabel">Encoding · {encodeStage ?? 'working'}</div>
 							<ProgressBar value={encodeProgress} tone="gold" />
 							<div class="crop-note" style="margin-top:6px">{Math.round(encodeProgress)}%</div>
+						</div>
+					{:else if reencodeMode === 'planned'}
+						<div class="applied-card">
+							<div class="alabel">Re-encode planned</div>
+							<dl class="enc-summary">
+								<dt>Encoder</dt>
+								<dd class="mono">{plan?.encoder.encoder ?? '—'} · {plan?.encoder.family ?? '—'}</dd>
+								<dt>Crop</dt>
+								<dd class="mono">
+									{plan?.crop.top ?? 0}:{plan?.crop.bottom ?? 0}
+									<span class="crop-note">→ {plan?.crop.output_height ?? detail.source_height ?? '—'}p</span>
+								</dd>
+								<dt>Temp size</dt>
+								<dd class="mono">
+									{fmtBytes(plan?.storage.estimated_temp_bytes ?? null)}
+									<span class="crop-note">/ {fmtBytes(plan?.storage.free_bytes ?? null)} free</span>
+								</dd>
+							</dl>
+						</div>
+						{#if planError}
+							<div class="note err">{planError}</div>
+						{/if}
+						{#each plan?.warnings ?? [] as w (w.code)}
+							<div class="note {w.requires_confirmation ? 'warn' : ''}">{w.message}</div>
+						{/each}
+						<button class="btn-gold" disabled={busy} onclick={startEncode}>
+							Confirm & encode →
+						</button>
+						<button class="btn-ghost" disabled={busy} onclick={discardPlan}>
+							Discard plan
+						</button>
+						<div class="note">
+							This plan is already saved. Confirm it to start the queued re-encode job, or
+							discard it to choose a different method.
 						</div>
 					{:else if planLoading}
 						<div class="note">Planning re-encode…</div>

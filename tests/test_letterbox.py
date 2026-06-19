@@ -10,7 +10,8 @@ binaries monkeypatched, mirroring ``test_run_endpoints.py`` /
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+import shutil
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -18,14 +19,23 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
 from marquee.config import settings
+from marquee.core import letterbox_reencode
+from marquee.core.letterbox_reencode import ReencodePlanError, _mkdir_with_retry
 from marquee.core.letterbox_service import _resolve_media_file, letterbox_service
+from marquee.core.media_files import ensure_media_file_for_movie
 from marquee.core.path_utils import PathValidationError
 from marquee.main import app
 from marquee.media import binaries, letterbox_preview
 from marquee.media import letterbox_detect as ld
 from marquee.media.letterbox_manager import JobState, letterbox_manager
 from marquee.media.probe import prefilter_bucket
-from marquee.models import LetterboxEvent, LetterboxState, Movie
+from marquee.models import (
+    LetterboxEvent,
+    LetterboxReencodeArtifact,
+    LetterboxState,
+    MediaJob,
+    Movie,
+)
 
 
 @pytest.fixture
@@ -319,6 +329,57 @@ def _preview_root(tmp_path, monkeypatch):
     return settings.letterbox_preview_path
 
 
+def _reencode_plan(job_id: str = "job1") -> dict:
+    return {
+        "job_id": job_id,
+        "status": "planned",
+        "expires_at": "2026-06-19T00:00:00+00:00",
+        "method": "permanent",
+        "crop": {"top": 140, "bottom": 140, "output_height": 800},
+        "source": {
+            "path": "/tmp/Movie (2020)/Movie (2020).mkv",
+            "size_bytes": 1,
+            "codec": "hevc",
+            "width": 1920,
+            "height": 1080,
+            "pix_fmt": "yuv420p",
+            "color_transfer": None,
+            "color_primaries": None,
+            "color_space": None,
+            "has_hdr": False,
+            "has_dovi": False,
+            "dovi_profile": None,
+        },
+        "encoder": {
+            "codec": "hevc",
+            "encoder": "hevc_nvenc",
+            "family": "nvidia",
+            "quality": 16,
+            "preset": "p7",
+            "available_encoders": ["hevc_nvenc"],
+            "used_cpu_fallback": False,
+        },
+        "hdr": {"status": "sdr"},
+        "dovi": {
+            "status": "not_present",
+            "supported": False,
+            "reason": None,
+            "profile": None,
+            "level": None,
+            "el_present": None,
+        },
+        "storage": {
+            "estimated_temp_bytes": 1,
+            "free_bytes": 2,
+            "original_preserved_by_default": True,
+            "replace_original_after_review": True,
+        },
+        "warnings": [],
+        "confirmation_required": False,
+        "input_signature": "sig",
+    }
+
+
 def test_eligibility_mkv_ok_without_mkvmerge(tmp_path, monkeypatch):
     # No mkvmerge → container/track check skipped; a writable .mkv is eligible.
     monkeypatch.setattr(binaries, "resolve", lambda name: None)
@@ -354,6 +415,83 @@ def test_resolve_media_file_rejects_escape(tmp_path):
     )
     with pytest.raises(PathValidationError):
         _resolve_media_file(movie)
+
+
+# ---------------------------------------------------------------------------
+# _mkdir_with_retry — cross-account ownership + transient mount errors
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_mkdir_with_retry_succeeds_after_transient_permission_error(tmp_path, monkeypatch):
+    monkeypatch.setattr(letterbox_reencode.asyncio, "sleep", lambda _delay: _noop())
+    real_mkdir = Path.mkdir
+    target = tmp_path / "candidates" / "radarr_movie-file_2010"
+    target.parent.mkdir()  # pre-exists, so the real mkdir call is a single non-recursive op
+    calls = {"count": 0}
+
+    def flaky_mkdir(self, *args, **kwargs):
+        if self == target:
+            calls["count"] += 1
+            if calls["count"] < 3:
+                raise PermissionError("transient mergerfs branch error")
+        return real_mkdir(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", flaky_mkdir)
+    await _mkdir_with_retry(target, boundary=tmp_path)
+    assert calls["count"] == 3
+    assert target.is_dir()
+
+
+@pytest.mark.asyncio
+async def test_mkdir_with_retry_raises_reencode_plan_error_when_exhausted(tmp_path, monkeypatch):
+    monkeypatch.setattr(letterbox_reencode.asyncio, "sleep", lambda _delay: _noop())
+
+    def always_denied(self, *args, **kwargs):
+        raise PermissionError("permission denied")
+
+    monkeypatch.setattr(Path, "mkdir", always_denied)
+    target = tmp_path / "candidates" / "radarr_movie-file_2010"
+    with pytest.raises(ReencodePlanError) as exc_info:
+        await _mkdir_with_retry(target, boundary=tmp_path)
+    assert exc_info.value.code == "candidate_dir_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_mkdir_with_retry_sets_setgid_group_write_up_to_boundary(tmp_path):
+    boundary = tmp_path / "movies" / ".marquee"
+    target = boundary / "letterbox" / "candidates" / "radarr_movie-file_2010" / "job1"
+    await _mkdir_with_retry(target, boundary=boundary)
+    for directory in (target, target.parent, target.parent.parent, boundary):
+        assert directory.stat().st_mode & 0o7777 == 0o2775
+    # Nothing above the boundary should have been touched.
+    assert boundary.parent.stat().st_mode & 0o7777 != 0o2775
+
+
+@pytest.mark.asyncio
+async def test_mkdir_with_retry_ignores_chmod_denied_on_foreign_ancestor(tmp_path, monkeypatch):
+    boundary = tmp_path / "movies" / ".marquee"
+    foreign = boundary / "letterbox" / "candidates"  # simulates a dir owned by the other account
+    target = foreign / "radarr_movie-file_2010" / "job1"
+    target.mkdir(parents=True)
+    shutil.rmtree(target)  # leave `foreign` in place, owned by "someone else"
+
+    real_chmod = Path.chmod
+
+    def chmod_denying_foreign(self, *args, **kwargs):
+        if self == foreign:
+            raise PermissionError("not the owner")
+        return real_chmod(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "chmod", chmod_denying_foreign)
+    await _mkdir_with_retry(target, boundary=boundary)
+
+    assert target.is_dir()
+    assert target.stat().st_mode & 0o7777 == 0o2775
+
+
+async def _noop():
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -931,6 +1069,147 @@ async def test_movie_detail_404_without_state(client, db):
     await db.refresh(movie)
     resp = await client.get(f"/api/letterbox/movies/{movie.id}")
     assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_movie_detail_without_reencode_snapshot(client, db, tmp_path):
+    movie, _ = _movie_with_file(tmp_path)
+    db.add(movie)
+    await db.commit()
+    await db.refresh(movie)
+    db.add(LetterboxState(movie_id=movie.id, status="candidate", confidence="high"))
+    await db.commit()
+
+    resp = await client.get(f"/api/letterbox/movies/{movie.id}")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "candidate"
+    assert body.get("reencode") is None
+
+
+@pytest.mark.asyncio
+async def test_movie_detail_includes_active_reencode_snapshot(client, db, tmp_path):
+    movie, _ = _movie_with_file(tmp_path)
+    db.add(movie)
+    await db.commit()
+    await db.refresh(movie)
+    media_file = await ensure_media_file_for_movie(db, movie)
+    assert media_file is not None
+    db.add(LetterboxState(movie_id=movie.id, status="candidate", confidence="high"))
+    db.add(
+        MediaJob(
+            job_id="job1",
+            operation="letterbox_reencode",
+            media_file_id=media_file.id,
+            status="running",
+            stage="encode",
+            progress_done=25,
+            progress_total=100,
+            plan_json=json.dumps(_reencode_plan("job1")),
+        )
+    )
+    await db.commit()
+
+    resp = await client.get(f"/api/letterbox/movies/{movie.id}")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["reencode"]["job"]["job_id"] == "job1"
+    assert body["reencode"]["job"]["status"] == "running"
+    assert body["reencode"]["job"]["stage"] == "encode"
+    assert body["reencode"]["job"]["progress_done"] == 25
+    assert body["reencode"]["job"]["progress_total"] == 100
+    assert body["reencode"]["job"]["plan"]["encoder"]["encoder"] == "hevc_nvenc"
+    assert body["reencode"]["artifact"] is None
+
+
+@pytest.mark.asyncio
+async def test_movie_detail_uses_latest_active_reencode_job(client, db, tmp_path):
+    movie, _ = _movie_with_file(tmp_path)
+    db.add(movie)
+    await db.commit()
+    await db.refresh(movie)
+    media_file = await ensure_media_file_for_movie(db, movie)
+    assert media_file is not None
+    db.add(LetterboxState(movie_id=movie.id, status="candidate", confidence="high"))
+    db.add(
+        MediaJob(
+            job_id="job-old",
+            operation="letterbox_reencode",
+            media_file_id=media_file.id,
+            status="planned",
+            stage="plan",
+            progress_done=0,
+            progress_total=100,
+            plan_json=json.dumps(_reencode_plan("job-old")),
+            created_at=datetime.now(UTC) - timedelta(minutes=5),
+        )
+    )
+    db.add(
+        MediaJob(
+            job_id="job-new",
+            operation="letterbox_reencode",
+            media_file_id=media_file.id,
+            status="running",
+            stage="encode",
+            progress_done=50,
+            progress_total=100,
+            plan_json=json.dumps(_reencode_plan("job-new")),
+            created_at=datetime.now(UTC),
+        )
+    )
+    await db.commit()
+
+    resp = await client.get(f"/api/letterbox/movies/{movie.id}")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["reencode"]["job"]["job_id"] == "job-new"
+    assert body["reencode"]["job"]["status"] == "running"
+    assert body["reencode"]["job"]["progress_done"] == 50
+    assert body["reencode"]["job"]["plan"]["operation"] == "letterbox_reencode"
+
+
+@pytest.mark.asyncio
+async def test_movie_detail_includes_finished_reencode_artifact(client, db, tmp_path):
+    movie, media = _movie_with_file(tmp_path)
+    db.add(movie)
+    await db.commit()
+    await db.refresh(movie)
+    media_file = await ensure_media_file_for_movie(db, movie)
+    assert media_file is not None
+    db.add(LetterboxState(movie_id=movie.id, status="candidate", confidence="high"))
+    db.add(
+        MediaJob(
+            job_id="job1",
+            operation="letterbox_reencode",
+            media_file_id=media_file.id,
+            status="succeeded",
+        )
+    )
+    db.add(
+        LetterboxReencodeArtifact(
+            job_id="job1",
+            movie_id=movie.id,
+            media_file_id=media_file.id,
+            original_path=str(media),
+            candidate_path=str(media.with_name("Movie (2020).letterbox.job1.mkv")),
+            original_size_bytes=1,
+            candidate_size_bytes=2,
+            encoder="hevc_nvenc",
+            encoder_family="nvidia",
+            codec="hevc",
+            crop_top=140,
+            crop_bottom=140,
+            status="candidate_ready",
+        )
+    )
+    await db.commit()
+
+    resp = await client.get(f"/api/letterbox/movies/{movie.id}")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["reencode"]["job"] is None
+    assert body["reencode"]["artifact"]["job_id"] == "job1"
+    assert body["reencode"]["artifact"]["status"] == "candidate_ready"
 
 
 @pytest.mark.asyncio
