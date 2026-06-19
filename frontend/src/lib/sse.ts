@@ -9,7 +9,12 @@ import { browser } from '$app/environment';
 export type SseHandler = (event: string, data: unknown) => void;
 
 /** Subscribe to an event-stream endpoint (e.g. `/api/pipeline/runs/<id>/events`).
- *  Returns an unsubscribe function. */
+ *  Returns an unsubscribe function.
+ *
+ *  An `'error'` pseudo-event is dispatched to the handler if the connection
+ *  drops so callers can surface a transient "reconnecting" state. The native
+ *  EventSource auto-reconnects; the returned unsubscribe always closes the
+ *  socket so it can never silently wedge a browser connection slot. */
 export function subscribe(path: string, types: string[], onEvent: SseHandler): () => void {
 	if (!browser) return () => {};
 	const es = new EventSource(path);
@@ -26,8 +31,11 @@ export function subscribe(path: string, types: string[], onEvent: SseHandler): (
 		es.addEventListener(type, fn);
 		return [type, fn];
 	});
+	const onError = () => onEvent('error', { readyState: es.readyState });
+	es.addEventListener('error', onError);
 	return () => {
 		for (const [type, fn] of listeners) es.removeEventListener(type, fn);
+		es.removeEventListener('error', onError);
 		es.close();
 	};
 }

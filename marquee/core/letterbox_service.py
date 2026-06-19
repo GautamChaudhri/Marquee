@@ -181,7 +181,7 @@ class LetterboxService:
         """Write symmetric/asymmetric pixel-crop tags to the movie's MKV."""
         if top < 0 or bottom < 0:
             raise IneligibleError("crop values must be non-negative")
-        eligibility = self.check_eligibility(movie)
+        eligibility = await asyncio.to_thread(self.check_eligibility, movie)
         if not eligibility.eligible or eligibility.path is None:
             await self._log(db, movie.id, "error", source, {"reason": eligibility.reason})
             await db.commit()
@@ -232,7 +232,7 @@ class LetterboxService:
         self, db: AsyncSession, movie: Movie, *, source: str = "api"
     ) -> RemoveResult:
         """Delete pixel-crop tags (idempotent)."""
-        eligibility = self.check_eligibility(movie)
+        eligibility = await asyncio.to_thread(self.check_eligibility, movie)
         if not eligibility.eligible or eligibility.path is None:
             raise IneligibleError(eligibility.reason or "ineligible")
         path = eligibility.path

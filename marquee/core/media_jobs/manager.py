@@ -98,17 +98,29 @@ class MediaJobManager:
     async def emit(
         self, db: AsyncSession, job_id: str, stage: str, state: str,
         *, message: str | None = None, progress: dict | None = None,
+        persist: bool = True,
     ) -> None:
-        event = MediaJobEvent(
-            job_id=job_id, stage=stage, state=state, message=message,
-            progress_json=json.dumps(progress) if progress else None,
-        )
-        db.add(event)
-        await db.commit()
-        await db.refresh(event)
+        """Publish a job event to live SSE subscribers, optionally persisting it.
+
+        ``persist=False`` publishes to the in-memory stream only (no DB write) —
+        used for high-frequency encode progress ticks so the live bar stays
+        smooth without one ``media_job_events`` row (and write-lock acquisition)
+        per ffmpeg frame. Stage/state transitions and terminal events persist so
+        a reconnecting client can replay the meaningful history cheaply.
+        """
+        event_id: int | None = None
+        if persist:
+            event = MediaJobEvent(
+                job_id=job_id, stage=stage, state=state, message=message,
+                progress_json=json.dumps(progress) if progress else None,
+            )
+            db.add(event)
+            await db.commit()
+            await db.refresh(event)
+            event_id = event.id
         self.stream(job_id).publish(
             {
-                "id": event.id, "job_id": job_id, "stage": stage, "state": state,
+                "id": event_id, "job_id": job_id, "stage": stage, "state": state,
                 "message": message, "progress": progress,
             }
         )

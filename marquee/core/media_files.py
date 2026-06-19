@@ -93,9 +93,11 @@ async def resolve_row(db: AsyncSession, row: MediaFile) -> ResolvedMediaFile:
     except OSError as exc:
         raise MediaFileUnavailableError(f"file not accessible: {exc}") from exc
 
-    # Best-effort diagnostic; never trusted as authoritative.
-    if row.last_resolved_path != str(path):
-        row.last_resolved_path = str(path)
+    # NOTE: intentionally does NOT write `last_resolved_path` here. resolve_row
+    # is on the hot read path (every GET /movies/{id}); mutating the row dirties
+    # the session and triggers an autoflush UPDATE that contends with the encode
+    # worker's write lock → "database is locked". The column is a non-critical
+    # diagnostic, so we accept leaving it stale rather than writing on reads.
 
     return ResolvedMediaFile(
         media_file_id=row.id,
