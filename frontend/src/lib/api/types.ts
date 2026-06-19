@@ -43,6 +43,7 @@ export interface MovieQuery {
 	poster_status?: PosterStatus;
 	hdr?: HdrKind | 'unknown';
 	letterbox_status?: string;
+	include_unavailable?: boolean;
 	sort?: 'title' | 'year' | 'added';
 }
 
@@ -108,6 +109,7 @@ export interface LetterboxStatus {
 	enabled: boolean;
 	method: string;
 	counts: Record<string, number>;
+	full_frame?: number;
 	binaries: Record<string, boolean>;
 	honored_by?: string[];
 	not_honored_by?: string[];

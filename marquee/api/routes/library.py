@@ -13,7 +13,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
-from sqlalchemy import func, select
+from sqlalchemy import exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.api.library_serializers import (
@@ -62,6 +62,9 @@ async def list_movies(
     letterbox_status: str | None = Query(
         None, description="Filter on LetterboxState.status, or 'none' for unanalyzed"
     ),
+    include_unavailable: bool = Query(
+        False, description="Include Radarr movies that do not have a downloaded file yet."
+    ),
     sort: str = Query("title", description="Sort: title | year"),
 ):
     """List movies with media-file id, subtitle coverage, and derived display fields.
@@ -75,6 +78,14 @@ async def list_movies(
     )
 
     conditions = []
+    if not include_unavailable:
+        has_active_media = exists(
+            select(MediaFile.id).where(
+                MediaFile.movie_id == Movie.id,
+                MediaFile.is_active.is_(True),
+            )
+        )
+        conditions.append(or_(Movie.movie_file_path.is_not(None), has_active_media))
     if q:
         conditions.append(Movie.title.ilike(f"%{q}%"))
     if poster_status and (pred := poster_status_filter(poster_status)) is not None:

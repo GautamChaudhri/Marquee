@@ -160,7 +160,7 @@ def test_consensus_case_b_conservative_min():
     assert r.confidence == "medium"
 
 
-def test_consensus_single_outlier_frame_stays_high():
+def test_consensus_single_outlier_frame_downgrades_without_variable_ar():
     # 11/12 frames agree at 120; one anomalous frame (e.g. end-credits graphic)
     # measures 120/480 (bar=300). The outlier is too small a cluster (1 sample)
     # to count as a second aspect ratio, so it shouldn't trigger variable_ar —
@@ -168,7 +168,7 @@ def test_consensus_single_outlier_frame_stays_high():
     measurements = [_w(m, 120, 120) for m in range(5, 56, 5)] + [_w(60, 120, 480)]
     r = ld.consensus(measurements, width=3840, height=2160)
     assert r.status == "candidate"
-    assert r.confidence == "high"
+    assert r.confidence == "medium"
     assert r.recommended_crop_top == 120
     assert r.variable_ar is False
 
@@ -180,7 +180,7 @@ def test_consensus_minor_jitter_merges_one_cluster():
     measurements = [_w(m, 278, 278) for m in range(5, 56, 5)] + [_w(40, 278, 304)]
     r = ld.consensus(measurements, width=3840, height=2160)
     assert r.status == "candidate"
-    assert r.confidence == "high"
+    assert r.confidence == "medium"
     assert r.recommended_crop_top == 278
     assert r.variable_ar is False
 
@@ -194,7 +194,7 @@ def test_consensus_variable_ar_two_wide_clusters():
     ]
     r = ld.consensus(measurements, width=3840, height=2160)
     assert r.status == "candidate"
-    assert r.confidence == "low"
+    assert r.confidence == "variable"
     assert r.recommended_crop_top == 68
     assert r.recommended_crop_bottom == 68
     assert r.variable_ar is True
@@ -229,7 +229,7 @@ def test_consensus_asymmetry_downgrades_when_symmetric_forced(monkeypatch):
     # 140 top vs 120 bottom, consistent → would be High, but asymmetry > tol.
     r = ld.consensus([_w(5, 140, 120), _w(10, 140, 120)], width=1920, height=1080)
     assert r.status == "candidate"
-    assert r.confidence == "medium"  # downgraded from high
+    assert r.confidence == "low"
 
 
 def test_consensus_asymmetric_mode_honors_uneven(monkeypatch):
@@ -239,6 +239,40 @@ def test_consensus_asymmetric_mode_honors_uneven(monkeypatch):
     r = ld.consensus([_w(5, 140, 120), _w(10, 140, 120)], width=1920, height=1080)
     assert r.recommended_crop_top == 140
     assert r.recommended_crop_bottom == 120
+
+
+def test_consensus_rejects_repeated_one_sided_false_crop():
+    measurements = [_w(m, 0, 560) for m in range(5, 65, 5)]
+    r = ld.consensus(measurements, width=3840, height=2160)
+    assert r.status == "not_letterboxed"
+    assert r.confidence == "none"
+    assert r.recommended_crop_top == 0
+
+
+def test_consensus_many_asymmetric_samples_forces_low_confidence():
+    measurements = [_w(m, 280, 280) for m in range(5, 45, 5)] + [
+        _w(45, 0, 560),
+        _w(50, 0, 560),
+        _w(55, 0, 560),
+        _w(60, 0, 560),
+    ]
+    r = ld.consensus(measurements, width=3840, height=2160)
+    assert r.status == "candidate"
+    assert r.confidence == "low"
+    assert r.recommended_crop_top == 280
+    assert r.variable_ar is False
+
+
+def test_consensus_asymmetric_outliers_do_not_create_variable_ar():
+    measurements = [_w(m, 278, 278) for m in range(15, 65, 5)] + [
+        _w(5, 388, 512),
+        _w(10, 598, 278),
+    ]
+    r = ld.consensus(measurements, width=3840, height=2160)
+    assert r.status == "candidate"
+    assert r.confidence == "medium"
+    assert r.recommended_crop_top == 278
+    assert r.variable_ar is False
 
 
 # ---------------------------------------------------------------------------
@@ -455,9 +489,42 @@ async def test_status_reports_binaries(client, db):
 
 
 @pytest.mark.asyncio
+async def test_status_counts_full_frame_present_prefilter_skips(client, db):
+    native = Movie(
+        title="Native Wide",
+        year=2000,
+        folder_path="/m/native",
+        movie_file_path="Native.mkv",
+        tmdb_id=71,
+    )
+    unavailable = Movie(title="Unavailable", year=2001, folder_path="/m/missing", tmdb_id=72)
+    db.add_all([native, unavailable])
+    await db.commit()
+    await db.refresh(native)
+    await db.refresh(unavailable)
+    db.add_all([
+        LetterboxState(
+            movie_id=native.id,
+            status="prefilter_skipped",
+            prefilter_reason="native_wide",
+        ),
+        LetterboxState(
+            movie_id=unavailable.id,
+            status="prefilter_skipped",
+            prefilter_reason="missing_movie_file_path",
+        ),
+    ])
+    await db.commit()
+
+    resp = await client.get("/api/letterbox/status")
+    assert resp.status_code == 200
+    assert resp.json()["full_frame"] == 1
+
+
+@pytest.mark.asyncio
 async def test_candidates_filter_and_paginate(client, db):
-    m1 = Movie(title="Scope", year=2000, folder_path="/m/s", tmdb_id=1)
-    m2 = Movie(title="Flat", year=2001, folder_path="/m/f", tmdb_id=2)
+    m1 = Movie(title="Scope", year=2000, folder_path="/m/s", movie_file_path="s.mkv", tmdb_id=1)
+    m2 = Movie(title="Flat", year=2001, folder_path="/m/f", movie_file_path="f.mkv", tmdb_id=2)
     db.add_all([m1, m2])
     await db.commit()
     await db.refresh(m1)
@@ -478,6 +545,128 @@ async def test_candidates_filter_and_paginate(client, db):
     assert len(items) == 1
     assert items[0]["title"] == "Scope"
     assert items[0]["recommended_crop_top"] == 140
+
+
+@pytest.mark.asyncio
+async def test_cleared_candidates_query_excludes_prefilter_skipped(client, db):
+    cleared = Movie(
+        title="Cleared",
+        year=2000,
+        folder_path="/m/cleared",
+        movie_file_path="Cleared.mkv",
+        tmdb_id=81,
+    )
+    full_frame = Movie(
+        title="Full Frame",
+        year=2001,
+        folder_path="/m/full",
+        movie_file_path="Full.mkv",
+        tmdb_id=82,
+    )
+    db.add_all([cleared, full_frame])
+    await db.commit()
+    await db.refresh(cleared)
+    await db.refresh(full_frame)
+    db.add_all([
+        LetterboxState(
+            movie_id=cleared.id,
+            status="not_letterboxed",
+            confidence="none",
+            reviewed=True,
+        ),
+        LetterboxState(
+            movie_id=full_frame.id,
+            status="prefilter_skipped",
+            prefilter_reason="native_wide",
+        ),
+    ])
+    await db.commit()
+
+    resp = await client.get("/api/letterbox/candidates?status=not_letterboxed&sort=recent")
+    assert resp.status_code == 200
+    assert [item["title"] for item in resp.json()["items"]] == ["Cleared"]
+
+
+@pytest.mark.asyncio
+async def test_candidates_confidence_sort_places_variable_after_medium(client, db):
+    movies = [
+        Movie(title="High", year=2000, folder_path="/m/h", movie_file_path="h.mkv", tmdb_id=21),
+        Movie(title="Medium", year=2000, folder_path="/m/m", movie_file_path="m.mkv", tmdb_id=22),
+        Movie(title="Variable", year=2000, folder_path="/m/v", movie_file_path="v.mkv", tmdb_id=23),
+        Movie(title="Low", year=2000, folder_path="/m/l", movie_file_path="l.mkv", tmdb_id=24),
+    ]
+    db.add_all(movies)
+    await db.commit()
+    for movie in movies:
+        await db.refresh(movie)
+    db.add_all([
+        LetterboxState(movie_id=movies[0].id, status="candidate", confidence="high"),
+        LetterboxState(movie_id=movies[1].id, status="candidate", confidence="medium"),
+        LetterboxState(
+            movie_id=movies[2].id,
+            status="candidate",
+            confidence="variable",
+            variable_ar=True,
+        ),
+        LetterboxState(movie_id=movies[3].id, status="candidate", confidence="low"),
+    ])
+    await db.commit()
+
+    resp = await client.get("/api/letterbox/candidates?status=candidate&sort=confidence")
+    assert resp.status_code == 200
+    assert [item["title"] for item in resp.json()["items"]] == [
+        "High",
+        "Medium",
+        "Variable",
+        "Low",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_candidates_reviewed_filter_and_recent_sort(client, db):
+    old = Movie(
+        title="Old Preview", year=2000, folder_path="/m/old", movie_file_path="old.mkv", tmdb_id=31
+    )
+    new = Movie(
+        title="New Preview", year=2001, folder_path="/m/new", movie_file_path="new.mkv", tmdb_id=32
+    )
+    done = Movie(
+        title="Reviewed", year=2002, folder_path="/m/done", movie_file_path="done.mkv", tmdb_id=33
+    )
+    db.add_all([old, new, done])
+    await db.commit()
+    for movie in [old, new, done]:
+        await db.refresh(movie)
+    db.add_all([
+        LetterboxState(
+            movie_id=old.id,
+            status="tagged",
+            confidence="high",
+            reviewed=False,
+            updated_at=datetime(2024, 1, 1, tzinfo=UTC),
+        ),
+        LetterboxState(
+            movie_id=new.id,
+            status="tagged",
+            confidence="high",
+            reviewed=False,
+            updated_at=datetime(2024, 1, 2, tzinfo=UTC),
+        ),
+        LetterboxState(
+            movie_id=done.id,
+            status="tagged",
+            confidence="high",
+            reviewed=True,
+            updated_at=datetime(2024, 1, 3, tzinfo=UTC),
+        ),
+    ])
+    await db.commit()
+
+    resp = await client.get(
+        "/api/letterbox/candidates?status=tagged&reviewed=false&sort=recent"
+    )
+    assert resp.status_code == 200
+    assert [item["title"] for item in resp.json()["items"]] == ["New Preview", "Old Preview"]
 
 
 @pytest.mark.asyncio
@@ -629,6 +818,64 @@ async def test_find_candidate_movies_prefilters_radarr_resolutions(client, db):
 
 
 @pytest.mark.asyncio
+async def test_find_candidate_movies_is_idempotent_after_resets(client, db):
+    detected = Movie(
+        title="Detected Reset",
+        year=2000,
+        folder_path="/m/d",
+        movie_file_path="Detected.mkv",
+        tmdb_id=41,
+        video_width=3840,
+        video_height=2160,
+    )
+    not_letterboxed = Movie(
+        title="Not Letterboxed Reset",
+        year=2001,
+        folder_path="/m/n",
+        movie_file_path="NotLetterboxed.mkv",
+        tmdb_id=42,
+        video_width=1920,
+        video_height=1080,
+    )
+    db.add_all([detected, not_letterboxed])
+    await db.commit()
+    await db.refresh(detected)
+    await db.refresh(not_letterboxed)
+    db.add_all([
+        LetterboxState(
+            movie_id=detected.id,
+            status="candidate",
+            confidence="medium",
+            recommended_crop_top=140,
+            recommended_crop_bottom=140,
+            prefilter_bucket="candidate",
+            prefilter_reason="sixteen_nine_container",
+        ),
+        LetterboxState(
+            movie_id=not_letterboxed.id,
+            status="not_letterboxed",
+            confidence="none",
+            reviewed=True,
+            recommended_crop_top=0,
+            recommended_crop_bottom=0,
+            prefilter_bucket="candidate",
+            prefilter_reason="sixteen_nine_container",
+        ),
+    ])
+    await db.commit()
+
+    assert (await client.post("/api/letterbox/dev/reset-detected")).status_code == 200
+    assert (await client.post("/api/letterbox/dev/reset-not-letterboxed")).status_code == 200
+
+    first = (await client.get("/api/letterbox/movies/find-candidates")).json()
+    second = (await client.get("/api/letterbox/movies/find-candidates")).json()
+    assert second["counts"] == first["counts"]
+    assert second["movie_ids"] == first["movie_ids"]
+    assert second["candidate_movie_ids"] == first["candidate_movie_ids"]
+    assert second["detectable_movie_ids"] == first["detectable_movie_ids"]
+
+
+@pytest.mark.asyncio
 async def test_movie_detail_404_without_state(client, db):
     movie = Movie(title="NoState", year=2000, folder_path="/m/n", tmdb_id=9)
     db.add(movie)
@@ -680,6 +927,48 @@ async def test_ignore_moves_to_skipped(client, db):
     assert resp.status_code == 200
     assert resp.json()["status"] == "skipped"
     assert resp.json()["reviewed"] is True
+
+
+@pytest.mark.asyncio
+async def test_mark_not_letterboxed_moves_detected_candidate(client, db):
+    movie = Movie(title="Bad Detect", year=2000, folder_path="/m/bd", tmdb_id=17)
+    db.add(movie)
+    await db.commit()
+    await db.refresh(movie)
+    db.add(
+        LetterboxState(
+            movie_id=movie.id,
+            status="candidate",
+            confidence="medium",
+            recommended_crop_top=280,
+            recommended_crop_bottom=280,
+            aspect_label="2.40:1",
+            variable_ar=True,
+            variable_ar_note="bad variable note",
+            error="old error",
+        )
+    )
+    await db.commit()
+
+    resp = await client.post(f"/api/letterbox/movies/{movie.id}/mark-not-letterboxed")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "not_letterboxed"
+    assert body["confidence"] == "none"
+    assert body["reviewed"] is True
+    assert body["recommended_crop_top"] == 0
+    assert body["recommended_crop_bottom"] == 0
+    assert body["aspect_label"] is None
+    assert body["variable_ar"] is False
+    assert body["variable_ar_note"] is None
+    assert body["error"] is None
+
+    event = (
+        await db.execute(
+            select(LetterboxEvent).where(LetterboxEvent.movie_id == movie.id)
+        )
+    ).scalar_one()
+    assert event.action == "mark_not_letterboxed"
 
 
 @pytest.mark.asyncio

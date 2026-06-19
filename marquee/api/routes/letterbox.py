@@ -24,6 +24,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from marquee.api.deps import enforce_rate_limit, get_rate_limiter
 from marquee.config import settings
 from marquee.core import letterbox_reencode
+from marquee.core.letterbox_prefilter import (
+    prefilter_category,
+    refresh_letterbox_prefilter_for_movie,
+    state_has_detector_truth,
+)
 from marquee.core.letterbox_service import IneligibleError, letterbox_service
 from marquee.core.media_files import (
     MediaFileNotFoundError,
@@ -36,7 +41,6 @@ from marquee.core.rate_limit import RateLimiter
 from marquee.database import get_db
 from marquee.media import binaries, letterbox_preview
 from marquee.media.letterbox_manager import BatchInProgressError, letterbox_manager
-from marquee.media.probe import prefilter_bucket
 from marquee.models import LetterboxEvent, LetterboxReencodeArtifact, LetterboxState, Movie
 
 logger = logging.getLogger(__name__)
@@ -46,22 +50,6 @@ router = APIRouter(prefix="/api/letterbox", tags=["letterbox"])
 # MKV pixel-crop tags are honored by these players only (design §7).
 _HONORED_BY = ["plex-desktop", "vlc", "mpv"]
 _NOT_HONORED_BY = ["plex-web", "plex-mobile"]
-_PREFILTER_STATUSES = {
-    "prefilter_candidate",
-    "prefilter_unknown",
-    "prefilter_skipped",
-}
-_DETECTOR_TRUTH_STATUSES = {
-    "candidate",
-    "not_letterboxed",
-    "variable_unsafe",
-    "tagged",
-    "reencoded",
-    "skipped",
-    "ineligible",
-}
-
-
 def _is_prefilter_schema_error(exc: OperationalError) -> bool:
     message = str(exc.orig if getattr(exc, "orig", None) else exc)
     return "letterbox_state" in message and "prefilter_" in message
@@ -128,67 +116,11 @@ def _resolution_label(width: int | None, height: int | None) -> str | None:
 
 
 def _prefilter_category(movie: Movie) -> tuple[str, dict]:
-    result = prefilter_bucket(movie.video_width, movie.video_height)
-    category = "unknown_resolution" if result.reason == "unknown_resolution" else result.bucket
-    aspect_ratio = round(result.aspect_ratio, 4) if result.aspect_ratio is not None else None
-    return category, {
-        "bucket": result.bucket,
-        "category": category,
-        "reason": result.reason,
-        "aspect_ratio": aspect_ratio,
-    }
-
-
-def _prefilter_status_for_category(category: str) -> str:
-    if category == "candidate":
-        return "prefilter_candidate"
-    if category == "unknown_resolution":
-        return "prefilter_unknown"
-    return "prefilter_skipped"
+    return prefilter_category(movie)
 
 
 def _state_has_detector_truth(state: LetterboxState | None) -> bool:
-    if state is None:
-        return False
-    if state.status in _PREFILTER_STATUSES or state.status == "errored":
-        return False
-    if state.last_detected_at is not None:
-        return True
-    if state.reviewed or state.applied_crop_top is not None or state.applied_crop_bottom is not None:
-        return True
-    if state.status in _DETECTOR_TRUTH_STATUSES:
-        return state.recommended_crop_top is not None or state.status != "candidate"
-    return False
-
-
-def _apply_prefilter_state(
-    state: LetterboxState,
-    movie: Movie,
-    *,
-    category: str,
-    prefilter: dict,
-    now: datetime,
-) -> None:
-    state.prefilter_bucket = prefilter["bucket"]
-    state.prefilter_reason = prefilter["reason"]
-    state.prefilter_aspect_ratio = prefilter["aspect_ratio"]
-    state.last_prefiltered_at = now
-
-    # Keep the latest sync dimensions visible before expensive detection runs.
-    if state.last_detected_at is None:
-        state.source_width = movie.video_width
-        state.source_height = movie.video_height
-
-    if not _state_has_detector_truth(state):
-        state.status = _prefilter_status_for_category(category)
-        state.confidence = None
-        state.recommended_crop_top = None
-        state.recommended_crop_bottom = None
-        state.aspect_label = None
-        state.detect_method = None
-        state.samples_json = None
-        state.reviewed = False
-        state.error = None
+    return state_has_detector_truth(state)
 
 
 def _should_enqueue_for_detection(movie: Movie, state: LetterboxState | None = None) -> bool:
@@ -307,6 +239,18 @@ async def letterbox_status(db: Annotated[AsyncSession, Depends(get_db)]):
     last_scan = (
         await db.execute(select(func.max(LetterboxState.last_detected_at)))
     ).scalar_one_or_none()
+    full_frame = (
+        await db.execute(
+            select(func.count())
+            .select_from(LetterboxState)
+            .join(Movie, Movie.id == LetterboxState.movie_id)
+            .where(
+                LetterboxState.status == "prefilter_skipped",
+                Movie.movie_file_path.is_not(None),
+                LetterboxState.prefilter_reason != "missing_movie_file_path",
+            )
+        )
+    ).scalar_one()
     # Re-probe binaries so a tool installed after server start (the resolve()
     # cache is per-process) shows up on the next status poll without a restart.
     binaries.reset_cache()
@@ -314,6 +258,7 @@ async def letterbox_status(db: Annotated[AsyncSession, Depends(get_db)]):
         "enabled": settings.LETTERBOX_ENABLED,
         "method": settings.LETTERBOX_DETECT_METHOD,
         "counts": counts,
+        "full_frame": full_frame,
         "binaries": binaries.availability(),
         "honored_by": _HONORED_BY,
         "not_honored_by": _NOT_HONORED_BY,
@@ -327,6 +272,7 @@ async def list_candidates(
     db: Annotated[AsyncSession, Depends(get_db)],
     status: str | None = None,
     confidence: str | None = None,
+    reviewed: bool | None = None,
     sort: str = "confidence",
     desc: bool = Query(True, description="confidence sort direction: True = high→low"),
     page: int = Query(1, ge=1),
@@ -334,10 +280,13 @@ async def list_candidates(
 ):
     """Paginated letterbox state, joined to movie identity. Drives all 3 tabs."""
     query = select(LetterboxState, Movie).join(Movie, Movie.id == LetterboxState.movie_id)
+    query = query.where(Movie.movie_file_path.is_not(None))
     if status:
         query = query.where(LetterboxState.status.in_(status.split(",")))
     if confidence:
         query = query.where(LetterboxState.confidence == confidence)
+    if reviewed is not None:
+        query = query.where(LetterboxState.reviewed.is_(reviewed))
 
     total = (
         await db.execute(select(func.count()).select_from(query.subquery()))
@@ -348,13 +297,16 @@ async def list_candidates(
         query = query.order_by(Movie.title)
     elif sort == "crop":
         query = query.order_by(LetterboxState.recommended_crop_top.desc().nullslast())
+    elif sort == "recent":
+        query = query.order_by(LetterboxState.updated_at.desc().nullslast(), Movie.title)
     else:  # confidence
         rank = case(
             (LetterboxState.confidence == "high", 0),
             (LetterboxState.confidence == "medium", 1),
-            (LetterboxState.confidence == "low", 2),
-            (LetterboxState.confidence == "none", 3),
-            else_=4,
+            (LetterboxState.confidence == "variable", 2),
+            (LetterboxState.confidence == "low", 3),
+            (LetterboxState.confidence == "none", 4),
+            else_=5,
         )
         order = rank if desc else rank.desc()
         query = query.order_by(order, Movie.title)
@@ -413,31 +365,13 @@ async def find_candidate_movies(
     for movie, state in rows:
         if not movie.movie_file_path:
             counts["missing_file_path"] += 1
-            if state is None:
-                state = LetterboxState(movie_id=movie.id)
-                db.add(state)
-            if not _state_has_detector_truth(state):
-                state.status = "prefilter_skipped"
-                state.prefilter_bucket = "no_file"
-                state.prefilter_reason = "missing_movie_file_path"
-                state.last_prefiltered_at = now
+            await refresh_letterbox_prefilter_for_movie(db, movie, now=now)
             continue
 
-        if state is None:
-            state = LetterboxState(movie_id=movie.id)
-            db.add(state)
-
         already_analyzed = _state_has_detector_truth(state)
+        state = await refresh_letterbox_prefilter_for_movie(db, movie, now=now)
         item = _prefilter_movie_to_dict(movie, state)
         category = item["prefilter"]["category"]
-        _apply_prefilter_state(
-            state,
-            movie,
-            category=category,
-            prefilter=item["prefilter"],
-            now=now,
-        )
-        item = _prefilter_movie_to_dict(movie, state)
 
         if already_analyzed:
             counts["already_analyzed"] += 1
@@ -946,6 +880,41 @@ async def ignore_one(movie_id: int, db: Annotated[AsyncSession, Depends(get_db)]
     return response
 
 
+@router.post("/movies/{movie_id}/mark-not-letterboxed")
+async def mark_not_letterboxed(
+    movie_id: int, db: Annotated[AsyncSession, Depends(get_db)]
+):
+    """Manual review override: move a bad detected crop to Not Letterboxed."""
+    await _load_movie(db, movie_id)
+    state = await _load_state(db, movie_id)
+    if state.status != "candidate":
+        raise HTTPException(
+            status_code=422,
+            detail="Can only mark detected candidate movies as not letterboxed.",
+        )
+    state.status = "not_letterboxed"
+    state.confidence = "none"
+    state.reviewed = True
+    state.recommended_crop_top = 0
+    state.recommended_crop_bottom = 0
+    state.aspect_label = None
+    state.variable_ar = False
+    state.variable_ar_note = None
+    state.error = None
+    response = _state_to_dict(state)
+    db.add(
+        LetterboxEvent(
+            movie_id=movie_id,
+            action="mark_not_letterboxed",
+            source="api",
+            detail="{}",
+        )
+    )
+    await db.commit()
+    letterbox_preview.purge_movie_previews(movie_id)
+    return response
+
+
 @router.post("/heal")
 async def letterbox_heal():
     """Re-apply crop tags that drifted off tagged files (tag-drift scan)."""
@@ -961,10 +930,13 @@ async def letterbox_heal():
 _NOT_LB_STATUSES = {"not_letterboxed", "variable_unsafe", "skipped"}
 
 
-def _wipe_detection(state: LetterboxState, now: datetime) -> None:
+def _wipe_detection(state: LetterboxState, _now: datetime) -> None:
     """Clear all detection and application fields; set status to prefilter_candidate."""
     state.status = "prefilter_candidate"
     state.confidence = None
+    state.prefilter_bucket = None
+    state.prefilter_reason = None
+    state.prefilter_aspect_ratio = None
     state.recommended_crop_top = None
     state.recommended_crop_bottom = None
     state.applied_crop_top = None
@@ -978,7 +950,7 @@ def _wipe_detection(state: LetterboxState, now: datetime) -> None:
     state.variable_ar_note = None
     state.last_detected_at = None
     state.last_applied_at = None
-    state.last_prefiltered_at = now
+    state.last_prefiltered_at = None
 
 
 @router.post("/dev/reset-not-letterboxed")
@@ -1001,6 +973,18 @@ async def dev_reset_detected(db: Annotated[AsyncSession, Depends(get_db)]):
     result = await db.execute(
         select(LetterboxState).where(LetterboxState.status == "candidate")
     )
+    states = result.scalars().all()
+    now = datetime.now(UTC)
+    for state in states:
+        _wipe_detection(state, now)
+    await db.commit()
+    return {"reset": len(states)}
+
+
+@router.post("/dev/reset-all")
+async def dev_reset_all(db: Annotated[AsyncSession, Depends(get_db)]):
+    """Dev: fully clear all letterbox workflow rows back to Candidates."""
+    result = await db.execute(select(LetterboxState))
     states = result.scalars().all()
     now = datetime.now(UTC)
     for state in states:

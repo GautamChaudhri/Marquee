@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.core.sync_service import SyncService, _resolve_poster_path
-from marquee.models import Episode, Movie, Season, Series
+from marquee.models import Episode, LetterboxState, Movie, Season, Series
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -194,6 +194,135 @@ async def test_sync_movies_populates_hdr_dv(db: AsyncSession):
     assert movie.has_dv is True
     assert movie.has_hdr is True
     assert movie.video_width == 3840
+
+
+@pytest.mark.asyncio
+async def test_sync_movies_prefilters_letterbox_candidate(db: AsyncSession):
+    radarr = AsyncMock()
+    radarr.get_movies.return_value = [
+        _radarr_movie(
+            movieFile={
+                "relativePath": "Dune (2021).mkv",
+                "mediaInfo": {"width": 3840, "height": 2160},
+            }
+        )
+    ]
+
+    svc = SyncService(db, radarr=radarr)
+    await svc.sync_all()
+
+    movie = (await db.execute(select(Movie).where(Movie.radarr_id == 1))).scalar_one()
+    state = (
+        await db.execute(select(LetterboxState).where(LetterboxState.movie_id == movie.id))
+    ).scalar_one()
+    assert state.status == "prefilter_candidate"
+    assert state.prefilter_reason == "sixteen_nine_container"
+
+
+@pytest.mark.asyncio
+async def test_sync_movies_prefilters_full_frame_skipped(db: AsyncSession):
+    radarr = AsyncMock()
+    radarr.get_movies.return_value = [
+        _radarr_movie(
+            movieFile={
+                "relativePath": "Dune (2021).mkv",
+                "mediaInfo": {"width": 3840, "height": 1600},
+            }
+        )
+    ]
+
+    svc = SyncService(db, radarr=radarr)
+    await svc.sync_all()
+
+    movie = (await db.execute(select(Movie).where(Movie.radarr_id == 1))).scalar_one()
+    state = (
+        await db.execute(select(LetterboxState).where(LetterboxState.movie_id == movie.id))
+    ).scalar_one()
+    assert state.status == "prefilter_skipped"
+    assert state.prefilter_reason == "native_wide"
+
+
+@pytest.mark.asyncio
+async def test_sync_movies_without_file_stays_out_of_letterbox_workflow(db: AsyncSession):
+    radarr = AsyncMock()
+    radarr.get_movies.return_value = [_radarr_movie(movieFile=None)]
+
+    svc = SyncService(db, radarr=radarr)
+    await svc.sync_all()
+
+    movie = (await db.execute(select(Movie).where(Movie.radarr_id == 1))).scalar_one()
+    assert movie.movie_file_path is None
+    state = (
+        await db.execute(select(LetterboxState).where(LetterboxState.movie_id == movie.id))
+    ).scalar_one_or_none()
+    assert state is None
+
+
+@pytest.mark.asyncio
+async def test_sync_movies_later_file_creates_prefilter_row(db: AsyncSession):
+    radarr = AsyncMock()
+    radarr.get_movies.return_value = [_radarr_movie(movieFile=None)]
+
+    svc = SyncService(db, radarr=radarr)
+    await svc.sync_all()
+
+    radarr.get_movies.return_value = [
+        _radarr_movie(
+            movieFile={
+                "relativePath": "Dune (2021).mkv",
+                "mediaInfo": {"width": 1920, "height": 1080},
+            }
+        )
+    ]
+    await svc.sync_all()
+
+    movie = (await db.execute(select(Movie).where(Movie.radarr_id == 1))).scalar_one()
+    state = (
+        await db.execute(select(LetterboxState).where(LetterboxState.movie_id == movie.id))
+    ).scalar_one()
+    assert state.status == "prefilter_candidate"
+
+
+@pytest.mark.asyncio
+async def test_sync_movies_prefilter_does_not_overwrite_detector_truth(db: AsyncSession):
+    movie = Movie(
+        radarr_id=1,
+        title="Dune",
+        year=2021,
+        folder_path="/movies/Dune (2021)",
+        movie_file_path="Dune (2021).mkv",
+    )
+    db.add(movie)
+    await db.flush()
+    db.add(
+        LetterboxState(
+            movie_id=movie.id,
+            status="not_letterboxed",
+            confidence="none",
+            reviewed=True,
+            last_detected_at=None,
+        )
+    )
+    await db.commit()
+
+    radarr = AsyncMock()
+    radarr.get_movies.return_value = [
+        _radarr_movie(
+            movieFile={
+                "relativePath": "Dune (2021).mkv",
+                "mediaInfo": {"width": 3840, "height": 2160},
+            }
+        )
+    ]
+
+    svc = SyncService(db, radarr=radarr)
+    await svc.sync_all()
+
+    state = (
+        await db.execute(select(LetterboxState).where(LetterboxState.movie_id == movie.id))
+    ).scalar_one()
+    assert state.status == "not_letterboxed"
+    assert state.reviewed is True
 
 
 @pytest.mark.asyncio

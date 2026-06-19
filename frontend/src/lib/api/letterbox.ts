@@ -37,6 +37,10 @@ export function ignoreLetterbox(fetchFn: Fetch, movieId: number): Promise<unknow
 	return apiSend(fetchFn, 'POST', `/letterbox/movies/${movieId}/ignore`);
 }
 
+export function markNotLetterboxed(fetchFn: Fetch, movieId: number): Promise<LetterboxDetail> {
+	return apiSend<LetterboxDetail>(fetchFn, 'POST', `/letterbox/movies/${movieId}/mark-not-letterboxed`);
+}
+
 export function removeLetterbox(fetchFn: Fetch, movieId: number): Promise<unknown> {
 	return apiSend(fetchFn, 'POST', `/letterbox/movies/${movieId}/remove`);
 }
@@ -46,7 +50,7 @@ export function confirmLetterbox(fetchFn: Fetch, movieId: number): Promise<Lette
 	return apiSend<LetterboxDetail>(fetchFn, 'POST', `/letterbox/movies/${movieId}/confirm`);
 }
 
-/** Reprocess: strip the tag, then re-run frame analysis. Lands back in Detected. */
+/** Reprocess: strip the tag, then re-run frame analysis. Lands back in Staging. */
 export async function reprocessLetterbox(
 	fetchFn: Fetch,
 	movieId: number
@@ -80,7 +84,7 @@ export function listColumn(fetchFn: Fetch, q: ColumnQuery): Promise<LetterboxCol
 	});
 }
 
-/** Resolution prefilter scan — populates the Candidates column. */
+/** Legacy/debug resolution prefilter refresh; normal prefiltering happens during sync. */
 export function scanLibrary(fetchFn: Fetch): Promise<unknown> {
 	return apiGet(fetchFn, '/letterbox/movies/find-candidates');
 }

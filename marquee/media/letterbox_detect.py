@@ -43,9 +43,11 @@ STATUS_ERRORED = "errored"
 CONF_HIGH = "high"
 CONF_MEDIUM = "medium"
 CONF_LOW = "low"
+CONF_VARIABLE = "variable"
 CONF_NONE = "none"
 
 _HDR_TRANSFER_FUNCTIONS = {"smpte2084", "arib-std-b67"}
+_ASYM_LOW_FRACTION = 0.25
 
 
 @dataclass
@@ -315,12 +317,6 @@ def consensus(
             samples=samples, method=method, error="no frames could be measured",
         )
 
-    bars = [m.bar for m in ok]
-    mn = min(bars)
-    med = round(statistics.median(bars))
-    zero_present = any(b <= noise for b in bars)
-    nonzero_present = any(b > min_bar for b in bars)
-
     def result(
         status, conf, top, bottom, *, variable_ar: bool = False, variable_ar_note: str | None = None
     ) -> DetectionResult:
@@ -334,11 +330,47 @@ def consensus(
             variable_ar=variable_ar, variable_ar_note=variable_ar_note,
         )
 
+    def is_zero(m: WindowMeasurement) -> bool:
+        return max(0, m.top_bar) <= noise and max(0, m.bottom_bar) <= noise
+
+    def is_symmetric(m: WindowMeasurement) -> bool:
+        return abs(max(0, m.top_bar) - max(0, m.bottom_bar)) <= asym_tol
+
+    def is_one_sided(m: WindowMeasurement) -> bool:
+        top = max(0, m.top_bar)
+        bottom = max(0, m.bottom_bar)
+        return (top <= noise and bottom > min_bar) or (bottom <= noise and top > min_bar)
+
+    def downgrade(conf: str) -> str:
+        return {CONF_HIGH: CONF_MEDIUM, CONF_MEDIUM: CONF_LOW}.get(conf, conf)
+
+    zero_present = any(is_zero(m) for m in ok)
+    one_sided_count = sum(1 for m in ok if is_one_sided(m))
+    asymmetric_count = sum(1 for m in ok if not is_zero(m) and not is_symmetric(m))
+    asymmetric_fraction = asymmetric_count / len(ok)
+    symmetric_nonzero = [m for m in ok if is_symmetric(m) and m.bar > min_bar]
+
+    if not symmetric_nonzero:
+        if one_sided_count / len(ok) >= 0.5:
+            return result(STATUS_NOT_LETTERBOXED, CONF_NONE, 0, 0)
+        if all(is_zero(m) for m in ok):
+            return result(STATUS_NOT_LETTERBOXED, CONF_NONE, 0, 0)
+        if config.LETTERBOX_ASYMMETRIC:
+            top = round(statistics.median([max(0, m.top_bar) for m in ok]))
+            bottom = round(statistics.median([max(0, m.bottom_bar) for m in ok]))
+            return result(STATUS_CANDIDATE, CONF_LOW, top, bottom)
+        rec = round(statistics.median([m.bar for m in ok]))
+        return result(STATUS_CANDIDATE, CONF_LOW, rec, rec)
+
+    bars = [m.bar for m in symmetric_nonzero]
+    mn = min(bars)
+    med = round(statistics.median(bars))
+
     if med <= noise:
         return result(STATUS_NOT_LETTERBOXED, CONF_NONE, 0, 0)
-    if zero_present and nonzero_present:
+    if zero_present:
         # Some scenes fill the 16:9 frame — any crop would clip them (Case A).
-        other_bar = round(statistics.median([b for b in bars if b > min_bar]))
+        other_bar = round(statistics.median(bars))
         other_ar = aspect_label(width, height - 2 * other_bar)
         note = (
             "This movie alternates between full-frame (16:9) scenes and "
@@ -371,17 +403,37 @@ def consensus(
             "wider-aspect-ratio scenes."
         )
         return result(
-            STATUS_CANDIDATE, CONF_LOW, mn_rep, mn_rep, variable_ar=True, variable_ar_note=note
+            STATUS_CANDIDATE,
+            CONF_VARIABLE,
+            mn_rep,
+            mn_rep,
+            variable_ar=True,
+            variable_ar_note=note,
         )
 
     # Single-cluster letterboxed content. Base confidence on how many samples agree with the median
-    # (robust to single outlier frames) rather than raw min/max spread.
-    n_agree = sum(1 for b in bars if abs(b - med) <= agree)
-    agreement = n_agree / len(bars)
+    # on both top and bottom (robust to single outlier frames) rather than
+    # averaging asymmetric frames into plausible-looking symmetric crops.
+    n_agree = sum(
+        1
+        for m in ok
+        if is_symmetric(m) and abs(m.top_bar - med) <= agree and abs(m.bottom_bar - med) <= agree
+    )
+    agreement = n_agree / len(ok)
     if agreement >= 0.8:
         rec = med
         conf = CONF_HIGH
-    elif sum(1 for b in bars if abs(b - med) <= medium_spread) / len(bars) >= 0.5:
+    elif (
+        sum(
+            1
+            for m in ok
+            if is_symmetric(m)
+            and abs(m.top_bar - med) <= medium_spread
+            and abs(m.bottom_bar - med) <= medium_spread
+        )
+        / len(ok)
+        >= 0.5
+    ):
         rec = med  # majority wins; use median so the dominant bar size is applied
         conf = CONF_MEDIUM
     else:
@@ -390,13 +442,13 @@ def consensus(
 
     top_med = round(statistics.median([max(0, m.top_bar) for m in ok]))
     bottom_med = round(statistics.median([max(0, m.bottom_bar) for m in ok]))
-    asymmetric = abs(top_med - bottom_med) > asym_tol
 
-    if asymmetric and config.LETTERBOX_ASYMMETRIC:
+    if asymmetric_count and config.LETTERBOX_ASYMMETRIC:
         return result(STATUS_CANDIDATE, conf, top_med, bottom_med)
-    if asymmetric:
-        # Bars are genuinely uneven but we're forcing symmetry — trust it less.
-        conf = {CONF_HIGH: CONF_MEDIUM, CONF_MEDIUM: CONF_LOW}.get(conf, conf)
+    if asymmetric_fraction >= _ASYM_LOW_FRACTION:
+        conf = CONF_LOW
+    elif asymmetric_count:
+        conf = downgrade(conf)
     return result(STATUS_CANDIDATE, conf, rec, rec)
 
 

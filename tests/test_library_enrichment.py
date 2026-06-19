@@ -68,7 +68,7 @@ async def test_list_enrichment_fields(db: AsyncSession, client: AsyncClient):
     resp = await client.get("/api/library/movies?sort=title")
     assert resp.status_code == 200
     body = resp.json()
-    assert body["total"] == 3
+    assert body["total"] == 2
     by_title = {m["title"]: m for m in body["items"]}
 
     alpha = by_title["Alpha"]
@@ -79,12 +79,7 @@ async def test_list_enrichment_fields(db: AsyncSession, client: AsyncClient):
     assert alpha["subtitle_status"] == "gap"
     assert alpha["genres"] == ["Sci-Fi"]
 
-    bravo = by_title["Bravo"]
-    assert bravo["resolution"] == "1080p"
-    assert bravo["poster_status"] == "review"
-    assert bravo["hdr"] == "hdr10"
-    assert bravo["letterbox_status"] == "none"
-    assert bravo["subtitle_status"] is None  # no inventory scanned
+    assert "Bravo" not in by_title
 
     charlie = by_title["Charlie"]
     assert charlie["resolution"] is None
@@ -107,13 +102,28 @@ async def test_list_filters_and_sort(db: AsyncSession, client: AsyncClient):
     assert [m["title"] for m in r.json()["items"]] == ["Alpha"]
 
     r = await client.get("/api/library/movies?letterbox_status=none")
-    assert [m["title"] for m in r.json()["items"]] == ["Bravo"]
+    assert r.json()["items"] == []
 
     r = await client.get("/api/library/movies?q=bra")
-    assert r.json()["total"] == 1
+    assert r.json()["total"] == 0
 
     r = await client.get("/api/library/movies?sort=year")
-    assert [m["title"] for m in r.json()["items"]] == ["Bravo", "Alpha", "Charlie"]
+    assert [m["title"] for m in r.json()["items"]] == ["Alpha", "Charlie"]
+
+
+@pytest.mark.asyncio
+async def test_include_unavailable_returns_radarr_movies_without_files(
+    db: AsyncSession, client: AsyncClient
+):
+    await _seed(db)
+
+    r = await client.get("/api/library/movies?include_unavailable=true&q=bra")
+    body = r.json()
+    assert body["total"] == 1
+    bravo = body["items"][0]
+    assert bravo["title"] == "Bravo"
+    assert bravo["media_file_id"] is None
+    assert bravo["letterbox_status"] == "none"
 
 
 @pytest.mark.asyncio
