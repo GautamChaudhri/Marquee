@@ -53,7 +53,12 @@ async def confirm_job(job_id: str, db: Annotated[AsyncSession, Depends(get_db)])
         raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
     if job.status != "planned":
         raise HTTPException(status_code=409, detail={"code": "not_planned", "status": job.status})
-    if job.plan_expires_at and job.plan_expires_at < datetime.now(UTC):
+    # SQLite doesn't honor DateTime(timezone=True) on round-trip, so a value
+    # written as aware UTC comes back naive — normalize before comparing.
+    plan_expires_at = job.plan_expires_at
+    if plan_expires_at and plan_expires_at.tzinfo is None:
+        plan_expires_at = plan_expires_at.replace(tzinfo=UTC)
+    if plan_expires_at and plan_expires_at < datetime.now(UTC):
         job.status = "failed"
         job.error_json = json.dumps({"code": "plan_stale", "error": "plan expired"})
         await db.commit()

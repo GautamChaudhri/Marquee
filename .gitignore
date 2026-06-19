@@ -54,6 +54,9 @@ coverage.xml
 # Marquee specific
 marquee/**/__pycache__/
 
+# Vendored binaries (host-specific, fetched/built per-deployment)
+/bin/
+
 # Training Data
 experiments/*
 !experiments/gauntlet_runner.py

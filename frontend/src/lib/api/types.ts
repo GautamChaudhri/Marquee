@@ -83,6 +83,10 @@ export interface LetterboxDetail {
 	samples?: LetterboxSample[];
 	preview_minute?: number;
 	preview_urls?: { before: string; after: string };
+	reencode?: {
+		job: MediaJobSnapshot | null;
+		artifact: ReencodeArtifact | null;
+	} | null;
 }
 
 export interface LetterboxSample {
@@ -130,6 +134,26 @@ export interface LetterboxAnalyzeSummary {
 	variable: number;
 	total: number;
 	completed: number;
+}
+
+export interface MediaJobSnapshot {
+	job_id: string;
+	operation: string;
+	status: string;
+	stage: string | null;
+	trigger: string;
+	media_file_id: number | null;
+	batch_id: string | null;
+	progress_done: number;
+	progress_total: number;
+	plan: ReencodePlan | null;
+	result: Record<string, unknown> | null;
+	error: { error: string; code?: string | null } | null;
+	input_signature: string | null;
+	plan_expires_at: string | null;
+	confirmed_at: string | null;
+	created_at: string | null;
+	updated_at: string | null;
 }
 
 export interface DolbyVisionInfo {
@@ -226,8 +250,9 @@ export interface ReencodeArtifact {
 	crop_bottom: number;
 	hdr_status: string | null;
 	dovi_status: string | null;
+	detail?: { plan?: ReencodePlan | null; warnings?: ReencodeWarning[] | null } | null;
 	created_at: string | null;
-}
+ }
 
 export interface ReencodeArtifactList {
 	summary: {

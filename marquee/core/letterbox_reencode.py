@@ -294,6 +294,42 @@ def saved_original_path(source: Path, source_key: str, job_id: str) -> Path:
     return _managed_root(source) / "backups" / source_key / job_id / source.name
 
 
+async def _mkdir_with_retry(path: Path, *, boundary: Path, attempts: int = 3, delay_s: float = 0.3) -> None:
+    """Create a directory tree under ``boundary``, tolerating cross-account ownership.
+
+    The candidates/backups tree lives on the same mount as the source media
+    (often a mergerfs union of multiple disks) so the final commit can be a
+    same-filesystem rename instead of a multi-GB copy, and it can be written
+    to by more than one OS account that share a common group (e.g. a human
+    dev account and an automation account). The retry loop covers genuinely
+    transient OSErrors (NFS hiccups, disk contention); it does *not* help
+    when a directory is owned by the other account with no group-write bit,
+    so on success we best-effort chmod every level we just touched, up to
+    ``boundary``, to setgid + group-write. We can only chmod directories we
+    own — pre-existing ones owned by the other account are left alone here
+    and need a one-time manual fix (chmod/chgrp) outside the app.
+    """
+    for attempt in range(1, attempts + 1):
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+            break
+        except (PermissionError, OSError):
+            if attempt == attempts:
+                raise ReencodePlanError(
+                    "candidate_dir_unavailable",
+                    f"could not create working directory {path} "
+                    "(storage mount issue — check media volume permissions/mounts)",
+                ) from None
+            await asyncio.sleep(delay_s)
+    current = path
+    while True:
+        with contextlib.suppress(PermissionError, FileNotFoundError):
+            current.chmod(0o2775)
+        if current == boundary or current.parent == current:
+            break
+        current = current.parent
+
+
 def dovi_info(source: SourceVideo | None) -> dict:
     if source is None:
         return {
@@ -593,7 +629,7 @@ async def execute_job(db: AsyncSession, job: MediaJob, emit) -> dict:
     media_row = await db.get(MediaFile, resolved.media_file_id)
     source_key = _source_key(media_row, resolved)
     out = candidate_output_path(resolved.path, source_key, job.job_id)
-    out.parent.mkdir(parents=True, exist_ok=True)
+    await _mkdir_with_retry(out.parent, boundary=_managed_root(resolved.path))
     out.unlink(missing_ok=True)
     dovi_preserve = bool(plan.get("dovi", {}).get("supported"))
     ffmpeg_out = out

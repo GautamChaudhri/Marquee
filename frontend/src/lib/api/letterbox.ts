@@ -4,6 +4,7 @@ import type {
 	LetterboxDetail,
 	LetterboxJobRef,
 	LetterboxStatus,
+	MediaJobSnapshot,
 	ReencodeArtifact,
 	ReencodeArtifactList,
 	ReencodeOptions,
@@ -122,6 +123,19 @@ export function confirmJob(fetchFn: Fetch, jobId: string): Promise<{ job_id: str
 	return apiSend(fetchFn, 'POST', `/media-jobs/${jobId}/confirm`, {});
 }
 
+/** Fetch a media job's current snapshot, including its recorded error (if failed). */
+export function getMediaJob(fetchFn: Fetch, jobId: string): Promise<MediaJobSnapshot> {
+	return apiGet<MediaJobSnapshot>(fetchFn, `/media-jobs/${jobId}`);
+}
+
+/** Cancel a media job. A planned/queued job is dropped; a running one is asked to stop. */
+export function cancelJob(
+	fetchFn: Fetch,
+	jobId: string
+): Promise<{ job_id: string; cancel_requested: boolean }> {
+	return apiSend(fetchFn, 'POST', `/media-jobs/${jobId}/cancel`, {});
+}
+
 export function listReencodeArtifacts(
 	fetchFn: Fetch,
 	q: { movie_id?: number; status?: string } = {}
@@ -157,3 +171,5 @@ export function restoreOriginal(
 export function deleteArtifact(fetchFn: Fetch, artifactId: number): Promise<unknown> {
 	return apiSend(fetchFn, 'DELETE', `/letterbox/reencode-artifacts/${artifactId}`);
 }
+
+export type { MediaJobSnapshot } from './types';

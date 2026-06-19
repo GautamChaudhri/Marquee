@@ -17,7 +17,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy import case, func, select
+from sqlalchemy import case, func, select, update
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -41,7 +41,13 @@ from marquee.core.rate_limit import RateLimiter
 from marquee.database import get_db
 from marquee.media import binaries, letterbox_preview
 from marquee.media.letterbox_manager import BatchInProgressError, letterbox_manager
-from marquee.models import LetterboxEvent, LetterboxReencodeArtifact, LetterboxState, Movie
+from marquee.models import (
+    LetterboxEvent,
+    LetterboxReencodeArtifact,
+    LetterboxState,
+    MediaJob,
+    Movie,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +56,9 @@ router = APIRouter(prefix="/api/letterbox", tags=["letterbox"])
 # MKV pixel-crop tags are honored by these players only (design §7).
 _HONORED_BY = ["plex-desktop", "vlc", "mpv"]
 _NOT_HONORED_BY = ["plex-web", "plex-mobile"]
+_ACTIVE_REENCODE_STATUSES = ("planned", "queued", "running")
+
+
 def _is_prefilter_schema_error(exc: OperationalError) -> bool:
     message = str(exc.orig if getattr(exc, "orig", None) else exc)
     return "letterbox_state" in message and "prefilter_" in message
@@ -170,6 +179,57 @@ async def _dolby_vision_for_movie(db: AsyncSession, movie: Movie) -> dict:
         return letterbox_reencode.dovi_info(None)
     source = letterbox_reencode.inspect_source(resolved.path)
     return letterbox_reencode.dovi_info(source)
+
+
+def _media_job_summary(job: MediaJob) -> dict:
+    return {
+        "job_id": job.job_id,
+        "operation": job.operation,
+        "status": job.status,
+        "stage": job.stage,
+        "trigger": job.trigger,
+        "media_file_id": job.media_file_id,
+        "batch_id": job.batch_id,
+        "progress_done": job.progress_done,
+        "progress_total": job.progress_total,
+        "plan": json.loads(job.plan_json) if job.plan_json else None,
+        "result": json.loads(job.result_json) if job.result_json else None,
+        "error": json.loads(job.error_json) if job.error_json else None,
+        "input_signature": job.input_signature,
+        "plan_expires_at": _iso_or_none(job.plan_expires_at),
+        "confirmed_at": _iso_or_none(job.confirmed_at),
+        "created_at": _iso_or_none(job.created_at),
+        "updated_at": _iso_or_none(job.updated_at),
+    }
+
+
+async def _latest_reencode_snapshot(db: AsyncSession, movie: Movie) -> dict | None:
+    media_file = await ensure_media_file_for_movie(db, movie)
+    if media_file is None:
+        return None
+
+    job_result = await db.execute(
+        select(MediaJob)
+        .where(
+            MediaJob.operation == "letterbox_reencode",
+            MediaJob.media_file_id == media_file.id,
+            MediaJob.status.in_(_ACTIVE_REENCODE_STATUSES),
+        )
+        .order_by(MediaJob.created_at.desc(), MediaJob.job_id.desc())
+    )
+    job = job_result.scalars().first()
+    artifact_result = await db.execute(
+        select(LetterboxReencodeArtifact)
+        .where(LetterboxReencodeArtifact.movie_id == movie.id)
+        .order_by(LetterboxReencodeArtifact.created_at.desc(), LetterboxReencodeArtifact.id.desc())
+    )
+    artifact = artifact_result.scalars().first()
+    if job is None and artifact is None:
+        return None
+    return {
+        "job": _media_job_summary(job) if job is not None else None,
+        "artifact": letterbox_reencode.artifact_to_dict(artifact) if artifact is not None else None,
+    }
 
 
 def _prefilter_movie_to_dict(movie: Movie, state: LetterboxState | None) -> dict:
@@ -425,6 +485,9 @@ async def get_movie_detail(
     detail["honored_by"] = _HONORED_BY
     detail["not_honored_by"] = _NOT_HONORED_BY
     detail["dolby_vision"] = await _dolby_vision_for_movie(db, movie)
+    reencode_snapshot = await _latest_reencode_snapshot(db, movie)
+    if reencode_snapshot is not None:
+        detail["reencode"] = reencode_snapshot
     detail["preview_minute"] = preview_minute
     if not state.reviewed:
         detail["preview_urls"] = {
@@ -774,6 +837,20 @@ async def create_reencode_plan(
         ) from exc
     except letterbox_reencode.ReencodePlanError as exc:
         raise _map_reencode_error(exc) from exc
+
+    # Supersede any still-pending plan for this file. Re-planning (e.g. tweaking
+    # a setting) creates a fresh job; without this, the old "planned" jobs pile
+    # up and the snapshot can surface a stale one, locking the UI on a plan the
+    # user already moved past.
+    await db.execute(
+        update(MediaJob)
+        .where(
+            MediaJob.operation == "letterbox_reencode",
+            MediaJob.media_file_id == media_file.id,
+            MediaJob.status == "planned",
+        )
+        .values(status="cancelled")
+    )
 
     expires_at = datetime.now(UTC) + timedelta(hours=2)
     job = await media_job_manager.create_job(
