@@ -28,11 +28,16 @@ _MAX_BRIGHT_PROBES = 6
 _YAVG_RE = re.compile(r"YAVG=([0-9.]+)")
 
 # Bump when the render recipe changes so stale cached frames are regenerated.
-_CACHE_VERSION = "v2"
+_CACHE_VERSION = "v3"
 
 
-def preview_path(movie_id: int, mode: str, minute: int) -> Path:
-    return settings.letterbox_preview_path / f"{movie_id}_{mode}_{minute}_{_CACHE_VERSION}.webp"
+def preview_path(movie_id: int, mode: str, minute: int, *, exact: bool = False) -> Path:
+    # "exact" frames (the literal sample minute, no brightness substitution) and
+    # "bright" frames (the brightness-substituted default view) must never share a
+    # cache slot — that collision is what made clicking a sample minute silently
+    # show whatever minute the brightness probe had substituted for it.
+    policy = "exact" if exact else "bright"
+    return settings.letterbox_preview_path / f"{movie_id}_{mode}_{minute}_{policy}_{_CACHE_VERSION}.webp"
 
 
 def _movie_preview_glob(movie_id: int) -> str:
@@ -114,17 +119,24 @@ def generate_preview(
     crop_bottom: int,
     height: int | None = None,
     candidate_minutes: list[int] | None = None,
+    exact: bool = False,
     force: bool = False,
 ) -> Path | None:
-    """Render (and cache) a full-resolution before/after preview; return path or None."""
+    """Render (and cache) a full-resolution before/after preview; return path or None.
+
+    *exact* renders the literal requested minute — used when the user clicks a
+    specific sample row, so the frame they see matches the minute they clicked.
+    Otherwise the brightest nearby candidate frame is substituted in, which is
+    only appropriate for the single auto-picked default/landing preview.
+    """
     if binaries.resolve("ffmpeg") is None:
         return None
-    out = preview_path(movie_id, mode, minute)
+    out = preview_path(movie_id, mode, minute, exact=exact)
     if out.is_file() and not force:
         return out
     out.parent.mkdir(parents=True, exist_ok=True)
 
-    src_minute = _pick_bright_minute(source, minute, candidate_minutes)
+    src_minute = minute if exact else _pick_bright_minute(source, minute, candidate_minutes)
 
     if mode == "after" and (crop_top or crop_bottom):
         vf = f"crop=iw:ih-{crop_top + crop_bottom}:0:{crop_top}"
@@ -188,17 +200,19 @@ def warm_movie_previews(
 
     for minute in minutes:
         for mode in ("before", "after"):
-            out = generate_preview(
-                source,
-                movie_id=movie_id,
-                minute=minute,
-                mode=mode,
-                crop_top=crop_top,
-                crop_bottom=crop_bottom,
-                height=height,
-                candidate_minutes=minutes,
-                force=True,
-            )
-            if out is not None:
-                generated.append(out)
+            for exact in (False, True):
+                out = generate_preview(
+                    source,
+                    movie_id=movie_id,
+                    minute=minute,
+                    mode=mode,
+                    crop_top=crop_top,
+                    crop_bottom=crop_bottom,
+                    height=height,
+                    candidate_minutes=minutes,
+                    exact=exact,
+                    force=True,
+                )
+                if out is not None:
+                    generated.append(out)
     return generated

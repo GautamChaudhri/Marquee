@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -428,6 +429,7 @@ def test_warm_movie_previews_renders_every_ok_sample(tmp_path, monkeypatch):
         crop_bottom,
         height=None,
         candidate_minutes=None,
+        exact=False,
         force=False,
     ):
         calls.append(
@@ -440,10 +442,11 @@ def test_warm_movie_previews_renders_every_ok_sample(tmp_path, monkeypatch):
                 "crop_bottom": crop_bottom,
                 "height": height,
                 "candidate_minutes": list(candidate_minutes or []),
+                "exact": exact,
                 "force": force,
             }
         )
-        out = letterbox_preview.preview_path(movie_id, mode, minute)
+        out = letterbox_preview.preview_path(movie_id, mode, minute, exact=exact)
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_bytes(f"{minute}:{mode}".encode())
         return out
@@ -465,13 +468,58 @@ def test_warm_movie_previews_renders_every_ok_sample(tmp_path, monkeypatch):
     )
 
     assert stale.exists() is False
-    assert len(calls) == 4
+    assert len(calls) == 8
     assert {call["minute"] for call in calls} == {5, 10}
     assert {call["mode"] for call in calls} == {"before", "after"}
     assert all(call["candidate_minutes"] == [5, 10] for call in calls)
+    assert {call["exact"] for call in calls} == {True, False}
     assert all(call["force"] is True for call in calls)
-    assert len(outputs) == 4
+    assert len(outputs) == 8
     assert all(path.exists() for path in outputs)
+
+
+def test_preview_cache_key_separates_exact_and_bright(tmp_path, monkeypatch):
+    _preview_root(tmp_path, monkeypatch)
+    bright = letterbox_preview.preview_path(7, "before", 10)
+    exact = letterbox_preview.preview_path(7, "before", 10, exact=True)
+
+    assert bright != exact
+    assert "_bright_" in bright.name
+    assert "_exact_" in exact.name
+
+
+def test_exact_preview_uses_requested_minute_without_substitution(tmp_path, monkeypatch):
+    """Regression: a too-dark minute=10 frame must not silently render minute=5's
+    content into the minute=10 cache slot — that's what made Lincoln/Borderlands
+    sample clicks keep showing the wrong frame."""
+    _preview_root(tmp_path, monkeypatch)
+    monkeypatch.setattr(binaries, "resolve", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(letterbox_preview, "_pick_bright_minute", lambda *a, **k: 5)
+    timestamps = []
+
+    def fake_run(name, args, timeout=None):
+        timestamps.append(args[args.index("-ss") + 1])
+        out = Path(args[-1])
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_bytes(b"webp")
+        return type("Result", (), {"ok": True, "stderr": ""})()
+
+    monkeypatch.setattr(binaries, "run", fake_run)
+
+    out = letterbox_preview.generate_preview(
+        "/movie.mkv",
+        movie_id=7,
+        minute=10,
+        mode="before",
+        crop_top=140,
+        crop_bottom=140,
+        height=1080,
+        candidate_minutes=[5, 10],
+        exact=True,
+    )
+
+    assert out is not None
+    assert timestamps == ["00:10:00"]
 
 
 # ---------------------------------------------------------------------------

@@ -564,6 +564,7 @@ async def movie_preview(
     db: Annotated[AsyncSession, Depends(get_db)],
     mode: str = "before",
     minute: int = 5,
+    exact: bool = False,
 ):
     movie = await _load_movie(db, movie_id)
     state = await _load_state(db, movie_id)
@@ -589,6 +590,7 @@ async def movie_preview(
         crop_bottom=state.recommended_crop_bottom or 0,
         height=state.source_height,
         candidate_minutes=candidate_minutes,
+        exact=exact,
     )
     if out is None:
         raise HTTPException(status_code=404, detail="Could not generate preview")
