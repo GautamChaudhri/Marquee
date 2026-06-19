@@ -249,7 +249,7 @@
 			{st.enabled ? 'Detection enabled' : 'Disabled'}
 		</span>
 		<span class="chip mono">method: {st.method}</span>
-		<span class="chip mono">Full Frame: {st.full_frame ?? 0}</span>
+		<span class="chip mono">Open Matte: {st.full_frame ?? 0}</span>
 		{#each Object.entries(st.binaries) as [name, ok] (name)}
 			<span class="chip mono" class:bad={!ok}>{name} {ok ? '✓' : '✗'}</span>
 		{/each}
@@ -395,7 +395,7 @@
 			</span>
 			<span class="tray-count">{cols.notLetterboxed.total}</span>
 			<span class="spacer"></span>
-			<span class="tray-note">verified clear · Full Frame {st?.full_frame ?? 0}</span>
+			<span class="tray-note">verified clear · Open Matte {st?.full_frame ?? 0}</span>
 		</div>
 		<div class="tray-body">
 			{@render rows(cols.notLetterboxed.items, cols.notLetterboxed.total, 'notlb')}

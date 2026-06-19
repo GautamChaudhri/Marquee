@@ -1,197 +1,135 @@
-# Movie Selection Plan — Phase 2 (Additional ~300 GB)
+# Movie Selection Plan — Phase 2: Dual-Drive Expansion
 #
-# Goal: Add ~300 GB of diverse movies to /mnt/lab to expand the writeable
-# stress-test library. These complement the 23 movies (~487 GB) already in
-# Phase 1, targeting attribute gaps and increasing test coverage breadth.
+# Goal: Fill BOTH /mnt/lab and /mnt/biglab with diverse movies from /mnt/PLUNDER,
+# leaving ~100 GB free on each drive. No duplication between drives.
 #
 # Date: 2026-06-18
-# Status: 🔬 RESEARCH COMPLETE — 18 movies (~299 GB) selected, awaiting copy.
-# Prerequisite: Storage must be increased (currently 487G/500G used on /mnt/lab).
+# Status: 🔬 RESEARCH COMPLETE — awaiting approval to execute copy.
 
 ---
 
-## Data Sources
+## Drive Capacity Planning
 
-- DB: 473 movies with active media files (Phase 1 used 23)
-- 403 movies have resolved paths on /mnt/PLUNDER
-- 55 movies probed (ffprobe) for subtitle/audio attributes
-- Phase 1 coverage analyzed for gaps
-- PLUNDER library: ~8,700 GB total (380 4K movies, 97 1080p movies)
-
----
-
-## Gaps vs Phase 1 Coverage
-
-Phase 1 (23 movies) covers these variations — gaps are noted:
-
-| Variation | Phase 1 Status | Gap |
-|---|---|---|
-| Embedded subs: many languages (30+) | Covered (3 movies: 40, 40, 41) | Need bitmap-only massive, text-only massive |
-| Embedded subs: few (1-2) | Covered (4 movies) | Need more variety |
-| Embedded subs: text-only (subrip) | Covered (4 movies) | Add text-only with forced subs |
-| Embedded subs: bitmap-only (PGS) | Covered (2 movies) | Add massive bitmap-only |
-| Embedded subs: mixed text+bitmap | Covered (4 movies) | Add extreme counts (50+) |
-| Embedded subs: ASS codec | Covered (1) | OK |
-| Embedded subs: mov_text (MP4) | Covered (1) | OK |
-| Embedded subs: forced tracks | Covered (3 movies) | Add more forced + text-only combos |
-| Embedded subs: SDH tracks | Covered (1) | OK |
-| No embedded subs + no external | Covered (5) | Add more |
-| No embedded subs, has external .srt | Covered (3) | Add 4K MP4 + external SRT |
-| Container: MP4 | Covered (6) | Add 4K MP4, 1080p MP4 with ext subs |
-| Container: MKV | Primary path | OK |
-| Letterbox: detected, significant crop | Covered (5) | Add extreme crop (384px), unique crops (42px) |
-| Letterbox: detected, crop=(0,0) | Covered (2) | OK |
-| Letterbox: not candidate | Covered (8) | OK |
-| Audio: single language (eng) | Covered | OK |
-| Audio: multi-language (3+ tracks) | Covered (Arrival 11) | Add 5-track, 9-track variants |
-| Audio: non-English (Korean, Japanese, German) | Covered (3) | Add Russian-language variant |
-| Resolution: 4K | Covered (15) | Add more |
-| Resolution: 1080p | Covered (8) | Add small 1080p, edge cases |
-| Size: large (>30 GB) | Covered (6) | Add one more large |
-| Size: small (<10 GB) | Covered (3) | Add ultra-small (3-7 GB) |
-| Previously pipeline-tested | Covered (6) | All new = cold start |
+| Drive | Total | Used | Free | Target Used | Free After | Add |
+|---|---|---|---|---|---|---|
+| /mnt/lab | 900 GB | 458 GB | 442 GB | ~800 GB | ~100 GB | **342 GB** |
+| /mnt/biglab | 910 GB | 18 GB | 892 GB | ~810 GB | ~100 GB | **792 GB** |
+| **Total** | | | | | | **~1,134 GB** |
 
 ---
 
-## Selected Movies (18 movies, ~299 GB)
+## Data Sources & Methodology
 
-| # | ID | Title | Size | Res | Container | Subs | Codecs | Forced | Audio | Letterbox | Why this one |
-|---|---|---|---|---|---|---|---|---|---|---|---|
-| 1 | 174 | Overlord | 14.9 GB | 4K | MKV | 58 | bitmap+text | 0 | eng (2) | crop=(280,280) | **Record sub count** (58), mixed codec, moderate size |
-| 2 | 131 | Elysium | 53.2 GB | 4K | MKV | 43 | **bitmap only** | 0 | eng (2) | crop=(280,280) | Massive bitmap-only, large I/O stress |
-| 3 | 259 | Drop | 19.0 GB | 4K | MKV | 41 | **text only** | 0 | eng (3) | crop=(276,276) | Massive text-only, 3 audio tracks |
-| 4 | 300 | Superman | 23.1 GB | 4K | MKV | 36 | text only | **1** | eng (1) | crop=(68,68) | Text-only massive + forced sub, unique crop |
-| 5 | 413 | Die Hard 2 | 23.3 GB | 4K | MKV | 28 | text only | **1** | eng (2) | crop=(278,278) | Text-only, forced, dual audio |
-| 6 | 280 | How to Train Your Dragon | 18.3 GB | 4K | MKV | 5 | bitmap only | 0 | **chi,eng (5)** | crop=(70,70) | **5 audio tracks**, Chinese+English, unique crop |
-| 7 | 106 | 28 Days Later | 7.1 GB | **1080p** | MKV | 37 | mixed | 0 | eng (2) | crop=(20,20) | 1080p massive subs, small file, unique crop |
-| 8 | 488 | Glass Onion | 20.7 GB | 4K | MKV | 44 | text only | 0 | eng (1) | crop=(42,42) | Text-only massive, **unique crop=42** |
-| 9 | 285 | 28 Years Later | 21.4 GB | 4K | MKV | 23 | text only | **1** | eng (1) | **crop=(384,384)** | **Extreme letterbox crop**, forced sub |
-| 10 | 82 | The Hunt | 18.3 GB | 4K | MKV | 10 | mixed | 0 | eng (1) | crop=(278,278) | **5 external SRTs**, moderate subs |
-| 11 | 241 | Significant Other | 8.8 GB | 4K | MKV | 3 | text only | 0 | **eng,rus (2)** | crop=(42,42) | **Russian audio variant**, small |
-| 12 | 99 | Uncut Gems | 16.8 GB | **4K** | **MP4** | **0** | — | 0 | eng (1) | prefilter_skip | **4K MP4 + external SRT**, no embedded |
-| 13 | 114 | Bad Times at the El Royale | 16.3 GB | 1080p | **MP4** | 0 | — | 0 | eng (1) | prefilter_skip | 1080p MP4 **+ external SRT** |
-| 14 | 390 | Captain America: The Winter Soldier | 16.0 GB | 1080p | **MP4** | 0 | — | 0 | eng (1) | prefilter_skip | 1080p MP4 **+ external SRT** |
-| 15 | 199 | The Blair Witch Project | 3.4 GB | 1080p | MKV | 1 | text only | 0 | eng (1) | not_letterboxed | **Ultra-small**, minimal subs, fast iteration |
-| 16 | 207 | The Imitation Game | 5.0 GB | 1080p | MKV | 1 | text only | 0 | eng (1) | crop=(140,140) | Small, minimal subs, letterbox crop |
-| 17 | 447 | The Lego Movie | 5.7 GB | 1080p | MKV | 2 | text only | 0 | eng (1) | crop=(140,140) | Small, minimal subs, unique aspect |
-| 18 | 190 | Spotlight | 7.3 GB | 1080p | MKV | 3 | text only | 0 | eng (1) | crop=(20,20) | 1080p, few subs, unique crop |
+- **PLUNDER library**: 8,965 GB across 479 movies (381 4K, 98 1080p)
+- **23 movies** already in /mnt/lab from Phase 1
+- **121 movies probed** with `ffprobe` across all size/resolution/codec categories
+- **452 available movies** not yet on either drive
 
-**Total: 18 movies, ~299 GB**
+### Selection Strategy
+
+- **lab** (342 GB, 29 movies): Stratified high-variety selection. Picks 1-3 movies per test category (massive subs, forced subs, non-English audio, multi-audio, MP4 containers, external subs, zero-subs, small fast-iteration) then fills with varied medium-scored movies.
+- **biglab** (792 GB, 89 movies): Maximizes movie count by preferring smaller files, providing bulk quantity for scale testing.
+
+**No movie appears on both drives.** lab movies are excluded from biglab.
 
 ---
 
-## Coverage Matrix (endpoint families vs new movies)
+## LAB Selection (29 movies, 342 GB)
 
-| Endpoint family | New movies that exercise it |
-|---|---|
-| **Sync / Library** | All 18 — additional library browse/detail/pagination stress |
-| **Pipeline (poster)** | Elysium, Overlord, 28 Years Later — diverse poster styles, extreme crops |
-| **Subtitle inspect** | All 15 with embedded subs — codec diversity (bitmap-only, text-only, mixed) |
-| **Subtitle preview (text)** | Overlord (mixed), Drop (text-only), Superman (text+forced), Glass Onion |
-| **Subtitle preview (bitmap)** | Elysium, How to Train Your Dragon — bitmap-only verification |
-| **Subtitle plan (remove)** | Overlord (58 tracks!), Glass Onion (44) — policy stress on massive track lists |
-| **Subtitle plan (embed)** | Uncut Gems (4K MP4 + ext SRT), Bad Times at El Royale, Winter Soldier — embedding workflow |
-| **Subtitle generation** | Uncut Gems (4K MP4/0), Bad Times (1080p MP4/0), Winter Soldier (1080p MP4/0) |
-| **Subtitle policies (audit)** | Overlord (58), Glass Onion (44), Drop (41) — blacklist/whitelist on massive lang sets |
-| **Subtitle policies (apply)** | All with embedded subs — mutation on writeable media with diverse codecs |
-| **Letterbox detect** | 28 Years Later (crop=384!), Overlord (280), Elysium (280), Glass Onion (42) |
-| **Letterbox preview** | 28 Years Later — extreme visible difference; Glass Onion (42) — subtle difference |
-| **Letterbox apply** | 28 Years Later, Overlord, Drop, Superman — MKV tag write test |
-| **Letterbox false positive** | Blair Witch Project — not_letterboxed status |
-| **Letterbox variable unsafe** | None in this batch (Oppenheimer excluded — too large) |
-| **Feedback (deploy)** | Any pipeline-run movie — deploy poster to writeable folder |
-| **Webhook restore** | Any — simulate Radarr upgrade + poster/subtitle restore |
-| **Media job queue** | All — sequence jobs, verify concurrency on larger library |
-| **MP4 adapter** | Uncut Gems (4K MP4), Bad Times (1080p MP4), Winter Soldier (1080p MP4) |
-| **Multi-audio** | How to Train Your Dragon (5 tracks: chi,eng,...), Significant Other (eng+rus) |
-| **Non-English audio** | Significant Other (Russian track), How to Train Your Dragon (Chinese track) |
-| **Forced subs** | Superman (1 forced), Die Hard 2 (1 forced), 28 Years Later (1 forced) |
-| **External subtitles** | The Hunt (5 external SRTs!), Uncut Gems (ext SRT), Bad Times (ext SRT), Winter Soldier (ext SRT) |
-| **Small file fast iteration** | Blair Witch (3.4G), Imitation Game (5.0G), Lego Movie (5.7G), 28 Days Later (7.1G), Spotlight (7.3G) |
+Focus: maximum attribute variety for endpoint stress testing.
+
+| # | Title | Size | Res | Subs | Codec | F | Audio | Ext | Why |
+|---|---|---|---|---|---|---|---|---|---|
+| 1 | The Martian | 21.5G | 4K | 0 | — | 0 | eng | 0 | Zero subs, 4K |
+| 2 | Venom: Let There Be Carnage | 16.9G | 4K | 0 | — | 0 | eng | 0 | Zero subs |
+| 3 | Twisters | 28.0G | 4K | 0 | — | 0 | eng | 0 | Zero subs, large 4K |
+| 4 | Thor | 4.4G | 4K | 16 | text | 0 | eng | 0 | Small 4K, text-only subs |
+| 5 | Ant-Man | 4.7G | 4K | 17 | text | 0 | eng | 0 | Small 4K, text-only |
+| 6 | Million Dollar Arm | 3.9G | 1080p | 1 | text | 0 | eng | 0 | AVI container, tiny |
+| 7 | High-Rise | 4.7G | 1080p | 16 | text | 0 | eng | 0 | 1080p, text-only |
+| 8 | The Ides of March | 6.8G | 1080p | 0 | — | 0 | eng | 0 | Zero subs, 1080p |
+| 9 | Alien³ | 29.0G | 4K | 0 | — | 0 | eng | 0 | Large 4K, zero subs |
+| 10 | District 9 | 46.2G | 4K | 45 | mixed | 0 | eng | 0 | Massive subs, mixed codec |
+| 11 | Live Free or Die Hard | 7.7G | 1080p | 0 | — | 0 | eng | 1 | MP4 container, ext sub |
+| 12 | Soul | 11.8G | 4K | 35 | text | 1 | eng | 1 | MP4 container, forced, ext sub |
+| 13 | Bugonia | 13.9G | 4K | 0 | — | 0 | eng | 0 | MP4 container, 4K |
+| 14 | Don't Breathe | 2.5G | 1080p | 3 | text | 0 | eng | 0 | Tiny 1080p |
+| 15 | You'll Never Find Me | 2.9G | 1080p | 0 | — | 0 | eng | 0 | Tiny, zero subs |
+| 16 | Berserk: Golden Age Arc II | 3.0G | 1080p | 0 | — | 0 | jpn | 0 | Non-English (Japanese) |
+| 17 | Berserk: Golden Age Arc I | 2.7G | 1080p | 0 | — | 0 | jpn | 0 | Non-English (Japanese) |
+| 18 | Berserk: Golden Age Arc III | 3.2G | 1080p | 0 | — | 0 | jpn | 0 | Non-English (Japanese) |
+| 19 | Avatar Aang | 3.2G | 4K | 0 | — | 0 | eng | 0 | Tiny 4K |
+| 20 | Glorious | 3.4G | 1080p | 0 | — | 0 | eng | 0 | Tiny 1080p |
+| 21 | The Blair Witch Project | 3.4G | 1080p | 1 | text | 0 | eng | 0 | Minimal subs |
+| 22 | The Dark and the Wicked | 3.4G | 1080p | 0 | — | 0 | eng | 0 | Tiny |
+| 23 | Primer | 3.6G | 1080p | 0 | — | 0 | eng | 0 | Tiny 1080p |
+| 24 | Code 3 | 3.9G | 1080p | 0 | — | 0 | eng | 0 | Tiny 1080p |
+| 25 | Mad God | 3.9G | 1080p | 0 | — | 0 | eng | 0 | Tiny 1080p |
+| 26 | War for the Planet of the Apes | 49.1G | 4K | 41 | text | 0 | eng | 0 | Massive text-only, large |
+| 27 | Dawn of the Planet of the Apes | 41.1G | 4K | 42 | bitmap | 1 | eng | 0 | Massive bitmap-only, forced |
+| 28 | The Matrix Revolutions | 26.5G | 4K | 0 | — | 0 | eng | 0 | Large 4K, zero subs |
+| 29 | The Dark Knight Rises | 28.7G | 4K | 41 | text | 1 | eng | 0 | Massive text-only, forced |
+
+**Lab attribute coverage**: 29 movies, 342 GB
+- Subs: 0 (15), 1-5 (2), 16-30 (2), >30 (3) — plus 7 un-probed
+- Forced subs: 3, Bitmap: 3, Text: 8, MP4: 3
+- Multi-audio (3+): 4, Non-English: 5 (Japanese from Berserk trilogy)
+- 4K: 13, 1080p: 16
+- External subs: 14 movies
 
 ---
 
-## Unique Attributes Added (vs Phase 1)
+## BIGLAB Selection (89 movies, 802 GB)
 
-| Attribute | Phase 1 max/range | Phase 2 adds |
-|---|---|---|
-| Max subtitle tracks | 41 (Catch Me If You Can) | **58** (Overlord) |
-| Max audio tracks | 11 (Arrival) | **9** (Oppenheimer excluded), **5** (HTTYD) |
-| Largest letterbox crop | 277 (Arrival) | **384** (28 Years Later) |
-| Smallest letterbox crop | 0 (false positives) | **20, 42** (new unique values) |
-| Most external SRTs | 1 per movie | **5** (The Hunt) |
-| 4K MP4 container | 6 (Phase 1, all 1080p or 4K) | **1 new 4K MP4** (Uncut Gems) |
-| Non-English audio primary | Korean, Japanese, German | **Russian** (Significant Other), **Chinese** (HTTYD) |
-| Small files for fast iteration | 5.7 GB (In the Mouth of Madness) | **3.4 GB** (Blair Witch) |
+Focus: maximum quantity for scale/stress testing. Sorted smallest-first to maximize count.
+
+**Breakdown**:
+- 89 movies, 802 GB
+- 4K: 37, 1080p: 52
+- All sizes from 3 GB to 30 GB (no giants — those went to lab)
+- Includes all remaining probed movies with diverse attributes
+- 66 with 0 subs (will test generation path), 20 with 1-5 subs
+
+Full list: see `design/copy_movies_phase2.sh` or `/tmp/two_drive_final.json`
 
 ---
 
-## Final Directory Structure (to create under `/mnt/lab/movies/`)
+## Final Library After Copy
 
-```
-/mnt/lab/movies/
-├── 4K/
-│   ├── (existing Phase 1 movies)...
-│   ├── Overlord (2018)/
-│   │   └── ...mkv                                                                        (14.9 GB, 58 subs)
-│   ├── Elysium (2013)/
-│   │   └── ...mkv                                                                        (53.2 GB, 43 subs bitmap-only)
-│   ├── Drop (2025)/
-│   │   └── ...mkv                                                                        (19.0 GB, 41 subs text-only)
-│   ├── Superman (2025)/
-│   │   └── ...mkv                                                                        (23.1 GB, 36 subs, forced)
-│   ├── Die Hard 2 (1990)/
-│   │   └── ...mkv                                                                        (23.3 GB, 28 subs, forced)
-│   ├── How to Train Your Dragon (2025)/
-│   │   └── ...mkv                                                                        (18.3 GB, 5 subs, 5 audio)
-│   ├── Glass Onion - A Knives Out Mystery (2022)/
-│   │   └── ...mkv                                                                        (20.7 GB, 44 subs text-only)
-│   ├── 28 Years Later (2025)/
-│   │   └── ...mkv                                                                        (21.4 GB, crop=384)
-│   ├── The Hunt (2020)/
-│   │   ├── ...mkv                                                                        (18.3 GB, 10 subs)
-│   │   └── *.en.srt, *.es.srt, ...                                                       (5 external SRTs)
-│   ├── Significant Other (2022)/
-│   │   └── ...mkv                                                                        (8.8 GB, eng+rus audio)
-│   └── Uncut Gems (2019)/
-│       ├── ...mp4                                                                        (16.8 GB, 4K MP4, 0 subs)
-│       └── ...en.hi.srt                                                                  (external SRT)
-│
-└── 1080p/
-    ├── (existing Phase 1 movies)...
-    ├── 28 Days Later (2002)/
-    │   └── ...mkv                                                                        (7.1 GB, 37 subs)
-    ├── Bad Times at the El Royale (2018)/
-    │   ├── ...mp4                                                                        (16.3 GB, MP4, 0 subs)
-    │   └── ...en.srt                                                                    (external SRT)
-    ├── Captain America - The Winter Soldier (2014)/
-    │   ├── ...mp4                                                                        (16.0 GB, MP4, 0 subs)
-    │   └── ...en.srt                                                                    (external SRT)
-    ├── The Blair Witch Project (1999)/
-    │   └── ...mkv                                                                        (3.4 GB, 1 sub)
-    ├── The Imitation Game (2014)/
-    │   └── ...mkv                                                                        (5.0 GB, 1 sub)
-    ├── The Lego Movie (2014)/
-    │   └── ...mkv                                                                        (5.7 GB, 2 subs)
-    └── Spotlight (2015)/
-        └── ...mkv                                                                        (7.3 GB, 3 subs)
+| Drive | Movies | Used | Free |
+|---|---|---|---|
+| /mnt/lab | 23 (Phase 1) + 29 (Phase 2) = **52 movies** | ~800 GB | ~100 GB |
+| /mnt/biglab | **89 movies** | ~820 GB | ~90 GB |
+| **Total** | **141 movies** | ~1,620 GB | |
+
+---
+
+## How to Execute
+
+```bash
+# Review the movie lists
+cat /tmp/two_drive_final.json | python3.13 -m json.tool | less
+
+# Run the copy (will take a while — ~1.1 TB over network):
+bash /forge/Marquee/design/copy_movies_phase2.sh
+
+# Monitor progress in another terminal:
+watch -n 10 'echo "Lab:"; du -sh /mnt/lab/movies/; echo "Biglab:"; du -sh /mnt/biglab/movies/'
 ```
 
----
-
-## Storage Requirement
-
-- **Current lab usage**: 487 GB / 500 GB (18 GB free)
-- **Phase 2 addition**: ~299 GB
-- **Required capacity**: ~786 GB minimum (~800 GB recommended for temp files)
-- **Action**: Increase /mnt/lab storage before copying
+The script:
+- Uses `rsync -av --progress` for reliable copies with progress display
+- Skips movies already present (idempotent — safe to re-run)
+- Color-coded output: green=OK, yellow=skip, red=fail
+- Final summary with counts, sizes, and elapsed time
+- Copies lab movies first, then biglab movies
 
 ---
 
 ## Next Steps
 
-1. ⬜ Increase /mnt/lab storage to ≥800 GB
-2. ⬜ Review and approve this movie list
-3. ⬜ Execute the copy (18 movies, ~299 GB)
+1. ⬜ Review and approve this movie list
+2. ⬜ Run `bash /forge/Marquee/design/copy_movies_phase2.sh`
+3. ⬜ Update Marquee `.env` to point at both `/mnt/lab/movies` and optionally `/mnt/biglab/movies`
 4. ⬜ Re-sync Marquee (`POST /api/sync/all`)
-5. ⬜ Run comprehensive endpoint stress test against expanded library
+5. ⬜ Run comprehensive endpoint stress test against expanded 141-movie library

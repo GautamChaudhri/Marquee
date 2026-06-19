@@ -142,16 +142,21 @@
 		return unique.length >= 2 ? unique.join(' / ') : (afterAR ?? null);
 	});
 
-	// Override preview URLs when the user clicks a sample frame row.
+	// Override preview URLs when the user clicks a sample frame row. A clicked
+	// row requests the *exact* minute (no brightness substitution) so it always
+	// shows the frame the user actually selected — see preview_path() in
+	// letterbox_preview.py for why the cache keys must stay separate.
 	const activeMinute = $derived(previewMinute ?? detail?.preview_minute ?? 5);
+	const exactPreview = $derived(previewMinute != null);
+	const previewSuffix = $derived(exactPreview ? '&exact=true' : '');
 	const beforeUrl = $derived(
 		detail && movieId != null
-			? `/api/letterbox/movies/${movieId}/preview?mode=before&minute=${activeMinute}`
+			? `/api/letterbox/movies/${movieId}/preview?mode=before&minute=${activeMinute}${previewSuffix}`
 			: null
 	);
 	const afterUrl = $derived(
 		detail && movieId != null
-			? `/api/letterbox/movies/${movieId}/preview?mode=after&minute=${activeMinute}`
+			? `/api/letterbox/movies/${movieId}/preview?mode=after&minute=${activeMinute}${previewSuffix}`
 			: null
 	);
 
@@ -451,10 +456,9 @@
 						<button
 							class="btn-sec"
 							disabled={busy}
-							onclick={() =>
-								run(() => markNotLetterboxed(fetch, id!), 'Marked as not letterboxed')}
+							onclick={() => run(() => markNotLetterboxed(fetch, id!), 'Marked as cleared')}
 						>
-							Set as not letterboxed
+							Set as cleared
 						</button>
 						<button
 							class="btn-ghost"
