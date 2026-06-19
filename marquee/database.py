@@ -64,6 +64,13 @@ def _get_engine():
                 cursor = dbapi_connection.cursor()
                 cursor.execute("PRAGMA foreign_keys=ON")
                 cursor.execute("PRAGMA journal_mode=WAL")
+                # Wait up to 5s for a competing writer instead of failing
+                # instantly with "database is locked" — the long-running encode
+                # worker holds the write lock in bursts while request handlers
+                # also read/write the same SQLite file.
+                cursor.execute("PRAGMA busy_timeout=5000")
+                # WAL + NORMAL is the standard durable-enough, fast combination.
+                cursor.execute("PRAGMA synchronous=NORMAL")
                 cursor.close()
 
     return _engine

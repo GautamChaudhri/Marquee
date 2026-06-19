@@ -16,13 +16,14 @@ from pathlib import Path
 
 import pytest
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from marquee.config import settings
 from marquee.core import letterbox_reencode
 from marquee.core.letterbox_reencode import ReencodePlanError, _mkdir_with_retry
 from marquee.core.letterbox_service import _resolve_media_file, letterbox_service
-from marquee.core.media_files import ensure_media_file_for_movie
+from marquee.core.media_files import ensure_media_file_for_movie, resolve_row
+from marquee.core.media_jobs import media_job_manager
 from marquee.core.path_utils import PathValidationError
 from marquee.main import app
 from marquee.media import binaries, letterbox_preview
@@ -33,7 +34,9 @@ from marquee.models import (
     LetterboxEvent,
     LetterboxReencodeArtifact,
     LetterboxState,
+    MediaFile,
     MediaJob,
+    MediaJobEvent,
     Movie,
 )
 
@@ -492,6 +495,85 @@ async def test_mkdir_with_retry_ignores_chmod_denied_on_foreign_ancestor(tmp_pat
 
 async def _noop():
     return None
+
+
+# ---------------------------------------------------------------------------
+# Pipeline resilience: non-blocking probes + DB lock avoidance
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_sqlite_busy_timeout_and_synchronous_pragmas(db):
+    # busy_timeout lets a writer wait instead of failing with "database is
+    # locked" the instant the encode worker holds the write lock.
+    assert (await db.execute(text("PRAGMA busy_timeout"))).scalar() == 5000
+    assert (await db.execute(text("PRAGMA synchronous"))).scalar() == 1  # NORMAL
+    assert (await db.execute(text("PRAGMA journal_mode"))).scalar() == "wal"
+
+
+@pytest.mark.asyncio
+async def test_resolve_row_does_not_write_on_read_path(db, tmp_path):
+    # resolve_row is on the hot GET path; it must not dirty the session (which
+    # would trigger an autoflush UPDATE that contends with the encode worker).
+    movie, media = _movie_with_file(tmp_path)
+    db.add(movie)
+    await db.flush()
+    row = MediaFile(
+        source="radarr", source_key="radarr:movie:1", movie_id=movie.id,
+        path=str(media), relative_path=media.name, container="mkv",
+        is_active=True, last_resolved_path="/stale/path",
+    )
+    db.add(row)
+    await db.commit()
+
+    await resolve_row(db, row)
+
+    assert not db.dirty
+    assert row.last_resolved_path == "/stale/path"
+
+
+@pytest.mark.asyncio
+async def test_emit_persist_false_skips_event_row(db):
+    # Live progress ticks (persist=False) publish to SSE subscribers but write
+    # no MediaJobEvent row — only throttled/transition events persist.
+    job = MediaJob(job_id="emit-job", operation="letterbox_reencode", media_file_id=None, status="running")
+    db.add(job)
+    await db.commit()
+
+    await media_job_manager.emit(db, "emit-job", "encode", "running", progress={"percent": 5}, persist=False)
+    rows = (await db.execute(select(MediaJobEvent).where(MediaJobEvent.job_id == "emit-job"))).scalars().all()
+    assert rows == []
+
+    await media_job_manager.emit(db, "emit-job", "encode", "running", progress={"percent": 6}, persist=True)
+    rows = (await db.execute(select(MediaJobEvent).where(MediaJobEvent.job_id == "emit-job"))).scalars().all()
+    assert len(rows) == 1
+
+
+@pytest.mark.asyncio
+async def test_movie_detail_does_not_probe(client, db, tmp_path, monkeypatch):
+    # The detail fetch must be subprocess-free so it returns instantly even
+    # while an encode saturates disk I/O — DoVi presence comes from the cached
+    # has_dv column, not a live ffprobe.
+    movie, _ = _movie_with_file(tmp_path)
+    db.add(movie)
+    await db.commit()
+    await db.refresh(movie)
+    db.add(LetterboxState(movie_id=movie.id, status="candidate", confidence="high"))
+    await db.commit()
+
+    probed = False
+
+    def boom(_path):
+        nonlocal probed
+        probed = True
+        raise binaries.BinaryError("inspect_source must not run on the detail path")
+
+    monkeypatch.setattr(letterbox_reencode, "inspect_source", boom)
+
+    resp = await client.get(f"/api/letterbox/movies/{movie.id}")
+    assert resp.status_code == 200
+    assert probed is False
+    assert resp.json()["dolby_vision"]["present"] is False
 
 
 # ---------------------------------------------------------------------------

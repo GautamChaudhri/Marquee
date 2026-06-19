@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { onDestroy } from 'svelte';
 	import { letterboxMeta, toneVar, aspectRatio } from '$lib/display';
 	import { toast } from '$lib/toast';
 	import type {
@@ -85,6 +86,12 @@
 			unsub = null;
 		}
 	}
+
+	// This component is reused as movieId changes (not remounted), so the
+	// movieId effect tears down the prior stream — but also close it on actual
+	// unmount so an EventSource never dangles and wedges a browser connection
+	// slot (onbeforeunload only covers full-page navigation, not SPA unmount).
+	onDestroy(stopEncodeStream);
 
 	function resetReencodeState() {
 		stopEncodeStream();
@@ -295,6 +302,9 @@
 				await finishEncode(jobId);
 				return;
 			}
+			// Transient connection drop: EventSource auto-reconnects and the
+			// backend replays history, so just wait it out rather than breaking.
+			if (type === 'error') return;
 			const ev = data as { stage?: string; state?: string; progress?: { percent?: number } | null };
 			if (ev.stage) encodeStage = ev.stage;
 			if (ev.progress?.percent != null) encodeProgress = ev.progress.percent;

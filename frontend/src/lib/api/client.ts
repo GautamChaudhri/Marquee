@@ -15,6 +15,34 @@ export class ApiError extends Error {
 	}
 }
 
+/** Default per-request timeout. A hung backend (e.g. one briefly saturated by
+ *  a concurrent encode) must not hold a browser connection slot open forever —
+ *  browsers cap ~6 per host, so a few stuck requests freeze the whole UI. We
+ *  fail fast instead and let callers fall back / retry. */
+const REQUEST_TIMEOUT_MS = 15000;
+
+/** fetch with an AbortController timeout; rethrows as an ApiError on timeout. */
+async function fetchWithTimeout(
+	fetchFn: Fetch,
+	url: string,
+	init: RequestInit,
+	path: string,
+	method: string
+): Promise<Response> {
+	const controller = new AbortController();
+	const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+	try {
+		return await fetchFn(url, { ...init, signal: controller.signal });
+	} catch (e) {
+		if (e instanceof DOMException && e.name === 'AbortError') {
+			throw new ApiError(0, `${method} ${path} → timed out after ${REQUEST_TIMEOUT_MS}ms`);
+		}
+		throw e;
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
 function buildQuery(params?: Record<string, unknown>): string {
 	if (!params) return '';
 	const sp = new URLSearchParams();
@@ -36,7 +64,8 @@ export async function apiGet<T>(
 	path: string,
 	params?: Record<string, unknown>
 ): Promise<T> {
-	const res = await fetch(`/api${path}${buildQuery(params)}`);
+	const path_ = `${path}${buildQuery(params)}`;
+	const res = await fetchWithTimeout(fetch, `/api${path_}`, {}, path, 'GET');
 	if (!res.ok) {
 		throw new ApiError(
 			res.status,
@@ -53,11 +82,17 @@ export async function apiSend<T>(
 	path: string,
 	body?: unknown
 ): Promise<T> {
-	const res = await fetch(`/api${path}`, {
-		method,
-		headers: body !== undefined ? { 'content-type': 'application/json' } : undefined,
-		body: body !== undefined ? JSON.stringify(body) : undefined
-	});
+	const res = await fetchWithTimeout(
+		fetch,
+		`/api${path}`,
+		{
+			method,
+			headers: body !== undefined ? { 'content-type': 'application/json' } : undefined,
+			body: body !== undefined ? JSON.stringify(body) : undefined
+		},
+		path,
+		method
+	);
 	if (!res.ok) {
 		throw new ApiError(
 			res.status,

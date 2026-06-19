@@ -8,6 +8,7 @@ pipeline run endpoints.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from datetime import UTC, datetime, timedelta
@@ -169,16 +170,33 @@ def _letterbox_state_summary(state: LetterboxState | None) -> dict | None:
     }
 
 
-async def _dolby_vision_for_movie(db: AsyncSession, movie: Movie) -> dict:
-    try:
-        media_file = await ensure_media_file_for_movie(db, movie)
-        if media_file is None:
-            return letterbox_reencode.dovi_info(None)
-        resolved = await resolve_media_file(db, media_file.id)
-    except (MediaFileNotFoundError, MediaFileUnavailableError):
-        return letterbox_reencode.dovi_info(None)
-    source = letterbox_reencode.inspect_source(resolved.path)
-    return letterbox_reencode.dovi_info(source)
+def _dolby_vision_summary(movie: Movie) -> dict:
+    """Cheap Dolby Vision presence from the synced ``has_dv`` column — no probe.
+
+    The movie-detail and detect responses must stay subprocess-free so they
+    return instantly even while an encode saturates disk I/O. ``ffprobe`` on a
+    4K file over a busy mergerfs mount can take tens of seconds, which used to
+    time the detail fetch out entirely. Full DoVi detail (profile/level/RPU
+    preservation) is probed only in ``build_plan``, where the user has
+    explicitly chosen a permanent re-encode and a one-off probe is warranted.
+    """
+    if movie.has_dv is None:
+        # Not yet checked by sync — report unknown rather than probing here.
+        reason = "not_checked"
+    elif movie.has_dv:
+        reason = "probed_on_reencode_plan"
+    else:
+        return {
+            "present": False, "profile": None, "level": None,
+            "el_present": None, "bl_signal_compatibility_id": None,
+            "preservation": {"status": "not_present", "supported": False, "reason": None},
+        }
+    return {
+        "present": bool(movie.has_dv),
+        "profile": None, "level": None, "el_present": None,
+        "bl_signal_compatibility_id": None,
+        "preservation": {"status": "unknown", "supported": False, "reason": reason},
+    }
 
 
 def _media_job_summary(job: MediaJob) -> dict:
@@ -484,7 +502,7 @@ async def get_movie_detail(
     detail["samples"] = samples
     detail["honored_by"] = _HONORED_BY
     detail["not_honored_by"] = _NOT_HONORED_BY
-    detail["dolby_vision"] = await _dolby_vision_for_movie(db, movie)
+    detail["dolby_vision"] = _dolby_vision_summary(movie)
     reencode_snapshot = await _latest_reencode_snapshot(db, movie)
     if reencode_snapshot is not None:
         detail["reencode"] = reencode_snapshot
@@ -570,7 +588,7 @@ async def detect_one(
     state = await letterbox_manager.detect_and_store(db, movie)
     limiter.record(f"lb_detect:{movie_id}")
     detail = _state_to_dict(state, movie)
-    detail["dolby_vision"] = await _dolby_vision_for_movie(db, movie)
+    detail["dolby_vision"] = _dolby_vision_summary(movie)
     return detail
 
 
@@ -634,11 +652,10 @@ async def movie_preview(
     if state.reviewed:
         raise HTTPException(status_code=404, detail="Preview unavailable after confirmation")
     _require_ffmpeg()
-    eligibility = letterbox_service.check_eligibility(movie)
+    # check_eligibility shells out to mkvmerge — offload off the event loop.
+    eligibility = await asyncio.to_thread(letterbox_service.check_eligibility, movie)
     if eligibility.path is None:
         raise HTTPException(status_code=404, detail="Media file unavailable for preview")
-
-    import asyncio  # noqa: PLC0415
 
     samples = json.loads(state.samples_json) if state.samples_json else []
     candidate_minutes = [s["minute"] for s in samples if s.get("ok")]
