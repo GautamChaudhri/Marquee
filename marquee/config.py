@@ -472,6 +472,13 @@ class Settings(BaseSettings):
         description="Detection backend: 'cropdetect' (ffmpeg, default) or "
         "'trim' (ImageMagick fallback for faint/color-cast bars).",
     )
+    LETTERBOX_DETECT_NVIDIA_ACCELERATION: Literal["auto", "off"] = Field(
+        default="auto",
+        description=(
+            "Use benchmarked NVIDIA NVDEC decode before CPU cropdetect when it is faster; "
+            "'off' always uses CPU decode."
+        ),
+    )
     LETTERBOX_TRIM_FUZZ: list[int] = Field(
         default=[5, 15, 25],
         description="Fuzz percentages tried by the 'trim' backend (needs ImageMagick).",

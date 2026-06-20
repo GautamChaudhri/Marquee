@@ -87,6 +87,11 @@ export interface LetterboxDetail {
 		job: MediaJobSnapshot | null;
 		artifact: ReencodeArtifact | null;
 	} | null;
+	detection_job?: {
+		job_id: string;
+		status: string;
+		events_url: string;
+	} | null;
 }
 
 export interface LetterboxSample {
@@ -96,6 +101,8 @@ export interface LetterboxSample {
 	bottom_bar?: number;
 	bar?: number;
 	error?: string | null;
+	backend?: 'cpu' | 'nvdec';
+	elapsed_ms?: number | null;
 }
 
 /** One row in a kanban column (from GET /letterbox/candidates items). */
@@ -132,6 +139,8 @@ export interface LetterboxAnalyzeSummary {
 	candidate: number;
 	not_letterboxed: number;
 	variable: number;
+	errored: number;
+	failed: number;
 	total: number;
 	completed: number;
 }

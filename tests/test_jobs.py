@@ -30,8 +30,14 @@ async def test_job_claim_reserves_resources_and_persists_attempt(db):
     assert claimed.status == "claimed"
     assert attempt.number == 1
     reservations = (
-        await db.execute(select(JobResourceReservation).where(JobResourceReservation.job_id == job.id))
-    ).scalars().all()
+        (
+            await db.execute(
+                select(JobResourceReservation).where(JobResourceReservation.job_id == job.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
     assert {item.resource_key for item in reservations} == {"gpu", "media-file:12"}
 
 
@@ -72,14 +78,26 @@ async def _drive_to_finish(db, worker_id: str, *, status: str) -> None:
 async def test_parent_emits_incremental_progress_then_summary(db):
     """A batch parent streams live per-child progress and a final summary —
     this is what drives the letterbox analyze bar and auto-moving cards."""
-    parent = await job_manager.create(db, job_type="letterbox_detect_batch", status="waiting_external")
-    await job_manager.create(db, job_type="letterbox_detect", parent_id=parent.id, subject_type="movie", subject_id=1)
-    await job_manager.create(db, job_type="letterbox_detect", parent_id=parent.id, subject_type="movie", subject_id=2)
+    parent = await job_manager.create(
+        db, job_type="letterbox_detect_batch", status="waiting_external"
+    )
+    await job_manager.create(
+        db, job_type="letterbox_detect", parent_id=parent.id, subject_type="movie", subject_id=1
+    )
+    await job_manager.create(
+        db, job_type="letterbox_detect", parent_id=parent.id, subject_type="movie", subject_id=2
+    )
 
     async def parent_events() -> list[JobEvent]:
         return (
-            await db.execute(select(JobEvent).where(JobEvent.job_id == parent.id).order_by(JobEvent.id))
-        ).scalars().all()
+            (
+                await db.execute(
+                    select(JobEvent).where(JobEvent.job_id == parent.id).order_by(JobEvent.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
 
     # First child finishes → an incremental progress event (parent still running).
     await _drive_to_finish(db, "worker-a", status="candidate")
@@ -99,9 +117,43 @@ async def test_parent_emits_incremental_progress_then_summary(db):
     assert terminal and terminal[-1].detail["summary"] == {"candidate": 1, "not_letterboxed": 1}
 
 
+async def test_create_batch_makes_every_child_visible_before_workers_can_claim(db):
+    parent, children = await job_manager.create_batch(
+        db,
+        parent_type="letterbox_detect_batch",
+        parent_payload={"movie_ids": [1, 2]},
+        parent_priority=60,
+        parent_subject_type="letterbox_batch",
+        parent_subject_id="batch-1",
+        children=[
+            {
+                "job_type": "letterbox_detect",
+                "payload": {"movie_id": 1},
+                "subject_type": "movie",
+                "subject_id": 1,
+            },
+            {
+                "job_type": "letterbox_detect",
+                "payload": {"movie_id": 2},
+                "subject_type": "movie",
+                "subject_id": 2,
+            },
+        ],
+    )
+
+    assert parent.status == "waiting_external"
+    assert len(children) == 2
+    rows = (await db.execute(select(Job).where(Job.parent_id == parent.id))).scalars().all()
+    assert {row.subject_id for row in rows} == {"1", "2"}
+
+
 async def test_interrupt_rolls_parent_progress_and_terminalizes_batch(db):
-    parent = await job_manager.create(db, job_type="letterbox_detect_batch", status="waiting_external")
-    await job_manager.create(db, job_type="letterbox_detect", parent_id=parent.id, subject_type="movie", subject_id=1)
+    parent = await job_manager.create(
+        db, job_type="letterbox_detect_batch", status="waiting_external"
+    )
+    await job_manager.create(
+        db, job_type="letterbox_detect", parent_id=parent.id, subject_type="movie", subject_id=1
+    )
 
     claim = await job_manager.claim_next(db, "worker-a")
     assert claim is not None
@@ -113,12 +165,16 @@ async def test_interrupt_rolls_parent_progress_and_terminalizes_batch(db):
     assert parent_row is not None
     assert parent_row.status == "interrupted"
     assert parent_row.finished_at is not None
-    assert parent_row.progress == {"children_total": 1, "children_completed": 1, "children_failed": 1}
+    assert parent_row.progress == {
+        "children_total": 1,
+        "children_completed": 1,
+        "children_failed": 1,
+    }
 
 
 async def test_recover_releases_stale_waiting_resource_attempt_and_requeues_retryable_job(db):
     await job_manager.bootstrap_resources(db)
-    job = await job_manager.create(
+    await job_manager.create(
         db,
         job_type="letterbox_detect",
         resources={"media_read": 1, "media-file:12": 1},
@@ -144,21 +200,31 @@ async def test_recover_releases_stale_waiting_resource_attempt_and_requeues_retr
     assert claimed.finished_at is None
     assert attempt.status == "interrupted"
     reservations = (
-        await db.execute(
-            select(JobResourceReservation).where(JobResourceReservation.job_id == claimed.id)
+        (
+            await db.execute(
+                select(JobResourceReservation).where(JobResourceReservation.job_id == claimed.id)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     assert reservations
     assert all(item.released_at is not None for item in reservations)
 
 
 async def test_cancelling_parent_batch_cascades_and_preserves_completed_children(db):
-    parent = await job_manager.create(db, job_type="letterbox_detect_batch", status="waiting_external")
-    await job_manager.create(db, job_type="letterbox_detect", parent_id=parent.id, subject_type="movie", subject_id=1)
+    parent = await job_manager.create(
+        db, job_type="letterbox_detect_batch", status="waiting_external"
+    )
+    await job_manager.create(
+        db, job_type="letterbox_detect", parent_id=parent.id, subject_type="movie", subject_id=1
+    )
     queued = await job_manager.create(
         db, job_type="letterbox_detect", parent_id=parent.id, subject_type="movie", subject_id=2
     )
-    await job_manager.create(db, job_type="letterbox_detect", parent_id=parent.id, subject_type="movie", subject_id=3)
+    await job_manager.create(
+        db, job_type="letterbox_detect", parent_id=parent.id, subject_type="movie", subject_id=3
+    )
 
     first_claim = await job_manager.claim_next(db, "worker-a")
     assert first_claim is not None
@@ -192,7 +258,9 @@ async def test_cancelling_parent_batch_cascades_and_preserves_completed_children
 
 
 async def test_cancelled_before_execution_updates_parent_to_terminal(db):
-    parent = await job_manager.create(db, job_type="letterbox_detect_batch", status="waiting_external")
+    parent = await job_manager.create(
+        db, job_type="letterbox_detect_batch", status="waiting_external"
+    )
     child = await job_manager.create(
         db,
         job_type="letterbox_detect",

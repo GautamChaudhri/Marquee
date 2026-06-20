@@ -73,12 +73,12 @@ def neutralize_media_roots(monkeypatch):
     [
         (1920, 1080, "candidate"),
         (3840, 2160, "candidate"),
-        (1920, 800, "skip"),     # native scope
-        (1920, 1040, "skip"),    # native 1.85
-        (1280, 720, "skip"),     # too small
-        (1440, 1080, "skip"),    # 4:3
-        (640, 480, "skip"),      # 4:3
-        (0, 0, "skip"),          # unknown
+        (1920, 800, "skip"),  # native scope
+        (1920, 1040, "skip"),  # native 1.85
+        (1280, 720, "skip"),  # too small
+        (1440, 1080, "skip"),  # 4:3
+        (640, 480, "skip"),  # 4:3
+        (0, 0, "skip"),  # unknown
     ],
 )
 def test_prefilter_bucket(w, h, bucket):
@@ -142,6 +142,50 @@ def test_cropdetect_measurement_uses_limit_without_keyframe_skip(monkeypatch):
     args = calls[0][1]
     assert "-skip_frame" not in args
     assert "cropdetect=limit=80:round=2:reset=1" in args
+
+
+def test_cropdetect_nvdec_downloads_frames_before_cpu_filter(monkeypatch):
+    calls = []
+
+    def fake_run(name, args, timeout=120.0):
+        calls.append((name, args, timeout))
+        return binaries.CommandResult(0, "", "[Parsed_cropdetect_0 @ 0x] crop=3840:1600:0:280\n")
+
+    monkeypatch.setattr(binaries, "run", fake_run)
+    measurement = ld.measure_window_cropdetect(
+        "/movie.mkv", 5, 2160, nvdec_decoder="hevc_cuvid", pix_fmt="yuv420p10le"
+    )
+
+    assert measurement.ok is True
+    assert measurement.backend == "nvdec"
+    args = calls[0][1]
+    assert args[args.index("-hwaccel") + 1] == "cuda"
+    assert args[args.index("-c:v:0") + 1] == "hevc_cuvid"
+    assert "hwdownload,format=p010le,cropdetect=limit=24:round=2:reset=1" in args
+
+
+def test_detect_uses_nvdec_only_after_faster_matching_benchmark(monkeypatch):
+    ld._NVDEC_BENCHMARKS.clear()
+    monkeypatch.setattr(ld, "sample_minutes", lambda *_args, **_kwargs: [5, 10])
+    monkeypatch.setattr(ld, "_nvdec_decoder_for", lambda *_args, **_kwargs: "hevc_cuvid")
+
+    def fake_measure(_path, minute, _height, *, nvdec_decoder=None, **_kwargs):
+        return ld.WindowMeasurement(
+            minute=minute,
+            ok=True,
+            top_bar=140,
+            bottom_bar=140,
+            width=1920,
+            height=800,
+            backend="nvdec" if nvdec_decoder else "cpu",
+            elapsed_ms=40 if nvdec_decoder else 100,
+        )
+
+    monkeypatch.setattr(ld, "measure_window_cropdetect", fake_measure)
+    result = ld.detect("/movie.mkv", width=1920, height=1080, codec="hevc", pix_fmt="yuv420p")
+
+    assert result.method == "cropdetect_nvdec"
+    assert [sample["backend"] for sample in result.samples] == ["nvdec", "nvdec"]
 
 
 # ---------------------------------------------------------------------------
@@ -325,8 +369,11 @@ def _movie_with_file(tmp_path, name="Movie (2020).mkv"):
     media = folder / name
     media.write_bytes(b"\x00")
     return Movie(
-        title="Movie", year=2020, folder_path=str(folder),
-        movie_file_path=name, tmdb_id=111,
+        title="Movie",
+        year=2020,
+        folder_path=str(folder),
+        movie_file_path=name,
+        tmdb_id=111,
     ), media
 
 
@@ -406,8 +453,11 @@ def test_eligibility_rejects_mp4(tmp_path, monkeypatch):
 def test_eligibility_missing_file(tmp_path, monkeypatch):
     monkeypatch.setattr(binaries, "resolve", lambda name: None)
     movie = Movie(
-        title="Gone", year=2020, folder_path=str(tmp_path),
-        movie_file_path="nope.mkv", tmdb_id=222,
+        title="Gone",
+        year=2020,
+        folder_path=str(tmp_path),
+        movie_file_path="nope.mkv",
+        tmdb_id=222,
     )
     elig = letterbox_service.check_eligibility(movie)
     assert elig.eligible is False
@@ -416,8 +466,11 @@ def test_eligibility_missing_file(tmp_path, monkeypatch):
 
 def test_resolve_media_file_rejects_escape(tmp_path):
     movie = Movie(
-        title="Evil", year=2020, folder_path=str(tmp_path),
-        movie_file_path="../../etc/passwd", tmdb_id=333,
+        title="Evil",
+        year=2020,
+        folder_path=str(tmp_path),
+        movie_file_path="../../etc/passwd",
+        tmdb_id=333,
     )
     with pytest.raises(PathValidationError):
         _resolve_media_file(movie)
@@ -513,9 +566,14 @@ async def test_resolve_row_does_not_write_on_read_path(db, tmp_path):
     db.add(movie)
     await db.flush()
     row = MediaFile(
-        source="radarr", source_key="radarr:movie:1", movie_id=movie.id,
-        path=str(media), relative_path=media.name, container="mkv",
-        is_active=True, last_resolved_path="/stale/path",
+        source="radarr",
+        source_key="radarr:movie:1",
+        movie_id=movie.id,
+        path=str(media),
+        relative_path=media.name,
+        container="mkv",
+        is_active=True,
+        last_resolved_path="/stale/path",
     )
     db.add(row)
     await db.commit()
@@ -530,16 +588,30 @@ async def test_resolve_row_does_not_write_on_read_path(db, tmp_path):
 async def test_emit_persist_false_skips_event_row(db):
     # Live progress ticks (persist=False) publish to SSE subscribers but write
     # no MediaJobEvent row — only throttled/transition events persist.
-    job = MediaJob(job_id="emit-job", operation="letterbox_reencode", media_file_id=None, status="running")
+    job = MediaJob(
+        job_id="emit-job", operation="letterbox_reencode", media_file_id=None, status="running"
+    )
     db.add(job)
     await db.commit()
 
-    await media_job_manager.emit(db, "emit-job", "encode", "running", progress={"percent": 5}, persist=False)
-    rows = (await db.execute(select(MediaJobEvent).where(MediaJobEvent.job_id == "emit-job"))).scalars().all()
+    await media_job_manager.emit(
+        db, "emit-job", "encode", "running", progress={"percent": 5}, persist=False
+    )
+    rows = (
+        (await db.execute(select(MediaJobEvent).where(MediaJobEvent.job_id == "emit-job")))
+        .scalars()
+        .all()
+    )
     assert rows == []
 
-    await media_job_manager.emit(db, "emit-job", "encode", "running", progress={"percent": 6}, persist=True)
-    rows = (await db.execute(select(MediaJobEvent).where(MediaJobEvent.job_id == "emit-job"))).scalars().all()
+    await media_job_manager.emit(
+        db, "emit-job", "encode", "running", progress={"percent": 6}, persist=True
+    )
+    rows = (
+        (await db.execute(select(MediaJobEvent).where(MediaJobEvent.job_id == "emit-job")))
+        .scalars()
+        .all()
+    )
     assert len(rows) == 1
 
 
@@ -583,13 +655,22 @@ async def test_detect_and_store_persists_and_auto_reviews(db, monkeypatch):
     await db.refresh(movie)
 
     monkeypatch.setattr(
-        letterbox_manager, "detect_movie_blocking",
+        letterbox_manager,
+        "detect_movie_blocking",
         lambda m: {
-            "status": "variable_unsafe", "confidence": "low", "eligible": True,
-            "ineligible_reason": None, "source_width": 1920, "source_height": 1080,
-            "recommended_crop_top": 0, "recommended_crop_bottom": 0,
-            "aspect_label": None, "detect_method": "cropdetect",
-            "samples_json": "[]", "error": None, "_container": "mkv",
+            "status": "variable_unsafe",
+            "confidence": "low",
+            "eligible": True,
+            "ineligible_reason": None,
+            "source_width": 1920,
+            "source_height": 1080,
+            "recommended_crop_top": 0,
+            "recommended_crop_bottom": 0,
+            "aspect_label": None,
+            "detect_method": "cropdetect",
+            "samples_json": "[]",
+            "error": None,
+            "_container": "mkv",
         },
     )
     state = await letterbox_manager.detect_and_store(db, movie)
@@ -608,17 +689,27 @@ async def test_detect_and_store_v1_records_v1_source(db, monkeypatch):
         letterbox_manager,
         "detect_movie_blocking_v1",
         lambda m: {
-            "status": "candidate", "confidence": "high", "eligible": True,
-            "ineligible_reason": None, "source_width": 3840, "source_height": 2160,
-            "recommended_crop_top": 280, "recommended_crop_bottom": 280,
-            "aspect_label": "2.40:1", "detect_method": "v1_script",
-            "samples_json": "{}", "error": None, "_container": "mkv",
+            "status": "candidate",
+            "confidence": "high",
+            "eligible": True,
+            "ineligible_reason": None,
+            "source_width": 3840,
+            "source_height": 2160,
+            "recommended_crop_top": 280,
+            "recommended_crop_bottom": 280,
+            "aspect_label": "2.40:1",
+            "detect_method": "v1_script",
+            "samples_json": "{}",
+            "error": None,
+            "_container": "mkv",
         },
     )
 
     state = await letterbox_manager.detect_and_store(db, movie, detector="v1")
     assert state.status == "candidate"
-    event = (await db.execute(select(LetterboxEvent).where(LetterboxEvent.movie_id == movie.id))).scalar_one()
+    event = (
+        await db.execute(select(LetterboxEvent).where(LetterboxEvent.movie_id == movie.id))
+    ).scalar_one()
     assert event.source == "detect_v1"
     detail = json.loads(event.detail)
     assert detail["detector"] == "v1"
@@ -634,19 +725,29 @@ async def test_detect_and_store_schedules_warm_off_request_path(db, monkeypatch)
     await db.refresh(movie)
 
     monkeypatch.setattr(
-        letterbox_manager, "detect_movie_blocking",
+        letterbox_manager,
+        "detect_movie_blocking",
         lambda m: {
-            "status": "candidate", "confidence": "high", "eligible": True,
-            "ineligible_reason": None, "source_width": 3840, "source_height": 2160,
-            "recommended_crop_top": 280, "recommended_crop_bottom": 280,
-            "aspect_label": "2.40:1", "detect_method": "cropdetect",
+            "status": "candidate",
+            "confidence": "high",
+            "eligible": True,
+            "ineligible_reason": None,
+            "source_width": 3840,
+            "source_height": 2160,
+            "recommended_crop_top": 280,
+            "recommended_crop_bottom": 280,
+            "aspect_label": "2.40:1",
+            "detect_method": "cropdetect",
             "samples_json": json.dumps([{"minute": 5, "ok": True}]),
-            "error": None, "_container": "mkv", "_source_path": "/m.mkv",
+            "error": None,
+            "_container": "mkv",
+            "_source_path": "/m.mkv",
         },
     )
     warmed = asyncio.Event()
     monkeypatch.setattr(
-        letterbox_preview, "warm_movie_previews",
+        letterbox_preview,
+        "warm_movie_previews",
         lambda *a, **k: warmed.set() or [],
     )
 
@@ -801,9 +902,7 @@ def test_pick_bright_minute_caps_probe_count(monkeypatch):
         return 0.0  # always too dark, forcing the candidate sweep
 
     monkeypatch.setattr(letterbox_preview, "_measure_luma", fake_measure)
-    letterbox_preview._pick_bright_minute(
-        "/m.mkv", 5, [10, 15, 20, 25, 30, 35, 40], movie_id=1
-    )
+    letterbox_preview._pick_bright_minute("/m.mkv", 5, [10, 15, 20, 25, 30, 35, 40], movie_id=1)
     assert len(probed) <= letterbox_preview._MAX_BRIGHT_PROBES
 
 
@@ -884,18 +983,20 @@ async def test_status_counts_full_frame_present_prefilter_skips(client, db):
     await db.commit()
     await db.refresh(native)
     await db.refresh(unavailable)
-    db.add_all([
-        LetterboxState(
-            movie_id=native.id,
-            status="prefilter_skipped",
-            prefilter_reason="native_wide",
-        ),
-        LetterboxState(
-            movie_id=unavailable.id,
-            status="prefilter_skipped",
-            prefilter_reason="missing_movie_file_path",
-        ),
-    ])
+    db.add_all(
+        [
+            LetterboxState(
+                movie_id=native.id,
+                status="prefilter_skipped",
+                prefilter_reason="native_wide",
+            ),
+            LetterboxState(
+                movie_id=unavailable.id,
+                status="prefilter_skipped",
+                prefilter_reason="missing_movie_file_path",
+            ),
+        ]
+    )
     await db.commit()
 
     resp = await client.get("/api/letterbox/status")
@@ -905,20 +1006,22 @@ async def test_status_counts_full_frame_present_prefilter_skips(client, db):
 
 @pytest.mark.asyncio
 async def test_status_ignores_terminal_letterbox_batches(client, db):
-    db.add_all([
-        Job(
-            id="batch-interrupted",
-            type="letterbox_detect_batch",
-            status="interrupted",
-            finished_at=datetime.now(UTC),
-        ),
-        Job(
-            id="batch-cancelled",
-            type="letterbox_detect_batch",
-            status="cancelled",
-            finished_at=datetime.now(UTC),
-        ),
-    ])
+    db.add_all(
+        [
+            Job(
+                id="batch-interrupted",
+                type="letterbox_detect_batch",
+                status="interrupted",
+                finished_at=datetime.now(UTC),
+            ),
+            Job(
+                id="batch-cancelled",
+                type="letterbox_detect_batch",
+                status="cancelled",
+                finished_at=datetime.now(UTC),
+            ),
+        ]
+    )
     await db.commit()
 
     resp = await client.get("/api/letterbox/status")
@@ -932,10 +1035,18 @@ async def test_cancel_job_route_cascades_letterbox_batch(client, db):
     parent = Job(id="batch-active", type="letterbox_detect_batch", status="waiting_external")
     db.add(parent)
     await db.flush()
-    db.add_all([
-        Job(id="child-done", type="letterbox_detect", parent_id=parent.id, status="succeeded", result={"status": "candidate"}),
-        Job(id="child-queued", type="letterbox_detect", parent_id=parent.id, status="queued"),
-    ])
+    db.add_all(
+        [
+            Job(
+                id="child-done",
+                type="letterbox_detect",
+                parent_id=parent.id,
+                status="succeeded",
+                result={"status": "candidate"},
+            ),
+            Job(id="child-queued", type="letterbox_detect", parent_id=parent.id, status="queued"),
+        ]
+    )
     await db.commit()
 
     resp = await client.post(f"/api/jobs/{parent.id}/cancel")
@@ -956,12 +1067,24 @@ async def test_candidates_filter_and_paginate(client, db):
     await db.commit()
     await db.refresh(m1)
     await db.refresh(m2)
-    db.add_all([
-        LetterboxState(movie_id=m1.id, status="candidate", confidence="high",
-                       recommended_crop_top=140, recommended_crop_bottom=140),
-        LetterboxState(movie_id=m2.id, status="tagged", confidence="high",
-                       applied_crop_top=140, applied_crop_bottom=140),
-    ])
+    db.add_all(
+        [
+            LetterboxState(
+                movie_id=m1.id,
+                status="candidate",
+                confidence="high",
+                recommended_crop_top=140,
+                recommended_crop_bottom=140,
+            ),
+            LetterboxState(
+                movie_id=m2.id,
+                status="tagged",
+                confidence="high",
+                applied_crop_top=140,
+                applied_crop_bottom=140,
+            ),
+        ]
+    )
     await db.commit()
 
     all_resp = await client.get("/api/letterbox/candidates")
@@ -994,19 +1117,21 @@ async def test_cleared_candidates_query_excludes_prefilter_skipped(client, db):
     await db.commit()
     await db.refresh(cleared)
     await db.refresh(full_frame)
-    db.add_all([
-        LetterboxState(
-            movie_id=cleared.id,
-            status="not_letterboxed",
-            confidence="none",
-            reviewed=True,
-        ),
-        LetterboxState(
-            movie_id=full_frame.id,
-            status="prefilter_skipped",
-            prefilter_reason="native_wide",
-        ),
-    ])
+    db.add_all(
+        [
+            LetterboxState(
+                movie_id=cleared.id,
+                status="not_letterboxed",
+                confidence="none",
+                reviewed=True,
+            ),
+            LetterboxState(
+                movie_id=full_frame.id,
+                status="prefilter_skipped",
+                prefilter_reason="native_wide",
+            ),
+        ]
+    )
     await db.commit()
 
     resp = await client.get("/api/letterbox/candidates?status=not_letterboxed&sort=recent")
@@ -1026,17 +1151,19 @@ async def test_candidates_confidence_sort_places_variable_after_medium(client, d
     await db.commit()
     for movie in movies:
         await db.refresh(movie)
-    db.add_all([
-        LetterboxState(movie_id=movies[0].id, status="candidate", confidence="high"),
-        LetterboxState(movie_id=movies[1].id, status="candidate", confidence="medium"),
-        LetterboxState(
-            movie_id=movies[2].id,
-            status="candidate",
-            confidence="variable",
-            variable_ar=True,
-        ),
-        LetterboxState(movie_id=movies[3].id, status="candidate", confidence="low"),
-    ])
+    db.add_all(
+        [
+            LetterboxState(movie_id=movies[0].id, status="candidate", confidence="high"),
+            LetterboxState(movie_id=movies[1].id, status="candidate", confidence="medium"),
+            LetterboxState(
+                movie_id=movies[2].id,
+                status="candidate",
+                confidence="variable",
+                variable_ar=True,
+            ),
+            LetterboxState(movie_id=movies[3].id, status="candidate", confidence="low"),
+        ]
+    )
     await db.commit()
 
     resp = await client.get("/api/letterbox/candidates?status=candidate&sort=confidence")
@@ -1064,34 +1191,34 @@ async def test_candidates_reviewed_filter_and_recent_sort(client, db):
     await db.commit()
     for movie in [old, new, done]:
         await db.refresh(movie)
-    db.add_all([
-        LetterboxState(
-            movie_id=old.id,
-            status="tagged",
-            confidence="high",
-            reviewed=False,
-            updated_at=datetime(2024, 1, 1, tzinfo=UTC),
-        ),
-        LetterboxState(
-            movie_id=new.id,
-            status="tagged",
-            confidence="high",
-            reviewed=False,
-            updated_at=datetime(2024, 1, 2, tzinfo=UTC),
-        ),
-        LetterboxState(
-            movie_id=done.id,
-            status="tagged",
-            confidence="high",
-            reviewed=True,
-            updated_at=datetime(2024, 1, 3, tzinfo=UTC),
-        ),
-    ])
+    db.add_all(
+        [
+            LetterboxState(
+                movie_id=old.id,
+                status="tagged",
+                confidence="high",
+                reviewed=False,
+                updated_at=datetime(2024, 1, 1, tzinfo=UTC),
+            ),
+            LetterboxState(
+                movie_id=new.id,
+                status="tagged",
+                confidence="high",
+                reviewed=False,
+                updated_at=datetime(2024, 1, 2, tzinfo=UTC),
+            ),
+            LetterboxState(
+                movie_id=done.id,
+                status="tagged",
+                confidence="high",
+                reviewed=True,
+                updated_at=datetime(2024, 1, 3, tzinfo=UTC),
+            ),
+        ]
+    )
     await db.commit()
 
-    resp = await client.get(
-        "/api/letterbox/candidates?status=tagged&reviewed=false&sort=recent"
-    )
+    resp = await client.get("/api/letterbox/candidates?status=tagged&reviewed=false&sort=recent")
     assert resp.status_code == 200
     assert [item["title"] for item in resp.json()["items"]] == ["New Preview", "Old Preview"]
 
@@ -1155,14 +1282,16 @@ async def test_find_candidate_movies_prefilters_radarr_resolutions(client, db):
         video_height=2160,
         container="mkv",
     )
-    db.add_all([
-        candidate,
-        native_scope,
-        unknown,
-        low_res,
-        pathless_candidate,
-        analyzed_false_positive,
-    ])
+    db.add_all(
+        [
+            candidate,
+            native_scope,
+            unknown,
+            low_res,
+            pathless_candidate,
+            analyzed_false_positive,
+        ]
+    )
     await db.commit()
     for movie in [
         candidate,
@@ -1216,9 +1345,7 @@ async def test_find_candidate_movies_prefilters_radarr_resolutions(client, db):
     assert pathless_candidate.id not in items
     assert analyzed_false_positive.id not in items
 
-    skipped_resp = await client.get(
-        "/api/letterbox/movies/find-candidates?include_skipped=true"
-    )
+    skipped_resp = await client.get("/api/letterbox/movies/find-candidates?include_skipped=true")
     skipped_items = {item["movie_id"]: item for item in skipped_resp.json()["items"]}
     assert len(skipped_items) == 4
     assert pathless_candidate.id not in skipped_items
@@ -1226,9 +1353,7 @@ async def test_find_candidate_movies_prefilters_radarr_resolutions(client, db):
     assert skipped_items[native_scope.id]["prefilter"]["reason"] == "native_wide"
     assert skipped_items[low_res.id]["prefilter"]["reason"] == "low_resolution"
 
-    analyzed_resp = await client.get(
-        "/api/letterbox/movies/find-candidates?include_analyzed=true"
-    )
+    analyzed_resp = await client.get("/api/letterbox/movies/find-candidates?include_analyzed=true")
     analyzed_body = analyzed_resp.json()
     analyzed_items = {item["movie_id"]: item for item in analyzed_body["items"]}
     assert set(analyzed_body["movie_ids"]) == {
@@ -1239,8 +1364,7 @@ async def test_find_candidate_movies_prefilters_radarr_resolutions(client, db):
     assert analyzed_false_positive.id in analyzed_items
     assert analyzed_items[analyzed_false_positive.id]["already_analyzed"] is True
     assert (
-        analyzed_items[analyzed_false_positive.id]["letterbox_state"]["status"]
-        == "not_letterboxed"
+        analyzed_items[analyzed_false_positive.id]["letterbox_state"]["status"] == "not_letterboxed"
     )
 
 
@@ -1268,27 +1392,29 @@ async def test_find_candidate_movies_is_idempotent_after_resets(client, db):
     await db.commit()
     await db.refresh(detected)
     await db.refresh(not_letterboxed)
-    db.add_all([
-        LetterboxState(
-            movie_id=detected.id,
-            status="candidate",
-            confidence="medium",
-            recommended_crop_top=140,
-            recommended_crop_bottom=140,
-            prefilter_bucket="candidate",
-            prefilter_reason="sixteen_nine_container",
-        ),
-        LetterboxState(
-            movie_id=not_letterboxed.id,
-            status="not_letterboxed",
-            confidence="none",
-            reviewed=True,
-            recommended_crop_top=0,
-            recommended_crop_bottom=0,
-            prefilter_bucket="candidate",
-            prefilter_reason="sixteen_nine_container",
-        ),
-    ])
+    db.add_all(
+        [
+            LetterboxState(
+                movie_id=detected.id,
+                status="candidate",
+                confidence="medium",
+                recommended_crop_top=140,
+                recommended_crop_bottom=140,
+                prefilter_bucket="candidate",
+                prefilter_reason="sixteen_nine_container",
+            ),
+            LetterboxState(
+                movie_id=not_letterboxed.id,
+                status="not_letterboxed",
+                confidence="none",
+                reviewed=True,
+                recommended_crop_top=0,
+                recommended_crop_bottom=0,
+                prefilter_bucket="candidate",
+                prefilter_reason="sixteen_nine_container",
+            ),
+        ]
+    )
     await db.commit()
 
     assert (await client.post("/api/letterbox/dev/reset-detected")).status_code == 200
@@ -1532,9 +1658,7 @@ async def test_mark_not_letterboxed_moves_detected_candidate(client, db):
     assert body["error"] is None
 
     event = (
-        await db.execute(
-            select(LetterboxEvent).where(LetterboxEvent.movie_id == movie.id)
-        )
+        await db.execute(select(LetterboxEvent).where(LetterboxEvent.movie_id == movie.id))
     ).scalar_one()
     assert event.action == "mark_not_letterboxed"
 
@@ -1607,9 +1731,7 @@ async def test_ignore_purges_previews(client, db):
 
 
 @pytest.mark.asyncio
-async def test_preview_route_does_not_regenerate_for_reviewed_movie(
-    client, db, monkeypatch
-):
+async def test_preview_route_does_not_regenerate_for_reviewed_movie(client, db, monkeypatch):
     preview_root = settings.letterbox_preview_path
     movie = Movie(title="Reviewed", year=2000, folder_path="/m/rev", tmdb_id=10)
     db.add(movie)
@@ -1625,10 +1747,12 @@ async def test_preview_route_does_not_regenerate_for_reviewed_movie(
             applied_crop_top=140,
             applied_crop_bottom=140,
             reviewed=True,
-            samples_json=json.dumps([
-                {"minute": 5, "ok": True},
-                {"minute": 10, "ok": True},
-            ]),
+            samples_json=json.dumps(
+                [
+                    {"minute": 5, "ok": True},
+                    {"minute": 10, "ok": True},
+                ]
+            ),
         )
     )
     await db.commit()
@@ -1675,8 +1799,15 @@ async def test_apply_success_with_mocked_binaries(client, db, tmp_path, monkeypa
     db.add(movie)
     await db.commit()
     await db.refresh(movie)
-    db.add(LetterboxState(movie_id=movie.id, status="candidate", confidence="high",
-                          recommended_crop_top=140, recommended_crop_bottom=140))
+    db.add(
+        LetterboxState(
+            movie_id=movie.id,
+            status="candidate",
+            confidence="high",
+            recommended_crop_top=140,
+            recommended_crop_bottom=140,
+        )
+    )
     await db.commit()
 
     mkv_json = json.dumps(
@@ -1702,8 +1833,15 @@ async def test_apply_ineligible_mp4_returns_422(client, db, tmp_path, monkeypatc
     db.add(movie)
     await db.commit()
     await db.refresh(movie)
-    db.add(LetterboxState(movie_id=movie.id, status="candidate", confidence="high",
-                          recommended_crop_top=140, recommended_crop_bottom=140))
+    db.add(
+        LetterboxState(
+            movie_id=movie.id,
+            status="candidate",
+            confidence="high",
+            recommended_crop_top=140,
+            recommended_crop_bottom=140,
+        )
+    )
     await db.commit()
 
     monkeypatch.setattr(binaries, "resolve", lambda name: None)

@@ -15,6 +15,7 @@ export interface JobSnapshot {
 	cancel_requested: boolean;
 	progress: JobProgress | null;
 	result: Record<string, unknown> | null;
+	error?: { type?: string; message?: string } | null;
 	events_url: string;
 }
 

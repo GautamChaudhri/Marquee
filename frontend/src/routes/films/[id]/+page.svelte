@@ -110,7 +110,8 @@
 		lbLoading = true;
 		lbError = null;
 		try {
-			lbState = await detectLetterbox(fetch, movie.id);
+			await detectLetterbox(fetch, movie.id);
+			lbState = await getLetterboxState(fetch, movie.id);
 		} catch (e) {
 			lbError = e instanceof Error ? e.message : 'Detection failed';
 		} finally {

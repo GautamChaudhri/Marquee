@@ -10,6 +10,7 @@ import type {
 	ReencodeOptions,
 	ReencodePlan
 } from './types';
+import type { JobSnapshot } from './jobs';
 
 // ── Single-movie state + actions (also used by the film detail hub) ──────────
 
@@ -25,8 +26,8 @@ export async function getLetterboxState(
 	}
 }
 
-export function detectLetterbox(fetchFn: Fetch, movieId: number): Promise<LetterboxDetail> {
-	return apiSend<LetterboxDetail>(fetchFn, 'POST', `/letterbox/movies/${movieId}/detect`);
+export function detectLetterbox(fetchFn: Fetch, movieId: number): Promise<JobSnapshot> {
+	return apiSend<JobSnapshot>(fetchFn, 'POST', `/letterbox/movies/${movieId}/detect`);
 }
 
 export function applyLetterbox(fetchFn: Fetch, movieId: number): Promise<unknown> {
@@ -55,7 +56,7 @@ export function confirmLetterbox(fetchFn: Fetch, movieId: number): Promise<Lette
 export async function reprocessLetterbox(
 	fetchFn: Fetch,
 	movieId: number
-): Promise<LetterboxDetail> {
+): Promise<JobSnapshot> {
 	await removeLetterbox(fetchFn, movieId);
 	return detectLetterbox(fetchFn, movieId);
 }

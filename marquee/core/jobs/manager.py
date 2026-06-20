@@ -47,7 +47,14 @@ class JobManager:
         return 1
 
     async def bootstrap_resources(self, db: AsyncSession) -> None:
-        for key in ("gpu", "media_read", "media_write", "transcode", "network_external", "maintenance_exclusive"):
+        for key in (
+            "gpu",
+            "media_read",
+            "media_write",
+            "transcode",
+            "network_external",
+            "maintenance_exclusive",
+        ):
             resource = await db.get(JobResource, key)
             if resource is None:
                 db.add(JobResource(key=key, capacity=self.resource_capacity(key)))
@@ -105,6 +112,69 @@ class JobManager:
         await db.refresh(job)
         return job
 
+    async def create_batch(
+        self,
+        db: AsyncSession,
+        *,
+        parent_type: str,
+        parent_payload: dict[str, Any],
+        parent_priority: int,
+        parent_subject_type: str,
+        parent_subject_id: str,
+        children: list[dict[str, Any]],
+    ) -> tuple[Job, list[Job]]:
+        """Create a batch parent and every child in one visible transaction.
+
+        A worker must never observe a partially-created batch: otherwise a fast
+        first child can terminalize the parent before later children exist.
+        """
+        parent_id = uuid4().hex
+        correlation_id = parent_id
+        parent = Job(
+            id=parent_id,
+            type=parent_type,
+            payload=parent_payload,
+            priority=parent_priority,
+            root_id=parent_id,
+            correlation_id=correlation_id,
+            subject_type=parent_subject_type,
+            subject_id=parent_subject_id,
+            status="waiting_external",
+        )
+        jobs: list[Job] = []
+        resource_keys = {key for child in children for key in child.get("resources", {})}
+        for key in resource_keys:
+            if await db.get(JobResource, key) is None:
+                db.add(JobResource(key=key, capacity=self.resource_capacity(key)))
+        db.add(parent)
+        await db.flush()
+        await self.emit(db, parent, state=parent.status, message="batch created", persist=True)
+
+        for child in children:
+            job = Job(
+                id=uuid4().hex,
+                type=child["job_type"],
+                payload=child.get("payload", {}),
+                priority=child.get("priority", parent_priority),
+                resource_request=child.get("resources", {}),
+                parent_id=parent_id,
+                root_id=parent_id,
+                correlation_id=correlation_id,
+                subject_type=child.get("subject_type"),
+                subject_id=str(child["subject_id"])
+                if child.get("subject_id") is not None
+                else None,
+                max_attempts=child.get("max_attempts", 3),
+            )
+            db.add(job)
+            jobs.append(job)
+        await db.flush()
+        for job in jobs:
+            await self.emit(db, job, state="queued", message="job created", persist=True)
+        await db.commit()
+        await db.refresh(parent)
+        return parent, jobs
+
     async def emit(
         self,
         db: AsyncSession,
@@ -117,9 +187,22 @@ class JobManager:
         attempt_id: int | None = None,
         persist: bool = True,
     ) -> None:
-        event_data = {"job_id": job.id, "state": state, "stage": stage, "message": message, "detail": detail}
+        event_data = {
+            "job_id": job.id,
+            "state": state,
+            "stage": stage,
+            "message": message,
+            "detail": detail,
+        }
         if persist:
-            event = JobEvent(job_id=job.id, attempt_id=attempt_id, state=state, stage=stage, message=message, detail=detail)
+            event = JobEvent(
+                job_id=job.id,
+                attempt_id=attempt_id,
+                state=state,
+                stage=stage,
+                message=message,
+                detail=detail,
+            )
             db.add(event)
             await db.flush()
             event_data["id"] = event.id
@@ -157,7 +240,9 @@ class JobManager:
         # Always lock resources in deterministic order to avoid deadlocks.
         for key, units in sorted(job.resource_request.items()):
             resource = (
-                await db.execute(select(JobResource).where(JobResource.key == key).with_for_update())
+                await db.execute(
+                    select(JobResource).where(JobResource.key == key).with_for_update()
+                )
             ).scalar_one_or_none()
             if resource is None or not resource.enabled or resource.capacity < int(units):
                 return False
@@ -173,20 +258,35 @@ class JobManager:
                 return False
         expiry = now + timedelta(seconds=settings.JOB_LEASE_SECONDS)
         for key, units in job.resource_request.items():
-            db.add(JobResourceReservation(job_id=job.id, attempt_id=attempt.id, resource_key=key, units=int(units), lease_expires_at=expiry))
+            db.add(
+                JobResourceReservation(
+                    job_id=job.id,
+                    attempt_id=attempt.id,
+                    resource_key=key,
+                    units=int(units),
+                    lease_expires_at=expiry,
+                )
+            )
         return True
 
     async def claim_next(self, db: AsyncSession, worker_id: str) -> tuple[Job, JobAttempt] | None:
         now = utcnow()
         candidates = (
-            await db.execute(
-                select(Job)
-                .where(Job.status.in_(("queued", "retry_scheduled", "waiting_resource")), Job.scheduled_at <= now)
-                .order_by(Job.priority.desc(), Job.created_at)
-                .with_for_update(skip_locked=True)
-                .limit(32)
+            (
+                await db.execute(
+                    select(Job)
+                    .where(
+                        Job.status.in_(("queued", "retry_scheduled", "waiting_resource")),
+                        Job.scheduled_at <= now,
+                    )
+                    .order_by(Job.priority.desc(), Job.created_at)
+                    .with_for_update(skip_locked=True)
+                    .limit(32)
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         for job in candidates:
             if job.cancel_requested:
                 job.status = "cancelled"
@@ -198,7 +298,9 @@ class JobManager:
                 job.status = "paused"
                 await self.emit(db, job, state="paused", message="paused before execution")
                 continue
-            attempt = JobAttempt(job_id=job.id, number=job.attempt_count + 1, worker_id=worker_id, status="claimed")
+            attempt = JobAttempt(
+                job_id=job.id, number=job.attempt_count + 1, worker_id=worker_id, status="claimed"
+            )
             db.add(attempt)
             await db.flush()
             if not await self._reserve(db, job, attempt):
@@ -208,7 +310,9 @@ class JobManager:
             job.attempt_count += 1
             job.status = "claimed"
             job.claimed_at = now
-            await self.emit(db, job, state="claimed", message=f"claimed by {worker_id}", attempt_id=attempt.id)
+            await self.emit(
+                db, job, state="claimed", message=f"claimed by {worker_id}", attempt_id=attempt.id
+            )
             await db.commit()
             return job, attempt
         await db.commit()
@@ -228,7 +332,10 @@ class JobManager:
         attempt.heartbeat_at = utcnow()
         await db.execute(
             update(JobResourceReservation)
-            .where(JobResourceReservation.attempt_id == attempt.id, JobResourceReservation.released_at.is_(None))
+            .where(
+                JobResourceReservation.attempt_id == attempt.id,
+                JobResourceReservation.released_at.is_(None),
+            )
             .values(lease_expires_at=utcnow() + timedelta(seconds=settings.JOB_LEASE_SECONDS))
         )
         await db.commit()
@@ -236,14 +343,22 @@ class JobManager:
     async def _release(self, db: AsyncSession, attempt_id: int) -> None:
         await db.execute(
             update(JobResourceReservation)
-            .where(JobResourceReservation.attempt_id == attempt_id, JobResourceReservation.released_at.is_(None))
+            .where(
+                JobResourceReservation.attempt_id == attempt_id,
+                JobResourceReservation.released_at.is_(None),
+            )
             .values(released_at=utcnow())
         )
 
-    async def _release_job_reservations(self, db: AsyncSession, job_id: str, *, released_at: datetime) -> None:
+    async def _release_job_reservations(
+        self, db: AsyncSession, job_id: str, *, released_at: datetime
+    ) -> None:
         await db.execute(
             update(JobResourceReservation)
-            .where(JobResourceReservation.job_id == job_id, JobResourceReservation.released_at.is_(None))
+            .where(
+                JobResourceReservation.job_id == job_id,
+                JobResourceReservation.released_at.is_(None),
+            )
             .values(released_at=released_at)
         )
 
@@ -272,10 +387,16 @@ class JobManager:
         job.finished_at = now
         await self._bridge_media_cancel(db, job)
         attempts = (
-            await db.execute(
-                select(JobAttempt).where(JobAttempt.job_id == job.id, JobAttempt.finished_at.is_(None))
+            (
+                await db.execute(
+                    select(JobAttempt).where(
+                        JobAttempt.job_id == job.id, JobAttempt.finished_at.is_(None)
+                    )
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         for attempt in attempts:
             attempt.status = "interrupted"
             attempt.finished_at = now
@@ -283,7 +404,9 @@ class JobManager:
         await self._release_job_reservations(db, job.id, released_at=now)
         await self.emit(db, job, state="cancelled", message=message)
 
-    async def finish(self, db: AsyncSession, job: Job, attempt: JobAttempt, *, result: dict | None = None) -> None:
+    async def finish(
+        self, db: AsyncSession, job: Job, attempt: JobAttempt, *, result: dict | None = None
+    ) -> None:
         now = utcnow()
         job.status = "succeeded"
         job.result = result or {}
@@ -292,7 +415,14 @@ class JobManager:
         attempt.finished_at = now
         attempt.metrics = {"runtime_seconds": (now - (attempt.started_at or now)).total_seconds()}
         await self._release(db, attempt.id)
-        await self.emit(db, job, state="succeeded", stage=job.current_stage, attempt_id=attempt.id, detail=job.result)
+        await self.emit(
+            db,
+            job,
+            state="succeeded",
+            stage=job.current_stage,
+            attempt_id=attempt.id,
+            detail=job.result,
+        )
         await self._update_parent(db, job.parent_id, child=job)
         await db.commit()
 
@@ -312,33 +442,53 @@ class JobManager:
             job.finished_at = now
         elif job.type in RETRYABLE and job.attempt_count < job.max_attempts:
             job.status = "retry_scheduled"
-            job.scheduled_at = now + timedelta(seconds=min(600, 30 * (2 ** (job.attempt_count - 1))))
+            job.scheduled_at = now + timedelta(
+                seconds=min(600, 30 * (2 ** (job.attempt_count - 1)))
+            )
         else:
             job.status = "dead_letter" if job.attempt_count >= job.max_attempts else "failed"
             job.finished_at = now
         job.error = error
-        await self.emit(db, job, state=job.status, stage=job.current_stage, message=str(exc), detail=error, attempt_id=attempt.id)
+        await self.emit(
+            db,
+            job,
+            state=job.status,
+            stage=job.current_stage,
+            message=str(exc),
+            detail=error,
+            attempt_id=attempt.id,
+        )
         await self._update_parent(db, job.parent_id, child=job)
         await db.commit()
 
-    async def _update_parent(self, db: AsyncSession, parent_id: str | None, child: Job | None = None) -> None:
+    async def _update_parent(
+        self, db: AsyncSession, parent_id: str | None, child: Job | None = None
+    ) -> None:
         if parent_id is None:
             return
         parent = await db.get(Job, parent_id)
         if parent is None:
             return
         statuses = (
-            await db.execute(select(Job.status).where(Job.parent_id == parent_id))
-        ).scalars().all()
+            (await db.execute(select(Job.status).where(Job.parent_id == parent_id))).scalars().all()
+        )
         total = len(statuses)
         completed = sum(status in TERMINAL for status in statuses)
-        failed = sum(status in {"failed", "dead_letter", "interrupted", "cancelled"} for status in statuses)
-        parent.progress = {"children_total": total, "children_completed": completed, "children_failed": failed}
+        failed = sum(
+            status in {"failed", "dead_letter", "interrupted", "cancelled"} for status in statuses
+        )
+        parent.progress = {
+            "children_total": total,
+            "children_completed": completed,
+            "children_failed": failed,
+        }
         detail = dict(parent.progress)
         if child is not None:
             # Name the child that just finished so a UI can move exactly that item.
             detail["subject_id"] = child.subject_id
-            detail["subject_status"] = child.result.get("status") if isinstance(child.result, dict) else None
+            detail["subject_status"] = (
+                child.result.get("status") if isinstance(child.result, dict) else None
+            )
         if total and completed == total:
             if parent.cancel_requested or parent.status == "cancelling":
                 parent.status = "cancelled"
@@ -354,30 +504,47 @@ class JobManager:
             # Persist the outcome on the parent so a client that loads the job
             # after completion (e.g. a page refresh) can show the summary.
             parent.result = {**parent.progress, "summary": summary}
-            await self.emit(db, parent, state=parent.status, message="all child jobs terminal", detail=detail)
+            await self.emit(
+                db, parent, state=parent.status, message="all child jobs terminal", detail=detail
+            )
         else:
-            if parent.cancel_requested and parent.status in {"waiting_external", "claimed", "running"}:
+            if parent.cancel_requested and parent.status in {
+                "waiting_external",
+                "claimed",
+                "running",
+            }:
                 parent.status = "cancelling"
             # Incremental progress on every child completion so SSE listeners get a
             # live bar and can react to each item finishing.  The parent's real
             # status stays non-terminal, so the stream's `done` sentinel is not sent.
             state = "cancelling" if parent.status == "cancelling" else "progress"
             message = "cancellation in progress" if state == "cancelling" else "child progress"
-            await self.emit(db, parent, state=state, stage=parent.current_stage, message=message, detail=detail)
+            await self.emit(
+                db, parent, state=state, stage=parent.current_stage, message=message, detail=detail
+            )
 
     async def _child_result_summary(self, db: AsyncSession, parent_id: str) -> dict[str, int]:
         """Domain-neutral tally of child ``result['status']`` values for a batch."""
-        results = (
-            await db.execute(select(Job.result).where(Job.parent_id == parent_id))
-        ).scalars().all()
+        rows = (
+            await db.execute(select(Job.status, Job.result).where(Job.parent_id == parent_id))
+        ).all()
         summary: dict[str, int] = {}
-        for result in results:
+        for job_status, result in rows:
             status = result.get("status") if isinstance(result, dict) else None
+            if status is None and job_status in {
+                "failed",
+                "dead_letter",
+                "interrupted",
+                "cancelled",
+            }:
+                status = job_status
             if status:
                 summary[status] = summary.get(status, 0) + 1
         return summary
 
-    async def interrupt(self, db: AsyncSession, job: Job, attempt: JobAttempt, *, reason: str) -> None:
+    async def interrupt(
+        self, db: AsyncSession, job: Job, attempt: JobAttempt, *, reason: str
+    ) -> None:
         """Record controlled worker shutdown without pretending work failed."""
         now = utcnow()
         await self._release(db, attempt.id)
@@ -395,15 +562,29 @@ class JobManager:
         now = utcnow()
         job.cancel_requested = True
         children = (
-            await db.execute(select(Job).where(Job.parent_id == job.id).order_by(Job.created_at, Job.id))
-        ).scalars().all()
+            (
+                await db.execute(
+                    select(Job).where(Job.parent_id == job.id).order_by(Job.created_at, Job.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
         if children:
             job.status = "cancelling"
             for child in children:
                 if child.status in TERMINAL:
                     continue
-                if child.status in {"planned", "queued", "waiting_resource", "retry_scheduled", "paused"}:
-                    await self._cancel_before_execution(db, child, now=now, message="cancelled by parent")
+                if child.status in {
+                    "planned",
+                    "queued",
+                    "waiting_resource",
+                    "retry_scheduled",
+                    "paused",
+                }:
+                    await self._cancel_before_execution(
+                        db, child, now=now, message="cancelled by parent"
+                    )
                 else:
                     child.cancel_requested = True
                     await self._bridge_media_cancel(db, child)
@@ -411,7 +592,9 @@ class JobManager:
             await self._update_parent(db, job.id)
         else:
             if job.status in {"planned", "queued", "waiting_resource", "retry_scheduled", "paused"}:
-                await self._cancel_before_execution(db, job, now=now, message="cancellation requested")
+                await self._cancel_before_execution(
+                    db, job, now=now, message="cancellation requested"
+                )
             else:
                 if job.status in ACTIVE:
                     job.status = "cancelling"
@@ -428,23 +611,31 @@ class JobManager:
         elif not paused and job.status == "paused":
             job.status = "queued"
             job.scheduled_at = utcnow()
-        await self.emit(db, job, state=job.status, message="pause requested" if paused else "resumed")
+        await self.emit(
+            db, job, state=job.status, message="pause requested" if paused else "resumed"
+        )
         await db.commit()
         return job
 
     async def _reconcile_active_parents(self, db: AsyncSession) -> None:
         parent_ids = (
-            await db.execute(
-                select(Job.id).where(
-                    Job.status.in_(tuple(ACTIVE)),
-                    Job.id.in_(select(Job.parent_id).where(Job.parent_id.is_not(None))),
+            (
+                await db.execute(
+                    select(Job.id).where(
+                        Job.status.in_(tuple(ACTIVE)),
+                        Job.id.in_(select(Job.parent_id).where(Job.parent_id.is_not(None))),
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         for parent_id in parent_ids:
             statuses = (
-                await db.execute(select(Job.status).where(Job.parent_id == parent_id))
-            ).scalars().all()
+                (await db.execute(select(Job.status).where(Job.parent_id == parent_id)))
+                .scalars()
+                .all()
+            )
             if statuses and all(status in TERMINAL for status in statuses):
                 await self._update_parent(db, parent_id)
 
@@ -454,7 +645,9 @@ class JobManager:
             await db.execute(
                 select(JobAttempt, Job)
                 .join(Job, Job.id == JobAttempt.job_id)
-                .where(JobAttempt.status.in_(("claimed", "running")), JobAttempt.heartbeat_at < cutoff)
+                .where(
+                    JobAttempt.status.in_(("claimed", "running")), JobAttempt.heartbeat_at < cutoff
+                )
                 .with_for_update(skip_locked=True)
             )
         ).all()

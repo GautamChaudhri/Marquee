@@ -55,16 +55,34 @@ def _schedule_preview_warm(source_path: str, **kwargs) -> None:
         try:
             await gated(letterbox_preview.warm_movie_previews, source_path, **kwargs)
         except Exception:  # noqa: BLE001 — best-effort cache warm; never crash the loop
-            logger.warning("preview warm failed for movie %s", kwargs.get("movie_id"), exc_info=True)
+            logger.warning(
+                "preview warm failed for movie %s", kwargs.get("movie_id"), exc_info=True
+            )
 
     task = asyncio.create_task(_run())
     _warm_tasks.add(task)
     task.add_done_callback(_warm_tasks.discard)
 
+
 _SENTINEL = object()
 _V1_VERTICAL_CROP_RE = re.compile(r"Vertical crop amount \(per-file\):\s*(\d+)")
 _V1_NOT_LETTERBOXED_RE = re.compile(r"\bis not letterboxed\b", re.IGNORECASE)
 _V1_RECOMMENDED_RE = re.compile(r"Recommended crop for .*?:\s*(\d+)x(\d+)\+(-?\d+)\+(-?\d+)")
+
+
+async def _emit_child_progress(db: AsyncSession, parent_job_id: str | None, detail: dict) -> None:
+    """Best-effort telemetry; a progress failure must not fail detection."""
+    if not parent_job_id:
+        return
+    try:
+        from marquee.core.jobs import job_manager  # noqa: PLC0415
+        from marquee.models import Job  # noqa: PLC0415
+
+        parent = await db.get(Job, parent_job_id)
+        if parent is not None:
+            await job_manager.emit(db, parent, state="child_progress", detail=detail)
+    except Exception:  # noqa: BLE001 - state detection takes precedence over UI telemetry
+        logger.exception("could not emit letterbox child progress")
 
 
 class BatchInProgressError(Exception):
@@ -183,6 +201,8 @@ class LetterboxManager:
             height=height,
             duration_s=duration,
             color_transfer=color_transfer,
+            codec=info.codec if info else None,
+            pix_fmt=info.pix_fmt if info else None,
         )
         return {
             "status": result.status,
@@ -359,63 +379,37 @@ class LetterboxManager:
         }
 
     async def detect_and_store(
-        self, db: AsyncSession, movie: Movie, *, detector: str = "v2", parent_job_id: str | None = None
+        self,
+        db: AsyncSession,
+        movie: Movie,
+        *,
+        detector: str = "v2",
+        parent_job_id: str | None = None,
     ) -> LetterboxState:
         """Detect one movie and persist its ``LetterboxState`` + event."""
-        # Emit progress: probing video
-        if parent_job_id:
-            from marquee.core.jobs import job_manager  # noqa: PLC0415
-            from marquee.models import Job  # noqa: PLC0415
+        await _emit_child_progress(
+            db,
+            parent_job_id,
+            {"movie_id": movie.id, "title": movie.title, "stage": "probing", "progress": 10},
+        )
 
-            parent = await db.get(Job, parent_job_id)
-            if parent:
-                await job_manager.emit(
-                    db,
-                    parent,
-                    state="child_progress",
-                    detail={
-                        "movie_id": movie.id,
-                        "title": movie.title,
-                        "stage": "probing",
-                        "progress": 10,
-                    },
-                )
+        detect_fn = (
+            self.detect_movie_blocking_v1 if detector == "v1" else self.detect_movie_blocking
+        )
 
-        detect_fn = self.detect_movie_blocking_v1 if detector == "v1" else self.detect_movie_blocking
-
-        # Emit progress: analyzing frames
-        if parent_job_id:
-            parent = await db.get(Job, parent_job_id)
-            if parent:
-                await job_manager.emit(
-                    db,
-                    parent,
-                    state="child_progress",
-                    detail={
-                        "movie_id": movie.id,
-                        "title": movie.title,
-                        "stage": "analyzing",
-                        "progress": 30,
-                    },
-                )
+        await _emit_child_progress(
+            db,
+            parent_job_id,
+            {"movie_id": movie.id, "title": movie.title, "stage": "analyzing", "progress": 30},
+        )
 
         updates = await gated(detect_fn, movie)
 
-        # Emit progress: calculating consensus
-        if parent_job_id:
-            parent = await db.get(Job, parent_job_id)
-            if parent:
-                await job_manager.emit(
-                    db,
-                    parent,
-                    state="child_progress",
-                    detail={
-                        "movie_id": movie.id,
-                        "title": movie.title,
-                        "stage": "consensus",
-                        "progress": 90,
-                    },
-                )
+        await _emit_child_progress(
+            db,
+            parent_job_id,
+            {"movie_id": movie.id, "title": movie.title, "stage": "consensus", "progress": 90},
+        )
         container = updates.pop("_container", None)
         source_path = updates.pop("_source_path", None)
         if container and not movie.container:

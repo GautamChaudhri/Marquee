@@ -33,6 +33,7 @@ class VideoInfo:
     container: str | None
     codec: str | None
     color_transfer: str | None = None
+    pix_fmt: str | None = None
 
 
 @dataclass
@@ -92,8 +93,10 @@ def probe_video(path: Path | str, retry_count: int = 1) -> VideoInfo | None:
             result = binaries.run(
                 "ffprobe",
                 [
-                    "-v", "error",
-                    "-print_format", "json",
+                    "-v",
+                    "error",
+                    "-print_format",
+                    "json",
                     "-show_format",
                     "-show_streams",
                     str(path),
@@ -119,7 +122,9 @@ def probe_video(path: Path | str, retry_count: int = 1) -> VideoInfo | None:
 
     if result is None:
         if last_error:
-            logger.error("ffprobe failed for %s after %d attempts: %s", path, max_attempts, last_error)
+            logger.error(
+                "ffprobe failed for %s after %d attempts: %s", path, max_attempts, last_error
+            )
         return None
 
     if not result.ok:
@@ -132,9 +137,7 @@ def probe_video(path: Path | str, retry_count: int = 1) -> VideoInfo | None:
         logger.warning("ffprobe returned non-JSON for %s", path)
         return None
 
-    video = next(
-        (s for s in data.get("streams", []) if s.get("codec_type") == "video"), None
-    )
+    video = next((s for s in data.get("streams", []) if s.get("codec_type") == "video"), None)
     if video is None:
         return None
 
@@ -162,6 +165,7 @@ def probe_video(path: Path | str, retry_count: int = 1) -> VideoInfo | None:
         container=fmt.get("format_name"),
         codec=video.get("codec_name"),
         color_transfer=video.get("color_transfer"),
+        pix_fmt=video.get("pix_fmt"),
     )
 
 

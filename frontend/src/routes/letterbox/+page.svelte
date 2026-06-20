@@ -174,6 +174,8 @@
 			candidate: s.candidate ?? 0,
 			not_letterboxed: s.not_letterboxed ?? 0,
 			variable: s.variable_unsafe ?? 0,
+			errored: s.errored ?? 0,
+			failed: s.failed ?? s.dead_letter ?? 0,
 			total,
 			completed: total
 		};
@@ -643,16 +645,19 @@
 					{#if result}
 						· <strong>{result.candidate}</strong> detected ·
 						<strong>{result.not_letterboxed}</strong> not letterboxed · {result.variable} unsafe
+						{#if result.errored || result.failed} · {result.errored + result.failed} failed{/if}
 					{/if}
 				{:else if batchStatus === 'failed'}
 					Analysis failed at <strong>{progressDone}</strong>/<strong>{progressTotal}</strong>
 					{#if result}
 						· <strong>{result.candidate}</strong> detected ·
 						<strong>{result.not_letterboxed}</strong> not letterboxed · {result.variable} unsafe
+						{#if result.errored || result.failed} · {result.errored + result.failed} failed{/if}
 					{/if}
 				{:else if result}
 					✓ Analysis complete — <strong>{result.candidate}</strong> detected ·
 					<strong>{result.not_letterboxed}</strong> not letterboxed · {result.variable} unsafe
+					{#if result.errored || result.failed} · {result.errored + result.failed} failed{/if}
 				{/if}
 			</span>
 			<div class="ab-actions">

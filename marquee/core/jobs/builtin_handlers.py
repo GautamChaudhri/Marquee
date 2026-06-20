@@ -9,6 +9,7 @@ from typing import Any
 from sqlalchemy import select
 
 from marquee.config import settings
+from marquee.core.jobs import job_manager
 from marquee.core.jobs.handlers import register
 from marquee.database import _get_session_factory
 from marquee.models import Job, Movie, PipelineRun
@@ -47,18 +48,23 @@ async def letterbox_detect(job: Job) -> dict[str, Any]:
         if job.parent_id:
             parent = await db.get(Job, job.parent_id)
             if parent:
-                await job_manager.emit(
-                    db,
-                    parent,
-                    state="child_progress",
-                    message=f"Analyzing {movie.title}",
-                    detail={
-                        "movie_id": movie_id,
-                        "title": movie.title,
-                        "stage": "started",
-                        "progress": 0,
-                    },
-                )
+                try:
+                    await job_manager.emit(
+                        db,
+                        parent,
+                        state="child_progress",
+                        message=f"Analyzing {movie.title}",
+                        detail={
+                            "movie_id": movie_id,
+                            "title": movie.title,
+                            "stage": "started",
+                            "progress": 0,
+                        },
+                    )
+                except Exception:  # noqa: BLE001 - progress must not fail detection
+                    logger.exception(
+                        "could not emit letterbox child-start progress for movie %d", movie.id
+                    )
 
         try:
             # Pass job context for progress emission
@@ -73,11 +79,13 @@ async def letterbox_detect(job: Job) -> dict[str, Any]:
             # Soft-fail on ffprobe timeouts to prevent cascading batch failure
             # The movie is marked as errored but the batch continues
             if "timed out" in str(exc).lower():
-                logger.warning("ffprobe timeout for movie %d (%s) - marking as errored", movie.id, movie.title)
+                logger.warning(
+                    "ffprobe timeout for movie %d (%s) - marking as errored", movie.id, movie.title
+                )
                 return {
                     "movie_id": movie.id,
                     "status": "errored",
-                    "error": f"Media probe timed out after multiple retries - possible network storage issue",
+                    "error": "Media probe timed out after multiple retries - possible network storage issue",
                     "skipped": True,
                 }
             # Re-raise other binary errors (missing ffprobe, etc.)
@@ -96,7 +104,12 @@ async def letterbox_apply(job: Job) -> dict[str, Any]:
         result = await letterbox_service.apply(
             db, movie, top=int(job.payload["top"]), bottom=int(job.payload["bottom"]), source="job"
         )
-        return {"applied": result.applied, "top": result.top, "bottom": result.bottom, "verified": result.verified}
+        return {
+            "applied": result.applied,
+            "top": result.top,
+            "bottom": result.bottom,
+            "verified": result.verified,
+        }
 
 
 @register("letterbox_remove")
@@ -127,7 +140,9 @@ async def taste_rebuild(_job: Job) -> dict[str, Any]:
     from marquee.ml.taste_trainer import rebuild_profile  # noqa: PLC0415
 
     await asyncio.to_thread(rebuild_profile)
-    head = await asyncio.to_thread(train_from_labels) if pipeline_settings.HEAD_AUTO_RETRAIN else None
+    head = (
+        await asyncio.to_thread(train_from_labels) if pipeline_settings.HEAD_AUTO_RETRAIN else None
+    )
     return {"rebuild": "completed", "head": head[1] if head else None}
 
 
@@ -145,9 +160,21 @@ async def library_sync(_job: Job) -> dict[str, Any]:
     from marquee.core.poster_sources.tmdb import TMDBClient  # noqa: PLC0415
     from marquee.core.sync_service import SyncService  # noqa: PLC0415
 
-    radarr = RadarrClient(settings.RADARR_URL, settings.RADARR_API_KEY) if settings.radarr_configured else None
-    sonarr = SonarrClient(settings.SONARR_URL, settings.SONARR_API_KEY) if settings.sonarr_configured else None
-    tmdb = TMDBClient(read_access_token=settings.TMDB_READ_ACCESS_TOKEN) if settings.tmdb_configured else None
+    radarr = (
+        RadarrClient(settings.RADARR_URL, settings.RADARR_API_KEY)
+        if settings.radarr_configured
+        else None
+    )
+    sonarr = (
+        SonarrClient(settings.SONARR_URL, settings.SONARR_API_KEY)
+        if settings.sonarr_configured
+        else None
+    )
+    tmdb = (
+        TMDBClient(read_access_token=settings.TMDB_READ_ACCESS_TOKEN)
+        if settings.tmdb_configured
+        else None
+    )
     for client in (radarr, sonarr, tmdb):
         if client is not None:
             await client.connect()
@@ -199,7 +226,14 @@ async def poster_pipeline(job: Job) -> dict[str, Any]:
         run_id = job.id
         existing = await db.get(PipelineRun, run_id)
         if existing is None:
-            db.add(PipelineRun(run_id=run_id, movie_id=movie.id, status="running", output_dir=str(settings.runs_work_path / movie.title)))
+            db.add(
+                PipelineRun(
+                    run_id=run_id,
+                    movie_id=movie.id,
+                    status="running",
+                    output_dir=str(settings.runs_work_path / movie.title),
+                )
+            )
             await db.commit()
         movie_id, title, tmdb_id = movie.id, movie.title, movie.tmdb_id
     if tmdb_id is None:
@@ -209,7 +243,9 @@ async def poster_pipeline(job: Job) -> dict[str, Any]:
     run_manager._active_run_id = run_id
     run_manager._runs[run_id] = RunState(run_id=run_id)
     try:
-        await run_manager._execute(run_id=run_id, tmdb=tmdb, movie_id=movie_id, movie_title=title, movie_tmdb_id=tmdb_id)
+        await run_manager._execute(
+            run_id=run_id, tmdb=tmdb, movie_id=movie_id, movie_title=title, movie_tmdb_id=tmdb_id
+        )
     finally:
         await tmdb.disconnect()
     return {"run_id": run_id}

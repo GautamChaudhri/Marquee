@@ -16,7 +16,6 @@
 		markNotLetterboxed,
 		removeLetterbox,
 		confirmLetterbox,
-		reprocessLetterbox,
 		createReencodePlan,
 		confirmJob,
 		cancelJob,
@@ -26,6 +25,7 @@
 		deleteArtifact
 	} from '$lib/api/letterbox';
 	import { subscribe } from '$lib/sse';
+	import { getJob, isTerminal, type JobSnapshot } from '$lib/api/jobs';
 	import StatusDot from './StatusDot.svelte';
 	import ProgressBar from './ProgressBar.svelte';
 	import Icon from './Icon.svelte';
@@ -87,14 +87,29 @@
 		}
 	}
 
+	let detectUnsub: (() => void) | null = null;
+	let detecting = $state(false);
+	let detectJobId = $state<string | null>(null);
+
+	function stopDetectStream() {
+		detectUnsub?.();
+		detectUnsub = null;
+	}
+
 	// This component is reused as movieId changes (not remounted), so the
 	// movieId effect tears down the prior stream — but also close it on actual
 	// unmount so an EventSource never dangles and wedges a browser connection
 	// slot (onbeforeunload only covers full-page navigation, not SPA unmount).
-	onDestroy(stopEncodeStream);
+	onDestroy(() => {
+		stopEncodeStream();
+		stopDetectStream();
+	});
 
 	function resetReencodeState() {
 		stopEncodeStream();
+		stopDetectStream();
+		detecting = false;
+		detectJobId = null;
 		method = 'quick';
 		showAdvanced = false;
 		plan = null;
@@ -132,6 +147,7 @@
 			.then((d) => {
 				detail = d;
 				hydrateReencodeState(d);
+				hydrateDetection(d?.detection_job ?? null);
 			})
 			.catch((e) => (loadError = e instanceof Error ? e.message : 'Failed to load'))
 			.finally(() => (loading = false));
@@ -233,6 +249,74 @@
 		if (c === 'variable') return 'var(--info)';
 		if (c === 'low') return 'var(--bad)';
 		return 'var(--warn)';
+	}
+
+	async function finishDetection(jobId: string) {
+		if (detectJobId !== jobId) return;
+		stopDetectStream();
+		detecting = false;
+		detectJobId = null;
+		try {
+			const job = await getJob(fetch, jobId);
+			if (job.status === 'succeeded') {
+				toast('Analysis complete', 'good');
+			} else {
+				toast(job.error?.message ?? `Analysis ${job.status}`, 'bad');
+			}
+		} catch {
+			toast('Analysis finished; refreshing the movie state', 'info');
+		}
+		lastId = null;
+		onChanged();
+	}
+
+	function trackDetection(job: Pick<JobSnapshot, 'job_id' | 'status' | 'events_url'>) {
+		stopDetectStream();
+		detectJobId = job.job_id;
+		detecting = !isTerminal(job.status);
+		if (!detecting) {
+			void finishDetection(job.job_id);
+			return;
+		}
+		detectUnsub = subscribe(job.events_url, ['message', 'done'], (type, raw) => {
+			if (type === 'done') {
+				void finishDetection(job.job_id);
+				return;
+			}
+			const event = (raw ?? {}) as { state?: string };
+			if (event.state && isTerminal(event.state)) void finishDetection(job.job_id);
+		});
+	}
+
+	function hydrateDetection(job: LetterboxDetail['detection_job']) {
+		if (job) trackDetection(job);
+	}
+
+	async function startDetection() {
+		if (id == null || busy || detecting) return;
+		busy = true;
+		try {
+			trackDetection(await detectLetterbox(fetch, id));
+			toast('Analysis queued', 'info');
+		} catch (e) {
+			toast(e instanceof Error ? e.message : 'Could not queue analysis', 'bad');
+		} finally {
+			busy = false;
+		}
+	}
+
+	async function startReprocess() {
+		if (id == null || busy || detecting) return;
+		busy = true;
+		try {
+			await removeLetterbox(fetch, id);
+			trackDetection(await detectLetterbox(fetch, id));
+			toast('Reprocess queued', 'info');
+		} catch (e) {
+			toast(e instanceof Error ? e.message : 'Could not queue reprocess', 'bad');
+		} finally {
+			busy = false;
+		}
 	}
 
 	async function run(fn: () => Promise<unknown>, okMsg: string) {
@@ -819,8 +903,8 @@
 					</button>
 					<button
 						class="btn-ghost"
-						disabled={busy}
-						onclick={() => run(() => reprocessLetterbox(fetch, id!), 'Reprocessed')}
+						disabled={busy || detecting}
+						onclick={startReprocess}
 					>
 						Reprocess with new settings
 					</button>
@@ -841,8 +925,8 @@
 					</button>
 					<button
 						class="btn-ghost"
-						disabled={busy}
-						onclick={() => run(() => reprocessLetterbox(fetch, id!), 'Reprocessed')}
+						disabled={busy || detecting}
+						onclick={startReprocess}
 					>
 						Reprocess
 					</button>
@@ -910,6 +994,9 @@
 									<span class="mono ce-min">{s.minute}min</span>
 									{#if s.ok}
 										<span class="mono ce-val">{s.top_bar ?? '?'}/{s.bottom_bar ?? '?'} px</span>
+										{#if s.backend || s.elapsed_ms != null}
+											<span class="ce-hint">{s.backend ?? 'cpu'} · {s.elapsed_ms ?? '?'}ms</span>
+										{/if}
 										<span class="ce-dot" style="color:{barColor}">●</span>
 									{:else}
 										<span class="ce-err">{s.error ?? 'failed'}</span>
@@ -997,10 +1084,10 @@
 					</button>
 					<button
 						class="btn-sec"
-						disabled={busy}
-						onclick={() => run(() => detectLetterbox(fetch, id!), 'Analysis complete')}
+						disabled={busy || detecting}
+						onclick={startDetection}
 					>
-						Analyze this film only
+						{detecting ? 'Analyzing…' : 'Analyze this film only'}
 					</button>
 					<button
 						class="btn-ghost"
@@ -1016,18 +1103,18 @@
 					</div>
 					<button
 						class="btn-sec"
-						disabled={busy}
-						onclick={() => run(() => detectLetterbox(fetch, id!), 'Re-detected')}
+						disabled={busy || detecting}
+						onclick={startDetection}
 					>
-						Re-detect
+						{detecting ? 'Analyzing…' : 'Re-detect'}
 					</button>
 				{:else}
 					<button
 						class="btn-sec"
-						disabled={busy}
-						onclick={() => run(() => detectLetterbox(fetch, id!), 'Re-detected')}
+						disabled={busy || detecting}
+						onclick={startDetection}
 					>
-						Re-detect
+						{detecting ? 'Analyzing…' : 'Re-detect'}
 					</button>
 				{/if}
 			</div>

@@ -73,6 +73,7 @@ async def _file_lock(db: AsyncSession, movie: Movie) -> dict[str, int]:
     media_file = await ensure_media_file_for_movie(db, movie)
     return {f"media-file:{media_file.id}": 1} if media_file is not None else {}
 
+
 # MKV pixel-crop tags are honored by these players only (design §7).
 _HONORED_BY = ["plex-desktop", "vlc", "mpv"]
 _NOT_HONORED_BY = ["plex-web", "plex-mobile"]
@@ -212,13 +213,18 @@ def _dolby_vision_summary(movie: Movie) -> dict:
         reason = "probed_on_reencode_plan"
     else:
         return {
-            "present": False, "profile": None, "level": None,
-            "el_present": None, "bl_signal_compatibility_id": None,
+            "present": False,
+            "profile": None,
+            "level": None,
+            "el_present": None,
+            "bl_signal_compatibility_id": None,
             "preservation": {"status": "not_present", "supported": False, "reason": None},
         }
     return {
         "present": bool(movie.has_dv),
-        "profile": None, "level": None, "el_present": None,
+        "profile": None,
+        "level": None,
+        "el_present": None,
         "bl_signal_compatibility_id": None,
         "preservation": {"status": "unknown", "supported": False, "reason": reason},
     }
@@ -307,9 +313,7 @@ def _prefilter_movie_to_dict(movie: Movie, state: LetterboxState | None) -> dict
 
 
 async def _load_movie(db: AsyncSession, movie_id: int) -> Movie:
-    movie = (
-        await db.execute(select(Movie).where(Movie.id == movie_id))
-    ).scalar_one_or_none()
+    movie = (await db.execute(select(Movie).where(Movie.id == movie_id))).scalar_one_or_none()
     if movie is None:
         raise HTTPException(status_code=404, detail=f"Movie id={movie_id} not found")
     return movie
@@ -317,9 +321,7 @@ async def _load_movie(db: AsyncSession, movie_id: int) -> Movie:
 
 async def _load_state(db: AsyncSession, movie_id: int) -> LetterboxState:
     state = (
-        await db.execute(
-            select(LetterboxState).where(LetterboxState.movie_id == movie_id)
-        )
+        await db.execute(select(LetterboxState).where(LetterboxState.movie_id == movie_id))
     ).scalar_one_or_none()
     if state is None:
         raise HTTPException(
@@ -339,8 +341,7 @@ async def letterbox_status(db: Annotated[AsyncSession, Depends(get_db)]):
     child_job = aliased(Job)
     rows = (
         await db.execute(
-            select(LetterboxState.status, func.count())
-            .group_by(LetterboxState.status)
+            select(LetterboxState.status, func.count()).group_by(LetterboxState.status)
         )
     ).all()
     counts = dict(rows)
@@ -416,9 +417,7 @@ async def list_candidates(
     if reviewed is not None:
         query = query.where(LetterboxState.reviewed.is_(reviewed))
 
-    total = (
-        await db.execute(select(func.count()).select_from(query.subquery()))
-    ).scalar_one()
+    total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar_one()
 
     # Sort: confidence (rank-ordered high→low or low→high), title, or crop size.
     if sort == "title":
@@ -538,16 +537,12 @@ async def find_candidate_movies(
 
 
 @router.get("/movies/{movie_id}")
-async def get_movie_detail(
-    movie_id: int, db: Annotated[AsyncSession, Depends(get_db)]
-):
+async def get_movie_detail(movie_id: int, db: Annotated[AsyncSession, Depends(get_db)]):
     movie = await _load_movie(db, movie_id)
     state = await _load_state(db, movie_id)
     samples = json.loads(state.samples_json) if state.samples_json else []
     # Preview at the first successfully-measured sample (or minute 5).
-    preview_minute = next(
-        (s["minute"] for s in samples if s.get("ok")), 5
-    )
+    preview_minute = next((s["minute"] for s in samples if s.get("ok")), 5)
     detail = _state_to_dict(state, movie)
     detail["samples"] = samples
     detail["honored_by"] = _HONORED_BY
@@ -556,6 +551,9 @@ async def get_movie_detail(
     reencode_snapshot = await _latest_reencode_snapshot(db, movie)
     if reencode_snapshot is not None:
         detail["reencode"] = reencode_snapshot
+    detect_job = await _active_detect_job(db, movie.id)
+    if detect_job is not None:
+        detail["detection_job"] = job_summary(detect_job)
     detail["preview_minute"] = preview_minute
     if not state.reviewed:
         detail["preview_urls"] = {
@@ -575,9 +573,7 @@ class BatchDetectRequest(BaseModel):
     all_candidates: bool = False
 
 
-async def _resolve_batch_movie_ids(
-    body: BatchDetectRequest, db: AsyncSession
-) -> list[int]:
+async def _resolve_batch_movie_ids(body: BatchDetectRequest, db: AsyncSession) -> list[int]:
     if body.movie_ids:
         return body.movie_ids
     if body.all_candidates:
@@ -589,14 +585,10 @@ async def _resolve_batch_movie_ids(
             )
         ).all()
         movie_ids = [
-            movie.id
-            for movie, state in rows
-            if _should_enqueue_for_detection(movie, state)
+            movie.id for movie, state in rows if _should_enqueue_for_detection(movie, state)
         ]
         return movie_ids
-    raise HTTPException(
-        status_code=400, detail="Provide movie_ids or set all_candidates=true"
-    )
+    raise HTTPException(status_code=400, detail="Provide movie_ids or set all_candidates=true")
 
 
 async def _start_detect_job(
@@ -609,35 +601,51 @@ async def _start_detect_job(
     if not movie_ids:
         raise HTTPException(status_code=400, detail="No matching candidate movies")
 
-    batch = await job_manager.create(
-        db,
-        job_type="letterbox_detect_batch",
-        payload={"detector": detector, "movie_ids": movie_ids},
-        priority=60,
-        subject_type="letterbox_batch",
-        subject_id=uuid4().hex,
-        status="waiting_external",
-    )
+    children: list[dict] = []
     for movie_id in movie_ids:
         movie = await db.get(Movie, movie_id)
         file_lock = await _file_lock(db, movie) if movie is not None else {}
-        await job_manager.create(
-            db,
-            job_type="letterbox_detect",
-            payload={"movie_id": movie_id, "detector": detector},
-            priority=60,
-            resources={"media_read": 1, **file_lock},
-            parent_id=batch.id,
-            correlation_id=batch.correlation_id,
-            subject_type="movie",
-            subject_id=movie_id,
+        children.append(
+            {
+                "job_type": "letterbox_detect",
+                "payload": {"movie_id": movie_id, "detector": detector},
+                "priority": 60,
+                "resources": {"media_read": 1, **file_lock},
+                "subject_type": "movie",
+                "subject_id": movie_id,
+            }
         )
+    batch, _children = await job_manager.create_batch(
+        db,
+        parent_type="letterbox_detect_batch",
+        parent_payload={"detector": detector, "movie_ids": movie_ids},
+        parent_priority=60,
+        parent_subject_type="letterbox_batch",
+        parent_subject_id=uuid4().hex,
+        children=children,
+    )
     return {
         "job_id": batch.id,
         "detector": detector,
         "total": len(movie_ids),
         "events_url": f"/api/jobs/{batch.id}/events",
     }
+
+
+async def _active_detect_job(db: AsyncSession, movie_id: int) -> Job | None:
+    return (
+        await db.execute(
+            select(Job)
+            .where(
+                Job.type == "letterbox_detect",
+                Job.subject_type == "movie",
+                Job.subject_id == str(movie_id),
+                Job.status.notin_(tuple(TERMINAL)),
+            )
+            .order_by(Job.created_at.desc(), Job.id.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
 
 
 @router.post("/movies/{movie_id}/detect")
@@ -648,8 +656,11 @@ async def detect_one(
 ):
     """Enqueue a durable single-movie detect job; returns its job summary."""
     _require_ffmpeg()
-    enforce_rate_limit(limiter, f"lb_detect:{movie_id}", settings.RATE_LETTERBOX_DETECT_SECONDS)
     movie = await _load_movie(db, movie_id)
+    active = await _active_detect_job(db, movie.id)
+    if active is not None:
+        return job_summary(active)
+    enforce_rate_limit(limiter, f"lb_detect:{movie_id}", settings.RATE_LETTERBOX_DETECT_SECONDS)
     limiter.record(f"lb_detect:{movie_id}")
     job = await job_manager.create(
         db,
@@ -794,9 +805,7 @@ async def apply_one(
 
 
 @router.post("/apply")
-async def apply_batch(
-    body: BatchApplyRequest, db: Annotated[AsyncSession, Depends(get_db)]
-):
+async def apply_batch(body: BatchApplyRequest, db: Annotated[AsyncSession, Depends(get_db)]):
     """Queue one durable apply child per eligible movie."""
     batch = await job_manager.create(
         db,
@@ -810,13 +819,9 @@ async def apply_batch(
     skipped = []
     queued = 0
     for movie_id in body.movie_ids:
-        movie = (
-            await db.execute(select(Movie).where(Movie.id == movie_id))
-        ).scalar_one_or_none()
+        movie = (await db.execute(select(Movie).where(Movie.id == movie_id))).scalar_one_or_none()
         state = (
-            await db.execute(
-                select(LetterboxState).where(LetterboxState.movie_id == movie_id)
-            )
+            await db.execute(select(LetterboxState).where(LetterboxState.movie_id == movie_id))
         ).scalar_one_or_none()
         if movie is None or state is None:
             skipped.append({"movie_id": movie_id, "reason": "not_found"})
@@ -830,7 +835,11 @@ async def apply_batch(
         await job_manager.create(
             db,
             job_type="letterbox_apply",
-            payload={"movie_id": movie.id, "top": state.recommended_crop_top or 0, "bottom": state.recommended_crop_bottom or 0},
+            payload={
+                "movie_id": movie.id,
+                "top": state.recommended_crop_top or 0,
+                "bottom": state.recommended_crop_bottom or 0,
+            },
             priority=70,
             resources={"media_write": 1, **(await _file_lock(db, movie))},
             parent_id=batch.id,
@@ -872,9 +881,7 @@ def _map_reencode_error(exc: letterbox_reencode.ReencodePlanError) -> HTTPExcept
     )
 
 
-async def _load_reencode_artifact(
-    db: AsyncSession, artifact_id: int
-) -> LetterboxReencodeArtifact:
+async def _load_reencode_artifact(db: AsyncSession, artifact_id: int) -> LetterboxReencodeArtifact:
     artifact = await db.get(LetterboxReencodeArtifact, artifact_id)
     if artifact is None:
         raise HTTPException(status_code=404, detail=f"Re-encode artifact {artifact_id} not found")
@@ -894,7 +901,10 @@ async def create_reencode_plan(
     if state.status == "variable_unsafe":
         raise HTTPException(
             status_code=422,
-            detail={"code": "variable_unsafe", "message": "Variable aspect ratio is unsafe to crop permanently."},
+            detail={
+                "code": "variable_unsafe",
+                "message": "Variable aspect ratio is unsafe to crop permanently.",
+            },
         )
     top = body.top if body.top is not None else state.recommended_crop_top
     bottom = body.bottom if body.bottom is not None else state.recommended_crop_bottom
@@ -976,9 +986,11 @@ async def list_reencode_artifacts(
     movie_id: int | None = None,
     limit: int = Query(100, ge=1, le=500),
 ):
-    query = select(LetterboxReencodeArtifact).order_by(
-        LetterboxReencodeArtifact.created_at.desc()
-    ).limit(limit)
+    query = (
+        select(LetterboxReencodeArtifact)
+        .order_by(LetterboxReencodeArtifact.created_at.desc())
+        .limit(limit)
+    )
     if status:
         query = query.where(LetterboxReencodeArtifact.status == status)
     if movie_id:
@@ -1058,9 +1070,7 @@ async def ignore_one(movie_id: int, db: Annotated[AsyncSession, Depends(get_db)]
 
 
 @router.post("/movies/{movie_id}/mark-not-letterboxed")
-async def mark_not_letterboxed(
-    movie_id: int, db: Annotated[AsyncSession, Depends(get_db)]
-):
+async def mark_not_letterboxed(movie_id: int, db: Annotated[AsyncSession, Depends(get_db)]):
     """Manual review override: move a bad detected crop to Not Letterboxed."""
     await _load_movie(db, movie_id)
     state = await _load_state(db, movie_id)
@@ -1148,9 +1158,7 @@ async def dev_reset_not_letterboxed(db: Annotated[AsyncSession, Depends(get_db)]
 @router.post("/dev/reset-detected")
 async def dev_reset_detected(db: Annotated[AsyncSession, Depends(get_db)]):
     """Dev: move all detected (candidate) movies back to Candidates."""
-    result = await db.execute(
-        select(LetterboxState).where(LetterboxState.status == "candidate")
-    )
+    result = await db.execute(select(LetterboxState).where(LetterboxState.status == "candidate"))
     states = result.scalars().all()
     now = datetime.now(UTC)
     for state in states:
@@ -1175,9 +1183,7 @@ async def dev_reset_all(db: Annotated[AsyncSession, Depends(get_db)]):
 async def dev_reset_movie(movie_id: int, db: Annotated[AsyncSession, Depends(get_db)]):
     """Dev: fully clear all letterbox data for one movie → back to Candidates."""
     await _load_movie(db, movie_id)
-    result = await db.execute(
-        select(LetterboxState).where(LetterboxState.movie_id == movie_id)
-    )
+    result = await db.execute(select(LetterboxState).where(LetterboxState.movie_id == movie_id))
     state = result.scalar_one_or_none()
     if state is None:
         raise HTTPException(status_code=404, detail="No letterbox state found for this movie")

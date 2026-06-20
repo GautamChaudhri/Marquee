@@ -23,6 +23,7 @@ import os
 import re
 import statistics
 import tempfile
+import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -48,6 +49,14 @@ CONF_NONE = "none"
 
 _HDR_TRANSFER_FUNCTIONS = {"smpte2084", "arib-std-b67"}
 _ASYM_LOW_FRACTION = 0.25
+_NVDEC_DECODERS = {
+    "h264": "h264_cuvid",
+    "hevc": "hevc_cuvid",
+    "av1": "av1_cuvid",
+    "vp9": "vp9_cuvid",
+}
+_NVDEC_BENCHMARKS: dict[tuple[str, str, int, int], bool] = {}
+_NVDEC_CAPABILITIES: dict[str, bool] = {}
 
 
 @dataclass
@@ -61,6 +70,8 @@ class WindowMeasurement:
     width: int = 0
     height: int = 0
     error: str | None = None
+    backend: str = "cpu"
+    elapsed_ms: int | None = None
 
     @property
     def bar(self) -> int:
@@ -151,14 +162,37 @@ def _bars_from_box(full_height: int, h: int, y: int) -> tuple[int, int]:
     return top, bottom
 
 
-def cropdetect_limit_for(
-    color_transfer: str | None, *, config: Settings = settings
-) -> int:
+def cropdetect_limit_for(color_transfer: str | None, *, config: Settings = settings) -> int:
     """Return the cropdetect threshold for SDR vs HDR transfer functions."""
     transfer = color_transfer.lower().strip(" ,") if color_transfer else None
     if transfer in _HDR_TRANSFER_FUNCTIONS:
         return config.LETTERBOX_CROPDETECT_HDR_LIMIT
     return config.LETTERBOX_CROPDETECT_LIMIT
+
+
+def _nvdec_decoder_for(codec: str | None, *, config: Settings = settings) -> str | None:
+    """Return a usable CUDA decoder name, without treating it as a requirement."""
+    if config.LETTERBOX_DETECT_NVIDIA_ACCELERATION == "off":
+        return None
+    decoder = _NVDEC_DECODERS.get(codec or "")
+    if decoder is None:
+        return None
+    if decoder in _NVDEC_CAPABILITIES:
+        return decoder if _NVDEC_CAPABILITIES[decoder] else None
+    try:
+        hwaccels = binaries.run("ffmpeg", ["-hide_banner", "-hwaccels"], timeout=30.0)
+        decoders = binaries.run("ffmpeg", ["-hide_banner", "-decoders"], timeout=30.0)
+    except binaries.BinaryError:
+        _NVDEC_CAPABILITIES[decoder] = False
+        return None
+    available = (
+        hwaccels.ok
+        and decoders.ok
+        and "cuda" in hwaccels.stdout.split()
+        and any(line.split()[1:2] == [decoder] for line in decoders.stdout.splitlines())
+    )
+    _NVDEC_CAPABILITIES[decoder] = available
+    return decoder if available else None
 
 
 def measure_window_cropdetect(
@@ -168,40 +202,88 @@ def measure_window_cropdetect(
     *,
     config: Settings = settings,
     cropdetect_limit: int | None = None,
+    nvdec_decoder: str | None = None,
+    pix_fmt: str | None = None,
 ) -> WindowMeasurement:
     limit = cropdetect_limit or config.LETTERBOX_CROPDETECT_LIMIT
     rnd = config.LETTERBOX_CROPDETECT_ROUND
     window = config.LETTERBOX_WINDOW_SECONDS
     vf = f"cropdetect=limit={limit}:round={rnd}:reset=1"
-    args = [
-        "-hide_banner", "-nostats",
-        "-ss", _timestamp(minute),
-        "-i", path,
-        "-an", "-sn",
-        "-t", str(window),
-        "-vf", vf,
-        "-f", "null", "-",
-    ]
+    backend = "cpu"
+    args = ["-hide_banner", "-nostats"]
+    if nvdec_decoder:
+        backend = "nvdec"
+        download_format = "p010le" if pix_fmt and "10" in pix_fmt else "nv12"
+        vf = f"hwdownload,format={download_format},{vf}"
+        args.extend(
+            [
+                "-hwaccel",
+                "cuda",
+                "-hwaccel_output_format",
+                "cuda",
+                "-c:v:0",
+                nvdec_decoder,
+            ]
+        )
+    args.extend(
+        [
+            "-ss",
+            _timestamp(minute),
+            "-i",
+            path,
+            "-an",
+            "-sn",
+            "-t",
+            str(window),
+            "-vf",
+            vf,
+            "-f",
+            "null",
+            "-",
+        ]
+    )
+    started = time.monotonic()
     try:
         result = binaries.run("ffmpeg", args, timeout=60.0)
     except binaries.BinaryError as exc:
-        return WindowMeasurement(minute=minute, ok=False, error=str(exc))
+        return WindowMeasurement(
+            minute=minute,
+            ok=False,
+            error=str(exc),
+            backend=backend,
+            elapsed_ms=round((time.monotonic() - started) * 1000),
+        )
 
     crop = parse_cropdetect(result.stderr)
     # Some ffmpeg builds reject the ``reset`` option name — retry minimally.
     if crop is None and "reset" in result.stderr.lower() and "option" in result.stderr.lower():
-        args[args.index(vf)] = f"cropdetect=limit={limit}:round={rnd}"
+        retry_filter = f"cropdetect=limit={limit}:round={rnd}"
+        if nvdec_decoder:
+            download_format = "p010le" if pix_fmt and "10" in pix_fmt else "nv12"
+            retry_filter = f"hwdownload,format={download_format},{retry_filter}"
+        args[args.index(vf)] = retry_filter
         result = binaries.run("ffmpeg", args, timeout=60.0)
         crop = parse_cropdetect(result.stderr)
     if crop is None:
         return WindowMeasurement(
-            minute=minute, ok=False, error="no cropdetect output"
+            minute=minute,
+            ok=False,
+            error="no cropdetect output",
+            backend=backend,
+            elapsed_ms=round((time.monotonic() - started) * 1000),
         )
 
     w, h, _x, y = crop
     top, bottom = _bars_from_box(full_height, h, y)
     return WindowMeasurement(
-        minute=minute, ok=True, top_bar=top, bottom_bar=bottom, width=w, height=h
+        minute=minute,
+        ok=True,
+        top_bar=top,
+        bottom_bar=bottom,
+        width=w,
+        height=h,
+        backend=backend,
+        elapsed_ms=round((time.monotonic() - started) * 1000),
     )
 
 
@@ -215,10 +297,19 @@ def measure_window_trim(
         extract = binaries.run(
             "ffmpeg",
             [
-                "-y", "-hide_banner", "-loglevel", "error",
-                "-ss", _timestamp(minute),
-                "-i", path,
-                "-frames:v", "1", "-q:v", "2", tmp,
+                "-y",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-ss",
+                _timestamp(minute),
+                "-i",
+                path,
+                "-frames:v",
+                "1",
+                "-q:v",
+                "2",
+                tmp,
             ],
             timeout=60.0,
         )
@@ -230,8 +321,7 @@ def measure_window_trim(
         for fuzz in config.LETTERBOX_TRIM_FUZZ:
             trimmed = binaries.run(
                 "convert",
-                [tmp, "-fuzz", f"{fuzz}%", "-trim", "+repage",
-                 "-format", "%wx%h+%X+%Y", "info:"],
+                [tmp, "-fuzz", f"{fuzz}%", "-trim", "+repage", "-format", "%wx%h+%X+%Y", "info:"],
                 timeout=30.0,
             )
             box = parse_trim(trimmed.stdout)
@@ -304,6 +394,8 @@ def consensus(
             "bottom_bar": m.bottom_bar,
             "bar": m.bar,
             "error": m.error,
+            "backend": m.backend,
+            "elapsed_ms": m.elapsed_ms,
         }
         for m in measurements
     ]
@@ -311,10 +403,16 @@ def consensus(
     ok = [m for m in measurements if m.ok]
     if not ok:
         return DetectionResult(
-            status=STATUS_ERRORED, confidence=CONF_NONE,
-            recommended_crop_top=0, recommended_crop_bottom=0,
-            source_width=width, source_height=height, aspect_label=None,
-            samples=samples, method=method, error="no frames could be measured",
+            status=STATUS_ERRORED,
+            confidence=CONF_NONE,
+            recommended_crop_top=0,
+            recommended_crop_bottom=0,
+            source_width=width,
+            source_height=height,
+            aspect_label=None,
+            samples=samples,
+            method=method,
+            error="no frames could be measured",
         )
 
     def result(
@@ -322,12 +420,17 @@ def consensus(
     ) -> DetectionResult:
         eff = height - top - bottom
         return DetectionResult(
-            status=status, confidence=conf,
-            recommended_crop_top=top, recommended_crop_bottom=bottom,
-            source_width=width, source_height=height,
+            status=status,
+            confidence=conf,
+            recommended_crop_top=top,
+            recommended_crop_bottom=bottom,
+            source_width=width,
+            source_height=height,
             aspect_label=aspect_label(width, eff) if top or bottom else None,
-            samples=samples, method=method,
-            variable_ar=variable_ar, variable_ar_note=variable_ar_note,
+            samples=samples,
+            method=method,
+            variable_ar=variable_ar,
+            variable_ar_note=variable_ar_note,
         )
 
     def is_zero(m: WindowMeasurement) -> bool:
@@ -464,6 +567,8 @@ def detect(
     height: int,
     duration_s: float | None = None,
     color_transfer: str | None = None,
+    codec: str | None = None,
+    pix_fmt: str | None = None,
     is_tv: bool = False,
     method: str | None = None,
     config: Settings = settings,
@@ -476,17 +581,52 @@ def detect(
     minutes = sample_minutes(duration_s, is_tv=is_tv, config=config)
     measurements: list[WindowMeasurement] = []
     consecutive_clear = 0
+    nvdec_decoder = _nvdec_decoder_for(codec, config=config) if method == "cropdetect" else None
+    benchmark_key = (codec or "", pix_fmt or "", width, height)
     for minute in minutes:
         if method == "trim":
             m = measure_window_trim(path, minute, height, config=config)
         else:
-            m = measure_window_cropdetect(
-                path,
-                minute,
-                height,
-                config=config,
-                cropdetect_limit=cropdetect_limit,
-            )
+            use_nvdec = bool(nvdec_decoder and _NVDEC_BENCHMARKS.get(benchmark_key, False))
+            if nvdec_decoder and benchmark_key not in _NVDEC_BENCHMARKS:
+                cpu = measure_window_cropdetect(
+                    path, minute, height, config=config, cropdetect_limit=cropdetect_limit
+                )
+                gpu = measure_window_cropdetect(
+                    path,
+                    minute,
+                    height,
+                    config=config,
+                    cropdetect_limit=cropdetect_limit,
+                    nvdec_decoder=nvdec_decoder,
+                    pix_fmt=pix_fmt,
+                )
+                matching = (
+                    cpu.ok
+                    and gpu.ok
+                    and abs(cpu.top_bar - gpu.top_bar) <= config.LETTERBOX_AGREE_PX
+                    and abs(cpu.bottom_bar - gpu.bottom_bar) <= config.LETTERBOX_AGREE_PX
+                )
+                faster = bool(
+                    cpu.elapsed_ms and gpu.elapsed_ms and gpu.elapsed_ms < cpu.elapsed_ms * 0.9
+                )
+                _NVDEC_BENCHMARKS[benchmark_key] = matching and faster
+                m = gpu if matching and faster else cpu
+            else:
+                m = measure_window_cropdetect(
+                    path,
+                    minute,
+                    height,
+                    config=config,
+                    cropdetect_limit=cropdetect_limit,
+                    nvdec_decoder=nvdec_decoder if use_nvdec else None,
+                    pix_fmt=pix_fmt,
+                )
+                if use_nvdec and not m.ok:
+                    _NVDEC_BENCHMARKS[benchmark_key] = False
+                    m = measure_window_cropdetect(
+                        path, minute, height, config=config, cropdetect_limit=cropdetect_limit
+                    )
         measurements.append(m)
         if m.ok and m.bar <= config.LETTERBOX_NOISE_PX:
             consecutive_clear += 1
@@ -495,8 +635,11 @@ def detect(
         elif m.ok:
             consecutive_clear = 0
 
+    resolved_method = (
+        "cropdetect_nvdec" if any(m.backend == "nvdec" for m in measurements) else method
+    )
     return consensus(
-        measurements, width=width, height=height, method=method, config=config
+        measurements, width=width, height=height, method=resolved_method, config=config
     )
 
 
