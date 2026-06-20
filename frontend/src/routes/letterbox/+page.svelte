@@ -135,6 +135,7 @@
 	// per-child progress events, survives a refresh (re-attaches + the event log
 	// replays), and stays until dismissed.
 	const LB_BATCH_KEY = 'lb.activeBatch';
+	const LB_BATCH_TOTAL_KEY = 'lb.activeBatch.total';
 	let analyzing = $state(false);
 	let progress = $state(0);
 	let progressTotal = $state(0);
@@ -146,10 +147,15 @@
 	let refreshQueued = false;
 	let pollInterval: ReturnType<typeof setInterval> | null = null;
 
-	function storeBatch(id: string | null) {
+	function storeBatch(id: string | null, total?: number) {
 		if (!browser) return;
-		if (id) localStorage.setItem(LB_BATCH_KEY, id);
-		else localStorage.removeItem(LB_BATCH_KEY);
+		if (id) {
+			localStorage.setItem(LB_BATCH_KEY, id);
+			if (total !== undefined) localStorage.setItem(LB_BATCH_TOTAL_KEY, String(total));
+		} else {
+			localStorage.removeItem(LB_BATCH_KEY);
+			localStorage.removeItem(LB_BATCH_TOTAL_KEY);
+		}
 	}
 
 	/** Map the job's domain-neutral child-status tally to the UI summary. */
@@ -338,7 +344,7 @@
 				return;
 			}
 			currentBatchId = ref.job_id;
-			storeBatch(ref.job_id);
+			storeBatch(ref.job_id, ref.total); // Store both ID and total for refresh persistence
 			startPolling(); // Start real-time tray polling
 			attachBatch(ref.events_url);
 		} catch (e) {
@@ -418,9 +424,16 @@
 		currentBatchId = jobId;
 		batchStatus = job.status;
 		const prog = job.progress ?? {};
-		progressTotal = prog.children_total ?? progressTotal;
+
+		// Restore progressTotal from multiple sources to prevent 0/0 display after refresh
+		// Priority: job.progress > localStorage > current state
+		const storedTotal = browser ? localStorage.getItem(LB_BATCH_TOTAL_KEY) : null;
+		const jobTotal = prog.children_total;
+		const fallbackTotal = storedTotal ? parseInt(storedTotal, 10) : progressTotal;
+
+		progressTotal = jobTotal ?? fallbackTotal;
 		progressDone = prog.children_completed ?? 0;
-		progress = progressTotal ? (progressDone / progressTotal) * 100 : 0;
+		progress = progressTotal > 0 ? (progressDone / progressTotal) * 100 : 0;
 		if (!allowActive && !isTerminal(job.status)) {
 			dismissAnalyze();
 			return;

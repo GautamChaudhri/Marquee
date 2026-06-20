@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any
 
 from sqlalchemy import select
@@ -11,6 +12,8 @@ from marquee.config import settings
 from marquee.core.jobs.handlers import register
 from marquee.database import _get_session_factory
 from marquee.models import Job, Movie, PipelineRun
+
+logger = logging.getLogger(__name__)
 
 
 @register("poster_heal")
@@ -29,6 +32,7 @@ async def letterbox_heal(_job: Job) -> dict[str, Any]:
 
 @register("letterbox_detect")
 async def letterbox_detect(job: Job) -> dict[str, Any]:
+    from marquee.media.binaries import BinaryError  # noqa: PLC0415
     from marquee.media.letterbox_manager import letterbox_manager  # noqa: PLC0415
 
     factory = _get_session_factory()
@@ -36,8 +40,23 @@ async def letterbox_detect(job: Job) -> dict[str, Any]:
         movie = await db.get(Movie, int(job.payload["movie_id"]))
         if movie is None:
             raise RuntimeError("movie not found")
-        state = await letterbox_manager.detect_and_store(db, movie, detector=job.payload.get("detector", "v2"))
-        return {"movie_id": movie.id, "status": state.status, "confidence": state.confidence}
+
+        try:
+            state = await letterbox_manager.detect_and_store(db, movie, detector=job.payload.get("detector", "v2"))
+            return {"movie_id": movie.id, "status": state.status, "confidence": state.confidence}
+        except BinaryError as exc:
+            # Soft-fail on ffprobe timeouts to prevent cascading batch failure
+            # The movie is marked as errored but the batch continues
+            if "timed out" in str(exc).lower():
+                logger.warning("ffprobe timeout for movie %d (%s) - marking as errored", movie.id, movie.title)
+                return {
+                    "movie_id": movie.id,
+                    "status": "errored",
+                    "error": f"Media probe timed out after multiple retries - possible network storage issue",
+                    "skipped": True,
+                }
+            # Re-raise other binary errors (missing ffprobe, etc.)
+            raise
 
 
 @register("letterbox_apply")

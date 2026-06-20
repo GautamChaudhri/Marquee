@@ -64,27 +64,64 @@ def prefilter_bucket(width: int | None, height: int | None) -> PrefilterResult:
     return PrefilterResult("candidate", "sixteen_nine_container", ar)
 
 
-def probe_video(path: Path | str) -> VideoInfo | None:
+def probe_video(path: Path | str, retry_count: int = 1) -> VideoInfo | None:
     """Return the first video stream's dimensions + container/duration/codec.
 
     Returns None if ffprobe is unavailable, the file can't be read, or it has
     no video stream.
+
+    Args:
+        path: Path to the video file
+        retry_count: Number of retries with progressive timeout (0 = no retry, default 1)
     """
     if binaries.resolve("ffprobe") is None:
         logger.warning("probe_video: ffprobe not available")
         return None
 
-    result = binaries.run(
-        "ffprobe",
-        [
-            "-v", "error",
-            "-print_format", "json",
-            "-show_format",
-            "-show_streams",
-            str(path),
-        ],
-        timeout=30.0,
-    )
+    # Progressive timeouts for network/FUSE storage (mergerfs, NFS, etc.)
+    # Increased from 30s base to handle slow network storage under load
+    timeouts = [60.0, 120.0, 180.0]
+    max_attempts = min(retry_count + 1, len(timeouts))
+
+    result = None
+    last_error = None
+
+    for attempt in range(max_attempts):
+        timeout = timeouts[attempt]
+        try:
+            result = binaries.run(
+                "ffprobe",
+                [
+                    "-v", "error",
+                    "-print_format", "json",
+                    "-show_format",
+                    "-show_streams",
+                    str(path),
+                ],
+                timeout=timeout,
+            )
+            # Success - exit retry loop
+            break
+        except binaries.BinaryError as exc:
+            last_error = exc
+            if "timed out" in str(exc).lower() and attempt < max_attempts - 1:
+                logger.warning(
+                    "ffprobe timeout attempt %d/%d for %s (%.1fs) - retrying with longer timeout",
+                    attempt + 1,
+                    max_attempts,
+                    path,
+                    timeout,
+                )
+                continue
+            # Not a timeout or out of retries - return None
+            logger.error("ffprobe error for %s after %d attempts: %s", path, attempt + 1, exc)
+            return None
+
+    if result is None:
+        if last_error:
+            logger.error("ffprobe failed for %s after %d attempts: %s", path, max_attempts, last_error)
+        return None
+
     if not result.ok:
         logger.warning("ffprobe failed for %s: %s", path, result.stderr.strip()[:200])
         return None
