@@ -128,11 +128,12 @@ async def job_events(
     if await db.get(Job, job_id) is None:
         raise HTTPException(404, "Job not found")
     after = int(last_event_id or 0)
+    factory = _get_session_factory()
 
     async def events():
         nonlocal after
         while True:
-            async with _get_session_factory() as stream_db:
+            async with factory() as stream_db:
                 rows = (
                     await stream_db.execute(select(JobEvent).where(JobEvent.job_id == job_id, JobEvent.id > after).order_by(JobEvent.id))
                 ).scalars().all()

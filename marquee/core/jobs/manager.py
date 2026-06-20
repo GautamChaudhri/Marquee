@@ -249,7 +249,7 @@ class JobManager:
         attempt.metrics = {"runtime_seconds": (now - (attempt.started_at or now)).total_seconds()}
         await self._release(db, attempt.id)
         await self.emit(db, job, state="succeeded", stage=job.current_stage, attempt_id=attempt.id, detail=job.result)
-        await self._update_parent(db, job.parent_id)
+        await self._update_parent(db, job.parent_id, child=job)
         await db.commit()
 
     async def fail(self, db: AsyncSession, job: Job, attempt: JobAttempt, exc: Exception) -> None:
@@ -270,10 +270,10 @@ class JobManager:
             job.finished_at = now
         job.error = error
         await self.emit(db, job, state=job.status, stage=job.current_stage, message=str(exc), detail=error, attempt_id=attempt.id)
-        await self._update_parent(db, job.parent_id)
+        await self._update_parent(db, job.parent_id, child=job)
         await db.commit()
 
-    async def _update_parent(self, db: AsyncSession, parent_id: str | None) -> None:
+    async def _update_parent(self, db: AsyncSession, parent_id: str | None, child: Job | None = None) -> None:
         if parent_id is None:
             return
         parent = await db.get(Job, parent_id)
@@ -286,10 +286,37 @@ class JobManager:
         completed = sum(status in TERMINAL for status in statuses)
         failed = sum(status in {"failed", "dead_letter", "interrupted", "cancelled"} for status in statuses)
         parent.progress = {"children_total": total, "children_completed": completed, "children_failed": failed}
+        detail = dict(parent.progress)
+        if child is not None:
+            # Name the child that just finished so a UI can move exactly that item.
+            detail["subject_id"] = child.subject_id
+            detail["subject_status"] = child.result.get("status") if isinstance(child.result, dict) else None
         if total and completed == total:
             parent.status = "failed" if failed else "succeeded"
             parent.finished_at = utcnow()
-            await self.emit(db, parent, state=parent.status, message="all child jobs terminal", detail=parent.progress)
+            summary = await self._child_result_summary(db, parent_id)
+            detail["summary"] = summary
+            # Persist the outcome on the parent so a client that loads the job
+            # after completion (e.g. a page refresh) can show the summary.
+            parent.result = {**parent.progress, "summary": summary}
+            await self.emit(db, parent, state=parent.status, message="all child jobs terminal", detail=detail)
+        else:
+            # Incremental progress on every child completion so SSE listeners get a
+            # live bar and can react to each item finishing.  The parent's real
+            # status stays non-terminal, so the stream's `done` sentinel is not sent.
+            await self.emit(db, parent, state="progress", stage=parent.current_stage, message="child progress", detail=detail)
+
+    async def _child_result_summary(self, db: AsyncSession, parent_id: str) -> dict[str, int]:
+        """Domain-neutral tally of child ``result['status']`` values for a batch."""
+        results = (
+            await db.execute(select(Job.result).where(Job.parent_id == parent_id))
+        ).scalars().all()
+        summary: dict[str, int] = {}
+        for result in results:
+            status = result.get("status") if isinstance(result, dict) else None
+            if status:
+                summary[status] = summary.get(status, 0) + 1
+        return summary
 
     async def interrupt(self, db: AsyncSession, job: Job, attempt: JobAttempt, *, reason: str) -> None:
         """Record controlled worker shutdown without pretending work failed."""
@@ -354,6 +381,8 @@ class JobManager:
             else:
                 job.status, job.finished_at = "interrupted", utcnow()
             await self.emit(db, job, state=job.status, message="worker lease expired", attempt_id=attempt.id)
+            # Keep batch parents progressing even if a child died outside finish/fail.
+            await self._update_parent(db, job.parent_id, child=job)
         # Reap worker rows whose heartbeat went stale (crashed/killed without a
         # clean shutdown) so /metrics doesn't keep reporting ghosts as running.
         await db.execute(

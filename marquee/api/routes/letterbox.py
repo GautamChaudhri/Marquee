@@ -45,8 +45,8 @@ from marquee.core.rate_limit import RateLimiter
 from marquee.database import get_db
 from marquee.media import binaries, letterbox_preview
 from marquee.media.concurrency import gated
-from marquee.media.letterbox_manager import letterbox_manager
 from marquee.models import (
+    Job,
     LetterboxEvent,
     LetterboxReencodeArtifact,
     LetterboxState,
@@ -359,6 +359,17 @@ async def letterbox_status(db: Annotated[AsyncSession, Depends(get_db)]):
     # Re-probe binaries so a tool installed after server start (the resolve()
     # cache is per-process) shows up on the next status poll without a restart.
     binaries.reset_cache()
+    # The durable batch-detect job is the source of truth for "is a scan running?"
+    # (an unfinished parent has finished_at IS NULL). The frontend uses this id to
+    # re-attach its progress bar after a refresh.
+    batch_active = (
+        await db.execute(
+            select(Job.id)
+            .where(Job.type == "letterbox_detect_batch", Job.finished_at.is_(None))
+            .order_by(Job.created_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
     return {
         "enabled": settings.LETTERBOX_ENABLED,
         "method": settings.LETTERBOX_DETECT_METHOD,
@@ -368,7 +379,7 @@ async def letterbox_status(db: Annotated[AsyncSession, Depends(get_db)]):
         "honored_by": _HONORED_BY,
         "not_honored_by": _NOT_HONORED_BY,
         "last_scan": last_scan.isoformat() if last_scan else None,
-        "batch_active": letterbox_manager.active_job_id,
+        "batch_active": batch_active,
     }
 
 
