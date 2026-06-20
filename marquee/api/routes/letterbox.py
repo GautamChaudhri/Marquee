@@ -14,23 +14,26 @@ import logging
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel
 from sqlalchemy import case, func, select, update
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.api.deps import enforce_rate_limit, get_rate_limiter
+from marquee.api.routes.jobs import job_summary
 from marquee.config import settings
 from marquee.core import letterbox_reencode
+from marquee.core.jobs import job_manager
 from marquee.core.letterbox_prefilter import (
     prefilter_category,
     refresh_letterbox_prefilter_for_movie,
     state_has_detector_truth,
 )
-from marquee.core.letterbox_service import IneligibleError, letterbox_service
+from marquee.core.letterbox_service import letterbox_service
 from marquee.core.media_files import (
     MediaFileNotFoundError,
     MediaFileUnavailableError,
@@ -42,7 +45,7 @@ from marquee.core.rate_limit import RateLimiter
 from marquee.database import get_db
 from marquee.media import binaries, letterbox_preview
 from marquee.media.concurrency import gated
-from marquee.media.letterbox_manager import BatchInProgressError, letterbox_manager
+from marquee.media.letterbox_manager import letterbox_manager
 from marquee.models import (
     LetterboxEvent,
     LetterboxReencodeArtifact,
@@ -54,6 +57,19 @@ from marquee.models import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/letterbox", tags=["letterbox"])
+
+
+async def _file_lock(db: AsyncSession, movie: Movie) -> dict[str, int]:
+    """Per-physical-file reservation (capacity 1) for a movie's active file.
+
+    Keying every operation that touches one file — letterbox detect/apply/remove
+    *and* the subtitle/reencode media jobs — on the same ``media-file:{id}``
+    namespace is what makes them mutually exclusive (e.g. a read-only detect can
+    never overlap a crop-tag write or a re-encode of the same file).  Empty when
+    the movie has no resolvable media file, so there is nothing to lock.
+    """
+    media_file = await ensure_media_file_for_movie(db, movie)
+    return {f"media-file:{media_file.id}": 1} if media_file is not None else {}
 
 # MKV pixel-crop tags are honored by these players only (design §7).
 _HONORED_BY = ["plex-desktop", "vlc", "mpv"]
@@ -570,19 +586,34 @@ async def _start_detect_job(
     if not movie_ids:
         raise HTTPException(status_code=400, detail="No matching candidate movies")
 
-    try:
-        job_id = await letterbox_manager.start_batch(movie_ids, detector=detector)
-    except BatchInProgressError as exc:
-        raise HTTPException(
-            status_code=409,
-            detail={"message": "A letterbox batch is already running", "job_id": exc.active_job_id},
-        ) from exc
-
+    batch = await job_manager.create(
+        db,
+        job_type="letterbox_detect_batch",
+        payload={"detector": detector, "movie_ids": movie_ids},
+        priority=60,
+        subject_type="letterbox_batch",
+        subject_id=uuid4().hex,
+        status="waiting_external",
+    )
+    for movie_id in movie_ids:
+        movie = await db.get(Movie, movie_id)
+        file_lock = await _file_lock(db, movie) if movie is not None else {}
+        await job_manager.create(
+            db,
+            job_type="letterbox_detect",
+            payload={"movie_id": movie_id, "detector": detector},
+            priority=60,
+            resources={"media_read": 1, **file_lock},
+            parent_id=batch.id,
+            correlation_id=batch.correlation_id,
+            subject_type="movie",
+            subject_id=movie_id,
+        )
     return {
-        "job_id": job_id,
+        "job_id": batch.id,
         "detector": detector,
         "total": len(movie_ids),
-        "events_url": f"/api/letterbox/jobs/{job_id}/events",
+        "events_url": f"/api/jobs/{batch.id}/events",
     }
 
 
@@ -592,15 +623,21 @@ async def detect_one(
     db: Annotated[AsyncSession, Depends(get_db)],
     limiter: Annotated[RateLimiter, Depends(get_rate_limiter)],
 ):
-    """Detect a single movie synchronously and return its updated state."""
+    """Enqueue a durable single-movie detect job; returns its job summary."""
     _require_ffmpeg()
     enforce_rate_limit(limiter, f"lb_detect:{movie_id}", settings.RATE_LETTERBOX_DETECT_SECONDS)
     movie = await _load_movie(db, movie_id)
-    state = await letterbox_manager.detect_and_store(db, movie)
     limiter.record(f"lb_detect:{movie_id}")
-    detail = _state_to_dict(state, movie)
-    detail["dolby_vision"] = _dolby_vision_summary(movie)
-    return detail
+    job = await job_manager.create(
+        db,
+        job_type="letterbox_detect",
+        payload={"movie_id": movie.id, "detector": "v2"},
+        priority=80,
+        resources={"media_read": 1, **(await _file_lock(db, movie))},
+        subject_type="movie",
+        subject_id=movie.id,
+    )
+    return job_summary(job)
 
 
 @router.post("/detect", status_code=202)
@@ -619,30 +656,8 @@ async def detect_batch(
 
 @router.get("/jobs/{job_id}/events")
 async def job_events(job_id: str):
-    """SSE stream of batch-detect progress (history replay → live → done)."""
-    state = letterbox_manager.get_state(job_id)
-    if state is None:
-        raise HTTPException(status_code=404, detail=f"No batch job {job_id}")
-
-    async def event_generator():
-        from marquee.media.letterbox_manager import _SENTINEL  # noqa: PLC0415
-
-        queue = state.subscribe()
-        try:
-            while True:
-                event = await queue.get()
-                if event is _SENTINEL:
-                    yield "event: done\ndata: {}\n\n"
-                    return
-                yield f"data: {json.dumps(event)}\n\n"
-        finally:
-            state.unsubscribe(queue)
-
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
+    """Compatibility redirect to the durable generic job event stream."""
+    return RedirectResponse(url=f"/api/jobs/{job_id}/events", status_code=307)
 
 
 # ---------------------------------------------------------------------------
@@ -742,21 +757,35 @@ async def apply_one(
     if not top and not bottom:
         raise HTTPException(status_code=422, detail="No crop to apply (recommendation is 0).")
 
-    try:
-        result = await letterbox_service.apply(
-            db, movie, top=top or 0, bottom=bottom or 0, source="api"
-        )
-    except IneligibleError as exc:
-        raise HTTPException(status_code=422, detail=f"Cannot apply: {exc.reason}") from exc
-    return {"applied": result.applied, "top": result.top, "bottom": result.bottom, "verified": result.verified}
+    job = await job_manager.create(
+        db,
+        job_type="letterbox_apply",
+        payload={"movie_id": movie.id, "top": top or 0, "bottom": bottom or 0},
+        priority=80,
+        resources={"media_write": 1, **(await _file_lock(db, movie))},
+        subject_type="movie",
+        subject_id=movie.id,
+        max_attempts=1,
+    )
+    return job_summary(job)
 
 
 @router.post("/apply")
 async def apply_batch(
     body: BatchApplyRequest, db: Annotated[AsyncSession, Depends(get_db)]
 ):
-    """Apply recommended crops to several movies (e.g. all High-confidence)."""
-    results = []
+    """Queue one durable apply child per eligible movie."""
+    batch = await job_manager.create(
+        db,
+        job_type="letterbox_apply_batch",
+        payload={"movie_ids": body.movie_ids, "only_high": body.only_high},
+        priority=70,
+        subject_type="letterbox_batch",
+        subject_id=uuid4().hex,
+        status="waiting_external",
+    )
+    skipped = []
+    queued = 0
     for movie_id in body.movie_ids:
         movie = (
             await db.execute(select(Movie).where(Movie.id == movie_id))
@@ -767,26 +796,35 @@ async def apply_batch(
             )
         ).scalar_one_or_none()
         if movie is None or state is None:
-            results.append({"movie_id": movie_id, "applied": False, "reason": "not_found"})
+            skipped.append({"movie_id": movie_id, "reason": "not_found"})
             continue
         if state.status == "variable_unsafe" or not state.recommended_crop_top:
-            results.append({"movie_id": movie_id, "applied": False, "reason": "not_applicable"})
+            skipped.append({"movie_id": movie_id, "reason": "not_applicable"})
             continue
         if body.only_high and state.confidence != "high":
-            results.append({"movie_id": movie_id, "applied": False, "reason": "not_high_confidence"})
+            skipped.append({"movie_id": movie_id, "reason": "not_high_confidence"})
             continue
-        try:
-            await letterbox_service.apply(
-                db, movie,
-                top=state.recommended_crop_top or 0,
-                bottom=state.recommended_crop_bottom or 0,
-                source="api",
-            )
-            results.append({"movie_id": movie_id, "applied": True})
-        except IneligibleError as exc:
-            results.append({"movie_id": movie_id, "applied": False, "reason": exc.reason})
-    applied = sum(1 for r in results if r["applied"])
-    return {"applied": applied, "total": len(body.movie_ids), "results": results}
+        await job_manager.create(
+            db,
+            job_type="letterbox_apply",
+            payload={"movie_id": movie.id, "top": state.recommended_crop_top or 0, "bottom": state.recommended_crop_bottom or 0},
+            priority=70,
+            resources={"media_write": 1, **(await _file_lock(db, movie))},
+            parent_id=batch.id,
+            correlation_id=batch.correlation_id,
+            subject_type="movie",
+            subject_id=movie.id,
+            max_attempts=1,
+        )
+        queued += 1
+    if not queued:
+        batch.status = "succeeded"
+        batch.finished_at = datetime.now(UTC)
+        batch.progress = {"children_total": 0, "children_completed": 0, "children_failed": 0}
+        await db.commit()
+    result = job_summary(batch)
+    result.update({"queued": queued, "skipped": skipped})
+    return result
 
 
 @router.post("/movies/{movie_id}/confirm")
@@ -969,11 +1007,17 @@ async def delete_reencode_artifact(
 async def remove_one(movie_id: int, db: Annotated[AsyncSession, Depends(get_db)]):
     movie = await _load_movie(db, movie_id)
     await _load_state(db, movie_id)
-    try:
-        result = await letterbox_service.remove(db, movie, source="api")
-    except IneligibleError as exc:
-        raise HTTPException(status_code=422, detail=f"Cannot remove: {exc.reason}") from exc
-    return {"removed": result.removed, "path": result.path}
+    job = await job_manager.create(
+        db,
+        job_type="letterbox_remove",
+        payload={"movie_id": movie.id},
+        priority=80,
+        resources={"media_write": 1, **(await _file_lock(db, movie))},
+        subject_type="movie",
+        subject_id=movie.id,
+        max_attempts=1,
+    )
+    return job_summary(job)
 
 
 @router.post("/movies/{movie_id}/ignore")
@@ -1026,11 +1070,12 @@ async def mark_not_letterboxed(
 
 
 @router.post("/heal")
-async def letterbox_heal():
+async def letterbox_heal(db: Annotated[AsyncSession, Depends(get_db)]):
     """Re-apply crop tags that drifted off tagged files (tag-drift scan)."""
-    from marquee.core.letterbox_heal import letterbox_heal_scan  # noqa: PLC0415
-
-    return await letterbox_heal_scan()
+    job = await job_manager.create(
+        db, job_type="letterbox_heal", priority=20, resources={"media_write": 1}
+    )
+    return job_summary(job)
 
 
 # ---------------------------------------------------------------------------

@@ -1,9 +1,7 @@
 """Alembic environment configuration.
 
-The application uses SQLAlchemy's async engine at runtime, but migrations run
-through a synchronous engine. Alembic's operations are synchronous anyway, and
-using the sync SQLite driver avoids event-loop/thread issues in constrained
-execution environments while targeting the same database file.
+The application uses PostgreSQL's async driver at runtime; Alembic uses
+psycopg's synchronous PostgreSQL driver for schema changes.
 """
 
 from logging.config import fileConfig
@@ -50,8 +48,8 @@ def do_run_migrations(connection):
 
 def _sync_url(url: str) -> str:
     """Convert app async DB URLs to equivalent sync URLs for Alembic."""
-    if url.startswith("sqlite+aiosqlite:"):
-        return url.replace("sqlite+aiosqlite:", "sqlite:", 1)
+    if url.startswith("postgresql+asyncpg:"):
+        return url.replace("postgresql+asyncpg:", "postgresql+psycopg:", 1)
     return url
 
 

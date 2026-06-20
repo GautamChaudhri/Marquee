@@ -10,7 +10,6 @@ import logging
 import multiprocessing
 import os
 import queue
-import threading
 import time
 from collections import Counter
 from datetime import UTC, datetime
@@ -24,12 +23,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.api.deps import enforce_rate_limit, get_rate_limiter
+from marquee.api.routes.jobs import job_summary
 from marquee.config import settings
+from marquee.core.jobs import job_manager
 from marquee.core.pipeline_config import pipeline_settings
 from marquee.core.rate_limit import RateLimiter
 from marquee.database import get_db
 from marquee.ml import feedback_store
-from marquee.models import Movie
+from marquee.models import Job, Movie
 
 logger = logging.getLogger(__name__)
 
@@ -318,60 +319,34 @@ async def _monitor_rebuild_process(process, progress_queue, started_monotonic: f
 @router.post("/retrain", status_code=202)
 async def retrain_taste(
     limiter: Annotated[RateLimiter, Depends(get_rate_limiter)],
+    db: Annotated[AsyncSession, Depends(get_db)],
 ):
     """Trigger a full taste-profile rebuild + head retrain in the background."""
-    from marquee.pipeline.run_manager import run_manager  # noqa: PLC0415
-
-    global _active_rebuild_process
     enforce_rate_limit(limiter, "taste_retrain", settings.RATE_TASTE_RETRAIN_SECONDS)
-    if _rebuild_state["running"]:
-        return {"status": "already_running", "started_at": _rebuild_state["started_at"]}
-    busy = run_manager.gpu_busy()
-    if busy is not None:
-        raise HTTPException(
-            status_code=409,
-            detail={"message": "GPU is busy — cannot rebuild now", "active": busy},
-        )
-    run_manager.begin_rebuild()
-    started_monotonic = _mark_rebuild_started()
-    run_manager.release_gpu_resources()
-    try:
-        process, progress_queue = _start_rebuild_process()
-    except Exception:
-        run_manager.end_rebuild()
-        _finish_rebuild("failed", started_monotonic, "could not start rebuild process")
-        raise
-    _active_rebuild_process = process
-    _apply_rebuild_progress(
-        {
-            "stage": "queued",
-            "pid": process.pid,
-            "message": "Taste profile rebuild process started.",
-        }
-    )
-    asyncio.create_task(_monitor_rebuild_process(process, progress_queue, started_monotonic))
     limiter.record("taste_retrain")
-    return {"status": "started", "poll": "/api/taste/status", "pid": process.pid}
+    job = await job_manager.create(
+        db=db,
+        job_type="taste_rebuild", priority=90, resources={"gpu": 1}, subject_type="taste_profile", subject_id="default",
+        idempotency_key=f"taste-rebuild:{int(time.time() // settings.RATE_TASTE_RETRAIN_SECONDS)}",
+        max_attempts=1,
+    )
+    return job_summary(job)
 
 
 @router.post("/retrain/cancel")
-async def cancel_retrain_taste():
-    """Request cancellation of an active taste-profile rebuild."""
-    global _rebuild_cancel_requested
-
-    if not _rebuild_state.get("running"):
-        return {"status": "not_running", "rebuild": _rebuild_state}
-    _rebuild_cancel_requested = "taste rebuild cancelled by operator"
-    process = _active_rebuild_process
-    if process is not None and process.is_alive():
-        process.terminate()
-    _apply_rebuild_progress(
-        {
-            "message": "Taste profile rebuild cancellation requested.",
-            "substage": "cancelling",
-        }
-    )
-    return {"status": "cancelling", "poll": "/api/taste/status", "rebuild": _rebuild_state}
+async def cancel_retrain_taste(db: Annotated[AsyncSession, Depends(get_db)]):
+    """Request cancellation through the durable job lifecycle."""
+    job = (
+        await db.execute(
+            select(Job)
+            .where(Job.type == "taste_rebuild", Job.status.in_(("queued", "waiting_resource", "claimed", "running")))
+            .order_by(Job.created_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if job is None:
+        return {"status": "not_running"}
+    return job_summary(await job_manager.request_cancel(db, job))
 
 
 # ---------------------------------------------------------------------------
@@ -397,25 +372,17 @@ async def get_taste_map(recompute: bool = False):
 @router.post("/map/rebuild", status_code=202)
 async def rebuild_map(
     limiter: Annotated[RateLimiter, Depends(get_rate_limiter)],
+    db: Annotated[AsyncSession, Depends(get_db)],
 ):
     """Force a taste-map rebuild in the background."""
     enforce_rate_limit(limiter, "taste_map_rebuild", settings.RATE_TASTE_MAP_REBUILD_SECONDS)
 
-    def _run() -> None:
-        from marquee.ml.taste_map import build_map  # noqa: PLC0415
-
-        try:
-            build_map()
-        except Exception:  # noqa: BLE001
-            logger.exception("taste map rebuild failed")
-
-    threading.Thread(
-        target=_run,
-        name="marquee-taste-map-rebuild",
-        daemon=True,
-    ).start()
     limiter.record("taste_map_rebuild")
-    return {"status": "started", "poll": "/api/taste/map"}
+    job = await job_manager.create(
+        db, job_type="taste_map", priority=50, resources={"gpu": 1}, subject_type="taste_profile", subject_id="default",
+        idempotency_key=f"taste-map:{int(time.time() // settings.RATE_TASTE_MAP_REBUILD_SECONDS)}",
+    )
+    return job_summary(job)
 
 
 @router.post("/map/candidates")

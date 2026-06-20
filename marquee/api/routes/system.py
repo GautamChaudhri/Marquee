@@ -10,16 +10,18 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from marquee.api.routes.jobs import job_summary
 from marquee.api.routes.webhooks import webhook_state
 from marquee.config import settings
 from marquee.core import system_metrics
-from marquee.core.heal import heal_scan, heal_state
+from marquee.core.heal import heal_state
+from marquee.core.jobs import job_manager
 from marquee.core.letterbox_heal import letterbox_heal_state
 from marquee.core.pipeline_config import pipeline_settings
 from marquee.database import get_db
 from marquee.media import binaries
 from marquee.ml.hardware import effective_ocr_workers
-from marquee.models import MediaJob
+from marquee.models import Job, MediaJob
 from marquee.pipeline.ocr_filter import active_worker_status, paddle_cuda_available
 
 logger = logging.getLogger(__name__)
@@ -53,6 +55,7 @@ async def system_status(db: Annotated[AsyncSession, Depends(get_db)]):
     queue_rows = (
         await db.execute(select(MediaJob.status, func.count()).group_by(MediaJob.status))
     ).all()
+    job_rows = (await db.execute(select(Job.status, func.count()).group_by(Job.status))).all()
     return {
         "cache": _cache_stats(),
         "heal": heal_state,
@@ -60,6 +63,7 @@ async def system_status(db: Annotated[AsyncSession, Depends(get_db)]):
         "webhook": webhook_state,
         "tools": binaries.availability(),
         "media_jobs": dict(queue_rows),
+        "jobs": dict(job_rows),
         "ocr": _ocr_status(),
     }
 
@@ -70,7 +74,7 @@ _QUEUED_JOB_STATUSES = {"queued", "pending"}
 
 async def _worker_counts(db: AsyncSession) -> dict[str, int]:
     rows = (
-        await db.execute(select(MediaJob.status, func.count()).group_by(MediaJob.status))
+        await db.execute(select(Job.status, func.count()).group_by(Job.status))
     ).all()
     counts = {str(status): n for status, n in rows}
     return {
@@ -100,9 +104,12 @@ async def generator_health():
 
 
 @router.post("/heal")
-async def trigger_heal():
+async def trigger_heal(db: Annotated[AsyncSession, Depends(get_db)]):
     """Run the self-heal poster existence scan on demand."""
-    return await heal_scan()
+    job = await job_manager.create(
+        db, job_type="poster_heal", priority=30, resources={"network_external": 1}
+    )
+    return job_summary(job)
 
 
 @router.post("/release-gpu")

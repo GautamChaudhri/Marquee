@@ -36,7 +36,9 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from marquee.api.routes.jobs import job_summary
 from marquee.config import settings
+from marquee.core.jobs import job_manager
 from marquee.core.path_utils import PathValidationError, safe_translate_and_validate
 from marquee.core.poster_service import poster_service
 from marquee.database import _get_session_factory, get_db
@@ -205,21 +207,17 @@ async def radarr_webhook(
         return {"status": "ignored", "reason": "rename — no tracked movie or no change"}
 
     if event == "Download" and payload.isUpgrade and payload.movie:
-        # Fast ACK: do the restore in the background (it may download).
-        asyncio.create_task(
-            _restore_after_upgrade(
-                payload.movie.id, payload.movie.tmdbId, payload.movie.folderPath
-            )
+        job = await job_manager.create(
+            db,
+            job_type="radarr_upgrade",
+            payload={"radarr_id": payload.movie.id, "tmdb_id": payload.movie.tmdbId, "folder": payload.movie.folderPath},
+            priority=80,
+            resources={"network_external": 1},
+            subject_type="radarr_movie",
+            subject_id=payload.movie.id,
+            idempotency_key=f"radarr-upgrade:{payload.movie.id}:{payload.movie.folderPath or ''}",
         )
-        # The new file has no crop tags — re-queue letterbox detection.
-        asyncio.create_task(
-            _letterbox_stale_after_upgrade(payload.movie.id, payload.movie.tmdbId)
-        )
-        # Queue a durable subtitle inventory scan for the (new) file.
-        asyncio.create_task(
-            _schedule_subtitle_scan(payload.movie.id, payload.movie.tmdbId)
-        )
-        return {"status": "restore_scheduled", "movie": payload.movie.title}
+        return {"status": "restore_scheduled", "movie": payload.movie.title, "job": job_summary(job)}
 
     return {"status": "ignored", "eventType": event}
 

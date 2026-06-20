@@ -657,9 +657,8 @@ async def execute_job(db: AsyncSession, job: MediaJob, emit) -> dict:
     assert proc.stdout is not None
     # ffmpeg emits a progress line several times per second. Publish every tick
     # to live SSE subscribers (in-memory, no DB), but only persist progress and
-    # poll for cancellation about once per second — otherwise the per-frame DB
-    # commits hold the SQLite write lock almost continuously and starve readers
-    # ("database is locked").
+    # poll for cancellation about once per second so high-frequency encoder
+    # output does not create unbounded database/event-stream write pressure.
     last_persist = 0.0
     while True:
         line = await proc.stdout.readline()

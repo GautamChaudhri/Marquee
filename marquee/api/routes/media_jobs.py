@@ -21,7 +21,7 @@ from marquee.core.media_files import resolve_media_file
 from marquee.core.media_jobs import media_job_manager
 from marquee.core.media_jobs.manager import _SENTINEL
 from marquee.database import get_db
-from marquee.models import MediaJob
+from marquee.models import Job, MediaJob
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +45,12 @@ def _job_dict(job: MediaJob) -> dict:
     }
 
 
+async def _generic_for_media_job(db: AsyncSession, media_job: MediaJob) -> Job | None:
+    """Temporary bridge lookup while media-operation rows are phased out."""
+    rows = (await db.execute(select(Job).where(Job.type == media_job.operation))).scalars().all()
+    return next((row for row in rows if row.payload.get("media_job_id") == media_job.job_id), None)
+
+
 @router.post("/{job_id}/confirm")
 async def confirm_job(job_id: str, db: Annotated[AsyncSession, Depends(get_db)]):
     """Revalidate a planned job against the live file, then queue it (§23.2)."""
@@ -53,11 +59,7 @@ async def confirm_job(job_id: str, db: Annotated[AsyncSession, Depends(get_db)])
         raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
     if job.status != "planned":
         raise HTTPException(status_code=409, detail={"code": "not_planned", "status": job.status})
-    # SQLite doesn't honor DateTime(timezone=True) on round-trip, so a value
-    # written as aware UTC comes back naive — normalize before comparing.
     plan_expires_at = job.plan_expires_at
-    if plan_expires_at and plan_expires_at.tzinfo is None:
-        plan_expires_at = plan_expires_at.replace(tzinfo=UTC)
     if plan_expires_at and plan_expires_at < datetime.now(UTC):
         job.status = "failed"
         job.error_json = json.dumps({"code": "plan_stale", "error": "plan expired"})
@@ -77,6 +79,10 @@ async def confirm_job(job_id: str, db: Annotated[AsyncSession, Depends(get_db)])
 
     job.status = "queued"
     job.confirmed_at = datetime.now(UTC)
+    generic = await _generic_for_media_job(db, job)
+    if generic is not None:
+        generic.status = "queued"
+        generic.scheduled_at = datetime.now(UTC)
     await db.commit()
     return {"job_id": job_id, "status": "queued"}
 
@@ -131,9 +137,16 @@ async def job_events(job_id: str, db: Annotated[AsyncSession, Depends(get_db)]):
 
 @router.post("/{job_id}/cancel")
 async def cancel_job(job_id: str, db: Annotated[AsyncSession, Depends(get_db)]):
+    job = await db.get(MediaJob, job_id)
     ok = await media_job_manager.cancel(db, job_id)
     if not ok:
         raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+    if job is not None:
+        generic = await _generic_for_media_job(db, job)
+        if generic is not None:
+            from marquee.core.jobs import job_manager  # noqa: PLC0415
+
+            await job_manager.request_cancel(db, generic)
     return {"job_id": job_id, "cancel_requested": True}
 
 

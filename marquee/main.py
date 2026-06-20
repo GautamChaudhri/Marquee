@@ -18,7 +18,6 @@ from sqlalchemy import text
 from marquee import __version__
 from marquee.api.auth import require_api_key
 from marquee.config import settings
-from marquee.core.backup import backup_service
 from marquee.core.pipeline_config import migrate_legacy_runtime_state
 from marquee.core.rate_limit import RateLimiter
 from marquee.database import _get_engine, close_db, init_db
@@ -41,36 +40,6 @@ logger = logging.getLogger(__name__)
 _sync_rate_limiter = RateLimiter(cooldown_seconds=settings.SYNC_COOLDOWN_SECONDS)
 # Shared limiter for expensive endpoints; callers pass an explicit per-op cooldown.
 _op_rate_limiter = RateLimiter()
-
-
-async def _heal_loop() -> None:
-    """Periodically run the self-heal poster existence scan."""
-    from marquee.core.heal import heal_scan
-
-    interval = max(60, settings.HEAL_INTERVAL_MINUTES * 60)
-    while True:
-        try:
-            await asyncio.sleep(interval)
-            await heal_scan()
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.warning("Self-heal scan failed", exc_info=True)
-
-
-async def _letterbox_heal_loop() -> None:
-    """Periodically re-apply crop tags that drifted off tagged MKV files."""
-    from marquee.core.letterbox_heal import letterbox_heal_scan
-
-    interval = max(60, settings.LETTERBOX_HEAL_INTERVAL_MINUTES * 60)
-    while True:
-        try:
-            await asyncio.sleep(interval)
-            await letterbox_heal_scan()
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.warning("Letterbox tag-drift scan failed", exc_info=True)
 
 
 # ---------------------------------------------------------------------------
@@ -159,49 +128,21 @@ async def lifespan(app: FastAPI):
     app.state.sync_rate_limiter = _sync_rate_limiter
     app.state.op_rate_limiter = _op_rate_limiter
 
-    # Self-heal scan — periodically restore posters missing from disk.
-    heal_task: asyncio.Task | None = None
-    if settings.HEAL_ENABLED:
-        heal_task = asyncio.create_task(_heal_loop())
-        logger.info(
-            "Self-heal scan enabled (every %d min)", settings.HEAL_INTERVAL_MINUTES
-        )
+    # Embedded job runtime — spawn the worker + scheduler as supervised child
+    # processes so background work runs without a manual `python -m ...worker`.
+    # Heavy work stays off the API event loop, and shutdown reaps the whole
+    # process group (workers + their ffmpeg children) so nothing is orphaned.
+    app.state.worker_supervisor = None
+    if settings.JOB_EMBEDDED_WORKERS:
+        from marquee.core.jobs.supervisor import WorkerSupervisor
 
-    # Letterbox tag-drift scan — re-apply crop tags lost to foreign remuxes.
-    letterbox_heal_task: asyncio.Task | None = None
-    if settings.LETTERBOX_ENABLED and settings.LETTERBOX_HEAL_ENABLED:
-        letterbox_heal_task = asyncio.create_task(_letterbox_heal_loop())
-        logger.info(
-            "Letterbox tag-drift scan enabled (every %d min)",
-            settings.LETTERBOX_HEAL_INTERVAL_MINUTES,
-        )
-
-    # Durable media-job worker — restart-safe subtitle scan/mutation/generation.
-    from marquee.core.media_jobs import media_job_manager  # noqa: PLC0415
-    from marquee.core.subtitles.config import subtitle_settings  # noqa: PLC0415
-
-    if subtitle_settings.SUBTITLE_ENABLED:
-        await media_job_manager.start()
-
-    backup_task: asyncio.Task | None = None
-    if not settings.DEBUG and settings.BACKUP_INTERVAL_HOURS > 0:
-        backup_task = asyncio.create_task(backup_service.scheduler_loop())
-        logger.info(
-            "Internal backup scheduler enabled (every %s hours, initial delay %ss)",
-            settings.BACKUP_INTERVAL_HOURS,
-            settings.BACKUP_INITIAL_DELAY_SECONDS,
-        )
+        supervisor = WorkerSupervisor()
+        await supervisor.start()
+        app.state.worker_supervisor = supervisor
+    else:
+        logger.info("JOB_EMBEDDED_WORKERS=false — expecting external worker/scheduler.")
 
     yield  # ── application runs here ──
-
-    if heal_task is not None:
-        heal_task.cancel()
-    if letterbox_heal_task is not None:
-        letterbox_heal_task.cancel()
-    if backup_task is not None:
-        backup_task.cancel()
-    if subtitle_settings.SUBTITLE_ENABLED:
-        await media_job_manager.stop()
 
     # ── SHUTDOWN ─────────────────────────────────────────────────────
     logger.info(
@@ -211,6 +152,12 @@ async def lifespan(app: FastAPI):
     async def _cleanup():
         """Run all cleanup tasks.  Each wrapped in try/except so one
         failure doesn't block the others."""
+        supervisor = getattr(app.state, "worker_supervisor", None)
+        if supervisor is not None:
+            try:
+                await supervisor.shutdown()
+            except Exception:
+                logger.warning("Error stopping embedded job runtime", exc_info=True)
         for name in ("radarr_client", "sonarr_client", "tmdb_client"):
             client = getattr(app.state, name, None)
             if client is not None:
@@ -322,6 +269,7 @@ from marquee.api.routes.backup import router as backup_router  # noqa: E402
 from marquee.api.routes.config import router as config_router  # noqa: E402
 from marquee.api.routes.feedback import router as feedback_router  # noqa: E402
 from marquee.api.routes.hdr import router as hdr_router  # noqa: E402
+from marquee.api.routes.jobs import router as jobs_router  # noqa: E402
 from marquee.api.routes.letterbox import router as letterbox_router  # noqa: E402
 from marquee.api.routes.library import router as library_router  # noqa: E402
 from marquee.api.routes.media_jobs import router as media_jobs_router  # noqa: E402
@@ -353,6 +301,7 @@ app.include_router(hdr_router)
 app.include_router(settings_router)
 app.include_router(system_router)
 app.include_router(letterbox_router)
+app.include_router(jobs_router)
 app.include_router(subtitles_router)
 app.include_router(subtitle_movies_router)
 app.include_router(media_jobs_router)

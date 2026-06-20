@@ -31,7 +31,7 @@ def upgrade() -> None:
         sa.Column("relative_path", sa.Text(), nullable=True),
         sa.Column("size_bytes", sa.BigInteger(), nullable=True),
         sa.Column("container", sa.String(length=20), nullable=True),
-        sa.Column("is_active", sa.Boolean(), server_default=sa.text("1"), nullable=False),
+        sa.Column("is_active", sa.Boolean(), server_default=sa.true(), nullable=False),
         sa.Column("last_seen_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("last_resolved_path", sa.Text(), nullable=True),
         sa.Column(
@@ -152,9 +152,9 @@ def upgrade() -> None:
         sa.Column("source", sa.String(length=20), nullable=False),
         sa.Column("provenance_json", sa.JSON(), nullable=True),
         sa.Column(
-            "restore_on_replacement", sa.Boolean(), server_default=sa.text("0"), nullable=False
+            "restore_on_replacement", sa.Boolean(), server_default=sa.false(), nullable=False
         ),
-        sa.Column("active", sa.Boolean(), server_default=sa.text("1"), nullable=False),
+        sa.Column("active", sa.Boolean(), server_default=sa.true(), nullable=False),
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),
@@ -203,8 +203,8 @@ def upgrade() -> None:
         sa.Column("failed_count", sa.Integer(), nullable=False),
         sa.Column("request_json", sa.JSON(), nullable=True),
         sa.Column("summary_json", sa.JSON(), nullable=True),
-        sa.Column("paused", sa.Boolean(), server_default=sa.text("0"), nullable=False),
-        sa.Column("cancel_requested", sa.Boolean(), server_default=sa.text("0"), nullable=False),
+        sa.Column("paused", sa.Boolean(), server_default=sa.false(), nullable=False),
+        sa.Column("cancel_requested", sa.Boolean(), server_default=sa.false(), nullable=False),
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),
@@ -239,7 +239,7 @@ def upgrade() -> None:
         sa.Column("plan_expires_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("confirmed_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("idempotency_key", sa.String(length=200), nullable=True),
-        sa.Column("cancel_requested", sa.Boolean(), server_default=sa.text("0"), nullable=False),
+        sa.Column("cancel_requested", sa.Boolean(), server_default=sa.false(), nullable=False),
         sa.Column("attempts", sa.Integer(), nullable=False),
         sa.Column(
             "created_at",
@@ -329,7 +329,7 @@ def upgrade() -> None:
         "subtitle_policies",
         sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
         sa.Column("name", sa.String(length=120), nullable=False),
-        sa.Column("enabled", sa.Boolean(), server_default=sa.text("0"), nullable=False),
+        sa.Column("enabled", sa.Boolean(), server_default=sa.false(), nullable=False),
         sa.Column("revision", sa.Integer(), server_default=sa.text("1"), nullable=False),
         sa.Column("mode", sa.String(length=12), nullable=False),
         sa.Column("languages_json", sa.JSON(), nullable=True),
@@ -338,8 +338,8 @@ def upgrade() -> None:
         sa.Column("protect_default", sa.Boolean(), nullable=False),
         sa.Column("protect_last_full_dialogue", sa.Boolean(), nullable=False),
         sa.Column("include_external", sa.Boolean(), nullable=False),
-        sa.Column("auto_apply", sa.Boolean(), server_default=sa.text("0"), nullable=False),
-        sa.Column("audit_only", sa.Boolean(), server_default=sa.text("1"), nullable=False),
+        sa.Column("auto_apply", sa.Boolean(), server_default=sa.false(), nullable=False),
+        sa.Column("audit_only", sa.Boolean(), server_default=sa.true(), nullable=False),
         sa.Column("hardlink_action", sa.String(length=12), nullable=False),
         sa.Column("backup_mode", sa.String(length=16), nullable=False),
         sa.Column(
@@ -385,7 +385,7 @@ def upgrade() -> None:
                 rtrim(folder_path, '/') || '/' || movie_file_path,
                 movie_file_path,
                 container,
-                1,
+                TRUE,
                 CURRENT_TIMESTAMP
             FROM movies
             WHERE movie_file_path IS NOT NULL AND movie_file_path != ''
@@ -402,7 +402,7 @@ def upgrade() -> None:
                 'sonarr:path:' || min(e.id),
                 rtrim(s.series_path, '/') || '/' || e.episode_file_path,
                 min(e.episode_file_path),
-                1,
+                TRUE,
                 CURRENT_TIMESTAMP
             FROM episodes e
             JOIN series s ON s.id = e.series_id

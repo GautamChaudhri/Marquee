@@ -86,5 +86,5 @@ def setup_logging(level: str = "INFO", fmt: str = "text") -> None:
     root.addHandler(handler)
 
     # Silence noisy third-party loggers
-    for name in ("aiosqlite", "sqlalchemy.engine", "watchfiles"):
+    for name in ("asyncpg", "psycopg", "sqlalchemy.engine", "watchfiles"):
         logging.getLogger(name).setLevel(logging.ERROR)

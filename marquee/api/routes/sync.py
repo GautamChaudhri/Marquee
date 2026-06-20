@@ -29,7 +29,6 @@ def _get_rate_limiter(request: Request) -> RateLimiter:
 
 @router.post("/all")
 async def sync_all(
-    request: Request,
     db: Annotated[AsyncSession, Depends(get_db)],
     radarr: Annotated[RadarrClient, Depends(get_radarr)],
     sonarr: Annotated[SonarrClient, Depends(get_sonarr)],
@@ -38,10 +37,14 @@ async def sync_all(
 ):
     """Sync all movies and TV shows from Radarr/Sonarr into the database.
 
-    Rate-limited: only one sync allowed per cooldown window
-    (default 5 minutes).  Returns 429 if triggered too soon.
+    Runs inline: it is network + DB only (no GPU, no real CPU load), so it does
+    not go through the job manager — the caller gets the full sync report back.
+
+    Rate-limited to one sync per cooldown window (default 5 min); returns 429 if
+    triggered too soon.  The cooldown is skipped in DEBUG so local iteration is
+    not throttled.
     """
-    if not rate_limiter.check("sync_all"):
+    if not settings.DEBUG and not rate_limiter.check("sync_all"):
         remaining = rate_limiter.remaining("sync_all")
         raise HTTPException(
             status_code=429,

@@ -162,6 +162,34 @@ class MediaJobManager:
         db.add(job)
         await db.commit()
         await db.refresh(job)
+        # The legacy row remains the detailed operation record for now; the
+        # generic Job owns scheduling, resource admission, and worker leases.
+        from marquee.core.jobs import job_manager  # noqa: PLC0415
+
+        resources = {f"media-file:{media_file_id}": 1} if media_file_id is not None else {}
+        if operation == "subtitle_generate":
+            resources["gpu"] = 1
+        elif operation in {"subtitle_remove", "subtitle_embed", "subtitle_metadata", "subtitle_restore", "letterbox_reencode"}:
+            resources["media_write"] = 1
+        else:
+            resources["media_read"] = 1
+        if operation == "letterbox_reencode" and plan:
+            family = plan.get("encoder", {}).get("family")
+            if family and family != "cpu":
+                resources["gpu"] = 1
+                resources["transcode"] = 1
+        await job_manager.create(
+            db,
+            job_type=operation,
+            payload={"media_job_id": job.job_id},
+            priority=80 if trigger in {"manual", "webhook"} else 30,
+            resources=resources,
+            subject_type="media_file" if media_file_id is not None else None,
+            subject_id=media_file_id,
+            idempotency_key=f"generic:{idempotency_key}" if idempotency_key else None,
+            status="planned" if status == "planned" else "queued",
+            max_attempts=1 if operation in {"subtitle_remove", "subtitle_embed", "subtitle_metadata", "subtitle_restore", "letterbox_reencode"} else 3,
+        )
         return job
 
     async def cancel(self, db: AsyncSession, job_id: str) -> bool:

@@ -71,8 +71,33 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------
     # Database
     # ------------------------------------------------------------------
-    DB_URL: str = "sqlite+aiosqlite:///./data/marquee.db"
+    DB_URL: str = "postgresql+asyncpg://marquee:marquee@postgres:5432/marquee"
     DATA_DIR: str = "data"
+    # Standalone dev: the API auto-spawns the worker + scheduler as child
+    # processes so nothing has to be started by hand.  The Compose topology runs
+    # dedicated worker/scheduler services, so it sets this false on the API.
+    JOB_EMBEDDED_WORKERS: bool = Field(
+        default=True,
+        description="Auto-spawn the job worker + scheduler as supervised child "
+        "processes from the API. Set false when dedicated worker/scheduler "
+        "services run separately (e.g. docker-compose).",
+    )
+    JOB_EMBEDDED_WORKER_COUNT: int = Field(
+        default=1,
+        ge=1,
+        le=8,
+        description="How many embedded worker processes to spawn. Resource caps "
+        "already serialize GPU/write work, so one is usually enough.",
+    )
+    JOB_WORKER_CONCURRENCY: int = Field(default=4, ge=1, le=32)
+    JOB_POLL_SECONDS: float = Field(default=0.5, ge=0.05, le=30.0)
+    JOB_HEARTBEAT_SECONDS: int = Field(default=10, ge=1, le=300)
+    JOB_LEASE_SECONDS: int = Field(default=60, ge=10, le=3600)
+    JOB_SHUTDOWN_GRACE_SECONDS: int = Field(default=30, ge=1, le=600)
+    JOB_GPU_SLOTS: int = Field(default=1, ge=0, le=8)
+    JOB_MEDIA_READ_SLOTS: int = Field(default=2, ge=1, le=16)
+    JOB_MEDIA_WRITE_SLOTS: int = Field(default=1, ge=1, le=8)
+    JOB_NETWORK_SLOTS: int = Field(default=4, ge=1, le=32)
     # Filesystem the dashboard disk gauge reports on. Defaults to the volume
     # holding DATA_DIR; point it at the media volume for a more useful number.
     METRICS_DISK_PATH: str | None = None
@@ -84,15 +109,8 @@ class Settings(BaseSettings):
 
     @property
     def db_url_resolved(self) -> str:
-        """Database URL with path resolved relative to project root.
-
-        Unlike ``DB_URL`` (which is relative to CWD), this always points
-        to ``<project>/data/marquee.db`` regardless of where uvicorn is
-        launched from.
-        """
-        db_path = self._project_root / self.DATA_DIR / "marquee.db"
-        db_path.parent.mkdir(parents=True, exist_ok=True)
-        return f"sqlite+aiosqlite:///{db_path}"
+        """PostgreSQL connection URL used by every Marquee runtime role."""
+        return self.DB_URL
 
     @property
     def data_dir_path(self) -> Path:

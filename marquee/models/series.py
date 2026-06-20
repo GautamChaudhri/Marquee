@@ -54,7 +54,7 @@ class Series(Base, TimestampMixin, ArtworkMixin):
         Index(
             "ix_series_missing_poster",
             "id",
-            sqlite_where=text("poster_path IS NULL"),
+            postgresql_where=text("poster_path IS NULL"),
         ),
     )
 

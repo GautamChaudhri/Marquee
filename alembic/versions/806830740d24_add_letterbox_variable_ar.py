@@ -21,7 +21,7 @@ depends_on: str | Sequence[str] | None = None
 def upgrade() -> None:
     op.add_column(
         "letterbox_state",
-        sa.Column("variable_ar", sa.Boolean(), nullable=False, server_default=sa.text("0")),
+        sa.Column("variable_ar", sa.Boolean(), nullable=False, server_default=sa.false()),
     )
     op.add_column(
         "letterbox_state",

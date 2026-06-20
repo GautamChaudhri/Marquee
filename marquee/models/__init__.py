@@ -3,6 +3,15 @@
 from marquee.models.artwork_event import ArtworkEvent
 from marquee.models.base import ArtworkMixin, TimestampMixin
 from marquee.models.episode import Episode
+from marquee.models.job import (
+    Job,
+    JobAttempt,
+    JobEvent,
+    JobResource,
+    JobResourceReservation,
+    JobSchedule,
+    JobWorker,
+)
 from marquee.models.letterbox import LetterboxEvent, LetterboxState
 from marquee.models.letterbox_reencode import LetterboxReencodeArtifact
 from marquee.models.media_backup import MediaBackup
@@ -26,6 +35,13 @@ __all__ = [
     "LetterboxEvent",
     "LetterboxState",
     "LetterboxReencodeArtifact",
+    "Job",
+    "JobAttempt",
+    "JobEvent",
+    "JobResource",
+    "JobResourceReservation",
+    "JobSchedule",
+    "JobWorker",
     "EpisodeMediaFile",
     "MediaFile",
     "MediaBatch",

@@ -8,12 +8,12 @@ from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from marquee.api.deps import enforce_rate_limit, get_rate_limiter, get_tmdb
+from marquee.api.deps import enforce_rate_limit, get_rate_limiter
 from marquee.api.library_serializers import enrich_movie
 from marquee.api.results import (
     build_results_payload,
@@ -21,15 +21,16 @@ from marquee.api.results import (
     find_candidate,
     poster_url,
 )
+from marquee.api.routes.jobs import job_summary
 from marquee.api.routes.library import _coverage_by_media_file
 from marquee.config import settings
+from marquee.core.jobs import job_manager
 from marquee.core.pipeline_config import PipelineSettings, pipeline_settings
-from marquee.core.poster_sources.tmdb import TMDBClient
 from marquee.core.rate_limit import RateLimiter
 from marquee.database import get_db
 from marquee.models import ArtworkEvent, LetterboxState, MediaFile, Movie, PipelineRun
 from marquee.pipeline.gate import PosterGate
-from marquee.pipeline.run_manager import RunInProgressError, run_manager
+from marquee.pipeline.run_manager import run_manager
 from marquee.pipeline.scorer import WeightedScorer
 
 logger = logging.getLogger(__name__)
@@ -49,7 +50,6 @@ _REVIEW_QUEUE_STATUSES = {"completed", "flagged_manual"}
 async def run_pipeline(
     movie_id: int,
     db: Annotated[AsyncSession, Depends(get_db)],
-    tmdb: Annotated[TMDBClient, Depends(get_tmdb)],
     limiter: Annotated[RateLimiter, Depends(get_rate_limiter)],
 ):
     """Start a pipeline run for a movie. 202 + run_id, or 409 if one is active."""
@@ -64,54 +64,22 @@ async def run_pipeline(
         )
 
     enforce_rate_limit(limiter, f"pipeline:{movie_id}", settings.RATE_PIPELINE_RUN_SECONDS)
-    try:
-        run_id = await run_manager.start(tmdb=tmdb, movie=movie)
-    except RunInProgressError as exc:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "message": "A pipeline run is already in progress",
-                "active_run_id": exc.active_run_id,
-            },
-        ) from exc
-
     limiter.record(f"pipeline:{movie_id}")
-    return {
-        "run_id": run_id,
-        "events_url": f"/api/pipeline/runs/{run_id}/events",
-        "results_url": f"/api/pipeline/runs/{run_id}",
-    }
+    job = await job_manager.create(
+        db, job_type="poster_pipeline", payload={"movie_id": movie.id}, priority=90,
+        resources={"gpu": 1, "network_external": 1}, subject_type="movie", subject_id=movie.id,
+        idempotency_key=f"poster-pipeline:{movie.id}:{int(__import__('time').time() // settings.RATE_PIPELINE_RUN_SECONDS)}",
+    )
+    response = job_summary(job)
+    response["run_id"] = job.id
+    response["results_url"] = f"/api/pipeline/runs/{job.id}"
+    return response
 
 
 @router.get("/runs/{run_id}/events")
 async def stream_events(run_id: str):
-    """SSE stream of live stage progress. Replays history, then live, then done."""
-    state = run_manager.get_state(run_id)
-    if state is None:
-        raise HTTPException(
-            status_code=404,
-            detail=f"No live run {run_id}. It may have finished — GET the results.",
-        )
-
-    async def event_generator():
-        from marquee.pipeline.run_manager import _SENTINEL  # noqa: PLC0415
-
-        queue = state.subscribe()
-        try:
-            while True:
-                event = await queue.get()
-                if event is _SENTINEL:
-                    yield "event: done\ndata: {}\n\n"
-                    return
-                yield f"data: {json.dumps(event)}\n\n"
-        finally:
-            state.unsubscribe(queue)
-
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
+    """Compatibility redirect to the worker-independent durable event stream."""
+    return RedirectResponse(url=f"/api/jobs/{run_id}/events", status_code=307)
 
 
 async def _load_run(db: AsyncSession, run_id: str) -> PipelineRun:

@@ -16,7 +16,6 @@ import argparse
 import json
 import logging
 import re
-import sqlite3
 from pathlib import Path
 
 import numpy as np
@@ -48,22 +47,21 @@ def _parse_name(name: str) -> tuple[str, int | None]:
 
 def _db_index() -> dict[str, tuple[list[str], int | None, int | None]]:
     """{lower title: (genres, year, tmdb_id)} from the Marquee DB."""
-    db_path = settings._project_root / settings.DATA_DIR / "marquee.db"
-    if not db_path.exists():
-        return {}
+    import psycopg  # noqa: PLC0415
+
     index: dict[str, tuple[list[str], int | None, int | None]] = {}
-    conn = sqlite3.connect(str(db_path))
+    db_url = settings.db_url_resolved.replace("postgresql+asyncpg://", "postgresql://", 1)
     try:
-        for title, year, genres_json, tmdb_id in conn.execute(
-            "SELECT title, year, genres, tmdb_id FROM movies"
-        ):
-            try:
-                genres = json.loads(genres_json) if genres_json else []
-            except (json.JSONDecodeError, TypeError):
-                genres = []
-            index[str(title).lower()] = (genres or [], year, tmdb_id)
-    finally:
-        conn.close()
+        with psycopg.connect(db_url) as conn, conn.cursor() as cursor:
+            cursor.execute("SELECT title, year, genres, tmdb_id FROM movies")
+            for title, year, genres_value, tmdb_id in cursor:
+                try:
+                    genres = json.loads(genres_value) if isinstance(genres_value, str) else (genres_value or [])
+                except (json.JSONDecodeError, TypeError):
+                    genres = []
+                index[str(title).lower()] = (genres, year, tmdb_id)
+    except Exception:
+        logger.warning("Could not read movie metadata from PostgreSQL", exc_info=True)
     return index
 
 

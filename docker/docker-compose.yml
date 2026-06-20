@@ -1,75 +1,82 @@
-# Marquee — one compose file, one profile per hardware tier.
-#
-#   docker compose -f docker/docker-compose.yml --profile cpu    up -d
-#   docker compose -f docker/docker-compose.yml --profile nvidia up -d
-#   docker compose -f docker/docker-compose.yml --profile intel  up -d
-#
-# All profiles share the same .env (API keys, *arr URLs, pipeline knobs).
-# EXECUTION_PROVIDER=auto picks the right ONNX provider inside each image;
-# nothing else changes between tiers.
-
-x-marquee-common: &marquee-common
+# PostgreSQL is the sole source of truth.  API, workers, and scheduler are
+# deliberately separate so a slow encode or model run never occupies Uvicorn.
+x-marquee: &marquee
+  build:
+    context: ..
+    dockerfile: docker/Dockerfile
+    args:
+      MARQUEE_HW: ${MARQUEE_HW:-cpu}
+  image: marquee:${MARQUEE_HW:-cpu}
   env_file:
     - ../.env
   environment:
-    - EXECUTION_PROVIDER=auto
+    DB_URL: postgresql+asyncpg://marquee:${POSTGRES_PASSWORD:-marquee-dev-change-me}@postgres:5432/marquee
+    EXECUTION_PROVIDER: ${EXECUTION_PROVIDER:-auto}
+    # Dedicated marquee-worker / marquee-scheduler services run the job runtime,
+    # so the API must NOT spawn its own embedded workers.  (Only the API process
+    # reads this flag; worker/scheduler/migrate ignore it.)
+    JOB_EMBEDDED_WORKERS: "false"
   volumes:
-    - ../marquee/ml/models:/app/marquee/ml/models:ro
-    # Clean runtime state lives in a Docker volume so the container starts
-    # with an empty DB and fresh cache/training/backups directories.
     - marquee-data:/app/data
-    # Media libraries — adjust to your mounts:
+    - ../marquee/ml/models:/app/marquee/ml/models:ro
+    # Media libraries must be mounted into both API (read-only UI access) and
+    # workers (read/write operations).  Add site-specific mounts here.
     # - /mnt/media/movies:/movies
-    # - /mnt/media/tv:/tvshows
-  ports:
-    - "3165:3165"
+  depends_on:
+    migrate:
+      condition: service_completed_successfully
   restart: unless-stopped
 
 services:
-  # Universal CPU tier — Intel N150 and anything else without a usable GPU.
-  marquee-cpu:
-    <<: *marquee-common
-    profiles: ["cpu"]
-    build:
-      context: ..
-      dockerfile: docker/Dockerfile
-      args:
-        MARQUEE_HW: cpu
-    image: marquee:cpu
-    container_name: marquee
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: marquee
+      POSTGRES_USER: marquee
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-marquee-dev-change-me}
+    volumes:
+      - marquee-postgres:/var/lib/postgresql/data
+    ports:
+      # Lets a locally-run `uvicorn` connect without exposing PostgreSQL to
+      # the LAN. Containers continue to use the internal `postgres` hostname.
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U marquee -d marquee"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
 
-  # NVIDIA tier — RTX 3060/3070 and up via the NVIDIA Container Toolkit.
-  marquee-nvidia:
-    <<: *marquee-common
-    profiles: ["nvidia"]
-    build:
-      context: ..
-      dockerfile: docker/Dockerfile
-      args:
-        MARQUEE_HW: nvidia
-    image: marquee:nvidia
-    container_name: marquee
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
+  migrate:
+    <<: *marquee
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
 
-  # Intel tier — iGPU (UHD/QSV crowd) and Arc dGPU (A310+) via OpenVINO.
-  marquee-intel:
-    <<: *marquee-common
-    profiles: ["intel"]
-    build:
-      context: ..
-      dockerfile: docker/Dockerfile
-      args:
-        MARQUEE_HW: intel
-    image: marquee:intel
-    container_name: marquee
-    devices:
-      - /dev/dri:/dev/dri
+  marquee-api:
+    <<: *marquee
+    command: ["uvicorn", "marquee.main:app", "--host", "0.0.0.0", "--port", "3165", "--no-access-log"]
+    ports:
+      - "3165:3165"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:3165/health').raise_for_status()"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+
+  marquee-worker:
+    <<: *marquee
+    command: ["python", "-m", "marquee.core.jobs.worker"]
+    # For NVIDIA deployments add the compose GPU reservation here.  Keeping it
+    # off API/scheduler is intentional: only workers own accelerator work.
+
+  marquee-scheduler:
+    <<: *marquee
+    command: ["python", "-m", "marquee.core.jobs.scheduler"]
 
 volumes:
   marquee-data:
+  marquee-postgres:

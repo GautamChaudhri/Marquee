@@ -7,19 +7,18 @@ import json
 import logging
 import os
 import shutil
-import sqlite3
+import subprocess
 import tarfile
 from datetime import UTC, datetime
 from pathlib import Path
 
 from marquee.api.results import BackupInfo, BackupResult, RestoreResult
 from marquee.config import settings
-from marquee.database import close_db
 
 logger = logging.getLogger(__name__)
 
 _TMP_DIR_NAME = ".tmp"
-_DB_FILENAME = "marquee.db"
+_DB_FILENAME = "marquee.dump"
 _STATE_FILENAME = "state.tar.gz"
 _MANIFEST_FILENAME = "manifest.json"
 
@@ -55,8 +54,8 @@ class BackupService:
 
     async def create_backup(self) -> BackupResult:
         async with self._operation_lock:
-            result = self._create_backup_sync()
-            self._rotate_backups_sync(settings.BACKUP_RETENTION_DAYS)
+            result = await asyncio.to_thread(self._create_backup_sync)
+            await asyncio.to_thread(self._rotate_backups_sync, settings.BACKUP_RETENTION_DAYS)
             return result
 
     async def list_backups(self) -> list[BackupInfo]:
@@ -68,30 +67,17 @@ class BackupService:
             return self._delete_backup_sync(backup_id)
 
     async def restore_backup(self, backup_id: str) -> RestoreResult:
+        """Validate a restore request; execution belongs to maintenance mode.
+
+        Restoring the database that owns this request cannot be safely done by
+        a normal API/worker process.  The dedicated maintenance command drains
+        services and invokes pg_restore before they restart.
+        """
         async with self._operation_lock:
             backup_root = self._backup_root(backup_id)
-            self._validate_backup_pair(backup_root)
-            self._validate_backup_db(backup_root / _DB_FILENAME)
-
-            restore_tmp = self.backup_dir / _TMP_DIR_NAME / f"restore-{backup_id}"
-            if restore_tmp.exists():
-                shutil.rmtree(restore_tmp)
-            restore_tmp.mkdir(parents=True, exist_ok=True)
-            try:
-                self._extract_state_archive(backup_root / _STATE_FILENAME, restore_tmp)
-                await close_db()
-                self._restore_sync(backup_root, restore_tmp)
-            finally:
-                shutil.rmtree(restore_tmp, ignore_errors=True)
-
-            logger.info("BACKUP RESTORE | id=%s", backup_id)
-            return RestoreResult(
-                backup_id=backup_id,
-                restored=True,
-                restored_db=True,
-                restored_state=True,
-                restart_required=True,
-            )
+            await asyncio.to_thread(self._validate_backup_pair, backup_root)
+            await asyncio.to_thread(self._validate_backup_db, backup_root / _DB_FILENAME)
+            return RestoreResult(backup_id=backup_id, restored=False, restored_db=False, restored_state=False, restart_required=True)
 
     async def scheduler_loop(self) -> None:
         if settings.DEBUG or settings.BACKUP_INTERVAL_HOURS <= 0:
@@ -185,12 +171,9 @@ class BackupService:
         return result
 
     def _snapshot_db(self, db_backup_path: Path) -> None:
-        live_path = self.data_dir / "marquee.db"
-        if not live_path.exists():
-            raise FileNotFoundError(f"Database not found: {live_path}")
         db_backup_path.parent.mkdir(parents=True, exist_ok=True)
-        with sqlite3.connect(live_path) as conn:
-            conn.execute("VACUUM INTO ?", (str(db_backup_path),))
+        db_url = settings.db_url_resolved.replace("postgresql+asyncpg://", "postgresql://", 1)
+        subprocess.run(["pg_dump", "--format=custom", "--no-owner", "--file", str(db_backup_path), db_url], check=True, capture_output=True, text=True)
 
     def _build_state_archive(self, state_path: Path, backup_id: str) -> dict:
         members: list[str] = []
@@ -239,31 +222,19 @@ class BackupService:
             )
 
     def _validate_backup_db(self, db_path: Path) -> None:
-        with sqlite3.connect(db_path) as conn:
-            result = conn.execute("PRAGMA integrity_check").fetchone()
-        if not result or result[0] != "ok":
-            raise RuntimeError(f"Backup database failed integrity_check: {result}")
+        result = subprocess.run(["pg_restore", "--list", str(db_path)], check=False, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise RuntimeError(f"Backup database validation failed: {result.stderr[:300]}")
 
     def _extract_state_archive(self, archive_path: Path, extract_root: Path) -> None:
         with tarfile.open(archive_path, "r:gz") as archive:
             archive.extractall(extract_root, filter="data")
 
     def _restore_sync(self, backup_root: Path, extracted_root: Path) -> None:
-        live_db = self.data_dir / "marquee.db"
-        pre_restore = self.data_dir / "marquee.db.pre-restore"
-        wal_path = self.data_dir / "marquee.db-wal"
-        shm_path = self.data_dir / "marquee.db-shm"
-        if pre_restore.exists():
-            pre_restore.unlink()
-        for sidecar in (wal_path, shm_path):
-            if sidecar.exists():
-                sidecar.unlink()
-        if live_db.exists():
-            os.replace(live_db, pre_restore)
-        shutil.copy2(backup_root / _DB_FILENAME, live_db)
-
-        self._clear_managed_state()
-        self._restore_managed_state(extracted_root)
+        raise RuntimeError(
+            "PostgreSQL restores require the marquee-maintenance command after workers are drained; "
+            "they cannot safely run inside the database being restored."
+        )
 
     def _clear_managed_state(self) -> None:
         for rel_path in self.managed_directory_targets():

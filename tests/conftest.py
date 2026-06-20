@@ -15,6 +15,13 @@ from marquee.models import (
     ArtworkEvent,
     Episode,
     EpisodeMediaFile,
+    Job,
+    JobAttempt,
+    JobEvent,
+    JobResource,
+    JobResourceReservation,
+    JobSchedule,
+    JobWorker,
     LetterboxEvent,
     LetterboxReencodeArtifact,
     LetterboxState,
@@ -38,15 +45,20 @@ from marquee.models import (
 
 @pytest_asyncio.fixture(scope="session", autouse=True)
 async def isolated_database(tmp_path_factory):
-    """Force the entire test session onto a temporary SQLite database."""
+    """Use SQLite only for isolated unit tests; production is PostgreSQL."""
     original_data_dir = settings.DATA_DIR
+    original_db_url = settings.DB_URL
     await close_db()
     settings.DATA_DIR = str(tmp_path_factory.mktemp("marquee-test-data"))
+    settings.DB_URL = "sqlite+aiosqlite:///./data/marquee.db"
     try:
+        async with _get_engine().begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
         yield
     finally:
         await close_db()
         settings.DATA_DIR = original_data_dir
+        settings.DB_URL = original_db_url
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -78,6 +90,13 @@ async def db():
     async with factory() as session:
         # Clean all rows from previous tests (children before parents).
         for model in (
+            JobResourceReservation,
+            JobEvent,
+            JobAttempt,
+            JobSchedule,
+            JobWorker,
+            Job,
+            JobResource,
             ArtworkEvent,
             LetterboxEvent,
             LetterboxReencodeArtifact,

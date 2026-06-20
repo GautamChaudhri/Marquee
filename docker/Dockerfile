@@ -29,6 +29,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ffmpeg \
         imagemagick \
         mkvtoolnix \
+        postgresql-client \
     && if [ "${MARQUEE_HW}" = "intel" ]; then \
         apt-get install -y --no-install-recommends \
             intel-opencl-icd \

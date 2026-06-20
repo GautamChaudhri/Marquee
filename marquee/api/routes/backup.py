@@ -2,17 +2,27 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, status
+from typing import Annotated
 
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from marquee.api.routes.jobs import job_summary
 from marquee.core.backup import backup_service
+from marquee.core.jobs import job_manager
+from marquee.database import get_db
 
 router = APIRouter(prefix="/api/system", tags=["system"])
 
 
 @router.post("/backup")
-async def create_backup():
+async def create_backup(db: Annotated[AsyncSession, Depends(get_db)]):
     """Create a local rollback backup of managed Marquee state."""
-    return (await backup_service.create_backup()).to_dict()
+    job = await job_manager.create(
+        db, job_type="backup_create", priority=10, resources={"maintenance_exclusive": 1},
+        subject_type="backup", subject_id="database",
+    )
+    return job_summary(job)
 
 
 @router.get("/backups")

@@ -46,7 +46,10 @@ async def _coverage_by_media_file(db: AsyncSession, media_file_ids: list[int]) -
             )
         )
     ).all()
-    return {mid: json.loads(cov) if cov else {} for mid, cov in rows}
+    return {
+        mid: (cov if isinstance(cov, dict) else json.loads(cov)) if cov else {}
+        for mid, cov in rows
+    }
 
 
 @router.get("/movies")
