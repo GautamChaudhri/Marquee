@@ -246,7 +246,7 @@
 			analyzing = !isTerminal(job.status);
 			toast(job.status === 'cancelled' ? 'Analysis cancelled' : 'Cancellation requested', 'info');
 			if (isTerminal(job.status)) {
-				await rehydrateBatch(currentBatchId);
+				await rehydrateBatch(currentBatchId, { allowActive: true });
 			}
 		} catch (e) {
 			toast(e instanceof Error ? e.message : 'Could not cancel analysis', 'bad');
@@ -254,7 +254,8 @@
 	}
 
 	/** Re-attach to an in-flight or just-finished batch after a (re)load. */
-	async function rehydrateBatch(jobId: string) {
+	async function rehydrateBatch(jobId: string, options: { allowActive: boolean }) {
+		const { allowActive } = options;
 		let job;
 		try {
 			job = await getJob(fetch, jobId);
@@ -270,6 +271,10 @@
 		progressTotal = prog.children_total ?? progressTotal;
 		progressDone = prog.children_completed ?? 0;
 		progress = progressTotal ? (progressDone / progressTotal) * 100 : 0;
+		if (!allowActive && !isTerminal(job.status)) {
+			dismissAnalyze();
+			return;
+		}
 		if (isTerminal(job.status)) {
 			analyzing = false;
 			result = summaryFrom((job.result?.summary ?? null) as Record<string, number> | null);
@@ -283,8 +288,11 @@
 	onMount(() => {
 		const active = data.status?.batch_active ?? null;
 		const stored = browser ? localStorage.getItem(LB_BATCH_KEY) : null;
-		const jobId = active ?? stored;
-		if (jobId) void rehydrateBatch(jobId);
+		if (active) {
+			void rehydrateBatch(active, { allowActive: true });
+			return;
+		}
+		if (stored) void rehydrateBatch(stored, { allowActive: false });
 	});
 
 	$effect(() => () => unsub?.());

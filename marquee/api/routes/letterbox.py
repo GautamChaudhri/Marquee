@@ -19,16 +19,17 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel
-from sqlalchemy import case, func, select, update
+from sqlalchemy import case, exists, func, select, update
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from marquee.api.deps import enforce_rate_limit, get_rate_limiter
 from marquee.api.routes.jobs import job_summary
 from marquee.config import settings
 from marquee.core import letterbox_reencode
 from marquee.core.jobs import job_manager
-from marquee.core.jobs.manager import ACTIVE
+from marquee.core.jobs.manager import ACTIVE, TERMINAL
 from marquee.core.letterbox_prefilter import (
     prefilter_category,
     refresh_letterbox_prefilter_for_movie,
@@ -335,6 +336,7 @@ async def _load_state(db: AsyncSession, movie_id: int) -> LetterboxState:
 
 @router.get("/status")
 async def letterbox_status(db: Annotated[AsyncSession, Depends(get_db)]):
+    child_job = aliased(Job)
     rows = (
         await db.execute(
             select(LetterboxState.status, func.count())
@@ -366,7 +368,16 @@ async def letterbox_status(db: Annotated[AsyncSession, Depends(get_db)]):
     batch_active = (
         await db.execute(
             select(Job.id)
-            .where(Job.type == "letterbox_detect_batch", Job.status.in_(tuple(ACTIVE)))
+            .where(
+                Job.type == "letterbox_detect_batch",
+                Job.status.in_(tuple(ACTIVE)),
+                exists(
+                    select(1).where(
+                        child_job.parent_id == Job.id,
+                        child_job.status.notin_(tuple(TERMINAL)),
+                    )
+                ),
+            )
             .order_by(Job.created_at.desc())
             .limit(1)
         )

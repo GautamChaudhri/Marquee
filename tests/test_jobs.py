@@ -189,3 +189,27 @@ async def test_cancelling_parent_batch_cascades_and_preserves_completed_children
         "children_failed": 2,
         "summary": {"candidate": 1},
     }
+
+
+async def test_cancelled_before_execution_updates_parent_to_terminal(db):
+    parent = await job_manager.create(db, job_type="letterbox_detect_batch", status="waiting_external")
+    child = await job_manager.create(
+        db,
+        job_type="letterbox_detect",
+        parent_id=parent.id,
+        subject_type="movie",
+        subject_id=1,
+        status="retry_scheduled",
+    )
+    child.cancel_requested = True
+    await db.commit()
+
+    claim = await job_manager.claim_next(db, "worker-a")
+
+    assert claim is None
+    child_row = await db.get(Job, child.id)
+    parent_row = await db.get(Job, parent.id)
+    assert child_row is not None and child_row.status == "cancelled"
+    assert parent_row is not None
+    assert parent_row.status == "cancelled"
+    assert parent_row.finished_at is not None

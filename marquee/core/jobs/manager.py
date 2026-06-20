@@ -192,6 +192,7 @@ class JobManager:
                 job.status = "cancelled"
                 job.finished_at = now
                 await self.emit(db, job, state="cancelled", message="cancelled before execution")
+                await self._update_parent(db, job.parent_id, child=job)
                 continue
             if job.pause_requested:
                 job.status = "paused"
@@ -302,6 +303,10 @@ class JobManager:
         attempt.status = "failed"
         attempt.finished_at = now
         attempt.error = error
+        # Cancellation can be requested from another session while this handler
+        # is running, so refresh the durable flag before deciding whether to
+        # retry or terminalize the job.
+        await db.refresh(job, ["cancel_requested"])
         if job.cancel_requested:
             job.status = "cancelled"
             job.finished_at = now
@@ -427,6 +432,22 @@ class JobManager:
         await db.commit()
         return job
 
+    async def _reconcile_active_parents(self, db: AsyncSession) -> None:
+        parent_ids = (
+            await db.execute(
+                select(Job.id).where(
+                    Job.status.in_(tuple(ACTIVE)),
+                    Job.id.in_(select(Job.parent_id).where(Job.parent_id.is_not(None))),
+                )
+            )
+        ).scalars().all()
+        for parent_id in parent_ids:
+            statuses = (
+                await db.execute(select(Job.status).where(Job.parent_id == parent_id))
+            ).scalars().all()
+            if statuses and all(status in TERMINAL for status in statuses):
+                await self._update_parent(db, parent_id)
+
     async def recover(self, db: AsyncSession) -> int:
         cutoff = utcnow() - timedelta(seconds=settings.JOB_LEASE_SECONDS)
         attempts = (
@@ -465,6 +486,7 @@ class JobManager:
             )
             # Keep batch parents progressing even if a child died outside finish/fail.
             await self._update_parent(db, job.parent_id, child=job)
+        await self._reconcile_active_parents(db)
         # Reap worker rows whose heartbeat went stale (crashed/killed without a
         # clean shutdown) so /metrics doesn't keep reporting ghosts as running.
         await db.execute(
