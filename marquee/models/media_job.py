@@ -19,6 +19,7 @@ from sqlalchemy import (
     String,
     Text,
     func,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -40,9 +41,11 @@ class MediaBatch(Base):
     failed_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     request_json: Mapped[str | None] = mapped_column(JSON, nullable=True)
     summary_json: Mapped[str | None] = mapped_column(JSON, nullable=True)
-    paused: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="0")
+    paused: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
     cancel_requested: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, default=False, server_default="0"
+        Boolean, nullable=False, default=False, server_default=text("false")
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
@@ -91,7 +94,7 @@ class MediaJob(Base):
         String(200), unique=True, nullable=True
     )
     cancel_requested: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, default=False, server_default="0"
+        Boolean, nullable=False, default=False, server_default=text("false")
     )
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 

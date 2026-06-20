@@ -19,6 +19,7 @@ from sqlalchemy import (
     Integer,
     String,
     func,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -33,7 +34,7 @@ class SubtitlePolicy(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(120), nullable=False)
     enabled: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, default=False, server_default="0"
+        Boolean, nullable=False, default=False, server_default=text("false")
     )
     revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
 
@@ -50,10 +51,10 @@ class SubtitlePolicy(Base):
     )
     include_external: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     auto_apply: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, default=False, server_default="0"
+        Boolean, nullable=False, default=False, server_default=text("false")
     )
     audit_only: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, default=True, server_default="1"
+        Boolean, nullable=False, default=True, server_default=text("true")
     )
     # block | allow_break
     hardlink_action: Mapped[str] = mapped_column(String(12), nullable=False, default="block")

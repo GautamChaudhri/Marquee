@@ -1,64 +1,62 @@
 """Shared pytest fixtures for Marquee tests."""
 
+import uuid
+
 import pytest
 import pytest_asyncio
-from sqlalchemy import delete
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.pool import NullPool
 
+import marquee.database as database_module
 from marquee.config import settings
 from marquee.database import (
     Base,
     _get_engine,
     _get_session_factory,
     close_db,
-)
-from marquee.models import (
-    ArtworkEvent,
-    Episode,
-    EpisodeMediaFile,
-    Job,
-    JobAttempt,
-    JobEvent,
-    JobResource,
-    JobResourceReservation,
-    JobSchedule,
-    JobWorker,
-    LetterboxEvent,
-    LetterboxReencodeArtifact,
-    LetterboxState,
-    ManagedSubtitleAsset,
-    ManagedSubtitleBinding,
-    MediaBackup,
-    MediaBatch,
-    MediaFile,
-    MediaJob,
-    MediaJobEvent,
-    Movie,
-    PipelineRun,
-    Season,
-    Series,
-    SubtitleInventory,
-    SubtitlePolicy,
-    SubtitlePolicyBinding,
-    SubtitleTrack,
+    reset_database,
 )
 
 
 @pytest_asyncio.fixture(scope="session", autouse=True)
 async def isolated_database(tmp_path_factory):
-    """Use SQLite only for isolated unit tests; production is PostgreSQL."""
+    """Provision an isolated PostgreSQL schema for the test session."""
     original_data_dir = settings.DATA_DIR
-    original_db_url = settings.DB_URL
+    schema = f"test_{uuid.uuid4().hex}"
+    admin_engine = create_async_engine(
+        settings.db_url_resolved,
+        echo=False,
+        poolclass=NullPool,
+    )
     await close_db()
     settings.DATA_DIR = str(tmp_path_factory.mktemp("marquee-test-data"))
-    settings.DB_URL = "sqlite+aiosqlite:///./data/marquee.db"
     try:
-        async with _get_engine().begin() as conn:
+        async with admin_engine.begin() as conn:
+            await conn.execute(text(f'CREATE SCHEMA "{schema}"'))
+
+        test_engine = create_async_engine(
+            settings.db_url_resolved,
+            echo=False,
+            poolclass=NullPool,
+            connect_args={"server_settings": {"search_path": schema}},
+        )
+        database_module._engine = test_engine
+        database_module._session_factory = async_sessionmaker(
+            bind=test_engine,
+            class_=AsyncSession,
+            expire_on_commit=False,
+        )
+
+        async with test_engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
         yield
     finally:
         await close_db()
+        async with admin_engine.begin() as conn:
+            await conn.execute(text(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
+        await admin_engine.dispose()
         settings.DATA_DIR = original_data_dir
-        settings.DB_URL = original_db_url
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -88,40 +86,7 @@ async def db():
 
     factory = _get_session_factory()
     async with factory() as session:
-        # Clean all rows from previous tests (children before parents).
-        for model in (
-            JobResourceReservation,
-            JobEvent,
-            JobAttempt,
-            JobSchedule,
-            JobWorker,
-            Job,
-            JobResource,
-            ArtworkEvent,
-            LetterboxEvent,
-            LetterboxReencodeArtifact,
-            LetterboxState,
-            PipelineRun,
-            MediaJobEvent,
-            MediaBackup,
-            MediaJob,
-            MediaBatch,
-            SubtitleTrack,
-            SubtitleInventory,
-            ManagedSubtitleBinding,
-            ManagedSubtitleAsset,
-            SubtitlePolicyBinding,
-            SubtitlePolicy,
-            EpisodeMediaFile,
-            MediaFile,
-            Episode,
-            Season,
-            Series,
-            Movie,
-        ):
-            await session.execute(delete(model))
-        await session.commit()
-
+        await reset_database(session)
         yield session
         await session.rollback()
         await session.close()

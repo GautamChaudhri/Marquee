@@ -47,10 +47,7 @@ async def _make_job(db, tmp_path, monkeypatch, *, plan_expires_at):
 
 @pytest.mark.asyncio
 async def test_confirm_job_with_naive_future_expiry_succeeds(db, tmp_path, monkeypatch):
-    """Regression: SQLite hands back plan_expires_at as naive, even though it
-    was written as aware UTC — comparing it to datetime.now(UTC) must not raise."""
-    # Simulate what SQLite hands back: a naive datetime whose clock value is
-    # UTC (since that's what was written), not naive local time.
+    """Naive future expiry values should still be treated as valid."""
     naive_future = datetime.now(UTC).replace(tzinfo=None) + timedelta(hours=1)
     assert naive_future.tzinfo is None
     job = await _make_job(db, tmp_path, monkeypatch, plan_expires_at=naive_future)

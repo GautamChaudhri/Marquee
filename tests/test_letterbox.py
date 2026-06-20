@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import select, text
+from sqlalchemy import select
 
 from marquee.config import settings
 from marquee.core import letterbox_reencode
@@ -503,15 +503,6 @@ async def _noop():
 # ---------------------------------------------------------------------------
 # Pipeline resilience: non-blocking probes + DB lock avoidance
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_sqlite_busy_timeout_and_synchronous_pragmas(db):
-    # busy_timeout lets a writer wait instead of failing with "database is
-    # locked" the instant the encode worker holds the write lock.
-    assert (await db.execute(text("PRAGMA busy_timeout"))).scalar() == 5000
-    assert (await db.execute(text("PRAGMA synchronous"))).scalar() == 1  # NORMAL
-    assert (await db.execute(text("PRAGMA journal_mode"))).scalar() == "wal"
 
 
 @pytest.mark.asyncio

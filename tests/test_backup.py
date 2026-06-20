@@ -1,23 +1,24 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 import tarfile
 from pathlib import Path
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from marquee.api.results import BackupInfo, BackupResult, RestoreResult
+from marquee.api.results import BackupInfo, RestoreResult
 from marquee.config import settings
 from marquee.core import pipeline_config as pipeline_config_module
 from marquee.core.backup import backup_service
+from marquee.core.jobs import job_manager
 from marquee.core.pipeline_config import (
     PipelineSettings,
     migrate_legacy_runtime_state,
     pipeline_settings,
 )
 from marquee.main import app
+from marquee.models import Job
 
 
 @pytest.fixture
@@ -36,17 +37,9 @@ async def client():
         yield ac
 
 
-def _write_db(path: Path, values: list[str]) -> None:
+def _write_dump(path: Path, payload: bytes = b"pg_dump") -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(path) as conn:
-        conn.execute("CREATE TABLE items (value TEXT NOT NULL)")
-        conn.executemany("INSERT INTO items (value) VALUES (?)", [(value,) for value in values])
-        conn.commit()
-
-
-def _read_db_values(path: Path) -> list[str]:
-    with sqlite3.connect(path) as conn:
-        return [row[0] for row in conn.execute("SELECT value FROM items ORDER BY rowid")]
+    path.write_bytes(payload)
 
 
 def _seed_managed_state(data_dir: Path) -> None:
@@ -91,14 +84,11 @@ def _seed_managed_state(data_dir: Path) -> None:
     (data_dir / "staging").mkdir(parents=True, exist_ok=True)
     (data_dir / "staging" / "scratch.bin").write_bytes(b"scratch")
 
-    (data_dir / "marquee.db-wal").write_bytes(b"wal")
-    (data_dir / "marquee.db-shm").write_bytes(b"shm")
-
 
 def _make_backup_dir(root: Path, backup_id: str) -> None:
     backup_root = root / backup_id
     backup_root.mkdir(parents=True, exist_ok=True)
-    (backup_root / "marquee.db").write_bytes(b"db")
+    (backup_root / "marquee.dump").write_bytes(b"db")
     (backup_root / "state.tar.gz").write_bytes(b"state")
     (backup_root / "manifest.json").write_text(
         json.dumps(
@@ -174,17 +164,17 @@ def test_migrate_legacy_runtime_state_conflict_raises_clear_error(
 
 @pytest.mark.asyncio
 async def test_create_backup_creates_directory_and_excludes_transient_files(
-    backup_paths: tuple[Path, Path]
+    backup_paths: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
 ):
     data_dir, backup_dir = backup_paths
-    _write_db(data_dir / "marquee.db", ["before"])
     _seed_managed_state(data_dir)
+    monkeypatch.setattr(backup_service, "_snapshot_db", lambda path: _write_dump(path, b"dump"))
 
     result = await backup_service.create_backup()
 
     backup_root = Path(result.backup_dir)
     assert backup_root == backup_dir / result.backup_id
-    assert (backup_root / "marquee.db").is_file()
+    assert (backup_root / "marquee.dump").is_file()
     assert (backup_root / "state.tar.gz").is_file()
     assert (backup_root / "manifest.json").is_file()
 
@@ -200,40 +190,27 @@ async def test_create_backup_creates_directory_and_excludes_transient_files(
     assert "runs/archive/run.json" in members
     assert "pipeline_overrides.json" in members
     assert "staging/scratch.bin" not in members
-    assert "marquee.db-wal" not in members
-    assert "marquee.db-shm" not in members
     assert not any(name.startswith("backups/") for name in members)
 
 
 @pytest.mark.asyncio
-async def test_restore_backup_exactly_replaces_managed_state_and_db(
-    backup_paths: tuple[Path, Path]
+async def test_restore_backup_reports_restart_required_after_validation(
+    backup_paths: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
 ):
     data_dir, _backup_dir = backup_paths
-    db_path = data_dir / "marquee.db"
-    _write_db(db_path, ["before"])
     _seed_managed_state(data_dir)
+    monkeypatch.setattr(backup_service, "_snapshot_db", lambda path: _write_dump(path, b"dump"))
+    monkeypatch.setattr(backup_service, "_validate_backup_db", lambda path: None)
 
     result = await backup_service.create_backup()
 
-    with sqlite3.connect(db_path) as conn:
-        conn.execute("INSERT INTO items (value) VALUES (?)", ("after",))
-        conn.commit()
-
-    (data_dir / "feedback" / "labels.jsonl").write_text('{"label": 0}\n', encoding="utf-8")
-    (data_dir / "training" / "positive" / "newer.jpg").write_bytes(b"newer")
-    (data_dir / "cache" / "taste_map.clip-vit-b-32.npz").write_bytes(b"changed")
-    (data_dir / "staging" / "scratch.bin").write_bytes(b"keep-me")
-
     restored = await backup_service.restore_backup(result.backup_id)
 
-    assert restored.restored is True
+    assert restored.backup_id == result.backup_id
+    assert restored.restored is False
+    assert restored.restored_db is False
+    assert restored.restored_state is False
     assert restored.restart_required is True
-    assert _read_db_values(db_path) == ["before"]
-    assert (data_dir / "feedback" / "labels.jsonl").read_text(encoding="utf-8") == '{"label": 1}\n'
-    assert not (data_dir / "training" / "positive" / "newer.jpg").exists()
-    assert (data_dir / "cache" / "taste_map.clip-vit-b-32.npz").read_bytes() == b"map"
-    assert (data_dir / "staging" / "scratch.bin").read_bytes() == b"keep-me"
 
 
 def test_rotate_backups_keeps_latest_per_day_for_retention_window(
@@ -259,16 +236,20 @@ def test_rotate_backups_keeps_latest_per_day_for_retention_window(
 
 @pytest.mark.asyncio
 async def test_backup_api_endpoints(client, monkeypatch: pytest.MonkeyPatch):
-    async def fake_create():
-        return BackupResult(
-            backup_id="20260617-120000",
-            created_at="2026-06-17T12:00:00+00:00",
-            backup_dir="/tmp/backups/20260617-120000",
-            db_path="/tmp/backups/20260617-120000/marquee.db",
-            state_path="/tmp/backups/20260617-120000/state.tar.gz",
-            manifest_path="/tmp/backups/20260617-120000/manifest.json",
-            db_size=123,
-            state_size=456,
+    async def fake_create_job(db, **kwargs):
+        return Job(
+            id="backup-job",
+            type=kwargs["job_type"],
+            status="queued",
+            priority=kwargs["priority"],
+            payload={},
+            resource_request=kwargs["resources"],
+            max_attempts=3,
+            attempt_count=0,
+            cancel_requested=False,
+            pause_requested=False,
+            subject_type=kwargs["subject_type"],
+            subject_id=kwargs["subject_id"],
         )
 
     async def fake_list():
@@ -295,14 +276,15 @@ async def test_backup_api_endpoints(client, monkeypatch: pytest.MonkeyPatch):
     async def fake_delete(backup_id: str):
         return backup_id == "20260617-120000"
 
-    monkeypatch.setattr(backup_service, "create_backup", fake_create)
+    monkeypatch.setattr(job_manager, "create", fake_create_job)
     monkeypatch.setattr(backup_service, "list_backups", fake_list)
     monkeypatch.setattr(backup_service, "restore_backup", fake_restore)
     monkeypatch.setattr(backup_service, "delete_backup", fake_delete)
 
     create_response = await client.post("/api/system/backup")
     assert create_response.status_code == 200
-    assert create_response.json()["backup_id"] == "20260617-120000"
+    assert create_response.json()["job_id"] == "backup-job"
+    assert create_response.json()["type"] == "backup_create"
 
     list_response = await client.get("/api/system/backups")
     assert list_response.status_code == 200

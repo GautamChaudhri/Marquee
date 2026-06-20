@@ -18,7 +18,7 @@ from marquee.core.heal import heal_state
 from marquee.core.jobs import job_manager
 from marquee.core.letterbox_heal import letterbox_heal_state
 from marquee.core.pipeline_config import pipeline_settings
-from marquee.database import get_db
+from marquee.database import get_db, reset_database
 from marquee.media import binaries
 from marquee.ml.hardware import effective_ocr_workers
 from marquee.models import Job, MediaJob
@@ -121,3 +121,9 @@ async def release_gpu_resources():
     if busy is not None:
         return {"status": "busy", "active": busy}
     return {"status": "released", **run_manager.release_gpu_resources()}
+
+
+@router.post("/reset-db")
+async def reset_database_endpoint(db: Annotated[AsyncSession, Depends(get_db)]):
+    """Delete all application data while keeping the current schema in place."""
+    return await reset_database(db)

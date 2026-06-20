@@ -58,7 +58,7 @@ class LetterboxState(Base, TimestampMixin):
 
     # Eligibility for tag application (MKV + writable + has a video track).
     eligible: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, default=True, server_default=text("1")
+        Boolean, nullable=False, default=True, server_default=text("true")
     )
     ineligible_reason: Mapped[str | None] = mapped_column(String(120), nullable=True)
 
@@ -93,7 +93,7 @@ class LetterboxState(Base, TimestampMixin):
     # User has reviewed this row (variable-unsafe / not-letterboxed / ignored)
     # so library re-scans don't re-flag it.
     reviewed: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, default=False, server_default=text("0")
+        Boolean, nullable=False, default=False, server_default=text("false")
     )
 
     last_detected_at: Mapped[datetime | None] = mapped_column(
@@ -109,7 +109,7 @@ class LetterboxState(Base, TimestampMixin):
     # mixed with 2.40:1 scope, or full-frame 16:9 scenes mixed with letterboxed
     # ones). `variable_ar_note` is a human-readable explanation for the UI.
     variable_ar: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, default=False, server_default=text("0")
+        Boolean, nullable=False, default=False, server_default=text("false")
     )
     variable_ar_note: Mapped[str | None] = mapped_column(Text, nullable=True)
 

@@ -359,11 +359,63 @@ class LetterboxManager:
         }
 
     async def detect_and_store(
-        self, db: AsyncSession, movie: Movie, *, detector: str = "v2"
+        self, db: AsyncSession, movie: Movie, *, detector: str = "v2", parent_job_id: str | None = None
     ) -> LetterboxState:
         """Detect one movie and persist its ``LetterboxState`` + event."""
+        # Emit progress: probing video
+        if parent_job_id:
+            from marquee.core.jobs import job_manager  # noqa: PLC0415
+            from marquee.models import Job  # noqa: PLC0415
+
+            parent = await db.get(Job, parent_job_id)
+            if parent:
+                await job_manager.emit(
+                    db,
+                    parent,
+                    state="child_progress",
+                    detail={
+                        "movie_id": movie.id,
+                        "title": movie.title,
+                        "stage": "probing",
+                        "progress": 10,
+                    },
+                )
+
         detect_fn = self.detect_movie_blocking_v1 if detector == "v1" else self.detect_movie_blocking
+
+        # Emit progress: analyzing frames
+        if parent_job_id:
+            parent = await db.get(Job, parent_job_id)
+            if parent:
+                await job_manager.emit(
+                    db,
+                    parent,
+                    state="child_progress",
+                    detail={
+                        "movie_id": movie.id,
+                        "title": movie.title,
+                        "stage": "analyzing",
+                        "progress": 30,
+                    },
+                )
+
         updates = await gated(detect_fn, movie)
+
+        # Emit progress: calculating consensus
+        if parent_job_id:
+            parent = await db.get(Job, parent_job_id)
+            if parent:
+                await job_manager.emit(
+                    db,
+                    parent,
+                    state="child_progress",
+                    detail={
+                        "movie_id": movie.id,
+                        "title": movie.title,
+                        "stage": "consensus",
+                        "progress": 90,
+                    },
+                )
         container = updates.pop("_container", None)
         source_path = updates.pop("_source_path", None)
         if container and not movie.container:

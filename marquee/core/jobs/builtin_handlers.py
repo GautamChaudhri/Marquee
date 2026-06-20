@@ -36,13 +36,38 @@ async def letterbox_detect(job: Job) -> dict[str, Any]:
     from marquee.media.letterbox_manager import letterbox_manager  # noqa: PLC0415
 
     factory = _get_session_factory()
+    movie_id = int(job.payload["movie_id"])
+
     async with factory() as db:
-        movie = await db.get(Movie, int(job.payload["movie_id"]))
+        movie = await db.get(Movie, movie_id)
         if movie is None:
             raise RuntimeError("movie not found")
 
+        # Emit child_started event if this is part of a batch
+        if job.parent_id:
+            parent = await db.get(Job, job.parent_id)
+            if parent:
+                await job_manager.emit(
+                    db,
+                    parent,
+                    state="child_progress",
+                    message=f"Analyzing {movie.title}",
+                    detail={
+                        "movie_id": movie_id,
+                        "title": movie.title,
+                        "stage": "started",
+                        "progress": 0,
+                    },
+                )
+
         try:
-            state = await letterbox_manager.detect_and_store(db, movie, detector=job.payload.get("detector", "v2"))
+            # Pass job context for progress emission
+            state = await letterbox_manager.detect_and_store(
+                db,
+                movie,
+                detector=job.payload.get("detector", "v2"),
+                parent_job_id=job.parent_id,
+            )
             return {"movie_id": movie.id, "status": state.status, "confidence": state.confidence}
         except BinaryError as exc:
             # Soft-fail on ffprobe timeouts to prevent cascading batch failure

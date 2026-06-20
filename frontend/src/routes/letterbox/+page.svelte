@@ -147,6 +147,14 @@
 	let refreshQueued = false;
 	let pollInterval: ReturnType<typeof setInterval> | null = null;
 
+	// Per-movie progress tracking
+	let currentMovie = $state<{
+		id: number;
+		title: string;
+		stage: string;
+		progress: number;
+	} | null>(null);
+
 	function storeBatch(id: string | null, total?: number) {
 		if (!browser) return;
 		if (id) {
@@ -300,12 +308,34 @@
 		const ev = (raw ?? {}) as Record<string, unknown>;
 		if (typeof ev.state === 'string' && ev.state !== 'progress') batchStatus = ev.state;
 		const detail = (ev.detail ?? {}) as Record<string, unknown>;
+
+		// Track per-movie progress
+		if (ev.state === 'child_progress') {
+			if (typeof detail.movie_id === 'number' && typeof detail.title === 'string') {
+				currentMovie = {
+					id: detail.movie_id as number,
+					title: detail.title as string,
+					stage: (detail.stage as string) || 'processing',
+					progress: (detail.progress as number) || 0
+				};
+			}
+		}
+
+		// Batch-level progress
 		if (typeof detail.children_completed === 'number') {
 			progressDone = detail.children_completed as number;
 			if (typeof detail.children_total === 'number') progressTotal = detail.children_total as number;
 			progress = progressTotal ? (progressDone / progressTotal) * 100 : 0;
 			scheduleTrayRefresh(); // a child finished → reflect its move
+
+			// Clear current movie when a child completes
+			if (currentMovie && currentMovie.progress >= 90) {
+				setTimeout(() => {
+					currentMovie = null;
+				}, 1000); // Brief delay to show completion
+			}
 		}
+
 		if (
 			(ev.state === 'succeeded' ||
 				ev.state === 'failed' ||
@@ -358,6 +388,7 @@
 	function finishAnalyze() {
 		analyzing = false;
 		stopPolling(); // Stop polling when analysis completes
+		currentMovie = null; // Clear current movie display
 		if (batchStatus === 'succeeded') progress = 100;
 		unsub?.();
 		unsub = null;
@@ -386,6 +417,7 @@
 		result = null;
 		analyzing = false;
 		stopPolling(); // Ensure polling stops
+		currentMovie = null; // Clear current movie display
 		currentBatchId = null;
 		batchStatus = null;
 		progress = 0;
@@ -639,7 +671,30 @@
 			{/if}
 			</div>
 		</div>
-		{#if analyzing}<ProgressBar value={progress} tone="gold" />{/if}
+		{#if analyzing}
+			<ProgressBar value={progress} tone="gold" />
+			{#if currentMovie}
+				<div class="current-movie-progress">
+					<div class="cmp-header">
+						<span class="cmp-title">{currentMovie.title}</span>
+						<span class="cmp-stage">
+							{#if currentMovie.stage === 'started'}
+								Starting analysis…
+							{:else if currentMovie.stage === 'probing'}
+								Probing video file…
+							{:else if currentMovie.stage === 'analyzing'}
+								Analyzing frames…
+							{:else if currentMovie.stage === 'consensus'}
+								Calculating crop…
+							{:else}
+								{currentMovie.stage}
+							{/if}
+						</span>
+					</div>
+					<ProgressBar value={currentMovie.progress} tone="info" height={4} />
+				</div>
+			{/if}
+		{/if}
 	</div>
 {/if}
 
@@ -891,6 +946,36 @@
 	}
 	.analyze-bar.done .ab-label strong {
 		color: var(--good);
+	}
+	.current-movie-progress {
+		margin-top: 8px;
+		padding: 10px 12px;
+		background: color-mix(in srgb, var(--info) 8%, transparent);
+		border: 1px solid color-mix(in srgb, var(--info) 20%, var(--line));
+		border-radius: var(--radius-sm);
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+	}
+	.cmp-header {
+		display: flex;
+		align-items: baseline;
+		justify-content: space-between;
+		gap: 12px;
+		font-size: 12px;
+	}
+	.cmp-title {
+		font-weight: 500;
+		color: var(--text);
+		flex: 1;
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+	.cmp-stage {
+		color: var(--muted);
+		font-size: 11px;
+		flex: none;
 	}
 	.ab-dismiss {
 		flex: none;

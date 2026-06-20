@@ -144,6 +144,32 @@ async def init_db(retries: int = 5) -> None:
             await asyncio.sleep(wait)
 
 
+async def reset_database(db: AsyncSession) -> dict[str, str | int]:
+    """Delete all row data from every application table.
+
+    PostgreSQL uses ``TRUNCATE ... RESTART IDENTITY CASCADE`` so foreign-key
+    graphs clear in one statement and primary-key sequences restart.
+    """
+    __import__("marquee.models")
+
+    tables = list(Base.metadata.sorted_tables)
+    connection = await db.connection()
+    dialect = connection.dialect.name
+
+    if not tables:
+        return {"status": "reset", "dialect": dialect, "tables_cleared": 0}
+
+    if dialect != "postgresql":
+        raise RuntimeError(f"reset_database requires PostgreSQL, got {dialect!r}")
+
+    preparer = connection.dialect.identifier_preparer
+    formatted_tables = ", ".join(preparer.format_table(table) for table in tables)
+    await db.execute(text(f"TRUNCATE TABLE {formatted_tables} RESTART IDENTITY CASCADE"))
+
+    await db.commit()
+    return {"status": "reset", "dialect": dialect, "tables_cleared": len(tables)}
+
+
 async def close_db() -> None:
     """Dispose of the engine and connection pool.
 

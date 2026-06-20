@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, LargeBinary, String, Text, func
+from sqlalchemy import Boolean, DateTime, LargeBinary, String, Text, func, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 
@@ -90,7 +90,7 @@ class ArtworkMixin:
         Boolean,
         nullable=False,
         default=False,
-        server_default="0",
+        server_default=text("false"),
         comment="True = a human approved this poster (vs an unreviewed AI pick)",
     )
 

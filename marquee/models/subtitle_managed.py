@@ -20,6 +20,7 @@ from sqlalchemy import (
     String,
     Text,
     func,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -49,10 +50,10 @@ class ManagedSubtitleAsset(Base):
     provenance_json: Mapped[str | None] = mapped_column(JSON, nullable=True)
 
     restore_on_replacement: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, default=False, server_default="0"
+        Boolean, nullable=False, default=False, server_default=text("false")
     )
     active: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, default=True, server_default="1"
+        Boolean, nullable=False, default=True, server_default=text("true")
     )
 
     created_at: Mapped[datetime] = mapped_column(

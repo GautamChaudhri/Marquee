@@ -28,6 +28,12 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/media-jobs", tags=["media-jobs"])
 
 
+def _as_utc(value: datetime | None) -> datetime | None:
+    if value is None or value.tzinfo is not None:
+        return value
+    return value.replace(tzinfo=UTC)
+
+
 def _job_dict(job: MediaJob) -> dict:
     return {
         "job_id": job.job_id,
@@ -59,7 +65,7 @@ async def confirm_job(job_id: str, db: Annotated[AsyncSession, Depends(get_db)])
         raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
     if job.status != "planned":
         raise HTTPException(status_code=409, detail={"code": "not_planned", "status": job.status})
-    plan_expires_at = job.plan_expires_at
+    plan_expires_at = _as_utc(job.plan_expires_at)
     if plan_expires_at and plan_expires_at < datetime.now(UTC):
         job.status = "failed"
         job.error_json = json.dumps({"code": "plan_stale", "error": "plan expired"})
