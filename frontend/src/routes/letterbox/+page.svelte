@@ -21,13 +21,19 @@
 	import LetterboxCard from '$lib/components/LetterboxCard.svelte';
 	import LetterboxDetail from '$lib/components/LetterboxDetail.svelte';
 	import type { PageData } from './$types';
+	import type { LetterboxColumn } from '$lib/api/types';
 
 	let { data }: { data: PageData } = $props();
 
 	type Variant = 'candidates' | 'detected' | 'preview' | 'notlb' | 'processed';
 
-	// ── Selection (URL-driven) ─────────────────────────────────────────────────
-	const cols = $derived(data.columns);
+	// ── Reactive tray state (initialized from load, updated via SSE) ───────────
+	let cols = $state(data.columns);
+
+	// Sync columns when data changes (e.g., from URL navigation)
+	$effect(() => {
+		cols = data.columns;
+	});
 	const selFromUrl = $derived(Number(page.url.searchParams.get('sel')) || null);
 	const defaultSel = $derived(
 		cols.detected.items[0]?.movie_id ?? cols.candidates.items[0]?.movie_id ?? null
@@ -69,12 +75,27 @@
 		const ids = cols.detected.items.map((i) => i.movie_id);
 		if (ids.length === 0 || processing) return;
 		processing = true;
+
+		// Optimistic update: move all detected movies to preview tray
+		const movedItems = [...cols.detected.items];
+		cols.detected.items = [];
+		cols.detected.total = 0;
+		for (const item of movedItems) {
+			item.status = 'tagged';
+			item.reviewed = false;
+		}
+		cols.preview.items = [...movedItems, ...cols.preview.items];
+		cols.preview.total += movedItems.length;
+
 		try {
 			await applyBatch(fetch, ids);
 			toast(`Applied crop tags to ${ids.length} ${ids.length === 1 ? 'movie' : 'movies'}`, 'good');
-			await invalidateAll();
+			// Refresh to sync with backend state
+			await refreshTrays();
 		} catch (e) {
 			toast(e instanceof Error ? e.message : 'Process failed', 'bad');
+			// Rollback on error
+			await refreshTrays();
 		} finally {
 			processing = false;
 		}
@@ -84,12 +105,26 @@
 		const ids = cols.preview.items.map((i) => i.movie_id);
 		if (ids.length === 0 || confirming) return;
 		confirming = true;
+
+		// Optimistic update: move all preview movies to processed tray
+		const movedItems = [...cols.preview.items];
+		cols.preview.items = [];
+		cols.preview.total = 0;
+		for (const item of movedItems) {
+			item.reviewed = true;
+		}
+		cols.processed.items = [...movedItems, ...cols.processed.items];
+		cols.processed.total += movedItems.length;
+
 		try {
 			await Promise.all(ids.map((id) => confirmLetterbox(fetch, id)));
 			toast(`Confirmed ${ids.length} ${ids.length === 1 ? 'movie' : 'movies'}`, 'good');
-			await invalidateAll();
+			// Refresh to sync with backend state
+			await refreshTrays();
 		} catch (e) {
 			toast(e instanceof Error ? e.message : 'Confirm failed', 'bad');
+			// Rollback on error
+			await refreshTrays();
 		} finally {
 			confirming = false;
 		}
@@ -109,6 +144,7 @@
 	let result = $state<LetterboxAnalyzeSummary | null>(null);
 	let unsub: (() => void) | null = null;
 	let refreshQueued = false;
+	let pollInterval: ReturnType<typeof setInterval> | null = null;
 
 	function storeBatch(id: string | null) {
 		if (!browser) return;
@@ -129,6 +165,116 @@
 		};
 	}
 
+	/** Move a movie from one tray to another based on its new status. */
+	function moveMovieBetweenTrays(movieId: number, newStatus: string) {
+		// Find and remove the movie from its current tray
+		let movedItem: LetterboxColumnItem | null = null;
+
+		for (const [key, col] of Object.entries(cols) as [keyof typeof cols, LetterboxColumn][]) {
+			const idx = col.items.findIndex((i: LetterboxColumnItem) => i.movie_id === movieId);
+			if (idx !== -1) {
+				movedItem = col.items[idx];
+				col.items = col.items.filter((_: LetterboxColumnItem, i: number) => i !== idx);
+				col.total = Math.max(0, col.total - 1);
+				break;
+			}
+		}
+
+		if (!movedItem) return; // Movie not found in any tray
+
+		// Update the item's status
+		movedItem.status = newStatus;
+
+		// Determine target tray based on status
+		let targetTray: keyof typeof cols | null = null;
+		if (newStatus === 'prefilter_candidate' || newStatus === 'prefilter_unknown') {
+			targetTray = 'candidates';
+		} else if (newStatus === 'candidate') {
+			targetTray = 'detected';
+		} else if (newStatus === 'tagged' && !movedItem.reviewed) {
+			targetTray = 'preview';
+		} else if (newStatus === 'tagged' && movedItem.reviewed) {
+			targetTray = 'processed';
+		} else if (newStatus === 'not_letterboxed' || newStatus === 'variable_unsafe' || newStatus === 'skipped') {
+			targetTray = 'notLetterboxed';
+		}
+
+		if (targetTray && cols[targetTray]) {
+			// Add to the target tray (prepend for recency)
+			cols[targetTray].items = [movedItem, ...cols[targetTray].items];
+			cols[targetTray].total += 1;
+
+			// If we're displaying a limited view, keep it trimmed
+			const CAP = 25;
+			if (cols[targetTray].items.length > CAP) {
+				cols[targetTray].items = cols[targetTray].items.slice(0, CAP);
+			}
+		}
+	}
+
+	/** Fetch updated tray data from the backend and merge into reactive state. */
+	async function refreshTrays() {
+		if (!browser) return;
+		try {
+			const [candidates, detected, preview, notLb, processed] = await Promise.all([
+				listColumn(fetch, {
+					status: 'prefilter_candidate,prefilter_unknown',
+					sort: 'confidence',
+					page_size: 25
+				}),
+				listColumn(fetch, {
+					status: 'candidate',
+					sort: 'confidence',
+					desc: data.detectedDesc,
+					page_size: 25
+				}),
+				listColumn(fetch, {
+					status: 'tagged',
+					reviewed: false,
+					sort: 'recent',
+					page_size: 25
+				}),
+				listColumn(fetch, {
+					status: 'not_letterboxed',
+					sort: 'recent',
+					page_size: 25
+				}),
+				listColumn(fetch, {
+					status: 'tagged',
+					reviewed: true,
+					sort: 'recent',
+					page_size: 25
+				})
+			]);
+
+			// Update reactive state
+			cols = {
+				candidates,
+				detected,
+				preview: { items: preview.items.filter(i => !i.reviewed), total: preview.items.filter(i => !i.reviewed).length },
+				notLetterboxed: notLb,
+				processed: { items: processed.items.filter(i => i.reviewed), total: processed.items.filter(i => i.reviewed).length }
+			};
+		} catch (e) {
+			// Silently degrade - don't spam toasts during active polling
+			console.warn('Tray refresh failed:', e);
+		}
+	}
+
+	/** Start polling for tray updates while batch analysis is running. */
+	function startPolling() {
+		if (pollInterval) return;
+		pollInterval = setInterval(refreshTrays, 3000); // Poll every 3 seconds
+	}
+
+	/** Stop polling when batch analysis completes. */
+	function stopPolling() {
+		if (pollInterval) {
+			clearInterval(pollInterval);
+			pollInterval = null;
+		}
+	}
+
 	/** Refresh the trays so finished movies hop to their next tray. Coalesced so a
 	 *  burst of replayed events (after a refresh) triggers a single reload. */
 	function scheduleTrayRefresh() {
@@ -136,8 +282,8 @@
 		refreshQueued = true;
 		setTimeout(() => {
 			refreshQueued = false;
-			invalidateAll();
-		}, 300);
+			refreshTrays(); // Direct refresh instead of invalidateAll
+		}, 800); // Debounce to avoid rapid-fire during replayed events
 	}
 
 	function onBatchEvent(type: string, raw: unknown) {
@@ -193,6 +339,7 @@
 			}
 			currentBatchId = ref.job_id;
 			storeBatch(ref.job_id);
+			startPolling(); // Start real-time tray polling
 			attachBatch(ref.events_url);
 		} catch (e) {
 			analyzing = false;
@@ -204,6 +351,7 @@
 
 	function finishAnalyze() {
 		analyzing = false;
+		stopPolling(); // Stop polling when analysis completes
 		if (batchStatus === 'succeeded') progress = 100;
 		unsub?.();
 		unsub = null;
@@ -222,7 +370,8 @@
 		} else {
 			toast('Analysis complete', 'good');
 		}
-		invalidateAll();
+		// Final refresh to ensure trays are in sync
+		refreshTrays();
 		// The batch id stays in localStorage so the summary survives a refresh
 		// until the user dismisses it.
 	}
@@ -230,6 +379,7 @@
 	function dismissAnalyze() {
 		result = null;
 		analyzing = false;
+		stopPolling(); // Ensure polling stops
 		currentBatchId = null;
 		batchStatus = null;
 		progress = 0;
@@ -281,6 +431,7 @@
 			if (!result && !progressTotal) storeBatch(null); // nothing to show → forget it
 		} else {
 			analyzing = true;
+			startPolling(); // Resume polling for rehydrated active batch
 			attachBatch(job.events_url);
 		}
 	}
@@ -293,9 +444,24 @@
 			return;
 		}
 		if (stored) void rehydrateBatch(stored, { allowActive: false });
+
+		// Refresh trays when user returns to tab (ensures data consistency)
+		const onVisibilityChange = () => {
+			if (document.visibilityState === 'visible' && !analyzing) {
+				refreshTrays();
+			}
+		};
+		document.addEventListener('visibilitychange', onVisibilityChange);
+
+		return () => {
+			document.removeEventListener('visibilitychange', onVisibilityChange);
+		};
 	});
 
-	$effect(() => () => unsub?.());
+	$effect(() => () => {
+		unsub?.();
+		stopPolling();
+	});
 
 	// ── Header chips ───────────────────────────────────────────────────────────
 	function relTime(iso: string | null): string {
@@ -464,7 +630,7 @@
 	</div>
 {/if}
 
-<LetterboxDetail movieId={selected} onChanged={invalidateAll} onAnalyzeAll={doAnalyze} {analyzing} />
+<LetterboxDetail movieId={selected} onChanged={refreshTrays} onAnalyzeAll={doAnalyze} {analyzing} />
 
 <!-- Stage breadcrumb -->
 <div class="flow">
