@@ -1,4 +1,6 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
+	import { browser } from '$app/environment';
 	import { goto, invalidateAll } from '$app/navigation';
 	import { page } from '$app/state';
 	import { subscribe } from '$lib/sse';
@@ -10,6 +12,7 @@
 		confirmLetterbox,
 		listColumn
 	} from '$lib/api/letterbox';
+	import { getJob, isTerminal } from '$lib/api/jobs';
 	import type { LetterboxAnalyzeSummary, LetterboxColumnItem } from '$lib/api/types';
 	import SectionHeader from '$lib/components/SectionHeader.svelte';
 	import StatusDot from '$lib/components/StatusDot.svelte';
@@ -92,13 +95,73 @@
 		}
 	}
 
-	// ── Analyze (batch frame analysis over SSE) ────────────────────────────────
+	// ── Analyze (batch frame analysis tracked via the durable job) ─────────────
+	// The bar is driven by the `letterbox_detect_batch` job: it updates live from
+	// per-child progress events, survives a refresh (re-attaches + the event log
+	// replays), and stays until dismissed.
+	const LB_BATCH_KEY = 'lb.activeBatch';
 	let analyzing = $state(false);
 	let progress = $state(0);
 	let progressTotal = $state(0);
 	let progressDone = $state(0);
 	let result = $state<LetterboxAnalyzeSummary | null>(null);
 	let unsub: (() => void) | null = null;
+	let refreshQueued = false;
+
+	function storeBatch(id: string | null) {
+		if (!browser) return;
+		if (id) localStorage.setItem(LB_BATCH_KEY, id);
+		else localStorage.removeItem(LB_BATCH_KEY);
+	}
+
+	/** Map the job's domain-neutral child-status tally to the UI summary. */
+	function summaryFrom(s: Record<string, number> | null | undefined): LetterboxAnalyzeSummary | null {
+		if (!s) return null;
+		const total = Object.values(s).reduce((a, b) => a + (b ?? 0), 0);
+		return {
+			candidate: s.candidate ?? 0,
+			not_letterboxed: s.not_letterboxed ?? 0,
+			variable: s.variable_unsafe ?? 0,
+			total,
+			completed: total
+		};
+	}
+
+	/** Refresh the trays so finished movies hop to their next tray. Coalesced so a
+	 *  burst of replayed events (after a refresh) triggers a single reload. */
+	function scheduleTrayRefresh() {
+		if (refreshQueued) return;
+		refreshQueued = true;
+		setTimeout(() => {
+			refreshQueued = false;
+			invalidateAll();
+		}, 300);
+	}
+
+	function onBatchEvent(type: string, raw: unknown) {
+		if (type === 'done') {
+			finishAnalyze();
+			return;
+		}
+		const ev = (raw ?? {}) as Record<string, unknown>;
+		const detail = (ev.detail ?? {}) as Record<string, unknown>;
+		if (typeof detail.children_completed === 'number') {
+			progressDone = detail.children_completed as number;
+			if (typeof detail.children_total === 'number') progressTotal = detail.children_total as number;
+			progress = progressTotal ? (progressDone / progressTotal) * 100 : 0;
+			scheduleTrayRefresh(); // a child finished → reflect its move
+		}
+		if ((ev.state === 'succeeded' || ev.state === 'failed') && detail.summary) {
+			result = summaryFrom(detail.summary as Record<string, number>);
+		}
+	}
+
+	/** Subscribe to a batch job's durable event stream. The stream replays all
+	 *  prior events on connect, so this catches up to live progress after a refresh. */
+	function attachBatch(eventsUrl: string) {
+		unsub?.();
+		unsub = subscribe(eventsUrl, ['message', 'done'], onBatchEvent);
+	}
 
 	async function doAnalyze() {
 		if (analyzing) return;
@@ -113,25 +176,14 @@
 			if (ref.total === 0) {
 				toast('No candidates to analyze', 'info');
 				analyzing = false;
+				storeBatch(null);
 				return;
 			}
-			unsub = subscribe(ref.events_url, ['message', 'done'], (type, raw) => {
-				if (type === 'done') {
-					finishAnalyze();
-					return;
-				}
-				const d = (raw ?? {}) as Record<string, unknown>;
-				if (d.state === 'done' && d.summary) {
-					result = d.summary as unknown as LetterboxAnalyzeSummary;
-				} else if (typeof d.completed === 'number') {
-					progressDone = d.completed as number;
-					if (typeof d.total === 'number') progressTotal = d.total as number;
-					progress = progressTotal ? (progressDone / progressTotal) * 100 : 0;
-				}
-			});
+			storeBatch(ref.job_id);
+			attachBatch(ref.events_url);
 		} catch (e) {
-			toast(e instanceof Error ? e.message : 'Analysis failed to start', 'bad');
 			analyzing = false;
+			toast(e instanceof Error ? e.message : 'Analysis failed to start', 'bad');
 		}
 	}
 
@@ -150,7 +202,44 @@
 			toast('Analysis complete', 'good');
 		}
 		invalidateAll();
+		// The batch id stays in localStorage so the summary survives a refresh
+		// until the user dismisses it.
 	}
+
+	function dismissAnalyze() {
+		result = null;
+		storeBatch(null);
+	}
+
+	/** Re-attach to an in-flight or just-finished batch after a (re)load. */
+	async function rehydrateBatch(jobId: string) {
+		let job;
+		try {
+			job = await getJob(fetch, jobId);
+		} catch {
+			storeBatch(null);
+			return;
+		}
+		const prog = job.progress ?? {};
+		progressTotal = prog.children_total ?? progressTotal;
+		progressDone = prog.children_completed ?? 0;
+		progress = progressTotal ? (progressDone / progressTotal) * 100 : 0;
+		if (isTerminal(job.status)) {
+			analyzing = false;
+			result = summaryFrom((job.result?.summary ?? null) as Record<string, number> | null);
+			if (!result) storeBatch(null); // nothing to show → forget it
+		} else {
+			analyzing = true;
+			attachBatch(job.events_url);
+		}
+	}
+
+	onMount(() => {
+		const active = data.status?.batch_active ?? null;
+		const stored = browser ? localStorage.getItem(LB_BATCH_KEY) : null;
+		const jobId = active ?? stored;
+		if (jobId) void rehydrateBatch(jobId);
+	});
 
 	$effect(() => () => unsub?.());
 
@@ -279,7 +368,7 @@
 				{/if}
 			</span>
 			{#if !analyzing}
-				<button class="ab-dismiss" onclick={() => (result = null)} aria-label="Dismiss">
+				<button class="ab-dismiss" onclick={dismissAnalyze} aria-label="Dismiss">
 					<Icon name="x" size={14} />
 				</button>
 			{/if}
