@@ -12,7 +12,7 @@
 		confirmLetterbox,
 		listColumn
 	} from '$lib/api/letterbox';
-	import { getJob, isTerminal } from '$lib/api/jobs';
+	import { cancelJob as cancelBatchJob, getJob, isTerminal } from '$lib/api/jobs';
 	import type { LetterboxAnalyzeSummary, LetterboxColumnItem } from '$lib/api/types';
 	import SectionHeader from '$lib/components/SectionHeader.svelte';
 	import StatusDot from '$lib/components/StatusDot.svelte';
@@ -104,6 +104,8 @@
 	let progress = $state(0);
 	let progressTotal = $state(0);
 	let progressDone = $state(0);
+	let currentBatchId = $state<string | null>(null);
+	let batchStatus = $state<string | null>(null);
 	let result = $state<LetterboxAnalyzeSummary | null>(null);
 	let unsub: (() => void) | null = null;
 	let refreshQueued = false;
@@ -144,6 +146,7 @@
 			return;
 		}
 		const ev = (raw ?? {}) as Record<string, unknown>;
+		if (typeof ev.state === 'string' && ev.state !== 'progress') batchStatus = ev.state;
 		const detail = (ev.detail ?? {}) as Record<string, unknown>;
 		if (typeof detail.children_completed === 'number') {
 			progressDone = detail.children_completed as number;
@@ -151,7 +154,13 @@
 			progress = progressTotal ? (progressDone / progressTotal) * 100 : 0;
 			scheduleTrayRefresh(); // a child finished → reflect its move
 		}
-		if ((ev.state === 'succeeded' || ev.state === 'failed') && detail.summary) {
+		if (
+			(ev.state === 'succeeded' ||
+				ev.state === 'failed' ||
+				ev.state === 'cancelled' ||
+				ev.state === 'interrupted') &&
+			detail.summary
+		) {
 			result = summaryFrom(detail.summary as Record<string, number>);
 		}
 	}
@@ -166,6 +175,7 @@
 	async function doAnalyze() {
 		if (analyzing) return;
 		analyzing = true;
+		batchStatus = 'waiting_external';
 		result = null;
 		progress = 0;
 		progressDone = 0;
@@ -176,23 +186,34 @@
 			if (ref.total === 0) {
 				toast('No candidates to analyze', 'info');
 				analyzing = false;
+				currentBatchId = null;
+				batchStatus = null;
 				storeBatch(null);
 				return;
 			}
+			currentBatchId = ref.job_id;
 			storeBatch(ref.job_id);
 			attachBatch(ref.events_url);
 		} catch (e) {
 			analyzing = false;
+			currentBatchId = null;
+			batchStatus = null;
 			toast(e instanceof Error ? e.message : 'Analysis failed to start', 'bad');
 		}
 	}
 
 	function finishAnalyze() {
 		analyzing = false;
-		progress = 100;
+		if (batchStatus === 'succeeded') progress = 100;
 		unsub?.();
 		unsub = null;
-		if (result) {
+		if (batchStatus === 'cancelled') {
+			toast(`Analysis cancelled at ${progressDone}/${progressTotal}`, 'info');
+		} else if (batchStatus === 'interrupted') {
+			toast(`Analysis stopped at ${progressDone}/${progressTotal}`, 'info');
+		} else if (batchStatus === 'failed') {
+			toast('Analysis failed', 'bad');
+		} else if (result) {
 			const nlb = result.not_letterboxed;
 			toast(
 				`Analysis complete — ${result.candidate} staged${nlb ? `, ${nlb} cleared` : ''}`,
@@ -208,7 +229,28 @@
 
 	function dismissAnalyze() {
 		result = null;
+		analyzing = false;
+		currentBatchId = null;
+		batchStatus = null;
+		progress = 0;
+		progressDone = 0;
+		progressTotal = 0;
 		storeBatch(null);
+	}
+
+	async function cancelAnalyze() {
+		if (!currentBatchId || batchStatus === 'cancelling') return;
+		try {
+			const job = await cancelBatchJob(fetch, currentBatchId);
+			batchStatus = job.status;
+			analyzing = !isTerminal(job.status);
+			toast(job.status === 'cancelled' ? 'Analysis cancelled' : 'Cancellation requested', 'info');
+			if (isTerminal(job.status)) {
+				await rehydrateBatch(currentBatchId);
+			}
+		} catch (e) {
+			toast(e instanceof Error ? e.message : 'Could not cancel analysis', 'bad');
+		}
 	}
 
 	/** Re-attach to an in-flight or just-finished batch after a (re)load. */
@@ -217,9 +259,13 @@
 		try {
 			job = await getJob(fetch, jobId);
 		} catch {
+			currentBatchId = null;
+			batchStatus = null;
 			storeBatch(null);
 			return;
 		}
+		currentBatchId = jobId;
+		batchStatus = job.status;
 		const prog = job.progress ?? {};
 		progressTotal = prog.children_total ?? progressTotal;
 		progressDone = prog.children_completed ?? 0;
@@ -227,7 +273,7 @@
 		if (isTerminal(job.status)) {
 			analyzing = false;
 			result = summaryFrom((job.result?.summary ?? null) as Record<string, number> | null);
-			if (!result) storeBatch(null); // nothing to show → forget it
+			if (!result && !progressTotal) storeBatch(null); // nothing to show → forget it
 		} else {
 			analyzing = true;
 			attachBatch(job.events_url);
@@ -255,6 +301,13 @@
 
 	const st = $derived(data.status);
 	const detectedTotal = $derived(cols.detected.total);
+	const showAnalyzeBanner = $derived(
+		analyzing ||
+			result !== null ||
+			batchStatus === 'cancelled' ||
+			batchStatus === 'interrupted' ||
+			batchStatus === 'failed'
+	);
 
 	// ── "View all" modal ───────────────────────────────────────────────────────
 	interface ModalCfg {
@@ -356,22 +409,48 @@
 	</span>
 </div>
 
-{#if analyzing || result}
+{#if showAnalyzeBanner}
 	<div class="analyze-bar" class:done={!analyzing}>
 		<div class="ab-row">
 			<span class="ab-label">
 				{#if analyzing}
-					<span class="spin">⟳</span> Analyzing candidates… {progressDone}/{progressTotal}
+					{#if batchStatus === 'cancelling'}
+						<span class="spin">⟳</span> Cancelling analysis… {progressDone}/{progressTotal}
+					{:else}
+						<span class="spin">⟳</span> Analyzing candidates… {progressDone}/{progressTotal}
+					{/if}
+				{:else if batchStatus === 'cancelled' || batchStatus === 'interrupted'}
+					Analysis stopped at <strong>{progressDone}</strong>/<strong>{progressTotal}</strong>
+					{#if result}
+						· <strong>{result.candidate}</strong> detected ·
+						<strong>{result.not_letterboxed}</strong> not letterboxed · {result.variable} unsafe
+					{/if}
+				{:else if batchStatus === 'failed'}
+					Analysis failed at <strong>{progressDone}</strong>/<strong>{progressTotal}</strong>
+					{#if result}
+						· <strong>{result.candidate}</strong> detected ·
+						<strong>{result.not_letterboxed}</strong> not letterboxed · {result.variable} unsafe
+					{/if}
 				{:else if result}
 					✓ Analysis complete — <strong>{result.candidate}</strong> detected ·
 					<strong>{result.not_letterboxed}</strong> not letterboxed · {result.variable} unsafe
 				{/if}
 			</span>
-			{#if !analyzing}
+			<div class="ab-actions">
+			{#if analyzing}
+				<button
+					class="ab-cancel"
+					onclick={cancelAnalyze}
+					disabled={batchStatus === 'cancelling' || !currentBatchId}
+				>
+					{batchStatus === 'cancelling' ? 'Cancelling…' : 'Cancel'}
+				</button>
+			{:else}
 				<button class="ab-dismiss" onclick={dismissAnalyze} aria-label="Dismiss">
 					<Icon name="x" size={14} />
 				</button>
 			{/if}
+			</div>
 		</div>
 		{#if analyzing}<ProgressBar value={progress} tone="gold" />{/if}
 	</div>
@@ -637,9 +716,28 @@
 		color: var(--muted);
 		border-radius: 6px;
 	}
+	.ab-actions {
+		flex: none;
+		display: flex;
+		align-items: center;
+	}
 	.ab-dismiss:hover {
 		background: var(--panel2);
 		color: var(--text);
+	}
+	.ab-cancel {
+		flex: none;
+		border: 1px solid color-mix(in srgb, var(--gold) 40%, var(--line2));
+		background: color-mix(in srgb, var(--gold) 14%, transparent);
+		color: var(--text);
+		border-radius: 999px;
+		padding: 6px 10px;
+		font-size: 12px;
+		font-weight: 600;
+	}
+	.ab-cancel:disabled {
+		opacity: 0.7;
+		cursor: default;
 	}
 
 	/* breadcrumb */

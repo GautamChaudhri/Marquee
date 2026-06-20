@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+
 from sqlalchemy import select
 
+from marquee.config import settings
 from marquee.core.jobs.manager import job_manager
 from marquee.models import Job, JobEvent, JobResourceReservation
 
@@ -94,3 +97,95 @@ async def test_parent_emits_incremental_progress_then_summary(db):
     assert parent_row.result["summary"] == {"candidate": 1, "not_letterboxed": 1}
     terminal = [e for e in await parent_events() if e.detail and "summary" in e.detail]
     assert terminal and terminal[-1].detail["summary"] == {"candidate": 1, "not_letterboxed": 1}
+
+
+async def test_interrupt_rolls_parent_progress_and_terminalizes_batch(db):
+    parent = await job_manager.create(db, job_type="letterbox_detect_batch", status="waiting_external")
+    await job_manager.create(db, job_type="letterbox_detect", parent_id=parent.id, subject_type="movie", subject_id=1)
+
+    claim = await job_manager.claim_next(db, "worker-a")
+    assert claim is not None
+    job, attempt = claim
+    await job_manager.start(db, job, attempt)
+    await job_manager.interrupt(db, job, attempt, reason="worker shutdown")
+
+    parent_row = await db.get(Job, parent.id)
+    assert parent_row is not None
+    assert parent_row.status == "interrupted"
+    assert parent_row.finished_at is not None
+    assert parent_row.progress == {"children_total": 1, "children_completed": 1, "children_failed": 1}
+
+
+async def test_recover_releases_stale_waiting_resource_attempt_and_requeues_retryable_job(db):
+    await job_manager.bootstrap_resources(db)
+    job = await job_manager.create(
+        db,
+        job_type="letterbox_detect",
+        resources={"media_read": 1, "media-file:12": 1},
+        subject_type="movie",
+        subject_id=12,
+    )
+
+    claim = await job_manager.claim_next(db, "worker-a")
+    assert claim is not None
+    claimed, attempt = claim
+    await job_manager.start(db, claimed, attempt)
+
+    claimed.status = "waiting_resource"
+    attempt.heartbeat_at = datetime.now(UTC) - timedelta(seconds=settings.JOB_LEASE_SECONDS + 5)
+    await db.commit()
+
+    recovered = await job_manager.recover(db)
+
+    assert recovered == 1
+    await db.refresh(claimed)
+    await db.refresh(attempt)
+    assert claimed.status == "retry_scheduled"
+    assert claimed.finished_at is None
+    assert attempt.status == "interrupted"
+    reservations = (
+        await db.execute(
+            select(JobResourceReservation).where(JobResourceReservation.job_id == claimed.id)
+        )
+    ).scalars().all()
+    assert reservations
+    assert all(item.released_at is not None for item in reservations)
+
+
+async def test_cancelling_parent_batch_cascades_and_preserves_completed_children(db):
+    parent = await job_manager.create(db, job_type="letterbox_detect_batch", status="waiting_external")
+    await job_manager.create(db, job_type="letterbox_detect", parent_id=parent.id, subject_type="movie", subject_id=1)
+    queued = await job_manager.create(
+        db, job_type="letterbox_detect", parent_id=parent.id, subject_type="movie", subject_id=2
+    )
+    await job_manager.create(db, job_type="letterbox_detect", parent_id=parent.id, subject_type="movie", subject_id=3)
+
+    first_claim = await job_manager.claim_next(db, "worker-a")
+    assert first_claim is not None
+    await job_manager.start(db, *first_claim)
+    await job_manager.finish(db, *first_claim, result={"status": "candidate"})
+
+    second_claim = await job_manager.claim_next(db, "worker-a")
+    assert second_claim is not None
+    running_job, running_attempt = second_claim
+    await job_manager.start(db, running_job, running_attempt)
+
+    cancelled = await job_manager.request_cancel(db, parent)
+
+    queued_row = await db.get(Job, queued.id)
+    running_row = await db.get(Job, running_job.id)
+    assert cancelled.status == "cancelling"
+    assert queued_row is not None and queued_row.status == "cancelled"
+    assert running_row is not None and running_row.cancel_requested is True
+    assert running_row.status == "running"
+
+    await job_manager.interrupt(db, running_job, running_attempt, reason="worker shutdown")
+    parent_row = await db.get(Job, parent.id)
+    assert parent_row is not None
+    assert parent_row.status == "cancelled"
+    assert parent_row.result == {
+        "children_total": 3,
+        "children_completed": 3,
+        "children_failed": 2,
+        "summary": {"candidate": 1},
+    }

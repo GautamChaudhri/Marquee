@@ -33,6 +33,7 @@ from marquee.media import letterbox_detect as ld
 from marquee.media.letterbox_manager import JobState, letterbox_manager
 from marquee.media.probe import prefilter_bucket
 from marquee.models import (
+    Job,
     LetterboxEvent,
     LetterboxReencodeArtifact,
     LetterboxState,
@@ -909,6 +910,51 @@ async def test_status_counts_full_frame_present_prefilter_skips(client, db):
     resp = await client.get("/api/letterbox/status")
     assert resp.status_code == 200
     assert resp.json()["full_frame"] == 1
+
+
+@pytest.mark.asyncio
+async def test_status_ignores_terminal_letterbox_batches(client, db):
+    db.add_all([
+        Job(
+            id="batch-interrupted",
+            type="letterbox_detect_batch",
+            status="interrupted",
+            finished_at=datetime.now(UTC),
+        ),
+        Job(
+            id="batch-cancelled",
+            type="letterbox_detect_batch",
+            status="cancelled",
+            finished_at=datetime.now(UTC),
+        ),
+    ])
+    await db.commit()
+
+    resp = await client.get("/api/letterbox/status")
+
+    assert resp.status_code == 200
+    assert resp.json()["batch_active"] is None
+
+
+@pytest.mark.asyncio
+async def test_cancel_job_route_cascades_letterbox_batch(client, db):
+    parent = Job(id="batch-active", type="letterbox_detect_batch", status="waiting_external")
+    db.add(parent)
+    await db.flush()
+    db.add_all([
+        Job(id="child-done", type="letterbox_detect", parent_id=parent.id, status="succeeded", result={"status": "candidate"}),
+        Job(id="child-queued", type="letterbox_detect", parent_id=parent.id, status="queued"),
+    ])
+    await db.commit()
+
+    resp = await client.post(f"/api/jobs/{parent.id}/cancel")
+
+    assert resp.status_code == 202
+    body = resp.json()
+    assert body["job_id"] == parent.id
+    assert body["status"] == "cancelled"
+    cancelled_child = await db.get(Job, "child-queued")
+    assert cancelled_child is not None and cancelled_child.status == "cancelled"
 
 
 @pytest.mark.asyncio

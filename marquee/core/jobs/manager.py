@@ -239,6 +239,49 @@ class JobManager:
             .values(released_at=utcnow())
         )
 
+    async def _release_job_reservations(self, db: AsyncSession, job_id: str, *, released_at: datetime) -> None:
+        await db.execute(
+            update(JobResourceReservation)
+            .where(JobResourceReservation.job_id == job_id, JobResourceReservation.released_at.is_(None))
+            .values(released_at=released_at)
+        )
+
+    async def _bridge_media_cancel(self, db: AsyncSession, job: Job) -> None:
+        media_job_id = job.payload.get("media_job_id") if isinstance(job.payload, dict) else None
+        if not media_job_id:
+            return
+        # Bridge cancellation into the established media handlers, which poll
+        # this flag while encoding/remuxing.
+        from marquee.models import MediaJob  # noqa: PLC0415
+
+        media_job = await db.get(MediaJob, media_job_id)
+        if media_job is not None:
+            media_job.cancel_requested = True
+
+    async def _cancel_before_execution(
+        self,
+        db: AsyncSession,
+        job: Job,
+        *,
+        now: datetime,
+        message: str,
+    ) -> None:
+        job.cancel_requested = True
+        job.status = "cancelled"
+        job.finished_at = now
+        await self._bridge_media_cancel(db, job)
+        attempts = (
+            await db.execute(
+                select(JobAttempt).where(JobAttempt.job_id == job.id, JobAttempt.finished_at.is_(None))
+            )
+        ).scalars().all()
+        for attempt in attempts:
+            attempt.status = "interrupted"
+            attempt.finished_at = now
+            attempt.error = {"type": "Cancelled", "message": message}
+        await self._release_job_reservations(db, job.id, released_at=now)
+        await self.emit(db, job, state="cancelled", message=message)
+
     async def finish(self, db: AsyncSession, job: Job, attempt: JobAttempt, *, result: dict | None = None) -> None:
         now = utcnow()
         job.status = "succeeded"
@@ -292,7 +335,14 @@ class JobManager:
             detail["subject_id"] = child.subject_id
             detail["subject_status"] = child.result.get("status") if isinstance(child.result, dict) else None
         if total and completed == total:
-            parent.status = "failed" if failed else "succeeded"
+            if parent.cancel_requested or parent.status == "cancelling":
+                parent.status = "cancelled"
+            elif any(status == "interrupted" for status in statuses) and not any(
+                status in {"failed", "dead_letter", "cancelled"} for status in statuses
+            ):
+                parent.status = "interrupted"
+            else:
+                parent.status = "failed" if failed else "succeeded"
             parent.finished_at = utcnow()
             summary = await self._child_result_summary(db, parent_id)
             detail["summary"] = summary
@@ -301,10 +351,14 @@ class JobManager:
             parent.result = {**parent.progress, "summary": summary}
             await self.emit(db, parent, state=parent.status, message="all child jobs terminal", detail=detail)
         else:
+            if parent.cancel_requested and parent.status in {"waiting_external", "claimed", "running"}:
+                parent.status = "cancelling"
             # Incremental progress on every child completion so SSE listeners get a
             # live bar and can react to each item finishing.  The parent's real
             # status stays non-terminal, so the stream's `done` sentinel is not sent.
-            await self.emit(db, parent, state="progress", stage=parent.current_stage, message="child progress", detail=detail)
+            state = "cancelling" if parent.status == "cancelling" else "progress"
+            message = "cancellation in progress" if state == "cancelling" else "child progress"
+            await self.emit(db, parent, state=state, stage=parent.current_stage, message=message, detail=detail)
 
     async def _child_result_summary(self, db: AsyncSession, parent_id: str) -> dict[str, int]:
         """Domain-neutral tally of child ``result['status']`` values for a batch."""
@@ -329,25 +383,36 @@ class JobManager:
         job.finished_at = now
         job.error = attempt.error
         await self.emit(db, job, state="interrupted", message=reason, attempt_id=attempt.id)
+        await self._update_parent(db, job.parent_id, child=job)
         await db.commit()
 
     async def request_cancel(self, db: AsyncSession, job: Job) -> Job:
+        now = utcnow()
         job.cancel_requested = True
-        if job.status in {"planned", "queued", "waiting_resource", "retry_scheduled", "paused"}:
-            job.status = "cancelled"
-            job.finished_at = utcnow()
-        elif job.status == "waiting_external":
+        children = (
+            await db.execute(select(Job).where(Job.parent_id == job.id).order_by(Job.created_at, Job.id))
+        ).scalars().all()
+        if children:
             job.status = "cancelling"
-        media_job_id = job.payload.get("media_job_id") if isinstance(job.payload, dict) else None
-        if media_job_id:
-            # Bridge cancellation into the established media handlers, which
-            # poll this flag while encoding/remuxing.
-            from marquee.models import MediaJob  # noqa: PLC0415
-
-            media_job = await db.get(MediaJob, media_job_id)
-            if media_job is not None:
-                media_job.cancel_requested = True
-        await self.emit(db, job, state=job.status, message="cancellation requested")
+            for child in children:
+                if child.status in TERMINAL:
+                    continue
+                if child.status in {"planned", "queued", "waiting_resource", "retry_scheduled", "paused"}:
+                    await self._cancel_before_execution(db, child, now=now, message="cancelled by parent")
+                else:
+                    child.cancel_requested = True
+                    await self._bridge_media_cancel(db, child)
+                    await self.emit(db, child, state=child.status, message="cancellation requested")
+            await self._update_parent(db, job.id)
+        else:
+            if job.status in {"planned", "queued", "waiting_resource", "retry_scheduled", "paused"}:
+                await self._cancel_before_execution(db, job, now=now, message="cancellation requested")
+            else:
+                if job.status in ACTIVE:
+                    job.status = "cancelling"
+                await self._bridge_media_cancel(db, job)
+                await self.emit(db, job, state=job.status, message="cancellation requested")
+            await self._update_parent(db, job.parent_id, child=job)
         await db.commit()
         return job
 
@@ -368,19 +433,36 @@ class JobManager:
             await db.execute(
                 select(JobAttempt, Job)
                 .join(Job, Job.id == JobAttempt.job_id)
-                .where(Job.status.in_(("claimed", "running")), JobAttempt.heartbeat_at < cutoff)
+                .where(JobAttempt.status.in_(("claimed", "running")), JobAttempt.heartbeat_at < cutoff)
                 .with_for_update(skip_locked=True)
             )
         ).all()
         for attempt, job in attempts:
+            now = utcnow()
+            error = {"type": "Interrupted", "message": "worker lease expired"}
             await self._release(db, attempt.id)
             attempt.status = "interrupted"
-            attempt.finished_at = utcnow()
-            if job.type in RETRYABLE and job.attempt_count < job.max_attempts:
-                job.status, job.scheduled_at = "retry_scheduled", utcnow()
+            attempt.finished_at = now
+            attempt.error = error
+            job.error = error
+            if job.cancel_requested:
+                job.status = "cancelled"
+                job.finished_at = now
+            elif job.type in RETRYABLE and job.attempt_count < job.max_attempts:
+                job.status = "retry_scheduled"
+                job.scheduled_at = now
+                job.finished_at = None
             else:
-                job.status, job.finished_at = "interrupted", utcnow()
-            await self.emit(db, job, state=job.status, message="worker lease expired", attempt_id=attempt.id)
+                job.status = "interrupted"
+                job.finished_at = now
+            await self.emit(
+                db,
+                job,
+                state=job.status,
+                message="worker lease expired",
+                detail=error,
+                attempt_id=attempt.id,
+            )
             # Keep batch parents progressing even if a child died outside finish/fail.
             await self._update_parent(db, job.parent_id, child=job)
         # Reap worker rows whose heartbeat went stale (crashed/killed without a

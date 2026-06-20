@@ -1,4 +1,4 @@
-import { apiGet, type Fetch } from './client';
+import { apiGet, apiSend, type Fetch } from './client';
 
 /** Progress block written by the job manager for parent/batch jobs. */
 export interface JobProgress {
@@ -12,6 +12,7 @@ export interface JobSnapshot {
 	job_id: string;
 	type: string;
 	status: string;
+	cancel_requested: boolean;
 	progress: JobProgress | null;
 	result: Record<string, unknown> | null;
 	events_url: string;
@@ -26,4 +27,11 @@ export function isTerminal(status: string): boolean {
 /** Fetch a durable job's current snapshot (used to re-hydrate UI after refresh). */
 export function getJob(fetchFn: Fetch, jobId: string): Promise<JobSnapshot> {
 	return apiGet<JobSnapshot>(fetchFn, `/jobs/${jobId}`);
+}
+
+export function cancelJob(
+	fetchFn: Fetch,
+	jobId: string
+): Promise<{ job_id: string; status: string; cancel_requested: boolean }> {
+	return apiSend(fetchFn, 'POST', `/jobs/${jobId}/cancel`, {});
 }

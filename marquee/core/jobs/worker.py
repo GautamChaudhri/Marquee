@@ -29,6 +29,18 @@ class DurableWorker:
         self.id = f"{socket.gethostname()}-{uuid4().hex[:12]}"
         self._stopping = asyncio.Event()
         self._tasks: set[asyncio.Task] = set()
+        self._next_recover_at = 0.0
+
+    async def _recover_if_due(self) -> None:
+        now = asyncio.get_running_loop().time()
+        if now < self._next_recover_at:
+            return
+        self._next_recover_at = now + settings.JOB_HEARTBEAT_SECONDS
+        factory = _get_session_factory()
+        async with factory() as db:
+            recovered = await job_manager.recover(db)
+        if recovered:
+            logger.info("Recovered %s stale job attempt(s)", recovered)
 
     async def _heartbeat(self) -> None:
         factory = _get_session_factory()
@@ -39,6 +51,10 @@ class DurableWorker:
                     worker.status = "draining" if self._stopping.is_set() else "running"
                     worker.heartbeat_at = datetime.now(UTC)
                     await db.commit()
+            try:
+                await self._recover_if_due()
+            except Exception:  # noqa: BLE001
+                logger.exception("periodic job recovery failed")
             await asyncio.sleep(settings.JOB_HEARTBEAT_SECONDS)
 
     async def _run_claim(self, job: Job, attempt: JobAttempt) -> None:
@@ -86,6 +102,7 @@ class DurableWorker:
             await job_manager.recover(db)
             db.add(JobWorker(id=self.id, capabilities={"worker_concurrency": settings.JOB_WORKER_CONCURRENCY}, status="running"))
             await db.commit()
+        self._next_recover_at = asyncio.get_running_loop().time() + settings.JOB_HEARTBEAT_SECONDS
         heartbeat = asyncio.create_task(self._heartbeat())
         try:
             while not self._stopping.is_set():

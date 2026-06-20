@@ -28,6 +28,7 @@ from marquee.api.routes.jobs import job_summary
 from marquee.config import settings
 from marquee.core import letterbox_reencode
 from marquee.core.jobs import job_manager
+from marquee.core.jobs.manager import ACTIVE
 from marquee.core.letterbox_prefilter import (
     prefilter_category,
     refresh_letterbox_prefilter_for_movie,
@@ -360,12 +361,12 @@ async def letterbox_status(db: Annotated[AsyncSession, Depends(get_db)]):
     # cache is per-process) shows up on the next status poll without a restart.
     binaries.reset_cache()
     # The durable batch-detect job is the source of truth for "is a scan running?"
-    # (an unfinished parent has finished_at IS NULL). The frontend uses this id to
-    # re-attach its progress bar after a refresh.
+    # (only parents in an active lifecycle state count). The frontend uses this
+    # id to re-attach its progress bar after a refresh.
     batch_active = (
         await db.execute(
             select(Job.id)
-            .where(Job.type == "letterbox_detect_batch", Job.finished_at.is_(None))
+            .where(Job.type == "letterbox_detect_batch", Job.status.in_(tuple(ACTIVE)))
             .order_by(Job.created_at.desc())
             .limit(1)
         )
