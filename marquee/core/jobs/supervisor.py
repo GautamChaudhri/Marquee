@@ -120,6 +120,12 @@ class WorkerSupervisor:
                 return
 
     def _signal_group(self, proc: asyncio.subprocess.Process, sig: int) -> None:
+        """Send signal to the worker's process group.
+
+        Kills the worker and all its children (ffmpeg, PaddleOCR) in one shot
+        when the worker exits cleanly. When the worker crashes (SIGKILL, OOM),
+        children are orphaned — `shutdown()` handles that separately.
+        """
         try:
             os.killpg(os.getpgid(proc.pid), sig)
         except ProcessLookupError:
@@ -134,7 +140,9 @@ class WorkerSupervisor:
         The hard SIGKILL escalation lives in ``finally`` and uses only the
         synchronous ``killpg`` syscall, so it still runs if the caller's overall
         shutdown budget (``SHUTDOWN_TIMEOUT_SECONDS``) cancels us mid-drain.
-        Killed children become short-lived zombies reaped when the API exits.
+
+        Orphaned children (spawned by workers that crashed before shutdown)
+        are killed explicitly by PID — the database tracks them for this.
         """
         self._shutting_down = True
         for task in self._tasks:
@@ -144,6 +152,7 @@ class WorkerSupervisor:
                 await asyncio.gather(*self._tasks, return_exceptions=True)
         self._tasks.clear()
 
+        # Kill active workers first (via process group)
         alive = [c.proc for c in self._children if c.proc is not None and c.proc.returncode is None]
         for proc in alive:
             self._signal_group(proc, signal.SIGTERM)
@@ -156,8 +165,58 @@ class WorkerSupervisor:
                     timeout=grace,
                 )
         finally:
+            # Hard-kill workers that didn't stop
             for proc in alive:
                 if proc.returncode is None:
                     logger.warning("worker pid=%s did not stop — SIGKILL", proc.pid)
                     self._signal_group(proc, signal.SIGKILL)
+
+            # Kill orphaned children (ffmpeg/OCR from crashed workers)
+            await self._kill_orphaned_children()
+
             logger.info("Embedded job runtime stopped.")
+
+    async def _kill_orphaned_children(self) -> None:
+        """Kill child processes orphaned by crashed workers.
+
+        When a worker crashes (OOM, SIGKILL, kernel panic), its children
+        (ffmpeg, PaddleOCR workers) are reparented to PID 1 and keep running.
+        The database tracks these PIDs so we can clean them up.
+        """
+        try:
+            from marquee.database import _get_session_factory  # noqa: PLC0415
+            from marquee.models import JobAttempt  # noqa: PLC0415
+            from sqlalchemy import select  # noqa: PLC0415
+
+            factory = _get_session_factory()
+            async with factory() as db:
+                # Find all running attempts with child PIDs
+                attempts = (
+                    await db.execute(
+                        select(JobAttempt).where(
+                            JobAttempt.status.in_(("claimed", "running")),
+                            JobAttempt.child_pids.is_not(None),
+                        )
+                    )
+                ).scalars().all()
+
+                killed = 0
+                for attempt in attempts:
+                    if not attempt.child_pids:
+                        continue
+                    for pid in attempt.child_pids:
+                        try:
+                            os.kill(pid, signal.SIGKILL)
+                            killed += 1
+                            logger.info("Killed orphaned child process pid=%d (attempt=%d)", pid, attempt.id)
+                        except ProcessLookupError:
+                            pass  # already dead
+                        except PermissionError:
+                            logger.warning("No permission to kill pid=%d (attempt=%d)", pid, attempt.id)
+                        except OSError as exc:
+                            logger.warning("Failed to kill pid=%d: %s", pid, exc)
+
+                if killed:
+                    logger.info("Killed %d orphaned child process(es)", killed)
+        except Exception:  # noqa: BLE001
+            logger.exception("Failed to kill orphaned children — manual cleanup may be needed")

@@ -6,10 +6,13 @@ Connection lifecycle:
   - The engine is created lazily on first use (no import-time side effects).
   - Sessions are created per-request via FastAPI's dependency injection.
   - ``expire_on_commit=False`` prevents lazy-load issues after commit.
+  - Pool sized for concurrent API requests + workers + SSE streams.
 """
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from collections.abc import AsyncGenerator
 
 from sqlalchemy import text
@@ -21,6 +24,8 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.orm import DeclarativeBase
 
 from marquee.config import settings
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Declarative Base
@@ -40,11 +45,27 @@ _session_factory: async_sessionmaker | None = None
 
 
 def _get_engine():
-    """Create or return the async SQLAlchemy engine."""
+    """Create or return the async SQLAlchemy engine.
+
+    Pool sizing rationale (default: 20 + overflow 10 = 30 max):
+      - API requests: ~5-10 concurrent during normal use
+      - Workers: 1-4 workers × 4 concurrency = 4-16 sessions
+      - SSE streams: 2-5 long-lived connections
+      - Overhead: migrations, admin tools
+
+    Connection recycling (3600s = 1 hour) prevents stale connections
+    after PostgreSQL restarts or network interruptions.
+    """
     global _engine
     if _engine is None:
-        _engine = create_async_engine(settings.db_url_resolved, echo=False, pool_pre_ping=True)
-
+        _engine = create_async_engine(
+            settings.db_url_resolved,
+            echo=False,
+            pool_pre_ping=True,
+            pool_size=20,
+            max_overflow=10,
+            pool_recycle=3600,
+        )
     return _engine
 
 
@@ -89,16 +110,38 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 # ---------------------------------------------------------------------------
 
 
-async def init_db() -> None:
+async def init_db(retries: int = 5) -> None:
     """Verify the migrated database is reachable.
 
     Schema changes are applied by the dedicated migration service before API,
     worker, and scheduler containers start.  Creating tables from application
     startup races with horizontally scaled services and is intentionally gone.
+
+    Retries with exponential backoff handle transient failures during:
+      - PostgreSQL container startup (Docker Compose race)
+      - Database server restarts (maintenance windows)
+      - Network interruptions (Kubernetes pod scheduling)
     """
     engine = _get_engine()
-    async with engine.connect() as conn:
-        await conn.execute(text("SELECT 1"))
+    for attempt in range(retries):
+        try:
+            async with engine.connect() as conn:
+                await conn.execute(text("SELECT 1"))
+            logger.info("Database connection verified")
+            return
+        except Exception as exc:
+            if attempt == retries - 1:
+                logger.error("Database connection failed after %d attempts", retries, exc_info=True)
+                raise
+            wait = 2 ** attempt  # 1, 2, 4, 8, 16 seconds
+            logger.warning(
+                "Database connection failed (attempt %d/%d), retrying in %ds: %s",
+                attempt + 1,
+                retries,
+                wait,
+                exc,
+            )
+            await asyncio.sleep(wait)
 
 
 async def close_db() -> None:

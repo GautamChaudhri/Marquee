@@ -80,6 +80,9 @@ class JobAttempt(Base):
     status: Mapped[str] = mapped_column(String(32), default="claimed", nullable=False)
     process_id: Mapped[int | None] = mapped_column(Integer)
     process_group_id: Mapped[int | None] = mapped_column(Integer)
+    # PIDs of child processes spawned by this attempt (ffmpeg, PaddleOCR workers).
+    # The supervisor uses this to kill orphaned children when the worker crashes.
+    child_pids: Mapped[list[int] | None] = mapped_column(JSON)
     claimed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -91,7 +94,10 @@ class JobAttempt(Base):
 
 class JobEvent(Base):
     __tablename__ = "job_events"
-    __table_args__ = (Index("ix_job_events_job_id_id", "job_id", "id"),)
+    __table_args__ = (
+        Index("ix_job_events_job_id_id", "job_id", "id"),
+        Index("ix_job_events_created_at", "created_at"),  # For debugging queries
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     job_id: Mapped[str] = mapped_column(ForeignKey("jobs.id", ondelete="CASCADE"), index=True)

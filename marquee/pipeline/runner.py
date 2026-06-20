@@ -286,6 +286,8 @@ def build_run_payload(
     error: str | None = None,
 ) -> dict[str, object]:
     """The full ``pipeline_run.json`` payload (also archived per run_id)."""
+    from marquee.ml.taste_store import compute_taste_profile_hash  # noqa: PLC0415
+
     return {
         "run_id": run_id,
         "movie_id": movie.id,
@@ -296,6 +298,7 @@ def build_run_payload(
         "status": status,
         "error": error,
         "model_name": pipeline_settings.AI_MODEL,
+        "taste_profile_hash": compute_taste_profile_hash(),  # For reproducibility
         "config": pipeline_settings.snapshot(),
         "stage_timings_seconds": timings,
         "total_duration_seconds": round(total_duration, 3),

@@ -14,6 +14,15 @@ One process-wide singleton (``run_manager``) that:
 The extractor is reset (recreated on next run) whenever the taste profile
 changes — call ``reset_extractor()`` after an incremental exemplar append or a
 profile rebuild.
+
+Job Platform Integration:
+  - The job platform (marquee.core.jobs) calls this manager from handlers.
+  - Job handlers (builtin_handlers.poster_pipeline) invoke run_manager._execute()
+    with pre-validated parameters.
+  - This keeps the RunManager focused on pipeline orchestration while the job
+    platform handles queueing, resource reservations, retries, and SSE events.
+  - RunManager still maintains in-memory event queues for backward compat with
+    the legacy direct-call API (to be phased out).
 """
 
 from __future__ import annotations
@@ -371,6 +380,20 @@ class RunManager:
         )
         state.finish()
         self._active_run_id = None
+
+        # Release GPU resources if caching is disabled (allows GPU sharing with
+        # letterbox/other jobs). When cache is enabled, models stay loaded for
+        # back-to-back poster runs.
+        if not settings.PIPELINE_CACHE_EXTRACTOR:
+            try:
+                released = self.release_gpu_resources()
+                logger.info(
+                    "Released GPU resources after run completion (extractor_cleared=%s, ocr_cleared=%s)",
+                    released["extractor_cleared"],
+                    released["ocr_cleared"],
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception("Failed to release GPU resources after run")
 
     def _run_stages_blocking(self, *, movie_title, out_dir, fetch, timings, progress):
         extractor = self._ensure_extractor()

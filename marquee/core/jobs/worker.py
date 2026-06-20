@@ -80,7 +80,22 @@ class DurableWorker:
 
             heartbeat = asyncio.create_task(renew_lease())
             try:
-                result = await handler(current)
+                # Enforce maximum runtime to prevent hung jobs (PaddleOCR GPU hang,
+                # ffmpeg stall, infinite loop in handler). Default: 1 hour.
+                timeout = settings.JOB_MAX_RUNTIME_SECONDS
+                result = await asyncio.wait_for(handler(current), timeout=timeout)
+            except asyncio.TimeoutError:
+                logger.error(
+                    "job %s exceeded max runtime (%ds) — terminating",
+                    current.id,
+                    settings.JOB_MAX_RUNTIME_SECONDS,
+                )
+                await job_manager.fail(
+                    db,
+                    current,
+                    current_attempt,
+                    TimeoutError(f"Job exceeded max runtime ({settings.JOB_MAX_RUNTIME_SECONDS}s)"),
+                )
             except asyncio.CancelledError:
                 await job_manager.interrupt(db, current, current_attempt, reason="worker shutdown")
                 raise

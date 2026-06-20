@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import time
 from datetime import UTC, datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,6 +19,11 @@ from marquee.database import _get_session_factory, get_db
 from marquee.models import Job, JobAttempt, JobEvent, JobResource, JobResourceReservation, JobWorker
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
+logger = logging.getLogger(__name__)
+
+# SSE stream timeout (1 hour) prevents infinite streams if clients never close.
+# Clients can reconnect using Last-Event-ID to resume from where they left off.
+_SSE_TIMEOUT_SECONDS = 3600
 
 
 def job_summary(job: Job) -> dict:
@@ -122,9 +129,21 @@ async def get_job(job_id: str, db: Annotated[AsyncSession, Depends(get_db)]):
 @router.get("/{job_id}/events")
 async def job_events(
     job_id: str,
+    request: Request,
     db: Annotated[AsyncSession, Depends(get_db)],
     last_event_id: Annotated[str | None, Header()] = None,
 ):
+    """Stream job events over SSE with disconnect detection and timeout.
+
+    Clients reconnecting after disconnect should send the last ``id`` they
+    received as the ``Last-Event-ID`` header — the stream replays all events
+    after that ID and continues live.
+
+    The stream terminates when:
+      - The job reaches a terminal state (succeeded/failed/cancelled/...)
+      - The client disconnects (browser tab closed, network interruption)
+      - The stream exceeds 1 hour (timeout — client should reconnect)
+    """
     if await db.get(Job, job_id) is None:
         raise HTTPException(404, "Job not found")
     after = int(last_event_id or 0)
@@ -132,18 +151,40 @@ async def job_events(
 
     async def events():
         nonlocal after
+        start = time.monotonic()
         while True:
+            # Check client disconnect (browser tab closed, network drop)
+            if await request.is_disconnected():
+                logger.info("SSE client disconnected for job %s (after event_id=%d)", job_id, after)
+                return
+
+            # Enforce maximum stream duration (prevents infinite streams)
+            elapsed = time.monotonic() - start
+            if elapsed > _SSE_TIMEOUT_SECONDS:
+                logger.warning(
+                    "SSE stream timeout for job %s after %.0fs (client should reconnect)",
+                    job_id,
+                    elapsed,
+                )
+                yield f'event: error\ndata: {{"message": "stream timeout — reconnect with Last-Event-ID"}}\n\n'
+                return
+
             async with factory() as stream_db:
                 rows = (
                     await stream_db.execute(select(JobEvent).where(JobEvent.job_id == job_id, JobEvent.id > after).order_by(JobEvent.id))
                 ).scalars().all()
                 job = await stream_db.get(Job, job_id)
+
             for event in rows:
                 after = event.id
                 yield f"id: {event.id}\ndata: {json.dumps({'id': event.id, 'job_id': job_id, 'state': event.state, 'stage': event.stage, 'message': event.message, 'detail': event.detail}, default=str)}\n\n"
+
             if job is None or job.status in {"succeeded", "failed", "cancelled", "interrupted", "dead_letter"}:
-                yield "event: done\ndata: {}\n\n"
+                # Include final status so frontend can show appropriate UI
+                yield f'event: done\ndata: {{"status": "{job.status if job else "unknown"}"}}\n\n'
+                logger.debug("SSE stream complete for job %s (status=%s)", job_id, job.status if job else None)
                 return
+
             await asyncio.sleep(0.5)
 
     return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})

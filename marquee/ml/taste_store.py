@@ -19,6 +19,7 @@ configured model fails loudly (design 04 §12).
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from abc import ABC, abstractmethod
 from pathlib import Path
@@ -39,6 +40,26 @@ from marquee.ml.calibration import TasteCalibration
 logger = logging.getLogger(__name__)
 
 DINO_SELF_KNN_KEY = "dino_self_knn"
+
+
+def compute_taste_profile_hash(profile_path: Path | str | None = None) -> str:
+    """Compute SHA-256 hash of the taste profile for reproducibility tracking.
+
+    Returns the first 12 hex characters of the hash (48 bits — collision-free
+    for practical use). Used to version pipeline runs so rescoring against
+    different profiles is detectable.
+
+    Returns "missing" if the profile file doesn't exist.
+    """
+    path = Path(profile_path or pipeline_settings.TASTE_PROFILE_PATH)
+    if not path.is_file():
+        return "missing"
+    try:
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        return digest[:12]  # 48 bits — more than enough for uniqueness
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Failed to hash taste profile at %s: %s", path, exc)
+        return "error"
 
 
 def weighted_topk_mean(

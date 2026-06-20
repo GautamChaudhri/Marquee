@@ -94,6 +94,13 @@ class Settings(BaseSettings):
     JOB_HEARTBEAT_SECONDS: int = Field(default=10, ge=1, le=300)
     JOB_LEASE_SECONDS: int = Field(default=60, ge=10, le=3600)
     JOB_SHUTDOWN_GRACE_SECONDS: int = Field(default=30, ge=1, le=600)
+    JOB_MAX_RUNTIME_SECONDS: int = Field(
+        default=3600,
+        ge=60,
+        le=86400,
+        description="Maximum runtime for any job (seconds). Jobs exceeding this "
+        "are terminated to prevent hung workers from blocking resources.",
+    )
     JOB_GPU_SLOTS: int = Field(default=1, ge=0, le=8)
     JOB_MEDIA_READ_SLOTS: int = Field(default=2, ge=1, le=16)
     JOB_MEDIA_WRITE_SLOTS: int = Field(default=1, ge=1, le=8)
@@ -423,6 +430,17 @@ class Settings(BaseSettings):
         default=1_048_576,
         description="Maximum Content-Length for any request body (bytes). Default 1 MB. "
         "Raise only if file-upload endpoints are added.",
+    )
+
+    # ------------------------------------------------------------------
+    # Pipeline Performance Tuning
+    # ------------------------------------------------------------------
+    PIPELINE_CACHE_EXTRACTOR: bool = Field(
+        default=False,
+        description="Keep CLIP/DINOv2 models loaded in GPU memory between runs. "
+        "Set true for back-to-back poster runs (faster), false to share GPU with "
+        "letterbox jobs (more flexible). Process-lifetime cache on small GPUs may "
+        "prevent letterbox re-encode from allocating decode buffers.",
     )
 
     # ------------------------------------------------------------------
