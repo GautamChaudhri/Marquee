@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import os
 import shutil
 import time
@@ -30,6 +31,8 @@ from marquee.models import (
     MediaFile,
     MediaJob,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class ReencodePlanError(Exception):
@@ -69,8 +72,10 @@ def _ffprobe_json(path: Path | str) -> dict | None:
     result = binaries.run(
         "ffprobe",
         [
-            "-v", "error",
-            "-print_format", "json",
+            "-v",
+            "error",
+            "-print_format",
+            "json",
             "-show_format",
             "-show_streams",
             "-show_chapters",
@@ -186,6 +191,105 @@ def ffmpeg_encoders() -> set[str]:
     return encoders
 
 
+def ffmpeg_hwaccels() -> set[str]:
+    """Return hardware acceleration methods advertised by the FFmpeg build."""
+    if binaries.resolve("ffmpeg") is None:
+        return set()
+    result = binaries.run("ffmpeg", ["-hide_banner", "-hwaccels"], timeout=30.0)
+    if not result.ok:
+        return set()
+    return {
+        line.strip()
+        for line in result.stdout.splitlines()
+        if line.strip() and not line.lower().startswith("hardware acceleration methods")
+    }
+
+
+def ffmpeg_decoders() -> set[str]:
+    """Return video decoder names advertised by the FFmpeg build."""
+    if binaries.resolve("ffmpeg") is None:
+        return set()
+    result = binaries.run("ffmpeg", ["-hide_banner", "-decoders"], timeout=30.0)
+    if not result.ok:
+        return set()
+    decoders: set[str] = set()
+    for line in result.stdout.splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[0].startswith("V"):
+            decoders.add(parts[1])
+    return decoders
+
+
+def _clean_ffmpeg_error(stderr: str, source: Path | str) -> str:
+    """Produce a concise, frontend-safe CUDA failure explanation."""
+    lines = [line.strip() for line in stderr.splitlines() if line.strip()]
+    message = lines[-1] if lines else "FFmpeg could not initialize NVIDIA acceleration."
+    return message.replace(str(source), "<source>")[:300]
+
+
+def nvidia_acceleration_plan(source: Path, source_codec: str | None, encoder: dict) -> dict:
+    """Preflight a zero-copy NVDEC -> NVENC path for one concrete source."""
+    disabled = {
+        "enabled": False,
+        "mode": "cpu_decode_crop",
+        "decoder": None,
+        "reason": None,
+    }
+    if settings.LETTERBOX_REENCODE_NVIDIA_ACCELERATION == "off":
+        return {**disabled, "reason": "NVIDIA acceleration is disabled by configuration."}
+    if encoder.get("family") != "nvidia":
+        return {**disabled, "reason": "Selected encoder does not use NVIDIA NVENC."}
+    decoder = _NVDEC_DECODERS.get(source_codec or "")
+    if decoder is None:
+        return {
+            **disabled,
+            "reason": f"No NVIDIA decoder mapping is available for source codec {source_codec or 'unknown'}.",
+        }
+    if "cuda" not in ffmpeg_hwaccels():
+        return {**disabled, "reason": "This FFmpeg build does not advertise CUDA acceleration."}
+    if decoder not in ffmpeg_decoders():
+        return {**disabled, "reason": f"This FFmpeg build does not provide {decoder}."}
+
+    # Listing a decoder does not prove it can decode this profile on the active
+    # GPU. Decode one frame into a CUDA frame before committing a job plan.
+    try:
+        result = binaries.run(
+            "ffmpeg",
+            [
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-hwaccel",
+                "cuda",
+                "-hwaccel_output_format",
+                "cuda",
+                "-c:v:0",
+                decoder,
+                "-i",
+                str(source),
+                "-map",
+                "0:v:0",
+                "-frames:v",
+                "1",
+                "-f",
+                "null",
+                "-",
+            ],
+            timeout=30.0,
+        )
+    except binaries.BinaryError as exc:
+        return {**disabled, "reason": f"NVIDIA acceleration preflight failed: {exc}"}
+    if not result.ok:
+        logger.info("NVIDIA acceleration preflight unavailable: %s", result.stderr)
+        return {**disabled, "reason": _clean_ffmpeg_error(result.stderr, source)}
+    return {
+        "enabled": True,
+        "mode": "nvidia_zero_copy",
+        "decoder": decoder,
+        "reason": None,
+    }
+
+
 def _target_codec(source_codec: str | None) -> str:
     if source_codec in {"h264", "avc1"}:
         return "h264"
@@ -217,6 +321,21 @@ _FAMILY_DEFAULT_PRESET: dict[str, str | None] = {
 _CANDIDATES: dict[str, list[str]] = {
     "h264": ["h264_nvenc", "h264_qsv", "h264_vaapi", "libx264"],
     "hevc": ["hevc_nvenc", "hevc_qsv", "hevc_vaapi", "libx265"],
+}
+
+# FFmpeg's CUDA decoder names do not always match the codec name verbatim.
+# Keep this deliberately small and capability-gated: a listed decoder is still
+# preflighted against the selected source before it is used for a real encode.
+_NVDEC_DECODERS: dict[str, str] = {
+    "h264": "h264_cuvid",
+    "hevc": "hevc_cuvid",
+    "av1": "av1_cuvid",
+    "vp9": "vp9_cuvid",
+    "vp8": "vp8_cuvid",
+    "mpeg2video": "mpeg2_cuvid",
+    "mpeg4": "mpeg4_cuvid",
+    "vc1": "vc1_cuvid",
+    "mjpeg": "mjpeg_cuvid",
 }
 
 
@@ -296,7 +415,9 @@ def saved_original_path(source: Path, source_key: str, job_id: str) -> Path:
     return _managed_root(source) / "backups" / source_key / job_id / source.name
 
 
-async def _mkdir_with_retry(path: Path, *, boundary: Path, attempts: int = 3, delay_s: float = 0.3) -> None:
+async def _mkdir_with_retry(
+    path: Path, *, boundary: Path, attempts: int = 3, delay_s: float = 0.3
+) -> None:
     """Create a directory tree under ``boundary``, tolerating cross-account ownership.
 
     The candidates/backups tree lives on the same mount as the source media
@@ -401,7 +522,8 @@ def _dovi_plan(source: SourceVideo, target_codec: str) -> tuple[dict, list[dict]
         ]
     warning = {
         "code": preservation["status"],
-        "message": preservation["reason"] or "Dolby Vision cannot be safely preserved for this file.",
+        "message": preservation["reason"]
+        or "Dolby Vision cannot be safely preserved for this file.",
         "requires_confirmation": True,
     }
     if settings.LETTERBOX_REENCODE_STRICT_DOVI:
@@ -422,7 +544,9 @@ async def build_plan(
     codec: str | None = None,
 ) -> dict:
     if resolved.path.suffix.lower() != ".mkv":
-        raise ReencodePlanError("not_mkv", "Permanent letterbox re-encode supports MKV files only for now.")
+        raise ReencodePlanError(
+            "not_mkv", "Permanent letterbox re-encode supports MKV files only for now."
+        )
     if top < 0 or bottom < 0 or (top == 0 and bottom == 0):
         raise ReencodePlanError("missing_crop", "A non-zero crop recommendation is required.")
     if quality is not None and not 0 <= quality <= 51:
@@ -437,7 +561,11 @@ async def build_plan(
     if source.height - top - bottom <= 0:
         raise ReencodePlanError("invalid_crop", "Crop values remove the full video height.")
 
-    allow_cpu = settings.LETTERBOX_REENCODE_ALLOW_CPU_FALLBACK if allow_cpu_fallback is None else allow_cpu_fallback
+    allow_cpu = (
+        settings.LETTERBOX_REENCODE_ALLOW_CPU_FALLBACK
+        if allow_cpu_fallback is None
+        else allow_cpu_fallback
+    )
     requested_codec = None if codec in {None, "preserve"} else codec
     encoder_plan = await gated(
         choose_encoder,
@@ -448,12 +576,29 @@ async def build_plan(
         requested_codec=requested_codec,
         requested_preset=preset,
     )
+    acceleration = await gated(
+        nvidia_acceleration_plan,
+        resolved.path,
+        source.codec,
+        encoder_plan,
+    )
     dovi, warnings = _dovi_plan(source, encoder_plan["codec"])
     if encoder_plan["used_cpu_fallback"]:
         warnings.append(
             {
                 "code": "cpu_fallback",
                 "message": "No supported GPU encoder was selected; this job will use CPU encoding and may take much longer.",
+                "requires_confirmation": False,
+            }
+        )
+    if encoder_plan["family"] == "nvidia" and not acceleration["enabled"]:
+        warnings.append(
+            {
+                "code": "nvidia_acceleration_unavailable",
+                "message": (
+                    "NVIDIA decode/crop acceleration is unavailable; this encode will use "
+                    f"CPU decode/crop. {acceleration['reason']}"
+                ),
                 "requires_confirmation": False,
             }
         )
@@ -490,6 +635,7 @@ async def build_plan(
             "dovi_bl_signal_compatibility_id": source.dovi_bl_signal_compatibility_id,
         },
         "encoder": encoder_plan,
+        "acceleration": acceleration,
         "hdr": {"status": "preserve_required" if source.has_hdr else "not_present"},
         "dovi": {
             **dovi,
@@ -515,32 +661,49 @@ def build_ffmpeg_args(source: Path, output: Path, plan: dict) -> list[str]:
     family = plan["encoder"]["family"]
     top = int(plan["crop"]["top"])
     bottom = int(plan["crop"]["bottom"])
-    crop_filter = f"crop=iw:ih-{top + bottom}:0:{top}"
-    if plan["source"].get("has_hdr") or "10" in str(plan["source"].get("pix_fmt") or ""):
-        crop_filter = f"{crop_filter},format=p010le"
+    acceleration = plan.get("acceleration") or {}
+    use_nvidia_zero_copy = bool(acceleration.get("enabled")) and family == "nvidia"
 
-    args = [
-        "-y",
-        "-hide_banner",
-        "-nostdin",
-        "-i",
-        str(source),
-        "-map",
-        "0",
-        "-map_metadata",
-        "0",
-        "-map_chapters",
-        "0",
-        "-copy_unknown",
-        "-max_muxing_queue_size",
-        "4096",
-        "-c",
-        "copy",
-        "-c:v:0",
-        encoder,
-        "-filter:v:0",
-        crop_filter,
-    ]
+    args = ["-y", "-hide_banner", "-nostdin"]
+    if use_nvidia_zero_copy:
+        # CUVID crops while producing CUDA frames, so NVENC receives GPU-resident
+        # frames directly. Do not add a CPU filter or format conversion here.
+        args.extend(
+            [
+                "-hwaccel",
+                "cuda",
+                "-hwaccel_output_format",
+                "cuda",
+                "-c:v:0",
+                str(acceleration["decoder"]),
+                "-crop",
+                f"{top}x{bottom}x0x0",
+            ]
+        )
+    args.extend(
+        [
+            "-i",
+            str(source),
+            "-map",
+            "0",
+            "-map_metadata",
+            "0",
+            "-map_chapters",
+            "0",
+            "-copy_unknown",
+            "-max_muxing_queue_size",
+            "4096",
+            "-c",
+            "copy",
+            "-c:v:0",
+            encoder,
+        ]
+    )
+    if not use_nvidia_zero_copy:
+        crop_filter = f"crop=iw:ih-{top + bottom}:0:{top}"
+        if plan["source"].get("has_hdr") or "10" in str(plan["source"].get("pix_fmt") or ""):
+            crop_filter = f"{crop_filter},format=p010le"
+        args.extend(["-filter:v:0", crop_filter])
     quality = str(plan["encoder"]["quality"])
     preset = plan["encoder"].get("preset")
     if family == "nvidia":
@@ -608,20 +771,84 @@ def build_dovi_remux_args(encoded_mkv: Path, injected_hevc: Path, output: Path) 
     ]
 
 
-def _parse_progress(line: str, duration_s: float | None) -> dict | None:
+def _parse_progress(line: str, duration_s: float | None, values: dict[str, str]) -> dict | None:
     if "=" not in line:
         return None
     key, value = line.strip().split("=", 1)
-    if key != "out_time_ms":
+    values[key] = value
+    if key != "progress":
         return None
     try:
-        out_seconds = int(value) / 1_000_000
-    except ValueError:
+        out_seconds = int(values["out_time_ms"]) / 1_000_000
+    except (KeyError, ValueError):
         return None
     percent = None
     if duration_s and duration_s > 0:
         percent = max(0, min(100, round((out_seconds / duration_s) * 100, 1)))
-    return {"out_time_seconds": round(out_seconds, 1), "percent": percent}
+    progress = {"out_time_seconds": round(out_seconds, 1), "percent": percent}
+    if values.get("fps") not in {None, "N/A"}:
+        with contextlib.suppress(ValueError):
+            progress["fps"] = round(float(values["fps"]), 2)
+    if values.get("speed") not in {None, "N/A"}:
+        with contextlib.suppress(ValueError):
+            progress["speed"] = round(float(values["speed"].removesuffix("x")), 3)
+    return progress
+
+
+async def _run_encode_attempt(
+    db: AsyncSession,
+    job: MediaJob,
+    emit,
+    source: Path,
+    output: Path,
+    plan: dict,
+    source_info: SourceVideo,
+) -> tuple[bool, str]:
+    """Run one FFmpeg encode attempt and return its failure diagnostic, if any."""
+    proc = await asyncio.create_subprocess_exec(
+        binaries.resolve("ffmpeg") or "ffmpeg",
+        *build_ffmpeg_args(source, output, plan),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    assert proc.stdout is not None
+    # ffmpeg emits a progress packet several times per second. Publish every
+    # packet live, but only persist it (and poll cancellation) about once/sec.
+    last_persist = 0.0
+    progress_values: dict[str, str] = {}
+    while True:
+        line = await proc.stdout.readline()
+        if not line:
+            break
+        progress = _parse_progress(
+            line.decode(errors="replace"), source_info.duration_s, progress_values
+        )
+        if progress is None:
+            continue
+        now = time.monotonic()
+        if now - last_persist < 1.0:
+            await emit(db, job.job_id, "encode", "running", progress=progress, persist=False)
+            continue
+        last_persist = now
+        percent = progress.get("percent")
+        if percent is not None:
+            job.progress_done = int(percent)
+            job.progress_total = 100
+        job.stage = "encode"
+        await emit(db, job.job_id, "encode", "running", progress=progress, persist=True)
+        await db.refresh(job, ["cancel_requested"])
+        if job.cancel_requested:
+            proc.terminate()
+            await proc.wait()
+            output.unlink(missing_ok=True)
+            raise ReencodePlanError("cancelled", "letterbox re-encode cancelled")
+    stderr = await proc.stderr.read() if proc.stderr is not None else b""
+    await proc.wait()
+    diagnostic = stderr.decode(errors="replace")
+    if proc.returncode != 0:
+        output.unlink(missing_ok=True)
+        return False, diagnostic
+    return True, diagnostic
 
 
 async def execute_job(db: AsyncSession, job: MediaJob, emit) -> dict:
@@ -646,51 +873,50 @@ async def execute_job(db: AsyncSession, job: MediaJob, emit) -> dict:
     source_info = await gated(inspect_source, resolved.path)
     if source_info is None:
         raise ReencodePlanError("probe_failed", "could not inspect source before encoding")
-    await emit(db, job.job_id, "encode", "start", message=f"Running {plan['encoder']['encoder']}")
-
-    proc = await asyncio.create_subprocess_exec(
-        binaries.resolve("ffmpeg") or "ffmpeg",
-        *build_ffmpeg_args(resolved.path, ffmpeg_out, plan),
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
+    acceleration = plan.get("acceleration") or {}
+    acceleration_active = bool(acceleration.get("enabled"))
+    pipeline_label = "NVIDIA NVDEC → GPU crop → NVENC" if acceleration_active else "CPU decode/crop"
+    await emit(
+        db,
+        job.job_id,
+        "encode",
+        "start",
+        message=f"Running {plan['encoder']['encoder']} ({pipeline_label})",
     )
-    assert proc.stdout is not None
-    # ffmpeg emits a progress line several times per second. Publish every tick
-    # to live SSE subscribers (in-memory, no DB), but only persist progress and
-    # poll for cancellation about once per second so high-frequency encoder
-    # output does not create unbounded database/event-stream write pressure.
-    last_persist = 0.0
-    while True:
-        line = await proc.stdout.readline()
-        if not line:
-            break
-        progress = _parse_progress(line.decode(errors="replace"), source_info.duration_s)
-        if progress is None:
-            continue
-        now = time.monotonic()
-        if now - last_persist < 1.0:
-            await emit(db, job.job_id, "encode", "running", progress=progress, persist=False)
-            continue
-        last_persist = now
-        # Mirror live progress onto the job row so a reconnecting client (or
-        # GET /movies/{id}) sees the current % immediately, then persist one
-        # throttled progress event for history/replay.
-        percent = progress.get("percent")
-        if percent is not None:
-            job.progress_done = int(percent)
-            job.progress_total = 100
+
+    succeeded, diagnostic = await _run_encode_attempt(
+        db, job, emit, resolved.path, ffmpeg_out, plan, source_info
+    )
+    execution_acceleration = dict(acceleration)
+    if not succeeded and acceleration_active:
+        logger.warning(
+            "NVIDIA zero-copy encode failed; retrying with CPU decode/crop: %s", diagnostic
+        )
+        fallback_reason = _clean_ffmpeg_error(diagnostic, resolved.path)
+        fallback_plan = json.loads(json.dumps(plan))
+        fallback_plan["acceleration"] = {
+            "enabled": False,
+            "mode": "cpu_decode_crop_fallback",
+            "decoder": acceleration.get("decoder"),
+            "reason": fallback_reason,
+        }
+        execution_acceleration = fallback_plan["acceleration"]
+        job.progress_done = 0
+        job.progress_total = 100
         job.stage = "encode"
-        await emit(db, job.job_id, "encode", "running", progress=progress, persist=True)
-        await db.refresh(job, ["cancel_requested"])
-        if job.cancel_requested:
-            proc.terminate()
-            out.unlink(missing_ok=True)
-            raise ReencodePlanError("cancelled", "letterbox re-encode cancelled")
-    stderr = await proc.stderr.read() if proc.stderr is not None else b""
-    await proc.wait()
-    if proc.returncode != 0:
-        ffmpeg_out.unlink(missing_ok=True)
-        raise ReencodePlanError("ffmpeg_failed", stderr.decode(errors="replace")[:500])
+        await emit(
+            db,
+            job.job_id,
+            "encode",
+            "fallback",
+            message=f"NVIDIA acceleration failed; retrying with CPU decode/crop. {fallback_reason}",
+            progress={"percent": 0},
+        )
+        succeeded, diagnostic = await _run_encode_attempt(
+            db, job, emit, resolved.path, ffmpeg_out, fallback_plan, source_info
+        )
+    if not succeeded:
+        raise ReencodePlanError("ffmpeg_failed", diagnostic[:500])
 
     dovi_status = plan.get("dovi", {}).get("status", "not_present")
     if dovi_preserve:
@@ -720,7 +946,9 @@ async def execute_job(db: AsyncSession, job: MediaJob, emit) -> dict:
         original_size_bytes=resolved.size_bytes,
         candidate_size_bytes=candidate_stat.st_size,
         original_signature=resolved.signature,
-        candidate_signature=compute_signature(out, size=candidate_stat.st_size, mtime_ns=candidate_stat.st_mtime_ns),
+        candidate_signature=compute_signature(
+            out, size=candidate_stat.st_size, mtime_ns=candidate_stat.st_mtime_ns
+        ),
         encoder=plan["encoder"]["encoder"],
         encoder_family=plan["encoder"]["family"],
         codec=plan["encoder"]["codec"],
@@ -728,14 +956,26 @@ async def execute_job(db: AsyncSession, job: MediaJob, emit) -> dict:
         crop_bottom=int(plan["crop"]["bottom"]),
         hdr_status="preserved" if plan["source"].get("has_hdr") else "not_present",
         dovi_status=dovi_status,
-        detail_json=json.dumps({"plan": plan, "warnings": plan.get("warnings", [])}, default=str),
+        detail_json=json.dumps(
+            {
+                "plan": plan,
+                "warnings": plan.get("warnings", []),
+                "execution": {"acceleration": execution_acceleration},
+            },
+            default=str,
+        ),
         status="candidate_ready",
     )
     db.add(artifact)
     await db.commit()
     await db.refresh(artifact)
     await emit(db, job.job_id, "done", "complete")
-    return {"artifact_id": artifact.id, "candidate_path": str(out), "candidate_size_bytes": candidate_stat.st_size}
+    return {
+        "artifact_id": artifact.id,
+        "candidate_path": str(out),
+        "candidate_size_bytes": candidate_stat.st_size,
+        "acceleration": execution_acceleration,
+    }
 
 
 async def _run_checked(binary_name: str, args: list[str], *, timeout: float | None = None) -> None:
@@ -781,20 +1021,30 @@ async def _preserve_dovi(source_mkv: Path, encoded_mkv: Path, final_mkv: Path, j
             shutil.rmtree(work)
 
 
-def validate_candidate(source_path: Path, out_path: Path, plan: dict, source: SourceVideo) -> list[str]:
+def validate_candidate(
+    source_path: Path, out_path: Path, plan: dict, source: SourceVideo
+) -> list[str]:
     problems: list[str] = []
     out = inspect_source(out_path)
     if out is None:
         return ["output not probeable"]
     expected_height = int(plan["crop"]["output_height"])
     if out.width != source.width or out.height != expected_height:
-        problems.append(f"unexpected dimensions: {out.width}x{out.height}, expected {source.width}x{expected_height}")
+        problems.append(
+            f"unexpected dimensions: {out.width}x{out.height}, expected {source.width}x{expected_height}"
+        )
     if out.audio_streams != source.audio_streams:
-        problems.append(f"audio stream count changed: {source.audio_streams} -> {out.audio_streams}")
+        problems.append(
+            f"audio stream count changed: {source.audio_streams} -> {out.audio_streams}"
+        )
     if out.subtitle_streams != source.subtitle_streams:
-        problems.append(f"subtitle stream count changed: {source.subtitle_streams} -> {out.subtitle_streams}")
+        problems.append(
+            f"subtitle stream count changed: {source.subtitle_streams} -> {out.subtitle_streams}"
+        )
     if out.attachment_streams != source.attachment_streams:
-        problems.append(f"attachment stream count changed: {source.attachment_streams} -> {out.attachment_streams}")
+        problems.append(
+            f"attachment stream count changed: {source.attachment_streams} -> {out.attachment_streams}"
+        )
     if source.duration_s and out.duration_s and abs(source.duration_s - out.duration_s) > 2.0:
         problems.append(f"duration drifted: {source.duration_s:.1f}s -> {out.duration_s:.1f}s")
     if source.has_hdr and not out.has_hdr:
@@ -807,8 +1057,12 @@ def validate_candidate(source_path: Path, out_path: Path, plan: dict, source: So
 async def artifact_summary(db: AsyncSession) -> dict:
     rows = (
         await db.execute(
-            select(LetterboxReencodeArtifact.status, func.count(), func.coalesce(func.sum(LetterboxReencodeArtifact.candidate_size_bytes), 0), func.coalesce(func.sum(LetterboxReencodeArtifact.saved_original_size_bytes), 0))
-            .group_by(LetterboxReencodeArtifact.status)
+            select(
+                LetterboxReencodeArtifact.status,
+                func.count(),
+                func.coalesce(func.sum(LetterboxReencodeArtifact.candidate_size_bytes), 0),
+                func.coalesce(func.sum(LetterboxReencodeArtifact.saved_original_size_bytes), 0),
+            ).group_by(LetterboxReencodeArtifact.status)
         )
     ).all()
     total_candidates = 0
@@ -818,7 +1072,12 @@ async def artifact_summary(db: AsyncSession) -> dict:
         counts[status] = count
         total_candidates += int(candidate_bytes or 0)
         total_saved += int(saved_bytes or 0)
-    return {"counts": counts, "candidate_bytes": total_candidates, "saved_original_bytes": total_saved, "total_bytes": total_candidates + total_saved}
+    return {
+        "counts": counts,
+        "candidate_bytes": total_candidates,
+        "saved_original_bytes": total_saved,
+        "total_bytes": total_candidates + total_saved,
+    }
 
 
 def artifact_to_dict(artifact: LetterboxReencodeArtifact) -> dict:
@@ -849,7 +1108,9 @@ def artifact_to_dict(artifact: LetterboxReencodeArtifact) -> dict:
 
 async def replace_original(db: AsyncSession, artifact: LetterboxReencodeArtifact) -> dict:
     if artifact.status not in {"candidate_ready", "kept"}:
-        raise ReencodePlanError("invalid_status", f"artifact is not replaceable from status {artifact.status}")
+        raise ReencodePlanError(
+            "invalid_status", f"artifact is not replaceable from status {artifact.status}"
+        )
     original = Path(artifact.original_path)
     candidate = Path(artifact.candidate_path or "")
     if not original.is_file() or not candidate.is_file():
@@ -857,15 +1118,26 @@ async def replace_original(db: AsyncSession, artifact: LetterboxReencodeArtifact
         await db.commit()
         raise ReencodePlanError("missing_file", "original or candidate file is missing")
     media_row = await db.get(MediaFile, artifact.media_file_id) if artifact.media_file_id else None
-    source_key = (media_row.source_key if media_row else f"movie-{artifact.movie_id}").replace(":", "_").replace("/", "_").replace("\\", "_")
-    saved = Path(artifact.saved_original_path) if artifact.saved_original_path else saved_original_path(original, source_key, artifact.job_id or uuid4().hex)
+    source_key = (
+        (media_row.source_key if media_row else f"movie-{artifact.movie_id}")
+        .replace(":", "_")
+        .replace("/", "_")
+        .replace("\\", "_")
+    )
+    saved = (
+        Path(artifact.saved_original_path)
+        if artifact.saved_original_path
+        else saved_original_path(original, source_key, artifact.job_id or uuid4().hex)
+    )
     saved.parent.mkdir(parents=True, exist_ok=True)
     os.replace(original, saved)
     os.replace(candidate, original)
     stat = saved.stat()
     artifact.saved_original_path = str(saved)
     artifact.saved_original_size_bytes = stat.st_size
-    artifact.saved_original_signature = compute_signature(saved, size=stat.st_size, mtime_ns=stat.st_mtime_ns)
+    artifact.saved_original_signature = compute_signature(
+        saved, size=stat.st_size, mtime_ns=stat.st_mtime_ns
+    )
     artifact.status = "replaced"
     artifact.updated_at = datetime.now(UTC)
     if media_row is not None:
@@ -883,7 +1155,9 @@ async def replace_original(db: AsyncSession, artifact: LetterboxReencodeArtifact
     return artifact_to_dict(artifact)
 
 
-async def restore_original(db: AsyncSession, artifact: LetterboxReencodeArtifact, *, keep_candidate: bool = False) -> dict:
+async def restore_original(
+    db: AsyncSession, artifact: LetterboxReencodeArtifact, *, keep_candidate: bool = False
+) -> dict:
     if artifact.status != "replaced":
         raise ReencodePlanError("invalid_status", "only replaced artifacts can restore an original")
     original = Path(artifact.original_path)

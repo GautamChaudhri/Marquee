@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -52,9 +53,7 @@ def test_choose_encoder_honors_explicit_encoder_override(monkeypatch):
 
 def test_choose_encoder_honors_quality_and_preset_override(monkeypatch):
     monkeypatch.setattr(lr, "ffmpeg_encoders", lambda: {"hevc_nvenc"})
-    choice = lr.choose_encoder(
-        "hevc", allow_cpu=True, requested_quality=22, requested_preset="p4"
-    )
+    choice = lr.choose_encoder("hevc", allow_cpu=True, requested_quality=22, requested_preset="p4")
     assert choice["quality"] == 22
     assert choice["preset"] == "p4"
 
@@ -107,6 +106,200 @@ def test_build_ffmpeg_args_reencodes_video_and_copies_other_streams(tmp_path):
     assert str(out) == args[-1]
 
 
+def test_nvidia_acceleration_plan_preflights_matching_decoder(tmp_path, monkeypatch):
+    source = tmp_path / "input.mkv"
+    source.write_bytes(b"video")
+    calls: list[list[str]] = []
+    monkeypatch.setattr(lr.settings, "LETTERBOX_REENCODE_NVIDIA_ACCELERATION", "auto")
+    monkeypatch.setattr(lr, "ffmpeg_hwaccels", lambda: {"cuda"})
+    monkeypatch.setattr(lr, "ffmpeg_decoders", lambda: {"hevc_cuvid"})
+    monkeypatch.setattr(
+        lr.binaries,
+        "run",
+        lambda _name, args, timeout: calls.append(args) or SimpleNamespace(ok=True, stderr=""),
+    )
+
+    acceleration = lr.nvidia_acceleration_plan(
+        source, "hevc", {"family": "nvidia", "encoder": "hevc_nvenc"}
+    )
+
+    assert acceleration == {
+        "enabled": True,
+        "mode": "nvidia_zero_copy",
+        "decoder": "hevc_cuvid",
+        "reason": None,
+    }
+    assert calls[0][calls[0].index("-c:v:0") + 1] == "hevc_cuvid"
+    assert "-hwaccel_output_format" in calls[0]
+
+
+def test_nvidia_acceleration_plan_reports_missing_decoder(monkeypatch, tmp_path):
+    monkeypatch.setattr(lr.settings, "LETTERBOX_REENCODE_NVIDIA_ACCELERATION", "auto")
+    monkeypatch.setattr(lr, "ffmpeg_hwaccels", lambda: {"cuda"})
+    monkeypatch.setattr(lr, "ffmpeg_decoders", set)
+
+    acceleration = lr.nvidia_acceleration_plan(
+        tmp_path / "input.mkv", "hevc", {"family": "nvidia", "encoder": "hevc_nvenc"}
+    )
+
+    assert acceleration["enabled"] is False
+    assert acceleration["decoder"] is None
+    assert "hevc_cuvid" in acceleration["reason"]
+
+
+def test_build_ffmpeg_args_uses_zero_copy_nvidia_pipeline(tmp_path):
+    src = tmp_path / "input.mkv"
+    out = tmp_path / "out.mkv"
+    plan = {
+        "crop": {"top": 68, "bottom": 68},
+        "source": {
+            "has_hdr": True,
+            "pix_fmt": "yuv420p10le",
+            "color_primaries": "bt2020",
+            "color_transfer": "smpte2084",
+            "color_space": "bt2020nc",
+        },
+        "encoder": {
+            "codec": "hevc",
+            "encoder": "hevc_nvenc",
+            "family": "nvidia",
+            "quality": 24,
+        },
+        "acceleration": {
+            "enabled": True,
+            "mode": "nvidia_zero_copy",
+            "decoder": "hevc_cuvid",
+            "reason": None,
+        },
+    }
+
+    args = lr.build_ffmpeg_args(src, out, plan)
+
+    assert args[args.index("-hwaccel") + 1] == "cuda"
+    assert args[args.index("-hwaccel_output_format") + 1] == "cuda"
+    assert args[args.index("-c:v:0") + 1] == "hevc_cuvid"
+    assert args[args.index("-crop") + 1] == "68x68x0x0"
+    assert args.index("-hwaccel") < args.index("-i")
+    assert "-filter:v:0" not in args
+    assert "p010le" not in args
+    assert args[args.index("-color_trc") + 1] == "smpte2084"
+
+
+def test_parse_progress_exposes_speed_and_fps():
+    values: dict[str, str] = {}
+    for line in ("out_time_ms=12000000", "fps=59.94", "speed=2.50x"):
+        assert lr._parse_progress(line, 60, values) is None
+
+    assert lr._parse_progress("progress=continue", 60, values) == {
+        "out_time_seconds": 12.0,
+        "percent": 20.0,
+        "fps": 59.94,
+        "speed": 2.5,
+    }
+
+
+@pytest.mark.asyncio
+async def test_execute_job_retries_accelerated_encode_with_cpu_decode(db, tmp_path, monkeypatch):
+    monkeypatch.setattr(lr.settings, "MEDIA_ROOTS", [str(tmp_path)])
+    source = tmp_path / "Movie.mkv"
+    source.write_bytes(b"source")
+    movie = Movie(
+        title="Movie", year=2024, folder_path=str(tmp_path), movie_file_path=source.name, tmdb_id=1
+    )
+    db.add(movie)
+    await db.flush()
+    media_file = MediaFile(
+        source="radarr",
+        source_key="radarr:movie:1",
+        movie_id=movie.id,
+        path=str(source),
+        relative_path=source.name,
+        container="mkv",
+        is_active=True,
+    )
+    db.add(media_file)
+    await db.flush()
+    plan = {
+        "crop": {"top": 10, "bottom": 10, "output_height": 1060},
+        "source": {"has_hdr": False, "pix_fmt": "yuv420p"},
+        "encoder": {
+            "codec": "hevc",
+            "encoder": "hevc_nvenc",
+            "family": "nvidia",
+            "quality": 24,
+        },
+        "acceleration": {
+            "enabled": True,
+            "mode": "nvidia_zero_copy",
+            "decoder": "hevc_cuvid",
+            "reason": None,
+        },
+        "dovi": {"supported": False, "status": "not_present"},
+        "warnings": [],
+    }
+    job = MediaJob(
+        job_id="fallback-job",
+        operation="letterbox_reencode",
+        media_file_id=media_file.id,
+        status="running",
+        request_json='{"movie_id": 1}',
+        plan_json=lr.json.dumps(plan),
+        input_signature=compute_signature(source),
+    )
+    db.add(job)
+    await db.commit()
+
+    source_info = lr.SourceVideo(
+        codec="hevc",
+        width=1920,
+        height=1080,
+        pix_fmt="yuv420p",
+        color_transfer=None,
+        color_primaries=None,
+        color_space=None,
+        duration_s=60,
+        has_hdr=False,
+        has_dovi=False,
+        dovi_profile=None,
+        dovi_level=None,
+        dovi_el_present=None,
+        dovi_bl_signal_compatibility_id=None,
+        video_streams=1,
+        audio_streams=0,
+        subtitle_streams=0,
+        attachment_streams=0,
+    )
+    monkeypatch.setattr(lr, "inspect_source", lambda _path: source_info)
+    monkeypatch.setattr(lr, "validate_candidate", lambda *_args: [])
+    calls: list[dict] = []
+
+    async def fake_run(_db, _job, _emit, _source, output, attempt_plan, _source_info):
+        calls.append(attempt_plan["acceleration"])
+        if attempt_plan["acceleration"]["enabled"]:
+            return False, f"CUDA failed for {source}"
+        output.write_bytes(b"candidate")
+        return True, ""
+
+    events: list[dict] = []
+
+    async def emit(_db, _job_id, _stage, state, **kwargs):
+        events.append({"state": state, **kwargs})
+
+    monkeypatch.setattr(lr, "_run_encode_attempt", fake_run)
+
+    result = await lr.execute_job(db, job, emit)
+
+    assert [call["enabled"] for call in calls] == [True, False]
+    assert any(event["state"] == "fallback" for event in events)
+    assert result["acceleration"]["mode"] == "cpu_decode_crop_fallback"
+    artifact = await db.get(LetterboxReencodeArtifact, result["artifact_id"])
+    assert artifact is not None
+    assert (
+        lr.json.loads(artifact.detail_json)["execution"]["acceleration"]["reason"]
+        == "CUDA failed for <source>"
+    )
+
+
 def test_inspect_source_extracts_dovi_details(monkeypatch):
     monkeypatch.setattr(
         lr,
@@ -143,7 +336,9 @@ def test_inspect_source_extracts_dovi_details(monkeypatch):
 
 
 def test_dovi_plan_supported_when_tool_present(monkeypatch):
-    monkeypatch.setattr(lr.binaries, "resolve", lambda name: "/usr/bin/dovi_tool" if name == "dovi_tool" else None)
+    monkeypatch.setattr(
+        lr.binaries, "resolve", lambda name: "/usr/bin/dovi_tool" if name == "dovi_tool" else None
+    )
     source = lr.SourceVideo(
         codec="hevc",
         width=3840,
@@ -171,7 +366,9 @@ def test_dovi_plan_supported_when_tool_present(monkeypatch):
 
 
 def test_dovi_plan_rejects_profile_7_as_not_fully_preservable(monkeypatch):
-    monkeypatch.setattr(lr.binaries, "resolve", lambda name: "/usr/bin/dovi_tool" if name == "dovi_tool" else None)
+    monkeypatch.setattr(
+        lr.binaries, "resolve", lambda name: "/usr/bin/dovi_tool" if name == "dovi_tool" else None
+    )
     source = lr.SourceVideo(
         codec="hevc",
         width=3840,
@@ -236,12 +433,16 @@ async def test_replace_and_restore_artifact(db, tmp_path, monkeypatch):
     movie_dir = tmp_path / "Movie"
     movie_dir.mkdir()
     original = movie_dir / "Movie.mkv"
-    candidate = tmp_path / ".marquee" / "letterbox" / "candidates" / "radarr_movie_1" / "job1" / "Movie.mkv"
+    candidate = (
+        tmp_path / ".marquee" / "letterbox" / "candidates" / "radarr_movie_1" / "job1" / "Movie.mkv"
+    )
     candidate.parent.mkdir(parents=True)
     original.write_bytes(b"original")
     candidate.write_bytes(b"candidate")
 
-    movie = Movie(title="Movie", year=2024, folder_path=str(movie_dir), movie_file_path="Movie.mkv", tmdb_id=1)
+    movie = Movie(
+        title="Movie", year=2024, folder_path=str(movie_dir), movie_file_path="Movie.mkv", tmdb_id=1
+    )
     db.add(movie)
     await db.flush()
     media_file = MediaFile(
@@ -255,9 +456,23 @@ async def test_replace_and_restore_artifact(db, tmp_path, monkeypatch):
     )
     db.add(media_file)
     await db.flush()
-    db.add(MediaJob(job_id="job1", operation="letterbox_reencode", media_file_id=media_file.id, status="succeeded"))
+    db.add(
+        MediaJob(
+            job_id="job1",
+            operation="letterbox_reencode",
+            media_file_id=media_file.id,
+            status="succeeded",
+        )
+    )
     await db.flush()
-    db.add(LetterboxState(movie_id=movie.id, status="candidate", recommended_crop_top=10, recommended_crop_bottom=10))
+    db.add(
+        LetterboxState(
+            movie_id=movie.id,
+            status="candidate",
+            recommended_crop_top=10,
+            recommended_crop_bottom=10,
+        )
+    )
     artifact = LetterboxReencodeArtifact(
         job_id="job1",
         movie_id=movie.id,

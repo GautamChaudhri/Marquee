@@ -195,6 +195,12 @@ export interface ReencodePlan {
 		available_encoders: string[];
 		used_cpu_fallback: boolean;
 	};
+	acceleration?: {
+		enabled: boolean;
+		mode: 'nvidia_zero_copy' | 'cpu_decode_crop' | 'cpu_decode_crop_fallback';
+		decoder: string | null;
+		reason: string | null;
+	};
 	hdr: { status: string };
 	// Flattened preservation fields + profile/level (see build_plan).
 	dovi: {
@@ -250,7 +256,11 @@ export interface ReencodeArtifact {
 	crop_bottom: number;
 	hdr_status: string | null;
 	dovi_status: string | null;
-	detail?: { plan?: ReencodePlan | null; warnings?: ReencodeWarning[] | null } | null;
+	detail?: {
+		plan?: ReencodePlan | null;
+		warnings?: ReencodeWarning[] | null;
+		execution?: { acceleration?: ReencodePlan['acceleration'] | null } | null;
+	} | null;
 	created_at: string | null;
  }
 

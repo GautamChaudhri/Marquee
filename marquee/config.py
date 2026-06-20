@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import contextlib
 from pathlib import Path
+from typing import Literal
 
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -46,7 +47,7 @@ class Settings(BaseSettings):
     API_KEY: str | None = Field(
         default=None,
         description="Static API key required on all endpoints except /health. "
-        "Generate one with: python -c \"import secrets; print(secrets.token_urlsafe(32))\".",
+        'Generate one with: python -c "import secrets; print(secrets.token_urlsafe(32))".',
     )
     AUTH_ALLOW_LOCAL: bool = Field(
         default=True,
@@ -167,16 +168,12 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------
     BACKUP_INTERVAL_HOURS: int = Field(
         default=24,
-        validation_alias=AliasChoices(
-            "BACKUP_INTERVAL_HOURS", "MARQUEE_BACKUP_INTERVAL_HOURS"
-        ),
+        validation_alias=AliasChoices("BACKUP_INTERVAL_HOURS", "MARQUEE_BACKUP_INTERVAL_HOURS"),
         description="Hours between automatic backups. Set to 0 to disable scheduled backups.",
     )
     BACKUP_RETENTION_DAYS: int = Field(
         default=7,
-        validation_alias=AliasChoices(
-            "BACKUP_RETENTION_DAYS", "MARQUEE_BACKUP_RETENTION_DAYS"
-        ),
+        validation_alias=AliasChoices("BACKUP_RETENTION_DAYS", "MARQUEE_BACKUP_RETENTION_DAYS"),
         description="Number of daily backup directories to retain after rotation.",
     )
     BACKUP_INITIAL_DELAY_SECONDS: int = Field(
@@ -310,10 +307,7 @@ class Settings(BaseSettings):
 
     @property
     def radarr_path_configured(self) -> bool:
-        return (
-            self.RADARR_PATH_PREFIX is not None
-            and self.RADARR_MEDIA_PATH is not None
-        )
+        return self.RADARR_PATH_PREFIX is not None and self.RADARR_MEDIA_PATH is not None
 
     def translate_radarr_path(self, arr_path: str) -> str:
         """Translate a path from Radarr's mount namespace to Marquee's.
@@ -324,7 +318,7 @@ class Settings(BaseSettings):
         if not arr_path or not self.RADARR_PATH_PREFIX:
             return arr_path
         if arr_path.startswith(self.RADARR_PATH_PREFIX):
-            return self.RADARR_MEDIA_PATH + arr_path[len(self.RADARR_PATH_PREFIX):]
+            return self.RADARR_MEDIA_PATH + arr_path[len(self.RADARR_PATH_PREFIX) :]
         return arr_path
 
     # ------------------------------------------------------------------
@@ -350,10 +344,7 @@ class Settings(BaseSettings):
 
     @property
     def sonarr_path_configured(self) -> bool:
-        return (
-            self.SONARR_PATH_PREFIX is not None
-            and self.SONARR_MEDIA_PATH is not None
-        )
+        return self.SONARR_PATH_PREFIX is not None and self.SONARR_MEDIA_PATH is not None
 
     def translate_sonarr_path(self, arr_path: str) -> str:
         """Translate a path from Sonarr's mount namespace to Marquee's.
@@ -364,7 +355,7 @@ class Settings(BaseSettings):
         if not arr_path or not self.SONARR_PATH_PREFIX:
             return arr_path
         if arr_path.startswith(self.SONARR_PATH_PREFIX):
-            return self.SONARR_MEDIA_PATH + arr_path[len(self.SONARR_PATH_PREFIX):]
+            return self.SONARR_MEDIA_PATH + arr_path[len(self.SONARR_PATH_PREFIX) :]
         return arr_path
 
     # ------------------------------------------------------------------
@@ -490,9 +481,7 @@ class Settings(BaseSettings):
     LETTERBOX_MKVPROPEDIT: str = Field(
         default="mkvpropedit", description="mkvpropedit binary path/name."
     )
-    LETTERBOX_MKVMERGE: str = Field(
-        default="mkvmerge", description="mkvmerge binary path/name."
-    )
+    LETTERBOX_MKVMERGE: str = Field(default="mkvmerge", description="mkvmerge binary path/name.")
     LETTERBOX_CONVERT: str = Field(
         default="convert", description="ImageMagick 'convert' binary (trim backend only)."
     )
@@ -502,12 +491,26 @@ class Settings(BaseSettings):
     LETTERBOX_REENCODE_ALLOW_CPU_FALLBACK: bool = Field(
         default=True, description="Allow CPU encoding when no supported GPU encoder is available."
     )
-    LETTERBOX_REENCODE_STRICT_DOVI: bool = Field(
-        default=False, description="Fail permanent re-encode plans when Dolby Vision cannot be preserved."
+    LETTERBOX_REENCODE_NVIDIA_ACCELERATION: Literal["auto", "off"] = Field(
+        default="auto",
+        description=(
+            "Use NVIDIA NVDEC decode and crop before NVENC encoding when FFmpeg and the "
+            "source support a zero-copy CUDA path; 'off' always uses CPU decode/crop."
+        ),
     )
-    LETTERBOX_MOVIE_SAMPLES_MIN: int = Field(default=5, description="Movie sampling start (minutes).")
-    LETTERBOX_MOVIE_SAMPLES_MAX: int = Field(default=60, description="Movie sampling end (minutes).")
-    LETTERBOX_MOVIE_SAMPLE_STEP: int = Field(default=5, description="Minutes between movie samples.")
+    LETTERBOX_REENCODE_STRICT_DOVI: bool = Field(
+        default=False,
+        description="Fail permanent re-encode plans when Dolby Vision cannot be preserved.",
+    )
+    LETTERBOX_MOVIE_SAMPLES_MIN: int = Field(
+        default=5, description="Movie sampling start (minutes)."
+    )
+    LETTERBOX_MOVIE_SAMPLES_MAX: int = Field(
+        default=60, description="Movie sampling end (minutes)."
+    )
+    LETTERBOX_MOVIE_SAMPLE_STEP: int = Field(
+        default=5, description="Minutes between movie samples."
+    )
     LETTERBOX_TV_SAMPLES: list[int] = Field(
         default=[5, 10, 15], description="Sample timestamps for TV episodes (minutes)."
     )

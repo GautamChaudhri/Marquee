@@ -105,6 +105,9 @@
 		encoding = false;
 		encodeProgress = 0;
 		encodeStage = null;
+		encodeMessage = null;
+		encodeFps = null;
+		encodeSpeed = null;
 		setEncoder = 'auto';
 		setQuality = null;
 		setPreset = '';
@@ -273,6 +276,9 @@
 	let encoding = $state(false);
 	let encodeProgress = $state(0);
 	let encodeStage = $state<string | null>(null);
+	let encodeMessage = $state<string | null>(null);
+	let encodeFps = $state<number | null>(null);
+	let encodeSpeed = $state<number | null>(null);
 	let artifact = $state<ReencodeArtifact | null>(null);
 	let unsub: (() => void) | null = null;
 
@@ -305,9 +311,17 @@
 			// Transient connection drop: EventSource auto-reconnects and the
 			// backend replays history, so just wait it out rather than breaking.
 			if (type === 'error') return;
-			const ev = data as { stage?: string; state?: string; progress?: { percent?: number } | null };
+			const ev = data as {
+				stage?: string;
+				state?: string;
+				message?: string;
+				progress?: { percent?: number; fps?: number; speed?: number } | null;
+			};
 			if (ev.stage) encodeStage = ev.stage;
 			if (ev.progress?.percent != null) encodeProgress = ev.progress.percent;
+			if (ev.progress?.fps != null) encodeFps = ev.progress.fps;
+			if (ev.progress?.speed != null) encodeSpeed = ev.progress.speed;
+			if (ev.message) encodeMessage = ev.message;
 		});
 	}
 
@@ -321,6 +335,9 @@
 		encoding = false;
 		encodeProgress = 0;
 		encodeStage = null;
+		encodeMessage = null;
+		encodeFps = null;
+		encodeSpeed = null;
 
 		const reencode = snapshot?.reencode;
 		if (!reencode) {
@@ -390,6 +407,11 @@
 		encoding = true;
 		encodeProgress = 0;
 		encodeStage = 'queued';
+		encodeMessage = plan.acceleration?.enabled
+			? 'NVIDIA NVDEC → GPU crop → NVENC'
+			: `CPU decode/crop${plan.acceleration?.reason ? ` · ${plan.acceleration.reason}` : ''}`;
+		encodeFps = null;
+		encodeSpeed = null;
 		artifact = null;
 		try {
 			await confirmJob(fetch, confirmId);
@@ -596,6 +618,14 @@
 									<dt>Dolby Vision</dt>
 									<dd class="mono">{artifact.dovi_status}</dd>
 								{/if}
+								{#if artifact.detail?.execution?.acceleration}
+									<dt>Pipeline</dt>
+									<dd class="mono">
+										{artifact.detail.execution.acceleration.enabled
+											? 'NVIDIA NVDEC → GPU crop → NVENC'
+											: `CPU decode/crop${artifact.detail.execution.acceleration.reason ? ` · ${artifact.detail.execution.acceleration.reason}` : ''}`}
+									</dd>
+								{/if}
 							</dl>
 						</div>
 						<button class="btn-gold" disabled={busy} onclick={doReplace}>
@@ -610,7 +640,12 @@
 						<div class="applied-card">
 							<div class="alabel">Encoding · {encodeStage ?? 'working'}</div>
 							<ProgressBar value={encodeProgress} tone="gold" />
-							<div class="crop-note" style="margin-top:6px">{Math.round(encodeProgress)}%</div>
+							<div class="crop-note" style="margin-top:6px">
+								{Math.round(encodeProgress)}%
+								{#if encodeFps != null} · {encodeFps.toFixed(1)} fps{/if}
+								{#if encodeSpeed != null} · {encodeSpeed.toFixed(2)}×{/if}
+							</div>
+							{#if encodeMessage}<div class="note">{encodeMessage}</div>{/if}
 						</div>
 					{:else if reencodeMode === 'planned'}
 						<div class="applied-card">
@@ -629,6 +664,11 @@
 									<span class="crop-note">/ {fmtBytes(plan?.storage.free_bytes ?? null)} free</span>
 								</dd>
 							</dl>
+							<div class="note {plan?.acceleration?.enabled ? 'good' : ''}">
+								{plan?.acceleration?.enabled
+									? `NVIDIA NVDEC → GPU crop → NVENC (${plan?.acceleration?.decoder})`
+									: `CPU decode/crop · ${plan?.acceleration?.reason ?? 'NVIDIA acceleration unavailable.'}`}
+							</div>
 						</div>
 						{#if planError}
 							<div class="note err">{planError}</div>
@@ -654,6 +694,11 @@
 					{:else if plan}
 						<!-- Most-relevant settings (always visible) -->
 						<div class="settings">
+							<div class="note {plan.acceleration?.enabled ? 'good' : ''}">
+								{plan.acceleration?.enabled
+									? `NVIDIA NVDEC → GPU crop → NVENC (${plan.acceleration?.decoder})`
+									: `CPU decode/crop · ${plan.acceleration?.reason ?? 'NVIDIA acceleration unavailable.'}`}
+							</div>
 							<label class="field">
 								<span>Quality (CQ/CRF) · lower = better</span>
 								<input
