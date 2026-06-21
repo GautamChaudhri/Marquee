@@ -524,6 +524,77 @@ async def review_queue(
     return {"total": total, "page": page, "page_size": page_size, "items": items}
 
 
+@router.post("/review/reset", status_code=200)
+async def reset_review_queue(
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    """Reset all movies in the review queue back to the run stage.
+
+    Clears poster DB state AND marks review-queue PipelineRuns so they
+    disappear from the Review tab. Does NOT delete poster files from disk.
+    """
+    # Find all PipelineRuns currently in the review queue.
+    result = await db.execute(
+        select(PipelineRun).where(
+            PipelineRun.feedback_event_id.is_(None),
+            PipelineRun.status.in_(_REVIEW_QUEUE_STATUSES),
+        )
+    )
+    review_runs = result.scalars().all()
+
+    if not review_runs:
+        return {"reset": 0}
+
+    # Collect unique movie IDs and mark their PipelineRuns as reviewed.
+    movie_ids = list({run.movie_id for run in review_runs})
+    reset_key = f"review_reset_{int(time.time())}"
+
+    for run in review_runs:
+        run.feedback_event_id = reset_key
+        db.add(
+            ArtworkEvent(
+                movie_id=run.movie_id,
+                action="review_reset",
+                source="manual",
+                detail=json.dumps({"run_id": run.run_id, "status": run.status}),
+            )
+        )
+
+    # Also clear poster state for any of these movies that have a poster deployed.
+    movies_with_poster = (
+        await db.execute(
+            select(Movie).where(
+                Movie.id.in_(movie_ids),
+                Movie.poster_path.isnot(None),
+            )
+        )
+    ).scalars().all()
+
+    for movie in movies_with_poster:
+        movie.poster_path = None
+        movie.poster_source = None
+        movie.poster_source_url = None
+        movie.poster_ai_selected = False
+        movie.poster_embedding = None
+        movie.poster_sha256 = None
+        movie.poster_phash = None
+        movie.poster_user_approved = False
+        movie.poster_deployed_filename = None
+        movie.poster_deployed_at = None
+
+    await db.commit()
+    logger.info(
+        "REVIEW RESET | runs_cleared=%d | posters_reset=%d",
+        len(review_runs),
+        len(movies_with_poster),
+    )
+    return {
+        "reset": len(review_runs),
+        "runs_cleared": len(review_runs),
+        "posters_reset": len(movies_with_poster),
+    }
+
+
 @movies_router.get("/{movie_id}/runs")
 async def list_movie_runs(
     movie_id: int,
