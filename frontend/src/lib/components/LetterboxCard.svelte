@@ -107,23 +107,21 @@
 </button>
 
 <style>
-	/* Base entry styling matches the original tray rows exactly; the scanning
-	   overlay (scan-line + progress) is layered on without changing the resting
-	   look. */
+	/* Base entry styling is the original tray row, verbatim; the scanning overlay
+	   (scan-line + progress) layers on without changing the resting look. */
 	.card {
 		position: relative;
 		display: flex;
 		align-items: center;
-		gap: 12px;
+		gap: 10px;
 		width: 100%;
-		padding: 14px 16px;
+		padding: 9px 14px;
 		border: none;
 		border-bottom: 1px solid var(--panel2);
 		background: transparent;
 		text-align: left;
 		cursor: pointer;
 		overflow: hidden;
-		transition: background 0.15s ease;
 	}
 	.card:hover {
 		background: var(--ink2);
@@ -138,8 +136,8 @@
 	.thumb {
 		position: relative;
 		flex: none;
-		width: 36px;
-		height: 54px;
+		width: 26px;
+		height: 40px;
 		border-radius: 4px;
 		border: 1px solid var(--line);
 		overflow: hidden;
@@ -176,7 +174,7 @@
 		flex: 1;
 	}
 	.title {
-		font-size: 14px;
+		font-size: 12.5px;
 		font-weight: 600;
 		color: var(--text);
 		white-space: nowrap;
@@ -184,13 +182,12 @@
 		text-overflow: ellipsis;
 	}
 	.sub {
-		font-size: 12px;
+		font-size: 11px;
 		color: var(--faint);
 		text-transform: capitalize;
 		white-space: nowrap;
 		overflow: hidden;
 		text-overflow: ellipsis;
-		margin-top: 2px;
 	}
 	.sub.scan-label {
 		color: var(--gold);
@@ -199,23 +196,23 @@
 	}
 	.ar {
 		flex: none;
-		font-size: 13px;
+		font-size: 11px;
 		color: var(--warn);
 	}
 	.badge {
 		flex: none;
-		font-size: 11.5px;
+		font-size: 10.5px;
 		color: var(--info);
 		background: color-mix(in srgb, var(--info) 12%, transparent);
 		border: 1px solid color-mix(in srgb, var(--info) 28%, transparent);
-		padding: 3px 9px;
+		padding: 2px 7px;
 		border-radius: 6px;
 		white-space: nowrap;
 	}
 	.dot {
 		flex: none;
-		width: 8px;
-		height: 8px;
+		width: 7px;
+		height: 7px;
 		border-radius: 50%;
 	}
 	.spin {
