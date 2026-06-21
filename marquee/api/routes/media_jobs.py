@@ -43,6 +43,8 @@ def _job_dict(job: MediaJob) -> dict:
         "trigger": job.trigger,
         "media_file_id": job.media_file_id,
         "batch_id": job.batch_id,
+        "progress_done": job.progress_done,
+        "progress_total": job.progress_total,
         "plan": json.loads(job.plan_json) if job.plan_json else None,
         "result": json.loads(job.result_json) if job.result_json else None,
         "error": json.loads(job.error_json) if job.error_json else None,
@@ -89,6 +91,19 @@ async def confirm_job(job_id: str, db: Annotated[AsyncSession, Depends(get_db)])
     if generic is not None:
         generic.status = "queued"
         generic.scheduled_at = datetime.now(UTC)
+
+    if job.operation == "letterbox_reencode" and job.media_file_id is not None:
+        from marquee.models import MediaFile
+        from marquee.models.letterbox import LetterboxState
+        from sqlalchemy import select
+        movie_file = await db.get(MediaFile, job.media_file_id)
+        if movie_file and movie_file.movie_id is not None:
+            stmt = select(LetterboxState).where(LetterboxState.movie_id == movie_file.movie_id)
+            state = (await db.execute(stmt)).scalar_one_or_none()
+            if state and state.status == "candidate":
+                state.status = "tagged"
+                state.reviewed = False
+
     await db.commit()
     return {"job_id": job_id, "status": "queued"}
 

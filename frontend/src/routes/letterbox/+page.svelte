@@ -65,6 +65,10 @@
 		selectedId = id;
 	}
 
+	let detailEncoding = $state(false);
+	let detailEncodeProgress = $state(0);
+	let detailEncodeStage = $state<string | null>(null);
+
 	function setTab(key: TabKey) {
 		if (key === activeTab) return;
 		activeTab = key;
@@ -641,9 +645,9 @@
 				{item}
 				{variant}
 				selected={item.movie_id === selected}
-				scanning={analyzing && item.movie_id === scanId}
-				progress={currentMovie && currentMovie.id === item.movie_id ? currentMovie.progress : 0}
-				stage={currentMovie && currentMovie.id === item.movie_id ? currentMovie.stage : null}
+				scanning={(analyzing && item.movie_id === scanId) || (detailEncoding && item.movie_id === selected)}
+				progress={currentMovie && currentMovie.id === item.movie_id ? currentMovie.progress : (detailEncoding && item.movie_id === selected ? detailEncodeProgress : 0)}
+				stage={currentMovie && currentMovie.id === item.movie_id ? currentMovie.stage : (detailEncoding && item.movie_id === selected ? detailEncodeStage : null)}
 				onSelect={select}
 			/>
 		{/each}
@@ -784,7 +788,17 @@
 		</section>
 
 		<section class="pane right">
-			<LetterboxDetail movieId={selected} onChanged={refreshTrays} onAnalyzeAll={doAnalyze} {analyzing} />
+			<LetterboxDetail
+				movieId={selected}
+				onChanged={refreshTrays}
+				onAnalyzeAll={doAnalyze}
+				{analyzing}
+				onEncodeState={(enc, p, s) => {
+					detailEncoding = enc;
+					detailEncodeProgress = p;
+					detailEncodeStage = s;
+				}}
+			/>
 		</section>
 	</div>
 </div>
@@ -821,6 +835,9 @@
 								{item}
 								variant={modal.variant}
 								selected={item.movie_id === selected}
+								scanning={(analyzing && item.movie_id === scanId) || (detailEncoding && item.movie_id === selected)}
+								progress={currentMovie && currentMovie.id === item.movie_id ? currentMovie.progress : (detailEncoding && item.movie_id === selected ? detailEncodeProgress : 0)}
+								stage={currentMovie && currentMovie.id === item.movie_id ? currentMovie.stage : (detailEncoding && item.movie_id === selected ? detailEncodeStage : null)}
 								onSelect={(id) => {
 									select(id);
 									closeModal();

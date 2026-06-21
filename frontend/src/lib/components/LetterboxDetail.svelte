@@ -124,6 +124,7 @@
 		onChanged: () => void;
 		onAnalyzeAll: () => void;
 		analyzing?: boolean;
+		onEncodeState?: (encoding: boolean, progress: number, stage: string | null) => void;
 	} = $props();
 
 	let detail = $state<LetterboxDetail | null>(null);
@@ -473,6 +474,7 @@
 			if (ev.progress?.fps != null) encodeFps = ev.progress.fps;
 			if (ev.progress?.speed != null) encodeSpeed = ev.progress.speed;
 			if (ev.message) encodeMessage = ev.message;
+			if (onEncodeState) onEncodeState(encoding, encodeProgress, encodeStage);
 		});
 	}
 
@@ -488,6 +490,7 @@
 			if (job.status !== 'queued' && job.status !== 'running') {
 				await finishEncode(jobId);
 			}
+			if (onEncodeState) onEncodeState(encoding, encodeProgress, encodeStage);
 		} catch {
 			/* transient — keep polling */
 		}
@@ -612,6 +615,16 @@
 			return;
 		}
 		startEncodeTracking(confirmId);
+		if (detail) {
+			detail.status = 'tagged';
+			detail.reviewed = false;
+			if (!detail.reencode) {
+				detail.reencode = { job: { status: 'queued' } } as any;
+			} else if (detail.reencode.job) {
+				detail.reencode.job.status = 'queued';
+			}
+		}
+		onChanged();
 	}
 
 	async function discardPlan() {
@@ -745,7 +758,7 @@
 			<!-- Row 3, spans both columns: actions -->
 			<div class="actions det-actions">
 				<div class="alabel">Actions</div>
-				{#if stage === 'detected'}
+				{#if reencodeMode !== null || stage === 'detected'}
 					{#if reencodeMode === null}
 						<button
 							class="fix-card"
