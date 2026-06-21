@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import logging
+import time
+from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Annotated
 
@@ -233,6 +235,177 @@ async def rescore_run(
         "gates": body.gates or {},
         "ranked": reranked,
         "gated_out": gated_out,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Batch runs (cross-movie, stage-batched)
+# ---------------------------------------------------------------------------
+
+
+class BatchRunRequest(BaseModel):
+    # "missing" (movies with no poster yet) | "all" | "selected" (movie_ids).
+    scope: str = "missing"
+    movie_ids: list[int] | None = None
+
+
+@router.post("/batch", status_code=202)
+async def run_pipeline_batch(
+    body: BatchRunRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    """Enqueue one stage-batched run over many movies (OCR/DINO load once)."""
+    scope = body.scope
+    if scope == "selected":
+        if not body.movie_ids:
+            raise HTTPException(status_code=400, detail="scope=selected requires movie_ids")
+        query = select(Movie.id).where(
+            Movie.id.in_(body.movie_ids), Movie.tmdb_id.is_not(None)
+        )
+    elif scope == "missing":
+        query = select(Movie.id).where(
+            Movie.poster_path.is_(None), Movie.tmdb_id.is_not(None)
+        )
+    elif scope == "all":
+        query = select(Movie.id).where(Movie.tmdb_id.is_not(None))
+    else:
+        raise HTTPException(status_code=400, detail=f"unknown scope {scope!r}")
+
+    movie_ids = list((await db.execute(query.order_by(Movie.id))).scalars().all())
+    if not movie_ids:
+        raise HTTPException(status_code=404, detail=f"no eligible movies for scope={scope!r}")
+    cap = pipeline_settings.PIPELINE_BATCH_MAX_MOVIES
+    if len(movie_ids) > cap:
+        raise HTTPException(
+            status_code=400,
+            detail=f"batch of {len(movie_ids)} movies exceeds PIPELINE_BATCH_MAX_MOVIES={cap}",
+        )
+    job = await job_manager.create(
+        db,
+        job_type="poster_pipeline_batch",
+        payload={"movie_ids": movie_ids, "scope": scope},
+        priority=80,
+        resources={"gpu": 1, "network_external": 1},
+        subject_type="pipeline_batch",
+        subject_id=scope,
+        max_attempts=1,
+        idempotency_key=f"poster-batch:{scope}:{int(time.time() // 30)}",
+    )
+    response = job_summary(job)
+    response["movie_count"] = len(movie_ids)
+    return response
+
+
+# ---------------------------------------------------------------------------
+# Pipeline cache (downloaded posters + working artifacts — never head/taste data)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/cache")
+async def get_pipeline_cache():
+    """On-disk size of each poster-pipeline cache (for the Clear button)."""
+    from marquee.core.pipeline_cache import cache_sizes  # noqa: PLC0415
+
+    return cache_sizes()
+
+
+class CacheClearRequest(BaseModel):
+    include_embeddings: bool = True
+    include_archives: bool = False
+
+
+@router.post("/cache/clear", status_code=202)
+async def clear_pipeline_cache(
+    body: CacheClearRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    """Clear downloaded-poster pipeline caches. Never touches head/taste data."""
+    job = await job_manager.create(
+        db,
+        job_type="pipeline_cache_clear",
+        payload={
+            "include_embeddings": body.include_embeddings,
+            "include_archives": body.include_archives,
+        },
+        priority=40,
+        resources={"maintenance_exclusive": 1},
+        subject_type="pipeline_cache",
+        subject_id="default",
+        max_attempts=1,
+    )
+    return job_summary(job)
+
+
+# ---------------------------------------------------------------------------
+# Aggregate metrics (cheap — from PipelineRun rows, no archive reads)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/metrics")
+async def pipeline_metrics(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    limit: int = 500,
+):
+    """Cross-run aggregates for a metrics dashboard, from recent PipelineRun rows."""
+    limit = min(max(limit, 1), 5000)
+    runs = (
+        (
+            await db.execute(
+                select(PipelineRun).order_by(PipelineRun.started_at.desc()).limit(limit)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    by_status: Counter[str] = Counter()
+    by_scorer: Counter[str] = Counter()
+    count_totals: dict[str, float] = defaultdict(float)
+    count_n: dict[str, int] = defaultdict(int)
+    stage_totals: dict[str, float] = defaultdict(float)
+    stage_n: dict[str, int] = defaultdict(int)
+    durations: list[float] = []
+    batches: set[str] = set()
+
+    for run in runs:
+        by_status[run.status] += 1
+        if run.scorer_name:
+            by_scorer[run.scorer_name] += 1
+        if run.batch_id:
+            batches.add(run.batch_id)
+        if run.duration_seconds is not None:
+            durations.append(run.duration_seconds)
+        for key, value in (json.loads(run.counts_json) if run.counts_json else {}).items():
+            if isinstance(value, (int, float)):
+                count_totals[key] += value
+                count_n[key] += 1
+        for key, value in (json.loads(run.timings_json) if run.timings_json else {}).items():
+            if isinstance(value, (int, float)):
+                stage_totals[key] += value
+                stage_n[key] += 1
+
+    durations.sort()
+
+    def _pct(p: float) -> float | None:
+        if not durations:
+            return None
+        return round(durations[min(len(durations) - 1, int(len(durations) * p))], 3)
+
+    return {
+        "window_runs": len(runs),
+        "by_status": dict(by_status),
+        "by_scorer": dict(by_scorer),
+        "distinct_batches": len(batches),
+        "duration_seconds": {
+            "avg": round(sum(durations) / len(durations), 3) if durations else None,
+            "p50": _pct(0.5),
+            "p90": _pct(0.9),
+            "max": round(max(durations), 3) if durations else None,
+        },
+        "avg_counts": {k: round(count_totals[k] / count_n[k], 2) for k in count_totals if count_n[k]},
+        "total_counts": {k: round(v, 2) for k, v in count_totals.items()},
+        "avg_stage_seconds": {k: round(stage_totals[k] / stage_n[k], 3) for k in stage_totals if stage_n[k]},
+        "total_stage_seconds": {k: round(v, 3) for k, v in stage_totals.items()},
     }
 
 

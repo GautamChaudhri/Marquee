@@ -102,10 +102,19 @@ class PipelineSettings(BaseSettings):
     FEEDBACK_NEGATIVES_FROM_OVERRIDES: bool = False
     # Approve/override deploys the selected poster to the media folder by default.
     FEEDBACK_DEPLOY_DEFAULT: bool = True
-    # Learned-head activation thresholds (design 09 §10) and auto-retrain.
+    # Learned-head activation thresholds (design 09 §10).
     HEAD_MIN_LABELS: int = 150
     HEAD_MIN_MOVIES: int = 5
-    HEAD_AUTO_RETRAIN: bool = True
+    # When True, every approve/override retrains the learned head inline. Default
+    # False: a pick only *accumulates* into the label/exemplar storage; the head
+    # is (re)trained on demand via the "Key Art Engine → Train" button, which
+    # enqueues the learned_head_train job through the job manager.
+    HEAD_AUTO_RETRAIN: bool = False
+
+    # ── Batch poster pipeline ─────────────────────────────────────────
+    # Upper bound on movies admitted to a single cross-movie batch run, so an
+    # accidental "run the whole library" can't queue an unbounded job.
+    PIPELINE_BATCH_MAX_MOVIES: int = 500
 
     # Fixed Phase-0 normalization ranges.
     NORM_KNN_MIN: float = 0.4

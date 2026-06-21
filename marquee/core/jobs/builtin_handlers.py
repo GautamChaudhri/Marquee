@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
+import threading
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import select
@@ -133,17 +136,42 @@ async def backup_create(_job: Job) -> dict[str, Any]:
 
 
 @register("taste_rebuild")
-async def taste_rebuild(_job: Job) -> dict[str, Any]:
-    """Run training outside FastAPI; the worker owns the exclusive GPU lease."""
+async def taste_rebuild(job: Job) -> dict[str, Any]:
+    """Rebuild the taste profile outside FastAPI; the worker owns the GPU lease.
+
+    ``payload.source`` selects the exemplar set:
+      * ``"training_dir"`` (default) — the curated ``data/training/positive`` folder.
+      * ``"library"`` — every movie's currently-deployed poster.
+    """
     from marquee.core.pipeline_config import pipeline_settings  # noqa: PLC0415
     from marquee.ml.head_trainer import train_from_labels  # noqa: PLC0415
     from marquee.ml.taste_trainer import rebuild_profile  # noqa: PLC0415
+    from marquee.pipeline.run_manager import run_manager  # noqa: PLC0415
 
-    await asyncio.to_thread(rebuild_profile)
-    head = (
-        await asyncio.to_thread(train_from_labels) if pipeline_settings.HEAD_AUTO_RETRAIN else None
-    )
-    return {"rebuild": "completed", "head": head[1] if head else None}
+    source = job.payload.get("source", "training_dir")
+    training_dir: Path | None = None
+    tmp = None
+    gathered: int | None = None
+    if source == "library":
+        training_dir, tmp, gathered = await _gather_library_posters()
+    try:
+        await asyncio.to_thread(rebuild_profile, training_dir=training_dir)
+        head = (
+            await asyncio.to_thread(train_from_labels)
+            if pipeline_settings.HEAD_AUTO_RETRAIN
+            else None
+        )
+    finally:
+        if tmp is not None:
+            tmp.cleanup()
+    # The next pipeline run in this worker must reload the rebuilt profile.
+    run_manager.reset_extractor()
+    return {
+        "rebuild": "completed",
+        "source": source,
+        "exemplars_gathered": gathered,
+        "head": head[1] if head else None,
+    }
 
 
 @register("taste_map")
@@ -238,14 +266,174 @@ async def poster_pipeline(job: Job) -> dict[str, Any]:
         movie_id, title, tmdb_id = movie.id, movie.title, movie.tmdb_id
     if tmdb_id is None:
         raise RuntimeError("movie has no TMDB ID")
+    from marquee.pipeline.progress_bridge import JobProgressBridge  # noqa: PLC0415
+
     tmdb = TMDBClient(read_access_token=settings.TMDB_READ_ACCESS_TOKEN)
     await tmdb.connect()
     run_manager._active_run_id = run_id
     run_manager._runs[run_id] = RunState(run_id=run_id)
     try:
-        await run_manager._execute(
-            run_id=run_id, tmdb=tmdb, movie_id=movie_id, movie_title=title, movie_tmdb_id=tmdb_id
-        )
+        async with JobProgressBridge(job.id) as bridge:
+            await run_manager._execute(
+                run_id=run_id,
+                tmdb=tmdb,
+                movie_id=movie_id,
+                movie_title=title,
+                movie_tmdb_id=tmdb_id,
+                progress_sink=bridge.callback,
+            )
     finally:
         await tmdb.disconnect()
     return {"run_id": run_id}
+
+
+@register("poster_pipeline_batch")
+async def poster_pipeline_batch(job: Job) -> dict[str, Any]:
+    """Stage-batched pipeline over many movies — OCR + DINO load once per batch.
+
+    One durable job streams every movie through each stage together (see
+    ``marquee.pipeline.batch_runner``); each movie still gets its own ``run_id``
+    + ``PipelineRun`` row, tagged ``batch_id=<this job>``.
+    """
+    from marquee.core.poster_sources.tmdb import TMDBClient  # noqa: PLC0415
+    from marquee.pipeline.batch_runner import run_batch  # noqa: PLC0415
+    from marquee.pipeline.progress_bridge import JobProgressBridge  # noqa: PLC0415
+    from marquee.pipeline.run_manager import run_manager  # noqa: PLC0415
+
+    movie_ids = [int(m) for m in job.payload.get("movie_ids", [])]
+    factory = _get_session_factory()
+    async with factory() as db:
+        rows = (
+            (await db.execute(select(Movie).where(Movie.id.in_(movie_ids)))).scalars().all()
+            if movie_ids
+            else []
+        )
+        by_id = {m.id: m for m in rows}
+        # Preserve the requested order; silently drop unknown ids.
+        movies = [
+            (movie.id, movie.title, movie.tmdb_id)
+            for mid in movie_ids
+            if (movie := by_id.get(mid)) is not None
+        ]
+    if not movies:
+        return {"status": "empty", "movies": 0}
+
+    cancel_event = threading.Event()
+
+    async def _watch_cancel() -> None:
+        while not cancel_event.is_set():
+            await asyncio.sleep(2.0)
+            async with factory() as watch_db:
+                current = await watch_db.get(Job, job.id)
+            if current is None or current.cancel_requested:
+                cancel_event.set()
+                return
+
+    tmdb = TMDBClient(read_access_token=settings.TMDB_READ_ACCESS_TOKEN)
+    await tmdb.connect()
+    # Load the model stack once, off the event loop, for the whole batch.
+    extractor = await asyncio.to_thread(run_manager._ensure_extractor)
+    watcher = asyncio.create_task(_watch_cancel())
+    try:
+        async with JobProgressBridge(job.id) as bridge:
+            summary = await run_batch(
+                job_id=job.id,
+                movies=movies,
+                tmdb=tmdb,
+                extractor=extractor,
+                progress=bridge.callback,
+                should_cancel=cancel_event.is_set,
+            )
+    finally:
+        cancel_event.set()
+        watcher.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await watcher
+        await tmdb.disconnect()
+        if not settings.PIPELINE_CACHE_EXTRACTOR:
+            with contextlib.suppress(Exception):
+                run_manager.release_gpu_resources()
+    return summary
+
+
+@register("learned_head_train")
+async def learned_head_train(_job: Job) -> dict[str, Any]:
+    """Train the learned head (the UI's 'Key Art Engine') from accumulated labels.
+
+    Pure-numpy logistic head — cheap, no GPU. Picks accumulate labels +
+    exemplars into storage; this is the manual trigger that consumes them.
+    """
+    from marquee.ml.head_trainer import train_from_labels  # noqa: PLC0415
+
+    head, info = await asyncio.to_thread(train_from_labels)
+    return {"trained": head is not None, **info}
+
+
+@register("pipeline_cache_clear")
+async def pipeline_cache_clear(job: Job) -> dict[str, Any]:
+    """Clear the downloaded-poster pipeline cache (never learned-head/taste data)."""
+    from marquee.core.pipeline_cache import clear_pipeline_cache  # noqa: PLC0415
+
+    include_embeddings = bool(job.payload.get("include_embeddings", True))
+    include_archives = bool(job.payload.get("include_archives", False))
+    return await asyncio.to_thread(
+        clear_pipeline_cache,
+        include_embeddings=include_embeddings,
+        include_archives=include_archives,
+    )
+
+
+async def _gather_library_posters() -> tuple[Path, Any, int]:
+    """Copy every movie's currently-deployed poster into a temp training dir.
+
+    Prefers the local deployed-poster cache (``data/cache/posters``) and falls
+    back to the on-disk poster in the media folder. Returns
+    ``(dir, TemporaryDirectory, count)``; the caller cleans up the temp dir.
+    """
+    import tempfile  # noqa: PLC0415
+
+    factory = _get_session_factory()
+    async with factory() as db:
+        rows = (
+            (await db.execute(select(Movie).where(Movie.poster_path.is_not(None))))
+            .scalars()
+            .all()
+        )
+        movies = [(m.title, m.year, m.tmdb_id, m.poster_path) for m in rows]
+    tmp = tempfile.TemporaryDirectory(prefix="marquee-libtrain-")
+    dest = Path(tmp.name)
+    count = await asyncio.to_thread(_copy_library_posters, movies, dest)
+    if count == 0:
+        tmp.cleanup()
+        raise RuntimeError("no deployed library posters found to train on")
+    return dest, tmp, count
+
+
+def _copy_library_posters(movies: list[tuple], dest: Path) -> int:
+    import shutil  # noqa: PLC0415
+
+    from marquee.core.poster_service import cache_paths  # noqa: PLC0415
+    from marquee.ml.profile_updater import exemplar_filename  # noqa: PLC0415
+
+    seen: set[str] = set()
+    count = 0
+    for title, year, tmdb_id, poster_path in movies:
+        source: Path | None = None
+        if tmdb_id is not None:
+            cache_file, _ = cache_paths(tmdb_id)
+            if cache_file.is_file():
+                source = cache_file
+        if source is None and poster_path and Path(poster_path).is_file():
+            source = Path(poster_path)
+        if source is None:
+            continue
+        name = exemplar_filename(title or "poster", year, ".jpg")
+        if name in seen:  # two movies, same title+year — keep the first
+            continue
+        seen.add(name)
+        try:
+            shutil.copy2(source, dest / name)
+            count += 1
+        except OSError as exc:
+            logger.warning("library-train: could not copy %s: %s", source, exc)
+    return count
