@@ -33,6 +33,7 @@ import gc
 import json
 import logging
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -252,6 +253,7 @@ class RunManager:
         movie_id: int,
         movie_title: str,
         movie_tmdb_id: int | None,
+        progress_sink: Callable[[ProgressEvent], None] | None = None,
     ) -> None:
         loop = asyncio.get_running_loop()
         state = self._runs[run_id]
@@ -260,6 +262,11 @@ class RunManager:
             loop.call_soon_threadsafe(
                 state.publish, {"run_id": run_id, **event.to_dict()}
             )
+            # Mirror onto the durable job stream when a sink is wired (the job
+            # handler passes a JobProgressBridge so single + batch runs share
+            # one progress contract).
+            if progress_sink is not None:
+                progress_sink(event)
 
         out_dir = settings.runs_work_path / _sanitise_filename(movie_title)
         out_dir.mkdir(parents=True, exist_ok=True)

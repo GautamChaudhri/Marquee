@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, String, Text, func
+from sqlalchemy import DateTime, Float, ForeignKey, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from marquee.database import Base
@@ -46,6 +46,18 @@ class PipelineRun(Base):
 
     # JSON dump of the stage survivor counts (the outcome.counts dict).
     counts_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # JSON dump of the per-stage wall-clock timings (the timings dict). Stored
+    # alongside counts so the metrics endpoint can aggregate stage cost over
+    # time without opening every archived run JSON.
+    timings_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Total run wall-clock (seconds) — the headline number for throughput stats.
+    duration_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    # When this run was produced by a cross-movie batch, the batch's job id —
+    # lets the UI group every movie that moved through one batch together.
+    batch_id: Mapped[str | None] = mapped_column(String(32), index=True, nullable=True)
 
     # data/runs/archive/{run_id}.json — survives re-runs of the same movie.
     archive_path: Mapped[str | None] = mapped_column(Text, nullable=True)

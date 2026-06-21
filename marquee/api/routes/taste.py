@@ -316,18 +316,56 @@ async def _monitor_rebuild_process(process, progress_queue, started_monotonic: f
         _rebuild_cancel_requested = None
 
 
+class TasteRetrainRequest(BaseModel):
+    # "training_dir" (curated folder, default) | "library" (deployed posters).
+    source: str = "training_dir"
+
+
 @router.post("/retrain", status_code=202)
 async def retrain_taste(
     limiter: Annotated[RateLimiter, Depends(get_rate_limiter)],
     db: Annotated[AsyncSession, Depends(get_db)],
+    body: TasteRetrainRequest | None = None,
 ):
-    """Trigger a full taste-profile rebuild + head retrain in the background."""
+    """Rebuild the taste profile in the background (job platform).
+
+    ``source="training_dir"`` (default) uses the curated
+    ``data/training/positive`` folder; ``source="library"`` rebuilds from every
+    movie's currently-deployed poster.
+    """
+    source = (body.source if body else None) or "training_dir"
+    if source not in ("training_dir", "library"):
+        raise HTTPException(status_code=400, detail=f"unknown source {source!r}")
     enforce_rate_limit(limiter, "taste_retrain", settings.RATE_TASTE_RETRAIN_SECONDS)
     limiter.record("taste_retrain")
     job = await job_manager.create(
         db=db,
         job_type="taste_rebuild", priority=90, resources={"gpu": 1}, subject_type="taste_profile", subject_id="default",
-        idempotency_key=f"taste-rebuild:{int(time.time() // settings.RATE_TASTE_RETRAIN_SECONDS)}",
+        payload={"source": source},
+        idempotency_key=f"taste-rebuild:{source}:{int(time.time() // settings.RATE_TASTE_RETRAIN_SECONDS)}",
+        max_attempts=1,
+    )
+    return job_summary(job)
+
+
+@router.post("/head/retrain", status_code=202)
+async def retrain_learned_head(
+    limiter: Annotated[RateLimiter, Depends(get_rate_limiter)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    """Train the learned head (UI "Key Art Engine") from accumulated labels.
+
+    Picks accumulate labels + exemplars into storage; this is the manual
+    trigger that (re)trains the head from them, through the job manager. Cheap
+    numpy fit — no GPU reservation.
+    """
+    enforce_rate_limit(limiter, "head_retrain", settings.RATE_TASTE_RETRAIN_SECONDS)
+    limiter.record("head_retrain")
+    job = await job_manager.create(
+        db=db,
+        job_type="learned_head_train", priority=70,
+        subject_type="learned_head", subject_id="default",
+        idempotency_key=f"head-train:{int(time.time() // settings.RATE_TASTE_RETRAIN_SECONDS)}",
         max_attempts=1,
     )
     return job_summary(job)

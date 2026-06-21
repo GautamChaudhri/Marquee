@@ -84,6 +84,51 @@ def poster_url(run_id: str, orig_filename: str) -> str:
     return f"/api/pipeline/runs/{run_id}/posters/{orig_filename}"
 
 
+# Ordered pipeline stages a candidate can be eliminated at — one tab each in the
+# UI. Each rejection_reason *base* maps to exactly one stage.
+_STAGE_LABELS: list[tuple[str, str]] = [
+    ("sha256", "Exact duplicates (SHA-256)"),
+    ("resolution", "Below resolution floor"),
+    ("style", "Style gate (aesthetic / off-style)"),
+    ("ocr", "Text gate (PaddleOCR)"),
+    ("phash", "Near-duplicates (perceptual hash)"),
+    ("fan_junk", "Fan-junk combo gate"),
+    ("errored", "Errored (decode / feature / download)"),
+]
+_REASON_STAGE: dict[str, str] = {
+    "dedup_sha256": "sha256",
+    "resolution_floor": "resolution",
+    "aesthetic_floor": "style",
+    "off_style_floor": "style",
+    "text_heavy": "ocr",
+    "ocr_text_heavy": "ocr",
+    "no_title": "ocr",
+    "no_text": "ocr",
+    "format_blocklist": "ocr",
+    "dedup_phash": "phash",
+    "fan_junk_combo": "fan_junk",
+    "feature_error": "errored",
+    "download_error": "errored",
+    "ocr_error": "errored",
+}
+
+
+def stage_for_candidate(candidate: dict) -> str:
+    """Bucket a non-ranked candidate into one of the per-stage tabs."""
+    base = _rejection_base(candidate.get("rejection_reason")) or ""
+    if base in _REASON_STAGE:
+        return _REASON_STAGE[base]
+    if base.startswith("dedup_"):
+        return "phash" if "phash" in base else "sha256"
+    if base.startswith("ocr") or base in ("no_text", "no_title"):
+        return "ocr"
+    if base.startswith(("feature_error", "download_error")):
+        return "errored"
+    if candidate.get("stage_reached") == "ocr":
+        return "ocr"
+    return "style"
+
+
 def _candidate_view(run_id: str, candidate: dict) -> dict:
     return {
         "orig_filename": candidate["orig_filename"],
@@ -127,16 +172,23 @@ def build_results_payload(
         )
 
     rejected: dict[str, list[dict]] = {"gate": [], "ocr": [], "dedup": [], "errored": []}
+    by_stage: dict[str, list[dict]] = {key: [] for key, _ in _STAGE_LABELS}
     summary: Counter[str] = Counter()
     for candidate in candidates:
         if candidate.get("rank") is not None:
             continue
-        bucket = categorize_rejection(candidate)
-        rejected[bucket].append(_candidate_view(run_id, candidate))
+        view = _candidate_view(run_id, candidate)
+        rejected[categorize_rejection(candidate)].append(view)
+        by_stage[stage_for_candidate(candidate)].append(view)
         base = _rejection_base(candidate.get("rejection_reason"))
         if base:
             summary[base] += 1
 
+    # One ordered group per pipeline stage, for the per-stage rejection tabs.
+    rejected_by_stage = [
+        {"stage": key, "label": label, "count": len(by_stage[key]), "posters": by_stage[key]}
+        for key, label in _STAGE_LABELS
+    ]
     rejection_summary = dict(summary)
     return {
         "run_id": run_id,
@@ -151,6 +203,7 @@ def build_results_payload(
         "auto_pick": auto_pick,
         "ranked": ranked_views,
         "rejected": rejected,
+        "rejected_by_stage": rejected_by_stage,
         "rejection_summary": rejection_summary,
         "suggestion": suggest_for_summary(rejection_summary),
         "counts": archive.get("counts")

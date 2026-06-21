@@ -386,14 +386,35 @@ def _worker_main(
         task = task_queue.get()
         if task is None:
             break
-        index, path_string = task
-        result_queue.put((_WORKER_RESULT, index, _process_image(path_string)))
+        index, path_string, task_title_tokens, task_director_tokens = task
+        result_queue.put(
+            (
+                _WORKER_RESULT,
+                index,
+                _process_image(path_string, task_title_tokens, task_director_tokens),
+            )
+        )
 
     task_queue.cancel_join_thread()
     _exit_worker(result_queue, 0)
 
 
-def _process_image(path_string: str) -> OCRCandidateResult:
+def _process_image(
+    path_string: str,
+    title_tokens: set[str] | None = None,
+    director_tokens: set[str] | None = None,
+) -> OCRCandidateResult:
+    """Detect text and decide accept/reject against this image's own title.
+
+    Title/director tokens are passed per call so a single worker pool can serve
+    many movies in one batch — the expensive PaddleOCR model load stays
+    once-per-worker while the cheap title matching varies per task. When omitted
+    they fall back to the worker-global tokens (the single-movie / test path).
+    """
+    if title_tokens is None:
+        title_tokens = _worker_title_tokens
+    if director_tokens is None:
+        director_tokens = _worker_director_tokens
     path = Path(path_string)
     if _worker_ocr is None:
         return OCRCandidateResult(path, False, "", "ocr_error", None)
@@ -464,17 +485,17 @@ def _process_image(path_string: str) -> OCRCandidateResult:
         # survivors (OCR_ACCEPT_NO_TEXT fallback).
         return OCRCandidateResult(path, False, "", "no_text", None)
 
-    all_tokens = _worker_title_tokens | _worker_director_tokens
+    all_tokens = title_tokens | director_tokens
     words = set(detected_text.split())
     if words & FORMAT_BLOCKLIST:
         return OCRCandidateResult(path, False, detected_text, "format_blocklist", None)
 
     title_candidates = [
-        box for box in boxes if _matches_allowed(box.text, _worker_title_tokens)
+        box for box in boxes if _matches_allowed(box.text, title_tokens)
     ]
     title_box = max(
         title_candidates,
-        key=lambda box: _title_match_score(box.text, _worker_title_tokens),
+        key=lambda box: _title_match_score(box.text, title_tokens),
         default=None,
     )
     residual = [
@@ -572,6 +593,39 @@ def _process_image(path_string: str) -> OCRCandidateResult:
     )
 
 
+def apply_no_text_fallback(
+    results: list[OCRCandidateResult],
+) -> list[OCRCandidateResult]:
+    """Rescue no_text/no_title posters ONLY when nothing titled survived.
+
+    Textless posters must never compete against titled ones (project target:
+    title-only text), but a movie whose every poster defeats OCR should still
+    get output rather than an empty run. Apply this over **one movie's** result
+    subset — never across a cross-movie batch.
+    """
+    if not pipeline_settings.OCR_ACCEPT_NO_TEXT:
+        return results
+    if any(result.accepted for result in results):
+        return results
+    rescuable = [
+        result for result in results if result.reason in ("no_text", "no_title")
+    ]
+    if not rescuable:
+        return results
+    logger.warning(
+        "OCR FALLBACK | zero titled survivors — rescuing %d textless/"
+        "no-title poster(s) as last resort",
+        len(rescuable),
+    )
+    rescued_paths = {result.image_path for result in rescuable}
+    return [
+        replace(result, accepted=True, reason=f"{result.reason}_fallback")
+        if result.image_path in rescued_paths
+        else result
+        for result in results
+    ]
+
+
 class PosterTextFilter:
     def __init__(
         self,
@@ -596,24 +650,52 @@ class PosterTextFilter:
         *,
         progress: Callable[[int, int], None] | None = None,
     ) -> list[OCRCandidateResult]:
+        """Single-movie batch: every poster matched against this movie's title."""
         if not paths:
+            return []
+        items = [(path, self.title_tokens, self.director_tokens) for path in paths]
+        results = self.run_ocr_batch(
+            items, num_workers=self.num_workers, progress=progress
+        )
+        results = apply_no_text_fallback(results)
+        logger.info(
+            "OCR complete: %d accepted, %d rejected",
+            sum(result.accepted for result in results),
+            sum(not result.accepted for result in results),
+        )
+        return results
+
+    @staticmethod
+    def run_ocr_batch(
+        items: list[tuple[Path, set[str], set[str]]],
+        *,
+        num_workers: int | None = None,
+        progress: Callable[[int, int], None] | None = None,
+    ) -> list[OCRCandidateResult]:
+        """Run OCR over many ``(path, title_tokens, director_tokens)`` items in
+        ONE worker pool, returning per-item results in input order.
+
+        Each worker loads PaddleOCR once and then processes a heterogeneous
+        queue, so a cross-movie batch pays the model-load cost a single time
+        instead of once per movie. The per-movie no-text fallback is NOT applied
+        here — callers run ``apply_no_text_fallback`` over each movie's own
+        subset (a movie with zero titled survivors must rescue only its own
+        textless posters, never another movie's).
+        """
+        if not items:
             return []
 
         context = multiprocessing.get_context("spawn")
-        worker_count = min(self.num_workers, len(paths))
+        wanted = num_workers or effective_ocr_workers()
+        worker_count = min(wanted, len(items))
         omp_threads = effective_ocr_omp_threads(worker_count)
         task_queue = context.Queue()
         result_queue = context.Queue()
         workers = [
             context.Process(
                 target=_worker_main,
-                args=(
-                    task_queue,
-                    result_queue,
-                    self.title_tokens,
-                    self.director_tokens,
-                    omp_threads,
-                ),
+                # Per-task tokens override these init defaults — pass empty sets.
+                args=(task_queue, result_queue, set(), set(), omp_threads),
                 name=f"poster-ocr-{index + 1}",
             )
             for index in range(worker_count)
@@ -623,17 +705,17 @@ class PosterTextFilter:
             for worker in workers:
                 worker.start()
                 _register_worker(worker)
-            self._wait_for_workers_ready(result_queue, workers)
+            PosterTextFilter._wait_for_workers_ready(result_queue, workers)
 
-            for index, path in enumerate(paths):
-                task_queue.put((index, str(path)))
+            for index, (path, title_tokens, director_tokens) in enumerate(items):
+                task_queue.put((index, str(path), title_tokens, director_tokens))
             for _ in workers:
                 task_queue.put(None)
 
-            ordered_results: list[OCRCandidateResult | None] = [None] * len(paths)
-            remaining = len(paths)
+            ordered_results: list[OCRCandidateResult | None] = [None] * len(items)
+            remaining = len(items)
             while remaining:
-                message_type, key, payload = self._get_worker_message(
+                message_type, key, payload = PosterTextFilter._get_worker_message(
                     result_queue,
                     workers,
                 )
@@ -641,59 +723,28 @@ class PosterTextFilter:
                     ordered_results[key] = payload
                     remaining -= 1
                     if progress is not None:
-                        progress(len(paths) - remaining, len(paths))
+                        progress(len(items) - remaining, len(items))
                 elif message_type == _WORKER_INIT_ERROR:
                     raise RuntimeError(
                         f"OCR worker {key} failed to initialize: {payload}"
                     )
 
-            self._join_workers(workers)
+            PosterTextFilter._join_workers(workers)
             results = [result for result in ordered_results if result is not None]
         finally:
-            self._stop_workers(workers)
-            self._close_queue(task_queue)
-            self._close_queue(result_queue)
+            PosterTextFilter._stop_workers(workers)
+            PosterTextFilter._close_queue(task_queue)
+            PosterTextFilter._close_queue(result_queue)
 
-        results = self._apply_no_text_fallback(results)
-
-        logger.info(
-            "OCR complete: %d accepted, %d rejected",
-            sum(result.accepted for result in results),
-            sum(not result.accepted for result in results),
-        )
+        logger.info("OCR batch ran %d image(s) over %d worker(s)", len(results), worker_count)
         return results
 
     @staticmethod
     def _apply_no_text_fallback(
         results: list[OCRCandidateResult],
     ) -> list[OCRCandidateResult]:
-        """Rescue no_text/no_title posters ONLY when nothing titled survived.
-
-        Textless posters must never compete against titled ones (project
-        target: title-only text), but a movie whose every poster defeats OCR
-        should still get output rather than an empty run.
-        """
-        if not pipeline_settings.OCR_ACCEPT_NO_TEXT:
-            return results
-        if any(result.accepted for result in results):
-            return results
-        rescuable = [
-            result for result in results if result.reason in ("no_text", "no_title")
-        ]
-        if not rescuable:
-            return results
-        logger.warning(
-            "OCR FALLBACK | zero titled survivors — rescuing %d textless/"
-            "no-title poster(s) as last resort",
-            len(rescuable),
-        )
-        rescued_paths = {result.image_path for result in rescuable}
-        return [
-            replace(result, accepted=True, reason=f"{result.reason}_fallback")
-            if result.image_path in rescued_paths
-            else result
-            for result in results
-        ]
+        """Back-compat shim — see module-level ``apply_no_text_fallback``."""
+        return apply_no_text_fallback(results)
 
     @staticmethod
     def _wait_for_workers_ready(result_queue: Any, workers: list[Any]) -> None:
@@ -798,4 +849,4 @@ class PosterTextFilter:
 
     def is_acceptable(self, path: Path) -> OCRCandidateResult:
         _init_worker(self.title_tokens, self.director_tokens)
-        return _process_image(str(path))
+        return _process_image(str(path), self.title_tokens, self.director_tokens)

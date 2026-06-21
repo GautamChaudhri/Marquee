@@ -89,7 +89,12 @@ _GENERATED_DIR_NAMES = {
 
 @dataclass
 class ProgressEvent:
-    """A single live progress beat for the SSE stream."""
+    """A single live progress beat for the SSE stream.
+
+    The ``movie_*`` and ``batch_*`` fields are populated only by the cross-movie
+    batch runner so a UI can show "stage X, movie 3/12 (Dune)". They stay None
+    for single-movie runs, keeping the event backward compatible.
+    """
 
     stage: str
     state: str  # "start" | "progress" | "end"
@@ -97,6 +102,12 @@ class ProgressEvent:
     total: int | None = None
     survivors: int | None = None
     elapsed_s: float | None = None
+    # Batch context (None for single-movie runs).
+    movie_id: int | None = None
+    title: str | None = None
+    movie_index: int | None = None  # 1-based position within the batch
+    movie_total: int | None = None
+    movies_done: int | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -106,6 +117,11 @@ class ProgressEvent:
             "total": self.total,
             "survivors": self.survivors,
             "elapsed_s": self.elapsed_s,
+            "movie_id": self.movie_id,
+            "title": self.title,
+            "movie_index": self.movie_index,
+            "movie_total": self.movie_total,
+            "movies_done": self.movies_done,
         }
 
 
