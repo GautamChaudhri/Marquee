@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { browser } from '$app/environment';
-	import { goto, invalidateAll } from '$app/navigation';
+	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { subscribe } from '$lib/sse';
 	import { toast } from '$lib/toast';
@@ -12,7 +12,12 @@
 		confirmLetterbox,
 		listColumn
 	} from '$lib/api/letterbox';
-	import { cancelJob as cancelBatchJob, getJob, isTerminal } from '$lib/api/jobs';
+	import {
+		cancelJob as cancelBatchJob,
+		getJob,
+		isTerminal,
+		runningChildMovieId
+	} from '$lib/api/jobs';
 	import type { LetterboxAnalyzeSummary, LetterboxColumnItem } from '$lib/api/types';
 	import SectionHeader from '$lib/components/SectionHeader.svelte';
 	import StatusDot from '$lib/components/StatusDot.svelte';
@@ -21,31 +26,66 @@
 	import LetterboxCard from '$lib/components/LetterboxCard.svelte';
 	import LetterboxDetail from '$lib/components/LetterboxDetail.svelte';
 	import type { PageData } from './$types';
-	import type { LetterboxColumn } from '$lib/api/types';
 
 	let { data }: { data: PageData } = $props();
 
 	type Variant = 'candidates' | 'detected' | 'preview' | 'notlb' | 'processed';
+	type TabKey = 'cleared' | 'candidates' | 'staging' | 'preview' | 'processed';
+	type ColKey = 'candidates' | 'detected' | 'preview' | 'notLetterboxed' | 'processed';
 
-	// ── Reactive tray state (initialized from load, updated via SSE) ───────────
+	// ── Reactive tray state (initialized from load, updated via SSE + poll) ─────
+	// eslint-disable-next-line svelte/prefer-writable-derived -- cols is mutated locally (optimistic moves + poll refresh); $state avoids prop-ownership warnings on nested writes
 	let cols = $state(data.columns);
 
-	// Sync columns when data changes (e.g., from URL navigation)
+	// Sync columns when data changes (e.g., from URL navigation / sort toggle)
 	$effect(() => {
 		cols = data.columns;
 	});
-	const selFromUrl = $derived(Number(page.url.searchParams.get('sel')) || null);
-	const defaultSel = $derived(
-		cols.detected.items[0]?.movie_id ?? cols.candidates.items[0]?.movie_id ?? null
-	);
-	const selected = $derived(selFromUrl ?? defaultSel);
+
+	// ── Tabs + selection (local state — the 5 columns are already loaded, so
+	//    switching tabs / selecting a film is instant and never re-runs load) ────
+	const TABS: { key: TabKey; label: string; col: ColKey; variant: Variant; color: string }[] = [
+		{ key: 'cleared', label: 'Cleared', col: 'notLetterboxed', variant: 'notlb', color: 'var(--bad)' },
+		{ key: 'candidates', label: 'Candidates', col: 'candidates', variant: 'candidates', color: 'var(--warn)' },
+		{ key: 'staging', label: 'Staging', col: 'detected', variant: 'detected', color: 'var(--info)' },
+		{ key: 'preview', label: 'Preview', col: 'preview', variant: 'preview', color: 'var(--dovi)' },
+		{ key: 'processed', label: 'Processed', col: 'processed', variant: 'processed', color: 'var(--good)' }
+	];
+
+	let activeTab = $state<TabKey>('staging');
+	const activeTabCfg = $derived(TABS.find((t) => t.key === activeTab) ?? TABS[2]);
+	const activeItems = $derived(cols[activeTabCfg.col].items);
+	const activeTotal = $derived(cols[activeTabCfg.col].total);
+
+	let selectedId = $state<number | null>(null);
+	const defaultSel = $derived(activeItems[0]?.movie_id ?? null);
+	const selected = $derived(selectedId ?? defaultSel);
 
 	function select(id: number) {
-		// eslint-disable-next-line svelte/prefer-svelte-reactivity -- transient query builder, not reactive state
-		const sp = new URLSearchParams(page.url.searchParams);
-		sp.set('sel', String(id));
-		goto(`/letterbox?${sp.toString()}`, { replaceState: true, keepFocus: true, noScroll: true });
+		selectedId = id;
 	}
+
+	function setTab(key: TabKey) {
+		if (key === activeTab) return;
+		activeTab = key;
+		const cfg = TABS.find((t) => t.key === key);
+		selectedId = cfg ? (cols[cfg.col].items[0]?.movie_id ?? null) : null;
+	}
+
+	const activeNote = $derived.by(() => {
+		switch (activeTab) {
+			case 'candidates':
+				return 'resolution probe';
+			case 'staging':
+				return detectedTotal > 0 ? `${detectedTotal} ready` : 'awaiting candidates';
+			case 'preview':
+				return 'review & confirm crop tags';
+			case 'cleared':
+				return `verified clear · Open Matte ${st?.full_frame ?? 0}`;
+			case 'processed':
+				return 'crop tag applied · reversible';
+		}
+	});
 
 	function toggleDsort() {
 		// eslint-disable-next-line svelte/prefer-svelte-reactivity -- transient query builder, not reactive state
@@ -90,11 +130,9 @@
 		try {
 			await applyBatch(fetch, ids);
 			toast(`Applied crop tags to ${ids.length} ${ids.length === 1 ? 'movie' : 'movies'}`, 'good');
-			// Refresh to sync with backend state
 			await refreshTrays();
 		} catch (e) {
 			toast(e instanceof Error ? e.message : 'Process failed', 'bad');
-			// Rollback on error
 			await refreshTrays();
 		} finally {
 			processing = false;
@@ -119,11 +157,9 @@
 		try {
 			await Promise.all(ids.map((id) => confirmLetterbox(fetch, id)));
 			toast(`Confirmed ${ids.length} ${ids.length === 1 ? 'movie' : 'movies'}`, 'good');
-			// Refresh to sync with backend state
 			await refreshTrays();
 		} catch (e) {
 			toast(e instanceof Error ? e.message : 'Confirm failed', 'bad');
-			// Rollback on error
 			await refreshTrays();
 		} finally {
 			confirming = false;
@@ -131,9 +167,9 @@
 	}
 
 	// ── Analyze (batch frame analysis tracked via the durable job) ─────────────
-	// The bar is driven by the `letterbox_detect_batch` job: it updates live from
-	// per-child progress events, survives a refresh (re-attaches + the event log
-	// replays), and stays until dismissed.
+	// The bar is driven by SSE *and* a snapshot poll (the SSE opened right after
+	// the POST doesn't always stream on the first run, so the poll guarantees the
+	// bar moves). It survives a refresh and stays until dismissed.
 	const LB_BATCH_KEY = 'lb.activeBatch';
 	const LB_BATCH_TOTAL_KEY = 'lb.activeBatch.total';
 	let analyzing = $state(false);
@@ -146,14 +182,19 @@
 	let unsub: (() => void) | null = null;
 	let refreshQueued = false;
 	let pollInterval: ReturnType<typeof setInterval> | null = null;
+	let pollTick = 0;
 
-	// Per-movie progress tracking
+	// Per-movie progress: `currentMovie` (precise %/stage from SSE) and
+	// `currentScanId` (the running child from the poll) together identify the card
+	// to mark as scanning.
 	let currentMovie = $state<{
 		id: number;
 		title: string;
 		stage: string;
 		progress: number;
 	} | null>(null);
+	let currentScanId = $state<number | null>(null);
+	const scanId = $derived(currentMovie?.id ?? currentScanId);
 
 	function storeBatch(id: string | null, total?: number) {
 		if (!browser) return;
@@ -179,53 +220,6 @@
 			total,
 			completed: total
 		};
-	}
-
-	/** Move a movie from one tray to another based on its new status. */
-	function moveMovieBetweenTrays(movieId: number, newStatus: string) {
-		// Find and remove the movie from its current tray
-		let movedItem: LetterboxColumnItem | null = null;
-
-		for (const [key, col] of Object.entries(cols) as [keyof typeof cols, LetterboxColumn][]) {
-			const idx = col.items.findIndex((i: LetterboxColumnItem) => i.movie_id === movieId);
-			if (idx !== -1) {
-				movedItem = col.items[idx];
-				col.items = col.items.filter((_: LetterboxColumnItem, i: number) => i !== idx);
-				col.total = Math.max(0, col.total - 1);
-				break;
-			}
-		}
-
-		if (!movedItem) return; // Movie not found in any tray
-
-		// Update the item's status
-		movedItem.status = newStatus;
-
-		// Determine target tray based on status
-		let targetTray: keyof typeof cols | null = null;
-		if (newStatus === 'prefilter_candidate' || newStatus === 'prefilter_unknown') {
-			targetTray = 'candidates';
-		} else if (newStatus === 'candidate') {
-			targetTray = 'detected';
-		} else if (newStatus === 'tagged' && !movedItem.reviewed) {
-			targetTray = 'preview';
-		} else if (newStatus === 'tagged' && movedItem.reviewed) {
-			targetTray = 'processed';
-		} else if (newStatus === 'not_letterboxed' || newStatus === 'variable_unsafe' || newStatus === 'skipped') {
-			targetTray = 'notLetterboxed';
-		}
-
-		if (targetTray && cols[targetTray]) {
-			// Add to the target tray (prepend for recency)
-			cols[targetTray].items = [movedItem, ...cols[targetTray].items];
-			cols[targetTray].total += 1;
-
-			// If we're displaying a limited view, keep it trimmed
-			const CAP = 25;
-			if (cols[targetTray].items.length > CAP) {
-				cols[targetTray].items = cols[targetTray].items.slice(0, CAP);
-			}
-		}
 	}
 
 	/** Fetch updated tray data from the backend and merge into reactive state. */
@@ -263,13 +257,18 @@
 				})
 			]);
 
-			// Update reactive state
 			cols = {
 				candidates,
 				detected,
-				preview: { items: preview.items.filter(i => !i.reviewed), total: preview.items.filter(i => !i.reviewed).length },
+				preview: {
+					items: preview.items.filter((i) => !i.reviewed),
+					total: preview.items.filter((i) => !i.reviewed).length
+				},
 				notLetterboxed: notLb,
-				processed: { items: processed.items.filter(i => i.reviewed), total: processed.items.filter(i => i.reviewed).length }
+				processed: {
+					items: processed.items.filter((i) => i.reviewed),
+					total: processed.items.filter((i) => i.reviewed).length
+				}
 			};
 		} catch (e) {
 			// Silently degrade - don't spam toasts during active polling
@@ -277,29 +276,58 @@
 		}
 	}
 
-	/** Start polling for tray updates while batch analysis is running. */
-	function startPolling() {
-		if (pollInterval) return;
-		pollInterval = setInterval(refreshTrays, 3000); // Poll every 3 seconds
+	/** Read the batch snapshot and advance the bar + scanning marker from it. */
+	async function syncBatchProgress() {
+		if (!currentBatchId || !analyzing) return;
+		try {
+			const job = await getJob(fetch, currentBatchId);
+			const prog = job.progress ?? {};
+			if (typeof prog.children_total === 'number' && prog.children_total > 0) {
+				progressTotal = prog.children_total;
+			}
+			if (typeof prog.children_completed === 'number') progressDone = prog.children_completed;
+			progress = progressTotal > 0 ? (progressDone / progressTotal) * 100 : 0;
+			if (isTerminal(job.status)) {
+				batchStatus = job.status;
+				result = summaryFrom((job.result?.summary ?? null) as Record<string, number> | null);
+				finishAnalyze();
+				return;
+			}
+			currentScanId = await runningChildMovieId(fetch, currentBatchId);
+		} catch {
+			/* transient — keep polling */
+		}
 	}
 
-	/** Stop polling when batch analysis completes. */
+	/** One poll tick: progress every ~1.5s, trays every other tick (~3s). */
+	async function pollActive() {
+		pollTick++;
+		await syncBatchProgress();
+		if (pollTick % 2 === 0) await refreshTrays();
+	}
+
+	function startPolling() {
+		if (pollInterval) return;
+		pollInterval = setInterval(() => void pollActive(), 1500);
+	}
+
 	function stopPolling() {
 		if (pollInterval) {
 			clearInterval(pollInterval);
 			pollInterval = null;
 		}
+		pollTick = 0;
 	}
 
-	/** Refresh the trays so finished movies hop to their next tray. Coalesced so a
+	/** Refresh the trays so finished movies hop to their next stage. Coalesced so a
 	 *  burst of replayed events (after a refresh) triggers a single reload. */
 	function scheduleTrayRefresh() {
 		if (refreshQueued) return;
 		refreshQueued = true;
 		setTimeout(() => {
 			refreshQueued = false;
-			refreshTrays(); // Direct refresh instead of invalidateAll
-		}, 800); // Debounce to avoid rapid-fire during replayed events
+			refreshTrays();
+		}, 800);
 	}
 
 	function onBatchEvent(type: string, raw: unknown) {
@@ -311,7 +339,7 @@
 		if (typeof ev.state === 'string' && ev.state !== 'progress') batchStatus = ev.state;
 		const detail = (ev.detail ?? {}) as Record<string, unknown>;
 
-		// Track per-movie progress
+		// Track per-movie progress (precise %/stage straight from the child).
 		if (ev.state === 'child_progress') {
 			if (typeof detail.movie_id === 'number' && typeof detail.title === 'string') {
 				currentMovie = {
@@ -334,7 +362,7 @@
 			if (currentMovie && currentMovie.progress >= 90) {
 				setTimeout(() => {
 					currentMovie = null;
-				}, 1000); // Brief delay to show completion
+				}, 1000);
 			}
 		}
 
@@ -364,6 +392,8 @@
 		progress = 0;
 		progressDone = 0;
 		progressTotal = 0;
+		currentMovie = null;
+		currentScanId = null;
 		try {
 			const ref = await analyzeAll(fetch);
 			progressTotal = ref.total;
@@ -376,9 +406,10 @@
 				return;
 			}
 			currentBatchId = ref.job_id;
-			storeBatch(ref.job_id, ref.total); // Store both ID and total for refresh persistence
-			startPolling(); // Start real-time tray polling
-			attachBatch(ref.events_url);
+			storeBatch(ref.job_id, ref.total);
+			// Route through the same proven path the post-refresh flow uses: seed
+			// from the job snapshot, attach SSE, and start the poll.
+			await rehydrateBatch(ref.job_id, { allowActive: true });
 		} catch (e) {
 			analyzing = false;
 			currentBatchId = null;
@@ -388,9 +419,11 @@
 	}
 
 	function finishAnalyze() {
+		if (!analyzing) return; // SSE 'done' and the poll can both land here
 		analyzing = false;
-		stopPolling(); // Stop polling when analysis completes
-		currentMovie = null; // Clear current movie display
+		stopPolling();
+		currentMovie = null;
+		currentScanId = null;
 		if (batchStatus === 'succeeded') progress = 100;
 		unsub?.();
 		unsub = null;
@@ -409,7 +442,6 @@
 		} else {
 			toast('Analysis complete', 'good');
 		}
-		// Final refresh to ensure trays are in sync
 		refreshTrays();
 		// The batch id stays in localStorage so the summary survives a refresh
 		// until the user dismisses it.
@@ -418,8 +450,9 @@
 	function dismissAnalyze() {
 		result = null;
 		analyzing = false;
-		stopPolling(); // Ensure polling stops
-		currentMovie = null; // Clear current movie display
+		stopPolling();
+		currentMovie = null;
+		currentScanId = null;
 		currentBatchId = null;
 		batchStatus = null;
 		progress = 0;
@@ -460,7 +493,6 @@
 		const prog = job.progress ?? {};
 
 		// Restore progressTotal from multiple sources to prevent 0/0 display after refresh
-		// Priority: job.progress > localStorage > current state
 		const storedTotal = browser ? localStorage.getItem(LB_BATCH_TOTAL_KEY) : null;
 		const jobTotal = prog.children_total;
 		const fallbackTotal = storedTotal ? parseInt(storedTotal, 10) : progressTotal;
@@ -474,11 +506,14 @@
 		}
 		if (isTerminal(job.status)) {
 			analyzing = false;
+			stopPolling();
+			currentMovie = null;
+			currentScanId = null;
 			result = summaryFrom((job.result?.summary ?? null) as Record<string, number> | null);
 			if (!result && !progressTotal) storeBatch(null); // nothing to show → forget it
 		} else {
 			analyzing = true;
-			startPolling(); // Resume polling for rehydrated active batch
+			startPolling();
 			attachBatch(job.events_url);
 		}
 	}
@@ -597,233 +632,161 @@
 	};
 </script>
 
-<SectionHeader title="Letterbox" subtitle="Black-bar detection & crop tagging">
-	{#snippet action()}
-		<button class="btn-sec" onclick={doHeal} disabled={healing}>
-			{healing ? 'Healing…' : 'Heal drifted tags'}
-		</button>
-	{/snippet}
-</SectionHeader>
-
-{#if st}
-	<div class="statusbar">
-		<span class="chip">
-			<StatusDot tone={st.enabled ? 'good' : 'bad'} size={7} />
-			{st.enabled ? 'Detection enabled' : 'Disabled'}
-		</span>
-		<span class="chip mono">method: {st.method}</span>
-		<span class="chip mono">Open Matte: {st.full_frame ?? 0}</span>
-		{#each Object.entries(st.binaries) as [name, ok] (name)}
-			<span class="chip mono" class:bad={!ok}>{name} {ok ? '✓' : '✗'}</span>
-		{/each}
-		<span class="chip mono faint">last scan {relTime(st.last_scan)}</span>
-	</div>
-{:else if data.error}
-	<div class="banner err">{data.error} The backend may be offline.</div>
-{/if}
-
-<div class="info">
-	<Icon name="letterbox" size={15} />
-	<span>
-		MKV pixel-crop tags are honored by <strong>Plex Desktop · VLC · mpv</strong> — but
-		<strong>not</strong> Plex Web or Mobile. Detection never writes to media; tags are reversible.
-	</span>
-</div>
-
-{#if showAnalyzeBanner}
-	<div class="analyze-bar" class:done={!analyzing}>
-		<div class="ab-row">
-			<span class="ab-label">
-				{#if analyzing}
-					{#if batchStatus === 'cancelling'}
-						<span class="spin">⟳</span> Cancelling analysis… {progressDone}/{progressTotal}
-					{:else}
-						<span class="spin">⟳</span> Analyzing candidates… {progressDone}/{progressTotal}
-					{/if}
-				{:else if batchStatus === 'cancelled' || batchStatus === 'interrupted'}
-					Analysis stopped at <strong>{progressDone}</strong>/<strong>{progressTotal}</strong>
-					{#if result}
-						· <strong>{result.candidate}</strong> detected ·
-						<strong>{result.not_letterboxed}</strong> not letterboxed · {result.variable} unsafe
-						{#if result.errored || result.failed} · {result.errored + result.failed} failed{/if}
-					{/if}
-				{:else if batchStatus === 'failed'}
-					Analysis failed at <strong>{progressDone}</strong>/<strong>{progressTotal}</strong>
-					{#if result}
-						· <strong>{result.candidate}</strong> detected ·
-						<strong>{result.not_letterboxed}</strong> not letterboxed · {result.variable} unsafe
-						{#if result.errored || result.failed} · {result.errored + result.failed} failed{/if}
-					{/if}
-				{:else if result}
-					✓ Analysis complete — <strong>{result.candidate}</strong> detected ·
-					<strong>{result.not_letterboxed}</strong> not letterboxed · {result.variable} unsafe
-					{#if result.errored || result.failed} · {result.errored + result.failed} failed{/if}
-				{/if}
-			</span>
-			<div class="ab-actions">
-			{#if analyzing}
-				<button
-					class="ab-cancel"
-					onclick={cancelAnalyze}
-					disabled={batchStatus === 'cancelling' || !currentBatchId}
-				>
-					{batchStatus === 'cancelling' ? 'Cancelling…' : 'Cancel'}
-				</button>
-			{:else}
-				<button class="ab-dismiss" onclick={dismissAnalyze} aria-label="Dismiss">
-					<Icon name="x" size={14} />
-				</button>
-			{/if}
-			</div>
-		</div>
-		{#if analyzing}
-			<ProgressBar value={progress} tone="gold" />
-			{#if currentMovie}
-				<div class="current-movie-progress">
-					<div class="cmp-header">
-						<span class="cmp-title">{currentMovie.title}</span>
-						<span class="cmp-stage">
-							{#if currentMovie.stage === 'started'}
-								Starting analysis…
-							{:else if currentMovie.stage === 'probing'}
-								Probing video file…
-							{:else if currentMovie.stage === 'analyzing'}
-								Analyzing frames…
-							{:else if currentMovie.stage === 'consensus'}
-								Calculating crop…
-							{:else}
-								{currentMovie.stage}
-							{/if}
-						</span>
-					</div>
-					<ProgressBar value={currentMovie.progress} tone="info" height={4} />
-				</div>
-			{/if}
-		{/if}
-	</div>
-{/if}
-
-<LetterboxDetail movieId={selected} onChanged={refreshTrays} onAnalyzeAll={doAnalyze} {analyzing} />
-
-<!-- Stage breadcrumb -->
-<div class="flow">
-	<span class="pill" style="--c:var(--warn)">Candidates</span>
-	<span class="arrow">→ analyze →</span>
-	<span class="pill" style="--c:var(--bad)">Cleared Candidates</span>
-	<span class="dotsep">·</span>
-	<span class="pill" style="--c:var(--info)">Staging</span>
-	<span class="arrow">→ select fix → process →</span>
-	<span class="pill" style="--c:var(--dovi)">Preview &amp; Confirm</span>
-	<span class="arrow">→ confirm →</span>
-	<span class="pill" style="--c:var(--good)">Done</span>
-</div>
-
-{#snippet rows(items: typeof cols.candidates.items, total: number, variant: Variant)}
+{#snippet list(items: typeof cols.candidates.items, total: number, variant: Variant)}
 	{#if items.length === 0}
-		<div class="tray-empty">—</div>
+		<div class="list-empty">No films in this stage.</div>
 	{:else}
 		{#each items as item (item.movie_id)}
-			<LetterboxCard {item} {variant} selected={item.movie_id === selected} onSelect={select} />
+			<LetterboxCard
+				{item}
+				{variant}
+				selected={item.movie_id === selected}
+				scanning={analyzing && item.movie_id === scanId}
+				progress={currentMovie && currentMovie.id === item.movie_id ? currentMovie.progress : 0}
+				stage={currentMovie && currentMovie.id === item.movie_id ? currentMovie.stage : null}
+				onSelect={select}
+			/>
 		{/each}
-	{/if}
-	{#if total > items.length}
-		<button class="tray-more" onclick={() => openModal(MODAL_CFGS[variant])}>
-			view all {total}
-		</button>
+		{#if total > items.length}
+			<button class="list-more" onclick={() => openModal(MODAL_CFGS[variant])}>view all {total}</button>
+		{/if}
 	{/if}
 {/snippet}
 
-<!-- Top trays: Candidates | Staging | Preview & Confirm -->
-<div class="trays top">
-	<section class="tray" style="--accent:var(--warn)">
-		<div class="tray-head">
-			<div class="tray-title-row">
-				<span class="tray-title">Candidates</span>
-				<span class="tray-count">{cols.candidates.total}</span>
-				<span class="spacer"></span>
-				<span class="tray-note">res probe</span>
-			</div>
-			<div class="tray-actions">
-				<button class="tb gold" onclick={doAnalyze} disabled={analyzing}>
-					{analyzing ? 'Analyzing…' : 'Analyze →'}
-				</button>
-			</div>
-		</div>
-		<div class="tray-body">{@render rows(cols.candidates.items, cols.candidates.total, 'candidates')}</div>
-	</section>
-
-	<section class="tray" style="--accent:var(--info)">
-		<div class="tray-head">
-			<div class="tray-title-row">
-				<span class="tray-title">Staging</span>
-				<span class="tray-count">{cols.detected.total}</span>
-				<button
-					class="sort-toggle"
-					onclick={toggleDsort}
-					title={data.detectedDesc ? 'Confidence: high → low' : 'Confidence: low → high'}
-				>
-					conf {data.detectedDesc ? '▼' : '▲'}
-				</button>
-				<span class="spacer"></span>
-				<span class="tray-note ready">{detectedTotal}/{detectedTotal} ready</span>
-			</div>
-			<div class="tray-actions">
-				<span class="tb quick-active">⚡ All Quick</span>
-				<span class="tb perm-disabled" title="Re-encode coming soon">🔧 All Perm</span>
-				<button class="tb gold" onclick={processDetected} disabled={processing || detectedTotal === 0}>
-					{processing ? 'Processing…' : 'Process →'}
-				</button>
-			</div>
-		</div>
-		<div class="tray-body">{@render rows(cols.detected.items, cols.detected.total, 'detected')}</div>
-	</section>
-
-	<section class="tray" style="--accent:var(--dovi)">
-		<div class="tray-head simple">
-			<span class="tray-title">Preview &amp; Confirm</span>
-			<span class="tray-count">{cols.preview.total}</span>
-			<span class="spacer"></span>
-			<button
-				class="tb gold sm"
-				onclick={confirmAll}
-				disabled={confirming || cols.preview.total === 0}
-			>
-				<Icon name="refresh" size={13} />
-				{confirming ? 'Confirming…' : 'Confirm all'}
+<div class="page">
+	<SectionHeader title="Letterbox" subtitle="Black-bar detection & crop tagging">
+		{#snippet action()}
+			<button class="btn-sec" onclick={doHeal} disabled={healing}>
+				{healing ? 'Healing…' : 'Heal drifted tags'}
 			</button>
-		</div>
-		<div class="tray-body">{@render rows(cols.preview.items, cols.preview.total, 'preview')}</div>
-	</section>
-</div>
+		{/snippet}
+	</SectionHeader>
 
-<!-- Bottom trays: Cleared Candidates | Processed -->
-<div class="trays bottom">
-	<section class="tray" style="--accent:var(--bad)">
-		<div class="tray-head simple">
-			<span class="tray-title">Cleared Candidates</span>
-			<span
-				class="info-dot"
-				title="These movies looked like possible letterbox candidates from their resolution, but analysis verified no crop is needed."
-				aria-label="These movies looked like possible letterbox candidates from their resolution, but analysis verified no crop is needed."
-			>
-				i
+	{#if st}
+		<div class="statusbar">
+			<span class="chip">
+				<StatusDot tone={st.enabled ? 'good' : 'bad'} size={7} />
+				{st.enabled ? 'Detection enabled' : 'Disabled'}
 			</span>
-			<span class="tray-count">{cols.notLetterboxed.total}</span>
-			<span class="spacer"></span>
-			<span class="tray-note">verified clear · Open Matte {st?.full_frame ?? 0}</span>
+			<span class="chip mono">method: {st.method}</span>
+			<span class="chip mono">Open Matte: {st.full_frame ?? 0}</span>
+			{#each Object.entries(st.binaries) as [name, ok] (name)}
+				<span class="chip mono" class:bad={!ok}>{name} {ok ? '✓' : '✗'}</span>
+			{/each}
+			<span class="chip mono faint">last scan {relTime(st.last_scan)}</span>
 		</div>
-		<div class="tray-body">
-			{@render rows(cols.notLetterboxed.items, cols.notLetterboxed.total, 'notlb')}
-		</div>
-	</section>
+	{:else if data.error}
+		<div class="banner err">{data.error} The backend may be offline.</div>
+	{/if}
 
-	<section class="tray" style="--accent:var(--good)">
-		<div class="tray-head simple">
-			<span class="tray-title">Processed</span>
-			<span class="tray-count">{cols.processed.total}</span>
+	{#if showAnalyzeBanner}
+		<div class="analyze-bar" class:done={!analyzing}>
+			<div class="ab-row">
+				<span class="ab-label">
+					{#if analyzing}
+						{#if batchStatus === 'cancelling'}
+							<span class="spin">⟳</span> Cancelling analysis… {progressDone}/{progressTotal}
+						{:else}
+							<span class="spin">⟳</span> Analyzing candidates… {progressDone}/{progressTotal}
+						{/if}
+					{:else if batchStatus === 'cancelled' || batchStatus === 'interrupted'}
+						Analysis stopped at <strong>{progressDone}</strong>/<strong>{progressTotal}</strong>
+						{#if result}
+							· <strong>{result.candidate}</strong> detected ·
+							<strong>{result.not_letterboxed}</strong> not letterboxed · {result.variable} unsafe
+							{#if result.errored || result.failed} · {result.errored + result.failed} failed{/if}
+						{/if}
+					{:else if batchStatus === 'failed'}
+						Analysis failed at <strong>{progressDone}</strong>/<strong>{progressTotal}</strong>
+						{#if result}
+							· <strong>{result.candidate}</strong> detected ·
+							<strong>{result.not_letterboxed}</strong> not letterboxed · {result.variable} unsafe
+							{#if result.errored || result.failed} · {result.errored + result.failed} failed{/if}
+						{/if}
+					{:else if result}
+						✓ Analysis complete — <strong>{result.candidate}</strong> detected ·
+						<strong>{result.not_letterboxed}</strong> not letterboxed · {result.variable} unsafe
+						{#if result.errored || result.failed} · {result.errored + result.failed} failed{/if}
+					{/if}
+				</span>
+				<div class="ab-actions">
+					{#if analyzing}
+						<button
+							class="ab-cancel"
+							onclick={cancelAnalyze}
+							disabled={batchStatus === 'cancelling' || !currentBatchId}
+						>
+							{batchStatus === 'cancelling' ? 'Cancelling…' : 'Cancel'}
+						</button>
+					{:else}
+						<button class="ab-dismiss" onclick={dismissAnalyze} aria-label="Dismiss">
+							<Icon name="x" size={14} />
+						</button>
+					{/if}
+				</div>
+			</div>
+			{#if analyzing}
+				<ProgressBar value={progress} tone="gold" />
+				<div class="ab-hint">Live progress shows on the film being analyzed in the Staging / Candidates tab.</div>
+			{/if}
 		</div>
-		<div class="tray-body">{@render rows(cols.processed.items, cols.processed.total, 'processed')}</div>
-	</section>
+	{/if}
+
+	<!-- Two fixed panes: tabbed film list | persistent inspector -->
+	<div class="split">
+		<section class="pane left" style="--accent:{activeTabCfg.color}">
+			<div class="tabs" role="tablist" aria-label="Letterbox stages">
+				{#each TABS as t (t.key)}
+					<button
+						class="tab"
+						class:active={t.key === activeTab}
+						style="--tab-c:{t.color}"
+						role="tab"
+						aria-selected={t.key === activeTab}
+						onclick={() => setTab(t.key)}
+					>
+						<span class="tab-label">{t.label}</span>
+						<span class="tab-count">{cols[t.col].total}</span>
+					</button>
+				{/each}
+			</div>
+
+			<div class="lane-bar">
+				<span class="lane-note">{activeNote}</span>
+				<div class="lane-actions">
+					{#if activeTab === 'candidates'}
+						<button class="tb gold" onclick={doAnalyze} disabled={analyzing}>
+							{analyzing ? 'Analyzing…' : 'Analyze →'}
+						</button>
+					{:else if activeTab === 'staging'}
+						<button
+							class="sort-toggle"
+							onclick={toggleDsort}
+							title={data.detectedDesc ? 'Confidence: high → low' : 'Confidence: low → high'}
+						>
+							conf {data.detectedDesc ? '▼' : '▲'}
+						</button>
+						<span class="tb quick-active">⚡ All Quick</span>
+						<span class="tb perm-disabled" title="Re-encode coming soon">🔧 All Perm</span>
+						<button class="tb gold" onclick={processDetected} disabled={processing || detectedTotal === 0}>
+							{processing ? 'Processing…' : 'Process →'}
+						</button>
+					{:else if activeTab === 'preview'}
+						<button class="tb gold" onclick={confirmAll} disabled={confirming || cols.preview.total === 0}>
+							<Icon name="refresh" size={13} />
+							{confirming ? 'Confirming…' : 'Confirm all'}
+						</button>
+					{/if}
+				</div>
+			</div>
+
+			<div class="list">{@render list(activeItems, activeTotal, activeTabCfg.variant)}</div>
+		</section>
+
+		<section class="pane right">
+			<LetterboxDetail movieId={selected} onChanged={refreshTrays} onAnalyzeAll={doAnalyze} {analyzing} />
+		</section>
+	</div>
 </div>
 
 <!-- "View all" modal -->
@@ -834,7 +797,9 @@
 		aria-modal="true"
 		aria-label={modal.label}
 		tabindex="-1"
-		onclick={(e) => { if (e.target === e.currentTarget) closeModal(); }}
+		onclick={(e) => {
+			if (e.target === e.currentTarget) closeModal();
+		}}
 		onkeydown={(e) => e.key === 'Escape' && closeModal()}
 	>
 		<div class="modal-card">
@@ -850,14 +815,19 @@
 				{:else if modalItems.length === 0}
 					<div class="modal-loading">No items found.</div>
 				{:else}
-					{#each modalItems as item (item.movie_id)}
-						<LetterboxCard
-							{item}
-							variant={modal.variant}
-							selected={item.movie_id === selected}
-							onSelect={(id) => { select(id); closeModal(); }}
-						/>
-					{/each}
+					<div class="modal-grid">
+						{#each modalItems as item (item.movie_id)}
+							<LetterboxCard
+								{item}
+								variant={modal.variant}
+								selected={item.movie_id === selected}
+								onSelect={(id) => {
+									select(id);
+									closeModal();
+								}}
+							/>
+						{/each}
+					</div>
 				{/if}
 			</div>
 		</div>
@@ -865,12 +835,19 @@
 {/if}
 
 <style>
+	.page {
+		display: flex;
+		flex-direction: column;
+		height: calc(100vh - var(--header-h) - 48px);
+		min-height: 480px;
+	}
+
 	.statusbar {
 		display: flex;
 		flex-wrap: wrap;
 		align-items: center;
 		gap: 8px;
-		margin-bottom: 14px;
+		margin-bottom: 12px;
 	}
 	.chip {
 		display: inline-flex;
@@ -893,25 +870,6 @@
 	.mono {
 		font-family: var(--font-mono);
 	}
-	.info {
-		display: flex;
-		align-items: flex-start;
-		gap: 9px;
-		padding: 11px 14px;
-		background: var(--ink2);
-		border: 1px solid var(--line);
-		border-left: 3px solid var(--info);
-		border-radius: var(--radius-sm);
-		font-size: 12px;
-		color: var(--muted);
-		line-height: 1.5;
-		margin-bottom: 16px;
-	}
-	.info :global(svg) {
-		flex: none;
-		margin-top: 1px;
-		color: var(--info);
-	}
 	.banner.err {
 		padding: 11px 14px;
 		border-radius: var(--radius-sm);
@@ -919,18 +877,20 @@
 		border: 1px solid color-mix(in srgb, var(--bad) 30%, transparent);
 		color: var(--bad);
 		font-size: 13px;
-		margin-bottom: 16px;
+		margin-bottom: 12px;
 	}
 
+	/* analyze header */
 	.analyze-bar {
 		border: 1px solid var(--gold-deep);
 		background: var(--gold-soft);
 		border-radius: var(--radius-sm);
 		padding: 11px 14px;
-		margin-bottom: 16px;
+		margin-bottom: 12px;
 		display: flex;
 		flex-direction: column;
 		gap: 8px;
+		flex: none;
 	}
 	.analyze-bar.done {
 		border-color: color-mix(in srgb, var(--good) 40%, var(--line2));
@@ -952,35 +912,9 @@
 	.analyze-bar.done .ab-label strong {
 		color: var(--good);
 	}
-	.current-movie-progress {
-		margin-top: 8px;
-		padding: 10px 12px;
-		background: color-mix(in srgb, var(--info) 8%, transparent);
-		border: 1px solid color-mix(in srgb, var(--info) 20%, var(--line));
-		border-radius: var(--radius-sm);
-		display: flex;
-		flex-direction: column;
-		gap: 6px;
-	}
-	.cmp-header {
-		display: flex;
-		align-items: baseline;
-		justify-content: space-between;
-		gap: 12px;
-		font-size: 12px;
-	}
-	.cmp-title {
-		font-weight: 500;
-		color: var(--text);
-		flex: 1;
-		white-space: nowrap;
-		overflow: hidden;
-		text-overflow: ellipsis;
-	}
-	.cmp-stage {
-		color: var(--muted);
+	.ab-hint {
 		font-size: 11px;
-		flex: none;
+		color: var(--muted);
 	}
 	.ab-dismiss {
 		flex: none;
@@ -1017,145 +951,141 @@
 		cursor: default;
 	}
 
-	/* breadcrumb */
-	.flow {
+	/* two-pane split */
+	.split {
+		display: flex;
+		gap: 14px;
+		flex: 1;
+		min-height: 0;
+	}
+	.pane {
+		background: var(--panel);
+		border: 1px solid var(--line);
+		border-radius: 10px;
+		display: flex;
+		flex-direction: column;
+		min-height: 0;
+		min-width: 0;
+		overflow: hidden;
+	}
+	.pane.left {
+		flex: 0 0 40%;
+		border-top: 2px solid var(--accent);
+	}
+	.pane.right {
+		flex: 1 1 60%;
+		overflow-y: auto;
+	}
+
+	/* tabs */
+	.tabs {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: stretch;
+		gap: 2px;
+		padding: 0 6px;
+		border-bottom: 1px solid var(--line);
+		flex: none;
+	}
+	.tab {
+		display: inline-flex;
+		align-items: center;
+		gap: 7px;
+		padding: 10px 10px;
+		margin-bottom: -1px;
+		background: transparent;
+		border: none;
+		border-bottom: 2px solid transparent;
+		color: var(--muted);
+		font-size: 12.5px;
+		font-weight: 600;
+		cursor: pointer;
+		white-space: nowrap;
+	}
+	.tab:hover {
+		color: var(--text);
+	}
+	.tab.active {
+		color: var(--text);
+		border-bottom-color: var(--tab-c);
+	}
+	.tab-count {
+		font-family: var(--font-mono);
+		font-size: 10px;
+		padding: 1px 6px;
+		border-radius: 6px;
+		background: color-mix(in srgb, var(--tab-c) 16%, transparent);
+		color: var(--tab-c);
+	}
+
+	/* contextual action bar for the active tab */
+	.lane-bar {
 		display: flex;
 		flex-wrap: wrap;
 		align-items: center;
-		gap: 7px;
-		margin-bottom: 14px;
+		justify-content: space-between;
+		gap: 8px;
+		padding: 9px 12px;
+		border-bottom: 1px solid var(--panel2);
+		flex: none;
 	}
-	.pill {
-		padding: 4px 11px;
-		border-radius: 20px;
-		font-size: 11px;
-		font-weight: 700;
-		color: var(--c);
-		background: color-mix(in srgb, var(--c) 12%, transparent);
-	}
-	.arrow,
-	.dotsep {
-		font-family: var(--font-mono);
+	.lane-note {
 		font-size: 11px;
 		color: var(--faint);
 	}
+	.lane-actions {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 6px;
+	}
 
-	/* trays */
-	.trays {
-		display: grid;
-		gap: 14px;
-	}
-	.trays.top {
-		grid-template-columns: 1fr 1fr 1fr;
-		margin-bottom: 14px;
-	}
-	.trays.bottom {
-		grid-template-columns: 2fr 1fr;
-	}
-	@media (max-width: 1000px) {
-		.trays.top,
-		.trays.bottom {
-			grid-template-columns: 1fr;
-		}
-	}
-	.tray {
-		background: var(--panel);
-		border: 1px solid var(--line);
-		border-top: 2px solid var(--accent);
-		border-radius: 12px;
-		overflow: hidden;
+	/* vertical film list */
+	.list {
+		flex: 1;
+		min-height: 0;
+		overflow-y: auto;
 		display: flex;
 		flex-direction: column;
 	}
-	.tray-head {
-		padding: 12px 14px 10px;
-		border-bottom: 1px solid var(--panel2);
+	.list-empty {
+		padding: 28px 14px;
+		color: var(--faint2);
+		font-size: 13px;
+		text-align: center;
 	}
-	.tray-head.simple {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		padding: 12px 14px;
-	}
-	.tray-title-row {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		margin-bottom: 9px;
-	}
-	.tray-title {
-		font-size: 12.5px;
-		font-weight: 700;
-		color: var(--accent);
-	}
-	.tray-count {
-		font-family: var(--font-mono);
-		font-size: 11px;
-		background: color-mix(in srgb, var(--accent) 14%, transparent);
-		color: var(--accent);
-		padding: 1px 7px;
-		border-radius: 7px;
-	}
-	.info-dot {
-		display: inline-flex;
-		align-items: center;
-		justify-content: center;
-		width: 16px;
-		height: 16px;
-		border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line));
-		border-radius: 50%;
-		color: var(--accent);
-		font-family: var(--font-mono);
-		font-size: 10px;
-		cursor: help;
-	}
-	.spacer {
-		flex: 1;
-	}
-	.sort-toggle {
-		font-family: var(--font-mono);
-		font-size: 10.5px;
-		color: var(--faint);
+	.list-more {
+		flex: none;
+		width: 100%;
+		text-align: center;
+		font-size: 11.5px;
+		color: var(--muted);
+		padding: 10px 0;
+		border: none;
+		border-top: 1px solid var(--panel2);
 		background: transparent;
-		border: 1px solid var(--panel2);
-		border-radius: 6px;
-		padding: 1px 6px;
 		cursor: pointer;
 	}
-	.sort-toggle:hover {
+	.list-more:hover {
 		color: var(--text);
-		border-color: var(--faint);
+		background: var(--ink2);
 	}
-	.tray-note {
-		font-size: 11px;
-		color: var(--faint);
-	}
-	.tray-note.ready {
-		font-family: var(--font-mono);
-		color: var(--good);
-	}
-	.tray-actions {
-		display: flex;
-		gap: 5px;
-	}
+
+	/* action buttons */
 	.tb {
-		flex: 1;
+		flex: none;
 		display: inline-flex;
 		align-items: center;
 		justify-content: center;
 		gap: 5px;
 		border-radius: 7px;
-		padding: 6px 8px;
+		padding: 6px 11px;
 		font-weight: 600;
 		font-size: 11.5px;
 		white-space: nowrap;
 		border: 1px solid var(--line2);
 		background: var(--panel2);
 		color: var(--text);
-	}
-	.tb.sm {
-		flex: none;
-		padding: 6px 13px;
 	}
 	.tb.gold {
 		background: linear-gradient(180deg, var(--gold), var(--gold-deep));
@@ -1179,37 +1109,19 @@
 		opacity: 0.5;
 		cursor: not-allowed;
 	}
-	.tray-body {
-		display: flex;
-		flex-direction: column;
-		min-height: 60px;
-		max-height: 390px;
-		overflow-y: auto;
-	}
-	.tray-empty {
-		text-align: center;
-		color: var(--faint2);
-		font-size: 13px;
-		padding: 20px 0;
-	}
-	.tray-more {
-		position: sticky;
-		bottom: 0;
-		flex-shrink: 0;
-		width: 100%;
-		text-align: center;
-		font-size: 11.5px;
-		color: var(--muted);
-		padding: 8px 0;
-		border: none;
-		border-top: 1px solid var(--panel2);
-		background: var(--panel);
-		box-shadow: 0 -4px 10px rgba(0, 0, 0, 0.2);
+	.sort-toggle {
+		font-family: var(--font-mono);
+		font-size: 10.5px;
+		color: var(--faint);
+		background: transparent;
+		border: 1px solid var(--panel2);
+		border-radius: 6px;
+		padding: 4px 7px;
 		cursor: pointer;
 	}
-	.tray-more:hover {
+	.sort-toggle:hover {
 		color: var(--text);
-		background: var(--panel2);
+		border-color: var(--faint);
 	}
 
 	.btn-sec {
@@ -1255,7 +1167,7 @@
 		border: 1px solid var(--line);
 		border-radius: var(--radius);
 		width: 100%;
-		max-width: 480px;
+		max-width: 560px;
 		max-height: 70vh;
 		display: flex;
 		flex-direction: column;
@@ -1291,11 +1203,48 @@
 	.modal-body {
 		flex: 1;
 		overflow-y: auto;
+		padding: 12px;
+	}
+	.modal-grid {
+		display: grid;
+		grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+		gap: 8px;
 	}
 	.modal-loading {
 		text-align: center;
 		color: var(--faint);
 		font-size: 13px;
 		padding: 32px 0;
+	}
+
+	/* stack the panes on narrow screens */
+	@media (max-width: 860px) {
+		.page {
+			height: auto;
+			min-height: 0;
+		}
+		.split {
+			flex-direction: column;
+			min-height: 0;
+		}
+		.pane {
+			overflow: visible;
+		}
+		.pane.left {
+			flex: none;
+		}
+		.pane.right {
+			flex: none;
+			overflow-y: visible;
+		}
+		.list {
+			max-height: 420px;
+		}
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		.spin {
+			animation: none;
+		}
 	}
 </style>

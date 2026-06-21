@@ -85,6 +85,10 @@
 			unsub();
 			unsub = null;
 		}
+		if (encodePoll) {
+			clearInterval(encodePoll);
+			encodePoll = null;
+		}
 	}
 
 	let detectUnsub: (() => void) | null = null;
@@ -118,6 +122,7 @@
 		planLoading = false;
 		artifact = null;
 		encoding = false;
+		encodeDone = false;
 		encodeProgress = 0;
 		encodeStage = null;
 		encodeMessage = null;
@@ -365,6 +370,11 @@
 	let encodeSpeed = $state<number | null>(null);
 	let artifact = $state<ReencodeArtifact | null>(null);
 	let unsub: (() => void) | null = null;
+	// Poll fallback for the encode bar + a once-only completion guard. The first
+	// EventSource opened right after confirm sometimes doesn't stream live, so we
+	// drive progress from the job snapshot too (mirrors the board's tray poll).
+	let encodePoll: ReturnType<typeof setInterval> | null = null;
+	let encodeDone = false;
 
 	const reencodeMode = $derived.by(() => {
 		const jobStatus = detail?.reencode?.job?.status;
@@ -409,6 +419,33 @@
 		});
 	}
 
+	/** Read the media-job snapshot once and advance the encode bar from it. */
+	async function pollEncodeOnce(jobId: string) {
+		try {
+			const job = await getMediaJob(fetch, jobId);
+			if (job.stage) encodeStage = job.stage;
+			if (job.progress_total > 0) {
+				const pct = (job.progress_done / job.progress_total) * 100;
+				if (pct > encodeProgress) encodeProgress = pct; // monotonic; don't fight SSE
+			}
+			if (job.status !== 'queued' && job.status !== 'running') {
+				await finishEncode(jobId);
+			}
+		} catch {
+			/* transient — keep polling */
+		}
+	}
+
+	/** Track a running encode via SSE *and* a snapshot poll, seeded immediately so
+	 *  the bar moves on the first run without needing a page refresh. */
+	function startEncodeTracking(jobId: string) {
+		encodeDone = false;
+		subscribeToEncode(jobId);
+		if (encodePoll) clearInterval(encodePoll);
+		encodePoll = setInterval(() => void pollEncodeOnce(jobId), 1500);
+		void pollEncodeOnce(jobId);
+	}
+
 	function hydrateReencodeState(snapshot: LetterboxDetail | null) {
 		stopEncodeStream();
 		plan = null;
@@ -445,7 +482,7 @@
 			encoding = true;
 			encodeStage = job.stage ?? job.status;
 			encodeProgress = job.progress_total > 0 ? (job.progress_done / job.progress_total) * 100 : 0;
-			subscribeToEncode(job.job_id);
+			startEncodeTracking(job.job_id);
 			return;
 		}
 
@@ -504,7 +541,7 @@
 			toast(e instanceof Error ? e.message : 'Could not start encode', 'bad');
 			return;
 		}
-		subscribeToEncode(confirmId);
+		startEncodeTracking(confirmId);
 	}
 
 	async function discardPlan() {
@@ -519,6 +556,9 @@
 
 	async function finishEncode(jobId: string) {
 		if (id == null) return;
+		if (encodeDone) return; // SSE 'done' and the poll can both land here
+		encodeDone = true;
+		stopEncodeStream();
 		try {
 			const list = await listReencodeArtifacts(fetch, { movie_id: id });
 			const ready = list.items.find((a) => a.status === 'candidate_ready' || a.status === 'kept');
@@ -588,7 +628,7 @@
 	{#if movieId == null}
 		<div class="empty">
 			<Icon name="letterbox" size={32} stroke={1} />
-			<span>Select a movie from the board to inspect it.</span>
+			<span>Select a film to inspect it.</span>
 		</div>
 	{:else if loading}
 		<div class="empty">Loading…</div>
@@ -1123,13 +1163,15 @@
 </div>
 
 <style>
+	/* Rendered flush inside the fixed inspector pane — the pane provides the
+	   surface + scroll; the panel keeps only a stage-color top accent. */
 	.panel {
-		border: 1px solid var(--line);
+		border: none;
 		border-top: 2px solid var(--panel-accent, var(--line));
-		border-radius: var(--radius);
-		background: var(--panel);
-		padding: 18px;
-		margin-bottom: 22px;
+		border-radius: 0;
+		background: transparent;
+		padding: 16px 14px 20px;
+		margin-bottom: 0;
 	}
 	.empty {
 		display: flex;
@@ -1146,44 +1188,25 @@
 		color: var(--bad);
 	}
 
-	/* Single-row layout (candidate / clean / other) */
+	/* Vertical inspector layout (candidate / clean / other) */
 	.grid {
-		display: grid;
-		grid-template-columns: 200px 1fr 240px;
-		gap: 24px;
+		display: flex;
+		flex-direction: column;
+		gap: 16px;
 	}
-	@media (max-width: 900px) {
-		.grid,
-		.grid-det {
-			grid-template-columns: 1fr !important;
-		}
-	}
-
-	/* 2-row layout for detected / preview / processed */
+	/* Vertical inspector layout for detected / preview / processed.
+	   DOM order is meta-top → before image → meta-bot → after image; actions are
+	   pushed last so the action stack sits at the bottom of the pane. */
 	.grid-det {
-		display: grid;
-		grid-template-columns: 200px 1fr 240px;
-		/* Rows auto-size to content; the image cell defines the row height */
-		gap: 14px 24px;
-	}
-	.meta-top {
-		grid-column: 1;
-		grid-row: 1;
+		display: flex;
+		flex-direction: column;
+		gap: 16px;
 	}
 	.frame-cell {
-		grid-column: 2;
-		/* row determined by DOM order */
 		min-width: 0;
 	}
 	.det-actions {
-		grid-column: 3;
-		grid-row: 1 / 3; /* spans both rows */
-		align-self: start;
-	}
-	.meta-bot {
-		grid-column: 1;
-		grid-row: 2;
-		align-self: start;
+		order: 9;
 	}
 
 	/* meta shared */
