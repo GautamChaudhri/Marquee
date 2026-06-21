@@ -55,6 +55,59 @@
 		'veryslow'
 	];
 
+	const ENCODER_LABELS: Record<string, string> = {
+		'hevc_nvenc': 'NVIDIA NVENC (HEVC)',
+		'h264_nvenc': 'NVIDIA NVENC (H.264)',
+		'hevc_qsv': 'Intel QuickSync (HEVC)',
+		'h264_qsv': 'Intel QuickSync (H.264)',
+		'hevc_vaapi': 'Intel VAAPI (HEVC)',
+		'h264_vaapi': 'Intel VAAPI (H.264)',
+		'libx265': 'Software x265 (HEVC)',
+		'libx264': 'Software x264 (H.264)'
+	};
+
+	function prettyEncoder(enc: string): string {
+		return ENCODER_LABELS[enc] ?? enc;
+	}
+
+	type QualityProfile = 'speed' | 'balanced' | 'quality';
+
+	// Per-family encoding parameters for each profile tier.
+	const PROFILE_SETTINGS: Record<QualityProfile, Record<string, { preset: string | null; quality: number }>> = {
+		speed: {
+			nvidia:      { preset: 'p4', quality: 20 },
+			cpu_x265:    { preset: 'fast', quality: 20 },
+			cpu_x264:    { preset: 'fast', quality: 23 },
+			intel_qsv:   { preset: null, quality: 23 },
+			intel_vaapi: { preset: null, quality: 25 },
+		},
+		balanced: {
+			nvidia:      { preset: 'p5', quality: 18 },
+			cpu_x265:    { preset: 'medium', quality: 18 },
+			cpu_x264:    { preset: 'medium', quality: 21 },
+			intel_qsv:   { preset: null, quality: 20 },
+			intel_vaapi: { preset: null, quality: 22 },
+		},
+		quality: {
+			nvidia:      { preset: 'p7', quality: 16 },
+			cpu_x265:    { preset: 'slow', quality: 16 },
+			cpu_x264:    { preset: 'slow', quality: 19 },
+			intel_qsv:   { preset: null, quality: 18 },
+			intel_vaapi: { preset: null, quality: 18 },
+		},
+	};
+
+	const PROFILE_META: Record<QualityProfile, { icon: string; label: string; description: string }> = {
+		speed:    { icon: '\u26a1', label: 'Prefer Speed',   description: 'Faster encode, slightly larger files' },
+		balanced: { icon: '\u2696',  label: 'Balanced',       description: 'Best tradeoff for most content' },
+		quality:  { icon: '\ud83c\udfaf', label: 'Prefer Quality', description: 'Reference quality, slower encode' },
+	};
+
+	function profileFamilyKey(family: string, encoder: string): string {
+		if (family === 'cpu') return encoder === 'libx264' ? 'cpu_x264' : 'cpu_x265';
+		return family;
+	}
+
 	function fmtBytes(n: number | null | undefined): string {
 		if (!n) return '—';
 		const gb = n / 1e9;
@@ -116,6 +169,8 @@
 		detectJobId = null;
 		method = 'quick';
 		showAdvanced = false;
+		settingsMode = 'simple';
+		selectedProfile = 'balanced';
 		plan = null;
 		jobId = null;
 		planError = null;
@@ -345,6 +400,8 @@
 	type Method = 'quick' | 'permanent';
 	let method = $state<Method>('quick');
 	let showAdvanced = $state(false);
+	let settingsMode = $state<'simple' | 'advanced'>('simple');
+	let selectedProfile = $state<QualityProfile>('balanced');
 
 	// User-editable settings (null/'' = use plan default).
 	let setEncoder = $state('auto');
@@ -491,18 +548,31 @@
 		}
 	}
 
+	function getProfileOverrides(): { quality?: number; preset?: string | null } {
+		if (!plan) return {};
+		const key = profileFamilyKey(plan.encoder.family, plan.encoder.encoder);
+		const settings = PROFILE_SETTINGS[selectedProfile]?.[key];
+		return settings ? { quality: settings.quality, preset: settings.preset } : {};
+	}
+
+	function selectProfile(p: QualityProfile) {
+		selectedProfile = p;
+		if (plan) loadPlan();
+	}
+
 	async function loadPlan() {
 		if (id == null || reencodeMode !== null) return;
 		planLoading = true;
 		planError = null;
 		try {
+			const profileOv = settingsMode === 'simple' ? getProfileOverrides() : {};
 			plan = await createReencodePlan(fetch, id, {
 				top: cropTopOverride,
 				bottom: cropBottomOverride,
-				allow_cpu_fallback: setAllowCpu,
+				allow_cpu_fallback: settingsMode === 'advanced' ? setAllowCpu : true,
 				encoder: setEncoder === 'auto' ? null : setEncoder,
-				quality: setQuality,
-				preset: setPreset || null,
+				quality: settingsMode === 'advanced' ? setQuality : (profileOv.quality ?? null),
+				preset: settingsMode === 'advanced' ? (setPreset || null) : (profileOv.preset ?? null),
 				codec: setCodec
 			});
 			jobId = plan.job_id;
@@ -732,7 +802,7 @@
 							<div class="alabel">Candidate ready</div>
 							<dl class="enc-summary">
 								<dt>Encoder</dt>
-								<dd class="mono">{artifact.encoder ?? '—'} · {artifact.codec ?? '—'}</dd>
+								<dd class="mono">{prettyEncoder(artifact.encoder ?? '')} · {artifact.codec ?? '—'}</dd>
 								<dt>Size</dt>
 								<dd class="mono">
 									{fmtBytes(artifact.candidate_size_bytes)}
@@ -776,7 +846,7 @@
 							<div class="alabel">Re-encode planned</div>
 							<dl class="enc-summary">
 								<dt>Encoder</dt>
-								<dd class="mono">{plan?.encoder.encoder ?? '—'} · {plan?.encoder.family ?? '—'}</dd>
+								<dd class="mono">{prettyEncoder(plan?.encoder.encoder ?? '')} · {plan?.encoder.family ?? '—'}</dd>
 								<dt>Crop</dt>
 								<dd class="mono">
 									{plan?.crop.top ?? 0}:{plan?.crop.bottom ?? 0}
@@ -816,96 +886,123 @@
 						<div class="note err">{planError}</div>
 						<button class="btn-sec" onclick={loadPlan}>Retry plan</button>
 					{:else if plan}
-						<!-- Most-relevant settings (always visible) -->
 						<div class="settings">
 							<div class="note {plan.acceleration?.enabled ? 'good' : ''}">
 								{plan.acceleration?.enabled
-									? `NVIDIA NVDEC → GPU crop → NVENC (${plan.acceleration?.decoder})`
-									: `CPU decode/crop · ${plan.acceleration?.reason ?? 'NVIDIA acceleration unavailable.'}`}
+									? `NVIDIA NVDEC \u2192 GPU crop \u2192 NVENC (${plan.acceleration?.decoder})`
+									: `CPU decode/crop \u00b7 ${plan.acceleration?.reason ?? 'NVIDIA acceleration unavailable.'}`}
 							</div>
-							<label class="field">
-								<span>Quality (CQ/CRF) · lower = better</span>
-								<input
-									type="number"
-									min="0"
-									max="51"
-									placeholder={String(plan.encoder.quality)}
-									bind:value={setQuality}
-									onchange={loadPlan}
-								/>
-							</label>
 							<label class="field">
 								<span>Encoder</span>
 								<select bind:value={setEncoder} onchange={loadPlan}>
-									<option value="auto">Auto ({plan.encoder.encoder})</option>
+									<option value="auto">Auto \u00b7 {prettyEncoder(plan.encoder.encoder)}</option>
 									{#each encoderOptions as enc (enc)}
-										<option value={enc}>{enc}</option>
+										<option value={enc}>{prettyEncoder(enc)}</option>
 									{/each}
 								</select>
 							</label>
-							<div class="field-row">
-								<label class="field">
-									<span>Crop top</span>
-									<input
-										type="number"
-										min="0"
-										placeholder={String(detail.recommended_crop_top ?? 0)}
-										bind:value={cropTopOverride}
-										onchange={loadPlan}
-									/>
-								</label>
-								<label class="field">
-									<span>Crop bottom</span>
-									<input
-										type="number"
-										min="0"
-										placeholder={String(detail.recommended_crop_bottom ?? 0)}
-										bind:value={cropBottomOverride}
-										onchange={loadPlan}
-									/>
-								</label>
-							</div>
+							<label class="field">
+								<span>Target codec</span>
+								<select bind:value={setCodec} onchange={loadPlan}>
+									<option value="preserve">Preserve ({plan.source.codec ?? '\u2014'})</option>
+									<option value="hevc">HEVC (H.265)</option>
+									<option value="h264">H.264</option>
+								</select>
+							</label>
 
-							<button class="adv-toggle" onclick={() => (showAdvanced = !showAdvanced)}>
-								{showAdvanced ? '▾' : '▸'} Advanced settings
-							</button>
-							{#if showAdvanced}
+							{#if settingsMode === 'simple'}
+								<div class="profile-cards">
+									{#each (['speed', 'balanced', 'quality'] as const) as p (p)}
+										{@const pmeta = PROFILE_META[p]}
+										{@const key = profileFamilyKey(plan.encoder.family, plan.encoder.encoder)}
+										{@const vals = PROFILE_SETTINGS[p][key]}
+										<button
+											class="profile-card"
+											class:active={selectedProfile === p}
+											onclick={() => selectProfile(p)}
+										>
+											<div class="profile-head">
+												<span class="profile-icon">{pmeta.icon}</span>
+												{pmeta.label}
+												{#if selectedProfile === p}<span class="fix-on">Selected</span>{/if}
+											</div>
+											<div class="profile-desc">{pmeta.description}</div>
+											{#if vals}
+												<div class="profile-vals mono">
+													{plan.encoder.family === 'nvidia' ? 'CQ' : plan.encoder.family === 'cpu' ? 'CRF' : 'Quality'} {vals.quality}{#if vals.preset} \u00b7 {vals.preset}{/if}
+												</div>
+											{/if}
+										</button>
+									{/each}
+								</div>
+								<button class="adv-toggle" onclick={() => (settingsMode = 'advanced')}>
+									\u2699 Advanced
+								</button>
+							{:else}
+								<label class="field">
+									<span>Quality (CQ/CRF) \u00b7 lower = better</span>
+									<input
+										type="number"
+										min="0"
+										max="51"
+										placeholder={String(plan.encoder.quality)}
+										bind:value={setQuality}
+										onchange={loadPlan}
+									/>
+								</label>
 								{#if presetOptions.length > 0}
 									<label class="field">
-										<span>Preset (speed ↔ quality)</span>
+										<span>Preset (speed \u2194 quality)</span>
 										<select bind:value={setPreset} onchange={loadPlan}>
 											<option value="">Default ({plan.encoder.preset ?? 'auto'})</option>
-											{#each presetOptions as p (p)}
-												<option value={p}>{p}</option>
+											{#each presetOptions as pr (pr)}
+												<option value={pr}>{pr}</option>
 											{/each}
 										</select>
 									</label>
 								{/if}
-								<label class="field">
-									<span>Target codec</span>
-									<select bind:value={setCodec} onchange={loadPlan}>
-										<option value="preserve">Preserve ({plan.source.codec ?? '—'})</option>
-										<option value="hevc">HEVC (H.265)</option>
-										<option value="h264">H.264</option>
-									</select>
-								</label>
+								<div class="field-row">
+									<label class="field">
+										<span>Crop top</span>
+										<input
+											type="number"
+											min="0"
+											placeholder={String(detail.recommended_crop_top ?? 0)}
+											bind:value={cropTopOverride}
+											onchange={loadPlan}
+										/>
+									</label>
+									<label class="field">
+										<span>Crop bottom</span>
+										<input
+											type="number"
+											min="0"
+											placeholder={String(detail.recommended_crop_bottom ?? 0)}
+											bind:value={cropBottomOverride}
+											onchange={loadPlan}
+										/>
+									</label>
+								</div>
 								<label class="field checkbox">
 									<input type="checkbox" bind:checked={setAllowCpu} onchange={loadPlan} />
 									<span>Allow CPU encoding fallback</span>
 								</label>
 								<dl class="enc-summary">
 									<dt>Resolved encoder</dt>
-									<dd class="mono">{plan.encoder.encoder} · {plan.encoder.family}</dd>
+									<dd class="mono">{prettyEncoder(plan.encoder.encoder)} \u00b7 {plan.encoder.family}</dd>
 									<dt>HDR</dt>
 									<dd class="mono">{plan.hdr.status}</dd>
 									<dt>Dolby Vision</dt>
-									<dd class="mono">{plan.dovi.status}{#if plan.dovi.reason} · {plan.dovi.reason}{/if}</dd>
+									<dd class="mono">{plan.dovi.status}{#if plan.dovi.reason} \u00b7 {plan.dovi.reason}{/if}</dd>
 									<dt>Est. temp size</dt>
 									<dd class="mono">
 										{fmtBytes(plan.storage.estimated_temp_bytes)}
 										<span class="crop-note">/ {fmtBytes(plan.storage.free_bytes)} free</span>
 									</dd>
 								</dl>
+								<button class="adv-toggle" onclick={() => (settingsMode = 'simple')}>
+									\u2190 Simple
+								</button>
 							{/if}
 						</div>
 
@@ -1520,6 +1617,51 @@
 		font-weight: 600;
 		cursor: pointer;
 		padding: 2px 0;
+	}
+	.profile-cards {
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+	}
+	.profile-card {
+		display: block;
+		width: 100%;
+		text-align: left;
+		border: 1px solid var(--line2);
+		border-radius: var(--radius-sm);
+		padding: 10px 12px;
+		background: transparent;
+		color: inherit;
+		cursor: pointer;
+		transition: border-color 0.15s, background 0.15s;
+	}
+	.profile-card:hover {
+		border-color: var(--faint);
+	}
+	.profile-card.active {
+		border-color: var(--gold);
+		background: var(--gold-soft);
+	}
+	.profile-head {
+		font-size: 12.5px;
+		font-weight: 600;
+		display: flex;
+		align-items: center;
+		gap: 6px;
+	}
+	.profile-icon {
+		font-size: 14px;
+	}
+	.profile-desc {
+		font-size: 11px;
+		color: var(--muted);
+		margin-top: 3px;
+		line-height: 1.4;
+	}
+	.profile-vals {
+		font-size: 10.5px;
+		color: var(--faint);
+		margin-top: 4px;
 	}
 	.enc-summary {
 		margin-top: 2px;

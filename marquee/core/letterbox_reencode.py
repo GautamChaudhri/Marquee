@@ -873,9 +873,28 @@ async def execute_job(db: AsyncSession, job: MediaJob, emit) -> dict:
     source_info = await gated(inspect_source, resolved.path)
     if source_info is None:
         raise ReencodePlanError("probe_failed", "could not inspect source before encoding")
+
+    # Start DOVI RPU extraction in parallel with the main encode (Fix C).
+    # Both operations read the source file; RPU extraction is I/O-bound and
+    # finishes well before the encode does, so the RPU will be ready by the
+    # time the encode completes — making RPU extraction effectively free.
+    rpu_task: asyncio.Task | None = None
+    rpu_work: Path | None = None
+    if dovi_preserve:
+        rpu_work = encoded_out.parent / f".dovi-{job.job_id}"
+        if rpu_work.exists():
+            shutil.rmtree(rpu_work)
+        rpu_work.mkdir(parents=True, exist_ok=True)
+        rpu_path = rpu_work / "RPU.bin"
+        rpu_task = asyncio.create_task(
+            _extract_rpu_piped(resolved.path, rpu_path),
+            name=f"dovi-rpu-{job.job_id}",
+        )
+        logger.info("DOVI RPU extraction started in parallel for %s", job.job_id)
+
     acceleration = plan.get("acceleration") or {}
     acceleration_active = bool(acceleration.get("enabled"))
-    pipeline_label = "NVIDIA NVDEC → GPU crop → NVENC" if acceleration_active else "CPU decode/crop"
+    pipeline_label = "NVIDIA NVDEC \u2192 GPU crop \u2192 NVENC" if acceleration_active else "CPU decode/crop"
     await emit(
         db,
         job.job_id,
@@ -916,13 +935,27 @@ async def execute_job(db: AsyncSession, job: MediaJob, emit) -> dict:
             db, job, emit, resolved.path, ffmpeg_out, fallback_plan, source_info
         )
     if not succeeded:
+        # Clean up the parallel RPU task if the encode itself failed.
+        if rpu_task is not None and not rpu_task.done():
+            rpu_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await rpu_task
         raise ReencodePlanError("ffmpeg_failed", diagnostic[:500])
 
     dovi_status = plan.get("dovi", {}).get("status", "not_present")
     if dovi_preserve:
         await emit(db, job.job_id, "dovi", "start", message="Preserving Dolby Vision RPU")
         try:
-            await _preserve_dovi(resolved.path, encoded_out, out, job.job_id)
+            await _preserve_dovi(
+                resolved.path,
+                encoded_out,
+                out,
+                job.job_id,
+                emit,
+                db,
+                job,
+                rpu_task=rpu_task,
+            )
             dovi_status = "preserved"
         except Exception as exc:  # noqa: BLE001
             out.unlink(missing_ok=True)
@@ -978,43 +1011,187 @@ async def execute_job(db: AsyncSession, job: MediaJob, emit) -> dict:
     }
 
 
-async def _run_checked(binary_name: str, args: list[str], *, timeout: float | None = None) -> None:
+async def _run_checked(
+    binary_name: str, args: list[str], *, timeout: float | None = 3600
+) -> None:
     proc = await asyncio.create_subprocess_exec(
         binaries.resolve(binary_name) or binary_name,
         *args,
-        stdout=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.PIPE,
     )
-    stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    _, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     if proc.returncode != 0:
-        message = (stderr or stdout or b"").decode(errors="replace")[:500]
+        message = (stderr or b"").decode(errors="replace")[:500]
         raise RuntimeError(message or f"{binary_name} exited {proc.returncode}")
 
 
-async def _preserve_dovi(source_mkv: Path, encoded_mkv: Path, final_mkv: Path, job_id: str) -> None:
+async def _piped_ffmpeg_to_dovi(
+    ffmpeg_args: list[str],
+    dovi_args: list[str],
+    *,
+    timeout: float = 3600,
+) -> None:
+    """Run an FFmpeg demux piped into dovi_tool via stdin.
+
+    FFmpeg writes raw HEVC to stdout; dovi_tool reads it from stdin.
+    This avoids dovi_tool parsing the MKV container (which is much slower
+    than FFmpeg's demuxer) and eliminates intermediate files on disk.
+    """
+    ffmpeg_bin = binaries.resolve("ffmpeg") or "ffmpeg"
+    dovi_bin = binaries.resolve("dovi_tool") or "dovi_tool"
+
+    ffmpeg_proc = await asyncio.create_subprocess_exec(
+        ffmpeg_bin,
+        *ffmpeg_args,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    assert ffmpeg_proc.stdout is not None
+    dovi_proc = await asyncio.create_subprocess_exec(
+        dovi_bin,
+        *dovi_args,
+        stdin=ffmpeg_proc.stdout,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    # Let the pipe flow: close our reference so dovi_tool sees EOF when FFmpeg finishes.
+    ffmpeg_proc.stdout.close()  # type: ignore[union-attr]
+
+    _, dovi_stderr = await asyncio.wait_for(dovi_proc.communicate(), timeout=timeout)
+    await ffmpeg_proc.wait()
+
+    if ffmpeg_proc.returncode != 0:
+        raise RuntimeError(
+            f"FFmpeg HEVC extraction exited {ffmpeg_proc.returncode} during DOVI pipe"
+        )
+    if dovi_proc.returncode != 0:
+        message = (dovi_stderr or b"").decode(errors="replace")[:500]
+        raise RuntimeError(message or f"dovi_tool exited {dovi_proc.returncode}")
+
+
+async def _extract_rpu_piped(
+    source_mkv: Path, rpu_out: Path, *, timeout: float = 3600
+) -> None:
+    """Pipe FFmpeg HEVC demux → dovi_tool extract-rpu.
+
+    FFmpeg handles MKV demuxing (fast), dovi_tool only sees raw HEVC NALs
+    which is much faster than having dovi_tool parse the MKV itself.
+    """
+    ffmpeg_args = [
+        "-hide_banner",
+        "-nostdin",
+        "-i",
+        str(source_mkv),
+        "-map",
+        "0:v:0",
+        "-c:v",
+        "copy",
+        "-bsf:v",
+        "hevc_mp4toannexb",
+        "-f",
+        "hevc",
+        "pipe:1",
+    ]
+    dovi_args = ["--crop", "extract-rpu", "-", "-o", str(rpu_out)]
+    await _piped_ffmpeg_to_dovi(ffmpeg_args, dovi_args, timeout=timeout)
+
+
+async def _inject_rpu_piped(
+    encoded_mkv: Path, rpu: Path, injected_hevc: Path, *, timeout: float = 3600
+) -> None:
+    """Pipe encoded MKV's HEVC stream → dovi_tool inject-rpu.
+
+    Eliminates the intermediate encoded.hevc file entirely — FFmpeg streams
+    the HEVC bitstream directly to dovi_tool via stdin.
+    """
+    ffmpeg_args = [
+        "-hide_banner",
+        "-nostdin",
+        "-i",
+        str(encoded_mkv),
+        "-map",
+        "0:v:0",
+        "-c:v",
+        "copy",
+        "-bsf:v",
+        "hevc_mp4toannexb",
+        "-f",
+        "hevc",
+        "pipe:1",
+    ]
+    dovi_args = [
+        "inject-rpu",
+        "-i",
+        "-",
+        "--rpu-in",
+        str(rpu),
+        "-o",
+        str(injected_hevc),
+    ]
+    await _piped_ffmpeg_to_dovi(ffmpeg_args, dovi_args, timeout=timeout)
+
+
+async def _preserve_dovi(
+    source_mkv: Path,
+    encoded_mkv: Path,
+    final_mkv: Path,
+    job_id: str,
+    emit,
+    db: AsyncSession,
+    job: MediaJob,
+    rpu_task: asyncio.Task | None = None,
+) -> None:
+    """Dolby Vision RPU preservation with piped architecture.
+
+    If *rpu_task* is provided it should be an ``asyncio.Task`` wrapping
+    ``_extract_rpu_piped()`` that was launched in parallel with the main
+    encode.  When the encode finishes faster than RPU extraction (unlikely
+    for long files) we simply await it here.
+    """
     work = encoded_mkv.parent / f".dovi-{job_id}"
     if work.exists():
         shutil.rmtree(work)
     work.mkdir(parents=True, exist_ok=True)
     try:
         rpu = work / "RPU.bin"
-        encoded_hevc = work / "encoded.hevc"
         injected_hevc = work / "injected.hevc"
-        await _run_checked(
-            "dovi_tool",
-            ["--crop", "extract-rpu", str(source_mkv), "-o", str(rpu)],
+
+        # Step 1: Await parallel RPU extraction (started during encode) or run it now.
+        await emit(
+            db,
+            job.job_id,
+            "dovi",
+            "running",
+            message="Extracting Dolby Vision RPU from source (1/3)\u2026",
         )
-        await _run_checked(
-            "ffmpeg",
-            build_hevc_extract_args(encoded_mkv, encoded_hevc),
+        if rpu_task is not None:
+            await rpu_task
+        else:
+            await _extract_rpu_piped(source_mkv, rpu)
+
+        # Step 2: Pipe encoded HEVC → inject RPU (no intermediate file).
+        await emit(
+            db,
+            job.job_id,
+            "dovi",
+            "running",
+            message="Injecting RPU into encoded video (2/3)\u2026",
         )
-        await _run_checked(
-            "dovi_tool",
-            ["inject-rpu", "-i", str(encoded_hevc), "--rpu-in", str(rpu), "-o", str(injected_hevc)],
+        await _inject_rpu_piped(encoded_mkv, rpu, injected_hevc)
+
+        # Step 3: Final remux — encoded MKV audio/subs + injected HEVC video.
+        await emit(
+            db,
+            job.job_id,
+            "dovi",
+            "running",
+            message="Remuxing final output with Dolby Vision (3/3)\u2026",
         )
         await _run_checked(
             "ffmpeg",
             build_dovi_remux_args(encoded_mkv, injected_hevc, final_mkv),
+            timeout=3600,
         )
     finally:
         with contextlib.suppress(OSError):
