@@ -24,7 +24,12 @@
 	{#each items as m (m.id)}
 		<button class="row" onclick={() => goto(`/films/${m.id}`)}>
 			<span class="thumb"
-				><PosterThumb title={m.title} posterStatus={m.poster_status} posterUrl={m.poster_url} hdr={m.hdr} /></span
+				><PosterThumb
+					title={m.title}
+					posterStatus={m.poster_status}
+					posterUrl={m.poster_url}
+					hdr={m.hdr}
+				/></span
 			>
 			<span class="title">
 				<strong>{m.title}</strong>

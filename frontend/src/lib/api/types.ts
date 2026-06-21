@@ -272,7 +272,7 @@ export interface ReencodeArtifact {
 	} | null;
 	created_at: string | null;
 	updated_at: string | null;
- }
+}
 
 export interface ReencodeArtifactList {
 	summary: {
@@ -308,3 +308,189 @@ export interface SystemMetrics {
 	workers: { active: number; queued: number };
 	uptime: string;
 }
+
+// ── Background jobs ─────────────────────────────────────────────────────────
+/** The `job_summary(job)` dict every enqueue endpoint returns. A superset of the
+ *  fields the UI needs to attach a progress bar (`status` + `events_url`). */
+export interface JobSummary {
+	job_id: string;
+	type: string;
+	status: string;
+	stage: string | null;
+	progress: Record<string, unknown> | null;
+	subject: { type: string; id: string } | null;
+	cancel_requested: boolean;
+	events_url: string;
+	status_url: string;
+	movie_count?: number; // batch runs only
+	[k: string]: unknown;
+}
+
+// ── Pipeline run results (GET /pipeline/runs/{id}) ──────────────────────────
+/** One candidate, shaped by `api/results.py::_candidate_view`. Ranked survivors
+ *  carry `rank`/`final_score`/`contributions`; rejects carry a reason. */
+export interface CandidateView {
+	orig_filename: string;
+	rank: number | null;
+	final_score: number | null;
+	poster_url: string;
+	contributions: Record<string, number> | null;
+	raw_features: Record<string, number> | null;
+	normalized_features: Record<string, number> | null;
+	gate_decision: string | null;
+	gate_reason: string | null;
+	stage_reached: string | null;
+	rejection_reason: string | null;
+	rejection_explanation: string | null;
+	dedup_kept: string | null;
+	/** Present on `auto_pick` only — top human-readable contribution lines. */
+	explanations?: string[];
+}
+
+/** One per-stage rejection group — drives the results-page stage tabs. */
+export interface RejectedStageGroup {
+	stage: string;
+	label: string;
+	count: number;
+	posters: CandidateView[];
+}
+
+export interface RunResults {
+	run_id: string;
+	movie: { id: number | null; title: string | null; tmdb_id: number | null };
+	status: string;
+	scorer: string | null;
+	reviewed: boolean;
+	auto_pick: CandidateView | null;
+	ranked: CandidateView[];
+	rejected: {
+		gate: CandidateView[];
+		ocr: CandidateView[];
+		dedup: CandidateView[];
+		errored: CandidateView[];
+	};
+	rejected_by_stage: RejectedStageGroup[];
+	rejection_summary: Record<string, number>;
+	suggestion: unknown;
+	counts: Record<string, number>;
+	stage_timings_s: Record<string, number>;
+	config_snapshot?: Record<string, unknown>;
+}
+
+/** Returned by `GET /pipeline/runs/{id}` while the run is still executing. */
+export interface RunningRun {
+	run_id: string;
+	status: 'running';
+	events_url: string;
+}
+
+export type RunResultsResponse = RunResults | RunningRun;
+
+export function isRunningRun(r: RunResultsResponse): r is RunningRun {
+	return r.status === 'running' && !('ranked' in r);
+}
+
+// ── Review queue + run history ──────────────────────────────────────────────
+export interface PipelineRunSummary {
+	run_id: string;
+	status: string;
+	started_at: string | null;
+	completed_at: string | null;
+	scorer_name: string | null;
+	counts: Record<string, number> | null;
+	reviewed: boolean;
+}
+
+export interface ReviewQueueItem {
+	movie: MovieListItem;
+	run: PipelineRunSummary;
+	results_url: string;
+}
+
+export interface ReviewQueue {
+	total: number;
+	page: number;
+	page_size: number;
+	items: ReviewQueueItem[];
+}
+
+export interface MovieRuns {
+	movie_id: number;
+	runs: PipelineRunSummary[];
+}
+
+// ── Metrics + cache ─────────────────────────────────────────────────────────
+export interface PipelineMetrics {
+	window_runs: number;
+	by_status: Record<string, number>;
+	by_scorer: Record<string, number>;
+	distinct_batches: number;
+	duration_seconds: {
+		avg: number | null;
+		p50: number | null;
+		p90: number | null;
+		max: number | null;
+	};
+	avg_counts: Record<string, number>;
+	total_counts: Record<string, number>;
+	avg_stage_seconds: Record<string, number>;
+	total_stage_seconds: Record<string, number>;
+}
+
+export interface CacheSizes {
+	sizes_bytes: { runs_work: number; staging: number; embeddings: number; archives: number };
+	clearable_bytes: number;
+	total_bytes: number;
+}
+
+// ── Feedback (pick / approve / reject) ──────────────────────────────────────
+export type FeedbackAction = 'approve' | 'override' | 'reject_all';
+
+export interface FeedbackRequestBody {
+	run_id: string;
+	action: FeedbackAction;
+	selected_filename?: string;
+	deploy?: boolean;
+}
+
+export interface FeedbackResult {
+	event_id: string;
+	labels_written: number;
+	exemplar_added: string | null;
+	remapped_to: string | null;
+	gate_override: { reason: string; count_at_current_threshold: number } | null;
+	head: { retrained: boolean; reason?: string } & Record<string, unknown>;
+	deployed_to: string | null;
+	deploy_error: string | null;
+}
+
+// ── Taste / Key Art Engine status (GET /taste/status) ───────────────────────
+export interface TasteStatus {
+	labels: {
+		total: number;
+		movies: number;
+		positives: number;
+		negatives: number;
+		genres: Record<string, number>;
+	};
+	exemplars: {
+		count: number;
+		negatives: number;
+		last_rebuild: string | null;
+		profile_present: boolean;
+	};
+	learned_head: {
+		active: boolean;
+		n_samples: number;
+		activation: {
+			movies: { have: number; need: number };
+			labels: { have: number; need: number };
+		};
+	};
+	gate_alerts: { gate: string; overrides: number; threshold?: number | string }[];
+	rebuild?: Record<string, unknown>;
+}
+
+export type TasteSource = 'training_dir' | 'library';
+
+export type BatchScope = 'missing' | 'all' | 'selected';

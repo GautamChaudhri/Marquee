@@ -40,7 +40,11 @@ export function ignoreLetterbox(fetchFn: Fetch, movieId: number): Promise<unknow
 }
 
 export function markNotLetterboxed(fetchFn: Fetch, movieId: number): Promise<LetterboxDetail> {
-	return apiSend<LetterboxDetail>(fetchFn, 'POST', `/letterbox/movies/${movieId}/mark-not-letterboxed`);
+	return apiSend<LetterboxDetail>(
+		fetchFn,
+		'POST',
+		`/letterbox/movies/${movieId}/mark-not-letterboxed`
+	);
 }
 
 export function removeLetterbox(fetchFn: Fetch, movieId: number): Promise<unknown> {
@@ -53,10 +57,7 @@ export function confirmLetterbox(fetchFn: Fetch, movieId: number): Promise<Lette
 }
 
 /** Reprocess: strip the tag, then re-run frame analysis. Lands back in Staging. */
-export async function reprocessLetterbox(
-	fetchFn: Fetch,
-	movieId: number
-): Promise<JobSnapshot> {
+export async function reprocessLetterbox(fetchFn: Fetch, movieId: number): Promise<JobSnapshot> {
 	await removeLetterbox(fetchFn, movieId);
 	return detectLetterbox(fetchFn, movieId);
 }
@@ -120,7 +121,10 @@ export function createReencodePlan(
 }
 
 /** Confirm a planned media job → queues it for the durable worker. */
-export function confirmJob(fetchFn: Fetch, jobId: string): Promise<{ job_id: string; status: string }> {
+export function confirmJob(
+	fetchFn: Fetch,
+	jobId: string
+): Promise<{ job_id: string; status: string }> {
 	return apiSend(fetchFn, 'POST', `/media-jobs/${jobId}/confirm`, {});
 }
 
