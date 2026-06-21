@@ -1051,14 +1051,33 @@ async def _piped_ffmpeg_to_dovi(
     dovi_proc = await asyncio.create_subprocess_exec(
         dovi_bin,
         *dovi_args,
-        stdin=ffmpeg_proc.stdout,
+        stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.PIPE,
     )
-    # Let the pipe flow: close our reference so dovi_tool sees EOF when FFmpeg finishes.
-    ffmpeg_proc.stdout.close()  # type: ignore[union-attr]
+    assert dovi_proc.stdin is not None
 
-    _, dovi_stderr = await asyncio.wait_for(dovi_proc.communicate(), timeout=timeout)
+    # asyncio subprocess streams aren't real file descriptors, so FFmpeg's
+    # stdout can't be handed to dovi_tool's stdin= directly (that's what
+    # crashed: Popen calls .fileno() on it). Pump bytes through ourselves.
+    async def _pump() -> None:
+        try:
+            while True:
+                chunk = await ffmpeg_proc.stdout.read(1 << 20)  # type: ignore[union-attr]
+                if not chunk:
+                    break
+                try:
+                    dovi_proc.stdin.write(chunk)  # type: ignore[union-attr]
+                    await dovi_proc.stdin.drain()  # type: ignore[union-attr]
+                except (BrokenPipeError, ConnectionResetError):
+                    break
+        finally:
+            with contextlib.suppress(Exception):
+                dovi_proc.stdin.close()  # type: ignore[union-attr]
+
+    _, (_, dovi_stderr) = await asyncio.wait_for(
+        asyncio.gather(_pump(), dovi_proc.communicate()), timeout=timeout
+    )
     await ffmpeg_proc.wait()
 
     if ffmpeg_proc.returncode != 0:

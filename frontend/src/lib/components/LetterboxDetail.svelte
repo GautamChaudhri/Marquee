@@ -22,6 +22,7 @@
 		getMediaJob,
 		listReencodeArtifacts,
 		replaceOriginal,
+		restoreOriginal,
 		deleteArtifact
 	} from '$lib/api/letterbox';
 	import { subscribe } from '$lib/sse';
@@ -118,7 +119,8 @@
 		movieId,
 		onChanged,
 		onAnalyzeAll,
-		analyzing = false
+		analyzing = false,
+		onEncodeState
 	}: {
 		movieId: number | null;
 		onChanged: () => void;
@@ -169,7 +171,6 @@
 		detecting = false;
 		detectJobId = null;
 		method = 'quick';
-		showAdvanced = false;
 		settingsMode = 'simple';
 		selectedProfile = 'balanced';
 		plan = null;
@@ -220,7 +221,7 @@
 		if (s.startsWith('prefilter')) return 'candidate';
 		if (s === 'candidate') return 'detected';
 		if (s === 'tagged') return detail?.reviewed ? 'processed' : 'preview';
-		if (s === 'reencoded') return 'processed';
+		if (s === 'reencoded') return 'reencoded';
 		if (s === 'not_letterboxed' || s === 'variable_unsafe' || s === 'skipped') return 'clean';
 		return 'other';
 	});
@@ -254,7 +255,8 @@
 				detected: 'var(--info)',
 				preview: 'var(--dovi)',
 				clean: 'var(--bad)',
-				processed: 'var(--good)'
+				processed: 'var(--good)',
+				reencoded: 'var(--good)'
 			} as Record<string, string>
 		)[stage] ?? 'var(--muted)'
 	);
@@ -400,7 +402,6 @@
 	// ── Permanent re-encode flow ────────────────────────────────────────────────
 	type Method = 'quick' | 'permanent';
 	let method = $state<Method>('quick');
-	let showAdvanced = $state(false);
 	let settingsMode = $state<'simple' | 'advanced'>('simple');
 	let selectedProfile = $state<QualityProfile>('balanced');
 
@@ -619,7 +620,10 @@
 			detail.status = 'tagged';
 			detail.reviewed = false;
 			if (!detail.reencode) {
-				detail.reencode = { job: { status: 'queued' } } as any;
+				detail.reencode = {
+					job: { status: 'queued' } as unknown as MediaJobSnapshot,
+					artifact: null
+				};
 			} else if (detail.reencode.job) {
 				detail.reencode.job.status = 'queued';
 			}
@@ -717,6 +721,75 @@
 		<div class="empty">Loading…</div>
 	{:else if loadError || !detail}
 		<div class="empty err">{loadError ?? 'No detail available.'}</div>
+	{:else if stage === 'reencoded'}
+		<!-- ── Re-encode complete: no preview to show, show the actual result ── -->
+		<div class="grid">
+			<div class="meta">
+				<div class="badge" style="--c:{toneVar(meta?.tone ?? 'muted')}; margin-bottom:10px;">
+					<StatusDot tone={meta?.tone ?? 'muted'} size={7} />
+					{meta?.label ?? detail.status}
+				</div>
+				<h3>{detail.title ?? `Movie ${detail.movie_id}`}</h3>
+				<div class="year">
+					{detail.year ?? '—'}{#if detail.source_height} · {detail.source_height}p{/if}
+				</div>
+			</div>
+			<div class="actions">
+				<div class="alabel">Re-encode complete</div>
+				{#if detail.reencode?.artifact}
+					{@const a = detail.reencode.artifact}
+					<div class="applied-card">
+						<dl class="enc-summary">
+							<dt>Encoder</dt>
+							<dd class="mono">{prettyEncoder(a.encoder ?? '')} · {a.codec ?? '—'}</dd>
+							<dt>Crop T / B</dt>
+							<dd class="mono">{a.crop_top ?? 0} / {a.crop_bottom ?? 0} px</dd>
+							<dt>Size</dt>
+							<dd class="mono">
+								{fmtBytes(a.candidate_size_bytes)}
+								<span class="crop-note">
+									(was {fmtBytes(a.original_size_bytes)}{#if a.original_size_bytes && a.candidate_size_bytes}
+										 · {Math.round((1 - a.candidate_size_bytes / a.original_size_bytes) * 100)}% smaller{/if})
+								</span>
+							</dd>
+							{#if a.hdr_status}
+								<dt>HDR</dt>
+								<dd class="mono">{a.hdr_status}</dd>
+							{/if}
+							{#if a.dovi_status}
+								<dt>Dolby Vision</dt>
+								<dd class="mono">{a.dovi_status}</dd>
+							{/if}
+							{#if a.detail?.execution?.acceleration}
+								<dt>Pipeline</dt>
+								<dd class="mono">
+									{a.detail.execution.acceleration.enabled
+										? 'NVIDIA NVDEC → GPU crop → NVENC'
+										: `CPU decode/crop${a.detail.execution.acceleration.reason ? ` · ${a.detail.execution.acceleration.reason}` : ''}`}
+								</dd>
+							{/if}
+							{#if a.updated_at}
+								<dt>Completed</dt>
+								<dd class="mono">{new Date(a.updated_at).toLocaleString()}</dd>
+							{/if}
+						</dl>
+					</div>
+					<button
+						class="btn-sec"
+						disabled={busy}
+						onclick={() => run(() => restoreOriginal(fetch, a.id), 'Original restored')}
+					>
+						Restore original →
+					</button>
+					<div class="note good">
+						The original is preserved under <span class="mono">.marquee/backups</span> — restoring
+						swaps it back into place.
+					</div>
+				{:else}
+					<div class="note">No re-encode record found for this file.</div>
+				{/if}
+			</div>
+		</div>
 	{:else if stage === 'detected' || stage === 'preview' || stage === 'processed'}
 		<!-- ── 2-row grid: before row + after row, actions span both ── -->
 		<div class="grid-det">
