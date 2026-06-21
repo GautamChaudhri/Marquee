@@ -662,7 +662,7 @@
 			</div>
 
 			<!-- Row 1, Col 2: before image -->
-			<div class="frame-cell">
+			<div class="frame-cell before">
 				{#if stage === 'processed'}
 					<div class="frame unanalyzed"><span class="ph">Previews cleared after confirmation</span></div>
 				{:else if beforeUrl}
@@ -672,7 +672,7 @@
 				{/if}
 			</div>
 
-			<!-- Col 3, spans both rows: actions -->
+			<!-- Row 3, spans both columns: actions -->
 			<div class="actions det-actions">
 				<div class="alabel">Actions</div>
 				{#if stage === 'detected'}
@@ -1055,7 +1055,7 @@
 			</div>
 
 			<!-- Row 2, Col 2: after image — defines the row's height -->
-			<div class="frame-cell">
+			<div class="frame-cell after">
 				{#if stage === 'processed'}
 					<div class="frame unanalyzed"><span class="ph">Previews cleared after confirmation</span></div>
 				{:else if afterUrl}
@@ -1194,19 +1194,35 @@
 		flex-direction: column;
 		gap: 16px;
 	}
-	/* Vertical inspector layout for detected / preview / processed.
-	   DOM order is meta-top → before image → meta-bot → after image; actions are
-	   pushed last so the action stack sits at the bottom of the pane. */
+	/* Two-row grid for detected / preview / processed: meta sits to the left of
+	   its image, shrinking the previews instead of stacking everything full-width.
+	   Actions span both columns in a third row at the bottom. */
 	.grid-det {
-		display: flex;
-		flex-direction: column;
-		gap: 16px;
+		display: grid;
+		grid-template-columns: 200px 1fr;
+		gap: 14px 20px;
+	}
+	.meta-top {
+		grid-column: 1;
+		grid-row: 1;
 	}
 	.frame-cell {
+		grid-column: 2;
 		min-width: 0;
 	}
+	.frame-cell.before {
+		grid-row: 1;
+	}
+	.meta-bot {
+		grid-column: 1;
+		grid-row: 2;
+	}
+	.frame-cell.after {
+		grid-row: 2;
+	}
 	.det-actions {
-		order: 9;
+		grid-column: 1 / -1;
+		grid-row: 3;
 	}
 
 	/* meta shared */
