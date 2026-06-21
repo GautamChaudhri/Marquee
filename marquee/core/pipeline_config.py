@@ -216,7 +216,7 @@ class PipelineSettings(BaseSettings):
     # from spawning enough GPU contexts to strand VRAM on 8GB cards.
     OCR_DEVICE: str = "auto"
     # 0 = auto-size from the hardware profile (cpu_count based, capped).
-    OCR_WORKERS: int = 0
+    OCR_WORKERS: int = 8
     # Run the extra top-strip and 2x-upscaled bottom-strip OCR passes.
     # Disable on very weak CPUs (e.g. Intel N150) to cut OCR time ~60% at the
     # cost of occasionally missing faint credit-block text.

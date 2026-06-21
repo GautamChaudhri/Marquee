@@ -275,19 +275,11 @@ def effective_clip_batch_size() -> int:
 
 
 def effective_ocr_workers() -> int:
-    """OCR_WORKERS from config, or the hardware tier default when 0.
-
-    Explicit GPU OCR is the only mode allowed to bypass the CUDA-tier cap.
-    This keeps stale .env values such as OCR_WORKERS=10 from spawning ten
-    Paddle GPU contexts after the safe OCR_DEVICE default has moved to CPU.
-    """
+    """OCR_WORKERS from config, or the hardware tier default when 0."""
     configured = pipeline_settings.OCR_WORKERS
-    profile = detect_hardware()
     if configured > 0:
-        if profile.tier == "cuda" and pipeline_settings.OCR_DEVICE != "gpu":
-            return min(configured, profile.ocr_workers)
-        return configured
-    return profile.ocr_workers
+        return min(configured, 16)  # sane upper bound to guard against typos
+    return detect_hardware().ocr_workers
 
 
 def effective_ocr_omp_threads(workers: int) -> int:

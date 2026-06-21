@@ -85,14 +85,14 @@ def _resolve_ocr_device(*, paddle_cuda_available: bool) -> str:
     return "gpu" if paddle_cuda_available else "cpu"
 
 
-def paddle_cuda_available() -> bool:
-    if "paddle" not in sys.modules:
+def paddle_cuda_available(*, allow_import: bool = False) -> bool:
+    if not allow_import and "paddle" not in sys.modules:
         return False
     try:
         import paddle
 
         return bool(paddle.device.is_compiled_with_cuda())
-    except Exception:  # noqa: BLE001 - status/debug path must stay lightweight
+    except Exception:
         return False
 
 
@@ -150,7 +150,7 @@ def _load_ocr() -> object:
     # model is ~15× slower in dynamic mode on CPU with no meaningful accuracy improvement
     # for the title-detection task. On GPU the difference is smaller but mobile is still
     # the better choice for throughput across many workers.
-    device = _resolve_ocr_device(paddle_cuda_available=paddle_cuda_available())
+    device = _resolve_ocr_device(paddle_cuda_available=paddle_cuda_available(allow_import=True))
     logger.info("Loading PaddleOCR on device=%s", device)
     return PaddleOCR(
         use_textline_orientation=True,
