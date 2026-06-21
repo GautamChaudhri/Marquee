@@ -17,6 +17,8 @@ _DATA_FEEDBACK_DIR = _DATA_DIR / "feedback"
 _DATA_TRAINING_DIR = _DATA_DIR / "training"
 _LEGACY_EXPERIMENTS_DIR = _PROJECT_ROOT / "experiments"
 
+_TMDB_SIZES = {"w92", "w154", "w185", "w342", "w500", "w780", "original"}
+
 
 class PipelineSettings(BaseSettings):
     """All tunable knobs for the GATE-then-RANK poster pipeline."""
@@ -211,6 +213,12 @@ class PipelineSettings(BaseSettings):
     DEDUP_PHASH_THRESHOLD: int = 6
     DEDUP_MIN_POSTER_WIDTH: int = 500
 
+    # TMDB poster size for initial pipeline fetch. "original" downloads
+    # uncapped resolution (1-10 MB per poster); smaller sizes save bandwidth
+    # at the cost of slightly degraded OCR and face-detection accuracy.
+    # "w500" (500 px wide, ~50-200 KB) is the default sweet spot.
+    TMDB_POSTER_SIZE: str = "w500"
+
     # "auto" keeps the intended GPU-first OCR path: PaddleOCR uses GPU when
     # Paddle CUDA is available, otherwise CPU. Worker caps below keep that
     # from spawning enough GPU contexts to strand VRAM on 8GB cards.
@@ -263,6 +271,17 @@ class PipelineSettings(BaseSettings):
     OCR_ACCEPT_NO_TEXT: bool = True
     # Try a contrast-enhanced image pass before concluding no_text.
     OCR_ENHANCE_RETRY: bool = True
+
+    # ── Text-gate mode presets (design 18) ───────────────────────────
+    # "title_only" = current strict behaviour (require title, reject residual).
+    # "textless"   = accept only textless posters (reject title + residual).
+    # "custom"     = per-category allow/deny toggles below.
+    OCR_TEXT_MODE: str = "title_only"
+    OCR_ALLOW_TITLE: bool = True
+    OCR_ALLOW_DIRECTOR: bool = False
+    OCR_ALLOW_STUDIO: bool = False
+    OCR_ALLOW_RATING: bool = False
+    OCR_ALLOW_TAGLINE: bool = False
 
     FACE_CONFIDENCE_THRESHOLD: float = 0.5
     FACE_NMS_THRESHOLD: float = 0.4
@@ -319,6 +338,14 @@ class PipelineSettings(BaseSettings):
             raise ValueError("OCR_MAX_RESIDUAL_AREA_FRACTION must be in [0, 1]")
         if self.OCR_DEVICE not in ("auto", "cpu", "gpu"):
             raise ValueError("OCR_DEVICE must be 'auto', 'cpu', or 'gpu'")
+        if self.TMDB_POSTER_SIZE not in _TMDB_SIZES:
+            raise ValueError(
+                f"TMDB_POSTER_SIZE must be one of {sorted(_TMDB_SIZES)}"
+            )
+        if self.OCR_TEXT_MODE not in ("title_only", "textless", "custom"):
+            raise ValueError(
+                "OCR_TEXT_MODE must be 'title_only', 'textless', or 'custom'"
+            )
         if self.DINO_ENABLED not in ("auto", "on", "off"):
             raise ValueError("DINO_ENABLED must be 'auto', 'on', or 'off'")
         if self.SCORER not in ("auto", "weighted", "learned"):

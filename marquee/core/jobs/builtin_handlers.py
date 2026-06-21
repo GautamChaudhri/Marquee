@@ -15,7 +15,7 @@ from marquee.config import settings
 from marquee.core.jobs import job_manager
 from marquee.core.jobs.handlers import register
 from marquee.database import _get_session_factory
-from marquee.models import Job, Movie, PipelineRun
+from marquee.models import ArtworkEvent, Job, Movie, PipelineRun
 
 logger = logging.getLogger(__name__)
 
@@ -381,6 +381,92 @@ async def pipeline_cache_clear(job: Job) -> dict[str, Any]:
         include_embeddings=include_embeddings,
         include_archives=include_archives,
     )
+
+
+@register("poster_deploy_reset")
+async def poster_deploy_reset(job: Job) -> dict[str, Any]:
+    """Delete every deployed poster and reset movies to missing.
+
+    Walks every ``Movie`` with a non-NULL ``poster_path``, validates the
+    folder via ``safe_translate_and_validate``, deletes the poster file
+    (confinement check: the file must reside in the validated folder), and
+    resets all ``poster_*`` columns to the missing state.  Cache copies
+    under ``data/cache/posters/`` are KEPT as fallback restore sources.
+
+    Idempotent — a second run finds zero deploy rows and returns reset=0.
+    """
+    import json as _json
+
+    from marquee.core.path_utils import safe_translate_and_validate
+    from marquee.core.poster_service import cache_paths
+
+    factory = _get_session_factory()
+    async with factory() as db:
+        rows = (
+            (await db.execute(
+                select(Movie).where(Movie.poster_path.is_not(None))
+            ))
+            .scalars()
+            .all()
+        )
+        if not rows:
+            return {"reset": 0, "failed": 0, "errors": []}
+
+        reset = 0
+        failed = 0
+        errors: list[dict] = []
+        for movie in rows:
+            try:
+                poster_file = Path(movie.poster_path)
+                # Confinement: validate the parent folder and confirm the
+                # stored path lives inside it.
+                folder = safe_translate_and_validate(
+                    movie.folder_path, source="radarr"
+                )
+                if poster_file.parent.resolve() != folder.resolve():
+                    raise RuntimeError(
+                        f"Poster parent {poster_file.parent} != folder {folder}"
+                    )
+                poster_file.unlink(missing_ok=True)
+
+                # Reset all poster_* columns to missing state.
+                movie.poster_path = None
+                movie.poster_source = None
+                movie.poster_source_url = None
+                movie.poster_ai_selected = False
+                movie.poster_embedding = None
+                movie.poster_sha256 = None
+                movie.poster_phash = None
+                movie.poster_user_approved = False
+                movie.poster_deployed_filename = None
+                movie.poster_deployed_at = None
+
+                detail = _json.dumps({
+                    "deleted_path": str(poster_file),
+                    "cache_kept": str(cache_paths(movie.tmdb_id)[0])
+                    if movie.tmdb_id else None,
+                })
+                db.add(
+                    ArtworkEvent(
+                        movie_id=movie.id,
+                        action="deploy_reset",
+                        source="maintenance",
+                        detail=detail,
+                    )
+                )
+                reset += 1
+            except Exception as exc:
+                logger.warning(
+                    "DEPLOY RESET | failed for movie %d (%s): %s",
+                    movie.id, movie.title, exc,
+                )
+                failed += 1
+                errors.append({"movie_id": movie.id, "title": movie.title, "error": str(exc)})
+
+        await db.commit()
+
+    logger.info("DEPLOY RESET | reset=%d | failed=%d", reset, failed)
+    return {"reset": reset, "failed": failed, "errors": errors}
 
 
 async def _gather_library_posters() -> tuple[Path, Any, int]:

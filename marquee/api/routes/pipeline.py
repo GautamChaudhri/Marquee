@@ -357,6 +357,30 @@ async def clear_pipeline_cache(
     return job_summary(job)
 
 
+@router.post("/posters/reset", status_code=202)
+async def reset_deployed_posters(
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    """Delete every deployed poster and reset movies to missing.
+
+    Enqueues a ``poster_deploy_reset`` durable job that walks all movies
+    with a deployed poster, deletes the poster file from the media folder
+    (keeping the ``data/cache/posters`` copies as restore fallbacks), and
+    resets all ``poster_*`` columns so the movies reappear in the Run tab.
+    """
+    job = await job_manager.create(
+        db,
+        job_type="poster_deploy_reset",
+        payload={},
+        priority=30,
+        resources={"maintenance_exclusive": 1, "media_write": 1},
+        subject_type="pipeline_posters",
+        subject_id="deploy_reset",
+        max_attempts=1,
+    )
+    return job_summary(job)
+
+
 # ---------------------------------------------------------------------------
 # Aggregate metrics (cheap — from PipelineRun rows, no archive reads)
 # ---------------------------------------------------------------------------
