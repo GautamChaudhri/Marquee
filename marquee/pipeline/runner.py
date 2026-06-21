@@ -16,7 +16,7 @@ Two changes vs the original inline version:
 
 Stage order (cheapest signal first — see design 04 §2):
 
-  FETCH -> SHA-256 -> GATE:resolution (TMDB metadata)
+  FETCH (metadata gate pre-download) -> SHA-256 -> GATE:resolution (safety net)
         -> STYLE FEATURES (batched CLIP: knn_sim, aesthetic, metadata scalars)
         -> GATE:style (aesthetic floor + rescue, off-style floor)
         -> OCR (text gate + title/residual geometry, style survivors only)
@@ -358,16 +358,15 @@ class FetchOutcome:
     counts: dict[str, int]
 
 
-async def fetch_and_download(
-    *,
+async def fetch_candidates(
     tmdb: TMDBClient,
     movie: Movie,
-    originals_dir: Path,
-    timings: dict[str, float],
-    progress: ProgressCallback | None = None,
-) -> FetchOutcome:
-    """Stage 1: fetch candidate metadata and download every poster at w500."""
-    stage_started = _stage_start("fetch", progress=progress)
+) -> tuple[list[PosterCandidate], str | None]:
+    """Fetch TMDB poster metadata for a movie — no downloads.
+
+    Returns ``(candidates, primary_name)``.  The caller is responsible for
+    applying metadata gates and downloading the survivors.
+    """
     candidates = await tmdb.get_movie_images(movie.tmdb_id)
     try:
         primary_name = await tmdb.get_movie_primary_poster(movie.tmdb_id)
@@ -379,7 +378,25 @@ async def fetch_and_download(
             exc,
         )
     logger.info("FETCH | primary_poster=%s", primary_name)
+    return candidates, primary_name
 
+
+async def fetch_and_download(
+    *,
+    tmdb: TMDBClient,
+    movie: Movie,
+    originals_dir: Path,
+    timings: dict[str, float],
+    progress: ProgressCallback | None = None,
+) -> FetchOutcome:
+    """Stage 1: fetch candidate metadata, gate by resolution (no download),
+    then download every survivor at the configured size."""
+    stage_started = _stage_start("fetch", progress=progress)
+    candidates, primary_name = await fetch_candidates(tmdb, movie)
+
+    # Build candidate_map, records, and resolution_by_name for ALL
+    # candidates (gated candidates stay in the map so downstream stages
+    # and run archives see the full candidate set).
     candidate_map: dict[str, PosterCandidate] = {}
     records: dict[str, CandidateScore] = {}
     for candidate in candidates:
@@ -395,6 +412,28 @@ async def fetch_and_download(
         for filename, candidate in candidate_map.items()
     }
 
+    # ── Metadata gates (resolution floor + future metadata-only gates) ───
+    # Run BEFORE any download so bandwidth/disk-rejected posters are never
+    # fetched from the CDN (design 18 §7).
+    gate = PosterGate()
+    downloadable: list[PosterCandidate] = []
+    metadata_gated = 0
+    for candidate in candidates:
+        decision = gate.evaluate_metadata(original_width=candidate.width)
+        if decision.passed:
+            downloadable.append(candidate)
+        else:
+            filename = _candidate_filename(candidate)
+            records[filename].rejection_reason = "resolution_floor"
+            records[filename].gate_decision = "gated"
+            metadata_gated += 1
+    if metadata_gated:
+        logger.info(
+            "FETCH | metadata_gated=%d (of %d total candidates)",
+            metadata_gated,
+            len(candidates),
+        )
+
     downloaded = skipped = download_errors = 0
     async with httpx.AsyncClient(timeout=60.0) as client:
         results = await asyncio.gather(
@@ -404,10 +443,10 @@ async def fetch_and_download(
                     originals_dir / _candidate_filename(candidate),
                     client,
                 )
-                for candidate in candidates
+                for candidate in downloadable
             ]
         )
-    for candidate, (status, error) in zip(candidates, results, strict=True):
+    for candidate, (status, error) in zip(downloadable, results, strict=True):
         filename = _candidate_filename(candidate)
         if status == "downloaded":
             downloaded += 1
@@ -439,6 +478,7 @@ async def fetch_and_download(
             "downloaded": downloaded,
             "skipped": skipped,
             "errors": download_errors,
+            "metadata_gated": metadata_gated,
         },
     )
 
@@ -503,6 +543,8 @@ def run_sync_stages(
     _stage_done("sha256", stage_started, timings, survivors=sha_result.final, progress=progress)
 
     # Gate 1: resolution floor — pure TMDB metadata, before any inference.
+    # As of design 18 §7, metadata gates run pre-download in fetch_and_download,
+    # so this loop is a safety net — it should never fire under normal operation.
     stage_started = _stage_start(
         "gate-resolution", total=sha_result.final, progress=progress
     )

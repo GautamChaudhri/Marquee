@@ -36,10 +36,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
+import httpx
 from sqlalchemy import select
 
 from marquee.config import settings
 from marquee.core.pipeline_config import pipeline_settings
+from marquee.core.poster_sources.tmdb import PosterCandidate
 from marquee.database import _get_session_factory
 from marquee.models import Movie, PipelineRun
 from marquee.pipeline.deduper import PosterDeduper
@@ -48,14 +50,17 @@ from marquee.pipeline.gate import PosterGate
 from marquee.pipeline.ocr_filter import PosterTextFilter, apply_no_text_fallback
 from marquee.pipeline.output import place_gated
 from marquee.pipeline.runner import (
+    _DOWNLOAD_SIZE,
     FetchOutcome,
     ProgressEvent,
+    _candidate_filename,
     _clear_generated_outputs,
     _copy_with_reason,
     _log_dedup_removal,
+    _root_images,
     _sanitise_filename,
     build_run_payload,
-    fetch_and_download,
+    fetch_candidates,
     place_outputs,
     write_run_json,
 )
@@ -66,6 +71,8 @@ logger = logging.getLogger(__name__)
 
 ProgressCallback = Callable[[ProgressEvent], None]
 ShouldCancel = Callable[[], bool]
+
+_BATCH_DOWNLOAD_SEMAPHORE = asyncio.Semaphore(15)
 
 
 # ---------------------------------------------------------------------------
@@ -96,6 +103,8 @@ class _BatchMovie:
     passed: list[CandidateScore] = field(default_factory=list)
     gated: list[CandidateScore] = field(default_factory=list)
     ranked: list[CandidateScore] = field(default_factory=list)
+    # Transient — candidates that passed metadata gates, pending Phase B download.
+    _downloadable: list[PosterCandidate] = field(default_factory=list)
 
     @property
     def records(self) -> dict[str, CandidateScore]:
@@ -155,27 +164,141 @@ async def run_batch(
     await _persist_running(contexts, job_id)
     logger.info("BATCH START | job=%s | movies=%d", job_id, total)
 
-    # ── FETCH (async) — download every movie's candidates ────────────────
+    # ── Phase A: fetch TMDB metadata for ALL movies concurrently ────────
+    # (design 18 §8 — metadata calls are fast and independent)
+    async def _fetch_meta(ctx: _BatchMovie) -> None:
+        if ctx.tmdb_id is None:
+            raise RuntimeError("movie has no TMDB ID — run sync first")
+        movie = Movie(id=ctx.movie_id, title=ctx.title, tmdb_id=ctx.tmdb_id)
+        candidates, primary_name = await fetch_candidates(tmdb, movie)
+
+        # Build candidate_map, records, resolution_by_name for ALL candidates.
+        candidate_map: dict[str, PosterCandidate] = {}
+        records: dict[str, CandidateScore] = {}
+        for candidate in candidates:
+            filename = _candidate_filename(candidate)
+            candidate_map[filename] = candidate
+            records[filename] = CandidateScore(
+                image_path=ctx.originals_dir / filename,
+                orig_filename=filename,
+                stage_reached="fetch",
+            )
+        resolution_by_name = {
+            filename: (candidate.width, candidate.height)
+            for filename, candidate in candidate_map.items()
+        }
+
+        # Metadata gates (resolution floor) — pre-download (design 18 §7).
+        gate = PosterGate()
+        downloadable: list[PosterCandidate] = []
+        metadata_gated = 0
+        for candidate in candidates:
+            decision = gate.evaluate_metadata(original_width=candidate.width)
+            if decision.passed:
+                downloadable.append(candidate)
+            else:
+                filename = _candidate_filename(candidate)
+                records[filename].rejection_reason = "resolution_floor"
+                records[filename].gate_decision = "gated"
+                metadata_gated += 1
+        if metadata_gated:
+            logger.info(
+                "BATCH META | movie=%s | metadata_gated=%d (of %d)",
+                ctx.title,
+                metadata_gated,
+                len(candidates),
+            )
+
+        ctx.fetch = FetchOutcome(
+            candidate_map=candidate_map,
+            records=records,
+            resolution_by_name=resolution_by_name,
+            all_files=[],  # filled after Phase B downloads
+            primary_name=primary_name,
+            counts={
+                "posters_found": len(candidates),
+                "downloaded": 0,
+                "skipped": 0,
+                "errors": 0,
+                "metadata_gated": metadata_gated,
+            },
+        )
+        ctx._downloadable = downloadable
+
+    fetch_tasks = []
     for ctx in contexts:
         if should_cancel():
             ctx.status = "cancelled"
             continue
         _emit(progress, ctx, "fetch", "start")
-        try:
-            if ctx.tmdb_id is None:
-                raise RuntimeError("movie has no TMDB ID — run sync first")
-            ctx.fetch = await fetch_and_download(
-                tmdb=tmdb,
-                movie=Movie(id=ctx.movie_id, title=ctx.title, tmdb_id=ctx.tmdb_id),
-                originals_dir=ctx.originals_dir,
-                timings=ctx.timings,
-                progress=None,  # per-poster download noise stays out of the job stream
-            )
-            ctx.counts.update(ctx.fetch.counts)
-        except Exception as exc:  # noqa: BLE001 — recorded per movie, batch continues
+        fetch_tasks.append(_fetch_meta(ctx))
+
+    fetch_results = await asyncio.gather(*fetch_tasks, return_exceptions=True)
+    fetchable = [c for c in contexts if c.status != "cancelled"]
+    for ctx, result in zip(fetchable, fetch_results, strict=True):
+        if isinstance(result, Exception):
             ctx.status = "failed"
-            ctx.error = str(exc)
-            logger.warning("BATCH FETCH FAILED | movie=%s | %s", ctx.title, exc)
+            ctx.error = str(result)
+            logger.warning("BATCH FETCH FAILED | movie=%s | %s", ctx.title, result)
+        if ctx.fetch is not None:
+            ctx.counts.update(ctx.fetch.counts)
+
+    # ── Phase B: cross-movie parallel download pool ─────────────────────
+    # (design 18 §8 — all surviving posters across all movies interleave
+    # under one semaphore so downloads from multiple movies overlap)
+    download_items: list[tuple[_BatchMovie, PosterCandidate]] = []
+    for ctx in contexts:
+        if ctx.fetch is None:
+            continue
+        for candidate in ctx._downloadable:
+            download_items.append((ctx, candidate))
+
+    if download_items:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+
+            async def _dl(ctx: _BatchMovie, candidate: PosterCandidate) -> None:
+                dest = ctx.originals_dir / _candidate_filename(candidate)
+                if dest.exists():
+                    ctx.fetch.counts["skipped"] += 1
+                    return
+                async with _BATCH_DOWNLOAD_SEMAPHORE:
+                    try:
+                        response = await client.get(
+                            candidate.url(size=_DOWNLOAD_SIZE)
+                        )
+                        response.raise_for_status()
+                        dest.write_bytes(response.content)
+                        ctx.fetch.counts["downloaded"] += 1
+                    except Exception as exc:
+                        filename = _candidate_filename(candidate)
+                        ctx.fetch.counts["errors"] += 1
+                        ctx.fetch.records[filename].rejection_reason = (
+                            f"download_error: {exc}"
+                        )
+                        logger.error(
+                            "BATCH DOWNLOAD ERROR | movie=%s | file=%s | %s",
+                            ctx.title,
+                            filename,
+                            exc,
+                        )
+
+            await asyncio.gather(*[_dl(ctx, c) for ctx, c in download_items])
+
+        # Build all_files per movie from what's actually on disk.
+        for ctx in contexts:
+            if ctx.fetch is None:
+                continue
+            cached = {path.name: path for path in _root_images(ctx.originals_dir)}
+            ctx.fetch.all_files = sorted(
+                cached[fn] for fn in ctx.fetch.candidate_map if fn in cached
+            )
+            if not ctx.fetch.all_files:
+                ctx.status = "failed"
+                ctx.error = "No poster files were downloaded or found in the cache"
+
+    for ctx in contexts:
+        if ctx.status == "cancelled":
+            continue
         _emit(progress, ctx, "fetch", "end", survivors=len(ctx.fetch.all_files) if ctx.fetch else 0)
 
     live = [c for c in contexts if c.fetch is not None]
@@ -286,6 +409,8 @@ def _movie_prelude(
     _emit(progress, ctx, "sha256", "end", survivors=sha.final)
 
     # Resolution gate (TMDB metadata).
+    # As of design 18 §7, metadata gates run pre-download in Phase A,
+    # so this loop is a safety net — it should never fire under normal operation.
     resolution_survivors: list[Path] = []
     for path in sorted(sha.survivors):
         record = records[path.name]
