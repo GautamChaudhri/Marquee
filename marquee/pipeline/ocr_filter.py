@@ -32,6 +32,14 @@ FORMAT_BLOCKLIST: frozenset[str] = frozenset(
         "cinerama", "panavision", "metrocolor",
     }
 )
+STUDIO_KEYWORDS: frozenset[str] = frozenset(
+    {
+        "paramount", "warner", "bros", "disney", "universal", "sony",
+        "columbia", "lionsgate", "mgm", "netflix", "a24", "focus",
+        "features", "dreamworks", "pixar", "searchlight", "miramax",
+        "orion", "touchstone", "blumhouse", "legendary",
+    }
+)
 TOP_STRIP_FRACTION = 0.18
 _DIGIT_WORDS = {
     "1": "one", "2": "two", "3": "three", "4": "four", "5": "five",
@@ -168,6 +176,72 @@ def _polygon_area(bbox: BoundingBox) -> float:
     x = points[:, 0]
     y = points[:, 1]
     return float(abs(np.dot(x, np.roll(y, 1)) - np.dot(y, np.roll(x, 1))) / 2)
+
+
+_RATING_PATTERN = re.compile(
+    r"\b(rated\s+)?(g|pg|pg-13|nc-17|r|nr|unrated|not\s*rated)\b",
+    re.IGNORECASE,
+)
+
+
+def classify_text_box(
+    box: _DetectedBox,
+    *,
+    image_w: int,
+    image_h: int,
+    title_box: _DetectedBox | None,
+    title_tokens: set[str],
+    director_tokens: set[str],
+) -> str:
+    """Classify a detected text box into a semantic category.
+
+    Returns one of: ``title``, ``director``, ``rating``, ``studio``,
+    ``tagline``, ``billing``, ``other``.
+
+    See design 18 §4 for the full classification spec.
+    """
+    text = _normalise(box.text)
+    words = set(text.split())
+    if not words:
+        return "other"
+
+    # Title: already matched via _matches_allowed against title_tokens.
+    if title_box is not None and box is title_box:
+        return "title"
+
+    # Director: regex match OR word match against director_tokens.
+    if re.search(r"directed\s+by", box.text, re.IGNORECASE):
+        return "director"
+    if director_tokens and _matches_allowed(box.text, director_tokens):
+        return "director"
+
+    # Rating: MPAA-ish certification marks.
+    if _RATING_PATTERN.search(text):
+        return "rating"
+
+    # Studio: any word in the known studio keyword set.
+    if words & STUDIO_KEYWORDS:
+        return "studio"
+
+    # Tagline heuristic: not any of the above, short-ish, roughly centered,
+    # upper/mid zone — promotional text.
+    y_center = sum(p[1] for p in box.bbox) / 4
+    y_center_frac = y_center / image_h
+    x_center = sum(p[0] for p in box.bbox) / 4
+    x_center_frac = x_center / image_w
+    word_count = len(words)
+    is_centered = 0.30 < x_center_frac < 0.70
+    is_upper_mid = 0.05 < y_center_frac < 0.65
+    is_short = word_count <= 8
+    if is_centered and is_upper_mid and is_short:
+        return "tagline"
+
+    # Billing: dense small bottom-zone text — only classify as billing
+    # when the box is unambiguously in the bottom region.
+    if y_center_frac > 0.85:
+        return "billing"
+
+    return "other"
 
 
 def _as_bbox(
@@ -566,23 +640,94 @@ def _process_image(
     # posters and is handled by the text_residual rank penalty. Only reject
     # when the poster is genuinely text-heavy — many significant boxes or a
     # large fraction of the image covered by non-title text.
+    #
+    # Mode-specific gate logic (design 18 §4):
+    #   title_only = current strict (require title, reject residual)
+    #   textless   = accept only textless (reject title + residual)
+    #   custom     = per-category allow/deny toggles
+    text_mode = pipeline_settings.OCR_TEXT_MODE
     significant_area_fraction = (
         sum(box.area for box in significant_residual) / image_area
         if image_area > 0
         else 0.0
     )
-    accepted = (
-        len(significant_residual) <= pipeline_settings.OCR_MAX_RESIDUAL_BOXES
-        and significant_area_fraction
-        <= pipeline_settings.OCR_MAX_RESIDUAL_AREA_FRACTION
-    )
-    reason = None if accepted else "text_heavy"
-    # Title-only target: text that never matches the title (logos, taglines
-    # read in isolation) does not make a titled poster.  Same fallback path
-    # as no_text — rescued by filter_batch only if nothing titled survives.
-    if accepted and title_box is None and pipeline_settings.OCR_REQUIRE_TITLE:
-        accepted = False
-        reason = "no_title"
+
+    if text_mode == "textless":
+        # Accept only if NO title AND no significant residual.
+        has_title = title_box is not None
+        has_residual = len(significant_residual) > 0
+        accepted = not has_title and not has_residual
+        reason = None if accepted else ("has_title" if has_title else "text_heavy")
+
+    elif text_mode == "custom":
+        # Classify each significant residual box against the allow toggles.
+        allow_map = {
+            "title": pipeline_settings.OCR_ALLOW_TITLE,
+            "director": pipeline_settings.OCR_ALLOW_DIRECTOR,
+            "studio": pipeline_settings.OCR_ALLOW_STUDIO,
+            "rating": pipeline_settings.OCR_ALLOW_RATING,
+            "tagline": pipeline_settings.OCR_ALLOW_TAGLINE,
+        }
+        denied_boxes: list[OCRTextBox] = []
+        for box in significant_residual:
+            # Reconstruct the _DetectedBox from the OCRTextBox fields for
+            # classification (OCRTextBox is derived from _DetectedBox).
+            source = _DetectedBox(
+                text=box.text,
+                confidence=box.confidence,
+                bbox=box.bbox,
+                geometry_valid=box.geometry_valid,
+            )
+            category = classify_text_box(
+                source,
+                image_w=image_width,
+                image_h=image_height,
+                title_box=title_box,
+                title_tokens=title_tokens,
+                director_tokens=director_tokens,
+            )
+            if not allow_map.get(category, False):
+                denied_boxes.append(box)
+
+        title_allowed = pipeline_settings.OCR_ALLOW_TITLE
+        denied_count = len(denied_boxes)
+        denied_area = sum(b.area for b in denied_boxes) / image_area if image_area > 0 else 0.0
+
+        accepted = (
+            denied_count <= pipeline_settings.OCR_MAX_RESIDUAL_BOXES
+            and denied_area <= pipeline_settings.OCR_MAX_RESIDUAL_AREA_FRACTION
+        )
+        reason = None if accepted else "text_heavy"
+        # Title gate: if title is denied, require that one is actually present.
+        if accepted and not title_allowed and title_box is not None:
+            accepted = False
+            reason = "has_title"
+        # Title requirement: if title is required but absent (and no title box).
+        if (
+            accepted
+            and title_allowed
+            and title_box is None
+            and pipeline_settings.OCR_REQUIRE_TITLE
+        ):
+            accepted = False
+            reason = "no_title"
+
+    else:
+        # title_only (default): unchanged — require title; reject significant
+        # residual above the count/area thresholds.
+        accepted = (
+            len(significant_residual) <= pipeline_settings.OCR_MAX_RESIDUAL_BOXES
+            and significant_area_fraction
+            <= pipeline_settings.OCR_MAX_RESIDUAL_AREA_FRACTION
+        )
+        reason = None if accepted else "text_heavy"
+        # Title-only target: text that never matches the title (logos, taglines
+        # read in isolation) does not make a titled poster.  Same fallback path
+        # as no_text — rescued by filter_batch only if nothing titled survives.
+        if accepted and title_box is None and pipeline_settings.OCR_REQUIRE_TITLE:
+            accepted = False
+            reason = "no_title"
+
     return OCRCandidateResult(
         image_path=path,
         accepted=accepted,

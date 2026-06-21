@@ -50,7 +50,6 @@ from marquee.pipeline.gate import PosterGate
 from marquee.pipeline.ocr_filter import PosterTextFilter, apply_no_text_fallback
 from marquee.pipeline.output import place_gated
 from marquee.pipeline.runner import (
-    _DOWNLOAD_SIZE,
     FetchOutcome,
     ProgressEvent,
     _candidate_filename,
@@ -264,7 +263,7 @@ async def run_batch(
                 async with _BATCH_DOWNLOAD_SEMAPHORE:
                     try:
                         response = await client.get(
-                            candidate.url(size=_DOWNLOAD_SIZE)
+                            candidate.url(size=pipeline_settings.TMDB_POSTER_SIZE)
                         )
                         response.raise_for_status()
                         dest.write_bytes(response.content)

@@ -56,7 +56,6 @@ logger = logging.getLogger(__name__)
 _RUNS_WORK_DATA = settings.runs_work_path
 _EXPERIMENTS_DATA = _RUNS_WORK_DATA
 _DOWNLOAD_SEMAPHORE = asyncio.Semaphore(5)
-_DOWNLOAD_SIZE = "w500"
 _IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff"}
 _GENERATED_DIR_NAMES = {
     # Current flat reject/output structure
@@ -335,7 +334,7 @@ async def _download_poster(
         return "skipped", None
     try:
         async with _DOWNLOAD_SEMAPHORE:
-            response = await client.get(poster.url(size=_DOWNLOAD_SIZE))
+            response = await client.get(poster.url(size=pipeline_settings.TMDB_POSTER_SIZE))
             response.raise_for_status()
             destination.write_bytes(response.content)
         return "downloaded", None

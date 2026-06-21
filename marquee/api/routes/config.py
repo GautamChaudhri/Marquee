@@ -24,6 +24,7 @@ from marquee.core.pipeline_config import (
     pipeline_settings,
     save_overrides,
 )
+from marquee.core.pipeline_config_meta import KNOB_GROUPS, KNOB_META
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +65,14 @@ def _serialize(value: Any) -> Any:
 async def get_pipeline_config():
     fields = PipelineSettings.model_fields
     current = pipeline_settings.model_dump()
+    # Merge per-field descriptions from the pydantic model.
+    meta = {}
+    for name, info in KNOB_META.items():
+        entry = dict(info)
+        field = fields.get(name)
+        if field and field.description:
+            entry["help"] = field.description
+        meta[name] = entry
     return {
         "values": {name: _serialize(current[name]) for name in fields},
         "defaults": {
@@ -71,6 +80,8 @@ async def get_pipeline_config():
         },
         "overrides": load_overrides(),
         "restart_required": sorted(RESTART_REQUIRED),
+        "groups": KNOB_GROUPS,
+        "meta": meta,
     }
 
 
