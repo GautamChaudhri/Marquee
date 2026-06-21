@@ -115,6 +115,11 @@
 		align-items: center;
 		gap: 10px;
 		width: 100%;
+		/* Never let the flex-column list shrink a row: with overflow:hidden a flex
+		   item's auto min-height collapses to 0, so a full list would squeeze the
+		   padding out of every card. flex:none keeps each row at its natural height
+		   and lets the list scroll instead. */
+		flex: none;
 		padding: 9px 14px;
 		border: none;
 		border-bottom: 1px solid var(--panel2);
