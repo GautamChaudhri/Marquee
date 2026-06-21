@@ -1,9 +1,10 @@
 <script lang="ts">
+	import { onDestroy } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { posterStatusMeta, letterboxMeta, toneVar } from '$lib/display';
 	import { ApiError } from '$lib/api/client';
-	import type { LetterboxDetail } from '$lib/api/types';
+	import type { LetterboxDetail, PipelineRunSummary, RunResults } from '$lib/api/types';
 	import {
 		getLetterboxState,
 		detectLetterbox,
@@ -11,8 +12,9 @@
 		ignoreLetterbox,
 		removeLetterbox
 	} from '$lib/api/letterbox';
-	import { triggerRun } from '$lib/api/pipeline';
-	import { subscribe } from '$lib/sse';
+	import { triggerRun, listMovieRuns, getRunResults } from '$lib/api/pipeline';
+	import { trackJob, type JobProgressDetail } from '$lib/jobs';
+	import RunProgress from '$lib/components/RunProgress.svelte';
 	import PosterThumb from '$lib/components/PosterThumb.svelte';
 	import HdrBadge from '$lib/components/HdrBadge.svelte';
 	import StatusDot from '$lib/components/StatusDot.svelte';
@@ -48,32 +50,42 @@
 
 	// ── Pipeline ─────────────────────────────────────────────────────────────
 	let pipeRunning = $state(false);
-	let pipeEvents = $state<string[]>([]);
-	let pipeDone = $state(false);
 	let pipeError = $state<string | null>(null);
 	let pipeRunId = $state<string | null>(null);
+	let pipeDetail = $state<JobProgressDetail>({});
+	let pipeStatus = $state('running');
+	let stopPipe: (() => void) | null = null;
+	let runs = $state<PipelineRunSummary[]>([]);
+	let latest = $state<RunResults | null>(null);
+	let posterLoaded = false;
 
 	async function startPipeline() {
 		if (!movie) return;
 		pipeRunning = true;
-		pipeEvents = [];
-		pipeDone = false;
 		pipeError = null;
 		pipeRunId = null;
+		pipeDetail = {};
+		pipeStatus = 'running';
 		try {
 			const ref = await triggerRun(fetch, movie.id);
 			pipeRunId = ref.run_id;
-			const unsub = subscribe(ref.events_url, ['message', 'done'], (type, raw) => {
-				if (type === 'done') {
-					pipeDone = true;
-					pipeRunning = false;
-					unsub();
-				} else {
-					const d = raw as Record<string, unknown>;
-					const msg = (d?.message ?? d?.stage ?? d?.status ?? JSON.stringify(d)) as string;
-					pipeEvents = [...pipeEvents, msg];
-				}
-			});
+			stopPipe?.();
+			stopPipe = trackJob(
+				fetch,
+				ref.run_id,
+				{
+					onProgress: ({ status, detail }) => {
+						pipeStatus = status;
+						pipeDetail = detail;
+					},
+					onDone: (j) => {
+						pipeRunning = false;
+						pipeStatus = j.status;
+						void loadRuns();
+					}
+				},
+				{ eventsUrl: ref.events_url }
+			);
 		} catch (e) {
 			if (e instanceof ApiError && e.status === 409) {
 				const detail = (e.body as { detail?: { message?: string; active_run_id?: string } })
@@ -86,6 +98,37 @@
 			pipeRunning = false;
 		}
 	}
+
+	async function loadRuns() {
+		if (!movie) return;
+		try {
+			const r = await listMovieRuns(fetch, movie.id);
+			runs = r.runs;
+			const done = r.runs.find((x) => x.status !== 'running');
+			if (done) await loadLatest(done.run_id);
+		} catch {
+			/* no history yet */
+		}
+	}
+	async function loadLatest(runId: string) {
+		try {
+			const res = await getRunResults(fetch, runId);
+			if ('ranked' in res) {
+				latest = res as RunResults;
+				if (!pipeRunId) pipeRunId = runId;
+			}
+		} catch {
+			/* ignore */
+		}
+	}
+
+	$effect(() => {
+		if (tab === 'poster' && !posterLoaded) {
+			posterLoaded = true;
+			loadRuns();
+		}
+	});
+	onDestroy(() => stopPipe?.());
 
 	// ── Letterbox ─────────────────────────────────────────────────────────────
 	let lbState = $state<LetterboxDetail | null | undefined>(undefined);
@@ -196,7 +239,8 @@
 			<div class="rail-meta">
 				<div class="movie-title">{movie.title}</div>
 				<div class="movie-sub">
-					{movie.year ?? '—'}{#if movie.genres?.length} · {movie.genres.slice(0, 2).join(', ')}{/if}
+					{movie.year ?? '—'}{#if movie.genres?.length}
+						· {movie.genres.slice(0, 2).join(', ')}{/if}
 				</div>
 			</div>
 
@@ -266,10 +310,7 @@
 					<div class="poster-status-row">
 						<div class="status-card">
 							<div class="sc-label">Current status</div>
-							<div
-								class="sc-val"
-								style="--c:{toneVar(posterStatusMeta[movie.poster_status].tone)}"
-							>
+							<div class="sc-val" style="--c:{toneVar(posterStatusMeta[movie.poster_status].tone)}">
 								<StatusDot tone={posterStatusMeta[movie.poster_status].tone} />
 								{posterStatusMeta[movie.poster_status].label}
 							</div>
@@ -289,38 +330,65 @@
 
 					{#if pipeError}
 						<div class="alert-box err">
-							{pipeError}{#if pipeRunId}<span class="mono small"> · run {pipeRunId.slice(0, 8)}</span
+							{pipeError}{#if pipeRunId}<span class="mono small">
+									· run {pipeRunId.slice(0, 8)}</span
 								>{/if}
 						</div>
 					{/if}
 
-					{#if pipeRunning || pipeDone || pipeEvents.length > 0}
-						<div class="run-log">
-							<div class="run-log-head">
-								{#if pipeRunning}
-									<span class="spin">⟳</span> Pipeline running
-								{:else if pipeDone}
-									✓ Run complete
-								{/if}
-								{#if pipeRunId}<span class="mono faint"> · {pipeRunId.slice(0, 8)}</span>{/if}
-							</div>
-							{#if pipeEvents.length > 0}
-								<ul class="event-list">
-									{#each pipeEvents.slice(-12) as ev, i (i)}
-										<li>{ev}</li>
-									{/each}
-								</ul>
+					{#if pipeRunning}
+						<RunProgress detail={pipeDetail} status={pipeStatus} title="Selecting poster" />
+					{/if}
+
+					{#if latest}
+						<a class="review-summary" href={`/pipeline/runs/${latest.run_id}`}>
+							{#if latest.auto_pick}
+								<div class="rs-poster">
+									<img src={latest.auto_pick.poster_url} alt="Auto-pick" />
+								</div>
 							{/if}
+							<div class="rs-body">
+								<div class="rs-title">Auto-pick ready</div>
+								<div class="rs-counts mono">
+									{latest.ranked.length} ranked · {latest.rejected_by_stage.reduce(
+										(a, g) => a + g.count,
+										0
+									)} rejected
+								</div>
+								<div class="rs-cta">Review candidates →</div>
+							</div>
+						</a>
+					{:else if !pipeRunning}
+						<div class="placeholder-card">
+							<div class="ph-title">Review candidates</div>
+							<div class="ph-body">
+								Run the pipeline to fetch and score poster candidates. Once complete, the ranked
+								results appear here for approval.
+							</div>
 						</div>
 					{/if}
 
-					<div class="placeholder-card">
-						<div class="ph-title">Review candidates</div>
-						<div class="ph-body">
-							Run the pipeline to fetch and score poster candidates. Once complete, the ranked
-							results will appear here for approval.
+					{#if runs.length > 0}
+						<div class="run-history">
+							<div class="rh-head">Recent runs</div>
+							{#each runs.slice(0, 6) as r (r.run_id)}
+								<a class="rh-row" href={`/pipeline/runs/${r.run_id}`}>
+									<StatusDot
+										tone={r.status === 'completed' || r.status === 'flagged_manual'
+											? 'good'
+											: r.status === 'running'
+												? 'gold'
+												: 'muted'}
+										size={6}
+									/>
+									<span class="rh-id mono">{r.run_id.slice(0, 8)}</span>
+									<span class="rh-status">{r.status}</span>
+									{#if r.reviewed}<span class="rh-reviewed">reviewed</span>{/if}
+									<span class="rh-scorer mono">{r.scorer_name ?? ''}</span>
+								</a>
+							{/each}
 						</div>
-					</div>
+					{/if}
 				</div>
 
 				<!-- ═══ VIDEO · HDR TAB ══════════════════════════════ -->
@@ -456,10 +524,8 @@
 										{lbLoading ? '⟳ Detecting…' : 'Detect letterbox'}
 									</button>
 								{:else if status === 'candidate' || status === 'prefilter_candidate'}
-									<button
-										class="btn-gold"
-										onclick={() => lbAction('apply')}
-										disabled={lbLoading}>Apply crop tags</button
+									<button class="btn-gold" onclick={() => lbAction('apply')} disabled={lbLoading}
+										>Apply crop tags</button
 									>
 									<button class="btn-sec" onclick={() => lbAction('ignore')} disabled={lbLoading}
 										>Skip</button
@@ -468,10 +534,8 @@
 										>Re-detect</button
 									>
 								{:else if status === 'tagged'}
-									<button
-										class="btn-sec"
-										onclick={() => lbAction('remove')}
-										disabled={lbLoading}>Remove tags</button
+									<button class="btn-sec" onclick={() => lbAction('remove')} disabled={lbLoading}
+										>Remove tags</button
 									>
 									<button class="btn-ghost" onclick={lbDetect} disabled={lbLoading}
 										>Re-detect</button
@@ -833,33 +897,100 @@
 		line-height: 1.5;
 	}
 
-	/* ── Pipeline run log ────────────────────────────────── */
-	.run-log {
-		background: var(--ink2);
+	/* ── Pipeline review summary + history ───────────────── */
+	.review-summary {
+		display: flex;
+		gap: 14px;
+		align-items: center;
+		padding: 12px;
 		border: 1px solid var(--line);
 		border-radius: var(--radius-sm);
-		padding: 12px 14px;
-		font-size: 12px;
+		background: var(--panel);
+		text-decoration: none;
 	}
-	.run-log-head {
-		font-weight: 600;
-		color: var(--text);
-		margin-bottom: 8px;
+	.review-summary:hover {
+		border-color: var(--gold);
 	}
-	.event-list {
-		list-style: none;
-		margin: 0;
-		padding: 0;
+	.rs-poster {
+		width: 54px;
+		flex: none;
+		aspect-ratio: 2 / 3;
+		border-radius: 6px;
+		overflow: hidden;
+		background: var(--ink2);
+	}
+	.rs-poster img {
+		width: 100%;
+		height: 100%;
+		object-fit: cover;
+	}
+	.rs-body {
 		display: flex;
 		flex-direction: column;
 		gap: 3px;
-		color: var(--muted);
-		font-family: var(--font-mono);
-		font-size: 11.5px;
 	}
-	.event-list li::before {
-		content: '›  ';
+	.rs-title {
+		font-size: 13px;
+		font-weight: 600;
+		color: var(--text);
+	}
+	.rs-counts {
+		font-size: 11.5px;
+		color: var(--muted);
+	}
+	.rs-cta {
+		font-size: 12px;
+		color: var(--gold);
+		margin-top: 2px;
+	}
+	.run-history {
+		border: 1px solid var(--line);
+		border-radius: var(--radius-sm);
+		background: var(--panel);
+		overflow: hidden;
+	}
+	.rh-head {
+		font-size: 10.5px;
+		text-transform: uppercase;
+		letter-spacing: 0.06em;
 		color: var(--faint);
+		font-weight: 700;
+		padding: 9px 12px;
+		border-bottom: 1px solid var(--line);
+	}
+	.rh-row {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		padding: 7px 12px;
+		border-bottom: 1px solid var(--line);
+		text-decoration: none;
+		font-size: 12px;
+	}
+	.rh-row:last-child {
+		border-bottom: none;
+	}
+	.rh-row:hover {
+		background: var(--panel2);
+	}
+	.rh-id {
+		color: var(--text);
+	}
+	.rh-status {
+		color: var(--muted);
+		text-transform: capitalize;
+	}
+	.rh-reviewed {
+		font-size: 10px;
+		color: var(--good);
+		border: 1px solid color-mix(in srgb, var(--good) 30%, transparent);
+		border-radius: 99px;
+		padding: 0 6px;
+	}
+	.rh-scorer {
+		margin-left: auto;
+		color: var(--faint);
+		font-size: 10.5px;
 	}
 
 	/* ── Placeholder cards ───────────────────────────────── */
@@ -984,9 +1115,6 @@
 	}
 	.small {
 		font-size: 11px;
-	}
-	.faint {
-		color: var(--faint);
 	}
 	.muted {
 		color: var(--muted);

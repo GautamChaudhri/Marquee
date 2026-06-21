@@ -9,7 +9,13 @@
 <div class="grid">
 	{#each items as m (m.id)}
 		<button class="cell" onclick={() => goto(`/films/${m.id}`)} title={m.title}>
-			<PosterThumb title={m.title} year={m.year} posterStatus={m.poster_status} posterUrl={m.poster_url} hdr={m.hdr} />
+			<PosterThumb
+				title={m.title}
+				year={m.year}
+				posterStatus={m.poster_status}
+				posterUrl={m.poster_url}
+				hdr={m.hdr}
+			/>
 			<div class="cap">{m.title}</div>
 		</button>
 	{/each}

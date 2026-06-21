@@ -45,11 +45,35 @@
 	// ── Tabs + selection (local state — the 5 columns are already loaded, so
 	//    switching tabs / selecting a film is instant and never re-runs load) ────
 	const TABS: { key: TabKey; label: string; col: ColKey; variant: Variant; color: string }[] = [
-		{ key: 'cleared', label: 'Cleared', col: 'notLetterboxed', variant: 'notlb', color: 'var(--bad)' },
-		{ key: 'candidates', label: 'Candidates', col: 'candidates', variant: 'candidates', color: 'var(--warn)' },
-		{ key: 'staging', label: 'Staging', col: 'detected', variant: 'detected', color: 'var(--info)' },
+		{
+			key: 'cleared',
+			label: 'Cleared',
+			col: 'notLetterboxed',
+			variant: 'notlb',
+			color: 'var(--bad)'
+		},
+		{
+			key: 'candidates',
+			label: 'Candidates',
+			col: 'candidates',
+			variant: 'candidates',
+			color: 'var(--warn)'
+		},
+		{
+			key: 'staging',
+			label: 'Staging',
+			col: 'detected',
+			variant: 'detected',
+			color: 'var(--info)'
+		},
 		{ key: 'preview', label: 'Preview', col: 'preview', variant: 'preview', color: 'var(--dovi)' },
-		{ key: 'processed', label: 'Processed', col: 'processed', variant: 'processed', color: 'var(--good)' }
+		{
+			key: 'processed',
+			label: 'Processed',
+			col: 'processed',
+			variant: 'processed',
+			color: 'var(--good)'
+		}
 	];
 
 	let activeTab = $state<TabKey>('staging');
@@ -212,7 +236,9 @@
 	}
 
 	/** Map the job's domain-neutral child-status tally to the UI summary. */
-	function summaryFrom(s: Record<string, number> | null | undefined): LetterboxAnalyzeSummary | null {
+	function summaryFrom(
+		s: Record<string, number> | null | undefined
+	): LetterboxAnalyzeSummary | null {
 		if (!s) return null;
 		const total = Object.values(s).reduce((a, b) => a + (b ?? 0), 0);
 		return {
@@ -358,7 +384,8 @@
 		// Batch-level progress
 		if (typeof detail.children_completed === 'number') {
 			progressDone = detail.children_completed as number;
-			if (typeof detail.children_total === 'number') progressTotal = detail.children_total as number;
+			if (typeof detail.children_total === 'number')
+				progressTotal = detail.children_total as number;
 			progress = progressTotal ? (progressDone / progressTotal) * 100 : 0;
 			scheduleTrayRefresh(); // a child finished → reflect its move
 
@@ -645,14 +672,25 @@
 				{item}
 				{variant}
 				selected={item.movie_id === selected}
-				scanning={(analyzing && item.movie_id === scanId) || (detailEncoding && item.movie_id === selected)}
-				progress={currentMovie && currentMovie.id === item.movie_id ? currentMovie.progress : (detailEncoding && item.movie_id === selected ? detailEncodeProgress : 0)}
-				stage={currentMovie && currentMovie.id === item.movie_id ? currentMovie.stage : (detailEncoding && item.movie_id === selected ? detailEncodeStage : null)}
+				scanning={(analyzing && item.movie_id === scanId) ||
+					(detailEncoding && item.movie_id === selected)}
+				progress={currentMovie && currentMovie.id === item.movie_id
+					? currentMovie.progress
+					: detailEncoding && item.movie_id === selected
+						? detailEncodeProgress
+						: 0}
+				stage={currentMovie && currentMovie.id === item.movie_id
+					? currentMovie.stage
+					: detailEncoding && item.movie_id === selected
+						? detailEncodeStage
+						: null}
 				onSelect={select}
 			/>
 		{/each}
 		{#if total > items.length}
-			<button class="list-more" onclick={() => openModal(MODAL_CFGS[variant])}>view all {total}</button>
+			<button class="list-more" onclick={() => openModal(MODAL_CFGS[variant])}
+				>view all {total}</button
+			>
 		{/if}
 	{/if}
 {/snippet}
@@ -698,19 +736,22 @@
 						{#if result}
 							· <strong>{result.candidate}</strong> detected ·
 							<strong>{result.not_letterboxed}</strong> not letterboxed · {result.variable} unsafe
-							{#if result.errored || result.failed} · {result.errored + result.failed} failed{/if}
+							{#if result.errored || result.failed}
+								· {result.errored + result.failed} failed{/if}
 						{/if}
 					{:else if batchStatus === 'failed'}
 						Analysis failed at <strong>{progressDone}</strong>/<strong>{progressTotal}</strong>
 						{#if result}
 							· <strong>{result.candidate}</strong> detected ·
 							<strong>{result.not_letterboxed}</strong> not letterboxed · {result.variable} unsafe
-							{#if result.errored || result.failed} · {result.errored + result.failed} failed{/if}
+							{#if result.errored || result.failed}
+								· {result.errored + result.failed} failed{/if}
 						{/if}
 					{:else if result}
 						✓ Analysis complete — <strong>{result.candidate}</strong> detected ·
 						<strong>{result.not_letterboxed}</strong> not letterboxed · {result.variable} unsafe
-						{#if result.errored || result.failed} · {result.errored + result.failed} failed{/if}
+						{#if result.errored || result.failed}
+							· {result.errored + result.failed} failed{/if}
 					{/if}
 				</span>
 				<div class="ab-actions">
@@ -731,7 +772,9 @@
 			</div>
 			{#if analyzing}
 				<ProgressBar value={progress} tone="gold" />
-				<div class="ab-hint">Live progress shows on the film being analyzed in the Staging / Candidates tab.</div>
+				<div class="ab-hint">
+					Live progress shows on the film being analyzed in the Staging / Candidates tab.
+				</div>
 			{/if}
 		</div>
 	{/if}
@@ -772,11 +815,19 @@
 						</button>
 						<span class="tb quick-active">⚡ All Quick</span>
 						<span class="tb perm-disabled" title="Re-encode coming soon">🔧 All Perm</span>
-						<button class="tb gold" onclick={processDetected} disabled={processing || detectedTotal === 0}>
+						<button
+							class="tb gold"
+							onclick={processDetected}
+							disabled={processing || detectedTotal === 0}
+						>
 							{processing ? 'Processing…' : 'Process →'}
 						</button>
 					{:else if activeTab === 'preview'}
-						<button class="tb gold" onclick={confirmAll} disabled={confirming || cols.preview.total === 0}>
+						<button
+							class="tb gold"
+							onclick={confirmAll}
+							disabled={confirming || cols.preview.total === 0}
+						>
 							<Icon name="refresh" size={13} />
 							{confirming ? 'Confirming…' : 'Confirm all'}
 						</button>
@@ -835,9 +886,18 @@
 								{item}
 								variant={modal.variant}
 								selected={item.movie_id === selected}
-								scanning={(analyzing && item.movie_id === scanId) || (detailEncoding && item.movie_id === selected)}
-								progress={currentMovie && currentMovie.id === item.movie_id ? currentMovie.progress : (detailEncoding && item.movie_id === selected ? detailEncodeProgress : 0)}
-								stage={currentMovie && currentMovie.id === item.movie_id ? currentMovie.stage : (detailEncoding && item.movie_id === selected ? detailEncodeStage : null)}
+								scanning={(analyzing && item.movie_id === scanId) ||
+									(detailEncoding && item.movie_id === selected)}
+								progress={currentMovie && currentMovie.id === item.movie_id
+									? currentMovie.progress
+									: detailEncoding && item.movie_id === selected
+										? detailEncodeProgress
+										: 0}
+								stage={currentMovie && currentMovie.id === item.movie_id
+									? currentMovie.stage
+									: detailEncoding && item.movie_id === selected
+										? detailEncodeStage
+										: null}
 								onSelect={(id) => {
 									select(id);
 									closeModal();

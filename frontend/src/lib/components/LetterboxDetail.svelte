@@ -57,14 +57,14 @@
 	];
 
 	const ENCODER_LABELS: Record<string, string> = {
-		'hevc_nvenc': 'NVIDIA NVENC (HEVC)',
-		'h264_nvenc': 'NVIDIA NVENC (H.264)',
-		'hevc_qsv': 'Intel QuickSync (HEVC)',
-		'h264_qsv': 'Intel QuickSync (H.264)',
-		'hevc_vaapi': 'Intel VAAPI (HEVC)',
-		'h264_vaapi': 'Intel VAAPI (H.264)',
-		'libx265': 'Software x265 (HEVC)',
-		'libx264': 'Software x264 (H.264)'
+		hevc_nvenc: 'NVIDIA NVENC (HEVC)',
+		h264_nvenc: 'NVIDIA NVENC (H.264)',
+		hevc_qsv: 'Intel QuickSync (HEVC)',
+		h264_qsv: 'Intel QuickSync (H.264)',
+		hevc_vaapi: 'Intel VAAPI (HEVC)',
+		h264_vaapi: 'Intel VAAPI (H.264)',
+		libx265: 'Software x265 (HEVC)',
+		libx264: 'Software x264 (H.264)'
 	};
 
 	function prettyEncoder(enc: string): string {
@@ -74,35 +74,51 @@
 	type QualityProfile = 'speed' | 'balanced' | 'quality';
 
 	// Per-family encoding parameters for each profile tier.
-	const PROFILE_SETTINGS: Record<QualityProfile, Record<string, { preset: string | null; quality: number }>> = {
+	const PROFILE_SETTINGS: Record<
+		QualityProfile,
+		Record<string, { preset: string | null; quality: number }>
+	> = {
 		speed: {
-			nvidia:      { preset: 'p4', quality: 20 },
-			cpu_x265:    { preset: 'fast', quality: 20 },
-			cpu_x264:    { preset: 'fast', quality: 23 },
-			intel_qsv:   { preset: null, quality: 23 },
-			intel_vaapi: { preset: null, quality: 25 },
+			nvidia: { preset: 'p4', quality: 20 },
+			cpu_x265: { preset: 'fast', quality: 20 },
+			cpu_x264: { preset: 'fast', quality: 23 },
+			intel_qsv: { preset: null, quality: 23 },
+			intel_vaapi: { preset: null, quality: 25 }
 		},
 		balanced: {
-			nvidia:      { preset: 'p5', quality: 18 },
-			cpu_x265:    { preset: 'medium', quality: 18 },
-			cpu_x264:    { preset: 'medium', quality: 21 },
-			intel_qsv:   { preset: null, quality: 20 },
-			intel_vaapi: { preset: null, quality: 22 },
+			nvidia: { preset: 'p5', quality: 18 },
+			cpu_x265: { preset: 'medium', quality: 18 },
+			cpu_x264: { preset: 'medium', quality: 21 },
+			intel_qsv: { preset: null, quality: 20 },
+			intel_vaapi: { preset: null, quality: 22 }
 		},
 		quality: {
-			nvidia:      { preset: 'p7', quality: 16 },
-			cpu_x265:    { preset: 'slow', quality: 16 },
-			cpu_x264:    { preset: 'slow', quality: 19 },
-			intel_qsv:   { preset: null, quality: 18 },
-			intel_vaapi: { preset: null, quality: 18 },
-		},
+			nvidia: { preset: 'p7', quality: 16 },
+			cpu_x265: { preset: 'slow', quality: 16 },
+			cpu_x264: { preset: 'slow', quality: 19 },
+			intel_qsv: { preset: null, quality: 18 },
+			intel_vaapi: { preset: null, quality: 18 }
+		}
 	};
 
-	const PROFILE_META: Record<QualityProfile, { icon: string; label: string; description: string }> = {
-		speed:    { icon: '\u26a1', label: 'Prefer Speed',   description: 'Faster encode, slightly larger files' },
-		balanced: { icon: '\u2696',  label: 'Balanced',       description: 'Best tradeoff for most content' },
-		quality:  { icon: '\ud83c\udfaf', label: 'Prefer Quality', description: 'Reference quality, slower encode' },
-	};
+	const PROFILE_META: Record<QualityProfile, { icon: string; label: string; description: string }> =
+		{
+			speed: {
+				icon: '\u26a1',
+				label: 'Prefer Speed',
+				description: 'Faster encode, slightly larger files'
+			},
+			balanced: {
+				icon: '\u2696',
+				label: 'Balanced',
+				description: 'Best tradeoff for most content'
+			},
+			quality: {
+				icon: '\ud83c\udfaf',
+				label: 'Prefer Quality',
+				description: 'Reference quality, slower encode'
+			}
+		};
 
 	function profileFamilyKey(family: string, encoder: string): string {
 		if (family === 'cpu') return encoder === 'libx264' ? 'cpu_x264' : 'cpu_x265';
@@ -290,7 +306,14 @@
 	);
 
 	// Assign a stable color per unique top/bottom pair so each group gets its own icon color.
-	const BAR_COLORS = ['var(--gold)', 'var(--info)', 'var(--good)', 'var(--warn)', 'var(--bad)', 'var(--muted)'];
+	const BAR_COLORS = [
+		'var(--gold)',
+		'var(--info)',
+		'var(--good)',
+		'var(--warn)',
+		'var(--bad)',
+		'var(--muted)'
+	];
 	function pairKey(s: NonNullable<LetterboxDetail['samples']>[number]): string {
 		return `${s.top_bar ?? '?'}:${s.bottom_bar ?? '?'}`;
 	}
@@ -449,34 +472,40 @@
 			? NVENC_PRESETS
 			: plan?.encoder.family === 'cpu'
 				? CPU_PRESETS
-			: []
+				: []
 	);
-	const encoderOptions = $derived(plan?.encoder.available_encoders.filter((e) => KNOWN_ENCODERS.includes(e)) ?? []);
+	const encoderOptions = $derived(
+		plan?.encoder.available_encoders.filter((e) => KNOWN_ENCODERS.includes(e)) ?? []
+	);
 
 	function subscribeToEncode(jobId: string) {
 		stopEncodeStream();
-		unsub = subscribe(`/api/media-jobs/${jobId}/events`, ['message', 'done'], async (type, data) => {
-			if (type === 'done') {
-				stopEncodeStream();
-				await finishEncode(jobId);
-				return;
+		unsub = subscribe(
+			`/api/media-jobs/${jobId}/events`,
+			['message', 'done'],
+			async (type, data) => {
+				if (type === 'done') {
+					stopEncodeStream();
+					await finishEncode(jobId);
+					return;
+				}
+				// Transient connection drop: EventSource auto-reconnects and the
+				// backend replays history, so just wait it out rather than breaking.
+				if (type === 'error') return;
+				const ev = data as {
+					stage?: string;
+					state?: string;
+					message?: string;
+					progress?: { percent?: number; fps?: number; speed?: number } | null;
+				};
+				if (ev.stage) encodeStage = ev.stage;
+				if (ev.progress?.percent != null) encodeProgress = ev.progress.percent;
+				if (ev.progress?.fps != null) encodeFps = ev.progress.fps;
+				if (ev.progress?.speed != null) encodeSpeed = ev.progress.speed;
+				if (ev.message) encodeMessage = ev.message;
+				if (onEncodeState) onEncodeState(encoding, encodeProgress, encodeStage);
 			}
-			// Transient connection drop: EventSource auto-reconnects and the
-			// backend replays history, so just wait it out rather than breaking.
-			if (type === 'error') return;
-			const ev = data as {
-				stage?: string;
-				state?: string;
-				message?: string;
-				progress?: { percent?: number; fps?: number; speed?: number } | null;
-			};
-			if (ev.stage) encodeStage = ev.stage;
-			if (ev.progress?.percent != null) encodeProgress = ev.progress.percent;
-			if (ev.progress?.fps != null) encodeFps = ev.progress.fps;
-			if (ev.progress?.speed != null) encodeSpeed = ev.progress.speed;
-			if (ev.message) encodeMessage = ev.message;
-			if (onEncodeState) onEncodeState(encoding, encodeProgress, encodeStage);
-		});
+		);
 	}
 
 	/** Read the media-job snapshot once and advance the encode bar from it. */
@@ -576,7 +605,7 @@
 				allow_cpu_fallback: settingsMode === 'advanced' ? setAllowCpu : true,
 				encoder: setEncoder === 'auto' ? null : setEncoder,
 				quality: settingsMode === 'advanced' ? setQuality : (profileOv.quality ?? null),
-				preset: settingsMode === 'advanced' ? (setPreset || null) : (profileOv.preset ?? null),
+				preset: settingsMode === 'advanced' ? setPreset || null : (profileOv.preset ?? null),
 				codec: setCodec
 			});
 			jobId = plan.job_id;
@@ -584,7 +613,8 @@
 			plan = null;
 			jobId = null;
 			const body = (e as { body?: { detail?: { message?: string } } })?.body;
-			planError = body?.detail?.message ?? (e instanceof Error ? e.message : 'Could not plan re-encode');
+			planError =
+				body?.detail?.message ?? (e instanceof Error ? e.message : 'Could not plan re-encode');
 		} finally {
 			planLoading = false;
 		}
@@ -731,7 +761,8 @@
 				</div>
 				<h3>{detail.title ?? `Movie ${detail.movie_id}`}</h3>
 				<div class="year">
-					{detail.year ?? '—'}{#if detail.source_height} · {detail.source_height}p{/if}
+					{detail.year ?? '—'}{#if detail.source_height}
+						· {detail.source_height}p{/if}
 				</div>
 			</div>
 			<div class="actions">
@@ -748,8 +779,11 @@
 							<dd class="mono">
 								{fmtBytes(a.candidate_size_bytes)}
 								<span class="crop-note">
-									(was {fmtBytes(a.original_size_bytes)}{#if a.original_size_bytes && a.candidate_size_bytes}
-										 · {Math.round((1 - a.candidate_size_bytes / a.original_size_bytes) * 100)}% smaller{/if})
+									(was {fmtBytes(
+										a.original_size_bytes
+									)}{#if a.original_size_bytes && a.candidate_size_bytes}
+										· {Math.round((1 - a.candidate_size_bytes / a.original_size_bytes) * 100)}%
+										smaller{/if})
 								</span>
 							</dd>
 							{#if a.hdr_status}
@@ -782,8 +816,8 @@
 						Restore original →
 					</button>
 					<div class="note good">
-						The original is preserved under <span class="mono">.marquee/backups</span> — restoring
-						swaps it back into place.
+						The original is preserved under <span class="mono">.marquee/backups</span> — restoring swaps
+						it back into place.
 					</div>
 				{:else}
 					<div class="note">No re-encode record found for this file.</div>
@@ -803,7 +837,8 @@
 				</div>
 				<h3>{detail.title ?? `Movie ${detail.movie_id}`}</h3>
 				<div class="year">
-					{detail.year ?? '—'}{#if detail.source_height} · {detail.source_height}p{/if}
+					{detail.year ?? '—'}{#if detail.source_height}
+						· {detail.source_height}p{/if}
 				</div>
 				<dl>
 					{#if detail.source_width && detail.source_height}
@@ -820,7 +855,9 @@
 			<!-- Row 1, Col 2: before image -->
 			<div class="frame-cell before">
 				{#if stage === 'processed'}
-					<div class="frame unanalyzed"><span class="ph">Previews cleared after confirmation</span></div>
+					<div class="frame unanalyzed">
+						<span class="ph">Previews cleared after confirmation</span>
+					</div>
 				{:else if beforeUrl}
 					<img class="frame" src={beforeUrl} alt="before crop" loading="lazy" />
 				{:else}
@@ -854,8 +891,7 @@
 								{#if method === 'permanent'}<span class="fix-on">Active</span>{/if}
 							</div>
 							<div class="fix-body">
-								FFmpeg re-encode. Works on all clients. Higher quality cost; original is
-								preserved.
+								FFmpeg re-encode. Works on all clients. Higher quality cost; original is preserved.
 							</div>
 						</button>
 					{/if}
@@ -888,7 +924,9 @@
 							<div class="alabel">Candidate ready</div>
 							<dl class="enc-summary">
 								<dt>Encoder</dt>
-								<dd class="mono">{prettyEncoder(artifact.encoder ?? '')} · {artifact.codec ?? '—'}</dd>
+								<dd class="mono">
+									{prettyEncoder(artifact.encoder ?? '')} · {artifact.codec ?? '—'}
+								</dd>
 								<dt>Size</dt>
 								<dd class="mono">
 									{fmtBytes(artifact.candidate_size_bytes)}
@@ -913,8 +951,8 @@
 						</button>
 						<button class="btn-ghost" disabled={busy} onclick={doDiscard}>Discard candidate</button>
 						<div class="note good">
-							The original is preserved under <span class="mono">.marquee/backups</span> after
-							replacement — reversible later.
+							The original is preserved under <span class="mono">.marquee/backups</span> after replacement
+							— reversible later.
 						</div>
 					{:else if encoding}
 						<div class="applied-card">
@@ -922,8 +960,10 @@
 							<ProgressBar value={encodeProgress} tone="gold" />
 							<div class="crop-note" style="margin-top:6px">
 								{Math.round(encodeProgress)}%
-								{#if encodeFps != null} · {encodeFps.toFixed(1)} fps{/if}
-								{#if encodeSpeed != null} · {encodeSpeed.toFixed(2)}×{/if}
+								{#if encodeFps != null}
+									· {encodeFps.toFixed(1)} fps{/if}
+								{#if encodeSpeed != null}
+									· {encodeSpeed.toFixed(2)}×{/if}
 							</div>
 							{#if encodeMessage}<div class="note">{encodeMessage}</div>{/if}
 						</div>
@@ -932,11 +972,15 @@
 							<div class="alabel">Re-encode planned</div>
 							<dl class="enc-summary">
 								<dt>Encoder</dt>
-								<dd class="mono">{prettyEncoder(plan?.encoder.encoder ?? '')} · {plan?.encoder.family ?? '—'}</dd>
+								<dd class="mono">
+									{prettyEncoder(plan?.encoder.encoder ?? '')} · {plan?.encoder.family ?? '—'}
+								</dd>
 								<dt>Crop</dt>
 								<dd class="mono">
 									{plan?.crop.top ?? 0}:{plan?.crop.bottom ?? 0}
-									<span class="crop-note">→ {plan?.crop.output_height ?? detail.source_height ?? '—'}p</span>
+									<span class="crop-note"
+										>→ {plan?.crop.output_height ?? detail.source_height ?? '—'}p</span
+									>
 								</dd>
 								<dt>Temp size</dt>
 								<dd class="mono">
@@ -959,12 +1003,10 @@
 						<button class="btn-gold" disabled={busy} onclick={startEncode}>
 							Confirm & encode →
 						</button>
-						<button class="btn-ghost" disabled={busy} onclick={discardPlan}>
-							Discard plan
-						</button>
+						<button class="btn-ghost" disabled={busy} onclick={discardPlan}> Discard plan </button>
 						<div class="note">
-							This plan is already saved. Confirm it to start the queued re-encode job, or
-							discard it to choose a different method.
+							This plan is already saved. Confirm it to start the queued re-encode job, or discard
+							it to choose a different method.
 						</div>
 					{:else if planLoading}
 						<div class="note">Planning re-encode…</div>
@@ -998,7 +1040,7 @@
 
 							{#if settingsMode === 'simple'}
 								<div class="profile-cards">
-									{#each (['speed', 'balanced', 'quality'] as const) as p (p)}
+									{#each ['speed', 'balanced', 'quality'] as const as p (p)}
 										{@const pmeta = PROFILE_META[p]}
 										{@const key = profileFamilyKey(plan.encoder.family, plan.encoder.encoder)}
 										{@const vals = PROFILE_SETTINGS[p][key]}
@@ -1015,7 +1057,13 @@
 											<div class="profile-desc">{pmeta.description}</div>
 											{#if vals}
 												<div class="profile-vals mono">
-													{plan.encoder.family === 'nvidia' ? 'CQ' : plan.encoder.family === 'cpu' ? 'CRF' : 'Quality'} {vals.quality}{#if vals.preset} \u00b7 {vals.preset}{/if}
+													{plan.encoder.family === 'nvidia'
+														? 'CQ'
+														: plan.encoder.family === 'cpu'
+															? 'CRF'
+															: 'Quality'}
+													{vals.quality}{#if vals.preset}
+														\u00b7 {vals.preset}{/if}
 												</div>
 											{/if}
 										</button>
@@ -1075,11 +1123,16 @@
 								</label>
 								<dl class="enc-summary">
 									<dt>Resolved encoder</dt>
-									<dd class="mono">{prettyEncoder(plan.encoder.encoder)} \u00b7 {plan.encoder.family}</dd>
+									<dd class="mono">
+										{prettyEncoder(plan.encoder.encoder)} \u00b7 {plan.encoder.family}
+									</dd>
 									<dt>HDR</dt>
 									<dd class="mono">{plan.hdr.status}</dd>
 									<dt>Dolby Vision</dt>
-									<dd class="mono">{plan.dovi.status}{#if plan.dovi.reason} \u00b7 {plan.dovi.reason}{/if}</dd>
+									<dd class="mono">
+										{plan.dovi.status}{#if plan.dovi.reason}
+											\u00b7 {plan.dovi.reason}{/if}
+									</dd>
 									<dt>Est. temp size</dt>
 									<dd class="mono">
 										{fmtBytes(plan.storage.estimated_temp_bytes)}
@@ -1105,9 +1158,9 @@
 					<div class="applied-card">
 						<div class="alabel">MKV pixel-crop value</div>
 						<div class="mono gold big">
-							{detail.applied_crop_top ?? detail.recommended_crop_top ?? 0}:{detail.applied_crop_bottom ??
-								detail.recommended_crop_bottom ??
-								0}:0:0
+							{detail.applied_crop_top ??
+								detail.recommended_crop_top ??
+								0}:{detail.applied_crop_bottom ?? detail.recommended_crop_bottom ?? 0}:0:0
 						</div>
 					</div>
 					<button
@@ -1124,14 +1177,12 @@
 					>
 						Remove tag · revert
 					</button>
-					<button
-						class="btn-ghost"
-						disabled={busy || detecting}
-						onclick={startReprocess}
-					>
+					<button class="btn-ghost" disabled={busy || detecting} onclick={startReprocess}>
 						Reprocess with new settings
 					</button>
-					<div class="note good">Reversible. Remove the tag at any time with zero quality impact.</div>
+					<div class="note good">
+						Reversible. Remove the tag at any time with zero quality impact.
+					</div>
 				{:else if stage === 'processed'}
 					<div class="applied-card">
 						<div class="alabel">Applied crop</div>
@@ -1146,11 +1197,7 @@
 					>
 						Remove tag
 					</button>
-					<button
-						class="btn-ghost"
-						disabled={busy || detecting}
-						onclick={startReprocess}
-					>
+					<button class="btn-ghost" disabled={busy || detecting} onclick={startReprocess}>
 						Reprocess
 					</button>
 				{/if}
@@ -1172,7 +1219,9 @@
 					{/if}
 					<dt>Crop T / B</dt>
 					<dd class="mono gold">
-						{cropLabel}{#if detail.variable_ar}<span class="crop-note"> · defaulting to smaller crop</span>{/if}
+						{cropLabel}{#if detail.variable_ar}<span class="crop-note">
+								· defaulting to smaller crop</span
+							>{/if}
 					</dd>
 					{#if detail.confidence && detail.confidence !== 'none'}
 						<dt>Confidence</dt>
@@ -1192,7 +1241,10 @@
 					<div class="conf-expand">
 						{#if detail.samples && detail.samples.length > 0}
 							{@const okSamples = detail.samples.filter((s) => s.ok)}
-							{@const pairCounts = okSamples.reduce((map, s) => map.set(pairKey(s), (map.get(pairKey(s)) ?? 0) + 1), new Map<string, number>())}
+							{@const pairCounts = okSamples.reduce(
+								(map, s) => map.set(pairKey(s), (map.get(pairKey(s)) ?? 0) + 1),
+								new Map<string, number>()
+							)}
 							{@const dominantPair = [...pairCounts.entries()].sort((a, b) => b[1] - a[1])[0]}
 							{@const agreeCount = dominantPair?.[1] ?? 0}
 							{@const colorMap = pairColorMap(detail.samples)}
@@ -1206,7 +1258,8 @@
 							</div>
 							{#each detail.samples as s (s.minute)}
 								{@const key = s.ok ? pairKey(s) : null}
-								{@const barColor = key != null ? (colorMap.get(key) ?? 'var(--faint)') : 'var(--faint)'}
+								{@const barColor =
+									key != null ? (colorMap.get(key) ?? 'var(--faint)') : 'var(--faint)'}
 								{@const isActive = s.minute === activeMinute}
 								<button
 									class="ce-row"
@@ -1240,7 +1293,9 @@
 			<!-- Row 2, Col 2: after image — defines the row's height -->
 			<div class="frame-cell after">
 				{#if stage === 'processed'}
-					<div class="frame unanalyzed"><span class="ph">Previews cleared after confirmation</span></div>
+					<div class="frame unanalyzed">
+						<span class="ph">Previews cleared after confirmation</span>
+					</div>
 				{:else if afterUrl}
 					<img class="frame good" src={afterUrl} alt="after crop" loading="lazy" />
 				{:else}
@@ -1258,7 +1313,8 @@
 				</div>
 				<h3>{detail.title ?? `Movie ${detail.movie_id}`}</h3>
 				<div class="year">
-					{detail.year ?? '—'}{#if detail.source_height} · {detail.source_height}p{/if}
+					{detail.year ?? '—'}{#if detail.source_height}
+						· {detail.source_height}p{/if}
 				</div>
 				<dl>
 					{#if detail.source_width && detail.source_height}
@@ -1288,8 +1344,8 @@
 						<span class="ph">? awaiting frame analysis</span>
 					</div>
 					<div class="note">
-						Resolution scan flagged this file. Run frame analysis to confirm and measure exact
-						crop values before applying any fix.
+						Resolution scan flagged this file. Run frame analysis to confirm and measure exact crop
+						values before applying any fix.
 					</div>
 				{:else if detail.preview_urls}
 					<img class="frame" src={detail.preview_urls.before} alt="before crop" loading="lazy" />
@@ -1305,11 +1361,7 @@
 					<button class="btn-gold" onclick={onAnalyzeAll} disabled={analyzing}>
 						<Icon name="refresh" size={15} /> Analyze all candidates
 					</button>
-					<button
-						class="btn-sec"
-						disabled={busy || detecting}
-						onclick={startDetection}
-					>
+					<button class="btn-sec" disabled={busy || detecting} onclick={startDetection}>
 						{detecting ? 'Analyzing…' : 'Analyze this film only'}
 					</button>
 					<button
@@ -1324,19 +1376,11 @@
 						No fix needed.{#if detail.status === 'variable_unsafe'}
 							Variable aspect ratio — unsafe to crop.{/if}
 					</div>
-					<button
-						class="btn-sec"
-						disabled={busy || detecting}
-						onclick={startDetection}
-					>
+					<button class="btn-sec" disabled={busy || detecting} onclick={startDetection}>
 						{detecting ? 'Analyzing…' : 'Re-detect'}
 					</button>
 				{:else}
-					<button
-						class="btn-sec"
-						disabled={busy || detecting}
-						onclick={startDetection}
-					>
+					<button class="btn-sec" disabled={busy || detecting} onclick={startDetection}>
 						{detecting ? 'Analyzing…' : 'Re-detect'}
 					</button>
 				{/if}
@@ -1719,7 +1763,9 @@
 		background: transparent;
 		color: inherit;
 		cursor: pointer;
-		transition: border-color 0.15s, background 0.15s;
+		transition:
+			border-color 0.15s,
+			background 0.15s;
 	}
 	.profile-card:hover {
 		border-color: var(--faint);

@@ -12,7 +12,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel
-from sqlalchemy import func, select
+from sqlalchemy import exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.api.deps import enforce_rate_limit, get_rate_limiter
@@ -43,6 +43,21 @@ movies_router = APIRouter(prefix="/api/movies", tags=["movies"])
 _REVIEW_QUEUE_STATUSES = {"completed", "flagged_manual"}
 
 
+def _downloaded():
+    """Movie has a file on disk. Mirrors the library list's availability filter
+    (``api/routes/library.py``) so the pipeline ignores undownloaded Radarr
+    movies entirely — exactly like the films list and letterbox do."""
+    return or_(
+        Movie.movie_file_path.is_not(None),
+        exists(
+            select(MediaFile.id).where(
+                MediaFile.movie_id == Movie.id,
+                MediaFile.is_active.is_(True),
+            )
+        ),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Run lifecycle
 # ---------------------------------------------------------------------------
@@ -63,6 +78,12 @@ async def run_pipeline(
     if movie.tmdb_id is None:
         raise HTTPException(
             status_code=400, detail=f"Movie {movie.title!r} has no TMDB ID — run sync"
+        )
+    if not await db.scalar(
+        select(exists(select(Movie.id).where(Movie.id == movie_id, _downloaded())))
+    ):
+        raise HTTPException(
+            status_code=400, detail=f"Movie {movie.title!r} has no downloaded file"
         )
 
     enforce_rate_limit(limiter, f"pipeline:{movie_id}", settings.RATE_PIPELINE_RUN_SECONDS)
@@ -260,14 +281,14 @@ async def run_pipeline_batch(
         if not body.movie_ids:
             raise HTTPException(status_code=400, detail="scope=selected requires movie_ids")
         query = select(Movie.id).where(
-            Movie.id.in_(body.movie_ids), Movie.tmdb_id.is_not(None)
+            Movie.id.in_(body.movie_ids), Movie.tmdb_id.is_not(None), _downloaded()
         )
     elif scope == "missing":
         query = select(Movie.id).where(
-            Movie.poster_path.is_(None), Movie.tmdb_id.is_not(None)
+            Movie.poster_path.is_(None), Movie.tmdb_id.is_not(None), _downloaded()
         )
     elif scope == "all":
-        query = select(Movie.id).where(Movie.tmdb_id.is_not(None))
+        query = select(Movie.id).where(Movie.tmdb_id.is_not(None), _downloaded())
     else:
         raise HTTPException(status_code=400, detail=f"unknown scope {scope!r}")
 
@@ -429,9 +450,11 @@ async def review_queue(
             PipelineRun.movie_id.label("movie_id"),
             func.max(PipelineRun.started_at).label("started_at"),
         )
+        .join(Movie, Movie.id == PipelineRun.movie_id)
         .where(
             PipelineRun.feedback_event_id.is_(None),
             PipelineRun.status.in_(_REVIEW_QUEUE_STATUSES),
+            _downloaded(),
         )
         .group_by(PipelineRun.movie_id)
         .subquery()

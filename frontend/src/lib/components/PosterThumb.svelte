@@ -29,12 +29,7 @@
 
 <div class="poster" class:flat={!rounded} style="--c0:{g[0]}; --c1:{g[1]}; --accent:{g[2]}">
 	{#if showImg}
-		<img
-			src={posterUrl}
-			alt={title}
-			class="cover"
-			onerror={() => (imgFailed = true)}
-		/>
+		<img src={posterUrl} alt={title} class="cover" onerror={() => (imgFailed = true)} />
 	{/if}
 	<div class="badges">
 		{#if status}<StatusDot tone={status.tone} title={status.label} />{/if}
