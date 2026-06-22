@@ -28,6 +28,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading
 import time
 from collections import defaultdict
 from collections.abc import Callable
@@ -47,7 +48,8 @@ from marquee.models import Movie, PipelineRun
 from marquee.pipeline.deduper import PosterDeduper
 from marquee.pipeline.features import FeatureExtractor
 from marquee.pipeline.gate import PosterGate
-from marquee.pipeline.ocr_filter import PosterTextFilter, apply_no_text_fallback
+from marquee.pipeline.ocr_filter import OcrPool, PosterTextFilter, apply_no_text_fallback
+from marquee.ml.hardware import effective_ocr_workers
 from marquee.pipeline.output import place_gated
 from marquee.pipeline.runner import (
     FetchOutcome,
@@ -354,11 +356,34 @@ def _run_sync_stages(
     if should_cancel():
         return
 
-    # Stage 2 (batched): OCR over EVERY movie's style survivors in one pool.
-    _ocr_batch(contexts, progress)
+    # Stage 2 (batched): OCR.  Preload the worker pool now — PaddleOCR model
+    # load overlaps with the last movie's style-gate tail.  By the time the
+    # first task is queued every worker is already resident.
+    ocr_pool = _start_ocr_pool_for(contexts)
+    ocr_done = False
+    try:
+        if should_cancel():
+            return
 
-    if should_cancel():
-        return
+        _ocr_batch(contexts, progress, pool=ocr_pool)
+
+        if should_cancel():
+            return
+
+        # Tear down the OCR pool on a background thread so the detail-features
+        # stage (DINOv2) can start immediately while worker processes unwind.
+        threading.Thread(
+            target=PosterTextFilter.stop_ocr_pool,
+            args=(ocr_pool,),
+            daemon=True,
+        ).start()
+        ocr_done = True
+    except Exception:
+        PosterTextFilter.stop_ocr_pool(ocr_pool)
+        raise
+    finally:
+        if not ocr_done:
+            PosterTextFilter.stop_ocr_pool(ocr_pool)
 
     # Stage 3 (per movie): perceptual dedup on each movie's OCR survivors.
     for ctx in contexts:
@@ -463,8 +488,33 @@ def _movie_prelude(
     ctx.style_survivors = style_survivors
 
 
-def _ocr_batch(contexts: list[_BatchMovie], progress: ProgressCallback | None) -> None:
-    """Run OCR over every movie's style survivors in ONE worker pool."""
+def _start_ocr_pool_for(contexts: list[_BatchMovie]) -> OcrPool:
+    """Count total OCR items across all movies and start the worker pool.
+
+    Called during the prelude phase so PaddleOCR loads in parallel with
+    the last few style-feature batches.
+    """
+    total = sum(len(ctx.style_survivors) for ctx in contexts)
+    if total == 0:
+        total = 1  # start_ocr_pool requires at least 1 worker
+    return PosterTextFilter.start_ocr_pool(
+        num_workers=min(effective_ocr_workers(), total)
+    )
+
+
+def _ocr_batch(
+    contexts: list[_BatchMovie],
+    progress: ProgressCallback | None,
+    *,
+    pool=None,
+) -> None:
+    """Run OCR over every movie's style survivors in ONE worker pool.
+
+    When *pool* (an ``OcrPool`` from ``PosterTextFilter.start_ocr_pool``) is
+    passed the workers are assumed already loaded — only the task feed +
+    result collection runs.  Otherwise a fresh pool is created and destroyed
+    inside the call (backward-compatible single-shot path).
+    """
     items: list[tuple[Path, set[str], set[str]]] = []
     owners: list[_BatchMovie] = []
     for ctx in contexts:
@@ -486,7 +536,10 @@ def _ocr_batch(contexts: list[_BatchMovie], progress: ProgressCallback | None) -
     def _tick(done: int, total_: int) -> None:
         _emit_global(progress, "ocr", "progress", done=done, total=total_)
 
-    results = PosterTextFilter.run_ocr_batch(items, progress=_tick)
+    if pool is not None:
+        results = PosterTextFilter.run_ocr_tasks(pool, items, progress=_tick)
+    else:
+        results = PosterTextFilter.run_ocr_batch(items, progress=_tick)
 
     by_movie: dict[int, list[OCRCandidateResult]] = defaultdict(list)
     for owner, result in zip(owners, results, strict=True):

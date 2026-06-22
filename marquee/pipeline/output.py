@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import shutil
 from dataclasses import dataclass, field
@@ -13,6 +14,23 @@ from marquee.core.poster_sources.tmdb import PosterCandidate
 from marquee.pipeline.types import CandidateScore
 
 logger = logging.getLogger(__name__)
+
+_OUTPUT_DOWNLOAD_SEMAPHORE = asyncio.Semaphore(5)
+
+
+async def _download_original(
+    score: CandidateScore,
+    candidate: PosterCandidate,
+    client: httpx.AsyncClient,
+) -> tuple[CandidateScore, bool, str | None]:
+    async with _OUTPUT_DOWNLOAD_SEMAPHORE:
+        try:
+            response = await client.get(candidate.url(size="original"))
+            response.raise_for_status()
+            score.image_path.write_bytes(response.content)
+            return score, True, None
+        except Exception as exc:
+            return score, False, str(exc)
 
 
 @dataclass
@@ -95,6 +113,8 @@ async def place_ranked(
         originals = ranked[:top_n]
 
     async with httpx.AsyncClient(timeout=60.0) as client:
+        # Build download tasks for valid candidates only.
+        tasks: list[tuple[CandidateScore, PosterCandidate]] = []
         for score in originals:
             candidate = candidate_map.get(score.orig_filename)
             if candidate is None:
@@ -103,19 +123,23 @@ async def place_ranked(
                 result.download_errors.append(message)
                 score.original_download = False
                 result.original_download_status[score.orig_filename] = False
-                continue
-            try:
-                response = await client.get(candidate.url(size="original"))
-                response.raise_for_status()
-                score.image_path.write_bytes(response.content)
-                result.original_downloads += 1
-                score.original_download = True
-                result.original_download_status[score.orig_filename] = True
-            except Exception as exc:
-                message = f"{score.orig_filename}: {exc}"
-                logger.warning("Original-resolution download failed: %s", message)
-                result.download_errors.append(message)
-                score.original_download = False
-                result.original_download_status[score.orig_filename] = False
+            else:
+                tasks.append((score, candidate))
+
+        if tasks:
+            gathered = await asyncio.gather(
+                *[_download_original(score, candidate, client) for score, candidate in tasks]
+            )
+            for score, ok, error in gathered:
+                if ok:
+                    result.original_downloads += 1
+                    score.original_download = True
+                    result.original_download_status[score.orig_filename] = True
+                else:
+                    message = f"{score.orig_filename}: {error}"
+                    logger.warning("Original-resolution download failed: %s", message)
+                    result.download_errors.append(message)
+                    score.original_download = False
+                    result.original_download_status[score.orig_filename] = False
 
     return result

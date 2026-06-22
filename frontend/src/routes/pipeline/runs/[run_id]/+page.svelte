@@ -73,10 +73,6 @@ function toggleStack(stackId: number) {
 	expandedStackIds = next;
 }
 
-function collapseAll() {
-	expandedStackIds = new Set();
-}
-
 /** Deterministic palette for expanded stack grouping accents. */
 const STACK_PALETTE = [
 	'#6366f1', '#f59e0b', '#10b981', '#ef4444',
@@ -362,15 +358,6 @@ const groupedRanked = $derived.by<Array<CandidateView | CandidateView[]>>(() => 
 
 	{#if activeStage === 'ranked' && results.stacks?.length}
 		{#if viewMode === 'flat'}
-			{#if expandedStackIds.size > 0}
-				<div class="expand-bar">
-					<span>Showing all variants inline — ranks update to reflect stack order.</span>
-					<button class="expand-collapse-btn" onclick={collapseAll}>
-						<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
-						Collapse all stacks
-					</button>
-				</div>
-			{/if}
 			<div class="poster-grid">
 				{#each groupedRanked as item (Array.isArray(item) ? (item as CandidateView[])[0].orig_filename : (item as CandidateView).orig_filename)}
 					{#if Array.isArray(item)}
@@ -390,6 +377,14 @@ const groupedRanked = $derived.by<Array<CandidateView | CandidateView[]>>(() => 
 									/>
 								</div>
 							{/each}
+							<button
+								class="stack-collapse-inline"
+								onclick={() => toggleStack(sid)}
+								title="Collapse this stack"
+							>
+								<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+								Collapse
+							</button>
 						{:else}
 							<PosterStack
 								members={group}
@@ -700,46 +695,34 @@ const groupedRanked = $derived.by<Array<CandidateView | CandidateView[]>>(() => 
 	}
 	.poster-grid {
 		display: grid;
-		grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+		grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
 		gap: 14px;
 	}
-	.expand-bar {
-		display: flex;
-		align-items: center;
-		gap: 12px;
-		flex-wrap: wrap;
-		padding: 6px 10px;
-		margin-bottom: 12px;
-		border-radius: var(--radius-sm);
-		background: var(--panel);
-		border: 1px solid var(--line);
-		font-size: 12px;
-		color: var(--muted);
-	}
-	.expand-collapse-btn {
+	.stack-collapse-inline {
 		display: inline-flex;
 		align-items: center;
-		gap: 5px;
-		padding: 4px 10px;
+		gap: 4px;
+		padding: 4px 9px;
 		border-radius: 6px;
 		border: 1px solid var(--line);
 		background: var(--panel2);
 		color: var(--muted);
-		font-size: 11.5px;
+		font-size: 11px;
 		font-weight: 550;
 		cursor: pointer;
 		white-space: nowrap;
+		align-self: center;
 		transition: color 0.12s ease, border-color 0.12s ease;
 	}
-	.expand-collapse-btn:hover {
+	.stack-collapse-inline:hover {
 		color: var(--text);
 		border-color: var(--gold);
 	}
 	.expanded-tile {
 		border-left: 3px solid var(--group-accent);
 		border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
-		background: color-mix(in srgb, var(--group-accent) 6%, transparent);
-		padding: 4px 4px 4px 6px;
+		background: color-mix(in srgb, var(--group-accent) 5%, transparent);
+		padding: 0 0 0 3px;
 	}
 	.stacks {
 		display: flex;

@@ -23,6 +23,24 @@ from marquee.core.pipeline_config import pipeline_settings
 from marquee.ml.hardware import effective_ocr_omp_threads, effective_ocr_workers
 from marquee.pipeline.types import BoundingBox, OCRCandidateResult, OCRTextBox
 
+
+@dataclass
+class OcrPool:
+    """Handle to a running pool of PaddleOCR worker processes.
+
+    Created by ``PosterTextFilter.start_ocr_pool()`` — workers are already
+    loaded and ready to accept tasks.  Feed them with ``run_ocr_tasks()``
+    and shut down with ``stop_ocr_pool()``.
+    """
+
+    workers: list[Any]
+    task_queue: Any
+    result_queue: Any
+
+    @property
+    def worker_count(self) -> int:
+        return len(self.workers)
+
 logger = logging.getLogger(__name__)
 
 FORMAT_BLOCKLIST: frozenset[str] = frozenset(
@@ -810,6 +828,92 @@ class PosterTextFilter:
         )
         return results
 
+    # ── Pool lifecycle (exposed for batch-runner preloading) ──────────────
+
+    @staticmethod
+    def start_ocr_pool(num_workers: int | None = None) -> OcrPool:
+        """Spawn OCR workers and block until every one has loaded PaddleOCR.
+
+        Call this early (e.g. during the fetch/download phase) so the
+        expensive model load overlaps with network I/O.  The returned
+        ``OcrPool`` can be passed to ``run_ocr_tasks`` and then
+        ``stop_ocr_pool``.
+        """
+        wanted = num_workers or effective_ocr_workers()
+        worker_count = max(1, wanted)
+        omp_threads = effective_ocr_omp_threads(worker_count)
+        context = multiprocessing.get_context("spawn")
+        task_queue = context.Queue()
+        result_queue = context.Queue()
+        workers = [
+            context.Process(
+                target=_worker_main,
+                args=(task_queue, result_queue, set(), set(), omp_threads),
+                name=f"poster-ocr-{idx + 1}",
+            )
+            for idx in range(worker_count)
+        ]
+        for worker in workers:
+            worker.start()
+            _register_worker(worker)
+        PosterTextFilter._wait_for_workers_ready(result_queue, workers)
+        logger.info("OCR pool started: %d worker(s)", worker_count)
+        return OcrPool(workers=workers, task_queue=task_queue, result_queue=result_queue)
+
+    @staticmethod
+    def run_ocr_tasks(
+        pool: OcrPool,
+        items: list[tuple[Path, set[str], set[str]]],
+        *,
+        progress: Callable[[int, int], None] | None = None,
+    ) -> list[OCRCandidateResult]:
+        """Feed *items* to a ready pool and collect per-item results in order.
+
+        The pool must have been created by ``start_ocr_pool`` and its workers
+        must still be alive.  After this returns, the pool can be reused for
+        another batch or shut down with ``stop_ocr_pool``.
+        """
+        if not items:
+            return []
+
+        for index, (path, title_tokens, director_tokens) in enumerate(items):
+            pool.task_queue.put((index, str(path), title_tokens, director_tokens))
+        for _ in pool.workers:
+            pool.task_queue.put(None)
+
+        ordered_results: list[OCRCandidateResult | None] = [None] * len(items)
+        remaining = len(items)
+        while remaining:
+            message_type, key, payload = PosterTextFilter._get_worker_message(
+                pool.result_queue, pool.workers
+            )
+            if message_type == _WORKER_RESULT:
+                ordered_results[key] = payload
+                remaining -= 1
+                if progress is not None:
+                    progress(len(items) - remaining, len(items))
+            elif message_type == _WORKER_INIT_ERROR:
+                raise RuntimeError(
+                    f"OCR worker {key} failed to initialize: {payload}"
+                )
+
+        PosterTextFilter._join_workers(pool.workers)
+        results = [r for r in ordered_results if r is not None]
+        logger.info("OCR tasks ran %d image(s) over %d worker(s)", len(results), pool.worker_count)
+        return results
+
+    @staticmethod
+    def stop_ocr_pool(pool: OcrPool) -> None:
+        """Shut down worker processes and release queues.
+
+        Safe to call from any thread — workers are terminated if they
+        haven't exited cleanly. After this the pool is dead.
+        """
+        PosterTextFilter._stop_workers(pool.workers)
+        PosterTextFilter._close_queue(pool.task_queue)
+        PosterTextFilter._close_queue(pool.result_queue)
+        logger.info("OCR pool stopped: %d worker(s)", pool.worker_count)
+
     @staticmethod
     def run_ocr_batch(
         items: list[tuple[Path, set[str], set[str]]],
@@ -830,59 +934,11 @@ class PosterTextFilter:
         if not items:
             return []
 
-        context = multiprocessing.get_context("spawn")
-        wanted = num_workers or effective_ocr_workers()
-        worker_count = min(wanted, len(items))
-        omp_threads = effective_ocr_omp_threads(worker_count)
-        task_queue = context.Queue()
-        result_queue = context.Queue()
-        workers = [
-            context.Process(
-                target=_worker_main,
-                # Per-task tokens override these init defaults — pass empty sets.
-                args=(task_queue, result_queue, set(), set(), omp_threads),
-                name=f"poster-ocr-{index + 1}",
-            )
-            for index in range(worker_count)
-        ]
-
+        pool = PosterTextFilter.start_ocr_pool(num_workers)
         try:
-            for worker in workers:
-                worker.start()
-                _register_worker(worker)
-            PosterTextFilter._wait_for_workers_ready(result_queue, workers)
-
-            for index, (path, title_tokens, director_tokens) in enumerate(items):
-                task_queue.put((index, str(path), title_tokens, director_tokens))
-            for _ in workers:
-                task_queue.put(None)
-
-            ordered_results: list[OCRCandidateResult | None] = [None] * len(items)
-            remaining = len(items)
-            while remaining:
-                message_type, key, payload = PosterTextFilter._get_worker_message(
-                    result_queue,
-                    workers,
-                )
-                if message_type == _WORKER_RESULT:
-                    ordered_results[key] = payload
-                    remaining -= 1
-                    if progress is not None:
-                        progress(len(items) - remaining, len(items))
-                elif message_type == _WORKER_INIT_ERROR:
-                    raise RuntimeError(
-                        f"OCR worker {key} failed to initialize: {payload}"
-                    )
-
-            PosterTextFilter._join_workers(workers)
-            results = [result for result in ordered_results if result is not None]
+            return PosterTextFilter.run_ocr_tasks(pool, items, progress=progress)
         finally:
-            PosterTextFilter._stop_workers(workers)
-            PosterTextFilter._close_queue(task_queue)
-            PosterTextFilter._close_queue(result_queue)
-
-        logger.info("OCR batch ran %d image(s) over %d worker(s)", len(results), worker_count)
-        return results
+            PosterTextFilter.stop_ocr_pool(pool)
 
     @staticmethod
     def _apply_no_text_fallback(
