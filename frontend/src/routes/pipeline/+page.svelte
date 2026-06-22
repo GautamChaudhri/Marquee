@@ -26,6 +26,7 @@
 	import { trackJob, type JobProgressDetail } from '$lib/jobs';
 	import { toast } from '$lib/toast';
 	import { bytesH } from '$lib/display';
+	import { submitFeedback } from '$lib/api/feedback';
 	import type {
 		BatchScope,
 		CacheSizes,
@@ -37,8 +38,8 @@
 
 	let { data }: { data: PageData } = $props();
 
-	type Tab = 'review' | 'run' | 'metrics';
-	let tab = $state<Tab>((page.url.searchParams.get('tab') as Tab) ?? 'review');
+	type Tab = 'run' | 'review' | 'metrics';
+	let tab = $state<Tab>((page.url.searchParams.get('tab') as Tab) ?? 'run');
 	function setTab(id: string) {
 		tab = id as Tab;
 		// eslint-disable-next-line svelte/prefer-svelte-reactivity -- transient query builder
@@ -62,8 +63,8 @@
 	const selected = new SvelteSet<number>();
 
 	const tabs = $derived([
-		{ id: 'review', label: 'Review', count: queue.total },
 		{ id: 'run', label: 'Run', count: missingTotal },
+		{ id: 'review', label: 'Review', count: queue.total },
 		{ id: 'metrics', label: 'Metrics' }
 	]);
 
@@ -88,6 +89,42 @@
 		} catch {
 			/* keep stale data on a transient failure */
 		}
+	}
+
+	// ── Auto-approve all review queue items ───────────────────────────────────
+	let approveAllOpen = $state(false);
+	let approveAllBusy = $state(false);
+	let approveAllDone = $state(0);
+	let approveAllTotal = $state(0);
+	let approveAllErrors = $state<string[]>([]);
+
+	async function approveAllAutoPicks() {
+		if (!queue.items.length) return;
+		approveAllBusy = true;
+		approveAllDone = 0;
+		approveAllTotal = queue.items.length;
+		approveAllErrors = [];
+		for (const item of queue.items) {
+			try {
+				await submitFeedback(fetch, {
+					run_id: item.run.run_id,
+					action: 'approve',
+					deploy: true
+				});
+				approveAllDone++;
+			} catch (e) {
+				const title = item.movie.title ?? item.run.run_id.slice(0, 8);
+				approveAllErrors.push(`${title}: ${e instanceof Error ? e.message : 'failed'}`);
+			}
+		}
+		approveAllBusy = false;
+		approveAllOpen = false;
+		if (approveAllErrors.length) {
+			toast(`${approveAllDone} approved · ${approveAllErrors.length} failed`, 'info');
+		} else {
+			toast(`${approveAllDone} auto-picks approved`, 'good');
+		}
+		await refreshAll();
 	}
 
 	// ── Runs (batch + single) ────────────────────────────────────────────────────
@@ -361,6 +398,16 @@
 			<span>Runs awaiting a poster decision will collect here. Start one from the Run tab.</span>
 		</div>
 	{:else}
+		<div class="rev-bar">
+			<span class="rev-count">{queue.total} run{queue.total === 1 ? '' : 's'} awaiting</span>
+			<button
+				class="btn-gold"
+				onclick={() => (approveAllOpen = true)}
+				disabled={queue.total === 0}
+			>
+				Approve all auto-picks
+			</button>
+		</div>
 		<div class="rev-grid">
 			{#each queue.items as item (item.run.run_id)}
 				{@const c = item.run.counts ?? {}}
@@ -599,6 +646,17 @@
 	</label>
 </ConfirmDialog>
 
+<ConfirmDialog
+	open={approveAllOpen}
+	title="Approve all auto-picks"
+	message="This will approve the auto-pick for all {queue.total} run{queue.total === 1 ? '' : 's'} in the review queue, deploy posters to movie folders, and train the Key Art Engine. Continue?"
+	confirmLabel={approveAllBusy ? `Approving ${approveAllDone}/${approveAllTotal}…` : `Approve all {queue.total}`}
+	tone="bad"
+	busy={approveAllBusy}
+	onConfirm={approveAllAutoPicks}
+	onCancel={() => (approveAllOpen = false)}
+/>
+
 <style>
 	.tabwrap {
 		padding-bottom: 14px;
@@ -638,6 +696,18 @@
 	}
 
 	/* ── Review grid ── */
+	.rev-bar {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 12px;
+		flex-wrap: wrap;
+		margin-bottom: 14px;
+	}
+	.rev-count {
+		font-size: 13px;
+		color: var(--muted);
+	}
 	.rev-grid {
 		display: grid;
 		grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
