@@ -1,5 +1,6 @@
 <script lang="ts">
-	import { onDestroy } from 'svelte';
+	import { onDestroy, onMount } from 'svelte';
+	import { browser } from '$app/environment';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { SvelteSet } from 'svelte/reactivity';
@@ -20,7 +21,7 @@
 		triggerRun
 	} from '$lib/api/pipeline';
 	import { listMovies } from '$lib/api/library';
-	import { cancelJob } from '$lib/api/jobs';
+	import { cancelJob, getJob, isTerminal } from '$lib/api/jobs';
 	import { ApiError } from '$lib/api/client';
 	import { trackJob, type JobProgressDetail } from '$lib/jobs';
 	import { toast } from '$lib/toast';
@@ -90,11 +91,90 @@
 	}
 
 	// ── Runs (batch + single) ────────────────────────────────────────────────────
+	const BATCH_STORAGE_KEY = 'marquee:pipeline:activeBatch';
 	let batchJobId = $state<string | null>(null);
 	let batchDetail = $state<JobProgressDetail>({});
 	let batchStatus = $state('running');
 	let batchRunning = $state(false);
 	let stopBatch: (() => void) | null = null;
+
+	/** Persist batch ID to localStorage so the bar survives a page refresh. */
+	function storeBatchId(id: string | null) {
+		if (!browser) return;
+		if (id) {
+			localStorage.setItem(BATCH_STORAGE_KEY, id);
+		} else {
+			localStorage.removeItem(BATCH_STORAGE_KEY);
+		}
+	}
+
+	/** Re-attach to a batch after page load: fetch snapshot, then either show
+	 *  the result summary or resume tracking via SSE + poll. Mirrors the
+	 *  proven letterbox rehydrateBatch pattern. */
+	async function rehydrateBatch(jobId: string) {
+		let job;
+		try {
+			job = await getJob(fetch, jobId);
+		} catch {
+			batchRunning = false;
+			batchJobId = null;
+			batchStatus = '';
+			storeBatchId(null);
+			return;
+		}
+		batchJobId = jobId;
+		batchStatus = job.status;
+
+		if (isTerminal(job.status)) {
+			batchRunning = false;
+			stopBatch?.();
+			stopBatch = null;
+			storeBatchId(null);
+			toast(
+				`Batch ${job.status}`,
+				job.status === 'succeeded' ? 'good' : job.status === 'cancelled' ? 'info' : 'bad'
+			);
+			void refreshAll();
+		} else {
+			batchRunning = true;
+			batchDetail = {};
+			stopBatch?.();
+			stopBatch = trackJob(
+				fetch,
+				jobId,
+				{
+					onProgress: ({ status, detail }) => {
+						batchStatus = status;
+						batchDetail = detail;
+					},
+					onDone: (j) => {
+						batchRunning = false;
+						batchStatus = j.status;
+						storeBatchId(null);
+						toast(
+							`Batch ${j.status}`,
+							j.status === 'succeeded' ? 'good' : 'bad'
+						);
+						void refreshAll();
+					}
+				},
+				{ eventsUrl: job.events_url }
+			);
+		}
+	}
+
+	onMount(() => {
+		// Priority 1: the load function found an active batch job.
+		if (data.activeJob?.job_id) {
+			void rehydrateBatch(data.activeJob.job_id);
+			return;
+		}
+		// Priority 2: localStorage still holds a batch ID from before refresh.
+		if (browser) {
+			const stored = localStorage.getItem(BATCH_STORAGE_KEY);
+			if (stored) void rehydrateBatch(stored);
+		}
+	});
 
 	const eligibleLoaded = $derived(missing.filter((m) => m.tmdb_id != null));
 	const selectedCount = $derived(selected.size);
@@ -124,6 +204,7 @@
 		try {
 			const job = await runBatch(fetch, { scope, movie_ids: movieIds });
 			batchJobId = job.job_id;
+			storeBatchId(job.job_id);
 			const n = job.movie_count ?? 0;
 			toast(`Batch queued — ${n} movie${n === 1 ? '' : 's'}`, 'info');
 			if (scope === 'selected') selected.clear();
@@ -139,6 +220,7 @@
 					onDone: (j) => {
 						batchRunning = false;
 						batchStatus = j.status;
+						storeBatchId(null);
 						toast(`Batch ${j.status}`, j.status === 'succeeded' ? 'good' : 'bad');
 						void refreshAll();
 					}

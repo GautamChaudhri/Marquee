@@ -87,9 +87,35 @@ def _phash(path: Path) -> str | None:
 
 def _atomic_copy(source: Path, dest: Path) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
+    if not os.access(dest.parent, os.W_OK):
+        import pwd  # noqa: PLC0415
+
+        try:
+            user = pwd.getpwuid(os.geteuid()).pw_name
+        except Exception:
+            user = str(os.geteuid())
+        raise PermissionError(
+            f"Cannot write to movie folder {dest.parent} — "
+            f"the backend runs as user '{user}' but this directory is not "
+            f"group-writable. Run: chmod g+w \"{dest.parent}\" "
+            f"(or add '{user}' to the owning group)."
+        )
+    # If the destination file already exists and we can't overwrite it,
+    # try to make it writable first.
+    if dest.exists() and not os.access(dest, os.W_OK):
+        try:
+            dest.chmod(0o664)
+        except OSError:
+            pass
     tmp = dest.parent / f".{dest.name}.tmp"
     shutil.copy2(source, tmp)
-    os.replace(tmp, dest)
+    try:
+        os.replace(tmp, dest)
+    except PermissionError:
+        raise PermissionError(
+            f"Cannot write poster to {dest} — the backend lacks write permission "
+            f"on the movie folder. Run: chmod g+w \"{dest.parent}\""
+        ) from None
 
 
 def _atomic_write_bytes(data: bytes, dest: Path) -> None:
