@@ -464,13 +464,17 @@ export interface CacheSizes {
 	total_bytes: number;
 }
 
-// ── Feedback (pick / approve / reject) ──────────────────────────────────────
-export type FeedbackAction = 'approve' | 'override' | 'reject_all';
+// ── Feedback (pick / approve / reject / rank) ───────────────────────────────
+export type FeedbackAction = 'approve' | 'override' | 'reject_all' | 'rank';
 
 export interface FeedbackRequestBody {
 	run_id: string;
 	action: FeedbackAction;
 	selected_filename?: string;
+	/** action="rank": ordered favorite tiers (ties share a sublist) of
+	 *  orig_filenames, plus the unordered hated set. */
+	favorites?: string[][];
+	hated?: string[];
 	deploy?: boolean;
 }
 
@@ -478,11 +482,25 @@ export interface FeedbackResult {
 	event_id: string;
 	labels_written: number;
 	exemplar_added: string | null;
+	/** action="rank": positive exemplars + hard negatives the event added. */
+	favorites_exemplars?: string[];
+	negatives_added?: string[];
 	remapped_to: string | null;
 	gate_override: { reason: string; count_at_current_threshold: number } | null;
 	head: { retrained: boolean; reason?: string } & Record<string, unknown>;
 	deployed_to: string | null;
 	deploy_error: string | null;
+}
+
+/** One rankable unit in the bucket-ranking panel — a whole design stack (its
+ *  members move together) or a single poster. ``filenames`` is what the rank
+ *  payload references. */
+export interface RankItem {
+	key: string;
+	posterUrl: string;
+	label: string;
+	score: number | null;
+	filenames: string[];
 }
 
 // ── Taste / Key Art Engine status (GET /taste/status) ───────────────────────
@@ -502,6 +520,9 @@ export interface TasteStatus {
 	};
 	learned_head: {
 		active: boolean;
+		/** Training mode: 'pairwise' counts within-movie preference pairs;
+		 *  'pointwise' counts approve/override labels. Drives the unit label. */
+		mode?: 'pairwise' | 'pointwise';
 		n_samples: number;
 		activation: {
 			movies: { have: number; need: number };

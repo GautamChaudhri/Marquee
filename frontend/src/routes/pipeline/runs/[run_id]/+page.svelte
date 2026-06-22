@@ -7,6 +7,7 @@
 	import RunProgress from '$lib/components/RunProgress.svelte';
 	import PosterCandidateTile from '$lib/components/PosterCandidateTile.svelte';
 	import PosterStack from '$lib/components/PosterStack.svelte';
+	import PosterRankingPanel from '$lib/components/PosterRankingPanel.svelte';
 	import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
 	import Icon from '$lib/components/Icon.svelte';
 	import { getRunResults } from '$lib/api/pipeline';
@@ -14,7 +15,13 @@
 	import { trackJob, type JobProgressDetail } from '$lib/jobs';
 	import { toast } from '$lib/toast';
 	import { gradientFor } from '$lib/display';
-	import type { CandidateView, RunResults, RunResultsResponse, StackView } from '$lib/api/types';
+	import type {
+		CandidateView,
+		RankItem,
+		RunResults,
+		RunResultsResponse,
+		StackView
+	} from '$lib/api/types';
 	import type { PageData } from './$types';
 
 	let { data }: { data: PageData } = $props();
@@ -50,178 +57,186 @@
 
 	let activeStage = $state('ranked');
 
-/** Stack ranking method — recomputed client-side from the archive data. */
-type StackMethod = 'robust' | 'max' | 'mean';
-let stackMethod = $state<StackMethod>('robust');
+	/** Stack ranking method — recomputed client-side from the archive data. */
+	type StackMethod = 'robust' | 'max' | 'mean';
+	let stackMethod = $state<StackMethod>('robust');
 
-/** Re-rank stacks using the selected aggregation method.
- *  Returns a new ranked array and stacks with updated stack_rank values. */
-const rankedByMethod = $derived.by<CandidateView[]>(() => {
-	const r = results?.ranked;
-	const s = results?.stacks;
-	if (!r?.length || !s?.length) return r ?? [];
-	if (stackMethod === 'robust') return r; // default — no change needed
+	/** Re-rank stacks using the selected aggregation method.
+	 *  Returns a new ranked array and stacks with updated stack_rank values. */
+	const rankedByMethod = $derived.by<CandidateView[]>(() => {
+		const r = results?.ranked;
+		const s = results?.stacks;
+		if (!r?.length || !s?.length) return r ?? [];
+		if (stackMethod === 'robust') return r; // default — no change needed
 
-	// Build groups keyed by stack_id.
-	const groups = new Map<number, CandidateView[]>();
-	for (const c of r) {
-		if (c.stack_id == null) continue;
-		const g = groups.get(c.stack_id) ?? [];
-		g.push(c);
-		groups.set(c.stack_id, g);
-	}
-	if (groups.size === 0) return r;
+		// Build groups keyed by stack_id.
+		const groups = new Map<number, CandidateView[]>();
+		for (const c of r) {
+			if (c.stack_id == null) continue;
+			const g = groups.get(c.stack_id) ?? [];
+			g.push(c);
+			groups.set(c.stack_id, g);
+		}
+		if (groups.size === 0) return r;
 
-	// Compute aggregate score per group using the selected method.
-	const scored: { id: number; score: number; members: CandidateView[] }[] = [];
-	for (const [id, members] of groups) {
-		const scores = members.map((c) => c.final_score ?? 0).sort((a, b) => b - a);
-		let agg: number;
-		if (stackMethod === 'max') {
-			agg = scores[0];
+		// Compute aggregate score per group using the selected method.
+		const scored: { id: number; score: number; members: CandidateView[] }[] = [];
+		for (const [id, members] of groups) {
+			const scores = members.map((c) => c.final_score ?? 0).sort((a, b) => b - a);
+			let agg: number;
+			if (stackMethod === 'max') {
+				agg = scores[0];
+			} else {
+				// mean
+				agg = scores.reduce((a, b) => a + b, 0) / scores.length;
+			}
+			scored.push({ id, score: agg, members });
+		}
+		// Sort groups by aggregate score descending, then by size.
+		scored.sort((a, b) => b.score - a.score || b.members.length - a.members.length);
+
+		// Reassign stack_rank and stack_score, rebuild the flat ranked list.
+		const out: CandidateView[] = [];
+		let rank = 0;
+		for (const group of scored) {
+			rank++;
+			for (const c of group.members) {
+				out.push({ ...c, stack_rank: rank, stack_score: group.score });
+			}
+		}
+		return out;
+	});
+
+	/** Re-rank stacks for the stacks sidebar (same method). */
+	const stacksByMethod = $derived.by<StackView[]>(() => {
+		const s = results?.stacks;
+		if (!s?.length) return [];
+		if (stackMethod === 'robust') return s;
+
+		const ranked = rankedByMethod;
+		const groups = new Map<number, CandidateView[]>();
+		for (const c of ranked) {
+			if (c.stack_id == null) continue;
+			const g = groups.get(c.stack_id) ?? [];
+			g.push(c);
+			groups.set(c.stack_id, g);
+		}
+		const ordered = [...groups.entries()]
+			.map(([id, members]) => {
+				const rep = members[0];
+				return {
+					stack_rank: rep.stack_rank ?? 0,
+					stack_id: id,
+					label: String(rep.stack_rank ?? ''),
+					size: rep.stack_size ?? members.length,
+					stack_score: rep.stack_score ?? null,
+					representative: rep,
+					members
+				};
+			})
+			.sort((a, b) => a.stack_rank - b.stack_rank);
+		return ordered;
+	});
+
+	/** Persisted toggle: 'flat' = visual card stacks in flat grid; 'sectioned' = Design headers with borders. */
+	let viewMode = $state<'flat' | 'sectioned'>(
+		(typeof localStorage !== 'undefined' &&
+			(localStorage.getItem('marquee:pipeline:stackView') as 'flat' | 'sectioned' | null)) ||
+			'flat'
+	);
+	$effect(() => {
+		if (typeof localStorage !== 'undefined') {
+			localStorage.setItem('marquee:pipeline:stackView', viewMode);
+		}
+	});
+
+	/** Which stack_ids are currently expanded (flat view only). */
+	let expandedStackIds = $state<Set<number>>(new Set());
+
+	function toggleStack(stackId: number) {
+		const next = new Set(expandedStackIds);
+		if (next.has(stackId)) {
+			next.delete(stackId);
 		} else {
-			// mean
-			agg = scores.reduce((a, b) => a + b, 0) / scores.length;
+			next.add(stackId);
 		}
-		scored.push({ id, score: agg, members });
+		expandedStackIds = next;
 	}
-	// Sort groups by aggregate score descending, then by size.
-	scored.sort((a, b) => b.score - a.score || b.members.length - a.members.length);
 
-	// Reassign stack_rank and stack_score, rebuild the flat ranked list.
-	const out: CandidateView[] = [];
-	let rank = 0;
-	for (const group of scored) {
-		rank++;
-		for (const c of group.members) {
-			out.push({ ...c, stack_rank: rank, stack_score: group.score });
+	/** True when at least one stack is expanded in flat view. */
+	const anyExpanded = $derived(expandedStackIds.size > 0);
+
+	function expandAll() {
+		if (!results?.stacks) return;
+		const ids = new Set(stacksByMethod.map((s) => s.stack_id));
+		expandedStackIds = ids;
+	}
+
+	function collapseAll() {
+		expandedStackIds = new Set();
+	}
+
+	/** Deterministic palette for expanded stack grouping accents. */
+	const STACK_PALETTE = [
+		'#6366f1',
+		'#f59e0b',
+		'#10b981',
+		'#ef4444',
+		'#8b5cf6',
+		'#06b6d4',
+		'#f97316',
+		'#84cc16'
+	];
+	function stackColor(stackId: number): string {
+		return STACK_PALETTE[Math.abs(stackId) % STACK_PALETTE.length];
+	}
+
+	const currentPosters = $derived.by<CandidateView[]>(() => {
+		if (!results) return [];
+		if (activeStage === 'ranked') return rankedByMethod;
+		return results.rejected_by_stage.find((g) => g.stage === activeStage)?.posters ?? [];
+	});
+
+	/** Group ALL posters that share a stack into arrays (not just consecutive ones).
+	 *  Groups appear at the position of their highest-ranked member; within each
+	 *  group posters are ordered by stack_pos (A, B, C…).  Only groups of ≥2
+	 *  become visual stacks; singles stay as individual tiles. */
+	const groupedRanked = $derived.by<Array<CandidateView | CandidateView[]>>(() => {
+		const r = rankedByMethod;
+		const s = stacksByMethod;
+		const hasStacks = !!results?.stacks?.length;
+		if (!hasStacks) return r;
+
+		// Collect every stack's members into a map, preserving rank order.
+		const byStack = new Map<number, CandidateView[]>();
+		for (const c of r) {
+			if (c.stack_id != null && (c.stack_size ?? 1) > 1) {
+				const group = byStack.get(c.stack_id) ?? [];
+				group.push(c);
+				byStack.set(c.stack_id, group);
+			}
 		}
-	}
-	return out;
-});
-
-/** Re-rank stacks for the stacks sidebar (same method). */
-const stacksByMethod = $derived.by<StackView[]>(() => {
-	const s = results?.stacks;
-	if (!s?.length) return [];
-	if (stackMethod === 'robust') return s;
-
-	const ranked = rankedByMethod;
-	const groups = new Map<number, CandidateView[]>();
-	for (const c of ranked) {
-		if (c.stack_id == null) continue;
-		const g = groups.get(c.stack_id) ?? [];
-		g.push(c);
-		groups.set(c.stack_id, g);
-	}
-	const ordered = [...groups.entries()]
-		.map(([id, members]) => {
-			const rep = members[0];
-			return {
-				stack_rank: rep.stack_rank ?? 0,
-				stack_id: id,
-				label: String(rep.stack_rank ?? ''),
-				size: rep.stack_size ?? members.length,
-				stack_score: rep.stack_score ?? null,
-				representative: rep,
-				members
-			};
-		})
-		.sort((a, b) => a.stack_rank - b.stack_rank);
-	return ordered;
-});
-
-/** Persisted toggle: 'flat' = visual card stacks in flat grid; 'sectioned' = Design headers with borders. */
-let viewMode = $state<'flat' | 'sectioned'>(
-	(typeof localStorage !== 'undefined' && (localStorage.getItem('marquee:pipeline:stackView') as 'flat' | 'sectioned' | null)) || 'flat'
-);
-$effect(() => {
-	if (typeof localStorage !== 'undefined') {
-		localStorage.setItem('marquee:pipeline:stackView', viewMode);
-	}
-});
-
-/** Which stack_ids are currently expanded (flat view only). */
-let expandedStackIds = $state<Set<number>>(new Set());
-
-function toggleStack(stackId: number) {
-	const next = new Set(expandedStackIds);
-	if (next.has(stackId)) {
-		next.delete(stackId);
-	} else {
-		next.add(stackId);
-	}
-	expandedStackIds = next;
-}
-
-/** True when at least one stack is expanded in flat view. */
-const anyExpanded = $derived(expandedStackIds.size > 0);
-
-function expandAll() {
-	if (!results?.stacks) return;
-	const ids = new Set(stacksByMethod.map((s) => s.stack_id));
-	expandedStackIds = ids;
-}
-
-function collapseAll() {
-	expandedStackIds = new Set();
-}
-
-/** Deterministic palette for expanded stack grouping accents. */
-const STACK_PALETTE = [
-	'#6366f1', '#f59e0b', '#10b981', '#ef4444',
-	'#8b5cf6', '#06b6d4', '#f97316', '#84cc16',
-];
-function stackColor(stackId: number): string {
-	return STACK_PALETTE[Math.abs(stackId) % STACK_PALETTE.length];
-}
-
-const currentPosters = $derived.by<CandidateView[]>(() => {
-	if (!results) return [];
-	if (activeStage === 'ranked') return rankedByMethod;
-	return results.rejected_by_stage.find((g) => g.stage === activeStage)?.posters ?? [];
-});
-
-/** Group ALL posters that share a stack into arrays (not just consecutive ones).
- *  Groups appear at the position of their highest-ranked member; within each
- *  group posters are ordered by stack_pos (A, B, C…).  Only groups of ≥2
- *  become visual stacks; singles stay as individual tiles. */
-const groupedRanked = $derived.by<Array<CandidateView | CandidateView[]>>(() => {
-	const r = rankedByMethod;
-	const s = stacksByMethod;
-	const hasStacks = !!(results?.stacks?.length);
-	if (!hasStacks) return r;
-
-	// Collect every stack's members into a map, preserving rank order.
-	const byStack = new Map<number, CandidateView[]>();
-	for (const c of r) {
-		if (c.stack_id != null && (c.stack_size ?? 1) > 1) {
-			const group = byStack.get(c.stack_id) ?? [];
-			group.push(c);
-			byStack.set(c.stack_id, group);
+		// Sort each group by stack_pos (A=1, B=2, …).
+		for (const group of byStack.values()) {
+			group.sort((a, b) => (a.stack_pos ?? 0) - (b.stack_pos ?? 0));
 		}
-	}
-	// Sort each group by stack_pos (A=1, B=2, …).
-	for (const group of byStack.values()) {
-		group.sort((a, b) => (a.stack_pos ?? 0) - (b.stack_pos ?? 0));
-	}
 
-	// Rebuild in original rank order, emitting each stack only once (at its
-	// first member's position).
-	const seen = new Set<number>();
-	const out: Array<CandidateView | CandidateView[]> = [];
-	for (const c of r) {
-		const sid = c.stack_id;
-		if (sid != null && (c.stack_size ?? 1) > 1) {
-			if (seen.has(sid)) continue;
-			seen.add(sid);
-			out.push(byStack.get(sid)!);
-		} else {
-			out.push(c);
+		// Rebuild in original rank order, emitting each stack only once (at its
+		// first member's position).
+		const seen = new Set<number>();
+		const out: Array<CandidateView | CandidateView[]> = [];
+		for (const c of r) {
+			const sid = c.stack_id;
+			if (sid != null && (c.stack_size ?? 1) > 1) {
+				if (seen.has(sid)) continue;
+				seen.add(sid);
+				out.push(byStack.get(sid)!);
+			} else {
+				out.push(c);
+			}
 		}
-	}
-	return out;
-});
+		return out;
+	});
 
 	function contribSegments(c: Record<string, number> | null) {
 		if (!c) return [];
@@ -331,6 +346,37 @@ const groupedRanked = $derived.by<Array<CandidateView | CandidateView[]>>(() => 
 		}
 	}
 
+	// ── Bucket ranking (Favorites/Hate/Neutral → pairwise learned head) ──────────
+	let rankMode = $state(false);
+
+	/** Rankable units: one per design stack (members move together) when stacks
+	 *  exist, else one per ranked poster. Mirrors the active stack method. */
+	const rankItems = $derived.by<RankItem[]>(() => {
+		if (!results) return [];
+		if (stacksByMethod.length) {
+			return stacksByMethod.map((st) => ({
+				key: String(st.stack_id),
+				posterUrl: st.representative.poster_url,
+				label: `Design ${st.stack_rank}`,
+				score: st.stack_score,
+				filenames: st.members.map((m) => m.orig_filename)
+			}));
+		}
+		return rankedByMethod.map((c) => ({
+			key: c.orig_filename,
+			posterUrl: c.poster_url,
+			label: c.rank != null ? `#${c.rank}` : c.orig_filename,
+			score: c.final_score,
+			filenames: [c.orig_filename]
+		}));
+	});
+
+	function onRanked(eventId: string) {
+		rankMode = false;
+		lastEventId = eventId;
+		void reload();
+	}
+
 	const pickGrad = $derived(pickTarget ? gradientFor(pickTarget.orig_filename) : gradientFor('?'));
 </script>
 
@@ -408,152 +454,214 @@ const groupedRanked = $derived.by<Array<CandidateView | CandidateView[]>>(() => 
 				<button class="btn-ghost" onclick={() => (rejectOpen = true)} disabled={results.reviewed}>
 					Reject all
 				</button>
+				<button
+					class="btn-ghost"
+					onclick={() => (rankMode = !rankMode)}
+					disabled={results.reviewed || !results.ranked.length}
+				>
+					{rankMode ? 'Exit ranking' : 'Rank by taste'}
+				</button>
 			</div>
 		</div>
 	</div>
 
-	<!-- ── Stage tabs ── -->
-	<div class="tabwrap">
-		<TabBar tabs={stageTabs} active={activeStage} onSelect={(id) => (activeStage = id)} />
-	</div>
+	{#if rankMode}
+		<PosterRankingPanel
+			runId={results.run_id}
+			items={rankItems}
+			disabled={results.reviewed}
+			onsubmitted={onRanked}
+			oncancel={() => (rankMode = false)}
+		/>
+	{:else}
+		<!-- ── Stage tabs ── -->
+		<div class="tabwrap">
+			<TabBar tabs={stageTabs} active={activeStage} onSelect={(id) => (activeStage = id)} />
+		</div>
 
-	<p class="grid-hint">
-		{#if activeStage === 'ranked'}
-			{#if stacksByMethod.length}
-				<span class="hint-left">
-					{#if viewMode === 'flat'}
-						Stacked posters share a design — click the stack to fan out all variants. Click any poster
-						to choose it.
-					{:else}
-						Posters are grouped into <strong>stacks</strong> of the same design — variants differ only in
-						title position, text, or crop. Designs are ranked by their best few variants, so the
-						auto-pick (1A) may not be the single highest-scored poster. Click any poster to choose it.
-					{/if}
-				</span>
-				<span class="hint-toggle">
-					<select class="method-select" bind:value={stackMethod} title="Stack ranking method">
-						<option value="robust">Robust (top-3 mean)</option>
-						<option value="max">Max (best variant)</option>
-						<option value="mean">Mean (all variants)</option>
-					</select>
-					<button
-						class="view-btn"
-						class:active={viewMode === 'flat'}
-						onclick={() => (viewMode = 'flat')}
-						title="Flat grid with visual card stacks"
-					>
-						<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
-						Flat
-					</button>
-					<button
-						class="view-btn"
-						class:active={viewMode === 'sectioned'}
-						onclick={() => (viewMode = 'sectioned')}
-						title="Sectioned stacks with Design headers"
-					>
-						<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="8" rx="1"/><rect x="3" y="13" width="18" height="8" rx="1"/></svg>
-						Sectioned
-					</button>
-					{#if viewMode === 'flat'}
+		<p class="grid-hint">
+			{#if activeStage === 'ranked'}
+				{#if stacksByMethod.length}
+					<span class="hint-left">
+						{#if viewMode === 'flat'}
+							Stacked posters share a design — click the stack to fan out all variants. Click any
+							poster to choose it.
+						{:else}
+							Posters are grouped into <strong>stacks</strong> of the same design — variants differ only
+							in title position, text, or crop. Designs are ranked by their best few variants, so the
+							auto-pick (1A) may not be the single highest-scored poster. Click any poster to choose it.
+						{/if}
+					</span>
+					<span class="hint-toggle">
+						<select class="method-select" bind:value={stackMethod} title="Stack ranking method">
+							<option value="robust">Robust (top-3 mean)</option>
+							<option value="max">Max (best variant)</option>
+							<option value="mean">Mean (all variants)</option>
+						</select>
 						<button
 							class="view-btn"
-							onclick={() => (anyExpanded ? collapseAll() : expandAll())}
-							title={anyExpanded ? 'Collapse all stacks' : 'Expand all stacks'}
+							class:active={viewMode === 'flat'}
+							onclick={() => (viewMode = 'flat')}
+							title="Flat grid with visual card stacks"
 						>
-							<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-								{#if anyExpanded}
-									<polyline points="15 18 9 12 15 6"/>
-								{:else}
-									<polyline points="9 18 15 12 9 6"/>
-								{/if}
-							</svg>
-							{anyExpanded ? 'Collapse all' : 'Expand all'}
+							<svg
+								width="14"
+								height="14"
+								viewBox="0 0 24 24"
+								fill="none"
+								stroke="currentColor"
+								stroke-width="2"
+								stroke-linecap="round"
+								stroke-linejoin="round"
+								><rect x="3" y="3" width="7" height="7" /><rect
+									x="14"
+									y="3"
+									width="7"
+									height="7"
+								/><rect x="3" y="14" width="7" height="7" /><rect
+									x="14"
+									y="14"
+									width="7"
+									height="7"
+								/></svg
+							>
+							Flat
 						</button>
-					{/if}
-				</span>
+						<button
+							class="view-btn"
+							class:active={viewMode === 'sectioned'}
+							onclick={() => (viewMode = 'sectioned')}
+							title="Sectioned stacks with Design headers"
+						>
+							<svg
+								width="14"
+								height="14"
+								viewBox="0 0 24 24"
+								fill="none"
+								stroke="currentColor"
+								stroke-width="2"
+								stroke-linecap="round"
+								stroke-linejoin="round"
+								><rect x="3" y="3" width="18" height="8" rx="1" /><rect
+									x="3"
+									y="13"
+									width="18"
+									height="8"
+									rx="1"
+								/></svg
+							>
+							Sectioned
+						</button>
+						{#if viewMode === 'flat'}
+							<button
+								class="view-btn"
+								onclick={() => (anyExpanded ? collapseAll() : expandAll())}
+								title={anyExpanded ? 'Collapse all stacks' : 'Expand all stacks'}
+							>
+								<svg
+									width="14"
+									height="14"
+									viewBox="0 0 24 24"
+									fill="none"
+									stroke="currentColor"
+									stroke-width="2"
+									stroke-linecap="round"
+									stroke-linejoin="round"
+								>
+									{#if anyExpanded}
+										<polyline points="15 18 9 12 15 6" />
+									{:else}
+										<polyline points="9 18 15 12 9 6" />
+									{/if}
+								</svg>
+								{anyExpanded ? 'Collapse all' : 'Expand all'}
+							</button>
+						{/if}
+					</span>
+				{:else}
+					Click any poster to set it as the chosen one — it deploys to the movie folder and trains
+					the Key Art Engine.
+				{/if}
 			{:else}
-				Click any poster to set it as the chosen one — it deploys to the movie folder and trains the
-				Key Art Engine.
+				Rejected at this stage. Click to override and choose it anyway.
 			{/if}
-		{:else}
-			Rejected at this stage. Click to override and choose it anyway.
-		{/if}
-	</p>
+		</p>
 
-	{#if activeStage === 'ranked' && results.stacks?.length}
-		{#if viewMode === 'flat'}
-			<div class="poster-grid">
-				{#each groupedRanked as item (Array.isArray(item) ? (item as CandidateView[])[0].orig_filename : (item as CandidateView).orig_filename)}
-					{#if Array.isArray(item)}
-						{@const group = item as CandidateView[]}
-						{@const sid = group[0].stack_id ?? 0}
-						{#if expandedStackIds.has(sid)}
-							{#each group as c (c.orig_filename)}
-								<PosterCandidateTile
-									candidate={c}
-									kind="ranked"
+		{#if activeStage === 'ranked' && results.stacks?.length}
+			{#if viewMode === 'flat'}
+				<div class="poster-grid">
+					{#each groupedRanked as item (Array.isArray(item) ? (item as CandidateView[])[0].orig_filename : (item as CandidateView).orig_filename)}
+						{#if Array.isArray(item)}
+							{@const group = item as CandidateView[]}
+							{@const sid = group[0].stack_id ?? 0}
+							{#if expandedStackIds.has(sid)}
+								{#each group as c (c.orig_filename)}
+									<PosterCandidateTile
+										candidate={c}
+										kind="ranked"
+										selectable={!results.reviewed}
+										onSelect={openPick}
+										accent={stackColor(sid)}
+										onCollapse={c.stack_pos === 1 ? () => toggleStack(sid) : undefined}
+									/>
+								{/each}
+							{:else}
+								<PosterStack
+									members={group}
 									selectable={!results.reviewed}
 									onSelect={openPick}
-									accent={stackColor(sid)}
-									onCollapse={c.stack_pos === 1 ? () => toggleStack(sid) : undefined}
+									onToggle={() => toggleStack(sid)}
 								/>
-							{/each}
+							{/if}
 						{:else}
-							<PosterStack
-								members={group}
+							<PosterCandidateTile
+								candidate={item as CandidateView}
+								kind="ranked"
 								selectable={!results.reviewed}
 								onSelect={openPick}
-								onToggle={() => toggleStack(sid)}
 							/>
 						{/if}
-					{:else}
-						<PosterCandidateTile
-							candidate={item as CandidateView}
-							kind="ranked"
-							selectable={!results.reviewed}
-							onSelect={openPick}
-						/>
-					{/if}
-				{/each}
-			</div>
+					{/each}
+				</div>
+			{:else}
+				<div class="stacks">
+					{#each stacksByMethod as st (st.stack_id)}
+						<section class="stack">
+							<div class="stack-head">
+								<span class="stack-name">Design {st.stack_rank}</span>
+								{#if st.stack_score != null}
+									<span class="stack-score mono">{st.stack_score.toFixed(3)}</span>
+								{/if}
+								<span class="stack-size">{st.size} variant{st.size === 1 ? '' : 's'}</span>
+							</div>
+							<div class="poster-grid">
+								{#each st.members as c (c.orig_filename)}
+									<PosterCandidateTile
+										candidate={c}
+										kind="ranked"
+										selectable={!results.reviewed}
+										onSelect={openPick}
+									/>
+								{/each}
+							</div>
+						</section>
+					{/each}
+				</div>
+			{/if}
+		{:else if currentPosters.length === 0}
+			<div class="empty-tab">No posters in this group.</div>
 		{:else}
-			<div class="stacks">
-				{#each stacksByMethod as st (st.stack_id)}
-					<section class="stack">
-						<div class="stack-head">
-							<span class="stack-name">Design {st.stack_rank}</span>
-							{#if st.stack_score != null}
-								<span class="stack-score mono">{st.stack_score.toFixed(3)}</span>
-							{/if}
-							<span class="stack-size">{st.size} variant{st.size === 1 ? '' : 's'}</span>
-						</div>
-						<div class="poster-grid">
-							{#each st.members as c (c.orig_filename)}
-								<PosterCandidateTile
-									candidate={c}
-									kind="ranked"
-									selectable={!results.reviewed}
-									onSelect={openPick}
-								/>
-							{/each}
-						</div>
-					</section>
+			<div class="poster-grid">
+				{#each currentPosters as c (c.orig_filename)}
+					<PosterCandidateTile
+						candidate={c}
+						kind={activeStage === 'ranked' ? 'ranked' : 'rejected'}
+						selectable={!results.reviewed}
+						onSelect={openPick}
+					/>
 				{/each}
 			</div>
 		{/if}
-	{:else if currentPosters.length === 0}
-		<div class="empty-tab">No posters in this group.</div>
-	{:else}
-		<div class="poster-grid">
-			{#each currentPosters as c (c.orig_filename)}
-				<PosterCandidateTile
-					candidate={c}
-					kind={activeStage === 'ranked' ? 'ranked' : 'rejected'}
-					selectable={!results.reviewed}
-					onSelect={openPick}
-				/>
-			{/each}
-		</div>
 	{/if}
 {/if}
 
@@ -795,7 +903,10 @@ const groupedRanked = $derived.by<Array<CandidateView | CandidateView[]>>(() => 
 		font-size: 11px;
 		font-weight: 550;
 		cursor: pointer;
-		transition: color 0.12s ease, border-color 0.12s ease, background 0.12s ease;
+		transition:
+			color 0.12s ease,
+			border-color 0.12s ease,
+			background 0.12s ease;
 	}
 	.view-btn:hover {
 		color: var(--text);
@@ -821,7 +932,9 @@ const groupedRanked = $derived.by<Array<CandidateView | CandidateView[]>>(() => 
 		background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='%23999' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
 		background-repeat: no-repeat;
 		background-position: right 5px center;
-		transition: color 0.12s ease, border-color 0.12s ease;
+		transition:
+			color 0.12s ease,
+			border-color 0.12s ease;
 	}
 	.method-select:hover {
 		color: var(--text);

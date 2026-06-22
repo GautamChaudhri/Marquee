@@ -104,6 +104,7 @@
 	let stopHead: (() => void) | null = null;
 
 	const head = $derived(status?.learned_head);
+	const headUnit = $derived(head?.mode === 'pairwise' ? 'pairs' : 'labels');
 	const ready = $derived(
 		!!head &&
 			head.activation.movies.have >= head.activation.movies.need &&
@@ -187,7 +188,7 @@
 					{head?.active ? 'Active' : 'Inactive'}
 				</span>
 			</div>
-			<div class="engine-val mono">{head?.n_samples ?? 0}<span class="unit"> labels</span></div>
+			<div class="engine-val mono">{head?.n_samples ?? 0}<span class="unit"> {headUnit}</span></div>
 			{#if head}
 				<div class="gauges">
 					<div class="gauge">
@@ -204,7 +205,7 @@
 					</div>
 					<div class="gauge">
 						<div class="gl">
-							<span>Labels</span><span class="mono"
+							<span>{head.mode === 'pairwise' ? 'Pairs' : 'Labels'}</span><span class="mono"
 								>{head.activation.labels.have}/{head.activation.labels.need}</span
 							>
 						</div>

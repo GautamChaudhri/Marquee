@@ -111,24 +111,156 @@ def build_training_data(
     return matrix, targets, common, len(movies)
 
 
+_BUCKET_FAV = "fav"
+_BUCKET_INDIFF = "indiff"
+_BUCKET_HATE = "hate"
+
+
+def build_pairwise_training_data(
+    rows: list[dict],
+) -> tuple[np.ndarray, np.ndarray, list[str], int, int]:
+    """Expand v3 ranking events into weighted within-movie preference pairs.
+
+    Each ranking event encodes a partial order over a movie's candidates:
+    ``Favorites`` (ordered tiers, ties within a tier) ≻ ``Indifferent`` ≻
+    ``Hate``. We turn that into ``(x_winner - x_loser, weight)`` rows — one per
+    cross-group/cross-tier pair, none within a tier (ties = no constraint).
+
+    Weight = ``movie_norm × confidence`` where ``movie_norm = 1/pairs-in-movie``
+    (so a 30-candidate movie can't drown a 6-candidate one) and ``confidence``
+    is 1.0 for explicit pairs (between favorite tiers, favorite↔hate) and
+    ``FEEDBACK_INDIFF_HATE_PAIR_WEIGHT`` for pairs touching the inferred
+    indifferent set. Legacy v1/v2 rows are ignored here (decision: start fresh).
+
+    Returns ``(diffs[N,F], weights[N], feature_names, n_movies, n_pairs)``.
+    Feature names are the intersection present on every paired candidate.
+    """
+    implicit_weight = pipeline_settings.FEEDBACK_INDIFF_HATE_PAIR_WEIGHT
+    all_pairs: list[tuple[dict, dict, float]] = []
+    movies: set[object] = set()
+
+    for row in rows:
+        if row.get("v") != 3 or row.get("type") != "ranking":
+            continue
+        feats = {
+            c["orig_filename"]: c["normalized_features"]
+            for c in row.get("candidates", [])
+            if c.get("orig_filename") and c.get("normalized_features")
+        }
+
+        # Ordered groups, best → worst, tagged explicit/implicit. Favorites
+        # arrive as tiers (list of lists); indifferent + hate are single groups.
+        groups: list[tuple[list[str], bool]] = []
+        favorites_flat: set[str] = set()
+        for tier in row.get("favorites") or []:
+            members = [name for name in tier if name in feats]
+            favorites_flat.update(tier)
+            if members:
+                groups.append((members, True))  # explicit
+        hated = [name for name in (row.get("hated") or []) if name in feats]
+        indifferent = [
+            name
+            for name in feats
+            if name not in favorites_flat and name not in set(row.get("hated") or [])
+        ]
+        if indifferent:
+            groups.append((indifferent, False))  # implicit (inferred)
+        if hated:
+            groups.append((hated, True))  # explicit
+
+        movie_pairs: list[tuple[dict, dict, float]] = []
+        for hi, (winners, w_explicit) in enumerate(groups):
+            for losers, l_explicit in groups[hi + 1 :]:
+                # Pair is explicit only when BOTH endpoints were stated by the
+                # user (favorite or hate); anything touching indifferent is soft.
+                confidence = 1.0 if (w_explicit and l_explicit) else implicit_weight
+                for winner in winners:
+                    for loser in losers:
+                        movie_pairs.append((feats[winner], feats[loser], confidence))
+
+        if not movie_pairs:
+            continue
+        movies.add(row.get("movie_id") if row.get("movie_id") is not None else row.get("title"))
+        movie_norm = 1.0 / len(movie_pairs)
+        all_pairs.extend(
+            (winner, loser, confidence * movie_norm)
+            for winner, loser, confidence in movie_pairs
+        )
+
+    if not all_pairs:
+        return np.empty((0, 0)), np.empty(0), [], len(movies), 0
+
+    common = sorted(
+        set.intersection(
+            *(set(winner) & set(loser) for winner, loser, _ in all_pairs)
+        )
+    )
+    diffs = np.asarray(
+        [
+            [winner[name] - loser[name] for name in common]
+            for winner, loser, _ in all_pairs
+        ],
+        dtype=np.float64,
+    )
+    weights = np.asarray([weight for _, _, weight in all_pairs], dtype=np.float64)
+    return diffs, weights, common, len(movies), len(all_pairs)
+
+
 def train_from_labels(
     *,
     runs_dir: Path | None = None,
     min_labels: int | None = None,
     min_movies: int | None = None,
+    min_pairs: int | None = None,
+    mode: str | None = None,
     l2: float = 1.0,
     save: bool = True,
 ) -> tuple[LogisticHead | None, dict]:
-    """Train + (optionally) save the head. Returns (head|None, info)."""
-    min_labels = pipeline_settings.HEAD_MIN_LABELS if min_labels is None else min_labels
+    """Train + (optionally) save the head. Returns (head|None, info).
+
+    ``mode`` selects the trainer (defaults to ``HEAD_TRAIN_MODE``): "pairwise"
+    learns a RankNet head from v3 ranking events; "pointwise" is the legacy
+    logistic regression over v1/v2 approve/override labels.
+    """
+    mode = pipeline_settings.HEAD_TRAIN_MODE if mode is None else mode
     min_movies = pipeline_settings.HEAD_MIN_MOVIES if min_movies is None else min_movies
+    rows = feedback_store.read_all()
+
+    if mode == "pairwise":
+        min_pairs = pipeline_settings.HEAD_MIN_PAIRS if min_pairs is None else min_pairs
+        diffs, weights, names, n_movies, n_pairs = build_pairwise_training_data(rows)
+        info = {
+            "mode": "pairwise",
+            "n_pairs": n_pairs,
+            "n_movies": n_movies,
+            "min_pairs": min_pairs,
+            "min_movies": min_movies,
+        }
+        if n_pairs < min_pairs or n_movies < min_movies:
+            info["activated"] = False
+            info["reason"] = (
+                f"need {min_movies} movies / {min_pairs} pairs; "
+                f"have {n_movies} movies / {n_pairs} pairs"
+            )
+            return None, info
+        head = LogisticHead.train_pairwise(diffs, weights, names, l2=l2)
+        info["activated"] = True
+        info["train_accuracy"] = head.train_accuracy
+        info["features"] = names
+        info["reason"] = "trained"
+        if save:
+            head.save()
+        return head, info
+
+    # Legacy pointwise path (v1/v2 approve/override labels).
+    min_labels = pipeline_settings.HEAD_MIN_LABELS if min_labels is None else min_labels
     current_runs_dir = runs_dir or _RUNS_DIR
     runs_dirs = (current_runs_dir, *_LEGACY_RUNS_DIRS)
 
-    rows = feedback_store.read_all()
     features, targets, names, n_movies = build_training_data(rows, runs_dirs)
     n_samples = int(len(targets))
     info = {
+        "mode": "pointwise",
         "n_samples": n_samples,
         "n_movies": n_movies,
         "min_labels": min_labels,
@@ -161,18 +293,27 @@ def train_from_labels(
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--runs-dir", type=Path, default=None)
+    parser.add_argument(
+        "--mode", choices=("pairwise", "pointwise"), default=pipeline_settings.HEAD_TRAIN_MODE
+    )
     parser.add_argument("--min-labels", type=int, default=pipeline_settings.HEAD_MIN_LABELS)
+    parser.add_argument("--min-pairs", type=int, default=pipeline_settings.HEAD_MIN_PAIRS)
     parser.add_argument("--min-movies", type=int, default=pipeline_settings.HEAD_MIN_MOVIES)
     parser.add_argument("--l2", type=float, default=1.0)
     args = parser.parse_args()
 
     head, info = train_from_labels(
         runs_dir=args.runs_dir or settings.runs_work_path,
+        mode=args.mode,
         min_labels=args.min_labels,
+        min_pairs=args.min_pairs,
         min_movies=args.min_movies,
         l2=args.l2,
     )
-    print(f"[INFO] {info['n_samples']} labels across {info['n_movies']} movies")
+    if info.get("mode") == "pairwise":
+        print(f"[INFO] {info['n_pairs']} pairs across {info['n_movies']} movies")
+    else:
+        print(f"[INFO] {info['n_samples']} labels across {info['n_movies']} movies")
     if head is None:
         raise SystemExit(f"[ABORT] {info['reason']}")
 
