@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from marquee.api.library_serializers import enrich_movie, hdr_filter
 from marquee.api.routes.library import _coverage_by_media_file
 from marquee.database import get_db
+from marquee.core.sort_title import title_sort_expr
 from marquee.models import LetterboxState, MediaFile, Movie
 
 router = APIRouter(prefix="/api/hdr", tags=["hdr"])
@@ -59,7 +60,7 @@ async def hdr_index(
     total = (await db.execute(select(func.count()).select_from(base.subquery()))).scalar_one()
     rows = (
         await db.execute(
-            base.order_by(Movie.title).limit(page_size).offset((page - 1) * page_size)
+            base.order_by(title_sort_expr()).limit(page_size).offset((page - 1) * page_size)
         )
     ).all()
 

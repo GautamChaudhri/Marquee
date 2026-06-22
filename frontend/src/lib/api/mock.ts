@@ -9,6 +9,7 @@ import type {
 	HdrKind,
 	SystemMetrics
 } from './types';
+import { compareBySortTitle } from '../sort-title';
 
 const TITLES = [
 	'Arrival',
@@ -58,7 +59,7 @@ export function mockMovies(params: MovieQuery = {}): Paginated<MovieListItem> {
 	if (params.poster_status) items = items.filter((m) => m.poster_status === params.poster_status);
 	if (params.hdr) items = items.filter((m) => m.hdr === params.hdr);
 	if (params.sort === 'year') items.sort((a, b) => b.year - a.year);
-	else items.sort((a, b) => a.title.localeCompare(b.title));
+	else items.sort((a, b) => compareBySortTitle(a.title, b.title));
 	return { total: items.length, page: params.page ?? 1, page_size: params.page_size ?? 50, items };
 }
 

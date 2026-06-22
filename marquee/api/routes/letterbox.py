@@ -45,6 +45,7 @@ from marquee.core.media_files import (
 from marquee.core.media_jobs import media_job_manager
 from marquee.core.rate_limit import RateLimiter
 from marquee.database import get_db
+from marquee.core.sort_title import title_sort_expr
 from marquee.media import binaries, letterbox_preview
 from marquee.media.concurrency import gated
 from marquee.models import (
@@ -421,11 +422,11 @@ async def list_candidates(
 
     # Sort: confidence (rank-ordered high→low or low→high), title, or crop size.
     if sort == "title":
-        query = query.order_by(Movie.title)
+        query = query.order_by(title_sort_expr())
     elif sort == "crop":
         query = query.order_by(LetterboxState.recommended_crop_top.desc().nullslast())
     elif sort == "recent":
-        query = query.order_by(LetterboxState.updated_at.desc().nullslast(), Movie.title)
+        query = query.order_by(LetterboxState.updated_at.desc().nullslast(), title_sort_expr())
     else:  # confidence
         rank = case(
             (LetterboxState.confidence == "high", 0),
@@ -436,7 +437,7 @@ async def list_candidates(
             else_=5,
         )
         order = rank if desc else rank.desc()
-        query = query.order_by(order, Movie.title)
+        query = query.order_by(order, title_sort_expr())
 
     query = query.limit(page_size).offset((page - 1) * page_size)
     rows = (await db.execute(query)).all()
@@ -466,7 +467,7 @@ async def find_candidate_movies(
             await db.execute(
                 select(Movie, LetterboxState)
                 .outerjoin(LetterboxState, LetterboxState.movie_id == Movie.id)
-                .order_by(Movie.title, Movie.year)
+                .order_by(title_sort_expr(), Movie.year)
             )
         ).all()
     except OperationalError as exc:

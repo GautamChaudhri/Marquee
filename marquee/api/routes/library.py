@@ -22,6 +22,7 @@ from marquee.api.library_serializers import (
     poster_status_filter,
 )
 from marquee.database import get_db
+from marquee.core.sort_title import title_sort_expr
 from marquee.models import (
     Episode,
     EpisodeMediaFile,
@@ -111,7 +112,7 @@ async def list_movies(
     elif sort == "added":
         order_col = Movie.created_at.desc()
     else:
-        order_col = Movie.title
+        order_col = title_sort_expr()
     rows = (
         await db.execute(
             base.order_by(order_col).limit(page_size).offset((page - 1) * page_size)
@@ -193,7 +194,7 @@ async def list_series(
     total = (await db.execute(select(func.count()).select_from(Series))).scalar_one()
     rows = (
         await db.execute(
-            select(Series).order_by(Series.title).limit(page_size).offset((page - 1) * page_size)
+            select(Series).order_by(title_sort_expr(Series.title)).limit(page_size).offset((page - 1) * page_size)
         )
     ).scalars().all()
     return {
