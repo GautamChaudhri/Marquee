@@ -59,39 +59,70 @@ $effect(() => {
 		localStorage.setItem('marquee:pipeline:stackView', viewMode);
 	}
 });
-	const currentPosters = $derived.by<CandidateView[]>(() => {
-		if (!results) return [];
-		if (activeStage === 'ranked') return results.ranked;
-		return results.rejected_by_stage.find((g) => g.stage === activeStage)?.posters ?? [];
-	});
 
-	/** Group consecutive ranked posters that share a stack into arrays.
-	 *  Singletons (or non-stacked runs) stay as individual CandidateViews.
-	 *  Used only on the 'ranked' tab when stacks are present. */
-	const groupedRanked = $derived.by<Array<CandidateView | CandidateView[]>>(() => {
-		const r = results?.ranked;
-		if (!r?.length) return [];
-		const hasStacks = !!(results?.stacks?.length);
-		if (!hasStacks) return r;
-		const out: Array<CandidateView | CandidateView[]> = [];
-		let i = 0;
-		while (i < r.length) {
-			const c = r[i];
-			if (c.stack_id != null && (c.stack_size ?? 1) > 1) {
-				const sid = c.stack_id;
-				const group: CandidateView[] = [];
-				while (i < r.length && r[i].stack_id === sid) {
-					group.push(r[i]);
-					i++;
-				}
-				out.push(group);
-			} else {
-				out.push(c);
+/** Which stack_ids are currently expanded (flat view only). */
+let expandedStackIds = $state<Set<number>>(new Set());
+
+function toggleStack(stackId: number) {
+	const next = new Set(expandedStackIds);
+	if (next.has(stackId)) {
+		next.delete(stackId);
+	} else {
+		next.add(stackId);
+	}
+	expandedStackIds = next;
+}
+
+function collapseAll() {
+	expandedStackIds = new Set();
+}
+
+/** Deterministic palette for expanded stack grouping accents. */
+const STACK_PALETTE = [
+	'#6366f1', '#f59e0b', '#10b981', '#ef4444',
+	'#8b5cf6', '#06b6d4', '#f97316', '#84cc16',
+];
+function stackColor(stackId: number): string {
+	return STACK_PALETTE[Math.abs(stackId) % STACK_PALETTE.length];
+}
+
+const currentPosters = $derived.by<CandidateView[]>(() => {
+	if (!results) return [];
+	if (activeStage === 'ranked') return results.ranked;
+	return results.rejected_by_stage.find((g) => g.stage === activeStage)?.posters ?? [];
+});
+
+/** Group consecutive ranked posters that share a stack into arrays.
+ *  Only groups of ≥2 become visual stacks; singles stay as individual tiles. */
+const groupedRanked = $derived.by<Array<CandidateView | CandidateView[]>>(() => {
+	const r = results?.ranked;
+	if (!r?.length) return [];
+	const hasStacks = !!(results?.stacks?.length);
+	if (!hasStacks) return r;
+	const out: Array<CandidateView | CandidateView[]> = [];
+	let i = 0;
+	while (i < r.length) {
+		const c = r[i];
+		if (c.stack_id != null && (c.stack_size ?? 1) > 1) {
+			const sid = c.stack_id;
+			const group: CandidateView[] = [];
+			while (i < r.length && r[i].stack_id === sid) {
+				group.push(r[i]);
 				i++;
 			}
+			// Only treat as a stack group when ≥2 are consecutive
+			if (group.length > 1) {
+				out.push(group);
+			} else {
+				out.push(group[0]);
+			}
+		} else {
+			out.push(c);
+			i++;
 		}
-		return out;
-	});
+	}
+	return out;
+});
 
 	function contribSegments(c: Record<string, number> | null) {
 		if (!c) return [];
@@ -331,14 +362,42 @@ $effect(() => {
 
 	{#if activeStage === 'ranked' && results.stacks?.length}
 		{#if viewMode === 'flat'}
+			{#if expandedStackIds.size > 0}
+				<div class="expand-bar">
+					<span>Showing all variants inline — ranks update to reflect stack order.</span>
+					<button class="expand-collapse-btn" onclick={collapseAll}>
+						<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+						Collapse all stacks
+					</button>
+				</div>
+			{/if}
 			<div class="poster-grid">
 				{#each groupedRanked as item (Array.isArray(item) ? (item as CandidateView[])[0].orig_filename : (item as CandidateView).orig_filename)}
 					{#if Array.isArray(item)}
-						<PosterStack
-							members={item as CandidateView[]}
-							selectable={!results.reviewed}
-							onSelect={openPick}
-						/>
+						{@const group = item as CandidateView[]}
+						{@const sid = group[0].stack_id ?? 0}
+						{#if expandedStackIds.has(sid)}
+							{#each group as c (c.orig_filename)}
+								<div
+									class="expanded-tile"
+									style="--group-accent: {stackColor(sid)}"
+								>
+									<PosterCandidateTile
+										candidate={c}
+										kind="ranked"
+										selectable={!results.reviewed}
+										onSelect={openPick}
+									/>
+								</div>
+							{/each}
+						{:else}
+							<PosterStack
+								members={group}
+								selectable={!results.reviewed}
+								onSelect={openPick}
+								onToggle={() => toggleStack(sid)}
+							/>
+						{/if}
 					{:else}
 						<PosterCandidateTile
 							candidate={item as CandidateView}
@@ -643,6 +702,44 @@ $effect(() => {
 		display: grid;
 		grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
 		gap: 14px;
+	}
+	.expand-bar {
+		display: flex;
+		align-items: center;
+		gap: 12px;
+		flex-wrap: wrap;
+		padding: 6px 10px;
+		margin-bottom: 12px;
+		border-radius: var(--radius-sm);
+		background: var(--panel);
+		border: 1px solid var(--line);
+		font-size: 12px;
+		color: var(--muted);
+	}
+	.expand-collapse-btn {
+		display: inline-flex;
+		align-items: center;
+		gap: 5px;
+		padding: 4px 10px;
+		border-radius: 6px;
+		border: 1px solid var(--line);
+		background: var(--panel2);
+		color: var(--muted);
+		font-size: 11.5px;
+		font-weight: 550;
+		cursor: pointer;
+		white-space: nowrap;
+		transition: color 0.12s ease, border-color 0.12s ease;
+	}
+	.expand-collapse-btn:hover {
+		color: var(--text);
+		border-color: var(--gold);
+	}
+	.expanded-tile {
+		border-left: 3px solid var(--group-accent);
+		border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+		background: color-mix(in srgb, var(--group-accent) 6%, transparent);
+		padding: 4px 4px 4px 6px;
 	}
 	.stacks {
 		display: flex;

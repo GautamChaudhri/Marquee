@@ -416,10 +416,10 @@ async def poster_deploy_reset(job: Job) -> dict[str, Any]:
         failed = 0
         errors: list[dict] = []
         for movie in rows:
+            deleted = False
+            stored_path = str(movie.poster_path)  # capture before clearing
             try:
                 poster_file = Path(movie.poster_path)
-                # Confinement: validate the parent folder and confirm the
-                # stored path lives inside it.
                 folder = safe_translate_and_validate(
                     movie.folder_path, source="radarr"
                 )
@@ -428,40 +428,51 @@ async def poster_deploy_reset(job: Job) -> dict[str, Any]:
                         f"Poster parent {poster_file.parent} != folder {folder}"
                     )
                 poster_file.unlink(missing_ok=True)
-
-                # Reset all poster_* columns to missing state.
-                movie.poster_path = None
-                movie.poster_source = None
-                movie.poster_source_url = None
-                movie.poster_ai_selected = False
-                movie.poster_embedding = None
-                movie.poster_sha256 = None
-                movie.poster_phash = None
-                movie.poster_user_approved = False
-                movie.poster_deployed_filename = None
-                movie.poster_deployed_at = None
-
-                detail = _json.dumps({
-                    "deleted_path": str(poster_file),
-                    "cache_kept": str(cache_paths(movie.tmdb_id)[0])
-                    if movie.tmdb_id else None,
-                })
-                db.add(
-                    ArtworkEvent(
-                        movie_id=movie.id,
-                        action="deploy_reset",
-                        source="maintenance",
-                        detail=detail,
-                    )
-                )
-                reset += 1
+                deleted = True
             except Exception as exc:
                 logger.warning(
-                    "DEPLOY RESET | failed for movie %d (%s): %s",
+                    "DEPLOY RESET | file error for movie %d (%s): %s",
                     movie.id, movie.title, exc,
                 )
+                try:
+                    Path(movie.poster_path).unlink(missing_ok=True)
+                except Exception:
+                    pass
+
+            # Always reset DB columns — the file is gone or unreachable.
+            movie.poster_path = None
+            movie.poster_source = None
+            movie.poster_source_url = None
+            movie.poster_ai_selected = False
+            movie.poster_embedding = None
+            movie.poster_sha256 = None
+            movie.poster_phash = None
+            movie.poster_user_approved = False
+            movie.poster_deployed_filename = None
+            movie.poster_deployed_at = None
+
+            detail = _json.dumps({
+                "deleted_path": stored_path,
+                "cache_kept": str(cache_paths(movie.tmdb_id)[0])
+                if movie.tmdb_id else None,
+            })
+            db.add(
+                ArtworkEvent(
+                    movie_id=movie.id,
+                    action="deploy_reset",
+                    source="maintenance",
+                    detail=detail,
+                )
+            )
+            if deleted:
+                reset += 1
+            else:
                 failed += 1
-                errors.append({"movie_id": movie.id, "title": movie.title, "error": str(exc)})
+                errors.append({
+                    "movie_id": movie.id,
+                    "title": movie.title,
+                    "error": "file unavailable — DB state cleared"
+                })
 
         await db.commit()
 
