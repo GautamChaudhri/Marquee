@@ -245,6 +245,118 @@ async def test_undo_unknown_event_404(client, db):
 
 
 # ---------------------------------------------------------------------------
+# rank action (v3 bucket-ranking events)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_rank_writes_v3_ranking_event(client, db, tmp_path):
+    await _seed(db, tmp_path)
+    resp = await client.post(
+        "/api/feedback",
+        json={
+            "run_id": "r1",
+            "action": "rank",
+            "favorites": [["auto.jpg"], ["alt.jpg"]],
+            "hated": [],
+        },
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["labels_written"] == 1
+    assert data["favorites_exemplars"] == ["Die Hard (1988).jpg"]
+
+    rows = feedback_store.read_all()
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["v"] == 3 and row["type"] == "ranking"
+    assert row["favorites"] == [["auto.jpg"], ["alt.jpg"]]
+    buckets = {c["orig_filename"]: c for c in row["candidates"]}
+    assert buckets["auto.jpg"]["bucket"] == "fav" and buckets["auto.jpg"]["tier"] == 1
+    assert buckets["alt.jpg"]["bucket"] == "fav" and buckets["alt.jpg"]["tier"] == 2
+
+
+@pytest.mark.asyncio
+async def test_rank_mines_hard_negatives_by_rank(client, db, tmp_path, monkeypatch):
+    await _seed(db, tmp_path)
+    copied = []
+    monkeypatch.setattr(
+        feedback_route,
+        "_copy_negative",
+        lambda c: (copied.append(c["orig_filename"]) or c["orig_filename"]),
+    )
+    monkeypatch.setattr(pipeline_settings, "FEEDBACK_HARD_NEGATIVE_RANK_MAX", 10)
+    resp = await client.post(
+        "/api/feedback",
+        json={
+            "run_id": "r1",
+            "action": "rank",
+            "favorites": [["auto.jpg"]],
+            "hated": ["alt.jpg", "ocrreject.jpg"],
+        },
+    )
+    assert resp.status_code == 200
+    # alt.jpg ranked #4 (≤10) is a hard negative; ocrreject was never ranked.
+    assert copied == ["alt.jpg"]
+    assert resp.json()["negatives_added"] == ["alt.jpg"]
+
+
+@pytest.mark.asyncio
+async def test_rank_undo_removes_exemplars_and_negatives(client, db, tmp_path, monkeypatch):
+    await _seed(db, tmp_path)
+    removed_ex: list[str] = []
+    removed_neg: list[str] = []
+    monkeypatch.setattr(feedback_route, "_copy_negative", lambda c: c["orig_filename"])
+    monkeypatch.setattr(
+        feedback_route.profile_updater,
+        "remove_exemplar",
+        lambda name: removed_ex.append(name) or True,
+    )
+    monkeypatch.setattr(
+        feedback_route,
+        "_remove_negative",
+        lambda name: removed_neg.append(name) or True,
+    )
+    resp = await client.post(
+        "/api/feedback",
+        json={
+            "run_id": "r1",
+            "action": "rank",
+            "favorites": [["auto.jpg"]],
+            "hated": ["alt.jpg"],
+        },
+    )
+    event_id = resp.json()["event_id"]
+
+    undo = await client.post("/api/feedback/undo", json={"event_id": event_id})
+    assert undo.status_code == 200
+    assert undo.json()["removed_labels"] == 1
+    assert removed_ex == ["Die Hard (1988).jpg"]
+    assert removed_neg == ["alt.jpg"]
+    assert feedback_store.read_all() == []
+
+
+@pytest.mark.asyncio
+async def test_rank_requires_buckets(client, db, tmp_path):
+    await _seed(db, tmp_path)
+    resp = await client.post(
+        "/api/feedback",
+        json={"run_id": "r1", "action": "rank", "favorites": [], "hated": []},
+    )
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_rank_unknown_filename_404(client, db, tmp_path):
+    await _seed(db, tmp_path)
+    resp = await client.post(
+        "/api/feedback",
+        json={"run_id": "r1", "action": "rank", "favorites": [["nope.jpg"]]},
+    )
+    assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
 # feedback_store unit tests
 # ---------------------------------------------------------------------------
 
@@ -260,6 +372,26 @@ def test_store_append_read_remove(tmp_path, monkeypatch):
     remaining = feedback_store.read_all()
     assert len(remaining) == 1
     assert remaining[0]["event_id"] == "e2"
+
+
+def test_summary_counts_ranking_events(tmp_path, monkeypatch):
+    monkeypatch.setattr(pipeline_settings, "FEEDBACK_LABELS_PATH", tmp_path / "l.jsonl")
+    feedback_store.append_labels(
+        [
+            {
+                "event_id": "e1",
+                "type": "ranking",
+                "movie_id": 1,
+                "favorites": [["a.jpg"], ["b.jpg"]],
+                "hated": ["c.jpg"],
+            }
+        ]
+    )
+    summary = feedback_store.summary()
+    assert summary["positives"] == 2  # two favorited posters
+    assert summary["negatives"] == 1  # one hated poster
+    assert summary["total"] == 3
+    assert summary["movies"] == 1
 
 
 @pytest.mark.asyncio

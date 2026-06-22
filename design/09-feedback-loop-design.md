@@ -22,6 +22,10 @@ selection.
 | `approve` | Positive label for the auto-pick | Auto-pick appended | Uses `PosterService.deploy()` when `deploy` is true/defaulted |
 | `override` | Negative for auto-pick, positive for selected poster | Selected poster appended | Uses `PosterService.deploy()` when `deploy` is true/defaulted |
 | `reject_all` | Negative for auto-pick | No exemplar added | No poster deployment |
+| `rank` | One v3 ranking event (Favorites tiers / Hate / Indifferent) → within-movie preference pairs | Tier-1 favorites appended (positive); high-ranked hated appended (negative) | Deploys the tier-1 favorite |
+
+The `rank` action is the bucket-ranking flow; it feeds the **pairwise** learned
+head and is documented in full in `design/19-preference-ranking-feedback.md`.
 
 `POST /api/feedback/undo` removes all labels with the provided `event_id` and
 removes matching profile additions where possible. It does not restore a
@@ -80,11 +84,18 @@ Activation thresholds:
 
 | Knob | Default |
 |---|---|
-| `HEAD_MIN_LABELS` | `150` |
+| `HEAD_TRAIN_MODE` | `pairwise` |
+| `HEAD_MIN_PAIRS` | `200` (pairwise) |
+| `HEAD_MIN_LABELS` | `150` (pointwise) |
 | `HEAD_MIN_MOVIES` | `5` |
-| `HEAD_AUTO_RETRAIN` | `True` |
+| `HEAD_AUTO_RETRAIN` | `False` |
 
-[PLANNED] Pairwise LightGBM/LambdaMART ranking is not implemented.
+**Pairwise (default):** `HEAD_TRAIN_MODE=pairwise` trains a RankNet linear head
+on within-movie preference pairs from v3 `rank` events. See
+`design/19-preference-ranking-feedback.md`. The legacy pointwise logistic head
+(`HEAD_TRAIN_MODE=pointwise`) trains on v1/v2 approve/override labels.
+
+[PLANNED] Tree-based LightGBM/LambdaMART ranking (Phase 2) is not implemented.
 
 ## Related API
 

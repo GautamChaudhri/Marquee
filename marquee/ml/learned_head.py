@@ -119,6 +119,72 @@ class LogisticHead:
             trained_at=datetime.now(UTC).isoformat(),
         )
 
+    @classmethod
+    def train_pairwise(
+        cls,
+        diffs: np.ndarray,
+        weights: np.ndarray,
+        feature_names: list[str],
+        *,
+        l2: float = 1.0,
+        learning_rate: float = 0.5,
+        max_iterations: int = 5000,
+        tolerance: float = 1e-7,
+        model_name: str | None = None,
+    ) -> LogisticHead:
+        """RankNet head: learn ``w`` so ``w·x`` orders posters as the user ranked.
+
+        Each row of ``diffs`` is ``x_winner - x_loser`` for one within-movie
+        preference pair; ``weights`` carries the per-pair importance (movie
+        normalization × explicit/implicit confidence). The target is always 1
+        (the winner should outscore the loser), so the loss is the weighted
+        binary cross-entropy of ``sigmoid(w·d)`` against 1.
+
+        No bias is learned: a bias shifts every poster's score equally and so
+        cannot change a within-movie ranking (it cancels in ``x⁺ - x⁻``). The
+        artifact therefore stores ``bias=0.0`` and the inference scorer
+        (``score``) is unchanged.
+        """
+        d = np.asarray(diffs, dtype=np.float64)
+        w_sample = np.asarray(weights, dtype=np.float64)
+        if d.ndim != 2 or d.shape[0] != w_sample.shape[0]:
+            raise ValueError(f"Bad pairwise shapes: diffs={d.shape}, weights={w_sample.shape}")
+        if d.shape[1] != len(feature_names):
+            raise ValueError("feature_names length does not match diffs columns")
+        if d.shape[0] == 0:
+            raise ValueError("No preference pairs to train on")
+
+        n, f = d.shape
+        weight_total = float(w_sample.sum()) or float(n)
+        coef = np.zeros(f)
+        previous_loss = np.inf
+        for _ in range(max_iterations):
+            probabilities = _sigmoid(d @ coef)
+            # ∂/∂w of weighted BCE(target=1): -weight·(1-p)·d, plus L2.
+            grad = -(((1.0 - probabilities) * w_sample) @ d) / weight_total
+            grad += l2 * coef / n
+            coef -= learning_rate * grad
+
+            loss = float(
+                -np.sum(w_sample * np.log(probabilities + 1e-12)) / weight_total
+                + l2 * float(coef @ coef) / (2 * n)
+            )
+            if abs(previous_loss - loss) < tolerance:
+                break
+            previous_loss = loss
+
+        # Pairwise agreement: fraction of pairs the learned scorer orders right.
+        agreement = float((_sigmoid(d @ coef) >= 0.5).mean())
+        return cls(
+            feature_names=list(feature_names),
+            weights=coef.astype(np.float64),
+            bias=0.0,
+            model_name=model_name or pipeline_settings.AI_MODEL,
+            n_samples=n,
+            train_accuracy=agreement,
+            trained_at=datetime.now(UTC).isoformat(),
+        )
+
     # ------------------------------------------------------------------
     # Inference
     # ------------------------------------------------------------------

@@ -119,15 +119,35 @@ def _movie_key(row: dict) -> object:
 
 
 def summary() -> dict:
-    """Label-derived stats (movie/genre augmentation happens in the route)."""
+    """Label-derived stats (movie/genre augmentation happens in the route).
+
+    Counts label-equivalent signals: a v1/v2 row is one label; a v3 ranking
+    event contributes one positive per favorited poster and one negative per
+    hated poster (its indifferent set is unlabeled and not counted).
+    """
     rows = read_all()
     movies = {_movie_key(row) for row in rows if _movie_key(row) is not None}
-    positives = sum(1 for row in rows if row.get("label") == 1)
+    positives = 0
+    negatives = 0
+    total = 0
+    for row in rows:
+        if row.get("type") == "ranking":
+            favorites = sum(len(tier) for tier in (row.get("favorites") or []))
+            hated = len(row.get("hated") or [])
+            positives += favorites
+            negatives += hated
+            total += favorites + hated
+        elif row.get("label") is not None:
+            total += 1
+            if row.get("label") == 1:
+                positives += 1
+            else:
+                negatives += 1
     return {
-        "total": len(rows),
+        "total": total,
         "movies": len(movies),
         "positives": positives,
-        "negatives": len(rows) - positives,
+        "negatives": negatives,
         "movie_keys": sorted(str(m) for m in movies),
     }
 
@@ -143,18 +163,28 @@ def gate_override_alerts() -> list[dict]:
         knob: getattr(pipeline_settings, knob)
         for knob in set(GATE_REASON_KNOBS.values())
     }
-    counts: Counter[str] = Counter()
-    for row in rows:
-        if row.get("role") != "user_pick" or row.get("action") != "override":
-            continue
-        reason = (row.get("rejection_reason") or "").split(":", 1)[0]
+    def _tally(reason_raw: str | None, snapshot: dict) -> None:
+        reason = (reason_raw or "").split(":", 1)[0]
         knob = GATE_REASON_KNOBS.get(reason)
         if knob is None:
-            continue
-        snapshot = row.get("gate_snapshot") or {}
+            return
         # Count only if the override was recorded at the *current* knob value.
-        if snapshot.get(knob) == current[knob]:
+        if (snapshot or {}).get(knob) == current[knob]:
             counts[reason] += 1
+
+    counts: Counter[str] = Counter()
+    for row in rows:
+        if row.get("type") == "ranking":
+            # A favorited poster the pipeline had gate-rejected is an override
+            # of that gate, same as a v2 override pick.
+            snapshot = row.get("gate_snapshot") or {}
+            for candidate in row.get("candidates", []):
+                if candidate.get("bucket") == "fav" and candidate.get("rejection_reason"):
+                    _tally(candidate.get("rejection_reason"), snapshot)
+            continue
+        if row.get("role") != "user_pick" or row.get("action") != "override":
+            continue
+        _tally(row.get("rejection_reason"), row.get("gate_snapshot") or {})
 
     threshold = pipeline_settings.FEEDBACK_GATE_ALERT_THRESHOLD
     alerts = []

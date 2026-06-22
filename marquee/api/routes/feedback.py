@@ -41,8 +41,11 @@ router = APIRouter(prefix="/api/feedback", tags=["feedback"])
 
 class FeedbackRequest(BaseModel):
     run_id: str
-    action: str  # approve | override | reject_all
+    action: str  # approve | override | reject_all | rank
     selected_filename: str | None = None
+    # action="rank": ordered favorite tiers (ties share a sublist) + hated set.
+    favorites: list[list[str]] | None = None
+    hated: list[str] | None = None
     deploy: bool | None = None  # defaults to FEEDBACK_DEPLOY_DEFAULT
 
 
@@ -102,6 +105,70 @@ def _archive_features(candidate: dict) -> tuple[dict | None, dict | None, dict |
         candidate.get("normalized_features"),
         candidate.get("extended_features"),
     )
+
+
+def _ranking_record(
+    *,
+    event_id: str,
+    ts: str,
+    run: PipelineRun,
+    movie: Movie | None,
+    favorites: list[list[str]],
+    hated: list[str],
+    candidates: list[dict],
+    favorites_exemplars: list[str],
+    negatives_added: list[str],
+) -> dict:
+    """One self-contained v3 ranking event (see design 19). Stores the raw
+    partial order + every paired candidate's normalized features, so the
+    pairwise trainer never depends on a run's working dir surviving."""
+    return {
+        "v": 3,
+        "type": "ranking",
+        "event_id": event_id,
+        "ts": ts,
+        "run_id": run.run_id,
+        "movie_id": run.movie_id,
+        "tmdb_id": movie.tmdb_id if movie else None,
+        "title": movie.title if movie else None,
+        "year": movie.year if movie else None,
+        "favorites": favorites,
+        "hated": hated,
+        "favorites_exemplars": favorites_exemplars,
+        "negatives_added": negatives_added,
+        "candidates": candidates,
+        "scorer_name": run.scorer_name,
+        "model_name": pipeline_settings.AI_MODEL,
+        "gate_snapshot": feedback_store.gate_snapshot(),
+    }
+
+
+def _resolve_pick(by_name: dict, name: str) -> dict | None:
+    """Resolve a filename to its candidate dict, remapping a dedup-twin onto
+    the survivor it collapsed into (mirrors the override remap)."""
+    candidate = by_name.get(name)
+    if candidate is None:
+        return None
+    if (candidate.get("rejection_reason") or "").startswith("dedup_") and candidate.get(
+        "dedup_kept"
+    ):
+        survivor = by_name.get(candidate["dedup_kept"])
+        if survivor is not None:
+            return survivor
+    return candidate
+
+
+async def _normalized_for(
+    request: Request, run: PipelineRun, candidate: dict, movie: Movie | None
+) -> dict | None:
+    """Normalized features for a candidate, backfilled via retro features when
+    it was rejected before the style stage (same as the override path)."""
+    _, normalized, _ = _archive_features(candidate)
+    if normalized is None:
+        _, normalized, _ = await _retro_features(
+            request=request, run=run, candidate=candidate, movie=movie
+        )
+    return normalized
 
 
 async def _retro_features(
@@ -246,6 +313,8 @@ async def submit_feedback(
     exemplar_added: str | None = None
     remapped_to: str | None = None
     pick: dict | None = None
+    favorites_exemplars: list[str] = []
+    negatives_added: list[str] = []
 
     if body.action == "reject_all":
         if auto is None:
@@ -323,6 +392,101 @@ async def submit_feedback(
         ):
             _copy_negative(auto)
 
+    elif body.action == "rank":
+        favorites_in = [tier for tier in (body.favorites or []) if tier]
+        hated_in = body.hated or []
+        if not favorites_in and not hated_in:
+            raise HTTPException(
+                status_code=400, detail="rank requires favorites and/or hated"
+            )
+
+        def _resolve_all(names: list[str]) -> list[dict]:
+            resolved = []
+            for name in names:
+                candidate = _resolve_pick(by_name, name)
+                if candidate is None:
+                    raise HTTPException(
+                        status_code=404,
+                        detail=f"{name!r} is not a candidate of this run",
+                    )
+                resolved.append(candidate)
+            return resolved
+
+        fav_tiers = [_resolve_all(tier) for tier in favorites_in]
+        hated_cands = _resolve_all(hated_in)
+        chosen = {c["orig_filename"] for tier in fav_tiers for c in tier}
+        chosen |= {c["orig_filename"] for c in hated_cands}
+
+        # Embed every paired candidate with its (backfilled) normalized features.
+        embedded: list[dict] = []
+        seen: set[str] = set()
+
+        async def _emit(candidate: dict, bucket: str, tier: int | None) -> None:
+            name = candidate["orig_filename"]
+            if name in seen:
+                return
+            normalized = await _normalized_for(request, run, candidate, movie)
+            if not normalized:
+                return  # nothing trainable — skip (still added to profile below)
+            seen.add(name)
+            embedded.append(
+                {
+                    "orig_filename": name,
+                    "bucket": bucket,
+                    "tier": tier,
+                    "pipeline_rank": candidate.get("rank"),
+                    "rejection_reason": candidate.get("rejection_reason"),
+                    "normalized_features": normalized,
+                }
+            )
+
+        for tier_index, tier in enumerate(fav_tiers, start=1):
+            for candidate in tier:
+                await _emit(candidate, "fav", tier_index)
+        for candidate in hated_cands:
+            await _emit(candidate, "hate", None)
+        # Indifferent = ranked survivors the user left untouched.
+        for candidate in archive.get("candidates", []):
+            if candidate.get("rank") is not None and candidate["orig_filename"] not in chosen:
+                await _emit(candidate, "indiff", None)
+
+        # Channel 1 (positive exemplars): tier-1 favorites.
+        if fav_tiers:
+            for candidate in fav_tiers[0]:
+                added = await asyncio.to_thread(
+                    _add_to_profile,
+                    candidate["orig_filename"],
+                    Path(candidate.get("image_path") or ""),
+                    movie,
+                )
+                if added:
+                    favorites_exemplars.append(added)
+
+        # Channel 1 (hard negatives): hated posters the pipeline ranked high.
+        rank_max = pipeline_settings.FEEDBACK_HARD_NEGATIVE_RANK_MAX
+        for candidate in hated_cands:
+            rank = candidate.get("rank")
+            if rank is not None and rank <= rank_max:
+                added = _copy_negative(candidate)
+                if added:
+                    negatives_added.append(added)
+
+        records.append(
+            _ranking_record(
+                event_id=event_id,
+                ts=ts,
+                run=run,
+                movie=movie,
+                favorites=[[c["orig_filename"] for c in tier] for tier in fav_tiers],
+                hated=[c["orig_filename"] for c in hated_cands],
+                candidates=embedded,
+                favorites_exemplars=favorites_exemplars,
+                negatives_added=negatives_added,
+            )
+        )
+        exemplar_added = favorites_exemplars[0] if favorites_exemplars else None
+        pick = fav_tiers[0][0] if fav_tiers else None
+
     else:
         raise HTTPException(status_code=400, detail=f"Unknown action {body.action!r}")
 
@@ -351,6 +515,8 @@ async def submit_feedback(
         "event_id": event_id,
         "labels_written": len(records),
         "exemplar_added": exemplar_added,
+        "favorites_exemplars": favorites_exemplars,
+        "negatives_added": negatives_added,
         "remapped_to": remapped_to,
         "gate_override": gate_override,
         "head": head_info,
@@ -369,10 +535,17 @@ async def undo_feedback(
         raise HTTPException(status_code=404, detail=f"No labels for event {body.event_id}")
 
     removed_exemplars: list[str] = []
+    removed_negatives: list[str] = []
     for row in removed:
-        exemplar = row.get("exemplar_filename")
-        if exemplar and await asyncio.to_thread(profile_updater.remove_exemplar, exemplar):
-            removed_exemplars.append(exemplar)
+        # v2 approve/override carry one exemplar; v3 ranking events carry lists
+        # of added positive exemplars + hard-negative files.
+        exemplar_names = [row.get("exemplar_filename"), *(row.get("favorites_exemplars") or [])]
+        for exemplar in exemplar_names:
+            if exemplar and await asyncio.to_thread(profile_updater.remove_exemplar, exemplar):
+                removed_exemplars.append(exemplar)
+        for negative in row.get("negatives_added") or []:
+            if _remove_negative(negative):
+                removed_negatives.append(negative)
 
     if removed_exemplars:
         run_manager.reset_extractor()
@@ -391,6 +564,7 @@ async def undo_feedback(
     return {
         "removed_labels": len(removed),
         "exemplars_removed": removed_exemplars,
+        "negatives_removed": removed_negatives,
         "head": head_info,
     }
 
@@ -407,15 +581,29 @@ def _gate_override_for(pick: dict) -> dict | None:
     }
 
 
-def _copy_negative(candidate: dict) -> None:
+def _copy_negative(candidate: dict) -> str | None:
+    """Copy a disliked poster into NEGATIVE_DATA_DIR. Returns the filename
+    added (for undo), or None if the source was missing or already present."""
     import shutil  # noqa: PLC0415
 
     source = Path(candidate.get("image_path") or "")
     if not source.is_file():
-        return
+        return None
     dest_dir = Path(pipeline_settings.NEGATIVE_DATA_DIR)
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / source.name
-    if not dest.exists():
-        shutil.copy2(source, dest)
-        logger.info("NEGATIVE | added %s to negative exemplars", source.name)
+    if dest.exists():
+        return None
+    shutil.copy2(source, dest)
+    logger.info("NEGATIVE | added %s to negative exemplars", source.name)
+    return dest.name
+
+
+def _remove_negative(filename: str) -> bool:
+    """Remove a negative exemplar file added by a ranking event (undo)."""
+    target = Path(pipeline_settings.NEGATIVE_DATA_DIR) / filename
+    if target.is_file():
+        target.unlink()
+        logger.info("NEGATIVE | removed %s", filename)
+        return True
+    return False

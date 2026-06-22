@@ -90,19 +90,39 @@ def _exemplar_stats() -> dict:
 
 
 def _head_status() -> dict:
+    """Activation progress for the learned head, in whichever training mode is
+    active. Keeps a stable shape (``n_samples`` + ``activation.{movies,labels}``)
+    so the UI is mode-agnostic; ``mode`` tells it whether the unit is pairs or
+    labels. In pairwise mode ``n_samples``/``labels`` carry the derived
+    within-movie preference-pair counts."""
     from marquee.ml.head_trainer import (  # noqa: PLC0415
         _LEGACY_RUNS_DIRS,
+        build_pairwise_training_data,
         build_training_data,
     )
 
     rows = feedback_store.read_all()
+    active = Path(pipeline_settings.LEARNED_HEAD_PATH).exists()
+
+    if pipeline_settings.HEAD_TRAIN_MODE == "pairwise":
+        _d, _w, _names, n_movies, n_pairs = build_pairwise_training_data(rows)
+        return {
+            "active": active,
+            "mode": "pairwise",
+            "n_samples": n_pairs,
+            "activation": {
+                "movies": {"have": n_movies, "need": pipeline_settings.HEAD_MIN_MOVIES},
+                "labels": {"have": n_pairs, "need": pipeline_settings.HEAD_MIN_PAIRS},
+            },
+        }
+
     _x, targets, _names, n_movies = build_training_data(
         rows, (settings.runs_work_path, *_LEGACY_RUNS_DIRS)
     )
     n_samples = int(len(targets))
-    active = Path(pipeline_settings.LEARNED_HEAD_PATH).exists()
     return {
         "active": active,
+        "mode": "pointwise",
         "n_samples": n_samples,
         "activation": {
             "movies": {"have": n_movies, "need": pipeline_settings.HEAD_MIN_MOVIES},

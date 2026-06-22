@@ -112,6 +112,27 @@ class PipelineSettings(BaseSettings):
     # is (re)trained on demand via the "Key Art Engine → Train" button, which
     # enqueues the learned_head_train job through the job manager.
     HEAD_AUTO_RETRAIN: bool = False
+    # How the learned head is trained from the labels file:
+    #   "pairwise"  — RankNet on within-movie preference pairs derived from v3
+    #                 ranking events (Favorites/Hate/Indifferent). The default:
+    #                 it matches the task (rank within a movie) and removes the
+    #                 cross-movie scale confound of pointwise 0/1 labels.
+    #   "pointwise" — legacy logistic regression over v1/v2 approve/override
+    #                 labels (kept for backward-compat / debugging).
+    HEAD_TRAIN_MODE: str = "pairwise"
+    # Pairwise-mode activation floor: minimum derived preference pairs (paired
+    # with HEAD_MIN_MOVIES) before the head trains/activates.
+    HEAD_MIN_PAIRS: int = 200
+    # Weight applied to *implicit* preference pairs (favorite↔indifferent and
+    # indifferent↔hate) relative to explicit favorite↔hate / between-tier pairs
+    # (weight 1.0). The user actively stated favorites and hates; "indifferent"
+    # is only inferred from what they left untouched, so it counts for less.
+    FEEDBACK_INDIFF_HATE_PAIR_WEIGHT: float = 0.3
+    # A hated poster becomes a *negative exemplar* (taste-profile Channel 1) only
+    # when the pipeline ranked it this high or better — i.e. a hard negative the
+    # model was confidently wrong about. Easy negatives (ranked worse, or never
+    # ranked) feed only the pairwise order, never the negative exemplar set.
+    FEEDBACK_HARD_NEGATIVE_RANK_MAX: int = 10
 
     # ── Batch poster pipeline ─────────────────────────────────────────
     # Upper bound on movies admitted to a single cross-movie batch run, so an
@@ -376,6 +397,14 @@ class PipelineSettings(BaseSettings):
             raise ValueError("DINO_ENABLED must be 'auto', 'on', or 'off'")
         if self.SCORER not in ("auto", "weighted", "learned"):
             raise ValueError("SCORER must be 'auto', 'weighted', or 'learned'")
+        if self.HEAD_TRAIN_MODE not in ("pairwise", "pointwise"):
+            raise ValueError("HEAD_TRAIN_MODE must be 'pairwise' or 'pointwise'")
+        if self.HEAD_MIN_PAIRS < 1:
+            raise ValueError("HEAD_MIN_PAIRS must be at least 1")
+        if not 0.0 <= self.FEEDBACK_INDIFF_HATE_PAIR_WEIGHT <= 1.0:
+            raise ValueError("FEEDBACK_INDIFF_HATE_PAIR_WEIGHT must be in [0, 1]")
+        if self.FEEDBACK_HARD_NEGATIVE_RANK_MAX < 0:
+            raise ValueError("FEEDBACK_HARD_NEGATIVE_RANK_MAX cannot be negative")
         if self.CALIBRATION_BANDWIDTH_SCALE <= 0:
             raise ValueError("CALIBRATION_BANDWIDTH_SCALE must be positive")
         if self.CALIBRATION_MIN_SAMPLES < 2:
