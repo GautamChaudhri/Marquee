@@ -14,7 +14,7 @@
 	import { trackJob, type JobProgressDetail } from '$lib/jobs';
 	import { toast } from '$lib/toast';
 	import { gradientFor } from '$lib/display';
-	import type { CandidateView, RunResults, RunResultsResponse } from '$lib/api/types';
+	import type { CandidateView, RunResults, RunResultsResponse, StackView } from '$lib/api/types';
 	import type { PageData } from './$types';
 
 	let { data }: { data: PageData } = $props();
@@ -41,7 +41,7 @@
 
 	const stageTabs = $derived.by(() => {
 		if (!results) return [];
-		const t = [{ id: 'ranked', label: 'Ranked', count: results.ranked.length }];
+		const t = [{ id: 'ranked', label: 'Ranked', count: rankedByMethod.length }];
 		for (const g of results.rejected_by_stage) {
 			if (g.count > 0) t.push({ id: g.stage, label: SHORT[g.stage] ?? g.label, count: g.count });
 		}
@@ -49,6 +49,87 @@
 	});
 
 	let activeStage = $state('ranked');
+
+/** Stack ranking method — recomputed client-side from the archive data. */
+type StackMethod = 'robust' | 'max' | 'mean';
+let stackMethod = $state<StackMethod>('robust');
+
+/** Re-rank stacks using the selected aggregation method.
+ *  Returns a new ranked array and stacks with updated stack_rank values. */
+const rankedByMethod = $derived.by<CandidateView[]>(() => {
+	const r = results?.ranked;
+	const s = results?.stacks;
+	if (!r?.length || !s?.length) return r ?? [];
+	if (stackMethod === 'robust') return r; // default — no change needed
+
+	// Build groups keyed by stack_id.
+	const groups = new Map<number, CandidateView[]>();
+	for (const c of r) {
+		if (c.stack_id == null) continue;
+		const g = groups.get(c.stack_id) ?? [];
+		g.push(c);
+		groups.set(c.stack_id, g);
+	}
+	if (groups.size === 0) return r;
+
+	// Compute aggregate score per group using the selected method.
+	const scored: { id: number; score: number; members: CandidateView[] }[] = [];
+	for (const [id, members] of groups) {
+		const scores = members.map((c) => c.final_score ?? 0).sort((a, b) => b - a);
+		let agg: number;
+		if (stackMethod === 'max') {
+			agg = scores[0];
+		} else {
+			// mean
+			agg = scores.reduce((a, b) => a + b, 0) / scores.length;
+		}
+		scored.push({ id, score: agg, members });
+	}
+	// Sort groups by aggregate score descending, then by size.
+	scored.sort((a, b) => b.score - a.score || b.members.length - a.members.length);
+
+	// Reassign stack_rank and stack_score, rebuild the flat ranked list.
+	const out: CandidateView[] = [];
+	let rank = 0;
+	for (const group of scored) {
+		rank++;
+		for (const c of group.members) {
+			out.push({ ...c, stack_rank: rank, stack_score: group.score });
+		}
+	}
+	return out;
+});
+
+/** Re-rank stacks for the stacks sidebar (same method). */
+const stacksByMethod = $derived.by<StackView[]>(() => {
+	const s = results?.stacks;
+	if (!s?.length) return [];
+	if (stackMethod === 'robust') return s;
+
+	const ranked = rankedByMethod;
+	const groups = new Map<number, CandidateView[]>();
+	for (const c of ranked) {
+		if (c.stack_id == null) continue;
+		const g = groups.get(c.stack_id) ?? [];
+		g.push(c);
+		groups.set(c.stack_id, g);
+	}
+	const ordered = [...groups.entries()]
+		.map(([id, members]) => {
+			const rep = members[0];
+			return {
+				stack_rank: rep.stack_rank ?? 0,
+				stack_id: id,
+				label: String(rep.stack_rank ?? ''),
+				size: rep.stack_size ?? members.length,
+				stack_score: rep.stack_score ?? null,
+				representative: rep,
+				members
+			};
+		})
+		.sort((a, b) => a.stack_rank - b.stack_rank);
+	return ordered;
+});
 
 /** Persisted toggle: 'flat' = visual card stacks in flat grid; 'sectioned' = Design headers with borders. */
 let viewMode = $state<'flat' | 'sectioned'>(
@@ -78,7 +159,7 @@ const anyExpanded = $derived(expandedStackIds.size > 0);
 
 function expandAll() {
 	if (!results?.stacks) return;
-	const ids = new Set(results.stacks.map((s) => s.stack_id));
+	const ids = new Set(stacksByMethod.map((s) => s.stack_id));
 	expandedStackIds = ids;
 }
 
@@ -97,7 +178,7 @@ function stackColor(stackId: number): string {
 
 const currentPosters = $derived.by<CandidateView[]>(() => {
 	if (!results) return [];
-	if (activeStage === 'ranked') return results.ranked;
+	if (activeStage === 'ranked') return rankedByMethod;
 	return results.rejected_by_stage.find((g) => g.stage === activeStage)?.posters ?? [];
 });
 
@@ -106,8 +187,8 @@ const currentPosters = $derived.by<CandidateView[]>(() => {
  *  group posters are ordered by stack_pos (A, B, C…).  Only groups of ≥2
  *  become visual stacks; singles stay as individual tiles. */
 const groupedRanked = $derived.by<Array<CandidateView | CandidateView[]>>(() => {
-	const r = results?.ranked;
-	if (!r?.length) return [];
+	const r = rankedByMethod;
+	const s = stacksByMethod;
 	const hasStacks = !!(results?.stacks?.length);
 	if (!hasStacks) return r;
 
@@ -338,7 +419,7 @@ const groupedRanked = $derived.by<Array<CandidateView | CandidateView[]>>(() => 
 
 	<p class="grid-hint">
 		{#if activeStage === 'ranked'}
-			{#if results.stacks?.length}
+			{#if stacksByMethod.length}
 				<span class="hint-left">
 					{#if viewMode === 'flat'}
 						Stacked posters share a design — click the stack to fan out all variants. Click any poster
@@ -350,6 +431,11 @@ const groupedRanked = $derived.by<Array<CandidateView | CandidateView[]>>(() => 
 					{/if}
 				</span>
 				<span class="hint-toggle">
+					<select class="method-select" bind:value={stackMethod} title="Stack ranking method">
+						<option value="robust">Robust (top-3 mean)</option>
+						<option value="max">Max (best variant)</option>
+						<option value="mean">Mean (all variants)</option>
+					</select>
 					<button
 						class="view-btn"
 						class:active={viewMode === 'flat'}
@@ -432,7 +518,7 @@ const groupedRanked = $derived.by<Array<CandidateView | CandidateView[]>>(() => 
 			</div>
 		{:else}
 			<div class="stacks">
-				{#each results.stacks as st (st.stack_id)}
+				{#each stacksByMethod as st (st.stack_id)}
 					<section class="stack">
 						<div class="stack-head">
 							<span class="stack-name">Design {st.stack_rank}</span>
@@ -719,6 +805,27 @@ const groupedRanked = $derived.by<Array<CandidateView | CandidateView[]>>(() => 
 		color: var(--text);
 		border-color: var(--gold-deep);
 		background: var(--panel2);
+	}
+	.method-select {
+		padding: 3px 20px 3px 8px;
+		border: 1px solid var(--line);
+		border-radius: 6px;
+		background: var(--panel);
+		color: var(--muted);
+		font-size: 11px;
+		font-weight: 550;
+		cursor: pointer;
+		appearance: none;
+		-webkit-appearance: none;
+		-moz-appearance: none;
+		background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='%23999' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+		background-repeat: no-repeat;
+		background-position: right 5px center;
+		transition: color 0.12s ease, border-color 0.12s ease;
+	}
+	.method-select:hover {
+		color: var(--text);
+		border-color: var(--line2);
 	}
 	.poster-grid {
 		display: grid;
