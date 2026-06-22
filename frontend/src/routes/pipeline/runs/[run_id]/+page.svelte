@@ -49,6 +49,16 @@
 	});
 
 	let activeStage = $state('ranked');
+
+/** Persisted toggle: 'flat' = visual card stacks in flat grid; 'sectioned' = Design headers with borders. */
+let viewMode = $state<'flat' | 'sectioned'>(
+	(typeof localStorage !== 'undefined' && (localStorage.getItem('marquee:pipeline:stackView') as 'flat' | 'sectioned' | null)) || 'flat'
+);
+$effect(() => {
+	if (typeof localStorage !== 'undefined') {
+		localStorage.setItem('marquee:pipeline:stackView', viewMode);
+	}
+});
 	const currentPosters = $derived.by<CandidateView[]>(() => {
 		if (!results) return [];
 		if (activeStage === 'ranked') return results.ranked;
@@ -279,32 +289,91 @@
 
 	<p class="grid-hint">
 		{#if activeStage === 'ranked'}
-			Stacked posters share a design — click the stack to fan out all variants. Click any poster
-			to choose it.
+			{#if results.stacks?.length}
+				<span class="hint-left">
+					{#if viewMode === 'flat'}
+						Stacked posters share a design — click the stack to fan out all variants. Click any poster
+						to choose it.
+					{:else}
+						Posters are grouped into <strong>stacks</strong> of the same design — variants differ only in
+						title position, text, or crop. Designs are ranked by their best few variants, so the
+						auto-pick (1A) may not be the single highest-scored poster. Click any poster to choose it.
+					{/if}
+				</span>
+				<span class="hint-toggle">
+					<button
+						class="view-btn"
+						class:active={viewMode === 'flat'}
+						onclick={() => (viewMode = 'flat')}
+						title="Flat grid with visual card stacks"
+					>
+						<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+						Flat
+					</button>
+					<button
+						class="view-btn"
+						class:active={viewMode === 'sectioned'}
+						onclick={() => (viewMode = 'sectioned')}
+						title="Sectioned stacks with Design headers"
+					>
+						<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="8" rx="1"/><rect x="3" y="13" width="18" height="8" rx="1"/></svg>
+						Sectioned
+					</button>
+				</span>
+			{:else}
+				Click any poster to set it as the chosen one — it deploys to the movie folder and trains the
+				Key Art Engine.
+			{/if}
 		{:else}
 			Rejected at this stage. Click to override and choose it anyway.
 		{/if}
 	</p>
 
 	{#if activeStage === 'ranked' && results.stacks?.length}
-		<div class="poster-grid">
-			{#each groupedRanked as item (Array.isArray(item) ? (item as CandidateView[])[0].orig_filename : (item as CandidateView).orig_filename)}
-				{#if Array.isArray(item)}
-					<PosterStack
-						members={item as CandidateView[]}
-						selectable={!results.reviewed}
-						onSelect={openPick}
-					/>
-				{:else}
-					<PosterCandidateTile
-						candidate={item as CandidateView}
-						kind="ranked"
-						selectable={!results.reviewed}
-						onSelect={openPick}
-					/>
-				{/if}
-			{/each}
-		</div>
+		{#if viewMode === 'flat'}
+			<div class="poster-grid">
+				{#each groupedRanked as item (Array.isArray(item) ? (item as CandidateView[])[0].orig_filename : (item as CandidateView).orig_filename)}
+					{#if Array.isArray(item)}
+						<PosterStack
+							members={item as CandidateView[]}
+							selectable={!results.reviewed}
+							onSelect={openPick}
+						/>
+					{:else}
+						<PosterCandidateTile
+							candidate={item as CandidateView}
+							kind="ranked"
+							selectable={!results.reviewed}
+							onSelect={openPick}
+						/>
+					{/if}
+				{/each}
+			</div>
+		{:else}
+			<div class="stacks">
+				{#each results.stacks as st (st.stack_id)}
+					<section class="stack">
+						<div class="stack-head">
+							<span class="stack-name">Design {st.stack_rank}</span>
+							{#if st.stack_score != null}
+								<span class="stack-score mono">{st.stack_score.toFixed(3)}</span>
+							{/if}
+							<span class="stack-size">{st.size} variant{st.size === 1 ? '' : 's'}</span>
+						</div>
+						<div class="poster-grid">
+							{#each st.members as c (c.orig_filename)}
+								<PosterCandidateTile
+									candidate={c}
+									kind="ranked"
+									selectable={!results.reviewed}
+									onSelect={openPick}
+								/>
+							{/each}
+						</div>
+					</section>
+				{/each}
+			</div>
+		{/if}
 	{:else if currentPosters.length === 0}
 		<div class="empty-tab">No posters in this group.</div>
 	{:else}
@@ -533,11 +602,78 @@
 		margin: 0 0 14px;
 		font-size: 12px;
 		color: var(--faint);
+		display: flex;
+		align-items: center;
+		gap: 12px;
+		flex-wrap: wrap;
+	}
+	.hint-left {
+		flex: 1;
+		min-width: 0;
+	}
+	.hint-toggle {
+		display: flex;
+		gap: 2px;
+		flex-shrink: 0;
+	}
+	.view-btn {
+		display: inline-flex;
+		align-items: center;
+		gap: 4px;
+		padding: 3px 8px;
+		border: 1px solid var(--line);
+		border-radius: 6px;
+		background: var(--panel);
+		color: var(--muted);
+		font-size: 11px;
+		font-weight: 550;
+		cursor: pointer;
+		transition: color 0.12s ease, border-color 0.12s ease, background 0.12s ease;
+	}
+	.view-btn:hover {
+		color: var(--text);
+		border-color: var(--line2);
+	}
+	.view-btn.active {
+		color: var(--text);
+		border-color: var(--gold-deep);
+		background: var(--panel2);
 	}
 	.poster-grid {
 		display: grid;
 		grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
 		gap: 14px;
+	}
+	.stacks {
+		display: flex;
+		flex-direction: column;
+		gap: 20px;
+	}
+	.stack {
+		padding: 12px 12px 14px;
+		border: 1px solid var(--line);
+		border-radius: var(--radius-sm);
+		background: var(--panel);
+	}
+	.stack-head {
+		display: flex;
+		align-items: baseline;
+		gap: 10px;
+		margin-bottom: 10px;
+	}
+	.stack-name {
+		font-size: 13px;
+		font-weight: 650;
+		color: var(--text);
+	}
+	.stack-score {
+		font-size: 12px;
+		color: var(--gold);
+	}
+	.stack-size {
+		font-size: 11.5px;
+		color: var(--faint);
+		margin-left: auto;
 	}
 	.empty-tab {
 		padding: 40px;
