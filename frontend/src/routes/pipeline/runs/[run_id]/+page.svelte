@@ -6,6 +6,7 @@
 	import StatusDot from '$lib/components/StatusDot.svelte';
 	import RunProgress from '$lib/components/RunProgress.svelte';
 	import PosterCandidateTile from '$lib/components/PosterCandidateTile.svelte';
+	import PosterStack from '$lib/components/PosterStack.svelte';
 	import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
 	import Icon from '$lib/components/Icon.svelte';
 	import { getRunResults } from '$lib/api/pipeline';
@@ -52,6 +53,34 @@
 		if (!results) return [];
 		if (activeStage === 'ranked') return results.ranked;
 		return results.rejected_by_stage.find((g) => g.stage === activeStage)?.posters ?? [];
+	});
+
+	/** Group consecutive ranked posters that share a stack into arrays.
+	 *  Singletons (or non-stacked runs) stay as individual CandidateViews.
+	 *  Used only on the 'ranked' tab when stacks are present. */
+	const groupedRanked = $derived.by<Array<CandidateView | CandidateView[]>>(() => {
+		const r = results?.ranked;
+		if (!r?.length) return [];
+		const hasStacks = !!(results?.stacks?.length);
+		if (!hasStacks) return r;
+		const out: Array<CandidateView | CandidateView[]> = [];
+		let i = 0;
+		while (i < r.length) {
+			const c = r[i];
+			if (c.stack_id != null && (c.stack_size ?? 1) > 1) {
+				const sid = c.stack_id;
+				const group: CandidateView[] = [];
+				while (i < r.length && r[i].stack_id === sid) {
+					group.push(r[i]);
+					i++;
+				}
+				out.push(group);
+			} else {
+				out.push(c);
+				i++;
+			}
+		}
+		return out;
 	});
 
 	function contribSegments(c: Record<string, number> | null) {
@@ -250,41 +279,30 @@
 
 	<p class="grid-hint">
 		{#if activeStage === 'ranked'}
-			{#if results.stacks?.length}
-				Posters are grouped into <strong>stacks</strong> of the same design — variants differ only in
-				title position, text, or crop. Designs are ranked by their best few variants, so the
-				auto-pick (1A) may not be the single highest-scored poster. Click any poster to choose it.
-			{:else}
-				Click any poster to set it as the chosen one — it deploys to the movie folder and trains the
-				Key Art Engine.
-			{/if}
+			Stacked posters share a design — click the stack to fan out all variants. Click any poster
+			to choose it.
 		{:else}
 			Rejected at this stage. Click to override and choose it anyway.
 		{/if}
 	</p>
 
 	{#if activeStage === 'ranked' && results.stacks?.length}
-		<div class="stacks">
-			{#each results.stacks as st (st.stack_id)}
-				<section class="stack">
-					<div class="stack-head">
-						<span class="stack-name">Design {st.stack_rank}</span>
-						{#if st.stack_score != null}
-							<span class="stack-score mono">{st.stack_score.toFixed(3)}</span>
-						{/if}
-						<span class="stack-size">{st.size} variant{st.size === 1 ? '' : 's'}</span>
-					</div>
-					<div class="poster-grid">
-						{#each st.members as c (c.orig_filename)}
-							<PosterCandidateTile
-								candidate={c}
-								kind="ranked"
-								selectable={!results.reviewed}
-								onSelect={openPick}
-							/>
-						{/each}
-					</div>
-				</section>
+		<div class="poster-grid">
+			{#each groupedRanked as item (Array.isArray(item) ? (item as CandidateView[])[0].orig_filename : (item as CandidateView).orig_filename)}
+				{#if Array.isArray(item)}
+					<PosterStack
+						members={item as CandidateView[]}
+						selectable={!results.reviewed}
+						onSelect={openPick}
+					/>
+				{:else}
+					<PosterCandidateTile
+						candidate={item as CandidateView}
+						kind="ranked"
+						selectable={!results.reviewed}
+						onSelect={openPick}
+					/>
+				{/if}
 			{/each}
 		</div>
 	{:else if currentPosters.length === 0}
@@ -520,37 +538,6 @@
 		display: grid;
 		grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
 		gap: 14px;
-	}
-	.stacks {
-		display: flex;
-		flex-direction: column;
-		gap: 20px;
-	}
-	.stack {
-		padding: 12px 12px 14px;
-		border: 1px solid var(--line);
-		border-radius: var(--radius-sm);
-		background: var(--panel);
-	}
-	.stack-head {
-		display: flex;
-		align-items: baseline;
-		gap: 10px;
-		margin-bottom: 10px;
-	}
-	.stack-name {
-		font-size: 13px;
-		font-weight: 650;
-		color: var(--text);
-	}
-	.stack-score {
-		font-size: 12px;
-		color: var(--gold);
-	}
-	.stack-size {
-		font-size: 11.5px;
-		color: var(--faint);
-		margin-left: auto;
 	}
 	.empty-tab {
 		padding: 40px;
