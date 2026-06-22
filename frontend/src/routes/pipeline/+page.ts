@@ -1,11 +1,13 @@
 import type { PageLoad } from './$types';
 import { getPipelineCache, getPipelineMetrics, getReviewQueue } from '$lib/api/pipeline';
+import { getOnboardingStatus } from '$lib/api/onboarding';
 import { listMovies } from '$lib/api/library';
 import { listJobs } from '$lib/api/jobs';
 import type { JobListItem } from '$lib/api/jobs';
 import type {
 	CacheSizes,
 	MovieListItem,
+	OnboardingStatus,
 	Paginated,
 	PipelineMetrics,
 	ReviewQueue
@@ -16,7 +18,7 @@ const EMPTY_MISSING: Paginated<MovieListItem> = { total: 0, page: 1, page_size: 
 
 export const load: PageLoad = async ({ fetch }) => {
 	const safe = <T>(p: Promise<T>, fallback: T): Promise<T> => p.catch(() => fallback);
-	const [queue, cache, metrics, missing, activeJob] = await Promise.all([
+	const [queue, cache, metrics, missing, activeJob, onboarding] = await Promise.all([
 		safe<ReviewQueue>(getReviewQueue(fetch, { page_size: 60 }), EMPTY_QUEUE),
 		safe<CacheSizes | null>(getPipelineCache(fetch), null),
 		safe<PipelineMetrics | null>(getPipelineMetrics(fetch, { limit: 500 }), null),
@@ -30,7 +32,8 @@ export const load: PageLoad = async ({ fetch }) => {
 				(r) => r.jobs[0] ?? null
 			),
 			null
-		)
+		),
+		safe<OnboardingStatus | null>(getOnboardingStatus(fetch), null)
 	]);
-	return { queue, cache, metrics, missing, activeJob };
+	return { queue, cache, metrics, missing, activeJob, onboarding };
 };

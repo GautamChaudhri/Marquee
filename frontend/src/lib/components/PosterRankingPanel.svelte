@@ -8,12 +8,18 @@
 		runId,
 		items,
 		disabled = false,
+		submitLabel = 'Submit ranking',
+		onSubmit,
 		onsubmitted,
 		oncancel
 	}: {
-		runId: string;
+		runId?: string;
 		items: RankItem[];
 		disabled?: boolean;
+		submitLabel?: string;
+		/** Custom submit (e.g. onboarding's taste-test endpoint). When given, it
+		 *  replaces the default `submitFeedback` call; the caller owns the toast. */
+		onSubmit?: (payload: { favorites: string[][]; hated: string[] }) => Promise<void>;
 		onsubmitted?: (eventId: string) => void;
 		oncancel?: () => void;
 	} = $props();
@@ -64,14 +70,19 @@
 		}
 		busy = true;
 		try {
-			const res = await submitFeedback(fetch, {
-				run_id: runId,
-				action: 'rank',
-				favorites,
-				hated
-			});
-			toast('Ranking saved — training the Key Art Engine', 'good');
-			onsubmitted?.(res.event_id);
+			if (onSubmit) {
+				await onSubmit({ favorites, hated });
+				onsubmitted?.('');
+			} else {
+				const res = await submitFeedback(fetch, {
+					run_id: runId ?? '',
+					action: 'rank',
+					favorites,
+					hated
+				});
+				toast('Ranking saved — training the Key Art Engine', 'good');
+				onsubmitted?.(res.event_id);
+			}
 		} catch (e) {
 			toast(e instanceof Error ? e.message : 'Ranking failed', 'bad');
 		} finally {
@@ -94,7 +105,7 @@
 		<div class="bar-actions">
 			<button class="btn-ghost" onclick={() => oncancel?.()} disabled={busy}>Cancel</button>
 			<button class="btn-gold" onclick={submit} disabled={busy || disabled}>
-				{busy ? 'Saving…' : 'Submit ranking'}
+				{busy ? 'Saving…' : submitLabel}
 			</button>
 		</div>
 	</div>
@@ -166,7 +177,7 @@
 		padding: 12px 14px;
 		border: 1px solid var(--line);
 		border-radius: var(--radius-sm);
-		background: color-mix(in srgb, var(--gold) 6%, transparent);
+		background: var(--gold-soft);
 		margin-bottom: 14px;
 	}
 	.intro {
@@ -176,7 +187,7 @@
 		line-height: 1.45;
 	}
 	.intro strong {
-		color: var(--ink);
+		color: var(--text);
 	}
 	.counts {
 		display: flex;
@@ -186,7 +197,7 @@
 		font-size: 12px;
 		padding: 3px 9px;
 		border-radius: 11px;
-		border: 1px solid var(--line);
+		border: 1px solid var(--line2);
 		color: var(--muted);
 	}
 	.chip.fav {
@@ -194,8 +205,8 @@
 		color: var(--gold);
 	}
 	.chip.hate {
-		border-color: var(--bad, #c0573f);
-		color: var(--bad, #c0573f);
+		border-color: var(--bad);
+		color: var(--bad);
 	}
 	.bar-actions {
 		display: flex;
@@ -214,6 +225,7 @@
 		padding: 6px;
 		border: 1px solid var(--line);
 		border-radius: var(--radius-sm);
+		background: var(--panel);
 		transition:
 			border-color 0.14s ease,
 			box-shadow 0.14s ease;
@@ -223,8 +235,8 @@
 		box-shadow: 0 0 0 1px var(--gold);
 	}
 	.card.hate {
-		border-color: var(--bad, #c0573f);
-		opacity: 0.78;
+		border-color: var(--bad);
+		opacity: 0.82;
 	}
 	.art {
 		position: relative;
@@ -249,7 +261,7 @@
 		padding: 0 5px;
 		border-radius: 9px;
 		background: color-mix(in srgb, var(--ink) 72%, transparent);
-		color: #fff;
+		color: var(--text);
 		font-size: 11px;
 		display: flex;
 		align-items: center;
@@ -283,15 +295,16 @@
 	}
 	.seg-btn {
 		padding: 4px 0;
-		border: 1px solid var(--line);
+		border: 1px solid var(--line2);
 		border-radius: 6px;
-		background: transparent;
+		background: var(--panel2);
 		color: var(--muted);
 		font-size: 13px;
 		cursor: pointer;
 	}
 	.seg-btn:hover {
-		border-color: var(--ink);
+		border-color: var(--faint);
+		color: var(--text);
 	}
 	.seg-btn.love.on {
 		background: var(--gold);
@@ -299,13 +312,14 @@
 		border-color: var(--gold);
 	}
 	.seg-btn.hate.on {
-		background: var(--bad, #c0573f);
-		color: #fff;
-		border-color: var(--bad, #c0573f);
+		background: var(--bad);
+		color: var(--ink);
+		border-color: var(--bad);
 	}
 	.seg-btn.on:not(.love):not(.hate) {
-		background: color-mix(in srgb, var(--ink) 14%, transparent);
-		color: var(--ink);
+		background: var(--line2);
+		color: var(--text);
+		border-color: var(--line2);
 	}
 	.tier {
 		display: flex;
@@ -316,10 +330,10 @@
 	.tier-btn {
 		width: 22px;
 		height: 22px;
-		border: 1px solid var(--line);
+		border: 1px solid var(--line2);
 		border-radius: 6px;
-		background: transparent;
-		color: var(--ink);
+		background: var(--panel2);
+		color: var(--text);
 		cursor: pointer;
 		line-height: 1;
 	}
@@ -331,5 +345,36 @@
 	}
 	.mono {
 		font-family: var(--font-mono);
+	}
+
+	/* Buttons (defined locally — the app's .btn-* are page-scoped, not global) */
+	.btn-gold {
+		padding: 9px 18px;
+		border-radius: 8px;
+		border: 1px solid var(--gold-deep);
+		background: linear-gradient(180deg, var(--gold), var(--gold-deep));
+		color: var(--on-gold);
+		font-size: 13px;
+		font-weight: 600;
+	}
+	.btn-gold:disabled {
+		opacity: 0.55;
+		cursor: not-allowed;
+	}
+	.btn-ghost {
+		padding: 8px 14px;
+		border-radius: 8px;
+		border: 1px solid transparent;
+		background: transparent;
+		color: var(--muted);
+		font-size: 13px;
+	}
+	.btn-ghost:hover:not(:disabled) {
+		color: var(--text);
+		background: var(--panel2);
+	}
+	.btn-ghost:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
 	}
 </style>
