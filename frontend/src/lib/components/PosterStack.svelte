@@ -1,85 +1,62 @@
 <script lang="ts">
 	import { gradientFor } from '$lib/display';
-	import PosterCandidateTile from './PosterCandidateTile.svelte';
 	import type { CandidateView } from '$lib/api/types';
 
 	let {
 		members,
 		selectable = true,
-		onSelect
+		onSelect,
+		onToggle
 	}: {
 		members: CandidateView[];
 		selectable?: boolean;
 		onSelect?: (c: CandidateView) => void;
+		onToggle?: () => void;
 	} = $props();
-
-	let expanded = $state(false);
-
-	function toggleExpand() {
-		expanded = !expanded;
-	}
 
 	const count = $derived(members.length);
 	const representative = $derived(members[0]);
-	// Show up to 3 offset card layers behind the front card
+	/** Show up to 3 offset ghost cards behind the front card. */
 	const backCards = $derived(members.slice(1, 4));
 	const g = $derived(gradientFor(representative?.orig_filename ?? ''));
+	const showBadge = $derived(count > 1);
 </script>
 
-{#if expanded}
-	<!-- ── Expanded: all members in a horizontal row ── -->
-	<div class="stack expanded">
-		<div class="stack-fan">
-			{#each members as c (c.orig_filename)}
-				<PosterCandidateTile
-					candidate={c}
-					kind="ranked"
-					{selectable}
-					{onSelect}
-				/>
-			{/each}
-		</div>
-		<button class="stack-collapse-btn" onclick={toggleExpand}>
-			<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
-			Collapse stack ({count})
-		</button>
-	</div>
-{:else}
-	<!-- ── Collapsed: visual card stack ── -->
-	<button
-		class="stack collapsed"
-		onclick={toggleExpand}
-		style="--s0:{g[0]}; --s1:{g[1]}"
-	>
-		<div class="stack-pile">
-			<!-- Backing cards (offset layers) -->
-			{#each backCards as card, i}
-				<div
-					class="stack-ghost"
-					style="--n:{i + 1}; --c0:{gradientFor(card.orig_filename)[0]}; --c1:{gradientFor(card.orig_filename)[1]}"
-				>
-					<img src={card.poster_url} alt="" loading="lazy" />
-				</div>
-			{/each}
-			<!-- Front card -->
-			<div class="stack-front">
-				<img
-					src={representative.poster_url}
-					alt={representative.orig_filename}
-					loading="lazy"
-				/>
-				{#if representative.final_score != null}
-					<span class="stack-front-score mono">{representative.final_score.toFixed(3)}</span>
-				{/if}
+<button
+	class="stack collapsed"
+	onclick={() => onToggle?.()}
+	style="--s0:{g[0]}; --s1:{g[1]}"
+	disabled={!selectable}
+>
+	<div class="stack-pile">
+		<!-- Backing cards (offset layers) -->
+		{#each backCards as card, i}
+			<div
+				class="stack-ghost"
+				style="--n:{i + 1}; --c0:{gradientFor(card.orig_filename)[0]}; --c1:{gradientFor(card.orig_filename)[1]}"
+			>
+				<img src={card.poster_url} alt="" loading="lazy" />
 			</div>
+		{/each}
+		<!-- Front card -->
+		<div class="stack-front">
+			<img
+				src={representative.poster_url}
+				alt={representative.orig_filename}
+				loading="lazy"
+			/>
+			{#if representative.final_score != null}
+				<span class="stack-front-score mono">{representative.final_score.toFixed(3)}</span>
+			{/if}
 		</div>
-		<!-- Count badge -->
+	</div>
+	<!-- Count badge (only when >1) -->
+	{#if showBadge}
 		<span class="stack-badge mono">{count}</span>
-	</button>
-{/if}
+	{/if}
+</button>
 
 <style>
-	/* ── Collapsed stack ── */
 	.stack.collapsed {
 		display: flex;
 		flex-direction: column;
@@ -90,6 +67,9 @@
 		cursor: pointer;
 		text-align: left;
 		position: relative;
+	}
+	.stack.collapsed:disabled {
+		cursor: default;
 	}
 
 	.stack-pile {
@@ -119,7 +99,7 @@
 		object-fit: cover;
 	}
 
-	.stack.collapsed:hover .stack-ghost {
+	.stack.collapsed:not(:disabled):hover .stack-ghost {
 		opacity: 0.7;
 	}
 
@@ -137,7 +117,7 @@
 			border-color 0.14s ease,
 			box-shadow 0.14s ease;
 	}
-	.stack.collapsed:hover .stack-front {
+	.stack.collapsed:not(:disabled):hover .stack-front {
 		transform: translateY(-2px);
 		border-color: var(--gold);
 		box-shadow: 0 6px 18px var(--shadow);
@@ -180,58 +160,6 @@
 		align-items: center;
 		justify-content: center;
 		box-shadow: 0 2px 6px var(--shadow);
-	}
-
-	/* ── Expanded stack ── */
-	.stack.expanded {
-		grid-column: 1 / -1;
-		display: flex;
-		flex-direction: column;
-		gap: 10px;
-		padding: 12px;
-		border: 1px solid var(--gold);
-		border-radius: var(--radius-sm);
-		background: var(--panel);
-		animation: stack-expand 0.2s ease;
-	}
-
-	@keyframes stack-expand {
-		from {
-			opacity: 0.6;
-			transform: scale(0.98);
-		}
-		to {
-			opacity: 1;
-			transform: scale(1);
-		}
-	}
-
-	.stack-fan {
-		display: flex;
-		gap: 14px;
-		flex-wrap: wrap;
-	}
-
-	.stack-collapse-btn {
-		display: inline-flex;
-		align-items: center;
-		gap: 6px;
-		align-self: flex-start;
-		padding: 5px 12px;
-		border-radius: 7px;
-		border: 1px solid var(--line);
-		background: var(--panel2);
-		color: var(--muted);
-		font-size: 12px;
-		font-weight: 550;
-		cursor: pointer;
-		transition:
-			color 0.12s ease,
-			border-color 0.12s ease;
-	}
-	.stack-collapse-btn:hover {
-		color: var(--text);
-		border-color: var(--line2);
 	}
 
 	.mono {
