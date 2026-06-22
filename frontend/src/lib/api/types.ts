@@ -492,6 +492,37 @@ export interface FeedbackResult {
 	deploy_error: string | null;
 }
 
+// ── Onboarding (cold-start "Rank Test") ─────────────────────────────────────
+export interface OnboardingStatus {
+	profile_present: boolean;
+	head_active: boolean;
+	taste_test_available: boolean;
+	needs_onboarding: boolean;
+	ranked: number;
+	min: number;
+	goal: number;
+	max: number;
+	can_complete: boolean;
+	at_goal: boolean;
+	at_max: boolean;
+	complete: boolean;
+	path: 'library' | 'taste_test' | null;
+	started_at: string | null;
+}
+
+export interface TasteTestPoster {
+	file: string;
+	url: string;
+}
+
+export interface TasteTestMovie {
+	id: string;
+	title: string | null;
+	year: number | null;
+	genres: string[];
+	posters: TasteTestPoster[];
+}
+
 /** One rankable unit in the bucket-ranking panel — a whole design stack (its
  *  members move together) or a single poster. ``filenames`` is what the rank
  *  payload references. */

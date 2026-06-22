@@ -188,10 +188,7 @@
 						batchRunning = false;
 						batchStatus = j.status;
 						storeBatchId(null);
-						toast(
-							`Batch ${j.status}`,
-							j.status === 'succeeded' ? 'good' : 'bad'
-						);
+						toast(`Batch ${j.status}`, j.status === 'succeeded' ? 'good' : 'bad');
 						void refreshAll();
 					}
 				},
@@ -385,6 +382,22 @@
 	{/snippet}
 </SectionHeader>
 
+{#if data.onboarding?.needs_onboarding}
+	<a
+		href="/onboarding"
+		style="display:flex; align-items:center; gap:12px; padding:12px 16px; margin-bottom:16px; border:1px solid var(--gold-deep); border-radius:var(--radius-sm); background:var(--gold-soft); color:var(--text); text-decoration:none;"
+	>
+		<span style="color:var(--gold); display:flex;"><Icon name="taste" size={18} /></span>
+		<div style="flex:1; display:flex; flex-direction:column;">
+			<strong style="color:var(--text);">Jump-start the Key Art Engine</strong>
+			<span style="font-size:12px; color:var(--muted);">
+				Rank a few movies to teach it your taste — {data.onboarding.ranked}/{data.onboarding.min} so far.
+			</span>
+		</div>
+		<span style="color:var(--gold); font-weight:600;">Start →</span>
+	</a>
+{/if}
+
 <div class="tabwrap">
 	<TabBar {tabs} active={tab} onSelect={setTab} />
 </div>
@@ -400,11 +413,7 @@
 	{:else}
 		<div class="rev-bar">
 			<span class="rev-count">{queue.total} run{queue.total === 1 ? '' : 's'} awaiting</span>
-			<button
-				class="btn-gold"
-				onclick={() => (approveAllOpen = true)}
-				disabled={queue.total === 0}
-			>
+			<button class="btn-gold" onclick={() => (approveAllOpen = true)} disabled={queue.total === 0}>
 				Approve all auto-picks
 			</button>
 		</div>
@@ -649,8 +658,12 @@
 <ConfirmDialog
 	open={approveAllOpen}
 	title="Approve all auto-picks"
-	message="This will approve the auto-pick for all {queue.total} run{queue.total === 1 ? '' : 's'} in the review queue, deploy posters to movie folders, and train the Key Art Engine. Continue?"
-	confirmLabel={approveAllBusy ? `Approving ${approveAllDone}/${approveAllTotal}…` : `Approve all {queue.total}`}
+	message="This will approve the auto-pick for all {queue.total} run{queue.total === 1
+		? ''
+		: 's'} in the review queue, deploy posters to movie folders, and train the Key Art Engine. Continue?"
+	confirmLabel={approveAllBusy
+		? `Approving ${approveAllDone}/${approveAllTotal}…`
+		: `Approve all {queue.total}`}
 	tone="bad"
 	busy={approveAllBusy}
 	onConfirm={approveAllAutoPicks}
