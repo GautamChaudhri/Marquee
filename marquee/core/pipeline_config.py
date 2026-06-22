@@ -16,6 +16,9 @@ _DATA_ML_DIR = _DATA_DIR / "ml"
 _DATA_FEEDBACK_DIR = _DATA_DIR / "feedback"
 _DATA_TRAINING_DIR = _DATA_DIR / "training"
 _LEGACY_EXPERIMENTS_DIR = _PROJECT_ROOT / "experiments"
+# Shipped (tracked) onboarding resources: the bundled taste test + starter
+# profile seed. Distinct from data/ (gitignored runtime state).
+_ONBOARDING_DIR = _PROJECT_ROOT / "marquee" / "onboarding"
 
 _TMDB_SIZES = {"w92", "w154", "w185", "w342", "w500", "w780", "original"}
 
@@ -104,9 +107,10 @@ class PipelineSettings(BaseSettings):
     FEEDBACK_NEGATIVES_FROM_OVERRIDES: bool = False
     # Approve/override deploys the selected poster to the media folder by default.
     FEEDBACK_DEPLOY_DEFAULT: bool = True
-    # Learned-head activation thresholds (design 09 §10).
+    # Learned-head activation thresholds (design 09 §10). HEAD_MIN_MOVIES must
+    # stay <= ONBOARDING_RANK_TEST_MIN so a completed rank test always activates.
     HEAD_MIN_LABELS: int = 150
-    HEAD_MIN_MOVIES: int = 5
+    HEAD_MIN_MOVIES: int = 10
     # When True, every approve/override retrains the learned head inline. Default
     # False: a pick only *accumulates* into the label/exemplar storage; the head
     # is (re)trained on demand via the "Key Art Engine → Train" button, which
@@ -133,6 +137,18 @@ class PipelineSettings(BaseSettings):
     # model was confidently wrong about. Easy negatives (ranked worse, or never
     # ranked) feed only the pairwise order, never the negative exemplar set.
     FEEDBACK_HARD_NEGATIVE_RANK_MAX: int = 10
+
+    # ── Cold-start onboarding (design 20) ─────────────────────────────
+    # Runtime onboarding state (progress + complete flag). data/ is gitignored.
+    ONBOARDING_STATE_PATH: Path = _DATA_DIR / "onboarding" / "state.json"
+    # Shipped resources: bundled taste test + tiny starter profile seed.
+    ONBOARDING_TASTE_TEST_DIR: Path = _ONBOARDING_DIR / "taste_test"
+    ONBOARDING_SEED_PROFILE_PATH: Path = _ONBOARDING_DIR / "seed" / "taste_profile.seed.npz"
+    # The "Rank Test": min to mark complete + activate, the encouraged goal, and
+    # the hard cap past which no more movies are offered.
+    ONBOARDING_RANK_TEST_MIN: int = 15
+    ONBOARDING_RANK_TEST_GOAL: int = 25
+    ONBOARDING_RANK_TEST_MAX: int = 40
 
     # ── Batch poster pipeline ─────────────────────────────────────────
     # Upper bound on movies admitted to a single cross-movie batch run, so an
@@ -405,6 +421,18 @@ class PipelineSettings(BaseSettings):
             raise ValueError("FEEDBACK_INDIFF_HATE_PAIR_WEIGHT must be in [0, 1]")
         if self.FEEDBACK_HARD_NEGATIVE_RANK_MAX < 0:
             raise ValueError("FEEDBACK_HARD_NEGATIVE_RANK_MAX cannot be negative")
+        if not (
+            0
+            < self.ONBOARDING_RANK_TEST_MIN
+            <= self.ONBOARDING_RANK_TEST_GOAL
+            <= self.ONBOARDING_RANK_TEST_MAX
+        ):
+            raise ValueError("ONBOARDING_RANK_TEST_MIN <= GOAL <= MAX must hold (all > 0)")
+        if self.HEAD_MIN_MOVIES > self.ONBOARDING_RANK_TEST_MIN:
+            raise ValueError(
+                "HEAD_MIN_MOVIES must be <= ONBOARDING_RANK_TEST_MIN so a completed "
+                "rank test always activates the head"
+            )
         if self.CALIBRATION_BANDWIDTH_SCALE <= 0:
             raise ValueError("CALIBRATION_BANDWIDTH_SCALE must be positive")
         if self.CALIBRATION_MIN_SAMPLES < 2:
