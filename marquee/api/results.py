@@ -144,7 +144,44 @@ def _candidate_view(run_id: str, candidate: dict) -> dict:
         "rejection_reason": candidate.get("rejection_reason"),
         "rejection_explanation": explain_rejection(candidate.get("rejection_reason")),
         "dedup_kept": candidate.get("dedup_kept"),
+        "stack_id": candidate.get("stack_id"),
+        "stack_rank": candidate.get("stack_rank"),
+        "stack_pos": candidate.get("stack_pos"),
+        "stack_label": candidate.get("stack_label"),
+        "stack_size": candidate.get("stack_size"),
+        "stack_score": candidate.get("stack_score"),
     }
+
+
+def _build_stacks(run_id: str, ranked: list[dict]) -> list[dict]:
+    """Group ranked survivors into per-design stacks for the UI.
+
+    Returns [] when the run has no stack metadata (stacking disabled or an
+    archive predating the stack layer), so the frontend falls back to the
+    flat ranked grid.
+    """
+    if not ranked or ranked[0].get("stack_rank") is None:
+        return []
+    by_stack: dict[int, list[dict]] = {}
+    for candidate in ranked:
+        by_stack.setdefault(candidate.get("stack_id"), []).append(candidate)
+    entries: list[dict] = []
+    for members in by_stack.values():
+        members.sort(key=lambda c: c.get("stack_pos") or 0)
+        rep = members[0]
+        entries.append(
+            {
+                "stack_rank": rep.get("stack_rank"),
+                "stack_id": rep.get("stack_id"),
+                "label": str(rep.get("stack_rank")),
+                "size": rep.get("stack_size") or len(members),
+                "stack_score": rep.get("stack_score"),
+                "representative": _candidate_view(run_id, rep),
+                "members": [_candidate_view(run_id, m) for m in members],
+            }
+        )
+    entries.sort(key=lambda s: s["stack_rank"])
+    return entries
 
 
 def build_results_payload(
@@ -164,11 +201,32 @@ def build_results_payload(
     )
     ranked_views = [_candidate_view(run_id, c) for c in ranked]
 
+    # Stacks: group ranked survivors of the same base design. One entry per
+    # stack, members ordered by stack_pos (A,B,C…), stacks by stack_rank.
+    stacks = _build_stacks(run_id, ranked)
+
+    # Auto-pick is "1A" — the representative of the top stack. With the robust
+    # top-K-mean stack score this can differ from the single globally
+    # highest-scored poster (= ranked[0]); fall back to that when stacking is
+    # off or the archive predates the stack layer.
+    auto_src = None
+    if stacks:
+        auto_src = next(
+            (
+                c
+                for c in ranked
+                if c.get("stack_rank") == 1 and c.get("stack_pos") == 1
+            ),
+            None,
+        )
+    if auto_src is None and ranked:
+        auto_src = ranked[0]
+
     auto_pick = None
-    if ranked:
-        auto_pick = _candidate_view(run_id, ranked[0])
+    if auto_src is not None:
+        auto_pick = _candidate_view(run_id, auto_src)
         auto_pick["explanations"] = explain_top_contributions(
-            ranked[0].get("contributions")
+            auto_src.get("contributions")
         )
 
     rejected: dict[str, list[dict]] = {"gate": [], "ocr": [], "dedup": [], "errored": []}
@@ -202,6 +260,7 @@ def build_results_payload(
         "reviewed": reviewed,
         "auto_pick": auto_pick,
         "ranked": ranked_views,
+        "stacks": stacks,
         "rejected": rejected,
         "rejected_by_stage": rejected_by_stage,
         "rejection_summary": rejection_summary,

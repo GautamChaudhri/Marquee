@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from typing import Any
 
 Point = tuple[float, float]
 BoundingBox = tuple[Point, Point, Point, Point]
@@ -89,6 +90,22 @@ class CandidateScore:
     # filename of the survivor it collapsed into (used by the feedback
     # endpoint to remap a dedup-twin override onto its survivor).
     dedup_kept: str | None = None
+    # ── Stack layer (design: poster stacks) ──────────────────────────────
+    # Ranked survivors of the same base design are grouped into a "stack".
+    # stack_rank orders designs against each other; within a stack, members
+    # are ordered by their individual score into positions 1,2,3 → labels
+    # A,B,C. The auto-pick is stack_rank=1 / stack_pos=1 ("1A"). All None
+    # until the stacker runs (or when STACK_ENABLED is off).
+    stack_id: int | None = None
+    stack_rank: int | None = None
+    stack_pos: int | None = None
+    stack_label: str | None = None
+    stack_size: int | None = None
+    stack_score: float | None = None
+    # Transient similarity carrier (L2-normalized DINOv2/CLIP vector, or an
+    # imagehash for the phash signal) handed from feature extraction to the
+    # stacker. Never serialized — excluded from to_dict by omission.
+    embedding: Any = field(default=None, repr=False, compare=False)
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -109,4 +126,10 @@ class CandidateScore:
             "rejection_reason": self.rejection_reason,
             "original_download": self.original_download,
             "dedup_kept": self.dedup_kept,
+            "stack_id": self.stack_id,
+            "stack_rank": self.stack_rank,
+            "stack_pos": self.stack_pos,
+            "stack_label": self.stack_label,
+            "stack_size": self.stack_size,
+            "stack_score": self.stack_score,
         }

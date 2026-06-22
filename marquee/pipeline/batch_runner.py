@@ -58,12 +58,14 @@ from marquee.pipeline.runner import (
     _log_dedup_removal,
     _root_images,
     _sanitise_filename,
+    _stack_signal_value,
     build_run_payload,
     fetch_candidates,
     place_outputs,
     write_run_json,
 )
 from marquee.pipeline.scorer import select_scorer
+from marquee.pipeline.stacker import assign_stacks
 from marquee.pipeline.types import CandidateScore, OCRCandidateResult
 
 logger = logging.getLogger(__name__)
@@ -518,7 +520,14 @@ def _ocr_batch(contexts: list[_BatchMovie], progress: ProgressCallback | None) -
 
 
 def _phash(ctx: _BatchMovie, progress: ProgressCallback | None) -> None:
-    """Perceptual near-dupe removal on one movie's OCR survivors."""
+    """Perceptual near-dupe removal on one movie's OCR survivors.
+
+    Skipped when STACK_ENABLED — the stack layer groups same-design variants
+    instead of deleting them, so every OCR survivor flows on to detail features.
+    """
+    if pipeline_settings.STACK_ENABLED:
+        ctx.counts["phash_survivors"] = len(ctx.ocr_survivors)
+        return
     if not ctx.ocr_survivors:
         ctx.counts["phash_survivors"] = 0
         return
@@ -576,10 +585,15 @@ def _detail_batch(
         return
 
     _emit_global(progress, "detail-features", "start", total=len(items))
-    detail_results = extractor.complete_batch(items)
+    # The stacker reuses these DINOv2 vectors as its grouping signal (keyed
+    # by index into the union `items`/`owners`).
+    dino_vectors: dict = {}
+    detail_results = extractor.complete_batch(items, dino_vectors_out=dino_vectors)
     diagnostic_scorer = select_scorer()
 
-    for (ctx, ocr_result), detail in zip(owners, detail_results, strict=True):
+    for index, ((ctx, ocr_result), detail) in enumerate(
+        zip(owners, detail_results, strict=True)
+    ):
         record = ctx.records[ocr_result.image_path.name]
         record.stage_reached = "features"
         if isinstance(detail, Exception):
@@ -595,6 +609,10 @@ def _detail_batch(
         record.gate_decision = "passed" if decision.passed else "gated"
         record.gate_reason = decision.reason
         if decision.passed:
+            if pipeline_settings.STACK_ENABLED:
+                record.embedding = _stack_signal_value(
+                    record, ocr_result.image_path, dino_vectors.get(index)
+                )
             ctx.passed.append(record)
         else:
             record.rejection_reason = decision.reason
@@ -621,6 +639,9 @@ def _rank(ctx: _BatchMovie, scorer, progress: ProgressCallback | None) -> None:
 
     _emit(progress, ctx, "rank", "start", total=len(ctx.passed))
     ranked = scorer.rank(ctx.passed)
+    # Stage 6b: group same-design variants into stacks (auto-pick = 1A).
+    if pipeline_settings.STACK_ENABLED:
+        assign_stacks(ranked)
     ctx.ranked = ranked
     ctx.counts["ranked"] = len(ranked)
     ctx.status = "completed"

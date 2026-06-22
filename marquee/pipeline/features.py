@@ -367,12 +367,18 @@ class FeatureExtractor:
     def complete_batch(
         self,
         items: list[tuple[FeatureVector, OCRCandidateResult]],
+        *,
+        dino_vectors_out: dict[int, np.ndarray] | None = None,
     ) -> list[FeatureVector | Exception]:
         """Fill in the detail scalars for OCR/pHash survivors.
 
         DINOv2 runs as one batched pass over all survivors; the per-poster
         CV work follows. Per-item failures come back as exceptions in their
         slot, everything else continues (design 04 §13).
+
+        When ``dino_vectors_out`` is provided, the raw L2-normalized DINOv2
+        embedding for each item is stored into it keyed by the item's index
+        (the stacker reuses these as its "same-design" signal — no recompute).
         """
         dino_scores: dict[int, float] = {}
         if self._dino_on and items:
@@ -391,6 +397,8 @@ class FeatureExtractor:
                     dino_scores[index] = self.taste_store.dino_style_score(
                         vector, k=self.config.K_NEIGHBORS
                     )
+                    if dino_vectors_out is not None:
+                        dino_vectors_out[index] = vector
 
         results: list[FeatureVector | Exception] = []
         for index, (features, ocr_result) in enumerate(items):

@@ -250,14 +250,44 @@
 
 	<p class="grid-hint">
 		{#if activeStage === 'ranked'}
-			Click any poster to set it as the chosen one — it deploys to the movie folder and trains the
-			Key Art Engine.
+			{#if results.stacks?.length}
+				Posters are grouped into <strong>stacks</strong> of the same design — variants differ only in
+				title position, text, or crop. Designs are ranked by their best few variants, so the
+				auto-pick (1A) may not be the single highest-scored poster. Click any poster to choose it.
+			{:else}
+				Click any poster to set it as the chosen one — it deploys to the movie folder and trains the
+				Key Art Engine.
+			{/if}
 		{:else}
 			Rejected at this stage. Click to override and choose it anyway.
 		{/if}
 	</p>
 
-	{#if currentPosters.length === 0}
+	{#if activeStage === 'ranked' && results.stacks?.length}
+		<div class="stacks">
+			{#each results.stacks as st (st.stack_id)}
+				<section class="stack">
+					<div class="stack-head">
+						<span class="stack-name">Design {st.stack_rank}</span>
+						{#if st.stack_score != null}
+							<span class="stack-score mono">{st.stack_score.toFixed(3)}</span>
+						{/if}
+						<span class="stack-size">{st.size} variant{st.size === 1 ? '' : 's'}</span>
+					</div>
+					<div class="poster-grid">
+						{#each st.members as c (c.orig_filename)}
+							<PosterCandidateTile
+								candidate={c}
+								kind="ranked"
+								selectable={!results.reviewed}
+								onSelect={openPick}
+							/>
+						{/each}
+					</div>
+				</section>
+			{/each}
+		</div>
+	{:else if currentPosters.length === 0}
 		<div class="empty-tab">No posters in this group.</div>
 	{:else}
 		<div class="poster-grid">
@@ -490,6 +520,37 @@
 		display: grid;
 		grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
 		gap: 14px;
+	}
+	.stacks {
+		display: flex;
+		flex-direction: column;
+		gap: 20px;
+	}
+	.stack {
+		padding: 12px 12px 14px;
+		border: 1px solid var(--line);
+		border-radius: var(--radius-sm);
+		background: var(--panel);
+	}
+	.stack-head {
+		display: flex;
+		align-items: baseline;
+		gap: 10px;
+		margin-bottom: 10px;
+	}
+	.stack-name {
+		font-size: 13px;
+		font-weight: 650;
+		color: var(--text);
+	}
+	.stack-score {
+		font-size: 12px;
+		color: var(--gold);
+	}
+	.stack-size {
+		font-size: 11.5px;
+		color: var(--faint);
+		margin-left: auto;
 	}
 	.empty-tab {
 		padding: 40px;

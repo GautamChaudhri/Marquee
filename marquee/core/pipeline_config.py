@@ -213,6 +213,32 @@ class PipelineSettings(BaseSettings):
     DEDUP_PHASH_THRESHOLD: int = 6
     DEDUP_MIN_POSTER_WIDTH: int = 500
 
+    # ── Stacks ──────────────────────────────────────────────────────────
+    # Instead of *deleting* near-duplicate posters, group same-design
+    # variants (title moved, recolored, slightly cropped) into a "stack".
+    # Every poster is still scored individually; stacks are ranked against
+    # each other and variants ranked within their stack (1A, 1B, ...), so
+    # the user compares distinct designs first, then drills into one.
+    # When disabled, the legacy pHash-removal stage (DEDUP_PHASH_THRESHOLD)
+    # runs instead and ranking stays flat.
+    STACK_ENABLED: bool = True
+    # Similarity signal used to decide "same design":
+    #   dino  — DINOv2 cosine (structure/composition; best at "same artwork,
+    #           different text/recolor"); falls back to CLIP when DINO is off.
+    #   clip  — CLIP cosine (already cached; more semantic, may over-group).
+    #   phash — perceptual-hash Hamming distance (whole-image; recolors and
+    #           large title-moves can split a design).
+    STACK_SIGNAL: str = "dino"
+    # Cosine-similarity floor for two posters to share a stack (dino/clip).
+    # Higher = tighter (more, smaller stacks). Tune against the library.
+    STACK_SIM_THRESHOLD: float = 0.88
+    # Hamming-distance ceiling for STACK_SIGNAL="phash" (out of 64 bits).
+    STACK_PHASH_MAX_DISTANCE: int = 12
+    # A stack's overall score is the mean of its top-K member scores
+    # (robust/trimmed mean): rewards designs with several strong variants
+    # without letting one weak variant drag the design down. K=1 == max.
+    STACK_AGG_TOPK: int = 3
+
     # TMDB poster size for initial pipeline fetch. "original" downloads
     # uncapped resolution (1-10 MB per poster); smaller sizes save bandwidth
     # at the cost of slightly degraded OCR and face-detection accuracy.
@@ -433,6 +459,13 @@ class PipelineSettings(BaseSettings):
             },
             "dedup_phash_threshold": self.DEDUP_PHASH_THRESHOLD,
             "dedup_min_poster_width": self.DEDUP_MIN_POSTER_WIDTH,
+            "stacks": {
+                "enabled": self.STACK_ENABLED,
+                "signal": self.STACK_SIGNAL,
+                "sim_threshold": self.STACK_SIM_THRESHOLD,
+                "phash_max_distance": self.STACK_PHASH_MAX_DISTANCE,
+                "agg_topk": self.STACK_AGG_TOPK,
+            },
         }
 
 
