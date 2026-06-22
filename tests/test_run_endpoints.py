@@ -171,6 +171,57 @@ def test_build_results_payload_shape():
     assert payload["rejected"]["dedup"][0]["dedup_kept"] == "a.jpg"
     assert payload["rejection_summary"] == {"ocr_text_heavy": 1, "dedup_phash": 1}
     assert "OCR_MAX_RESIDUAL_BOXES" in payload["suggestion"]
+    # No stack metadata in the fixture → flat fallback (no stacks, auto = rank 1).
+    assert payload["stacks"] == []
+
+
+def test_build_results_payload_with_stacks():
+    archive = _fake_archive()
+    by_name = {c["orig_filename"]: c for c in archive["candidates"]}
+    # b.jpg (global rank 2) is the top *design*; a.jpg (global rank 1) is design 2.
+    by_name["b.jpg"].update(
+        stack_id=0, stack_rank=1, stack_pos=1, stack_label="A", stack_size=1, stack_score=0.72
+    )
+    by_name["a.jpg"].update(
+        stack_id=1, stack_rank=2, stack_pos=1, stack_label="A", stack_size=1, stack_score=0.90
+    )
+    payload = build_results_payload(
+        archive, run_id="r", status="completed", reviewed=False, scorer="weighted"
+    )
+    assert [s["stack_rank"] for s in payload["stacks"]] == [1, 2]
+    assert payload["stacks"][0]["representative"]["orig_filename"] == "b.jpg"
+    # Auto-pick follows the stack (1A = b.jpg), not global rank 1 (a.jpg).
+    assert payload["auto_pick"]["orig_filename"] == "b.jpg"
+    # The flat ranked list is still global-rank ordered.
+    assert payload["ranked"][0]["orig_filename"] == "a.jpg"
+
+
+def test_write_run_json_coerces_numpy(tmp_path):
+    """Regression: feature extras (calibration typicality, zero-shot axes) emit
+    numpy scalars/arrays; the archive write must coerce them, not raise."""
+    import numpy as np
+
+    from marquee.pipeline.runner import write_run_json
+
+    path = tmp_path / "run.json"
+    write_run_json(
+        path,
+        {
+            "score": np.float32(0.5),
+            "vec": np.array([1.0, 2.0], dtype=np.float32),
+            "count": np.int64(3),
+            "flag": np.bool_(True),
+            "nested": {"x": np.float32(1.25)},
+        },
+    )
+    data = json.loads(path.read_text())
+    assert data == {
+        "score": 0.5,
+        "vec": [1.0, 2.0],
+        "count": 3,
+        "flag": True,
+        "nested": {"x": 1.25},
+    }
 
 
 # ---------------------------------------------------------------------------

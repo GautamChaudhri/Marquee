@@ -343,8 +343,27 @@ export interface CandidateView {
 	rejection_reason: string | null;
 	rejection_explanation: string | null;
 	dedup_kept: string | null;
+	/** Stack layer: which design group this poster belongs to and its place
+	 * within it. Null when stacking is off or the run predates the layer. */
+	stack_id: number | null;
+	stack_rank: number | null;
+	stack_pos: number | null;
+	stack_label: string | null;
+	stack_size: number | null;
+	stack_score: number | null;
 	/** Present on `auto_pick` only — top human-readable contribution lines. */
 	explanations?: string[];
+}
+
+/** One design group: a representative poster + its ranked variants (A,B,C…). */
+export interface StackView {
+	stack_rank: number;
+	stack_id: number;
+	label: string;
+	size: number;
+	stack_score: number | null;
+	representative: CandidateView;
+	members: CandidateView[];
 }
 
 /** One per-stage rejection group — drives the results-page stage tabs. */
@@ -363,6 +382,8 @@ export interface RunResults {
 	reviewed: boolean;
 	auto_pick: CandidateView | null;
 	ranked: CandidateView[];
+	/** Ranked survivors grouped by design. Empty when stacking is off. */
+	stacks: StackView[];
 	rejected: {
 		gate: CandidateView[];
 		ocr: CandidateView[];

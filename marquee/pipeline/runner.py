@@ -38,17 +38,19 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
+import numpy as np
 
 from marquee.config import settings
 from marquee.core.pipeline_config import pipeline_settings
 from marquee.core.poster_sources.tmdb import PosterCandidate, TMDBClient
 from marquee.models import Movie
 from marquee.pipeline.deduper import DedupRemoval, PosterDeduper
-from marquee.pipeline.features import FeatureExtractor
+from marquee.pipeline.features import FeatureExtractor, load_cached_embedding
 from marquee.pipeline.gate import PosterGate
 from marquee.pipeline.ocr_filter import PosterTextFilter
 from marquee.pipeline.output import OutputResult, place_gated, place_ranked
 from marquee.pipeline.scorer import select_scorer
+from marquee.pipeline.stacker import assign_stacks
 from marquee.pipeline.types import CandidateScore, OCRCandidateResult
 
 logger = logging.getLogger(__name__)
@@ -321,8 +323,26 @@ def build_run_payload(
     }
 
 
+def _json_default(obj: object) -> object:
+    """Coerce the numpy scalars/arrays the ML feature extras emit (calibration
+    typicality, zero-shot axes, etc.) into JSON-native values so every run
+    archives instead of silently failing to serialize. Keeps numeric fidelity
+    (float/int, not str) because the archive is replayed for rescoring."""
+    if isinstance(obj, np.bool_):
+        return bool(obj)
+    if isinstance(obj, np.integer):
+        return int(obj)
+    if isinstance(obj, np.floating):
+        return float(obj)
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
+
+
 def write_run_json(path: Path, payload: dict[str, object]) -> None:
-    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    path.write_text(
+        json.dumps(payload, indent=2, default=_json_default), encoding="utf-8"
+    )
 
 
 async def _download_poster(
@@ -494,6 +514,34 @@ class SyncOutcome:
     status: str = "completed"
     ranked: list[CandidateScore] = field(default_factory=list)
     counts: dict[str, int] = field(default_factory=dict)
+
+
+def _stack_signal_value(record: CandidateScore, image_path: Path, dino_vector):
+    """The per-poster similarity value the stacker groups on (STACK_SIGNAL).
+
+    dino → the DINOv2 vector retained from detail features (CLIP cache as a
+    fallback when DINO is off); clip → the cached CLIP embedding; phash → a
+    perceptual hash. Returns None when the signal can't be computed, so the
+    stacker leaves that poster as its own singleton.
+    """
+    signal = pipeline_settings.STACK_SIGNAL
+    if signal == "phash":
+        import imagehash  # noqa: PLC0415
+        from PIL import Image  # noqa: PLC0415
+
+        try:
+            with Image.open(image_path) as img:
+                return imagehash.phash(img)
+        except Exception:  # noqa: BLE001 — missing hash → singleton stack
+            logger.warning("STACK | pHash failed for %s — singleton", image_path.name)
+            return None
+    if signal == "clip":
+        return load_cached_embedding(record.orig_filename)
+    # dino (default): use the retained vector, fall back to the CLIP cache
+    # when DINO produced nothing for this poster (model off / per-item error).
+    if dino_vector is not None:
+        return dino_vector
+    return load_cached_embedding(record.orig_filename)
 
 
 def run_sync_stages(
@@ -678,47 +726,54 @@ def run_sync_stages(
     outcome.counts["ocr_survivors"] = len(ocr_survivors)
     _stage_done("ocr", stage_started, timings, survivors=len(ocr_survivors), progress=progress)
 
-    # Stage 2b: perceptual dedup on OCR survivors.
-    stage_started = _stage_start(
-        "phash", total=len(ocr_survivors), progress=progress
-    )
-    ocr_survivor_paths = [r.image_path for r in ocr_survivors]
-    phash_rejected_dir = out_dir / "3-phash-rejected"
-    phash_rejected_dir.mkdir()
-    dedup_preference = {
-        r.image_path.name: (
-            1 if r.title_bbox is not None else 0,
-            -len(r.residual_boxes),
-            1 if r.image_path.name == primary_name else 0,
-            records[r.image_path.name].features.knn_sim,
+    # Stage 2b: perceptual dedup on OCR survivors. When STACK_ENABLED this
+    # removal stage is replaced by the stack layer (same-design variants are
+    # grouped and ranked, not deleted), so it is skipped entirely.
+    if pipeline_settings.STACK_ENABLED:
+        outcome.counts["phash_survivors"] = len(ocr_survivors)
+    else:
+        stage_started = _stage_start(
+            "phash", total=len(ocr_survivors), progress=progress
         )
-        for r in ocr_survivors
-        if records[r.image_path.name].features is not None
-    }
-    phash_result = PosterDeduper(
-        min_width=0,
-        resolution_by_name=resolution_by_name,
-        preference_by_name=dedup_preference,
-    ).deduplicate(ocr_survivor_paths)
-    phash_survivor_names = {path.name for path in phash_result.survivors}
-    for removal in phash_result.removals:
-        if removal.reason != "phash":
-            continue
-        _log_dedup_removal(removal)
-        record = records[removal.removed.name]
-        record.stage_reached = "phash"
-        record.rejection_reason = "dedup_phash"
-        record.dedup_kept = removal.kept.name if removal.kept else None
-        record.image_path = _copy_with_reason(
-            removal.removed,
-            phash_rejected_dir,
-            "phash",
+        ocr_survivor_paths = [r.image_path for r in ocr_survivors]
+        phash_rejected_dir = out_dir / "3-phash-rejected"
+        phash_rejected_dir.mkdir()
+        dedup_preference = {
+            r.image_path.name: (
+                1 if r.title_bbox is not None else 0,
+                -len(r.residual_boxes),
+                1 if r.image_path.name == primary_name else 0,
+                records[r.image_path.name].features.knn_sim,
+            )
+            for r in ocr_survivors
+            if records[r.image_path.name].features is not None
+        }
+        phash_result = PosterDeduper(
+            min_width=0,
+            resolution_by_name=resolution_by_name,
+            preference_by_name=dedup_preference,
+        ).deduplicate(ocr_survivor_paths)
+        phash_survivor_names = {path.name for path in phash_result.survivors}
+        for removal in phash_result.removals:
+            if removal.reason != "phash":
+                continue
+            _log_dedup_removal(removal)
+            record = records[removal.removed.name]
+            record.stage_reached = "phash"
+            record.rejection_reason = "dedup_phash"
+            record.dedup_kept = removal.kept.name if removal.kept else None
+            record.image_path = _copy_with_reason(
+                removal.removed,
+                phash_rejected_dir,
+                "phash",
+            )
+        ocr_survivors = [
+            r for r in ocr_survivors if r.image_path.name in phash_survivor_names
+        ]
+        outcome.counts["phash_survivors"] = len(ocr_survivors)
+        _stage_done(
+            "phash", stage_started, timings, survivors=len(ocr_survivors), progress=progress
         )
-    ocr_survivors = [
-        r for r in ocr_survivors if r.image_path.name in phash_survivor_names
-    ]
-    outcome.counts["phash_survivors"] = len(ocr_survivors)
-    _stage_done("phash", stage_started, timings, survivors=len(ocr_survivors), progress=progress)
 
     # Stage 4b: detail features + the remaining hard gate.
     stage_started = _stage_start(
@@ -727,8 +782,15 @@ def run_sync_stages(
     diagnostic_scorer = select_scorer()
     passed: list[CandidateScore] = []
     detail_items = [(records[r.image_path.name].features, r) for r in ocr_survivors]
-    detail_results = feature_extractor.complete_batch(detail_items)
-    for ocr_result, detail_result in zip(ocr_survivors, detail_results, strict=True):
+    # The stacker reuses the DINOv2 vectors computed here as its grouping
+    # signal — capture them keyed by item index (aligned to ocr_survivors).
+    dino_vectors: dict = {}
+    detail_results = feature_extractor.complete_batch(
+        detail_items, dino_vectors_out=dino_vectors
+    )
+    for index, (ocr_result, detail_result) in enumerate(
+        zip(ocr_survivors, detail_results, strict=True)
+    ):
         filename = ocr_result.image_path.name
         record = records[filename]
         record.stage_reached = "features"
@@ -750,6 +812,10 @@ def run_sync_stages(
         record.gate_decision = "passed" if decision.passed else "gated"
         record.gate_reason = decision.reason
         if decision.passed:
+            if pipeline_settings.STACK_ENABLED:
+                record.embedding = _stack_signal_value(
+                    record, ocr_result.image_path, dino_vectors.get(index)
+                )
             passed.append(record)
             logger.info("GATE PASS | file=%s", record.orig_filename)
         else:
@@ -781,6 +847,11 @@ def run_sync_stages(
     )
     logger.info("RANK | scorer=%s", diagnostic_scorer.name)
     ranked = diagnostic_scorer.rank(passed)
+    # Stage 6b: group same-design variants into stacks and rank designs
+    # against each other (auto-pick = 1A). Mutates stack fields on records;
+    # the flat `ranked` order (by global rank) is kept for output/back-compat.
+    if pipeline_settings.STACK_ENABLED:
+        assign_stacks(ranked)
     for record in ranked:
         logger.info(
             "RANK | rank=%d | file=%s | final_score=%.4f | scorer=%s",

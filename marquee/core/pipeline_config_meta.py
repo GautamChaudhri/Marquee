@@ -138,6 +138,21 @@ KNOB_GROUPS: list[dict[str, Any]] = [
         ],
     },
     {
+        "id": "stacks",
+        "label": "Stacks",
+        "description": (
+            "Group same-design poster variants into stacks instead of deleting "
+            "near-duplicates; rank designs, then variants within each design."
+        ),
+        "knobs": [
+            "STACK_ENABLED",
+            "STACK_SIGNAL",
+            "STACK_SIM_THRESHOLD",
+            "STACK_PHASH_MAX_DISTANCE",
+            "STACK_AGG_TOPK",
+        ],
+    },
+    {
         "id": "downloads",
         "label": "Downloads",
         "description": "TMDB poster fetch and batch sizing.",
@@ -262,6 +277,13 @@ KNOB_META: dict[str, dict[str, Any]] = {
     # ── Dedup ────────────────────────────────────────────────────────
     "DEDUP_PHASH_THRESHOLD": {"kind": "int", "min": 0, "max": 64, "step": 1},
     "DEDUP_MIN_POSTER_WIDTH": {"kind": "int", "min": 0, "max": 4000, "step": 10},
+
+    # ── Stacks ───────────────────────────────────────────────────────
+    "STACK_ENABLED": {"kind": "bool"},
+    "STACK_SIGNAL": {"kind": "enum", "options": ["dino", "clip", "phash"]},
+    "STACK_SIM_THRESHOLD": {"kind": "float", "min": 0, "max": 1, "step": 0.01},
+    "STACK_PHASH_MAX_DISTANCE": {"kind": "int", "min": 0, "max": 64, "step": 1},
+    "STACK_AGG_TOPK": {"kind": "int", "min": 1, "max": 20, "step": 1},
 
     # ── Downloads ────────────────────────────────────────────────────
     "TMDB_POSTER_SIZE": {

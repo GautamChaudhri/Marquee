@@ -32,8 +32,15 @@ def _orig_suffix(orig_filename: str) -> str:
 def ranked_filename(score: CandidateScore) -> str:
     if score.rank is None or score.final_score is None:
         raise ValueError("Ranked output requires rank and final score")
+    # Prefix the stack label ("1A", "2B", ...) when the stack layer ran, so
+    # placed files self-describe both their design and global rank.
+    stack_prefix = (
+        f"{score.stack_rank}{score.stack_label}__"
+        if score.stack_rank is not None and score.stack_label is not None
+        else ""
+    )
     return (
-        f"{score.rank}__{score.final_score:.4f}__"
+        f"{stack_prefix}{score.rank}__{score.final_score:.4f}__"
         f"{Path(score.orig_filename).stem}{_orig_suffix(score.orig_filename)}"
     )
 
@@ -70,8 +77,25 @@ async def place_ranked(
         score.image_path = destination
         result.placed_count += 1
 
+    # Pick which candidates get re-fetched at full resolution. With stacks,
+    # that's the representative (A) of each of the top-N stacks — one crisp
+    # image per distinct design, rather than N near-identical variants of one.
+    if any(score.stack_rank is not None for score in ranked):
+        originals = sorted(
+            (
+                score
+                for score in ranked
+                if score.stack_pos == 1
+                and score.stack_rank is not None
+                and score.stack_rank <= top_n
+            ),
+            key=lambda score: score.stack_rank,
+        )
+    else:
+        originals = ranked[:top_n]
+
     async with httpx.AsyncClient(timeout=60.0) as client:
-        for score in ranked[:top_n]:
+        for score in originals:
             candidate = candidate_map.get(score.orig_filename)
             if candidate is None:
                 message = f"Missing PosterCandidate for {score.orig_filename}"

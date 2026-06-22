@@ -15,7 +15,20 @@
 	} = $props();
 
 	const g = $derived(gradientFor(candidate.orig_filename));
-	const isAutoPick = $derived(kind === 'ranked' && candidate.rank === 1);
+	// "1A" when stacked, else "#rank". Auto-pick is the top stack's A (which,
+	// under the robust stack score, may not be global rank 1).
+	const stacked = $derived(candidate.stack_rank != null && candidate.stack_label != null);
+	const tag = $derived(
+		stacked
+			? `${candidate.stack_rank}${candidate.stack_label}`
+			: candidate.rank != null
+				? `#${candidate.rank}`
+				: ''
+	);
+	const isAutoPick = $derived(
+		kind === 'ranked' &&
+			(stacked ? candidate.stack_rank === 1 && candidate.stack_pos === 1 : candidate.rank === 1)
+	);
 	let imgFailed = $state(false);
 
 	const reason = $derived(
@@ -29,7 +42,7 @@
 	class:rejected={kind === 'rejected'}
 	disabled={!selectable}
 	onclick={() => onSelect?.(candidate)}
-	title={kind === 'rejected' ? reason : `Rank ${candidate.rank}`}
+	title={kind === 'rejected' ? reason : stacked ? `Stack ${tag}` : `Rank ${candidate.rank}`}
 	style="--c0:{g[0]}; --c1:{g[1]}; --accent:{g[2]}"
 >
 	<div class="art">
@@ -42,7 +55,7 @@
 		{/if}
 		<div class="top">
 			{#if kind === 'ranked'}
-				<span class="rank">#{candidate.rank}</span>
+				<span class="rank">{tag}</span>
 				{#if isAutoPick}<span class="auto-tag">AUTO</span>{/if}
 			{/if}
 		</div>
@@ -52,7 +65,7 @@
 	</div>
 	<div class="cap">
 		{#if kind === 'ranked'}
-			<span class="cap-main">Rank {candidate.rank}</span>
+			<span class="cap-main">{stacked ? tag : `Rank ${candidate.rank}`}</span>
 		{:else}
 			<span class="cap-main bad-text" title={reason}>{reason || 'Rejected'}</span>
 		{/if}
