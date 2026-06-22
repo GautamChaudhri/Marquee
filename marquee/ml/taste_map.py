@@ -93,8 +93,24 @@ def _cluster(coords: np.ndarray) -> np.ndarray | None:
         from sklearn.cluster import HDBSCAN  # noqa: PLC0415
     except ImportError:
         return None
-    min_size = max(5, coords.shape[0] // 30)
-    return HDBSCAN(min_cluster_size=min_size).fit_predict(coords).astype(np.int64)
+    n = coords.shape[0]
+    min_size = max(5, int(n * pipeline_settings.TASTE_MAP_MIN_CLUSTER_SIZE_RATIO))
+    min_samples = max(3, min_size // 3)
+    epsilon = pipeline_settings.TASTE_MAP_CLUSTER_EPSILON
+    method = pipeline_settings.TASTE_MAP_CLUSTER_METHOD
+    kwargs: dict = {
+        "min_cluster_size": min_size,
+        "min_samples": min_samples,
+        "cluster_selection_method": method,
+    }
+    if epsilon > 0:
+        kwargs["cluster_selection_epsilon"] = epsilon
+    logger.info(
+        "TASTE MAP | clustering with min_cluster_size=%d, min_samples=%d, "
+        "epsilon=%.2f, method=%s",
+        min_size, min_samples, epsilon, method,
+    )
+    return HDBSCAN(**kwargs).fit_predict(coords).astype(np.int64)
 
 
 def _cluster_names(labels: np.ndarray | None, genres: list | None) -> dict[int, str]:
@@ -199,6 +215,9 @@ def build_map() -> dict:
         "projection_method": unicode_scalar(method),
         "profile_mtime": np.float64(profile["mtime"]),
         "computed_at": unicode_scalar(datetime.now(UTC).isoformat()),
+        "cluster_ratio": np.float64(pipeline_settings.TASTE_MAP_MIN_CLUSTER_SIZE_RATIO),
+        "cluster_epsilon": np.float64(pipeline_settings.TASTE_MAP_CLUSTER_EPSILON),
+        "cluster_method": unicode_scalar(pipeline_settings.TASTE_MAP_CLUSTER_METHOD),
     }
     if labels is not None:
         payload["cluster_labels"] = labels
@@ -229,6 +248,13 @@ def _is_stale() -> bool:
         ensure_safe_artifact(map_path, "taste_map")
         with load_npz_safe(map_path) as data:
             map_mtime = float(np.asarray(data["profile_mtime"]).item())
+            # Rebuild if cluster parameters changed.
+            for key, current in (
+                ("cluster_ratio", pipeline_settings.TASTE_MAP_MIN_CLUSTER_SIZE_RATIO),
+                ("cluster_epsilon", pipeline_settings.TASTE_MAP_CLUSTER_EPSILON),
+            ):
+                if key in data.files and abs(float(np.asarray(data[key]).item()) - current) > 1e-8:
+                    return True
     except Exception:
         return True
     profile_path = Path(pipeline_settings.TASTE_PROFILE_PATH)

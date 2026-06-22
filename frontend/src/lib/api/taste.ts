@@ -53,6 +53,12 @@ export function overlayCandidates(
 	});
 }
 
+/** Run profile enrichment (genres, years, tmdb_ids) and rebuild the map.
+ *  Returns the refreshed taste-map data directly. */
+export function enrichProfile(fetchFn: Fetch): Promise<TasteMapData> {
+	return apiSend<TasteMapData>(fetchFn, 'POST', '/taste/enrich');
+}
+
 /** The k nearest exemplars to a given exemplar (click-to-explore). */
 export function getExemplarNeighbors(
 	fetchFn: Fetch,

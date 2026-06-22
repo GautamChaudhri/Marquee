@@ -496,6 +496,21 @@ async def overlay_candidates(
     }
 
 
+@router.post("/enrich")
+async def enrich_profile(
+    limiter: Annotated[RateLimiter, Depends(get_rate_limiter)],
+):
+    """Run profile enrichment (genres, years, tmdb_ids) and rebuild the map."""
+    from marquee.ml.profile_enrich import enrich  # noqa: PLC0415
+    from marquee.ml.taste_map import build_map  # noqa: PLC0415
+
+    enforce_rate_limit(limiter, "taste_enrich", settings.RATE_TASTE_ENRICH_SECONDS)
+    limiter.record("taste_enrich")
+    path = await asyncio.to_thread(enrich)
+    result = await asyncio.to_thread(build_map)
+    return {"profile_path": str(path), "map_rebuilt": True, **result}
+
+
 def _safe_exemplar_name(name: str) -> str:
     if "/" in name or "\\" in name or ".." in name:
         raise HTTPException(status_code=400, detail="Invalid exemplar name")

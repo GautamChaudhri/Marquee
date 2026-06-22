@@ -452,6 +452,9 @@ class Settings(BaseSettings):
     RATE_TASTE_MAP_REBUILD_SECONDS: int = Field(
         default=300, description="Cooldown between taste-map rebuilds."
     )
+    RATE_TASTE_ENRICH_SECONDS: int = Field(
+        default=600, description="Cooldown between profile-enrichment runs."
+    )
 
     # ------------------------------------------------------------------
     # Webhooks (Radarr/Sonarr → poster restoration)

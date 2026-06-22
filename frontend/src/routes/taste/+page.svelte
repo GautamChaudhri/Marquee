@@ -6,7 +6,7 @@
 	import StatusDot from '$lib/components/StatusDot.svelte';
 	import RunProgress from '$lib/components/RunProgress.svelte';
 	import Icon from '$lib/components/Icon.svelte';
-	import { getTasteStatus, retrainTaste, retrainHead, cancelRetrain, getTasteMap } from '$lib/api/taste';
+	import { getTasteStatus, retrainTaste, retrainHead, cancelRetrain, getTasteMap, enrichProfile } from '$lib/api/taste';
 	import TasteMap from '$lib/components/TasteMap.svelte';
 	import { trackJob, type JobProgressDetail } from '$lib/jobs';
 	import { toast } from '$lib/toast';
@@ -94,6 +94,21 @@
 			toast(mapError, 'bad');
 		} finally {
 			mapLoading = false;
+		}
+	}
+
+	let enriching = $state(false);
+
+	async function runEnrich() {
+		if (enriching) return;
+		enriching = true;
+		try {
+			mapData = await enrichProfile(fetch);
+			toast('Metadata enriched — map updated', 'good');
+		} catch (e) {
+			toast(e instanceof Error ? e.message : 'Enrichment failed', 'bad');
+		} finally {
+			enriching = false;
 		}
 	}
 
@@ -302,9 +317,14 @@
 	<div class="map-section">
 		<div class="map-header">
 			<span class="map-title">Taste map</span>
-			<button class="map-rebuild-btn" onclick={rebuildMap} disabled={mapLoading}>
-				{mapLoading ? 'Building…' : 'Rebuild map'}
-			</button>
+			<div class="map-actions">
+				<button class="map-rebuild-btn" onclick={rebuildMap} disabled={mapLoading}>
+					{mapLoading ? 'Building…' : 'Rebuild map'}
+				</button>
+				<button class="map-rebuild-btn" onclick={runEnrich} disabled={enriching || mapLoading}>
+					{enriching ? 'Enriching…' : 'Enrich metadata'}
+				</button>
+			</div>
 		</div>
 		<TasteMap {mapData} loading={mapLoading} error={mapError} />
 	</div>
@@ -535,6 +555,10 @@
 		font-size: 13px;
 		font-weight: 600;
 		color: var(--text);
+	}
+	.map-actions {
+		display: flex;
+		gap: 8px;
 	}
 	.map-rebuild-btn {
 		padding: 5px 14px;

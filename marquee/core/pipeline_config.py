@@ -47,6 +47,18 @@ class PipelineSettings(BaseSettings):
     TASTE_NEG_WEIGHT: float = 1.0
     PREFERRED_LANG: str = "en"
 
+    # ── Taste map clustering ──────────────────────────────────────────
+    # Minimum cluster size as fraction of profile size (e.g. 0.03 → ~15 at
+    # 500 exemplars). Larger = fewer, larger clusters.
+    TASTE_MAP_MIN_CLUSTER_SIZE_RATIO: float = 0.03
+    # HDBSCAN cluster_selection_epsilon: max distance within a cluster on
+    # the UMAP/PCA projection. 0 = let HDBSCAN choose. Smaller = tighter
+    # clusters and more noise. 0.2-0.6 works well for UMAP coords.
+    TASTE_MAP_CLUSTER_EPSILON: float = 0.4
+    # HDBSCAN cluster_selection_method: 'eom' (excess of mass, fewer larger
+    # clusters) or 'leaf' (more, smaller, more homogeneous clusters).
+    TASTE_MAP_CLUSTER_METHOD: str = "leaf"
+
     CLIP_MODEL_PATH: Path = _MODELS_DIR / "clip-vit-b-32.onnx"
     AESTHETIC_MODEL_PATH: Path = _MODELS_DIR / "sa_0_4_vit_b_32_linear.pth"
     FACE_MODEL_PATH: Path = _MODELS_DIR / "scrfd_500m_bnkps.onnx"
@@ -377,6 +389,12 @@ class PipelineSettings(BaseSettings):
             raise ValueError("KNN_SOFTMAX_TEMP must be positive")
         if self.TASTE_NEG_WEIGHT < 0:
             raise ValueError("TASTE_NEG_WEIGHT cannot be negative")
+        if not 0.01 <= self.TASTE_MAP_MIN_CLUSTER_SIZE_RATIO <= 0.5:
+            raise ValueError("TASTE_MAP_MIN_CLUSTER_SIZE_RATIO must be in [0.01, 0.5]")
+        if self.TASTE_MAP_CLUSTER_EPSILON < 0:
+            raise ValueError("TASTE_MAP_CLUSTER_EPSILON cannot be negative")
+        if self.TASTE_MAP_CLUSTER_METHOD not in ("eom", "leaf"):
+            raise ValueError("TASTE_MAP_CLUSTER_METHOD must be 'eom' or 'leaf'")
         if self.OCR_WORKERS < 0:
             raise ValueError("OCR_WORKERS cannot be negative")
         if self.OCR_MAX_RESIDUAL_BOXES < 0:
@@ -459,6 +477,9 @@ class PipelineSettings(BaseSettings):
             "knn_softmax_temp": self.KNN_SOFTMAX_TEMP,
             "taste_neg_weight": self.TASTE_NEG_WEIGHT,
             "preferred_lang": self.PREFERRED_LANG,
+            "taste_map_min_cluster_size_ratio": self.TASTE_MAP_MIN_CLUSTER_SIZE_RATIO,
+            "taste_map_cluster_epsilon": self.TASTE_MAP_CLUSTER_EPSILON,
+            "taste_map_cluster_method": self.TASTE_MAP_CLUSTER_METHOD,
             "weights": self.scorer_weights,
             "gates": {
                 "min_width": self.GATE_MIN_WIDTH,

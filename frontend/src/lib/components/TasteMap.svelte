@@ -76,14 +76,19 @@
 					clusterNames.set(c.id, c.name);
 				}
 			}
+			const noiseColor = '#3f4452';
+			const noiseCount = points.filter((p) => p.cluster == null || p.cluster === -1).length;
 			const colors = points.map((p) =>
 				p.cluster != null && p.cluster !== -1
-					? (clusterMap.get(p.cluster) ?? '#5b6170')
-					: '#5b6170'
+					? (clusterMap.get(p.cluster) ?? noiseColor)
+					: noiseColor
 			);
 			const legend = [...clusterMap.entries()]
 				.filter(([id]) => clusterNames.has(id))
 				.map(([id, color]) => ({ name: clusterNames.get(id)!, color }));
+			if (noiseCount > 0) {
+				legend.push({ name: `Noise (${noiseCount})`, color: noiseColor });
+			}
 			return { colors, legendGroups: legend, showLegend: true };
 		}
 
@@ -237,12 +242,22 @@
 		const glowLineColor = (c: string): string =>
 			c.replace('rgb', 'rgba').replace(')', ',0.55)');
 
+		// Noise points get reduced opacity and smaller size.
+		const isNoise = points.map((p) => p.cluster == null || p.cluster === -1);
+		const hasNoise = isNoise.some(Boolean);
+		const sizes = hasNoise
+			? points.map((_p, i) => isNoise[i] ? (mode === '3d' ? 3.5 : 4.5) : (mode === '3d' ? 5 : 8))
+			: undefined;
+		const opacities = hasNoise
+			? points.map((_p, i) => isNoise[i] ? 0.4 : 0.88)
+			: undefined;
+
 		const markerBase: Record<string, unknown> = {
-			size: mode === '3d' ? 5 : 8,
+			size: sizes ?? (mode === '3d' ? 5 : 8),
 			color: colors,
-			opacity: 0.88,
+			opacity: opacities ?? 0.88,
 			line: {
-				width: mode === '3d' ? 1.2 : 0.6,
+				width: mode === '3d' ? (hasNoise ? points.map((_p, i) => isNoise[i] ? 0.5 : 1.2) : 1.2) : 0.6,
 				color: mode === '3d' ? colors.map(glowLineColor) : 'rgba(255,255,255,0.12)'
 			},
 			symbol: 'circle'
@@ -270,10 +285,10 @@
 			trace.z = z;
 			trace.marker = {
 				...markerBase,
-				size: 5.5,
-				opacity: 0.9,
+				size: sizes ? points.map((_p, i) => isNoise[i] ? 3.0 : 5.5) : 5.5,
+				opacity: opacities ? points.map((_p, i) => isNoise[i] ? 0.35 : 0.9) : 0.9,
 				line: {
-					width: 1.5,
+					width: hasNoise ? points.map((_p, i) => isNoise[i] ? 0.4 : 1.5) : 1.5,
 					color: colors.map((c: string) =>
 						c.replace('rgb', 'rgba').replace(')', ',0.45)')
 					)
@@ -545,6 +560,13 @@
 				{/if}
 			</div>
 		</div>
+
+		{#if colorBy === 'genre' && mapData.points.every((p) => !p.genres || p.genres.length === 0)}
+			<div class="map-warn">
+				Genre metadata not available. Run <b>Enrich metadata</b> from the Key Art Engine
+				page to populate genres from the database.
+			</div>
+		{/if}
 
 		<div class="map-grid">
 			<!-- Plot -->
@@ -911,6 +933,19 @@
 		font-size: 11px;
 		color: var(--faint);
 		padding: 8px 0;
+	}
+
+	.map-warn {
+		font-size: 11.5px;
+		color: var(--warn);
+		background: color-mix(in srgb, var(--warn) 8%, transparent);
+		border: 1px solid color-mix(in srgb, var(--warn) 20%, transparent);
+		border-radius: var(--radius-sm);
+		padding: 8px 12px;
+		text-align: center;
+	}
+	.map-warn b {
+		color: var(--text);
 	}
 
 	.map-note {
