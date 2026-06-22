@@ -6,12 +6,18 @@
 		candidate,
 		kind = 'ranked',
 		selectable = true,
-		onSelect
+		onSelect,
+		accent = '',
+		onCollapse
 	}: {
 		candidate: CandidateView;
 		kind?: 'ranked' | 'rejected';
 		selectable?: boolean;
 		onSelect?: (c: CandidateView) => void;
+		/** Optional CSS color for a left-edge accent (used by expanded stacks). */
+		accent?: string;
+		/** When set, a collapse button appears right-aligned in the caption row. */
+		onCollapse?: () => void;
 	} = $props();
 
 	const g = $derived(gradientFor(candidate.orig_filename));
@@ -40,10 +46,11 @@
 	class="tile"
 	class:auto={isAutoPick}
 	class:rejected={kind === 'rejected'}
+	class:accented={accent !== ''}
 	disabled={!selectable}
 	onclick={() => onSelect?.(candidate)}
 	title={kind === 'rejected' ? reason : stacked ? `Stack ${tag}` : `Rank ${candidate.rank}`}
-	style="--c0:{g[0]}; --c1:{g[1]}; --accent:{g[2]}"
+	style="--c0:{g[0]}; --c1:{g[1]}; --accent:{g[2]}; --group-accent:{accent}"
 >
 	<div class="art">
 		{#if !imgFailed}
@@ -53,21 +60,27 @@
 				onerror={() => (imgFailed = true)}
 			/>
 		{/if}
-		<div class="top">
-			{#if kind === 'ranked'}
-				<span class="rank">{tag}</span>
-				{#if isAutoPick}<span class="auto-tag">AUTO</span>{/if}
-			{/if}
-		</div>
 		{#if kind === 'ranked' && candidate.final_score != null}
 			<div class="score mono">{candidate.final_score.toFixed(3)}</div>
 		{/if}
 	</div>
-	<div class="cap">
+	<div class="cap" class:has-collapse={onCollapse != null}>
 		{#if kind === 'ranked'}
 			<span class="cap-main">{stacked ? tag : `Rank ${candidate.rank}`}</span>
 		{:else}
 			<span class="cap-main bad-text" title={reason}>{reason || 'Rejected'}</span>
+		{/if}
+		{#if onCollapse}
+			<span
+				class="cap-collapse"
+				role="button"
+				tabindex="0"
+				onclick={(e) => { e.stopPropagation(); onCollapse(); }}
+				onkeydown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); onCollapse(); } }}
+				title="Collapse this stack"
+			>
+				<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+			</span>
 		{/if}
 	</div>
 </button>
@@ -114,39 +127,23 @@
 		opacity: 1;
 		border-color: var(--line2);
 	}
+	.tile.accented {
+		background: color-mix(in srgb, var(--group-accent) 4%, transparent);
+	}
+	.tile.accented .art {
+		border-left: 3px solid var(--group-accent);
+		border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+	}
+	.tile.accented .cap-main {
+		color: var(--group-accent);
+		font-weight: 600;
+	}
 	img {
 		position: absolute;
 		inset: 0;
 		width: 100%;
 		height: 100%;
 		object-fit: cover;
-	}
-	.top {
-		position: absolute;
-		inset: 6px 6px auto 6px;
-		display: flex;
-		align-items: center;
-		gap: 5px;
-		z-index: 1;
-	}
-	.rank {
-		font-family: var(--font-mono);
-		font-size: 11px;
-		font-weight: 700;
-		padding: 1px 6px;
-		border-radius: 6px;
-		background: color-mix(in srgb, var(--ink) 72%, transparent);
-		color: var(--text);
-		backdrop-filter: blur(2px);
-	}
-	.auto-tag {
-		font-size: 9px;
-		font-weight: 700;
-		letter-spacing: 0.06em;
-		padding: 1px 5px;
-		border-radius: 6px;
-		background: var(--gold);
-		color: var(--on-gold);
 	}
 	.score {
 		position: absolute;
@@ -162,6 +159,33 @@
 	}
 	.cap {
 		min-width: 0;
+	}
+	.cap.has-collapse {
+		display: flex;
+		align-items: center;
+		gap: 4px;
+	}
+	.cap.has-collapse .cap-main {
+		flex: 1;
+	}
+	.cap-collapse {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 18px;
+		height: 18px;
+		padding: 0;
+		border: 1px solid var(--line);
+		border-radius: 4px;
+		background: var(--panel2);
+		color: var(--muted);
+		cursor: pointer;
+		flex-shrink: 0;
+		transition: color 0.12s ease, border-color 0.12s ease;
+	}
+	.cap-collapse:hover {
+		color: var(--text);
+		border-color: var(--gold);
 	}
 	.cap-main {
 		display: block;
