@@ -73,6 +73,19 @@ function toggleStack(stackId: number) {
 	expandedStackIds = next;
 }
 
+/** True when at least one stack is expanded in flat view. */
+const anyExpanded = $derived(expandedStackIds.size > 0);
+
+function expandAll() {
+	if (!results?.stacks) return;
+	const ids = new Set(results.stacks.map((s) => s.stack_id));
+	expandedStackIds = ids;
+}
+
+function collapseAll() {
+	expandedStackIds = new Set();
+}
+
 /** Deterministic palette for expanded stack grouping accents. */
 const STACK_PALETTE = [
 	'#6366f1', '#f59e0b', '#10b981', '#ef4444',
@@ -88,33 +101,42 @@ const currentPosters = $derived.by<CandidateView[]>(() => {
 	return results.rejected_by_stage.find((g) => g.stage === activeStage)?.posters ?? [];
 });
 
-/** Group consecutive ranked posters that share a stack into arrays.
- *  Only groups of ≥2 become visual stacks; singles stay as individual tiles. */
+/** Group ALL posters that share a stack into arrays (not just consecutive ones).
+ *  Groups appear at the position of their highest-ranked member; within each
+ *  group posters are ordered by stack_pos (A, B, C…).  Only groups of ≥2
+ *  become visual stacks; singles stay as individual tiles. */
 const groupedRanked = $derived.by<Array<CandidateView | CandidateView[]>>(() => {
 	const r = results?.ranked;
 	if (!r?.length) return [];
 	const hasStacks = !!(results?.stacks?.length);
 	if (!hasStacks) return r;
-	const out: Array<CandidateView | CandidateView[]> = [];
-	let i = 0;
-	while (i < r.length) {
-		const c = r[i];
+
+	// Collect every stack's members into a map, preserving rank order.
+	const byStack = new Map<number, CandidateView[]>();
+	for (const c of r) {
 		if (c.stack_id != null && (c.stack_size ?? 1) > 1) {
-			const sid = c.stack_id;
-			const group: CandidateView[] = [];
-			while (i < r.length && r[i].stack_id === sid) {
-				group.push(r[i]);
-				i++;
-			}
-			// Only treat as a stack group when ≥2 are consecutive
-			if (group.length > 1) {
-				out.push(group);
-			} else {
-				out.push(group[0]);
-			}
+			const group = byStack.get(c.stack_id) ?? [];
+			group.push(c);
+			byStack.set(c.stack_id, group);
+		}
+	}
+	// Sort each group by stack_pos (A=1, B=2, …).
+	for (const group of byStack.values()) {
+		group.sort((a, b) => (a.stack_pos ?? 0) - (b.stack_pos ?? 0));
+	}
+
+	// Rebuild in original rank order, emitting each stack only once (at its
+	// first member's position).
+	const seen = new Set<number>();
+	const out: Array<CandidateView | CandidateView[]> = [];
+	for (const c of r) {
+		const sid = c.stack_id;
+		if (sid != null && (c.stack_size ?? 1) > 1) {
+			if (seen.has(sid)) continue;
+			seen.add(sid);
+			out.push(byStack.get(sid)!);
 		} else {
 			out.push(c);
-			i++;
 		}
 	}
 	return out;
@@ -346,6 +368,22 @@ const groupedRanked = $derived.by<Array<CandidateView | CandidateView[]>>(() => 
 						<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="8" rx="1"/><rect x="3" y="13" width="18" height="8" rx="1"/></svg>
 						Sectioned
 					</button>
+					{#if viewMode === 'flat'}
+						<button
+							class="view-btn"
+							onclick={() => (anyExpanded ? collapseAll() : expandAll())}
+							title={anyExpanded ? 'Collapse all stacks' : 'Expand all stacks'}
+						>
+							<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+								{#if anyExpanded}
+									<polyline points="15 18 9 12 15 6"/>
+								{:else}
+									<polyline points="9 18 15 12 9 6"/>
+								{/if}
+							</svg>
+							{anyExpanded ? 'Collapse all' : 'Expand all'}
+						</button>
+					{/if}
 				</span>
 			{:else}
 				Click any poster to set it as the chosen one — it deploys to the movie folder and trains the
@@ -365,26 +403,15 @@ const groupedRanked = $derived.by<Array<CandidateView | CandidateView[]>>(() => 
 						{@const sid = group[0].stack_id ?? 0}
 						{#if expandedStackIds.has(sid)}
 							{#each group as c (c.orig_filename)}
-								<div
-									class="expanded-tile"
-									style="--group-accent: {stackColor(sid)}"
-								>
-									<PosterCandidateTile
-										candidate={c}
-										kind="ranked"
-										selectable={!results.reviewed}
-										onSelect={openPick}
-									/>
-								</div>
+								<PosterCandidateTile
+									candidate={c}
+									kind="ranked"
+									selectable={!results.reviewed}
+									onSelect={openPick}
+									accent={stackColor(sid)}
+									onCollapse={c.stack_pos === 1 ? () => toggleStack(sid) : undefined}
+								/>
 							{/each}
-							<button
-								class="stack-collapse-inline"
-								onclick={() => toggleStack(sid)}
-								title="Collapse this stack"
-							>
-								<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
-								Collapse
-							</button>
 						{:else}
 							<PosterStack
 								members={group}
@@ -697,32 +724,6 @@ const groupedRanked = $derived.by<Array<CandidateView | CandidateView[]>>(() => 
 		display: grid;
 		grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
 		gap: 14px;
-	}
-	.stack-collapse-inline {
-		display: inline-flex;
-		align-items: center;
-		gap: 4px;
-		padding: 4px 9px;
-		border-radius: 6px;
-		border: 1px solid var(--line);
-		background: var(--panel2);
-		color: var(--muted);
-		font-size: 11px;
-		font-weight: 550;
-		cursor: pointer;
-		white-space: nowrap;
-		align-self: center;
-		transition: color 0.12s ease, border-color 0.12s ease;
-	}
-	.stack-collapse-inline:hover {
-		color: var(--text);
-		border-color: var(--gold);
-	}
-	.expanded-tile {
-		border-left: 3px solid var(--group-accent);
-		border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
-		background: color-mix(in srgb, var(--group-accent) 5%, transparent);
-		padding: 0 0 0 3px;
 	}
 	.stacks {
 		display: flex;
