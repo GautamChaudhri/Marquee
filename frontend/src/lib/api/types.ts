@@ -515,3 +515,56 @@ export interface TasteStatus {
 export type TasteSource = 'training_dir' | 'library';
 
 export type BatchScope = 'missing' | 'all' | 'selected';
+
+// ── Taste map (GET /taste/map) ─────────────────────────────────────────────
+export interface TasteMapPoint {
+	name: string;
+	x: number;
+	y: number;
+	z: number;
+	x2: number;
+	y2: number;
+	cluster: number | null;
+	self_knn: number;
+	genres: string[] | null;
+	year: number | null;
+	aesthetic: number | null;
+	colorfulness: number | null;
+	thumb_url: string;
+}
+
+export interface TasteMapCluster {
+	id: number;
+	name: string;
+	size: number;
+}
+
+export interface TasteMapData {
+	projection: { method: string; computed_at: string };
+	points: TasteMapPoint[];
+	clusters: TasteMapCluster[] | null;
+	outliers: string[];
+	clustering: TasteMapCluster[] | null;
+	note: string | null;
+}
+
+export interface TasteMapCandidate {
+	orig_filename: string;
+	rank: number | null;
+	final_score: number | null;
+	x: number;
+	y: number;
+	z: number;
+	knn_sim: number;
+	neighbors: { name: string; similarity: number }[];
+}
+
+export interface TasteMapCandidateOverlay {
+	run_id: string;
+	candidates: TasteMapCandidate[];
+}
+
+export interface TasteNeighbor {
+	name: string;
+	similarity: number;
+}
