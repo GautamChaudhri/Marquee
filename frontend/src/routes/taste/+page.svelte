@@ -6,15 +6,20 @@
 	import StatusDot from '$lib/components/StatusDot.svelte';
 	import RunProgress from '$lib/components/RunProgress.svelte';
 	import Icon from '$lib/components/Icon.svelte';
-	import { getTasteStatus, retrainTaste, retrainHead, cancelRetrain } from '$lib/api/taste';
+	import { getTasteStatus, retrainTaste, retrainHead, cancelRetrain, getTasteMap } from '$lib/api/taste';
+	import TasteMap from '$lib/components/TasteMap.svelte';
 	import { trackJob, type JobProgressDetail } from '$lib/jobs';
 	import { toast } from '$lib/toast';
 	import type { TasteSource, TasteStatus } from '$lib/api/types';
 	import type { PageData } from './$types';
 
+	import type { TasteMapData } from '$lib/api/types';
 	let { data }: { data: PageData } = $props();
 	// svelte-ignore state_referenced_locally
 	let status = $state<TasteStatus | null>(data.status);
+	let mapData = $state<TasteMapData | null>(data.mapData ?? null);
+	let mapLoading = $state(false);
+	let mapError = $state<string | null>(null);
 
 	async function refresh() {
 		try {
@@ -73,6 +78,22 @@
 			toast('Cancellation requested', 'info');
 		} catch {
 			toast('Could not cancel', 'bad');
+		}
+	}
+
+	// ── Taste map ──────────────────────────────────────────────────────────
+	async function rebuildMap() {
+		if (mapLoading) return;
+		mapLoading = true;
+		mapError = null;
+		try {
+			mapData = await getTasteMap(fetch, true);
+			toast('Taste map rebuilt', 'good');
+		} catch (e) {
+			mapError = e instanceof Error ? e.message : 'Map rebuild failed';
+			toast(mapError, 'bad');
+		} finally {
+			mapLoading = false;
 		}
 	}
 
@@ -276,12 +297,15 @@
 		</div>
 	{/if}
 
-	<!-- ── Taste map placeholder ── -->
-	<div class="placeholder">
-		<div class="ph-title">2D taste map</div>
-		<div class="ph-body">
-			An interactive projection of the embedding space is coming in a later slice.
+	<!-- ── Taste map ── -->
+	<div class="map-section">
+		<div class="map-header">
+			<span class="map-title">Taste map</span>
+			<button class="map-rebuild-btn" onclick={rebuildMap} disabled={mapLoading}>
+				{mapLoading ? 'Building…' : 'Rebuild map'}
+			</button>
 		</div>
+		<TasteMap {mapData} loading={mapLoading} error={mapError} />
 	</div>
 {/if}
 
@@ -497,21 +521,39 @@
 		color: var(--muted);
 	}
 
-	.placeholder {
-		border: 1px dashed var(--line2);
-		border-radius: var(--radius);
-		padding: 22px;
-		text-align: center;
+	.map-section {
+		margin-top: 20px;
 	}
-	.ph-title {
+	.map-header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		margin-bottom: 10px;
+	}
+	.map-title {
 		font-size: 13px;
 		font-weight: 600;
-		color: var(--faint);
-		margin-bottom: 4px;
+		color: var(--text);
 	}
-	.ph-body {
-		font-size: 12px;
-		color: var(--faint);
+	.map-rebuild-btn {
+		padding: 5px 14px;
+		border-radius: 7px;
+		border: 1px solid var(--line2);
+		background: var(--panel2);
+		color: var(--muted);
+		font-size: 11.5px;
+		font-weight: 550;
+		cursor: pointer;
+		transition: all 0.15s;
+	}
+	.map-rebuild-btn:hover:not(:disabled) {
+		background: var(--panel);
+		color: var(--text);
+		border-color: var(--line);
+	}
+	.map-rebuild-btn:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
 	}
 
 	.btn-gold {
