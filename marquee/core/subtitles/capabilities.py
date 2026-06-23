@@ -8,7 +8,7 @@ human reason the API passes straight through.
 
 from __future__ import annotations
 
-_MKV_FORMATS = {"matroska", "webm"}
+_MKV_FORMATS = {"matroska", "webm", "mkv"}
 _MP4_FORMATS = {"mov", "mp4", "m4a", "m4v", "3gp", "3g2", "mj2"}
 
 

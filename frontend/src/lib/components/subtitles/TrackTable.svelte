@@ -123,28 +123,64 @@
 		}
 	}
 
-	// Subscribes to and monitors a backend job until terminal state
-	function monitorJob(jobId: string, onDone: () => Promise<void> | void): Promise<void> {
-		return new Promise((resolve, reject) => {
-			const unsub = subscribe(`/api/media-jobs/${jobId}/events`, ['progress', 'complete', 'error'], (type, data: any) => {
-				if (type === 'progress') {
-					progressPercent = data.percent ?? progressPercent;
-					progressStage = data.stage ?? progressStage;
-					progressMessage = data.message ?? progressMessage;
-				} else if (type === 'complete') {
-					unsub();
-					if (data.status === 'completed' || data.status === 'succeeded') {
-						resolve(onDone());
-					} else {
-						reject(new Error(data.error || 'Job failed'));
+		// Subscribes to and monitors a backend job until terminal state.
+		// Listens for generic SSE ``message`` events (the default for unnamed
+		// ``data:`` lines) plus the terminal ``done`` event.  The backend emits
+		// ``{stage, state, message, progress}`` on every state change and
+		// ``event: done`` with status when the job finishes.
+		function monitorJob(jobId: string, onDone: () => Promise<void> | void): Promise<void> {
+			return new Promise((resolve, reject) => {
+				const unsub = subscribe(
+					`/api/media-jobs/${jobId}/events`,
+					['message', 'done'],
+					(type, data: any) => {
+						if (type === 'message') {
+							if (data?.stage) progressStage = data.stage;
+							if (data?.message) progressMessage = data.message;
+							// Drive the bar from the stage sequence:
+							//   preflight→remux→validate→replace→done
+							const stage = data?.stage;
+							const state = data?.state;
+							if (stage && state) {
+								if (stage === 'preflight') progressPercent = state === 'start' ? 5 : 15;
+								else if (stage === 'remux') progressPercent = state === 'start' ? 20 : 65;
+								else if (stage === 'validate') progressPercent = state === 'start' ? 70 : 80;
+								else if (stage === 'replace') progressPercent = 85;
+								else if (stage === 'external') progressPercent = 92;
+								else if (stage === 'done') progressPercent = 100;
+								else if (stage === 'start') progressPercent = 1;
+							}
+						} else if (type === 'done') {
+							unsub();
+							const status = data?.status ?? '';
+							if (status === 'succeeded' || status === 'completed' || !status) {
+								progressPercent = 100;
+								resolve(onDone());
+							} else {
+								reject(new Error(data?.error || `Job ended with status: ${status}`));
+							}
+						}
 					}
-				} else if (type === 'error') {
-					unsub();
-					reject(new Error(data.error || 'SSE stream connection error'));
-				}
+				);
+				// If the EventSource connection itself fails, reject so the UI
+				// doesn't hang forever.
+				setTimeout(() => {
+					if (progressPercent < 100 && progressPercent > 0) {
+						// The job may have finished while we were disconnected — poll once.
+						fetch(`/api/media-jobs/${jobId}`)
+							.then((r) => r.json())
+							.then((j) => {
+								if (j.status === 'succeeded' || j.status === 'completed') {
+									unsub();
+									progressPercent = 100;
+									resolve(onDone());
+								}
+							})
+							.catch(() => {});
+					}
+				}, 8000);
 			});
-		});
-	}
+		}
 
 	function cleanupAndRefresh() {
 		submitting = false;

@@ -12,16 +12,15 @@ import logging
 from datetime import UTC, datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.core.media_files import resolve_media_file
 from marquee.core.media_jobs import media_job_manager
-from marquee.core.media_jobs.manager import _SENTINEL
-from marquee.database import get_db
-from marquee.models import Job, MediaJob
+from marquee.database import _get_session_factory, get_db
+from marquee.models import Job, MediaJob, MediaJobEvent
 
 logger = logging.getLogger(__name__)
 
@@ -72,13 +71,35 @@ async def confirm_job(job_id: str, db: Annotated[AsyncSession, Depends(get_db)])
         job.status = "failed"
         job.error_json = json.dumps({"code": "plan_stale", "error": "plan expired"})
         await db.commit()
-        raise HTTPException(status_code=409, detail={"code": "plan_stale", "message": "plan expired"})
+        raise HTTPException(
+            status_code=409, detail={"code": "plan_stale", "message": "plan expired"}
+        )
+
+    # Reject plans the backend itself has flagged as non-executable.
+    if job.plan_json:
+        plan = json.loads(job.plan_json)
+        if not plan.get("capabilities", {}).get("can_execute", True):
+            blocking = [
+                w["code"]
+                for w in plan.get("warnings", [])
+                if w.get("code") in ("container_not_writable", "mkv_track_ids_unavailable")
+            ]
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "plan_not_executable",
+                    "message": "plan cannot be executed",
+                    "blocking_warnings": blocking,
+                },
+            )
 
     # Re-validate the file signature so we never act on a changed file.
     try:
         resolved = await resolve_media_file(db, job.media_file_id)
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=422, detail={"code": "file_unavailable", "message": str(exc)}) from exc
+        raise HTTPException(
+            status_code=422, detail={"code": "file_unavailable", "message": str(exc)}
+        ) from exc
     if job.input_signature and resolved.signature != job.input_signature:
         raise HTTPException(
             status_code=409,
@@ -93,9 +114,11 @@ async def confirm_job(job_id: str, db: Annotated[AsyncSession, Depends(get_db)])
         generic.scheduled_at = datetime.now(UTC)
 
     if job.operation == "letterbox_reencode" and job.media_file_id is not None:
+        from sqlalchemy import select
+
         from marquee.models import MediaFile
         from marquee.models.letterbox import LetterboxState
-        from sqlalchemy import select
+
         movie_file = await db.get(MediaFile, job.media_file_id)
         if movie_file and movie_file.movie_id is not None:
             stmt = select(LetterboxState).where(LetterboxState.movie_id == movie_file.movie_id)
@@ -117,37 +140,88 @@ async def get_job(job_id: str, db: Annotated[AsyncSession, Depends(get_db)]):
 
 
 @router.get("/{job_id}/events")
-async def job_events(job_id: str, db: Annotated[AsyncSession, Depends(get_db)]):
+async def job_events(
+    job_id: str,
+    request: Request,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
     """SSE: replay persisted events, then stream live ones until completion."""
     job = await db.get(MediaJob, job_id)
     if job is None:
         raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
 
-    stream = media_job_manager.stream(job_id)
-    history = await media_job_manager.persisted_events(db, job_id)
+    factory = _get_session_factory()
     terminal = {"succeeded", "failed", "cancelled", "interrupted"}
-    already_done = job.status in terminal
+
+    _pct = {
+        ("preflight", "start"): 5,
+        ("preflight", "done"): 15,
+        ("remux", "start"): 20,
+        ("remux", "done"): 65,
+        ("validate", "start"): 70,
+        ("validate", "done"): 80,
+        ("replace", "start"): 85,
+        ("external", "start"): 90,
+        ("external", "done"): 95,
+        ("restore", "start"): 90,
+        ("done", "complete"): 100,
+    }
 
     async def generator():
-        queue = stream.subscribe()
-        seen = set()
-        try:
-            for event in history:
-                seen.add(event["id"])
-                yield f"data: {json.dumps(event)}\n\n"
-            if already_done:
+        import asyncio
+        import time
+
+        after = 0
+        start = time.monotonic()
+        while True:
+            if await request.is_disconnected():
+                logger.info(
+                    "SSE client disconnected for media job %s (after event_id=%d)", job_id, after
+                )
+                return
+
+            if time.monotonic() - start > 3600:
+                logger.warning("SSE stream timeout for media job %s", job_id)
+                yield 'event: error\ndata: {"message": "stream timeout"}\n\n'
+                return
+
+            async with factory() as stream_db:
+                rows = (
+                    (
+                        await stream_db.execute(
+                            select(MediaJobEvent)
+                            .where(MediaJobEvent.job_id == job_id, MediaJobEvent.id > after)
+                            .order_by(MediaJobEvent.id)
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                current_job = await stream_db.get(MediaJob, job_id)
+
+            for event in rows:
+                after = event.id
+                event_dict = {
+                    "id": event.id,
+                    "job_id": job_id,
+                    "stage": event.stage,
+                    "state": event.state,
+                    "message": event.message,
+                    "progress": json.loads(event.progress_json) if event.progress_json else None,
+                }
+                stage = event_dict.get("stage")
+                state = event_dict.get("state")
+                if isinstance(stage, str) and isinstance(state, str):
+                    pct = _pct.get((stage, state))
+                    if pct is not None:
+                        event_dict["percent"] = pct
+                yield f"data: {json.dumps(event_dict)}\n\n"
+
+            if current_job is None or current_job.status in terminal:
                 yield "event: done\ndata: {}\n\n"
                 return
-            while True:
-                event = await queue.get()
-                if event is _SENTINEL:
-                    yield "event: done\ndata: {}\n\n"
-                    return
-                if event.get("id") in seen:
-                    continue
-                yield f"data: {json.dumps(event)}\n\n"
-        finally:
-            stream.unsubscribe(queue)
+
+            await asyncio.sleep(0.5)
 
     return StreamingResponse(
         generator(),

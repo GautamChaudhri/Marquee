@@ -1,10 +1,12 @@
 <script lang="ts">
+	import { onDestroy } from 'svelte';
 	import { submitMovieGeneration, submitGeneration } from '$lib/api/subtitle-generators';
 	import { listMovies } from '$lib/api/library';
 	import type { MovieListItem } from '$lib/api/types';
 	import ProgressBar from '../ProgressBar.svelte';
 	import { subscribe } from '$lib/sse';
 	import { toast } from '$lib/toast';
+	import { getMediaJob } from '$lib/api/media-jobs';
 
 	let {
 		movieId = null,
@@ -55,6 +57,14 @@
 	let progressStage = $state('');
 	let progressMessage = $state('');
 	let activeJobId = $state<string | null>(null);
+	let pollInterval: ReturnType<typeof setInterval> | null = null;
+
+	onDestroy(() => {
+		if (pollInterval) {
+			clearInterval(pollInterval);
+			pollInterval = null;
+		}
+	});
 
 	// Fetch movies list if we are in global tab mode
 	async function loadMoviesList() {
@@ -94,29 +104,78 @@
 			activeJobId = res.job_id;
 			progressMessage = 'Job queued...';
 
+			if (pollInterval) {
+				clearInterval(pollInterval);
+				pollInterval = null;
+			}
+
 			// Subscribe to SSE events
-			const unsub = subscribe(`/api/media-jobs/${res.job_id}/events`, ['progress', 'complete', 'error'], (type, data: any) => {
-				if (type === 'progress') {
+			let unsub: () => void;
+			unsub = subscribe(`/api/media-jobs/${res.job_id}/events`, ['message', 'done'], async (type, data: any) => {
+				if (type === 'message') {
 					progressPercent = data.percent ?? progressPercent;
 					progressStage = data.stage ?? progressStage;
 					progressMessage = data.message ?? progressMessage;
-				} else if (type === 'complete') {
+				} else if (type === 'done') {
 					unsub();
+					if (pollInterval) {
+						clearInterval(pollInterval);
+						pollInterval = null;
+					}
 					generating = false;
 					activeJobId = null;
-					if (data.status === 'completed' || data.status === 'succeeded') {
-						toast('Subtitles generated successfully!', 'good');
+					progressPercent = 100;
+					try {
+						const job = await getMediaJob(fetch, res.job_id);
+						if (job.status === 'succeeded' || job.status === 'completed') {
+							toast('Subtitles generated successfully!', 'good');
+							if (onComplete) onComplete();
+						} else {
+							toast(`Generation failed: ${(job.error as any)?.error || job.error || 'Unknown error'}`, 'bad');
+						}
+					} catch (e: any) {
+						toast(`Generation completed. Failed to verify status: ${e.message}`, 'info');
 						if (onComplete) onComplete();
-					} else {
-						toast(`Generation failed: ${data.error || 'Unknown error'}`, 'bad');
 					}
 				} else if (type === 'error') {
 					unsub();
+					if (pollInterval) {
+						clearInterval(pollInterval);
+						pollInterval = null;
+					}
 					generating = false;
 					activeJobId = null;
 					toast('Connection to generation progress lost', 'bad');
 				}
 			});
+
+			// Fallback polling loop to ensure progress clears even if SSE drops
+			pollInterval = setInterval(async () => {
+				try {
+					const job = await getMediaJob(fetch, res.job_id);
+					if (job.status !== 'queued' && job.status !== 'running') {
+						if (pollInterval) {
+							clearInterval(pollInterval);
+							pollInterval = null;
+						}
+						if (generating && activeJobId === res.job_id) {
+							unsub();
+							generating = false;
+							activeJobId = null;
+							progressPercent = 100;
+							if (job.status === 'succeeded' || job.status === 'completed') {
+								toast('Subtitles generated successfully!', 'good');
+								if (onComplete) onComplete();
+							} else {
+								toast(`Generation failed: ${(job.error as any)?.error || job.error || 'Unknown error'}`, 'bad');
+								if (onComplete) onComplete();
+							}
+						}
+					}
+				} catch (e) {
+					// Ignore transient errors
+				}
+			}, 1500);
 
 		} catch (e: any) {
 			toast(e.message || 'Generation submission failed', 'bad');
