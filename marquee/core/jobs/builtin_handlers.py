@@ -223,6 +223,42 @@ async def library_sync(_job: Job) -> dict[str, Any]:
                 await client.disconnect()
 
 
+@register("subtitle_scan_all")
+async def subtitle_scan_all(job: Job) -> dict[str, Any]:
+    """Scan subtitle coverage for all active media files in the library."""
+    from sqlalchemy import select  # noqa: PLC0415
+    from marquee.models import MediaFile, SubtitleInventory  # noqa: PLC0415
+    from marquee.core.media_jobs import media_job_manager  # noqa: PLC0415
+
+    force = job.payload.get("force", False)
+    factory = _get_session_factory()
+    async with factory() as db:
+        if force:
+            stmt = select(MediaFile).where(MediaFile.is_active.is_(True))
+        else:
+            subquery = select(SubtitleInventory.media_file_id)
+            stmt = select(MediaFile).where(
+                MediaFile.is_active.is_(True),
+                MediaFile.id.not_in(subquery)
+            )
+        media_files = (await db.execute(stmt)).scalars().all()
+
+        count = 0
+        for mf in media_files:
+            key = f"manual:subtitle-scan:{mf.id}:{job.id}"
+            await media_job_manager.create_job(
+                db,
+                operation="subtitle_scan",
+                media_file_id=mf.id,
+                trigger="manual",
+                status="queued",
+                idempotency_key=key,
+            )
+            count += 1
+
+        return {"queued_scans": count}
+
+
 @register("radarr_upgrade")
 async def radarr_upgrade(job: Job) -> dict[str, Any]:
     """Durably perform all upgrade follow-up after the webhook has ACKed."""

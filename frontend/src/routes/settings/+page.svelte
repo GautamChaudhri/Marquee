@@ -5,6 +5,7 @@
 	import { getPipelineConfig, putPipelineConfig, resetDeployedPosters } from '$lib/api/config';
 	import type { KnobGroup, PipelineConfig } from '$lib/api/config';
 	import { toast } from '$lib/toast';
+	import SubtitleSettings from '$lib/components/subtitles/SubtitleSettings.svelte';
 
 	let { data } = $props();
 	let config: PipelineConfig | null = $derived(data.config);
@@ -21,6 +22,12 @@
 	// ── Derived ──────────────────────────────────────────────────────
 	let currentValues = $derived({ ...config?.values, ...dirty });
 	let groups = $derived(config?.groups ?? []);
+	let tabs = $derived.by(() => {
+		const base = (config?.groups ?? []).map((g: KnobGroup) => ({ id: g.id, label: g.label }));
+		base.push({ id: 'subtitles', label: 'Subtitles' });
+		return base;
+	});
+
 	let meta = $derived(config?.meta ?? {});
 	let overrides = $derived(config?.overrides ?? {});
 	let dirtyCount = $derived(Object.keys(dirty).length);
@@ -123,13 +130,16 @@
 		<!-- Group tabs -->
 		<div class="tabs-wrap">
 			<TabBar
-				tabs={groups.map((g: KnobGroup) => ({ id: g.id, label: g.label }))}
+				{tabs}
 				active={activeGroup}
 				onSelect={(id: string) => (activeGroup = id)}
 			/>
 		</div>
 
-		<div class="knobs-section">
+		{#if activeGroup === 'subtitles'}
+			<SubtitleSettings bind:settings={data.settings} />
+		{:else}
+			<div class="knobs-section">
 			<!-- Group description -->
 			{#each groups.filter((g: KnobGroup) => g.id === activeGroup) as group (group.id)}
 				<div class="group-header">
@@ -279,6 +289,7 @@
 				</button>
 			</div>
 		</div>
+		{/if}
 
 		<!-- Confirm dialogs -->
 		<ConfirmDialog

@@ -247,3 +247,48 @@ async def inspect_movie_subtitles(
         "path_present": True,
         "inventory": inventory,
     }
+
+
+@router.post("/api/media-files/{media_file_id}/subtitles/{track_id}/extract", status_code=202)
+async def extract_subtitle_track(
+    media_file_id: int,
+    track_id: str,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    """Queue a job to extract an embedded subtitle track to an external sidecar."""
+    if not subtitle_settings.SUBTITLE_ENABLED:
+        raise HTTPException(status_code=503, detail="Subtitle management is disabled")
+    try:
+        resolved = await resolve_media_file(db, media_file_id)
+    except (MediaFileNotFoundError, MediaFileUnavailableError) as exc:
+        raise _map_resolve_error(exc) from exc
+
+    track = await service.get_track(db, media_file_id, track_id)
+    if track is None or track.source != "embedded":
+        raise HTTPException(status_code=404, detail="Embedded track not found")
+
+    job = await media_job_manager.create_job(
+        db,
+        operation="subtitle_extract",
+        media_file_id=media_file_id,
+        trigger="manual",
+        request={"track_id": track_id},
+        status="confirmed",
+    )
+    return {"job_id": job.job_id, "status": "queued"}
+
+
+@router.post("/api/subtitles/scan-library", status_code=202)
+async def scan_library_subtitles(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    force: bool = False,
+):
+    """Enqueue a job to scan subtitle coverage for all active media files in the library."""
+    from marquee.core.jobs.manager import job_manager  # noqa: PLC0415
+    job = await job_manager.create(
+        db,
+        job_type="subtitle_scan_all",
+        payload={"force": force},
+    )
+    return {"job_id": job.id, "status": "queued"}
+
