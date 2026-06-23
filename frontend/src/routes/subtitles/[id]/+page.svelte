@@ -1,12 +1,14 @@
 <script lang="ts">
-	import { onDestroy } from 'svelte';
+	import { onDestroy, onMount } from 'svelte';
+	import { browser } from '$app/environment';
 	import { page } from '$app/state';
 	import { getMovie } from '$lib/api/library';
 	import { inspectMovie, getInventory, scanSubtitles, createPlan, extractTrack, previewTrack } from '$lib/api/subtitles';
 	import { getGenerators, submitMovieGeneration } from '$lib/api/subtitle-generators';
 	import { getSettings, putSettings } from '$lib/api/system';
 	import { confirmJob, getMediaJob } from '$lib/api/media-jobs';
-	import { subscribe } from '$lib/sse';
+	import type { MediaJob } from '$lib/api/types';
+	import { trackJob } from '$lib/jobs';
 	import { toast } from '$lib/toast';
 	import { bytesH } from '$lib/display';
 	import TabBar from '$lib/components/TabBar.svelte';
@@ -103,13 +105,22 @@
 	let progressMessage = $state('');
 	let jobLog = $state<string[]>([]);
 	let busy = $state(false);
-	let pollInterval: ReturnType<typeof setInterval> | null = null;
+
+	// Persist the active job id per-movie so the bar survives a refresh or
+	// a navigate-away-and-back (the root layout remounts this component on
+	// every route change). Mirrors routes/pipeline + routes/letterbox.
+	const SUBTITLE_JOB_KEY = `marquee:subtitles:activeJob:${page.params.id}`;
+	let stopTracking: (() => void) | null = null;
+
+	function storeJobId(id: string | null) {
+		if (!browser) return;
+		if (id) localStorage.setItem(SUBTITLE_JOB_KEY, id);
+		else localStorage.removeItem(SUBTITLE_JOB_KEY);
+	}
 
 	onDestroy(() => {
-		if (pollInterval) {
-			clearInterval(pollInterval);
-			pollInterval = null;
-		}
+		stopTracking?.();
+		stopTracking = null;
 	});
 
 	// Initialize override inputs from loaded settings
@@ -219,85 +230,105 @@
 		}
 	}
 
-	// Monitor running media job via SSE
+	// Terminal MediaJob statuses (mirrors the backend's `terminal` set in
+	// media_jobs.py's SSE endpoint).
+	const TERMINAL_STATUSES = ['succeeded', 'completed', 'failed', 'cancelled', 'interrupted'];
+
+	/** Resume/attach the shared poll-plus-SSE tracker for a job whose initial
+	 *  progress state has already been seeded by the caller. Always goes
+	 *  through `trackJob()` so this bar gets the same "seed immediately" /
+	 *  "either SSE or poll can finalize" guarantees as the letterbox and
+	 *  poster-pipeline bars. */
+	function attachTracking(jobId: string, onCompleteCallback?: (freshInspect: any) => void | Promise<void>) {
+		storeJobId(jobId);
+		stopTracking?.();
+		stopTracking = trackJob<MediaJob>(
+			fetch,
+			jobId,
+			{
+				onProgress: ({ detail }) => {
+					if (typeof detail?.stage === 'string') progressStage = detail.stage;
+					if (typeof detail?.percent === 'number') progressPercent = detail.percent;
+					if (typeof detail?.message === 'string') progressMessage = detail.message;
+					jobLog = [...jobLog, `[${progressStage || 'info'}] ${progressMessage || ''}`];
+				},
+				onDone: async (job) => {
+					stopTracking = null;
+					runningJobId = null;
+					busy = false;
+					progressPercent = 100;
+					storeJobId(null);
+					if (job.status === 'succeeded' || job.status === 'completed') {
+						toast('Subtitles operation completed successfully!', 'good');
+						const freshInspect = await refreshInventory();
+						if (onCompleteCallback) await onCompleteCallback(freshInspect);
+					} else {
+						toast(`Operation failed: ${(job.error as any)?.error || job.error || 'Unknown error'}`, 'bad');
+						await refreshInventory();
+					}
+				}
+			},
+			{ eventsUrl: `/api/media-jobs/${jobId}/events`, fetchJob: getMediaJob }
+		);
+	}
+
+	// Start tracking a freshly-created media job.
 	function monitorJob(jobId: string, onCompleteCallback?: (freshInspect: any) => void | Promise<void>) {
 		runningJobId = jobId;
 		progressPercent = 0;
 		progressStage = 'queued';
 		progressMessage = 'Waiting in job queue...';
 		jobLog = [];
+		attachTracking(jobId, onCompleteCallback);
+	}
 
-		if (pollInterval) {
-			clearInterval(pollInterval);
-			pollInterval = null;
+	/** Re-attach to a job after page load: fetch its snapshot, then either
+	 *  show the terminal result or resume tracking — never reset progress
+	 *  to 0 if the job is already partway through. Mirrors
+	 *  routes/pipeline + routes/letterbox `rehydrateBatch`. */
+	async function rehydrateJob(jobId: string) {
+		let job: MediaJob;
+		try {
+			job = await getMediaJob(fetch, jobId);
+		} catch {
+			storeJobId(null);
+			return;
 		}
 
-		let unsub: () => void;
-		unsub = subscribe(`/api/media-jobs/${jobId}/events`, ['message', 'done'], async (type, data: any) => {
-			if (type === 'message') {
-				progressPercent = data.percent ?? progressPercent;
-				progressStage = data.stage ?? progressStage;
-				progressMessage = data.message ?? progressMessage;
-				jobLog = [...jobLog, `[${data.stage || 'info'}] ${data.message || ''}`];
-			} else if (type === 'done') {
-				unsub();
-				if (pollInterval) {
-					clearInterval(pollInterval);
-					pollInterval = null;
-				}
-				runningJobId = null;
-				busy = false;
-				progressPercent = 100;
-				try {
-					const job = await getMediaJob(fetch, jobId);
-					if (job.status === 'succeeded' || job.status === 'completed') {
-						toast('Subtitles operation completed successfully!', 'good');
-						const freshInspect = await refreshInventory();
-						if (onCompleteCallback) onCompleteCallback(freshInspect);
-					} else {
-						toast(`Operation failed: ${(job.error as any)?.error || job.error || 'Unknown error'}`, 'bad');
-					}
-				} catch (e: any) {
-					toast(`Operation completed. Failed to verify status: ${e.message}`, 'info');
-					const freshInspect = await refreshInventory();
-					if (onCompleteCallback) onCompleteCallback(freshInspect);
-				}
-			} else if (type === 'error') {
-				// Transient connection drop: EventSource auto-reconnects and the
-				// backend replays history, so just wait it out rather than breaking.
-				return;
+		if (TERMINAL_STATUSES.includes(job.status)) {
+			storeJobId(null);
+			if (job.status === 'succeeded' || job.status === 'completed') {
+				toast('Subtitles operation completed successfully!', 'good');
+			} else {
+				toast(`Operation failed: ${(job.error as any)?.error || job.error || 'Unknown error'}`, 'bad');
 			}
-		});
+			await refreshInventory();
+			return;
+		}
 
-		// Fallback polling loop to ensure list updates and progress clears even if SSE drops
-		pollInterval = setInterval(async () => {
-			try {
-				const job = await getMediaJob(fetch, jobId);
-				if (job.status !== 'queued' && job.status !== 'running') {
-					if (pollInterval) {
-						clearInterval(pollInterval);
-						pollInterval = null;
-					}
-					if (runningJobId === jobId) {
-						unsub();
-						runningJobId = null;
-						busy = false;
-						progressPercent = 100;
-						if (job.status === 'succeeded' || job.status === 'completed') {
-							toast('Subtitles operation completed successfully!', 'good');
-							const freshInspect = await refreshInventory();
-							if (onCompleteCallback) onCompleteCallback(freshInspect);
-						} else {
-							toast(`Operation failed: ${(job.error as any)?.error || job.error || 'Unknown error'}`, 'bad');
-							await refreshInventory();
-						}
-					}
-				}
-			} catch (e) {
-				// Keep polling on transient errors
-			}
-		}, 1500);
+		runningJobId = jobId;
+		progressStage = job.progress?.stage ?? job.status;
+		progressPercent = job.progress?.percent ?? 0;
+		progressMessage = job.progress?.message ?? 'Waiting in job queue...';
+		jobLog = [];
+		busy = true;
+		attachTracking(jobId);
 	}
+
+	onMount(() => {
+		// Priority 1: the page loader's inspect() call found an active job
+		// for this exact media file.
+		const active = data.inspect?.active_job?.job_id ?? null;
+		if (active) {
+			void rehydrateJob(active);
+			return;
+		}
+		// Priority 2: localStorage still holds a job id from before refresh.
+		if (browser) {
+			const stored = localStorage.getItem(SUBTITLE_JOB_KEY);
+			if (stored) void rehydrateJob(stored);
+		}
+	});
 
 	// ── ACTION: Delete Selected Tracks ──
 	async function handleDeleteSelected() {

@@ -26,11 +26,12 @@ from marquee.core.media_files import (
     resolve_media_file,
 )
 from marquee.core.media_jobs import media_job_manager
+from marquee.core.media_jobs.serialize import job_dict as _media_job_dict
 from marquee.core.subtitles import mutation, service
 from marquee.core.subtitles.config import subtitle_settings
 from marquee.database import get_db
 from marquee.media import binaries
-from marquee.models import Movie
+from marquee.models import MediaJob, Movie
 
 logger = logging.getLogger(__name__)
 
@@ -240,12 +241,28 @@ async def inspect_movie_subtitles(
     except MediaFileUnavailableError as exc:
         raise _map_resolve_error(exc) from exc
 
+    # Re-attach to a running job so the progress bar survives a refresh —
+    # the page's loader calls this endpoint on every load, already scoped
+    # to this exact media file.
+    active_job = (
+        await db.execute(
+            select(MediaJob)
+            .where(
+                MediaJob.media_file_id == media_file.id,
+                MediaJob.status.in_(["queued", "running"]),
+            )
+            .order_by(MediaJob.created_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
     return {
         "movie_id": movie.id,
         "title": movie.title,
         "media_file_id": media_file.id,
         "path_present": True,
         "inventory": inventory,
+        "active_job": _media_job_dict(active_job) if active_job else None,
     }
 
 

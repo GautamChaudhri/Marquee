@@ -227,8 +227,9 @@ async def library_sync(_job: Job) -> dict[str, Any]:
 async def subtitle_scan_all(job: Job) -> dict[str, Any]:
     """Scan subtitle coverage for all active media files in the library."""
     from sqlalchemy import select  # noqa: PLC0415
-    from marquee.models import MediaFile, SubtitleInventory  # noqa: PLC0415
+
     from marquee.core.media_jobs import media_job_manager  # noqa: PLC0415
+    from marquee.models import MediaFile, SubtitleInventory  # noqa: PLC0415
 
     force = job.payload.get("force", False)
     factory = _get_session_factory()
@@ -238,8 +239,7 @@ async def subtitle_scan_all(job: Job) -> dict[str, Any]:
         else:
             subquery = select(SubtitleInventory.media_file_id)
             stmt = select(MediaFile).where(
-                MediaFile.is_active.is_(True),
-                MediaFile.id.not_in(subquery)
+                MediaFile.is_active.is_(True), MediaFile.id.not_in(subquery)
             )
         media_files = (await db.execute(stmt)).scalars().all()
 
@@ -253,9 +253,11 @@ async def subtitle_scan_all(job: Job) -> dict[str, Any]:
                 trigger="manual",
                 status="queued",
                 idempotency_key=key,
+                commit=False,
             )
             count += 1
 
+        await db.commit()
         return {"queued_scans": count}
 
 
@@ -439,11 +441,7 @@ async def poster_deploy_reset(job: Job) -> dict[str, Any]:
     factory = _get_session_factory()
     async with factory() as db:
         rows = (
-            (await db.execute(
-                select(Movie).where(Movie.poster_path.is_not(None))
-            ))
-            .scalars()
-            .all()
+            (await db.execute(select(Movie).where(Movie.poster_path.is_not(None)))).scalars().all()
         )
         if not rows:
             return {"reset": 0, "failed": 0, "errors": []}
@@ -456,19 +454,17 @@ async def poster_deploy_reset(job: Job) -> dict[str, Any]:
             stored_path = str(movie.poster_path)  # capture before clearing
             try:
                 poster_file = Path(movie.poster_path)
-                folder = safe_translate_and_validate(
-                    movie.folder_path, source="radarr"
-                )
+                folder = safe_translate_and_validate(movie.folder_path, source="radarr")
                 if poster_file.parent.resolve() != folder.resolve():
-                    raise RuntimeError(
-                        f"Poster parent {poster_file.parent} != folder {folder}"
-                    )
+                    raise RuntimeError(f"Poster parent {poster_file.parent} != folder {folder}")
                 poster_file.unlink(missing_ok=True)
                 deleted = True
             except Exception as exc:
                 logger.warning(
                     "DEPLOY RESET | file error for movie %d (%s): %s",
-                    movie.id, movie.title, exc,
+                    movie.id,
+                    movie.title,
+                    exc,
                 )
                 try:
                     Path(movie.poster_path).unlink(missing_ok=True)
@@ -487,11 +483,12 @@ async def poster_deploy_reset(job: Job) -> dict[str, Any]:
             movie.poster_deployed_filename = None
             movie.poster_deployed_at = None
 
-            detail = _json.dumps({
-                "deleted_path": stored_path,
-                "cache_kept": str(cache_paths(movie.tmdb_id)[0])
-                if movie.tmdb_id else None,
-            })
+            detail = _json.dumps(
+                {
+                    "deleted_path": stored_path,
+                    "cache_kept": str(cache_paths(movie.tmdb_id)[0]) if movie.tmdb_id else None,
+                }
+            )
             db.add(
                 ArtworkEvent(
                     movie_id=movie.id,
@@ -504,11 +501,13 @@ async def poster_deploy_reset(job: Job) -> dict[str, Any]:
                 reset += 1
             else:
                 failed += 1
-                errors.append({
-                    "movie_id": movie.id,
-                    "title": movie.title,
-                    "error": "file unavailable — DB state cleared"
-                })
+                errors.append(
+                    {
+                        "movie_id": movie.id,
+                        "title": movie.title,
+                        "error": "file unavailable — DB state cleared",
+                    }
+                )
 
         await db.commit()
 
@@ -528,9 +527,7 @@ async def _gather_library_posters() -> tuple[Path, Any, int]:
     factory = _get_session_factory()
     async with factory() as db:
         rows = (
-            (await db.execute(select(Movie).where(Movie.poster_path.is_not(None))))
-            .scalars()
-            .all()
+            (await db.execute(select(Movie).where(Movie.poster_path.is_not(None)))).scalars().all()
         )
         movies = [(m.title, m.year, m.tmdb_id, m.poster_path) for m in rows]
     tmp = tempfile.TemporaryDirectory(prefix="marquee-libtrain-")

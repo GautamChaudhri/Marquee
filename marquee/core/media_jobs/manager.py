@@ -96,8 +96,14 @@ class MediaJobManager:
         return self._streams.setdefault(job_id, JobStream())
 
     async def emit(
-        self, db: AsyncSession, job_id: str, stage: str, state: str,
-        *, message: str | None = None, progress: dict | None = None,
+        self,
+        db: AsyncSession,
+        job_id: str,
+        stage: str,
+        state: str,
+        *,
+        message: str | None = None,
+        progress: dict | None = None,
         persist: bool = True,
     ) -> None:
         """Publish a job event to live SSE subscribers, optionally persisting it.
@@ -111,29 +117,57 @@ class MediaJobManager:
         event_id: int | None = None
         if persist:
             event = MediaJobEvent(
-                job_id=job_id, stage=stage, state=state, message=message,
+                job_id=job_id,
+                stage=stage,
+                state=state,
+                message=message,
                 progress_json=json.dumps(progress) if progress else None,
             )
             db.add(event)
+
+            # Update parent MediaJob's current stage and progress statistics
+            job = await db.get(MediaJob, job_id)
+            if job is not None:
+                job.stage = stage
+                if progress and "percent" in progress:
+                    job.progress_done = int(progress["percent"])
+                    job.progress_total = 100
+                elif progress and "progress" in progress:
+                    job.progress_done = int(progress["progress"])
+                    job.progress_total = 100
+
             await db.commit()
             await db.refresh(event)
             event_id = event.id
         self.stream(job_id).publish(
             {
-                "id": event_id, "job_id": job_id, "stage": stage, "state": state,
-                "message": message, "progress": progress,
+                "id": event_id,
+                "job_id": job_id,
+                "stage": stage,
+                "state": state,
+                "message": message,
+                "progress": progress,
             }
         )
 
     async def persisted_events(self, db: AsyncSession, job_id: str) -> list[dict]:
         rows = (
-            await db.execute(
-                select(MediaJobEvent).where(MediaJobEvent.job_id == job_id).order_by(MediaJobEvent.id)
+            (
+                await db.execute(
+                    select(MediaJobEvent)
+                    .where(MediaJobEvent.job_id == job_id)
+                    .order_by(MediaJobEvent.id)
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         return [
             {
-                "id": r.id, "job_id": job_id, "stage": r.stage, "state": r.state,
+                "id": r.id,
+                "job_id": job_id,
+                "stage": r.stage,
+                "state": r.state,
                 "message": r.message,
                 "progress": json.loads(r.progress_json) if r.progress_json else None,
             }
@@ -145,23 +179,40 @@ class MediaJobManager:
     # ------------------------------------------------------------------
 
     async def create_job(
-        self, db: AsyncSession, *, operation: str, media_file_id: int | None,
-        trigger: str = "manual", request: dict | None = None, plan: dict | None = None,
-        status: str = "planned", input_signature: str | None = None,
-        plan_expires_at: datetime | None = None, idempotency_key: str | None = None,
+        self,
+        db: AsyncSession,
+        *,
+        operation: str,
+        media_file_id: int | None,
+        trigger: str = "manual",
+        request: dict | None = None,
+        plan: dict | None = None,
+        status: str = "planned",
+        input_signature: str | None = None,
+        plan_expires_at: datetime | None = None,
+        idempotency_key: str | None = None,
         batch_id: str | None = None,
+        commit: bool = True,
     ) -> MediaJob:
         job = MediaJob(
-            job_id=uuid4().hex, operation=operation, media_file_id=media_file_id,
-            trigger=trigger, status=status,
+            job_id=uuid4().hex,
+            operation=operation,
+            media_file_id=media_file_id,
+            trigger=trigger,
+            status=status,
             request_json=json.dumps(request) if request else None,
             plan_json=json.dumps(plan) if plan else None,
-            input_signature=input_signature, plan_expires_at=plan_expires_at,
-            idempotency_key=idempotency_key, batch_id=batch_id,
+            input_signature=input_signature,
+            plan_expires_at=plan_expires_at,
+            idempotency_key=idempotency_key,
+            batch_id=batch_id,
         )
         db.add(job)
-        await db.commit()
-        await db.refresh(job)
+        if commit:
+            await db.commit()
+            await db.refresh(job)
+        else:
+            await db.flush()
         # The legacy row remains the detailed operation record for now; the
         # generic Job owns scheduling, resource admission, and worker leases.
         from marquee.core.jobs import job_manager  # noqa: PLC0415
@@ -169,7 +220,13 @@ class MediaJobManager:
         resources = {f"media-file:{media_file_id}": 1} if media_file_id is not None else {}
         if operation == "subtitle_generate":
             resources["gpu"] = 1
-        elif operation in {"subtitle_remove", "subtitle_embed", "subtitle_metadata", "subtitle_restore", "letterbox_reencode"}:
+        elif operation in {
+            "subtitle_remove",
+            "subtitle_embed",
+            "subtitle_metadata",
+            "subtitle_restore",
+            "letterbox_reencode",
+        }:
             resources["media_write"] = 1
         else:
             resources["media_read"] = 1
@@ -188,7 +245,17 @@ class MediaJobManager:
             subject_id=media_file_id,
             idempotency_key=f"generic:{idempotency_key}" if idempotency_key else None,
             status="planned" if status == "planned" else "queued",
-            max_attempts=1 if operation in {"subtitle_remove", "subtitle_embed", "subtitle_metadata", "subtitle_restore", "letterbox_reencode"} else 3,
+            max_attempts=1
+            if operation
+            in {
+                "subtitle_remove",
+                "subtitle_embed",
+                "subtitle_metadata",
+                "subtitle_restore",
+                "letterbox_reencode",
+            }
+            else 3,
+            commit=commit,
         )
         return job
 
@@ -261,7 +328,9 @@ class MediaJobManager:
                     logger.exception("media job %s failed", job_id)
                     code = getattr(exc, "code", None)
                     job.status = "cancelled" if code == "cancelled" else "failed"
-                    job.error_json = json.dumps({"error": str(exc), "code": getattr(exc, "code", None)})
+                    job.error_json = json.dumps(
+                        {"error": str(exc), "code": getattr(exc, "code", None)}
+                    )
                     await db.commit()
                     await self.emit(db, job_id, "error", job.status, message=str(exc))
                 finally:
@@ -276,8 +345,10 @@ class MediaJobManager:
         if batch is None:
             return
         rows = (
-            await db.execute(select(MediaJob.status).where(MediaJob.batch_id == batch_id))
-        ).scalars().all()
+            (await db.execute(select(MediaJob.status).where(MediaJob.batch_id == batch_id)))
+            .scalars()
+            .all()
+        )
         batch.completed_count = sum(1 for s in rows if s == "succeeded")
         batch.failed_count = sum(1 for s in rows if s == "failed")
         terminal = {"succeeded", "failed", "cancelled", "interrupted"}

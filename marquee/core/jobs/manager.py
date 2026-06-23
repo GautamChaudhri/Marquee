@@ -78,6 +78,7 @@ class JobManager:
         idempotency_key: str | None = None,
         status: str = "queued",
         max_attempts: int = 3,
+        commit: bool = True,
     ) -> Job:
         if idempotency_key:
             existing = (
@@ -108,8 +109,9 @@ class JobManager:
         db.add(job)
         await db.flush()
         await self.emit(db, job, state=status, message="job created", persist=True)
-        await db.commit()
-        await db.refresh(job)
+        if commit:
+            await db.commit()
+            await db.refresh(job)
         return job
 
     async def create_batch(

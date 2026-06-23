@@ -51,12 +51,21 @@ class PolicyBody(BaseModel):
 
 def _policy_dict(p: SubtitlePolicy) -> dict:
     return {
-        "id": p.id, "name": p.name, "enabled": p.enabled, "revision": p.revision,
-        "mode": p.mode, "languages": json.loads(p.languages_json) if p.languages_json else [],
-        "unknown_action": p.unknown_action, "protect_forced": p.protect_forced,
-        "protect_default": p.protect_default, "protect_last_full_dialogue": p.protect_last_full_dialogue,
-        "include_external": p.include_external, "auto_apply": p.auto_apply,
-        "audit_only": p.audit_only, "hardlink_action": p.hardlink_action, "backup_mode": p.backup_mode,
+        "id": p.id,
+        "name": p.name,
+        "enabled": p.enabled,
+        "revision": p.revision,
+        "mode": p.mode,
+        "languages": json.loads(p.languages_json) if p.languages_json else [],
+        "unknown_action": p.unknown_action,
+        "protect_forced": p.protect_forced,
+        "protect_default": p.protect_default,
+        "protect_last_full_dialogue": p.protect_last_full_dialogue,
+        "include_external": p.include_external,
+        "auto_apply": p.auto_apply,
+        "audit_only": p.audit_only,
+        "hardlink_action": p.hardlink_action,
+        "backup_mode": p.backup_mode,
     }
 
 
@@ -81,12 +90,19 @@ async def list_policies(db: Annotated[AsyncSession, Depends(get_db)]):
 @router.post("", status_code=201)
 async def create_policy(body: PolicyBody, db: Annotated[AsyncSession, Depends(get_db)]):
     policy = SubtitlePolicy(
-        name=body.name, mode=body.mode, languages_json=json.dumps(body.languages),
-        enabled=body.enabled, unknown_action=body.unknown_action,
-        protect_forced=body.protect_forced, protect_default=body.protect_default,
+        name=body.name,
+        mode=body.mode,
+        languages_json=json.dumps(body.languages),
+        enabled=body.enabled,
+        unknown_action=body.unknown_action,
+        protect_forced=body.protect_forced,
+        protect_default=body.protect_default,
         protect_last_full_dialogue=body.protect_last_full_dialogue,
-        include_external=body.include_external, auto_apply=body.auto_apply,
-        audit_only=body.audit_only, hardlink_action=body.hardlink_action, backup_mode=body.backup_mode,
+        include_external=body.include_external,
+        auto_apply=body.auto_apply,
+        audit_only=body.audit_only,
+        hardlink_action=body.hardlink_action,
+        backup_mode=body.backup_mode,
     )
     db.add(policy)
     await db.commit()
@@ -107,7 +123,9 @@ async def get_policy(policy_id: int, db: Annotated[AsyncSession, Depends(get_db)
 
 
 @router.put("/{policy_id}")
-async def update_policy(policy_id: int, body: PolicyBody, db: Annotated[AsyncSession, Depends(get_db)]):
+async def update_policy(
+    policy_id: int, body: PolicyBody, db: Annotated[AsyncSession, Depends(get_db)]
+):
     policy = await _load_policy(db, policy_id)
     policy.name = body.name
     policy.mode = body.mode
@@ -229,6 +247,7 @@ async def apply_policy(
             status="queued",
             input_signature=resolved.signature,
             batch_id=batch.batch_id,
+            commit=False,
         )
         created += 1
 

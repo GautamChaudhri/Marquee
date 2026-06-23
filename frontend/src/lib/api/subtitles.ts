@@ -1,7 +1,7 @@
 import { env } from '$env/dynamic/public';
 import { apiGet, apiSend, type Fetch } from './client';
 import { mockSubtitleInventory } from './mock';
-import type { SubtitleInventory, SubtitlePlanRequest, SubtitlePlan } from './types';
+import type { MediaJob, SubtitleInventory, SubtitlePlanRequest, SubtitlePlan } from './types';
 
 const useMocks = () => env.PUBLIC_USE_MOCKS === 'true';
 
@@ -29,6 +29,7 @@ export function inspectMovie(
 	media_file_id: number;
 	path_present: boolean;
 	inventory: SubtitleInventory;
+	active_job: MediaJob | null;
 }> {
 	if (useMocks()) {
 		return Promise.resolve({
@@ -36,7 +37,8 @@ export function inspectMovie(
 			title: 'Mock Movie',
 			media_file_id: movieId,
 			path_present: true,
-			inventory: mockSubtitleInventory(movieId)
+			inventory: mockSubtitleInventory(movieId),
+			active_job: null
 		});
 	}
 	return apiSend<{
@@ -45,6 +47,7 @@ export function inspectMovie(
 		media_file_id: number;
 		path_present: boolean;
 		inventory: SubtitleInventory;
+		active_job: MediaJob | null;
 	}>(fetch, 'POST', `/movies/${movieId}/subtitles/inspect`);
 }
 

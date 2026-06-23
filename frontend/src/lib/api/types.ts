@@ -742,6 +742,7 @@ export interface MediaJob {
 		percent: number;
 		message: string;
 	} | null;
+	events_url: string;
 	backup_id: string | null;
 	plan: any | null;
 }

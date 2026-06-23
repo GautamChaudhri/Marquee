@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.core.media_files import resolve_media_file
 from marquee.core.media_jobs import media_job_manager
+from marquee.core.media_jobs.serialize import job_dict as _job_dict
 from marquee.database import _get_session_factory, get_db
 from marquee.models import Job, MediaJob, MediaJobEvent
 
@@ -31,25 +32,6 @@ def _as_utc(value: datetime | None) -> datetime | None:
     if value is None or value.tzinfo is not None:
         return value
     return value.replace(tzinfo=UTC)
-
-
-def _job_dict(job: MediaJob) -> dict:
-    return {
-        "job_id": job.job_id,
-        "operation": job.operation,
-        "status": job.status,
-        "stage": job.stage,
-        "trigger": job.trigger,
-        "media_file_id": job.media_file_id,
-        "batch_id": job.batch_id,
-        "progress_done": job.progress_done,
-        "progress_total": job.progress_total,
-        "plan": json.loads(job.plan_json) if job.plan_json else None,
-        "result": json.loads(job.result_json) if job.result_json else None,
-        "error": json.loads(job.error_json) if job.error_json else None,
-        "plan_expires_at": job.plan_expires_at.isoformat() if job.plan_expires_at else None,
-        "created_at": job.created_at.isoformat() if job.created_at else None,
-    }
 
 
 async def _generic_for_media_job(db: AsyncSession, media_job: MediaJob) -> Job | None:
