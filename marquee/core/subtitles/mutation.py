@@ -50,21 +50,136 @@ def _temp_output_path(source: Path, job_id: str) -> Path:
     return source.with_name(f".{source.name}.marquee.{job_id}.partial{source.suffix}")
 
 
+def _real_branch_root(source: Path) -> Path | None:
+    """Real on-disk root backing ``source``, if it lives under a mergerfs union.
+
+    mergerfs's create policy chooses which underlying branch a brand-new path
+    lands on independently of which branch the file it's related to is
+    already on, so a freshly-created backup dir can silently end up on a
+    different physical disk than the source file — turning the "cheap
+    hardlink" below into an always-falls-back full byte copy. Mergerfs
+    exposes the true backing path via the ``user.mergerfs.basepath`` xattr;
+    resolving it first makes hardlinking deterministic instead of a coin
+    flip. A no-op (returns ``None``) on non-mergerfs filesystems.
+    """
+    import sys  # noqa: PLC0415
+
+    if sys.platform != "linux":
+        return None
+    try:
+        raw = os.getxattr(str(source), "user.mergerfs.basepath")
+    except OSError:
+        return None
+    return Path(os.fsdecode(raw))
+
+
 def _backup_dir(source: Path, source_key: str) -> Path:
     """Hidden, same-filesystem backup dir outside the title folder (§16.7)."""
     # Walk up to the configured media root; fall back to the parent's parent.
     from marquee.config import settings  # noqa: PLC0415
 
-    root = None
-    resolved = str(source)
-    for candidate in settings.effective_media_roots:
-        if resolved.startswith(str(candidate)):
-            root = Path(candidate)
-            break
+    root = _real_branch_root(source)
     if root is None:
-        root = source.parent.parent
+        resolved = str(source)
+        for candidate in settings.effective_media_roots:
+            if resolved.startswith(str(candidate)):
+                root = Path(candidate)
+                break
+        if root is None:
+            root = source.parent.parent
     safe_key = source_key.replace(":", "_").replace("/", "_")
     return root / ".marquee" / "backups" / safe_key
+
+
+def _nice_ionice_prefix() -> list[str]:
+    """Best-effort low-priority prefix for heavy media I/O subprocesses.
+
+    Without this, a full-priority backup/remux copy can saturate the disks
+    the API's Postgres connection and even SSH share, stalling the whole
+    host for the duration of a batch.
+    """
+    prefix: list[str] = []
+    nice_bin = shutil.which("nice")
+    if nice_bin:
+        prefix += [nice_bin, "-n", "19"]
+    ionice_bin = shutil.which("ionice")
+    if ionice_bin:
+        prefix += [ionice_bin, "-c", "3"]
+    return prefix
+
+
+async def link_or_copy(src: Path, dst: Path, *, bwlimit_kbps: int) -> str:
+    """Materialize ``dst`` as a copy of ``src``, cheapest method first.
+
+    Tries a same-filesystem hardlink (instant, zero extra bytes), then a
+    reflink/COW clone (instant, shares blocks until either side is modified),
+    then a deprioritized + bandwidth-capped full copy as the last resort.
+    Returns which method won: ``"hardlink"``, ``"reflink"``, or ``"copy"``.
+    """
+    dst.parent.mkdir(parents=True, exist_ok=True)
+
+    def try_link() -> bool:
+        try:
+            os.link(src, dst)
+            return True
+        except OSError:
+            return False
+
+    if await asyncio.to_thread(try_link):
+        return "hardlink"
+
+    prefix = _nice_ionice_prefix()
+    cp_bin = shutil.which("cp")
+    if cp_bin:
+        proc = await asyncio.create_subprocess_exec(
+            *prefix,
+            cp_bin,
+            "--reflink=always",
+            str(src),
+            str(dst),
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        await proc.communicate()
+        if proc.returncode == 0:
+            return "reflink"
+        dst.unlink(missing_ok=True)
+
+    rsync_bin = shutil.which("rsync")
+    if rsync_bin:
+        proc = await asyncio.create_subprocess_exec(
+            *prefix,
+            rsync_bin,
+            f"--bwlimit={bwlimit_kbps}",
+            str(src),
+            str(dst),
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await proc.communicate()
+        if proc.returncode == 0:
+            return "copy"
+        dst.unlink(missing_ok=True)
+        raise OSError((stderr or b"").decode(errors="replace")[:500])
+
+    if cp_bin:
+        proc = await asyncio.create_subprocess_exec(
+            *prefix,
+            cp_bin,
+            str(src),
+            str(dst),
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await proc.communicate()
+        if proc.returncode == 0:
+            return "copy"
+        dst.unlink(missing_ok=True)
+        raise OSError((stderr or b"").decode(errors="replace")[:500])
+
+    # No external copy tools at all — last resort, unprioritized.
+    await asyncio.to_thread(shutil.copy2, src, dst)
+    return "copy"
 
 
 # ---------------------------------------------------------------------------
@@ -233,23 +348,10 @@ async def execute_job(db: AsyncSession, job, emit) -> dict:
         await emit(db, job.job_id, "remux", "start", message=f"Running {adapter.binary}")
         binary, args = argv
         binary_path = binaries.resolve(binary) or binary
-        cmd_args = list(args)
 
         # Prefix execution with nice and ionice if available to prioritize system and web server stability
-        nice_bin = shutil.which("nice")
-        ionice_bin = shutil.which("ionice")
-
-        executable = binary_path
-        if nice_bin or ionice_bin:
-            run_args = []
-            if nice_bin:
-                run_args += [nice_bin, "-n", "19"]
-            if ionice_bin:
-                run_args += [ionice_bin, "-c", "3"]
-            run_args.append(binary_path)
-            run_args.extend(cmd_args)
-            executable = run_args[0]
-            cmd_args = run_args[1:]
+        run_args = [*_nice_ionice_prefix(), binary_path, *args]
+        executable, cmd_args = run_args[0], run_args[1:]
 
         proc = await asyncio.create_subprocess_exec(
             executable,
@@ -281,7 +383,8 @@ async def execute_job(db: AsyncSession, job, emit) -> dict:
             raise PreflightError("validation_failed", "; ".join(result.problems))
 
         if backup_requested:
-            await _make_backup(db, job, resolved)
+            await emit(db, job.job_id, "backup", "start")
+            await _make_backup(db, job, resolved, emit)
 
         await emit(db, job.job_id, "replace", "start")
         os.replace(out, resolved.path)
@@ -389,22 +492,28 @@ async def _build_argv(db, job, operation, request, source_probe, adapter, out, r
     raise PreflightError("unsupported_operation", operation)
 
 
-async def _make_backup(db: AsyncSession, job, resolved: ResolvedMediaFile) -> None:
+async def _make_backup(db: AsyncSession, job, resolved: ResolvedMediaFile, emit) -> None:
     row = (
         await db.execute(select(MediaFile).where(MediaFile.id == resolved.media_file_id))
     ).scalar_one_or_none()
     source_key = row.source_key if row else f"file-{resolved.media_file_id}"
-    backup_dir = _backup_dir(resolved.path, source_key) / job.job_id
+    backup_path = _backup_dir(resolved.path, source_key) / job.job_id / resolved.path.name
 
-    def do_backup():
-        backup_dir.mkdir(parents=True, exist_ok=True)
-        try:
-            os.link(resolved.path, backup_path)  # cheap same-fs hardlink
-        except OSError:
-            shutil.copy2(resolved.path, backup_path)
-
-    backup_path = backup_dir / resolved.path.name
-    await asyncio.to_thread(do_backup)
+    started = asyncio.get_running_loop().time()
+    method = await link_or_copy(
+        resolved.path,
+        backup_path,
+        bwlimit_kbps=subtitle_settings.SUBTITLE_BACKUP_COPY_BWLIMIT_KBPS,
+    )
+    duration_s = round(asyncio.get_running_loop().time() - started, 1)
+    await emit(
+        db,
+        job.job_id,
+        "backup",
+        "complete",
+        message=f"backup via {method}",
+        progress={"method": method, "bytes": resolved.size_bytes, "duration_s": duration_s},
+    )
     db.add(
         MediaBackup(
             id=uuid4().hex,
