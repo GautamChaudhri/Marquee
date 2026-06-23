@@ -4,7 +4,7 @@
 	import PlanReview from './PlanReview.svelte';
 	import ConfirmDialog from '../ConfirmDialog.svelte';
 	import ProgressBar from '../ProgressBar.svelte';
-	import { createPlan, extractTrack } from '$lib/api/subtitles';
+		import { createPlan, extractTrack, getInventory } from '$lib/api/subtitles';
 	import { confirmJob, cancelJob } from '$lib/api/media-jobs';
 	import { subscribe } from '$lib/sse';
 	import { toast } from '$lib/toast';
@@ -253,49 +253,65 @@
 		}
 	}
 
-	// Multi-step Extract execution
-	async function handleExtract() {
-		if (selectedTracks.length !== 1) return;
-		const track = selectedTracks[0];
-		submitting = true;
-		progressMessage = `Extracting track ${track.language_tag.toUpperCase()}...`;
-		progressPercent = 10;
+		// Multi-step Extract execution
+		async function handleExtract() {
+			if (selectedTracks.length !== 1) return;
+			const track = selectedTracks[0];
+			submitting = true;
+			progressMessage = `Extracting track ${track.language_tag.toUpperCase()}...`;
+			progressPercent = 10;
 
-		try {
-			const res = await extractTrack(fetch, mediaFileId, track.id);
-			activeJobId = res.job_id;
-			progressMessage = 'Extraction started...';
+			try {
+				const res = await extractTrack(fetch, mediaFileId, track.id);
+				activeJobId = res.job_id;
+				progressMessage = 'Extraction started...';
 
-			await monitorJob(res.job_id, async () => {
-				if (deleteOriginalAfterExtract) {
-					progressMessage = 'Extraction finished. Removing original embedded track (remuxing)...';
-					progressPercent = 85;
+				await monitorJob(res.job_id, async () => {
+					if (deleteOriginalAfterExtract) {
+						progressMessage = 'Extraction finished. Removing original embedded track (remuxing)...';
+						progressPercent = 85;
 
-					const plan = await createPlan(fetch, mediaFileId, {
-						operation: 'subtitle_remove',
-						track_ids: [track.id],
-						backup: true,
-						allow_break: false
-					});
+						// Re-fetch the inventory — the extract handler rescans,
+						// which replaces all track IDs.  Find the embedded track
+						// by its stable attributes (tool_track_id + language).
+						const fresh = await getInventory(fetch, mediaFileId);
+						const embedded = fresh.tracks.find(
+							(t: SubtitleTrack) =>
+								t.source === 'embedded' &&
+								t.tool_track_id === track.tool_track_id &&
+								t.language_tag === track.language_tag
+						);
+						if (!embedded) {
+							toast('Original track not found after extraction — it may already be gone.', 'info');
+							cleanupAndRefresh();
+							return;
+						}
 
-					progressMessage = 'Confirming original track removal...';
-					const confirmRes = await confirmJob(fetch, plan.job_id);
-					activeJobId = plan.job_id;
+						const plan = await createPlan(fetch, mediaFileId, {
+							operation: 'subtitle_remove',
+							track_ids: [embedded.id],
+							backup: true,
+							allow_break: false
+						});
 
-					await monitorJob(plan.job_id, () => {
-						toast('Track extracted and original embedded track removed successfully', 'good');
+						progressMessage = 'Confirming original track removal...';
+						const confirmRes = await confirmJob(fetch, plan.job_id);
+						activeJobId = plan.job_id;
+
+						await monitorJob(plan.job_id, () => {
+							toast('Track extracted and original embedded track removed successfully', 'good');
+							cleanupAndRefresh();
+						});
+					} else {
+						toast('Track extracted successfully', 'good');
 						cleanupAndRefresh();
-					});
-				} else {
-					toast('Track extracted successfully', 'good');
-					cleanupAndRefresh();
-				}
-			});
-		} catch (e: any) {
-			toast(`Extraction failed: ${e.message}`, 'bad');
-			submitting = false;
+					}
+				});
+			} catch (e: any) {
+				toast(`Extraction failed: ${e.message}`, 'bad');
+				submitting = false;
+			}
 		}
-	}
 
 	// Cancel running job
 	async function handleCancelJob() {

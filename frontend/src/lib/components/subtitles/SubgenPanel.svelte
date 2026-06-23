@@ -138,14 +138,9 @@
 						if (onComplete) onComplete();
 					}
 				} else if (type === 'error') {
-					unsub();
-					if (pollInterval) {
-						clearInterval(pollInterval);
-						pollInterval = null;
-					}
-					generating = false;
-					activeJobId = null;
-					toast('Connection to generation progress lost', 'bad');
+					// Transient connection drop: EventSource auto-reconnects and the
+					// backend replays history, so just wait it out rather than breaking.
+					return;
 				}
 			});
 

@@ -67,14 +67,20 @@ class DurableWorker:
             await job_manager.start(db, current, current_attempt)
             handler = resolve(current.type)
             if handler is None:
-                await job_manager.fail(db, current, current_attempt, RuntimeError(f"no handler for {current.type!r}"))
+                await job_manager.fail(
+                    db, current, current_attempt, RuntimeError(f"no handler for {current.type!r}")
+                )
                 return
+
             async def renew_lease() -> None:
                 while True:
                     await asyncio.sleep(settings.JOB_HEARTBEAT_SECONDS)
                     async with factory() as heartbeat_db:
                         heartbeat_attempt = await heartbeat_db.get(JobAttempt, attempt.id)
-                        if heartbeat_attempt is None or heartbeat_attempt.status not in {"claimed", "running"}:
+                        if heartbeat_attempt is None or heartbeat_attempt.status not in {
+                            "claimed",
+                            "running",
+                        }:
                             return
                         await job_manager.heartbeat(heartbeat_db, heartbeat_attempt)
 
@@ -84,7 +90,7 @@ class DurableWorker:
                 # ffmpeg stall, infinite loop in handler). Default: 1 hour.
                 timeout = settings.JOB_MAX_RUNTIME_SECONDS
                 result = await asyncio.wait_for(handler(current), timeout=timeout)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 logger.error(
                     "job %s exceeded max runtime (%ds) — terminating",
                     current.id,
@@ -115,7 +121,13 @@ class DurableWorker:
         async with factory() as db:
             await job_manager.bootstrap_resources(db)
             await job_manager.recover(db)
-            db.add(JobWorker(id=self.id, capabilities={"worker_concurrency": settings.JOB_WORKER_CONCURRENCY}, status="running"))
+            db.add(
+                JobWorker(
+                    id=self.id,
+                    capabilities={"worker_concurrency": settings.JOB_WORKER_CONCURRENCY},
+                    status="running",
+                )
+            )
             await db.commit()
         self._next_recover_at = asyncio.get_running_loop().time() + settings.JOB_HEARTBEAT_SECONDS
         heartbeat = asyncio.create_task(self._heartbeat())
@@ -138,7 +150,9 @@ class DurableWorker:
             with contextlib.suppress(asyncio.CancelledError):
                 await heartbeat
             if self._tasks:
-                done, pending = await asyncio.wait(self._tasks, timeout=settings.JOB_SHUTDOWN_GRACE_SECONDS)
+                done, pending = await asyncio.wait(
+                    self._tasks, timeout=settings.JOB_SHUTDOWN_GRACE_SECONDS
+                )
                 for task in pending:
                     task.cancel()
                 if pending:
@@ -156,6 +170,10 @@ class DurableWorker:
 
 
 async def main() -> None:
+    from marquee.logging import setup_logging
+
+    setup_logging(level=settings.LOG_LEVEL, fmt=settings.LOG_FORMAT)
+
     worker = DurableWorker()
     loop = asyncio.get_running_loop()
     import signal  # noqa: PLC0415

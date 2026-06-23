@@ -128,12 +128,15 @@
 
 	// Helper to refresh page inventory
 	async function refreshInventory() {
-		if (!movie) return;
+		if (!movie) return null;
 		try {
-			inspect = await inspectMovie(fetch, movie.id);
+			const res = await inspectMovie(fetch, movie.id);
+			inspect = res;
 			selectedTrackIds = [];
+			return res;
 		} catch (e: any) {
 			toast(e.message || 'Failed to refresh tracks inventory', 'bad');
+			return null;
 		}
 	}
 
@@ -217,7 +220,7 @@
 	}
 
 	// Monitor running media job via SSE
-	function monitorJob(jobId: string, onCompleteCallback?: () => void) {
+	function monitorJob(jobId: string, onCompleteCallback?: (freshInspect: any) => void | Promise<void>) {
 		runningJobId = jobId;
 		progressPercent = 0;
 		progressStage = 'queued';
@@ -249,25 +252,20 @@
 					const job = await getMediaJob(fetch, jobId);
 					if (job.status === 'succeeded' || job.status === 'completed') {
 						toast('Subtitles operation completed successfully!', 'good');
-						await refreshInventory();
-						if (onCompleteCallback) onCompleteCallback();
+						const freshInspect = await refreshInventory();
+						if (onCompleteCallback) onCompleteCallback(freshInspect);
 					} else {
 						toast(`Operation failed: ${(job.error as any)?.error || job.error || 'Unknown error'}`, 'bad');
 					}
 				} catch (e: any) {
 					toast(`Operation completed. Failed to verify status: ${e.message}`, 'info');
-					await refreshInventory();
-					if (onCompleteCallback) onCompleteCallback();
+					const freshInspect = await refreshInventory();
+					if (onCompleteCallback) onCompleteCallback(freshInspect);
 				}
 			} else if (type === 'error') {
-				unsub();
-				if (pollInterval) {
-					clearInterval(pollInterval);
-					pollInterval = null;
-				}
-				runningJobId = null;
-				busy = false;
-				toast('Lost connection to task server', 'bad');
+				// Transient connection drop: EventSource auto-reconnects and the
+				// backend replays history, so just wait it out rather than breaking.
+				return;
 			}
 		});
 
@@ -287,8 +285,8 @@
 						progressPercent = 100;
 						if (job.status === 'succeeded' || job.status === 'completed') {
 							toast('Subtitles operation completed successfully!', 'good');
-							await refreshInventory();
-							if (onCompleteCallback) onCompleteCallback();
+							const freshInspect = await refreshInventory();
+							if (onCompleteCallback) onCompleteCallback(freshInspect);
 						} else {
 							toast(`Operation failed: ${(job.error as any)?.error || job.error || 'Unknown error'}`, 'bad');
 							await refreshInventory();
@@ -324,17 +322,23 @@
 		busy = true;
 		const mediaFileId = movie.media_file_id;
 		const trackId = singleSelectedTrack.id;
+		const originalStreamIndex = singleSelectedTrack.stream_index;
 		try {
 			const res = await extractTrack(fetch, mediaFileId, trackId);
-			monitorJob(res.job_id, async () => {
+			monitorJob(res.job_id, async (freshInspect) => {
 				// If cleanup checkbox is set, trigger removal of embedded track after extraction resolves
 				if (deleteAfterExtract) {
 					toast('Sidecar extracted. Remuxing to delete original embedded track...', 'info');
 					busy = true;
 					try {
+						const freshTracks = freshInspect?.inventory?.tracks || [];
+						const freshTrack = freshTracks.find((t: any) => t.source === 'embedded' && t.stream_index === originalStreamIndex);
+						if (!freshTrack) {
+							throw new Error('Could not find original embedded track in updated inventory');
+						}
 						const plan = await createPlan(fetch, mediaFileId, {
 							operation: 'subtitle_remove',
-							track_ids: [trackId]
+							track_ids: [freshTrack.id]
 						});
 						await confirmJob(fetch, plan.job_id);
 						monitorJob(plan.job_id);
@@ -356,21 +360,27 @@
 		busy = true;
 		const mediaFileId = movie.media_file_id;
 		const trackId = singleSelectedTrack.id;
+		const originalExternalPath = singleSelectedTrack.external_path;
 		try {
 			const plan = await createPlan(fetch, mediaFileId, {
 				operation: 'subtitle_embed',
 				track_ids: [trackId]
 			});
 			await confirmJob(fetch, plan.job_id);
-			monitorJob(plan.job_id, async () => {
+			monitorJob(plan.job_id, async (freshInspect) => {
 				// If cleanup checkbox is set, trigger deletion of external file after embedding resolves
 				if (deleteAfterEmbed) {
 					toast('Track embedded. Removing external sidecar file...', 'info');
 					busy = true;
 					try {
+						const freshTracks = freshInspect?.inventory?.tracks || [];
+						const freshTrack = freshTracks.find((t: any) => t.source === 'external' && t.external_path === originalExternalPath);
+						if (!freshTrack) {
+							throw new Error('Could not find original external track in updated inventory');
+						}
 						const removePlan = await createPlan(fetch, mediaFileId, {
 							operation: 'subtitle_remove',
-							track_ids: [trackId]
+							track_ids: [freshTrack.id]
 						});
 						await confirmJob(fetch, removePlan.job_id);
 						monitorJob(removePlan.job_id);
