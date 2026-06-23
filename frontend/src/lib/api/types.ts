@@ -620,3 +620,189 @@ export interface TasteNeighbor {
 	name: string;
 	similarity: number;
 }
+
+// ── Subtitle Inventory ──
+export interface SubtitleTrack {
+	id: string;
+	source: 'embedded' | 'external';
+	stream_index: number;
+	tool_track_id: number;
+	external_path: string | null;
+	codec: string;
+	kind: 'text' | 'bitmap' | 'teletext' | 'unknown';
+	language_raw: string;
+	language_tag: string;
+	language_source: 'metadata' | 'filename' | 'user' | 'unknown';
+	title: string | null;
+	is_default: boolean;
+	is_forced: boolean;
+	is_sdh: boolean;
+	is_commentary: boolean;
+	is_generated: boolean;
+	size_bytes: number | null;
+	per_track_actions: {
+		remove: TrackAction;
+		embed: TrackAction;
+		extract: TrackAction;
+	};
+}
+
+export interface TrackAction {
+	available: boolean;
+	reason: string | null;
+}
+
+export interface AudioStreamInfo {
+	index: number;
+	language: string;
+	channels: number;
+	codec: string;
+}
+
+export interface ContainerCapabilities {
+	can_remove: boolean;
+	can_embed_text: boolean;
+	can_embed_bitmap: boolean;
+	can_edit_metadata: boolean;
+}
+
+export interface SubtitleCoverage {
+	audio_languages: string[];
+	full_dialogue_languages: string[];
+	forced_only_languages: string[];
+	sdh_languages: string[];
+	commentary_present: boolean;
+	external_present: boolean;
+	embedded_present: boolean;
+	generated_present: boolean;
+	unknown_present: boolean;
+	missing_preferred_languages: string[];
+	track_count: number;
+}
+
+export interface SubtitleInventory {
+	inventory_id: string;
+	file_path: string;
+	container: string;
+	duration_seconds: number;
+	tracks: SubtitleTrack[];
+	coverage: SubtitleCoverage;
+	capabilities: ContainerCapabilities;
+	audio_streams: AudioStreamInfo[];
+	file_signature: string;
+	scanned_at: string;
+}
+
+// ── Plans ──
+export interface TrackEdit {
+	track_id: string;
+	field: string;
+	value: unknown;
+}
+
+export interface SubtitlePlanRequest {
+	operation: 'subtitle_remove' | 'subtitle_embed' | 'subtitle_metadata';
+	track_ids: string[];
+	edits?: TrackEdit[];
+	backup?: boolean;
+	allow_break?: boolean;
+}
+
+export interface SubtitlePlan {
+	job_id: string;
+	status: string;
+	operation: string;
+	before: Record<string, unknown>;
+	after: Record<string, unknown>;
+	warnings: any[];
+	storage: {
+		source_bytes?: number;
+		estimated_temp_bytes?: number;
+		free_bytes?: number;
+		backup_requested?: boolean;
+		estimated_bytes?: number;
+		available_bytes?: number;
+	};
+	plan_expires_at?: string;
+}
+
+export interface MediaJob {
+	job_id: string;
+	status: string;
+	operation: string;
+	media_file_id: string | number | null;
+	created_at: string;
+	updated_at: string;
+	started_at: string | null;
+	completed_at: string | null;
+	result: Record<string, unknown> | null;
+	error: string | null;
+	progress: {
+		stage: string;
+		percent: number;
+		message: string;
+	} | null;
+	backup_id: string | null;
+	plan: any | null;
+}
+
+// ── Generators ──
+export interface SubtitleGenerator {
+	name: string;
+	type: string;
+	url: string;
+	online: boolean;
+	version: string | null;
+	model: string | null;
+	device: string | null;
+	capabilities: {
+		language_hint: boolean;
+		translate: boolean;
+		concurrent: number;
+	};
+}
+
+export interface GenerationRequest {
+	generator_id?: string | null;
+	language_hint?: string | null;
+	output: 'external' | 'embedded';
+}
+
+// ── Policies ──
+export interface SubtitlePolicy {
+	id: number;
+	name: string;
+	enabled: boolean;
+	revision: number;
+	mode: 'allowlist' | 'blocklist';
+	languages: string[];
+	unknown_action: 'keep' | 'review' | 'remove';
+	target_source?: 'embedded' | 'external' | 'both';
+	protect_forced: boolean;
+	protect_default: boolean;
+	protect_last_full_dialogue: boolean;
+	include_external: boolean;
+	auto_apply: boolean;
+	audit_only: boolean;
+	hardlink_action: 'block' | 'allow_break';
+	backup_mode: 'none' | 'keep_original';
+	created_at: string;
+	updated_at: string;
+}
+
+export interface PolicyAuditResultItem {
+	movie_id: number;
+	media_file_id: string;
+	removals: number;
+	protected: number;
+	review_required: number;
+	warnings: string[];
+	coverage_before: SubtitleCoverage;
+	coverage_after: SubtitleCoverage;
+}
+
+export interface PolicyAuditResult {
+	policy_id: number;
+	total_removals: number;
+	items: PolicyAuditResultItem[];
+}

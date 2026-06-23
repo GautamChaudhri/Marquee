@@ -81,6 +81,12 @@ class SubgenPathGenerator:
                 body = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
             return GeneratorHealth(healthy=True, version=str(body.get("version") or body.get("status") or "ok"))
         except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "SUBGEN | Connection health check failed to URL %s: %s",
+                subtitle_settings.SUBGEN_URL,
+                str(exc),
+                exc_info=True,
+            )
             return GeneratorHealth(healthy=False, detail=str(exc))
 
     async def submit(self, request: GenerationRequest) -> ProviderSubmission:
@@ -97,6 +103,13 @@ class SubgenPathGenerator:
                 )
                 resp.raise_for_status()
         except Exception as exc:  # noqa: BLE001
+            logger.error(
+                "SUBGEN | Submission failed to URL %s for file %s: %s",
+                subtitle_settings.SUBGEN_URL,
+                request.local_media_path,
+                str(exc),
+                exc_info=True,
+            )
             return ProviderSubmission(accepted=False, submitted_at="", detail=str(exc))
         return ProviderSubmission(
             accepted=True,

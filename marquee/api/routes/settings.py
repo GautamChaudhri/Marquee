@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
+
 
 from marquee.config import settings as app_settings
 from marquee.core.subtitles.config import subtitle_settings
@@ -53,9 +55,12 @@ async def get_settings():
                 "callback_token_configured": _configured(
                     subtitle_settings.SUBGEN_CALLBACK_TOKEN
                 ),
+                "url": subtitle_settings.SUBGEN_URL,
                 "profile_name": subtitle_settings.SUBGEN_PROFILE_NAME,
                 "model_label": subtitle_settings.SUBGEN_MODEL_LABEL,
                 "mode": subtitle_settings.SUBGEN_MODE,
+                "local_path_prefix": subtitle_settings.SUBGEN_LOCAL_PATH_PREFIX,
+                "remote_path_prefix": subtitle_settings.SUBGEN_REMOTE_PATH_PREFIX,
             },
         },
         "paths": {
@@ -102,5 +107,83 @@ async def get_settings():
             "series": app_settings.SERIES_POSTER_FORMAT,
             "season": app_settings.SEASON_POSTER_FORMAT,
         },
-        "writable": False,
+        "writable": True,
     }
+
+
+class SubtitlesSettingsUpdate(BaseModel):
+    enabled: bool | None = None
+    scan_concurrency: int | None = None
+    mutation_concurrency: int | None = None
+    generation_concurrency: int | None = None
+    preferred_languages: list[str] | None = None
+    unknown_language_action: str | None = None
+    protect_forced: bool | None = None
+    protect_last_full_dialogue: bool | None = None
+    backup_mode: str | None = None
+    external_delete_mode: str | None = None
+
+
+class SubgenSettingsUpdate(BaseModel):
+    url: str | None = None
+    profile_name: str | None = None
+    model_label: str | None = None
+    mode: str | None = None
+    local_path_prefix: str | None = None
+    remote_path_prefix: str | None = None
+    callback_token: str | None = None
+
+
+class SettingsUpdatePayload(BaseModel):
+    subtitles: SubtitlesSettingsUpdate | None = None
+    subgen: SubgenSettingsUpdate | None = None
+
+
+@router.put("")
+async def put_settings(payload: SettingsUpdatePayload):
+    """Update subtitle settings, validate, mutate singleton, and save overrides."""
+    current = subtitle_settings.model_dump()
+
+    if payload.subtitles:
+        sub_update = payload.subtitles.model_dump(exclude_unset=True)
+        for key, val in sub_update.items():
+            current[f"SUBTITLE_{key.upper()}"] = val
+
+    if payload.subgen:
+        subgen_update = payload.subgen.model_dump(exclude_unset=True)
+        for key, val in subgen_update.items():
+            current[f"SUBGEN_{key.upper()}"] = val
+
+    from marquee.core.subtitles.config import SubtitleSettings
+    try:
+        SubtitleSettings(**current)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    from marquee.core.subtitles.config import save_overrides, load_overrides
+
+    updated_fields = {}
+    if payload.subtitles:
+        for key, val in payload.subtitles.model_dump(exclude_unset=True).items():
+            setting_key = f"SUBTITLE_{key.upper()}"
+            setattr(subtitle_settings, setting_key, val)
+            updated_fields[setting_key] = val
+
+    if payload.subgen:
+        for key, val in payload.subgen.model_dump(exclude_unset=True).items():
+            setting_key = f"SUBGEN_{key.upper()}"
+            setattr(subtitle_settings, setting_key, val)
+            if setting_key == "SUBGEN_CALLBACK_TOKEN":
+                updated_fields[setting_key] = "<redacted>"
+            else:
+                updated_fields[setting_key] = val
+
+    current_overrides = load_overrides()
+    for setting_key, val in updated_fields.items():
+        if setting_key == "SUBGEN_CALLBACK_TOKEN":
+            val = getattr(subtitle_settings, setting_key)
+        current_overrides[setting_key] = val
+
+    save_overrides(current_overrides)
+    return {"applied": sorted(updated_fields.keys()), "settings": await get_settings()}
+

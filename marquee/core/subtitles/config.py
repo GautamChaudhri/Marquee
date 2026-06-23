@@ -67,4 +67,38 @@ class SubtitleSettings(BaseSettings):
         return bool(self.SUBGEN_URL)
 
 
-subtitle_settings = SubtitleSettings()
+def _overrides_path() -> Path:
+    return ENV_FILE.parent / "data" / "subtitle_overrides.json"
+
+
+def load_overrides() -> dict:
+    """Persisted UI subtitle overrides, layered on top of env/.env at startup."""
+    import json  # noqa: PLC0415
+
+    path = _overrides_path()
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text())
+        return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def save_overrides(overrides: dict) -> None:
+    """Atomically persist current UI subtitle overrides."""
+    import json  # noqa: PLC0415
+    import os  # noqa: PLC0415
+
+    path = _overrides_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(overrides, indent=2, default=str), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+try:
+    subtitle_settings = SubtitleSettings(**load_overrides())
+except Exception:
+    subtitle_settings = SubtitleSettings()
+
