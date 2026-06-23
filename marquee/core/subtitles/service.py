@@ -10,6 +10,7 @@ No media file is written here — this is the inspection half of the feature.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from pathlib import Path
@@ -86,8 +87,8 @@ def build_track_dicts(probe_result: probe.ProbeResult | None, externals: list) -
 
 async def scan_inventory(db: AsyncSession, resolved: ResolvedMediaFile) -> SubtitleInventory:
     """Probe + discover + persist the current inventory for a media file."""
-    probe_result = probe.probe_container(resolved.path)
-    externals = external.discover(resolved.path)
+    probe_result = await asyncio.to_thread(probe.probe_container, resolved.path)
+    externals = await asyncio.to_thread(external.discover, resolved.path)
     tracks = build_track_dicts(probe_result, externals)
 
     container = probe_result.container if probe_result else resolved.container
@@ -110,16 +111,12 @@ async def scan_inventory(db: AsyncSession, resolved: ResolvedMediaFile) -> Subti
         db.add(inventory)
     else:
         # Replace tracks transactionally on rescan.
-        await db.execute(
-            delete(SubtitleTrack).where(SubtitleTrack.inventory_id == inventory.id)
-        )
+        await db.execute(delete(SubtitleTrack).where(SubtitleTrack.inventory_id == inventory.id))
 
     inventory.file_signature = resolved.signature
     inventory.container = family
     inventory.duration_seconds = probe_result.duration_seconds if probe_result else None
-    inventory.audio_streams_json = json.dumps(
-        probe_result.audio_streams if probe_result else []
-    )
+    inventory.audio_streams_json = json.dumps(probe_result.audio_streams if probe_result else [])
     inventory.chapters_count = probe_result.chapters_count if probe_result else 0
     inventory.attachments_count = probe_result.attachments_count if probe_result else 0
     inventory.coverage_json = json.dumps(cov)
@@ -136,11 +133,9 @@ async def scan_inventory(db: AsyncSession, resolved: ResolvedMediaFile) -> Subti
 
 async def _tracks_for(db: AsyncSession, inventory_id: int) -> list[SubtitleTrack]:
     return list(
-        (
-            await db.execute(
-                select(SubtitleTrack).where(SubtitleTrack.inventory_id == inventory_id)
-            )
-        ).scalars().all()
+        (await db.execute(select(SubtitleTrack).where(SubtitleTrack.inventory_id == inventory_id)))
+        .scalars()
+        .all()
     )
 
 
@@ -153,9 +148,7 @@ async def get_inventory_dict(db: AsyncSession, media_file_id: int, *, force: boo
     resolved = await resolve_media_file(db, media_file_id)
     inventory = (
         await db.execute(
-            select(SubtitleInventory).where(
-                SubtitleInventory.media_file_id == media_file_id
-            )
+            select(SubtitleInventory).where(SubtitleInventory.media_file_id == media_file_id)
         )
     ).scalar_one_or_none()
 
@@ -176,9 +169,7 @@ async def get_track(db: AsyncSession, media_file_id: int, track_id: str) -> Subt
     """Look up a track by id, scoped to the media file's current inventory."""
     inventory = (
         await db.execute(
-            select(SubtitleInventory).where(
-                SubtitleInventory.media_file_id == media_file_id
-            )
+            select(SubtitleInventory).where(SubtitleInventory.media_file_id == media_file_id)
         )
     ).scalar_one_or_none()
     if inventory is None:
@@ -207,7 +198,9 @@ def inventory_to_dict(inventory: SubtitleInventory, tracks: list[SubtitleTrack])
         "attachments_count": inventory.attachments_count,
         "capabilities": caps,
         "coverage": json.loads(inventory.coverage_json) if inventory.coverage_json else {},
-        "audio_streams": json.loads(inventory.audio_streams_json) if inventory.audio_streams_json else [],
+        "audio_streams": json.loads(inventory.audio_streams_json)
+        if inventory.audio_streams_json
+        else [],
         "scanned_at": inventory.scanned_at.isoformat() if inventory.scanned_at else None,
         "error": inventory.error,
         "tracks": [_track_to_dict(t, caps) for t in tracks],

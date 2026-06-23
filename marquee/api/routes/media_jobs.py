@@ -143,12 +143,13 @@ async def get_job(job_id: str, db: Annotated[AsyncSession, Depends(get_db)]):
 async def job_events(
     job_id: str,
     request: Request,
-    db: Annotated[AsyncSession, Depends(get_db)],
 ):
     """SSE: replay persisted events, then stream live ones until completion."""
-    job = await db.get(MediaJob, job_id)
-    if job is None:
-        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+    factory = _get_session_factory()
+    async with factory() as db:
+        job = await db.get(MediaJob, job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
 
     factory = _get_session_factory()
     terminal = {"succeeded", "failed", "cancelled", "interrupted"}

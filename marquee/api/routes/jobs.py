@@ -83,27 +83,49 @@ async def list_jobs(
     rows = (await db.execute(query)).scalars().all()
     has_more = len(rows) > limit
     rows = rows[:limit]
-    next_before = int(rows[-1].created_at.timestamp()) if has_more and rows and rows[-1].created_at else None
+    next_before = (
+        int(rows[-1].created_at.timestamp()) if has_more and rows and rows[-1].created_at else None
+    )
     return {"jobs": [job_summary(row) for row in rows], "next_before": next_before}
 
 
 @router.get("/metrics")
 async def job_metrics(db: Annotated[AsyncSession, Depends(get_db)]):
-    status_counts = dict((await db.execute(select(Job.status, func.count()).group_by(Job.status))).all())
+    status_counts = dict(
+        (await db.execute(select(Job.status, func.count()).group_by(Job.status))).all()
+    )
     resources = (await db.execute(select(JobResource))).scalars().all()
     active = (
         await db.execute(
-            select(JobResourceReservation.resource_key, func.coalesce(func.sum(JobResourceReservation.units), 0))
+            select(
+                JobResourceReservation.resource_key,
+                func.coalesce(func.sum(JobResourceReservation.units), 0),
+            )
             .where(JobResourceReservation.released_at.is_(None))
             .group_by(JobResourceReservation.resource_key)
         )
     ).all()
     in_use = dict(active)
-    workers = (await db.execute(select(JobWorker).order_by(JobWorker.heartbeat_at.desc()))).scalars().all()
+    workers = (
+        (await db.execute(select(JobWorker).order_by(JobWorker.heartbeat_at.desc())))
+        .scalars()
+        .all()
+    )
     return {
         "counts": status_counts,
-        "resources": [{"key": row.key, "capacity": row.capacity, "in_use": int(in_use.get(row.key, 0)), "enabled": row.enabled} for row in resources],
-        "workers": [{"id": row.id, "status": row.status, "heartbeat_at": row.heartbeat_at.isoformat()} for row in workers],
+        "resources": [
+            {
+                "key": row.key,
+                "capacity": row.capacity,
+                "in_use": int(in_use.get(row.key, 0)),
+                "enabled": row.enabled,
+            }
+            for row in resources
+        ],
+        "workers": [
+            {"id": row.id, "status": row.status, "heartbeat_at": row.heartbeat_at.isoformat()}
+            for row in workers
+        ],
     }
 
 
@@ -112,17 +134,55 @@ async def get_job(job_id: str, db: Annotated[AsyncSession, Depends(get_db)]):
     job = await db.get(Job, job_id)
     if job is None:
         raise HTTPException(404, "Job not found")
-    attempts = (await db.execute(select(JobAttempt).where(JobAttempt.job_id == job_id).order_by(JobAttempt.number))).scalars().all()
-    reservations = (await db.execute(select(JobResourceReservation).where(JobResourceReservation.job_id == job_id))).scalars().all()
+    attempts = (
+        (
+            await db.execute(
+                select(JobAttempt).where(JobAttempt.job_id == job_id).order_by(JobAttempt.number)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    reservations = (
+        (
+            await db.execute(
+                select(JobResourceReservation).where(JobResourceReservation.job_id == job_id)
+            )
+        )
+        .scalars()
+        .all()
+    )
     data = job_summary(job)
-    data.update({
-        "payload": job.payload,
-        "checkpoint": job.checkpoint,
-        "result": job.result,
-        "error": job.error,
-        "attempts": [{"number": a.number, "status": a.status, "worker_id": a.worker_id, "started_at": a.started_at.isoformat() if a.started_at else None, "finished_at": a.finished_at.isoformat() if a.finished_at else None, "metrics": a.metrics, "error": a.error} for a in attempts],
-        "resources": [{"key": r.resource_key, "units": r.units, "stage": r.stage, "acquired_at": r.acquired_at.isoformat() if r.acquired_at else None, "released_at": r.released_at.isoformat() if r.released_at else None} for r in reservations],
-    })
+    data.update(
+        {
+            "payload": job.payload,
+            "checkpoint": job.checkpoint,
+            "result": job.result,
+            "error": job.error,
+            "attempts": [
+                {
+                    "number": a.number,
+                    "status": a.status,
+                    "worker_id": a.worker_id,
+                    "started_at": a.started_at.isoformat() if a.started_at else None,
+                    "finished_at": a.finished_at.isoformat() if a.finished_at else None,
+                    "metrics": a.metrics,
+                    "error": a.error,
+                }
+                for a in attempts
+            ],
+            "resources": [
+                {
+                    "key": r.resource_key,
+                    "units": r.units,
+                    "stage": r.stage,
+                    "acquired_at": r.acquired_at.isoformat() if r.acquired_at else None,
+                    "released_at": r.released_at.isoformat() if r.released_at else None,
+                }
+                for r in reservations
+            ],
+        }
+    )
     return data
 
 
@@ -130,7 +190,6 @@ async def get_job(job_id: str, db: Annotated[AsyncSession, Depends(get_db)]):
 async def job_events(
     job_id: str,
     request: Request,
-    db: Annotated[AsyncSession, Depends(get_db)],
     last_event_id: Annotated[str | None, Header()] = None,
 ):
     """Stream job events over SSE with disconnect detection and timeout.
@@ -144,8 +203,10 @@ async def job_events(
       - The client disconnects (browser tab closed, network interruption)
       - The stream exceeds 1 hour (timeout — client should reconnect)
     """
-    if await db.get(Job, job_id) is None:
-        raise HTTPException(404, "Job not found")
+    factory = _get_session_factory()
+    async with factory() as db:
+        if await db.get(Job, job_id) is None:
+            raise HTTPException(404, "Job not found")
     after = int(last_event_id or 0)
     factory = _get_session_factory()
 
@@ -166,28 +227,50 @@ async def job_events(
                     job_id,
                     elapsed,
                 )
-                yield f'event: error\ndata: {{"message": "stream timeout — reconnect with Last-Event-ID"}}\n\n'
+                yield 'event: error\ndata: {"message": "stream timeout — reconnect with Last-Event-ID"}\n\n'
                 return
 
             async with factory() as stream_db:
                 rows = (
-                    await stream_db.execute(select(JobEvent).where(JobEvent.job_id == job_id, JobEvent.id > after).order_by(JobEvent.id))
-                ).scalars().all()
+                    (
+                        await stream_db.execute(
+                            select(JobEvent)
+                            .where(JobEvent.job_id == job_id, JobEvent.id > after)
+                            .order_by(JobEvent.id)
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
                 job = await stream_db.get(Job, job_id)
 
             for event in rows:
                 after = event.id
                 yield f"id: {event.id}\ndata: {json.dumps({'id': event.id, 'job_id': job_id, 'state': event.state, 'stage': event.stage, 'message': event.message, 'detail': event.detail}, default=str)}\n\n"
 
-            if job is None or job.status in {"succeeded", "failed", "cancelled", "interrupted", "dead_letter"}:
+            if job is None or job.status in {
+                "succeeded",
+                "failed",
+                "cancelled",
+                "interrupted",
+                "dead_letter",
+            }:
                 # Include final status so frontend can show appropriate UI
                 yield f'event: done\ndata: {{"status": "{job.status if job else "unknown"}"}}\n\n'
-                logger.debug("SSE stream complete for job %s (status=%s)", job_id, job.status if job else None)
+                logger.debug(
+                    "SSE stream complete for job %s (status=%s)",
+                    job_id,
+                    job.status if job else None,
+                )
                 return
 
             await asyncio.sleep(0.5)
 
-    return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.post("/{job_id}/cancel", status_code=202)
@@ -221,5 +304,16 @@ async def retry_job(job_id: str, db: Annotated[AsyncSession, Depends(get_db)]):
         raise HTTPException(404, "Job not found")
     if job.status not in {"failed", "interrupted", "cancelled", "dead_letter"}:
         raise HTTPException(409, f"Cannot retry a {job.status} job")
-    retry = await job_manager.create(db, job_type=job.type, payload=job.payload, priority=job.priority, resources=job.resource_request, parent_id=job.parent_id, correlation_id=job.correlation_id, subject_type=job.subject_type, subject_id=job.subject_id, max_attempts=job.max_attempts)
+    retry = await job_manager.create(
+        db,
+        job_type=job.type,
+        payload=job.payload,
+        priority=job.priority,
+        resources=job.resource_request,
+        parent_id=job.parent_id,
+        correlation_id=job.correlation_id,
+        subject_type=job.subject_type,
+        subject_id=job.subject_id,
+        max_attempts=job.max_attempts,
+    )
     return job_summary(retry)

@@ -31,7 +31,10 @@ async def _scan(db: AsyncSession, job: MediaJob, emit) -> dict:
     resolved = await resolve_media_file(db, job.media_file_id)
     inventory = await service.scan_inventory(db, resolved)
     await emit(db, job.job_id, "scan", "complete")
-    return {"inventory_id": inventory.id, "tracks": len(await service._tracks_for(db, inventory.id))}
+    return {
+        "inventory_id": inventory.id,
+        "tracks": len(await service._tracks_for(db, inventory.id)),
+    }
 
 
 async def _mutate(db: AsyncSession, job: MediaJob, emit) -> dict:
@@ -51,19 +54,23 @@ async def _extract(db: AsyncSession, job: MediaJob, emit) -> dict:
     track = await service.get_track(db, job.media_file_id, request["track_id"])
     if track is None or track.source != "embedded":
         raise ValueError("extract requires an embedded track")
-    source_probe = probe.probe_container(resolved.path)
+    source_probe = await asyncio.to_thread(probe.probe_container, resolved.path)
     family = capabilities.container_family(source_probe.container if source_probe else None)
     adapter = adapter_for(family)
     ext = "srt" if track.kind == "text" else "sup"
     out = resolved.path.with_suffix(f".{track.language_tag}.extracted.{ext}")
     binary, args = adapter.build_extract(
-        resolved.path, Path(out), stream_index=track.stream_index or 0,
+        resolved.path,
+        Path(out),
+        stream_index=track.stream_index or 0,
         tool_track_id=track.tool_track_id,
     )
     await emit(db, job.job_id, "extract", "start")
     proc = await asyncio.create_subprocess_exec(
-        binaries.resolve(binary) or binary, *args,
-        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        binaries.resolve(binary) or binary,
+        *args,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
     )
     _, stderr = await proc.communicate()
     if proc.returncode != 0:

@@ -64,6 +64,10 @@ async def reconcile_schedules() -> None:
 
 
 async def run() -> None:
+    from marquee.logging import setup_logging
+
+    setup_logging(level=settings.LOG_LEVEL, fmt=settings.LOG_FORMAT)
+
     await init_db()
     await reconcile_schedules()
     factory = _get_session_factory()
@@ -72,10 +76,24 @@ async def run() -> None:
             now = datetime.now(UTC)
             async with factory() as db:
                 schedules = (
-                    await db.execute(select(JobSchedule).where(JobSchedule.enabled.is_(True), JobSchedule.next_run_at <= now).with_for_update(skip_locked=True))
-                ).scalars().all()
+                    (
+                        await db.execute(
+                            select(JobSchedule)
+                            .where(JobSchedule.enabled.is_(True), JobSchedule.next_run_at <= now)
+                            .with_for_update(skip_locked=True)
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
                 for schedule in schedules:
-                    job = await job_manager.create(db, job_type=schedule.job_type, payload={"scheduled": True}, priority=schedule.priority, idempotency_key=f"{schedule.id}:{schedule.next_run_at.isoformat()}")
+                    job = await job_manager.create(
+                        db,
+                        job_type=schedule.job_type,
+                        payload={"scheduled": True},
+                        priority=schedule.priority,
+                        idempotency_key=f"{schedule.id}:{schedule.next_run_at.isoformat()}",
+                    )
                     schedule.last_job_id = job.id
                     schedule.last_run_at = now
                     schedule.next_run_at = now + timedelta(seconds=schedule.interval_seconds)

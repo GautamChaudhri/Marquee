@@ -10,6 +10,7 @@ with real ffmpeg/mkvtoolnix present (validated, not executed, in this sandbox).
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -112,7 +113,9 @@ async def build_plan(
                 )
         for tid in remove_ids:
             if by_id[tid].get("is_forced"):
-                warnings.append({"code": "forced_track_selected", "track_id": tid, "requires_override": True})
+                warnings.append(
+                    {"code": "forced_track_selected", "track_id": tid, "requires_override": True}
+                )
         after_tracks = [t for t in tracks if t["id"] not in remove_ids]
         if remove_ids and not after_tracks:
             warnings.append({"code": "all_subtitles_removed", "requires_override": True})
@@ -143,7 +146,9 @@ async def build_plan(
         after_tracks, audio, preferred_languages=subtitle_settings.SUBTITLE_PREFERRED_LANGUAGES
     )
 
-    free_bytes = shutil.disk_usage(resolved.path.parent).free if resolved.path.parent.exists() else None
+    free_bytes = (
+        shutil.disk_usage(resolved.path.parent).free if resolved.path.parent.exists() else None
+    )
     blocking_codes = {
         "container_not_writable",
         "mkv_track_ids_unavailable",
@@ -201,18 +206,18 @@ async def preflight(
 
 async def execute_job(db: AsyncSession, job, emit) -> dict:
     """Run a confirmed mutation job end-to-end. Requires ffmpeg/mkvtoolnix."""
-    import asyncio  # noqa: PLC0415
-
     request = json.loads(job.request_json) if job.request_json else {}
     operation = job.operation
     allow_break = request.get("allow_break", False)
-    backup_requested = request.get("backup", subtitle_settings.SUBTITLE_BACKUP_MODE == "keep_original")
+    backup_requested = request.get(
+        "backup", subtitle_settings.SUBTITLE_BACKUP_MODE == "keep_original"
+    )
 
     await emit(db, job.job_id, "preflight", "start")
     resolved = await preflight(
         db, job.media_file_id, saved_signature=job.input_signature, allow_break=allow_break
     )
-    source_probe = probe.probe_container(resolved.path)
+    source_probe = await asyncio.to_thread(probe.probe_container, resolved.path)
     if source_probe is None:
         raise PreflightError("probe_failed", "could not probe source before mutation")
 
@@ -227,9 +232,30 @@ async def execute_job(db: AsyncSession, job, emit) -> dict:
     if argv is not None:
         await emit(db, job.job_id, "remux", "start", message=f"Running {adapter.binary}")
         binary, args = argv
+        binary_path = binaries.resolve(binary) or binary
+        cmd_args = list(args)
+
+        # Prefix execution with nice and ionice if available to prioritize system and web server stability
+        nice_bin = shutil.which("nice")
+        ionice_bin = shutil.which("ionice")
+
+        executable = binary_path
+        if nice_bin or ionice_bin:
+            run_args = []
+            if nice_bin:
+                run_args += [nice_bin, "-n", "19"]
+            if ionice_bin:
+                run_args += [ionice_bin, "-c", "3"]
+            run_args.append(binary_path)
+            run_args.extend(cmd_args)
+            executable = run_args[0]
+            cmd_args = run_args[1:]
+
         proc = await asyncio.create_subprocess_exec(
-            binaries.resolve(binary) or binary, *args,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            executable,
+            *cmd_args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
         _, stderr = await proc.communicate()
         if proc.returncode != 0:
@@ -244,7 +270,12 @@ async def execute_job(db: AsyncSession, job, emit) -> dict:
             raise PreflightError("remux_failed", stderr_text)
 
         await emit(db, job.job_id, "validate", "start")
-        result = validation.validate_output(source_probe, out, expected_subtitle_delta=expected_delta)
+        result = await asyncio.to_thread(
+            validation.validate_output,
+            source_probe,
+            out,
+            expected_subtitle_delta=expected_delta,
+        )
         if not result.ok:
             out.unlink(missing_ok=True)
             raise PreflightError("validation_failed", "; ".join(result.problems))
@@ -257,7 +288,9 @@ async def execute_job(db: AsyncSession, job, emit) -> dict:
 
     external_result = []
     if external_removals:
-        external_result = await _remove_external_sidecars(db, job, resolved, external_removals, emit)
+        external_result = await _remove_external_sidecars(
+            db, job, resolved, external_removals, emit
+        )
 
     # Refresh MediaFile metadata + rescan inventory before completing.
     media_file = (
@@ -279,14 +312,20 @@ async def execute_job(db: AsyncSession, job, emit) -> dict:
 async def _build_argv(db, job, operation, request, source_probe, adapter, out, resolved):
     """Translate a job request into (binary, args) + the expected subtitle delta."""
     tracks = (
-        await db.execute(
-            select(SubtitleTrack).where(SubtitleTrack.inventory_id == request["inventory_id"])
+        (
+            await db.execute(
+                select(SubtitleTrack).where(SubtitleTrack.inventory_id == request["inventory_id"])
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     by_id = {t.id: t for t in tracks}
 
     # Heal missing tool_track_ids on the fly using fresh probe data if available
-    probe_subs_by_index = {s.stream_index: s for s in source_probe.subtitles if s.stream_index is not None}
+    probe_subs_by_index = {
+        s.stream_index: s for s in source_probe.subtitles if s.stream_index is not None
+    }
     for t in tracks:
         if t.source == "embedded" and t.tool_track_id is None:
             aligned = probe_subs_by_index.get(t.stream_index)
@@ -303,12 +342,18 @@ async def _build_argv(db, job, operation, request, source_probe, adapter, out, r
             remove_tool_track_ids=[t.tool_track_id for t in remove if t.tool_track_id is not None],
             remove_stream_indices=[t.stream_index for t in remove if t.stream_index is not None],
             keep_tool_track_ids=[
-                t.tool_track_id for t in tracks
-                if t.source == "embedded" and t.id not in {r.id for r in remove}
+                t.tool_track_id
+                for t in tracks
+                if t.source == "embedded"
+                and t.id not in {r.id for r in remove}
                 and t.tool_track_id is not None
             ],
         )
-        return (adapter.binary, adapter.build_remove(resolved.path, out, plan)), -len(remove), external_remove
+        return (
+            (adapter.binary, adapter.build_remove(resolved.path, out, plan)),
+            -len(remove),
+            external_remove,
+        )
 
     if operation == "subtitle_embed":
         sources = [
@@ -328,7 +373,9 @@ async def _build_argv(db, job, operation, request, source_probe, adapter, out, r
     if operation == "subtitle_metadata":
         edits = [
             MetadataEdit(
-                track_ref=e.get("tool_track_id") if e.get("tool_track_id") is not None else e.get("stream_index", 0),
+                track_ref=e.get("tool_track_id")
+                if e.get("tool_track_id") is not None
+                else e.get("stream_index", 0),
                 language_tag=e.get("language_tag"),
                 title=e.get("title"),
                 is_default=e.get("is_default"),
@@ -348,12 +395,16 @@ async def _make_backup(db: AsyncSession, job, resolved: ResolvedMediaFile) -> No
     ).scalar_one_or_none()
     source_key = row.source_key if row else f"file-{resolved.media_file_id}"
     backup_dir = _backup_dir(resolved.path, source_key) / job.job_id
-    backup_dir.mkdir(parents=True, exist_ok=True)
+
+    def do_backup():
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            os.link(resolved.path, backup_path)  # cheap same-fs hardlink
+        except OSError:
+            shutil.copy2(resolved.path, backup_path)
+
     backup_path = backup_dir / resolved.path.name
-    try:
-        os.link(resolved.path, backup_path)  # cheap same-fs hardlink
-    except OSError:
-        shutil.copy2(resolved.path, backup_path)
+    await asyncio.to_thread(do_backup)
     db.add(
         MediaBackup(
             id=uuid4().hex,
@@ -389,7 +440,9 @@ async def _remove_external_sidecars(
         for raw_path in paths:
             path = raw_path.resolve()
             if path.parent != parent:
-                raise PreflightError("external_path_escape", f"refusing external path outside media folder: {path}")
+                raise PreflightError(
+                    "external_path_escape", f"refusing external path outside media folder: {path}"
+                )
             if not path.is_file():
                 removed.append({"path": str(path), "status": "missing"})
                 continue
@@ -397,7 +450,14 @@ async def _remove_external_sidecars(
                 signature = compute_signature(path)
                 size = path.stat().st_size
                 path.unlink()
-                removed.append({"path": str(path), "status": "deleted", "size_bytes": size, "signature": signature})
+                removed.append(
+                    {
+                        "path": str(path),
+                        "status": "deleted",
+                        "size_bytes": size,
+                        "signature": signature,
+                    }
+                )
                 continue
 
             quarantine_dir = parent / ".marquee" / "quarantine" / job.job_id
@@ -439,7 +499,9 @@ def signature_of(path: Path) -> str:
 
 
 def plan_to_json(plan: dict) -> str:
-    return json.dumps(plan, default=lambda o: asdict(o) if hasattr(o, "__dataclass_fields__") else str(o))
+    return json.dumps(
+        plan, default=lambda o: asdict(o) if hasattr(o, "__dataclass_fields__") else str(o)
+    )
 
 
 def now_plus_ttl() -> datetime:

@@ -8,6 +8,7 @@ the live media.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
 import os
@@ -24,10 +25,16 @@ logger = logging.getLogger(__name__)
 
 async def _backup_for_job(db: AsyncSession, job_id: str) -> MediaBackup | None:
     return (
-        await db.execute(
-            select(MediaBackup).where(MediaBackup.job_id == job_id).order_by(MediaBackup.created_at.desc())
+        (
+            await db.execute(
+                select(MediaBackup)
+                .where(MediaBackup.job_id == job_id)
+                .order_by(MediaBackup.created_at.desc())
+            )
         )
-    ).scalars().first()
+        .scalars()
+        .first()
+    )
 
 
 async def restore_job_backup(db: AsyncSession, job_id: str) -> dict | None:
@@ -41,7 +48,7 @@ async def restore_job_backup(db: AsyncSession, job_id: str) -> dict | None:
         await db.commit()
         return {"restored": False, "reason": "backup missing on disk"}
     tmp = dest.with_name(f".{dest.name}.restore.tmp")
-    shutil.copy2(src, tmp)
+    await asyncio.to_thread(shutil.copy2, src, tmp)
     os.replace(tmp, dest)
     backup.status = "restored"
     await db.commit()
