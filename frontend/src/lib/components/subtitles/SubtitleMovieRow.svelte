@@ -3,19 +3,11 @@
 	import type { Tone } from '$lib/display';
 	import PosterThumb from '../PosterThumb.svelte';
 	import StatusDot from '../StatusDot.svelte';
-	import Icon from '../Icon.svelte';
-	import SubtitleMovieDetail from './SubtitleMovieDetail.svelte';
 
 	let {
-		movie,
-		expanded = false,
-		onToggle,
-		onMutationComplete
+		movie
 	}: {
 		movie: MovieListItem;
-		expanded: boolean;
-		onToggle: () => void;
-		onMutationComplete?: () => void;
 	} = $props();
 
 	// Parse subtitle coverage safely
@@ -61,8 +53,8 @@
 	}
 </script>
 
-<div class="row-container" class:expanded>
-	<button class="row-trigger" onclick={onToggle}>
+<div class="row-container">
+	<a class="row-trigger" href="/subtitles/{movie.id}">
 		<span class="thumb">
 			<PosterThumb
 				title={movie.title}
@@ -95,24 +87,10 @@
 			<span class="status-lbl">{statusLabel}</span>
 		</span>
 		<span class="container-badge">{movie.container || 'mkv'}</span>
-		<span class="chev" class:rotated={expanded}>
-			<Icon name="chevron" size={14} />
+		<span class="chev">
+			→
 		</span>
-	</button>
-
-	{#if expanded}
-		<div class="detail-wrapper">
-			{#if movie.media_file_id}
-				<SubtitleMovieDetail
-					mediaFileId={movie.media_file_id}
-					movieId={movie.id}
-					onMutationComplete={onMutationComplete}
-				/>
-			{:else}
-				<div class="error-detail">No media file ID found for this movie. Cannot inspect subtitle tracks.</div>
-			{/if}
-		</div>
-	{/if}
+	</a>
 </div>
 
 <style>
@@ -136,6 +114,7 @@
 		color: var(--text);
 		cursor: pointer;
 		transition: background-color 0.15s;
+		text-decoration: none;
 	}
 	.row-trigger:hover {
 		background: var(--panel2);
@@ -222,20 +201,8 @@
 		display: flex;
 		justify-content: flex-end;
 		color: var(--faint);
-		transition: transform 0.2s;
-	}
-	.chev.rotated {
-		transform: rotate(90deg);
-		color: var(--gold);
-	}
-	.detail-wrapper {
-		border-top: 1px solid var(--line);
-		background: var(--ink2);
-	}
-	.error-detail {
-		padding: 16px;
-		color: var(--bad);
-		font-size: 13px;
+		font-weight: bold;
+		font-size: 14px;
 	}
 	.muted {
 		color: var(--faint);

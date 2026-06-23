@@ -113,7 +113,7 @@
 	<div class="tab-content-wrapper">
 		{#if activeTab === 'inventory'}
 			{#if movies}
-				<SubtitleMovieList {movies} onMutationComplete={refreshMovies} />
+				<SubtitleMovieList {movies} />
 			{:else}
 				<div class="loading-state">Loading inventory...</div>
 			{/if}

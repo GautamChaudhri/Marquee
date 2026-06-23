@@ -233,8 +233,15 @@ async def execute_job(db: AsyncSession, job, emit) -> dict:
         )
         _, stderr = await proc.communicate()
         if proc.returncode != 0:
+            stderr_text = (stderr or b"").decode(errors="replace")[:500]
+            logger.error(
+                "%s remux failed (exit %d): %s",
+                adapter.binary,
+                proc.returncode,
+                stderr_text or "(no output — possible crash or signal)",
+            )
             out.unlink(missing_ok=True)
-            raise PreflightError("remux_failed", (stderr or b"").decode(errors="replace")[:300])
+            raise PreflightError("remux_failed", stderr_text)
 
         await emit(db, job.job_id, "validate", "start")
         result = validation.validate_output(source_probe, out, expected_subtitle_delta=expected_delta)
@@ -277,6 +284,14 @@ async def _build_argv(db, job, operation, request, source_probe, adapter, out, r
         )
     ).scalars().all()
     by_id = {t.id: t for t in tracks}
+
+    # Heal missing tool_track_ids on the fly using fresh probe data if available
+    probe_subs_by_index = {s.stream_index: s for s in source_probe.subtitles if s.stream_index is not None}
+    for t in tracks:
+        if t.source == "embedded" and t.tool_track_id is None:
+            aligned = probe_subs_by_index.get(t.stream_index)
+            if aligned and aligned.tool_track_id is not None:
+                t.tool_track_id = aligned.tool_track_id
 
     if operation == "subtitle_remove":
         selected = [by_id[t] for t in request.get("track_ids", []) if t in by_id]

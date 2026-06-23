@@ -39,7 +39,7 @@ class MatroskaAdapter:
             args += ["--subtitle-tracks", "!" + ",".join(str(i) for i in plan.remove_tool_track_ids)]
         else:
             args += ["--no-subtitles"]
-        args += ["--", binaries.safe_media_path(src)]
+        args += [binaries.safe_media_path(src)]
         return args
 
     def build_embed(self, src: Path, out: Path, sources: list[EmbedSource]) -> list[str]:
@@ -72,7 +72,7 @@ class MatroskaAdapter:
                 args += ["--forced-track", f"{ref}:{_yesno(edit.is_forced)}"]
             if edit.is_sdh is not None:
                 args += ["--hearing-impaired-flag", f"{ref}:{_yesno(edit.is_sdh)}"]
-        args += ["--", binaries.safe_media_path(src)]
+        args += [binaries.safe_media_path(src)]
         return args
 
     def build_extract(

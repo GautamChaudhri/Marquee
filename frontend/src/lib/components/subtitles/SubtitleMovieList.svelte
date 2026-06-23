@@ -3,11 +3,9 @@
 	import SubtitleMovieRow from './SubtitleMovieRow.svelte';
 
 	let {
-		movies,
-		onMutationComplete
+		movies
 	}: {
 		movies: MovieListItem[];
-		onMutationComplete?: () => void;
 	} = $props();
 
 	let searchQuery = $state('');
@@ -23,12 +21,6 @@
 			return matchesSearch;
 		})
 	);
-
-	let expandedMovieId = $state<number | null>(null);
-
-	function handleToggle(id: number) {
-		expandedMovieId = expandedMovieId === id ? null : id;
-	}
 </script>
 
 <div class="controls">
@@ -66,9 +58,6 @@
 		{#each filteredMovies as m (m.id)}
 			<SubtitleMovieRow
 				movie={m}
-				expanded={expandedMovieId === m.id}
-				onToggle={() => handleToggle(m.id)}
-				onMutationComplete={onMutationComplete}
 			/>
 		{/each}
 	{/if}

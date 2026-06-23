@@ -21,6 +21,7 @@ async def _run_media(job: Job) -> dict:
     from marquee.core.media_jobs.handlers import dispatch  # noqa: PLC0415
     from marquee.core.media_jobs.manager import media_job_manager  # noqa: PLC0415
 
+    media_job = None
     media_job_id = job.payload.get("media_job_id")
     if not media_job_id:
         raise RuntimeError("media bridge job has no media_job_id")
@@ -37,7 +38,13 @@ async def _run_media(job: Job) -> dict:
             # Preserve the legacy event/audit stream while mirroring it into
             # the generic stream consumed by the future job-management UI.
             await media_job_manager.emit(
-                db, media_job.job_id, stage, state, message=message, progress=progress, persist=persist
+                db,
+                media_job.job_id,
+                stage,
+                state,
+                message=message,
+                progress=progress,
+                persist=persist,
             )
             current = await db.get(Job, job.id)
             if current is not None:
@@ -45,19 +52,31 @@ async def _run_media(job: Job) -> dict:
                 if progress is not None:
                     current.progress = progress
                 await job_manager.emit(
-                    db, current, state=state, stage=stage, message=message, detail=progress, persist=persist
+                    db,
+                    current,
+                    state=state,
+                    stage=stage,
+                    message=message,
+                    detail=progress,
+                    persist=persist,
                 )
             await db.commit()
 
         try:
             result = await dispatch(db, media_job, emit)
-        except Exception:
+            media_job.status = "succeeded"
+            await db.commit()
+            return result
+        except Exception as exc:
+            import json as _json
+
             media_job.status = "failed"
+            media_job.error_json = _json.dumps({"error": str(exc), "type": type(exc).__name__})
             await db.commit()
             raise
-        media_job.status = "succeeded"
-        await db.commit()
-        return result
+        finally:
+            if media_job is not None:
+                media_job_manager.stream(media_job.job_id).finish()
 
 
 for _operation in (
