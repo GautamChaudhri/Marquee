@@ -34,6 +34,10 @@ class SubtitleSettings(BaseSettings):
     SUBTITLE_HARDLINK_POLICY: str = "block"
     # none | keep_original
     SUBTITLE_BACKUP_MODE: str = "none"
+    # Bandwidth cap for a backup/restore copy that can't be a hardlink/reflink
+    # (e.g. genuinely different filesystems) — protects DB/SSH I/O headroom on
+    # the same disks. ~80MB/s by default.
+    SUBTITLE_BACKUP_COPY_BWLIMIT_KBPS: int = 81920
     # quarantine | delete
     SUBTITLE_EXTERNAL_DELETE_MODE: str = "quarantine"
 

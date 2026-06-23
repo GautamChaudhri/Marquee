@@ -8,11 +8,9 @@ the live media.
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import logging
 import os
-import shutil
 from pathlib import Path
 
 from sqlalchemy import select
@@ -47,8 +45,13 @@ async def restore_job_backup(db: AsyncSession, job_id: str) -> dict | None:
         backup.status = "missing"
         await db.commit()
         return {"restored": False, "reason": "backup missing on disk"}
+    from marquee.core.subtitles.config import subtitle_settings  # noqa: PLC0415
+    from marquee.core.subtitles.mutation import link_or_copy  # noqa: PLC0415
+
     tmp = dest.with_name(f".{dest.name}.restore.tmp")
-    await asyncio.to_thread(shutil.copy2, src, tmp)
+    await link_or_copy(
+        src, tmp, bwlimit_kbps=subtitle_settings.SUBTITLE_BACKUP_COPY_BWLIMIT_KBPS
+    )
     os.replace(tmp, dest)
     backup.status = "restored"
     await db.commit()
