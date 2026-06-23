@@ -26,28 +26,34 @@ export interface JobProgressDetail {
 	[k: string]: unknown;
 }
 
-export interface TrackHandlers {
+export interface TrackHandlers<T = JobSnapshot> {
 	onProgress?: (p: { status: string; detail: JobProgressDetail }) => void;
-	onDone?: (job: JobSnapshot) => void;
+	onDone?: (job: T) => void;
 	onError?: (message: string) => void;
 }
 
-export interface TrackOptions {
+export interface TrackOptions<T = JobSnapshot> {
 	/** Durable event stream to subscribe to (from the enqueue response). */
 	eventsUrl?: string;
 	/** Snapshot poll cadence; default 1.5s like the letterbox batch. */
 	pollMs?: number;
+	/** Snapshot fetcher to use instead of the generic `/jobs/{id}`. Pass this
+	 *  for job systems with their own snapshot endpoint (e.g. `getMediaJob`
+	 *  for `/media-jobs/{id}`) so every progress bar can share this one
+	 *  poll-plus-SSE engine instead of hand-rolling its own. */
+	fetchJob?: (fetchFn: Fetch, jobId: string) => Promise<T>;
 }
 
 /** Start tracking; returns a stop() that clears the poll + closes the stream.
  *  Always call it on teardown (component unmount). */
-export function trackJob(
+export function trackJob<T extends { status: string; progress?: unknown } = JobSnapshot>(
 	fetchFn: Fetch,
 	jobId: string,
-	handlers: TrackHandlers,
-	opts: TrackOptions = {}
+	handlers: TrackHandlers<T>,
+	opts: TrackOptions<T> = {}
 ): () => void {
 	const pollMs = opts.pollMs ?? 1500;
+	const fetchJob = (opts.fetchJob ?? getJob) as (fetchFn: Fetch, jobId: string) => Promise<T>;
 	let finished = false;
 	let timer: ReturnType<typeof setInterval> | null = null;
 	let unsub: (() => void) | null = null;
@@ -61,7 +67,7 @@ export function trackJob(
 		unsub = null;
 	};
 
-	const finish = (job: JobSnapshot) => {
+	const finish = (job: T) => {
 		if (finished) return;
 		finished = true;
 		stop();
@@ -71,7 +77,7 @@ export function trackJob(
 	const poll = async () => {
 		if (finished) return;
 		try {
-			const job = await getJob(fetchFn, jobId);
+			const job = await fetchJob(fetchFn, jobId);
 			if (job.progress) {
 				handlers.onProgress?.({ status: job.status, detail: job.progress as JobProgressDetail });
 			}

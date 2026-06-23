@@ -18,6 +18,7 @@ export function getMediaJob(fetch: Fetch, jobId: string): Promise<MediaJob> {
 			result: null,
 			error: null,
 			progress: { stage: 'remux.start', percent: 45, message: 'Remuxing container to remove track' },
+			events_url: `/media-jobs/${jobId}/events`,
 			backup_id: 'backup-1',
 			plan: null
 		});
@@ -44,6 +45,7 @@ export function listMediaJobs(
 					result: { message: 'Successfully removed 1 track' },
 					error: null,
 					progress: { stage: 'done.complete', percent: 100, message: 'Done' },
+					events_url: '/media-jobs/job-1/events',
 					backup_id: 'backup-1',
 					plan: null
 				}
