@@ -14,6 +14,7 @@ from marquee.core.jobs import (
     builtin_handlers,  # noqa: F401 - registers handlers
     legacy_media,  # noqa: F401 - registers bridge handlers
 )
+from marquee.core.jobs.child_tracking import current_attempt_id
 from marquee.core.jobs.handlers import resolve
 from marquee.core.jobs.manager import job_manager
 from marquee.database import _get_session_factory, close_db, init_db
@@ -85,6 +86,7 @@ class DurableWorker:
                         await job_manager.heartbeat(heartbeat_db, heartbeat_attempt)
 
             heartbeat = asyncio.create_task(renew_lease())
+            attempt_token = current_attempt_id.set(current_attempt.id)
             try:
                 # Enforce maximum runtime to prevent hung jobs (PaddleOCR GPU hang,
                 # ffmpeg stall, infinite loop in handler). Default: 1 hour.
@@ -111,6 +113,7 @@ class DurableWorker:
             else:
                 await job_manager.finish(db, current, current_attempt, result=result or {})
             finally:
+                current_attempt_id.reset(attempt_token)
                 heartbeat.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await heartbeat

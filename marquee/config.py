@@ -106,6 +106,14 @@ class Settings(BaseSettings):
     JOB_MEDIA_READ_SLOTS: int = Field(default=2, ge=1, le=16)
     JOB_MEDIA_WRITE_SLOTS: int = Field(default=1, ge=1, le=8)
     JOB_NETWORK_SLOTS: int = Field(default=4, ge=1, le=32)
+    JOB_RETENTION_DAYS: int = Field(
+        default=30,
+        ge=1,
+        le=3650,
+        description="Days to retain terminal Job rows (and their attempts/"
+        "events/resource reservations, plus any bridged MediaJob row) before "
+        "the daily job_retention_purge job deletes them.",
+    )
     # Filesystem the dashboard disk gauge reports on. Defaults to the volume
     # holding DATA_DIR; point it at the media volume for a more useful number.
     METRICS_DISK_PATH: str | None = None

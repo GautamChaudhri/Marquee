@@ -23,6 +23,7 @@ from uuid import uuid4
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from marquee.core.jobs.child_tracking import clear_child_pid, record_child_pid
 from marquee.core.media_files import ResolvedMediaFile, compute_signature, resolve_media_file
 from marquee.core.subtitles import capabilities, coverage, probe, service, validation
 from marquee.core.subtitles.adapters import adapter_for
@@ -140,7 +141,11 @@ async def link_or_copy(src: Path, dst: Path, *, bwlimit_kbps: int) -> str:
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
         )
-        await proc.communicate()
+        await record_child_pid(proc.pid)
+        try:
+            await proc.communicate()
+        finally:
+            await clear_child_pid(proc.pid)
         if proc.returncode == 0:
             return "reflink"
         dst.unlink(missing_ok=True)
@@ -156,7 +161,11 @@ async def link_or_copy(src: Path, dst: Path, *, bwlimit_kbps: int) -> str:
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
         )
-        _, stderr = await proc.communicate()
+        await record_child_pid(proc.pid)
+        try:
+            _, stderr = await proc.communicate()
+        finally:
+            await clear_child_pid(proc.pid)
         if proc.returncode == 0:
             return "copy"
         dst.unlink(missing_ok=True)
@@ -171,7 +180,11 @@ async def link_or_copy(src: Path, dst: Path, *, bwlimit_kbps: int) -> str:
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
         )
-        _, stderr = await proc.communicate()
+        await record_child_pid(proc.pid)
+        try:
+            _, stderr = await proc.communicate()
+        finally:
+            await clear_child_pid(proc.pid)
         if proc.returncode == 0:
             return "copy"
         dst.unlink(missing_ok=True)
@@ -359,7 +372,11 @@ async def execute_job(db: AsyncSession, job, emit) -> dict:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        _, stderr = await proc.communicate()
+        await record_child_pid(proc.pid)
+        try:
+            _, stderr = await proc.communicate()
+        finally:
+            await clear_child_pid(proc.pid)
         if proc.returncode != 0:
             stderr_text = (stderr or b"").decode(errors="replace")[:500]
             logger.error(

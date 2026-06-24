@@ -125,7 +125,7 @@ Organized by the phase when attention is needed. Reference `design/03-migration-
 - [ ] **Additional poster sources.** Fanart.tv, TheTVDB, TVmaze. TMDB is sole source for initial pipeline.
 - [ ] **TMDB ID resolution for series.** Currently series use `tvdb_id` as primary key. When adding more poster sources, resolve `tmdb_id` via TMDB `/find` endpoint.
 - [ ] **Director info for OCR.** TMDB credits endpoint needed — currently director defaults to `None`.
-- [ ] **HDR/DV tracking.** Quality profile syncing, media info comparison, missing HDR/DV flagging.
+- [x] ~~**HDR/DV tracking (research + design).**~~ → `design/22-radarr-overlay.md` — full design for Radarr Overlay page: 5-group HDR tag upgrade, quality profile & custom format syncing, HDR target detection from profile formatItems, missing-HDR flagging, CF score visibility, DOVI fallback analysis.
 - [ ] **Backdrops, logos, banners.** Additional artwork types per `design/02-model-schema.md`.
 - [ ] **Health check hardening.** Add more probes (external API reachability, disk space, etc.).
 - [ ] **ChromaDB integration.** Replace `NumpyTasteStore` with `ChromaTasteStore` for incremental approval feature.

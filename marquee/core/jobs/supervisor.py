@@ -27,6 +27,13 @@ from marquee.config import settings
 
 logger = logging.getLogger(__name__)
 
+# If a child dies this many times in a row, each within 30s of starting, stop
+# respawning it — it's a persistent failure (broken migration, unreachable DB,
+# bad import), not a transient blip, and an endless respawn loop would just
+# burn CPU silently. Surfaced via WorkerSupervisor.status() / /api/system/status.
+MAX_CONSECUTIVE_FAST_FAILURES = 5
+FAST_FAILURE_WINDOW_SECONDS = 30
+
 
 def _set_pdeathsig() -> None:  # pragma: no cover - runs in the forked child
     """Ask the kernel to SIGTERM this child if the parent (API) dies abruptly.
@@ -47,12 +54,14 @@ def _set_pdeathsig() -> None:  # pragma: no cover - runs in the forked child
 
 
 class _Child:
-    __slots__ = ("name", "args", "proc")
+    __slots__ = ("name", "args", "proc", "fast_failures", "degraded")
 
     def __init__(self, name: str, args: list[str]) -> None:
         self.name = name
         self.args = args
         self.proc: asyncio.subprocess.Process | None = None
+        self.fast_failures = 0
+        self.degraded = False
 
 
 class WorkerSupervisor:
@@ -81,6 +90,26 @@ class WorkerSupervisor:
             "Embedded job runtime started: %s", ", ".join(c.name for c in self._children)
         )
 
+    def status(self) -> dict:
+        """Per-child health snapshot for /api/system/status.
+
+        ``degraded`` (aggregate) is True if any child has given up respawning
+        — an operator needs to look at logs and restart the API process.
+        """
+        children = [
+            {
+                "name": child.name,
+                "running": child.proc is not None and child.proc.returncode is None,
+                "degraded": child.degraded,
+                "fast_failures": child.fast_failures,
+            }
+            for child in self._children
+        ]
+        return {
+            "degraded": any(c["degraded"] for c in children),
+            "children": children,
+        }
+
     async def _spawn(self, child: _Child) -> None:
         child.proc = await asyncio.create_subprocess_exec(
             sys.executable,
@@ -94,7 +123,14 @@ class WorkerSupervisor:
         logger.info("Spawned %s (pid=%s)", child.name, child.proc.pid)
 
     async def _supervise(self, child: _Child) -> None:
-        """Respawn a child that dies unexpectedly, with capped backoff."""
+        """Respawn a child that dies unexpectedly, with capped backoff.
+
+        Gives up (sets ``degraded``) after MAX_CONSECUTIVE_FAST_FAILURES
+        in a row, each within FAST_FAILURE_WINDOW_SECONDS of starting — that
+        pattern means the child is broken (bad migration, unreachable DB,
+        broken import), not transiently flaky, so respawning forever would
+        just loop silently without ever recovering.
+        """
         backoff = 1.0
         while not self._shutting_down:
             proc = child.proc
@@ -104,8 +140,25 @@ class WorkerSupervisor:
             returncode = await proc.wait()
             if self._shutting_down:
                 return
-            if time.monotonic() - started > 30:
+            ran_seconds = time.monotonic() - started
+            if ran_seconds > FAST_FAILURE_WINDOW_SECONDS:
                 backoff = 1.0  # it ran a while; treat this as a fresh failure
+                child.fast_failures = 0
+            else:
+                child.fast_failures += 1
+            if child.fast_failures >= MAX_CONSECUTIVE_FAST_FAILURES:
+                child.degraded = True
+                logger.critical(
+                    "%s has crashed %d times in a row within %ds of starting "
+                    "(rc=%s) — giving up on respawning it. Check logs for the "
+                    "underlying cause (DB connectivity, migrations, import "
+                    "errors) and restart the API process once fixed.",
+                    child.name,
+                    child.fast_failures,
+                    FAST_FAILURE_WINDOW_SECONDS,
+                    returncode,
+                )
+                return
             logger.warning(
                 "%s exited (rc=%s); respawning in %.0fs", child.name, returncode, backoff
             )
@@ -117,6 +170,7 @@ class WorkerSupervisor:
                 await self._spawn(child)
             except Exception:  # noqa: BLE001
                 logger.exception("respawn of %s failed", child.name)
+                child.degraded = True
                 return
 
     def _signal_group(self, proc: asyncio.subprocess.Process, sig: int) -> None:

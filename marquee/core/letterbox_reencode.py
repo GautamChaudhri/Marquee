@@ -18,6 +18,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.config import settings
+from marquee.core.jobs.child_tracking import clear_child_pid, record_child_pid
 from marquee.core.media_files import (
     ResolvedMediaFile,
     compute_signature,
@@ -811,44 +812,48 @@ async def _run_encode_attempt(
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    assert proc.stdout is not None
-    # ffmpeg emits a progress packet several times per second. Publish every
-    # packet live, but only persist it (and poll cancellation) about once/sec.
-    last_persist = 0.0
-    progress_values: dict[str, str] = {}
-    while True:
-        line = await proc.stdout.readline()
-        if not line:
-            break
-        progress = _parse_progress(
-            line.decode(errors="replace"), source_info.duration_s, progress_values
-        )
-        if progress is None:
-            continue
-        now = time.monotonic()
-        if now - last_persist < 1.0:
-            await emit(db, job.job_id, "encode", "running", progress=progress, persist=False)
-            continue
-        last_persist = now
-        percent = progress.get("percent")
-        if percent is not None:
-            job.progress_done = int(percent)
-            job.progress_total = 100
-        job.stage = "encode"
-        await emit(db, job.job_id, "encode", "running", progress=progress, persist=True)
-        await db.refresh(job, ["cancel_requested"])
-        if job.cancel_requested:
-            proc.terminate()
-            await proc.wait()
+    await record_child_pid(proc.pid)
+    try:
+        assert proc.stdout is not None
+        # ffmpeg emits a progress packet several times per second. Publish every
+        # packet live, but only persist it (and poll cancellation) about once/sec.
+        last_persist = 0.0
+        progress_values: dict[str, str] = {}
+        while True:
+            line = await proc.stdout.readline()
+            if not line:
+                break
+            progress = _parse_progress(
+                line.decode(errors="replace"), source_info.duration_s, progress_values
+            )
+            if progress is None:
+                continue
+            now = time.monotonic()
+            if now - last_persist < 1.0:
+                await emit(db, job.job_id, "encode", "running", progress=progress, persist=False)
+                continue
+            last_persist = now
+            percent = progress.get("percent")
+            if percent is not None:
+                job.progress_done = int(percent)
+                job.progress_total = 100
+            job.stage = "encode"
+            await emit(db, job.job_id, "encode", "running", progress=progress, persist=True)
+            await db.refresh(job, ["cancel_requested"])
+            if job.cancel_requested:
+                proc.terminate()
+                await proc.wait()
+                output.unlink(missing_ok=True)
+                raise ReencodePlanError("cancelled", "letterbox re-encode cancelled")
+        stderr = await proc.stderr.read() if proc.stderr is not None else b""
+        await proc.wait()
+        diagnostic = stderr.decode(errors="replace")
+        if proc.returncode != 0:
             output.unlink(missing_ok=True)
-            raise ReencodePlanError("cancelled", "letterbox re-encode cancelled")
-    stderr = await proc.stderr.read() if proc.stderr is not None else b""
-    await proc.wait()
-    diagnostic = stderr.decode(errors="replace")
-    if proc.returncode != 0:
-        output.unlink(missing_ok=True)
-        return False, diagnostic
-    return True, diagnostic
+            return False, diagnostic
+        return True, diagnostic
+    finally:
+        await clear_child_pid(proc.pid)
 
 
 async def execute_job(db: AsyncSession, job: MediaJob, emit) -> dict:
@@ -1020,7 +1025,11 @@ async def _run_checked(
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.PIPE,
     )
-    _, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    await record_child_pid(proc.pid)
+    try:
+        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    finally:
+        await clear_child_pid(proc.pid)
     if proc.returncode != 0:
         message = (stderr or b"").decode(errors="replace")[:500]
         raise RuntimeError(message or f"{binary_name} exited {proc.returncode}")
@@ -1047,6 +1056,7 @@ async def _piped_ffmpeg_to_dovi(
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL,
     )
+    await record_child_pid(ffmpeg_proc.pid)
     assert ffmpeg_proc.stdout is not None
     dovi_proc = await asyncio.create_subprocess_exec(
         dovi_bin,
@@ -1055,30 +1065,35 @@ async def _piped_ffmpeg_to_dovi(
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.PIPE,
     )
+    await record_child_pid(dovi_proc.pid)
     assert dovi_proc.stdin is not None
 
-    # asyncio subprocess streams aren't real file descriptors, so FFmpeg's
-    # stdout can't be handed to dovi_tool's stdin= directly (that's what
-    # crashed: Popen calls .fileno() on it). Pump bytes through ourselves.
-    async def _pump() -> None:
-        try:
-            while True:
-                chunk = await ffmpeg_proc.stdout.read(1 << 20)  # type: ignore[union-attr]
-                if not chunk:
-                    break
-                try:
-                    dovi_proc.stdin.write(chunk)  # type: ignore[union-attr]
-                    await dovi_proc.stdin.drain()  # type: ignore[union-attr]
-                except (BrokenPipeError, ConnectionResetError):
-                    break
-        finally:
-            with contextlib.suppress(Exception):
-                dovi_proc.stdin.close()  # type: ignore[union-attr]
+    try:
+        # asyncio subprocess streams aren't real file descriptors, so FFmpeg's
+        # stdout can't be handed to dovi_tool's stdin= directly (that's what
+        # crashed: Popen calls .fileno() on it). Pump bytes through ourselves.
+        async def _pump() -> None:
+            try:
+                while True:
+                    chunk = await ffmpeg_proc.stdout.read(1 << 20)  # type: ignore[union-attr]
+                    if not chunk:
+                        break
+                    try:
+                        dovi_proc.stdin.write(chunk)  # type: ignore[union-attr]
+                        await dovi_proc.stdin.drain()  # type: ignore[union-attr]
+                    except (BrokenPipeError, ConnectionResetError):
+                        break
+            finally:
+                with contextlib.suppress(Exception):
+                    dovi_proc.stdin.close()  # type: ignore[union-attr]
 
-    _, (_, dovi_stderr) = await asyncio.wait_for(
-        asyncio.gather(_pump(), dovi_proc.communicate()), timeout=timeout
-    )
-    await ffmpeg_proc.wait()
+        _, (_, dovi_stderr) = await asyncio.wait_for(
+            asyncio.gather(_pump(), dovi_proc.communicate()), timeout=timeout
+        )
+        await ffmpeg_proc.wait()
+    finally:
+        await clear_child_pid(ffmpeg_proc.pid)
+        await clear_child_pid(dovi_proc.pid)
 
     if ffmpeg_proc.returncode != 0:
         raise RuntimeError(

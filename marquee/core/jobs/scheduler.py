@@ -15,7 +15,7 @@ from marquee.models import JobSchedule
 # Every recurring schedule Marquee knows about.  Whether each is actually
 # enabled is decided per-reconcile from the feature flags below, so toggling a
 # flag off durably disables the schedule instead of leaving it firing.
-ALL_SCHEDULE_IDS = ("poster-heal", "letterbox-heal", "backup")
+ALL_SCHEDULE_IDS = ("poster-heal", "letterbox-heal", "backup", "job-retention-purge")
 
 
 def _enabled_schedules() -> dict[str, tuple[str, int]]:
@@ -31,6 +31,8 @@ def _enabled_schedules() -> dict[str, tuple[str, int]]:
     # Scheduled backups are skipped in DEBUG (matches the prior lifespan gate).
     if settings.BACKUP_INTERVAL_HOURS > 0 and not settings.DEBUG:
         schedules["backup"] = ("backup_create", settings.BACKUP_INTERVAL_HOURS * 3600)
+    # Pure hygiene — no feature flag, always on (gated only by JOB_RETENTION_DAYS).
+    schedules["job-retention-purge"] = ("job_retention_purge", 86400)
     return schedules
 
 

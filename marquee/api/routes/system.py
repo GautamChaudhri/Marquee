@@ -6,7 +6,7 @@ import logging
 import os
 from typing import Annotated
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -51,11 +51,12 @@ def _ocr_status() -> dict:
 
 
 @router.get("/status")
-async def system_status(db: Annotated[AsyncSession, Depends(get_db)]):
+async def system_status(request: Request, db: Annotated[AsyncSession, Depends(get_db)]):
     queue_rows = (
         await db.execute(select(MediaJob.status, func.count()).group_by(MediaJob.status))
     ).all()
     job_rows = (await db.execute(select(Job.status, func.count()).group_by(Job.status))).all()
+    supervisor = getattr(request.app.state, "worker_supervisor", None)
     return {
         "cache": _cache_stats(),
         "heal": heal_state,
@@ -65,6 +66,7 @@ async def system_status(db: Annotated[AsyncSession, Depends(get_db)]):
         "media_jobs": dict(queue_rows),
         "jobs": dict(job_rows),
         "ocr": _ocr_status(),
+        "worker_supervisor": supervisor.status() if supervisor is not None else None,
     }
 
 
