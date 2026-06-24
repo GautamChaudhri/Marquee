@@ -166,6 +166,10 @@ class PipelineSettings(BaseSettings):
     # Upper bound on movies admitted to a single cross-movie batch run, so an
     # accidental "run the whole library" can't queue an unbounded job.
     PIPELINE_BATCH_MAX_MOVIES: int = 500
+    # Radarr Overlay policy: a DoVi file only satisfies a DoVi target when it
+    # also carries an HDR fallback layer (e.g. DV HDR10), not streaming-profile
+    # DV-only files.
+    HDR_OVERLAY_DOVI_REQUIRE_FALLBACK: bool = True
 
     # Fixed Phase-0 normalization ranges.
     NORM_KNN_MIN: float = 0.4

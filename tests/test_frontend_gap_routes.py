@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.config import settings
@@ -18,7 +19,11 @@ from marquee.models import (
     MediaJob,
     MediaJobEvent,
     Movie,
+    MovieCustomFormatScore,
     PipelineRun,
+    RadarrCustomFormat,
+    RadarrProfileFormatItem,
+    RadarrQualityProfile,
 )
 
 
@@ -88,12 +93,51 @@ async def test_review_queue_latest_unreviewed_run_per_movie(
 
 @pytest.mark.asyncio
 async def test_hdr_distribution_and_filter(db: AsyncSession, client: AsyncClient):
+    now = datetime.now(UTC)
+    db.add_all(
+        [
+            RadarrCustomFormat(
+                id=15,
+                name="Dolby Vision",
+                include_when_renaming=False,
+                specifications_json=[],
+                synced_at=now,
+            ),
+            RadarrCustomFormat(
+                id=20,
+                name="HDR10+",
+                include_when_renaming=False,
+                specifications_json=[],
+                synced_at=now,
+            ),
+            RadarrQualityProfile(
+                id=3,
+                name="UHD",
+                upgrade_allowed=True,
+                cutoff_format_score=100,
+                min_format_score=0,
+                synced_at=now,
+            ),
+        ]
+    )
+    await db.flush()
+    db.add_all(
+        [
+            RadarrProfileFormatItem(profile_id=3, custom_format_id=15, score=15),
+            RadarrProfileFormatItem(profile_id=3, custom_format_id=20, score=10),
+        ]
+    )
+    await db.flush()
     db.add_all(
         [
             Movie(
                 title="Dolby",
                 year=2020,
                 folder_path="/m/d",
+                movie_file_path="dolby.mkv",
+                quality_profile_id=3,
+                quality_cutoff_met=True,
+                hdr_type_raw="DV HDR10",
                 has_hdr=True,
                 has_dv=True,
             ),
@@ -101,6 +145,10 @@ async def test_hdr_distribution_and_filter(db: AsyncSession, client: AsyncClient
                 title="Hdr",
                 year=2021,
                 folder_path="/m/h",
+                movie_file_path="hdr.mkv",
+                quality_profile_id=3,
+                quality_cutoff_met=False,
+                hdr_type_raw="HDR10Plus",
                 has_hdr=True,
                 has_dv=False,
             ),
@@ -108,25 +156,53 @@ async def test_hdr_distribution_and_filter(db: AsyncSession, client: AsyncClient
                 title="Sdr",
                 year=2022,
                 folder_path="/m/s",
+                movie_file_path="sdr.mkv",
+                hdr_type_raw="SDR",
                 has_hdr=False,
                 has_dv=False,
             ),
             Movie(title="Unknown", year=2023, folder_path="/m/u"),
         ]
     )
+    await db.flush()
+    movies = (await db.execute(select(Movie))).scalars().all()
+    by_title = {movie.title: movie for movie in movies}
+    db.add_all(
+        [
+            MovieCustomFormatScore(
+                movie_id=by_title["Dolby"].id,
+                custom_format_id=15,
+                score=15,
+                synced_at=now,
+            ),
+            MovieCustomFormatScore(
+                movie_id=by_title["Hdr"].id,
+                custom_format_id=20,
+                score=10,
+                synced_at=now,
+            ),
+        ]
+    )
     await db.commit()
 
-    body = (await client.get("/api/hdr?hdr=hdr10")).json()
+    body = (await client.get("/api/hdr?hdr_tags=hdr10p")).json()
     assert body["distribution"] == {
-        "dovi": 1,
-        "hdr10p": 0,
+        "hdr": 0,
         "hdr10": 1,
+        "hdr10p": 1,
+        "dovi": 1,
+        "dovi_no_fallback": 0,
         "sdr": 1,
         "unknown": 1,
     }
     assert body["total"] == 1
     assert [item["title"] for item in body["items"]] == ["Hdr"]
-    assert body["items"][0]["hdr"] == "hdr10"
+    assert body["items"][0]["hdr"] == "hdr10p"
+    assert body["items"][0]["hdr_tags"] == ["hdr10p"]
+    assert body["items"][0]["profile_name"] == "UHD"
+    assert body["items"][0]["cf_score"] == 10
+    assert body["items"][0]["hdr_targets"] == ["hdr10p", "dovi"]
+    assert body["items"][0]["hdr_target_status"] == "below_target"
 
 
 @pytest.mark.asyncio
@@ -509,7 +585,3 @@ async def test_build_argv_heals_null_tool_track_id(db: AsyncSession):
 
     # Check track.tool_track_id is updated
     assert track.tool_track_id == 3
-
-
-
-

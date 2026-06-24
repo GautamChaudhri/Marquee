@@ -12,7 +12,7 @@
 		shows: { title: 'Shows', sub: 'Series library' },
 		pipeline: { title: 'Poster pipeline', sub: 'Run, review & tune selection' },
 		taste: { title: 'Key Art Engine', sub: 'Taste profile & learned ranker' },
-		hdr: { title: 'HDR & Dolby Vision', sub: 'Dynamic-range coverage' },
+		hdr: { title: 'Radarr Overlay', sub: 'HDR targets, scores & upgrade signals' },
 		subtitles: { title: 'Subtitles', sub: 'Inventory, policies & generation' },
 		letterbox: { title: 'Letterbox', sub: 'Black-bar detection & cropping' },
 		activity: { title: 'Activity', sub: 'Recent events' },

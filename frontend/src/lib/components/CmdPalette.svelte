@@ -13,7 +13,7 @@
 		{ label: 'Shows', href: '/shows', icon: 'tv' },
 		{ label: 'Review queue', href: '/pipeline', icon: 'pipeline' },
 		{ label: 'Taste map', href: '/taste', icon: 'taste' },
-		{ label: 'HDR coverage', href: '/hdr', icon: 'hdr' },
+		{ label: 'Radarr Overlay', href: '/hdr', icon: 'hdr' },
 		{ label: 'Subtitles', href: '/subtitles', icon: 'subtitles' },
 		{ label: 'Letterbox', href: '/letterbox', icon: 'letterbox' },
 		{ label: 'Activity', href: '/activity', icon: 'activity' },

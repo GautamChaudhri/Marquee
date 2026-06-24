@@ -17,12 +17,13 @@ from typing import Any
 from sqlalchemy import and_
 from sqlalchemy.sql.elements import ColumnElement
 
+from marquee.core.radarr_overlay import legacy_hdr_label, legacy_hdr_tags
 from marquee.models import Movie
 
 # Poster status values, in precedence order (first match wins).
 POSTER_STATUSES = ("missing", "approved", "review", "deployed")
 # HDR badge values (None = not yet probed).
-HDR_VALUES = ("dovi", "hdr10", "sdr")
+HDR_VALUES = ("dovi", "hdr10p", "hdr10", "hdr", "sdr")
 
 
 def resolution_label(width: int | None, height: int | None) -> str | None:
@@ -88,25 +89,47 @@ def hdr_label(has_hdr: bool | None, has_dv: bool | None) -> str | None:
     Booleans can't distinguish HDR10+ from HDR10 — that needs a raw
     dynamic-range string column (future follow-up).
     """
-    if has_dv:
-        return "dovi"
-    if has_hdr:
-        return "hdr10"
-    if has_hdr is False:
-        return "sdr"
-    return None
+    return legacy_hdr_label(None, has_hdr, has_dv)
+
+
+def movie_hdr_label(movie: Movie) -> str | None:
+    """Single badge label using raw HDR data when available."""
+    return legacy_hdr_label(movie.hdr_type_raw, movie.has_hdr, movie.has_dv)
+
+
+def movie_hdr_tags(movie: Movie) -> list[str]:
+    """Multi-tag HDR display list for movie surfaces."""
+    return legacy_hdr_tags(movie.hdr_type_raw, movie.has_hdr, movie.has_dv)
 
 
 def hdr_filter(value: str) -> ColumnElement[bool] | None:
     """SQL predicate matching :func:`hdr_label` for server-side filtering."""
     if value == "dovi":
         return Movie.has_dv.is_(True)
+    if value == "hdr10p":
+        return Movie.hdr_type_raw.ilike("%HDR10PLUS%") | Movie.hdr_type_raw.ilike("%HDR10+%")
     if value == "hdr10":
-        return and_(Movie.has_hdr.is_(True), Movie.has_dv.isnot(True))
+        return and_(
+            Movie.has_hdr.is_(True),
+            Movie.has_dv.isnot(True),
+            Movie.hdr_type_raw.isnot(None),
+            Movie.hdr_type_raw.not_ilike("%HDR10PLUS%"),
+            Movie.hdr_type_raw.not_ilike("%HDR10+%"),
+            Movie.hdr_type_raw.ilike("%HDR10%"),
+        )
+    if value == "hdr":
+        return and_(
+            Movie.has_hdr.is_(True),
+            Movie.has_dv.isnot(True),
+            Movie.hdr_type_raw.isnot(None),
+            Movie.hdr_type_raw.not_ilike("%HDR10%"),
+            Movie.hdr_type_raw.not_ilike("%HDR10+%"),
+            Movie.hdr_type_raw.not_ilike("%HDR10PLUS%"),
+        )
     if value == "sdr":
         return and_(Movie.has_hdr.is_(False), Movie.has_dv.isnot(True))
     if value == "unknown":
-        return Movie.has_hdr.is_(None)
+        return and_(Movie.has_hdr.is_(None), Movie.hdr_type_raw.is_(None))
     return None
 
 
@@ -140,7 +163,8 @@ def enrich_movie(
         "resolution": resolution_label(movie.video_width, movie.video_height),
         "poster_status": poster_status(movie),
         "poster_url": f"/api/library/movies/{movie.id}/poster" if movie.poster_path else None,
-        "hdr": hdr_label(movie.has_hdr, movie.has_dv),
+        "hdr": movie_hdr_label(movie),
+        "hdr_tags": movie_hdr_tags(movie),
         "letterbox_status": lb_status or "none",
         "subtitle_status": subtitle_status(coverage),
         "media_file_id": media_file.id if media_file else None,

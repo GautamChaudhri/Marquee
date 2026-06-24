@@ -10,7 +10,17 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.core.sync_service import SyncService, _resolve_poster_path
-from marquee.models import Episode, LetterboxState, Movie, Season, Series
+from marquee.models import (
+    Episode,
+    LetterboxState,
+    Movie,
+    MovieCustomFormatScore,
+    RadarrCustomFormat,
+    RadarrProfileFormatItem,
+    RadarrQualityProfile,
+    Season,
+    Series,
+)
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -191,6 +201,7 @@ async def test_sync_movies_populates_hdr_dv(db: AsyncSession):
     await svc.sync_all()
 
     movie = (await db.execute(select(Movie).where(Movie.radarr_id == 1))).scalar_one()
+    assert movie.hdr_type_raw == "DV HDR10"
     assert movie.has_dv is True
     assert movie.has_hdr is True
     assert movie.video_width == 3840
@@ -344,12 +355,166 @@ async def test_sync_movies_hdr_sdr_vs_unknown(db: AsyncSession):
     await svc.sync_all()
 
     sdr = (await db.execute(select(Movie).where(Movie.title == "SDR Film"))).scalar_one()
+    assert sdr.hdr_type_raw == "SDR"
     assert sdr.has_hdr is False
     assert sdr.has_dv is False
 
     unknown = (await db.execute(select(Movie).where(Movie.title == "Unknown Film"))).scalar_one()
+    assert unknown.hdr_type_raw is None
     assert unknown.has_hdr is None
     assert unknown.has_dv is None
+
+
+@pytest.mark.asyncio
+async def test_sync_movies_populates_hdr_variants_from_raw(db: AsyncSession):
+    radarr = AsyncMock()
+    radarr.get_movies.return_value = [
+        _radarr_movie(
+            title="Plus",
+            movieFile={"relativePath": "plus.mkv", "mediaInfo": {"videoDynamicRangeType": "HDR10Plus"}},
+        ),
+        _radarr_movie(
+            id=2,
+            title="Generic",
+            tmdbId=2,
+            movieFile={"relativePath": "generic.mkv", "mediaInfo": {"videoDynamicRangeType": "HLG"}},
+        ),
+        _radarr_movie(
+            id=3,
+            title="DoVi Only",
+            tmdbId=3,
+            movieFile={"relativePath": "dovi.mkv", "mediaInfo": {"videoDynamicRangeType": "DV"}},
+        ),
+    ]
+
+    svc = SyncService(db, radarr=radarr)
+    await svc.sync_all()
+
+    plus = (await db.execute(select(Movie).where(Movie.title == "Plus"))).scalar_one()
+    generic = (await db.execute(select(Movie).where(Movie.title == "Generic"))).scalar_one()
+    dovi_only = (await db.execute(select(Movie).where(Movie.title == "DoVi Only"))).scalar_one()
+
+    assert plus.hdr_type_raw == "HDR10Plus"
+    assert plus.has_hdr is True
+    assert plus.has_dv is False
+    assert generic.hdr_type_raw == "HLG"
+    assert generic.has_hdr is True
+    assert generic.has_dv is False
+    assert dovi_only.hdr_type_raw == "DV"
+    assert dovi_only.has_hdr is False
+    assert dovi_only.has_dv is True
+
+
+@pytest.mark.asyncio
+async def test_sync_movies_syncs_overlay_profile_and_cf_scores(db: AsyncSession):
+    radarr = AsyncMock()
+    radarr.get_movies.return_value = [
+        _radarr_movie(
+            movieFile={
+                "relativePath": "Dune (2021).mkv",
+                "qualityCutoffNotMet": False,
+                "customFormats": [
+                    {"id": 15, "name": "Dolby Vision", "score": 15},
+                    {"id": 20, "name": "HDR10+", "score": 10},
+                ],
+                "mediaInfo": {"videoDynamicRangeType": "DV HDR10"},
+            }
+        )
+    ]
+    radarr.get_custom_formats.return_value = [
+        {
+            "id": 15,
+            "name": "Dolby Vision",
+            "includeCustomFormatWhenRenaming": True,
+            "specifications": [
+                {"fields": [{"name": "value", "value": r"\b(DV|DOLBY[ .]?VISION)\b"}]}
+            ],
+        },
+        {
+            "id": 20,
+            "name": "HDR10+",
+            "includeCustomFormatWhenRenaming": False,
+            "specifications": [
+                {"fields": [{"name": "value", "value": r"\b(HDR10PLUS|HDR10\+)\b"}]}
+            ],
+        },
+    ]
+    radarr.get_quality_profiles.return_value = [
+        {
+            "id": 3,
+            "name": "UHD",
+            "upgradeAllowed": True,
+            "cutoffFormatScore": 100,
+            "minFormatScore": 0,
+            "formatItems": [
+                {"format": 15, "name": "Dolby Vision", "score": 15},
+                {"format": 20, "name": "HDR10+", "score": 10},
+            ],
+        }
+    ]
+
+    svc = SyncService(db, radarr=radarr)
+    await svc.sync_all()
+
+    movie = (await db.execute(select(Movie).where(Movie.radarr_id == 1))).scalar_one()
+    custom_formats = (await db.execute(select(RadarrCustomFormat))).scalars().all()
+    profiles = (await db.execute(select(RadarrQualityProfile))).scalars().all()
+    profile_items = (await db.execute(select(RadarrProfileFormatItem))).scalars().all()
+    movie_scores = (await db.execute(select(MovieCustomFormatScore))).scalars().all()
+
+    assert movie.quality_cutoff_met is True
+    assert {row.name for row in custom_formats} == {"Dolby Vision", "HDR10+"}
+    assert [row.name for row in profiles] == ["UHD"]
+    assert {(row.profile_id, row.custom_format_id, row.score) for row in profile_items} == {
+        (3, 15, 15),
+        (3, 20, 10),
+    }
+    assert {(row.movie_id, row.custom_format_id, row.score) for row in movie_scores} == {
+        (movie.id, 15, 15),
+        (movie.id, 20, 10),
+    }
+
+
+@pytest.mark.asyncio
+async def test_sync_movies_replaces_stale_movie_cf_scores(db: AsyncSession):
+    radarr = AsyncMock()
+    radarr.get_movies.return_value = [
+        _radarr_movie(
+            movieFile={
+                "relativePath": "first.mkv",
+                "customFormats": [{"id": 15, "name": "Dolby Vision", "score": 15}],
+                "mediaInfo": {"videoDynamicRangeType": "DV HDR10"},
+            }
+        )
+    ]
+    radarr.get_custom_formats.return_value = [
+        {"id": 15, "name": "Dolby Vision", "includeCustomFormatWhenRenaming": False, "specifications": []},
+        {"id": 20, "name": "HDR10+", "includeCustomFormatWhenRenaming": False, "specifications": []},
+    ]
+    radarr.get_quality_profiles.return_value = [
+        {"id": 3, "name": "UHD", "formatItems": []}
+    ]
+
+    svc = SyncService(db, radarr=radarr)
+    await svc.sync_all()
+
+    radarr.get_movies.return_value = [
+        _radarr_movie(
+            movieFile={
+                "relativePath": "second.mkv",
+                "customFormats": [{"id": 20, "name": "HDR10+", "score": 10}],
+                "mediaInfo": {"videoDynamicRangeType": "HDR10Plus"},
+            }
+        )
+    ]
+    await svc.sync_all()
+
+    movie = (await db.execute(select(Movie).where(Movie.radarr_id == 1))).scalar_one()
+    rows = (await db.execute(select(MovieCustomFormatScore))).scalars().all()
+    assert movie.hdr_type_raw == "HDR10Plus"
+    assert {(row.movie_id, row.custom_format_id, row.score) for row in rows} == {
+        (movie.id, 20, 10)
+    }
 
 
 @pytest.mark.asyncio

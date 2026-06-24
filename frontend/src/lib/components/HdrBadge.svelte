@@ -1,21 +1,39 @@
 <script lang="ts">
 	import type { HdrKind } from '$lib/api/types';
-	let { kind }: { kind: HdrKind | null } = $props();
+	let {
+		kind = null,
+		kinds = []
+	}: { kind?: HdrKind | null; kinds?: HdrKind[] } = $props();
 
 	const META: Record<HdrKind, { label: string; v: string }> = {
+		hdr: { label: 'HDR', v: '--good' },
 		dovi: { label: 'DoVi', v: '--dovi' },
+		dovi_no_fallback: { label: 'DoVi-', v: '--low' },
 		hdr10p: { label: 'HDR10+', v: '--warn' },
 		hdr10: { label: 'HDR10', v: '--info' },
 		sdr: { label: 'SDR', v: '--faint' }
 	};
-	const m = $derived(kind ? META[kind] : null);
+	const active = $derived(
+		kinds.length ? kinds.filter((value) => value in META) : kind ? [kind] : []
+	);
 </script>
 
-{#if m}
-	<span class="hdr" style="--c:var({m.v})">{m.label}</span>
+{#if active.length}
+	<span class="row">
+		{#each active as value (value)}
+			{@const m = META[value]}
+			<span class="hdr" style="--c:var({m.v})">{m.label}</span>
+		{/each}
+	</span>
 {/if}
 
 <style>
+	.row {
+		display: inline-flex;
+		flex-wrap: wrap;
+		gap: 4px;
+		align-items: center;
+	}
 	.hdr {
 		font-family: var(--font-mono);
 		font-size: 10px;

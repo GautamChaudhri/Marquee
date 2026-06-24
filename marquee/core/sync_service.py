@@ -18,7 +18,7 @@ from datetime import UTC, datetime
 from functools import lru_cache
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.config import settings
@@ -27,11 +27,16 @@ from marquee.core.arr_clients.sonarr_client import SonarrClient
 from marquee.core.letterbox_prefilter import refresh_letterbox_prefilter_for_movie
 from marquee.core.path_utils import safe_translate_and_validate
 from marquee.core.poster_sources.tmdb import TMDBClient
+from marquee.core.radarr_overlay import classify_hdr_flags
 from marquee.models import (
     Episode,
     EpisodeMediaFile,
     MediaFile,
     Movie,
+    MovieCustomFormatScore,
+    RadarrCustomFormat,
+    RadarrProfileFormatItem,
+    RadarrQualityProfile,
     Season,
     Series,
 )
@@ -131,8 +136,26 @@ class SyncService:
     async def _sync_movies(self) -> SyncResult:
         """Sync all movies from Radarr into the ``movies`` table."""
         result = SyncResult()
+        now = datetime.now(UTC)
 
         raw_movies = await self.radarr.get_movies()
+        custom_formats = []
+        quality_profiles = []
+        try:
+            custom_formats = await self.radarr.get_custom_formats()
+        except Exception:
+            logger.warning("Failed to sync Radarr custom formats", exc_info=True)
+        try:
+            quality_profiles = await self.radarr.get_quality_profiles()
+        except Exception:
+            logger.warning("Failed to sync Radarr quality profiles", exc_info=True)
+        if not isinstance(custom_formats, list):
+            custom_formats = []
+        if not isinstance(quality_profiles, list):
+            quality_profiles = []
+        custom_format_names = await _sync_radarr_overlay_reference_data(
+            self.db, custom_formats, quality_profiles, now
+        )
 
         # Index existing rows by radarr_id → O(1) lookups
         existing = {
@@ -182,19 +205,32 @@ class SyncService:
                     movie.container = container
 
                 # ── HDR / Dolby Vision (frontend G2 badges) ───────────
-                has_hdr, has_dv = _extract_hdr(movie_file)
-                if has_hdr is not None:
-                    movie.has_hdr = has_hdr
-                    movie.has_dv = has_dv
+                hdr_type_raw, has_hdr, has_dv = _extract_hdr(movie_file)
+                movie.hdr_type_raw = hdr_type_raw
+                movie.has_hdr = has_hdr
+                movie.has_dv = has_dv
 
                 # ── Quality ───────────────────────────────────────────
                 movie.quality_profile_id = data.get("qualityProfileId")
+                quality_cutoff_not_met = movie_file.get("qualityCutoffNotMet")
+                movie.quality_cutoff_met = (
+                    None
+                    if quality_cutoff_not_met is None
+                    else not bool(quality_cutoff_not_met)
+                )
 
                 # ── Poster existence ──────────────────────────────────
                 await self._check_existing_poster(movie)
 
                 # ── Physical media-file row (design 03 §19.3) ─────────
                 await self.db.flush()  # assign movie.id for new rows
+                await _replace_movie_custom_format_scores(
+                    self.db,
+                    movie.id,
+                    movie_file.get("customFormats") or [],
+                    custom_format_names,
+                    now,
+                )
                 await _upsert_movie_media_file(self.db, movie, movie_file)
                 await refresh_letterbox_prefilter_for_movie(self.db, movie)
 
@@ -474,8 +510,11 @@ async def _upsert_movie_media_file(db: AsyncSession, movie: Movie, movie_file: d
             )
         )
     ).scalars().all()
+    by_source_key = (
+        await db.execute(select(MediaFile).where(MediaFile.source_key == source_key))
+    ).scalar_one_or_none()
 
-    current = next((m for m in existing if m.path == path), None)
+    current = by_source_key or next((m for m in existing if m.path == path), None)
     for other in existing:
         if other is not current:
             other.is_active = False  # replaced/old file → keep for history
@@ -581,31 +620,155 @@ def _extract_media_info(movie_file: dict) -> tuple[int | None, int | None, str |
     return width, height, container
 
 
-def _extract_hdr(movie_file: dict) -> tuple[bool | None, bool | None]:
-    """Derive ``(has_hdr, has_dv)`` from a Radarr ``movieFile.mediaInfo``.
+def _extract_hdr(movie_file: dict) -> tuple[str | None, bool | None, bool | None]:
+    """Derive raw HDR truth plus legacy ``(has_hdr, has_dv)`` flags.
 
     Radarr exposes ``videoDynamicRangeType`` (e.g. ``"DV"``, ``"HDR10"``,
     ``"HDR10Plus"``, ``"HLG"``, ``"PQ"``, ``"DV HDR10"``) and/or
-    ``videoDynamicRange`` (``"HDR"``/``"SDR"``/``""``). Returns ``(None, None)``
-    when nothing is reported, leaving the columns NULL ("not checked") rather
-    than asserting SDR. Booleans can't distinguish HDR10+ from HDR10.
+    ``videoDynamicRange`` (``"HDR"``/``"SDR"``/``""``). The raw value prefers
+    ``videoDynamicRangeType`` and falls back to ``videoDynamicRange``.
     """
     media_info = movie_file.get("mediaInfo") or {}
-    range_type = (media_info.get("videoDynamicRangeType") or "").upper()
-    range_str = (media_info.get("videoDynamicRange") or "").upper()
-
-    if not range_type and not range_str:
-        return None, None
-
-    has_dv = "DV" in range_type or "DOLBY" in range_type
-    has_hdr = (
-        any(tag in range_type for tag in ("HDR10", "HLG", "PQ", "HDR"))
-        or range_str == "HDR"
+    hdr_type_raw = (
+        (media_info.get("videoDynamicRangeType") or "").strip()
+        or (media_info.get("videoDynamicRange") or "").strip()
+        or None
     )
-    if not has_dv and not has_hdr:
-        # Explicitly reported and neither HDR nor DV → SDR.
-        return False, False
-    return has_hdr, has_dv
+    has_hdr, has_dv = classify_hdr_flags(hdr_type_raw)
+    return hdr_type_raw, has_hdr, has_dv
+
+
+async def _sync_radarr_overlay_reference_data(
+    db: AsyncSession,
+    custom_formats: list[dict],
+    quality_profiles: list[dict],
+    synced_at: datetime,
+) -> dict[int, str]:
+    """Upsert Radarr custom-format and quality-profile metadata."""
+    existing_custom_formats = {
+        row.id: row
+        for row in (await db.execute(select(RadarrCustomFormat))).scalars()
+    }
+    existing_profiles = {
+        row.id: row
+        for row in (await db.execute(select(RadarrQualityProfile))).scalars()
+    }
+
+    custom_format_names: dict[int, str] = {}
+    for payload in custom_formats:
+        cf_id = payload.get("id")
+        if cf_id is None:
+            continue
+        row = existing_custom_formats.get(cf_id)
+        if row is None:
+            row = RadarrCustomFormat(id=cf_id)
+            db.add(row)
+        row.name = payload.get("name") or f"Custom Format {cf_id}"
+        row.include_when_renaming = bool(payload.get("includeCustomFormatWhenRenaming"))
+        row.specifications_json = payload.get("specifications")
+        row.synced_at = synced_at
+        custom_format_names[cf_id] = row.name
+
+    for payload in quality_profiles:
+        profile_id = payload.get("id")
+        if profile_id is None:
+            continue
+        row = existing_profiles.get(profile_id)
+        if row is None:
+            row = RadarrQualityProfile(id=profile_id)
+            db.add(row)
+        row.name = payload.get("name") or f"Profile {profile_id}"
+        row.upgrade_allowed = payload.get("upgradeAllowed")
+        row.cutoff_format_score = payload.get("cutoffFormatScore")
+        row.min_format_score = payload.get("minFormatScore")
+        row.synced_at = synced_at
+
+        for item in payload.get("formatItems") or []:
+            cf_id = item.get("format")
+            if cf_id is None or cf_id in custom_format_names:
+                continue
+            placeholder = existing_custom_formats.get(cf_id)
+            if placeholder is None:
+                placeholder = RadarrCustomFormat(id=cf_id)
+                db.add(placeholder)
+                existing_custom_formats[cf_id] = placeholder
+            placeholder.name = item.get("name") or f"Custom Format {cf_id}"
+            placeholder.include_when_renaming = False
+            placeholder.specifications_json = None
+            placeholder.synced_at = synced_at
+            custom_format_names[cf_id] = placeholder.name
+
+    custom_format_ids = {payload.get("id") for payload in custom_formats if payload.get("id") is not None}
+    profile_ids = {payload.get("id") for payload in quality_profiles if payload.get("id") is not None}
+
+    if custom_format_ids:
+        await db.execute(
+            delete(RadarrCustomFormat).where(
+                RadarrCustomFormat.id.not_in(custom_format_ids)
+            )
+        )
+    if profile_ids:
+        await db.execute(
+            delete(RadarrQualityProfile).where(
+                RadarrQualityProfile.id.not_in(profile_ids)
+            )
+        )
+
+    await db.execute(delete(RadarrProfileFormatItem))
+    for payload in quality_profiles:
+        profile_id = payload.get("id")
+        if profile_id is None:
+            continue
+        for item in payload.get("formatItems") or []:
+            cf_id = item.get("format")
+            score = item.get("score")
+            if cf_id is None or score is None:
+                continue
+            db.add(
+                RadarrProfileFormatItem(
+                    profile_id=profile_id,
+                    custom_format_id=cf_id,
+                    score=int(score),
+                )
+            )
+
+    return custom_format_names
+
+
+async def _replace_movie_custom_format_scores(
+    db: AsyncSession,
+    movie_id: int,
+    custom_formats: list[dict],
+    custom_format_names: dict[int, str],
+    synced_at: datetime,
+) -> None:
+    """Replace the current-file custom-format scores for one movie."""
+    await db.execute(delete(MovieCustomFormatScore).where(MovieCustomFormatScore.movie_id == movie_id))
+
+    for payload in custom_formats:
+        cf_id = payload.get("id")
+        score = payload.get("score")
+        if cf_id is None or score is None:
+            continue
+        if cf_id not in custom_format_names:
+            db.add(
+                RadarrCustomFormat(
+                    id=cf_id,
+                    name=payload.get("name") or f"Custom Format {cf_id}",
+                    include_when_renaming=False,
+                    specifications_json=None,
+                    synced_at=synced_at,
+                )
+            )
+            custom_format_names[cf_id] = payload.get("name") or f"Custom Format {cf_id}"
+        db.add(
+            MovieCustomFormatScore(
+                movie_id=movie_id,
+                custom_format_id=cf_id,
+                score=int(score),
+                synced_at=synced_at,
+            )
+        )
 
 
 @lru_cache(maxsize=1000)

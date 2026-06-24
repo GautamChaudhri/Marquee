@@ -9,9 +9,9 @@ export interface Paginated<T> {
 }
 
 export type PosterStatus = 'missing' | 'review' | 'approved' | 'deployed';
-/** Backend currently emits dovi | hdr10 | sdr | null; hdr10p reserved for the badge. */
-export type HdrKind = 'dovi' | 'hdr10' | 'hdr10p' | 'sdr';
+export type HdrKind = 'hdr' | 'hdr10' | 'hdr10p' | 'dovi' | 'dovi_no_fallback' | 'sdr';
 export type SubtitleStatus = 'ok' | 'gap';
+export type HdrTargetStatus = 'met_target' | 'below_target' | 'no_hdr_target' | 'no_file';
 
 export interface MovieListItem {
 	id: number;
@@ -26,6 +26,7 @@ export interface MovieListItem {
 	poster_status: PosterStatus;
 	poster_url: string | null;
 	hdr: HdrKind | null;
+	hdr_tags: HdrKind[];
 	letterbox_status: string;
 	subtitle_status: SubtitleStatus | null;
 	media_file_id: number | null;
@@ -45,6 +46,47 @@ export interface MovieQuery {
 	letterbox_status?: string;
 	include_unavailable?: boolean;
 	sort?: 'title' | 'year' | 'added';
+}
+
+export interface RadarrOverlayProfile {
+	id: number;
+	name: string;
+	cutoff_format_score: number | null;
+}
+
+export interface RadarrOverlayItem extends MovieListItem {
+	dovi_no_fallback: boolean;
+	profile_id: number | null;
+	profile_name: string | null;
+	cf_score: number;
+	cf_cutoff: number | null;
+	cutoff_met: boolean | null;
+	hdr_targets: HdrKind[];
+	hdr_target_status: HdrTargetStatus;
+}
+
+export interface RadarrOverlayQuery {
+	page?: number;
+	page_size?: number;
+	hdr?: HdrKind | 'unknown';
+	hdr_tags?: string[];
+	cf_score_min?: number;
+	cf_score_max?: number;
+	profile_id?: number;
+	hdr_target_status?: HdrTargetStatus;
+	dovi_no_fallback?: boolean;
+	sort_by?: 'title' | 'year' | 'cf_score' | 'hdr_target_status';
+	sort_dir?: 'asc' | 'desc';
+}
+
+export interface RadarrOverlayResponse extends Paginated<RadarrOverlayItem> {
+	distribution: Record<
+		'hdr' | 'hdr10' | 'hdr10p' | 'dovi' | 'dovi_no_fallback' | 'sdr' | 'unknown',
+		number
+	>;
+	distribution_order: string[];
+	profiles: RadarrOverlayProfile[];
+	applied_filters: Record<string, unknown>;
 }
 
 export interface PipelineRunRef {
