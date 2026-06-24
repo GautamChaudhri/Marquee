@@ -43,7 +43,7 @@
 				<StatusDot tone={posterStatusMeta[m.poster_status].tone} />
 				<span class="lbl">{posterStatusMeta[m.poster_status].label}</span>
 			</span>
-			<span><HdrBadge kind={m.hdr} /></span>
+			<span><HdrBadge kinds={m.hdr_tags} kind={m.hdr} /></span>
 			<span class="subs" class:gap={m.subtitle_status === 'gap'}>{m.subtitle_status ?? '—'}</span>
 			<span class="cell">
 				{#if letterboxMeta(m.letterbox_status)}

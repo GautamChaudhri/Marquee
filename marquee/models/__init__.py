@@ -19,6 +19,12 @@ from marquee.models.media_file import EpisodeMediaFile, MediaFile
 from marquee.models.media_job import MediaBatch, MediaJob, MediaJobEvent
 from marquee.models.movie import Movie
 from marquee.models.pipeline_run import PipelineRun
+from marquee.models.radarr_overlay import (
+    MovieCustomFormatScore,
+    RadarrCustomFormat,
+    RadarrProfileFormatItem,
+    RadarrQualityProfile,
+)
 from marquee.models.season import Season
 from marquee.models.series import Series
 from marquee.models.subtitle_inventory import SubtitleInventory, SubtitleTrack
@@ -56,6 +62,10 @@ __all__ = [
     "SubtitlePolicyBinding",
     "Movie",
     "PipelineRun",
+    "RadarrCustomFormat",
+    "RadarrQualityProfile",
+    "RadarrProfileFormatItem",
+    "MovieCustomFormatScore",
     "Season",
     "Series",
     "Episode",

@@ -254,7 +254,7 @@
 				{#if movie.hdr}
 					<div class="chip">
 						<span class="chip-label">HDR</span>
-						<HdrBadge kind={movie.hdr} />
+						<HdrBadge kinds={movie.hdr_tags} kind={movie.hdr} />
 					</div>
 				{/if}
 				{#if movie.container}
@@ -405,7 +405,7 @@
 						</div>
 						<div class="info-card">
 							<div class="ic-label">Dynamic range</div>
-							<div class="ic-val"><HdrBadge kind={movie.hdr} /></div>
+							<div class="ic-val"><HdrBadge kinds={movie.hdr_tags} kind={movie.hdr} /></div>
 							{#if !movie.hdr}<div class="ic-sub muted">Not detected</div>{/if}
 						</div>
 						<div class="info-card">

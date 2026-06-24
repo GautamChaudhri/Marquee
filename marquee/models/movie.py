@@ -13,7 +13,7 @@ class Movie(Base, TimestampMixin, ArtworkMixin):
     """A movie identified by Radarr or standalone filesystem scan.
 
     Poster retrieval uses ``tmdb_id`` as the universal lookup key.
-    HDR/DV tracking uses ``has_hdr`` / ``has_dv`` (NULL = not yet checked).
+    HDR/DV tracking uses ``hdr_type_raw`` + ``has_hdr`` / ``has_dv``.
     """
 
     __tablename__ = "movies"
@@ -55,6 +55,19 @@ class Movie(Base, TimestampMixin, ArtworkMixin):
 
     # ── Quality / HDR-DV (Phase N) ────────────────────────────────────
     quality_profile_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    quality_cutoff_met: Mapped[bool | None] = mapped_column(
+        Boolean,
+        nullable=True,
+        comment="NULL=unknown, True=current file meets Radarr cutoff, False=below cutoff",
+    )
+    hdr_type_raw: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+        comment=(
+            "Raw Radarr dynamic-range descriptor; prefers videoDynamicRangeType and "
+            "falls back to videoDynamicRange"
+        ),
+    )
 
     has_hdr: Mapped[bool | None] = mapped_column(
         Boolean, nullable=True, comment="NULL=not checked, True=has HDR, False=missing HDR"

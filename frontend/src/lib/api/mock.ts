@@ -7,6 +7,8 @@ import type {
 	Paginated,
 	PosterStatus,
 	HdrKind,
+	RadarrOverlayQuery,
+	RadarrOverlayResponse,
 	SystemMetrics,
 	SubtitleInventory,
 	SubtitleGenerator,
@@ -30,7 +32,7 @@ const TITLES = [
 	'Parasite'
 ];
 const POSTER: PosterStatus[] = ['deployed', 'approved', 'review', 'missing'];
-const HDR: (HdrKind | null)[] = ['dovi', 'hdr10', 'sdr', null];
+const HDR: (HdrKind | null)[] = ['dovi', 'hdr10p', 'hdr10', 'hdr', 'sdr', null];
 const RES = ['4K', '1080p', '720p', null];
 
 function makeItem(i: number): MovieListItem {
@@ -47,6 +49,7 @@ function makeItem(i: number): MovieListItem {
 		poster_status: POSTER[i % POSTER.length],
 		poster_url: null,
 		hdr: HDR[i % HDR.length],
+		hdr_tags: HDR[i % HDR.length] ? [HDR[i % HDR.length] as HdrKind] : [],
 		letterbox_status: i % 3 === 0 ? 'candidate' : 'none',
 		subtitle_status: i % 4 === 0 ? 'gap' : 'ok',
 		media_file_id: i + 1,
@@ -70,6 +73,68 @@ export function mockMovies(params: MovieQuery = {}): Paginated<MovieListItem> {
 export function mockMovieDetail(id: number): MovieDetail {
 	const base = ALL.find((m) => m.id === id) ?? makeItem(0);
 	return { ...base, media_file_path: `/movies/${base.title}/${base.title}.mkv` };
+}
+
+export function mockRadarrOverlay(params: RadarrOverlayQuery = {}): RadarrOverlayResponse {
+	let items = ALL.map((item, index) => ({
+		...item,
+		hdr_tags:
+			item.hdr === 'dovi'
+				? ['dovi', index % 2 ? 'dovi_no_fallback' : 'hdr10']
+				: item.hdr
+					? [item.hdr]
+					: [],
+		dovi_no_fallback: index % 2 === 1 && item.hdr === 'dovi',
+		profile_id: index % 3 === 0 ? 3 : 4,
+		profile_name: index % 3 === 0 ? 'UHD Cinema' : 'Web 4K',
+		cf_score: 40 - index * 2,
+		cf_cutoff: index % 3 === 0 ? 100 : 60,
+		cutoff_met: index % 4 === 0 ? true : index % 4 === 1 ? false : null,
+		hdr_targets: (index % 3 === 0 ? ['dovi', 'hdr10'] : ['hdr10p']) as HdrKind[],
+		hdr_target_status: (index % 4 === 0
+			? 'met_target'
+			: index % 4 === 1
+				? 'below_target'
+				: index % 4 === 2
+					? 'no_hdr_target'
+					: 'no_file') as
+			| 'met_target'
+			| 'below_target'
+			| 'no_hdr_target'
+			| 'no_file'
+	})) as RadarrOverlayResponse['items'];
+
+	if (params.hdr_tags?.length) {
+		items = items.filter((item) => params.hdr_tags!.some((tag) => item.hdr_tags.includes(tag as HdrKind)));
+	}
+	if (params.hdr_target_status) items = items.filter((item) => item.hdr_target_status === params.hdr_target_status);
+	if (params.profile_id) items = items.filter((item) => item.profile_id === params.profile_id);
+	if (params.dovi_no_fallback) items = items.filter((item) => item.dovi_no_fallback);
+	if (params.sort_by === 'year') items.sort((a, b) => b.year - a.year);
+	else if (params.sort_by === 'title') items.sort((a, b) => compareBySortTitle(a.title, b.title));
+	else items.sort((a, b) => b.cf_score - a.cf_score || compareBySortTitle(a.title, b.title));
+
+	return {
+		total: items.length,
+		page: params.page ?? 1,
+		page_size: params.page_size ?? 50,
+		items,
+		distribution: {
+			hdr: 2,
+			hdr10: 3,
+			hdr10p: 2,
+			dovi: 2,
+			dovi_no_fallback: 1,
+			sdr: 2,
+			unknown: 1
+		},
+		distribution_order: ['hdr', 'hdr10', 'hdr10p', 'dovi', 'dovi_no_fallback', 'sdr', 'unknown'],
+		profiles: [
+			{ id: 3, name: 'UHD Cinema', cutoff_format_score: 100 },
+			{ id: 4, name: 'Web 4K', cutoff_format_score: 60 }
+		],
+		applied_filters: {}
+	};
 }
 
 export function mockMetrics(): SystemMetrics {
