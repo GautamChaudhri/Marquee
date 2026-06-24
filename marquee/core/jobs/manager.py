@@ -85,6 +85,12 @@ class JobManager:
                 await db.execute(select(Job).where(Job.idempotency_key == idempotency_key))
             ).scalar_one_or_none()
             if existing is not None:
+                if existing.type != job_type:
+                    raise ValueError(
+                        f"idempotency_key {idempotency_key!r} already used by job "
+                        f"{existing.id!r} of type {existing.type!r}; refusing to "
+                        f"return it for a {job_type!r} request"
+                    )
                 return existing
         job_id = uuid4().hex
         request = resources or {}
@@ -375,6 +381,30 @@ class JobManager:
         media_job = await db.get(MediaJob, media_job_id)
         if media_job is not None:
             media_job.cancel_requested = True
+
+    async def _sync_media_job_status(self, db: AsyncSession, job: Job) -> None:
+        """Mirror a just-recovered generic Job's status onto its bridged MediaJob.
+
+        Scoped to exactly the one job/attempt recover() found stale — never a
+        sweep over all MediaJob rows — so a legitimately-running job in another
+        worker process is never touched. No-op if the job isn't one of the
+        legacy_media-bridged types (no media_job_id in its payload).
+        """
+        media_job_id = job.payload.get("media_job_id") if isinstance(job.payload, dict) else None
+        if not media_job_id:
+            return
+        from marquee.models import MediaJob  # noqa: PLC0415
+
+        media_job = await db.get(MediaJob, media_job_id)
+        if media_job is None:
+            return
+        if job.status == "retry_scheduled":
+            media_job.status = "queued"
+            media_job.cancel_requested = False
+        elif job.status == "cancelled":
+            media_job.status = "cancelled"
+        else:
+            media_job.status = "interrupted"
 
     async def _cancel_before_execution(
         self,
@@ -671,6 +701,7 @@ class JobManager:
             else:
                 job.status = "interrupted"
                 job.finished_at = now
+            await self._sync_media_job_status(db, job)
             await self.emit(
                 db,
                 job,

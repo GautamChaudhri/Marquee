@@ -13,6 +13,7 @@ import logging
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from marquee.core.jobs.child_tracking import clear_child_pid, record_child_pid
 from marquee.core.media_files import resolve_media_file
 from marquee.core.subtitles import mutation, service
 from marquee.models import MediaJob
@@ -72,7 +73,11 @@ async def _extract(db: AsyncSession, job: MediaJob, emit) -> dict:
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    _, stderr = await proc.communicate()
+    await record_child_pid(proc.pid)
+    try:
+        _, stderr = await proc.communicate()
+    finally:
+        await clear_child_pid(proc.pid)
     if proc.returncode != 0:
         raise RuntimeError((stderr or b"").decode(errors="replace")[:300])
     # Re-scan so the new sidecar appears as an external track.

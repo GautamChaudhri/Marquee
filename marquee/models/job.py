@@ -31,6 +31,7 @@ class Job(Base):
     __table_args__ = (
         Index("ix_jobs_claim", "status", "scheduled_at", "priority", "created_at"),
         Index("ix_jobs_parent_status", "parent_id", "status"),
+        Index("ix_jobs_purge", "status", "finished_at"),
     )
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True)

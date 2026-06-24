@@ -567,3 +567,59 @@ def _copy_library_posters(movies: list[tuple], dest: Path) -> int:
         except OSError as exc:
             logger.warning("library-train: could not copy %s: %s", source, exc)
     return count
+
+
+@register("job_retention_purge")
+async def job_retention_purge(_job: Job) -> dict[str, Any]:
+    """Delete terminal Job rows (and their bridged MediaJob, if any) past JOB_RETENTION_DAYS.
+
+    JobAttempt/JobEvent/JobResourceReservation cascade-delete with their
+    parent Job (FK ondelete=CASCADE); MediaJobEvent cascades with its parent
+    MediaJob the same way. Only terminal jobs are ever touched — anything
+    still active is left alone regardless of age.
+    """
+    from datetime import UTC, datetime, timedelta
+
+    from marquee.models import MediaJob
+
+    cutoff = datetime.now(UTC) - timedelta(days=settings.JOB_RETENTION_DAYS)
+    factory = _get_session_factory()
+    async with factory() as db:
+        rows = (
+            await db.execute(
+                select(Job.id, Job.payload).where(
+                    Job.status.in_(("succeeded", "failed", "cancelled", "interrupted", "dead_letter")),
+                    Job.finished_at.is_not(None),
+                    Job.finished_at < cutoff,
+                )
+            )
+        ).all()
+        if not rows:
+            return {"jobs_deleted": 0, "media_jobs_deleted": 0}
+
+        job_ids = [row.id for row in rows]
+        media_job_ids = [
+            row.payload.get("media_job_id")
+            for row in rows
+            if isinstance(row.payload, dict) and row.payload.get("media_job_id")
+        ]
+
+        media_jobs_deleted = 0
+        if media_job_ids:
+            result = await db.execute(
+                MediaJob.__table__.delete().where(MediaJob.job_id.in_(media_job_ids))
+            )
+            media_jobs_deleted = result.rowcount or 0
+
+        result = await db.execute(Job.__table__.delete().where(Job.id.in_(job_ids)))
+        jobs_deleted = result.rowcount or 0
+        await db.commit()
+
+    logger.info(
+        "job_retention_purge: deleted %d job(s) and %d bridged media job(s) "
+        "older than %d day(s)",
+        jobs_deleted,
+        media_jobs_deleted,
+        settings.JOB_RETENTION_DAYS,
+    )
+    return {"jobs_deleted": jobs_deleted, "media_jobs_deleted": media_jobs_deleted}

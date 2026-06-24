@@ -1,10 +1,10 @@
-"""MediaJobManager — durable queue, serial worker, SSE, and restart recovery.
+"""MediaJobManager — durable operation record, SSE stream, and batch tracking.
 
-The worker processes ``queued`` jobs oldest-first, one at a time (remuxes are
-I/O-bound; overlapping them thrashes the disk). Each job takes a per-media-file
-lock. Progress events are persisted to ``media_job_events`` and mirrored to live
-SSE subscribers. On startup, jobs left ``running`` become ``interrupted`` (a
-crash mid-remux leaves only a discardable ``.partial`` beside the source).
+Execution lives in the generic job platform (``marquee.core.jobs``); this
+module keeps the detailed ``MediaJob``/``MediaJobEvent`` audit record and the
+live SSE fan-out that ``marquee.core.jobs.legacy_media`` mirrors progress into
+as the generic ``Job`` runs. See ``marquee/core/jobs/legacy_media.py`` for the
+bridge that actually executes a ``MediaJob``'s operation.
 """
 
 from __future__ import annotations
@@ -16,10 +16,9 @@ import logging
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from sqlalchemy import select, update
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from marquee.database import _get_session_factory
 from marquee.models import MediaJob, MediaJobEvent
 
 logger = logging.getLogger(__name__)
@@ -58,35 +57,6 @@ class JobStream:
 class MediaJobManager:
     def __init__(self) -> None:
         self._streams: dict[str, JobStream] = {}
-        self._locks: dict[int, asyncio.Lock] = {}
-        self._worker: asyncio.Task | None = None
-        self._running = False
-
-    # ------------------------------------------------------------------
-    # Lifecycle
-    # ------------------------------------------------------------------
-
-    async def start(self) -> None:
-        await self.recover()
-        self._running = True
-        self._worker = asyncio.create_task(self._worker_loop())
-        logger.info("MediaJobManager worker started")
-
-    async def stop(self) -> None:
-        self._running = False
-        if self._worker is not None:
-            self._worker.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._worker
-
-    async def recover(self) -> None:
-        """Mark crashed ``running`` jobs ``interrupted`` (design §22.3)."""
-        factory = _get_session_factory()
-        async with factory() as db:
-            await db.execute(
-                update(MediaJob).where(MediaJob.status == "running").values(status="interrupted")
-            )
-            await db.commit()
 
     # ------------------------------------------------------------------
     # Events / SSE
@@ -194,6 +164,20 @@ class MediaJobManager:
         batch_id: str | None = None,
         commit: bool = True,
     ) -> MediaJob:
+        if idempotency_key:
+            existing = (
+                await db.execute(
+                    select(MediaJob).where(MediaJob.idempotency_key == idempotency_key)
+                )
+            ).scalar_one_or_none()
+            if existing is not None:
+                if existing.operation != operation:
+                    raise ValueError(
+                        f"idempotency_key {idempotency_key!r} already used by media "
+                        f"job {existing.job_id!r} of operation {existing.operation!r}; "
+                        f"refusing to return it for a {operation!r} request"
+                    )
+                return existing
         job = MediaJob(
             job_id=uuid4().hex,
             operation=operation,
@@ -271,74 +255,15 @@ class MediaJobManager:
         return True
 
     # ------------------------------------------------------------------
-    # Worker
+    # Batch progress
     # ------------------------------------------------------------------
 
-    async def _worker_loop(self) -> None:
-        while self._running:
-            try:
-                job_id = await self._next_queued_job_id()
-                if job_id is None:
-                    await asyncio.sleep(2.0)
-                    continue
-                await self._run_job(job_id)
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                logger.exception("media job worker iteration failed")
-                await asyncio.sleep(2.0)
+    async def update_batch_progress(self, db: AsyncSession, batch_id: str) -> None:
+        """Tally child MediaJob statuses onto their parent MediaBatch row.
 
-    async def _next_queued_job_id(self) -> str | None:
-        factory = _get_session_factory()
-        async with factory() as db:
-            row = (
-                await db.execute(
-                    select(MediaJob.job_id)
-                    .where(MediaJob.status == "queued")
-                    .order_by(MediaJob.created_at)
-                    .limit(1)
-                )
-            ).scalar_one_or_none()
-            return row
-
-    async def _run_job(self, job_id: str) -> None:
-        from marquee.core.media_jobs.handlers import dispatch  # noqa: PLC0415
-
-        factory = _get_session_factory()
-        async with factory() as db:
-            job = await db.get(MediaJob, job_id)
-            if job is None or job.status != "queued":
-                return
-            if job.cancel_requested:
-                job.status = "cancelled"
-                await db.commit()
-                return
-            lock = self._locks.setdefault(job.media_file_id or -1, asyncio.Lock())
-            async with lock:
-                job.status = "running"
-                job.attempts += 1
-                await db.commit()
-                await self.emit(db, job_id, "start", "running", message=job.operation)
-                try:
-                    result = await dispatch(db, job, self.emit)
-                    job.status = "succeeded"
-                    job.result_json = json.dumps(result, default=str)
-                    await db.commit()
-                except Exception as exc:  # noqa: BLE001 — recorded on the job
-                    logger.exception("media job %s failed", job_id)
-                    code = getattr(exc, "code", None)
-                    job.status = "cancelled" if code == "cancelled" else "failed"
-                    job.error_json = json.dumps(
-                        {"error": str(exc), "code": getattr(exc, "code", None)}
-                    )
-                    await db.commit()
-                    await self.emit(db, job_id, "error", job.status, message=str(exc))
-                finally:
-                    if job.batch_id:
-                        await self._update_batch(db, job.batch_id)
-            self.stream(job_id).finish()
-
-    async def _update_batch(self, db: AsyncSession, batch_id: str) -> None:
+        Called by the legacy_media bridge handler whenever a bridged MediaJob
+        with a batch_id reaches a terminal state.
+        """
         from marquee.models import MediaBatch  # noqa: PLC0415
 
         batch = await db.get(MediaBatch, batch_id)

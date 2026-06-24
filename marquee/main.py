@@ -37,7 +37,6 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Rate Limiter (module-level — shared across requests)
 # ---------------------------------------------------------------------------
-_sync_rate_limiter = RateLimiter(cooldown_seconds=settings.SYNC_COOLDOWN_SECONDS)
 # Shared limiter for expensive endpoints; callers pass an explicit per-op cooldown.
 _op_rate_limiter = RateLimiter()
 
@@ -125,7 +124,6 @@ async def lifespan(app: FastAPI):
     logger.info("Database ready.")
 
     # Rate limiters — shared across requests
-    app.state.sync_rate_limiter = _sync_rate_limiter
     app.state.op_rate_limiter = _op_rate_limiter
 
     # Embedded job runtime — spawn the worker + scheduler as supervised child
