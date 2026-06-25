@@ -252,12 +252,13 @@ async def hdr_index(
     """Return the Radarr Overlay page data."""
     movie_rows = (
         await db.execute(
-            select(Movie, LetterboxState)
+            select(Movie, LetterboxState, DoviState)
             .outerjoin(LetterboxState, LetterboxState.movie_id == Movie.id)
+            .outerjoin(DoviState, DoviState.movie_id == Movie.id)
             .where(Movie.movie_file_path.is_not(None), Movie.movie_file_path != "")
         )
     ).all()
-    movies = [movie for movie, _ in movie_rows]
+    movies = [movie for movie, _, _ in movie_rows]
     movie_ids = [movie.id for movie in movies]
 
     media_rows = (
@@ -284,7 +285,7 @@ async def hdr_index(
     ) = await _load_profile_context(db)
 
     all_items: list[dict[str, Any]] = []
-    for movie, lb in movie_rows:
+    for movie, lb, dovi_state in movie_rows:
         media = media_by_movie.get(movie.id)
         base = enrich_movie(
             movie,
@@ -303,6 +304,12 @@ async def hdr_index(
             "hdr_tags": hdr_tags_for_movie,
             "distribution_keys": distribution_keys(movie.hdr_type_raw),
             "dovi_no_fallback": "dovi_no_fallback" in hdr_tags_for_movie,
+            "dovi_status": dovi_state.status if dovi_state is not None else None,
+            "dovi_profile": dovi_state.dovi_profile if dovi_state is not None else None,
+            "dovi_el_type": dovi_state.el_type if dovi_state is not None else None,
+            "dovi_bl_signal_compatibility_id": (
+                dovi_state.bl_signal_compatibility_id if dovi_state is not None else None
+            ),
             "profile_id": movie.quality_profile_id,
             "profile_name": profiles_by_id.get(movie.quality_profile_id).name
             if movie.quality_profile_id in profiles_by_id
@@ -481,6 +488,10 @@ class DoviAnalyzeBatchRequest(BaseModel):
     movie_ids: list[int] | None = None
 
 
+class DoviConvertRequest(BaseModel):
+    kind: str | None = None
+
+
 async def _load_movie(db: AsyncSession, movie_id: int) -> Movie:
     movie = (await db.execute(select(Movie).where(Movie.id == movie_id))).scalar_one_or_none()
     if movie is None:
@@ -502,6 +513,46 @@ async def _active_dovi_job(db: AsyncSession, movie_id: int) -> Job | None:
             .limit(1)
         )
     ).scalar_one_or_none()
+
+
+async def _active_dovi_conversion_job(db: AsyncSession, movie_id: int) -> Job | None:
+    return (
+        await db.execute(
+            select(Job)
+            .where(
+                Job.type == "dovi_convert",
+                Job.subject_type == "movie",
+                Job.subject_id == str(movie_id),
+                Job.status.notin_(tuple(TERMINAL)),
+            )
+            .order_by(Job.created_at.desc(), Job.id.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
+
+async def _latest_dovi_conversion_job(db: AsyncSession, movie_id: int) -> Job | None:
+    return (
+        await db.execute(
+            select(Job)
+            .where(
+                Job.type == "dovi_convert",
+                Job.subject_type == "movie",
+                Job.subject_id == str(movie_id),
+            )
+            .order_by(Job.created_at.desc(), Job.id.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
+
+def _dovi_job_detail(job: Job | None) -> dict | None:
+    if job is None:
+        return None
+    data = job_summary(job)
+    data["result"] = job.result
+    data["error"] = job.error
+    return data
 
 
 def _dovi_state_to_dict(state: DoviState | None) -> dict[str, Any] | None:
@@ -560,6 +611,7 @@ async def hdr_movie_detail(
     ).scalar_one_or_none() if movie.quality_profile_id is not None else None
     hdr_tags = ordered_tags(classify_hdr_tags(movie.hdr_type_raw))
     active = await _active_dovi_job(db, movie_id)
+    conversion_job = await _latest_dovi_conversion_job(db, movie_id)
     return {
         "movie": _movie_detail_dict(movie),
         "profile_name": profile.name if profile else None,
@@ -567,10 +619,12 @@ async def hdr_movie_detail(
         "hdr_bucket": overlay_bucket(movie.hdr_type_raw),
         "dovi": _dovi_state_to_dict(state),
         "binaries": {
+            "ffmpeg": binaries.resolve("ffmpeg") is not None,
             "dovi_tool": binaries.resolve("dovi_tool") is not None,
             "ffprobe": binaries.resolve("ffprobe") is not None,
         },
         "analysis_job": job_summary(active) if active else None,
+        "conversion_job": _dovi_job_detail(conversion_job),
     }
 
 
@@ -601,6 +655,56 @@ async def analyze_movie_dovi(
         subject_id=movie.id,
     )
     return job_summary(job)
+
+
+@router.post("/{movie_id}/convert")
+async def convert_movie_dovi(
+    movie_id: int,
+    body: DoviConvertRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    """Enqueue a supported Dolby Vision Profile 8.1 remediation job."""
+    missing = [name for name in ("ffmpeg", "ffprobe", "dovi_tool") if binaries.resolve(name) is None]
+    if missing:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Required binary not found on PATH: {', '.join(missing)}",
+        )
+    movie = await _load_movie(db, movie_id)
+    state = (
+        await db.execute(select(DoviState).where(DoviState.movie_id == movie_id))
+    ).scalar_one_or_none()
+    if state is None or state.status != "analyzed":
+        raise HTTPException(
+            status_code=409,
+            detail="Run Dolby Vision analysis before starting remediation.",
+        )
+    conversion = conversion_eligibility(state.dovi_profile, state.el_type)
+    kind = body.kind or conversion.get("kind")
+    if not conversion.get("eligible") or kind != conversion.get("kind"):
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "not_eligible",
+                "message": conversion.get("reason") or "This stream is not eligible.",
+            },
+        )
+    active = await _active_dovi_conversion_job(db, movie.id)
+    if active is not None:
+        return _dovi_job_detail(active)
+    media_file = await ensure_media_file_for_movie(db, movie)
+    file_lock = {f"media-file:{media_file.id}": 1} if media_file is not None else {}
+    job = await job_manager.create(
+        db,
+        job_type="dovi_convert",
+        payload={"movie_id": movie.id, "kind": kind},
+        priority=75,
+        resources={"media_write": 1, **file_lock},
+        subject_type="movie",
+        subject_id=movie.id,
+        max_attempts=1,
+    )
+    return _dovi_job_detail(job)
 
 
 @router.post("/analyze", status_code=202)

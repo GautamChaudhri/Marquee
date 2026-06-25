@@ -45,6 +45,14 @@ export function analyzeMovieDovi(fetch: Fetch, movieId: number): Promise<JobSnap
 	return apiSend<JobSnapshot>(fetch, 'POST', `/hdr/${movieId}/analyze`);
 }
 
+export function convertMovieDovi(
+	fetch: Fetch,
+	movieId: number,
+	kind: 'p5_to_p81' | 'p7_strip_el'
+): Promise<JobSnapshot> {
+	return apiSend<JobSnapshot>(fetch, 'POST', `/hdr/${movieId}/convert`, { kind });
+}
+
 export function analyzeDoviBatch(
 	fetch: Fetch,
 	movieIds?: number[]

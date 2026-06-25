@@ -9,6 +9,7 @@
 	import type {
 		HdrKind,
 		HdrPreferenceChoice,
+		RadarrOverlayItem,
 		RadarrOverlayProfilePreference,
 		RadarrOverlayStatus
 	} from '$lib/api/types';
@@ -68,6 +69,11 @@
 		hdr10p: 'var(--dovi)',
 		dovi: 'var(--gold)',
 		dovi_no_fallback: 'var(--bad)'
+	};
+	const DOVI_P8_VARIANT: Record<number, string> = {
+		1: 'P8.1',
+		2: 'P8.2',
+		4: 'P8.4'
 	};
 	const PREFERENCE_LABEL: Record<HdrPreferenceChoice, string> = {
 		sdr: 'SDR',
@@ -167,6 +173,44 @@
 		const currentSort = page.url.searchParams.get('sort_by') ?? 'cf_score';
 		if (currentSort !== sortBy) return '';
 		return (page.url.searchParams.get('sort_dir') ?? 'desc') === 'asc' ? '↑' : '↓';
+	}
+
+	function hdrOnlyKinds(kinds: HdrKind[]): HdrKind[] {
+		return kinds.filter((kind) => kind !== 'dovi' && kind !== 'dovi_no_fallback');
+	}
+
+	function primaryHdrKind(kind: HdrKind | null): HdrKind | null {
+		return kind === 'dovi' || kind === 'dovi_no_fallback' ? null : kind;
+	}
+
+	function doviBadgeLabel(item: RadarrOverlayItem): string | null {
+		if (!item.hdr_tags.includes('dovi') && !item.dovi_no_fallback) return null;
+		if (item.dovi_profile == null) return 'DoVi P?';
+		const profile =
+			item.dovi_profile === 8
+				? (item.dovi_bl_signal_compatibility_id != null
+						? DOVI_P8_VARIANT[item.dovi_bl_signal_compatibility_id]
+						: null) ?? 'P8'
+				: `P${item.dovi_profile}`;
+		const suffix = item.dovi_profile === 7 && item.dovi_el_type ? ` ${item.dovi_el_type}` : '';
+		return `DoVi ${profile}${suffix}`;
+	}
+
+	function doviBadgeTone(item: RadarrOverlayItem): string {
+		if (item.dovi_profile == null) return 'var(--low)';
+		return item.dovi_no_fallback ? 'var(--bad)' : 'var(--gold)';
+	}
+
+	function doviBadgeTitle(item: RadarrOverlayItem): string | null {
+		const label = doviBadgeLabel(item);
+		if (!label) return null;
+		if (item.dovi_profile == null) {
+			return `${label}. Dolby Vision is present, but this file has not been analyzed yet.`;
+		}
+		if (item.dovi_profile === 5) return `${label}. Profile 5 can show green/purple tint on non-DV playback.`;
+		if (item.dovi_el_type === 'FEL') return `${label}. Full enhancement layer can trigger playback issues.`;
+		if (item.dovi_el_type === 'MEL') return `${label}. Minimal enhancement layer is generally safe to drop.`;
+		return label;
 	}
 
 	// ── Tier ladder per draft ────────────────────────────────────────────
@@ -645,8 +689,7 @@
 				<div class="row head">
 					<span><a class="sort-link" href={sortHref('title')}>Title {sortGlyph('title')}</a></span>
 					<span>HDR profiles</span>
-					<span>Profile</span>
-					<span>Radarr targets</span>
+					<span>Quality profile</span>
 					<span
 						><a class="sort-link" href={sortHref('preference_status')}
 							>Status {sortGlyph('preference_status')}</a
@@ -660,16 +703,27 @@
 							<small>{item.year} · {item.resolution ?? 'Unknown res'}</small>
 						</span>
 						<span class="tags-cell">
-							<HdrBadge kinds={item.hdr_tags} kind={item.hdr} />
+							<div class="stack-badges">
+								<HdrBadge kinds={hdrOnlyKinds(item.hdr_tags)} kind={primaryHdrKind(item.hdr)} />
+								{#if doviBadgeLabel(item)}
+									<span
+										class="dovi-badge"
+										style={`--c:${doviBadgeTone(item)}`}
+										title={doviBadgeTitle(item) ?? undefined}
+									>
+										{doviBadgeLabel(item)}
+									</span>
+								{/if}
+							</div>
 						</span>
-						<span class="profile">
+						<span class="quality-profile">
 							<strong>{item.profile_name ?? '—'}</strong>
-						</span>
-						<span class="tags-cell">
 							{#if item.profile_targets.length}
-								<HdrBadge kinds={item.profile_targets} />
+								<div class="quality-targets">
+									<HdrBadge kinds={item.profile_targets} />
+								</div>
 							{:else}
-								<span class="muted">—</span>
+								<small class="muted">No HDR targets</small>
 							{/if}
 						</span>
 						<span class="status" style={`--tone:${STATUS_META[item.preference_status].tone}`}>
@@ -1211,7 +1265,7 @@
 	}
 	.row {
 		display: grid;
-		grid-template-columns: 1.35fr 1.1fr 0.9fr 1.1fr 1.35fr;
+		grid-template-columns: 1.35fr 1.15fr 1.35fr 1.35fr;
 		gap: 12px;
 		padding: 12px 14px;
 		align-items: center;
@@ -1236,7 +1290,7 @@
 		text-decoration: none;
 	}
 	.title,
-	.profile,
+	.quality-profile,
 	.status {
 		display: flex;
 		flex-direction: column;
@@ -1244,7 +1298,7 @@
 		min-width: 0;
 	}
 	.title strong,
-	.profile strong,
+	.quality-profile strong,
 	.status strong {
 		font-size: 13px;
 	}
@@ -1255,6 +1309,32 @@
 	}
 	.tags-cell {
 		display: flex;
+		align-items: center;
+	}
+	.stack-badges {
+		display: inline-flex;
+		flex-wrap: wrap;
+		gap: 4px;
+		align-items: center;
+	}
+	.dovi-badge {
+		font-family: var(--font-mono);
+		font-size: 10px;
+		font-weight: 600;
+		letter-spacing: 0.02em;
+		padding: 2px 6px;
+		border-radius: 5px;
+		color: var(--c);
+		background: color-mix(in srgb, var(--c) 14%, transparent);
+		border: 1px solid color-mix(in srgb, var(--c) 30%, transparent);
+		white-space: nowrap;
+	}
+	.quality-profile {
+		align-items: flex-start;
+	}
+	.quality-targets {
+		display: inline-flex;
+		flex-wrap: wrap;
 		align-items: center;
 	}
 	.status strong {
@@ -1332,7 +1412,7 @@
 			grid-template-columns: 1fr;
 		}
 		.row {
-			grid-template-columns: 1.3fr 1fr 1fr 1fr 1.2fr;
+			grid-template-columns: 1.2fr 1fr 1.2fr 1.2fr;
 			font-size: 12px;
 		}
 	}
