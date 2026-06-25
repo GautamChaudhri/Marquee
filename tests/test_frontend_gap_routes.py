@@ -16,6 +16,7 @@ from marquee.core.subtitles.config import subtitle_settings
 from marquee.main import app
 from marquee.models import (
     ArtworkEvent,
+    DoviState,
     MediaJob,
     MediaJobEvent,
     Movie,
@@ -169,6 +170,17 @@ async def test_hdr_distribution_and_filter(db: AsyncSession, client: AsyncClient
     )
     await db.commit()
 
+    hdr_movie = (await db.execute(select(Movie).where(Movie.title == "Hdr"))).scalar_one()
+    db.add(
+        DoviState(
+            movie_id=hdr_movie.id,
+            status="analyzed",
+            dovi_profile=8,
+            bl_signal_compatibility_id=1,
+        )
+    )
+    await db.commit()
+
     body = (await client.get("/api/hdr?hdr_tags=hdr10p")).json()
     assert body["distribution"] == {
         "sdr": 1,
@@ -182,6 +194,9 @@ async def test_hdr_distribution_and_filter(db: AsyncSession, client: AsyncClient
     assert [item["title"] for item in body["items"]] == ["Hdr"]
     assert body["items"][0]["hdr"] == "hdr10p"
     assert body["items"][0]["hdr_tags"] == ["hdr10p"]
+    assert body["items"][0]["dovi_status"] == "analyzed"
+    assert body["items"][0]["dovi_profile"] == 8
+    assert body["items"][0]["dovi_bl_signal_compatibility_id"] == 1
     assert body["items"][0]["profile_name"] == "UHD"
     assert body["items"][0]["cf_score"] == 10
     assert body["items"][0]["profile_targets"] == ["hdr10p", "dovi"]

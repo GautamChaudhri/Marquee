@@ -87,6 +87,11 @@ export function mockRadarrOverlay(params: RadarrOverlayQuery = {}): RadarrOverla
 					? [item.hdr]
 					: [],
 		dovi_no_fallback: index % 2 === 1 && item.hdr === 'dovi',
+		dovi_status: item.hdr === 'dovi' ? 'analyzed' : 'unknown',
+		dovi_profile:
+			item.hdr === 'dovi' ? (index % 3 === 0 ? 5 : index % 3 === 1 ? 7 : 8) : null,
+		dovi_el_type: item.hdr === 'dovi' && index % 3 === 1 ? (index % 2 ? 'FEL' : 'MEL') : null,
+		dovi_bl_signal_compatibility_id: item.hdr === 'dovi' ? (index % 3 === 2 ? 1 : 0) : null,
 		profile_id: index % 3 === 0 ? 3 : 4,
 		profile_name: index % 3 === 0 ? 'UHD Cinema' : 'Web 4K',
 		cf_score: 40 - index * 2,

@@ -1,10 +1,11 @@
-"""Durable job handler for Dolby Vision analysis.
+"""Durable job handlers for Dolby Vision analysis and remediation.
 
 ``dovi_analyze`` inspects one movie's file (ffprobe + dovi_tool) and upserts the
 result into ``DoviState``. Batches fan out one child per DoVi movie via
 ``job_manager.create_batch`` (parent type ``dovi_analyze_batch`` — like
 ``letterbox_detect_batch``, the parent needs no handler; child progress
-aggregates automatically).
+aggregates automatically). ``dovi_convert`` creates a non-destructive Profile
+8.1 candidate for supported Profile 5 / Profile 7 files.
 
 Registered by import side-effect; ``marquee.core.jobs.worker`` imports this
 module so the decorator runs before the worker resolves any job.
@@ -125,3 +126,47 @@ async def dovi_analyze(job: Job) -> dict[str, Any]:
             "profile": state.dovi_profile,
             "el_type": state.el_type,
         }
+
+
+@register("dovi_convert")
+async def dovi_convert(job: Job) -> dict[str, Any]:
+    from marquee.core.dovi_conversion import (  # noqa: PLC0415
+        DoviConversionError,
+        execute_conversion,
+    )
+    from marquee.core.media_files import (  # noqa: PLC0415
+        MediaFileNotFoundError,
+        MediaFileUnavailableError,
+        ensure_media_file_for_movie,
+        resolve_media_file,
+    )
+
+    factory = _get_session_factory()
+    movie_id = int(job.payload["movie_id"])
+    kind = job.payload.get("kind")
+    if kind not in {"p5_to_p81", "p7_strip_el"}:
+        raise DoviConversionError("invalid_kind", "Unsupported Dolby Vision conversion kind.")
+
+    async with factory() as db:
+        current = await db.get(Job, job.id)
+        if current is None:
+            raise RuntimeError("job not found")
+        movie = await db.get(Movie, movie_id)
+        if movie is None:
+            raise RuntimeError("movie not found")
+        media_file = await ensure_media_file_for_movie(db, movie)
+        if media_file is None:
+            raise DoviConversionError("no_media_file", "No media file is available for this movie.")
+        try:
+            resolved = await resolve_media_file(db, media_file.id)
+        except (MediaFileNotFoundError, MediaFileUnavailableError) as exc:
+            raise DoviConversionError("file_unavailable", str(exc)) from exc
+        result = await execute_conversion(
+            db,
+            current,
+            resolved=resolved,
+            media_file=media_file,
+            kind=kind,  # type: ignore[arg-type]
+        )
+        result["movie_id"] = movie_id
+        return result

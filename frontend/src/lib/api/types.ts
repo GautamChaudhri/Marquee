@@ -77,6 +77,10 @@ export interface RadarrOverlayProfilePreference {
 
 export interface RadarrOverlayItem extends MovieListItem {
 	dovi_no_fallback: boolean;
+	dovi_status?: 'unknown' | 'analyzed' | 'not_dovi' | 'error' | null;
+	dovi_profile?: number | null;
+	dovi_el_type?: DoviElType;
+	dovi_bl_signal_compatibility_id?: number | null;
 	profile_id: number | null;
 	profile_name: string | null;
 	cf_score: number | null;
@@ -156,8 +160,9 @@ export interface HdrMovieDetail {
 	hdr_tags: HdrKind[];
 	hdr_bucket: string;
 	dovi: DoviState | null;
-	binaries: { dovi_tool: boolean; ffprobe: boolean };
+	binaries: { dovi_tool: boolean; ffmpeg: boolean; ffprobe: boolean };
 	analysis_job: import('./jobs').JobSnapshot | null;
+	conversion_job: import('./jobs').JobSnapshot | null;
 }
 
 export interface PipelineRunRef {
