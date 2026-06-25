@@ -87,9 +87,7 @@ def require(*names: str) -> None:
     """Raise ``BinaryMissingError`` if any of *names* is unavailable."""
     missing = [name for name in names if resolve(name) is None]
     if missing:
-        raise BinaryMissingError(
-            f"Required media tool(s) not found on PATH: {', '.join(missing)}"
-        )
+        raise BinaryMissingError(f"Required media tool(s) not found on PATH: {', '.join(missing)}")
 
 
 def run(name: str, args: list[str], *, timeout: float = 120.0) -> CommandResult:

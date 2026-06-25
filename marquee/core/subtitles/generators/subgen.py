@@ -34,7 +34,7 @@ def translate_local_to_remote(local_path: str) -> str:
     local_prefix = subtitle_settings.SUBGEN_LOCAL_PATH_PREFIX
     remote_prefix = subtitle_settings.SUBGEN_REMOTE_PATH_PREFIX
     if local_prefix and remote_prefix and local_path.startswith(local_prefix):
-        return remote_prefix + local_path[len(local_prefix):]
+        return remote_prefix + local_path[len(local_prefix) :]
     return local_path
 
 
@@ -43,7 +43,7 @@ def translate_remote_to_local(remote_path: str) -> str:
     local_prefix = subtitle_settings.SUBGEN_LOCAL_PATH_PREFIX
     remote_prefix = subtitle_settings.SUBGEN_REMOTE_PATH_PREFIX
     if local_prefix and remote_prefix and remote_path.startswith(remote_prefix):
-        return local_prefix + remote_path[len(remote_prefix):]
+        return local_prefix + remote_path[len(remote_prefix) :]
     return remote_path
 
 
@@ -78,8 +78,14 @@ class SubgenPathGenerator:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 resp = await client.get(f"{subtitle_settings.SUBGEN_URL.rstrip('/')}/status")
                 resp.raise_for_status()
-                body = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
-            return GeneratorHealth(healthy=True, version=str(body.get("version") or body.get("status") or "ok"))
+                body = (
+                    resp.json()
+                    if resp.headers.get("content-type", "").startswith("application/json")
+                    else {}
+                )
+            return GeneratorHealth(
+                healthy=True, version=str(body.get("version") or body.get("status") or "ok")
+            )
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "SUBGEN | Connection health check failed to URL %s: %s",
@@ -91,7 +97,9 @@ class SubgenPathGenerator:
 
     async def submit(self, request: GenerationRequest) -> ProviderSubmission:
         if not subtitle_settings.SUBGEN_URL:
-            return ProviderSubmission(accepted=False, submitted_at="", detail="SUBGEN_URL not configured")
+            return ProviderSubmission(
+                accepted=False, submitted_at="", detail="SUBGEN_URL not configured"
+            )
         remote = translate_local_to_remote(request.local_media_path)
         payload = {"path": remote}
         if request.language_hint:

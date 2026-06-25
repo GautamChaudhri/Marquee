@@ -60,9 +60,7 @@ def load_profile(path: Path) -> dict[str, np.ndarray]:
     ensure_safe_artifact(path, "taste_profile")
     with load_npz_safe(path) as data:
         out["embeddings"] = np.asarray(data["embeddings"], dtype=np.float32)
-        out["poster_names"] = np.asarray(
-            decode_unicode_list(data["poster_names"]), dtype=np.str_
-        )
+        out["poster_names"] = np.asarray(decode_unicode_list(data["poster_names"]), dtype=np.str_)
         if "dino_embeddings" in data:
             out["dino_embeddings"] = np.asarray(data["dino_embeddings"], dtype=np.float32)
     return out
@@ -170,9 +168,7 @@ def auc(positives: np.ndarray, negatives: np.ndarray) -> float:
 def run_sweep(args: argparse.Namespace) -> None:
     profile = load_profile(pipeline_settings.TASTE_PROFILE_PATH)
     embeddings = profile["embeddings"]
-    kept, flagged, missing = load_labeled_embeddings(
-        Path(pipeline_settings.FEEDBACK_LABELS_PATH)
-    )
+    kept, flagged, missing = load_labeled_embeddings(Path(pipeline_settings.FEEDBACK_LABELS_PATH))
     gate = pipeline_settings.GATE_MIN_KNN_SIM
 
     print(f"Exemplars: {embeddings.shape[0]}  |  folds: {args.folds}  |  gate: knn_sim >= {gate}")

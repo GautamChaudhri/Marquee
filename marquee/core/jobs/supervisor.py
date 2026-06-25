@@ -86,9 +86,7 @@ class WorkerSupervisor:
             self._tasks.append(
                 asyncio.create_task(self._supervise(child), name=f"supervise-{child.name}")
             )
-        logger.info(
-            "Embedded job runtime started: %s", ", ".join(c.name for c in self._children)
-        )
+        logger.info("Embedded job runtime started: %s", ", ".join(c.name for c in self._children))
 
     def status(self) -> dict:
         """Per-child health snapshot for /api/system/status.
@@ -246,13 +244,17 @@ class WorkerSupervisor:
             async with factory() as db:
                 # Find all running attempts with child PIDs
                 attempts = (
-                    await db.execute(
-                        select(JobAttempt).where(
-                            JobAttempt.status.in_(("claimed", "running")),
-                            JobAttempt.child_pids.is_not(None),
+                    (
+                        await db.execute(
+                            select(JobAttempt).where(
+                                JobAttempt.status.in_(("claimed", "running")),
+                                JobAttempt.child_pids.is_not(None),
+                            )
                         )
                     )
-                ).scalars().all()
+                    .scalars()
+                    .all()
+                )
 
                 killed = 0
                 for attempt in attempts:
@@ -262,11 +264,15 @@ class WorkerSupervisor:
                         try:
                             os.kill(pid, signal.SIGKILL)
                             killed += 1
-                            logger.info("Killed orphaned child process pid=%d (attempt=%d)", pid, attempt.id)
+                            logger.info(
+                                "Killed orphaned child process pid=%d (attempt=%d)", pid, attempt.id
+                            )
                         except ProcessLookupError:
                             pass  # already dead
                         except PermissionError:
-                            logger.warning("No permission to kill pid=%d (attempt=%d)", pid, attempt.id)
+                            logger.warning(
+                                "No permission to kill pid=%d (attempt=%d)", pid, attempt.id
+                            )
                         except OSError as exc:
                             logger.warning("Failed to kill pid=%d: %s", pid, exc)
 

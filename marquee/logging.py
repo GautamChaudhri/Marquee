@@ -52,9 +52,7 @@ class JsonFormatter(logging.Formatter):
 # Text Formatter (development)
 # ---------------------------------------------------------------------------
 
-TEXT_FORMAT = (
-    "%(asctime)s [%(levelname)-5s] %(name)s: %(message)s"
-)
+TEXT_FORMAT = "%(asctime)s [%(levelname)-5s] %(name)s: %(message)s"
 
 
 # ---------------------------------------------------------------------------

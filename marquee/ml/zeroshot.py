@@ -114,9 +114,7 @@ class ZeroShotAxes:
             stored_model = decode_unicode_scalar(data["model_name"])
             # int8-quantized variants share the fp32 text tower's space
             # closely enough for soft rank features.
-            if not expected.startswith(stored_model) and not stored_model.startswith(
-                expected
-            ):
+            if not expected.startswith(stored_model) and not stored_model.startswith(expected):
                 logger.warning(
                     "ZEROSHOT | axes artifact model %r does not match %r — "
                     "style axes disabled. Rebuild with: python -m marquee.ml.zeroshot",
@@ -132,10 +130,7 @@ class ZeroShotAxes:
     def scores(self, embedding: np.ndarray) -> dict[str, float]:
         """All axis scores for one L2-normalized image embedding."""
         values = self.directions @ np.asarray(embedding, dtype=np.float32).reshape(512)
-        return {
-            name: float(value)
-            for name, value in zip(self.axis_names, values, strict=True)
-        }
+        return {name: float(value) for name, value in zip(self.axis_names, values, strict=True)}
 
 
 # ---------------------------------------------------------------------------

@@ -133,7 +133,7 @@ async def init_db(retries: int = 5) -> None:
             if attempt == retries - 1:
                 logger.error("Database connection failed after %d attempts", retries, exc_info=True)
                 raise
-            wait = 2 ** attempt  # 1, 2, 4, 8, 16 seconds
+            wait = 2**attempt  # 1, 2, 4, 8, 16 seconds
             logger.warning(
                 "Database connection failed (attempt %d/%d), retrying in %ds: %s",
                 attempt + 1,

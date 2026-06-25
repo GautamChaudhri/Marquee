@@ -36,9 +36,7 @@ def validate_output(
     if out.video_count < 1:
         problems.append("output has no video stream")
     if out.video_count != source.video_count:
-        problems.append(
-            f"video stream count changed: {source.video_count} -> {out.video_count}"
-        )
+        problems.append(f"video stream count changed: {source.video_count} -> {out.video_count}")
     if len(out.audio_streams) != len(source.audio_streams):
         problems.append(
             f"audio stream count changed: {len(source.audio_streams)} -> {len(out.audio_streams)}"

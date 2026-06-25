@@ -11,6 +11,7 @@ export interface Paginated<T> {
 export type PosterStatus = 'missing' | 'review' | 'approved' | 'deployed';
 export type HdrKind = 'hdr' | 'hdr10' | 'hdr10p' | 'dovi' | 'dovi_no_fallback' | 'sdr';
 export type HdrPreferenceChoice =
+	| 'sdr'
 	| 'hdr'
 	| 'hdr10'
 	| 'hdr10p'
@@ -71,6 +72,7 @@ export interface RadarrOverlayProfilePreference {
 	available_preference_targets: HdrPreferenceChoice[];
 	meet_target: HdrPreferenceChoice | null;
 	exceed_target: HdrPreferenceChoice | null;
+	excluded_targets: HdrPreferenceChoice[];
 }
 
 export interface RadarrOverlayItem extends MovieListItem {

@@ -38,9 +38,13 @@ async def test_metrics_shape_no_gpu(db, client: AsyncClient, monkeypatch):
 @pytest.mark.asyncio
 async def test_metrics_gpu_present(db, client: AsyncClient, monkeypatch):
     fake = {
-        "model": "NVIDIA GeForce RTX 3070", "util": 42,
-        "vramUsed": 1_000_000, "vramTotal": 8_000_000,
-        "temp": 55, "power": 120.0, "enc": 0,
+        "model": "NVIDIA GeForce RTX 3070",
+        "util": 42,
+        "vramUsed": 1_000_000,
+        "vramTotal": 8_000_000,
+        "temp": 55,
+        "power": 120.0,
+        "enc": 0,
     }
     monkeypatch.setattr(system_metrics, "gpu_metrics", lambda: fake)
 

@@ -144,9 +144,7 @@ class TasteCalibration:
                     f"(min {config.CALIBRATION_MIN_SAMPLES})"
                 )
                 continue
-            bandwidth = _silverman_bandwidth(
-                samples, config.CALIBRATION_BANDWIDTH_SCALE
-            )
+            bandwidth = _silverman_bandwidth(samples, config.CALIBRATION_BANDWIDTH_SCALE)
             density_at_samples = _kde_density(samples, samples, bandwidth)
             self._bands[name] = FeatureBand(
                 name=name,
@@ -199,9 +197,7 @@ class TasteCalibration:
         band = self._bands.get(name)
         if band is None or value is None or np.isnan(value):
             return None
-        density = float(
-            _kde_density(float(value), band.samples, band.bandwidth)[0]
-        )
+        density = float(_kde_density(float(value), band.samples, band.bandwidth)[0])
         if band.density_max <= 0:
             return None
         return float(np.clip(density / band.density_max, 0.0, 1.0))
@@ -216,11 +212,9 @@ class TasteCalibration:
             f"bandwidth_scale={self.config.CALIBRATION_BANDWIDTH_SCALE}"
         ]
         lines.extend(
-            f"CALIBRATION BAND | {self._bands[name].describe()}"
-            for name in sorted(self._bands)
+            f"CALIBRATION BAND | {self._bands[name].describe()}" for name in sorted(self._bands)
         )
         lines.extend(
-            f"CALIBRATION SKIP | {name}: {reason}"
-            for name, reason in sorted(self._skipped.items())
+            f"CALIBRATION SKIP | {name}: {reason}" for name, reason in sorted(self._skipped.items())
         )
         return lines

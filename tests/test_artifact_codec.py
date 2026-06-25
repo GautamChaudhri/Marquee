@@ -126,7 +126,9 @@ def test_legacy_taste_map_migrates_and_loads(tmp_path, monkeypatch):
     from marquee.core.pipeline_config import pipeline_settings
 
     monkeypatch.setattr(pipeline_settings, "TASTE_PROFILE_PATH", profile_path)
-    monkeypatch.setattr(type(settings), "poster_cache_path", property(lambda self: tmp_path / "cache" / "posters"))
+    monkeypatch.setattr(
+        type(settings), "poster_cache_path", property(lambda self: tmp_path / "cache" / "posters")
+    )
 
     result = load_map()
     assert len(result["points"]) == 3
@@ -164,7 +166,9 @@ def test_migrate_live_artifacts_scans_known_paths(tmp_path, monkeypatch):
     monkeypatch.setattr(pipeline_settings, "TASTE_PROFILE_PATH", taste_profile)
     monkeypatch.setattr(pipeline_settings, "LEARNED_HEAD_PATH", ml_dir / "missing_head.npz")
     monkeypatch.setattr(pipeline_settings, "ZEROSHOT_AXES_PATH", ml_dir / "missing_axes.npz")
-    monkeypatch.setattr(type(settings), "poster_cache_path", property(lambda self: cache_dir / "posters"))
+    monkeypatch.setattr(
+        type(settings), "poster_cache_path", property(lambda self: cache_dir / "posters")
+    )
 
     migrated = migrate_live_artifacts()
     assert any("taste_profile" in item for item in migrated)

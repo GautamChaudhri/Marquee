@@ -90,9 +90,7 @@ class MediaJob(Base):
     input_signature: Mapped[str | None] = mapped_column(String(128), nullable=True)
     plan_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    idempotency_key: Mapped[str | None] = mapped_column(
-        String(200), unique=True, nullable=True
-    )
+    idempotency_key: Mapped[str | None] = mapped_column(String(200), unique=True, nullable=True)
     cancel_requested: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=text("false")
     )
@@ -106,10 +104,7 @@ class MediaJob(Base):
     )
 
     def __repr__(self) -> str:
-        return (
-            f"<MediaJob(job_id={self.job_id!r}, op={self.operation!r}, "
-            f"status={self.status!r})>"
-        )
+        return f"<MediaJob(job_id={self.job_id!r}, op={self.operation!r}, status={self.status!r})>"
 
 
 class MediaJobEvent(Base):

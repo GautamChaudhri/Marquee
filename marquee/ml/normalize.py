@@ -57,9 +57,7 @@ def normalize_features(
     knn_span = config.NORM_KNN_MAX - config.NORM_KNN_MIN
     normalized = {
         "knn_sim": _clip(
-            (features.knn_sim - config.NORM_KNN_MIN) / knn_span
-            if knn_span > 0
-            else 0.0
+            (features.knn_sim - config.NORM_KNN_MIN) / knn_span if knn_span > 0 else 0.0
         ),
         "aesthetic": _clip(features.aesthetic / config.NORM_AESTHETIC_MAX),
         "title_colorfulness": (
@@ -70,8 +68,7 @@ def normalize_features(
         "text_residual": _clip(1.0 - features.text_residual),
         "resolution": _clip(features.resolution / config.NORM_RESOLUTION_MAX_MP),
         "sharpness": _clip(
-            math.log1p(max(features.sharpness, 0.0))
-            / math.log1p(config.NORM_SHARPNESS_MAX)
+            math.log1p(max(features.sharpness, 0.0)) / math.log1p(config.NORM_SHARPNESS_MAX)
         ),
         "face_area": _clip(1.0 - features.face_area),
         "provenance": _clip(features.provenance),
@@ -84,9 +81,7 @@ def normalize_features(
             _DINO_KNN_FALLBACK_MAX,
         )
         span = high - low
-        normalized["dino_knn"] = _clip(
-            (features.dino_knn - low) / span if span > 0 else 0.0
-        )
+        normalized["dino_knn"] = _clip((features.dino_knn - low) / span if span > 0 else 0.0)
 
     if features.taste_typicality is not None:
         normalized["taste_typicality"] = _clip(features.taste_typicality)

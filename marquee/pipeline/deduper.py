@@ -71,7 +71,7 @@ class DedupRemoval:
 class DedupResult:
     """Stats and survivors from a dedup run."""
 
-    initial: int = 0                # input count
+    initial: int = 0  # input count
     survivors: list[Path] = field(default_factory=list)
 
     # Stage 2a
@@ -83,7 +83,7 @@ class DedupResult:
     phash_groups_found: int = 0
 
     # Pre-filter
-    size_filter_removed: int = 0    # removed by DEDUP_MIN_POSTER_WIDTH
+    size_filter_removed: int = 0  # removed by DEDUP_MIN_POSTER_WIDTH
     removals: list[DedupRemoval] = field(default_factory=list)
 
     @property
@@ -123,11 +123,11 @@ class PosterDeduper:
     ):
         self._sha256_only = sha256_only
         self._min_width = (
-            min_width if min_width is not None
-            else pipeline_settings.DEDUP_MIN_POSTER_WIDTH
+            min_width if min_width is not None else pipeline_settings.DEDUP_MIN_POSTER_WIDTH
         )
         self._phash_threshold = (
-            phash_threshold if phash_threshold is not None
+            phash_threshold
+            if phash_threshold is not None
             else pipeline_settings.DEDUP_PHASH_THRESHOLD
         )
         self._resolution_by_name = resolution_by_name or {}
@@ -176,9 +176,7 @@ class PosterDeduper:
     # Size filter
     # ------------------------------------------------------------------
 
-    def _filter_by_size(
-        self, paths: list[Path], result: DedupResult
-    ) -> list[Path]:
+    def _filter_by_size(self, paths: list[Path], result: DedupResult) -> list[Path]:
         """Remove candidates narrower than min_width pixels."""
         if self._min_width <= 0:
             return list(paths)
@@ -212,13 +210,16 @@ class PosterDeduper:
                 )
                 logger.debug(
                     "Size-filtered %s: width=%d < min=%d",
-                    p.name, w, self._min_width,
+                    p.name,
+                    w,
+                    self._min_width,
                 )
 
         if result.size_filter_removed:
             logger.info(
                 "Size filter removed %d poster(s) below %dpx width",
-                result.size_filter_removed, self._min_width,
+                result.size_filter_removed,
+                self._min_width,
             )
 
         return kept
@@ -227,9 +228,7 @@ class PosterDeduper:
     # Stage 2a: SHA-256 exact dedup
     # ------------------------------------------------------------------
 
-    def _sha256_dedup(
-        self, paths: list[Path], result: DedupResult
-    ) -> list[Path]:
+    def _sha256_dedup(self, paths: list[Path], result: DedupResult) -> list[Path]:
         """Hash every file. Group by hash. Keep highest res per group."""
         hashes: dict[str, list[Path]] = {}
 
@@ -257,7 +256,8 @@ class PosterDeduper:
                         )
                 logger.debug(
                     "SHA-256 dupe group (x%d): %s",
-                    len(group), {g.name for g in group},
+                    len(group),
+                    {g.name for g in group},
                 )
             survivors.append(kept)
 
@@ -276,9 +276,7 @@ class PosterDeduper:
     # Stage 2b: pHash perceptual dedup
     # ------------------------------------------------------------------
 
-    def _phash_dedup(
-        self, paths: list[Path], result: DedupResult
-    ) -> list[Path]:
+    def _phash_dedup(self, paths: list[Path], result: DedupResult) -> list[Path]:
         """Compute pHash for each survivor. Group near-duplicates. Keep best res."""
         # Compute hash objects once upfront (parsing them per-comparison was
         # the old O(n^2) hot spot).
@@ -346,7 +344,8 @@ class PosterDeduper:
                         )
                 logger.debug(
                     "pHash near-dupe group (x%d): %s",
-                    len(group), {path.name for _, path, _ in group},
+                    len(group),
+                    {path.name for _, path, _ in group},
                 )
             survivors.append(kept)
 
@@ -385,8 +384,7 @@ class PosterDeduper:
         best = scored[0][2]
         log = logger.info if any(x[0] for x in scored) else logger.debug
         log(
-            "DEDUP KEEP | file=%s | preference=%s | resolution=%dpx2 | "
-            "group_size=%d",
+            "DEDUP KEEP | file=%s | preference=%s | resolution=%dpx2 | group_size=%d",
             best.name,
             scored[0][0] or None,
             scored[0][1],

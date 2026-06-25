@@ -36,7 +36,10 @@ class MatroskaAdapter:
             args += ["--subtitle-tracks", ",".join(str(i) for i in plan.keep_tool_track_ids)]
         elif plan.remove_tool_track_ids:
             # Negated form: keep everything except these.
-            args += ["--subtitle-tracks", "!" + ",".join(str(i) for i in plan.remove_tool_track_ids)]
+            args += [
+                "--subtitle-tracks",
+                "!" + ",".join(str(i) for i in plan.remove_tool_track_ids),
+            ]
         else:
             args += ["--no-subtitles"]
         args += [binaries.safe_media_path(src)]

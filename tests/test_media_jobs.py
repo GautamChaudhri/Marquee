@@ -19,7 +19,9 @@ async def _make_job(db, tmp_path, monkeypatch, *, plan_expires_at):
     media_path = movie_dir / "Movie.mkv"
     media_path.write_bytes(b"data")
 
-    movie = Movie(title="Movie", year=2024, folder_path=str(movie_dir), movie_file_path="Movie.mkv", tmdb_id=1)
+    movie = Movie(
+        title="Movie", year=2024, folder_path=str(movie_dir), movie_file_path="Movie.mkv", tmdb_id=1
+    )
     db.add(movie)
     await db.flush()
     media_file = MediaFile(

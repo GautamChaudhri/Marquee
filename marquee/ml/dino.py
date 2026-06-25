@@ -67,9 +67,7 @@ def dino_active(*, log: bool = False) -> bool:
 
 def preprocess_dino(image: Image.Image) -> np.ndarray:
     """RGB -> (1, 3, 224, 224) float32 with ImageNet normalization."""
-    image = image.convert("RGB").resize(
-        (DINO_INPUT_SIZE, DINO_INPUT_SIZE), Image.LANCZOS
-    )
+    image = image.convert("RGB").resize((DINO_INPUT_SIZE, DINO_INPUT_SIZE), Image.LANCZOS)
     arr = np.asarray(image, dtype=np.float32) / 255.0
     arr = (arr - _DINO_MEAN) / _DINO_STD
     return arr.transpose(2, 0, 1)[np.newaxis]
@@ -126,10 +124,7 @@ class DinoImageEncoder:
         if not images:
             return np.empty((0, self.embedding_dim), dtype=np.float32)
         pixels = np.concatenate(
-            [
-                preprocess_dino(item) if isinstance(item, Image.Image) else item
-                for item in images
-            ],
+            [preprocess_dino(item) if isinstance(item, Image.Image) else item for item in images],
             axis=0,
         ).astype(np.float32)
         if not self.supports_batching:

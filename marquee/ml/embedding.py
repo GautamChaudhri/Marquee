@@ -30,8 +30,7 @@ def create_onnx_session(
     path = Path(model_path or pipeline_settings.CLIP_MODEL_PATH)
     if not path.exists():
         raise FileNotFoundError(
-            f"CLIP ONNX model not found: {path}. "
-            "Run `python -m marquee.ml.clip_export` first."
+            f"CLIP ONNX model not found: {path}. Run `python -m marquee.ml.clip_export` first."
         )
     return _create_hardware_session(path, execution_provider=execution_provider)
 
@@ -92,10 +91,7 @@ class CLIPImageEncoder:
             return np.empty((0, self.embedding_dim), dtype=np.float32)
 
         pixels = np.concatenate(
-            [
-                preprocess_image(item) if isinstance(item, Image.Image) else item
-                for item in images
-            ],
+            [preprocess_image(item) if isinstance(item, Image.Image) else item for item in images],
             axis=0,
         ).astype(np.float32)
 

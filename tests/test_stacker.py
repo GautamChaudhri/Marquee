@@ -107,8 +107,6 @@ def test_phash_signal_groups_by_hamming_distance():
     near[0].embedding = imagehash.hex_to_hash("ffffffffffffffff")
     near[1].embedding = imagehash.hex_to_hash("ffffffffffffff0f")  # ~4 bits off
     near[2].embedding = imagehash.hex_to_hash("0000000000000000")  # 64 bits off
-    stacks = assign_stacks(
-        near, config=_cfg(STACK_SIGNAL="phash", STACK_PHASH_MAX_DISTANCE=12)
-    )
+    stacks = assign_stacks(near, config=_cfg(STACK_SIGNAL="phash", STACK_PHASH_MAX_DISTANCE=12))
     # p0+p1 collapse into one design; p2 stands alone.
     assert sorted(len(s.members) for s in stacks) == [1, 2]

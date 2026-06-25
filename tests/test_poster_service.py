@@ -57,7 +57,11 @@ async def test_deploy_writes_file_cache_meta_db_event(db, tmp_path):
     source = _make_image(tmp_path / "src.jpg")
 
     result = await poster_service.deploy(
-        db, movie, source, source="feedback", user_approved=True,
+        db,
+        movie,
+        source,
+        source="feedback",
+        user_approved=True,
         poster_source_url="https://image.tmdb.org/t/p/original/abc.jpg",
     )
 
@@ -81,8 +85,10 @@ async def test_deploy_writes_file_cache_meta_db_event(db, tmp_path):
 
     # Audit event.
     events = (
-        await db.execute(select(ArtworkEvent).where(ArtworkEvent.movie_id == movie.id))
-    ).scalars().all()
+        (await db.execute(select(ArtworkEvent).where(ArtworkEvent.movie_id == movie.id)))
+        .scalars()
+        .all()
+    )
     assert any(e.action == "deploy" for e in events)
 
 

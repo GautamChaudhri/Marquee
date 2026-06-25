@@ -300,9 +300,7 @@ async def submit_feedback(
     if archive is None:
         raise HTTPException(status_code=404, detail="Run archive unavailable")
 
-    movie = (
-        await db.execute(select(Movie).where(Movie.id == run.movie_id))
-    ).scalar_one_or_none()
+    movie = (await db.execute(select(Movie).where(Movie.id == run.movie_id))).scalar_one_or_none()
 
     by_name = {c["orig_filename"]: c for c in archive.get("candidates", [])}
     auto = next((c for c in archive.get("candidates", []) if c.get("rank") == 1), None)
@@ -322,9 +320,17 @@ async def submit_feedback(
         raw, norm, ext = _archive_features(auto)
         records.append(
             _label_record(
-                candidate=auto, label=0, action="reject_all", role="explicit_reject",
-                event_id=event_id, ts=ts, run=run, movie=movie,
-                raw=raw, normalized=norm, extended=ext,
+                candidate=auto,
+                label=0,
+                action="reject_all",
+                role="explicit_reject",
+                event_id=event_id,
+                ts=ts,
+                run=run,
+                movie=movie,
+                raw=raw,
+                normalized=norm,
+                extended=ext,
             )
         )
 
@@ -351,13 +357,25 @@ async def submit_feedback(
             raise HTTPException(status_code=400, detail="No auto-pick available to approve")
 
         # Override = pairwise: negative for the auto-pick the user passed over.
-        if body.action == "override" and auto is not None and auto["orig_filename"] != pick["orig_filename"]:
+        if (
+            body.action == "override"
+            and auto is not None
+            and auto["orig_filename"] != pick["orig_filename"]
+        ):
             raw, norm, ext = _archive_features(auto)
             records.append(
                 _label_record(
-                    candidate=auto, label=0, action="override", role="auto_pick",
-                    event_id=event_id, ts=ts, run=run, movie=movie,
-                    raw=raw, normalized=norm, extended=ext,
+                    candidate=auto,
+                    label=0,
+                    action="override",
+                    role="auto_pick",
+                    event_id=event_id,
+                    ts=ts,
+                    run=run,
+                    movie=movie,
+                    raw=raw,
+                    normalized=norm,
+                    extended=ext,
                 )
             )
 
@@ -377,9 +395,17 @@ async def submit_feedback(
 
         records.append(
             _label_record(
-                candidate=pick, label=1, action=body.action, role="user_pick",
-                event_id=event_id, ts=ts, run=run, movie=movie,
-                raw=raw, normalized=norm, extended=ext,
+                candidate=pick,
+                label=1,
+                action=body.action,
+                role="user_pick",
+                event_id=event_id,
+                ts=ts,
+                run=run,
+                movie=movie,
+                raw=raw,
+                normalized=norm,
+                extended=ext,
                 exemplar_filename=exemplar_added,
             )
         )
@@ -396,9 +422,7 @@ async def submit_feedback(
         favorites_in = [tier for tier in (body.favorites or []) if tier]
         hated_in = body.hated or []
         if not favorites_in and not hated_in:
-            raise HTTPException(
-                status_code=400, detail="rank requires favorites and/or hated"
-            )
+            raise HTTPException(status_code=400, detail="rank requires favorites and/or hated")
 
         def _resolve_all(names: list[str]) -> list[dict]:
             resolved = []
@@ -552,10 +576,14 @@ async def undo_feedback(
 
     # Clear the reviewed marker on any run that pointed at this event.
     runs = (
-        await db.execute(
-            select(PipelineRun).where(PipelineRun.feedback_event_id == body.event_id)
+        (
+            await db.execute(
+                select(PipelineRun).where(PipelineRun.feedback_event_id == body.event_id)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     for run in runs:
         run.feedback_event_id = None
     await db.commit()

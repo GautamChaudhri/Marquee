@@ -7,6 +7,7 @@ from collections.abc import Iterable
 HDR_TAG_ORDER = ("hdr", "hdr10", "hdr10p", "dovi")
 DISPLAY_HDR_TAG_ORDER = ("hdr", "hdr10", "hdr10p", "dovi", "dovi_no_fallback")
 PREFERENCE_TARGET_ORDER = (
+    "sdr",
     "hdr",
     "hdr10",
     "hdr10p",
@@ -183,9 +184,9 @@ def movie_cf_score(rows: Iterable[object]) -> int:
 
 
 def preference_target_choices(profile_targets: Iterable[str]) -> list[str]:
-    """Return user-facing preference targets allowed by a profile's HDR scope."""
+    """Return user-facing preference targets. SDR is always available as the baseline."""
     targets = set(profile_targets)
-    allowed: set[str] = set()
+    allowed: set[str] = {"sdr"}
     for tag in ("hdr", "hdr10", "hdr10p"):
         if tag in targets:
             allowed.add(tag)
@@ -200,13 +201,8 @@ def default_profile_preference(available_targets: Iterable[str]) -> tuple[str | 
     if not choices:
         return None, None
 
-    non_dovi = [choice for choice in choices if choice in {"hdr", "hdr10", "hdr10p"}]
-    if non_dovi:
-        meet_target = non_dovi[0]
-    elif "dovi_no_fallback" in choices:
-        meet_target = "dovi_no_fallback"
-    else:
-        meet_target = choices[0]
+    # Default meet to the lowest-ranked target (typically "sdr")
+    meet_target = choices[0]
 
     meet_rank = preference_rank(meet_target)
     stricter = [choice for choice in choices if preference_rank(choice) > meet_rank]
@@ -238,6 +234,8 @@ def is_valid_preference_pair(meet_target: str | None, exceed_target: str | None)
 
 def preference_target_matches(choice: str, file_tags: set[str]) -> bool:
     """Return whether a file satisfies one preference target predicate."""
+    if choice == "sdr":
+        return not file_tags  # file has no HDR tags at all
     if choice == "hdr":
         return any(tag in file_tags for tag in ("hdr", "hdr10", "hdr10p"))
     if choice == "hdr10":

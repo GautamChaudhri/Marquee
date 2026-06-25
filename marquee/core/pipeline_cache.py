@@ -34,10 +34,10 @@ def _protected_dirs() -> list[Path]:
     """Directories that must never be cleared by this module."""
     return [
         Path(pipeline_settings.FEEDBACK_LABELS_PATH).parent,  # data/feedback
-        Path(pipeline_settings.TRAINING_DATA_DIR),            # data/training/positive
-        Path(pipeline_settings.NEGATIVE_DATA_DIR),            # data/training/negative
-        Path(pipeline_settings.TASTE_PROFILE_PATH).parent,   # data/ml
-        settings.poster_cache_path,                          # data/cache/posters
+        Path(pipeline_settings.TRAINING_DATA_DIR),  # data/training/positive
+        Path(pipeline_settings.NEGATIVE_DATA_DIR),  # data/training/negative
+        Path(pipeline_settings.TASTE_PROFILE_PATH).parent,  # data/ml
+        settings.poster_cache_path,  # data/cache/posters
     ]
 
 

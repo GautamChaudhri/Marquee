@@ -56,15 +56,13 @@ class PosterGate:
                 return GateResult(
                     False,
                     "aesthetic_floor",
-                    f"aesthetic={features.aesthetic:.4f} < "
-                    f"{self.config.GATE_MIN_AESTHETIC:.4f}",
+                    f"aesthetic={features.aesthetic:.4f} < {self.config.GATE_MIN_AESTHETIC:.4f}",
                 )
         if features.knn_sim < self.config.GATE_MIN_KNN_SIM:
             return GateResult(
                 False,
                 "off_style_floor",
-                f"knn_sim={features.knn_sim:.4f} < "
-                f"{self.config.GATE_MIN_KNN_SIM:.4f}",
+                f"knn_sim={features.knn_sim:.4f} < {self.config.GATE_MIN_KNN_SIM:.4f}",
             )
         return _PASS
 
@@ -73,8 +71,7 @@ class PosterGate:
             self.config.GATE_FAN_JUNK_ENABLED
             and features.aesthetic < self.config.GATE_FAN_JUNK_MAX_AESTHETIC
             and features.provenance < self.config.GATE_FAN_JUNK_MAX_PROVENANCE
-            and features.resolution
-            < self.config.GATE_FAN_JUNK_MAX_RESOLUTION_MP
+            and features.resolution < self.config.GATE_FAN_JUNK_MAX_RESOLUTION_MP
         ):
             return GateResult(
                 False,

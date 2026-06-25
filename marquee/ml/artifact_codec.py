@@ -137,11 +137,7 @@ def _artifact_object_keys(kind: ArtifactKind, payload: dict[str, np.ndarray]) ->
 
 
 def _allowed_legacy_object_keys(kind: ArtifactKind) -> set[str]:
-    return (
-        _STRING_LIST_KEYS[kind]
-        | _SCALAR_STRING_KEYS[kind]
-        | _JSON_STRING_ARRAY_KEYS[kind]
-    )
+    return _STRING_LIST_KEYS[kind] | _SCALAR_STRING_KEYS[kind] | _JSON_STRING_ARRAY_KEYS[kind]
 
 
 def needs_migration(kind: ArtifactKind, payload: dict[str, np.ndarray]) -> bool:

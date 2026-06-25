@@ -127,9 +127,7 @@ async def ensure_media_file_for_movie(db: AsyncSession, movie: Movie) -> MediaFi
     """
     existing = (
         await db.execute(
-            select(MediaFile).where(
-                MediaFile.movie_id == movie.id, MediaFile.is_active.is_(True)
-            )
+            select(MediaFile).where(MediaFile.movie_id == movie.id, MediaFile.is_active.is_(True))
         )
     ).scalar_one_or_none()
 

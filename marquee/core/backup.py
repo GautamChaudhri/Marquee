@@ -77,7 +77,13 @@ class BackupService:
             backup_root = self._backup_root(backup_id)
             await asyncio.to_thread(self._validate_backup_pair, backup_root)
             await asyncio.to_thread(self._validate_backup_db, backup_root / _DB_FILENAME)
-            return RestoreResult(backup_id=backup_id, restored=False, restored_db=False, restored_state=False, restart_required=True)
+            return RestoreResult(
+                backup_id=backup_id,
+                restored=False,
+                restored_db=False,
+                restored_state=False,
+                restart_required=True,
+            )
 
     async def scheduler_loop(self) -> None:
         if settings.DEBUG or settings.BACKUP_INTERVAL_HOURS <= 0:
@@ -173,7 +179,12 @@ class BackupService:
     def _snapshot_db(self, db_backup_path: Path) -> None:
         db_backup_path.parent.mkdir(parents=True, exist_ok=True)
         db_url = settings.db_url_resolved.replace("postgresql+asyncpg://", "postgresql://", 1)
-        subprocess.run(["pg_dump", "--format=custom", "--no-owner", "--file", str(db_backup_path), db_url], check=True, capture_output=True, text=True)
+        subprocess.run(
+            ["pg_dump", "--format=custom", "--no-owner", "--file", str(db_backup_path), db_url],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
 
     def _build_state_archive(self, state_path: Path, backup_id: str) -> dict:
         members: list[str] = []
@@ -217,12 +228,12 @@ class BackupService:
             if not (backup_root / name).exists()
         ]
         if missing:
-            raise FileNotFoundError(
-                f"Backup {backup_root.name} is incomplete; missing {missing}"
-            )
+            raise FileNotFoundError(f"Backup {backup_root.name} is incomplete; missing {missing}")
 
     def _validate_backup_db(self, db_path: Path) -> None:
-        result = subprocess.run(["pg_restore", "--list", str(db_path)], check=False, capture_output=True, text=True)
+        result = subprocess.run(
+            ["pg_restore", "--list", str(db_path)], check=False, capture_output=True, text=True
+        )
         if result.returncode != 0:
             raise RuntimeError(f"Backup database validation failed: {result.stderr[:300]}")
 
@@ -297,8 +308,7 @@ class BackupService:
             grouped.setdefault(day, []).append(backup)
         keep_days = sorted(grouped, reverse=True)[:retention_days]
         keep_ids = {
-            max(grouped[day], key=lambda backup: backup.backup_id).backup_id
-            for day in keep_days
+            max(grouped[day], key=lambda backup: backup.backup_id).backup_id for day in keep_days
         }
         deleted = 0
         for backup in backups:

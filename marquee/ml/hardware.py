@@ -156,11 +156,7 @@ def _auto_ocr_workers(tier: str, cpu_count: int) -> tuple[int, int]:
     # On CUDA hosts GPU paddle replicates model weights into VRAM per worker,
     # so the pool is capped lower; if paddle turns out to be CPU-only there,
     # the smaller pool with more threads per worker is still a fast default.
-    workers = (
-        max(1, min(3, cpu_count // 4))
-        if tier == "cuda"
-        else max(1, min(6, cpu_count // 2))
-    )
+    workers = max(1, min(3, cpu_count // 4)) if tier == "cuda" else max(1, min(6, cpu_count // 2))
     omp_threads = max(1, cpu_count // workers)
     return workers, omp_threads
 

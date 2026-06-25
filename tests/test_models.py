@@ -223,9 +223,7 @@ async def test_cascade_delete_seasons(db: AsyncSession):
     await db.flush()
 
     # Verify season exists
-    result = await db.execute(
-        select(Season).where(Season.series_id == series.id)
-    )
+    result = await db.execute(select(Season).where(Season.series_id == series.id))
     assert result.scalar_one_or_none() is not None
 
     # Delete series
@@ -233,9 +231,7 @@ async def test_cascade_delete_seasons(db: AsyncSession):
     await db.flush()
 
     # Season should be gone
-    result = await db.execute(
-        select(Season).where(Season.series_id == series.id)
-    )
+    result = await db.execute(select(Season).where(Season.series_id == series.id))
     assert result.scalar_one_or_none() is None
 
 
@@ -253,9 +249,7 @@ async def test_cascade_delete_episodes(db: AsyncSession):
     await db.delete(series)
     await db.flush()
 
-    result = await db.execute(
-        select(Episode).where(Episode.series_id == series.id)
-    )
+    result = await db.execute(select(Episode).where(Episode.series_id == series.id))
     assert result.scalar_one_or_none() is None
 
 
@@ -323,9 +317,14 @@ async def test_radarr_overlay_tables_columns(db):
     assert {"id", "name", "include_when_renaming", "specifications_json", "synced_at"} <= (
         await _column_names("radarr_custom_formats")
     )
-    assert {"id", "name", "upgrade_allowed", "cutoff_format_score", "min_format_score", "synced_at"} <= (
-        await _column_names("radarr_quality_profiles")
-    )
+    assert {
+        "id",
+        "name",
+        "upgrade_allowed",
+        "cutoff_format_score",
+        "min_format_score",
+        "synced_at",
+    } <= (await _column_names("radarr_quality_profiles"))
     assert {"profile_id", "custom_format_id", "score"} <= (
         await _column_names("radarr_profile_format_items")
     )
@@ -343,4 +342,6 @@ def test_radarr_overlay_model_repr_smoke():
     assert RadarrQualityProfile(id=2, name="UHD", cutoff_format_score=100)
     assert RadarrProfileFormatItem(profile_id=2, custom_format_id=1, score=10)
     assert MovieCustomFormatScore(movie_id=4, custom_format_id=1, score=10)
-    assert RadarrOverlayProfilePreference(profile_id=2, meet_target="hdr", exceed_target="dovi_fallback")
+    assert RadarrOverlayProfilePreference(
+        profile_id=2, meet_target="hdr", exceed_target="dovi_fallback"
+    )

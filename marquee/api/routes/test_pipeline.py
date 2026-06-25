@@ -54,9 +54,7 @@ async def test_pipeline_movie(
     limiter: Annotated[RateLimiter, Depends(get_rate_limiter)],
 ):
     """Run Fetch -> SHA -> Gate(res) -> Style -> Gate(style) -> OCR -> pHash -> Detail -> Gate -> Rank -> Output."""
-    movie = (
-        await db.execute(select(Movie).where(Movie.id == movie_id))
-    ).scalar_one_or_none()
+    movie = (await db.execute(select(Movie).where(Movie.id == movie_id))).scalar_one_or_none()
     if movie is None:
         movies = (await db.execute(select(Movie).order_by(Movie.id))).scalars().all()
         if not movies:
@@ -177,9 +175,7 @@ async def test_pipeline_movie(
                 }
                 for record in ranked[:5]
             ],
-            "original_download_errors": (
-                output_result.download_errors if output_result else []
-            ),
+            "original_download_errors": (output_result.download_errors if output_result else []),
         }
     except HTTPException:
         raise

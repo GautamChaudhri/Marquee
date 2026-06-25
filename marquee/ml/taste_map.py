@@ -106,9 +106,11 @@ def _cluster(coords: np.ndarray) -> np.ndarray | None:
     if epsilon > 0:
         kwargs["cluster_selection_epsilon"] = epsilon
     logger.info(
-        "TASTE MAP | clustering with min_cluster_size=%d, min_samples=%d, "
-        "epsilon=%.2f, method=%s",
-        min_size, min_samples, epsilon, method,
+        "TASTE MAP | clustering with min_cluster_size=%d, min_samples=%d, epsilon=%.2f, method=%s",
+        min_size,
+        min_samples,
+        epsilon,
+        method,
     )
     return HDBSCAN(**kwargs).fit_predict(coords).astype(np.int64)
 
@@ -125,7 +127,7 @@ def _cluster_names(labels: np.ndarray | None, genres: list | None) -> dict[int, 
         if genres is not None:
             genre_counts: Counter[str] = Counter()
             for i in members:
-                for genre in (genres[i] or []):
+                for genre in genres[i] or []:
                     genre_counts[genre] += 1
             top = [g for g, _ in genre_counts.most_common(2)]
             label_text = "/".join(top) if top else "Mixed"
@@ -187,9 +189,7 @@ def build_map() -> dict:
     profile = _load_profile_arrays()
     embeddings = profile["embeddings"]
     # L2-normalize for cosine-correct projection + barycentric placement.
-    embeddings = embeddings / np.maximum(
-        np.linalg.norm(embeddings, axis=1, keepdims=True), 1e-10
-    )
+    embeddings = embeddings / np.maximum(np.linalg.norm(embeddings, axis=1, keepdims=True), 1e-10)
     n = embeddings.shape[0]
 
     coords_3d, method = _reduce(embeddings, 3)
@@ -273,9 +273,7 @@ def load_map(recompute: bool = False) -> dict:
         coords_2d = data["coords_2d"]
         labels = data["cluster_labels"].tolist() if "cluster_labels" in data.files else None
         cluster_names = (
-            decode_unicode_list(data["cluster_names"])
-            if "cluster_names" in data.files
-            else []
+            decode_unicode_list(data["cluster_names"]) if "cluster_names" in data.files else []
         )
         self_knn = data["self_knn"].tolist()
         genres = (
@@ -286,9 +284,7 @@ def load_map(recompute: bool = False) -> dict:
         years = data["years"].tolist() if "years" in data.files else None
         aesthetic = data["aesthetic"].tolist() if "aesthetic" in data.files else None
         colorfulness = (
-            data["global_colorfulness"].tolist()
-            if "global_colorfulness" in data.files
-            else None
+            data["global_colorfulness"].tolist() if "global_colorfulness" in data.files else None
         )
         method = decode_unicode_scalar(data["projection_method"])
         computed_at = decode_unicode_scalar(data["computed_at"])
@@ -385,9 +381,7 @@ def project(embeddings: np.ndarray, k: int | None = None) -> list[dict]:
                 "y": float(position[1]),
                 "z": float(position[2]),
                 "knn_sim": float(np.dot(weights, top_sims)),
-                "neighbors": [
-                    {"name": names[i], "similarity": float(sims[i])} for i in top_idx
-                ],
+                "neighbors": [{"name": names[i], "similarity": float(sims[i])} for i in top_idx],
             }
         )
     return results
@@ -401,9 +395,7 @@ def neighbors_of(poster_name: str, k: int | None = None) -> list[dict] | None:
     if poster_name not in names:
         return None
     embeddings = profile["embeddings"]
-    embeddings = embeddings / np.maximum(
-        np.linalg.norm(embeddings, axis=1, keepdims=True), 1e-10
-    )
+    embeddings = embeddings / np.maximum(np.linalg.norm(embeddings, axis=1, keepdims=True), 1e-10)
     index = names.index(poster_name)
     sims = embeddings @ embeddings[index]
     sims[index] = -np.inf

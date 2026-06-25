@@ -25,8 +25,7 @@ def _event(movie_id, favorites, hated, feats, **extra):
         "favorites": favorites,
         "hated": hated,
         "candidates": [
-            {"orig_filename": name, "normalized_features": vec}
-            for name, vec in feats.items()
+            {"orig_filename": name, "normalized_features": vec} for name, vec in feats.items()
         ],
         **extra,
     }

@@ -40,11 +40,13 @@ def test_process_image_uses_per_call_tokens(tmp_path: Path, monkeypatch: pytest.
 
     class TitleOCR:
         def predict(self, _image):
-            return [{
-                "rec_texts": ["dune"],
-                "rec_scores": [0.99],
-                "rec_polys": [[[100, 300], [400, 300], [400, 360], [100, 360]]],
-            }]
+            return [
+                {
+                    "rec_texts": ["dune"],
+                    "rec_scores": [0.99],
+                    "rec_polys": [[[100, 300], [400, 300], [400, 360], [100, 360]]],
+                }
+            ]
 
     monkeypatch.setattr(ocr_filter, "_worker_ocr", TitleOCR())
     # Deliberately wrong globals: if the decision used these it would be no_title.
@@ -105,9 +107,7 @@ def _make_batch_movie(tmp_path: Path, movie_id: int, title: str, files: list[str
     return ctx
 
 
-def test_batch_ocr_fallback_is_isolated_per_movie(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
+def test_batch_ocr_fallback_is_isolated_per_movie(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """A movie with a titled survivor must NOT rescue its textless posters,
     while a movie with zero titled survivors must rescue its own — the no-text
     fallback is per movie, never across the shared batch."""
@@ -146,13 +146,37 @@ def test_rejected_by_stage_groups_each_reason():
         "tmdb_id": 2,
         "candidates": [
             {"orig_filename": "r1.jpg", "rank": 1, "final_score": 0.9, "contributions": {}},
-            {"orig_filename": "sha.jpg", "rejection_reason": "dedup_sha256", "stage_reached": "dedup"},
-            {"orig_filename": "res.jpg", "rejection_reason": "resolution_floor", "stage_reached": "gate"},
-            {"orig_filename": "aes.jpg", "rejection_reason": "aesthetic_floor", "stage_reached": "gate"},
-            {"orig_filename": "off.jpg", "rejection_reason": "off_style_floor", "stage_reached": "gate"},
+            {
+                "orig_filename": "sha.jpg",
+                "rejection_reason": "dedup_sha256",
+                "stage_reached": "dedup",
+            },
+            {
+                "orig_filename": "res.jpg",
+                "rejection_reason": "resolution_floor",
+                "stage_reached": "gate",
+            },
+            {
+                "orig_filename": "aes.jpg",
+                "rejection_reason": "aesthetic_floor",
+                "stage_reached": "gate",
+            },
+            {
+                "orig_filename": "off.jpg",
+                "rejection_reason": "off_style_floor",
+                "stage_reached": "gate",
+            },
             {"orig_filename": "ocr.jpg", "rejection_reason": "text_heavy", "stage_reached": "ocr"},
-            {"orig_filename": "ph.jpg", "rejection_reason": "dedup_phash", "stage_reached": "phash"},
-            {"orig_filename": "err.jpg", "rejection_reason": "feature_error: boom", "stage_reached": "features"},
+            {
+                "orig_filename": "ph.jpg",
+                "rejection_reason": "dedup_phash",
+                "stage_reached": "phash",
+            },
+            {
+                "orig_filename": "err.jpg",
+                "rejection_reason": "feature_error: boom",
+                "stage_reached": "features",
+            },
         ],
     }
     payload = build_results_payload(
@@ -199,9 +223,9 @@ def test_clear_pipeline_cache_spares_protected(tmp_path_factory):
 
     result = pc.clear_pipeline_cache(include_embeddings=False, include_archives=False)
 
-    assert list(work.iterdir()) == []      # working tree contents removed
-    assert list(staging.iterdir()) == []   # staging cleared
-    assert (posters / "5.jpg").exists()    # deployed-poster cache untouched
+    assert list(work.iterdir()) == []  # working tree contents removed
+    assert list(staging.iterdir()) == []  # staging cleared
+    assert (posters / "5.jpg").exists()  # deployed-poster cache untouched
     assert result["total_freed_bytes"] >= 150
 
 
@@ -219,9 +243,9 @@ def test_copy_library_posters_names_and_dedupes(tmp_path: Path):
     dest.mkdir()
 
     movies = [
-        ("Dune", 2021, None, str(source)),      # copied via poster_path
-        ("Dune", 2021, None, str(source)),      # same title+year → skipped
-        ("No Source", 2000, None, None),        # no source → skipped
+        ("Dune", 2021, None, str(source)),  # copied via poster_path
+        ("Dune", 2021, None, str(source)),  # same title+year → skipped
+        ("No Source", 2000, None, None),  # no source → skipped
     ]
     count = _copy_library_posters(movies, dest)
 

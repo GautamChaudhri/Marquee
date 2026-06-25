@@ -1,6 +1,6 @@
 # 22 — Radarr Overlay Page
 
-**Status:** Design phase (research complete, implementation pending)
+**Status:** Vertical slice built (2026-06-24). Tier ladder UX implemented for preference targets.
 **Created:** 2026-06-24
 **Depends on:** Radarr API v3 configured (already wired in `config.py`)
 
@@ -13,6 +13,19 @@ HDR-target analysis.
 
 The page lives under the **Toolbox** nav group (renamed from "HDR" to "Radarr Overlay").
 It is read-only — no mutations to Radarr or the Marquee DB (aside from syncing the data in).
+
+### UX Decision — Tier Ladder for Preference Targets
+
+The per-profile meet/exceed target selector uses a **vertical tier ladder** instead of `<select>` dropdowns.
+This reinforces the hierarchy (HDR → HDR10 → HDR10+ → DoVi any → DoVi+HDR) visually:
+
+- **Green zone** — tiers at or above the meet target (but below exceed). File qualifies as "meets target."
+- **Gold zone** — tiers at or above the exceed target. File "exceeds target."
+- **Gray zone** — tiers below meet target. Automatically excluded.
+- **Collapsible** — after setting preferences, the ladder collapses to a compact summary. Click to edit.
+- **Click to set** — click any tier to set meet; click a higher tier to set exceed; click current boundary to clear.
+
+`below_target` status text in the movie table uses `--bad` (red) for immediate visual identification.
 
 ---
 

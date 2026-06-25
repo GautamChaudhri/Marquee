@@ -239,11 +239,7 @@ def measure_exemplar_features(
                     message=f"Detecting faces for {item_label}.",
                 )
                 boxes = face_detector.detect(standardized)
-                features.update(
-                    face_geometry(
-                        boxes, standardized.shape[1], standardized.shape[0]
-                    )
-                )
+                features.update(face_geometry(boxes, standardized.shape[1], standardized.shape[0]))
 
             if person_detector is not None:
                 _emit_progress(
@@ -278,9 +274,7 @@ def measure_exemplar_features(
                 result = text_filter.is_acceptable(path)
                 with Image.open(path) as image:
                     width, height = image.size
-                features.update(
-                    title_geometry(result.title_bbox, width, height)
-                )
+                features.update(title_geometry(result.title_bbox, width, height))
             except Exception as exc:
                 tqdm.write(f"[WARN] OCR title geometry failed for {path.name}: {exc}")
 
@@ -325,10 +319,7 @@ def compute_dino_self_knn(dino_embeddings: np.ndarray, k: int) -> np.ndarray:
     sims = dino_embeddings @ dino_embeddings.T
     np.fill_diagonal(sims, -np.inf)
     return np.asarray(
-        [
-            weighted_topk_mean(row[np.isfinite(row)], k, weighting="mean")
-            for row in sims
-        ],
+        [weighted_topk_mean(row[np.isfinite(row)], k, weighting="mean") for row in sims],
         dtype=np.float64,
     )
 
@@ -367,7 +358,9 @@ def print_diagnostics(
     print(f"Model: {pipeline_settings.AI_MODEL}")
     print(f"Posters: {len(names)}")
     print(f"Centroid cosine: mean={centroid_sims.mean():.4f} std={centroid_sims.std():.4f}")
-    print(f"Top-{neighbor_count} neighbor cosine: mean={knn_means.mean():.4f} std={knn_means.std():.4f}")
+    print(
+        f"Top-{neighbor_count} neighbor cosine: mean={knn_means.mean():.4f} std={knn_means.std():.4f}"
+    )
 
     if neg_embeddings is not None and len(neg_embeddings):
         pos_sims = neg_embeddings @ embeddings.T
@@ -535,9 +528,7 @@ def _run_build(args) -> Path:
                 "fix or remove the unreadable files and rerun."
             )
         dino_model_name = dino_encoder.model_name
-        dino_self_knn = compute_dino_self_knn(
-            dino_embeddings, pipeline_settings.K_NEIGHBORS
-        )
+        dino_self_knn = compute_dino_self_knn(dino_embeddings, pipeline_settings.K_NEIGHBORS)
         logger.info("Taste profile DINO embeddings complete: %d exemplars", len(dino_kept))
         if neg_paths:
             neg_dino, neg_dino_kept = extract_embeddings(

@@ -77,9 +77,7 @@ def _exemplar_stats() -> dict:
         "profile_present": path.exists(),
     }
     if path.exists():
-        stats["last_rebuild"] = datetime.fromtimestamp(
-            path.stat().st_mtime, tz=UTC
-        ).isoformat()
+        stats["last_rebuild"] = datetime.fromtimestamp(path.stat().st_mtime, tz=UTC).isoformat()
         try:
             store = NumpyTasteStore()
             stats["count"] = store.size
@@ -136,14 +134,12 @@ async def taste_status(db: Annotated[AsyncSession, Depends(get_db)]):
     summary = feedback_store.summary()
 
     # Genre spread over labeled movies (v2 rows carry movie_id).
-    movie_ids = [
-        int(key) for key in summary["movie_keys"] if key.lstrip("-").isdigit()
-    ]
+    movie_ids = [int(key) for key in summary["movie_keys"] if key.lstrip("-").isdigit()]
     genres: Counter[str] = Counter()
     if movie_ids:
         rows = (
-            await db.execute(select(Movie.genres).where(Movie.id.in_(movie_ids)))
-        ).scalars().all()
+            (await db.execute(select(Movie.genres).where(Movie.id.in_(movie_ids)))).scalars().all()
+        )
         for movie_genres in rows:
             for genre in movie_genres or []:
                 genres[genre] += 1
@@ -360,7 +356,11 @@ async def retrain_taste(
     limiter.record("taste_retrain")
     job = await job_manager.create(
         db=db,
-        job_type="taste_rebuild", priority=90, resources={"gpu": 1}, subject_type="taste_profile", subject_id="default",
+        job_type="taste_rebuild",
+        priority=90,
+        resources={"gpu": 1},
+        subject_type="taste_profile",
+        subject_id="default",
         payload={"source": source},
         idempotency_key=f"taste-rebuild:{source}:{int(time.time() // settings.RATE_TASTE_RETRAIN_SECONDS)}",
         max_attempts=1,
@@ -383,8 +383,10 @@ async def retrain_learned_head(
     limiter.record("head_retrain")
     job = await job_manager.create(
         db=db,
-        job_type="learned_head_train", priority=70,
-        subject_type="learned_head", subject_id="default",
+        job_type="learned_head_train",
+        priority=70,
+        subject_type="learned_head",
+        subject_id="default",
         idempotency_key=f"head-train:{int(time.time() // settings.RATE_TASTE_RETRAIN_SECONDS)}",
         max_attempts=1,
     )
@@ -397,7 +399,10 @@ async def cancel_retrain_taste(db: Annotated[AsyncSession, Depends(get_db)]):
     job = (
         await db.execute(
             select(Job)
-            .where(Job.type == "taste_rebuild", Job.status.in_(("queued", "waiting_resource", "claimed", "running")))
+            .where(
+                Job.type == "taste_rebuild",
+                Job.status.in_(("queued", "waiting_resource", "claimed", "running")),
+            )
             .order_by(Job.created_at.desc())
             .limit(1)
         )
@@ -437,7 +442,12 @@ async def rebuild_map(
 
     limiter.record("taste_map_rebuild")
     job = await job_manager.create(
-        db, job_type="taste_map", priority=50, resources={"gpu": 1}, subject_type="taste_profile", subject_id="default",
+        db,
+        job_type="taste_map",
+        priority=50,
+        resources={"gpu": 1},
+        subject_type="taste_profile",
+        subject_id="default",
         idempotency_key=f"taste-map:{int(time.time() // settings.RATE_TASTE_MAP_REBUILD_SECONDS)}",
     )
     return job_summary(job)

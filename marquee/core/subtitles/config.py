@@ -105,4 +105,3 @@ try:
     subtitle_settings = SubtitleSettings(**load_overrides())
 except Exception:
     subtitle_settings = SubtitleSettings()
-

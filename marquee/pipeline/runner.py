@@ -196,9 +196,7 @@ def _stage_done(
 ) -> None:
     elapsed = time.perf_counter() - started
     timings[name] = round(elapsed, 3)
-    logger.info(
-        "STAGE END | %s | survivors=%d | elapsed=%.3fs", name, survivors, elapsed
-    )
+    logger.info("STAGE END | %s | survivors=%d | elapsed=%.3fs", name, survivors, elapsed)
     _emit(
         progress,
         ProgressEvent(
@@ -252,16 +250,10 @@ def _log_detail_features(
     if features.typicality_detail and calibration is not None:
         entries = []
         for name in sorted(features.typicality_detail):
-            value = (
-                features.aesthetic
-                if name == "aesthetic"
-                else features.extended.get(name)
-            )
+            value = features.aesthetic if name == "aesthetic" else features.extended.get(name)
             band = calibration.band(name)
             band_text = (
-                f"[p10={band.p10:.3f} med={band.median:.3f} p90={band.p90:.3f}]"
-                if band
-                else "[?]"
+                f"[p10={band.p10:.3f} med={band.median:.3f} p90={band.p90:.3f}]" if band else "[?]"
             )
             entries.append(
                 f"{name}={value:.4f}->{features.typicality_detail[name]:.3f} {band_text}"
@@ -340,9 +332,7 @@ def _json_default(obj: object) -> object:
 
 
 def write_run_json(path: Path, payload: dict[str, object]) -> None:
-    path.write_text(
-        json.dumps(payload, indent=2, default=_json_default), encoding="utf-8"
-    )
+    path.write_text(json.dumps(payload, indent=2, default=_json_default), encoding="utf-8")
 
 
 async def _download_poster(
@@ -392,8 +382,7 @@ async def fetch_candidates(
     except Exception as exc:
         primary_name = None
         logger.warning(
-            "FETCH | primary poster lookup failed (%s) — "
-            "official_family disabled this run",
+            "FETCH | primary poster lookup failed (%s) — official_family disabled this run",
             exc,
         )
     logger.info("FETCH | primary_poster=%s", primary_name)
@@ -478,9 +467,7 @@ async def fetch_and_download(
 
     cached_root_files = {path.name: path for path in _root_images(originals_dir)}
     all_files = sorted(
-        cached_root_files[filename]
-        for filename in candidate_map
-        if filename in cached_root_files
+        cached_root_files[filename] for filename in candidate_map if filename in cached_root_files
     )
     if not all_files:
         raise RuntimeError("No poster files were downloaded or found in the cache")
@@ -592,9 +579,7 @@ def run_sync_stages(
     # Gate 1: resolution floor — pure TMDB metadata, before any inference.
     # As of design 18 §7, metadata gates run pre-download in fetch_and_download,
     # so this loop is a safety net — it should never fire under normal operation.
-    stage_started = _stage_start(
-        "gate-resolution", total=sha_result.final, progress=progress
-    )
+    stage_started = _stage_start("gate-resolution", total=sha_result.final, progress=progress)
     resolution_survivors: list[Path] = []
     for path in sorted(sha_result.survivors):
         record = records[path.name]
@@ -629,9 +614,7 @@ def run_sync_stages(
         "style-features", total=len(resolution_survivors), progress=progress
     )
     style_items = [(path, candidate_map[path.name]) for path in resolution_survivors]
-    style_results = feature_extractor.extract_style_batch(
-        style_items, primary_name=primary_name
-    )
+    style_results = feature_extractor.extract_style_batch(style_items, primary_name=primary_name)
     styled: list[Path] = []
     for (path, _candidate), result in zip(style_items, style_results, strict=True):
         record = records[path.name]
@@ -653,9 +636,7 @@ def run_sync_stages(
                 sort_keys=True,
             ),
         )
-    _stage_done(
-        "style-features", stage_started, timings, survivors=len(styled), progress=progress
-    )
+    _stage_done("style-features", stage_started, timings, survivors=len(styled), progress=progress)
 
     # Gate 2: style gates (aesthetic floor + rescue, off-style floor).
     stage_started = _stage_start("gate-style", total=len(styled), progress=progress)
@@ -700,8 +681,7 @@ def run_sync_stages(
         record = records[result.image_path.name]
         record.stage_reached = "ocr"
         logger.info(
-            "OCR | file=%s | accepted=%s | reason=%s | text=%r | "
-            "title_bbox=%s | residual_boxes=%d",
+            "OCR | file=%s | accepted=%s | reason=%s | text=%r | title_bbox=%s | residual_boxes=%d",
             result.image_path.name,
             result.accepted,
             result.reason,
@@ -712,9 +692,7 @@ def run_sync_stages(
         if not result.accepted:
             reason = result.reason or "ocr_rejected"
             record.rejection_reason = reason
-            destination_dir = (
-                errored_dir if reason.startswith("ocr_error") else ocr_rejected_dir
-            )
+            destination_dir = errored_dir if reason.startswith("ocr_error") else ocr_rejected_dir
             record.image_path = _copy_with_reason(
                 result.image_path,
                 destination_dir,
@@ -732,9 +710,7 @@ def run_sync_stages(
     if pipeline_settings.STACK_ENABLED:
         outcome.counts["phash_survivors"] = len(ocr_survivors)
     else:
-        stage_started = _stage_start(
-            "phash", total=len(ocr_survivors), progress=progress
-        )
+        stage_started = _stage_start("phash", total=len(ocr_survivors), progress=progress)
         ocr_survivor_paths = [r.image_path for r in ocr_survivors]
         phash_rejected_dir = out_dir / "3-phash-rejected"
         phash_rejected_dir.mkdir()
@@ -767,27 +743,21 @@ def run_sync_stages(
                 phash_rejected_dir,
                 "phash",
             )
-        ocr_survivors = [
-            r for r in ocr_survivors if r.image_path.name in phash_survivor_names
-        ]
+        ocr_survivors = [r for r in ocr_survivors if r.image_path.name in phash_survivor_names]
         outcome.counts["phash_survivors"] = len(ocr_survivors)
         _stage_done(
             "phash", stage_started, timings, survivors=len(ocr_survivors), progress=progress
         )
 
     # Stage 4b: detail features + the remaining hard gate.
-    stage_started = _stage_start(
-        "detail-features", total=len(ocr_survivors), progress=progress
-    )
+    stage_started = _stage_start("detail-features", total=len(ocr_survivors), progress=progress)
     diagnostic_scorer = select_scorer()
     passed: list[CandidateScore] = []
     detail_items = [(records[r.image_path.name].features, r) for r in ocr_survivors]
     # The stacker reuses the DINOv2 vectors computed here as its grouping
     # signal — capture them keyed by item index (aligned to ocr_survivors).
     dino_vectors: dict = {}
-    detail_results = feature_extractor.complete_batch(
-        detail_items, dino_vectors_out=dino_vectors
-    )
+    detail_results = feature_extractor.complete_batch(detail_items, dino_vectors_out=dino_vectors)
     for index, (ocr_result, detail_result) in enumerate(
         zip(ocr_survivors, detail_results, strict=True)
     ):
@@ -828,9 +798,7 @@ def run_sync_stages(
                 decision.detail,
             )
     outcome.counts["feature_survivors"] = len(passed)
-    _stage_done(
-        "detail-features", stage_started, timings, survivors=len(passed), progress=progress
-    )
+    _stage_done("detail-features", stage_started, timings, survivors=len(passed), progress=progress)
 
     gated_dir = out_dir / "gated"
     place_gated(gated, gated_dir)
@@ -842,9 +810,7 @@ def run_sync_stages(
         return outcome
 
     # Stage 6: within-movie ranking.
-    stage_started = _stage_start(
-        "rank", total=len(passed), progress=progress
-    )
+    stage_started = _stage_start("rank", total=len(passed), progress=progress)
     logger.info("RANK | scorer=%s", diagnostic_scorer.name)
     ranked = diagnostic_scorer.rank(passed)
     # Stage 6b: group same-design variants into stacks and rank designs

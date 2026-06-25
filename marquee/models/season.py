@@ -44,7 +44,4 @@ class Season(Base, TimestampMixin, ArtworkMixin):
     )
 
     def __repr__(self) -> str:
-        return (
-            f"<Season(id={self.id}, series_id={self.series_id}, "
-            f"season={self.season_number})>"
-        )
+        return f"<Season(id={self.id}, series_id={self.series_id}, season={self.season_number})>"

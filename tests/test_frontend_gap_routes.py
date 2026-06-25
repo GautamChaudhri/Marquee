@@ -52,7 +52,9 @@ async def test_review_queue_latest_unreviewed_run_per_movie(
         has_hdr=True,
         has_dv=True,
     )
-    bravo = Movie(title="Bravo", year=2021, folder_path="/m/b", movie_file_path="bravo.mkv", tmdb_id=2)
+    bravo = Movie(
+        title="Bravo", year=2021, folder_path="/m/b", movie_file_path="bravo.mkv", tmdb_id=2
+    )
     db.add_all([alpha, bravo])
     await db.flush()
     db.add_all(
@@ -252,13 +254,11 @@ async def test_activity_feed_unifies_sources(db: AsyncSession, client: AsyncClie
     assert by_id["pipeline-run:run-1"]["level"] == "warn"
     assert by_id["pipeline-run:run-1"]["movie_id"] == movie.id
     assert any(
-        event["id"].startswith("media-job-event:")
-        and event["message"] == "Scanning subtitles"
+        event["id"].startswith("media-job-event:") and event["message"] == "Scanning subtitles"
         for event in body["events"]
     )
     assert any(
-        event["id"].startswith("artwork:") and event["level"] == "ok"
-        for event in body["events"]
+        event["id"].startswith("artwork:") and event["level"] == "ok" for event in body["events"]
     )
 
 
@@ -282,7 +282,10 @@ async def test_settings_redacts_secrets(client: AsyncClient, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_put_settings_success(client: AsyncClient, monkeypatch, tmp_path):
-    monkeypatch.setattr("marquee.core.subtitles.config._overrides_path", lambda: tmp_path / "subtitle_overrides.json")
+    monkeypatch.setattr(
+        "marquee.core.subtitles.config._overrides_path",
+        lambda: tmp_path / "subtitle_overrides.json",
+    )
 
     payload = {
         "subtitles": {
@@ -293,8 +296,8 @@ async def test_put_settings_success(client: AsyncClient, monkeypatch, tmp_path):
         "subgen": {
             "url": "http://whisper.service:9000",
             "mode": "translate",
-            "callback_token": "supersecrettoken"
-        }
+            "callback_token": "supersecrettoken",
+        },
     }
 
     resp = await client.put("/api/settings", json=payload)
@@ -331,26 +334,20 @@ async def test_put_settings_success(client: AsyncClient, monkeypatch, tmp_path):
 
 @pytest.mark.asyncio
 async def test_put_settings_validation_failure(client: AsyncClient, monkeypatch, tmp_path):
-    monkeypatch.setattr("marquee.core.subtitles.config._overrides_path", lambda: tmp_path / "subtitle_overrides.json")
+    monkeypatch.setattr(
+        "marquee.core.subtitles.config._overrides_path",
+        lambda: tmp_path / "subtitle_overrides.json",
+    )
 
     # pass invalid scan_concurrency (type error)
-    payload = {
-        "subtitles": {
-            "scan_concurrency": "not-an-int"
-        }
-    }
+    payload = {"subtitles": {"scan_concurrency": "not-an-int"}}
     resp = await client.put("/api/settings", json=payload)
     assert resp.status_code == 422
 
     # pass invalid preferred_languages (type error)
-    payload = {
-        "subtitles": {
-            "preferred_languages": "not-a-list"
-        }
-    }
+    payload = {"subtitles": {"preferred_languages": "not-a-list"}}
     resp = await client.put("/api/settings", json=payload)
     assert resp.status_code == 422
-
 
 
 @pytest.mark.asyncio
@@ -371,7 +368,13 @@ async def test_extract_subtitle_track_endpoint(
     video_file.write_bytes(b"mock video data")
 
     # Create records in database
-    movie = Movie(title="Test Movie", year=2024, folder_path=str(tmp_path), movie_file_path="test_movie.mkv", tmdb_id=123)
+    movie = Movie(
+        title="Test Movie",
+        year=2024,
+        folder_path=str(tmp_path),
+        movie_file_path="test_movie.mkv",
+        tmdb_id=123,
+    )
     db.add(movie)
     await db.flush()
 
@@ -417,7 +420,9 @@ async def test_extract_subtitle_track_endpoint(
     await db.commit()
 
     # 1. Success case: extracting embedded track
-    resp = await client.post(f"/api/media-files/{media_file.id}/subtitles/{embedded_track.id}/extract")
+    resp = await client.post(
+        f"/api/media-files/{media_file.id}/subtitles/{embedded_track.id}/extract"
+    )
     assert resp.status_code == 202
     data = resp.json()
     assert "job_id" in data
@@ -426,21 +431,24 @@ async def test_extract_subtitle_track_endpoint(
     # Verify that MediaJob was created in DB
     job_id = data["job_id"]
     from sqlalchemy import select
-    job = (await db.execute(
-        select(MediaJob).where(MediaJob.job_id == job_id)
-    )).scalar_one_or_none()
+
+    job = (await db.execute(select(MediaJob).where(MediaJob.job_id == job_id))).scalar_one_or_none()
     assert job is not None
     assert job.operation == "subtitle_extract"
     assert job.status == "confirmed"
     assert job.media_file_id == media_file.id
 
     # 2. Error case: track does not exist
-    resp = await client.post(f"/api/media-files/{media_file.id}/subtitles/nonexistent-track/extract")
+    resp = await client.post(
+        f"/api/media-files/{media_file.id}/subtitles/nonexistent-track/extract"
+    )
     assert resp.status_code == 404
     assert resp.json()["detail"] == "Embedded track not found"
 
     # 3. Error case: track is external
-    resp = await client.post(f"/api/media-files/{media_file.id}/subtitles/{external_track.id}/extract")
+    resp = await client.post(
+        f"/api/media-files/{media_file.id}/subtitles/{external_track.id}/extract"
+    )
     assert resp.status_code == 404
     assert resp.json()["detail"] == "Embedded track not found"
 
@@ -462,9 +470,7 @@ async def test_scan_library_subtitles_endpoint(
 
     # Verify that Job was created in DB
     job_id = data["job_id"]
-    job = (await db.execute(
-        select(Job).where(Job.id == job_id)
-    )).scalar_one_or_none()
+    job = (await db.execute(select(Job).where(Job.id == job_id))).scalar_one_or_none()
     assert job is not None
     assert job.type == "subtitle_scan_all"
     assert job.status == "queued"
@@ -478,13 +484,21 @@ async def test_subtitle_scan_all_handler(db: AsyncSession):
     from marquee.core.jobs.builtin_handlers import subtitle_scan_all
 
     # Setup configurations
-    movie1 = Movie(title="Movie 1", year=2024, folder_path="/tmp/m1", movie_file_path="m1.mkv", tmdb_id=101)
-    movie2 = Movie(title="Movie 2", year=2024, folder_path="/tmp/m2", movie_file_path="m2.mkv", tmdb_id=102)
+    movie1 = Movie(
+        title="Movie 1", year=2024, folder_path="/tmp/m1", movie_file_path="m1.mkv", tmdb_id=101
+    )
+    movie2 = Movie(
+        title="Movie 2", year=2024, folder_path="/tmp/m2", movie_file_path="m2.mkv", tmdb_id=102
+    )
     db.add_all([movie1, movie2])
     await db.flush()
 
-    mf1 = MediaFile(source="radarr", source_key="k1", movie_id=movie1.id, path="m1.mkv", is_active=True)
-    mf2 = MediaFile(source="radarr", source_key="k2", movie_id=movie2.id, path="m2.mkv", is_active=True)
+    mf1 = MediaFile(
+        source="radarr", source_key="k1", movie_id=movie1.id, path="m1.mkv", is_active=True
+    )
+    mf2 = MediaFile(
+        source="radarr", source_key="k2", movie_id=movie2.id, path="m2.mkv", is_active=True
+    )
     db.add_all([mf1, mf2])
     await db.flush()
 
@@ -499,9 +513,9 @@ async def test_subtitle_scan_all_handler(db: AsyncSession):
     assert res == {"queued_scans": 1}
 
     # Verify that a MediaJob was created for mf2
-    media_jobs = (await db.execute(
-        select(MediaJob).where(MediaJob.media_file_id == mf2.id)
-    )).scalars().all()
+    media_jobs = (
+        (await db.execute(select(MediaJob).where(MediaJob.media_file_id == mf2.id))).scalars().all()
+    )
     assert len(media_jobs) == 1
     assert media_jobs[0].operation == "subtitle_scan"
     assert media_jobs[0].status == "queued"
@@ -520,11 +534,19 @@ async def test_build_argv_heals_null_tool_track_id(db: AsyncSession):
     from marquee.core.subtitles.adapters.matroska import MatroskaAdapter
 
     # Create dummy movie & media file
-    movie = Movie(title="Dummy Movie", year=2024, folder_path="/tmp/dummy", movie_file_path="dummy.mkv", tmdb_id=999)
+    movie = Movie(
+        title="Dummy Movie",
+        year=2024,
+        folder_path="/tmp/dummy",
+        movie_file_path="dummy.mkv",
+        tmdb_id=999,
+    )
     db.add(movie)
     await db.flush()
 
-    media_file = MediaFile(source="radarr", source_key="dummy-key", movie_id=movie.id, path="dummy.mkv", is_active=True)
+    media_file = MediaFile(
+        source="radarr", source_key="dummy-key", movie_id=movie.id, path="dummy.mkv", is_active=True
+    )
     db.add(media_file)
     await db.flush()
 
@@ -562,11 +584,12 @@ async def test_build_argv_heals_null_tool_track_id(db: AsyncSession):
                 is_commentary=False,
                 tool_track_id=3,  # Present in probe!
             )
-        ]
+        ],
     )
 
     from pathlib import Path
     from marquee.core.media_files import ResolvedMediaFile
+
     resolved = ResolvedMediaFile(
         media_file_id=media_file.id,
         source="radarr",
@@ -583,7 +606,14 @@ async def test_build_argv_heals_null_tool_track_id(db: AsyncSession):
 
     # Call _build_argv - it should align on the fly and not raise UnsupportedContainerError
     argv, expected_delta, ext_rem = await _build_argv(
-        db, None, "subtitle_remove", request, source_probe, adapter, Path("/tmp/dummy_out.mkv"), resolved
+        db,
+        None,
+        "subtitle_remove",
+        request,
+        source_probe,
+        adapter,
+        Path("/tmp/dummy_out.mkv"),
+        resolved,
     )
 
     # Check track.tool_track_id is updated

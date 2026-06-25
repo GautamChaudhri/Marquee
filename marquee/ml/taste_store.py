@@ -145,53 +145,38 @@ class NumpyTasteStore(TasteStore):
             self._centroid = np.asarray(data["centroid_emb"], dtype=np.float32)
             names = decode_unicode_list(data["poster_names"])
             if self._embeddings.ndim != 2 or self._embeddings.shape[1] != 512:
-                raise RuntimeError(
-                    f"Invalid taste embedding shape: {self._embeddings.shape}"
-                )
+                raise RuntimeError(f"Invalid taste embedding shape: {self._embeddings.shape}")
             if self._centroid.shape != (512,):
-                raise RuntimeError(
-                    f"Invalid taste centroid shape: {self._centroid.shape}"
-                )
+                raise RuntimeError(f"Invalid taste centroid shape: {self._centroid.shape}")
             if len(names) != self._embeddings.shape[0]:
-                raise RuntimeError(
-                    "Taste profile poster_names length does not match embeddings"
-                )
+                raise RuntimeError("Taste profile poster_names length does not match embeddings")
             self._metadata = [{"filename": str(name)} for name in names]
 
             if "neg_embeddings" in data:
                 negatives = np.asarray(data["neg_embeddings"], dtype=np.float32)
                 if negatives.ndim != 2 or negatives.shape[1] != 512:
-                    raise RuntimeError(
-                        f"Invalid negative embedding shape: {negatives.shape}"
-                    )
+                    raise RuntimeError(f"Invalid negative embedding shape: {negatives.shape}")
                 self._neg_embeddings = negatives
 
             # Optional DINOv2 space (second style opinion).
             if "dino_embeddings" in data:
-                self._dino_embeddings = np.asarray(
-                    data["dino_embeddings"], dtype=np.float32
-                )
+                self._dino_embeddings = np.asarray(data["dino_embeddings"], dtype=np.float32)
                 self._dino_model_name = decode_unicode_scalar(data["dino_model_name"])
                 if self._dino_embeddings.shape[0] != self._embeddings.shape[0]:
-                    raise RuntimeError(
-                        "dino_embeddings count does not match CLIP exemplar count"
-                    )
+                    raise RuntimeError("dino_embeddings count does not match CLIP exemplar count")
                 if "neg_dino_embeddings" in data:
                     self._neg_dino_embeddings = np.asarray(
                         data["neg_dino_embeddings"], dtype=np.float32
                     )
                 if DINO_SELF_KNN_KEY in data:
-                    self._dino_self_knn = np.asarray(
-                        data[DINO_SELF_KNN_KEY], dtype=np.float64
-                    )
+                    self._dino_self_knn = np.asarray(data[DINO_SELF_KNN_KEY], dtype=np.float64)
             profile_arrays = {key: data[key] for key in data.files}
             if GENRES_JSON_KEY in profile_arrays:
                 profile_arrays["genres"] = decode_json_string_array(profile_arrays[GENRES_JSON_KEY])
             self._calibration = TasteCalibration.from_profile_arrays(profile_arrays)
 
         logger.info(
-            "Loaded taste profile %s: %d exemplars (%d negative), "
-            "dino=%s, calibration=%s",
+            "Loaded taste profile %s: %d exemplars (%d negative), dino=%s, calibration=%s",
             self.profile_path.name,
             self.size,
             self.negative_size,

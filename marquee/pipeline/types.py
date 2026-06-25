@@ -113,9 +113,7 @@ class CandidateScore:
             "image_path": str(self.image_path),
             "raw_features": self.features.raw_values() if self.features else None,
             "extended_features": self.features.extended if self.features else None,
-            "typicality_detail": (
-                self.features.typicality_detail if self.features else None
-            ),
+            "typicality_detail": (self.features.typicality_detail if self.features else None),
             "normalized_features": self.features.normalized if self.features else None,
             "contributions": self.contributions,
             "gate_decision": self.gate_decision,

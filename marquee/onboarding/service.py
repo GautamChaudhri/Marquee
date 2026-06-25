@@ -388,5 +388,8 @@ def taste_test_rank(
         "gate_snapshot": feedback_store.gate_snapshot(),
     }
     feedback_store.append_labels([record])
-    return {"event_id": event_id, "favorites_exemplars": favorites_exemplars,
-            "negatives_added": negatives_added}
+    return {
+        "event_id": event_id,
+        "favorites_exemplars": favorites_exemplars,
+        "negatives_added": negatives_added,
+    }

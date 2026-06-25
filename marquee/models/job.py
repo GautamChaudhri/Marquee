@@ -40,7 +40,9 @@ class Job(Base):
     payload: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
     status: Mapped[str] = mapped_column(String(32), default="queued", index=True, nullable=False)
     priority: Mapped[int] = mapped_column(Integer, default=50, nullable=False)
-    parent_id: Mapped[str | None] = mapped_column(ForeignKey("jobs.id", ondelete="SET NULL"), index=True)
+    parent_id: Mapped[str | None] = mapped_column(
+        ForeignKey("jobs.id", ondelete="SET NULL"), index=True
+    )
     root_id: Mapped[str | None] = mapped_column(String(32), index=True)
     correlation_id: Mapped[str | None] = mapped_column(String(64), index=True)
     subject_type: Mapped[str | None] = mapped_column(String(40), index=True)
@@ -102,7 +104,9 @@ class JobEvent(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     job_id: Mapped[str] = mapped_column(ForeignKey("jobs.id", ondelete="CASCADE"), index=True)
-    attempt_id: Mapped[int | None] = mapped_column(ForeignKey("job_attempts.id", ondelete="SET NULL"))
+    attempt_id: Mapped[int | None] = mapped_column(
+        ForeignKey("job_attempts.id", ondelete="SET NULL")
+    )
     stage: Mapped[str | None] = mapped_column(String(80))
     state: Mapped[str] = mapped_column(String(32), nullable=False)
     message: Mapped[str | None] = mapped_column(Text)
@@ -120,7 +124,9 @@ class JobResource(Base):
     key: Mapped[str] = mapped_column(String(160), primary_key=True)
     capacity: Mapped[int] = mapped_column(Integer, nullable=False)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
-    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), onupdate=func.now())
+    updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), onupdate=func.now()
+    )
 
 
 class JobResourceReservation(Base):
@@ -129,11 +135,15 @@ class JobResourceReservation(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     job_id: Mapped[str] = mapped_column(ForeignKey("jobs.id", ondelete="CASCADE"), index=True)
-    attempt_id: Mapped[int | None] = mapped_column(ForeignKey("job_attempts.id", ondelete="SET NULL"))
+    attempt_id: Mapped[int | None] = mapped_column(
+        ForeignKey("job_attempts.id", ondelete="SET NULL")
+    )
     resource_key: Mapped[str] = mapped_column(ForeignKey("job_resources.key", ondelete="CASCADE"))
     units: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     stage: Mapped[str | None] = mapped_column(String(80))
-    acquired_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    acquired_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
     released_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
 
@@ -147,7 +157,9 @@ class JobSchedule(Base):
     interval_seconds: Mapped[int] = mapped_column(Integer, nullable=False)
     priority: Mapped[int] = mapped_column(Integer, default=10, nullable=False)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
-    next_run_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True, nullable=False)
+    next_run_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), index=True, nullable=False
+    )
     last_job_id: Mapped[str | None] = mapped_column(String(32))
     last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
@@ -159,4 +171,6 @@ class JobWorker(Base):
     capabilities: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
     status: Mapped[str] = mapped_column(String(24), default="starting", nullable=False)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    heartbeat_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    heartbeat_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )

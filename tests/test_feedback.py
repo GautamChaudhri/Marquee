@@ -29,13 +29,9 @@ async def client():
 @pytest.fixture(autouse=True)
 def labels_to_tmp(tmp_path, monkeypatch):
     """Redirect the labels file to a temp path for every test."""
-    monkeypatch.setattr(
-        pipeline_settings, "FEEDBACK_LABELS_PATH", tmp_path / "labels.jsonl"
-    )
+    monkeypatch.setattr(pipeline_settings, "FEEDBACK_LABELS_PATH", tmp_path / "labels.jsonl")
     # Avoid all ML: stub the profile-add and head-retrain hooks.
-    monkeypatch.setattr(
-        feedback_route, "_add_to_profile", lambda *a, **k: "Die Hard (1988).jpg"
-    )
+    monkeypatch.setattr(feedback_route, "_add_to_profile", lambda *a, **k: "Die Hard (1988).jpg")
     monkeypatch.setattr(
         feedback_route, "_maybe_retrain_head", lambda: {"retrained": False, "reason": "stub"}
     )
@@ -166,7 +162,9 @@ async def test_scenario_c_override_reject_tracks_gate(client, db, tmp_path):
     assert pick["label"] == 1
     assert pick["rejection_reason"] == "ocr_text_heavy"
     # Gate snapshot records the knob value at feedback time.
-    assert pick["gate_snapshot"]["OCR_MAX_RESIDUAL_BOXES"] == pipeline_settings.OCR_MAX_RESIDUAL_BOXES
+    assert (
+        pick["gate_snapshot"]["OCR_MAX_RESIDUAL_BOXES"] == pipeline_settings.OCR_MAX_RESIDUAL_BOXES
+    )
 
 
 @pytest.mark.asyncio
@@ -202,9 +200,7 @@ async def test_run_marked_reviewed(client, db, tmp_path):
     resp = await client.post("/api/feedback", json={"run_id": "r1", "action": "approve"})
     event_id = resp.json()["event_id"]
 
-    run = (
-        await db.execute(select(PipelineRun).where(PipelineRun.run_id == "r1"))
-    ).scalar_one()
+    run = (await db.execute(select(PipelineRun).where(PipelineRun.run_id == "r1"))).scalar_one()
     await db.refresh(run)
     assert run.feedback_event_id == event_id
 
@@ -231,9 +227,7 @@ async def test_undo_round_trip(client, db, tmp_path, monkeypatch):
     assert feedback_store.read_all() == []
     assert removed_calls == ["Die Hard (1988).jpg"]
 
-    run = (
-        await db.execute(select(PipelineRun).where(PipelineRun.run_id == "r1"))
-    ).scalar_one()
+    run = (await db.execute(select(PipelineRun).where(PipelineRun.run_id == "r1"))).scalar_one()
     await db.refresh(run)
     assert run.feedback_event_id is None
 
@@ -283,7 +277,7 @@ async def test_rank_mines_hard_negatives_by_rank(client, db, tmp_path, monkeypat
     monkeypatch.setattr(
         feedback_route,
         "_copy_negative",
-        lambda c: (copied.append(c["orig_filename"]) or c["orig_filename"]),
+        lambda c: copied.append(c["orig_filename"]) or c["orig_filename"],
     )
     monkeypatch.setattr(pipeline_settings, "FEEDBACK_HARD_NEGATIVE_RANK_MAX", 10)
     resp = await client.post(
@@ -412,7 +406,9 @@ def test_gate_override_alert_respects_snapshot(tmp_path, monkeypatch):
     # Five overrides recorded at the current threshold (0) → should count.
     current = [
         {
-            "event_id": f"e{i}", "role": "user_pick", "action": "override",
+            "event_id": f"e{i}",
+            "role": "user_pick",
+            "action": "override",
             "rejection_reason": "ocr_text_heavy",
             "gate_snapshot": {"OCR_MAX_RESIDUAL_BOXES": 0},
         }
@@ -421,7 +417,9 @@ def test_gate_override_alert_respects_snapshot(tmp_path, monkeypatch):
     # One override recorded at a *different* threshold (2) → must NOT count.
     stale = [
         {
-            "event_id": "old", "role": "user_pick", "action": "override",
+            "event_id": "old",
+            "role": "user_pick",
+            "action": "override",
             "rejection_reason": "ocr_text_heavy",
             "gate_snapshot": {"OCR_MAX_RESIDUAL_BOXES": 2},
         }

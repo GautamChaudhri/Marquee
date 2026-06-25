@@ -192,9 +192,7 @@ class FeatureExtractor:
             if self.person_detector.available:
                 _ = self.person_detector.session
                 self._person_on = True
-                logger.info(
-                    "PERSON | ACTIVE | model=%s", self.person_detector.model_path.name
-                )
+                logger.info("PERSON | ACTIVE | model=%s", self.person_detector.model_path.name)
             else:
                 logger.warning(
                     "PERSON | model missing (%s) — person features skipped. "
@@ -244,9 +242,7 @@ class FeatureExtractor:
         ``official_family`` — its CLIP cosine to that primary, the "official
         key-art family" signal.
         """
-        results: list[FeatureVector | Exception] = [
-            Exception("not computed") for _ in items
-        ]
+        results: list[FeatureVector | Exception] = [Exception("not computed") for _ in items]
         embeddings: dict[int, np.ndarray] = {}
         miss_indices: list[int] = []
         miss_pixels: list[np.ndarray] = []
@@ -287,8 +283,7 @@ class FeatureExtractor:
                 )
             else:
                 logger.info(
-                    "OFFICIAL | primary=%s — scoring official_family for %d "
-                    "candidate(s)",
+                    "OFFICIAL | primary=%s — scoring official_family for %d candidate(s)",
                     primary_name,
                     len(embeddings),
                 )
@@ -328,14 +323,10 @@ class FeatureExtractor:
     ) -> FeatureVector:
         vote_count = max(candidate.vote_count, 0)
         adjusted_vote = (
-            (vote_count / (vote_count + self.config.PROV_CONFIDENCE))
-            * candidate.vote_average
-            + (
-                self.config.PROV_CONFIDENCE
-                / (vote_count + self.config.PROV_CONFIDENCE)
-            )
-            * self.config.PROV_PRIOR_MEAN
-        )
+            vote_count / (vote_count + self.config.PROV_CONFIDENCE)
+        ) * candidate.vote_average + (
+            self.config.PROV_CONFIDENCE / (vote_count + self.config.PROV_CONFIDENCE)
+        ) * self.config.PROV_PRIOR_MEAN
         features = FeatureVector(
             knn_sim=self.taste_store.style_score(
                 embedding,
@@ -354,9 +345,7 @@ class FeatureExtractor:
         )
         if self._zeroshot is not None:
             features.extended.update(self._zeroshot.scores(embedding))
-        features.extended["aspect_ratio_deviation"] = abs(
-            candidate.aspect_ratio - 2.0 / 3.0
-        )
+        features.extended["aspect_ratio_deviation"] = abs(candidate.aspect_ratio - 2.0 / 3.0)
         normalize_features(features, self.config)
         return features
 
@@ -462,25 +451,15 @@ class FeatureExtractor:
         features.sharpness = float(cv2.Laplacian(gray, cv2.CV_64F).var())
 
         face_boxes = self.face_detector.detect(image_bgr)
-        face_total = sum(
-            max(0.0, x2 - x1) * max(0.0, y2 - y1) for x1, y1, x2, y2 in face_boxes
-        )
-        features.face_area = (
-            min(face_total / image_area, 1.0) if image_area > 0 else 0.0
-        )
+        face_total = sum(max(0.0, x2 - x1) * max(0.0, y2 - y1) for x1, y1, x2, y2 in face_boxes)
+        features.face_area = min(face_total / image_area, 1.0) if image_area > 0 else 0.0
 
         # ── Extended features (recs 1, 3, 5) ─────────────────────────────
         features.extended.update(palette_features(standardized))
         features.extended.update(composition_features(standardized))
+        features.extended.update(face_geometry(face_boxes, image_bgr.shape[1], image_bgr.shape[0]))
         features.extended.update(
-            face_geometry(
-                face_boxes, image_bgr.shape[1], image_bgr.shape[0]
-            )
-        )
-        features.extended.update(
-            title_geometry(
-                ocr_result.title_bbox, image_bgr.shape[1], image_bgr.shape[0]
-            )
+            title_geometry(ocr_result.title_bbox, image_bgr.shape[1], image_bgr.shape[0])
         )
         if self._quality_on:
             artifacts = quality_artifact_features(standardized)
@@ -491,9 +470,7 @@ class FeatureExtractor:
                 self.config,
             )
             if self._person_on:
-                features.extended.update(
-                    self.person_detector.person_features(standardized)
-                )
+                features.extended.update(self.person_detector.person_features(standardized))
 
         features.dino_knn = dino_knn
 
@@ -517,11 +494,7 @@ class FeatureExtractor:
         """
         detail: dict[str, float] = {}
         for name in self.config.TYPICALITY_FEATURES:
-            value = (
-                features.aesthetic
-                if name == "aesthetic"
-                else features.extended.get(name)
-            )
+            value = features.aesthetic if name == "aesthetic" else features.extended.get(name)
             if value is None or not np.isfinite(value):
                 continue
             typicality = self._calibration.typicality(name, float(value))
@@ -553,10 +526,7 @@ class FeatureExtractor:
             with np.load(cache_path, allow_pickle=False) as cached:
                 model_name = str(np.asarray(cached["model_name"]).item())
                 cached_filename = str(np.asarray(cached["orig_filename"]).item())
-                if (
-                    model_name == self.config.AI_MODEL
-                    and cached_filename == orig_filename
-                ):
+                if model_name == self.config.AI_MODEL and cached_filename == orig_filename:
                     return np.asarray(cached["embedding"], dtype=np.float32)
         except (OSError, ValueError, KeyError):
             logger.warning("Discarding invalid embedding cache: %s", cache_path)
@@ -573,14 +543,8 @@ class FeatureExtractor:
         )
 
     def _cache_path(self, orig_filename: str) -> Path:
-        key = hashlib.sha256(
-            f"{self.config.AI_MODEL}:{orig_filename}".encode()
-        ).hexdigest()
-        return (
-            self.config.EMBEDDING_CACHE_DIR
-            / self.config.AI_MODEL
-            / f"{key}.npz"
-        )
+        key = hashlib.sha256(f"{self.config.AI_MODEL}:{orig_filename}".encode()).hexdigest()
+        return self.config.EMBEDDING_CACHE_DIR / self.config.AI_MODEL / f"{key}.npz"
 
     def _language_match(self, language: str | None) -> float:
         if language == self.config.PREFERRED_LANG:

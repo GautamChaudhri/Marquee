@@ -99,19 +99,13 @@ class PipelineSettings(BaseSettings):
     # ── Feedback loop (design 09) ─────────────────────────────────────
     # JSONL of self-contained labels written by the feedback endpoint. The
     # single training source of truth (append-only, hand-editable).
-    FEEDBACK_LABELS_PATH: Path = (
-        _DATA_FEEDBACK_DIR / "labels.jsonl"
-    )
+    FEEDBACK_LABELS_PATH: Path = _DATA_FEEDBACK_DIR / "labels.jsonl"
     # Directory of disliked exemplars (negative taste). Copied into here when
     # FEEDBACK_NEGATIVES_FROM_OVERRIDES is on.
-    NEGATIVE_DATA_DIR: Path = (
-        _DATA_TRAINING_DIR / "negative"
-    )
+    NEGATIVE_DATA_DIR: Path = _DATA_TRAINING_DIR / "negative"
     # Source-of-truth folder for positive exemplars (the 430 hand-picked +
     # any approved/overridden posters appended by the feedback loop).
-    TRAINING_DATA_DIR: Path = (
-        _DATA_TRAINING_DIR / "positive"
-    )
+    TRAINING_DATA_DIR: Path = _DATA_TRAINING_DIR / "positive"
     # After this many overrides of the same gate (at the current threshold),
     # the taste status surfaces a tuning suggestion.
     FEEDBACK_GATE_ALERT_THRESHOLD: int = 5
@@ -223,16 +217,29 @@ class PipelineSettings(BaseSettings):
     # by closeness to the taste profile's own distribution of that feature.
     TYPICALITY_FEATURES: list[str] = [
         # palette / mood
-        "darkness", "mean_saturation", "hue_entropy", "global_colorfulness",
+        "darkness",
+        "mean_saturation",
+        "hue_entropy",
+        "global_colorfulness",
         "contrast_rms",
         # composition
-        "negative_space_frac", "edge_density", "visual_entropy", "symmetry",
+        "negative_space_frac",
+        "edge_density",
+        "visual_entropy",
+        "symmetry",
         # typography geometry
-        "title_height_frac", "title_y_center", "title_centeredness",
+        "title_height_frac",
+        "title_y_center",
+        "title_centeredness",
         # subject / faces / people
-        "face_count", "largest_face_frac", "person_count", "person_area_frac",
+        "face_count",
+        "largest_face_frac",
+        "person_count",
+        "person_area_frac",
         # CLIP zero-shot style axes
-        "axis_illustrated", "axis_minimalist", "axis_vintage",
+        "axis_illustrated",
+        "axis_minimalist",
+        "axis_vintage",
         # personalized quality band
         "aesthetic",
     ]
@@ -424,13 +431,9 @@ class PipelineSettings(BaseSettings):
         if self.OCR_DEVICE not in ("auto", "cpu", "gpu"):
             raise ValueError("OCR_DEVICE must be 'auto', 'cpu', or 'gpu'")
         if self.TMDB_POSTER_SIZE not in _TMDB_SIZES:
-            raise ValueError(
-                f"TMDB_POSTER_SIZE must be one of {sorted(_TMDB_SIZES)}"
-            )
+            raise ValueError(f"TMDB_POSTER_SIZE must be one of {sorted(_TMDB_SIZES)}")
         if self.OCR_TEXT_MODE not in ("title_only", "textless", "custom"):
-            raise ValueError(
-                "OCR_TEXT_MODE must be 'title_only', 'textless', or 'custom'"
-            )
+            raise ValueError("OCR_TEXT_MODE must be 'title_only', 'textless', or 'custom'")
         if self.DINO_ENABLED not in ("auto", "on", "off"):
             raise ValueError("DINO_ENABLED must be 'auto', 'on', or 'off'")
         if self.SCORER not in ("auto", "weighted", "learned"):

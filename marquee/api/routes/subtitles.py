@@ -50,7 +50,9 @@ def _map_resolve_error(exc: Exception) -> HTTPException:
     if isinstance(exc, MediaFileNotFoundError):
         return HTTPException(status_code=404, detail=str(exc))
     if isinstance(exc, MediaFileUnavailableError):
-        return HTTPException(status_code=422, detail={"code": "file_unavailable", "message": str(exc)})
+        return HTTPException(
+            status_code=422, detail={"code": "file_unavailable", "message": str(exc)}
+        )
     return HTTPException(status_code=500, detail=str(exc))
 
 
@@ -74,9 +76,7 @@ async def get_subtitles(
 
 
 @router.post("/api/media-files/{media_file_id}/subtitles/scan")
-async def scan_subtitles(
-    media_file_id: int, db: Annotated[AsyncSession, Depends(get_db)]
-):
+async def scan_subtitles(media_file_id: int, db: Annotated[AsyncSession, Depends(get_db)]):
     """Force a fresh inventory scan (inline for a single file)."""
     _require_ffprobe()
     try:
@@ -169,13 +169,17 @@ async def create_subtitle_plan(
 
     try:
         plan = await mutation.build_plan(
-            db, resolved, inventory,
+            db,
+            resolved,
+            inventory,
             operation=body.operation,
             params={"track_ids": body.track_ids, "edits": body.edits},
             backup_requested=body.backup,
         )
     except mutation.PlanError as exc:
-        raise HTTPException(status_code=422, detail={"code": "plan_error", "message": str(exc)}) from exc
+        raise HTTPException(
+            status_code=422, detail={"code": "plan_error", "message": str(exc)}
+        ) from exc
 
     expires_at = mutation.now_plus_ttl()
     job = await media_job_manager.create_job(
@@ -211,9 +215,7 @@ movies_router = APIRouter(prefix="/api/movies", tags=["subtitles"])
 
 
 @movies_router.post("/{movie_id}/subtitles/inspect")
-async def inspect_movie_subtitles(
-    movie_id: int, db: Annotated[AsyncSession, Depends(get_db)]
-):
+async def inspect_movie_subtitles(movie_id: int, db: Annotated[AsyncSession, Depends(get_db)]):
     """Resolve a movie's file, probe it, and return its full subtitle inventory.
 
     Read-only. Creates the MediaFile row on demand so it works without a fresh
@@ -223,9 +225,7 @@ async def inspect_movie_subtitles(
         raise HTTPException(status_code=503, detail="Subtitle management is disabled")
     _require_ffprobe()
 
-    movie = (
-        await db.execute(select(Movie).where(Movie.id == movie_id))
-    ).scalar_one_or_none()
+    movie = (await db.execute(select(Movie).where(Movie.id == movie_id))).scalar_one_or_none()
     if movie is None:
         raise HTTPException(status_code=404, detail=f"Movie id={movie_id} not found")
 
@@ -233,7 +233,10 @@ async def inspect_movie_subtitles(
     if media_file is None:
         raise HTTPException(
             status_code=422,
-            detail={"code": "no_media_file", "message": f"{movie.title!r} has no media file (run sync / download it)"},
+            detail={
+                "code": "no_media_file",
+                "message": f"{movie.title!r} has no media file (run sync / download it)",
+            },
         )
 
     try:
@@ -302,10 +305,10 @@ async def scan_library_subtitles(
 ):
     """Enqueue a job to scan subtitle coverage for all active media files in the library."""
     from marquee.core.jobs.manager import job_manager  # noqa: PLC0415
+
     job = await job_manager.create(
         db,
         job_type="subtitle_scan_all",
         payload={"force": force},
     )
     return {"job_id": job.id, "status": "queued"}
-

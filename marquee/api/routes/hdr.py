@@ -21,9 +21,9 @@ from marquee.core.radarr_overlay import (
     is_valid_preference_pair,
     ordered_tags,
     overlay_bucket,
+    preference_rank,
     preference_status,
     preference_target_choices,
-    preference_rank,
     profile_hdr_targets,
 )
 from marquee.core.sort_title import sort_title
@@ -61,6 +61,7 @@ class ProfilePreferenceUpdate(BaseModel):
     profile_id: int
     meet_target: str
     exceed_target: str | None = None
+    excluded_targets: list[str] | None = None
 
 
 class ProfilePreferencesUpdatePayload(BaseModel):
@@ -123,24 +124,30 @@ def _sort_title_value(item: dict[str, Any]) -> str:
 
 
 def _sort_cf_score_value(item: dict[str, Any]) -> int:
-    return item["cf_score"] if item["cf_score"] is not None else -10**9
+    return item["cf_score"] if item["cf_score"] is not None else -(10**9)
 
 
 def _sort_items(items: list[dict[str, Any]], sort_by: str, sort_dir: str) -> list[dict[str, Any]]:
     reverse = sort_dir == "desc"
     if sort_by == "year":
-        return sorted(items, key=lambda item: (item["year"], _sort_title_value(item)), reverse=reverse)
+        return sorted(
+            items, key=lambda item: (item["year"], _sort_title_value(item)), reverse=reverse
+        )
     if sort_by == "cf_score":
         return sorted(
             items,
-            key=lambda item: (_sort_cf_score_value(item), item["cf_cutoff"] or -10**9, _sort_title_value(item)),
+            key=lambda item: (
+                _sort_cf_score_value(item),
+                item["cf_cutoff"] or -(10**9),
+                _sort_title_value(item),
+            ),
             reverse=reverse,
         )
     if sort_by == "preference_status":
         return sorted(
             items,
             key=lambda item: (
-                PREFERENCE_STATUS_SORT.get(item["preference_status"], -10**9),
+                PREFERENCE_STATUS_SORT.get(item["preference_status"], -(10**9)),
                 _sort_cf_score_value(item),
                 _sort_title_value(item),
             ),
@@ -149,7 +156,9 @@ def _sort_items(items: list[dict[str, Any]], sort_by: str, sort_dir: str) -> lis
     return sorted(items, key=_sort_title_value, reverse=reverse)
 
 
-async def _load_profile_context(db: AsyncSession) -> tuple[
+async def _load_profile_context(
+    db: AsyncSession,
+) -> tuple[
     dict[int, RadarrQualityProfile],
     dict[int, list[str]],
     dict[int, dict[str, Any]],
@@ -165,8 +174,7 @@ async def _load_profile_context(db: AsyncSession) -> tuple[
         profile_items_by_profile[row.profile_id].append(row)
 
     cf_classifications = {
-        row.id: classify_custom_format_tags(row.name, row.specifications_json)
-        for row in cf_rows
+        row.id: classify_custom_format_tags(row.name, row.specifications_json) for row in cf_rows
     }
     profile_targets_by_id = {
         profile_id: ordered_tags(profile_hdr_targets(items, cf_classifications))
@@ -189,8 +197,10 @@ async def _load_profile_context(db: AsyncSession) -> tuple[
         ):
             meet_target = stored.meet_target
             exceed_target = stored.exceed_target
+            excluded_targets = stored.excluded_targets or []
         else:
             meet_target, exceed_target = default_profile_preference(available_targets)
+            excluded_targets = []
 
         preference_summary_by_profile[profile_id] = {
             "profile_id": profile_id,
@@ -199,6 +209,7 @@ async def _load_profile_context(db: AsyncSession) -> tuple[
             "available_preference_targets": available_targets,
             "meet_target": meet_target,
             "exceed_target": exceed_target,
+            "excluded_targets": excluded_targets,
         }
 
     return profiles_by_id, profile_targets_by_id, preference_summary_by_profile
@@ -258,7 +269,11 @@ async def hdr_index(
     media_by_movie = {media.movie_id: media for media in media_rows}
     coverage = await _coverage_by_media_file(db, [media.id for media in media_rows])
 
-    profiles_by_id, profile_targets_by_id, preference_summary_by_profile = await _load_profile_context(db)
+    (
+        profiles_by_id,
+        profile_targets_by_id,
+        preference_summary_by_profile,
+    ) = await _load_profile_context(db)
 
     all_items: list[dict[str, Any]] = []
     for movie, lb in movie_rows:
@@ -344,7 +359,11 @@ async def hdr_index(
                 "cutoff_format_score": profile.cutoff_format_score,
             }
             for profile in sorted(
-                (profile for profile in profiles_by_id.values() if profile.id in overlay_profile_ids),
+                (
+                    profile
+                    for profile in profiles_by_id.values()
+                    if profile.id in overlay_profile_ids
+                ),
                 key=lambda profile: profile.name.lower(),
             )
         ],
@@ -422,10 +441,9 @@ async def put_profile_preferences(
                 status_code=400,
                 detail=f"exceed_target must be stricter than meet_target for profile {update.profile_id}",
             )
-        if (
-            update.exceed_target is not None
-            and preference_rank(update.exceed_target) <= preference_rank(update.meet_target)
-        ):
+        if update.exceed_target is not None and preference_rank(
+            update.exceed_target
+        ) <= preference_rank(update.meet_target):
             raise HTTPException(
                 status_code=400,
                 detail=f"exceed_target must rank above meet_target for profile {update.profile_id}",
@@ -437,6 +455,7 @@ async def put_profile_preferences(
             db.add(row)
         row.meet_target = update.meet_target
         row.exceed_target = update.exceed_target
+        row.excluded_targets = update.excluded_targets
         row.updated_at = now
         applied.append(update.profile_id)
 

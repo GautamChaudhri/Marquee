@@ -46,9 +46,7 @@ class SubtitlePolicy(Base):
     unknown_action: Mapped[str] = mapped_column(String(10), nullable=False, default="keep")
     protect_forced: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     protect_default: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    protect_last_full_dialogue: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, default=True
-    )
+    protect_last_full_dialogue: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     include_external: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     auto_apply: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=text("false")

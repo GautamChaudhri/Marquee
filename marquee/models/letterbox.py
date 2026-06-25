@@ -99,9 +99,7 @@ class LetterboxState(Base, TimestampMixin):
     last_detected_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
-    last_applied_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    last_applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # True when the detector found two or more well-supported, mutually
@@ -146,7 +144,4 @@ class LetterboxEvent(Base):
     )
 
     def __repr__(self) -> str:
-        return (
-            f"<LetterboxEvent(id={self.id}, movie_id={self.movie_id}, "
-            f"action={self.action!r})>"
-        )
+        return f"<LetterboxEvent(id={self.id}, movie_id={self.movie_id}, action={self.action!r})>"

@@ -26,11 +26,16 @@ class Series(Base, TimestampMixin, ArtworkMixin):
     year: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
     tvdb_id: Mapped[int | None] = mapped_column(
-        Integer, unique=True, index=True, nullable=True,
+        Integer,
+        unique=True,
+        index=True,
+        nullable=True,
         comment="Primary ID from Sonarr; required by Fanart.tv",
     )
     tmdb_id: Mapped[int | None] = mapped_column(
-        Integer, index=True, nullable=True,
+        Integer,
+        index=True,
+        nullable=True,
         comment="Resolved from Sonarr or TMDB /find endpoint",
     )
     imdb_id: Mapped[str | None] = mapped_column(String(20), nullable=True)
@@ -41,9 +46,7 @@ class Series(Base, TimestampMixin, ArtworkMixin):
     )
 
     # ── Origin ───────────────────────────────────────────────────────
-    sonarr_id: Mapped[int | None] = mapped_column(
-        Integer, unique=True, index=True, nullable=True
-    )
+    sonarr_id: Mapped[int | None] = mapped_column(Integer, unique=True, index=True, nullable=True)
 
     # ── Sonarr Metadata ──────────────────────────────────────────────
     quality_profile_id: Mapped[int | None] = mapped_column(Integer, nullable=True)

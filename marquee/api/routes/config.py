@@ -75,9 +75,7 @@ async def get_pipeline_config():
         meta[name] = entry
     return {
         "values": {name: _serialize(current[name]) for name in fields},
-        "defaults": {
-            name: _serialize(field.default) for name, field in fields.items()
-        },
+        "defaults": {name: _serialize(field.default) for name, field in fields.items()},
         "overrides": load_overrides(),
         "restart_required": sorted(RESTART_REQUIRED),
         "groups": KNOB_GROUPS,
@@ -100,9 +98,7 @@ async def put_pipeline_config(update: ConfigUpdate):
     if blocked:
         raise HTTPException(
             status_code=400,
-            detail=(
-                f"These knobs need a restart (set them via .env, not the API): {blocked}"
-            ),
+            detail=(f"These knobs need a restart (set them via .env, not the API): {blocked}"),
         )
 
     # Validate by constructing a fully-specified throwaway instance — this runs

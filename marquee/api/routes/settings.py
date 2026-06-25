@@ -52,9 +52,7 @@ async def get_settings():
             "subgen": {
                 "configured": subtitle_settings.generation_enabled,
                 "url_configured": _configured(subtitle_settings.SUBGEN_URL),
-                "callback_token_configured": _configured(
-                    subtitle_settings.SUBGEN_CALLBACK_TOKEN
-                ),
+                "callback_token_configured": _configured(subtitle_settings.SUBGEN_CALLBACK_TOKEN),
                 "url": subtitle_settings.SUBGEN_URL,
                 "profile_name": subtitle_settings.SUBGEN_PROFILE_NAME,
                 "model_label": subtitle_settings.SUBGEN_MODEL_LABEL,
@@ -155,6 +153,7 @@ async def put_settings(payload: SettingsUpdatePayload):
             current[f"SUBGEN_{key.upper()}"] = val
 
     from marquee.core.subtitles.config import SubtitleSettings
+
     try:
         SubtitleSettings(**current)
     except Exception as exc:
@@ -186,4 +185,3 @@ async def put_settings(payload: SettingsUpdatePayload):
 
     save_overrides(current_overrides)
     return {"applied": sorted(updated_fields.keys()), "settings": await get_settings()}
-

@@ -85,7 +85,9 @@ async def _lookup_movie(db: AsyncSession, payload_movie: _ArrMovie) -> Movie | N
     return None
 
 
-async def _restore_after_upgrade(radarr_id: int | None, tmdb_id: int | None, new_folder: str | None) -> None:
+async def _restore_after_upgrade(
+    radarr_id: int | None, tmdb_id: int | None, new_folder: str | None
+) -> None:
     """Background task: wait for the new folder, then restore if needed."""
     lock_key = radarr_id if radarr_id is not None else (tmdb_id or 0)
     lock = _movie_locks.setdefault(lock_key, asyncio.Lock())
@@ -118,7 +120,9 @@ async def _restore_after_upgrade(radarr_id: int | None, tmdb_id: int | None, new
             if settings.WEBHOOK_DRY_RUN:
                 db.add(
                     ArtworkEvent(
-                        movie_id=movie.id, action="webhook_noop", source="webhook",
+                        movie_id=movie.id,
+                        action="webhook_noop",
+                        source="webhook",
                         detail='{"dry_run": true}',
                     )
                 )
@@ -132,7 +136,9 @@ async def _restore_after_upgrade(radarr_id: int | None, tmdb_id: int | None, new
                     movie.folder_path = new_folder
                 db.add(
                     ArtworkEvent(
-                        movie_id=movie.id, action="webhook_noop", source="webhook",
+                        movie_id=movie.id,
+                        action="webhook_noop",
+                        source="webhook",
                         detail='{"reason": "poster survived upgrade"}',
                     )
                 )
@@ -164,9 +170,7 @@ async def _letterbox_stale_after_upgrade(radarr_id: int | None, tmdb_id: int | N
         if movie is None:
             return
         state = (
-            await db.execute(
-                select(LetterboxState).where(LetterboxState.movie_id == movie.id)
-            )
+            await db.execute(select(LetterboxState).where(LetterboxState.movie_id == movie.id))
         ).scalar_one_or_none()
         if state is None:
             return
@@ -176,7 +180,9 @@ async def _letterbox_stale_after_upgrade(radarr_id: int | None, tmdb_id: int | N
         state.reviewed = False
         db.add(
             LetterboxEvent(
-                movie_id=movie.id, action="detect", source="webhook",
+                movie_id=movie.id,
+                action="detect",
+                source="webhook",
                 detail='{"reason": "stale after upgrade — re-detect queued"}',
             )
         )
@@ -210,14 +216,22 @@ async def radarr_webhook(
         job = await job_manager.create(
             db,
             job_type="radarr_upgrade",
-            payload={"radarr_id": payload.movie.id, "tmdb_id": payload.movie.tmdbId, "folder": payload.movie.folderPath},
+            payload={
+                "radarr_id": payload.movie.id,
+                "tmdb_id": payload.movie.tmdbId,
+                "folder": payload.movie.folderPath,
+            },
             priority=80,
             resources={"network_external": 1},
             subject_type="radarr_movie",
             subject_id=payload.movie.id,
             idempotency_key=f"radarr-upgrade:{payload.movie.id}:{payload.movie.folderPath or ''}",
         )
-        return {"status": "restore_scheduled", "movie": payload.movie.title, "job": job_summary(job)}
+        return {
+            "status": "restore_scheduled",
+            "movie": payload.movie.title,
+            "job": job_summary(job),
+        }
 
     return {"status": "ignored", "eventType": event}
 
@@ -235,9 +249,7 @@ async def subgen_callback(payload: dict, token: str | None = None):
 
     if subtitle_settings.SUBGEN_CALLBACK_TOKEN and token != subtitle_settings.SUBGEN_CALLBACK_TOKEN:
         raise HTTPException(status_code=401, detail="Invalid Subgen callback token")
-    webhook_state.update(
-        last_received=datetime.now(UTC).isoformat(), last_event="subgen_callback"
-    )
+    webhook_state.update(last_received=datetime.now(UTC).isoformat(), last_event="subgen_callback")
     logger.info("WEBHOOK | subgen callback: %s", json.dumps(payload, default=str)[:300])
     return {"ok": True}
 
@@ -269,8 +281,12 @@ async def _schedule_subtitle_scan(radarr_id: int | None, tmdb_id: int | None) ->
         if existing is not None:
             return  # collapse duplicate import webhooks
         await media_job_manager.create_job(
-            db, operation="subtitle_scan", media_file_id=media_file.id,
-            trigger="webhook", status="queued", idempotency_key=key,
+            db,
+            operation="subtitle_scan",
+            media_file_id=media_file.id,
+            trigger="webhook",
+            status="queued",
+            idempotency_key=key,
         )
 
 
@@ -287,9 +303,7 @@ async def sonarr_webhook(
     """
     from datetime import UTC, datetime  # noqa: PLC0415
 
-    webhook_state.update(
-        last_received=datetime.now(UTC).isoformat(), last_event=payload.eventType
-    )
+    webhook_state.update(last_received=datetime.now(UTC).isoformat(), last_event=payload.eventType)
     if payload.eventType == "Test":
         return {"ok": True, "message": "Marquee Sonarr webhook reachable"}
     return {"status": "ignored", "eventType": payload.eventType}

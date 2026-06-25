@@ -47,7 +47,10 @@ def preview_path(movie_id: int, mode: str, minute: int, *, exact: bool = False) 
     # cache slot — that collision is what made clicking a sample minute silently
     # show whatever minute the brightness probe had substituted for it.
     policy = "exact" if exact else "bright"
-    return settings.letterbox_preview_path / f"{movie_id}_{mode}_{minute}_{policy}_{_CACHE_VERSION}.webp"
+    return (
+        settings.letterbox_preview_path
+        / f"{movie_id}_{mode}_{minute}_{policy}_{_CACHE_VERSION}.webp"
+    )
 
 
 def _movie_preview_glob(movie_id: int) -> str:
@@ -69,12 +72,21 @@ def _measure_luma(source: Path | str, minute: int) -> float | None:
         result = binaries.run(
             "ffmpeg",
             [
-                "-hide_banner", "-loglevel", "info", "-nostats",
-                "-ss", _timestamp(minute),
-                "-i", str(source),
-                "-frames:v", "1",
-                "-vf", "signalstats,metadata=print",
-                "-f", "null", "-",
+                "-hide_banner",
+                "-loglevel",
+                "info",
+                "-nostats",
+                "-ss",
+                _timestamp(minute),
+                "-i",
+                str(source),
+                "-frames:v",
+                "1",
+                "-vf",
+                "signalstats,metadata=print",
+                "-f",
+                "null",
+                "-",
             ],
             timeout=_LUMA_PROBE_TIMEOUT,
         )
@@ -194,18 +206,28 @@ def generate_preview(
     result = binaries.run(
         "ffmpeg",
         [
-            "-y", "-hide_banner", "-loglevel", "error",
-            "-ss", _timestamp(src_minute),
-            "-i", str(source),
-            "-frames:v", "1",
-            "-vf", vf,
-            "-quality", "95",
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-ss",
+            _timestamp(src_minute),
+            "-i",
+            str(source),
+            "-frames:v",
+            "1",
+            "-vf",
+            vf,
+            "-quality",
+            "95",
             str(out),
         ],
         timeout=90.0,
     )
     if not result.ok or not out.is_file():
-        logger.warning("preview generation failed for movie %s: %s", movie_id, result.stderr.strip()[:200])
+        logger.warning(
+            "preview generation failed for movie %s: %s", movie_id, result.stderr.strip()[:200]
+        )
         return None
     return out
 

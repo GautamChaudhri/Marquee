@@ -60,14 +60,17 @@ async def letterbox_heal_scan() -> dict:
             logger.info("LETTERBOX HEAL | tags drifted on %s — re-applying", movie.title)
             try:
                 await letterbox_service.apply(
-                    db, movie,
+                    db,
+                    movie,
                     top=state.applied_crop_top or 0,
                     bottom=state.applied_crop_bottom or 0,
                     source="heal",
                 )
                 reapplied += 1
             except Exception:  # noqa: BLE001
-                logger.warning("LETTERBOX HEAL | re-apply failed for %s", movie.title, exc_info=True)
+                logger.warning(
+                    "LETTERBOX HEAL | re-apply failed for %s", movie.title, exc_info=True
+                )
                 failed += 1
 
     letterbox_heal_state.update(
@@ -79,7 +82,10 @@ async def letterbox_heal_scan() -> dict:
     )
     logger.info(
         "LETTERBOX HEAL | checked=%d reapplied=%d unverifiable=%d failed=%d",
-        checked, reapplied, unverifiable, failed,
+        checked,
+        reapplied,
+        unverifiable,
+        failed,
     )
     return {
         "checked": checked,
