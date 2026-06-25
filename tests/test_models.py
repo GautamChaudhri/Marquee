@@ -11,6 +11,7 @@ from marquee.models import (
     Movie,
     MovieCustomFormatScore,
     RadarrCustomFormat,
+    RadarrOverlayProfilePreference,
     RadarrProfileFormatItem,
     RadarrQualityProfile,
     Season,
@@ -60,6 +61,7 @@ async def test_all_tables_created(db):
     assert await _table_exists("radarr_quality_profiles")
     assert await _table_exists("radarr_profile_format_items")
     assert await _table_exists("movie_custom_format_scores")
+    assert await _table_exists("radarr_overlay_profile_preferences")
 
 
 @pytest.mark.asyncio
@@ -78,6 +80,7 @@ async def test_movie_columns(db):
     assert "quality_profile_id" in cols
     assert "quality_cutoff_met" in cols
     assert "hdr_type_raw" in cols
+    assert "current_cf_score" in cols
     assert "has_hdr" in cols
     assert "has_dv" in cols
     # ArtworkMixin
@@ -329,6 +332,9 @@ async def test_radarr_overlay_tables_columns(db):
     assert {"movie_id", "custom_format_id", "score", "synced_at"} <= (
         await _column_names("movie_custom_format_scores")
     )
+    assert {"profile_id", "meet_target", "exceed_target", "updated_at"} <= (
+        await _column_names("radarr_overlay_profile_preferences")
+    )
 
 
 def test_radarr_overlay_model_repr_smoke():
@@ -337,3 +343,4 @@ def test_radarr_overlay_model_repr_smoke():
     assert RadarrQualityProfile(id=2, name="UHD", cutoff_format_score=100)
     assert RadarrProfileFormatItem(profile_id=2, custom_format_id=1, score=10)
     assert MovieCustomFormatScore(movie_id=4, custom_format_id=1, score=10)
+    assert RadarrOverlayProfilePreference(profile_id=2, meet_target="hdr", exceed_target="dovi_fallback")

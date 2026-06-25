@@ -412,14 +412,23 @@ async def test_sync_movies_syncs_overlay_profile_and_cf_scores(db: AsyncSession)
         _radarr_movie(
             movieFile={
                 "relativePath": "Dune (2021).mkv",
-                "qualityCutoffNotMet": False,
-                "customFormats": [
-                    {"id": 15, "name": "Dolby Vision", "score": 15},
-                    {"id": 20, "name": "HDR10+", "score": 10},
-                ],
                 "mediaInfo": {"videoDynamicRangeType": "DV HDR10"},
             }
         )
+    ]
+    radarr.get_movie_files.return_value = [
+        {
+            "id": 2001,
+            "movieId": 1,
+            "relativePath": "Dune (2021).mkv",
+            "qualityCutoffNotMet": False,
+            "customFormatScore": 25,
+            "customFormats": [
+                {"id": 15, "name": "Dolby Vision"},
+                {"id": 20, "name": "HDR10+"},
+            ],
+            "mediaInfo": {"videoDynamicRangeType": "DV HDR10"},
+        }
     ]
     radarr.get_custom_formats.return_value = [
         {
@@ -463,6 +472,7 @@ async def test_sync_movies_syncs_overlay_profile_and_cf_scores(db: AsyncSession)
     movie_scores = (await db.execute(select(MovieCustomFormatScore))).scalars().all()
 
     assert movie.quality_cutoff_met is True
+    assert movie.current_cf_score == 25
     assert {row.name for row in custom_formats} == {"Dolby Vision", "HDR10+"}
     assert [row.name for row in profiles] == ["UHD"]
     assert {(row.profile_id, row.custom_format_id, row.score) for row in profile_items} == {
@@ -473,6 +483,7 @@ async def test_sync_movies_syncs_overlay_profile_and_cf_scores(db: AsyncSession)
         (movie.id, 15, 15),
         (movie.id, 20, 10),
     }
+    radarr.get_movie_files.assert_awaited_once_with([1])
 
 
 @pytest.mark.asyncio
@@ -482,17 +493,33 @@ async def test_sync_movies_replaces_stale_movie_cf_scores(db: AsyncSession):
         _radarr_movie(
             movieFile={
                 "relativePath": "first.mkv",
-                "customFormats": [{"id": 15, "name": "Dolby Vision", "score": 15}],
                 "mediaInfo": {"videoDynamicRangeType": "DV HDR10"},
             }
         )
+    ]
+    radarr.get_movie_files.return_value = [
+        {
+            "id": 2001,
+            "movieId": 1,
+            "relativePath": "first.mkv",
+            "customFormatScore": 15,
+            "customFormats": [{"id": 15, "name": "Dolby Vision"}],
+            "mediaInfo": {"videoDynamicRangeType": "DV HDR10"},
+        }
     ]
     radarr.get_custom_formats.return_value = [
         {"id": 15, "name": "Dolby Vision", "includeCustomFormatWhenRenaming": False, "specifications": []},
         {"id": 20, "name": "HDR10+", "includeCustomFormatWhenRenaming": False, "specifications": []},
     ]
     radarr.get_quality_profiles.return_value = [
-        {"id": 3, "name": "UHD", "formatItems": []}
+        {
+            "id": 3,
+            "name": "UHD",
+            "formatItems": [
+                {"format": 15, "name": "Dolby Vision", "score": 15},
+                {"format": 20, "name": "HDR10+", "score": 10},
+            ],
+        }
     ]
 
     svc = SyncService(db, radarr=radarr)
@@ -502,16 +529,26 @@ async def test_sync_movies_replaces_stale_movie_cf_scores(db: AsyncSession):
         _radarr_movie(
             movieFile={
                 "relativePath": "second.mkv",
-                "customFormats": [{"id": 20, "name": "HDR10+", "score": 10}],
                 "mediaInfo": {"videoDynamicRangeType": "HDR10Plus"},
             }
         )
+    ]
+    radarr.get_movie_files.return_value = [
+        {
+            "id": 2002,
+            "movieId": 1,
+            "relativePath": "second.mkv",
+            "customFormatScore": 10,
+            "customFormats": [{"id": 20, "name": "HDR10+"}],
+            "mediaInfo": {"videoDynamicRangeType": "HDR10Plus"},
+        }
     ]
     await svc.sync_all()
 
     movie = (await db.execute(select(Movie).where(Movie.radarr_id == 1))).scalar_one()
     rows = (await db.execute(select(MovieCustomFormatScore))).scalars().all()
     assert movie.hdr_type_raw == "HDR10Plus"
+    assert movie.current_cf_score == 10
     assert {(row.movie_id, row.custom_format_id, row.score) for row in rows} == {
         (movie.id, 20, 10)
     }

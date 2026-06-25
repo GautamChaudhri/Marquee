@@ -19,7 +19,6 @@ from marquee.models import (
     MediaJob,
     MediaJobEvent,
     Movie,
-    MovieCustomFormatScore,
     PipelineRun,
     RadarrCustomFormat,
     RadarrProfileFormatItem,
@@ -137,6 +136,7 @@ async def test_hdr_distribution_and_filter(db: AsyncSession, client: AsyncClient
                 movie_file_path="dolby.mkv",
                 quality_profile_id=3,
                 quality_cutoff_met=True,
+                current_cf_score=25,
                 hdr_type_raw="DV HDR10",
                 has_hdr=True,
                 has_dv=True,
@@ -148,6 +148,7 @@ async def test_hdr_distribution_and_filter(db: AsyncSession, client: AsyncClient
                 movie_file_path="hdr.mkv",
                 quality_profile_id=3,
                 quality_cutoff_met=False,
+                current_cf_score=10,
                 hdr_type_raw="HDR10Plus",
                 has_hdr=True,
                 has_dv=False,
@@ -164,25 +165,6 @@ async def test_hdr_distribution_and_filter(db: AsyncSession, client: AsyncClient
             Movie(title="Unknown", year=2023, folder_path="/m/u"),
         ]
     )
-    await db.flush()
-    movies = (await db.execute(select(Movie))).scalars().all()
-    by_title = {movie.title: movie for movie in movies}
-    db.add_all(
-        [
-            MovieCustomFormatScore(
-                movie_id=by_title["Dolby"].id,
-                custom_format_id=15,
-                score=15,
-                synced_at=now,
-            ),
-            MovieCustomFormatScore(
-                movie_id=by_title["Hdr"].id,
-                custom_format_id=20,
-                score=10,
-                synced_at=now,
-            ),
-        ]
-    )
     await db.commit()
 
     body = (await client.get("/api/hdr?hdr_tags=hdr10p")).json()
@@ -193,7 +175,7 @@ async def test_hdr_distribution_and_filter(db: AsyncSession, client: AsyncClient
         "dovi": 1,
         "dovi_no_fallback": 0,
         "sdr": 1,
-        "unknown": 1,
+        "unknown": 0,
     }
     assert body["total"] == 1
     assert [item["title"] for item in body["items"]] == ["Hdr"]
@@ -201,8 +183,29 @@ async def test_hdr_distribution_and_filter(db: AsyncSession, client: AsyncClient
     assert body["items"][0]["hdr_tags"] == ["hdr10p"]
     assert body["items"][0]["profile_name"] == "UHD"
     assert body["items"][0]["cf_score"] == 10
-    assert body["items"][0]["hdr_targets"] == ["hdr10p", "dovi"]
-    assert body["items"][0]["hdr_target_status"] == "below_target"
+    assert body["items"][0]["profile_targets"] == ["hdr10p", "dovi"]
+    assert body["items"][0]["available_preference_targets"] == [
+        "hdr10p",
+        "dovi_no_fallback",
+        "dovi_fallback",
+    ]
+    assert body["items"][0]["meet_target"] == "hdr10p"
+    assert body["items"][0]["exceed_target"] == "dovi_fallback"
+    assert body["items"][0]["preference_status"] == "meets_target"
+    assert body["profile_preferences"] == [
+        {
+            "profile_id": 3,
+            "profile_name": "UHD",
+            "profile_targets": ["hdr10p", "dovi"],
+            "available_preference_targets": [
+                "hdr10p",
+                "dovi_no_fallback",
+                "dovi_fallback",
+            ],
+            "meet_target": "hdr10p",
+            "exceed_target": "dovi_fallback",
+        }
+    ]
 
 
 @pytest.mark.asyncio

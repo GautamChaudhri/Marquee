@@ -1,4 +1,4 @@
-"""Helpers for Radarr overlay HDR, custom-format, and target evaluation."""
+"""Helpers for Radarr overlay HDR, custom-format, and preference evaluation."""
 
 from __future__ import annotations
 
@@ -6,11 +6,18 @@ from collections.abc import Iterable
 
 HDR_TAG_ORDER = ("hdr", "hdr10", "hdr10p", "dovi")
 DISPLAY_HDR_TAG_ORDER = ("hdr", "hdr10", "hdr10p", "dovi", "dovi_no_fallback")
-HDR_TARGET_STATUSES = (
-    "met_target",
+PREFERENCE_TARGET_ORDER = (
+    "hdr",
+    "hdr10",
+    "hdr10p",
+    "dovi_no_fallback",
+    "dovi_fallback",
+)
+PREFERENCE_STATUS_ORDER = (
     "below_target",
+    "meets_target",
+    "exceeds_target",
     "no_hdr_target",
-    "no_file",
 )
 
 HDR_KEYWORDS: dict[str, tuple[str, ...]] = {
@@ -175,29 +182,90 @@ def movie_cf_score(rows: Iterable[object]) -> int:
     return sum(int(getattr(row, "score", 0) or 0) for row in rows)
 
 
-def hdr_target_status(
-    *,
-    has_file: bool,
-    file_tags: set[str],
-    targets: set[str],
-    require_dovi_fallback: bool,
-) -> str:
-    """Compare a file's HDR tags against its profile targets."""
-    if not has_file:
-        return "no_file"
-    if not targets:
-        return "no_hdr_target"
+def preference_target_choices(profile_targets: Iterable[str]) -> list[str]:
+    """Return user-facing preference targets allowed by a profile's HDR scope."""
+    targets = set(profile_targets)
+    allowed: set[str] = set()
+    for tag in ("hdr", "hdr10", "hdr10p"):
+        if tag in targets:
+            allowed.add(tag)
+    if "dovi" in targets:
+        allowed.update({"dovi_no_fallback", "dovi_fallback"})
+    return [choice for choice in PREFERENCE_TARGET_ORDER if choice in allowed]
 
-    for target in targets:
-        if target == "dovi":
-            if "dovi" not in file_tags:
-                return "below_target"
-            if require_dovi_fallback and "dovi_no_fallback" in file_tags:
-                return "below_target"
-            continue
-        if target not in file_tags:
-            return "below_target"
-    return "met_target"
+
+def default_profile_preference(available_targets: Iterable[str]) -> tuple[str | None, str | None]:
+    """Seed defaults for one profile when no saved preference row exists."""
+    choices = list(available_targets)
+    if not choices:
+        return None, None
+
+    non_dovi = [choice for choice in choices if choice in {"hdr", "hdr10", "hdr10p"}]
+    if non_dovi:
+        meet_target = non_dovi[0]
+    elif "dovi_no_fallback" in choices:
+        meet_target = "dovi_no_fallback"
+    else:
+        meet_target = choices[0]
+
+    meet_rank = preference_rank(meet_target)
+    stricter = [choice for choice in choices if preference_rank(choice) > meet_rank]
+    if "dovi_fallback" in stricter:
+        exceed_target = "dovi_fallback"
+    else:
+        exceed_target = stricter[0] if stricter else None
+    return meet_target, exceed_target
+
+
+def preference_rank(choice: str | None) -> int:
+    """Relative strictness rank for preference validation and defaults."""
+    if choice is None:
+        return -1
+    try:
+        return PREFERENCE_TARGET_ORDER.index(choice)
+    except ValueError:
+        return -1
+
+
+def is_valid_preference_pair(meet_target: str | None, exceed_target: str | None) -> bool:
+    """Return whether a meet/exceed pair is internally consistent."""
+    if meet_target is None:
+        return exceed_target is None
+    if exceed_target is None:
+        return True
+    return preference_rank(exceed_target) > preference_rank(meet_target)
+
+
+def preference_target_matches(choice: str, file_tags: set[str]) -> bool:
+    """Return whether a file satisfies one preference target predicate."""
+    if choice == "hdr":
+        return any(tag in file_tags for tag in ("hdr", "hdr10", "hdr10p"))
+    if choice == "hdr10":
+        return any(tag in file_tags for tag in ("hdr10", "hdr10p"))
+    if choice == "hdr10p":
+        return "hdr10p" in file_tags
+    if choice == "dovi_no_fallback":
+        return "dovi" in file_tags
+    if choice == "dovi_fallback":
+        return "dovi" in file_tags and "dovi_no_fallback" not in file_tags
+    return False
+
+
+def preference_status(
+    *,
+    file_tags: set[str],
+    profile_targets: set[str],
+    meet_target: str | None,
+    exceed_target: str | None,
+) -> str:
+    """Compare one file's HDR truth against the chosen preference targets."""
+    if not profile_targets or meet_target is None:
+        return "no_hdr_target"
+    if exceed_target and preference_target_matches(exceed_target, file_tags):
+        return "exceeds_target"
+    if preference_target_matches(meet_target, file_tags):
+        return "meets_target"
+    return "below_target"
 
 
 def ordered_tags(tags: Iterable[str]) -> list[str]:

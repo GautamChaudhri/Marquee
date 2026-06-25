@@ -1,7 +1,11 @@
 import { env } from '$env/dynamic/public';
-import { apiGet, type Fetch } from './client';
+import { apiGet, apiSend, type Fetch } from './client';
 import { mockRadarrOverlay } from './mock';
-import type { RadarrOverlayQuery, RadarrOverlayResponse } from './types';
+import type {
+	HdrPreferenceChoice,
+	RadarrOverlayQuery,
+	RadarrOverlayResponse
+} from './types';
 
 const useMocks = () => env.PUBLIC_USE_MOCKS === 'true';
 
@@ -19,4 +23,17 @@ export function getRadarrOverlay(
 		'/hdr',
 		query as unknown as Record<string, unknown>
 	);
+}
+
+export function putRadarrOverlayPreferences(
+	fetch: Fetch,
+	profiles: Array<{
+		profile_id: number;
+		meet_target: HdrPreferenceChoice;
+		exceed_target: HdrPreferenceChoice | null;
+	}>
+) {
+	return apiSend<{ applied_profile_ids: number[] }>(fetch, 'PUT', '/hdr/preferences', {
+		profiles
+	});
 }

@@ -1,10 +1,15 @@
 <script lang="ts">
+	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
+	import { putRadarrOverlayPreferences } from '$lib/api/radarr-overlay';
 	import HdrBadge from '$lib/components/HdrBadge.svelte';
+	import { toast } from '$lib/toast';
 	import type {
 		HdrKind,
-		HdrTargetStatus,
-		RadarrOverlayItem
+		HdrPreferenceChoice,
+		RadarrOverlayItem,
+		RadarrOverlayProfilePreference,
+		RadarrOverlayStatus
 	} from '$lib/api/types';
 	import type { PageData } from './$types';
 
@@ -20,13 +25,29 @@
 		'unknown'
 	];
 	const STATUS_META: Record<
-		HdrTargetStatus,
+		RadarrOverlayStatus,
 		{ label: string; tone: string; note: string }
 	> = {
-		met_target: { label: 'Met target', tone: 'var(--good)', note: 'Current file satisfies the profile HDR target.' },
-		below_target: { label: 'Below target', tone: 'var(--warn)', note: 'Current file is missing one or more targeted HDR formats.' },
-		no_hdr_target: { label: 'No HDR target', tone: 'var(--faint)', note: 'This quality profile does not actively seek HDR formats.' },
-		no_file: { label: 'No file', tone: 'var(--info)', note: 'Movie is monitored but there is no active file to inspect.' }
+		below_target: {
+			label: 'Below target',
+			tone: 'var(--warn)',
+			note: 'Current file does not satisfy the configured meet target.'
+		},
+		meets_target: {
+			label: 'Meets target',
+			tone: 'var(--good)',
+			note: 'Current file satisfies the configured meet target.'
+		},
+		exceeds_target: {
+			label: 'Exceeds target',
+			tone: 'var(--gold)',
+			note: 'Current file satisfies the configured exceed target.'
+		},
+		no_hdr_target: {
+			label: 'No HDR target',
+			tone: 'var(--faint)',
+			note: 'This quality profile does not actively target HDR formats.'
+		}
 	};
 	const TAG_LABEL: Record<string, string> = {
 		hdr: 'HDR',
@@ -37,6 +58,36 @@
 		sdr: 'SDR',
 		unknown: 'Unknown'
 	};
+	const PREFERENCE_LABEL: Record<HdrPreferenceChoice, string> = {
+		hdr: 'HDR',
+		hdr10: 'HDR10',
+		hdr10p: 'HDR10+',
+		dovi_no_fallback: 'DoVi (any)',
+		dovi_fallback: 'DoVi + HDR fallback'
+	};
+	const DEFAULT_SORT_DIR: Record<'title' | 'cf_score' | 'preference_status', 'asc' | 'desc'> = {
+		title: 'asc',
+		cf_score: 'desc',
+		preference_status: 'desc'
+	};
+	const PREFERENCE_RANK: Record<HdrPreferenceChoice, number> = {
+		hdr: 0,
+		hdr10: 1,
+		hdr10p: 2,
+		dovi_no_fallback: 3,
+		dovi_fallback: 4
+	};
+
+	type PreferenceDraft = RadarrOverlayProfilePreference;
+
+	let preferenceDrafts = $state<PreferenceDraft[]>([]);
+	let savingPreferences = $state(false);
+
+	$effect(() => {
+		preferenceDrafts = (data.data?.profile_preferences ?? []).map((preference) => ({
+			...preference
+		}));
+	});
 
 	function selectedTags(): string[] {
 		const raw = page.url.searchParams.getAll('hdr_tags');
@@ -86,6 +137,66 @@
 		const suffix = item.cutoff_met == null ? '' : item.cutoff_met ? ' met' : ' open';
 		return `${item.cf_cutoff}${suffix}`;
 	}
+
+	function sortHref(sortBy: 'title' | 'cf_score' | 'preference_status'): string {
+		const currentSort = (page.url.searchParams.get('sort_by') as typeof sortBy | null) ?? 'cf_score';
+		const currentDir = (page.url.searchParams.get('sort_dir') as 'asc' | 'desc' | null) ?? 'desc';
+		const nextDir =
+			currentSort === sortBy
+				? currentDir === 'asc'
+					? 'desc'
+					: 'asc'
+				: DEFAULT_SORT_DIR[sortBy];
+		return withParams({ sort_by: sortBy, sort_dir: nextDir });
+	}
+
+	function sortGlyph(sortBy: 'title' | 'cf_score' | 'preference_status'): string {
+		const currentSort = page.url.searchParams.get('sort_by') ?? 'cf_score';
+		if (currentSort !== sortBy) return '';
+		return (page.url.searchParams.get('sort_dir') ?? 'desc') === 'asc' ? '↑' : '↓';
+	}
+
+	function availableExceedTargets(draft: PreferenceDraft): HdrPreferenceChoice[] {
+		if (!draft.meet_target) return [];
+		return draft.available_preference_targets.filter(
+			(choice) => PREFERENCE_RANK[choice] > PREFERENCE_RANK[draft.meet_target as HdrPreferenceChoice]
+		);
+	}
+
+	function updateMeetTarget(draft: PreferenceDraft, nextValue: string): void {
+		draft.meet_target = nextValue as HdrPreferenceChoice;
+		if (draft.exceed_target && !availableExceedTargets(draft).includes(draft.exceed_target)) {
+			draft.exceed_target = null;
+		}
+	}
+
+	async function savePreferences(): Promise<void> {
+		if (!preferenceDrafts.length) return;
+		savingPreferences = true;
+		try {
+			await putRadarrOverlayPreferences(
+				fetch,
+				preferenceDrafts
+					.filter((draft) => draft.meet_target)
+					.map((draft) => ({
+						profile_id: draft.profile_id,
+						meet_target: draft.meet_target!,
+						exceed_target: draft.exceed_target
+					}))
+			);
+			toast('Overlay preferences saved', 'good');
+			await goto(page.url, {
+				replaceState: true,
+				noScroll: true,
+				keepFocus: true,
+				invalidateAll: true
+			});
+		} catch (e) {
+			toast(e instanceof Error ? e.message : 'Could not save overlay preferences', 'bad');
+		} finally {
+			savingPreferences = false;
+		}
+	}
 </script>
 
 {#if data.error || !data.data}
@@ -106,7 +217,7 @@
 				<p class="eyebrow">Toolbox</p>
 				<h1>Radarr Overlay</h1>
 				<p class="lede">
-					A consolidated readout of HDR truth, custom-format score posture, and per-profile target compliance.
+					A consolidated readout of HDR truth, custom-format score posture, and per-profile preference compliance.
 				</p>
 			</div>
 			<div class="stats">
@@ -116,7 +227,7 @@
 				</div>
 				<div class="stat">
 					<span class="label">Profiles</span>
-					<strong>{data.data.profiles.length}</strong>
+					<strong>{data.data.profile_preferences.length}</strong>
 				</div>
 				<div class="stat">
 					<span class="label">DoVi no fallback</span>
@@ -129,7 +240,7 @@
 			<div class="bar-head">
 				<div>
 					<h2>HDR distribution</h2>
-					<p>Each movie contributes to every HDR tag it actually carries, so hybrid files like <code>DV HDR10</code> count in both groups.</p>
+					<p>Each movie contributes to every HDR profile it actually carries, so hybrid files like <code>DV HDR10</code> count in both groups.</p>
 				</div>
 				<a class="clear" href={clearHref()}>Clear filters</a>
 			</div>
@@ -150,6 +261,8 @@
 		</div>
 
 		<form class="panel filters" method="GET">
+			<input type="hidden" name="sort_by" value={data.query.sort_by ?? 'cf_score'} />
+			<input type="hidden" name="sort_dir" value={data.query.sort_dir ?? 'desc'} />
 			<div class="filter-row">
 				<label>
 					<span>Profile</span>
@@ -166,43 +279,27 @@
 					</select>
 				</label>
 				<label>
-					<span>Target status</span>
-					<select name="hdr_target_status">
+					<span>Status</span>
+					<select name="preference_status">
 						<option value="">Any status</option>
 						{#each Object.entries(STATUS_META) as [value, meta] (value)}
-							<option value={value} selected={data.query.hdr_target_status === value}>{meta.label}</option>
+							<option value={value} selected={data.query.preference_status === value}>{meta.label}</option>
 						{/each}
 					</select>
 				</label>
 				<label>
 					<span>Min CF score</span>
-					<input name="cf_score_min" type="number" min="0" value={data.query.cf_score_min ?? ''} />
+					<input name="cf_score_min" type="number" value={data.query.cf_score_min ?? ''} />
 				</label>
 				<label>
 					<span>Max CF score</span>
-					<input name="cf_score_max" type="number" min="0" value={data.query.cf_score_max ?? ''} />
-				</label>
-				<label>
-					<span>Sort</span>
-					<select name="sort_by">
-						<option value="cf_score" selected={data.query.sort_by === 'cf_score'}>CF score</option>
-						<option value="hdr_target_status" selected={data.query.sort_by === 'hdr_target_status'}>Target status</option>
-						<option value="title" selected={data.query.sort_by === 'title'}>Title</option>
-						<option value="year" selected={data.query.sort_by === 'year'}>Year</option>
-					</select>
-				</label>
-				<label>
-					<span>Direction</span>
-					<select name="sort_dir">
-						<option value="desc" selected={data.query.sort_dir === 'desc'}>Desc</option>
-						<option value="asc" selected={data.query.sort_dir === 'asc'}>Asc</option>
-					</select>
+					<input name="cf_score_max" type="number" value={data.query.cf_score_max ?? ''} />
 				</label>
 			</div>
 
 			<div class="filter-row tags">
 				<div class="tag-group">
-					<span class="group-label">HDR tags</span>
+					<span class="group-label">HDR profiles</span>
 					<div class="checks">
 						{#each TAGS as tag (tag)}
 							<label class="check">
@@ -230,6 +327,63 @@
 			</div>
 		</form>
 
+		<div class="panel preference-panel">
+			<div class="table-head">
+				<div>
+					<h2>Preference targets</h2>
+					<p>Each profile defines what counts as <strong>meet</strong> and optionally <strong>exceed</strong>. Below target is derived automatically.</p>
+				</div>
+				<button class="save" type="button" onclick={savePreferences} disabled={savingPreferences}>
+					{savingPreferences ? 'Saving…' : 'Save preferences'}
+				</button>
+			</div>
+			{#if preferenceDrafts.length}
+				<div class="preference-grid">
+					{#each preferenceDrafts as draft (draft.profile_id)}
+						<div class="pref-card">
+							<div class="pref-head">
+								<strong>{draft.profile_name}</strong>
+								<span class="pref-label">Radarr targets</span>
+							</div>
+							<div class="pref-tags">
+								<HdrBadge kinds={draft.profile_targets} />
+							</div>
+							<div class="pref-controls">
+								<label>
+									<span>Meets target</span>
+									<select
+										value={draft.meet_target ?? ''}
+										onchange={(event) => updateMeetTarget(draft, (event.currentTarget as HTMLSelectElement).value)}
+									>
+										{#each draft.available_preference_targets as choice (choice)}
+											<option value={choice}>{PREFERENCE_LABEL[choice]}</option>
+										{/each}
+									</select>
+								</label>
+								<label>
+									<span>Exceeds target</span>
+									<select
+										value={draft.exceed_target ?? ''}
+										onchange={(event) => {
+											const value = (event.currentTarget as HTMLSelectElement).value;
+											draft.exceed_target = value ? (value as HdrPreferenceChoice) : null;
+										}}
+									>
+										<option value="">None</option>
+										{#each availableExceedTargets(draft) as choice (choice)}
+											<option value={choice}>{PREFERENCE_LABEL[choice]}</option>
+										{/each}
+									</select>
+								</label>
+							</div>
+						</div>
+					{/each}
+				</div>
+			{:else}
+				<p class="muted">No file-backed profile on this page currently exposes HDR preference targets.</p>
+			{/if}
+		</div>
+
 		<div class="panel list">
 			<div class="table-head">
 				<h2>Movies</h2>
@@ -237,13 +391,13 @@
 			</div>
 			<div class="rows">
 				<div class="row head">
-					<span>Title</span>
-					<span>HDR tags</span>
+					<span><a class="sort-link" href={sortHref('title')}>Title {sortGlyph('title')}</a></span>
+					<span>HDR profiles</span>
 					<span>Profile</span>
-					<span>CF score</span>
+					<span><a class="sort-link" href={sortHref('cf_score')}>CF score {sortGlyph('cf_score')}</a></span>
 					<span>Cutoff</span>
-					<span>Targets</span>
-					<span>Status</span>
+					<span>Radarr targets</span>
+					<span><a class="sort-link" href={sortHref('preference_status')}>Status {sortGlyph('preference_status')}</a></span>
 				</div>
 				{#each data.data.items as item (item.id)}
 					<a class="row item" href={`/films/${item.id}`}>
@@ -256,20 +410,19 @@
 						</span>
 						<span class="profile">
 							<strong>{item.profile_name ?? '—'}</strong>
-							<small>{item.profile_id ? `#${item.profile_id}` : 'No profile'}</small>
 						</span>
-						<span class="mono">{item.cf_score}</span>
+						<span class="mono">{item.cf_score ?? '—'}</span>
 						<span class="mono">{cutoffLabel(item)}</span>
 						<span class="tags-cell">
-							{#if item.hdr_targets.length}
-								<HdrBadge kinds={item.hdr_targets} />
+							{#if item.profile_targets.length}
+								<HdrBadge kinds={item.profile_targets} />
 							{:else}
 								<span class="muted">—</span>
 							{/if}
 						</span>
-						<span class="status" style={`--tone:${STATUS_META[item.hdr_target_status].tone}`}>
-							<strong>{STATUS_META[item.hdr_target_status].label}</strong>
-							<small>{STATUS_META[item.hdr_target_status].note}</small>
+						<span class="status" style={`--tone:${STATUS_META[item.preference_status].tone}`}>
+							<strong>{STATUS_META[item.preference_status].label}</strong>
+							<small>{STATUS_META[item.preference_status].note}</small>
 						</span>
 					</a>
 				{/each}
@@ -398,7 +551,7 @@
 	}
 	.filter-row {
 		display: grid;
-		grid-template-columns: repeat(6, minmax(0, 1fr));
+		grid-template-columns: repeat(4, minmax(0, 1fr));
 		gap: 12px;
 	}
 	label {
@@ -444,7 +597,8 @@
 	.check.single {
 		align-self: center;
 	}
-	.apply {
+	.apply,
+	.save {
 		height: 40px;
 		padding: 0 16px;
 		border: 1px solid color-mix(in srgb, var(--gold) 35%, var(--line));
@@ -453,6 +607,46 @@
 		color: var(--gold);
 		font-weight: 600;
 	}
+	.apply:disabled,
+	.save:disabled {
+		opacity: 0.6;
+		cursor: default;
+	}
+	.preference-panel {
+		display: flex;
+		flex-direction: column;
+		gap: 14px;
+	}
+	.preference-grid {
+		display: grid;
+		grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+		gap: 12px;
+	}
+	.pref-card {
+		padding: 14px;
+		border: 1px solid var(--line);
+		border-radius: var(--radius-sm);
+		background: var(--ink2);
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
+	}
+	.pref-head {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+	}
+	.pref-label {
+		font-size: 11px;
+		letter-spacing: 0.07em;
+		text-transform: uppercase;
+		color: var(--faint2);
+	}
+	.pref-controls {
+		display: grid;
+		grid-template-columns: 1fr 1fr;
+		gap: 10px;
+	}
 	.rows {
 		border: 1px solid var(--line);
 		border-radius: var(--radius-sm);
@@ -460,7 +654,7 @@
 	}
 	.row {
 		display: grid;
-		grid-template-columns: 1.35fr 1.1fr 1fr 90px 90px 1.1fr 1.35fr;
+		grid-template-columns: 1.35fr 1.1fr 0.9fr 90px 90px 1.1fr 1.35fr;
 		gap: 12px;
 		padding: 12px 14px;
 		align-items: center;
@@ -480,6 +674,10 @@
 	.row.item:hover {
 		background: var(--panel2);
 	}
+	.sort-link {
+		color: inherit;
+		text-decoration: none;
+	}
 	.title,
 	.profile,
 	.status {
@@ -494,7 +692,6 @@
 		font-size: 13px;
 	}
 	.title small,
-	.profile small,
 	.status small {
 		color: var(--muted);
 		line-height: 1.35;
@@ -528,7 +725,8 @@
 			flex-direction: column;
 		}
 		.stats,
-		.filter-row {
+		.filter-row,
+		.pref-controls {
 			grid-template-columns: repeat(2, minmax(0, 1fr));
 		}
 		.tags {
@@ -544,7 +742,8 @@
 			padding: 16px;
 		}
 		.stats,
-		.filter-row {
+		.filter-row,
+		.pref-controls {
 			grid-template-columns: 1fr;
 		}
 		.row {

@@ -2,7 +2,7 @@ import type { PageLoad } from './$types';
 import { getRadarrOverlay } from '$lib/api/radarr-overlay';
 import type {
 	HdrKind,
-	HdrTargetStatus,
+	RadarrOverlayStatus,
 	RadarrOverlayQuery
 } from '$lib/api/types';
 
@@ -23,12 +23,12 @@ export const load: PageLoad = async ({ fetch, url }) => {
 		cf_score_min: sp.get('cf_score_min') ? Number(sp.get('cf_score_min')) : undefined,
 		cf_score_max: sp.get('cf_score_max') ? Number(sp.get('cf_score_max')) : undefined,
 		profile_id: sp.get('profile_id') ? Number(sp.get('profile_id')) : undefined,
-		hdr_target_status:
-			(sp.get('hdr_target_status') as HdrTargetStatus) || undefined,
+		preference_status:
+			(sp.get('preference_status') as RadarrOverlayStatus) || undefined,
 		dovi_no_fallback:
 			sp.get('dovi_no_fallback') === 'true' ? true : undefined,
 		sort_by:
-			(sp.get('sort_by') as 'title' | 'year' | 'cf_score' | 'hdr_target_status') ||
+			(sp.get('sort_by') as 'title' | 'year' | 'cf_score' | 'preference_status') ||
 			'cf_score',
 		sort_dir: (sp.get('sort_dir') as 'asc' | 'desc') || 'desc'
 	};

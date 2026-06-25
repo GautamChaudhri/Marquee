@@ -139,8 +139,17 @@ class SyncService:
         now = datetime.now(UTC)
 
         raw_movies = await self.radarr.get_movies()
+        movie_files = []
         custom_formats = []
         quality_profiles = []
+        try:
+            movie_files = await self.radarr.get_movie_files(
+                [movie["id"] for movie in raw_movies if movie.get("id") is not None]
+            )
+        except Exception:
+            logger.warning("Failed to sync Radarr movie files", exc_info=True)
+        if not isinstance(movie_files, list):
+            movie_files = []
         try:
             custom_formats = await self.radarr.get_custom_formats()
         except Exception:
@@ -153,9 +162,14 @@ class SyncService:
             custom_formats = []
         if not isinstance(quality_profiles, list):
             quality_profiles = []
-        custom_format_names = await _sync_radarr_overlay_reference_data(
+        custom_format_names, profile_scores_by_profile = await _sync_radarr_overlay_reference_data(
             self.db, custom_formats, quality_profiles, now
         )
+        movie_file_by_movie_id = {
+            movie_file["movieId"]: movie_file
+            for movie_file in movie_files
+            if movie_file.get("movieId") is not None
+        }
 
         # Index existing rows by radarr_id → O(1) lookups
         existing = {
@@ -193,7 +207,7 @@ class SyncService:
                 movie.genres = genres if isinstance(genres, list) else None
 
                 # ── Filesystem ────────────────────────────────────────
-                movie_file = data.get("movieFile") or {}
+                movie_file = movie_file_by_movie_id.get(radarr_id) or data.get("movieFile") or {}
                 movie.movie_file_path = movie_file.get("relativePath")
 
                 # ── Encoded video (letterbox pre-filter, design 04) ───
@@ -218,6 +232,11 @@ class SyncService:
                     if quality_cutoff_not_met is None
                     else not bool(quality_cutoff_not_met)
                 )
+                movie.current_cf_score = (
+                    None
+                    if movie_file.get("customFormatScore") is None
+                    else int(movie_file.get("customFormatScore"))
+                )
 
                 # ── Poster existence ──────────────────────────────────
                 await self._check_existing_poster(movie)
@@ -229,6 +248,7 @@ class SyncService:
                     movie.id,
                     movie_file.get("customFormats") or [],
                     custom_format_names,
+                    profile_scores_by_profile.get(movie.quality_profile_id or -1, {}),
                     now,
                 )
                 await _upsert_movie_media_file(self.db, movie, movie_file)
@@ -643,7 +663,7 @@ async def _sync_radarr_overlay_reference_data(
     custom_formats: list[dict],
     quality_profiles: list[dict],
     synced_at: datetime,
-) -> dict[int, str]:
+) -> tuple[dict[int, str], dict[int, dict[int, int]]]:
     """Upsert Radarr custom-format and quality-profile metadata."""
     existing_custom_formats = {
         row.id: row
@@ -715,24 +735,29 @@ async def _sync_radarr_overlay_reference_data(
         )
 
     await db.execute(delete(RadarrProfileFormatItem))
+    profile_scores_by_profile: dict[int, dict[int, int]] = {}
     for payload in quality_profiles:
         profile_id = payload.get("id")
         if profile_id is None:
             continue
+        profile_scores: dict[int, int] = {}
         for item in payload.get("formatItems") or []:
             cf_id = item.get("format")
             score = item.get("score")
             if cf_id is None or score is None:
                 continue
+            score_int = int(score)
             db.add(
                 RadarrProfileFormatItem(
                     profile_id=profile_id,
                     custom_format_id=cf_id,
-                    score=int(score),
+                    score=score_int,
                 )
             )
+            profile_scores[cf_id] = score_int
+        profile_scores_by_profile[profile_id] = profile_scores
 
-    return custom_format_names
+    return custom_format_names, profile_scores_by_profile
 
 
 async def _replace_movie_custom_format_scores(
@@ -740,6 +765,7 @@ async def _replace_movie_custom_format_scores(
     movie_id: int,
     custom_formats: list[dict],
     custom_format_names: dict[int, str],
+    profile_scores_by_cf: dict[int, int],
     synced_at: datetime,
 ) -> None:
     """Replace the current-file custom-format scores for one movie."""
@@ -747,8 +773,7 @@ async def _replace_movie_custom_format_scores(
 
     for payload in custom_formats:
         cf_id = payload.get("id")
-        score = payload.get("score")
-        if cf_id is None or score is None:
+        if cf_id is None:
             continue
         if cf_id not in custom_format_names:
             db.add(
@@ -765,7 +790,7 @@ async def _replace_movie_custom_format_scores(
             MovieCustomFormatScore(
                 movie_id=movie_id,
                 custom_format_id=cf_id,
-                score=int(score),
+                score=int(profile_scores_by_cf.get(cf_id, 0)),
                 synced_at=synced_at,
             )
         )

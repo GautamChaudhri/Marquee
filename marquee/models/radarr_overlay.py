@@ -66,3 +66,17 @@ class MovieCustomFormatScore(Base):
     )
     score: Mapped[int] = mapped_column(Integer, nullable=False)
     synced_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class RadarrOverlayProfilePreference(Base):
+    """User preference targets layered on top of a Radarr quality profile."""
+
+    __tablename__ = "radarr_overlay_profile_preferences"
+
+    profile_id: Mapped[int] = mapped_column(
+        ForeignKey("radarr_quality_profiles.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    meet_target: Mapped[str] = mapped_column(String(32), nullable=False)
+    exceed_target: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
