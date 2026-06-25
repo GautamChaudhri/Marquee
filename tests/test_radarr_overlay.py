@@ -103,7 +103,7 @@ def test_preference_status_resolves_meet_exceed_and_no_target():
             meet_target="hdr10",
             exceed_target="dovi_fallback",
         )
-        == "below_target"
+        == "meets_target"
     )
     assert (
         preference_status(
@@ -120,6 +120,9 @@ def test_is_valid_preference_pair_requires_stricter_exceed_target():
     assert is_valid_preference_pair("hdr", "dovi_fallback") is True
     assert is_valid_preference_pair("hdr10p", "dovi_no_fallback") is True
     assert is_valid_preference_pair("dovi_fallback", "hdr10p") is False
+    assert is_valid_preference_pair(None, None) is True
+    assert is_valid_preference_pair("hdr", None) is True
+    assert is_valid_preference_pair(None, "dovi_fallback") is True
 
 
 def test_ordered_tags_stable():

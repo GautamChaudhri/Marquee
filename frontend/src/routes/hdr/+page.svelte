@@ -15,6 +15,13 @@
 
 	let { data }: { data: PageData } = $props();
 
+	let currentPage = $derived(data.data?.page ?? 1);
+	let pageSize = $derived(data.data?.page_size ?? 100);
+	let totalItems = $derived(data.data?.total ?? 0);
+	let totalPages = $derived(Math.ceil(totalItems / pageSize));
+	let startIndex = $derived(totalItems > 0 ? (currentPage - 1) * pageSize + 1 : 0);
+	let endIndex = $derived(Math.min(currentPage * pageSize, totalItems));
+
 	const TAGS: (HdrKind | 'unknown')[] = [
 		'hdr',
 		'hdr10',
@@ -117,7 +124,9 @@
 			if (value === null || value === '') sp.delete(key);
 			else sp.set(key, value);
 		}
-		sp.delete('page');
+		if (!('page' in patch)) {
+			sp.delete('page');
+		}
 		const query = sp.toString();
 		return query ? `/hdr?${query}` : '/hdr';
 	}
@@ -188,61 +197,72 @@
 		return count;
 	}
 
-	// Per-draft active mode for setting targets
-	let activeModes = $state<Record<number, 'meet' | 'exceed' | null>>({});
-
-	function activateMode(draft: PreferenceDraft, mode: 'meet' | 'exceed'): void {
-		activeModes = { ...activeModes, [draft.profile_id]: mode };
-	}
-
-	function cancelMode(draft: PreferenceDraft): void {
-		activeModes = { ...activeModes, [draft.profile_id]: null };
-	}
-
-	function rungSelect(draft: PreferenceDraft, choice: HdrPreferenceChoice): void {
-		const mode = activeModes[draft.profile_id];
-		if (!mode) return;
-		if (mode === 'meet') {
-			draft.meet_target = draft.meet_target === choice ? null : choice;
+	function toggleMeetBoundary(draft: PreferenceDraft, choice: HdrPreferenceChoice): void {
+		if (draft.meet_target === choice) {
+			draft.meet_target = null;
 		} else {
-			draft.exceed_target = draft.exceed_target === choice ? null : choice;
+			draft.meet_target = choice;
+			// If exceeds target is set but is lower or equal, clear/reset it
+			if (
+				draft.exceed_target &&
+				PREFERENCE_RANK[draft.exceed_target] <= PREFERENCE_RANK[choice]
+			) {
+				draft.exceed_target = null;
+			}
 		}
-		cancelMode(draft);
+	}
+
+	function toggleExceedBoundary(draft: PreferenceDraft, choice: HdrPreferenceChoice): void {
+		if (draft.exceed_target === choice) {
+			draft.exceed_target = null;
+		} else {
+			draft.exceed_target = choice;
+			// If meets target is set but is higher or equal, clear/reset it
+			if (
+				draft.meet_target &&
+				PREFERENCE_RANK[draft.meet_target] >= PREFERENCE_RANK[choice]
+			) {
+				draft.meet_target = null;
+			}
+		}
 	}
 
 	function zoneForChoice(
 		draft: PreferenceDraft,
 		choice: HdrPreferenceChoice
-	): 'exceed' | 'meet' | 'below_meet' | 'neutral' {
+	): 'exceed' | 'meet' | 'fail' {
 		const rank = PREFERENCE_RANK[choice];
-		const exceedRank = draft.exceed_target ? PREFERENCE_RANK[draft.exceed_target] : -1;
-		if (exceedRank >= 0 && rank >= exceedRank) return 'exceed';
 		const meetRank = draft.meet_target ? PREFERENCE_RANK[draft.meet_target] : -1;
-		if (meetRank >= 0) {
-			if (rank >= meetRank) return 'meet';
-			return 'below_meet';
+		const exceedRank = draft.exceed_target ? PREFERENCE_RANK[draft.exceed_target] : -1;
+
+		if (exceedRank >= 0 && rank >= exceedRank) {
+			return 'exceed';
 		}
-		return 'neutral';
+		if (meetRank >= 0 && rank >= meetRank) {
+			return 'meet';
+		}
+		if (draft.meet_target == null && exceedRank >= 0 && rank < exceedRank) {
+			return 'meet';
+		}
+		if (draft.meet_target == null && draft.exceed_target == null) {
+			return 'meet';
+		}
+		return 'fail';
 	}
+
 	function dismissRung(draft: PreferenceDraft, choice: HdrPreferenceChoice): void {
 		excludedKeys[excludedKey(draft, choice)] = true;
 
 		if (draft.meet_target === choice) {
-			const choices = effectiveChoices(draft);
-			draft.meet_target = findMeetFromChoices(choices);
-			draft.exceed_target = null;
-		} else if (draft.exceed_target === choice) {
+			draft.meet_target = null;
+		}
+		if (draft.exceed_target === choice) {
 			draft.exceed_target = null;
 		}
 	}
 
 	function restoreRung(draft: PreferenceDraft, choice: HdrPreferenceChoice): void {
 		delete excludedKeys[excludedKey(draft, choice)];
-
-		if (!draft.meet_target) {
-			const choices = effectiveChoices(draft);
-			draft.meet_target = findMeetFromChoices(choices);
-		}
 	}
 
 	function collapseDraft(draft: PreferenceDraft): void {
@@ -261,19 +281,16 @@
 		try {
 			await putRadarrOverlayPreferences(
 				fetch,
-				preferenceDrafts
-					.filter((draft) => draft.meet_target)
-					.map((draft) => ({
-						profile_id: draft.profile_id,
-						meet_target: draft.meet_target!,
-						exceed_target: draft.exceed_target,
-						excluded_targets: draft.available_preference_targets.filter((choice) =>
-							isExcluded(draft, choice)
-						)
-					}))
+				preferenceDrafts.map((draft) => ({
+					profile_id: draft.profile_id,
+					meet_target: draft.meet_target,
+					exceed_target: draft.exceed_target,
+					excluded_targets: draft.available_preference_targets.filter((choice) =>
+						isExcluded(draft, choice)
+					)
+				}))
 			);
 			toast('Overlay preferences saved', 'good');
-			activeModes = {};
 			await goto(page.url, {
 				replaceState: true,
 				noScroll: true,
@@ -449,7 +466,7 @@
 								<HdrBadge kinds={draft.profile_targets} />
 							</div>
 							<div class="pref-controls">
-								{#if expandedDrafts[draft.profile_id] || !draft.meet_target}
+								{#if expandedDrafts[draft.profile_id] || (draft.meet_target == null && draft.exceed_target == null)}
 									<!-- svelte-ignore a11y_click_events_have_key_events -->
 									<!-- svelte-ignore a11y_no_static_element_interactions -->
 									<div class="ladder">
@@ -460,66 +477,64 @@
 											{@const activeChoices = draft.available_preference_targets.filter(
 												(choice) => !isExcluded(draft, choice)
 											)}
-											{@const mode = activeModes[draft.profile_id] ?? null}
-												<!-- Active rungs: reversed so DoVi+HDR is top, SDR is bottom -->
-												{#each [...activeChoices].reverse() as choice (choice)}
-													{@const zone = zoneForChoice(draft, choice)}
-													{@const isMeetBoundary = draft.meet_target === choice}
-													{@const isExceedBoundary = draft.exceed_target === choice}
-													<!-- svelte-ignore a11y_click_events_have_key_events -->
-													<!-- svelte-ignore a11y_no_static_element_interactions -->
-													<div
-														class="rung"
-														class:exceed={zone === 'exceed'}
-														class:meet={zone === 'meet'}
-														class:below-meet={zone === 'below_meet'}
-														class:neutral={zone === 'neutral'}
-														class:boundary={isMeetBoundary || isExceedBoundary}
-														class:selectable={!!mode}
-														onclick={() => rungSelect(draft, choice)}
-													>
-														<span class="rung-indicator"></span>
-														<span class="rung-label">{PREFERENCE_LABEL[choice]}</span>
-														{#if isMeetBoundary}
-															<span class="rung-tag meet-tag">meet</span>
-														{/if}
-														{#if isExceedBoundary}
-															<span class="rung-tag exceed-tag">exceed</span>
-														{/if}
-														{#if zone === 'below_meet' && choice === 'sdr'}
-															<span class="rung-tag fails-tag">FAILS</span>
-														{/if}
-														{#if zone === 'meet' || zone === 'exceed'}
-															<button
-																class="rung-dismiss"
-																type="button"
-																title="Remove {PREFERENCE_LABEL[choice]} from targets"
-																onclick={(e) => { e.stopPropagation(); dismissRung(draft, choice); }}>×</button>
-														{/if}
+											<!-- Active rungs: reversed so DoVi+HDR is top, SDR is bottom -->
+											{#each [...activeChoices].reverse() as choice (choice)}
+												{@const zone = zoneForChoice(draft, choice)}
+												{@const isMeetBoundary = draft.meet_target === choice}
+												{@const isExceedBoundary = draft.exceed_target === choice}
+												<!-- svelte-ignore a11y_click_events_have_key_events -->
+												<!-- svelte-ignore a11y_no_static_element_interactions -->
+												<div
+													class="rung"
+													class:exceed={zone === 'exceed'}
+													class:meet={zone === 'meet'}
+													class:fail={zone === 'fail'}
+													class:boundary={isMeetBoundary || isExceedBoundary}
+												>
+													<span class="rung-indicator"></span>
+													<span class="rung-label">{PREFERENCE_LABEL[choice]}</span>
+													{#if isMeetBoundary}
+														<span class="rung-tag meet-tag">meet</span>
+													{/if}
+													{#if isExceedBoundary}
+														<span class="rung-tag exceed-tag">exceed</span>
+													{/if}
+													{#if zone === 'fail'}
+														<span class="rung-tag fails-tag">fails</span>
+													{/if}
+													<div class="rung-actions">
+														<button
+															class="action-btn meet-btn"
+															class:active={isMeetBoundary}
+															type="button"
+															title="Set as meets target"
+															onclick={() => toggleMeetBoundary(draft, choice)}
+														>
+															✓
+														</button>
+														<button
+															class="action-btn exceed-btn"
+															class:active={isExceedBoundary}
+															type="button"
+															title="Set as exceeds target"
+															onclick={() => toggleExceedBoundary(draft, choice)}
+														>
+															★
+														</button>
+														<button
+															class="action-btn dismiss-btn"
+															type="button"
+															title="Mark as fails & exclude"
+															onclick={() => dismissRung(draft, choice)}
+														>
+															×
+														</button>
 													</div>
-												{/each}
-												<!-- Mode buttons -->
-												<div class="mode-bar">
-													<button
-														class="mode-btn"
-														class:armed={mode === 'meet'}
-														type="button"
-														onclick={() => mode === 'meet' ? cancelMode(draft) : activateMode(draft, 'meet')}
-													>
-														{mode === 'meet' ? 'Cancel meet' : 'Set Meet'}
-													</button>
-													<button
-														class="mode-btn"
-														class:armed={mode === 'exceed'}
-														type="button"
-														onclick={() => mode === 'exceed' ? cancelMode(draft) : activateMode(draft, 'exceed')}
-													>
-														{mode === 'exceed' ? 'Cancel exceed' : 'Set Exceed'}
-													</button>
 												</div>
-												<!-- Excluded rungs at the bottom -->
+											{/each}
+											<!-- Excluded rungs at the bottom -->
 											{#if excludedChoices.length > 0}
-												<div class="excluded-sep">excluded</div>
+												<div class="excluded-sep">Failed / Excluded</div>
 												{#each excludedChoices as choice (choice)}
 													<!-- svelte-ignore a11y_click_events_have_key_events -->
 													<!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -532,28 +547,35 @@
 											{/if}
 										{/if}
 									</div>
-									{#if draft.meet_target}
-										<button
-											class="collapse-ladder"
-											type="button"
-											onclick={() => collapseDraft(draft)}
-										>
-											Collapse
-										</button>
-									{/if}
+									<button
+										class="collapse-ladder"
+										type="button"
+										onclick={() => collapseDraft(draft)}
+									>
+										Collapse
+									</button>
 								{:else}
 									<button class="ladder-summary" type="button" onclick={() => expandDraft(draft)}>
-										<span class="summary-meet">
-											Meet: <strong>{PREFERENCE_LABEL[draft.meet_target!]}</strong>
-										</span>
+										{#if draft.meet_target}
+											<span class="summary-meet">
+												Meet: <strong>{PREFERENCE_LABEL[draft.meet_target]}</strong>
+											</span>
+										{/if}
 										{#if draft.exceed_target}
+											{#if draft.meet_target}·{/if}
 											<span class="summary-exceed">
-												· Exceed: <strong>{PREFERENCE_LABEL[draft.exceed_target]}</strong>
+												Exceed: <strong>{PREFERENCE_LABEL[draft.exceed_target]}</strong>
+											</span>
+										{/if}
+										{#if !draft.meet_target && !draft.exceed_target}
+											<span class="summary-meet">
+												No targets set
 											</span>
 										{/if}
 										{#if excludedCount(draft) > 0}
+											·
 											<span class="summary-excluded">
-												· Excluded: <strong>{excludedCount(draft)}</strong>
+												Failed/Excluded: <strong>{excludedCount(draft)}</strong>
 											</span>
 										{/if}
 										<span class="summary-edit">Edit</span>
@@ -620,6 +642,39 @@
 					</a>
 				{/each}
 			</div>
+
+			{#if totalPages > 1}
+				<div class="pagination">
+					<span class="pagination-info">
+						Showing <strong>{startIndex}</strong> – <strong>{endIndex}</strong> of <strong>{totalItems}</strong> movies
+					</span>
+					<div class="pagination-buttons">
+						<a
+							class="page-btn"
+							class:disabled={currentPage <= 1}
+							href={currentPage > 1 ? withParams({ page: (currentPage - 1).toString() }) : undefined}
+						>
+							← Prev
+						</a>
+						{#each Array.from({ length: totalPages }, (_, i) => i + 1) as p}
+							<a
+								class="page-btn"
+								class:active={p === currentPage}
+								href={withParams({ page: p.toString() })}
+							>
+								{p}
+							</a>
+						{/each}
+						<a
+							class="page-btn"
+							class:disabled={currentPage >= totalPages}
+							href={currentPage < totalPages ? withParams({ page: (currentPage + 1).toString() }) : undefined}
+						>
+							Next →
+						</a>
+					</div>
+				</div>
+			{/if}
 		</div>
 	</section>
 {/if}
@@ -886,9 +941,7 @@
 		background: var(--gold);
 		box-shadow: 0 0 6px color-mix(in srgb, var(--gold) 50%, transparent);
 	}
-	.rung.excluded .rung-indicator {
-		background: var(--faint);
-	}
+
 	.rung.meet {
 		background: color-mix(in srgb, var(--good) 10%, transparent);
 	}
@@ -901,13 +954,7 @@
 	.rung.exceed:hover {
 		background: color-mix(in srgb, var(--gold) 18%, transparent);
 	}
-	.rung.excluded {
-		background: var(--ink2);
-		color: var(--faint);
-	}
-	.rung.excluded:hover {
-		background: color-mix(in srgb, var(--faint) 12%, var(--ink2));
-	}
+
 	.rung.boundary {
 		font-weight: 600;
 	}
@@ -985,68 +1032,54 @@
 	.summary-excluded strong {
 		color: var(--bad);
 	}
-	/* ── rung selectable (mode armed) ────────────── */
-	.rung.selectable {
-		cursor: pointer;
-	}
-	.rung.selectable:hover {
-		filter: brightness(1.15);
-	}
-	/* ── mode bar ─────────────────────────────────── */
-	.mode-bar {
+	/* ── rung actions & buttons ───────────────────── */
+	.rung-actions {
 		display: flex;
-		gap: 8px;
-		padding: 8px 12px;
-		border-top: 1px solid var(--line);
+		align-items: center;
+		gap: 6px;
+		margin-left: auto;
+		opacity: 0;
+		transition: opacity 0.15s ease;
 	}
-	.mode-btn {
-		flex: 1;
-		font-size: 11px;
-		font-weight: 600;
-		text-transform: uppercase;
-		letter-spacing: 0.04em;
-		padding: 6px 0;
-		border-radius: 6px;
+	.rung:hover .rung-actions {
+		opacity: 1;
+	}
+	.action-btn {
+		width: 24px;
+		height: 24px;
+		border-radius: 50%;
 		border: 1px solid var(--line);
-		background: var(--ink2);
-		color: var(--muted);
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		background: transparent;
+		color: var(--faint2);
 		cursor: pointer;
-		transition: all 0.12s ease;
+		font-size: 12px;
+		line-height: 1;
+		padding: 0;
+		transition: all 0.15s ease;
 	}
-	.mode-btn:hover {
+	.action-btn:hover {
 		color: var(--text);
 		border-color: var(--line2);
 	}
-	.mode-btn.armed {
-		background: color-mix(in srgb, var(--gold) 15%, transparent);
-		border-color: var(--gold);
+	.action-btn.meet-btn:hover,
+	.action-btn.meet-btn.active {
+		color: var(--good);
+		border-color: var(--good);
+		background: color-mix(in srgb, var(--good) 15%, transparent);
+	}
+	.action-btn.exceed-btn:hover,
+	.action-btn.exceed-btn.active {
 		color: var(--gold);
+		border-color: var(--gold);
+		background: color-mix(in srgb, var(--gold) 15%, transparent);
 	}
-	.rung-dismiss {
-		flex: none;
-		width: 22px;
-		height: 22px;
-		border: none;
-		border-radius: 5px;
-		background: transparent;
-		color: var(--faint);
-		font-size: 15px;
-		line-height: 1;
-		cursor: pointer;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		opacity: 0;
-		transition:
-			opacity 0.12s ease,
-			background 0.12s ease;
-	}
-	.rung:hover .rung-dismiss {
-		opacity: 1;
-	}
-	.rung-dismiss:hover {
-		background: color-mix(in srgb, var(--faint) 18%, transparent);
-		color: var(--text);
+	.action-btn.dismiss-btn:hover {
+		color: var(--bad);
+		border-color: var(--bad);
+		background: color-mix(in srgb, var(--bad) 15%, transparent);
 	}
 	/* ── dismissed (excluded) rungs ──────────────── */
 	.excluded-sep {
@@ -1069,30 +1102,20 @@
 	.rung.dismissed .rung-indicator {
 		background: var(--faint2);
 	}
-	/* ── below-meet rungs (red) ─────────────────── */
-	.rung.below-meet {
+	/* ── fail rungs (red) ─────────────────── */
+	.rung.fail {
 		background: color-mix(in srgb, var(--bad) 8%, transparent);
 		color: var(--muted);
 	}
-	.rung.below-meet:hover {
+	.rung.fail:hover {
 		background: color-mix(in srgb, var(--bad) 16%, transparent);
 		color: var(--text);
 	}
-	.rung.below-meet .rung-indicator {
+	.rung.fail .rung-indicator {
 		background: var(--bad);
 		box-shadow: 0 0 5px color-mix(in srgb, var(--bad) 40%, transparent);
 	}
-	/* ── neutral rungs (nothing set) ────────────── */
-	.rung.neutral {
-		background: var(--ink2);
-		color: var(--muted);
-	}
-	.rung.neutral:hover {
-		background: var(--panel2);
-	}
-	.rung.neutral .rung-indicator {
-		background: var(--faint2);
-	}
+
 	.rung-restore {
 		font-size: 10px;
 		color: var(--faint);
@@ -1172,6 +1195,54 @@
 		border-radius: var(--radius);
 		border: 1px solid color-mix(in srgb, var(--warn) 30%, var(--line));
 		background: color-mix(in srgb, var(--warn) 8%, transparent);
+	}
+	.pagination {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		padding: 14px 18px;
+		border-top: 1px solid var(--line);
+		background: var(--ink2);
+		font-size: 13px;
+		color: var(--muted);
+	}
+	.pagination-info strong {
+		color: var(--text);
+	}
+	.pagination-buttons {
+		display: flex;
+		gap: 6px;
+	}
+	.page-btn {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		padding: 6px 12px;
+		border-radius: var(--radius-sm);
+		border: 1px solid var(--line);
+		background: var(--panel);
+		color: var(--text);
+		text-decoration: none;
+		font-size: 12px;
+		font-weight: 500;
+		transition: all 0.12s ease;
+		cursor: pointer;
+	}
+	.page-btn:hover:not(.disabled):not(.active) {
+		background: var(--panel2);
+		border-color: var(--line2);
+	}
+	.page-btn.active {
+		background: var(--text);
+		border-color: var(--text);
+		color: var(--ink);
+		font-weight: 600;
+		cursor: default;
+	}
+	.page-btn.disabled {
+		opacity: 0.4;
+		cursor: not-allowed;
+		pointer-events: none;
 	}
 	@media (max-width: 1100px) {
 		.hero,

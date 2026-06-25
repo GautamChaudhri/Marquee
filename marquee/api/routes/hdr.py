@@ -59,7 +59,7 @@ HDR_DISTRIBUTION_ORDER = (
 
 class ProfilePreferenceUpdate(BaseModel):
     profile_id: int
-    meet_target: str
+    meet_target: str | None = None
     exceed_target: str | None = None
     excluded_targets: list[str] | None = None
 
@@ -191,7 +191,7 @@ async def _load_profile_context(
 
         stored = stored_preferences.get(profile_id)
         if stored and (
-            stored.meet_target in available_targets
+            (stored.meet_target is None or stored.meet_target in available_targets)
             and (stored.exceed_target is None or stored.exceed_target in available_targets)
             and is_valid_preference_pair(stored.meet_target, stored.exceed_target)
         ):
@@ -315,6 +315,7 @@ async def hdr_index(
                 profile_targets=set(profile_targets),
                 meet_target=preference_summary["meet_target"] if preference_summary else None,
                 exceed_target=preference_summary["exceed_target"] if preference_summary else None,
+                excluded_targets=preference_summary["excluded_targets"] if preference_summary else None,
             ),
         }
         all_items.append(item)
@@ -426,7 +427,7 @@ async def put_profile_preferences(
             )
 
         available_targets = set(summary["available_preference_targets"])
-        if update.meet_target not in available_targets:
+        if update.meet_target is not None and update.meet_target not in available_targets:
             raise HTTPException(
                 status_code=400,
                 detail=f"Invalid meet_target for profile {update.profile_id}",
@@ -441,7 +442,7 @@ async def put_profile_preferences(
                 status_code=400,
                 detail=f"exceed_target must be stricter than meet_target for profile {update.profile_id}",
             )
-        if update.exceed_target is not None and preference_rank(
+        if update.exceed_target is not None and update.meet_target is not None and preference_rank(
             update.exceed_target
         ) <= preference_rank(update.meet_target):
             raise HTTPException(

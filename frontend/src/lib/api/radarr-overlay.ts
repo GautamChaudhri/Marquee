@@ -21,7 +21,7 @@ export function putRadarrOverlayPreferences(
 	fetch: Fetch,
 	profiles: Array<{
 		profile_id: number;
-		meet_target: HdrPreferenceChoice;
+		meet_target: HdrPreferenceChoice | null;
 		exceed_target: HdrPreferenceChoice | null;
 		excluded_targets: HdrPreferenceChoice[];
 	}>

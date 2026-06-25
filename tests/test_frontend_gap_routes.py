@@ -187,11 +187,12 @@ async def test_hdr_distribution_and_filter(db: AsyncSession, client: AsyncClient
     assert body["items"][0]["cf_score"] == 10
     assert body["items"][0]["profile_targets"] == ["hdr10p", "dovi"]
     assert body["items"][0]["available_preference_targets"] == [
+        "sdr",
         "hdr10p",
         "dovi_no_fallback",
         "dovi_fallback",
     ]
-    assert body["items"][0]["meet_target"] == "hdr10p"
+    assert body["items"][0]["meet_target"] == "sdr"
     assert body["items"][0]["exceed_target"] == "dovi_fallback"
     assert body["items"][0]["preference_status"] == "meets_target"
     assert body["profile_preferences"] == [
@@ -200,12 +201,14 @@ async def test_hdr_distribution_and_filter(db: AsyncSession, client: AsyncClient
             "profile_name": "UHD",
             "profile_targets": ["hdr10p", "dovi"],
             "available_preference_targets": [
+                "sdr",
                 "hdr10p",
                 "dovi_no_fallback",
                 "dovi_fallback",
             ],
-            "meet_target": "hdr10p",
+            "meet_target": "sdr",
             "exceed_target": "dovi_fallback",
+            "excluded_targets": [],
         }
     ]
 
