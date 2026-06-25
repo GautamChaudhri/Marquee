@@ -27,6 +27,41 @@ from marquee.models import SubtitleInventory, SubtitleTrack
 
 logger = logging.getLogger(__name__)
 
+_SUBTITLE_CODEC_LABELS = {
+    "ass": "ASS",
+    "dvb_subtitle": "DVB",
+    "dvbsub": "DVB",
+    "dvb_teletext": "DVB Teletext",
+    "dvd_subtitle": "DVD VobSub",
+    "dvdsub": "DVD VobSub",
+    "hdmv_pgs_subtitle": "PGS",
+    "hdmv_text_subtitle": "HDMV Text",
+    "mov_text": "MOV Text",
+    "pgssub": "PGS",
+    "ssa": "SSA",
+    "srt": "SRT",
+    "subrip": "SRT",
+    "text": "Text",
+    "vobsub": "VobSub",
+    "webvtt": "WebVTT",
+    "vtt": "WebVTT",
+    "xsub": "XSUB",
+}
+
+_KIND_LABELS = {
+    "text": "Text",
+    "bitmap": "Bitmap",
+    "teletext": "Teletext",
+    "unknown": "Unknown",
+}
+
+
+def codec_label(codec: str | None) -> str:
+    key = (codec or "").lower()
+    if key in _SUBTITLE_CODEC_LABELS:
+        return _SUBTITLE_CODEC_LABELS[key]
+    return (codec or "unknown").replace("_", " ").upper()
+
 
 def _embedded_to_dict(sub: probe.EmbeddedSub) -> dict:
     return {
@@ -97,6 +132,8 @@ async def scan_inventory(db: AsyncSession, resolved: ResolvedMediaFile) -> Subti
         tracks,
         probe_result.audio_streams if probe_result else [],
         preferred_languages=subtitle_settings.SUBTITLE_PREFERRED_LANGUAGES,
+        preferred_audio_languages=subtitle_settings.SUBTITLE_PREFERRED_AUDIO_LANGUAGES,
+        preferred_subtitle_languages=subtitle_settings.SUBTITLE_PREFERRED_SUBTITLE_LANGUAGES,
     )
 
     inventory = (
@@ -139,7 +176,14 @@ async def _tracks_for(db: AsyncSession, inventory_id: int) -> list[SubtitleTrack
     )
 
 
-async def get_inventory_dict(db: AsyncSession, media_file_id: int, *, force: bool = False) -> dict:
+async def get_inventory_dict(
+    db: AsyncSession,
+    media_file_id: int,
+    *,
+    force: bool = False,
+    preferred_audio_languages: list[str] | None = None,
+    preferred_subtitle_languages: list[str] | None = None,
+) -> dict:
     """Return the cached inventory when its signature still matches, else rescan.
 
     Single-file detail requests refresh inline (expected to be fast); bulk
@@ -154,13 +198,23 @@ async def get_inventory_dict(db: AsyncSession, media_file_id: int, *, force: boo
 
     if not force and inventory is not None and inventory.file_signature == resolved.signature:
         tracks = await _tracks_for(db, inventory.id)
-        result = inventory_to_dict(inventory, tracks)
+        result = inventory_to_dict(
+            inventory,
+            tracks,
+            preferred_audio_languages=preferred_audio_languages,
+            preferred_subtitle_languages=preferred_subtitle_languages,
+        )
         result["stale"] = False
         return result
 
     inventory = await scan_inventory(db, resolved)
     tracks = await _tracks_for(db, inventory.id)
-    result = inventory_to_dict(inventory, tracks)
+    result = inventory_to_dict(
+        inventory,
+        tracks,
+        preferred_audio_languages=preferred_audio_languages,
+        preferred_subtitle_languages=preferred_subtitle_languages,
+    )
     result["stale"] = False
     return result
 
@@ -184,10 +238,46 @@ async def get_track(db: AsyncSession, media_file_id: int, track_id: str) -> Subt
     ).scalar_one_or_none()
 
 
-def inventory_to_dict(inventory: SubtitleInventory, tracks: list[SubtitleTrack]) -> dict:
+def inventory_to_dict(
+    inventory: SubtitleInventory,
+    tracks: list[SubtitleTrack],
+    *,
+    preferred_audio_languages: list[str] | None = None,
+    preferred_subtitle_languages: list[str] | None = None,
+) -> dict:
     """API shape for an inventory + its tracks (+ capabilities + coverage)."""
     family = capabilities.container_family(inventory.container)
     caps = capabilities.capabilities_for(family)
+    stored_coverage = json.loads(inventory.coverage_json) if inventory.coverage_json else {}
+    audio_streams = (
+        json.loads(inventory.audio_streams_json) if inventory.audio_streams_json else []
+    )
+    if stored_coverage and "audio_channels_by_language" not in stored_coverage:
+        by_language: dict[str, list[str]] = {}
+        for stream in audio_streams:
+            lang = stream.get("language_tag") or "und"
+            label = stream.get("channel_label") or coverage.channel_label(stream)
+            if label:
+                by_language.setdefault(lang, [])
+                if label not in by_language[lang]:
+                    by_language[lang].append(label)
+        stored_coverage["audio_channels_by_language"] = {
+            lang: sorted(labels) for lang, labels in by_language.items()
+        }
+    effective_coverage = coverage.apply_preferences(
+        stored_coverage,
+        preferred_languages=subtitle_settings.SUBTITLE_PREFERRED_LANGUAGES,
+        preferred_audio_languages=(
+            preferred_audio_languages
+            if preferred_audio_languages is not None
+            else subtitle_settings.SUBTITLE_PREFERRED_AUDIO_LANGUAGES
+        ),
+        preferred_subtitle_languages=(
+            preferred_subtitle_languages
+            if preferred_subtitle_languages is not None
+            else subtitle_settings.SUBTITLE_PREFERRED_SUBTITLE_LANGUAGES
+        ),
+    )
     return {
         "inventory_id": inventory.id,
         "media_file_id": inventory.media_file_id,
@@ -197,10 +287,8 @@ def inventory_to_dict(inventory: SubtitleInventory, tracks: list[SubtitleTrack])
         "chapters_count": inventory.chapters_count,
         "attachments_count": inventory.attachments_count,
         "capabilities": caps,
-        "coverage": json.loads(inventory.coverage_json) if inventory.coverage_json else {},
-        "audio_streams": json.loads(inventory.audio_streams_json)
-        if inventory.audio_streams_json
-        else [],
+        "coverage": effective_coverage,
+        "audio_streams": audio_streams,
         "scanned_at": inventory.scanned_at.isoformat() if inventory.scanned_at else None,
         "error": inventory.error,
         "tracks": [_track_to_dict(t, caps) for t in tracks],
@@ -228,7 +316,10 @@ def _track_to_dict(track: SubtitleTrack, caps: dict) -> dict:
         "stream_index": track.stream_index,
         "tool_track_id": track.tool_track_id,
         "codec": track.codec,
+        "codec_label": codec_label(track.codec),
         "kind": track.kind,
+        "kind_label": _KIND_LABELS.get(track.kind, track.kind.title()),
+        "language_raw": track.language_raw,
         "language_tag": track.language_tag,
         "language_source": track.language_source,
         "title": track.title,

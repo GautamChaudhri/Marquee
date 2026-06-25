@@ -45,6 +45,7 @@
 		<span></span>
 		<span>Title</span>
 		<span>Audio</span>
+		<span>Audio Channels</span>
 		<span>Subtitles</span>
 		<span>Embedded</span>
 		<span>External</span>
@@ -137,7 +138,7 @@
 	}
 	.row.head {
 		display: grid;
-		grid-template-columns: 40px minmax(0, 1fr) 120px 120px 100px 100px 100px 80px 40px;
+		grid-template-columns: 40px minmax(0, 1fr) 120px 120px 120px 100px 100px 100px 80px 40px;
 		align-items: center;
 		gap: 12px;
 		width: 100%;

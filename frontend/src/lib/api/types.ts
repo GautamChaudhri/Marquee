@@ -42,6 +42,7 @@ export interface MovieListItem {
 	subtitle_status: SubtitleStatus | null;
 	media_file_id: number | null;
 	subtitle_coverage: Record<string, unknown> | null;
+	preferred_languages?: PreferredLanguageState;
 }
 
 export interface MovieDetail extends MovieListItem {
@@ -743,12 +744,14 @@ export interface TasteNeighbor {
 export interface SubtitleTrack {
 	id: string;
 	source: 'embedded' | 'external';
-	stream_index: number;
-	tool_track_id: number;
+	stream_index: number | null;
+	tool_track_id: number | null;
 	external_path: string | null;
-	codec: string;
+	codec: string | null;
+	codec_label?: string;
 	kind: 'text' | 'bitmap' | 'teletext' | 'unknown';
-	language_raw: string;
+	kind_label?: string;
+	language_raw: string | null;
 	language_tag: string;
 	language_source: 'metadata' | 'filename' | 'user' | 'unknown';
 	title: string | null;
@@ -773,8 +776,23 @@ export interface TrackAction {
 export interface AudioStreamInfo {
 	index: number;
 	language: string;
+	language_raw?: string | null;
+	language_tag: string;
+	language_source?: 'metadata' | 'filename' | 'user' | 'unknown';
 	channels: number;
-	codec: string;
+	channel_layout?: string | null;
+	channel_label?: string | null;
+	codec: string | null;
+	codec_long_name?: string | null;
+	profile?: string | null;
+	format_label?: string | null;
+	title?: string | null;
+	tool_track_id?: number | null;
+	disposition?: Record<string, unknown>;
+	is_default?: boolean;
+	is_forced?: boolean;
+	is_sdh?: boolean;
+	is_commentary?: boolean;
 }
 
 export interface ContainerCapabilities {
@@ -786,6 +804,7 @@ export interface ContainerCapabilities {
 
 export interface SubtitleCoverage {
 	audio_languages: string[];
+	audio_channels_by_language?: Record<string, string[]>;
 	full_dialogue_languages: string[];
 	forced_only_languages: string[];
 	sdh_languages: string[];
@@ -794,8 +813,24 @@ export interface SubtitleCoverage {
 	embedded_present: boolean;
 	generated_present: boolean;
 	unknown_present: boolean;
+	preferred_audio_languages?: string[];
+	preferred_subtitle_languages?: string[];
+	missing_preferred_audio_languages?: string[];
 	missing_preferred_languages: string[];
+	audio_status?: 'ok' | 'gap';
+	subtitle_status?: 'ok' | 'gap';
+	status?: 'ok' | 'gap';
 	track_count: number;
+	preferences?: PreferredLanguageState;
+}
+
+export interface PreferredLanguageState {
+	shared: string[];
+	audio: string[];
+	subtitles: string[];
+	override: boolean;
+	override_audio: string[] | null;
+	override_subtitles: string[] | null;
 }
 
 export interface SubtitleInventory {
@@ -813,15 +848,30 @@ export interface SubtitleInventory {
 
 // ── Plans ──
 export interface TrackEdit {
-	track_id: string;
-	field: string;
-	value: unknown;
+	track_id?: string;
+	stream_type?: 'audio' | 'subtitle';
+	stream_index?: number;
+	audio_stream_index?: number;
+	language_tag?: string | null;
+	title?: string | null;
+	is_default?: boolean;
+	is_forced?: boolean;
+	is_sdh?: boolean;
+	is_commentary?: boolean;
+	field?: string;
+	value?: unknown;
 }
 
 export interface SubtitlePlanRequest {
-	operation: 'subtitle_remove' | 'subtitle_embed' | 'subtitle_metadata' | 'track_remove';
+	operation:
+		| 'subtitle_remove'
+		| 'subtitle_embed'
+		| 'subtitle_metadata'
+		| 'track_remove'
+		| 'audio_reorder';
 	track_ids: string[];
 	audio_stream_indices?: number[];
+	audio_stream_order?: number[];
 	edits?: TrackEdit[];
 	backup?: boolean;
 	allow_break?: boolean;

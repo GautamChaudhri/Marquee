@@ -95,6 +95,8 @@ class MatroskaAdapter:
                 args += ["--forced-track", f"{ref}:{_yesno(edit.is_forced)}"]
             if edit.is_sdh is not None:
                 args += ["--hearing-impaired-flag", f"{ref}:{_yesno(edit.is_sdh)}"]
+            if edit.is_commentary is not None:
+                args += ["--commentary-flag", f"{ref}:{_yesno(edit.is_commentary)}"]
         args += [binaries.safe_media_path(src)]
         return args
 

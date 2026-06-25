@@ -23,6 +23,10 @@ export function getSettings(fetch: Fetch): Promise<any> {
 				mutation_concurrency: 1,
 				generation_concurrency: 1,
 				preferred_languages: ['en'],
+				preferred_audio_languages: null,
+				preferred_subtitle_languages: null,
+				effective_preferred_audio_languages: ['en'],
+				effective_preferred_subtitle_languages: ['en'],
 				unknown_language_action: 'review',
 				protect_forced: true,
 				protect_last_full_dialogue: true,
@@ -54,4 +58,3 @@ export function putSettings(fetch: Fetch, payload: any): Promise<any> {
 	}
 	return apiSend<any>(fetch, 'PUT', '/settings', payload);
 }
-

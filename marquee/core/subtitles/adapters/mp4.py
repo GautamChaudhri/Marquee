@@ -52,21 +52,34 @@ class Mp4Adapter:
         return args
 
     def build_metadata(self, src: Path, out: Path, edits: list[MetadataEdit]) -> list[str]:
-        """Copy all streams, applying per-subtitle-stream metadata/dispositions."""
+        """Copy all streams, applying per-audio/subtitle metadata/dispositions."""
         args = ["-y", "-i", binaries.safe_media_path(src), "-map", "0", "-c", "copy"]
         for edit in edits:
-            ref = edit.track_ref  # subtitle-relative index (s:N)
+            ref = edit.track_ref  # type-relative index (a:N / s:N)
+            kind = "a" if edit.stream_type == "audio" else "s"
             if edit.language_tag is not None:
-                args += [f"-metadata:s:s:{ref}", f"language={edit.language_tag}"]
+                args += [f"-metadata:s:{kind}:{ref}", f"language={edit.language_tag}"]
             if edit.title is not None:
-                args += [f"-metadata:s:s:{ref}", f"title={edit.title}"]
+                args += [f"-metadata:s:{kind}:{ref}", f"title={edit.title}"]
             disp = []
             if edit.is_default:
                 disp.append("default")
             if edit.is_forced:
                 disp.append("forced")
-            if edit.is_default is not None or edit.is_forced is not None:
-                args += [f"-disposition:s:{ref}", "+".join(disp) if disp else "0"]
+            if edit.is_sdh:
+                disp.append("hearing_impaired")
+            if edit.is_commentary:
+                disp.append("comment")
+            if any(
+                flag is not None
+                for flag in (
+                    edit.is_default,
+                    edit.is_forced,
+                    edit.is_sdh,
+                    edit.is_commentary,
+                )
+            ):
+                args += [f"-disposition:{kind}:{ref}", "+".join(disp) if disp else "0"]
         args += ["-movflags", "+faststart", binaries.safe_media_path(out)]
         return args
 

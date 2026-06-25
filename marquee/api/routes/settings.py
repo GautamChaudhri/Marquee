@@ -5,7 +5,6 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-
 from marquee.config import settings as app_settings
 from marquee.core.subtitles.config import subtitle_settings
 
@@ -94,6 +93,14 @@ async def get_settings():
             "mutation_concurrency": subtitle_settings.SUBTITLE_MUTATION_CONCURRENCY,
             "generation_concurrency": subtitle_settings.SUBTITLE_GENERATION_CONCURRENCY,
             "preferred_languages": subtitle_settings.SUBTITLE_PREFERRED_LANGUAGES,
+            "preferred_audio_languages": subtitle_settings.SUBTITLE_PREFERRED_AUDIO_LANGUAGES,
+            "preferred_subtitle_languages": subtitle_settings.SUBTITLE_PREFERRED_SUBTITLE_LANGUAGES,
+            "effective_preferred_audio_languages": (
+                subtitle_settings.effective_preferred_audio_languages
+            ),
+            "effective_preferred_subtitle_languages": (
+                subtitle_settings.effective_preferred_subtitle_languages
+            ),
             "unknown_language_action": subtitle_settings.SUBTITLE_UNKNOWN_LANGUAGE_ACTION,
             "protect_forced": subtitle_settings.SUBTITLE_PROTECT_FORCED,
             "protect_last_full_dialogue": subtitle_settings.SUBTITLE_PROTECT_LAST_FULL_DIALOGUE,
@@ -115,6 +122,8 @@ class SubtitlesSettingsUpdate(BaseModel):
     mutation_concurrency: int | None = None
     generation_concurrency: int | None = None
     preferred_languages: list[str] | None = None
+    preferred_audio_languages: list[str] | None = None
+    preferred_subtitle_languages: list[str] | None = None
     unknown_language_action: str | None = None
     protect_forced: bool | None = None
     protect_last_full_dialogue: bool | None = None
@@ -159,7 +168,7 @@ async def put_settings(payload: SettingsUpdatePayload):
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    from marquee.core.subtitles.config import save_overrides, load_overrides
+    from marquee.core.subtitles.config import load_overrides, save_overrides
 
     updated_fields = {}
     if payload.subtitles:

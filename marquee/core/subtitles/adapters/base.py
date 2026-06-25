@@ -29,11 +29,13 @@ class MetadataEdit:
     """A per-track metadata change (by tool track id / stream index)."""
 
     track_ref: int
+    stream_type: str = "subtitle"
     language_tag: str | None = None
     title: str | None = None
     is_default: bool | None = None
     is_forced: bool | None = None
     is_sdh: bool | None = None
+    is_commentary: bool | None = None
 
 
 @dataclass

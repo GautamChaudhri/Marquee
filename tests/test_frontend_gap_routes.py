@@ -309,6 +309,8 @@ async def test_put_settings_success(client: AsyncClient, monkeypatch, tmp_path):
             "enabled": False,
             "scan_concurrency": 5,
             "preferred_languages": ["en", "es", "fr"],
+            "preferred_audio_languages": ["en"],
+            "preferred_subtitle_languages": ["en", "fr"],
         },
         "subgen": {
             "url": "http://whisper.service:9000",
@@ -325,6 +327,8 @@ async def test_put_settings_success(client: AsyncClient, monkeypatch, tmp_path):
     assert "SUBTITLE_ENABLED" in data["applied"]
     assert "SUBTITLE_SCAN_CONCURRENCY" in data["applied"]
     assert "SUBTITLE_PREFERRED_LANGUAGES" in data["applied"]
+    assert "SUBTITLE_PREFERRED_AUDIO_LANGUAGES" in data["applied"]
+    assert "SUBTITLE_PREFERRED_SUBTITLE_LANGUAGES" in data["applied"]
     assert "SUBGEN_URL" in data["applied"]
     assert "SUBGEN_MODE" in data["applied"]
     assert "SUBGEN_CALLBACK_TOKEN" in data["applied"]
@@ -333,6 +337,8 @@ async def test_put_settings_success(client: AsyncClient, monkeypatch, tmp_path):
     assert subtitle_settings.SUBTITLE_ENABLED is False
     assert subtitle_settings.SUBTITLE_SCAN_CONCURRENCY == 5
     assert subtitle_settings.SUBTITLE_PREFERRED_LANGUAGES == ["en", "es", "fr"]
+    assert subtitle_settings.SUBTITLE_PREFERRED_AUDIO_LANGUAGES == ["en"]
+    assert subtitle_settings.SUBTITLE_PREFERRED_SUBTITLE_LANGUAGES == ["en", "fr"]
     assert subtitle_settings.SUBGEN_URL == "http://whisper.service:9000"
     assert subtitle_settings.SUBGEN_MODE == "translate"
     assert subtitle_settings.SUBGEN_CALLBACK_TOKEN == "supersecrettoken"
@@ -344,6 +350,8 @@ async def test_put_settings_success(client: AsyncClient, monkeypatch, tmp_path):
     assert content["SUBTITLE_ENABLED"] is False
     assert content["SUBTITLE_SCAN_CONCURRENCY"] == 5
     assert content["SUBTITLE_PREFERRED_LANGUAGES"] == ["en", "es", "fr"]
+    assert content["SUBTITLE_PREFERRED_AUDIO_LANGUAGES"] == ["en"]
+    assert content["SUBTITLE_PREFERRED_SUBTITLE_LANGUAGES"] == ["en", "fr"]
     assert content["SUBGEN_URL"] == "http://whisper.service:9000"
     assert content["SUBGEN_MODE"] == "translate"
     assert content["SUBGEN_CALLBACK_TOKEN"] == "supersecrettoken"
@@ -476,6 +484,7 @@ async def test_scan_library_subtitles_endpoint(
     client: AsyncClient,
 ):
     from sqlalchemy import select
+
     from marquee.models import Job
 
     # Trigger scan library
@@ -497,8 +506,9 @@ async def test_scan_library_subtitles_endpoint(
 @pytest.mark.asyncio
 async def test_subtitle_scan_all_handler(db: AsyncSession):
     from sqlalchemy import select
-    from marquee.models import Job, MediaFile, SubtitleInventory, MediaJob, Movie
+
     from marquee.core.jobs.builtin_handlers import subtitle_scan_all
+    from marquee.models import Job, MediaFile, MediaJob, Movie, SubtitleInventory
 
     # Setup configurations
     movie1 = Movie(
@@ -545,10 +555,10 @@ async def test_subtitle_scan_all_handler(db: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_build_argv_heals_null_tool_track_id(db: AsyncSession):
-    from marquee.core.subtitles.mutation import _build_argv
-    from marquee.models import SubtitleInventory, SubtitleTrack, Movie, MediaFile
-    from marquee.core.subtitles.probe import ProbeResult, EmbeddedSub
     from marquee.core.subtitles.adapters.matroska import MatroskaAdapter
+    from marquee.core.subtitles.mutation import _build_argv
+    from marquee.core.subtitles.probe import EmbeddedSub, ProbeResult
+    from marquee.models import MediaFile, Movie, SubtitleInventory, SubtitleTrack
 
     # Create dummy movie & media file
     movie = Movie(
@@ -605,6 +615,7 @@ async def test_build_argv_heals_null_tool_track_id(db: AsyncSession):
     )
 
     from pathlib import Path
+
     from marquee.core.media_files import ResolvedMediaFile
 
     resolved = ResolvedMediaFile(
@@ -622,7 +633,7 @@ async def test_build_argv_heals_null_tool_track_id(db: AsyncSession):
     adapter = MatroskaAdapter()
 
     # Call _build_argv - it should align on the fly and not raise UnsupportedContainerError
-    argv, expected_delta, ext_rem = await _build_argv(
+    argv, expected_delta, expected_audio_delta, ext_rem = await _build_argv(
         db,
         None,
         "subtitle_remove",
@@ -635,3 +646,4 @@ async def test_build_argv_heals_null_tool_track_id(db: AsyncSession):
 
     # Check track.tool_track_id is updated
     assert track.tool_track_id == 3
+    assert expected_audio_delta == 0

@@ -49,7 +49,10 @@ class SubtitleSettings(BaseSettings):
     SUBTITLE_NORMALIZE_TEXT_UTF8: bool = True
     SUBTITLE_JOB_EVENT_RETENTION_DAYS: int = 30
     # Languages the UI considers "preferred" for missing-coverage flags.
+    # Audio/subtitle-specific lists inherit this shared list when unset.
     SUBTITLE_PREFERRED_LANGUAGES: list[str] = ["en"]
+    SUBTITLE_PREFERRED_AUDIO_LANGUAGES: list[str] | None = None
+    SUBTITLE_PREFERRED_SUBTITLE_LANGUAGES: list[str] | None = None
     SUBTITLE_PREVIEW_MAX_CUES: int = 20
 
     # ── Generation (Subgen; external service, not bundled) ────────────
@@ -69,6 +72,14 @@ class SubtitleSettings(BaseSettings):
     @property
     def generation_enabled(self) -> bool:
         return bool(self.SUBGEN_URL)
+
+    @property
+    def effective_preferred_audio_languages(self) -> list[str]:
+        return self.SUBTITLE_PREFERRED_AUDIO_LANGUAGES or self.SUBTITLE_PREFERRED_LANGUAGES
+
+    @property
+    def effective_preferred_subtitle_languages(self) -> list[str]:
+        return self.SUBTITLE_PREFERRED_SUBTITLE_LANGUAGES or self.SUBTITLE_PREFERRED_LANGUAGES
 
 
 def _overrides_path() -> Path:

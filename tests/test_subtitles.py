@@ -57,11 +57,35 @@ def test_coverage_separates_full_forced_commentary_and_missing_preferred():
 
     assert summary["full_dialogue_languages"] == ["en", "und"]
     assert summary["forced_only_languages"] == ["fr"]
+    assert summary["missing_preferred_audio_languages"] == []
     assert summary["missing_preferred_languages"] == ["ja"]
+    assert summary["status"] == "gap"
     assert summary["commentary_present"] is True
     assert summary["external_present"] is True
     assert summary["embedded_present"] is True
     assert summary["generated_present"] is True
+
+
+def test_coverage_uses_split_audio_subtitle_preferences():
+    tracks = [{"id": "en-full", "source": "embedded", "language_tag": "en"}]
+    audio = [
+        {"language_tag": "en", "channels": 6, "channel_layout": "5.1"},
+        {"language_tag": "fr", "channels": 2, "channel_layout": "stereo"},
+    ]
+
+    summary = coverage.compute_coverage(
+        tracks,
+        audio,
+        preferred_languages=["en"],
+        preferred_audio_languages=["fr"],
+        preferred_subtitle_languages=["ja"],
+    )
+
+    assert summary["audio_channels_by_language"] == {"en": ["5.1"], "fr": ["2.0"]}
+    assert summary["missing_preferred_audio_languages"] == []
+    assert summary["missing_preferred_languages"] == ["ja"]
+    assert summary["audio_status"] == "ok"
+    assert summary["subtitle_status"] == "gap"
 
 
 def test_policy_blocklist_protects_forced_unknown_and_external_by_default():
@@ -273,3 +297,108 @@ async def test_audio_remove_plan(tmp_path):
     )
     # Check that it warns about all audio removed
     assert any(w["code"] == "all_audio_removed" for w in plan_all["warnings"])
+
+
+@pytest.mark.asyncio
+async def test_metadata_plan_updates_subtitle_and_audio_flags(tmp_path):
+    media = tmp_path / "Movie.mkv"
+    media.write_bytes(b"fake")
+    resolved = ResolvedMediaFile(
+        media_file_id=1,
+        source="radarr",
+        path=media,
+        size_bytes=media.stat().st_size,
+        mtime_ns=media.stat().st_mtime_ns,
+        st_nlink=1,
+        signature="sig",
+        container="mkv",
+        movie_id=1,
+    )
+    inventory = {
+        "container_family": "mkv",
+        "capabilities": capabilities.capabilities_for("mkv"),
+        "coverage": {},
+        "audio_streams": [
+            {
+                "index": 1,
+                "language_tag": "en",
+                "tool_track_id": 1,
+                "is_default": False,
+                "is_commentary": False,
+            }
+        ],
+        "tracks": [
+            {
+                "id": "sub-en",
+                "source": "embedded",
+                "language_tag": "en",
+                "tool_track_id": 2,
+                "is_default": False,
+                "is_forced": False,
+                "is_sdh": False,
+                "is_commentary": False,
+            }
+        ],
+    }
+
+    plan = await mutation.build_plan(
+        None,
+        resolved,
+        inventory,
+        operation="subtitle_metadata",
+        params={
+            "edits": [
+                {"track_id": "sub-en", "is_default": True, "is_sdh": True},
+                {
+                    "stream_type": "audio",
+                    "audio_stream_index": 1,
+                    "is_default": True,
+                    "is_commentary": True,
+                },
+            ]
+        },
+    )
+
+    assert plan["capabilities"]["can_execute"] is True
+    assert plan["after"]["tracks"][0]["is_default"] is True
+    assert plan["after"]["tracks"][0]["is_sdh"] is True
+    assert plan["after"]["audio_streams"][0]["is_default"] is True
+    assert plan["after"]["audio_streams"][0]["is_commentary"] is True
+
+
+@pytest.mark.asyncio
+async def test_audio_reorder_plan_reorders_preview(tmp_path):
+    media = tmp_path / "Movie.mkv"
+    media.write_bytes(b"fake")
+    resolved = ResolvedMediaFile(
+        media_file_id=1,
+        source="radarr",
+        path=media,
+        size_bytes=media.stat().st_size,
+        mtime_ns=media.stat().st_mtime_ns,
+        st_nlink=1,
+        signature="sig",
+        container="mkv",
+        movie_id=1,
+    )
+    inventory = {
+        "container_family": "mkv",
+        "capabilities": capabilities.capabilities_for("mkv"),
+        "coverage": {},
+        "audio_streams": [
+            {"index": 1, "language_tag": "en", "tool_track_id": 1},
+            {"index": 2, "language_tag": "fr", "tool_track_id": 2},
+        ],
+        "tracks": [],
+    }
+
+    plan = await mutation.build_plan(
+        None,
+        resolved,
+        inventory,
+        operation="audio_reorder",
+        params={"audio_stream_order": [2, 1]},
+    )
+
+    assert [stream["index"] for stream in plan["after"]["audio_streams"]] == [2, 1]
+    assert plan["capabilities"]["can_execute"] is True

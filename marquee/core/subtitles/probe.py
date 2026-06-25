@@ -16,7 +16,7 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from marquee.core.subtitles import languages
+from marquee.core.subtitles import coverage, languages
 from marquee.media import binaries
 
 logger = logging.getLogger(__name__)
@@ -33,6 +33,21 @@ _BITMAP_CODECS = {
 }
 _TELETEXT_CODECS = {"dvb_teletext"}
 
+_AUDIO_FORMAT_LABELS = {
+    "aac": "AAC",
+    "ac3": "Dolby Digital",
+    "eac3": "Dolby Digital Plus",
+    "truehd": "Dolby TrueHD",
+    "mlp": "MLP",
+    "dts": "DTS",
+    "dts_hd": "DTS-HD",
+    "flac": "FLAC",
+    "alac": "ALAC",
+    "opus": "Opus",
+    "vorbis": "Vorbis",
+    "mp3": "MP3",
+}
+
 
 def codec_kind(codec: str | None) -> str:
     c = (codec or "").lower()
@@ -43,6 +58,36 @@ def codec_kind(codec: str | None) -> str:
     if c in _TELETEXT_CODECS:
         return "teletext"
     return "unknown"
+
+
+def _audio_format_label(stream: dict, tags: dict) -> str | None:
+    codec = (stream.get("codec_name") or "").lower()
+    profile = (stream.get("profile") or "").strip()
+    title = (tags.get("title") or "").lower()
+    probe_text = " ".join(
+        str(value).lower()
+        for value in (
+            stream.get("codec_long_name"),
+            profile,
+            tags.get("title"),
+            tags.get("handler_name"),
+        )
+        if value
+    )
+
+    if "atmos" in probe_text or "joc" in probe_text:
+        if codec == "truehd":
+            return "Dolby TrueHD Atmos"
+        if codec == "eac3":
+            return "Dolby Atmos"
+        return "Dolby Atmos"
+    if "dts:x" in title or "dtsx" in title:
+        return "DTS:X"
+    if codec.startswith("pcm_"):
+        return "PCM"
+    if codec == "dts" and "ma" in profile.lower():
+        return "DTS-HD MA"
+    return _AUDIO_FORMAT_LABELS.get(codec) or profile or stream.get("codec_long_name")
 
 
 @dataclass
@@ -65,6 +110,7 @@ class EmbeddedSub:
 class ProbeResult:
     container: str | None
     duration_seconds: float | None
+    streams: list[dict] = field(default_factory=list)
     audio_streams: list[dict] = field(default_factory=list)
     subtitles: list[EmbeddedSub] = field(default_factory=list)
     chapters_count: int = 0
@@ -114,25 +160,50 @@ def probe_container(path: Path | str) -> ProbeResult | None:
 
     audio: list[dict] = []
     subs: list[EmbeddedSub] = []
+    streams: list[dict] = []
     video_count = attachments = 0
 
     for stream in data.get("streams", []):
         codec_type = stream.get("codec_type")
+        streams.append(
+            {
+                "index": stream.get("index"),
+                "codec_type": codec_type,
+                "codec": stream.get("codec_name"),
+            }
+        )
         if codec_type == "video":
             video_count += 1
         elif codec_type == "attachment":
             attachments += 1
         elif codec_type == "audio":
             tags = stream.get("tags", {}) or {}
-            tag, _ = languages.normalize(tags.get("language"))
+            raw_lang = tags.get("language")
+            tag, _ = languages.normalize(raw_lang)
+            disposition = stream.get("disposition", {}) or {}
+            title_low = (tags.get("title") or "").lower()
             audio.append(
                 {
                     "index": stream.get("index"),
                     "codec": stream.get("codec_name"),
+                    "codec_long_name": stream.get("codec_long_name"),
+                    "profile": stream.get("profile"),
+                    "format_label": _audio_format_label(stream, tags),
+                    "language": tag,
+                    "language_raw": raw_lang,
                     "language_tag": tag,
+                    "language_source": "metadata" if raw_lang else "unknown",
                     "title": tags.get("title"),
                     "channels": stream.get("channels"),
-                    "disposition": stream.get("disposition", {}),
+                    "channel_layout": stream.get("channel_layout"),
+                    "channel_label": coverage.channel_label(stream),
+                    "disposition": disposition,
+                    "is_default": bool(disposition.get("default")),
+                    "is_forced": bool(disposition.get("forced")),
+                    "is_sdh": bool(disposition.get("hearing_impaired")),
+                    "is_commentary": bool(disposition.get("comment"))
+                    or bool(disposition.get("commentary"))
+                    or "commentary" in title_low,
                 }
             )
         elif codec_type == "subtitle":
@@ -144,6 +215,7 @@ def probe_container(path: Path | str) -> ProbeResult | None:
     return ProbeResult(
         container=fmt.get("format_name"),
         duration_seconds=duration,
+        streams=streams,
         audio_streams=audio,
         subtitles=subs,
         chapters_count=len(data.get("chapters", [])),

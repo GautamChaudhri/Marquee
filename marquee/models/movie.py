@@ -77,6 +77,14 @@ class Movie(Base, TimestampMixin, ArtworkMixin):
         Boolean, nullable=True, comment="NULL=not checked, True=has DV, False=missing DV"
     )
 
+    # ── Audio/subtitle preference overrides ───────────────────────────
+    # NULL means inherit the global subtitle settings. Lists are normalized
+    # BCP-47 language tags and apply only to this movie.
+    preferred_audio_languages_json: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    preferred_subtitle_languages_json: Mapped[list[str] | None] = mapped_column(
+        JSON, nullable=True
+    )
+
     # ── Indexes ──────────────────────────────────────────────────────
     __table_args__ = (
         Index(

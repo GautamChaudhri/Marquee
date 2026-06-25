@@ -82,7 +82,7 @@
 		const codes = whitelistText.split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
 		if (codes.length === 0) return;
 		tracks.forEach(t => {
-			if (codes.includes(t.language_tag.toLowerCase()) || codes.includes(t.language_raw.toLowerCase())) {
+			if (codes.includes(t.language_tag.toLowerCase()) || codes.includes((t.language_raw || '').toLowerCase())) {
 				selectedIds.add(t.id);
 			}
 		});
@@ -93,7 +93,7 @@
 		const codes = blacklistText.split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
 		if (codes.length === 0) return;
 		tracks.forEach(t => {
-			if (codes.includes(t.language_tag.toLowerCase()) || codes.includes(t.language_raw.toLowerCase())) {
+			if (codes.includes(t.language_tag.toLowerCase()) || codes.includes((t.language_raw || '').toLowerCase())) {
 				selectedIds.delete(t.id);
 			}
 		});

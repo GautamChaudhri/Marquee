@@ -34,6 +34,19 @@
 		return coverage.audio_languages;
 	});
 
+	let audioChannels = $derived.by(() => {
+		if (!coverage || !coverage.audio_channels_by_language) return [];
+		const preferred = Array.isArray(coverage.preferred_audio_languages)
+			? coverage.preferred_audio_languages
+			: audioLangs;
+		const labels = new Set<string>();
+		preferred.forEach((lang: string) => {
+			const channelLabels = coverage.audio_channels_by_language?.[lang] || [];
+			channelLabels.forEach((label: string) => labels.add(label));
+		});
+		return Array.from(labels).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+	});
+
 	// Subtitle status classes and label
 	let statusLabel = $derived.by(() => {
 		if (movie.subtitle_status === 'ok') return 'OK';
@@ -82,6 +95,15 @@
 				<span class="muted">—</span>
 			{/if}
 		</span>
+		<span class="channel-pills">
+			{#if audioChannels.length > 0}
+				{#each audioChannels as label}
+					<span class="channel-pill">{label}</span>
+				{/each}
+			{:else}
+				<span class="muted">—</span>
+			{/if}
+		</span>
 		<span class="langs">
 			{#if subtitleLangs.length > 0}
 				{#each subtitleLangs as lang}
@@ -118,7 +140,7 @@
 	}
 	.row-trigger {
 		display: grid;
-		grid-template-columns: 40px minmax(0, 1fr) 120px 120px 100px 100px 100px 80px 40px;
+		grid-template-columns: 40px minmax(0, 1fr) 120px 120px 120px 100px 100px 100px 80px 40px;
 		align-items: center;
 		gap: 12px;
 		width: 100%;
@@ -175,6 +197,21 @@
 		display: flex;
 		gap: 4px;
 		flex-wrap: wrap;
+	}
+	.channel-pills {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 4px;
+	}
+	.channel-pill {
+		background: color-mix(in srgb, var(--gold) 16%, transparent);
+		border: 1px solid color-mix(in srgb, var(--gold) 28%, transparent);
+		color: var(--gold);
+		border-radius: 999px;
+		font-family: var(--font-mono);
+		font-size: 10.5px;
+		font-weight: 700;
+		padding: 2px 7px;
 	}
 	.lang-pill {
 		font-size: 10px;

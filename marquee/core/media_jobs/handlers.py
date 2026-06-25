@@ -122,6 +122,7 @@ _HANDLERS = {
     "subtitle_remove": _mutate,
     "subtitle_embed": _mutate,
     "subtitle_metadata": _mutate,
+    "audio_reorder": _mutate,
     "subtitle_extract": _extract,
     "subtitle_generate": _generate,
     "subtitle_policy": _policy,

@@ -11,6 +11,7 @@
 	import type { SubtitlePolicy } from '$lib/api/types';
 	import { scanLibrarySubtitles } from '$lib/api/subtitles';
 	import { listMovies } from '$lib/api/library';
+	import { putSettings } from '$lib/api/system';
 	import { toast } from '$lib/toast';
 
 	let { data } = $props();
@@ -26,11 +27,41 @@
 
 	// Local reactive state for movies
 	let movies = $state(data.movies?.items || []);
+	let settings = $state(data.settings);
 	let scanningLibrary = $state(false);
+	let savingPreferences = $state(false);
+	let preferredShared = $state('en');
+	let preferredAudio = $state('en');
+	let preferredSubtitles = $state('en');
+	let separatePreferred = $state(false);
+	let preferencesInitialized = $state(false);
 
 	$effect(() => {
 		if (data.movies?.items) {
 			movies = data.movies.items;
+		}
+	});
+
+	$effect(() => {
+		if (settings && !preferencesInitialized) {
+			const sub = settings.subtitles || {};
+			preferredShared = (sub.preferred_languages || ['en']).join(', ');
+			preferredAudio = (
+				sub.preferred_audio_languages ||
+				sub.effective_preferred_audio_languages ||
+				sub.preferred_languages ||
+				['en']
+			).join(', ');
+			preferredSubtitles = (
+				sub.preferred_subtitle_languages ||
+				sub.effective_preferred_subtitle_languages ||
+				sub.preferred_languages ||
+				['en']
+			).join(', ');
+			separatePreferred = Boolean(
+				sub.preferred_audio_languages || sub.preferred_subtitle_languages
+			);
+			preferencesInitialized = true;
 		}
 	});
 
@@ -40,6 +71,37 @@
 			movies = res.items;
 		} catch (e) {
 			console.error(e);
+		}
+	}
+
+	function parseLanguages(value: string) {
+		return value
+			.split(',')
+			.map((s) => s.trim())
+			.filter(Boolean);
+	}
+
+	async function savePreferredLanguages() {
+		savingPreferences = true;
+		try {
+			const payload = {
+				subtitles: {
+					preferred_languages: parseLanguages(preferredShared),
+					preferred_audio_languages: separatePreferred ? parseLanguages(preferredAudio) : null,
+					preferred_subtitle_languages: separatePreferred
+						? parseLanguages(preferredSubtitles)
+						: null
+				}
+			};
+			const response = await putSettings(fetch, payload);
+			settings = response.settings;
+			preferencesInitialized = false;
+			await refreshMovies();
+			toast('Preferred languages saved', 'good');
+		} catch (e: any) {
+			toast(e.message || 'Failed to save preferred languages', 'bad');
+		} finally {
+			savingPreferences = false;
 		}
 	}
 
@@ -112,6 +174,52 @@
 
 	<div class="tab-content-wrapper">
 		{#if activeTab === 'inventory'}
+			<div class="preferences-panel mq-rise">
+				<div class="preferences-head">
+					<div>
+						<h3>Preferred Languages</h3>
+						<p>Used for audio/subtitle gap status across the library.</p>
+					</div>
+					<label class="toggle-row">
+						<input type="checkbox" bind:checked={separatePreferred} />
+						<span>Separate audio and subtitles</span>
+					</label>
+				</div>
+				<div class="preferences-grid" class:split={separatePreferred}>
+					<label class="setting-field">
+						<span>{separatePreferred ? 'Shared fallback' : 'Audio & subtitles'}</span>
+						<input
+							type="text"
+							bind:value={preferredShared}
+							placeholder="en, es, fr"
+							autocomplete="off"
+						/>
+					</label>
+					{#if separatePreferred}
+						<label class="setting-field">
+							<span>Audio</span>
+							<input
+								type="text"
+								bind:value={preferredAudio}
+								placeholder="en, es"
+								autocomplete="off"
+							/>
+						</label>
+						<label class="setting-field">
+							<span>Subtitles</span>
+							<input
+								type="text"
+								bind:value={preferredSubtitles}
+								placeholder="en, fr"
+								autocomplete="off"
+							/>
+						</label>
+					{/if}
+					<button class="btn-save-preferences" onclick={savePreferredLanguages} disabled={savingPreferences}>
+						{savingPreferences ? 'Saving...' : 'Save'}
+					</button>
+				</div>
+			</div>
 			{#if movies}
 				<SubtitleMovieList {movies} />
 			{:else}
@@ -158,6 +266,105 @@
 		flex: 1;
 		min-height: 0;
 	}
+	.preferences-panel {
+		background: var(--panel);
+		border: 1px solid var(--line);
+		border-radius: var(--radius);
+		padding: 16px;
+		margin-bottom: 16px;
+		display: flex;
+		flex-direction: column;
+		gap: 14px;
+	}
+	.preferences-head {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 16px;
+	}
+	.preferences-head h3 {
+		margin: 0;
+		font-size: 15px;
+	}
+	.preferences-head p {
+		margin: 4px 0 0;
+		font-size: 12.5px;
+		color: var(--muted);
+	}
+	.toggle-row {
+		display: inline-flex;
+		align-items: center;
+		gap: 8px;
+		color: var(--muted);
+		font-size: 12.5px;
+		cursor: pointer;
+		white-space: nowrap;
+	}
+	.toggle-row input[type='checkbox'] {
+		appearance: none;
+		width: 16px;
+		height: 16px;
+		border-radius: 999px;
+		border: 1px solid var(--line2);
+		background: var(--ink2);
+		cursor: pointer;
+		box-shadow: inset 0 0 0 4px var(--ink2);
+		transition: border-color 0.15s, background-color 0.15s, box-shadow 0.15s;
+	}
+	.toggle-row input[type='checkbox']:checked {
+		border-color: var(--gold);
+		background: var(--gold);
+		box-shadow: 0 0 0 3px var(--gold-soft), 0 0 14px rgba(255, 190, 73, 0.35);
+	}
+	.preferences-grid {
+		display: grid;
+		grid-template-columns: minmax(220px, 1fr) auto;
+		gap: 12px;
+		align-items: end;
+	}
+	.preferences-grid.split {
+		grid-template-columns: repeat(3, minmax(160px, 1fr)) auto;
+	}
+	.setting-field {
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+		min-width: 0;
+	}
+	.setting-field span {
+		font-size: 11px;
+		text-transform: uppercase;
+		font-weight: 700;
+		color: var(--faint2);
+	}
+	.setting-field input {
+		width: 100%;
+		padding: 9px 10px;
+		background: var(--panel2);
+		border: 1px solid var(--line);
+		border-radius: var(--radius-sm);
+		color: var(--text);
+		font-size: 13px;
+		outline: none;
+	}
+	.setting-field input:focus {
+		border-color: var(--gold);
+		box-shadow: 0 0 0 2px var(--gold-soft);
+	}
+	.btn-save-preferences {
+		font-size: 13px;
+		font-weight: 650;
+		padding: 9px 16px;
+		border-radius: var(--radius-sm);
+		border: 1px solid color-mix(in srgb, var(--gold) 60%, transparent);
+		background: var(--gold);
+		color: var(--ink);
+		cursor: pointer;
+	}
+	.btn-save-preferences:disabled {
+		opacity: 0.6;
+		cursor: not-allowed;
+	}
 	.generation-grid {
 		display: grid;
 		grid-template-columns: 320px 1fr;
@@ -166,6 +373,14 @@
 	}
 	@media (max-width: 800px) {
 		.generation-grid {
+			grid-template-columns: 1fr;
+		}
+		.preferences-head {
+			align-items: flex-start;
+			flex-direction: column;
+		}
+		.preferences-grid,
+		.preferences-grid.split {
 			grid-template-columns: 1fr;
 		}
 	}

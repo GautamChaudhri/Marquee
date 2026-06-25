@@ -214,7 +214,9 @@ export function mockSubtitleInventory(mediaFileId: number): SubtitleInventory {
 			tool_track_id: 3,
 			external_path: null,
 			codec: 'subrip',
+			codec_label: 'SRT',
 			kind: 'text',
+			kind_label: 'Text',
 			language_raw: 'eng',
 			language_tag: 'en',
 			language_source: 'metadata',
@@ -238,7 +240,9 @@ export function mockSubtitleInventory(mediaFileId: number): SubtitleInventory {
 			tool_track_id: 4,
 			external_path: null,
 			codec: 'subrip',
+			codec_label: 'SRT',
 			kind: 'text',
+			kind_label: 'Text',
 			language_raw: 'eng',
 			language_tag: 'en',
 			language_source: 'metadata',
@@ -262,7 +266,9 @@ export function mockSubtitleInventory(mediaFileId: number): SubtitleInventory {
 			tool_track_id: 0,
 			external_path: '/movies/MockMovie/MockMovie.ja.srt',
 			codec: 'subrip',
+			codec_label: 'SRT',
 			kind: 'text',
+			kind_label: 'Text',
 			language_raw: 'jpn',
 			language_tag: 'ja',
 			language_source: 'filename',
@@ -289,6 +295,7 @@ export function mockSubtitleInventory(mediaFileId: number): SubtitleInventory {
 		tracks,
 		coverage: {
 			audio_languages: ['en', 'ja'],
+			audio_channels_by_language: { en: ['5.1'], ja: ['2.0'] },
 			full_dialogue_languages: ['en', 'ja'],
 			forced_only_languages: [],
 			sdh_languages: [],
@@ -297,7 +304,13 @@ export function mockSubtitleInventory(mediaFileId: number): SubtitleInventory {
 			embedded_present: true,
 			generated_present: false,
 			unknown_present: false,
+			preferred_audio_languages: ['en'],
+			preferred_subtitle_languages: ['en'],
+			missing_preferred_audio_languages: [],
 			missing_preferred_languages: [],
+			audio_status: 'ok',
+			subtitle_status: 'ok',
+			status: 'ok',
 			track_count: 3
 		},
 		capabilities: {
@@ -307,8 +320,27 @@ export function mockSubtitleInventory(mediaFileId: number): SubtitleInventory {
 			can_edit_metadata: true
 		},
 		audio_streams: [
-			{ index: 0, language: 'en', channels: 6, codec: 'ac3' },
-			{ index: 1, language: 'ja', channels: 2, codec: 'aac' }
+			{
+				index: 0,
+				language: 'en',
+				language_tag: 'en',
+				channels: 6,
+				channel_layout: '5.1',
+				channel_label: '5.1',
+				codec: 'ac3',
+				format_label: 'Dolby Digital',
+				is_default: true
+			},
+			{
+				index: 1,
+				language: 'ja',
+				language_tag: 'ja',
+				channels: 2,
+				channel_layout: 'stereo',
+				channel_label: '2.0',
+				codec: 'aac',
+				format_label: 'AAC'
+			}
 		],
 		file_signature: `sig-${mediaFileId}`,
 		scanned_at: new Date().toISOString()
