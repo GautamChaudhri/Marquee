@@ -660,6 +660,11 @@
 			: null
 	);
 
+	// Cross-table selection state for the unified action bar
+	let audioActive = $derived(selectedAudioIndices.length > 0);
+	let subtitleActive = $derived(selectedTrackIds.length > 0);
+	let totalSelected = $derived(selectedAudioIndices.length + selectedTrackIds.length);
+
 	$effect(() => {
 		if (!inspect || moviePreferencesInitialized) return;
 		const prefs = inspect.preferred_languages || coverage?.preferences || movie?.preferred_languages;
@@ -826,6 +831,26 @@
 		subtitleDirty = false;
 	}
 
+	// Unified bar wrappers: apply to whichever single-selection(s) are
+	// currently active, so one click can affect the audio row, the
+	// subtitle row, or both at once.
+	function applySetDefault() {
+		if (singleSelectedAudio) draftSetAudioDefault(singleSelectedAudio.index);
+		if (singleSelectedTrack?.source === 'embedded') draftSetSubtitleDefault(singleSelectedTrack.id);
+	}
+	function applyToggleFlag(field: 'is_forced' | 'is_sdh' | 'is_commentary') {
+		if (singleSelectedAudio) draftToggleAudioFlag(singleSelectedAudio.index, field);
+		if (singleSelectedTrack?.source === 'embedded') draftToggleSubtitleFlag(singleSelectedTrack.id, field);
+	}
+	async function saveAllChanges() {
+		if (audioDirty) await saveAudioChanges();
+		if (subtitleDirty) await saveSubtitleChanges();
+	}
+	function discardAllChanges() {
+		discardAudioChanges();
+		discardSubtitleChanges();
+	}
+
 	async function saveAudioChanges() {
 		if (!movie || !movie.media_file_id || busy) return;
 		const metadataEdits = audioDraft
@@ -929,36 +954,19 @@
 		}
 	}
 
-	async function deleteAudioSelected() {
-		if (!movie || !movie.media_file_id || selectedAudioIndices.length === 0) return;
-		busy = true;
-		try {
-			const plan = await createPlan(fetch, movie.media_file_id, {
-				operation: 'track_remove',
-				track_ids: [],
-				audio_stream_indices: selectedAudioIndices
-			});
-			await confirmJob(fetch, plan.job_id);
-			monitorJob(plan.job_id);
-		} catch (e: any) {
-			toast(e.message || 'Audio delete failed', 'bad');
-			busy = false;
-		}
-	}
-
-	async function deleteSubtitleSelected() {
-		if (!movie || !movie.media_file_id || selectedTrackIds.length === 0) return;
+	async function deleteSelected() {
+		if (!movie?.media_file_id || busy || totalSelected === 0) return;
 		busy = true;
 		try {
 			const plan = await createPlan(fetch, movie.media_file_id, {
 				operation: 'track_remove',
 				track_ids: selectedTrackIds,
-				audio_stream_indices: []
+				audio_stream_indices: selectedAudioIndices
 			});
 			await confirmJob(fetch, plan.job_id);
 			monitorJob(plan.job_id);
 		} catch (e: any) {
-			toast(e.message || 'Subtitle delete failed', 'bad');
+			toast(e.message || 'Delete failed', 'bad');
 			busy = false;
 		}
 	}
@@ -1051,52 +1059,91 @@
 		<div class="tab-content-wrapper">
 			{#if activeTab === 'tracks'}
 				<!-- ── TRACKS TAB ── -->
+				<div class="unified-action-bar">
+					<span class="selection-summary">
+						{#if totalSelected === 0}
+							No tracks selected
+						{:else}
+							{#if audioActive}{selectedAudioIndices.length} audio{/if}
+							{#if audioActive && subtitleActive} + {/if}
+							{#if subtitleActive}{selectedTrackIds.length} subtitle{/if}
+							selected
+						{/if}
+					</span>
+
+					<button
+						class="chip-action"
+						class:active={(singleSelectedAudio && audioDefault(singleSelectedAudio)) || singleSelectedTrack?.is_default}
+						onclick={applySetDefault}
+						disabled={busy || (!singleSelectedAudio && singleSelectedTrack?.source !== 'embedded')}
+					>
+						Set Default
+					</button>
+
+					<details class="flags-dropdown">
+						<summary class="chip-action">Set Flags ▾</summary>
+						<div class="flags-menu">
+							{#if singleSelectedAudio || singleSelectedTrack?.source === 'embedded'}
+								<button class="flags-menu-row" class:checked={(singleSelectedAudio && audioForced(singleSelectedAudio)) || (singleSelectedTrack?.source === 'embedded' && singleSelectedTrack.is_forced)} onclick={() => applyToggleFlag('is_forced')}>
+									<span class="flag-dot warn"></span> Forced
+								</button>
+								<button class="flags-menu-row" class:checked={(singleSelectedAudio && audioSdh(singleSelectedAudio)) || (singleSelectedTrack?.source === 'embedded' && singleSelectedTrack.is_sdh)} onclick={() => applyToggleFlag('is_sdh')}>
+									<span class="flag-dot good"></span> HI / SDH
+								</button>
+								<button class="flags-menu-row" class:checked={(singleSelectedAudio && audioCommentary(singleSelectedAudio)) || (singleSelectedTrack?.source === 'embedded' && singleSelectedTrack.is_commentary)} onclick={() => applyToggleFlag('is_commentary')}>
+									<span class="flag-dot dovi"></span> Commentary
+								</button>
+							{:else}
+								<span class="flags-menu-empty">Select a track first</span>
+							{/if}
+						</div>
+					</details>
+
+					{#if singleSelectedAudio}
+						<div class="icon-btn-group">
+							<button class="chip-action" aria-label="Move to first" title="Move to first" onclick={() => draftReorderAudio('first')} disabled={busy}>⏮</button>
+							<button class="chip-action" aria-label="Move up" title="Move up" onclick={() => draftReorderAudio('up')} disabled={busy}>▲</button>
+							<button class="chip-action" aria-label="Move down" title="Move down" onclick={() => draftReorderAudio('down')} disabled={busy}>▼</button>
+							<button class="chip-action" aria-label="Move to last" title="Move to last" onclick={() => draftReorderAudio('last')} disabled={busy}>⏭</button>
+						</div>
+					{/if}
+
+					{#if singleSelectedTrack}
+						<button class="chip-action" onclick={handleExtractTrack} disabled={busy || singleSelectedTrack.source !== 'embedded'}>
+							📂 Extract to Sidecar
+						</button>
+						<button class="chip-action" onclick={handleEmbedTrack} disabled={busy || singleSelectedTrack.source !== 'external'}>
+							📥 Embed into Container
+						</button>
+						<label class="checkbox-row">
+							<input class="select-circle" type="checkbox" bind:checked={deleteAfterExtract} />
+							<span>Del. after extract</span>
+						</label>
+						<label class="checkbox-row">
+							<input class="select-circle" type="checkbox" bind:checked={deleteAfterEmbed} />
+							<span>Del. after embed</span>
+						</label>
+					{/if}
+
+					<div class="action-group save-group">
+						<button class="chip-action danger" onclick={deleteSelected} disabled={busy || totalSelected === 0}>
+							Delete ({totalSelected})
+						</button>
+						<button class="chip-action" onclick={discardAllChanges} disabled={busy || (!audioDirty && !subtitleDirty)}>
+							Discard
+						</button>
+						<button class="chip-action primary" onclick={saveAllChanges} disabled={busy || (!audioDirty && !subtitleDirty)}>
+							Save Changes
+						</button>
+					</div>
+				</div>
 				<div class="subtitles-tab-grid">
-					
+
 					<!-- Left Main: Tracks list and controls -->
 					<div class="left-panel">
 						<!-- Audio Tracks Section -->
 						<div class="tracks-list-header">
 							<h5>Audio Tracks ({audioDraft.length})</h5>
-						</div>
-						<div class="inline-actions audio-action-panel">
-							<div class="inline-actions-head">
-								<span>Audio Actions</span>
-								<strong>{selectedAudioIndices.length} selected</strong>
-							</div>
-							<div class="inline-actions-body">
-								<div class="action-group">
-									<button class="chip-action" class:active={singleSelectedAudio && audioDefault(singleSelectedAudio)} onclick={() => singleSelectedAudio && draftSetAudioDefault(singleSelectedAudio.index)} disabled={busy || !singleSelectedAudio}>
-										Set Default
-									</button>
-									<button class="chip-action" class:active={singleSelectedAudio && audioForced(singleSelectedAudio)} onclick={() => singleSelectedAudio && draftToggleAudioFlag(singleSelectedAudio.index, 'is_forced')} disabled={busy || !singleSelectedAudio}>
-										Forced
-									</button>
-									<button class="chip-action" class:active={singleSelectedAudio && audioSdh(singleSelectedAudio)} onclick={() => singleSelectedAudio && draftToggleAudioFlag(singleSelectedAudio.index, 'is_sdh')} disabled={busy || !singleSelectedAudio}>
-										HI
-									</button>
-									<button class="chip-action" class:active={singleSelectedAudio && audioCommentary(singleSelectedAudio)} onclick={() => singleSelectedAudio && draftToggleAudioFlag(singleSelectedAudio.index, 'is_commentary')} disabled={busy || !singleSelectedAudio}>
-										Comment
-									</button>
-									<div class="icon-btn-group">
-										<button class="chip-action" aria-label="Move to first" title="Move to first" onclick={() => draftReorderAudio('first')} disabled={busy || !singleSelectedAudio}>⏮</button>
-										<button class="chip-action" aria-label="Move up" title="Move up" onclick={() => draftReorderAudio('up')} disabled={busy || !singleSelectedAudio}>▲</button>
-										<button class="chip-action" aria-label="Move down" title="Move down" onclick={() => draftReorderAudio('down')} disabled={busy || !singleSelectedAudio}>▼</button>
-										<button class="chip-action" aria-label="Move to last" title="Move to last" onclick={() => draftReorderAudio('last')} disabled={busy || !singleSelectedAudio}>⏭</button>
-									</div>
-								</div>
-								<div class="action-group save-group">
-									<button class="chip-action danger" onclick={deleteAudioSelected} disabled={busy || selectedAudioIndices.length === 0}>
-										Delete Audio ({selectedAudioIndices.length})
-									</button>
-									<button class="chip-action" onclick={discardAudioChanges} disabled={busy || !audioDirty}>
-										Discard
-									</button>
-									<button class="chip-action primary" onclick={saveAudioChanges} disabled={busy || !audioDirty}>
-										Save Changes
-									</button>
-								</div>
-							</div>
 						</div>
 						<div class="tracks-table-wrap">
 							<table class="tracks-table">
@@ -1164,53 +1211,6 @@
 						<!-- Subtitle Tracks Section -->
 						<div class="tracks-list-header mt-10">
 							<h5>Subtitle Tracks ({subtitleDraft.length})</h5>
-						</div>
-						<div class="inline-actions subtitle-action-panel">
-							<div class="inline-actions-head">
-								<span>Subtitle Actions</span>
-								<strong>{selectedTrackIds.length} selected</strong>
-							</div>
-							<div class="inline-actions-body">
-								<div class="action-group">
-									<button class="chip-action" class:active={singleSelectedTrack?.is_default} onclick={() => singleSelectedTrack && draftSetSubtitleDefault(singleSelectedTrack.id)} disabled={busy || singleSelectedTrack?.source !== 'embedded'}>
-										Set Default
-									</button>
-									<button class="chip-action" class:active={singleSelectedTrack?.is_forced} onclick={() => singleSelectedTrack && draftToggleSubtitleFlag(singleSelectedTrack.id, 'is_forced')} disabled={busy || singleSelectedTrack?.source !== 'embedded'}>
-										Forced
-									</button>
-									<button class="chip-action" class:active={singleSelectedTrack?.is_sdh} onclick={() => singleSelectedTrack && draftToggleSubtitleFlag(singleSelectedTrack.id, 'is_sdh')} disabled={busy || singleSelectedTrack?.source !== 'embedded'}>
-										SDH
-									</button>
-									<button class="chip-action" class:active={singleSelectedTrack?.is_commentary} onclick={() => singleSelectedTrack && draftToggleSubtitleFlag(singleSelectedTrack.id, 'is_commentary')} disabled={busy || singleSelectedTrack?.source !== 'embedded'}>
-										Comment
-									</button>
-									<button class="chip-action" onclick={handleExtractTrack} disabled={busy || singleSelectedTrack?.source !== 'embedded' || selectedAudioIndices.length > 0}>
-										📂 Extract to Sidecar
-									</button>
-									<button class="chip-action" onclick={handleEmbedTrack} disabled={busy || singleSelectedTrack?.source !== 'external' || selectedAudioIndices.length > 0}>
-										📥 Embed into Container
-									</button>
-									<label class="checkbox-row">
-										<input class="select-circle" type="checkbox" bind:checked={deleteAfterExtract} />
-										<span>Delete after extract</span>
-									</label>
-									<label class="checkbox-row">
-										<input class="select-circle" type="checkbox" bind:checked={deleteAfterEmbed} />
-										<span>Delete after embed</span>
-									</label>
-								</div>
-								<div class="action-group save-group">
-									<button class="chip-action danger" onclick={deleteSubtitleSelected} disabled={busy || selectedTrackIds.length === 0}>
-										Delete Subtitles ({selectedTrackIds.length})
-									</button>
-									<button class="chip-action" onclick={discardSubtitleChanges} disabled={busy || !subtitleDirty}>
-										Discard
-									</button>
-									<button class="chip-action primary" onclick={saveSubtitleChanges} disabled={busy || !subtitleDirty}>
-										Save Changes
-									</button>
-								</div>
-							</div>
 						</div>
 						<div class="tracks-table-wrap">
 							<table class="tracks-table">
@@ -1804,35 +1804,24 @@
 		align-items: center;
 		padding: 14px 20px;
 	}
-	.inline-actions {
-		border: 1px solid var(--line);
-		border-radius: var(--radius);
-		background: color-mix(in srgb, var(--gold) 3%, var(--panel));
-		padding: 12px;
-		display: flex;
-		flex-direction: column;
-		gap: 10px;
-	}
-	.audio-action-panel {
-		border-color: color-mix(in srgb, #79c0ff 28%, var(--line));
-	}
-	.subtitle-action-panel {
-		border-color: color-mix(in srgb, var(--gold) 30%, var(--line));
-	}
-	.inline-actions-head {
+	.unified-action-bar {
+		position: sticky;
+		top: 0;
+		z-index: 5;
+		background: var(--ink);
+		border-bottom: 1px solid var(--line);
+		padding: 10px 4px;
+		margin-bottom: 16px;
 		display: flex;
 		align-items: center;
-		justify-content: space-between;
-		gap: 12px;
-		font-size: 11px;
-		text-transform: uppercase;
-		font-weight: 750;
-		color: var(--faint2);
+		gap: 8px;
+		flex-wrap: wrap;
 	}
-	.inline-actions-head strong {
-		color: var(--gold);
+	.selection-summary {
+		font-size: 12px;
+		color: var(--muted);
+		white-space: nowrap;
 	}
-	.inline-actions-body,
 	.action-group {
 		display: flex;
 		align-items: center;
@@ -1888,6 +1877,69 @@
 	}
 	.save-group {
 		margin-left: auto;
+	}
+	.flags-dropdown {
+		position: relative;
+	}
+	.flags-dropdown summary {
+		list-style: none;
+	}
+	.flags-dropdown summary::-webkit-details-marker {
+		display: none;
+	}
+	.flags-menu {
+		position: absolute;
+		top: calc(100% + 4px);
+		left: 0;
+		background: var(--panel);
+		border: 1px solid var(--line);
+		border-radius: var(--radius-sm);
+		box-shadow: 0 8px 24px var(--shadow);
+		padding: 4px;
+		display: flex;
+		flex-direction: column;
+		min-width: 170px;
+		z-index: 6;
+	}
+	.flags-menu-row {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		border: none;
+		background: none;
+		color: var(--text);
+		font-size: 12.5px;
+		padding: 7px 8px;
+		border-radius: var(--radius-sm);
+		cursor: pointer;
+		text-align: left;
+		width: 100%;
+	}
+	.flags-menu-row:hover {
+		background: var(--panel2);
+	}
+	.flags-menu-row.checked {
+		color: var(--gold);
+	}
+	.flags-menu-empty {
+		font-size: 12px;
+		color: var(--faint);
+		padding: 7px 8px;
+	}
+	.flag-dot {
+		width: 8px;
+		height: 8px;
+		border-radius: 50%;
+		flex-shrink: 0;
+	}
+	.flag-dot.warn {
+		background: var(--warn);
+	}
+	.flag-dot.good {
+		background: var(--good);
+	}
+	.flag-dot.dovi {
+		background: var(--dovi);
 	}
 
 	/* Table design */
