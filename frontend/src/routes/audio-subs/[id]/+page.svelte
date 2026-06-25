@@ -45,8 +45,6 @@
 	// Selection State
 	let selectedTrackIds = $state<string[]>([]);
 	let selectedAudioIndices = $state<number[]>([]);
-	let deleteAfterExtract = $state(false);
-	let deleteAfterEmbed = $state(false);
 
 	// Staged-edit draft state: local working copies of the tables that
 	// flag/reorder edits mutate directly, only sent to the backend on Save.
@@ -435,7 +433,7 @@
 	});
 
 	// ── ACTION: Extract Embedded to Sidecar ──
-	async function handleExtractTrack() {
+	async function handleExtractTrack(withDelete: boolean) {
 		if (!movie || !movie.media_file_id || !singleSelectedTrack) return;
 		busy = true;
 		const mediaFileId = movie.media_file_id;
@@ -444,8 +442,7 @@
 		try {
 			const res = await extractTrack(fetch, mediaFileId, trackId);
 			monitorJob(res.job_id, async (freshInspect) => {
-				// If cleanup checkbox is set, trigger removal of embedded track after extraction resolves
-				if (deleteAfterExtract) {
+				if (withDelete) {
 					toast('Sidecar extracted. Remuxing to delete original embedded track...', 'info');
 					busy = true;
 					try {
@@ -473,7 +470,7 @@
 	}
 
 	// ── ACTION: Embed External Sidecar into Video ──
-	async function handleEmbedTrack() {
+	async function handleEmbedTrack(withDelete: boolean) {
 		if (!movie || !movie.media_file_id || !singleSelectedTrack) return;
 		busy = true;
 		const mediaFileId = movie.media_file_id;
@@ -486,8 +483,7 @@
 			});
 			await confirmJob(fetch, plan.job_id);
 			monitorJob(plan.job_id, async (freshInspect) => {
-				// If cleanup checkbox is set, trigger deletion of external file after embedding resolves
-				if (deleteAfterEmbed) {
+				if (withDelete) {
 					toast('Track embedded. Removing external sidecar file...', 'info');
 					busy = true;
 					try {
@@ -1059,88 +1055,90 @@
 		<div class="tab-content-wrapper">
 			{#if activeTab === 'tracks'}
 				<!-- ── TRACKS TAB ── -->
-				<div class="unified-action-bar">
-					<span class="selection-summary">
-						{#if totalSelected === 0}
-							No tracks selected
-						{:else}
-							{#if audioActive}{selectedAudioIndices.length} audio{/if}
-							{#if audioActive && subtitleActive} + {/if}
-							{#if subtitleActive}{selectedTrackIds.length} subtitle{/if}
-							selected
-						{/if}
-					</span>
-
-					<button
-						class="chip-action"
-						class:active={(singleSelectedAudio && audioDefault(singleSelectedAudio)) || singleSelectedTrack?.is_default}
-						onclick={applySetDefault}
-						disabled={busy || (!singleSelectedAudio && singleSelectedTrack?.source !== 'embedded')}
-					>
-						Set Default
-					</button>
-
-					<details class="flags-dropdown">
-						<summary class="chip-action">Set Flags ▾</summary>
-						<div class="flags-menu">
-							{#if singleSelectedAudio || singleSelectedTrack?.source === 'embedded'}
-								<button class="flags-menu-row" class:checked={(singleSelectedAudio && audioForced(singleSelectedAudio)) || (singleSelectedTrack?.source === 'embedded' && singleSelectedTrack.is_forced)} onclick={() => applyToggleFlag('is_forced')}>
-									<span class="flag-dot warn"></span> Forced
-								</button>
-								<button class="flags-menu-row" class:checked={(singleSelectedAudio && audioSdh(singleSelectedAudio)) || (singleSelectedTrack?.source === 'embedded' && singleSelectedTrack.is_sdh)} onclick={() => applyToggleFlag('is_sdh')}>
-									<span class="flag-dot good"></span> HI / SDH
-								</button>
-								<button class="flags-menu-row" class:checked={(singleSelectedAudio && audioCommentary(singleSelectedAudio)) || (singleSelectedTrack?.source === 'embedded' && singleSelectedTrack.is_commentary)} onclick={() => applyToggleFlag('is_commentary')}>
-									<span class="flag-dot dovi"></span> Commentary
-								</button>
-							{:else}
-								<span class="flags-menu-empty">Select a track first</span>
-							{/if}
-						</div>
-					</details>
-
-					{#if singleSelectedAudio}
-						<div class="icon-btn-group">
-							<button class="chip-action" aria-label="Move to first" title="Move to first" onclick={() => draftReorderAudio('first')} disabled={busy}>⏮</button>
-							<button class="chip-action" aria-label="Move up" title="Move up" onclick={() => draftReorderAudio('up')} disabled={busy}>▲</button>
-							<button class="chip-action" aria-label="Move down" title="Move down" onclick={() => draftReorderAudio('down')} disabled={busy}>▼</button>
-							<button class="chip-action" aria-label="Move to last" title="Move to last" onclick={() => draftReorderAudio('last')} disabled={busy}>⏭</button>
-						</div>
-					{/if}
-
-					{#if singleSelectedTrack}
-						<button class="chip-action" onclick={handleExtractTrack} disabled={busy || singleSelectedTrack.source !== 'embedded'}>
-							📂 Extract to Sidecar
-						</button>
-						<button class="chip-action" onclick={handleEmbedTrack} disabled={busy || singleSelectedTrack.source !== 'external'}>
-							📥 Embed into Container
-						</button>
-						<label class="checkbox-row">
-							<input class="select-circle" type="checkbox" bind:checked={deleteAfterExtract} />
-							<span>Del. after extract</span>
-						</label>
-						<label class="checkbox-row">
-							<input class="select-circle" type="checkbox" bind:checked={deleteAfterEmbed} />
-							<span>Del. after embed</span>
-						</label>
-					{/if}
-
-					<div class="action-group save-group">
-						<button class="chip-action danger" onclick={deleteSelected} disabled={busy || totalSelected === 0}>
-							Delete ({totalSelected})
-						</button>
-						<button class="chip-action" onclick={discardAllChanges} disabled={busy || (!audioDirty && !subtitleDirty)}>
-							Discard
-						</button>
-						<button class="chip-action primary" onclick={saveAllChanges} disabled={busy || (!audioDirty && !subtitleDirty)}>
-							Save Changes
-						</button>
-					</div>
-				</div>
 				<div class="subtitles-tab-grid">
-
+					
 					<!-- Left Main: Tracks list and controls -->
 					<div class="left-panel">
+						<div class="unified-action-bar">
+							<div class="bar-row">
+								<button
+									class="chip-action"
+									class:active={(singleSelectedAudio && audioDefault(singleSelectedAudio)) || singleSelectedTrack?.is_default}
+									onclick={applySetDefault}
+									disabled={busy || (!singleSelectedAudio && singleSelectedTrack?.source !== 'embedded')}
+								>
+									Set Default
+								</button>
+								
+								<details class="action-dropdown">
+									<summary class="chip-action">Set Flags ▾</summary>
+									<div class="dropdown-menu">
+										{#if singleSelectedAudio || singleSelectedTrack?.source === 'embedded'}
+											<button class="dropdown-menu-row" class:checked={(singleSelectedAudio && audioForced(singleSelectedAudio)) || (singleSelectedTrack?.source === 'embedded' && singleSelectedTrack.is_forced)} onclick={() => applyToggleFlag('is_forced')}>
+												<span class="flag-dot warn"></span> Forced
+											</button>
+											<button class="dropdown-menu-row" class:checked={(singleSelectedAudio && audioSdh(singleSelectedAudio)) || (singleSelectedTrack?.source === 'embedded' && singleSelectedTrack.is_sdh)} onclick={() => applyToggleFlag('is_sdh')}>
+												<span class="flag-dot good"></span> HI / SDH
+											</button>
+											<button class="dropdown-menu-row" class:checked={(singleSelectedAudio && audioCommentary(singleSelectedAudio)) || (singleSelectedTrack?.source === 'embedded' && singleSelectedTrack.is_commentary)} onclick={() => applyToggleFlag('is_commentary')}>
+												<span class="flag-dot dovi"></span> Commentary
+											</button>
+										{:else}
+											<span class="dropdown-menu-empty">Select a track first</span>
+										{/if}
+									</div>
+								</details>
+								
+								{#if singleSelectedAudio}
+									<div class="icon-btn-group">
+										<button class="chip-action" aria-label="Move to first" title="Move to first" onclick={() => draftReorderAudio('first')} disabled={busy}>⏮</button>
+										<button class="chip-action" aria-label="Move up" title="Move up" onclick={() => draftReorderAudio('up')} disabled={busy}>▲</button>
+										<button class="chip-action" aria-label="Move down" title="Move down" onclick={() => draftReorderAudio('down')} disabled={busy}>▼</button>
+										<button class="chip-action" aria-label="Move to last" title="Move to last" onclick={() => draftReorderAudio('last')} disabled={busy}>⏭</button>
+									</div>
+								{/if}
+								
+								{#if singleSelectedTrack}
+									<details class="action-dropdown">
+										<summary class="chip-action">{singleSelectedTrack.source === 'embedded' ? 'Extract' : 'Embed'} ▾</summary>
+										<div class="dropdown-menu">
+											{#if singleSelectedTrack.source === 'embedded'}
+												<button class="dropdown-menu-row" onclick={() => handleExtractTrack(false)}>Extract to Sidecar</button>
+												<button class="dropdown-menu-row" onclick={() => handleExtractTrack(true)}>Extract &amp; Delete Embedded</button>
+											{:else}
+												<button class="dropdown-menu-row" onclick={() => handleEmbedTrack(false)}>Embed into Container</button>
+												<button class="dropdown-menu-row" onclick={() => handleEmbedTrack(true)}>Embed &amp; Delete Sidecar</button>
+											{/if}
+										</div>
+									</details>
+								{/if}
+							</div>
+							
+							<div class="bar-row bar-row-bottom">
+								<span class="selection-summary">
+									{#if totalSelected === 0}
+										No tracks selected
+									{:else}
+										{#if audioActive}{selectedAudioIndices.length} audio{/if}
+										{#if audioActive && subtitleActive} + {/if}
+										{#if subtitleActive}{selectedTrackIds.length} subtitle{/if}
+										selected
+									{/if}
+								</span>
+								<div class="action-group">
+									<button class="chip-action danger" onclick={deleteSelected} disabled={busy || totalSelected === 0}>
+										Delete ({totalSelected})
+									</button>
+									<button class="chip-action" onclick={discardAllChanges} disabled={busy || (!audioDirty && !subtitleDirty)}>
+										Discard
+									</button>
+									<button class="chip-action primary" onclick={saveAllChanges} disabled={busy || (!audioDirty && !subtitleDirty)}>
+										Save Changes
+									</button>
+								</div>
+							</div>
+						</div>
+						
 						<!-- Audio Tracks Section -->
 						<div class="tracks-list-header">
 							<h5>Audio Tracks ({audioDraft.length})</h5>
@@ -1806,16 +1804,28 @@
 	}
 	.unified-action-bar {
 		position: sticky;
-		top: 0;
+		top: 12px;
 		z-index: 5;
-		background: var(--ink);
-		border-bottom: 1px solid var(--line);
-		padding: 10px 4px;
-		margin-bottom: 16px;
+		background: var(--panel);
+		border: 1px solid var(--line);
+		border-radius: var(--radius);
+		box-shadow: 0 10px 24px var(--shadow);
+		padding: 12px 14px;
+		margin-bottom: 18px;
+		display: flex;
+		flex-direction: column;
+		gap: 10px;
+	}
+	.bar-row {
 		display: flex;
 		align-items: center;
 		gap: 8px;
 		flex-wrap: wrap;
+	}
+	.bar-row-bottom {
+		justify-content: space-between;
+		border-top: 1px solid var(--line);
+		padding-top: 10px;
 	}
 	.selection-summary {
 		font-size: 12px;
@@ -1875,33 +1885,30 @@
 	.icon-btn-group .chip-action:not(:last-child) {
 		border-right: 1px solid var(--line2);
 	}
-	.save-group {
-		margin-left: auto;
-	}
-	.flags-dropdown {
+	.action-dropdown {
 		position: relative;
 	}
-	.flags-dropdown summary {
+	.action-dropdown summary {
 		list-style: none;
 	}
-	.flags-dropdown summary::-webkit-details-marker {
+	.action-dropdown summary::-webkit-details-marker {
 		display: none;
 	}
-	.flags-menu {
+	.dropdown-menu {
 		position: absolute;
 		top: calc(100% + 4px);
 		left: 0;
-		background: var(--panel);
+		background: var(--panel2);
 		border: 1px solid var(--line);
 		border-radius: var(--radius-sm);
 		box-shadow: 0 8px 24px var(--shadow);
 		padding: 4px;
 		display: flex;
 		flex-direction: column;
-		min-width: 170px;
+		min-width: 180px;
 		z-index: 6;
 	}
-	.flags-menu-row {
+	.dropdown-menu-row {
 		display: flex;
 		align-items: center;
 		gap: 8px;
@@ -1915,13 +1922,13 @@
 		text-align: left;
 		width: 100%;
 	}
-	.flags-menu-row:hover {
-		background: var(--panel2);
+	.dropdown-menu-row:hover {
+		background: var(--line);
 	}
-	.flags-menu-row.checked {
+	.dropdown-menu-row.checked {
 		color: var(--gold);
 	}
-	.flags-menu-empty {
+	.dropdown-menu-empty {
 		font-size: 12px;
 		color: var(--faint);
 		padding: 7px 8px;
