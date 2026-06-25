@@ -212,11 +212,7 @@ def build_results_payload(
     auto_src = None
     if stacks:
         auto_src = next(
-            (
-                c
-                for c in ranked
-                if c.get("stack_rank") == 1 and c.get("stack_pos") == 1
-            ),
+            (c for c in ranked if c.get("stack_rank") == 1 and c.get("stack_pos") == 1),
             None,
         )
     if auto_src is None and ranked:
@@ -225,9 +221,7 @@ def build_results_payload(
     auto_pick = None
     if auto_src is not None:
         auto_pick = _candidate_view(run_id, auto_src)
-        auto_pick["explanations"] = explain_top_contributions(
-            auto_src.get("contributions")
-        )
+        auto_pick["explanations"] = explain_top_contributions(auto_src.get("contributions"))
 
     rejected: dict[str, list[dict]] = {"gate": [], "ocr": [], "dedup": [], "errored": []}
     by_stage: dict[str, list[dict]] = {key: [] for key, _ in _STAGE_LABELS}
@@ -265,8 +259,7 @@ def build_results_payload(
         "rejected_by_stage": rejected_by_stage,
         "rejection_summary": rejection_summary,
         "suggestion": suggest_for_summary(rejection_summary),
-        "counts": archive.get("counts")
-        or _counts_from_candidates(candidates),
+        "counts": archive.get("counts") or _counts_from_candidates(candidates),
         "stage_timings_s": archive.get("stage_timings_seconds", {}),
         "config_snapshot": archive.get("config", {}),
     }

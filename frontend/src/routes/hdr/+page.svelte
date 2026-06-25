@@ -24,13 +24,10 @@
 		'sdr',
 		'unknown'
 	];
-	const STATUS_META: Record<
-		RadarrOverlayStatus,
-		{ label: string; tone: string; note: string }
-	> = {
+	const STATUS_META: Record<RadarrOverlayStatus, { label: string; tone: string; note: string }> = {
 		below_target: {
 			label: 'Below target',
-			tone: 'var(--warn)',
+			tone: 'var(--bad)',
 			note: 'Current file does not satisfy the configured meet target.'
 		},
 		meets_target: {
@@ -59,6 +56,7 @@
 		unknown: 'Unknown'
 	};
 	const PREFERENCE_LABEL: Record<HdrPreferenceChoice, string> = {
+		sdr: 'SDR',
 		hdr: 'HDR',
 		hdr10: 'HDR10',
 		hdr10p: 'HDR10+',
@@ -71,6 +69,7 @@
 		preference_status: 'desc'
 	};
 	const PREFERENCE_RANK: Record<HdrPreferenceChoice, number> = {
+		sdr: -1,
 		hdr: 0,
 		hdr10: 1,
 		hdr10p: 2,
@@ -84,9 +83,19 @@
 	let savingPreferences = $state(false);
 
 	$effect(() => {
-		preferenceDrafts = (data.data?.profile_preferences ?? []).map((preference) => ({
+		const prefs = data.data?.profile_preferences ?? [];
+		preferenceDrafts = prefs.map((preference) => ({
 			...preference
 		}));
+
+		// Initialize excludedKeys from backend excluded_targets
+		const nextKeys: Record<string, boolean> = {};
+		for (const pref of prefs) {
+			for (const choice of pref.excluded_targets ?? []) {
+				nextKeys[excludedKey(pref, choice)] = true;
+			}
+		}
+		excludedKeys = nextKeys;
 	});
 
 	function selectedTags(): string[] {
@@ -98,10 +107,7 @@
 			.filter(Boolean);
 	}
 
-	function withParams(
-		patch: Record<string, string | null>,
-		tagsOverride?: string[]
-	): string {
+	function withParams(patch: Record<string, string | null>, tagsOverride?: string[]): string {
 		const sp = new URLSearchParams(page.url.searchParams);
 		if (tagsOverride) {
 			sp.delete('hdr_tags');
@@ -139,14 +145,11 @@
 	}
 
 	function sortHref(sortBy: 'title' | 'cf_score' | 'preference_status'): string {
-		const currentSort = (page.url.searchParams.get('sort_by') as typeof sortBy | null) ?? 'cf_score';
+		const currentSort =
+			(page.url.searchParams.get('sort_by') as typeof sortBy | null) ?? 'cf_score';
 		const currentDir = (page.url.searchParams.get('sort_dir') as 'asc' | 'desc' | null) ?? 'desc';
 		const nextDir =
-			currentSort === sortBy
-				? currentDir === 'asc'
-					? 'desc'
-					: 'asc'
-				: DEFAULT_SORT_DIR[sortBy];
+			currentSort === sortBy ? (currentDir === 'asc' ? 'desc' : 'asc') : DEFAULT_SORT_DIR[sortBy];
 		return withParams({ sort_by: sortBy, sort_dir: nextDir });
 	}
 
@@ -156,18 +159,100 @@
 		return (page.url.searchParams.get('sort_dir') ?? 'desc') === 'asc' ? '↑' : '↓';
 	}
 
-	function availableExceedTargets(draft: PreferenceDraft): HdrPreferenceChoice[] {
-		if (!draft.meet_target) return [];
-		return draft.available_preference_targets.filter(
-			(choice) => PREFERENCE_RANK[choice] > PREFERENCE_RANK[draft.meet_target as HdrPreferenceChoice]
-		);
+	// ── Tier ladder per draft ────────────────────────────────────────────
+	let expandedDrafts = $state<Record<number, boolean>>({});
+	// Excluded tiers keyed by "profile_id:choice" for deep reactivity
+	let excludedKeys = $state<Record<string, boolean>>({});
+
+	function excludedKey(draft: PreferenceDraft, choice: string): string {
+		return `${draft.profile_id}:${choice}`;
 	}
 
-	function updateMeetTarget(draft: PreferenceDraft, nextValue: string): void {
-		draft.meet_target = nextValue as HdrPreferenceChoice;
-		if (draft.exceed_target && !availableExceedTargets(draft).includes(draft.exceed_target)) {
+	function isExcluded(draft: PreferenceDraft, choice: string): boolean {
+		return !!excludedKeys[excludedKey(draft, choice)];
+	}
+
+	function effectiveChoices(draft: PreferenceDraft): HdrPreferenceChoice[] {
+		return draft.available_preference_targets.filter((choice) => !isExcluded(draft, choice));
+	}
+
+	function findMeetFromChoices(choices: HdrPreferenceChoice[]): HdrPreferenceChoice | null {
+		return choices.length > 0 ? choices[0] : null;
+	}
+
+	function excludedCount(draft: PreferenceDraft): number {
+		let count = 0;
+		for (const choice of draft.available_preference_targets) {
+			if (isExcluded(draft, choice)) count++;
+		}
+		return count;
+	}
+
+	// Per-draft active mode for setting targets
+	let activeModes = $state<Record<number, 'meet' | 'exceed' | null>>({});
+
+	function activateMode(draft: PreferenceDraft, mode: 'meet' | 'exceed'): void {
+		activeModes = { ...activeModes, [draft.profile_id]: mode };
+	}
+
+	function cancelMode(draft: PreferenceDraft): void {
+		activeModes = { ...activeModes, [draft.profile_id]: null };
+	}
+
+	function rungSelect(draft: PreferenceDraft, choice: HdrPreferenceChoice): void {
+		const mode = activeModes[draft.profile_id];
+		if (!mode) return;
+		if (mode === 'meet') {
+			draft.meet_target = draft.meet_target === choice ? null : choice;
+		} else {
+			draft.exceed_target = draft.exceed_target === choice ? null : choice;
+		}
+		cancelMode(draft);
+	}
+
+	function zoneForChoice(
+		draft: PreferenceDraft,
+		choice: HdrPreferenceChoice
+	): 'exceed' | 'meet' | 'below_meet' | 'neutral' {
+		const rank = PREFERENCE_RANK[choice];
+		const exceedRank = draft.exceed_target ? PREFERENCE_RANK[draft.exceed_target] : -1;
+		if (exceedRank >= 0 && rank >= exceedRank) return 'exceed';
+		const meetRank = draft.meet_target ? PREFERENCE_RANK[draft.meet_target] : -1;
+		if (meetRank >= 0) {
+			if (rank >= meetRank) return 'meet';
+			return 'below_meet';
+		}
+		return 'neutral';
+	}
+	function dismissRung(draft: PreferenceDraft, choice: HdrPreferenceChoice): void {
+		excludedKeys[excludedKey(draft, choice)] = true;
+
+		if (draft.meet_target === choice) {
+			const choices = effectiveChoices(draft);
+			draft.meet_target = findMeetFromChoices(choices);
+			draft.exceed_target = null;
+		} else if (draft.exceed_target === choice) {
 			draft.exceed_target = null;
 		}
+	}
+
+	function restoreRung(draft: PreferenceDraft, choice: HdrPreferenceChoice): void {
+		delete excludedKeys[excludedKey(draft, choice)];
+
+		if (!draft.meet_target) {
+			const choices = effectiveChoices(draft);
+			draft.meet_target = findMeetFromChoices(choices);
+		}
+	}
+
+	function collapseDraft(draft: PreferenceDraft): void {
+		const next = { ...expandedDrafts };
+		next[draft.profile_id] = false;
+		expandedDrafts = next;
+	}
+
+	function expandDraft(draft: PreferenceDraft): void {
+		expandedDrafts = { ...expandedDrafts, [draft.profile_id]: true };
 	}
 
 	async function savePreferences(): Promise<void> {
@@ -181,10 +266,14 @@
 					.map((draft) => ({
 						profile_id: draft.profile_id,
 						meet_target: draft.meet_target!,
-						exceed_target: draft.exceed_target
+						exceed_target: draft.exceed_target,
+						excluded_targets: draft.available_preference_targets.filter((choice) =>
+							isExcluded(draft, choice)
+						)
 					}))
 			);
 			toast('Overlay preferences saved', 'good');
+			activeModes = {};
 			await goto(page.url, {
 				replaceState: true,
 				noScroll: true,
@@ -205,7 +294,9 @@
 			<div>
 				<p class="eyebrow">Toolbox</p>
 				<h1>Radarr Overlay</h1>
-				<p class="lede">Read-only Radarr metadata coverage for HDR, quality profiles, and custom-format scoring.</p>
+				<p class="lede">
+					Read-only Radarr metadata coverage for HDR, quality profiles, and custom-format scoring.
+				</p>
 			</div>
 		</div>
 		<div class="error">{data.error ?? 'Failed to load Radarr overlay.'}</div>
@@ -217,7 +308,8 @@
 				<p class="eyebrow">Toolbox</p>
 				<h1>Radarr Overlay</h1>
 				<p class="lede">
-					A consolidated readout of HDR truth, custom-format score posture, and per-profile preference compliance.
+					A consolidated readout of HDR truth, custom-format score posture, and per-profile
+					preference compliance.
 				</p>
 			</div>
 			<div class="stats">
@@ -240,7 +332,11 @@
 			<div class="bar-head">
 				<div>
 					<h2>HDR distribution</h2>
-					<p>Each movie contributes to every HDR profile it actually carries, so hybrid files like <code>DV HDR10</code> count in both groups.</p>
+					<p>
+						Each movie contributes to every HDR profile it actually carries, so hybrid files like <code
+							>DV HDR10</code
+						> count in both groups.
+					</p>
 				</div>
 				<a class="clear" href={clearHref()}>Clear filters</a>
 			</div>
@@ -283,7 +379,8 @@
 					<select name="preference_status">
 						<option value="">Any status</option>
 						{#each Object.entries(STATUS_META) as [value, meta] (value)}
-							<option value={value} selected={data.query.preference_status === value}>{meta.label}</option>
+							<option {value} selected={data.query.preference_status === value}>{meta.label}</option
+							>
 						{/each}
 					</select>
 				</label>
@@ -331,7 +428,10 @@
 			<div class="table-head">
 				<div>
 					<h2>Preference targets</h2>
-					<p>Each profile defines what counts as <strong>meet</strong> and optionally <strong>exceed</strong>. Below target is derived automatically.</p>
+					<p>
+						Each profile defines what counts as <strong>meet</strong> and optionally
+						<strong>exceed</strong>. Below target is derived automatically.
+					</p>
 				</div>
 				<button class="save" type="button" onclick={savePreferences} disabled={savingPreferences}>
 					{savingPreferences ? 'Saving…' : 'Save preferences'}
@@ -349,38 +449,124 @@
 								<HdrBadge kinds={draft.profile_targets} />
 							</div>
 							<div class="pref-controls">
-								<label>
-									<span>Meets target</span>
-									<select
-										value={draft.meet_target ?? ''}
-										onchange={(event) => updateMeetTarget(draft, (event.currentTarget as HTMLSelectElement).value)}
-									>
-										{#each draft.available_preference_targets as choice (choice)}
-											<option value={choice}>{PREFERENCE_LABEL[choice]}</option>
-										{/each}
-									</select>
-								</label>
-								<label>
-									<span>Exceeds target</span>
-									<select
-										value={draft.exceed_target ?? ''}
-										onchange={(event) => {
-											const value = (event.currentTarget as HTMLSelectElement).value;
-											draft.exceed_target = value ? (value as HdrPreferenceChoice) : null;
-										}}
-									>
-										<option value="">None</option>
-										{#each availableExceedTargets(draft) as choice (choice)}
-											<option value={choice}>{PREFERENCE_LABEL[choice]}</option>
-										{/each}
-									</select>
-								</label>
+								{#if expandedDrafts[draft.profile_id] || !draft.meet_target}
+									<!-- svelte-ignore a11y_click_events_have_key_events -->
+									<!-- svelte-ignore a11y_no_static_element_interactions -->
+									<div class="ladder">
+										{#if true}
+											{@const excludedChoices = draft.available_preference_targets.filter(
+												(choice) => isExcluded(draft, choice)
+											)}
+											{@const activeChoices = draft.available_preference_targets.filter(
+												(choice) => !isExcluded(draft, choice)
+											)}
+											{@const mode = activeModes[draft.profile_id] ?? null}
+												<!-- Active rungs: reversed so DoVi+HDR is top, SDR is bottom -->
+												{#each [...activeChoices].reverse() as choice (choice)}
+													{@const zone = zoneForChoice(draft, choice)}
+													{@const isMeetBoundary = draft.meet_target === choice}
+													{@const isExceedBoundary = draft.exceed_target === choice}
+													<!-- svelte-ignore a11y_click_events_have_key_events -->
+													<!-- svelte-ignore a11y_no_static_element_interactions -->
+													<div
+														class="rung"
+														class:exceed={zone === 'exceed'}
+														class:meet={zone === 'meet'}
+														class:below-meet={zone === 'below_meet'}
+														class:neutral={zone === 'neutral'}
+														class:boundary={isMeetBoundary || isExceedBoundary}
+														class:selectable={!!mode}
+														onclick={() => rungSelect(draft, choice)}
+													>
+														<span class="rung-indicator"></span>
+														<span class="rung-label">{PREFERENCE_LABEL[choice]}</span>
+														{#if isMeetBoundary}
+															<span class="rung-tag meet-tag">meet</span>
+														{/if}
+														{#if isExceedBoundary}
+															<span class="rung-tag exceed-tag">exceed</span>
+														{/if}
+														{#if zone === 'below_meet' && choice === 'sdr'}
+															<span class="rung-tag fails-tag">FAILS</span>
+														{/if}
+														{#if zone === 'meet' || zone === 'exceed'}
+															<button
+																class="rung-dismiss"
+																type="button"
+																title="Remove {PREFERENCE_LABEL[choice]} from targets"
+																onclick={(e) => { e.stopPropagation(); dismissRung(draft, choice); }}>×</button>
+														{/if}
+													</div>
+												{/each}
+												<!-- Mode buttons -->
+												<div class="mode-bar">
+													<button
+														class="mode-btn"
+														class:armed={mode === 'meet'}
+														type="button"
+														onclick={() => mode === 'meet' ? cancelMode(draft) : activateMode(draft, 'meet')}
+													>
+														{mode === 'meet' ? 'Cancel meet' : 'Set Meet'}
+													</button>
+													<button
+														class="mode-btn"
+														class:armed={mode === 'exceed'}
+														type="button"
+														onclick={() => mode === 'exceed' ? cancelMode(draft) : activateMode(draft, 'exceed')}
+													>
+														{mode === 'exceed' ? 'Cancel exceed' : 'Set Exceed'}
+													</button>
+												</div>
+												<!-- Excluded rungs at the bottom -->
+											{#if excludedChoices.length > 0}
+												<div class="excluded-sep">excluded</div>
+												{#each excludedChoices as choice (choice)}
+													<!-- svelte-ignore a11y_click_events_have_key_events -->
+													<!-- svelte-ignore a11y_no_static_element_interactions -->
+													<div class="rung dismissed" onclick={() => restoreRung(draft, choice)}>
+														<span class="rung-indicator"></span>
+														<span class="rung-label">{PREFERENCE_LABEL[choice]}</span>
+														<span class="rung-restore">restore</span>
+													</div>
+												{/each}
+											{/if}
+										{/if}
+									</div>
+									{#if draft.meet_target}
+										<button
+											class="collapse-ladder"
+											type="button"
+											onclick={() => collapseDraft(draft)}
+										>
+											Collapse
+										</button>
+									{/if}
+								{:else}
+									<button class="ladder-summary" type="button" onclick={() => expandDraft(draft)}>
+										<span class="summary-meet">
+											Meet: <strong>{PREFERENCE_LABEL[draft.meet_target!]}</strong>
+										</span>
+										{#if draft.exceed_target}
+											<span class="summary-exceed">
+												· Exceed: <strong>{PREFERENCE_LABEL[draft.exceed_target]}</strong>
+											</span>
+										{/if}
+										{#if excludedCount(draft) > 0}
+											<span class="summary-excluded">
+												· Excluded: <strong>{excludedCount(draft)}</strong>
+											</span>
+										{/if}
+										<span class="summary-edit">Edit</span>
+									</button>
+								{/if}
 							</div>
 						</div>
 					{/each}
 				</div>
 			{:else}
-				<p class="muted">No file-backed profile on this page currently exposes HDR preference targets.</p>
+				<p class="muted">
+					No file-backed profile on this page currently exposes HDR preference targets.
+				</p>
 			{/if}
 		</div>
 
@@ -394,10 +580,17 @@
 					<span><a class="sort-link" href={sortHref('title')}>Title {sortGlyph('title')}</a></span>
 					<span>HDR profiles</span>
 					<span>Profile</span>
-					<span><a class="sort-link" href={sortHref('cf_score')}>CF score {sortGlyph('cf_score')}</a></span>
+					<span
+						><a class="sort-link" href={sortHref('cf_score')}>CF score {sortGlyph('cf_score')}</a
+						></span
+					>
 					<span>Cutoff</span>
 					<span>Radarr targets</span>
-					<span><a class="sort-link" href={sortHref('preference_status')}>Status {sortGlyph('preference_status')}</a></span>
+					<span
+						><a class="sort-link" href={sortHref('preference_status')}
+							>Status {sortGlyph('preference_status')}</a
+						></span
+					>
 				</div>
 				{#each data.data.items as item (item.id)}
 					<a class="row item" href={`/films/${item.id}`}>
@@ -446,7 +639,11 @@
 		border: 1px solid var(--line);
 		border-radius: var(--radius);
 		background:
-			radial-gradient(circle at top right, color-mix(in srgb, var(--dovi) 20%, transparent), transparent 35%),
+			radial-gradient(
+				circle at top right,
+				color-mix(in srgb, var(--dovi) 20%, transparent),
+				transparent 35%
+			),
 			linear-gradient(160deg, var(--panel), var(--ink2));
 	}
 	.eyebrow {
@@ -456,7 +653,9 @@
 		text-transform: uppercase;
 		color: var(--gold);
 	}
-	h1, h2, p {
+	h1,
+	h2,
+	p {
 		margin: 0;
 	}
 	h1 {
@@ -528,7 +727,11 @@
 		border-radius: 10px;
 		border: 1px solid var(--line);
 		background:
-			linear-gradient(90deg, color-mix(in srgb, var(--gold-soft) 30%, transparent) var(--w), transparent var(--w)),
+			linear-gradient(
+				90deg,
+				color-mix(in srgb, var(--gold-soft) 30%, transparent) var(--w),
+				transparent var(--w)
+			),
 			var(--panel2);
 		display: flex;
 		justify-content: space-between;
@@ -643,9 +846,261 @@
 		color: var(--faint2);
 	}
 	.pref-controls {
-		display: grid;
-		grid-template-columns: 1fr 1fr;
+		display: flex;
+		flex-direction: column;
 		gap: 10px;
+	}
+	/* ── tier ladder ─────────────────────────────────── */
+	.ladder {
+		display: flex;
+		flex-direction: column;
+		border: 1px solid var(--line);
+		border-radius: var(--radius-sm);
+		overflow: hidden;
+	}
+	.rung {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		padding: 9px 12px;
+		cursor: pointer;
+		border-bottom: 1px solid var(--line);
+		transition: background 0.12s ease;
+	}
+	.rung:last-child {
+		border-bottom: none;
+	}
+	.rung-indicator {
+		width: 10px;
+		height: 10px;
+		border-radius: 50%;
+		flex: none;
+		background: var(--faint2);
+		transition: background 0.12s ease;
+	}
+	.rung.meet .rung-indicator {
+		background: var(--good);
+		box-shadow: 0 0 6px color-mix(in srgb, var(--good) 50%, transparent);
+	}
+	.rung.exceed .rung-indicator {
+		background: var(--gold);
+		box-shadow: 0 0 6px color-mix(in srgb, var(--gold) 50%, transparent);
+	}
+	.rung.excluded .rung-indicator {
+		background: var(--faint);
+	}
+	.rung.meet {
+		background: color-mix(in srgb, var(--good) 10%, transparent);
+	}
+	.rung.meet:hover {
+		background: color-mix(in srgb, var(--good) 18%, transparent);
+	}
+	.rung.exceed {
+		background: color-mix(in srgb, var(--gold) 10%, transparent);
+	}
+	.rung.exceed:hover {
+		background: color-mix(in srgb, var(--gold) 18%, transparent);
+	}
+	.rung.excluded {
+		background: var(--ink2);
+		color: var(--faint);
+	}
+	.rung.excluded:hover {
+		background: color-mix(in srgb, var(--faint) 12%, var(--ink2));
+	}
+	.rung.boundary {
+		font-weight: 600;
+	}
+	.rung-label {
+		font-size: 13px;
+		flex: 1;
+	}
+	.rung-tag {
+		font-size: 10px;
+		text-transform: uppercase;
+		letter-spacing: 0.06em;
+		font-weight: 700;
+		padding: 2px 7px;
+		border-radius: 4px;
+	}
+	.meet-tag {
+		background: color-mix(in srgb, var(--good) 25%, transparent);
+		color: var(--good);
+	}
+	.exceed-tag {
+		background: color-mix(in srgb, var(--gold) 25%, transparent);
+		color: var(--gold);
+	}
+	.fails-tag {
+		background: color-mix(in srgb, var(--bad) 25%, transparent);
+		color: var(--bad);
+	}
+	.collapse-ladder {
+		font-size: 12px;
+		color: var(--muted);
+		background: transparent;
+		border: 1px solid var(--line);
+		border-radius: var(--radius-sm);
+		padding: 6px 12px;
+		cursor: pointer;
+		align-self: flex-start;
+	}
+	.collapse-ladder:hover {
+		background: var(--panel2);
+		color: var(--text);
+	}
+	/* ── collapsed summary ──────────────────────────── */
+	.ladder-summary {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		width: 100%;
+		padding: 10px 12px;
+		border: 1px solid var(--line);
+		border-radius: var(--radius-sm);
+		background: var(--ink2);
+		color: var(--text);
+		cursor: pointer;
+		text-align: left;
+		font-size: 12px;
+	}
+	.ladder-summary:hover {
+		background: var(--panel2);
+	}
+	.summary-meet strong {
+		color: var(--good);
+	}
+	.summary-exceed strong {
+		color: var(--gold);
+	}
+	.summary-edit {
+		margin-left: auto;
+		font-size: 11px;
+		color: var(--muted);
+	}
+	.summary-excluded {
+		font-size: 11px;
+		color: var(--muted);
+	}
+	.summary-excluded strong {
+		color: var(--bad);
+	}
+	/* ── rung selectable (mode armed) ────────────── */
+	.rung.selectable {
+		cursor: pointer;
+	}
+	.rung.selectable:hover {
+		filter: brightness(1.15);
+	}
+	/* ── mode bar ─────────────────────────────────── */
+	.mode-bar {
+		display: flex;
+		gap: 8px;
+		padding: 8px 12px;
+		border-top: 1px solid var(--line);
+	}
+	.mode-btn {
+		flex: 1;
+		font-size: 11px;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+		padding: 6px 0;
+		border-radius: 6px;
+		border: 1px solid var(--line);
+		background: var(--ink2);
+		color: var(--muted);
+		cursor: pointer;
+		transition: all 0.12s ease;
+	}
+	.mode-btn:hover {
+		color: var(--text);
+		border-color: var(--line2);
+	}
+	.mode-btn.armed {
+		background: color-mix(in srgb, var(--gold) 15%, transparent);
+		border-color: var(--gold);
+		color: var(--gold);
+	}
+	.rung-dismiss {
+		flex: none;
+		width: 22px;
+		height: 22px;
+		border: none;
+		border-radius: 5px;
+		background: transparent;
+		color: var(--faint);
+		font-size: 15px;
+		line-height: 1;
+		cursor: pointer;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		opacity: 0;
+		transition:
+			opacity 0.12s ease,
+			background 0.12s ease;
+	}
+	.rung:hover .rung-dismiss {
+		opacity: 1;
+	}
+	.rung-dismiss:hover {
+		background: color-mix(in srgb, var(--faint) 18%, transparent);
+		color: var(--text);
+	}
+	/* ── dismissed (excluded) rungs ──────────────── */
+	.excluded-sep {
+		font-size: 9px;
+		text-transform: uppercase;
+		letter-spacing: 0.1em;
+		color: var(--faint);
+		padding: 6px 12px 3px;
+		border-top: 1px solid var(--line);
+	}
+	.rung.dismissed {
+		background: var(--ink2);
+		color: var(--faint);
+		cursor: pointer;
+	}
+	.rung.dismissed:hover {
+		background: color-mix(in srgb, var(--faint) 12%, var(--ink2));
+		color: var(--muted);
+	}
+	.rung.dismissed .rung-indicator {
+		background: var(--faint2);
+	}
+	/* ── below-meet rungs (red) ─────────────────── */
+	.rung.below-meet {
+		background: color-mix(in srgb, var(--bad) 8%, transparent);
+		color: var(--muted);
+	}
+	.rung.below-meet:hover {
+		background: color-mix(in srgb, var(--bad) 16%, transparent);
+		color: var(--text);
+	}
+	.rung.below-meet .rung-indicator {
+		background: var(--bad);
+		box-shadow: 0 0 5px color-mix(in srgb, var(--bad) 40%, transparent);
+	}
+	/* ── neutral rungs (nothing set) ────────────── */
+	.rung.neutral {
+		background: var(--ink2);
+		color: var(--muted);
+	}
+	.rung.neutral:hover {
+		background: var(--panel2);
+	}
+	.rung.neutral .rung-indicator {
+		background: var(--faint2);
+	}
+	.rung-restore {
+		font-size: 10px;
+		color: var(--faint);
+		opacity: 0;
+		transition: opacity 0.12s ease;
+	}
+	.rung.dismissed:hover .rung-restore {
+		opacity: 1;
 	}
 	.rows {
 		border: 1px solid var(--line);
@@ -725,8 +1180,7 @@
 			flex-direction: column;
 		}
 		.stats,
-		.filter-row,
-		.pref-controls {
+		.filter-row {
 			grid-template-columns: repeat(2, minmax(0, 1fr));
 		}
 		.tags {
@@ -742,8 +1196,7 @@
 			padding: 16px;
 		}
 		.stats,
-		.filter-row,
-		.pref-controls {
+		.filter-row {
 			grid-template-columns: 1fr;
 		}
 		.row {

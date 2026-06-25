@@ -30,9 +30,7 @@ async def _make_movie(db, **kwargs) -> Movie:
 @pytest.mark.asyncio
 async def test_movie_genres_json_roundtrip(db):
     movie = await _make_movie(db, genres=["Action", "Thriller"])
-    fetched = (
-        await db.execute(select(Movie).where(Movie.id == movie.id))
-    ).scalar_one()
+    fetched = (await db.execute(select(Movie).where(Movie.id == movie.id))).scalar_one()
     assert fetched.genres == ["Action", "Thriller"]
 
 
@@ -87,10 +85,10 @@ async def test_artwork_event_audit_row(db):
     await db.commit()
 
     rows = (
-        await db.execute(
-            select(ArtworkEvent).where(ArtworkEvent.movie_id == movie.id)
-        )
-    ).scalars().all()
+        (await db.execute(select(ArtworkEvent).where(ArtworkEvent.movie_id == movie.id)))
+        .scalars()
+        .all()
+    )
     assert len(rows) == 1
     assert rows[0].action == "deploy"
     assert rows[0].source == "pipeline"

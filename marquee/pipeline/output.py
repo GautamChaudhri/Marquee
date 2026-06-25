@@ -71,8 +71,7 @@ def place_gated(
     for candidate in candidates:
         reason = candidate.gate_reason or "unknown_gate"
         destination = gated_dir / (
-            f"{reason}__{Path(candidate.orig_filename).stem}"
-            f"{_orig_suffix(candidate.orig_filename)}"
+            f"{reason}__{Path(candidate.orig_filename).stem}{_orig_suffix(candidate.orig_filename)}"
         )
         shutil.copy2(candidate.image_path, destination)
         candidate.image_path = destination

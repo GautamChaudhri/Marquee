@@ -55,7 +55,11 @@ def state_has_detector_truth(state: LetterboxState | None) -> bool:
         return False
     if state.last_detected_at is not None:
         return True
-    if state.reviewed or state.applied_crop_top is not None or state.applied_crop_bottom is not None:
+    if (
+        state.reviewed
+        or state.applied_crop_top is not None
+        or state.applied_crop_bottom is not None
+    ):
         return True
     if state.status in DETECTOR_TRUTH_STATUSES:
         return state.recommended_crop_top is not None or state.status != "candidate"

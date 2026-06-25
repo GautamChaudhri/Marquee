@@ -31,8 +31,8 @@ async def heal_scan() -> dict:
     checked = restored = failed = 0
     async with factory() as db:
         movies = (
-            await db.execute(select(Movie).where(Movie.poster_path.is_not(None)))
-        ).scalars().all()
+            (await db.execute(select(Movie).where(Movie.poster_path.is_not(None)))).scalars().all()
+        )
         for movie in movies:
             checked += 1
             if movie.poster_path and Path(movie.poster_path).is_file():
@@ -52,6 +52,8 @@ async def heal_scan() -> dict:
     )
     logger.info(
         "HEAL | scan complete | checked=%d restored=%d failed=%d",
-        checked, restored, failed,
+        checked,
+        restored,
+        failed,
     )
     return {"checked": checked, "restored": restored, "failed": failed}

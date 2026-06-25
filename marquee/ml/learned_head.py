@@ -98,8 +98,7 @@ class LogisticHead:
 
             loss = float(
                 -np.mean(
-                    y * np.log(probabilities + 1e-12)
-                    + (1 - y) * np.log(1 - probabilities + 1e-12)
+                    y * np.log(probabilities + 1e-12) + (1 - y) * np.log(1 - probabilities + 1e-12)
                 )
                 + l2 * float(weights @ weights) / (2 * n)
             )
@@ -202,9 +201,7 @@ class LogisticHead:
                 f"Learned head expects features {missing} that this run did not "
                 "compute. Retrain the head or set SCORER=weighted."
             )
-        x = np.asarray(
-            [normalized[name] for name in self.feature_names], dtype=np.float64
-        )
+        x = np.asarray([normalized[name] for name in self.feature_names], dtype=np.float64)
         probability = float(_sigmoid(np.asarray([x @ self.weights + self.bias]))[0])
         contributions = {
             name: float(weight * value)

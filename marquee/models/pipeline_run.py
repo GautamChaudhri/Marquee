@@ -30,16 +30,12 @@ class PipelineRun(Base):
     )
 
     # running | completed | flagged_manual | failed
-    status: Mapped[str] = mapped_column(
-        String(20), nullable=False, default="running"
-    )
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="running")
 
     started_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
-    completed_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # Which scorer head ranked this run — provenance for labels (weighted/learned).
     scorer_name: Mapped[str | None] = mapped_column(String(20), nullable=True)

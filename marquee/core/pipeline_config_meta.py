@@ -210,7 +210,6 @@ KNOB_META: dict[str, dict[str, Any]] = {
     "WEIGHT_TASTE_TYPICALITY": {"kind": "weight", "min": 0, "max": 1, "step": 0.01},
     "WEIGHT_QUALITY_ARTIFACTS": {"kind": "weight", "min": 0, "max": 1, "step": 0.01},
     "WEIGHT_OFFICIAL_FAMILY": {"kind": "weight", "min": 0, "max": 1, "step": 0.01},
-
     # ── Gates ────────────────────────────────────────────────────────
     "GATE_MIN_WIDTH": {"kind": "int", "min": 0, "max": 4000, "step": 10},
     "GATE_MIN_AESTHETIC": {"kind": "float", "min": 0, "max": 10, "step": 0.1},
@@ -221,7 +220,6 @@ KNOB_META: dict[str, dict[str, Any]] = {
     "GATE_FAN_JUNK_MAX_AESTHETIC": {"kind": "float", "min": 0, "max": 10, "step": 0.1},
     "GATE_FAN_JUNK_MAX_PROVENANCE": {"kind": "float", "min": 0, "max": 10, "step": 0.01},
     "GATE_FAN_JUNK_MAX_RESOLUTION_MP": {"kind": "float", "min": 0, "max": 20, "step": 0.1},
-
     # ── Text gate / OCR ──────────────────────────────────────────────
     "OCR_TEXT_MODE": {"kind": "enum", "options": ["title_only", "textless", "custom"]},
     "OCR_ALLOW_TITLE": {"kind": "bool"},
@@ -239,19 +237,25 @@ KNOB_META: dict[str, dict[str, Any]] = {
     "OCR_BOTTOM_CONFIDENCE_THRESHOLD": {"kind": "float", "min": 0, "max": 1, "step": 0.05},
     "OCR_FUZZY_CUTOFF": {"kind": "float", "min": 0, "max": 1, "step": 0.05},
     "OCR_TITLE_PROXIMITY_PIXELS": {"kind": "float", "min": 0, "max": 200, "step": 5},
-    "OCR_RESIDUAL_SIGNIFICANT_AREA_FRACTION": {"kind": "float", "min": 0, "max": 0.1, "step": 0.001},
+    "OCR_RESIDUAL_SIGNIFICANT_AREA_FRACTION": {
+        "kind": "float",
+        "min": 0,
+        "max": 0.1,
+        "step": 0.001,
+    },
     "OCR_RESIDUAL_SIGNIFICANT_WIDTH_FRACTION": {"kind": "float", "min": 0, "max": 1, "step": 0.05},
     "OCR_REQUIRE_TITLE": {"kind": "bool"},
     "OCR_ACCEPT_NO_TEXT": {"kind": "bool"},
     "OCR_ENHANCE_RETRY": {"kind": "bool"},
-
     # ── Style / taste ────────────────────────────────────────────────
     "K_NEIGHBORS": {"kind": "int", "min": 1, "max": 100, "step": 1},
     "KNN_WEIGHTING": {"kind": "enum", "options": ["mean", "softmax"]},
     "KNN_SOFTMAX_TEMP": {"kind": "float", "min": 0.01, "max": 5, "step": 0.01},
     "TASTE_NEG_WEIGHT": {"kind": "float", "min": 0, "max": 10, "step": 0.1},
-    "PREFERRED_LANG": {"kind": "enum", "options": ["en", "fr", "de", "es", "it", "ja", "ko", "zh", "pt", "ru"]},
-
+    "PREFERRED_LANG": {
+        "kind": "enum",
+        "options": ["en", "fr", "de", "es", "it", "ja", "ko", "zh", "pt", "ru"],
+    },
     # ── Detail ───────────────────────────────────────────────────────
     "DINO_ENABLED": {"kind": "enum", "options": ["auto", "on", "off"]},
     "EXTRA_QUALITY_ENABLED": {"kind": "bool"},
@@ -260,12 +264,10 @@ KNOB_META: dict[str, dict[str, Any]] = {
     "FACE_NMS_THRESHOLD": {"kind": "float", "min": 0, "max": 1, "step": 0.05},
     "QUALITY_BLOCKINESS_SAT": {"kind": "float", "min": 0, "max": 50, "step": 0.5},
     "QUALITY_NOISE_SAT": {"kind": "float", "min": 0, "max": 50, "step": 0.5},
-
     # ── Calibration ──────────────────────────────────────────────────
     "CALIBRATION_ENABLED": {"kind": "bool"},
     "CALIBRATION_BANDWIDTH_SCALE": {"kind": "float", "min": 0.1, "max": 5, "step": 0.1},
     "CALIBRATION_MIN_SAMPLES": {"kind": "int", "min": 2, "max": 500, "step": 1},
-
     # ── Learned head / feedback ──────────────────────────────────────
     "SCORER": {"kind": "enum", "options": ["auto", "weighted", "learned"]},
     "HEAD_MIN_LABELS": {"kind": "int", "min": 1, "max": 10000, "step": 10},
@@ -274,18 +276,15 @@ KNOB_META: dict[str, dict[str, Any]] = {
     "FEEDBACK_GATE_ALERT_THRESHOLD": {"kind": "int", "min": 1, "max": 100, "step": 1},
     "FEEDBACK_NEGATIVES_FROM_OVERRIDES": {"kind": "bool"},
     "FEEDBACK_DEPLOY_DEFAULT": {"kind": "bool"},
-
     # ── Dedup ────────────────────────────────────────────────────────
     "DEDUP_PHASH_THRESHOLD": {"kind": "int", "min": 0, "max": 64, "step": 1},
     "DEDUP_MIN_POSTER_WIDTH": {"kind": "int", "min": 0, "max": 4000, "step": 10},
-
     # ── Stacks ───────────────────────────────────────────────────────
     "STACK_ENABLED": {"kind": "bool"},
     "STACK_SIGNAL": {"kind": "enum", "options": ["dino", "clip", "phash"]},
     "STACK_SIM_THRESHOLD": {"kind": "float", "min": 0, "max": 1, "step": 0.01},
     "STACK_PHASH_MAX_DISTANCE": {"kind": "int", "min": 0, "max": 64, "step": 1},
     "STACK_AGG_TOPK": {"kind": "int", "min": 1, "max": 20, "step": 1},
-
     # ── Downloads ────────────────────────────────────────────────────
     "TMDB_POSTER_SIZE": {
         "kind": "enum",
@@ -293,7 +292,6 @@ KNOB_META: dict[str, dict[str, Any]] = {
     },
     "PIPELINE_BATCH_MAX_MOVIES": {"kind": "int", "min": 1, "max": 5000, "step": 10},
     "HDR_OVERLAY_DOVI_REQUIRE_FALLBACK": {"kind": "bool"},
-
     # ── Advanced ─────────────────────────────────────────────────────
     "NORM_KNN_MIN": {"kind": "float", "min": 0, "max": 1, "step": 0.01},
     "NORM_KNN_MAX": {"kind": "float", "min": 0, "max": 1, "step": 0.01},

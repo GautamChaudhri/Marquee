@@ -25,9 +25,7 @@ class Movie(Base, TimestampMixin, ArtworkMixin):
     title: Mapped[str] = mapped_column(String(500), nullable=False)
     year: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
-    tmdb_id: Mapped[int | None] = mapped_column(
-        Integer, unique=True, index=True, nullable=True
-    )
+    tmdb_id: Mapped[int | None] = mapped_column(Integer, unique=True, index=True, nullable=True)
     imdb_id: Mapped[str | None] = mapped_column(String(20), nullable=True)
 
     # ── Genres ───────────────────────────────────────────────────────
@@ -49,9 +47,7 @@ class Movie(Base, TimestampMixin, ArtworkMixin):
     )
 
     # ── Origin ───────────────────────────────────────────────────────
-    radarr_id: Mapped[int | None] = mapped_column(
-        Integer, unique=True, index=True, nullable=True
-    )
+    radarr_id: Mapped[int | None] = mapped_column(Integer, unique=True, index=True, nullable=True)
 
     # ── Quality / HDR-DV (Phase N) ────────────────────────────────────
     quality_profile_id: Mapped[int | None] = mapped_column(Integer, nullable=True)

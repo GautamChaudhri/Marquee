@@ -35,7 +35,13 @@ def bundle(tmp_path, monkeypatch):
                 {"file": file, "normalized_features": {"knn_sim": 0.4 + 0.1 * i, "aesthetic": 0.6}}
             )
         movies.append(
-            {"id": f"tt_{mid}", "title": mid.upper(), "year": 2000, "genres": ["Drama"], "posters": posters}
+            {
+                "id": f"tt_{mid}",
+                "title": mid.upper(),
+                "year": 2000,
+                "genres": ["Drama"],
+                "posters": posters,
+            }
         )
     (tt / "manifest.json").write_text(json.dumps({"model_name": "clip-vit-b-32", "movies": movies}))
 
@@ -126,7 +132,15 @@ async def test_status_endpoint_shape(bundle, client):
     resp = await client.get("/api/onboarding/status")
     assert resp.status_code == 200
     data = resp.json()
-    for key in ("ranked", "min", "goal", "max", "complete", "needs_onboarding", "taste_test_available"):
+    for key in (
+        "ranked",
+        "min",
+        "goal",
+        "max",
+        "complete",
+        "needs_onboarding",
+        "taste_test_available",
+    ):
         assert key in data
     assert data["taste_test_available"] is True
 

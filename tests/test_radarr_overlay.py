@@ -58,11 +58,12 @@ def test_profile_hdr_targets_only_positive_scores():
 
 def test_preference_target_choices_expand_dovi_targets():
     assert preference_target_choices({"hdr", "dovi"}) == [
+        "sdr",
         "hdr",
         "dovi_no_fallback",
         "dovi_fallback",
     ]
-    assert preference_target_choices({"hdr10p"}) == ["hdr10p"]
+    assert preference_target_choices({"hdr10p"}) == ["sdr", "hdr10p"]
 
 
 def test_default_profile_preference_prefers_base_hdr_then_dovi_fallback():
@@ -77,30 +78,42 @@ def test_default_profile_preference_prefers_base_hdr_then_dovi_fallback():
 
 
 def test_preference_status_resolves_meet_exceed_and_no_target():
-    assert preference_status(
-        file_tags={"dovi", "hdr10"},
-        profile_targets={"hdr", "dovi"},
-        meet_target="hdr",
-        exceed_target="dovi_fallback",
-    ) == "exceeds_target"
-    assert preference_status(
-        file_tags={"hdr10"},
-        profile_targets={"hdr", "dovi"},
-        meet_target="hdr",
-        exceed_target="dovi_fallback",
-    ) == "meets_target"
-    assert preference_status(
-        file_tags={"dovi", "dovi_no_fallback"},
-        profile_targets={"hdr", "dovi"},
-        meet_target="hdr10",
-        exceed_target="dovi_fallback",
-    ) == "below_target"
-    assert preference_status(
-        file_tags={"hdr10"},
-        profile_targets=set(),
-        meet_target=None,
-        exceed_target=None,
-    ) == "no_hdr_target"
+    assert (
+        preference_status(
+            file_tags={"dovi", "hdr10"},
+            profile_targets={"hdr", "dovi"},
+            meet_target="hdr",
+            exceed_target="dovi_fallback",
+        )
+        == "exceeds_target"
+    )
+    assert (
+        preference_status(
+            file_tags={"hdr10"},
+            profile_targets={"hdr", "dovi"},
+            meet_target="hdr",
+            exceed_target="dovi_fallback",
+        )
+        == "meets_target"
+    )
+    assert (
+        preference_status(
+            file_tags={"dovi", "dovi_no_fallback"},
+            profile_targets={"hdr", "dovi"},
+            meet_target="hdr10",
+            exceed_target="dovi_fallback",
+        )
+        == "below_target"
+    )
+    assert (
+        preference_status(
+            file_tags={"hdr10"},
+            profile_targets=set(),
+            meet_target=None,
+            exceed_target=None,
+        )
+        == "no_hdr_target"
+    )
 
 
 def test_is_valid_preference_pair_requires_stricter_exceed_target():

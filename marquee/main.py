@@ -86,9 +86,7 @@ async def lifespan(app: FastAPI):
     if settings.radarr_configured:
         from marquee.core.arr_clients.radarr_client import RadarrClient
 
-        app.state.radarr_client = RadarrClient(
-            settings.RADARR_URL, settings.RADARR_API_KEY
-        )
+        app.state.radarr_client = RadarrClient(settings.RADARR_URL, settings.RADARR_API_KEY)
         await app.state.radarr_client.connect()
         logger.info("Radarr connected at %s", settings.RADARR_URL)
     else:
@@ -98,9 +96,7 @@ async def lifespan(app: FastAPI):
     if settings.sonarr_configured:
         from marquee.core.arr_clients.sonarr_client import SonarrClient
 
-        app.state.sonarr_client = SonarrClient(
-            settings.SONARR_URL, settings.SONARR_API_KEY
-        )
+        app.state.sonarr_client = SonarrClient(settings.SONARR_URL, settings.SONARR_API_KEY)
         await app.state.sonarr_client.connect()
         logger.info("Sonarr connected at %s", settings.SONARR_URL)
     else:
@@ -110,9 +106,7 @@ async def lifespan(app: FastAPI):
     if settings.tmdb_configured:
         from marquee.core.poster_sources.tmdb import TMDBClient
 
-        app.state.tmdb_client = TMDBClient(
-            read_access_token=settings.TMDB_READ_ACCESS_TOKEN
-        )
+        app.state.tmdb_client = TMDBClient(read_access_token=settings.TMDB_READ_ACCESS_TOKEN)
         await app.state.tmdb_client.connect()
         logger.info("TMDB connected")
     else:
@@ -143,9 +137,7 @@ async def lifespan(app: FastAPI):
     yield  # ── application runs here ──
 
     # ── SHUTDOWN ─────────────────────────────────────────────────────
-    logger.info(
-        "Shutting down (timeout=%ss) ...", settings.SHUTDOWN_TIMEOUT_SECONDS
-    )
+    logger.info("Shutting down (timeout=%ss) ...", settings.SHUTDOWN_TIMEOUT_SECONDS)
 
     async def _cleanup():
         """Run all cleanup tasks.  Each wrapped in try/except so one
@@ -170,9 +162,7 @@ async def lifespan(app: FastAPI):
             logger.warning("Error closing database", exc_info=True)
 
     try:
-        await asyncio.wait_for(
-            _cleanup(), timeout=settings.SHUTDOWN_TIMEOUT_SECONDS
-        )
+        await asyncio.wait_for(_cleanup(), timeout=settings.SHUTDOWN_TIMEOUT_SECONDS)
     except TimeoutError:
         logger.error(
             "Shutdown timed out after %ss — forcing exit.",
@@ -314,6 +304,7 @@ app.include_router(webhooks_router)
 # ---------------------------------------------------------------------------
 # Exception Handler
 # ---------------------------------------------------------------------------
+
 
 # FastAPI's own HTTPException handler takes priority — this only fires for
 # genuinely unhandled exceptions so internal details never reach the client.

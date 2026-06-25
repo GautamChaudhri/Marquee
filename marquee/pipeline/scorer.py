@@ -37,9 +37,7 @@ class PosterScorer(ABC):
         for candidate in candidates:
             if candidate.features is None:
                 raise ValueError("Cannot rank a candidate without features")
-            candidate.final_score, candidate.contributions = self.score(
-                candidate.features
-            )
+            candidate.final_score, candidate.contributions = self.score(candidate.features)
         ranked = sorted(
             candidates,
             key=lambda candidate: candidate.final_score or 0.0,
@@ -78,9 +76,7 @@ class WeightedScorer(PosterScorer):
 
         contributions = {
             name: (
-                features.normalized[name] * weights[name] / total_weight
-                if name in active
-                else 0.0
+                features.normalized[name] * weights[name] / total_weight if name in active else 0.0
             )
             for name in weights
         }

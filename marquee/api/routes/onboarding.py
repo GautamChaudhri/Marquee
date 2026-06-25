@@ -146,9 +146,7 @@ async def taste_test_poster(file: str):
 @router.post("/taste-test/rank")
 async def taste_test_rank(body: TasteTestRankRequest):
     try:
-        result = service.taste_test_rank(
-            body.movie_id, body.favorites or [], body.hated or []
-        )
+        result = service.taste_test_rank(body.movie_id, body.favorites or [], body.hated or [])
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {**result, "status": service.status()}

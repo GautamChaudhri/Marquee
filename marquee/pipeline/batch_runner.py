@@ -275,9 +275,7 @@ async def run_batch(
                     except Exception as exc:
                         filename = _candidate_filename(candidate)
                         ctx.fetch.counts["errors"] += 1
-                        ctx.fetch.records[filename].rejection_reason = (
-                            f"download_error: {exc}"
-                        )
+                        ctx.fetch.records[filename].rejection_reason = f"download_error: {exc}"
                         logger.error(
                             "BATCH DOWNLOAD ERROR | movie=%s | file=%s | %s",
                             ctx.title,
@@ -418,9 +416,9 @@ def _movie_prelude(
     _emit(progress, ctx, "sha256", "start", total=len(ctx.fetch.all_files))
     sha_dir = out_dir / "1-sha256-rejected"
     sha_dir.mkdir(exist_ok=True)
-    sha = PosterDeduper(
-        sha256_only=True, resolution_by_name=resolution_by_name
-    ).deduplicate(ctx.fetch.all_files)
+    sha = PosterDeduper(sha256_only=True, resolution_by_name=resolution_by_name).deduplicate(
+        ctx.fetch.all_files
+    )
     for removal in sha.removals:
         _log_dedup_removal(removal)
         record = records[removal.removed.name]
@@ -454,9 +452,7 @@ def _movie_prelude(
     # Style features (batched CLIP for this movie; model already resident).
     _emit(progress, ctx, "style-features", "start", total=len(resolution_survivors))
     style_items = [(path, candidate_map[path.name]) for path in resolution_survivors]
-    style_results = extractor.extract_style_batch(
-        style_items, primary_name=ctx.fetch.primary_name
-    )
+    style_results = extractor.extract_style_batch(style_items, primary_name=ctx.fetch.primary_name)
     styled: list[Path] = []
     for (path, _candidate), result in zip(style_items, style_results, strict=True):
         record = records[path.name]
@@ -497,9 +493,7 @@ def _start_ocr_pool_for(contexts: list[_BatchMovie]) -> OcrPool:
     total = sum(len(ctx.style_survivors) for ctx in contexts)
     if total == 0:
         total = 1  # start_ocr_pool requires at least 1 worker
-    return PosterTextFilter.start_ocr_pool(
-        num_workers=min(effective_ocr_workers(), total)
-    )
+    return PosterTextFilter.start_ocr_pool(num_workers=min(effective_ocr_workers(), total))
 
 
 def _ocr_batch(
@@ -644,9 +638,7 @@ def _detail_batch(
     detail_results = extractor.complete_batch(items, dino_vectors_out=dino_vectors)
     diagnostic_scorer = select_scorer()
 
-    for index, ((ctx, ocr_result), detail) in enumerate(
-        zip(owners, detail_results, strict=True)
-    ):
+    for index, ((ctx, ocr_result), detail) in enumerate(zip(owners, detail_results, strict=True)):
         record = ctx.records[ocr_result.image_path.name]
         record.stage_reached = "features"
         if isinstance(detail, Exception):

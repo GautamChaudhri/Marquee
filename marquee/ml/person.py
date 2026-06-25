@@ -132,9 +132,7 @@ class PersonDetector:
         height, width = image_bgr.shape[:2]
         image_area = float(width * height)
         boxes = self.detect(image_bgr)
-        areas = [
-            max(0.0, x2 - x1) * max(0.0, y2 - y1) for x1, y1, x2, y2 in boxes
-        ]
+        areas = [max(0.0, x2 - x1) * max(0.0, y2 - y1) for x1, y1, x2, y2 in boxes]
         total = min(sum(areas) / image_area, 1.0) if image_area > 0 else 0.0
         return {
             "person_count": float(len(boxes)),

@@ -30,11 +30,11 @@ IMAGE_BASE_URL = "https://image.tmdb.org/t/p"
 class PosterCandidate:
     """A single poster option returned by TMDB images endpoints."""
 
-    file_path: str          # e.g. "/gnb54uIjX2M81c6RWPM4uQwulMt.jpg"
+    file_path: str  # e.g. "/gnb54uIjX2M81c6RWPM4uQwulMt.jpg"
     width: int
     height: int
     aspect_ratio: float
-    language: str | None    # iso_639_1 — None means language-neutral (text-free)
+    language: str | None  # iso_639_1 — None means language-neutral (text-free)
     vote_average: float
     vote_count: int
 
@@ -105,9 +105,7 @@ class TMDBClient:
                     "TMDB authentication failed — check your Read Access Token."
                 ) from exc
             if status == 404:
-                raise TMDBNotFoundError(
-                    f"TMDB resource not found: {path}"
-                ) from exc
+                raise TMDBNotFoundError(f"TMDB resource not found: {path}") from exc
             raise TMDBResponseError(
                 f"TMDB returned unexpected status {status} for {path}",
                 status_code=status,

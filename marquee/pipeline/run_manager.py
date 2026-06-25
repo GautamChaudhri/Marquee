@@ -259,9 +259,7 @@ class RunManager:
         state = self._runs[run_id]
 
         def progress(event: ProgressEvent) -> None:
-            loop.call_soon_threadsafe(
-                state.publish, {"run_id": run_id, **event.to_dict()}
-            )
+            loop.call_soon_threadsafe(state.publish, {"run_id": run_id, **event.to_dict()})
             # Mirror onto the durable job stream when a sink is wired (the job
             # handler passes a JobProgressBridge so single + batch runs share
             # one progress contract).
@@ -369,9 +367,7 @@ class RunManager:
             error=error,
         )
 
-        logger.info(
-            "RUN END | run_id=%s | status=%s | total=%.3fs", run_id, status, total_duration
-        )
+        logger.info("RUN END | run_id=%s | status=%s | total=%.3fs", run_id, status, total_duration)
         logger.info("=" * 80)
         _remove_run_file_handler(file_handler)
 
@@ -430,9 +426,7 @@ class RunManager:
         factory = _get_session_factory()
         async with factory() as session:
             run = (
-                await session.execute(
-                    select(PipelineRun).where(PipelineRun.run_id == run_id)
-                )
+                await session.execute(select(PipelineRun).where(PipelineRun.run_id == run_id))
             ).scalar_one_or_none()
             if run is None:
                 return

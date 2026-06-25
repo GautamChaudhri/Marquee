@@ -899,7 +899,9 @@ async def execute_job(db: AsyncSession, job: MediaJob, emit) -> dict:
 
     acceleration = plan.get("acceleration") or {}
     acceleration_active = bool(acceleration.get("enabled"))
-    pipeline_label = "NVIDIA NVDEC \u2192 GPU crop \u2192 NVENC" if acceleration_active else "CPU decode/crop"
+    pipeline_label = (
+        "NVIDIA NVDEC \u2192 GPU crop \u2192 NVENC" if acceleration_active else "CPU decode/crop"
+    )
     await emit(
         db,
         job.job_id,
@@ -1016,9 +1018,7 @@ async def execute_job(db: AsyncSession, job: MediaJob, emit) -> dict:
     }
 
 
-async def _run_checked(
-    binary_name: str, args: list[str], *, timeout: float | None = 3600
-) -> None:
+async def _run_checked(binary_name: str, args: list[str], *, timeout: float | None = 3600) -> None:
     proc = await asyncio.create_subprocess_exec(
         binaries.resolve(binary_name) or binary_name,
         *args,
@@ -1104,9 +1104,7 @@ async def _piped_ffmpeg_to_dovi(
         raise RuntimeError(message or f"dovi_tool exited {dovi_proc.returncode}")
 
 
-async def _extract_rpu_piped(
-    source_mkv: Path, rpu_out: Path, *, timeout: float = 3600
-) -> None:
+async def _extract_rpu_piped(source_mkv: Path, rpu_out: Path, *, timeout: float = 3600) -> None:
     """Pipe FFmpeg HEVC demux → dovi_tool extract-rpu.
 
     FFmpeg handles MKV demuxing (fast), dovi_tool only sees raw HEVC NALs

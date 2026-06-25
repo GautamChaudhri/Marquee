@@ -35,12 +35,16 @@ async def _owner_keys(db: AsyncSession, media_file: MediaFile) -> list[tuple[str
     if media_file.movie_id is not None:
         owners.append(("movie", media_file.movie_id))
     episode_ids = (
-        await db.execute(
-            select(EpisodeMediaFile.episode_id).where(
-                EpisodeMediaFile.media_file_id == media_file.id
+        (
+            await db.execute(
+                select(EpisodeMediaFile.episode_id).where(
+                    EpisodeMediaFile.media_file_id == media_file.id
+                )
             )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     owners.extend(("episode", eid) for eid in episode_ids)
     return owners
 
@@ -58,33 +62,39 @@ async def restore_managed_assets(db: AsyncSession, job, emit) -> dict:
     asset_ids: set[str] = set()
     for owner_type, owner_id in owners:
         bound = (
-            await db.execute(
-                select(ManagedSubtitleBinding.asset_id).where(
-                    ManagedSubtitleBinding.owner_type == owner_type,
-                    ManagedSubtitleBinding.owner_id == owner_id,
+            (
+                await db.execute(
+                    select(ManagedSubtitleBinding.asset_id).where(
+                        ManagedSubtitleBinding.owner_type == owner_type,
+                        ManagedSubtitleBinding.owner_id == owner_id,
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         asset_ids.update(bound)
     if not asset_ids:
         return {"restored": 0, "reason": "no managed assets"}
 
     assets = (
-        await db.execute(
-            select(ManagedSubtitleAsset).where(
-                ManagedSubtitleAsset.id.in_(asset_ids),
-                ManagedSubtitleAsset.active.is_(True),
-                ManagedSubtitleAsset.restore_on_replacement.is_(True),
+        (
+            await db.execute(
+                select(ManagedSubtitleAsset).where(
+                    ManagedSubtitleAsset.id.in_(asset_ids),
+                    ManagedSubtitleAsset.active.is_(True),
+                    ManagedSubtitleAsset.restore_on_replacement.is_(True),
+                )
             )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     if not assets:
         return {"restored": 0, "reason": "no auto-restore assets"}
 
     inventory = await service.get_inventory_dict(db, media_file.id)
-    present_langs = {
-        t["language_tag"] for t in inventory["tracks"] if t["source"] == "embedded"
-    }
+    present_langs = {t["language_tag"] for t in inventory["tracks"] if t["source"] == "embedded"}
 
     restored = 0
     for asset in assets:
@@ -101,7 +111,9 @@ async def restore_managed_assets(db: AsyncSession, job, emit) -> dict:
         except OSError as exc:
             logger.warning("could not stage managed asset %s: %s", asset.id, exc)
             continue
-        await emit(db, job.job_id, "restore", "running", message=f"re-embedding {asset.language_tag}")
+        await emit(
+            db, job.job_id, "restore", "running", message=f"re-embedding {asset.language_tag}"
+        )
         # Rescan so the staged sidecar becomes an embeddable external track, then
         # embed it via the normal mutation transaction.
         await service.scan_inventory(db, resolved)

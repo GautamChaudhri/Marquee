@@ -22,7 +22,15 @@ from marquee.media import binaries
 logger = logging.getLogger(__name__)
 
 _TEXT_CODECS = {"subrip", "srt", "ass", "ssa", "mov_text", "webvtt", "vtt", "text", "stl"}
-_BITMAP_CODECS = {"hdmv_pgs_subtitle", "pgssub", "dvd_subtitle", "dvdsub", "vobsub", "xsub", "dvbsub"}
+_BITMAP_CODECS = {
+    "hdmv_pgs_subtitle",
+    "pgssub",
+    "dvd_subtitle",
+    "dvdsub",
+    "vobsub",
+    "xsub",
+    "dvbsub",
+}
 _TELETEXT_CODECS = {"dvb_teletext"}
 
 
@@ -70,9 +78,13 @@ def _ffprobe_json(path: Path | str) -> dict | None:
     result = binaries.run(
         "ffprobe",
         [
-            "-v", "error",
-            "-print_format", "json",
-            "-show_format", "-show_streams", "-show_chapters",
+            "-v",
+            "error",
+            "-print_format",
+            "json",
+            "-show_format",
+            "-show_streams",
+            "-show_chapters",
             str(path),
         ],
         timeout=60.0,
@@ -178,9 +190,7 @@ def _align_mkv_track_ids(path: Path | str, subs: list[EmbeddedSub]) -> None:
         data = json.loads(result.stdout)
     except json.JSONDecodeError:
         return
-    sub_track_ids = [
-        t.get("id") for t in data.get("tracks", []) if t.get("type") == "subtitles"
-    ]
+    sub_track_ids = [t.get("id") for t in data.get("tracks", []) if t.get("type") == "subtitles"]
     if len(sub_track_ids) == len(subs):
         for sub, track_id in zip(subs, sub_track_ids, strict=True):
             sub.tool_track_id = track_id

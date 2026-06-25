@@ -76,17 +76,13 @@ def safe_translate_and_validate(arr_path: str, *, source: str = "radarr") -> Pat
     try:
         resolved = Path(translated).resolve()
     except (OSError, RuntimeError) as exc:
-        raise PathValidationError(
-            f"Could not resolve path {translated!r}: {exc}"
-        ) from exc
+        raise PathValidationError(f"Could not resolve path {translated!r}: {exc}") from exc
 
     # ── Layer 4: validate against effective media roots ───────────────
     media_roots = settings.effective_media_roots
     if media_roots:  # only enforce if roots are configured
         resolved_str = str(resolved)
-        if not any(
-            resolved_str.startswith(str(root)) for root in media_roots
-        ):
+        if not any(resolved_str.startswith(str(root)) for root in media_roots):
             raise PathValidationError(
                 f"Path {resolved_str!r} is not within any allowed media root. "
                 f"Allowed roots: {[str(r) for r in media_roots]}"

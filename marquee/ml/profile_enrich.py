@@ -56,7 +56,11 @@ def _db_index() -> dict[str, tuple[list[str], int | None, int | None]]:
             cursor.execute("SELECT title, year, genres, tmdb_id FROM movies")
             for title, year, genres_value, tmdb_id in cursor:
                 try:
-                    genres = json.loads(genres_value) if isinstance(genres_value, str) else (genres_value or [])
+                    genres = (
+                        json.loads(genres_value)
+                        if isinstance(genres_value, str)
+                        else (genres_value or [])
+                    )
                 except (json.JSONDecodeError, TypeError):
                     genres = []
                 index[str(title).lower()] = (genres, year, tmdb_id)
@@ -73,11 +77,25 @@ def _tmdb_lookup(title: str, year: int | None) -> tuple[list[str], int | None] |
 
     # TMDB genre ids → names (movie list, stable).
     genre_map = {
-        28: "Action", 12: "Adventure", 16: "Animation", 35: "Comedy",
-        80: "Crime", 99: "Documentary", 18: "Drama", 10751: "Family",
-        14: "Fantasy", 36: "History", 27: "Horror", 10402: "Music",
-        9648: "Mystery", 10749: "Romance", 878: "Science Fiction",
-        10770: "TV Movie", 53: "Thriller", 10752: "War", 37: "Western",
+        28: "Action",
+        12: "Adventure",
+        16: "Animation",
+        35: "Comedy",
+        80: "Crime",
+        99: "Documentary",
+        18: "Drama",
+        10751: "Family",
+        14: "Fantasy",
+        36: "History",
+        27: "Horror",
+        10402: "Music",
+        9648: "Mystery",
+        10749: "Romance",
+        878: "Science Fiction",
+        10770: "TV Movie",
+        53: "Thriller",
+        10752: "War",
+        37: "Western",
     }
     try:
         params = {"query": title}
@@ -153,7 +171,9 @@ def enrich(*, use_tmdb: bool = True) -> Path:
     resolved = sum(1 for g in genres_out if g)
     logger.info(
         "ENRICH | %d posters: %d with genres (%d TMDB calls)",
-        len(names), resolved, tmdb_calls,
+        len(names),
+        resolved,
+        tmdb_calls,
     )
     return profile_path
 

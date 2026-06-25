@@ -43,18 +43,14 @@ class TestRadarrTranslation:
             radarr_media_path="/Volumes/PLUNDER/Media/Movies",
         )
         with patch("marquee.core.path_utils.settings", settings):
-            result = safe_translate_and_validate(
-                "/plunder/movies/Dune (2021)", source="radarr"
-            )
+            result = safe_translate_and_validate("/plunder/movies/Dune (2021)", source="radarr")
         assert result == Path("/Volumes/PLUNDER/Media/Movies/Dune (2021)")
 
     def test_passthrough_when_no_radarr_mapping(self):
         """Without mapping, radarr paths pass through untranslated."""
         settings = _mock_settings()  # no path mapping
         with patch("marquee.core.path_utils.settings", settings):
-            result = safe_translate_and_validate(
-                "/plunder/movies/Dune (2021)", source="radarr"
-            )
+            result = safe_translate_and_validate("/plunder/movies/Dune (2021)", source="radarr")
         assert result == Path("/plunder/movies/Dune (2021)")
 
     def test_passthrough_when_prefix_doesnt_match(self):
@@ -64,9 +60,7 @@ class TestRadarrTranslation:
             media_roots=["/"],  # allow-all for this test
         )
         with patch("marquee.core.path_utils.settings", settings):
-            result = safe_translate_and_validate(
-                "/some/other/path/Dune", source="radarr"
-            )
+            result = safe_translate_and_validate("/some/other/path/Dune", source="radarr")
         # Passes through untranslated (caller is expected to log a warning)
         assert str(result) == "/some/other/path/Dune"
 
@@ -80,17 +74,13 @@ class TestSonarrTranslation:
             sonarr_media_path="/Volumes/PLUNDER/Media/TV",
         )
         with patch("marquee.core.path_utils.settings", settings):
-            result = safe_translate_and_validate(
-                "/plunder/tv/Breaking Bad", source="sonarr"
-            )
+            result = safe_translate_and_validate("/plunder/tv/Breaking Bad", source="sonarr")
         assert result == Path("/Volumes/PLUNDER/Media/TV/Breaking Bad")
 
     def test_passthrough_when_no_sonarr_mapping(self):
         settings = _mock_settings()
         with patch("marquee.core.path_utils.settings", settings):
-            result = safe_translate_and_validate(
-                "/plunder/tv/Breaking Bad", source="sonarr"
-            )
+            result = safe_translate_and_validate("/plunder/tv/Breaking Bad", source="sonarr")
         assert result == Path("/plunder/tv/Breaking Bad")
 
     def test_passthrough_when_prefix_doesnt_match(self):
@@ -100,9 +90,7 @@ class TestSonarrTranslation:
             media_roots=["/"],  # allow-all for this test
         )
         with patch("marquee.core.path_utils.settings", settings):
-            result = safe_translate_and_validate(
-                "/other/tv/Breaking Bad", source="sonarr"
-            )
+            result = safe_translate_and_validate("/other/tv/Breaking Bad", source="sonarr")
         assert str(result) == "/other/tv/Breaking Bad"
 
 
@@ -166,9 +154,7 @@ def test_resolves_symlinks():
         with patch("marquee.core.path_utils.settings", settings):
             # /tmp is a symlink to /private/tmp on macOS — both path and
             # root get resolved, so compare against the resolved form
-            result = safe_translate_and_validate(
-                str(link / "Dune"), source="radarr"
-            )
+            result = safe_translate_and_validate(str(link / "Dune"), source="radarr")
             assert str(result).startswith(str(media.resolve()))
 
 
@@ -258,9 +244,7 @@ def test_auto_derived_roots_reject_wrong_path():
         patch("marquee.core.path_utils.settings", settings),
         pytest.raises(PathValidationError),
     ):
-        safe_translate_and_validate(
-            "/Volumes/PLUNDER/Media/TV/Breaking Bad", source="sonarr"
-        )
+        safe_translate_and_validate("/Volumes/PLUNDER/Media/TV/Breaking Bad", source="sonarr")
 
 
 def test_manual_and_auto_roots_combined():
@@ -271,13 +255,9 @@ def test_manual_and_auto_roots_combined():
     )
     with patch("marquee.core.path_utils.settings", settings):
         # Auto-derived pass
-        safe_translate_and_validate(
-            "/Volumes/PLUNDER/Media/Movies/Dune", source="radarr"
-        )
+        safe_translate_and_validate("/Volumes/PLUNDER/Media/Movies/Dune", source="radarr")
         # Manual pass
-        safe_translate_and_validate(
-            "/some/manual/path/extra", source="radarr"
-        )
+        safe_translate_and_validate("/some/manual/path/extra", source="radarr")
 
 
 # ---------------------------------------------------------------------------
@@ -292,9 +272,7 @@ def test_full_flow_radarr_happy_path():
         radarr_media_path="/Volumes/PLUNDER/Media/Movies",
     )
     with patch("marquee.core.path_utils.settings", settings):
-        result = safe_translate_and_validate(
-            "/plunder/movies/Dune (2021)", source="radarr"
-        )
+        result = safe_translate_and_validate("/plunder/movies/Dune (2021)", source="radarr")
     assert result == Path("/Volumes/PLUNDER/Media/Movies/Dune (2021)")
 
 
@@ -305,9 +283,7 @@ def test_full_flow_sonarr_happy_path():
         sonarr_media_path="/Volumes/PLUNDER/Media/TV",
     )
     with patch("marquee.core.path_utils.settings", settings):
-        result = safe_translate_and_validate(
-            "/plunder/tv/Breaking Bad", source="sonarr"
-        )
+        result = safe_translate_and_validate("/plunder/tv/Breaking Bad", source="sonarr")
     assert result == Path("/Volumes/PLUNDER/Media/TV/Breaking Bad")
 
 
@@ -356,14 +332,14 @@ def _mock_settings(
             if not arr_path or not self.RADARR_PATH_PREFIX:
                 return arr_path
             if arr_path.startswith(self.RADARR_PATH_PREFIX):
-                return self.RADARR_MEDIA_PATH + arr_path[len(self.RADARR_PATH_PREFIX):]
+                return self.RADARR_MEDIA_PATH + arr_path[len(self.RADARR_PATH_PREFIX) :]
             return arr_path
 
         def translate_sonarr_path(self, arr_path: str) -> str:
             if not arr_path or not self.SONARR_PATH_PREFIX:
                 return arr_path
             if arr_path.startswith(self.SONARR_PATH_PREFIX):
-                return self.SONARR_MEDIA_PATH + arr_path[len(self.SONARR_PATH_PREFIX):]
+                return self.SONARR_MEDIA_PATH + arr_path[len(self.SONARR_PATH_PREFIX) :]
             return arr_path
 
         @property

@@ -346,7 +346,9 @@ async def test_sync_movies_hdr_sdr_vs_unknown(db: AsyncSession):
             movieFile={"relativePath": "a.mkv", "mediaInfo": {"videoDynamicRange": "SDR"}},
         ),
         _radarr_movie(
-            id=2, title="Unknown Film", tmdbId=2,
+            id=2,
+            title="Unknown Film",
+            tmdbId=2,
             movieFile={"relativePath": "b.mkv"},  # no mediaInfo
         ),
     ]
@@ -371,13 +373,19 @@ async def test_sync_movies_populates_hdr_variants_from_raw(db: AsyncSession):
     radarr.get_movies.return_value = [
         _radarr_movie(
             title="Plus",
-            movieFile={"relativePath": "plus.mkv", "mediaInfo": {"videoDynamicRangeType": "HDR10Plus"}},
+            movieFile={
+                "relativePath": "plus.mkv",
+                "mediaInfo": {"videoDynamicRangeType": "HDR10Plus"},
+            },
         ),
         _radarr_movie(
             id=2,
             title="Generic",
             tmdbId=2,
-            movieFile={"relativePath": "generic.mkv", "mediaInfo": {"videoDynamicRangeType": "HLG"}},
+            movieFile={
+                "relativePath": "generic.mkv",
+                "mediaInfo": {"videoDynamicRangeType": "HLG"},
+            },
         ),
         _radarr_movie(
             id=3,
@@ -508,8 +516,18 @@ async def test_sync_movies_replaces_stale_movie_cf_scores(db: AsyncSession):
         }
     ]
     radarr.get_custom_formats.return_value = [
-        {"id": 15, "name": "Dolby Vision", "includeCustomFormatWhenRenaming": False, "specifications": []},
-        {"id": 20, "name": "HDR10+", "includeCustomFormatWhenRenaming": False, "specifications": []},
+        {
+            "id": 15,
+            "name": "Dolby Vision",
+            "includeCustomFormatWhenRenaming": False,
+            "specifications": [],
+        },
+        {
+            "id": 20,
+            "name": "HDR10+",
+            "includeCustomFormatWhenRenaming": False,
+            "specifications": [],
+        },
     ]
     radarr.get_quality_profiles.return_value = [
         {
@@ -549,9 +567,7 @@ async def test_sync_movies_replaces_stale_movie_cf_scores(db: AsyncSession):
     rows = (await db.execute(select(MovieCustomFormatScore))).scalars().all()
     assert movie.hdr_type_raw == "HDR10Plus"
     assert movie.current_cf_score == 10
-    assert {(row.movie_id, row.custom_format_id, row.score) for row in rows} == {
-        (movie.id, 20, 10)
-    }
+    assert {(row.movie_id, row.custom_format_id, row.score) for row in rows} == {(movie.id, 20, 10)}
 
 
 @pytest.mark.asyncio
@@ -600,9 +616,7 @@ async def test_sync_series_missing_title_does_not_poison_commit(db: AsyncSession
 
     assert report.series.errors == 1
     assert report.series.created == 1  # the valid one still lands
-    series = (
-        await db.execute(select(Series).where(Series.sonarr_id == 100))
-    ).scalar_one()
+    series = (await db.execute(select(Series).where(Series.sonarr_id == 100))).scalar_one()
     assert series.title == "Breaking Bad"
 
 
@@ -640,27 +654,29 @@ async def test_sync_series_creates_new(db: AsyncSession):
 
     assert report.series.created == 1
 
-    series = (
-        await db.execute(select(Series).where(Series.sonarr_id == 100))
-    ).scalar_one()
+    series = (await db.execute(select(Series).where(Series.sonarr_id == 100))).scalar_one()
     assert series.title == "Breaking Bad"
     assert series.tvdb_id == 81189
     assert series.season_count == 2
 
     # Seasons
     seasons = (
-        await db.execute(
-            select(Season).where(Season.series_id == series.id).order_by(Season.season_number)
+        (
+            await db.execute(
+                select(Season).where(Season.series_id == series.id).order_by(Season.season_number)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     assert len(seasons) == 2
     assert seasons[0].season_number == 1
     assert seasons[1].season_number == 2
 
     # Episodes
     episodes = (
-        await db.execute(select(Episode).where(Episode.series_id == series.id))
-    ).scalars().all()
+        (await db.execute(select(Episode).where(Episode.series_id == series.id))).scalars().all()
+    )
     assert len(episodes) == 1
     assert episodes[0].title == "Pilot"
     assert episodes[0].episode_file_path == "/tv/Breaking Bad/Season 1/Breaking Bad - S01E01.mkv"
@@ -671,10 +687,12 @@ async def test_sync_series_skips_season_zero(db: AsyncSession):
     """Season 0 (Specials) should be skipped."""
     sonarr = AsyncMock()
     sonarr.get_series.return_value = [
-        _sonarr_series(seasons=[
-            {"seasonNumber": 0, "monitored": False},
-            {"seasonNumber": 1, "monitored": True},
-        ])
+        _sonarr_series(
+            seasons=[
+                {"seasonNumber": 0, "monitored": False},
+                {"seasonNumber": 1, "monitored": True},
+            ]
+        )
     ]
     sonarr.get_episodes.return_value = []
     sonarr.get_episode_files.return_value = []
@@ -682,12 +700,10 @@ async def test_sync_series_skips_season_zero(db: AsyncSession):
     svc = SyncService(db, sonarr=sonarr)
     await svc.sync_all()
 
-    series = (
-        await db.execute(select(Series).where(Series.sonarr_id == 100))
-    ).scalar_one()
+    series = (await db.execute(select(Series).where(Series.sonarr_id == 100))).scalar_one()
     seasons = (
-        await db.execute(select(Season).where(Season.series_id == series.id))
-    ).scalars().all()
+        (await db.execute(select(Season).where(Season.series_id == series.id))).scalars().all()
+    )
     assert len(seasons) == 1
     assert seasons[0].season_number == 1
 
@@ -703,9 +719,7 @@ async def test_sync_series_handles_missing_tvdb_id(db: AsyncSession):
     svc = SyncService(db, sonarr=sonarr)
     await svc.sync_all()
 
-    series = (
-        await db.execute(select(Series).where(Series.sonarr_id == 100))
-    ).scalar_one()
+    series = (await db.execute(select(Series).where(Series.sonarr_id == 100))).scalar_one()
     assert series.tvdb_id is None
 
 
@@ -716,11 +730,11 @@ async def test_sync_series_handles_missing_tvdb_id(db: AsyncSession):
 
 def test_resolve_movie_poster_default():
     """Default format: poster.jpg inside movie folder."""
-    movie = Movie(
-        id=1, title="Dune", year=2021, folder_path="/movies/Dune (2021)"
-    )
-    with patch("marquee.core.sync_service.safe_translate_and_validate",
-               return_value=Path("/movies/Dune (2021)")):
+    movie = Movie(id=1, title="Dune", year=2021, folder_path="/movies/Dune (2021)")
+    with patch(
+        "marquee.core.sync_service.safe_translate_and_validate",
+        return_value=Path("/movies/Dune (2021)"),
+    ):
         result = _resolve_poster_path(movie)
     assert result == Path("/movies/Dune (2021)/poster.jpg")
 
@@ -730,13 +744,17 @@ def test_resolve_movie_poster_with_basename():
     from marquee.config import settings
 
     movie = Movie(
-        id=1, title="Dune", year=2021,
+        id=1,
+        title="Dune",
+        year=2021,
         folder_path="/movies/Dune (2021)",
         movie_file_path="Dune (2021).mkv",
     )
     with (
-        patch("marquee.core.sync_service.safe_translate_and_validate",
-              return_value=Path("/movies/Dune (2021)")),
+        patch(
+            "marquee.core.sync_service.safe_translate_and_validate",
+            return_value=Path("/movies/Dune (2021)"),
+        ),
         patch.object(settings, "MOVIE_POSTER_FORMAT", "{movie_basename}.jpg"),
     ):
         result = _resolve_poster_path(movie)
@@ -747,12 +765,12 @@ def test_resolve_series_poster():
     """Series poster should use SERIES_POSTER_FORMAT."""
     from marquee.config import settings
 
-    series = Series(
-        id=1, title="Breaking Bad", year=2008, series_path="/tv/Breaking Bad"
-    )
+    series = Series(id=1, title="Breaking Bad", year=2008, series_path="/tv/Breaking Bad")
     with (
-        patch("marquee.core.sync_service.safe_translate_and_validate",
-              return_value=Path("/tv/Breaking Bad")),
+        patch(
+            "marquee.core.sync_service.safe_translate_and_validate",
+            return_value=Path("/tv/Breaking Bad"),
+        ),
         patch.object(settings, "SERIES_POSTER_FORMAT", "poster.jpg"),
     ):
         result = _resolve_poster_path(series)
@@ -767,8 +785,10 @@ def test_resolve_season_poster():
     season = Season(series_id=1, season_number=3)
 
     with (
-        patch("marquee.core.sync_service.safe_translate_and_validate",
-              return_value=Path("/tv/Breaking Bad")),
+        patch(
+            "marquee.core.sync_service.safe_translate_and_validate",
+            return_value=Path("/tv/Breaking Bad"),
+        ),
         patch.object(settings, "SEASON_POSTER_FORMAT", "season{season:02d}-poster.jpg"),
     ):
         result = _resolve_poster_path(season, series=series)
@@ -778,8 +798,10 @@ def test_resolve_season_poster():
 def test_resolve_poster_invalid_path_returns_none():
     """If path validation fails, return None gracefully."""
     movie = Movie(title="Test", year=2024, folder_path="/bad/../escape")
-    with patch("marquee.core.sync_service.safe_translate_and_validate",
-               side_effect=ValueError("outside allowed roots")):
+    with patch(
+        "marquee.core.sync_service.safe_translate_and_validate",
+        side_effect=ValueError("outside allowed roots"),
+    ):
         result = _resolve_poster_path(movie)
     assert result is None
 

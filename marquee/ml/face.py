@@ -146,5 +146,7 @@ class FaceDetector:
         image_area = float(width * height)
         if image_area <= 0:
             return 0.0
-        total = sum(max(0.0, x2 - x1) * max(0.0, y2 - y1) for x1, y1, x2, y2 in self.detect(image_bgr))
+        total = sum(
+            max(0.0, x2 - x1) * max(0.0, y2 - y1) for x1, y1, x2, y2 in self.detect(image_bgr)
+        )
         return float(min(total / image_area, 1.0))

@@ -56,8 +56,7 @@ class SubtitleInventory(Base):
 
     def __repr__(self) -> str:
         return (
-            f"<SubtitleInventory(media_file_id={self.media_file_id}, "
-            f"container={self.container!r})>"
+            f"<SubtitleInventory(media_file_id={self.media_file_id}, container={self.container!r})>"
         )
 
 

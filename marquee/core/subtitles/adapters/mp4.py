@@ -72,4 +72,11 @@ class Mp4Adapter:
         self, src: Path, out: Path, *, stream_index: int, tool_track_id: int | None
     ) -> tuple[str, list[str]]:
         """Extract one subtitle stream via ffmpeg (by global stream index)."""
-        return "ffmpeg", ["-y", "-i", binaries.safe_media_path(src), "-map", f"0:{stream_index}", binaries.safe_media_path(out)]
+        return "ffmpeg", [
+            "-y",
+            "-i",
+            binaries.safe_media_path(src),
+            "-map",
+            f"0:{stream_index}",
+            binaries.safe_media_path(out),
+        ]

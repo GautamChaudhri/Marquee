@@ -78,8 +78,7 @@ def explain_top_contributions(
 REJECTION_SUGGESTIONS: dict[str, str] = {
     "ocr_text_heavy": "Many posters were rejected for extra text — consider raising "
     "OCR_MAX_RESIDUAL_BOXES to tolerate taglines.",
-    "ocr_no_text": "Many posters had no readable text — the title typography may be "
-    "defeating OCR.",
+    "ocr_no_text": "Many posters had no readable text — the title typography may be defeating OCR.",
     "ocr_no_title": "The title couldn't be matched on several posters — check the "
     "movie title spelling or OCR fuzzy cutoff.",
     "style_aesthetic_floor": "Several posters fell below the aesthetic floor — "

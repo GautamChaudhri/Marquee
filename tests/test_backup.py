@@ -213,9 +213,7 @@ async def test_restore_backup_reports_restart_required_after_validation(
     assert restored.restart_required is True
 
 
-def test_rotate_backups_keeps_latest_per_day_for_retention_window(
-    backup_paths: tuple[Path, Path]
-):
+def test_rotate_backups_keeps_latest_per_day_for_retention_window(backup_paths: tuple[Path, Path]):
     _data_dir, backup_dir = backup_paths
     for backup_id in (
         "20260617-010000",
@@ -290,7 +288,9 @@ async def test_backup_api_endpoints(client, monkeypatch: pytest.MonkeyPatch):
     assert list_response.status_code == 200
     assert list_response.json()[0]["backup_id"] == "20260617-120000"
 
-    restore_response = await client.post("/api/system/restore", params={"backup_id": "20260617-120000"})
+    restore_response = await client.post(
+        "/api/system/restore", params={"backup_id": "20260617-120000"}
+    )
     assert restore_response.status_code == 202
     assert restore_response.json()["restart_required"] is True
 

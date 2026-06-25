@@ -43,8 +43,7 @@ def labels_path() -> Path:
 def gate_snapshot() -> dict[str, object]:
     """Current values of every gate knob referenced by an override alert."""
     return {
-        knob: getattr(pipeline_settings, knob)
-        for knob in sorted(set(GATE_REASON_KNOBS.values()))
+        knob: getattr(pipeline_settings, knob) for knob in sorted(set(GATE_REASON_KNOBS.values()))
     }
 
 
@@ -159,10 +158,8 @@ def gate_override_alerts() -> list[dict]:
     from marquee.api.explanations import REJECTION_SUGGESTIONS  # noqa: PLC0415
 
     rows = read_all()
-    current = {
-        knob: getattr(pipeline_settings, knob)
-        for knob in set(GATE_REASON_KNOBS.values())
-    }
+    current = {knob: getattr(pipeline_settings, knob) for knob in set(GATE_REASON_KNOBS.values())}
+
     def _tally(reason_raw: str | None, snapshot: dict) -> None:
         reason = (reason_raw or "").split(":", 1)[0]
         knob = GATE_REASON_KNOBS.get(reason)

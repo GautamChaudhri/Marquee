@@ -48,8 +48,7 @@ async def _coverage_by_media_file(db: AsyncSession, media_file_ids: list[int]) -
         )
     ).all()
     return {
-        mid: (cov if isinstance(cov, dict) else json.loads(cov)) if cov else {}
-        for mid, cov in rows
+        mid: (cov if isinstance(cov, dict) else json.loads(cov)) if cov else {} for mid, cov in rows
     }
 
 
@@ -103,9 +102,7 @@ async def list_movies(
     if conditions:
         base = base.where(*conditions)
 
-    total = (
-        await db.execute(select(func.count()).select_from(base.subquery()))
-    ).scalar_one()
+    total = (await db.execute(select(func.count()).select_from(base.subquery()))).scalar_one()
 
     if sort == "year":
         order_col = Movie.year.desc()
@@ -114,21 +111,25 @@ async def list_movies(
     else:
         order_col = title_sort_expr()
     rows = (
-        await db.execute(
-            base.order_by(order_col).limit(page_size).offset((page - 1) * page_size)
-        )
+        await db.execute(base.order_by(order_col).limit(page_size).offset((page - 1) * page_size))
     ).all()
 
     movies = [m for m, _ in rows]
     lb_by_movie = {m.id: lb for m, lb in rows}
     movie_ids = [m.id for m in movies]
     media_rows = (
-        await db.execute(
-            select(MediaFile).where(
-                MediaFile.movie_id.in_(movie_ids), MediaFile.is_active.is_(True)
+        (
+            await db.execute(
+                select(MediaFile).where(
+                    MediaFile.movie_id.in_(movie_ids), MediaFile.is_active.is_(True)
+                )
             )
         )
-    ).scalars().all() if movie_ids else []
+        .scalars()
+        .all()
+        if movie_ids
+        else []
+    )
     mf_by_movie = {mf.movie_id: mf for mf in media_rows}
     coverage = await _coverage_by_media_file(db, [mf.id for mf in media_rows])
 
@@ -153,6 +154,7 @@ async def get_movie_poster(movie_id: int, db: Annotated[AsyncSession, Depends(ge
     if movie is None or not movie.poster_path:
         raise HTTPException(status_code=404, detail="No poster available")
     import os
+
     if not os.path.isfile(movie.poster_path):
         raise HTTPException(status_code=404, detail="Poster file not found on disk")
     return FileResponse(movie.poster_path, media_type="image/jpeg")
@@ -172,15 +174,11 @@ async def get_movie(movie_id: int, db: Annotated[AsyncSession, Depends(get_db)])
     movie, lb = row
     mf = (
         await db.execute(
-            select(MediaFile).where(
-                MediaFile.movie_id == movie_id, MediaFile.is_active.is_(True)
-            )
+            select(MediaFile).where(MediaFile.movie_id == movie_id, MediaFile.is_active.is_(True))
         )
     ).scalar_one_or_none()
     coverage = await _coverage_by_media_file(db, [mf.id] if mf else [])
-    item = enrich_movie(
-        movie, mf, coverage.get(mf.id) if mf else None, lb.status if lb else None
-    )
+    item = enrich_movie(movie, mf, coverage.get(mf.id) if mf else None, lb.status if lb else None)
     item["media_file_path"] = mf.path if mf else None
     return item
 
@@ -193,10 +191,17 @@ async def list_series(
 ):
     total = (await db.execute(select(func.count()).select_from(Series))).scalar_one()
     rows = (
-        await db.execute(
-            select(Series).order_by(title_sort_expr(Series.title)).limit(page_size).offset((page - 1) * page_size)
+        (
+            await db.execute(
+                select(Series)
+                .order_by(title_sort_expr(Series.title))
+                .limit(page_size)
+                .offset((page - 1) * page_size)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     return {
         "total": total,
         "page": page,
@@ -225,10 +230,14 @@ async def get_series(series_id: int, db: Annotated[AsyncSession, Depends(get_db)
 @router.get("/series/{series_id}/seasons")
 async def list_seasons(series_id: int, db: Annotated[AsyncSession, Depends(get_db)]):
     rows = (
-        await db.execute(
-            select(Season).where(Season.series_id == series_id).order_by(Season.season_number)
+        (
+            await db.execute(
+                select(Season).where(Season.series_id == series_id).order_by(Season.season_number)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     return {
         "series_id": series_id,
         "seasons": [{"id": s.id, "season_number": s.season_number} for s in rows],
@@ -245,9 +254,7 @@ async def get_episode(episode_id: int, db: Annotated[AsyncSession, Depends(get_d
         raise HTTPException(status_code=404, detail=f"Episode id={episode_id} not found")
     media_file_id = (
         await db.execute(
-            select(EpisodeMediaFile.media_file_id).where(
-                EpisodeMediaFile.episode_id == episode_id
-            )
+            select(EpisodeMediaFile.media_file_id).where(EpisodeMediaFile.episode_id == episode_id)
         )
     ).scalar_one_or_none()
     return {

@@ -93,11 +93,9 @@ export function mockRadarrOverlay(params: RadarrOverlayQuery = {}): RadarrOverla
 		cf_cutoff: index % 3 === 0 ? 100 : 60,
 		cutoff_met: index % 4 === 0 ? true : index % 4 === 1 ? false : null,
 		profile_targets: (index % 3 === 0 ? ['dovi', 'hdr10'] : ['hdr10p']) as HdrKind[],
-		available_preference_targets: (
-			index % 3 === 0
-				? ['hdr10', 'dovi_no_fallback', 'dovi_fallback']
-				: ['hdr10p']
-		) as HdrPreferenceChoice[],
+		available_preference_targets: (index % 3 === 0
+			? ['hdr10', 'dovi_no_fallback', 'dovi_fallback']
+			: ['hdr10p']) as HdrPreferenceChoice[],
 		meet_target: (index % 3 === 0 ? 'hdr10' : 'hdr10p') as HdrPreferenceChoice,
 		exceed_target: (index % 3 === 0 ? 'dovi_fallback' : null) as HdrPreferenceChoice | null,
 		preference_status: (index % 4 === 0
@@ -110,7 +108,9 @@ export function mockRadarrOverlay(params: RadarrOverlayQuery = {}): RadarrOverla
 	})) as RadarrOverlayResponse['items'];
 
 	if (params.hdr_tags?.length) {
-		items = items.filter((item) => params.hdr_tags!.some((tag) => item.hdr_tags.includes(tag as HdrKind)));
+		items = items.filter((item) =>
+			params.hdr_tags!.some((tag) => item.hdr_tags.includes(tag as HdrKind))
+		);
 	}
 	if (params.preference_status) {
 		items = items.filter((item) => item.preference_status === params.preference_status);
@@ -132,7 +132,11 @@ export function mockRadarrOverlay(params: RadarrOverlayQuery = {}): RadarrOverla
 				(b.cf_score ?? -999999) - (a.cf_score ?? -999999) ||
 				compareBySortTitle(a.title, b.title)
 		);
-	} else items.sort((a, b) => (b.cf_score ?? -999999) - (a.cf_score ?? -999999) || compareBySortTitle(a.title, b.title));
+	} else
+		items.sort(
+			(a, b) =>
+				(b.cf_score ?? -999999) - (a.cf_score ?? -999999) || compareBySortTitle(a.title, b.title)
+		);
 
 	return {
 		total: items.length,
@@ -160,7 +164,8 @@ export function mockRadarrOverlay(params: RadarrOverlayQuery = {}): RadarrOverla
 				profile_targets: ['hdr10', 'dovi'],
 				available_preference_targets: ['hdr10', 'dovi_no_fallback', 'dovi_fallback'],
 				meet_target: 'hdr10',
-				exceed_target: 'dovi_fallback'
+				exceed_target: 'dovi_fallback',
+				excluded_targets: []
 			},
 			{
 				profile_id: 4,
@@ -168,7 +173,8 @@ export function mockRadarrOverlay(params: RadarrOverlayQuery = {}): RadarrOverla
 				profile_targets: ['hdr10p'],
 				available_preference_targets: ['hdr10p'],
 				meet_target: 'hdr10p',
-				exceed_target: null
+				exceed_target: null,
+				excluded_targets: []
 			}
 		],
 		applied_filters: {}

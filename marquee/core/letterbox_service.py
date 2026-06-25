@@ -105,9 +105,7 @@ def read_applied_crop(path: Path | str) -> tuple[int, int] | None:
         data = json.loads(result.stdout)
     except json.JSONDecodeError:
         return None
-    video = next(
-        (t for t in data.get("tracks", []) if t.get("type") == "video"), None
-    )
+    video = next((t for t in data.get("tracks", []) if t.get("type") == "video"), None)
     if video is None:
         return None
     props = video.get("properties", {})
@@ -147,22 +145,16 @@ class LetterboxService:
                 except json.JSONDecodeError:
                     data = {}
                 container = (data.get("container", {}).get("type") or "").lower()
-                has_video = any(
-                    t.get("type") == "video" for t in data.get("tracks", [])
-                )
+                has_video = any(t.get("type") == "video" for t in data.get("tracks", []))
                 if "matroska" not in container and container:
                     return Eligibility(False, "not_matroska", path)
                 if not has_video:
                     return Eligibility(False, "no_video_track", path)
         return Eligibility(True, None, path)
 
-    async def get_or_create_state(
-        self, db: AsyncSession, movie_id: int
-    ) -> LetterboxState:
+    async def get_or_create_state(self, db: AsyncSession, movie_id: int) -> LetterboxState:
         state = (
-            await db.execute(
-                select(LetterboxState).where(LetterboxState.movie_id == movie_id)
-            )
+            await db.execute(select(LetterboxState).where(LetterboxState.movie_id == movie_id))
         ).scalar_one_or_none()
         if state is None:
             state = LetterboxState(movie_id=movie_id, status="prefilter_candidate")
@@ -193,16 +185,25 @@ class LetterboxService:
                 binaries.run,
                 "mkvpropedit",
                 [
-                    binaries.safe_media_path(path), "--edit", "track:v1",
-                    "--set", f"pixel-crop-top={top}",
-                    "--set", f"pixel-crop-bottom={bottom}",
-                    "--set", "pixel-crop-left=0",
-                    "--set", "pixel-crop-right=0",
+                    binaries.safe_media_path(path),
+                    "--edit",
+                    "track:v1",
+                    "--set",
+                    f"pixel-crop-top={top}",
+                    "--set",
+                    f"pixel-crop-bottom={bottom}",
+                    "--set",
+                    "pixel-crop-left=0",
+                    "--set",
+                    "pixel-crop-right=0",
                 ],
             )
             if not result.ok:
                 await self._log(
-                    db, movie.id, "error", source,
+                    db,
+                    movie.id,
+                    "error",
+                    source,
                     {"reason": "mkvpropedit_failed", "stderr": result.stderr.strip()[:300]},
                 )
                 await db.commit()
@@ -219,18 +220,23 @@ class LetterboxService:
         state.last_applied_at = datetime.now(UTC)
         state.error = None
         await self._log(
-            db, movie.id, "apply", source,
+            db,
+            movie.id,
+            "apply",
+            source,
             {"top": top, "bottom": bottom, "verified": verified, "path": str(path)},
         )
         await db.commit()
         logger.info(
-            "LETTERBOX APPLIED | movie=%s | %d/%dpx | verified=%s", movie.title, top, bottom, verified
+            "LETTERBOX APPLIED | movie=%s | %d/%dpx | verified=%s",
+            movie.title,
+            top,
+            bottom,
+            verified,
         )
         return ApplyResult(applied=True, top=top, bottom=bottom, path=str(path), verified=verified)
 
-    async def remove(
-        self, db: AsyncSession, movie: Movie, *, source: str = "api"
-    ) -> RemoveResult:
+    async def remove(self, db: AsyncSession, movie: Movie, *, source: str = "api") -> RemoveResult:
         """Delete pixel-crop tags (idempotent)."""
         eligibility = await asyncio.to_thread(self.check_eligibility, movie)
         if not eligibility.eligible or eligibility.path is None:
@@ -241,11 +247,17 @@ class LetterboxService:
                 binaries.run,
                 "mkvpropedit",
                 [
-                    binaries.safe_media_path(path), "--edit", "track:v1",
-                    "--delete", "pixel-crop-top",
-                    "--delete", "pixel-crop-bottom",
-                    "--delete", "pixel-crop-left",
-                    "--delete", "pixel-crop-right",
+                    binaries.safe_media_path(path),
+                    "--edit",
+                    "track:v1",
+                    "--delete",
+                    "pixel-crop-top",
+                    "--delete",
+                    "pixel-crop-bottom",
+                    "--delete",
+                    "pixel-crop-left",
+                    "--delete",
+                    "pixel-crop-right",
                 ],
             )
 

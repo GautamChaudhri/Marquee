@@ -588,7 +588,9 @@ async def job_retention_purge(_job: Job) -> dict[str, Any]:
         rows = (
             await db.execute(
                 select(Job.id, Job.payload).where(
-                    Job.status.in_(("succeeded", "failed", "cancelled", "interrupted", "dead_letter")),
+                    Job.status.in_(
+                        ("succeeded", "failed", "cancelled", "interrupted", "dead_letter")
+                    ),
                     Job.finished_at.is_not(None),
                     Job.finished_at < cutoff,
                 )
@@ -616,8 +618,7 @@ async def job_retention_purge(_job: Job) -> dict[str, Any]:
         await db.commit()
 
     logger.info(
-        "job_retention_purge: deleted %d job(s) and %d bridged media job(s) "
-        "older than %d day(s)",
+        "job_retention_purge: deleted %d job(s) and %d bridged media job(s) older than %d day(s)",
         jobs_deleted,
         media_jobs_deleted,
         settings.JOB_RETENTION_DAYS,

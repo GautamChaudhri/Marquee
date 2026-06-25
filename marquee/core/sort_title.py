@@ -20,19 +20,29 @@ if TYPE_CHECKING:
 # multi-word articles ("Los") match before their prefix ("Lo").
 SORT_TITLE_ARTICLES: frozenset[str] = frozenset(
     {
-        "The", "A", "An",  # English
-        "Le", "La", "Les",  # French
-        "El", "Los", "Las",  # Spanish
-        "Der", "Die", "Das",  # German
-        "Il", "Lo", "Gli",  # Italian
-        "O", "Os", "As",  # Portuguese
+        "The",
+        "A",
+        "An",  # English
+        "Le",
+        "La",
+        "Les",  # French
+        "El",
+        "Los",
+        "Las",  # Spanish
+        "Der",
+        "Die",
+        "Das",  # German
+        "Il",
+        "Lo",
+        "Gli",  # Italian
+        "O",
+        "Os",
+        "As",  # Portuguese
     }
 )
 
 # Pre-sorted by length descending so longer articles match first.
-_ARTICLES_SORTED: tuple[str, ...] = tuple(
-    sorted(SORT_TITLE_ARTICLES, key=len, reverse=True)
-)
+_ARTICLES_SORTED: tuple[str, ...] = tuple(sorted(SORT_TITLE_ARTICLES, key=len, reverse=True))
 
 # Pattern: optional article + space at the start, case-insensitive.
 _ARTICLE_RE = re.compile(

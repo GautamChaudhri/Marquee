@@ -87,7 +87,7 @@ def _matching_tokens(video_stem: str, sub_stem: str) -> list[str] | None:
         return []
     prefix = video_stem + "."
     if sub_stem.startswith(prefix):
-        return [t for t in sub_stem[len(prefix):].split(".") if t]
+        return [t for t in sub_stem[len(prefix) :].split(".") if t]
     return None
 
 

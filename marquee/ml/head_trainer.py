@@ -104,9 +104,7 @@ def build_training_data(
         return np.empty((0, 0)), np.empty(0), [], len(movies)
 
     common = sorted(set.intersection(*(set(feat) for feat, _ in samples)))
-    matrix = np.asarray(
-        [[feat[name] for name in common] for feat, _ in samples], dtype=np.float64
-    )
+    matrix = np.asarray([[feat[name] for name in common] for feat, _ in samples], dtype=np.float64)
     targets = np.asarray([label for _, label in samples], dtype=np.float64)
     return matrix, targets, common, len(movies)
 
@@ -183,23 +181,15 @@ def build_pairwise_training_data(
         movies.add(row.get("movie_id") if row.get("movie_id") is not None else row.get("title"))
         movie_norm = 1.0 / len(movie_pairs)
         all_pairs.extend(
-            (winner, loser, confidence * movie_norm)
-            for winner, loser, confidence in movie_pairs
+            (winner, loser, confidence * movie_norm) for winner, loser, confidence in movie_pairs
         )
 
     if not all_pairs:
         return np.empty((0, 0)), np.empty(0), [], len(movies), 0
 
-    common = sorted(
-        set.intersection(
-            *(set(winner) & set(loser) for winner, loser, _ in all_pairs)
-        )
-    )
+    common = sorted(set.intersection(*(set(winner) & set(loser) for winner, loser, _ in all_pairs)))
     diffs = np.asarray(
-        [
-            [winner[name] - loser[name] for name in common]
-            for winner, loser, _ in all_pairs
-        ],
+        [[winner[name] - loser[name] for name in common] for winner, loser, _ in all_pairs],
         dtype=np.float64,
     )
     weights = np.asarray([weight for _, _, weight in all_pairs], dtype=np.float64)
@@ -324,7 +314,9 @@ def main() -> None:
         key=lambda item: -abs(item[1]),
     ):
         print(f"  {name:>22s}: {weight:+.4f}")
-    print(f"[INFO] SCORER=auto will now use the learned head ({pipeline_settings.LEARNED_HEAD_PATH.name})")
+    print(
+        f"[INFO] SCORER=auto will now use the learned head ({pipeline_settings.LEARNED_HEAD_PATH.name})"
+    )
 
 
 if __name__ == "__main__":

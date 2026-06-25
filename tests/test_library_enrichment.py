@@ -23,42 +23,66 @@ async def client():
 async def _seed(db: AsyncSession) -> None:
     # Alpha — approved poster, 4K, Dolby Vision, LB candidate, subtitle gap.
     alpha = Movie(
-        title="Alpha", year=2020, folder_path="/m/a",
-        poster_path="/m/a/poster.jpg", poster_user_approved=True,
-        video_width=3840, video_height=1600, has_hdr=True, has_dv=True,
+        title="Alpha",
+        year=2020,
+        folder_path="/m/a",
+        poster_path="/m/a/poster.jpg",
+        poster_user_approved=True,
+        video_width=3840,
+        video_height=1600,
+        has_hdr=True,
+        has_dv=True,
         genres=["Sci-Fi"],
     )
     # Bravo — unreviewed AI pick, 1080p, HDR10, no LB row, no inventory.
     bravo = Movie(
-        title="Bravo", year=2022, folder_path="/m/b",
-        poster_path="/m/b/poster.jpg", poster_ai_selected=True,
-        video_width=1920, video_height=1080, has_hdr=True, has_dv=False,
+        title="Bravo",
+        year=2022,
+        folder_path="/m/b",
+        poster_path="/m/b/poster.jpg",
+        poster_ai_selected=True,
+        video_width=1920,
+        video_height=1080,
+        has_hdr=True,
+        has_dv=False,
     )
     # Charlie — missing poster, no resolution, SDR, LB tagged, subtitle ok.
     charlie = Movie(
-        title="Charlie", year=2019, folder_path="/m/c",
-        has_hdr=False, has_dv=False,
+        title="Charlie",
+        year=2019,
+        folder_path="/m/c",
+        has_hdr=False,
+        has_dv=False,
     )
     db.add_all([alpha, bravo, charlie])
     await db.flush()
 
-    db.add_all([
-        LetterboxState(movie_id=alpha.id, status="candidate"),
-        LetterboxState(movie_id=charlie.id, status="tagged"),
-    ])
-    mf_a = MediaFile(source="radarr", source_key="r:a", path="/m/a/a.mkv",
-                     movie_id=alpha.id, is_active=True)
-    mf_c = MediaFile(source="radarr", source_key="r:c", path="/m/c/c.mkv",
-                     movie_id=charlie.id, is_active=True)
+    db.add_all(
+        [
+            LetterboxState(movie_id=alpha.id, status="candidate"),
+            LetterboxState(movie_id=charlie.id, status="tagged"),
+        ]
+    )
+    mf_a = MediaFile(
+        source="radarr", source_key="r:a", path="/m/a/a.mkv", movie_id=alpha.id, is_active=True
+    )
+    mf_c = MediaFile(
+        source="radarr", source_key="r:c", path="/m/c/c.mkv", movie_id=charlie.id, is_active=True
+    )
     db.add_all([mf_a, mf_c])
     await db.flush()
 
-    db.add_all([
-        SubtitleInventory(media_file_id=mf_a.id,
-                          coverage_json=json.dumps({"missing_preferred_languages": ["eng"]})),
-        SubtitleInventory(media_file_id=mf_c.id,
-                          coverage_json=json.dumps({"missing_preferred_languages": []})),
-    ])
+    db.add_all(
+        [
+            SubtitleInventory(
+                media_file_id=mf_a.id,
+                coverage_json=json.dumps({"missing_preferred_languages": ["eng"]}),
+            ),
+            SubtitleInventory(
+                media_file_id=mf_c.id, coverage_json=json.dumps({"missing_preferred_languages": []})
+            ),
+        ]
+    )
     await db.commit()
 
 

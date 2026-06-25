@@ -41,27 +41,68 @@ class OcrPool:
     def worker_count(self) -> int:
         return len(self.workers)
 
+
 logger = logging.getLogger(__name__)
 
 FORMAT_BLOCKLIST: frozenset[str] = frozenset(
     {
-        "4k", "uhd", "hdr", "bluray", "blu", "ray", "dolby", "atmos",
-        "imax", "dts", "hevc", "remux", "1080p", "2160p", "720p", "ultra",
-        "cinerama", "panavision", "metrocolor",
+        "4k",
+        "uhd",
+        "hdr",
+        "bluray",
+        "blu",
+        "ray",
+        "dolby",
+        "atmos",
+        "imax",
+        "dts",
+        "hevc",
+        "remux",
+        "1080p",
+        "2160p",
+        "720p",
+        "ultra",
+        "cinerama",
+        "panavision",
+        "metrocolor",
     }
 )
 STUDIO_KEYWORDS: frozenset[str] = frozenset(
     {
-        "paramount", "warner", "bros", "disney", "universal", "sony",
-        "columbia", "lionsgate", "mgm", "netflix", "a24", "focus",
-        "features", "dreamworks", "pixar", "searchlight", "miramax",
-        "orion", "touchstone", "blumhouse", "legendary",
+        "paramount",
+        "warner",
+        "bros",
+        "disney",
+        "universal",
+        "sony",
+        "columbia",
+        "lionsgate",
+        "mgm",
+        "netflix",
+        "a24",
+        "focus",
+        "features",
+        "dreamworks",
+        "pixar",
+        "searchlight",
+        "miramax",
+        "orion",
+        "touchstone",
+        "blumhouse",
+        "legendary",
     }
 )
 TOP_STRIP_FRACTION = 0.18
 _DIGIT_WORDS = {
-    "1": "one", "2": "two", "3": "three", "4": "four", "5": "five",
-    "6": "six", "7": "seven", "8": "eight", "9": "nine",
+    "1": "one",
+    "2": "two",
+    "3": "three",
+    "4": "four",
+    "5": "five",
+    "6": "six",
+    "7": "seven",
+    "8": "eight",
+    "9": "nine",
 }
 
 _worker_ocr = None
@@ -400,11 +441,10 @@ def _bbox_center_distance(b1: BoundingBox, b2: BoundingBox) -> float:
     return ((c1x - c2x) ** 2 + (c1y - c2y) ** 2) ** 0.5
 
 
-
-
 def _enhance_contrast(image: np.ndarray) -> np.ndarray:
     """Return a contrast-boosted copy of *image* to help OCR find low-contrast text."""
     from PIL import ImageEnhance
+
     return np.asarray(ImageEnhance.Contrast(Image.fromarray(image)).enhance(2.0))
 
 
@@ -416,10 +456,7 @@ def _title_match_score(text: str, title_tokens: set[str]) -> float:
     for word in words:
         scores.append(
             max(
-                (
-                    difflib.SequenceMatcher(None, word, token).ratio()
-                    for token in title_tokens
-                ),
+                (difflib.SequenceMatcher(None, word, token).ratio() for token in title_tokens),
                 default=0.0,
             )
         )
@@ -537,7 +574,7 @@ def _process_image(
                 scale=2.0,
             )
             bottom_image = np.asarray(
-                Image.fromarray(image[height - strip_rows:]).resize(
+                Image.fromarray(image[height - strip_rows :]).resize(
                     (image.shape[1] * 2, strip_rows * 2),
                     Image.Resampling.LANCZOS,
                 )
@@ -582,9 +619,7 @@ def _process_image(
     if words & FORMAT_BLOCKLIST:
         return OCRCandidateResult(path, False, detected_text, "format_blocklist", None)
 
-    title_candidates = [
-        box for box in boxes if _matches_allowed(box.text, title_tokens)
-    ]
+    title_candidates = [box for box in boxes if _matches_allowed(box.text, title_tokens)]
     title_box = max(
         title_candidates,
         key=lambda box: _title_match_score(box.text, title_tokens),
@@ -616,12 +651,8 @@ def _process_image(
     prox = pipeline_settings.OCR_TITLE_PROXIMITY_PIXELS
     image_height, image_width = image.shape[0], image.shape[1]
     image_area = float(image_height * image_width)
-    min_big_area = (
-        pipeline_settings.OCR_RESIDUAL_SIGNIFICANT_AREA_FRACTION * image_area
-    )
-    min_big_width = (
-        pipeline_settings.OCR_RESIDUAL_SIGNIFICANT_WIDTH_FRACTION * image_width
-    )
+    min_big_area = pipeline_settings.OCR_RESIDUAL_SIGNIFICANT_AREA_FRACTION * image_area
+    min_big_width = pipeline_settings.OCR_RESIDUAL_SIGNIFICANT_WIDTH_FRACTION * image_width
     significant_residual: list[OCRTextBox] = []
     for box in residual:
         xs = [p[0] for p in box.bbox]
@@ -665,9 +696,7 @@ def _process_image(
     #   custom     = per-category allow/deny toggles
     text_mode = pipeline_settings.OCR_TEXT_MODE
     significant_area_fraction = (
-        sum(box.area for box in significant_residual) / image_area
-        if image_area > 0
-        else 0.0
+        sum(box.area for box in significant_residual) / image_area if image_area > 0 else 0.0
     )
 
     if text_mode == "textless":
@@ -721,12 +750,7 @@ def _process_image(
             accepted = False
             reason = "has_title"
         # Title requirement: if title is required but absent (and no title box).
-        if (
-            accepted
-            and title_allowed
-            and title_box is None
-            and pipeline_settings.OCR_REQUIRE_TITLE
-        ):
+        if accepted and title_allowed and title_box is None and pipeline_settings.OCR_REQUIRE_TITLE:
             accepted = False
             reason = "no_title"
 
@@ -735,8 +759,7 @@ def _process_image(
         # residual above the count/area thresholds.
         accepted = (
             len(significant_residual) <= pipeline_settings.OCR_MAX_RESIDUAL_BOXES
-            and significant_area_fraction
-            <= pipeline_settings.OCR_MAX_RESIDUAL_AREA_FRACTION
+            and significant_area_fraction <= pipeline_settings.OCR_MAX_RESIDUAL_AREA_FRACTION
         )
         reason = None if accepted else "text_heavy"
         # Title-only target: text that never matches the title (logos, taglines
@@ -770,9 +793,7 @@ def apply_no_text_fallback(
         return results
     if any(result.accepted for result in results):
         return results
-    rescuable = [
-        result for result in results if result.reason in ("no_text", "no_title")
-    ]
+    rescuable = [result for result in results if result.reason in ("no_text", "no_title")]
     if not rescuable:
         return results
     logger.warning(
@@ -817,9 +838,7 @@ class PosterTextFilter:
         if not paths:
             return []
         items = [(path, self.title_tokens, self.director_tokens) for path in paths]
-        results = self.run_ocr_batch(
-            items, num_workers=self.num_workers, progress=progress
-        )
+        results = self.run_ocr_batch(items, num_workers=self.num_workers, progress=progress)
         results = apply_no_text_fallback(results)
         logger.info(
             "OCR complete: %d accepted, %d rejected",
@@ -893,9 +912,7 @@ class PosterTextFilter:
                 if progress is not None:
                     progress(len(items) - remaining, len(items))
             elif message_type == _WORKER_INIT_ERROR:
-                raise RuntimeError(
-                    f"OCR worker {key} failed to initialize: {payload}"
-                )
+                raise RuntimeError(f"OCR worker {key} failed to initialize: {payload}")
 
         PosterTextFilter._join_workers(pool.workers)
         results = [r for r in ordered_results if r is not None]
@@ -966,20 +983,12 @@ class PosterTextFilter:
             try:
                 return result_queue.get(timeout=_WORKER_POLL_SECONDS)
             except queue.Empty:
-                failed = [
-                    worker for worker in workers if worker.exitcode not in (None, 0)
-                ]
+                failed = [worker for worker in workers if worker.exitcode not in (None, 0)]
                 if failed:
-                    details = ", ".join(
-                        f"{worker.name}={worker.exitcode}" for worker in failed
-                    )
-                    raise RuntimeError(
-                        f"OCR worker exited unexpectedly: {details}"
-                    ) from None
+                    details = ", ".join(f"{worker.name}={worker.exitcode}" for worker in failed)
+                    raise RuntimeError(f"OCR worker exited unexpectedly: {details}") from None
                 if all(worker.exitcode is not None for worker in workers):
-                    raise RuntimeError(
-                        "OCR workers exited before returning all results"
-                    ) from None
+                    raise RuntimeError("OCR workers exited before returning all results") from None
 
     @staticmethod
     def _join_workers(workers: list[Any]) -> None:
@@ -998,26 +1007,17 @@ class PosterTextFilter:
             for worker in hung:
                 worker.join()
             details = ", ".join(
-                f"{worker.name}=pid:{worker.pid} exit:{worker.exitcode}"
-                for worker in hung
+                f"{worker.name}=pid:{worker.pid} exit:{worker.exitcode}" for worker in hung
             )
             raise RuntimeError(f"OCR worker forced shutdown: {details}")
 
-        failed = [
-            worker
-            for worker in workers
-            if worker not in hung and worker.exitcode != 0
-        ]
+        failed = [worker for worker in workers if worker not in hung and worker.exitcode != 0]
         if failed:
-            details = ", ".join(
-                f"{worker.name}={worker.exitcode}" for worker in failed
-            )
+            details = ", ".join(f"{worker.name}={worker.exitcode}" for worker in failed)
             raise RuntimeError(f"OCR worker shutdown failed: {details}")
         for worker in workers:
             if worker.pid is not None and _pid_alive(worker.pid):
-                raise RuntimeError(
-                    f"OCR worker survived shutdown: {worker.name}=pid:{worker.pid}"
-                )
+                raise RuntimeError(f"OCR worker survived shutdown: {worker.name}=pid:{worker.pid}")
             _unregister_worker(worker)
 
     @staticmethod
@@ -1039,9 +1039,7 @@ class PosterTextFilter:
                 else:
                     _unregister_worker(worker)
         if cleanup_failures:
-            raise RuntimeError(
-                "OCR worker cleanup failed: " + ", ".join(cleanup_failures)
-            )
+            raise RuntimeError("OCR worker cleanup failed: " + ", ".join(cleanup_failures))
 
     @staticmethod
     def _close_queue(worker_queue: Any) -> None:

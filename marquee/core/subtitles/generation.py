@@ -40,7 +40,7 @@ async def list_generators() -> list[dict]:
     for gen in _GENERATORS.values():
         caps = gen.capabilities()
         health = await gen.health()
-        
+
         # Default device is cuda in this deployment profile.
         device = "cuda"
         if health.version and "cpu" in health.version.lower():
@@ -61,7 +61,6 @@ async def list_generators() -> list[dict]:
                 "supports_per_request_model": caps.supports_per_request_model,
                 "supports_percent_progress": caps.supports_percent_progress,
                 "transport": caps.transport,
-                
                 # Frontend schema matches SubtitleGenerator interface in types.ts
                 "type": caps.provider,
                 "url": subtitle_settings.SUBGEN_URL or "",
@@ -72,7 +71,7 @@ async def list_generators() -> list[dict]:
                     "language_hint": caps.supports_language_hint,
                     "translate": caps.mode == "translate",
                     "concurrent": 2 if device == "cuda" else 1,
-                }
+                },
             }
         )
     return out

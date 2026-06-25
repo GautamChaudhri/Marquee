@@ -43,9 +43,7 @@ class MediaFile(Base, TimestampMixin):
     source: Mapped[str] = mapped_column(String(20), nullable=False)
     # Stable logical key, e.g. "radarr:movie-file:1234" / "sonarr:episode-file:5678"
     # or a path-derived fallback before the native id is known.
-    source_key: Mapped[str] = mapped_column(
-        String(200), unique=True, index=True, nullable=False
-    )
+    source_key: Mapped[str] = mapped_column(String(200), unique=True, index=True, nullable=False)
     source_file_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     movie_id: Mapped[int | None] = mapped_column(
@@ -61,16 +59,11 @@ class MediaFile(Base, TimestampMixin):
     is_active: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True, server_default=text("true")
     )
-    last_seen_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_resolved_path: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     def __repr__(self) -> str:
-        return (
-            f"<MediaFile(id={self.id}, source_key={self.source_key!r}, "
-            f"active={self.is_active})>"
-        )
+        return f"<MediaFile(id={self.id}, source_key={self.source_key!r}, active={self.is_active})>"
 
 
 class EpisodeMediaFile(Base):
@@ -95,6 +88,5 @@ class EpisodeMediaFile(Base):
 
     def __repr__(self) -> str:
         return (
-            f"<EpisodeMediaFile(episode_id={self.episode_id}, "
-            f"media_file_id={self.media_file_id})>"
+            f"<EpisodeMediaFile(episode_id={self.episode_id}, media_file_id={self.media_file_id})>"
         )

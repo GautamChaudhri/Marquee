@@ -49,9 +49,7 @@ async def restore_job_backup(db: AsyncSession, job_id: str) -> dict | None:
     from marquee.core.subtitles.mutation import link_or_copy  # noqa: PLC0415
 
     tmp = dest.with_name(f".{dest.name}.restore.tmp")
-    await link_or_copy(
-        src, tmp, bwlimit_kbps=subtitle_settings.SUBTITLE_BACKUP_COPY_BWLIMIT_KBPS
-    )
+    await link_or_copy(src, tmp, bwlimit_kbps=subtitle_settings.SUBTITLE_BACKUP_COPY_BWLIMIT_KBPS)
     os.replace(tmp, dest)
     backup.status = "restored"
     await db.commit()

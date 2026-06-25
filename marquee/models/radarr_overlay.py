@@ -79,4 +79,5 @@ class RadarrOverlayProfilePreference(Base):
     )
     meet_target: Mapped[str] = mapped_column(String(32), nullable=False)
     exceed_target: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    excluded_targets: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

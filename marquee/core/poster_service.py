@@ -54,9 +54,7 @@ def render_filename(movie: Movie) -> str:
     """Render the configured movie poster filename (handles {movie_basename})."""
     fmt = settings.MOVIE_POSTER_FORMAT
     if "{movie_basename}" in fmt:
-        basename = (
-            Path(movie.movie_file_path).stem if movie.movie_file_path else "poster"
-        )
+        basename = Path(movie.movie_file_path).stem if movie.movie_file_path else "poster"
         return fmt.format(movie_basename=basename)
     return fmt
 
@@ -97,7 +95,7 @@ def _atomic_copy(source: Path, dest: Path) -> None:
         raise PermissionError(
             f"Cannot write to movie folder {dest.parent} — "
             f"the backend runs as user '{user}' but this directory is not "
-            f"group-writable. Run: chmod g+w \"{dest.parent}\" "
+            f'group-writable. Run: chmod g+w "{dest.parent}" '
             f"(or add '{user}' to the owning group)."
         )
     # If the destination file already exists and we can't overwrite it,
@@ -114,7 +112,7 @@ def _atomic_copy(source: Path, dest: Path) -> None:
     except PermissionError:
         raise PermissionError(
             f"Cannot write poster to {dest} — the backend lacks write permission "
-            f"on the movie folder. Run: chmod g+w \"{dest.parent}\""
+            f'on the movie folder. Run: chmod g+w "{dest.parent}"'
         ) from None
 
 
@@ -125,7 +123,9 @@ def _atomic_write_bytes(data: bytes, dest: Path) -> None:
     os.replace(tmp, dest)
 
 
-async def _log_event(db: AsyncSession, movie_id: int, action: str, source: str, detail: dict) -> None:
+async def _log_event(
+    db: AsyncSession, movie_id: int, action: str, source: str, detail: dict
+) -> None:
     db.add(
         ArtworkEvent(
             movie_id=movie_id,
@@ -203,9 +203,15 @@ class PosterService:
             movie.poster_phash = phash
 
         await _log_event(
-            db, movie.id, "deploy", source,
-            {"path": str(dest), "cache": str(cache_file) if cache_file else None,
-             "user_approved": user_approved},
+            db,
+            movie.id,
+            "deploy",
+            source,
+            {
+                "path": str(dest),
+                "cache": str(cache_file) if cache_file else None,
+                "user_approved": user_approved,
+            },
         )
         await db.commit()
 
@@ -280,9 +286,11 @@ class PosterService:
         movie.folder_path = folder_raw
         movie.poster_deployed_at = datetime.now(UTC)
         await _log_event(
-            db, movie.id,
+            db,
+            movie.id,
             "restore" if source != "heal" else "heal_restore",
-            source, {"path": str(dest), "via": via},
+            source,
+            {"path": str(dest), "via": via},
         )
         await db.commit()
         logger.info("POSTER RESTORED | movie=%s | via=%s | path=%s", movie.title, via, dest)

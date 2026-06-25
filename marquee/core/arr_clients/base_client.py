@@ -54,13 +54,10 @@ class ArrClient:
             return response.json()
         except httpx.ConnectError:
             raise ArrConnectionError(
-                f"Cannot connect to {self.service_name} at {self.base_url}. "
-                "Is the service running?"
+                f"Cannot connect to {self.service_name} at {self.base_url}. Is the service running?"
             ) from None
         except httpx.TimeoutException:
-            raise ArrConnectionError(
-                f"{self.service_name} request timed out."
-            ) from None
+            raise ArrConnectionError(f"{self.service_name} request timed out.") from None
         except httpx.HTTPStatusError as exc:
             status = exc.response.status_code
             if status == 401:
@@ -68,9 +65,7 @@ class ArrClient:
                     f"{self.service_name} returned 401 — check your API key."
                 ) from exc
             if status == 404:
-                raise ArrNotFoundError(
-                    f"{self.service_name} resource not found: {path}"
-                ) from exc
+                raise ArrNotFoundError(f"{self.service_name} resource not found: {path}") from exc
             raise ArrResponseError(
                 f"{self.service_name} returned unexpected status {status} for {path}",
                 status_code=status,

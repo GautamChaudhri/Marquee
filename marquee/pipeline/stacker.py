@@ -100,9 +100,7 @@ def _similarity_matrix(
         return sim, usable, threshold
 
     # dino / clip → cosine over L2-normalized vectors
-    usable = [
-        i for i, c in enumerate(candidates) if isinstance(c.embedding, np.ndarray)
-    ]
+    usable = [i for i, c in enumerate(candidates) if isinstance(c.embedding, np.ndarray)]
     if not usable:
         return np.zeros((0, 0)), [], config.STACK_SIM_THRESHOLD
     vecs = np.stack([np.asarray(candidates[i].embedding, dtype=np.float64) for i in usable])
@@ -112,9 +110,7 @@ def _similarity_matrix(
     return sim, usable, config.STACK_SIM_THRESHOLD
 
 
-def _cluster(
-    n_usable: int, sim: np.ndarray, threshold: float
-) -> list[list[int]]:
+def _cluster(n_usable: int, sim: np.ndarray, threshold: float) -> list[list[int]]:
     """Greedy average-linkage on a similarity matrix → clusters of indices.
 
     Indices are positions in ``sim`` (0..n_usable-1).  Merges the two
@@ -127,9 +123,7 @@ def _cluster(
         best_pair: tuple[int, int] | None = None
         for ci in range(len(clusters)):
             for cj in range(ci + 1, len(clusters)):
-                avg = float(
-                    np.mean([sim[a, b] for a in clusters[ci] for b in clusters[cj]])
-                )
+                avg = float(np.mean([sim[a, b] for a in clusters[ci] for b in clusters[cj]]))
                 if avg > best_avg:
                     best_avg = avg
                     best_pair = (ci, cj)

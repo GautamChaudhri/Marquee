@@ -70,9 +70,7 @@ async def run_pipeline(
     limiter: Annotated[RateLimiter, Depends(get_rate_limiter)],
 ):
     """Start a pipeline run for a movie. 202 + run_id, or 409 if one is active."""
-    movie = (
-        await db.execute(select(Movie).where(Movie.id == movie_id))
-    ).scalar_one_or_none()
+    movie = (await db.execute(select(Movie).where(Movie.id == movie_id))).scalar_one_or_none()
     if movie is None:
         raise HTTPException(status_code=404, detail=f"Movie id={movie_id} not found")
     if movie.tmdb_id is None:
@@ -82,15 +80,18 @@ async def run_pipeline(
     if not await db.scalar(
         select(exists(select(Movie.id).where(Movie.id == movie_id, _downloaded())))
     ):
-        raise HTTPException(
-            status_code=400, detail=f"Movie {movie.title!r} has no downloaded file"
-        )
+        raise HTTPException(status_code=400, detail=f"Movie {movie.title!r} has no downloaded file")
 
     enforce_rate_limit(limiter, f"pipeline:{movie_id}", settings.RATE_PIPELINE_RUN_SECONDS)
     limiter.record(f"pipeline:{movie_id}")
     job = await job_manager.create(
-        db, job_type="poster_pipeline", payload={"movie_id": movie.id}, priority=90,
-        resources={"gpu": 1, "network_external": 1}, subject_type="movie", subject_id=movie.id,
+        db,
+        job_type="poster_pipeline",
+        payload={"movie_id": movie.id},
+        priority=90,
+        resources={"gpu": 1, "network_external": 1},
+        subject_type="movie",
+        subject_id=movie.id,
         idempotency_key=f"poster-pipeline:{movie.id}:{int(__import__('time').time() // settings.RATE_PIPELINE_RUN_SECONDS)}",
     )
     response = job_summary(job)
@@ -122,7 +123,11 @@ async def get_run_results(
     """Full results payload for a run (auto-pick, ranked, rejected-by-stage)."""
     run = await _load_run(db, run_id)
     if run.status == "running":
-        return {"run_id": run_id, "status": "running", "events_url": f"/api/pipeline/runs/{run_id}/events"}
+        return {
+            "run_id": run_id,
+            "status": "running",
+            "events_url": f"/api/pipeline/runs/{run_id}/events",
+        }
 
     archive = run_manager.load_archive(run_id, run.archive_path)
     if archive is None:
@@ -165,10 +170,7 @@ async def get_run_poster(
         Path(__file__).resolve().parents[2] / "experiments" / "runs",
         Path(__file__).resolve().parents[1] / "experiments" / "runs",
     ]
-    if not any(
-        str(image_path).startswith(str(root.resolve()))
-        for root in legacy_roots
-    ):
+    if not any(str(image_path).startswith(str(root.resolve())) for root in legacy_roots):
         raise HTTPException(status_code=403, detail="Poster path outside run tree")
     if not image_path.is_file():
         raise HTTPException(status_code=404, detail="Poster file no longer on disk")
@@ -182,7 +184,9 @@ class RescoreRequest(BaseModel):
     gates: dict[str, float] | None = None
 
 
-def _clone_config(weights: dict[str, float] | None, gates: dict[str, float] | None) -> PipelineSettings:
+def _clone_config(
+    weights: dict[str, float] | None, gates: dict[str, float] | None
+) -> PipelineSettings:
     """A throwaway PipelineSettings with weight/gate overrides applied."""
     merged = pipeline_settings.model_dump()
     for feature_name, value in (weights or {}).items():
@@ -394,11 +398,7 @@ async def pipeline_metrics(
     """Cross-run aggregates for a metrics dashboard, from recent PipelineRun rows."""
     limit = min(max(limit, 1), 5000)
     runs = (
-        (
-            await db.execute(
-                select(PipelineRun).order_by(PipelineRun.started_at.desc()).limit(limit)
-            )
-        )
+        (await db.execute(select(PipelineRun).order_by(PipelineRun.started_at.desc()).limit(limit)))
         .scalars()
         .all()
     )
@@ -447,9 +447,13 @@ async def pipeline_metrics(
             "p90": _pct(0.9),
             "max": round(max(durations), 3) if durations else None,
         },
-        "avg_counts": {k: round(count_totals[k] / count_n[k], 2) for k in count_totals if count_n[k]},
+        "avg_counts": {
+            k: round(count_totals[k] / count_n[k], 2) for k in count_totals if count_n[k]
+        },
         "total_counts": {k: round(v, 2) for k, v in count_totals.items()},
-        "avg_stage_seconds": {k: round(stage_totals[k] / stage_n[k], 3) for k in stage_totals if stage_n[k]},
+        "avg_stage_seconds": {
+            k: round(stage_totals[k] / stage_n[k], 3) for k in stage_totals if stage_n[k]
+        },
         "total_stage_seconds": {k: round(v, 3) for k, v in stage_totals.items()},
     }
 
@@ -485,7 +489,11 @@ async def review_queue(
     )
     base = (
         select(PipelineRun, Movie, LetterboxState)
-        .join(latest, (latest.c.movie_id == PipelineRun.movie_id) & (latest.c.started_at == PipelineRun.started_at))
+        .join(
+            latest,
+            (latest.c.movie_id == PipelineRun.movie_id)
+            & (latest.c.started_at == PipelineRun.started_at),
+        )
         .join(Movie, Movie.id == PipelineRun.movie_id)
         .outerjoin(LetterboxState, LetterboxState.movie_id == Movie.id)
         .where(
@@ -586,13 +594,17 @@ async def reset_review_queue(
 
     # Also clear poster state for any of these movies that have a poster deployed.
     movies_with_poster = (
-        await db.execute(
-            select(Movie).where(
-                Movie.id.in_(movie_ids),
-                Movie.poster_path.isnot(None),
+        (
+            await db.execute(
+                select(Movie).where(
+                    Movie.id.in_(movie_ids),
+                    Movie.poster_path.isnot(None),
+                )
             )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
 
     for movie in movies_with_poster:
         movie.poster_path = None
@@ -626,12 +638,16 @@ async def list_movie_runs(
 ):
     """Run history for a movie, newest first."""
     runs = (
-        await db.execute(
-            select(PipelineRun)
-            .where(PipelineRun.movie_id == movie_id)
-            .order_by(PipelineRun.started_at.desc())
+        (
+            await db.execute(
+                select(PipelineRun)
+                .where(PipelineRun.movie_id == movie_id)
+                .order_by(PipelineRun.started_at.desc())
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     return {
         "movie_id": movie_id,
         "runs": [
@@ -656,12 +672,16 @@ async def list_artwork_events(
 ):
     """Deploy/restore history for a movie, newest first."""
     events = (
-        await db.execute(
-            select(ArtworkEvent)
-            .where(ArtworkEvent.movie_id == movie_id)
-            .order_by(ArtworkEvent.created_at.desc())
+        (
+            await db.execute(
+                select(ArtworkEvent)
+                .where(ArtworkEvent.movie_id == movie_id)
+                .order_by(ArtworkEvent.created_at.desc())
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     return {
         "movie_id": movie_id,
         "events": [

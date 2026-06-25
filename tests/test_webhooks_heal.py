@@ -48,8 +48,11 @@ async def _deployed_movie(db, tmp_path, radarr_id=11, tmdb_id=562) -> tuple[Movi
     folder = tmp_path / "Die Hard (1988)"
     folder.mkdir(parents=True)
     movie = Movie(
-        title="Die Hard", year=1988, folder_path=str(folder),
-        tmdb_id=tmdb_id, radarr_id=radarr_id,
+        title="Die Hard",
+        year=1988,
+        folder_path=str(folder),
+        tmdb_id=tmdb_id,
+        radarr_id=radarr_id,
     )
     db.add(movie)
     await db.commit()
@@ -139,13 +142,17 @@ async def test_webhook_upgrade_noop_when_poster_survives(client, db, tmp_path):
     for _ in range(50):
         await asyncio.sleep(0.02)
         events = (
-            await db.execute(select(ArtworkEvent).where(ArtworkEvent.movie_id == movie.id))
-        ).scalars().all()
+            (await db.execute(select(ArtworkEvent).where(ArtworkEvent.movie_id == movie.id)))
+            .scalars()
+            .all()
+        )
         if any(e.action == "webhook_noop" for e in events):
             break
     events = (
-        await db.execute(select(ArtworkEvent).where(ArtworkEvent.movie_id == movie.id))
-    ).scalars().all()
+        (await db.execute(select(ArtworkEvent).where(ArtworkEvent.movie_id == movie.id)))
+        .scalars()
+        .all()
+    )
     assert any(e.action == "webhook_noop" for e in events)
 
 

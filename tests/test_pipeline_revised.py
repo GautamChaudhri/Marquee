@@ -351,11 +351,13 @@ def test_ocr_rejects_text_without_title_match(
         def predict(self, _image):
             # One short, insignificant fragment (< 4 chars) — previously
             # accepted with title_bbox=None despite showing no title.
-            return [{
-                "rec_texts": ["may"],
-                "rec_scores": [0.99],
-                "rec_polys": [[[10, 10], [60, 10], [60, 30], [10, 30]]],
-            }]
+            return [
+                {
+                    "rec_texts": ["may"],
+                    "rec_scores": [0.99],
+                    "rec_polys": [[[10, 10], [60, 10], [60, 30], [10, 30]]],
+                }
+            ]
 
     monkeypatch.setattr(ocr_filter, "_worker_ocr", FragmentOCR())
     monkeypatch.setattr(ocr_filter, "_worker_title_tokens", {"avengers"})
@@ -544,9 +546,7 @@ def test_normalize_official_family_ramp():
     assert normalized["official_family"] == pytest.approx(1.0)
 
     features.official_family = 0.60
-    assert normalize_features(features, PipelineSettings())[
-        "official_family"
-    ] == pytest.approx(0.0)
+    assert normalize_features(features, PipelineSettings())["official_family"] == pytest.approx(0.0)
 
     features.official_family = None
     assert "official_family" not in normalize_features(features, PipelineSettings())
@@ -563,14 +563,16 @@ def test_ocr_big_residual_box_is_significant_despite_garbled_text(
 
     class WatermarkOCR:
         def predict(self, _image):
-            return [{
-                "rec_texts": ["avengers", "mm"],
-                "rec_scores": [0.95, 0.92],
-                "rec_polys": [
-                    [[50, 20], [450, 20], [450, 70], [50, 70]],      # title
-                    [[40, 300], [460, 300], [460, 380], [40, 380]],  # watermark
-                ],
-            }]
+            return [
+                {
+                    "rec_texts": ["avengers", "mm"],
+                    "rec_scores": [0.95, 0.92],
+                    "rec_polys": [
+                        [[50, 20], [450, 20], [450, 70], [50, 70]],  # title
+                        [[40, 300], [460, 300], [460, 380], [40, 380]],  # watermark
+                    ],
+                }
+            ]
 
     monkeypatch.setattr(ocr_filter, "_worker_ocr", WatermarkOCR())
     monkeypatch.setattr(ocr_filter, "_worker_title_tokens", {"avengers"})
@@ -952,9 +954,7 @@ class _FakeOnnxSession:
         if isinstance(self._batch_dim, int):
             assert batch <= self._batch_dim
         self.run_calls.append(batch)
-        vectors = np.tile(
-            np.arange(1, 513, dtype=np.float32), (batch, 1)
-        )
+        vectors = np.tile(np.arange(1, 513, dtype=np.float32), (batch, 1))
         return [vectors]
 
 
@@ -975,9 +975,7 @@ def test_encode_batch_falls_back_to_loop_on_fixed_batch_model():
 def test_encode_batch_uses_dynamic_batching(monkeypatch: pytest.MonkeyPatch):
     from marquee.ml.embedding import CLIPImageEncoder
 
-    monkeypatch.setattr(
-        "marquee.ml.embedding.effective_clip_batch_size", lambda: 2
-    )
+    monkeypatch.setattr("marquee.ml.embedding.effective_clip_batch_size", lambda: 2)
     session = _FakeOnnxSession(batch_dim="batch")
     encoder = CLIPImageEncoder(session=session)
     pixels = [np.zeros((1, 3, 224, 224), dtype=np.float32) for _ in range(5)]

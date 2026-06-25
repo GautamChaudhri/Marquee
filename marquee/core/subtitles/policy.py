@@ -116,7 +116,11 @@ def evaluate_policy(tracks: list[dict], audio: list[dict], policy: dict) -> Poli
     )
     if lost:
         ev.warnings.append(
-            {"code": "full_dialogue_coverage_lost", "languages": sorted(lost), "requires_override": True}
+            {
+                "code": "full_dialogue_coverage_lost",
+                "languages": sorted(lost),
+                "requires_override": True,
+            }
         )
     if ev.review_required:
         ev.warnings.append({"code": "review_required", "count": len(ev.review_required)})

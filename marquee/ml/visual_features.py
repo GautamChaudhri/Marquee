@@ -126,9 +126,7 @@ def noise_sigma(gray: np.ndarray) -> float:
     )
     response = cv2.filter2D(gray.astype(np.float32), -1, kernel)
     h, w = gray.shape
-    return float(
-        math.sqrt(math.pi / 2.0) * np.abs(response).sum() / (6.0 * w * h)
-    )
+    return float(math.sqrt(math.pi / 2.0) * np.abs(response).sum() / (6.0 * w * h))
 
 
 def blockiness(gray: np.ndarray) -> float:
@@ -148,9 +146,7 @@ def blockiness(gray: np.ndarray) -> float:
     mask_cols[7::8] = False
     mask_rows = np.ones(row_diff.shape[0], dtype=bool)
     mask_rows[7::8] = False
-    inner = (
-        float(col_diff[:, mask_cols].mean()) + float(row_diff[mask_rows, :].mean())
-    ) / 2.0
+    inner = (float(col_diff[:, mask_cols].mean()) + float(row_diff[mask_rows, :].mean())) / 2.0
     boundary = (float(boundary_cols.mean()) + float(boundary_rows.mean())) / 2.0
     return float(max(0.0, boundary - inner))
 
@@ -201,9 +197,7 @@ def face_geometry(
     image_area = float(image_width * image_height)
     if image_area <= 0:
         return {"face_count": 0.0, "largest_face_frac": 0.0}
-    areas = [
-        max(0.0, x2 - x1) * max(0.0, y2 - y1) for x1, y1, x2, y2 in face_boxes
-    ]
+    areas = [max(0.0, x2 - x1) * max(0.0, y2 - y1) for x1, y1, x2, y2 in face_boxes]
     return {
         "face_count": float(len(face_boxes)),
         "largest_face_frac": float(max(areas) / image_area) if areas else 0.0,

@@ -60,9 +60,7 @@ def _calibration(values_by_feature: dict[str, list[float]]) -> TasteCalibration:
 
 def test_typicality_peaks_at_dense_region_and_decays_outside():
     rng = np.random.default_rng(7)
-    calibration = _calibration(
-        {"darkness": list(rng.normal(0.6, 0.05, 200))}
-    )
+    calibration = _calibration({"darkness": list(rng.normal(0.6, 0.05, 200))})
     at_center = calibration.typicality("darkness", 0.6)
     at_edge = calibration.typicality("darkness", 0.75)
     far_out = calibration.typicality("darkness", 0.95)
@@ -170,9 +168,9 @@ def test_composition_symmetry_mirrored_image():
 def test_noise_and_blockiness_ordering():
     rng = np.random.default_rng(2)
     clean = np.full((256, 256), 128, dtype=np.uint8)
-    noisy = np.clip(
-        clean.astype(np.int16) + rng.normal(0, 20, clean.shape), 0, 255
-    ).astype(np.uint8)
+    noisy = np.clip(clean.astype(np.int16) + rng.normal(0, 20, clean.shape), 0, 255).astype(
+        np.uint8
+    )
     assert noise_sigma(noisy) > noise_sigma(clean) + 5
 
     blocky = np.zeros((256, 256), dtype=np.uint8)
@@ -246,9 +244,7 @@ def test_weighted_scorer_redistributes_absent_optional_features():
     normalize_features(features)  # no dino/typicality/quality keys
     score_without, _ = WeightedScorer().score(features)
 
-    features_full = _features(
-        dino_knn=0.55, taste_typicality=0.8, quality_artifacts=0.1
-    )
+    features_full = _features(dino_knn=0.55, taste_typicality=0.8, quality_artifacts=0.1)
     normalize_features(features_full, dino_knn_range=(0.3, 0.8))
     score_with, contributions = WeightedScorer().score(features_full)
 
@@ -299,12 +295,8 @@ def test_learned_head_refuses_missing_features(tmp_path: Path):
 def test_select_scorer_auto_falls_back_without_artifact(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    config = PipelineSettings(
-        SCORER="auto", LEARNED_HEAD_PATH=tmp_path / "missing.npz"
-    )
-    monkeypatch.setattr(
-        "marquee.ml.learned_head.pipeline_settings", config
-    )
+    config = PipelineSettings(SCORER="auto", LEARNED_HEAD_PATH=tmp_path / "missing.npz")
+    monkeypatch.setattr("marquee.ml.learned_head.pipeline_settings", config)
     scorer = select_scorer(config)
     assert scorer.name == "weighted"
 
@@ -321,9 +313,7 @@ def test_select_scorer_auto_prefers_valid_learned_head(
     )
     head.save(artifact)
     config = PipelineSettings(SCORER="auto", LEARNED_HEAD_PATH=artifact)
-    monkeypatch.setattr(
-        "marquee.ml.learned_head.pipeline_settings", config
-    )
+    monkeypatch.setattr("marquee.ml.learned_head.pipeline_settings", config)
     scorer = select_scorer(config)
     assert scorer.name == "learned"
 

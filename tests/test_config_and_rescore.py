@@ -75,18 +75,14 @@ async def test_put_invalid_value_rejected(client):
 
 @pytest.mark.asyncio
 async def test_put_restart_required_rejected(client):
-    resp = await client.put(
-        "/api/config/pipeline", json={"values": {"AI_MODEL": "something-else"}}
-    )
+    resp = await client.put("/api/config/pipeline", json={"values": {"AI_MODEL": "something-else"}})
     assert resp.status_code == 400
     assert "restart" in resp.json()["detail"].lower()
 
 
 @pytest.mark.asyncio
 async def test_put_unknown_key_rejected(client):
-    resp = await client.put(
-        "/api/config/pipeline", json={"values": {"NOT_A_KNOB": 1}}
-    )
+    resp = await client.put("/api/config/pipeline", json={"values": {"NOT_A_KNOB": 1}})
     assert resp.status_code == 400
     assert "Unknown" in resp.json()["detail"]
 
@@ -107,9 +103,15 @@ def _rescore_archive(movie_id: int) -> dict:
                 "image_path": "/x/ranked/1.jpg",
                 "rank": 1,
                 "raw_features": {
-                    "knn_sim": 0.9, "aesthetic": 6.0, "title_colorfulness": 10.0,
-                    "text_residual": 0.0, "resolution": 2.0, "sharpness": 500.0,
-                    "face_area": 0.5, "provenance": 0.6, "lang_match": 1.0,
+                    "knn_sim": 0.9,
+                    "aesthetic": 6.0,
+                    "title_colorfulness": 10.0,
+                    "text_residual": 0.0,
+                    "resolution": 2.0,
+                    "sharpness": 500.0,
+                    "face_area": 0.5,
+                    "provenance": 0.6,
+                    "lang_match": 1.0,
                 },
                 "normalized_features": {"knn_sim": 0.95, "face_area": 0.5},
             },
@@ -118,9 +120,15 @@ def _rescore_archive(movie_id: int) -> dict:
                 "image_path": "/x/ranked/2.jpg",
                 "rank": 2,
                 "raw_features": {
-                    "knn_sim": 0.6, "aesthetic": 6.0, "title_colorfulness": 10.0,
-                    "text_residual": 0.0, "resolution": 2.0, "sharpness": 500.0,
-                    "face_area": 0.0, "provenance": 0.6, "lang_match": 1.0,
+                    "knn_sim": 0.6,
+                    "aesthetic": 6.0,
+                    "title_colorfulness": 10.0,
+                    "text_residual": 0.0,
+                    "resolution": 2.0,
+                    "sharpness": 500.0,
+                    "face_area": 0.0,
+                    "provenance": 0.6,
+                    "lang_match": 1.0,
                 },
                 "normalized_features": {"knn_sim": 0.6, "face_area": 1.0},
             },
@@ -138,7 +146,9 @@ async def _seed_rescore(db, tmp_path) -> str:
     archive_file.write_text(json.dumps(archive))
     db.add(
         PipelineRun(
-            run_id="rs1", movie_id=movie.id, status="completed",
+            run_id="rs1",
+            movie_id=movie.id,
+            status="completed",
             archive_path=str(archive_file),
         )
     )

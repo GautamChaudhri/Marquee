@@ -75,9 +75,7 @@ _QUEUED_JOB_STATUSES = {"queued", "pending"}
 
 
 async def _worker_counts(db: AsyncSession) -> dict[str, int]:
-    rows = (
-        await db.execute(select(Job.status, func.count()).group_by(Job.status))
-    ).all()
+    rows = (await db.execute(select(Job.status, func.count()).group_by(Job.status))).all()
     counts = {str(status): n for status, n in rows}
     return {
         "active": sum(n for s, n in counts.items() if s in _ACTIVE_JOB_STATUSES),

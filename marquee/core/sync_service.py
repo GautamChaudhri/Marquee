@@ -127,7 +127,9 @@ class SyncService:
         # Clear path validation cache after sync to avoid serving stale data
         # if *arr updates a folder path between syncs.
         _validate_folder_cached.cache_clear()
-        logger.debug("Path validation cache cleared (%d hits)", _validate_folder_cached.cache_info().hits)
+        logger.debug(
+            "Path validation cache cleared (%d hits)", _validate_folder_cached.cache_info().hits
+        )
 
         return report
 
@@ -172,10 +174,7 @@ class SyncService:
         }
 
         # Index existing rows by radarr_id → O(1) lookups
-        existing = {
-            m.radarr_id: m
-            for m in (await self.db.execute(select(Movie))).scalars()
-        }
+        existing = {m.radarr_id: m for m in (await self.db.execute(select(Movie))).scalars()}
 
         for data in raw_movies:
             radarr_id = data["id"]
@@ -228,9 +227,7 @@ class SyncService:
                 movie.quality_profile_id = data.get("qualityProfileId")
                 quality_cutoff_not_met = movie_file.get("qualityCutoffNotMet")
                 movie.quality_cutoff_met = (
-                    None
-                    if quality_cutoff_not_met is None
-                    else not bool(quality_cutoff_not_met)
+                    None if quality_cutoff_not_met is None else not bool(quality_cutoff_not_met)
                 )
                 movie.current_cf_score = (
                     None
@@ -255,9 +252,7 @@ class SyncService:
                 await refresh_letterbox_prefilter_for_movie(self.db, movie)
 
             except Exception:
-                logger.error(
-                    "Error syncing movie radarr_id=%s", radarr_id, exc_info=True
-                )
+                logger.error("Error syncing movie radarr_id=%s", radarr_id, exc_info=True)
                 result.errors += 1
 
         await self.db.commit()
@@ -271,10 +266,7 @@ class SyncService:
 
         raw_series = await self.sonarr.get_series()
 
-        existing = {
-            s.sonarr_id: s
-            for s in (await self.db.execute(select(Series))).scalars()
-        }
+        existing = {s.sonarr_id: s for s in (await self.db.execute(select(Series))).scalars()}
 
         for data in raw_series:
             sonarr_id = data["id"]
@@ -283,9 +275,7 @@ class SyncService:
                 # with a NULL title would fail the NOT NULL constraint at
                 # commit time and abort the whole sync, not just this entry.
                 if not data.get("title"):
-                    logger.warning(
-                        "Skipping series sonarr_id=%s — missing title", sonarr_id
-                    )
+                    logger.warning("Skipping series sonarr_id=%s — missing title", sonarr_id)
                     result.series.errors += 1
                     continue
 
@@ -330,9 +320,7 @@ class SyncService:
                 result.episodes.errors += er.errors
 
             except Exception:
-                logger.error(
-                    "Error syncing series sonarr_id=%s", sonarr_id, exc_info=True
-                )
+                logger.error("Error syncing series sonarr_id=%s", sonarr_id, exc_info=True)
                 result.series.errors += 1
 
         await self.db.commit()
@@ -350,10 +338,10 @@ class SyncService:
 
         # Index existing seasons by season_number
         existing_rows = (
-            await self.db.execute(
-                select(Season).where(Season.series_id == series.id)
-            )
-        ).scalars().all()
+            (await self.db.execute(select(Season).where(Season.series_id == series.id)))
+            .scalars()
+            .all()
+        )
         existing = {s.season_number: s for s in existing_rows}
 
         for sdata in sonarr_seasons:
@@ -394,10 +382,10 @@ class SyncService:
 
         # Index existing episodes by sonarr_episode_id
         existing_rows = (
-            await self.db.execute(
-                select(Episode).where(Episode.series_id == series.id)
-            )
-        ).scalars().all()
+            (await self.db.execute(select(Episode).where(Episode.series_id == series.id)))
+            .scalars()
+            .all()
+        )
         existing = {e.sonarr_episode_id: e for e in existing_rows}
 
         for edata in raw_episodes:
@@ -517,19 +505,21 @@ async def _upsert_movie_media_file(db: AsyncSession, movie: Movie, movie_file: d
     if not path:
         return  # no file yet (movie monitored but not downloaded)
 
-    source_key = (
-        f"radarr:movie-file:{file_id}" if file_id else f"radarr:movie:{movie.id}"
-    )
+    source_key = f"radarr:movie-file:{file_id}" if file_id else f"radarr:movie:{movie.id}"
     container = Path(path).suffix.lstrip(".").lower() or None
     size = movie_file.get("size")
 
     existing = (
-        await db.execute(
-            select(MediaFile).where(
-                MediaFile.movie_id == movie.id, MediaFile.is_active.is_(True)
+        (
+            await db.execute(
+                select(MediaFile).where(
+                    MediaFile.movie_id == movie.id, MediaFile.is_active.is_(True)
+                )
             )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     by_source_key = (
         await db.execute(select(MediaFile).where(MediaFile.source_key == source_key))
     ).scalar_one_or_none()
@@ -566,9 +556,7 @@ async def _upsert_episode_media_files(
         if not file_id or file_id not in file_by_id:
             continue
         ep = (
-            await db.execute(
-                select(Episode).where(Episode.sonarr_episode_id == edata["id"])
-            )
+            await db.execute(select(Episode).where(Episode.sonarr_episode_id == edata["id"]))
         ).scalar_one_or_none()
         if ep is not None:
             eps_by_file.setdefault(file_id, []).append(ep)
@@ -604,9 +592,7 @@ async def _upsert_episode_media_files(
                 )
             ).scalar_one_or_none()
             if link is None:
-                db.add(
-                    EpisodeMediaFile(episode_id=ep.id, media_file_id=media_file.id)
-                )
+                db.add(EpisodeMediaFile(episode_id=ep.id, media_file_id=media_file.id))
 
 
 def _extract_media_info(movie_file: dict) -> tuple[int | None, int | None, str | None]:
@@ -654,6 +640,12 @@ def _extract_hdr(movie_file: dict) -> tuple[str | None, bool | None, bool | None
         or (media_info.get("videoDynamicRange") or "").strip()
         or None
     )
+    # Radarr only populates videoDynamicRangeType for HDR content.
+    # When mediaInfo is present (file was analyzed) but no dynamic-range
+    # field was reported, the file is SDR — not unknown.
+    if hdr_type_raw is None and media_info:
+        has_hdr, has_dv = False, False
+        return "SDR", has_hdr, has_dv
     has_hdr, has_dv = classify_hdr_flags(hdr_type_raw)
     return hdr_type_raw, has_hdr, has_dv
 
@@ -666,12 +658,10 @@ async def _sync_radarr_overlay_reference_data(
 ) -> tuple[dict[int, str], dict[int, dict[int, int]]]:
     """Upsert Radarr custom-format and quality-profile metadata."""
     existing_custom_formats = {
-        row.id: row
-        for row in (await db.execute(select(RadarrCustomFormat))).scalars()
+        row.id: row for row in (await db.execute(select(RadarrCustomFormat))).scalars()
     }
     existing_profiles = {
-        row.id: row
-        for row in (await db.execute(select(RadarrQualityProfile))).scalars()
+        row.id: row for row in (await db.execute(select(RadarrQualityProfile))).scalars()
     }
 
     custom_format_names: dict[int, str] = {}
@@ -718,20 +708,20 @@ async def _sync_radarr_overlay_reference_data(
             placeholder.synced_at = synced_at
             custom_format_names[cf_id] = placeholder.name
 
-    custom_format_ids = {payload.get("id") for payload in custom_formats if payload.get("id") is not None}
-    profile_ids = {payload.get("id") for payload in quality_profiles if payload.get("id") is not None}
+    custom_format_ids = {
+        payload.get("id") for payload in custom_formats if payload.get("id") is not None
+    }
+    profile_ids = {
+        payload.get("id") for payload in quality_profiles if payload.get("id") is not None
+    }
 
     if custom_format_ids:
         await db.execute(
-            delete(RadarrCustomFormat).where(
-                RadarrCustomFormat.id.not_in(custom_format_ids)
-            )
+            delete(RadarrCustomFormat).where(RadarrCustomFormat.id.not_in(custom_format_ids))
         )
     if profile_ids:
         await db.execute(
-            delete(RadarrQualityProfile).where(
-                RadarrQualityProfile.id.not_in(profile_ids)
-            )
+            delete(RadarrQualityProfile).where(RadarrQualityProfile.id.not_in(profile_ids))
         )
 
     await db.execute(delete(RadarrProfileFormatItem))
@@ -769,7 +759,9 @@ async def _replace_movie_custom_format_scores(
     synced_at: datetime,
 ) -> None:
     """Replace the current-file custom-format scores for one movie."""
-    await db.execute(delete(MovieCustomFormatScore).where(MovieCustomFormatScore.movie_id == movie_id))
+    await db.execute(
+        delete(MovieCustomFormatScore).where(MovieCustomFormatScore.movie_id == movie_id)
+    )
 
     for payload in custom_formats:
         cf_id = payload.get("id")
