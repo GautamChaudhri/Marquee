@@ -171,13 +171,12 @@ async def test_hdr_distribution_and_filter(db: AsyncSession, client: AsyncClient
 
     body = (await client.get("/api/hdr?hdr_tags=hdr10p")).json()
     assert body["distribution"] == {
+        "sdr": 1,
         "hdr": 0,
         "hdr10": 1,
         "hdr10p": 1,
         "dovi": 1,
         "dovi_no_fallback": 0,
-        "sdr": 1,
-        "unknown": 0,
     }
     assert body["total"] == 1
     assert [item["title"] for item in body["items"]] == ["Hdr"]

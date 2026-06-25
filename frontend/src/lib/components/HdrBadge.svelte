@@ -8,7 +8,7 @@
 	const META: Record<HdrKind, { label: string; v: string }> = {
 		hdr: { label: 'HDR', v: '--good' },
 		dovi: { label: 'DoVi', v: '--gold' },
-		dovi_no_fallback: { label: 'DoVi-', v: '--low' },
+		dovi_no_fallback: { label: 'DoVi-', v: '--bad' },
 		hdr10p: { label: 'HDR10+', v: '--dovi' },
 		hdr10: { label: 'HDR10', v: '--info' },
 		sdr: { label: 'SDR', v: '--faint' }
