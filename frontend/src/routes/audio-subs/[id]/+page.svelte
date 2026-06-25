@@ -591,6 +591,13 @@
 			selectedTrackIds = tracks.map((t: any) => t.id);
 		}
 	}
+	function selectOnlyTrack(id: string) {
+		if (selectedTrackIds.length === 1 && selectedTrackIds[0] === id) {
+			selectedTrackIds = [];
+		} else {
+			selectedTrackIds = [id];
+		}
+	}
 
 	// Audio selection checkbox helpers
 	function toggleAudioSelect(index: number) {
@@ -605,6 +612,13 @@
 			selectedAudioIndices = [];
 		} else {
 			selectedAudioIndices = audioStreams.map((s: any) => s.index);
+		}
+	}
+	function selectOnlyAudio(index: number) {
+		if (selectedAudioIndices.length === 1 && selectedAudioIndices[0] === index) {
+			selectedAudioIndices = [];
+		} else {
+			selectedAudioIndices = [index];
 		}
 	}
 
@@ -1001,8 +1015,8 @@
 										{#each audioStreams as stream (stream.index)}
 											<tr
 												class:selected={selectedAudioIndices.includes(stream.index)}
-												onclick={() => toggleAudioSelect(stream.index)}
-												onkeydown={(event) => toggleRowFromKeyboard(event, () => toggleAudioSelect(stream.index))}
+												onclick={() => selectOnlyAudio(stream.index)}
+												onkeydown={(event) => toggleRowFromKeyboard(event, () => selectOnlyAudio(stream.index))}
 												role="button"
 												tabindex="0"
 											>
@@ -1119,8 +1133,8 @@
 										{#each tracks as track (track.id)}
 											<tr
 												class:selected={selectedTrackIds.includes(track.id)}
-												onclick={() => toggleTrackSelect(track.id)}
-												onkeydown={(event) => toggleRowFromKeyboard(event, () => toggleTrackSelect(track.id))}
+												onclick={() => selectOnlyTrack(track.id)}
+												onkeydown={(event) => toggleRowFromKeyboard(event, () => selectOnlyTrack(track.id))}
 												role="button"
 												tabindex="0"
 											>
@@ -1212,7 +1226,7 @@
 								<div class="coverage-row">
 									<span class="lbl">Status:</span>
 									<span class="val status-lbl" class:ok={audioStatus === 'ok'} class:gap={audioStatus === 'gap'}>
-										{audioStatus === 'ok' ? '✅ OK' : '⚠️ Gaps Present'}
+										{audioStatus === 'ok' ? 'Full Coverage' : 'Gaps Present'}
 									</span>
 								</div>
 								
@@ -1237,18 +1251,16 @@
 											{/each}
 										</div>
 									</div>
+									{#if missingPreferredAudio.length > 0}
 									<div class="detail-row">
 										<span class="label">Missing Preferred:</span>
 										<div class="tags">
-											{#if missingPreferredAudio.length > 0}
-												{#each missingPreferredAudio as lang}
-													<span class="lang-pill missing">{lang.toUpperCase()}</span>
-												{/each}
-											{:else}
-												<span class="muted font-sm font-good">None (Full Coverage)</span>
-											{/if}
+											{#each missingPreferredAudio as lang}
+												<span class="lang-pill missing">{lang.toUpperCase()}</span>
+											{/each}
 										</div>
 									</div>
+									{/if}
 								</div>
 							</div>
 
@@ -1261,7 +1273,7 @@
 								<div class="coverage-row">
 									<span class="lbl">Status:</span>
 									<span class="val status-lbl" class:ok={subtitleStatus === 'ok'} class:gap={subtitleStatus === 'gap'}>
-										{subtitleStatus === 'ok' ? '✅ OK' : subtitleStatus === 'gap' ? '⚠️ Gaps Present' : '❌ Unscanned'}
+										{subtitleStatus === 'ok' ? 'Full Coverage' : subtitleStatus === 'gap' ? 'Gaps Present' : 'Unscanned'}
 									</span>
 								</div>
 
@@ -1299,18 +1311,16 @@
 												{/each}
 											</div>
 										</div>
+										{#if missingPreferredSubtitles.length > 0}
 										<div class="detail-row">
 											<span class="label">Missing Preferred:</span>
 											<div class="tags">
-												{#if missingPreferredSubtitles.length > 0}
-													{#each missingPreferredSubtitles as lang}
-														<span class="lang-pill missing">{lang.toUpperCase()}</span>
-													{/each}
-												{:else}
-													<span class="muted font-sm font-good">None (Full Coverage)</span>
-												{/if}
+												{#each missingPreferredSubtitles as lang}
+													<span class="lang-pill missing">{lang.toUpperCase()}</span>
+												{/each}
 											</div>
 										</div>
+										{/if}
 									</div>
 								{/if}
 							</div>

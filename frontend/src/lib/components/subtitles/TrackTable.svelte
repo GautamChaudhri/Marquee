@@ -123,6 +123,19 @@
 		}
 	}
 
+	function onRowSelect(index: number) {
+		const track = tracks[index];
+		// If this track is already the only selected one, deselect it
+		if (selectedIds.size === 1 && selectedIds.has(track.id)) {
+			selectedIds.clear();
+			lastSelectedIndex = null;
+		} else {
+			selectedIds.clear();
+			selectedIds.add(track.id);
+			lastSelectedIndex = index;
+		}
+	}
+
 		// Subscribes to and monitors a backend job until terminal state.
 		// Listens for generic SSE ``message`` events (the default for unnamed
 		// ``data:`` lines) plus the terminal ``done`` event.  The backend emits
@@ -399,6 +412,7 @@
 					{track}
 					selected={selectedIds.has(track.id)}
 					onToggle={(e) => onRowToggle(idx, e)}
+					onSelect={() => onRowSelect(idx)}
 				/>
 			{/each}
 		</tbody>

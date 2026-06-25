@@ -50,7 +50,6 @@
 		<span>Embedded</span>
 		<span>External</span>
 		<span>Status</span>
-		<span>Container</span>
 		<span></span>
 	</div>
 
@@ -138,7 +137,7 @@
 	}
 	.row.head {
 		display: grid;
-		grid-template-columns: 40px minmax(0, 1fr) 120px 120px 120px 100px 100px 100px 80px 40px;
+		grid-template-columns: 40px minmax(0, 1fr) 120px 120px 120px 100px 100px 100px 40px;
 		align-items: center;
 		gap: 12px;
 		width: 100%;
