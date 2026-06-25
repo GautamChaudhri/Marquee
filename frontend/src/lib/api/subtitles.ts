@@ -1,7 +1,13 @@
 import { env } from '$env/dynamic/public';
 import { apiGet, apiSend, type Fetch } from './client';
 import { mockSubtitleInventory } from './mock';
-import type { MediaJob, SubtitleInventory, SubtitlePlanRequest, SubtitlePlan } from './types';
+import type {
+	MediaJob,
+	PreferredLanguageState,
+	SubtitleInventory,
+	SubtitlePlanRequest,
+	SubtitlePlan
+} from './types';
 
 const useMocks = () => env.PUBLIC_USE_MOCKS === 'true';
 
@@ -30,6 +36,7 @@ export function inspectMovie(
 	path_present: boolean;
 	inventory: SubtitleInventory;
 	active_job: MediaJob | null;
+	preferred_languages?: PreferredLanguageState;
 }> {
 	if (useMocks()) {
 		return Promise.resolve({
@@ -38,7 +45,15 @@ export function inspectMovie(
 			media_file_id: movieId,
 			path_present: true,
 			inventory: mockSubtitleInventory(movieId),
-			active_job: null
+			active_job: null,
+			preferred_languages: {
+				shared: ['en'],
+				audio: ['en'],
+				subtitles: ['en'],
+				override: false,
+				override_audio: null,
+				override_subtitles: null
+			}
 		});
 	}
 	return apiSend<{
@@ -48,7 +63,40 @@ export function inspectMovie(
 		path_present: boolean;
 		inventory: SubtitleInventory;
 		active_job: MediaJob | null;
+		preferred_languages?: PreferredLanguageState;
 	}>(fetch, 'POST', `/movies/${movieId}/subtitles/inspect`);
+}
+
+export function updateMovieSubtitlePreferences(
+	fetch: Fetch,
+	movieId: number,
+	request: {
+		preferred_audio_languages?: string[] | null;
+		preferred_subtitle_languages?: string[] | null;
+		use_global?: boolean;
+	}
+): Promise<{ movie_id: number; preferred_languages: PreferredLanguageState }> {
+	if (useMocks()) {
+		return Promise.resolve({
+			movie_id: movieId,
+			preferred_languages: {
+				shared: ['en'],
+				audio: request.preferred_audio_languages || ['en'],
+				subtitles: request.preferred_subtitle_languages || ['en'],
+				override: !request.use_global,
+				override_audio: request.use_global ? null : request.preferred_audio_languages || ['en'],
+				override_subtitles: request.use_global
+					? null
+					: request.preferred_subtitle_languages || ['en']
+			}
+		});
+	}
+	return apiSend<{ movie_id: number; preferred_languages: PreferredLanguageState }>(
+		fetch,
+		'PUT',
+		`/movies/${movieId}/subtitles/preferences`,
+		request
+	);
 }
 
 export function createPlan(
@@ -113,4 +161,3 @@ export function scanLibrarySubtitles(
 		`/subtitles/scan-library?force=${force}`
 	);
 }
-

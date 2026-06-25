@@ -19,6 +19,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from marquee.api.library_serializers import effective_movie_preferences
 from marquee.core.media_files import (
     MediaFileNotFoundError,
     MediaFileUnavailableError,
@@ -27,7 +28,7 @@ from marquee.core.media_files import (
 )
 from marquee.core.media_jobs import media_job_manager
 from marquee.core.media_jobs.serialize import job_dict as _media_job_dict
-from marquee.core.subtitles import mutation, service
+from marquee.core.subtitles import coverage, mutation, service
 from marquee.core.subtitles.config import subtitle_settings
 from marquee.database import get_db
 from marquee.media import binaries
@@ -146,12 +147,19 @@ async def download_track(
 
 
 class PlanRequest(BaseModel):
-    operation: str  # subtitle_remove | subtitle_embed | subtitle_metadata
+    operation: str  # subtitle_remove | subtitle_embed | subtitle_metadata | audio_reorder
     track_ids: list[str] = []
     audio_stream_indices: list[int] = []
+    audio_stream_order: list[int] = []
     edits: list[dict] = []
     backup: bool = False
     allow_break: bool = False
+
+
+class MovieSubtitlePreferencesUpdate(BaseModel):
+    preferred_audio_languages: list[str] | None = None
+    preferred_subtitle_languages: list[str] | None = None
+    use_global: bool = False
 
 
 @router.post("/api/media-files/{media_file_id}/subtitle-plans", status_code=201)
@@ -177,6 +185,7 @@ async def create_subtitle_plan(
             params={
                 "track_ids": body.track_ids,
                 "audio_stream_indices": body.audio_stream_indices,
+                "audio_stream_order": body.audio_stream_order,
                 "edits": body.edits,
             },
             backup_requested=body.backup,
@@ -196,6 +205,7 @@ async def create_subtitle_plan(
             "inventory_id": inventory["inventory_id"],
             "track_ids": body.track_ids,
             "audio_stream_indices": body.audio_stream_indices,
+            "audio_stream_order": body.audio_stream_order,
             "edits": body.edits,
             "backup": body.backup,
             "allow_break": body.allow_break,
@@ -246,7 +256,14 @@ async def inspect_movie_subtitles(movie_id: int, db: Annotated[AsyncSession, Dep
         )
 
     try:
-        inventory = await service.get_inventory_dict(db, media_file.id, force=True)
+        preferences = effective_movie_preferences(movie)
+        inventory = await service.get_inventory_dict(
+            db,
+            media_file.id,
+            force=True,
+            preferred_audio_languages=preferences["audio"],
+            preferred_subtitle_languages=preferences["subtitles"],
+        )
     except MediaFileUnavailableError as exc:
         raise _map_resolve_error(exc) from exc
 
@@ -271,8 +288,35 @@ async def inspect_movie_subtitles(movie_id: int, db: Annotated[AsyncSession, Dep
         "media_file_id": media_file.id,
         "path_present": True,
         "inventory": inventory,
+        "preferred_languages": preferences,
         "active_job": _media_job_dict(active_job) if active_job else None,
     }
+
+
+@movies_router.put("/{movie_id}/subtitles/preferences")
+async def update_movie_subtitle_preferences(
+    movie_id: int,
+    body: MovieSubtitlePreferencesUpdate,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    """Set or reset per-movie preferred audio/subtitle language overrides."""
+    movie = (await db.execute(select(Movie).where(Movie.id == movie_id))).scalar_one_or_none()
+    if movie is None:
+        raise HTTPException(status_code=404, detail=f"Movie id={movie_id} not found")
+
+    if body.use_global:
+        movie.preferred_audio_languages_json = None
+        movie.preferred_subtitle_languages_json = None
+    else:
+        movie.preferred_audio_languages_json = coverage.normalize_language_list(
+            body.preferred_audio_languages
+        )
+        movie.preferred_subtitle_languages_json = coverage.normalize_language_list(
+            body.preferred_subtitle_languages
+        )
+    await db.commit()
+    await db.refresh(movie)
+    return {"movie_id": movie.id, "preferred_languages": effective_movie_preferences(movie)}
 
 
 @router.post("/api/media-files/{media_file_id}/subtitles/{track_id}/extract", status_code=202)

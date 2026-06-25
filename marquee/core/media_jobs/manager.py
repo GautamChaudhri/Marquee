@@ -208,6 +208,7 @@ class MediaJobManager:
             "subtitle_remove",
             "subtitle_embed",
             "subtitle_metadata",
+            "audio_reorder",
             "subtitle_restore",
             "letterbox_reencode",
         }:
@@ -235,6 +236,7 @@ class MediaJobManager:
                 "subtitle_remove",
                 "subtitle_embed",
                 "subtitle_metadata",
+                "audio_reorder",
                 "subtitle_restore",
                 "letterbox_reencode",
             }

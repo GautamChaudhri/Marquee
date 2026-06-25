@@ -21,8 +21,9 @@ from marquee.api.library_serializers import (
     hdr_filter,
     poster_status_filter,
 )
-from marquee.database import get_db
 from marquee.core.sort_title import title_sort_expr
+from marquee.core.subtitles import coverage as subtitle_coverage
+from marquee.database import get_db
 from marquee.models import (
     Episode,
     EpisodeMediaFile,
@@ -42,14 +43,35 @@ async def _coverage_by_media_file(db: AsyncSession, media_file_ids: list[int]) -
         return {}
     rows = (
         await db.execute(
-            select(SubtitleInventory.media_file_id, SubtitleInventory.coverage_json).where(
+            select(
+                SubtitleInventory.media_file_id,
+                SubtitleInventory.coverage_json,
+                SubtitleInventory.audio_streams_json,
+            ).where(
                 SubtitleInventory.media_file_id.in_(media_file_ids)
             )
         )
     ).all()
-    return {
-        mid: (cov if isinstance(cov, dict) else json.loads(cov)) if cov else {} for mid, cov in rows
-    }
+    result = {}
+    for mid, cov, audio_json in rows:
+        summary = (cov if isinstance(cov, dict) else json.loads(cov)) if cov else {}
+        audio_streams = (
+            audio_json if isinstance(audio_json, list) else json.loads(audio_json)
+        ) if audio_json else []
+        if summary and "audio_channels_by_language" not in summary:
+            by_language: dict[str, list[str]] = {}
+            for stream in audio_streams:
+                lang = stream.get("language_tag") or "und"
+                label = stream.get("channel_label") or subtitle_coverage.channel_label(stream)
+                if label:
+                    by_language.setdefault(lang, [])
+                    if label not in by_language[lang]:
+                        by_language[lang].append(label)
+            summary["audio_channels_by_language"] = {
+                lang: sorted(labels) for lang, labels in by_language.items()
+            }
+        result[mid] = summary
+    return result
 
 
 @router.get("/movies")

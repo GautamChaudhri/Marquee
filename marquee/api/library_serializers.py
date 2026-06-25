@@ -18,6 +18,8 @@ from sqlalchemy import and_
 from sqlalchemy.sql.elements import ColumnElement
 
 from marquee.core.radarr_overlay import legacy_hdr_label, legacy_hdr_tags
+from marquee.core.subtitles import coverage as subtitle_coverage
+from marquee.core.subtitles.config import subtitle_settings
 from marquee.models import Movie
 
 # Poster status values, in precedence order (first match wins).
@@ -133,15 +135,60 @@ def hdr_filter(value: str) -> ColumnElement[bool] | None:
     return None
 
 
+def effective_movie_preferences(movie: Movie) -> dict:
+    """Preferred languages after applying nullable movie overrides."""
+    override_audio = movie.preferred_audio_languages_json is not None
+    override_subtitles = movie.preferred_subtitle_languages_json is not None
+    audio = (
+        movie.preferred_audio_languages_json
+        if override_audio
+        else subtitle_settings.SUBTITLE_PREFERRED_AUDIO_LANGUAGES
+    )
+    subtitles = (
+        movie.preferred_subtitle_languages_json
+        if override_subtitles
+        else subtitle_settings.SUBTITLE_PREFERRED_SUBTITLE_LANGUAGES
+    )
+    effective_audio, effective_subtitles = subtitle_coverage.effective_preferred_languages(
+        preferred_languages=subtitle_settings.SUBTITLE_PREFERRED_LANGUAGES,
+        preferred_audio_languages=audio,
+        preferred_subtitle_languages=subtitles,
+    )
+    return {
+        "shared": subtitle_coverage.normalize_language_list(
+            subtitle_settings.SUBTITLE_PREFERRED_LANGUAGES
+        ),
+        "audio": effective_audio,
+        "subtitles": effective_subtitles,
+        "override": override_audio or override_subtitles,
+        "override_audio": movie.preferred_audio_languages_json,
+        "override_subtitles": movie.preferred_subtitle_languages_json,
+    }
+
+
+def apply_movie_preferences(movie: Movie, coverage: dict | None) -> dict | None:
+    if not coverage:
+        return None
+    preferences = effective_movie_preferences(movie)
+    result = subtitle_coverage.apply_preferences(
+        coverage,
+        preferred_languages=preferences["shared"],
+        preferred_audio_languages=preferences["audio"],
+        preferred_subtitle_languages=preferences["subtitles"],
+    )
+    result["preferences"] = preferences
+    return result
+
+
 def subtitle_status(coverage: dict | None) -> str | None:
     """``ok`` / ``gap`` from a persisted coverage summary, or ``None`` if unscanned.
 
-    Uses ``missing_preferred_languages`` from
+    Uses combined audio/subtitle missing-preferred fields from
     :func:`marquee.core.subtitles.coverage.compute_coverage`.
     """
     if not coverage:
         return None
-    return "gap" if coverage.get("missing_preferred_languages") else "ok"
+    return "gap" if coverage.get("status") == "gap" else "ok"
 
 
 def enrich_movie(
@@ -151,6 +198,8 @@ def enrich_movie(
     lb_status: str | None,
 ) -> dict:
     """Assemble a list/detail item dict with derived display fields."""
+    effective_coverage = apply_movie_preferences(movie, coverage)
+    preferences = effective_movie_preferences(movie)
     return {
         "id": movie.id,
         "title": movie.title,
@@ -166,7 +215,8 @@ def enrich_movie(
         "hdr": movie_hdr_label(movie),
         "hdr_tags": movie_hdr_tags(movie),
         "letterbox_status": lb_status or "none",
-        "subtitle_status": subtitle_status(coverage),
+        "subtitle_status": subtitle_status(effective_coverage),
         "media_file_id": media_file.id if media_file else None,
-        "subtitle_coverage": coverage,
+        "subtitle_coverage": effective_coverage,
+        "preferred_languages": preferences,
     }

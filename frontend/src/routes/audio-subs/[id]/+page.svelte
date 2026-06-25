@@ -2,8 +2,13 @@
 	import { onDestroy, onMount } from 'svelte';
 	import { browser } from '$app/environment';
 	import { page } from '$app/state';
-	import { getMovie } from '$lib/api/library';
-	import { inspectMovie, getInventory, scanSubtitles, createPlan, extractTrack, previewTrack } from '$lib/api/subtitles';
+	import {
+		inspectMovie,
+		scanSubtitles,
+		createPlan,
+		extractTrack,
+		updateMovieSubtitlePreferences
+	} from '$lib/api/subtitles';
 	import { getGenerators, submitMovieGeneration } from '$lib/api/subtitle-generators';
 	import { getSettings, putSettings } from '$lib/api/system';
 	import { confirmJob, getMediaJob } from '$lib/api/media-jobs';
@@ -12,8 +17,6 @@
 	import { toast } from '$lib/toast';
 	import { bytesH } from '$lib/display';
 	import TabBar from '$lib/components/TabBar.svelte';
-	import SectionHeader from '$lib/components/SectionHeader.svelte';
-	import StatusDot from '$lib/components/StatusDot.svelte';
 	import ProgressBar from '$lib/components/ProgressBar.svelte';
 	import PosterThumb from '$lib/components/PosterThumb.svelte';
 
@@ -44,6 +47,15 @@
 	let selectedAudioIndices = $state<number[]>([]);
 	let deleteAfterExtract = $state(false);
 	let deleteAfterEmbed = $state(false);
+
+	// Movie preferred-language override state
+	let moviePreferencesInitialized = $state(false);
+	let movieOverrideEnabled = $state(false);
+	let movieSeparatePreferred = $state(false);
+	let moviePreferredShared = $state('en');
+	let moviePreferredAudio = $state('en');
+	let moviePreferredSubtitles = $state('en');
+	let savingMoviePreferences = $state(false);
 
 	// Batch Delete States
 	let batchDeleteOpen = $state(false);
@@ -98,12 +110,27 @@
 
 	// Missing preferred languages calculation
 	let preferredLangs = $derived(settings?.subtitles?.preferred_languages || ['en']);
+	let effectiveAudioPreferredLangs = $derived(
+		coverage?.preferred_audio_languages ||
+			settings?.subtitles?.effective_preferred_audio_languages ||
+			preferredLangs
+	);
+	let effectiveSubtitlePreferredLangs = $derived(
+		coverage?.preferred_subtitle_languages ||
+			settings?.subtitles?.effective_preferred_subtitle_languages ||
+			preferredLangs
+	);
 	let missingPreferredAudio = $derived.by(() => {
+		if (coverage?.missing_preferred_audio_languages) {
+			return coverage.missing_preferred_audio_languages;
+		}
 		const audioLangs = new Set((coverage?.audio_languages || []).map((l: string) => l.toLowerCase()));
-		const preferred = preferredLangs.map((l: string) => l.toLowerCase());
+		const preferred = effectiveAudioPreferredLangs.map((l: string) => l.toLowerCase());
 		return preferred.filter((l: string) => !audioLangs.has(l));
 	});
-	let audioStatus = $derived(missingPreferredAudio.length > 0 ? 'gap' : 'ok');
+	let missingPreferredSubtitles = $derived(coverage?.missing_preferred_languages || []);
+	let audioStatus = $derived(coverage?.audio_status || (missingPreferredAudio.length > 0 ? 'gap' : 'ok'));
+	let subtitleStatus = $derived(coverage?.subtitle_status || (missingPreferredSubtitles.length > 0 ? 'gap' : 'ok'));
 
 	// Track Selection Details
 	let selectedTracks = $derived(
@@ -375,26 +402,6 @@
 		}
 	});
 
-	// ── ACTION: Delete Selected Tracks ──
-	// ── ACTION: Delete Selected Tracks (Subtitles and/or Audio) ──
-	async function handleDeleteSelected() {
-		if (!movie || !movie.media_file_id) return;
-		if (selectedTrackIds.length === 0 && selectedAudioIndices.length === 0) return;
-		busy = true;
-		try {
-			const plan = await createPlan(fetch, movie.media_file_id, {
-				operation: 'track_remove',
-				track_ids: selectedTrackIds,
-				audio_stream_indices: selectedAudioIndices
-			});
-			await confirmJob(fetch, plan.job_id);
-			monitorJob(plan.job_id);
-		} catch (e: any) {
-			toast(e.message || 'Delete operation failed', 'bad');
-			busy = false;
-		}
-	}
-
 	// ── ACTION: Extract Embedded to Sidecar ──
 	async function handleExtractTrack() {
 		if (!movie || !movie.media_file_id || !singleSelectedTrack) return;
@@ -607,6 +614,237 @@
 			: null
 	);
 
+	$effect(() => {
+		if (!inspect || moviePreferencesInitialized) return;
+		const prefs = inspect.preferred_languages || coverage?.preferences || movie?.preferred_languages;
+		const shared = prefs?.shared || settings?.subtitles?.preferred_languages || ['en'];
+		const audio = prefs?.audio || settings?.subtitles?.effective_preferred_audio_languages || shared;
+		const subtitles = prefs?.subtitles || settings?.subtitles?.effective_preferred_subtitle_languages || shared;
+		movieOverrideEnabled = Boolean(prefs?.override);
+		moviePreferredShared = shared.join(', ');
+		moviePreferredAudio = audio.join(', ');
+		moviePreferredSubtitles = subtitles.join(', ');
+		movieSeparatePreferred = audio.join(',') !== subtitles.join(',');
+		moviePreferencesInitialized = true;
+	});
+
+	function parseLanguages(value: string) {
+		return value
+			.split(',')
+			.map((s) => s.trim())
+			.filter(Boolean);
+	}
+
+	async function saveMoviePreferences() {
+		if (!movie) return;
+		savingMoviePreferences = true;
+		try {
+			await updateMovieSubtitlePreferences(fetch, movie.id, {
+				preferred_audio_languages: movieSeparatePreferred
+					? parseLanguages(moviePreferredAudio)
+					: parseLanguages(moviePreferredShared),
+				preferred_subtitle_languages: movieSeparatePreferred
+					? parseLanguages(moviePreferredSubtitles)
+					: parseLanguages(moviePreferredShared)
+			});
+			movieOverrideEnabled = true;
+			moviePreferencesInitialized = false;
+			await refreshInventory();
+			toast('Movie preferred languages saved', 'good');
+		} catch (e: any) {
+			toast(e.message || 'Failed to save movie preferred languages', 'bad');
+		} finally {
+			savingMoviePreferences = false;
+		}
+	}
+
+	async function resetMoviePreferences() {
+		if (!movie) return;
+		savingMoviePreferences = true;
+		try {
+			await updateMovieSubtitlePreferences(fetch, movie.id, { use_global: true });
+			movieOverrideEnabled = false;
+			moviePreferencesInitialized = false;
+			await refreshInventory();
+			toast('Movie preferences reset to library defaults', 'good');
+		} catch (e: any) {
+			toast(e.message || 'Failed to reset movie preferred languages', 'bad');
+		} finally {
+			savingMoviePreferences = false;
+		}
+	}
+
+	function audioDefault(stream: any) {
+		return Boolean(stream?.is_default || stream?.disposition?.default || stream?.disposition?.default_flag);
+	}
+	function audioForced(stream: any) {
+		return Boolean(stream?.is_forced || stream?.disposition?.forced || stream?.disposition?.forced_flag);
+	}
+	function audioSdh(stream: any) {
+		return Boolean(stream?.is_sdh || stream?.disposition?.hearing_impaired);
+	}
+	function audioCommentary(stream: any) {
+		return Boolean(
+			stream?.is_commentary ||
+				stream?.disposition?.comment ||
+				stream?.disposition?.commentary ||
+				stream?.disposition?.original
+		);
+	}
+	function audioChannelLabel(stream: any) {
+		return stream?.channel_label || (stream?.channels ? `${stream.channels}ch` : '—');
+	}
+	function audioFormatLabel(stream: any) {
+		return stream?.format_label || stream?.profile || stream?.codec_long_name || '—';
+	}
+	function subtitleCodecLabel(track: any) {
+		return track?.codec_label || (track?.codec || '—').replaceAll('_', ' ').toUpperCase();
+	}
+	function subtitleKindLabel(track: any) {
+		return track?.kind_label || track?.kind || '—';
+	}
+
+	async function runMetadataEdits(edits: any[]) {
+		if (!movie || !movie.media_file_id || edits.length === 0) return;
+		busy = true;
+		try {
+			const plan = await createPlan(fetch, movie.media_file_id, {
+				operation: 'subtitle_metadata',
+				track_ids: [],
+				edits
+			});
+			await confirmJob(fetch, plan.job_id);
+			monitorJob(plan.job_id);
+		} catch (e: any) {
+			toast(e.message || 'Metadata update failed', 'bad');
+			busy = false;
+		}
+	}
+
+	function audioEdit(stream: any, changes: Record<string, boolean>) {
+		return {
+			stream_type: 'audio',
+			audio_stream_index: stream.index,
+			is_default: audioDefault(stream),
+			is_forced: audioForced(stream),
+			is_sdh: audioSdh(stream),
+			is_commentary: audioCommentary(stream),
+			...changes
+		};
+	}
+
+	function subtitleEdit(track: any, changes: Record<string, boolean>) {
+		return {
+			track_id: track.id,
+			is_default: track.is_default,
+			is_forced: track.is_forced,
+			is_sdh: track.is_sdh,
+			is_commentary: track.is_commentary,
+			...changes
+		};
+	}
+
+	async function makeAudioDefault() {
+		if (!singleSelectedAudio) return;
+		await runMetadataEdits(
+			audioStreams.map((stream: any) =>
+				audioEdit(stream, { is_default: stream.index === singleSelectedAudio.index })
+			)
+		);
+	}
+
+	async function toggleAudioCommentary() {
+		if (!singleSelectedAudio) return;
+		await runMetadataEdits([
+			audioEdit(singleSelectedAudio, { is_commentary: !audioCommentary(singleSelectedAudio) })
+		]);
+	}
+
+	async function toggleAudioFlag(field: 'is_forced' | 'is_sdh') {
+		if (!singleSelectedAudio) return;
+		const current = field === 'is_forced' ? audioForced(singleSelectedAudio) : audioSdh(singleSelectedAudio);
+		await runMetadataEdits([audioEdit(singleSelectedAudio, { [field]: !current })]);
+	}
+
+	async function makeSubtitleDefault() {
+		if (!singleSelectedTrack || singleSelectedTrack.source !== 'embedded') return;
+		const embeddedTracks = tracks.filter((track: any) => track.source === 'embedded');
+		await runMetadataEdits(
+			embeddedTracks.map((track: any) =>
+				subtitleEdit(track, { is_default: track.id === singleSelectedTrack.id })
+			)
+		);
+	}
+
+	async function toggleSubtitleFlag(field: 'is_forced' | 'is_sdh' | 'is_commentary') {
+		if (!singleSelectedTrack || singleSelectedTrack.source !== 'embedded') return;
+		await runMetadataEdits([
+			subtitleEdit(singleSelectedTrack, { [field]: !singleSelectedTrack[field] })
+		]);
+	}
+
+	async function deleteAudioSelected() {
+		if (!movie || !movie.media_file_id || selectedAudioIndices.length === 0) return;
+		busy = true;
+		try {
+			const plan = await createPlan(fetch, movie.media_file_id, {
+				operation: 'track_remove',
+				track_ids: [],
+				audio_stream_indices: selectedAudioIndices
+			});
+			await confirmJob(fetch, plan.job_id);
+			monitorJob(plan.job_id);
+		} catch (e: any) {
+			toast(e.message || 'Audio delete failed', 'bad');
+			busy = false;
+		}
+	}
+
+	async function deleteSubtitleSelected() {
+		if (!movie || !movie.media_file_id || selectedTrackIds.length === 0) return;
+		busy = true;
+		try {
+			const plan = await createPlan(fetch, movie.media_file_id, {
+				operation: 'track_remove',
+				track_ids: selectedTrackIds,
+				audio_stream_indices: []
+			});
+			await confirmJob(fetch, plan.job_id);
+			monitorJob(plan.job_id);
+		} catch (e: any) {
+			toast(e.message || 'Subtitle delete failed', 'bad');
+			busy = false;
+		}
+	}
+
+	async function reorderSelectedAudio(direction: 'first' | 'up' | 'down' | 'last') {
+		if (!movie || !movie.media_file_id || !singleSelectedAudio) return;
+		const order = audioStreams.map((stream: any) => stream.index);
+		const current = order.indexOf(singleSelectedAudio.index);
+		if (current < 0) return;
+		const [moved] = order.splice(current, 1);
+		let nextIndex = current;
+		if (direction === 'first') nextIndex = 0;
+		if (direction === 'up') nextIndex = Math.max(0, current - 1);
+		if (direction === 'down') nextIndex = Math.min(order.length, current + 1);
+		if (direction === 'last') nextIndex = order.length;
+		order.splice(nextIndex, 0, moved);
+		if (order.join(',') === audioStreams.map((stream: any) => stream.index).join(',')) return;
+		busy = true;
+		try {
+			const plan = await createPlan(fetch, movie.media_file_id, {
+				operation: 'audio_reorder',
+				track_ids: [],
+				audio_stream_order: order
+			});
+			await confirmJob(fetch, plan.job_id);
+			monitorJob(plan.job_id);
+		} catch (e: any) {
+			toast(e.message || 'Audio reorder failed', 'bad');
+			busy = false;
+		}
+	}
+
 	// Language checkbox helpers for Batch Delete
 	function toggleBatchLang(lang: string) {
 		if (batchLanguages.includes(lang)) {
@@ -614,6 +852,12 @@
 		} else {
 			batchLanguages = [...batchLanguages, lang];
 		}
+	}
+
+	function toggleRowFromKeyboard(event: KeyboardEvent, toggle: () => void) {
+		if (event.key !== 'Enter' && event.key !== ' ') return;
+		event.preventDefault();
+		toggle();
 	}
 </script>
 
@@ -693,29 +937,56 @@
 					
 					<!-- Left Main: Tracks list and controls -->
 					<div class="left-panel">
-						<div class="panel-section header-row">
-							<h4>Media Tracks & Operations</h4>
-							<div class="actions">
-								<button class="btn secondary btn-sm" onclick={handleRescan} disabled={busy}>
-									🔄 Re-Scan File
-								</button>
-							</div>
-						</div>
-
 						<!-- Audio Tracks Section -->
 						<div class="tracks-list-header">
 							<h5>Audio Tracks ({audioStreams.length})</h5>
 						</div>
+						{#if selectedAudioIndices.length > 0}
+							<div class="inline-actions audio-action-panel mq-rise">
+								<div class="inline-actions-head">
+									<span>Audio Actions</span>
+									<strong>{selectedAudioIndices.length} selected</strong>
+								</div>
+								<div class="inline-actions-body">
+									{#if singleSelectedAudio}
+										<div class="action-group">
+											<button class="chip-action" class:active={audioDefault(singleSelectedAudio)} onclick={makeAudioDefault} disabled={busy}>
+												Set Default
+											</button>
+											<button class="chip-action" class:active={audioForced(singleSelectedAudio)} onclick={() => toggleAudioFlag('is_forced')} disabled={busy}>
+												{audioForced(singleSelectedAudio) ? 'Unset Forced' : 'Set Forced'}
+											</button>
+											<button class="chip-action" class:active={audioSdh(singleSelectedAudio)} onclick={() => toggleAudioFlag('is_sdh')} disabled={busy}>
+												{audioSdh(singleSelectedAudio) ? 'Unset HI' : 'Set HI'}
+											</button>
+											<button class="chip-action" class:active={audioCommentary(singleSelectedAudio)} onclick={toggleAudioCommentary} disabled={busy}>
+												{audioCommentary(singleSelectedAudio) ? 'Unset Comment' : 'Set Comment'}
+											</button>
+										</div>
+										<div class="action-group">
+											<button class="chip-action" onclick={() => reorderSelectedAudio('first')} disabled={busy}>Move First</button>
+											<button class="chip-action" onclick={() => reorderSelectedAudio('up')} disabled={busy}>Move Up</button>
+											<button class="chip-action" onclick={() => reorderSelectedAudio('down')} disabled={busy}>Move Down</button>
+											<button class="chip-action" onclick={() => reorderSelectedAudio('last')} disabled={busy}>Move Last</button>
+										</div>
+									{/if}
+									<button class="chip-action danger" onclick={deleteAudioSelected} disabled={busy}>
+										Delete Audio ({selectedAudioIndices.length})
+									</button>
+								</div>
+							</div>
+						{/if}
 						<div class="tracks-table-wrap">
 							<table class="tracks-table">
 								<thead>
 									<tr>
 										<th class="chk-col">
-											<input type="checkbox" checked={audioStreams.length > 0 && selectedAudioIndices.length === audioStreams.length} onchange={toggleAllAudio} />
+											<input class="select-circle" type="checkbox" checked={audioStreams.length > 0 && selectedAudioIndices.length === audioStreams.length} onchange={toggleAllAudio} />
 										</th>
 										<th>Language</th>
 										<th>Source</th>
 										<th>Codec</th>
+										<th>Format</th>
 										<th>Channels</th>
 										<th>Flags</th>
 										<th>Stream</th>
@@ -724,13 +995,19 @@
 								<tbody>
 									{#if audioStreams.length === 0}
 										<tr>
-											<td colspan="7" class="empty-table">No audio tracks found. Re-scan the media file.</td>
+											<td colspan="8" class="empty-table">No audio tracks found. Re-scan the media file.</td>
 										</tr>
 									{:else}
 										{#each audioStreams as stream (stream.index)}
-											<tr class:selected={selectedAudioIndices.includes(stream.index)}>
+											<tr
+												class:selected={selectedAudioIndices.includes(stream.index)}
+												onclick={() => toggleAudioSelect(stream.index)}
+												onkeydown={(event) => toggleRowFromKeyboard(event, () => toggleAudioSelect(stream.index))}
+												role="button"
+												tabindex="0"
+											>
 												<td class="chk-col">
-													<input type="checkbox" checked={selectedAudioIndices.includes(stream.index)} onchange={() => toggleAudioSelect(stream.index)} />
+													<input class="select-circle" type="checkbox" checked={selectedAudioIndices.includes(stream.index)} onclick={(event) => event.stopPropagation()} onchange={() => toggleAudioSelect(stream.index)} />
 												</td>
 												<td>
 													<span class="lang-tag font-mono uppercase">{stream.language_tag || 'und'}</span>
@@ -742,15 +1019,16 @@
 													</span>
 												</td>
 												<td class="font-mono">{stream.codec || '—'}</td>
+												<td>{audioFormatLabel(stream)}</td>
 												<td>
-													<span>{stream.channels ? `${stream.channels}ch` : '—'}</span>
+													<span>{audioChannelLabel(stream)}</span>
 												</td>
 												<td>
 													<div class="flags-row">
-														{#if stream.disposition?.default || stream.disposition?.default_flag}<span class="flag-pill default">DEFAULT</span>{/if}
-														{#if stream.disposition?.forced || stream.disposition?.forced_flag}<span class="flag-pill forced">FORCED</span>{/if}
-														{#if stream.disposition?.hearing_impaired}<span class="flag-pill sdh">SDH</span>{/if}
-														{#if stream.disposition?.comment || stream.disposition?.commentary || stream.disposition?.original}<span class="flag-pill commentary">COMMENT</span>{/if}
+														{#if audioDefault(stream)}<span class="flag-pill default">DEFAULT</span>{/if}
+														{#if audioForced(stream)}<span class="flag-pill forced">FORCED</span>{/if}
+														{#if audioSdh(stream)}<span class="flag-pill sdh">HI</span>{/if}
+														{#if audioCommentary(stream)}<span class="flag-pill commentary">COMMENT</span>{/if}
 													</div>
 												</td>
 												<td class="font-mono font-sm">#{stream.index}</td>
@@ -765,12 +1043,64 @@
 						<div class="tracks-list-header mt-10">
 							<h5>Subtitle Tracks ({tracks.length})</h5>
 						</div>
+						{#if selectedTrackIds.length > 0}
+							<div class="inline-actions subtitle-action-panel mq-rise">
+								<div class="inline-actions-head">
+									<span>Subtitle Actions</span>
+									<strong>{selectedTrackIds.length} selected</strong>
+								</div>
+								<div class="inline-actions-body">
+									{#if singleSelectedTrack && singleSelectedTrack.source === 'embedded'}
+										<div class="action-group">
+											<button class="chip-action" class:active={singleSelectedTrack.is_default} onclick={makeSubtitleDefault} disabled={busy}>
+												Set Default
+											</button>
+											<button class="chip-action" class:active={singleSelectedTrack.is_forced} onclick={() => toggleSubtitleFlag('is_forced')} disabled={busy}>
+												{singleSelectedTrack.is_forced ? 'Unset Forced' : 'Set Forced'}
+											</button>
+											<button class="chip-action" class:active={singleSelectedTrack.is_sdh} onclick={() => toggleSubtitleFlag('is_sdh')} disabled={busy}>
+												{singleSelectedTrack.is_sdh ? 'Unset SDH' : 'Set SDH'}
+											</button>
+											<button class="chip-action" class:active={singleSelectedTrack.is_commentary} onclick={() => toggleSubtitleFlag('is_commentary')} disabled={busy}>
+												{singleSelectedTrack.is_commentary ? 'Unset Comment' : 'Set Comment'}
+											</button>
+										</div>
+									{/if}
+									{#if singleSelectedTrack && selectedAudioIndices.length === 0}
+										{#if singleSelectedTrack.source === 'embedded'}
+											<div class="action-card compact">
+												<button class="btn primary btn-sm" onclick={handleExtractTrack} disabled={busy}>
+													📂 Extract to Sidecar
+												</button>
+												<label class="checkbox-row">
+													<input class="select-circle" type="checkbox" bind:checked={deleteAfterExtract} />
+													<span>Delete embedded track after extraction</span>
+												</label>
+											</div>
+										{:else if singleSelectedTrack.source === 'external'}
+											<div class="action-card compact">
+												<button class="btn primary btn-sm" onclick={handleEmbedTrack} disabled={busy}>
+													📥 Embed into Container
+												</button>
+												<label class="checkbox-row">
+													<input class="select-circle" type="checkbox" bind:checked={deleteAfterEmbed} />
+													<span>Delete sidecar after embedding</span>
+												</label>
+											</div>
+										{/if}
+									{/if}
+									<button class="chip-action danger" onclick={deleteSubtitleSelected} disabled={busy}>
+										Delete Subtitles ({selectedTrackIds.length})
+									</button>
+								</div>
+							</div>
+						{/if}
 						<div class="tracks-table-wrap">
 							<table class="tracks-table">
 								<thead>
 									<tr>
 										<th class="chk-col">
-											<input type="checkbox" checked={tracks.length > 0 && selectedTrackIds.length === tracks.length} onchange={toggleAllTracks} />
+											<input class="select-circle" type="checkbox" checked={tracks.length > 0 && selectedTrackIds.length === tracks.length} onchange={toggleAllTracks} />
 										</th>
 										<th>Language</th>
 										<th>Source</th>
@@ -787,23 +1117,29 @@
 										</tr>
 									{:else}
 										{#each tracks as track (track.id)}
-											<tr class:selected={selectedTrackIds.includes(track.id)}>
+											<tr
+												class:selected={selectedTrackIds.includes(track.id)}
+												onclick={() => toggleTrackSelect(track.id)}
+												onkeydown={(event) => toggleRowFromKeyboard(event, () => toggleTrackSelect(track.id))}
+												role="button"
+												tabindex="0"
+											>
 												<td class="chk-col">
-													<input type="checkbox" checked={selectedTrackIds.includes(track.id)} onchange={() => toggleTrackSelect(track.id)} />
+													<input class="select-circle" type="checkbox" checked={selectedTrackIds.includes(track.id)} onclick={(event) => event.stopPropagation()} onchange={() => toggleTrackSelect(track.id)} />
 												</td>
 												<td>
 													<span class="lang-tag font-mono uppercase">{track.language_tag || 'und'}</span>
-													<span class="lang-name">{track.language_raw || 'Undetermined'}</span>
+													<span class="lang-name">{getLanguageName(track.language_tag)}</span>
 												</td>
 												<td>
 													<span class="source-badge" class:external={track.source === 'external'}>
 														{track.source}
 													</span>
 												</td>
-												<td class="font-mono">{track.codec || '—'}</td>
+												<td class="font-mono">{subtitleCodecLabel(track)}</td>
 												<td>
 													<span class="kind-badge" class:bitmap={track.kind === 'bitmap'}>
-														{track.kind}
+														{subtitleKindLabel(track)}
 													</span>
 												</td>
 												<td>
@@ -823,52 +1159,49 @@
 							</table>
 						</div>
 
-						<!-- Unified Operations Command Bar -->
-						<div class="commands-bar mq-rise">
-							<h5>Track Actions</h5>
-							{#if selectedTrackIds.length === 0 && selectedAudioIndices.length === 0}
-								<p class="help-text">Select one or more tracks in the lists to reveal modification actions.</p>
-							{:else}
-								<div class="commands-controls">
-									<!-- Contextual Single Subtitle Track Actions -->
-									{#if singleSelectedTrack && selectedAudioIndices.length === 0}
-										{#if singleSelectedTrack.source === 'embedded'}
-											<div class="action-card">
-												<button class="btn primary" onclick={handleExtractTrack} disabled={busy}>
-													📂 Extract to Sidecar File
-												</button>
-												<label class="checkbox-row">
-													<input type="checkbox" bind:checked={deleteAfterExtract} />
-													<span>Delete embedded track from video container after extraction completes</span>
-												</label>
-											</div>
-										{:else if singleSelectedTrack.source === 'external'}
-											<div class="action-card">
-												<button class="btn primary" onclick={handleEmbedTrack} disabled={busy}>
-													📥 Embed into Video Container
-												</button>
-												<label class="checkbox-row">
-													<input type="checkbox" bind:checked={deleteAfterEmbed} />
-													<span>Delete external sidecar file (.srt) after embedding completes</span>
-												</label>
-											</div>
-										{/if}
-									{/if}
-
-									<!-- Delete Selected (always available when > 0 items checked) -->
-									<div class="action-card delete-card">
-										<button class="btn danger" onclick={handleDeleteSelected} disabled={busy}>
-											🗑️ Delete Selected ({selectedTrackIds.length + selectedAudioIndices.length})
-										</button>
-										<span class="help-text">Permanently remuxes the video container file or unlinks the sidecar subtitle files.</span>
-									</div>
-								</div>
-							{/if}
-						</div>
 					</div>
 
 					<!-- Right Panel: Coverage & Batch Delete Drawer -->
 					<div class="right-panel">
+						<button class="rescan-side-button" onclick={handleRescan} disabled={busy}>
+							🔄 Re-Scan File
+						</button>
+
+						<div class="panel-section movie-preferences-box">
+							<div class="movie-preferences-head">
+								<h4>Preferred Languages</h4>
+								<span class="inherit-badge" class:override={movieOverrideEnabled}>
+									{movieOverrideEnabled ? 'Movie Override' : 'Library Default'}
+								</span>
+							</div>
+							<label class="checkbox-row compact-row">
+								<input class="select-circle" type="checkbox" bind:checked={movieSeparatePreferred} />
+								<span>Separate audio and subtitles</span>
+							</label>
+							<label class="pref-field">
+								<span>{movieSeparatePreferred ? 'Shared fallback' : 'Audio & subtitles'}</span>
+								<input type="text" bind:value={moviePreferredShared} placeholder="en, es, fr" autocomplete="off" />
+							</label>
+							{#if movieSeparatePreferred}
+								<label class="pref-field">
+									<span>Audio</span>
+									<input type="text" bind:value={moviePreferredAudio} placeholder="en, es" autocomplete="off" />
+								</label>
+								<label class="pref-field">
+									<span>Subtitles</span>
+									<input type="text" bind:value={moviePreferredSubtitles} placeholder="en, fr" autocomplete="off" />
+								</label>
+							{/if}
+							<div class="preferences-actions">
+								<button class="btn secondary btn-sm" onclick={resetMoviePreferences} disabled={savingMoviePreferences || !movieOverrideEnabled}>
+									Reset
+								</button>
+								<button class="btn primary btn-sm" onclick={saveMoviePreferences} disabled={savingMoviePreferences}>
+									{savingMoviePreferences ? 'Saving...' : 'Save'}
+								</button>
+							</div>
+						</div>
+
 						<!-- Coverage Box -->
 						<div class="panel-section coverage-box">
 							<h4>Language Coverage Status</h4>
@@ -897,6 +1230,14 @@
 										</div>
 									</div>
 									<div class="detail-row">
+										<span class="label">Preferred:</span>
+										<div class="tags">
+											{#each effectiveAudioPreferredLangs as lang}
+												<span class="lang-pill {getLanguageClass(lang)}">{lang.toUpperCase()}</span>
+											{/each}
+										</div>
+									</div>
+									<div class="detail-row">
 										<span class="label">Missing Preferred:</span>
 										<div class="tags">
 											{#if missingPreferredAudio.length > 0}
@@ -919,8 +1260,8 @@
 								<div class="section-subtitle">Subtitles</div>
 								<div class="coverage-row">
 									<span class="lbl">Status:</span>
-									<span class="val status-lbl" class:ok={movie.subtitle_status === 'ok'} class:gap={movie.subtitle_status === 'gap'}>
-										{movie.subtitle_status === 'ok' ? '✅ OK' : movie.subtitle_status === 'gap' ? '⚠️ Gaps Present' : '❌ Unscanned'}
+									<span class="val status-lbl" class:ok={subtitleStatus === 'ok'} class:gap={subtitleStatus === 'gap'}>
+										{subtitleStatus === 'ok' ? '✅ OK' : subtitleStatus === 'gap' ? '⚠️ Gaps Present' : '❌ Unscanned'}
 									</span>
 								</div>
 
@@ -951,10 +1292,18 @@
 											</div>
 										</div>
 										<div class="detail-row">
+											<span class="label">Preferred:</span>
+											<div class="tags">
+												{#each effectiveSubtitlePreferredLangs as lang}
+													<span class="lang-pill {getLanguageClass(lang)}">{lang.toUpperCase()}</span>
+												{/each}
+											</div>
+										</div>
+										<div class="detail-row">
 											<span class="label">Missing Preferred:</span>
 											<div class="tags">
-												{#if coverage.missing_preferred_languages && coverage.missing_preferred_languages.length > 0}
-													{#each coverage.missing_preferred_languages as lang}
+												{#if missingPreferredSubtitles.length > 0}
+													{#each missingPreferredSubtitles as lang}
 														<span class="lang-pill missing">{lang.toUpperCase()}</span>
 													{/each}
 												{:else}
@@ -1018,7 +1367,7 @@
 											<div class="checklist-grid">
 												{#each uniqueLanguagesForBatch as lang}
 													<label class="chk-item">
-														<input type="checkbox" checked={batchLanguages.includes(lang)} onchange={() => toggleBatchLang(lang)} />
+														<input class="select-circle" type="checkbox" checked={batchLanguages.includes(lang)} onchange={() => toggleBatchLang(lang)} />
 														<span>{lang.toUpperCase()}</span>
 													</label>
 												{/each}
@@ -1342,6 +1691,69 @@
 		align-items: center;
 		padding: 14px 20px;
 	}
+	.inline-actions {
+		border: 1px solid var(--line);
+		border-radius: var(--radius);
+		background: color-mix(in srgb, var(--gold) 3%, var(--panel));
+		padding: 12px;
+		display: flex;
+		flex-direction: column;
+		gap: 10px;
+	}
+	.audio-action-panel {
+		border-color: color-mix(in srgb, #79c0ff 28%, var(--line));
+	}
+	.subtitle-action-panel {
+		border-color: color-mix(in srgb, var(--gold) 30%, var(--line));
+	}
+	.inline-actions-head {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 12px;
+		font-size: 11px;
+		text-transform: uppercase;
+		font-weight: 750;
+		color: var(--faint2);
+	}
+	.inline-actions-head strong {
+		color: var(--gold);
+	}
+	.inline-actions-body,
+	.action-group {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		flex-wrap: wrap;
+	}
+	.chip-action {
+		border: 1px solid var(--line2);
+		background: var(--panel2);
+		color: var(--text);
+		border-radius: 999px;
+		padding: 6px 10px;
+		font-size: 12px;
+		font-weight: 650;
+		cursor: pointer;
+	}
+	.chip-action:hover:not(:disabled),
+	.chip-action.active {
+		border-color: var(--gold);
+		color: var(--gold);
+		box-shadow: 0 0 0 2px var(--gold-soft);
+	}
+	.chip-action.danger {
+		border-color: color-mix(in srgb, var(--bad) 40%, var(--line));
+		color: var(--bad);
+	}
+	.chip-action:disabled {
+		opacity: 0.55;
+		cursor: not-allowed;
+	}
+	.action-card.compact {
+		padding: 10px;
+		gap: 8px;
+	}
 
 	/* Table design */
 	.tracks-table-wrap {
@@ -1377,15 +1789,37 @@
 	.tracks-table tr.selected td {
 		background: color-mix(in srgb, var(--gold) 5%, transparent);
 	}
+	.tracks-table tbody tr[role='button'] {
+		cursor: pointer;
+	}
+	.tracks-table tbody tr[role='button']:focus-visible td {
+		outline: 1px solid var(--gold);
+		outline-offset: -1px;
+	}
 	.chk-col {
 		width: 40px;
 		text-align: center;
 	}
-	.chk-col input {
-		width: 14px;
-		height: 14px;
-		accent-color: var(--gold);
+	.select-circle {
+		appearance: none;
+		width: 15px;
+		height: 15px;
+		border-radius: 999px;
+		border: 1px solid var(--line2);
+		background: var(--ink2);
 		cursor: pointer;
+		box-shadow: inset 0 0 0 4px var(--ink2);
+		transition: background-color 0.15s, border-color 0.15s, box-shadow 0.15s;
+		vertical-align: middle;
+	}
+	.select-circle:checked {
+		border-color: var(--gold);
+		background: var(--gold);
+		box-shadow: 0 0 0 3px var(--gold-soft), 0 0 14px rgba(255, 190, 73, 0.42);
+	}
+	.select-circle:focus-visible {
+		outline: 2px solid color-mix(in srgb, var(--gold) 50%, transparent);
+		outline-offset: 2px;
 	}
 	.lang-tag {
 		font-weight: 700;
@@ -1471,29 +1905,6 @@
 		color: var(--muted);
 	}
 
-	/* Command action bar styling */
-	.commands-bar {
-		background: var(--panel);
-		border: 1px solid var(--line);
-		border-radius: var(--radius);
-		padding: 20px;
-		display: flex;
-		flex-direction: column;
-		gap: 12px;
-	}
-	.commands-bar h5 {
-		margin: 0;
-		font-size: 13.5px;
-		font-weight: 600;
-		text-transform: uppercase;
-		letter-spacing: 0.03em;
-		color: var(--faint2);
-	}
-	.commands-controls {
-		display: flex;
-		flex-direction: column;
-		gap: 16px;
-	}
 	.action-card {
 		background: var(--panel2);
 		border: 1px solid var(--line);
@@ -1511,27 +1922,90 @@
 		font-size: 12px;
 		color: var(--muted);
 	}
-	.checkbox-row input {
-		width: 14px;
-		height: 14px;
+	.checkbox-row.compact-row {
+		font-size: 12.5px;
+	}
+	.checkbox-row input:not(.select-circle) {
 		accent-color: var(--gold);
 	}
-	.delete-card {
-		border-color: color-mix(in srgb, var(--bad) 30%, var(--line));
-		background: color-mix(in srgb, var(--bad) 3%, var(--panel2));
-		flex-direction: row;
-		align-items: center;
-		justify-content: space-between;
-	}
-	.delete-card .help-text {
-		margin: 0;
-	}
-
 	/* Right Panel components */
 	.right-panel {
 		display: flex;
 		flex-direction: column;
 		gap: 20px;
+	}
+	.rescan-side-button {
+		width: 100%;
+		border: 1px solid var(--line);
+		background: var(--panel);
+		color: var(--text);
+		border-radius: var(--radius);
+		padding: 12px 14px;
+		font-size: 13px;
+		font-weight: 700;
+		cursor: pointer;
+	}
+	.rescan-side-button:hover:not(:disabled) {
+		border-color: var(--gold);
+		color: var(--gold);
+		box-shadow: 0 0 0 2px var(--gold-soft);
+	}
+	.rescan-side-button:disabled {
+		opacity: 0.55;
+		cursor: not-allowed;
+	}
+	.movie-preferences-box {
+		gap: 12px;
+	}
+	.movie-preferences-head {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 10px;
+	}
+	.inherit-badge {
+		border: 1px solid var(--line2);
+		background: var(--panel2);
+		color: var(--muted);
+		border-radius: 999px;
+		padding: 3px 8px;
+		font-size: 10.5px;
+		font-weight: 700;
+	}
+	.inherit-badge.override {
+		border-color: color-mix(in srgb, var(--gold) 40%, transparent);
+		background: var(--gold-soft);
+		color: var(--gold);
+	}
+	.pref-field {
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+	}
+	.pref-field span {
+		color: var(--faint2);
+		font-size: 10.5px;
+		font-weight: 750;
+		text-transform: uppercase;
+	}
+	.pref-field input {
+		width: 100%;
+		border: 1px solid var(--line);
+		background: var(--panel2);
+		color: var(--text);
+		border-radius: var(--radius-sm);
+		padding: 8px 10px;
+		font-size: 12.5px;
+		outline: none;
+	}
+	.pref-field input:focus {
+		border-color: var(--gold);
+		box-shadow: 0 0 0 2px var(--gold-soft);
+	}
+	.preferences-actions {
+		display: flex;
+		justify-content: flex-end;
+		gap: 8px;
 	}
 	.coverage-box {
 		gap: 10px;
@@ -1630,11 +2104,6 @@
 		flex-direction: column;
 		gap: 6px;
 	}
-	.languages-checklist .label {
-		font-size: 11.5px;
-		font-weight: 600;
-		color: var(--muted);
-	}
 	.checklist-grid {
 		display: grid;
 		grid-template-columns: repeat(2, 1fr);
@@ -1653,30 +2122,8 @@
 		cursor: pointer;
 		font-size: 12px;
 	}
-	.chk-item input {
+	.chk-item input:not(.select-circle) {
 		accent-color: var(--gold);
-	}
-
-	/* Simple Table */
-	.simple-table {
-		width: 100%;
-		border-collapse: collapse;
-		font-size: 12px;
-	}
-	.simple-table th, .simple-table td {
-		padding: 6px 8px;
-		border-bottom: 1px solid var(--line);
-		text-align: left;
-	}
-	.simple-table th {
-		background: var(--panel2);
-		color: var(--muted);
-		font-size: 10px;
-		text-transform: uppercase;
-		font-weight: 700;
-	}
-	.simple-table tr:last-child td {
-		border-bottom: none;
 	}
 
 	/* AI Generation Tab Grid */

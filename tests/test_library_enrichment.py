@@ -9,8 +9,16 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from marquee.core.subtitles.config import subtitle_settings
 from marquee.main import app
 from marquee.models import LetterboxState, MediaFile, Movie, SubtitleInventory
+
+
+@pytest.fixture(autouse=True)
+def _preferred_languages_reset(monkeypatch):
+    monkeypatch.setattr(subtitle_settings, "SUBTITLE_PREFERRED_LANGUAGES", ["en"])
+    monkeypatch.setattr(subtitle_settings, "SUBTITLE_PREFERRED_AUDIO_LANGUAGES", None)
+    monkeypatch.setattr(subtitle_settings, "SUBTITLE_PREFERRED_SUBTITLE_LANGUAGES", None)
 
 
 @pytest_asyncio.fixture
@@ -76,10 +84,23 @@ async def _seed(db: AsyncSession) -> None:
         [
             SubtitleInventory(
                 media_file_id=mf_a.id,
-                coverage_json=json.dumps({"missing_preferred_languages": ["eng"]}),
+                coverage_json=json.dumps(
+                    {
+                        "audio_languages": ["en"],
+                        "full_dialogue_languages": [],
+                        "missing_preferred_languages": ["en"],
+                    }
+                ),
             ),
             SubtitleInventory(
-                media_file_id=mf_c.id, coverage_json=json.dumps({"missing_preferred_languages": []})
+                media_file_id=mf_c.id,
+                coverage_json=json.dumps(
+                    {
+                        "audio_languages": ["en"],
+                        "full_dialogue_languages": ["en"],
+                        "missing_preferred_languages": [],
+                    }
+                ),
             ),
         ]
     )

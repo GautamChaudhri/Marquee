@@ -195,6 +195,130 @@ async def link_or_copy(src: Path, dst: Path, *, bwlimit_kbps: int) -> str:
     return "copy"
 
 
+def _as_bool(value) -> bool | None:
+    if value is None:
+        return None
+    return bool(value)
+
+
+def _apply_metadata_edits(
+    tracks: list[dict],
+    audio_streams: list[dict],
+    edits: list[dict],
+) -> tuple[list[dict], list[dict]]:
+    """Return preview copies with user metadata/flag edits applied."""
+    after_tracks = [dict(track) for track in tracks]
+    after_audio = [dict(stream) for stream in audio_streams]
+    tracks_by_id = {track["id"]: track for track in after_tracks}
+    audio_by_index = {stream.get("index"): stream for stream in after_audio}
+
+    for edit in edits:
+        target = None
+        if edit.get("track_id"):
+            target = tracks_by_id.get(edit["track_id"])
+        elif edit.get("stream_type") == "audio" or edit.get("audio_stream_index") is not None:
+            target = audio_by_index.get(edit.get("audio_stream_index", edit.get("stream_index")))
+        if target is None:
+            continue
+
+        if "language_tag" in edit:
+            target["language_tag"] = edit["language_tag"]
+        if "title" in edit:
+            target["title"] = edit["title"]
+        for field in ("is_default", "is_forced", "is_sdh", "is_commentary"):
+            if field in edit:
+                target[field] = _as_bool(edit[field])
+                if "disposition" in target:
+                    disposition_key = {
+                        "is_default": "default",
+                        "is_forced": "forced",
+                        "is_sdh": "hearing_impaired",
+                        "is_commentary": "comment",
+                    }[field]
+                    target["disposition"][disposition_key] = int(bool(edit[field]))
+
+    return after_tracks, after_audio
+
+
+def _stream_positions(source_probe: probe.ProbeResult) -> tuple[dict[int, int], dict[int, int]]:
+    subtitle_positions = {
+        stream.stream_index: idx
+        for idx, stream in enumerate(source_probe.subtitles)
+        if stream.stream_index is not None
+    }
+    audio_positions: dict[int, int] = {}
+    for idx, stream in enumerate(source_probe.audio_streams):
+        index = stream.get("index")
+        if isinstance(index, int):
+            audio_positions[index] = idx
+    return subtitle_positions, audio_positions
+
+
+def _metadata_track_ref(
+    *,
+    family: str,
+    stream_type: str,
+    stream_index: int | None,
+    tool_track_id: int | None,
+    subtitle_positions: dict[int, int],
+    audio_positions: dict[int, int],
+) -> int | None:
+    if family == "mkv":
+        return tool_track_id
+    if stream_index is None:
+        return None
+    positions = audio_positions if stream_type == "audio" else subtitle_positions
+    return positions.get(stream_index)
+
+
+def _metadata_bool(edit: dict, source: dict, field: str) -> bool | None:
+    if field in edit:
+        return _as_bool(edit[field])
+    if field in source:
+        return _as_bool(source[field])
+    disposition = source.get("disposition") or {}
+    disposition_key = {
+        "is_default": "default",
+        "is_forced": "forced",
+        "is_sdh": "hearing_impaired",
+        "is_commentary": "comment",
+    }[field]
+    if disposition_key in disposition:
+        return bool(disposition[disposition_key])
+    return None
+
+
+def _build_audio_reorder_args(
+    src: Path,
+    out: Path,
+    source_probe: probe.ProbeResult,
+    requested_order: list[int],
+) -> list[str]:
+    """Build an ffmpeg stream-copy remux that reorders audio streams only."""
+    requested = list(dict.fromkeys(requested_order))
+    args = ["-y", "-i", binaries.safe_media_path(src)]
+    inserted_audio = False
+
+    for stream in source_probe.streams:
+        index = stream.get("index")
+        if index is None:
+            continue
+        if stream.get("codec_type") == "audio":
+            if inserted_audio:
+                continue
+            for audio_index in requested:
+                args += ["-map", f"0:{audio_index}"]
+            inserted_audio = True
+            continue
+        args += ["-map", f"0:{index}"]
+
+    if not inserted_audio:
+        for audio_index in requested:
+            args += ["-map", f"0:{audio_index}"]
+    args += ["-c", "copy", binaries.safe_media_path(out)]
+    return args
+
+
 # ---------------------------------------------------------------------------
 # Planning (no media writes)
 # ---------------------------------------------------------------------------
@@ -216,6 +340,8 @@ async def build_plan(
     caps = inventory["capabilities"]
     warnings: list[dict] = []
     after_tracks: list[dict]
+    audio = inventory.get("audio_streams", [])
+    after_audio: list[dict] = list(audio)
 
     if operation in ("subtitle_remove", "track_remove"):
         remove_ids = set(params.get("track_ids", []))
@@ -249,7 +375,6 @@ async def build_plan(
             warnings.append({"code": "all_subtitles_removed", "requires_override": True})
 
         # Audio stream removal validation and planning
-        audio = inventory.get("audio_streams", [])
         audio_remove_indices = set(params.get("audio_stream_indices", []))
         audio_indices = {a.get("index") for a in audio}
         unknown_audio = audio_remove_indices - audio_indices
@@ -288,22 +413,81 @@ async def build_plan(
             after_tracks.append({**track, "source": "embedded"})
 
     elif operation == "subtitle_metadata":
-        after_tracks = list(tracks)  # metadata edits don't change coverage shape much
+        edits = params.get("edits", [])
+        edit_track_ids = {e.get("track_id") for e in edits if e.get("track_id")}
+        unknown = edit_track_ids - set(by_id)
+        if unknown:
+            raise PlanError(f"unknown track ids: {sorted(unknown)}")
+        audio_indices = {a.get("index") for a in audio}
+        edit_audio_indices = {
+            e.get("audio_stream_index", e.get("stream_index"))
+            for e in edits
+            if e.get("stream_type") == "audio" or e.get("audio_stream_index") is not None
+        }
+        edit_audio_indices.discard(None)
+        unknown_audio = edit_audio_indices - audio_indices
+        if unknown_audio:
+            raise PlanError(f"unknown audio stream indices: {sorted(unknown_audio)}")
         if not caps["can_edit_metadata"]:
             warnings.append({"code": "metadata_edit_unsupported", "requires_override": False})
 
+        if family == "mkv":
+            missing_track_ids = sorted(
+                tid
+                for tid in edit_track_ids
+                if by_id[tid].get("source") == "embedded"
+                and by_id[tid].get("tool_track_id") is None
+            )
+            if missing_track_ids:
+                warnings.append(
+                    {
+                        "code": "mkv_metadata_track_ids_unavailable",
+                        "track_ids": missing_track_ids,
+                        "requires_override": False,
+                    }
+                )
+            audio_by_index = {a.get("index"): a for a in audio}
+            missing_audio_ids = sorted(
+                index
+                for index in edit_audio_indices
+                if audio_by_index[index].get("tool_track_id") is None
+            )
+            if missing_audio_ids:
+                warnings.append(
+                    {
+                        "code": "mkv_audio_metadata_track_ids_unavailable",
+                        "stream_indices": missing_audio_ids,
+                        "requires_override": False,
+                    }
+                )
+
+        after_tracks, after_audio = _apply_metadata_edits(tracks, audio, edits)
+
+    elif operation == "audio_reorder":
+        requested_order = params.get("audio_stream_order", [])
+        if not caps["can_remove"]:
+            warnings.append({"code": caps["can_remove_reason"], "requires_override": False})
+        audio_indices = [a.get("index") for a in audio if a.get("index") is not None]
+        if not audio_indices:
+            raise PlanError("no audio streams available to reorder")
+        if len(requested_order) != len(audio_indices) or set(requested_order) != set(
+            audio_indices
+        ):
+            raise PlanError("audio_stream_order must contain every audio stream index once")
+        audio_by_index = {a.get("index"): a for a in audio}
+        after_audio = [audio_by_index[index] for index in requested_order]
+        after_tracks = list(tracks)
+
     else:
         raise PlanError(f"unsupported plan operation: {operation}")
-
-    audio = inventory.get("audio_streams", [])
-    audio_remove_indices = set(params.get("audio_stream_indices", []))
-    after_audio = [a for a in audio if a.get("index") not in audio_remove_indices]
 
     cov_before = inventory.get("coverage", {})
     cov_after = coverage.compute_coverage(
         after_tracks,
         after_audio,
         preferred_languages=subtitle_settings.SUBTITLE_PREFERRED_LANGUAGES,
+        preferred_audio_languages=subtitle_settings.SUBTITLE_PREFERRED_AUDIO_LANGUAGES,
+        preferred_subtitle_languages=subtitle_settings.SUBTITLE_PREFERRED_SUBTITLE_LANGUAGES,
     )
 
     free_bytes = (
@@ -312,13 +496,15 @@ async def build_plan(
     blocking_codes = {
         "container_not_writable",
         "mkv_track_ids_unavailable",
+        "mkv_metadata_track_ids_unavailable",
+        "mkv_audio_metadata_track_ids_unavailable",
     }
     can_execute = not any(w.get("code") in blocking_codes for w in warnings)
 
     return {
         "operation": operation,
-        "before": {"tracks": tracks, "coverage": cov_before},
-        "after": {"tracks": after_tracks, "coverage": cov_after},
+        "before": {"tracks": tracks, "audio_streams": audio, "coverage": cov_before},
+        "after": {"tracks": after_tracks, "audio_streams": after_audio, "coverage": cov_after},
         "warnings": warnings,
         "capabilities": {"can_execute": can_execute},
         "storage": {
@@ -390,8 +576,8 @@ async def execute_job(db: AsyncSession, job, emit) -> dict:
     )
 
     if argv is not None:
-        await emit(db, job.job_id, "remux", "start", message=f"Running {adapter.binary}")
         binary, args = argv
+        await emit(db, job.job_id, "remux", "start", message=f"Running {binary}")
         binary_path = binaries.resolve(binary) or binary
 
         # Prefix execution with nice and ionice if available to prioritize system and web server stability
@@ -554,20 +740,89 @@ async def _build_argv(db, job, operation, request, source_probe, adapter, out, r
         )
 
     if operation == "subtitle_metadata":
-        edits = [
-            MetadataEdit(
-                track_ref=e.get("tool_track_id")
-                if e.get("tool_track_id") is not None
-                else e.get("stream_index", 0),
-                language_tag=e.get("language_tag"),
-                title=e.get("title"),
-                is_default=e.get("is_default"),
-                is_forced=e.get("is_forced"),
-                is_sdh=e.get("is_sdh"),
+        family = capabilities.container_family(source_probe.container)
+        subtitle_positions, audio_positions = _stream_positions(source_probe)
+        source_audio_by_index = {
+            stream.get("index"): stream
+            for stream in source_probe.audio_streams
+            if stream.get("index") is not None
+        }
+        edits: list[MetadataEdit] = []
+        for edit in request.get("edits", []):
+            if edit.get("stream_type") == "audio" or edit.get("audio_stream_index") is not None:
+                stream_index = edit.get("audio_stream_index", edit.get("stream_index"))
+                source_audio = source_audio_by_index.get(stream_index)
+                if source_audio is None:
+                    continue
+                track_ref = _metadata_track_ref(
+                    family=family,
+                    stream_type="audio",
+                    stream_index=stream_index,
+                    tool_track_id=source_audio.get("tool_track_id"),
+                    subtitle_positions=subtitle_positions,
+                    audio_positions=audio_positions,
+                )
+                if track_ref is None:
+                    raise PreflightError(
+                        "metadata_track_ref_unavailable",
+                        f"audio stream {stream_index} cannot be addressed for metadata edits",
+                    )
+                edits.append(
+                    MetadataEdit(
+                        track_ref=track_ref,
+                        stream_type="audio",
+                        language_tag=edit.get("language_tag"),
+                        title=edit.get("title"),
+                        is_default=_metadata_bool(edit, source_audio, "is_default"),
+                        is_forced=_metadata_bool(edit, source_audio, "is_forced"),
+                        is_sdh=_metadata_bool(edit, source_audio, "is_sdh"),
+                        is_commentary=_metadata_bool(edit, source_audio, "is_commentary"),
+                    )
+                )
+                continue
+
+            track = by_id.get(edit.get("track_id"))
+            if track is None or track.source != "embedded":
+                continue
+            track_ref = _metadata_track_ref(
+                family=family,
+                stream_type="subtitle",
+                stream_index=track.stream_index,
+                tool_track_id=track.tool_track_id,
+                subtitle_positions=subtitle_positions,
+                audio_positions=audio_positions,
             )
-            for e in request.get("edits", [])
-        ]
+            if track_ref is None:
+                raise PreflightError(
+                    "metadata_track_ref_unavailable",
+                    f"subtitle track {track.id} cannot be addressed for metadata edits",
+                )
+            source_track = {
+                "is_default": track.is_default,
+                "is_forced": track.is_forced,
+                "is_sdh": track.is_sdh,
+                "is_commentary": track.is_commentary,
+            }
+            edits.append(
+                MetadataEdit(
+                    track_ref=track_ref,
+                    stream_type="subtitle",
+                    language_tag=edit.get("language_tag"),
+                    title=edit.get("title"),
+                    is_default=_metadata_bool(edit, source_track, "is_default"),
+                    is_forced=_metadata_bool(edit, source_track, "is_forced"),
+                    is_sdh=_metadata_bool(edit, source_track, "is_sdh"),
+                    is_commentary=_metadata_bool(edit, source_track, "is_commentary"),
+                )
+            )
         return (adapter.binary, adapter.build_metadata(resolved.path, out, edits)), 0, 0, []
+
+    if operation == "audio_reorder":
+        order = request.get("audio_stream_order", [])
+        current_order = [stream.get("index") for stream in source_probe.audio_streams]
+        if order == current_order:
+            return None, 0, 0, []
+        return ("ffmpeg", _build_audio_reorder_args(resolved.path, out, source_probe, order)), 0, 0, []
 
     raise PreflightError("unsupported_operation", operation)
 
