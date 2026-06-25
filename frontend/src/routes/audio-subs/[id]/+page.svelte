@@ -12,7 +12,7 @@
 	import { getGenerators, submitMovieGeneration } from '$lib/api/subtitle-generators';
 	import { getSettings, putSettings } from '$lib/api/system';
 	import { confirmJob, getMediaJob } from '$lib/api/media-jobs';
-	import type { MediaJob } from '$lib/api/types';
+	import type { MediaJob, TrackEdit } from '$lib/api/types';
 	import { trackJob } from '$lib/jobs';
 	import { toast } from '$lib/toast';
 	import { bytesH } from '$lib/display';
@@ -47,6 +47,20 @@
 	let selectedAudioIndices = $state<number[]>([]);
 	let deleteAfterExtract = $state(false);
 	let deleteAfterEmbed = $state(false);
+
+	// Staged-edit draft state: local working copies of the tables that
+	// flag/reorder edits mutate directly, only sent to the backend on Save.
+	let audioDraft = $state<any[]>([]);
+	let subtitleDraft = $state<any[]>([]);
+	let audioDirty = $state(false);
+	let subtitleDirty = $state(false);
+
+	$effect(() => {
+		if (!audioDirty) audioDraft = audioStreams.map((s: any) => ({ ...s }));
+	});
+	$effect(() => {
+		if (!subtitleDirty) subtitleDraft = tracks.map((t: any) => ({ ...t }));
+	});
 
 	// Movie preferred-language override state
 	let moviePreferencesInitialized = $state(false);
@@ -132,9 +146,10 @@
 	let audioStatus = $derived(coverage?.audio_status || (missingPreferredAudio.length > 0 ? 'gap' : 'ok'));
 	let subtitleStatus = $derived(coverage?.subtitle_status || (missingPreferredSubtitles.length > 0 ? 'gap' : 'ok'));
 
-	// Track Selection Details
+	// Track Selection Details (derived from the draft, so action buttons
+	// reflect staged-but-unsaved edits)
 	let selectedTracks = $derived(
-		tracks.filter((t: any) => selectedTrackIds.includes(t.id))
+		subtitleDraft.filter((t: any) => selectedTrackIds.includes(t.id))
 	);
 	let singleSelectedTrack = $derived(
 		selectedTracks.length === 1 ? selectedTracks[0] : null
@@ -216,6 +231,8 @@
 			inspect = res;
 			selectedTrackIds = [];
 			selectedAudioIndices = [];
+			audioDirty = false;
+			subtitleDirty = false;
 			return res;
 		} catch (e: any) {
 			toast(e.message || 'Failed to refresh tracks inventory', 'bad');
@@ -311,7 +328,11 @@
 	 *  through `trackJob()` so this bar gets the same "seed immediately" /
 	 *  "either SSE or poll can finalize" guarantees as the letterbox and
 	 *  poster-pipeline bars. */
-	function attachTracking(jobId: string, onCompleteCallback?: (freshInspect: any) => void | Promise<void>) {
+	function attachTracking(
+		jobId: string,
+		onCompleteCallback?: (freshInspect: any) => void | Promise<void>,
+		onSettled?: (job: MediaJob) => void
+	) {
 		storeJobId(jobId);
 		stopTracking?.();
 		stopTracking = trackJob<MediaJob>(
@@ -338,6 +359,7 @@
 						toast(`Operation failed: ${(job.error as any)?.error || job.error || 'Unknown error'}`, 'bad');
 						await refreshInventory();
 					}
+					onSettled?.(job);
 				}
 			},
 			{ eventsUrl: `/api/media-jobs/${jobId}/events`, fetchJob: getMediaJob }
@@ -345,13 +367,23 @@
 	}
 
 	// Start tracking a freshly-created media job.
-	function monitorJob(jobId: string, onCompleteCallback?: (freshInspect: any) => void | Promise<void>) {
+	function monitorJob(
+		jobId: string,
+		onCompleteCallback?: (freshInspect: any) => void | Promise<void>,
+		onSettled?: (job: MediaJob) => void
+	) {
 		runningJobId = jobId;
 		progressPercent = 0;
 		progressStage = 'queued';
 		progressMessage = 'Waiting in job queue...';
 		jobLog = [];
-		attachTracking(jobId, onCompleteCallback);
+		attachTracking(jobId, onCompleteCallback, onSettled);
+	}
+
+	// Run a job and resolve once it reaches a terminal state, regardless of
+	// success/failure — used to chain sequential plan+confirm calls (Save).
+	function runJobAndWait(jobId: string): Promise<MediaJob> {
+		return new Promise((resolve) => monitorJob(jobId, undefined, resolve));
 	}
 
 	/** Re-attach to a job after page load: fetch its snapshot, then either
@@ -585,10 +617,10 @@
 		}
 	}
 	function toggleAllTracks() {
-		if (selectedTrackIds.length === tracks.length) {
+		if (selectedTrackIds.length === subtitleDraft.length) {
 			selectedTrackIds = [];
 		} else {
-			selectedTrackIds = tracks.map((t: any) => t.id);
+			selectedTrackIds = subtitleDraft.map((t: any) => t.id);
 		}
 	}
 	function selectOnlyTrack(id: string) {
@@ -608,10 +640,10 @@
 		}
 	}
 	function toggleAllAudio() {
-		if (selectedAudioIndices.length === audioStreams.length) {
+		if (selectedAudioIndices.length === audioDraft.length) {
 			selectedAudioIndices = [];
 		} else {
-			selectedAudioIndices = audioStreams.map((s: any) => s.index);
+			selectedAudioIndices = audioDraft.map((s: any) => s.index);
 		}
 	}
 	function selectOnlyAudio(index: number) {
@@ -624,7 +656,7 @@
 
 	let singleSelectedAudio = $derived(
 		selectedAudioIndices.length === 1
-			? audioStreams.find((s: any) => s.index === selectedAudioIndices[0])
+			? audioDraft.find((s: any) => s.index === selectedAudioIndices[0])
 			: null
 	);
 
@@ -718,24 +750,7 @@
 		return track?.kind_label || track?.kind || '—';
 	}
 
-	async function runMetadataEdits(edits: any[]) {
-		if (!movie || !movie.media_file_id || edits.length === 0) return;
-		busy = true;
-		try {
-			const plan = await createPlan(fetch, movie.media_file_id, {
-				operation: 'subtitle_metadata',
-				track_ids: [],
-				edits
-			});
-			await confirmJob(fetch, plan.job_id);
-			monitorJob(plan.job_id);
-		} catch (e: any) {
-			toast(e.message || 'Metadata update failed', 'bad');
-			busy = false;
-		}
-	}
-
-	function audioEdit(stream: any, changes: Record<string, boolean>) {
+	function audioEdit(stream: any, changes: Partial<TrackEdit>): TrackEdit {
 		return {
 			stream_type: 'audio',
 			audio_stream_index: stream.index,
@@ -747,7 +762,7 @@
 		};
 	}
 
-	function subtitleEdit(track: any, changes: Record<string, boolean>) {
+	function subtitleEdit(track: any, changes: Partial<TrackEdit>): TrackEdit {
 		return {
 			track_id: track.id,
 			is_default: track.is_default,
@@ -758,43 +773,160 @@
 		};
 	}
 
-	async function makeAudioDefault() {
+	// Draft mutators: stage flag/reorder edits locally; nothing hits the
+	// backend until saveAudioChanges()/saveSubtitleChanges() runs.
+	function draftSetAudioDefault(index: number) {
+		audioDraft = audioDraft.map((s) => ({ ...s, is_default: s.index === index }));
+		audioDirty = true;
+	}
+
+	function draftToggleAudioFlag(index: number, field: 'is_forced' | 'is_sdh' | 'is_commentary') {
+		audioDraft = audioDraft.map((s) => {
+			if (s.index !== index) return s;
+			const current =
+				field === 'is_forced' ? audioForced(s) : field === 'is_sdh' ? audioSdh(s) : audioCommentary(s);
+			return { ...s, [field]: !current };
+		});
+		audioDirty = true;
+	}
+
+	function draftReorderAudio(direction: 'first' | 'up' | 'down' | 'last') {
 		if (!singleSelectedAudio) return;
-		await runMetadataEdits(
-			audioStreams.map((stream: any) =>
-				audioEdit(stream, { is_default: stream.index === singleSelectedAudio.index })
-			)
+		const order = [...audioDraft];
+		const current = order.findIndex((s) => s.index === singleSelectedAudio.index);
+		if (current < 0) return;
+		const [moved] = order.splice(current, 1);
+		let nextIndex = current;
+		if (direction === 'first') nextIndex = 0;
+		if (direction === 'up') nextIndex = Math.max(0, current - 1);
+		if (direction === 'down') nextIndex = Math.min(order.length, current + 1);
+		if (direction === 'last') nextIndex = order.length;
+		order.splice(nextIndex, 0, moved);
+		audioDraft = order;
+		audioDirty = true;
+	}
+
+	function draftSetSubtitleDefault(id: string) {
+		subtitleDraft = subtitleDraft.map((t) =>
+			t.source === 'embedded' ? { ...t, is_default: t.id === id } : t
 		);
+		subtitleDirty = true;
 	}
 
-	async function toggleAudioCommentary() {
-		if (!singleSelectedAudio) return;
-		await runMetadataEdits([
-			audioEdit(singleSelectedAudio, { is_commentary: !audioCommentary(singleSelectedAudio) })
-		]);
+	function draftToggleSubtitleFlag(id: string, field: 'is_forced' | 'is_sdh' | 'is_commentary') {
+		subtitleDraft = subtitleDraft.map((t) => (t.id === id ? { ...t, [field]: !t[field] } : t));
+		subtitleDirty = true;
 	}
 
-	async function toggleAudioFlag(field: 'is_forced' | 'is_sdh') {
-		if (!singleSelectedAudio) return;
-		const current = field === 'is_forced' ? audioForced(singleSelectedAudio) : audioSdh(singleSelectedAudio);
-		await runMetadataEdits([audioEdit(singleSelectedAudio, { [field]: !current })]);
+	function discardAudioChanges() {
+		audioDirty = false;
 	}
 
-	async function makeSubtitleDefault() {
-		if (!singleSelectedTrack || singleSelectedTrack.source !== 'embedded') return;
-		const embeddedTracks = tracks.filter((track: any) => track.source === 'embedded');
-		await runMetadataEdits(
-			embeddedTracks.map((track: any) =>
-				subtitleEdit(track, { is_default: track.id === singleSelectedTrack.id })
-			)
-		);
+	function discardSubtitleChanges() {
+		subtitleDirty = false;
 	}
 
-	async function toggleSubtitleFlag(field: 'is_forced' | 'is_sdh' | 'is_commentary') {
-		if (!singleSelectedTrack || singleSelectedTrack.source !== 'embedded') return;
-		await runMetadataEdits([
-			subtitleEdit(singleSelectedTrack, { [field]: !singleSelectedTrack[field] })
-		]);
+	async function saveAudioChanges() {
+		if (!movie || !movie.media_file_id || busy) return;
+		const metadataEdits = audioDraft
+			.filter((draft) => {
+				const original = audioStreams.find((s: any) => s.index === draft.index);
+				return (
+					original &&
+					(audioDefault(draft) !== audioDefault(original) ||
+						audioForced(draft) !== audioForced(original) ||
+						audioSdh(draft) !== audioSdh(original) ||
+						audioCommentary(draft) !== audioCommentary(original))
+				);
+			})
+			.map((draft) =>
+				audioEdit(draft, {
+					is_default: audioDefault(draft),
+					is_forced: audioForced(draft),
+					is_sdh: audioSdh(draft),
+					is_commentary: audioCommentary(draft)
+				})
+			);
+		const draftOrder = audioDraft.map((s: any) => s.index);
+		const orderChanged = audioStreams.map((s: any) => s.index).join(',') !== draftOrder.join(',');
+
+		if (metadataEdits.length === 0 && !orderChanged) {
+			toast('No changes to save', 'info');
+			return;
+		}
+
+		busy = true;
+		try {
+			if (metadataEdits.length > 0) {
+				const plan = await createPlan(fetch, movie.media_file_id, {
+					operation: 'subtitle_metadata',
+					track_ids: [],
+					edits: metadataEdits
+				});
+				await confirmJob(fetch, plan.job_id);
+				const job = await runJobAndWait(plan.job_id);
+				if (job.status !== 'succeeded' && job.status !== 'completed') return;
+			}
+			if (orderChanged) {
+				const plan = await createPlan(fetch, movie.media_file_id, {
+					operation: 'audio_reorder',
+					track_ids: [],
+					audio_stream_order: draftOrder
+				});
+				await confirmJob(fetch, plan.job_id);
+				await runJobAndWait(plan.job_id);
+			}
+			audioDirty = false;
+		} catch (e: any) {
+			toast(e.message || 'Save failed', 'bad');
+		} finally {
+			busy = false;
+		}
+	}
+
+	async function saveSubtitleChanges() {
+		if (!movie || !movie.media_file_id || busy) return;
+		const metadataEdits = subtitleDraft
+			.filter((draft) => draft.source === 'embedded')
+			.filter((draft) => {
+				const original = tracks.find((t: any) => t.id === draft.id);
+				return (
+					original &&
+					(draft.is_default !== original.is_default ||
+						draft.is_forced !== original.is_forced ||
+						draft.is_sdh !== original.is_sdh ||
+						draft.is_commentary !== original.is_commentary)
+				);
+			})
+			.map((draft) =>
+				subtitleEdit(draft, {
+					is_default: draft.is_default,
+					is_forced: draft.is_forced,
+					is_sdh: draft.is_sdh,
+					is_commentary: draft.is_commentary
+				})
+			);
+
+		if (metadataEdits.length === 0) {
+			toast('No changes to save', 'info');
+			return;
+		}
+
+		busy = true;
+		try {
+			const plan = await createPlan(fetch, movie.media_file_id, {
+				operation: 'subtitle_metadata',
+				track_ids: [],
+				edits: metadataEdits
+			});
+			await confirmJob(fetch, plan.job_id);
+			await runJobAndWait(plan.job_id);
+			subtitleDirty = false;
+		} catch (e: any) {
+			toast(e.message || 'Save failed', 'bad');
+		} finally {
+			busy = false;
+		}
 	}
 
 	async function deleteAudioSelected() {
@@ -827,34 +959,6 @@
 			monitorJob(plan.job_id);
 		} catch (e: any) {
 			toast(e.message || 'Subtitle delete failed', 'bad');
-			busy = false;
-		}
-	}
-
-	async function reorderSelectedAudio(direction: 'first' | 'up' | 'down' | 'last') {
-		if (!movie || !movie.media_file_id || !singleSelectedAudio) return;
-		const order = audioStreams.map((stream: any) => stream.index);
-		const current = order.indexOf(singleSelectedAudio.index);
-		if (current < 0) return;
-		const [moved] = order.splice(current, 1);
-		let nextIndex = current;
-		if (direction === 'first') nextIndex = 0;
-		if (direction === 'up') nextIndex = Math.max(0, current - 1);
-		if (direction === 'down') nextIndex = Math.min(order.length, current + 1);
-		if (direction === 'last') nextIndex = order.length;
-		order.splice(nextIndex, 0, moved);
-		if (order.join(',') === audioStreams.map((stream: any) => stream.index).join(',')) return;
-		busy = true;
-		try {
-			const plan = await createPlan(fetch, movie.media_file_id, {
-				operation: 'audio_reorder',
-				track_ids: [],
-				audio_stream_order: order
-			});
-			await confirmJob(fetch, plan.job_id);
-			monitorJob(plan.job_id);
-		} catch (e: any) {
-			toast(e.message || 'Audio reorder failed', 'bad');
 			busy = false;
 		}
 	}
@@ -953,49 +1057,53 @@
 					<div class="left-panel">
 						<!-- Audio Tracks Section -->
 						<div class="tracks-list-header">
-							<h5>Audio Tracks ({audioStreams.length})</h5>
+							<h5>Audio Tracks ({audioDraft.length})</h5>
 						</div>
-						{#if selectedAudioIndices.length > 0}
-							<div class="inline-actions audio-action-panel mq-rise">
-								<div class="inline-actions-head">
-									<span>Audio Actions</span>
-									<strong>{selectedAudioIndices.length} selected</strong>
+						<div class="inline-actions audio-action-panel">
+							<div class="inline-actions-head">
+								<span>Audio Actions</span>
+								<strong>{selectedAudioIndices.length} selected</strong>
+							</div>
+							<div class="inline-actions-body">
+								<div class="action-group">
+									<button class="chip-action" class:active={singleSelectedAudio && audioDefault(singleSelectedAudio)} onclick={() => singleSelectedAudio && draftSetAudioDefault(singleSelectedAudio.index)} disabled={busy || !singleSelectedAudio}>
+										Set Default
+									</button>
+									<button class="chip-action" class:active={singleSelectedAudio && audioForced(singleSelectedAudio)} onclick={() => singleSelectedAudio && draftToggleAudioFlag(singleSelectedAudio.index, 'is_forced')} disabled={busy || !singleSelectedAudio}>
+										Forced
+									</button>
+									<button class="chip-action" class:active={singleSelectedAudio && audioSdh(singleSelectedAudio)} onclick={() => singleSelectedAudio && draftToggleAudioFlag(singleSelectedAudio.index, 'is_sdh')} disabled={busy || !singleSelectedAudio}>
+										HI
+									</button>
+									<button class="chip-action" class:active={singleSelectedAudio && audioCommentary(singleSelectedAudio)} onclick={() => singleSelectedAudio && draftToggleAudioFlag(singleSelectedAudio.index, 'is_commentary')} disabled={busy || !singleSelectedAudio}>
+										Comment
+									</button>
+									<div class="icon-btn-group">
+										<button class="chip-action" aria-label="Move to first" title="Move to first" onclick={() => draftReorderAudio('first')} disabled={busy || !singleSelectedAudio}>⏮</button>
+										<button class="chip-action" aria-label="Move up" title="Move up" onclick={() => draftReorderAudio('up')} disabled={busy || !singleSelectedAudio}>▲</button>
+										<button class="chip-action" aria-label="Move down" title="Move down" onclick={() => draftReorderAudio('down')} disabled={busy || !singleSelectedAudio}>▼</button>
+										<button class="chip-action" aria-label="Move to last" title="Move to last" onclick={() => draftReorderAudio('last')} disabled={busy || !singleSelectedAudio}>⏭</button>
+									</div>
 								</div>
-								<div class="inline-actions-body">
-									{#if singleSelectedAudio}
-										<div class="action-group">
-											<button class="chip-action" class:active={audioDefault(singleSelectedAudio)} onclick={makeAudioDefault} disabled={busy}>
-												Set Default
-											</button>
-											<button class="chip-action" class:active={audioForced(singleSelectedAudio)} onclick={() => toggleAudioFlag('is_forced')} disabled={busy}>
-												{audioForced(singleSelectedAudio) ? 'Unset Forced' : 'Set Forced'}
-											</button>
-											<button class="chip-action" class:active={audioSdh(singleSelectedAudio)} onclick={() => toggleAudioFlag('is_sdh')} disabled={busy}>
-												{audioSdh(singleSelectedAudio) ? 'Unset HI' : 'Set HI'}
-											</button>
-											<button class="chip-action" class:active={audioCommentary(singleSelectedAudio)} onclick={toggleAudioCommentary} disabled={busy}>
-												{audioCommentary(singleSelectedAudio) ? 'Unset Comment' : 'Set Comment'}
-											</button>
-										</div>
-										<div class="action-group">
-											<button class="chip-action" onclick={() => reorderSelectedAudio('first')} disabled={busy}>Move First</button>
-											<button class="chip-action" onclick={() => reorderSelectedAudio('up')} disabled={busy}>Move Up</button>
-											<button class="chip-action" onclick={() => reorderSelectedAudio('down')} disabled={busy}>Move Down</button>
-											<button class="chip-action" onclick={() => reorderSelectedAudio('last')} disabled={busy}>Move Last</button>
-										</div>
-									{/if}
-									<button class="chip-action danger" onclick={deleteAudioSelected} disabled={busy}>
+								<div class="action-group save-group">
+									<button class="chip-action danger" onclick={deleteAudioSelected} disabled={busy || selectedAudioIndices.length === 0}>
 										Delete Audio ({selectedAudioIndices.length})
+									</button>
+									<button class="chip-action" onclick={discardAudioChanges} disabled={busy || !audioDirty}>
+										Discard
+									</button>
+									<button class="chip-action primary" onclick={saveAudioChanges} disabled={busy || !audioDirty}>
+										Save Changes
 									</button>
 								</div>
 							</div>
-						{/if}
+						</div>
 						<div class="tracks-table-wrap">
 							<table class="tracks-table">
 								<thead>
 									<tr>
 										<th class="chk-col">
-											<input class="select-circle" type="checkbox" checked={audioStreams.length > 0 && selectedAudioIndices.length === audioStreams.length} onchange={toggleAllAudio} />
+											<input class="select-circle" type="checkbox" checked={audioDraft.length > 0 && selectedAudioIndices.length === audioDraft.length} onchange={toggleAllAudio} />
 										</th>
 										<th>Language</th>
 										<th>Source</th>
@@ -1007,12 +1115,12 @@
 									</tr>
 								</thead>
 								<tbody>
-									{#if audioStreams.length === 0}
+									{#if audioDraft.length === 0}
 										<tr>
 											<td colspan="8" class="empty-table">No audio tracks found. Re-scan the media file.</td>
 										</tr>
 									{:else}
-										{#each audioStreams as stream (stream.index)}
+										{#each audioDraft as stream (stream.index)}
 											<tr
 												class:selected={selectedAudioIndices.includes(stream.index)}
 												onclick={() => selectOnlyAudio(stream.index)}
@@ -1055,66 +1163,61 @@
 
 						<!-- Subtitle Tracks Section -->
 						<div class="tracks-list-header mt-10">
-							<h5>Subtitle Tracks ({tracks.length})</h5>
+							<h5>Subtitle Tracks ({subtitleDraft.length})</h5>
 						</div>
-						{#if selectedTrackIds.length > 0}
-							<div class="inline-actions subtitle-action-panel mq-rise">
-								<div class="inline-actions-head">
-									<span>Subtitle Actions</span>
-									<strong>{selectedTrackIds.length} selected</strong>
+						<div class="inline-actions subtitle-action-panel">
+							<div class="inline-actions-head">
+								<span>Subtitle Actions</span>
+								<strong>{selectedTrackIds.length} selected</strong>
+							</div>
+							<div class="inline-actions-body">
+								<div class="action-group">
+									<button class="chip-action" class:active={singleSelectedTrack?.is_default} onclick={() => singleSelectedTrack && draftSetSubtitleDefault(singleSelectedTrack.id)} disabled={busy || singleSelectedTrack?.source !== 'embedded'}>
+										Set Default
+									</button>
+									<button class="chip-action" class:active={singleSelectedTrack?.is_forced} onclick={() => singleSelectedTrack && draftToggleSubtitleFlag(singleSelectedTrack.id, 'is_forced')} disabled={busy || singleSelectedTrack?.source !== 'embedded'}>
+										Forced
+									</button>
+									<button class="chip-action" class:active={singleSelectedTrack?.is_sdh} onclick={() => singleSelectedTrack && draftToggleSubtitleFlag(singleSelectedTrack.id, 'is_sdh')} disabled={busy || singleSelectedTrack?.source !== 'embedded'}>
+										SDH
+									</button>
+									<button class="chip-action" class:active={singleSelectedTrack?.is_commentary} onclick={() => singleSelectedTrack && draftToggleSubtitleFlag(singleSelectedTrack.id, 'is_commentary')} disabled={busy || singleSelectedTrack?.source !== 'embedded'}>
+										Comment
+									</button>
+									<button class="chip-action" onclick={handleExtractTrack} disabled={busy || singleSelectedTrack?.source !== 'embedded' || selectedAudioIndices.length > 0}>
+										📂 Extract to Sidecar
+									</button>
+									<button class="chip-action" onclick={handleEmbedTrack} disabled={busy || singleSelectedTrack?.source !== 'external' || selectedAudioIndices.length > 0}>
+										📥 Embed into Container
+									</button>
+									<label class="checkbox-row">
+										<input class="select-circle" type="checkbox" bind:checked={deleteAfterExtract} />
+										<span>Delete after extract</span>
+									</label>
+									<label class="checkbox-row">
+										<input class="select-circle" type="checkbox" bind:checked={deleteAfterEmbed} />
+										<span>Delete after embed</span>
+									</label>
 								</div>
-								<div class="inline-actions-body">
-									{#if singleSelectedTrack && singleSelectedTrack.source === 'embedded'}
-										<div class="action-group">
-											<button class="chip-action" class:active={singleSelectedTrack.is_default} onclick={makeSubtitleDefault} disabled={busy}>
-												Set Default
-											</button>
-											<button class="chip-action" class:active={singleSelectedTrack.is_forced} onclick={() => toggleSubtitleFlag('is_forced')} disabled={busy}>
-												{singleSelectedTrack.is_forced ? 'Unset Forced' : 'Set Forced'}
-											</button>
-											<button class="chip-action" class:active={singleSelectedTrack.is_sdh} onclick={() => toggleSubtitleFlag('is_sdh')} disabled={busy}>
-												{singleSelectedTrack.is_sdh ? 'Unset SDH' : 'Set SDH'}
-											</button>
-											<button class="chip-action" class:active={singleSelectedTrack.is_commentary} onclick={() => toggleSubtitleFlag('is_commentary')} disabled={busy}>
-												{singleSelectedTrack.is_commentary ? 'Unset Comment' : 'Set Comment'}
-											</button>
-										</div>
-									{/if}
-									{#if singleSelectedTrack && selectedAudioIndices.length === 0}
-										{#if singleSelectedTrack.source === 'embedded'}
-											<div class="action-card compact">
-												<button class="btn primary btn-sm" onclick={handleExtractTrack} disabled={busy}>
-													📂 Extract to Sidecar
-												</button>
-												<label class="checkbox-row">
-													<input class="select-circle" type="checkbox" bind:checked={deleteAfterExtract} />
-													<span>Delete embedded track after extraction</span>
-												</label>
-											</div>
-										{:else if singleSelectedTrack.source === 'external'}
-											<div class="action-card compact">
-												<button class="btn primary btn-sm" onclick={handleEmbedTrack} disabled={busy}>
-													📥 Embed into Container
-												</button>
-												<label class="checkbox-row">
-													<input class="select-circle" type="checkbox" bind:checked={deleteAfterEmbed} />
-													<span>Delete sidecar after embedding</span>
-												</label>
-											</div>
-										{/if}
-									{/if}
-									<button class="chip-action danger" onclick={deleteSubtitleSelected} disabled={busy}>
+								<div class="action-group save-group">
+									<button class="chip-action danger" onclick={deleteSubtitleSelected} disabled={busy || selectedTrackIds.length === 0}>
 										Delete Subtitles ({selectedTrackIds.length})
+									</button>
+									<button class="chip-action" onclick={discardSubtitleChanges} disabled={busy || !subtitleDirty}>
+										Discard
+									</button>
+									<button class="chip-action primary" onclick={saveSubtitleChanges} disabled={busy || !subtitleDirty}>
+										Save Changes
 									</button>
 								</div>
 							</div>
-						{/if}
+						</div>
 						<div class="tracks-table-wrap">
 							<table class="tracks-table">
 								<thead>
 									<tr>
 										<th class="chk-col">
-											<input class="select-circle" type="checkbox" checked={tracks.length > 0 && selectedTrackIds.length === tracks.length} onchange={toggleAllTracks} />
+											<input class="select-circle" type="checkbox" checked={subtitleDraft.length > 0 && selectedTrackIds.length === subtitleDraft.length} onchange={toggleAllTracks} />
 										</th>
 										<th>Language</th>
 										<th>Source</th>
@@ -1125,12 +1228,12 @@
 									</tr>
 								</thead>
 								<tbody>
-									{#if tracks.length === 0}
+									{#if subtitleDraft.length === 0}
 										<tr>
 											<td colspan="7" class="empty-table">No subtitle tracks found. Re-scan the media file or run AI generation.</td>
 										</tr>
 									{:else}
-										{#each tracks as track (track.id)}
+										{#each subtitleDraft as track (track.id)}
 											<tr
 												class:selected={selectedTrackIds.includes(track.id)}
 												onclick={() => selectOnlyTrack(track.id)}
@@ -1756,13 +1859,35 @@
 		border-color: color-mix(in srgb, var(--bad) 40%, var(--line));
 		color: var(--bad);
 	}
+	.chip-action.primary {
+		background: var(--gold);
+		border-color: var(--gold-deep);
+		color: var(--on-gold);
+	}
+	.chip-action.primary:hover:not(:disabled) {
+		background: var(--gold-deep);
+		box-shadow: none;
+	}
 	.chip-action:disabled {
 		opacity: 0.55;
 		cursor: not-allowed;
 	}
-	.action-card.compact {
-		padding: 10px;
-		gap: 8px;
+	.icon-btn-group {
+		display: inline-flex;
+		border: 1px solid var(--line2);
+		border-radius: 999px;
+		overflow: hidden;
+	}
+	.icon-btn-group .chip-action {
+		border: none;
+		border-radius: 0;
+		padding: 6px 9px;
+	}
+	.icon-btn-group .chip-action:not(:last-child) {
+		border-right: 1px solid var(--line2);
+	}
+	.save-group {
+		margin-left: auto;
 	}
 
 	/* Table design */
