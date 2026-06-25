@@ -123,7 +123,6 @@
 			<StatusDot tone={statusTone} />
 			<span class="status-lbl">{statusLabel}</span>
 		</span>
-		<span class="container-badge">{movie.container || 'mkv'}</span>
 		<span class="chev">
 			→
 		</span>
@@ -140,7 +139,7 @@
 	}
 	.row-trigger {
 		display: grid;
-		grid-template-columns: 40px minmax(0, 1fr) 120px 120px 120px 100px 100px 100px 80px 40px;
+		grid-template-columns: 40px minmax(0, 1fr) 120px 120px 120px 100px 100px 100px 40px;
 		align-items: center;
 		gap: 12px;
 		width: 100%;
@@ -238,16 +237,6 @@
 	.status-lbl {
 		font-size: 12.5px;
 		color: var(--muted);
-	}
-	.container-badge {
-		font-family: var(--font-mono);
-		font-size: 11.5px;
-		color: var(--muted);
-		text-transform: uppercase;
-		background: var(--panel2);
-		padding: 2px 6px;
-		border-radius: 4px;
-		width: max-content;
 	}
 	.chev {
 		display: flex;

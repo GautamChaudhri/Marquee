@@ -6,11 +6,13 @@
 		track,
 		selected,
 		onToggle,
+		onSelect,
 		canCheck = true
 	}: {
 		track: SubtitleTrack;
 		selected: boolean;
 		onToggle: (e: MouseEvent) => void;
+		onSelect: () => void;
 		canCheck?: boolean;
 	} = $props();
 
@@ -26,7 +28,7 @@
 	});
 </script>
 
-<tr class="track-row" class:selected onclick={onToggle}>
+<tr class="track-row" class:selected onclick={() => onSelect()}>
 	<td class="checkbox-cell" onclick={(e) => e.stopPropagation()}>
 		{#if canCheck}
 			<input
