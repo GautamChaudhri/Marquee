@@ -15,8 +15,8 @@
 	let embeddedCount = $derived(coverage?.embedded_present ? (coverage?.track_count || 'Yes') : 'None');
 	let externalCount = $derived(coverage?.external_present ? 'Yes' : 'None');
 
-	// Collect unique languages
-	let languages = $derived.by(() => {
+	// Collect unique subtitle languages
+	let subtitleLangs = $derived.by(() => {
 		if (!coverage) return [];
 		const langs = new Set<string>();
 		if (Array.isArray(coverage.full_dialogue_languages)) {
@@ -26,6 +26,12 @@
 			coverage.forced_only_languages.forEach((l: string) => langs.add(l));
 		}
 		return Array.from(langs);
+	});
+
+	// Collect audio languages
+	let audioLangs = $derived.by(() => {
+		if (!coverage || !Array.isArray(coverage.audio_languages)) return [];
+		return coverage.audio_languages;
 	});
 
 	// Subtitle status classes and label
@@ -67,20 +73,29 @@
 			<strong>{movie.title}</strong>
 			<small>{movie.year}</small>
 		</span>
-		<span class="count-badge" class:zero={embeddedCount === 'None'}>
-			{embeddedCount}
-		</span>
-		<span class="count-badge" class:zero={externalCount === 'None'}>
-			{externalCount}
-		</span>
 		<span class="langs">
-			{#if languages.length > 0}
-				{#each languages as lang}
+			{#if audioLangs.length > 0}
+				{#each audioLangs as lang}
 					<span class="lang-pill {getLanguageClass(lang)}">{lang.toUpperCase()}</span>
 				{/each}
 			{:else}
 				<span class="muted">—</span>
 			{/if}
+		</span>
+		<span class="langs">
+			{#if subtitleLangs.length > 0}
+				{#each subtitleLangs as lang}
+					<span class="lang-pill {getLanguageClass(lang)}">{lang.toUpperCase()}</span>
+				{/each}
+			{:else}
+				<span class="muted">—</span>
+			{/if}
+		</span>
+		<span class="count-badge" class:zero={embeddedCount === 'None'}>
+			{embeddedCount}
+		</span>
+		<span class="count-badge" class:zero={externalCount === 'None'}>
+			{externalCount}
 		</span>
 		<span class="status-cell">
 			<StatusDot tone={statusTone} />
@@ -103,7 +118,7 @@
 	}
 	.row-trigger {
 		display: grid;
-		grid-template-columns: 40px minmax(0, 1fr) 100px 100px 140px 100px 80px 40px;
+		grid-template-columns: 40px minmax(0, 1fr) 120px 120px 100px 100px 100px 80px 40px;
 		align-items: center;
 		gap: 12px;
 		width: 100%;

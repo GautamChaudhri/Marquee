@@ -217,7 +217,7 @@ async def build_plan(
     warnings: list[dict] = []
     after_tracks: list[dict]
 
-    if operation == "subtitle_remove":
+    if operation in ("subtitle_remove", "track_remove"):
         remove_ids = set(params.get("track_ids", []))
         unknown = remove_ids - set(by_id)
         if unknown:
@@ -245,8 +245,35 @@ async def build_plan(
                     {"code": "forced_track_selected", "track_id": tid, "requires_override": True}
                 )
         after_tracks = [t for t in tracks if t["id"] not in remove_ids]
-        if remove_ids and not after_tracks:
+        if remove_ids and not after_tracks and tracks:
             warnings.append({"code": "all_subtitles_removed", "requires_override": True})
+
+        # Audio stream removal validation and planning
+        audio = inventory.get("audio_streams", [])
+        audio_remove_indices = set(params.get("audio_stream_indices", []))
+        audio_indices = {a.get("index") for a in audio}
+        unknown_audio = audio_remove_indices - audio_indices
+        if unknown_audio:
+            raise PlanError(f"unknown audio stream indices: {sorted(unknown_audio)}")
+
+        after_audio = [a for a in audio if a.get("index") not in audio_remove_indices]
+        if audio_remove_indices and not after_audio:
+            warnings.append({"code": "all_audio_removed", "requires_override": True})
+
+        if family == "mkv" and audio_remove_indices:
+            missing_audio_tool_ids = sorted(
+                a.get("index")
+                for a in audio
+                if a.get("index") in audio_remove_indices and a.get("tool_track_id") is None
+            )
+            if missing_audio_tool_ids:
+                warnings.append(
+                    {
+                        "code": "mkv_audio_track_ids_unavailable",
+                        "stream_indices": missing_audio_tool_ids,
+                        "requires_override": False,
+                    }
+                )
 
     elif operation == "subtitle_embed":
         embed_ids = params.get("track_ids", [])
@@ -269,9 +296,14 @@ async def build_plan(
         raise PlanError(f"unsupported plan operation: {operation}")
 
     audio = inventory.get("audio_streams", [])
+    audio_remove_indices = set(params.get("audio_stream_indices", []))
+    after_audio = [a for a in audio if a.get("index") not in audio_remove_indices]
+
     cov_before = inventory.get("coverage", {})
     cov_after = coverage.compute_coverage(
-        after_tracks, audio, preferred_languages=subtitle_settings.SUBTITLE_PREFERRED_LANGUAGES
+        after_tracks,
+        after_audio,
+        preferred_languages=subtitle_settings.SUBTITLE_PREFERRED_LANGUAGES,
     )
 
     free_bytes = (
@@ -353,7 +385,7 @@ async def execute_job(db: AsyncSession, job, emit) -> dict:
     adapter = adapter_for(family)
     out = _temp_output_path(resolved.path, job.job_id)
 
-    argv, expected_delta, external_removals = await _build_argv(
+    argv, expected_delta, expected_audio_delta, external_removals = await _build_argv(
         db, job, operation, request, source_probe, adapter, out, resolved
     )
 
@@ -394,6 +426,7 @@ async def execute_job(db: AsyncSession, job, emit) -> dict:
             source_probe,
             out,
             expected_subtitle_delta=expected_delta,
+            expected_audio_delta=expected_audio_delta,
         )
         if not result.ok:
             out.unlink(missing_ok=True)
@@ -430,7 +463,7 @@ async def execute_job(db: AsyncSession, job, emit) -> dict:
 
 
 async def _build_argv(db, job, operation, request, source_probe, adapter, out, resolved):
-    """Translate a job request into (binary, args) + the expected subtitle delta."""
+    """Translate a job request into (binary, args) + the expected subtitle and audio deltas."""
     tracks = (
         (
             await db.execute(
@@ -452,12 +485,33 @@ async def _build_argv(db, job, operation, request, source_probe, adapter, out, r
             if aligned and aligned.tool_track_id is not None:
                 t.tool_track_id = aligned.tool_track_id
 
-    if operation == "subtitle_remove":
+    if operation in ("subtitle_remove", "track_remove"):
         selected = [by_id[t] for t in request.get("track_ids", []) if t in by_id]
         remove = [t for t in selected if t.source == "embedded"]
         external_remove = [t for t in selected if t.source == "external"]
-        if not remove:
-            return None, 0, external_remove
+
+        # Audio track deletion support
+        audio_remove_indices = request.get("audio_stream_indices", [])
+        probe_audio = source_probe.audio_streams if source_probe else []
+
+        remove_audio_tool_track_ids = []
+        remove_audio_stream_indices = []
+        keep_audio_tool_track_ids = []
+
+        for aud in probe_audio:
+            idx = aud.get("index")
+            tid = aud.get("tool_track_id")
+            if idx in audio_remove_indices:
+                remove_audio_stream_indices.append(idx)
+                if tid is not None:
+                    remove_audio_tool_track_ids.append(tid)
+            else:
+                if tid is not None:
+                    keep_audio_tool_track_ids.append(tid)
+
+        if not remove and not remove_audio_stream_indices:
+            return None, 0, 0, external_remove
+
         plan = RemovePlan(
             remove_tool_track_ids=[t.tool_track_id for t in remove if t.tool_track_id is not None],
             remove_stream_indices=[t.stream_index for t in remove if t.stream_index is not None],
@@ -468,10 +522,14 @@ async def _build_argv(db, job, operation, request, source_probe, adapter, out, r
                 and t.id not in {r.id for r in remove}
                 and t.tool_track_id is not None
             ],
+            remove_audio_tool_track_ids=remove_audio_tool_track_ids,
+            remove_audio_stream_indices=remove_audio_stream_indices,
+            keep_audio_tool_track_ids=keep_audio_tool_track_ids,
         )
         return (
             (adapter.binary, adapter.build_remove(resolved.path, out, plan)),
             -len(remove),
+            -len(remove_audio_stream_indices),
             external_remove,
         )
 
@@ -488,7 +546,12 @@ async def _build_argv(db, job, operation, request, source_probe, adapter, out, r
             for t in request.get("track_ids", [])
             if t in by_id and by_id[t].external_path
         ]
-        return (adapter.binary, adapter.build_embed(resolved.path, out, sources)), len(sources), []
+        return (
+            (adapter.binary, adapter.build_embed(resolved.path, out, sources)),
+            len(sources),
+            0,
+            [],
+        )
 
     if operation == "subtitle_metadata":
         edits = [
@@ -504,7 +567,7 @@ async def _build_argv(db, job, operation, request, source_probe, adapter, out, r
             )
             for e in request.get("edits", [])
         ]
-        return (adapter.binary, adapter.build_metadata(resolved.path, out, edits)), 0, []
+        return (adapter.binary, adapter.build_metadata(resolved.path, out, edits)), 0, 0, []
 
     raise PreflightError("unsupported_operation", operation)
 

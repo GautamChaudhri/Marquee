@@ -44,6 +44,11 @@ class RemovePlan:
     remove_stream_indices: list[int] = field(default_factory=list)
     keep_tool_track_ids: list[int] = field(default_factory=list)
 
+    # Audio track deletion support
+    remove_audio_tool_track_ids: list[int] = field(default_factory=list)
+    remove_audio_stream_indices: list[int] = field(default_factory=list)
+    keep_audio_tool_track_ids: list[int] = field(default_factory=list)
+
 
 @runtime_checkable
 class MutationAdapter(Protocol):

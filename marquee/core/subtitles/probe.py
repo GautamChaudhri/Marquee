@@ -139,7 +139,7 @@ def probe_container(path: Path | str) -> ProbeResult | None:
             subs.append(_embedded_sub(stream))
 
     if path and str(path).lower().endswith(".mkv"):
-        _align_mkv_track_ids(path, subs)
+        _align_mkv_track_ids(path, subs, audio)
 
     return ProbeResult(
         container=fmt.get("format_name"),
@@ -174,11 +174,11 @@ def _embedded_sub(stream: dict) -> EmbeddedSub:
     )
 
 
-def _align_mkv_track_ids(path: Path | str, subs: list[EmbeddedSub]) -> None:
-    """Fill ``tool_track_id`` for MKV subs by aligning mkvmerge subtitle tracks.
+def _align_mkv_track_ids(path: Path | str, subs: list[EmbeddedSub], audio: list[dict]) -> None:
+    """Fill ``tool_track_id`` for MKV subs and audio by aligning mkvmerge tracks.
 
-    ffprobe lists subtitle streams in the same relative order mkvmerge does, so
-    we zip the two subtitle sequences. Best-effort — leaves None if mkvmerge is
+    ffprobe lists tracks in the same relative order mkvmerge does, so
+    we zip the two sequences. Best-effort — leaves None if mkvmerge is
     unavailable or the shapes disagree.
     """
     if binaries.resolve("mkvmerge") is None:
@@ -190,7 +190,15 @@ def _align_mkv_track_ids(path: Path | str, subs: list[EmbeddedSub]) -> None:
         data = json.loads(result.stdout)
     except json.JSONDecodeError:
         return
-    sub_track_ids = [t.get("id") for t in data.get("tracks", []) if t.get("type") == "subtitles"]
+
+    tracks_data = data.get("tracks", [])
+
+    sub_track_ids = [t.get("id") for t in tracks_data if t.get("type") == "subtitles"]
     if len(sub_track_ids) == len(subs):
         for sub, track_id in zip(subs, sub_track_ids, strict=True):
             sub.tool_track_id = track_id
+
+    audio_track_ids = [t.get("id") for t in tracks_data if t.get("type") == "audio"]
+    if len(audio_track_ids) == len(audio):
+        for aud, track_id in zip(audio, audio_track_ids, strict=True):
+            aud["tool_track_id"] = track_id

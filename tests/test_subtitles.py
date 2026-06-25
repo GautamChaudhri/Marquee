@@ -220,3 +220,56 @@ async def test_external_only_remove_plan_can_execute(tmp_path):
 
     assert plan["warnings"] == [{"code": "all_subtitles_removed", "requires_override": True}]
     assert plan["capabilities"]["can_execute"] is True
+
+
+@pytest.mark.asyncio
+async def test_audio_remove_plan(tmp_path):
+    media = tmp_path / "Movie.mkv"
+    media.write_bytes(b"fake")
+    resolved = ResolvedMediaFile(
+        media_file_id=1,
+        source="radarr",
+        path=media,
+        size_bytes=media.stat().st_size,
+        mtime_ns=media.stat().st_mtime_ns,
+        st_nlink=1,
+        signature="sig",
+        container="mkv",
+        movie_id=1,
+    )
+    inventory = {
+        "container_family": "mkv",
+        "capabilities": capabilities.capabilities_for("mkv"),
+        "coverage": {
+            "audio_languages": ["en", "fr"],
+        },
+        "audio_streams": [
+            {"index": 1, "language_tag": "en", "tool_track_id": 1},
+            {"index": 2, "language_tag": "fr", "tool_track_id": 2},
+        ],
+        "tracks": [],
+    }
+
+    # Remove the French audio stream (index 2)
+    plan = await mutation.build_plan(
+        None,
+        resolved,
+        inventory,
+        operation="track_remove",
+        params={"track_ids": [], "audio_stream_indices": [2]},
+    )
+
+    assert plan["capabilities"]["can_execute"] is True
+    # The coverage after should not contain French audio
+    assert plan["after"]["coverage"]["audio_languages"] == ["en"]
+
+    # Now remove all audio streams
+    plan_all = await mutation.build_plan(
+        None,
+        resolved,
+        inventory,
+        operation="track_remove",
+        params={"track_ids": [], "audio_stream_indices": [1, 2]},
+    )
+    # Check that it warns about all audio removed
+    assert any(w["code"] == "all_audio_removed" for w in plan_all["warnings"])

@@ -18,9 +18,11 @@ class Mp4Adapter:
     binary = "ffmpeg"
 
     def build_remove(self, src: Path, out: Path, plan: RemovePlan) -> list[str]:
-        """Map everything, then negate the removed subtitle streams; copy codecs."""
+        """Map everything, then negate the removed subtitle and audio streams; copy codecs."""
         args = ["-y", "-i", binaries.safe_media_path(src), "-map", "0"]
         for index in plan.remove_stream_indices:
+            args += ["-map", f"-0:{index}"]
+        for index in plan.remove_audio_stream_indices:
             args += ["-map", f"-0:{index}"]
         args += ["-c", "copy", "-movflags", "+faststart", binaries.safe_media_path(out)]
         return args

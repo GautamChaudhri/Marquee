@@ -25,6 +25,7 @@ def validate_output(
     out_path: Path | str,
     *,
     expected_subtitle_delta: int = 0,
+    expected_audio_delta: int = 0,
     duration_tolerance_s: float = 2.0,
 ) -> ValidationResult:
     """Validate a remuxed output against the source probe."""
@@ -37,9 +38,10 @@ def validate_output(
         problems.append("output has no video stream")
     if out.video_count != source.video_count:
         problems.append(f"video stream count changed: {source.video_count} -> {out.video_count}")
-    if len(out.audio_streams) != len(source.audio_streams):
+    expected_audio = len(source.audio_streams) + expected_audio_delta
+    if len(out.audio_streams) != expected_audio:
         problems.append(
-            f"audio stream count changed: {len(source.audio_streams)} -> {len(out.audio_streams)}"
+            f"audio stream count changed: expected {expected_audio}, got {len(out.audio_streams)}"
         )
     if (
         source.duration_seconds is not None
