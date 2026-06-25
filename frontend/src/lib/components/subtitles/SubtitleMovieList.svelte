@@ -44,9 +44,10 @@
 	<div class="row head">
 		<span></span>
 		<span>Title</span>
+		<span>Audio</span>
+		<span>Subtitles</span>
 		<span>Embedded</span>
 		<span>External</span>
-		<span>Languages</span>
 		<span>Status</span>
 		<span>Container</span>
 		<span></span>
@@ -136,7 +137,7 @@
 	}
 	.row.head {
 		display: grid;
-		grid-template-columns: 40px minmax(0, 1fr) 100px 100px 140px 100px 80px 40px;
+		grid-template-columns: 40px minmax(0, 1fr) 120px 120px 100px 100px 100px 80px 40px;
 		align-items: center;
 		gap: 12px;
 		width: 100%;

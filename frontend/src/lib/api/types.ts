@@ -768,8 +768,9 @@ export interface TrackEdit {
 }
 
 export interface SubtitlePlanRequest {
-	operation: 'subtitle_remove' | 'subtitle_embed' | 'subtitle_metadata';
+	operation: 'subtitle_remove' | 'subtitle_embed' | 'subtitle_metadata' | 'track_remove';
 	track_ids: string[];
+	audio_stream_indices?: number[];
 	edits?: TrackEdit[];
 	backup?: boolean;
 	allow_break?: boolean;

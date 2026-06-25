@@ -148,6 +148,7 @@ async def download_track(
 class PlanRequest(BaseModel):
     operation: str  # subtitle_remove | subtitle_embed | subtitle_metadata
     track_ids: list[str] = []
+    audio_stream_indices: list[int] = []
     edits: list[dict] = []
     backup: bool = False
     allow_break: bool = False
@@ -173,7 +174,11 @@ async def create_subtitle_plan(
             resolved,
             inventory,
             operation=body.operation,
-            params={"track_ids": body.track_ids, "edits": body.edits},
+            params={
+                "track_ids": body.track_ids,
+                "audio_stream_indices": body.audio_stream_indices,
+                "edits": body.edits,
+            },
             backup_requested=body.backup,
         )
     except mutation.PlanError as exc:
@@ -190,6 +195,7 @@ async def create_subtitle_plan(
         request={
             "inventory_id": inventory["inventory_id"],
             "track_ids": body.track_ids,
+            "audio_stream_indices": body.audio_stream_indices,
             "edits": body.edits,
             "backup": body.backup,
             "allow_break": body.allow_break,
@@ -279,7 +285,7 @@ async def extract_subtitle_track(
     if not subtitle_settings.SUBTITLE_ENABLED:
         raise HTTPException(status_code=503, detail="Subtitle management is disabled")
     try:
-        resolved = await resolve_media_file(db, media_file_id)
+        await resolve_media_file(db, media_file_id)
     except (MediaFileNotFoundError, MediaFileUnavailableError) as exc:
         raise _map_resolve_error(exc) from exc
 

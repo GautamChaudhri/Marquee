@@ -27,11 +27,10 @@
 
 	// Tabs Configuration
 	const tabs = [
-		{ id: 'subtitles', label: 'Subtitles & Operations' },
-		{ id: 'generation', label: 'AI Subtitle Generation' },
-		{ id: 'audio', label: 'Audio Tracks' }
+		{ id: 'tracks', label: 'Tracks & Operations' },
+		{ id: 'generation', label: 'AI Subtitle Generation' }
 	];
-	let activeTab = $state('subtitles');
+	let activeTab = $state('tracks');
 
 	// Inventory & Tracks State
 	let inventory = $derived(inspect?.inventory || ({} as any));
@@ -42,15 +41,28 @@
 
 	// Selection State
 	let selectedTrackIds = $state<string[]>([]);
+	let selectedAudioIndices = $state<number[]>([]);
 	let deleteAfterExtract = $state(false);
 	let deleteAfterEmbed = $state(false);
 
 	// Batch Delete States
 	let batchDeleteOpen = $state(false);
+	let batchDeleteTarget = $state<'subtitles' | 'audio' | 'both'>('both');
 	let batchDeleteMode = $state<'except' | 'only'>('except');
 	let batchLanguages = $state<string[]>([]);
 
-	// Unique languages present in current tracks
+	// Language helper display
+	const langNames = new Intl.DisplayNames(['en'], { type: 'language' });
+	function getLanguageName(tag: string) {
+		if (!tag || tag === 'und') return 'Undetermined';
+		try {
+			return langNames.of(tag) || tag;
+		} catch {
+			return tag;
+		}
+	}
+
+	// Unique languages present in current subtitle tracks
 	let uniqueLanguages = $derived.by(() => {
 		const langs = new Set<string>();
 		tracks.forEach((t: any) => {
@@ -60,6 +72,38 @@
 		});
 		return Array.from(langs).sort();
 	});
+
+	// Unique languages present in audio tracks
+	let audioLanguages = $derived.by(() => {
+		const langs = new Set<string>();
+		audioStreams.forEach((stream: any) => {
+			if (stream.language_tag) {
+				langs.add(stream.language_tag.toLowerCase());
+			}
+		});
+		return Array.from(langs).sort();
+	});
+
+	// Union or subset of unique languages for batch delete depending on target
+	let uniqueLanguagesForBatch = $derived.by(() => {
+		if (batchDeleteTarget === 'subtitles') {
+			return uniqueLanguages;
+		} else if (batchDeleteTarget === 'audio') {
+			return audioLanguages;
+		} else {
+			const union = new Set([...uniqueLanguages, ...audioLanguages]);
+			return Array.from(union).sort();
+		}
+	});
+
+	// Missing preferred languages calculation
+	let preferredLangs = $derived(settings?.subtitles?.preferred_languages || ['en']);
+	let missingPreferredAudio = $derived.by(() => {
+		const audioLangs = new Set((coverage?.audio_languages || []).map((l: string) => l.toLowerCase()));
+		const preferred = preferredLangs.map((l: string) => l.toLowerCase());
+		return preferred.filter((l: string) => !audioLangs.has(l));
+	});
+	let audioStatus = $derived(missingPreferredAudio.length > 0 ? 'gap' : 'ok');
 
 	// Track Selection Details
 	let selectedTracks = $derived(
@@ -144,6 +188,7 @@
 			const res = await inspectMovie(fetch, movie.id);
 			inspect = res;
 			selectedTrackIds = [];
+			selectedAudioIndices = [];
 			return res;
 		} catch (e: any) {
 			toast(e.message || 'Failed to refresh tracks inventory', 'bad');
@@ -331,13 +376,16 @@
 	});
 
 	// ── ACTION: Delete Selected Tracks ──
+	// ── ACTION: Delete Selected Tracks (Subtitles and/or Audio) ──
 	async function handleDeleteSelected() {
-		if (!movie || !movie.media_file_id || selectedTrackIds.length === 0) return;
+		if (!movie || !movie.media_file_id) return;
+		if (selectedTrackIds.length === 0 && selectedAudioIndices.length === 0) return;
 		busy = true;
 		try {
 			const plan = await createPlan(fetch, movie.media_file_id, {
-				operation: 'subtitle_remove',
-				track_ids: selectedTrackIds
+				operation: 'track_remove',
+				track_ids: selectedTrackIds,
+				audio_stream_indices: selectedAudioIndices
 			});
 			await confirmJob(fetch, plan.job_id);
 			monitorJob(plan.job_id);
@@ -368,7 +416,7 @@
 							throw new Error('Could not find original embedded track in updated inventory');
 						}
 						const plan = await createPlan(fetch, mediaFileId, {
-							operation: 'subtitle_remove',
+							operation: 'track_remove',
 							track_ids: [freshTrack.id]
 						});
 						await confirmJob(fetch, plan.job_id);
@@ -410,7 +458,7 @@
 							throw new Error('Could not find original external track in updated inventory');
 						}
 						const removePlan = await createPlan(fetch, mediaFileId, {
-							operation: 'subtitle_remove',
+							operation: 'track_remove',
 							track_ids: [freshTrack.id]
 						});
 						await confirmJob(fetch, removePlan.job_id);
@@ -435,21 +483,35 @@
 			return;
 		}
 
-		// Compile target track IDs
+		// Compile target tracks and audio streams
 		let targetTrackIds: string[] = [];
-		if (batchDeleteMode === 'only') {
-			// Delete only selected
-			targetTrackIds = tracks
-				.filter((t: any) => batchLanguages.includes(t.language_tag?.toLowerCase()))
-				.map((t: any) => t.id);
-		} else {
-			// Delete everything EXCEPT selected
-			targetTrackIds = tracks
-				.filter((t: any) => !batchLanguages.includes(t.language_tag?.toLowerCase()))
-				.map((t: any) => t.id);
+		let targetAudioIndices: number[] = [];
+
+		if (batchDeleteTarget === 'subtitles' || batchDeleteTarget === 'both') {
+			if (batchDeleteMode === 'only') {
+				targetTrackIds = tracks
+					.filter((t: any) => batchLanguages.includes(t.language_tag?.toLowerCase()))
+					.map((t: any) => t.id);
+			} else {
+				targetTrackIds = tracks
+					.filter((t: any) => !batchLanguages.includes(t.language_tag?.toLowerCase()))
+					.map((t: any) => t.id);
+			}
 		}
 
-		if (targetTrackIds.length === 0) {
+		if (batchDeleteTarget === 'audio' || batchDeleteTarget === 'both') {
+			if (batchDeleteMode === 'only') {
+				targetAudioIndices = audioStreams
+					.filter((s: any) => batchLanguages.includes(s.language_tag?.toLowerCase()))
+					.map((s: any) => s.index);
+			} else {
+				targetAudioIndices = audioStreams
+					.filter((s: any) => !batchLanguages.includes(s.language_tag?.toLowerCase()))
+					.map((s: any) => s.index);
+			}
+		}
+
+		if (targetTrackIds.length === 0 && targetAudioIndices.length === 0) {
 			toast('No matching tracks found for this batch filter', 'info');
 			batchDeleteOpen = false;
 			return;
@@ -459,8 +521,9 @@
 		batchDeleteOpen = false;
 		try {
 			const plan = await createPlan(fetch, movie.media_file_id, {
-				operation: 'subtitle_remove',
-				track_ids: targetTrackIds
+				operation: 'track_remove',
+				track_ids: targetTrackIds,
+				audio_stream_indices: targetAudioIndices
 			});
 			await confirmJob(fetch, plan.job_id);
 			monitorJob(plan.job_id);
@@ -521,6 +584,28 @@
 			selectedTrackIds = tracks.map((t: any) => t.id);
 		}
 	}
+
+	// Audio selection checkbox helpers
+	function toggleAudioSelect(index: number) {
+		if (selectedAudioIndices.includes(index)) {
+			selectedAudioIndices = selectedAudioIndices.filter(i => i !== index);
+		} else {
+			selectedAudioIndices = [...selectedAudioIndices, index];
+		}
+	}
+	function toggleAllAudio() {
+		if (selectedAudioIndices.length === audioStreams.length) {
+			selectedAudioIndices = [];
+		} else {
+			selectedAudioIndices = audioStreams.map((s: any) => s.index);
+		}
+	}
+
+	let singleSelectedAudio = $derived(
+		selectedAudioIndices.length === 1
+			? audioStreams.find((s: any) => s.index === selectedAudioIndices[0])
+			: null
+	);
 
 	// Language checkbox helpers for Batch Delete
 	function toggleBatchLang(lang: string) {
@@ -602,14 +687,14 @@
 
 		<!-- Tab Content -->
 		<div class="tab-content-wrapper">
-			{#if activeTab === 'subtitles'}
-				<!-- ── SUBTITLES TAB ── -->
+			{#if activeTab === 'tracks'}
+				<!-- ── TRACKS TAB ── -->
 				<div class="subtitles-tab-grid">
 					
 					<!-- Left Main: Tracks list and controls -->
 					<div class="left-panel">
 						<div class="panel-section header-row">
-							<h4>Subtitle Tracks ({tracks.length})</h4>
+							<h4>Media Tracks & Operations</h4>
 							<div class="actions">
 								<button class="btn secondary btn-sm" onclick={handleRescan} disabled={busy}>
 									🔄 Re-Scan File
@@ -617,7 +702,69 @@
 							</div>
 						</div>
 
-						<!-- Tracks Table -->
+						<!-- Audio Tracks Section -->
+						<div class="tracks-list-header">
+							<h5>Audio Tracks ({audioStreams.length})</h5>
+						</div>
+						<div class="tracks-table-wrap">
+							<table class="tracks-table">
+								<thead>
+									<tr>
+										<th class="chk-col">
+											<input type="checkbox" checked={audioStreams.length > 0 && selectedAudioIndices.length === audioStreams.length} onchange={toggleAllAudio} />
+										</th>
+										<th>Language</th>
+										<th>Source</th>
+										<th>Codec</th>
+										<th>Channels</th>
+										<th>Flags</th>
+										<th>Stream</th>
+									</tr>
+								</thead>
+								<tbody>
+									{#if audioStreams.length === 0}
+										<tr>
+											<td colspan="7" class="empty-table">No audio tracks found. Re-scan the media file.</td>
+										</tr>
+									{:else}
+										{#each audioStreams as stream (stream.index)}
+											<tr class:selected={selectedAudioIndices.includes(stream.index)}>
+												<td class="chk-col">
+													<input type="checkbox" checked={selectedAudioIndices.includes(stream.index)} onchange={() => toggleAudioSelect(stream.index)} />
+												</td>
+												<td>
+													<span class="lang-tag font-mono uppercase">{stream.language_tag || 'und'}</span>
+													<span class="lang-name">{getLanguageName(stream.language_tag)}</span>
+												</td>
+												<td>
+													<span class="source-badge">
+														embedded
+													</span>
+												</td>
+												<td class="font-mono">{stream.codec || '—'}</td>
+												<td>
+													<span>{stream.channels ? `${stream.channels}ch` : '—'}</span>
+												</td>
+												<td>
+													<div class="flags-row">
+														{#if stream.disposition?.default || stream.disposition?.default_flag}<span class="flag-pill default">DEFAULT</span>{/if}
+														{#if stream.disposition?.forced || stream.disposition?.forced_flag}<span class="flag-pill forced">FORCED</span>{/if}
+														{#if stream.disposition?.hearing_impaired}<span class="flag-pill sdh">SDH</span>{/if}
+														{#if stream.disposition?.comment || stream.disposition?.commentary || stream.disposition?.original}<span class="flag-pill commentary">COMMENT</span>{/if}
+													</div>
+												</td>
+												<td class="font-mono font-sm">#{stream.index}</td>
+											</tr>
+										{/each}
+									{/if}
+								</tbody>
+							</table>
+						</div>
+
+						<!-- Subtitle Tracks Section -->
+						<div class="tracks-list-header mt-10">
+							<h5>Subtitle Tracks ({tracks.length})</h5>
+						</div>
 						<div class="tracks-table-wrap">
 							<table class="tracks-table">
 								<thead>
@@ -676,15 +823,15 @@
 							</table>
 						</div>
 
-						<!-- Redesigned Operations Command Bar -->
+						<!-- Unified Operations Command Bar -->
 						<div class="commands-bar mq-rise">
-							<h5>Subtitle Track Actions</h5>
-							{#if selectedTrackIds.length === 0}
-								<p class="help-text">Select one or more tracks in the list to reveal modification actions.</p>
+							<h5>Track Actions</h5>
+							{#if selectedTrackIds.length === 0 && selectedAudioIndices.length === 0}
+								<p class="help-text">Select one or more tracks in the lists to reveal modification actions.</p>
 							{:else}
 								<div class="commands-controls">
-									<!-- Contextual Single Track Actions -->
-									{#if singleSelectedTrack}
+									<!-- Contextual Single Subtitle Track Actions -->
+									{#if singleSelectedTrack && selectedAudioIndices.length === 0}
 										{#if singleSelectedTrack.source === 'embedded'}
 											<div class="action-card">
 												<button class="btn primary" onclick={handleExtractTrack} disabled={busy}>
@@ -711,9 +858,9 @@
 									<!-- Delete Selected (always available when > 0 items checked) -->
 									<div class="action-card delete-card">
 										<button class="btn danger" onclick={handleDeleteSelected} disabled={busy}>
-											🗑️ Delete Selected ({selectedTrackIds.length})
+											🗑️ Delete Selected ({selectedTrackIds.length + selectedAudioIndices.length})
 										</button>
-										<span class="help-text">Permanently remuxes the video file or unlinks the sidecar file.</span>
+										<span class="help-text">Permanently remuxes the video container file or unlinks the sidecar subtitle files.</span>
 									</div>
 								</div>
 							{/if}
@@ -724,34 +871,25 @@
 					<div class="right-panel">
 						<!-- Coverage Box -->
 						<div class="panel-section coverage-box">
-							<h4>Subtitle Coverage Status</h4>
-							<div class="coverage-row">
-								<span class="lbl">Coverage Status:</span>
-								<span class="val status-lbl" class:ok={movie.subtitle_status === 'ok'} class:gap={movie.subtitle_status === 'gap'}>
-									{movie.subtitle_status === 'ok' ? '✅ OK' : movie.subtitle_status === 'gap' ? '⚠️ Gaps Present' : '❌ Unscanned'}
-								</span>
-							</div>
-
-							{#if coverage}
+							<h4>Language Coverage Status</h4>
+							
+							<!-- Audio Coverage Part -->
+							<div class="coverage-section">
+								<div class="section-subtitle">Audio</div>
+								<div class="coverage-row">
+									<span class="lbl">Status:</span>
+									<span class="val status-lbl" class:ok={audioStatus === 'ok'} class:gap={audioStatus === 'gap'}>
+										{audioStatus === 'ok' ? '✅ OK' : '⚠️ Gaps Present'}
+									</span>
+								</div>
+								
 								<div class="coverage-details">
 									<div class="detail-row">
-										<span class="label">Full Dialogue Languages:</span>
+										<span class="label">Languages Present:</span>
 										<div class="tags">
-											{#if coverage.full_dialogue_languages && coverage.full_dialogue_languages.length > 0}
-												{#each coverage.full_dialogue_languages as lang}
+											{#if coverage?.audio_languages && coverage.audio_languages.length > 0}
+												{#each coverage.audio_languages as lang}
 													<span class="lang-pill {getLanguageClass(lang)}">{lang.toUpperCase()}</span>
-												{/each}
-											{:else}
-												<span class="muted">—</span>
-											{/if}
-										</div>
-									</div>
-									<div class="detail-row">
-										<span class="label">Forced Dialogue:</span>
-										<div class="tags">
-											{#if coverage.forced_only_languages && coverage.forced_only_languages.length > 0}
-												{#each coverage.forced_only_languages as lang}
-													<span class="lang-pill forced">{lang.toUpperCase()}</span>
 												{/each}
 											{:else}
 												<span class="muted">—</span>
@@ -761,8 +899,8 @@
 									<div class="detail-row">
 										<span class="label">Missing Preferred:</span>
 										<div class="tags">
-											{#if coverage.missing_preferred_languages && coverage.missing_preferred_languages.length > 0}
-												{#each coverage.missing_preferred_languages as lang}
+											{#if missingPreferredAudio.length > 0}
+												{#each missingPreferredAudio as lang}
 													<span class="lang-pill missing">{lang.toUpperCase()}</span>
 												{/each}
 											{:else}
@@ -771,7 +909,62 @@
 										</div>
 									</div>
 								</div>
-							{/if}
+							</div>
+
+							<!-- Divider line -->
+							<hr class="coverage-divider" />
+
+							<!-- Subtitles Coverage Part -->
+							<div class="coverage-section">
+								<div class="section-subtitle">Subtitles</div>
+								<div class="coverage-row">
+									<span class="lbl">Status:</span>
+									<span class="val status-lbl" class:ok={movie.subtitle_status === 'ok'} class:gap={movie.subtitle_status === 'gap'}>
+										{movie.subtitle_status === 'ok' ? '✅ OK' : movie.subtitle_status === 'gap' ? '⚠️ Gaps Present' : '❌ Unscanned'}
+									</span>
+								</div>
+
+								{#if coverage}
+									<div class="coverage-details">
+										<div class="detail-row">
+											<span class="label">Full Dialogue Languages:</span>
+											<div class="tags">
+												{#if coverage.full_dialogue_languages && coverage.full_dialogue_languages.length > 0}
+													{#each coverage.full_dialogue_languages as lang}
+														<span class="lang-pill {getLanguageClass(lang)}">{lang.toUpperCase()}</span>
+													{/each}
+												{:else}
+													<span class="muted">—</span>
+												{/if}
+											</div>
+										</div>
+										<div class="detail-row">
+											<span class="label">Forced Dialogue:</span>
+											<div class="tags">
+												{#if coverage.forced_only_languages && coverage.forced_only_languages.length > 0}
+													{#each coverage.forced_only_languages as lang}
+														<span class="lang-pill forced">{lang.toUpperCase()}</span>
+													{/each}
+												{:else}
+													<span class="muted">—</span>
+												{/if}
+											</div>
+										</div>
+										<div class="detail-row">
+											<span class="label">Missing Preferred:</span>
+											<div class="tags">
+												{#if coverage.missing_preferred_languages && coverage.missing_preferred_languages.length > 0}
+													{#each coverage.missing_preferred_languages as lang}
+														<span class="lang-pill missing">{lang.toUpperCase()}</span>
+													{/each}
+												{:else}
+													<span class="muted font-sm font-good">None (Full Coverage)</span>
+												{/if}
+											</div>
+										</div>
+									</div>
+								{/if}
+							</div>
 						</div>
 
 						<!-- Batch / Quick Delete Panel -->
@@ -783,26 +976,47 @@
 
 							{#if batchDeleteOpen}
 								<div class="batch-delete-body mq-rise">
-									<p class="help">Quickly wipe multiple subtitle tracks based on specific languages.</p>
+									<p class="help">Quickly wipe multiple tracks based on specific languages.</p>
 									
-									<div class="option-group">
-										<label class="radio-label">
-											<input type="radio" value="except" bind:group={batchDeleteMode} />
-											<span>Delete everything <strong>except</strong> selected</span>
-										</label>
-										<label class="radio-label">
-											<input type="radio" value="only" bind:group={batchDeleteMode} />
-											<span>Delete <strong>only</strong> selected</span>
-										</label>
+									<div class="batch-step">
+										<span class="step-label">1. Target Tracks:</span>
+										<div class="option-group">
+											<label class="radio-label">
+												<input type="radio" value="both" bind:group={batchDeleteTarget} />
+												<span>Audio & Subtitles</span>
+											</label>
+											<label class="radio-label">
+												<input type="radio" value="subtitles" bind:group={batchDeleteTarget} />
+												<span>Subtitles Only</span>
+											</label>
+											<label class="radio-label">
+												<input type="radio" value="audio" bind:group={batchDeleteTarget} />
+												<span>Audio Only</span>
+											</label>
+										</div>
+									</div>
+
+									<div class="batch-step">
+										<span class="step-label">2. Deletion Mode:</span>
+										<div class="option-group">
+											<label class="radio-label">
+												<input type="radio" value="except" bind:group={batchDeleteMode} />
+												<span>Delete everything <strong>except</strong> selected</span>
+											</label>
+											<label class="radio-label">
+												<input type="radio" value="only" bind:group={batchDeleteMode} />
+												<span>Delete <strong>only</strong> selected</span>
+											</label>
+										</div>
 									</div>
 
 									<div class="languages-checklist">
-										<span class="label">Choose Languages:</span>
-										{#if uniqueLanguages.length === 0}
-											<div class="muted font-sm">No track languages detected.</div>
+										<span class="step-label">3. Choose Languages:</span>
+										{#if uniqueLanguagesForBatch.length === 0}
+											<div class="muted font-sm">No track languages found.</div>
 										{:else}
 											<div class="checklist-grid">
-												{#each uniqueLanguages as lang}
+												{#each uniqueLanguagesForBatch as lang}
 													<label class="chk-item">
 														<input type="checkbox" checked={batchLanguages.includes(lang)} onchange={() => toggleBatchLang(lang)} />
 														<span>{lang.toUpperCase()}</span>
@@ -812,42 +1026,11 @@
 										{/if}
 									</div>
 
-									<button class="btn danger btn-sm mt-10 w-full" onclick={handleBatchDelete} disabled={busy || uniqueLanguages.length === 0 || batchLanguages.length === 0}>
+									<button class="btn danger btn-sm mt-10 w-full" onclick={handleBatchDelete} disabled={busy || uniqueLanguagesForBatch.length === 0 || batchLanguages.length === 0}>
 										🔥 Execute Batch Delete
 									</button>
 								</div>
 							{/if}
-						</div>
-
-						<!-- Audio Stream Layout details -->
-						<div class="panel-section audio-summary-box">
-							<h4>Audio Streams Reference</h4>
-							<table class="simple-table">
-								<thead>
-									<tr>
-										<th>Stream</th>
-										<th>Lang</th>
-										<th>Codec</th>
-										<th>Ch</th>
-									</tr>
-								</thead>
-								<tbody>
-									{#if audioStreams.length === 0}
-										<tr>
-											<td colspan="4" class="muted center">No audio details.</td>
-										</tr>
-									{:else}
-										{#each audioStreams as stream}
-											<tr>
-												<td class="font-mono">#{stream.index}</td>
-												<td class="uppercase font-sm font-bold">{stream.language || 'und'}</td>
-												<td class="font-mono font-sm">{stream.codec || '—'}</td>
-												<td>{stream.channels || '—'}ch</td>
-											</tr>
-										{/each}
-									{/if}
-								</tbody>
-							</table>
 						</div>
 					</div>
 				</div>
@@ -951,58 +1134,6 @@
 								</button>
 							</div>
 						</div>
-					</div>
-				</div>
-
-			{:else if activeTab === 'audio'}
-				<!-- ── AUDIO TAB PLACEHOLDER ── -->
-				<div class="audio-tab-placeholder mq-rise">
-					<div class="placeholder-icon">🎛️</div>
-					<h3>Audio Track Manipulation</h3>
-					<p class="subtitle">Coming Soon — Future Feature Expansion</p>
-					<p class="description">
-						In the future, this tab will house the advanced audio controls for this movie. 
-						It will mirror the subtitle track manipulation functionality, allowing you to:
-					</p>
-					<ul class="features-list">
-						<li><strong>Wipe Audio Streams</strong> directly from the Matroska/MP4 container.</li>
-						<li><strong>Extract Audio</strong> channels to high-quality external files (.ac3, .dts, .flac).</li>
-						<li><strong>Embed External Audio</strong> tracks (such as commentary tracks or localized language dubs) into your video file.</li>
-						<li><strong>Edit Audio Metadata</strong> including default, forced flags, and language tags.</li>
-						<li><strong>Layout Multi-Channel Controls</strong> for standardizing layouts (Stereo, 5.1, 7.1, Dolby Atmos).</li>
-					</ul>
-					<div class="mock-table-view">
-						<div class="mock-header">Mock Audio Layout Preview</div>
-						<table class="simple-table mock-table">
-							<thead>
-								<tr>
-									<th>Stream</th>
-									<th>Codec</th>
-									<th>Channels</th>
-									<th>Language</th>
-									<th>Flags</th>
-									<th>Actions</th>
-								</tr>
-							</thead>
-							<tbody>
-								<tr class="muted">
-									<td>#0 (Audio)</td>
-									<td>truehd</td>
-									<td>8ch (Atmos)</td>
-									<td>English (en)</td>
-									<td><span class="flag-pill default">DEFAULT</span></td>
-									<td><button class="btn secondary btn-xs" disabled>Extract</button></td>
-								</tr>
-								<tr class="muted">
-									<td>#1 (Audio)</td>
-									<td>ac3</td>
-									<td>6ch (5.1)</td>
-									<td>Spanish (es)</td>
-									<td>—</td>
-									<td><button class="btn secondary btn-xs" disabled>Extract</button></td>
-								</tr>
-							</tbody>
-						</table>
 					</div>
 				</div>
 			{/if}
@@ -1260,6 +1391,32 @@
 		font-weight: 700;
 		color: var(--gold);
 	}
+	.lang-pill {
+		font-size: 10px;
+		font-weight: 700;
+		padding: 2px 5px;
+		border-radius: 4px;
+		color: var(--ink);
+	}
+	.lang-pill.missing {
+		background: transparent;
+		border: 1px dashed var(--bad);
+		color: var(--bad);
+	}
+	.lang-pill.forced {
+		background: transparent;
+		border: 1px dashed var(--warn);
+		color: var(--warn);
+	}
+	/* 8-color accent palette — matches SubtitleMovieRow */
+	:global(.lang-1) { background: #ff7b72; color: #fff; }
+	:global(.lang-2) { background: #79c0ff; color: #0d1117; }
+	:global(.lang-3) { background: #7ee787; color: #0d1117; }
+	:global(.lang-4) { background: #d2a8ff; color: #0d1117; }
+	:global(.lang-5) { background: #ffca28; color: #0d1117; }
+	:global(.lang-6) { background: #ffa657; color: #0d1117; }
+	:global(.lang-7) { background: #56d364; color: #0d1117; }
+	:global(.lang-8) { background: #ec407a; color: #fff; }
 	.lang-name {
 		color: var(--muted);
 		font-size: 12px;
@@ -1674,81 +1831,46 @@
 		margin-top: 6px;
 	}
 
-	/* Audio Tab Placeholder */
-	.audio-tab-placeholder {
-		background: var(--panel);
-		border: 1px dashed var(--line2);
-		border-radius: var(--radius);
-		padding: 48px 32px;
-		text-align: center;
-		max-width: 680px;
-		margin: 20px auto;
-		display: flex;
-		flex-direction: column;
-		align-items: center;
-		gap: 14px;
-	}
-	.placeholder-icon {
-		font-size: 40px;
+	.section-subtitle {
+		font-size: 13.5px;
+		font-weight: 650;
+		color: var(--gold);
 		margin-bottom: 8px;
 	}
-	.audio-tab-placeholder h3 {
-		margin: 0;
-		font-size: 18px;
-		font-weight: 700;
-	}
-	.audio-tab-placeholder .subtitle {
-		margin: 0;
-		color: var(--gold);
-		font-size: 13px;
-		font-weight: 600;
-		text-transform: uppercase;
-		letter-spacing: 0.05em;
-	}
-	.audio-tab-placeholder .description {
-		font-size: 13.5px;
-		color: var(--muted);
-		line-height: 1.5;
-		margin-top: 6px;
-	}
-	.features-list {
-		text-align: left;
-		font-size: 12.5px;
-		color: var(--muted);
-		line-height: 1.6;
-		margin: 10px 0;
-		padding-left: 20px;
+	.coverage-section {
 		display: flex;
 		flex-direction: column;
-		gap: 8px;
-		max-width: 480px;
+		gap: 6px;
 	}
-	.mock-table-view {
-		width: 100%;
-		max-width: 600px;
-		margin-top: 24px;
-		background: var(--panel2);
-		border: 1px solid var(--line);
-		border-radius: 6px;
-		overflow: hidden;
+	.coverage-divider {
+		border: 0;
+		border-top: 1px dashed var(--line);
+		margin: 12px 0;
 	}
-	.mock-header {
-		background: var(--ink2);
-		padding: 8px 12px;
-		font-size: 10.5px;
+	.batch-step {
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+	}
+	.step-label {
+		font-size: 11.5px;
+		font-weight: 600;
+		color: var(--muted);
 		text-transform: uppercase;
-		font-weight: 700;
-		color: var(--faint);
-		letter-spacing: 0.05em;
-		text-align: left;
-		border-bottom: 1px solid var(--line);
+		letter-spacing: 0.03em;
 	}
-	.mock-table {
-		opacity: 0.5;
+	.tracks-list-header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		margin-top: 16px;
+		margin-bottom: 8px;
 	}
-	.btn-xs {
-		padding: 3px 6px;
-		font-size: 10.5px;
+	.tracks-list-header h5 {
+		margin: 0;
+		font-size: 14.5px;
+		font-weight: 650;
+		color: var(--text);
 	}
 
 	/* Base buttons */

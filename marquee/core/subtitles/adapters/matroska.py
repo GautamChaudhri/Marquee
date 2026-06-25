@@ -26,22 +26,42 @@ class MatroskaAdapter:
     binary = "mkvmerge"
 
     def build_remove(self, src: Path, out: Path, plan: RemovePlan) -> list[str]:
-        """Keep only the surviving subtitle tracks (or drop all subtitles)."""
-        if not plan.keep_tool_track_ids and not plan.remove_tool_track_ids:
-            raise UnsupportedContainerError(
-                "Matroska subtitle removal requires mkvmerge track IDs; rescan with mkvmerge installed"
-            )
+        """Keep only the surviving subtitle and audio tracks (or drop them)."""
         args = ["-o", binaries.safe_media_path(out)]
-        if plan.keep_tool_track_ids:
-            args += ["--subtitle-tracks", ",".join(str(i) for i in plan.keep_tool_track_ids)]
-        elif plan.remove_tool_track_ids:
-            # Negated form: keep everything except these.
-            args += [
-                "--subtitle-tracks",
-                "!" + ",".join(str(i) for i in plan.remove_tool_track_ids),
-            ]
-        else:
-            args += ["--no-subtitles"]
+
+        # Subtitles removal logic
+        if plan.remove_tool_track_ids or plan.remove_stream_indices:
+            if plan.keep_tool_track_ids:
+                args += ["--subtitle-tracks", ",".join(str(i) for i in plan.keep_tool_track_ids)]
+            elif plan.remove_tool_track_ids:
+                # Negated form: keep everything except these.
+                args += [
+                    "--subtitle-tracks",
+                    "!" + ",".join(str(i) for i in plan.remove_tool_track_ids),
+                ]
+            elif plan.remove_stream_indices:
+                raise UnsupportedContainerError(
+                    "Matroska subtitle removal requires mkvmerge track IDs; rescan with mkvmerge installed"
+                )
+            else:
+                args += ["--no-subtitles"]
+
+        # Audio tracks removal logic
+        if plan.remove_audio_tool_track_ids or plan.remove_audio_stream_indices:
+            if plan.keep_audio_tool_track_ids:
+                args += ["--audio-tracks", ",".join(str(i) for i in plan.keep_audio_tool_track_ids)]
+            elif plan.remove_audio_tool_track_ids:
+                args += [
+                    "--audio-tracks",
+                    "!" + ",".join(str(i) for i in plan.remove_audio_tool_track_ids),
+                ]
+            elif plan.remove_audio_stream_indices:
+                raise UnsupportedContainerError(
+                    "Matroska audio removal requires mkvmerge track IDs; rescan with mkvmerge installed"
+                )
+            else:
+                args += ["--no-audio"]
+
         args += [binaries.safe_media_path(src)]
         return args
 
