@@ -3,8 +3,11 @@
 from marquee.core.radarr_overlay import (
     classify_custom_format_tags,
     classify_hdr_tags,
-    hdr_target_status,
+    default_profile_preference,
+    is_valid_preference_pair,
     ordered_tags,
+    preference_status,
+    preference_target_choices,
     profile_hdr_targets,
 )
 
@@ -53,31 +56,57 @@ def test_profile_hdr_targets_only_positive_scores():
     assert targets == {"dovi", "hdr10", "hdr10p"}
 
 
-def test_hdr_target_status_respects_dovi_fallback_toggle():
-    assert hdr_target_status(
-        has_file=True,
-        file_tags={"dovi", "dovi_no_fallback"},
-        targets={"dovi"},
-        require_dovi_fallback=True,
-    ) == "below_target"
-    assert hdr_target_status(
-        has_file=True,
-        file_tags={"dovi", "dovi_no_fallback"},
-        targets={"dovi"},
-        require_dovi_fallback=False,
-    ) == "met_target"
-    assert hdr_target_status(
-        has_file=False,
-        file_tags=set(),
-        targets={"hdr10"},
-        require_dovi_fallback=True,
-    ) == "no_file"
-    assert hdr_target_status(
-        has_file=True,
+def test_preference_target_choices_expand_dovi_targets():
+    assert preference_target_choices({"hdr", "dovi"}) == [
+        "hdr",
+        "dovi_no_fallback",
+        "dovi_fallback",
+    ]
+    assert preference_target_choices({"hdr10p"}) == ["hdr10p"]
+
+
+def test_default_profile_preference_prefers_base_hdr_then_dovi_fallback():
+    assert default_profile_preference(["hdr", "dovi_no_fallback", "dovi_fallback"]) == (
+        "hdr",
+        "dovi_fallback",
+    )
+    assert default_profile_preference(["dovi_no_fallback", "dovi_fallback"]) == (
+        "dovi_no_fallback",
+        "dovi_fallback",
+    )
+
+
+def test_preference_status_resolves_meet_exceed_and_no_target():
+    assert preference_status(
+        file_tags={"dovi", "hdr10"},
+        profile_targets={"hdr", "dovi"},
+        meet_target="hdr",
+        exceed_target="dovi_fallback",
+    ) == "exceeds_target"
+    assert preference_status(
         file_tags={"hdr10"},
-        targets=set(),
-        require_dovi_fallback=True,
+        profile_targets={"hdr", "dovi"},
+        meet_target="hdr",
+        exceed_target="dovi_fallback",
+    ) == "meets_target"
+    assert preference_status(
+        file_tags={"dovi", "dovi_no_fallback"},
+        profile_targets={"hdr", "dovi"},
+        meet_target="hdr10",
+        exceed_target="dovi_fallback",
+    ) == "below_target"
+    assert preference_status(
+        file_tags={"hdr10"},
+        profile_targets=set(),
+        meet_target=None,
+        exceed_target=None,
     ) == "no_hdr_target"
+
+
+def test_is_valid_preference_pair_requires_stricter_exceed_target():
+    assert is_valid_preference_pair("hdr", "dovi_fallback") is True
+    assert is_valid_preference_pair("hdr10p", "dovi_no_fallback") is True
+    assert is_valid_preference_pair("dovi_fallback", "hdr10p") is False
 
 
 def test_ordered_tags_stable():

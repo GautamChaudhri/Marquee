@@ -10,8 +10,18 @@ export interface Paginated<T> {
 
 export type PosterStatus = 'missing' | 'review' | 'approved' | 'deployed';
 export type HdrKind = 'hdr' | 'hdr10' | 'hdr10p' | 'dovi' | 'dovi_no_fallback' | 'sdr';
+export type HdrPreferenceChoice =
+	| 'hdr'
+	| 'hdr10'
+	| 'hdr10p'
+	| 'dovi_no_fallback'
+	| 'dovi_fallback';
 export type SubtitleStatus = 'ok' | 'gap';
-export type HdrTargetStatus = 'met_target' | 'below_target' | 'no_hdr_target' | 'no_file';
+export type RadarrOverlayStatus =
+	| 'below_target'
+	| 'meets_target'
+	| 'exceeds_target'
+	| 'no_hdr_target';
 
 export interface MovieListItem {
 	id: number;
@@ -54,15 +64,27 @@ export interface RadarrOverlayProfile {
 	cutoff_format_score: number | null;
 }
 
+export interface RadarrOverlayProfilePreference {
+	profile_id: number;
+	profile_name: string;
+	profile_targets: HdrKind[];
+	available_preference_targets: HdrPreferenceChoice[];
+	meet_target: HdrPreferenceChoice | null;
+	exceed_target: HdrPreferenceChoice | null;
+}
+
 export interface RadarrOverlayItem extends MovieListItem {
 	dovi_no_fallback: boolean;
 	profile_id: number | null;
 	profile_name: string | null;
-	cf_score: number;
+	cf_score: number | null;
 	cf_cutoff: number | null;
 	cutoff_met: boolean | null;
-	hdr_targets: HdrKind[];
-	hdr_target_status: HdrTargetStatus;
+	profile_targets: HdrKind[];
+	available_preference_targets: HdrPreferenceChoice[];
+	meet_target: HdrPreferenceChoice | null;
+	exceed_target: HdrPreferenceChoice | null;
+	preference_status: RadarrOverlayStatus;
 }
 
 export interface RadarrOverlayQuery {
@@ -73,9 +95,9 @@ export interface RadarrOverlayQuery {
 	cf_score_min?: number;
 	cf_score_max?: number;
 	profile_id?: number;
-	hdr_target_status?: HdrTargetStatus;
+	preference_status?: RadarrOverlayStatus;
 	dovi_no_fallback?: boolean;
-	sort_by?: 'title' | 'year' | 'cf_score' | 'hdr_target_status';
+	sort_by?: 'title' | 'year' | 'cf_score' | 'preference_status';
 	sort_dir?: 'asc' | 'desc';
 }
 
@@ -86,6 +108,7 @@ export interface RadarrOverlayResponse extends Paginated<RadarrOverlayItem> {
 	>;
 	distribution_order: string[];
 	profiles: RadarrOverlayProfile[];
+	profile_preferences: RadarrOverlayProfilePreference[];
 	applied_filters: Record<string, unknown>;
 }
 

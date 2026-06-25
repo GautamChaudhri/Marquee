@@ -1,6 +1,7 @@
 /** Offline fixtures, used when PUBLIC_USE_MOCKS=true so screens build without a
  *  backend. Mirrors the real response shapes from ./types. */
 import type {
+	HdrPreferenceChoice,
 	MovieDetail,
 	MovieListItem,
 	MovieQuery,
@@ -9,6 +10,7 @@ import type {
 	HdrKind,
 	RadarrOverlayQuery,
 	RadarrOverlayResponse,
+	RadarrOverlayStatus,
 	SystemMetrics,
 	SubtitleInventory,
 	SubtitleGenerator,
@@ -90,29 +92,47 @@ export function mockRadarrOverlay(params: RadarrOverlayQuery = {}): RadarrOverla
 		cf_score: 40 - index * 2,
 		cf_cutoff: index % 3 === 0 ? 100 : 60,
 		cutoff_met: index % 4 === 0 ? true : index % 4 === 1 ? false : null,
-		hdr_targets: (index % 3 === 0 ? ['dovi', 'hdr10'] : ['hdr10p']) as HdrKind[],
-		hdr_target_status: (index % 4 === 0
-			? 'met_target'
+		profile_targets: (index % 3 === 0 ? ['dovi', 'hdr10'] : ['hdr10p']) as HdrKind[],
+		available_preference_targets: (
+			index % 3 === 0
+				? ['hdr10', 'dovi_no_fallback', 'dovi_fallback']
+				: ['hdr10p']
+		) as HdrPreferenceChoice[],
+		meet_target: (index % 3 === 0 ? 'hdr10' : 'hdr10p') as HdrPreferenceChoice,
+		exceed_target: (index % 3 === 0 ? 'dovi_fallback' : null) as HdrPreferenceChoice | null,
+		preference_status: (index % 4 === 0
+			? 'exceeds_target'
 			: index % 4 === 1
-				? 'below_target'
+				? 'meets_target'
 				: index % 4 === 2
-					? 'no_hdr_target'
-					: 'no_file') as
-			| 'met_target'
-			| 'below_target'
-			| 'no_hdr_target'
-			| 'no_file'
+					? 'below_target'
+					: 'no_hdr_target') as RadarrOverlayStatus
 	})) as RadarrOverlayResponse['items'];
 
 	if (params.hdr_tags?.length) {
 		items = items.filter((item) => params.hdr_tags!.some((tag) => item.hdr_tags.includes(tag as HdrKind)));
 	}
-	if (params.hdr_target_status) items = items.filter((item) => item.hdr_target_status === params.hdr_target_status);
+	if (params.preference_status) {
+		items = items.filter((item) => item.preference_status === params.preference_status);
+	}
 	if (params.profile_id) items = items.filter((item) => item.profile_id === params.profile_id);
 	if (params.dovi_no_fallback) items = items.filter((item) => item.dovi_no_fallback);
 	if (params.sort_by === 'year') items.sort((a, b) => b.year - a.year);
 	else if (params.sort_by === 'title') items.sort((a, b) => compareBySortTitle(a.title, b.title));
-	else items.sort((a, b) => b.cf_score - a.cf_score || compareBySortTitle(a.title, b.title));
+	else if (params.sort_by === 'preference_status') {
+		const rank: Record<RadarrOverlayStatus, number> = {
+			no_hdr_target: -1,
+			below_target: 0,
+			meets_target: 1,
+			exceeds_target: 2
+		};
+		items.sort(
+			(a, b) =>
+				rank[b.preference_status] - rank[a.preference_status] ||
+				(b.cf_score ?? -999999) - (a.cf_score ?? -999999) ||
+				compareBySortTitle(a.title, b.title)
+		);
+	} else items.sort((a, b) => (b.cf_score ?? -999999) - (a.cf_score ?? -999999) || compareBySortTitle(a.title, b.title));
 
 	return {
 		total: items.length,
@@ -132,6 +152,24 @@ export function mockRadarrOverlay(params: RadarrOverlayQuery = {}): RadarrOverla
 		profiles: [
 			{ id: 3, name: 'UHD Cinema', cutoff_format_score: 100 },
 			{ id: 4, name: 'Web 4K', cutoff_format_score: 60 }
+		],
+		profile_preferences: [
+			{
+				profile_id: 3,
+				profile_name: 'UHD Cinema',
+				profile_targets: ['hdr10', 'dovi'],
+				available_preference_targets: ['hdr10', 'dovi_no_fallback', 'dovi_fallback'],
+				meet_target: 'hdr10',
+				exceed_target: 'dovi_fallback'
+			},
+			{
+				profile_id: 4,
+				profile_name: 'Web 4K',
+				profile_targets: ['hdr10p'],
+				available_preference_targets: ['hdr10p'],
+				meet_target: 'hdr10p',
+				exceed_target: null
+			}
 		],
 		applied_filters: {}
 	};

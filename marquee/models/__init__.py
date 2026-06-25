@@ -22,6 +22,7 @@ from marquee.models.pipeline_run import PipelineRun
 from marquee.models.radarr_overlay import (
     MovieCustomFormatScore,
     RadarrCustomFormat,
+    RadarrOverlayProfilePreference,
     RadarrProfileFormatItem,
     RadarrQualityProfile,
 )
@@ -66,6 +67,7 @@ __all__ = [
     "RadarrQualityProfile",
     "RadarrProfileFormatItem",
     "MovieCustomFormatScore",
+    "RadarrOverlayProfilePreference",
     "Season",
     "Series",
     "Episode",

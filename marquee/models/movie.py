@@ -60,6 +60,11 @@ class Movie(Base, TimestampMixin, ArtworkMixin):
         nullable=True,
         comment="NULL=unknown, True=current file meets Radarr cutoff, False=below cutoff",
     )
+    current_cf_score: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+        comment="Raw aggregate custom-format score from Radarr's current movieFile payload",
+    )
     hdr_type_raw: Mapped[str | None] = mapped_column(
         String(64),
         nullable=True,
