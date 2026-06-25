@@ -47,13 +47,12 @@ PREFERENCE_STATUS_SORT = {
     "exceeds_target": 2,
 }
 HDR_DISTRIBUTION_ORDER = (
+    "sdr",
     "hdr",
     "hdr10",
     "hdr10p",
     "dovi",
     "dovi_no_fallback",
-    "sdr",
-    "unknown",
 )
 
 
@@ -84,7 +83,7 @@ def _parse_hdr_tags(hdr: str | None, hdr_tags: list[str] | None) -> list[str]:
 
 
 def _distribution(items: list[dict[str, Any]]) -> dict[str, int]:
-    counts = dict.fromkeys(HDR_DISTRIBUTION_ORDER, 0)
+    counts: dict[str, int] = dict.fromkeys(HDR_DISTRIBUTION_ORDER, 0)
     for item in items:
         for key in item["distribution_keys"]:
             counts[key] += 1

@@ -133,7 +133,7 @@ def distribution_keys(raw_value: str | None) -> list[str]:
     """Distribution buckets emitted for one movie."""
     raw = _normalized(raw_value)
     if not raw:
-        return ["unknown"]
+        return ["sdr"]
     tags = classify_hdr_tags(raw)
     return tags or ["sdr"]
 

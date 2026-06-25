@@ -23,13 +23,12 @@
 	let endIndex = $derived(Math.min(currentPage * pageSize, totalItems));
 
 	const TAGS: (HdrKind | 'unknown')[] = [
+		'sdr',
 		'hdr',
 		'hdr10',
 		'hdr10p',
 		'dovi',
-		'dovi_no_fallback',
-		'sdr',
-		'unknown'
+		'dovi_no_fallback'
 	];
 	const STATUS_META: Record<RadarrOverlayStatus, { label: string; tone: string; note: string }> = {
 		below_target: {
@@ -54,21 +53,28 @@
 		}
 	};
 	const TAG_LABEL: Record<string, string> = {
+		sdr: 'SDR',
 		hdr: 'HDR',
 		hdr10: 'HDR10',
 		hdr10p: 'HDR10+',
 		dovi: 'DoVi',
-		dovi_no_fallback: 'DoVi no fallback',
-		sdr: 'SDR',
-		unknown: 'Unknown'
+		dovi_no_fallback: 'DoVi w/o fallback'
+	};
+	const DIST_COLORS: Record<string, string> = {
+		sdr: 'var(--faint)',
+		hdr: 'var(--good)',
+		hdr10: 'var(--info)',
+		hdr10p: 'var(--dovi)',
+		dovi: 'var(--gold)',
+		dovi_no_fallback: 'var(--bad)'
 	};
 	const PREFERENCE_LABEL: Record<HdrPreferenceChoice, string> = {
 		sdr: 'SDR',
 		hdr: 'HDR',
 		hdr10: 'HDR10',
 		hdr10p: 'HDR10+',
-		dovi_no_fallback: 'DoVi (any)',
-		dovi_fallback: 'DoVi + HDR fallback'
+		dovi_no_fallback: 'DoVi w/o fallback',
+		dovi_fallback: 'DoVi'
 	};
 	const DEFAULT_SORT_DIR: Record<'title' | 'cf_score' | 'preference_status', 'asc' | 'desc'> = {
 		title: 'asc',
@@ -310,7 +316,7 @@
 		<div class="hero">
 			<div>
 				<p class="eyebrow">Toolbox</p>
-				<h1>Radarr Overlay</h1>
+				<h1>HDR/DoVi Management</h1>
 				<p class="lede">
 					Read-only Radarr metadata coverage for HDR, quality profiles, and custom-format scoring.
 				</p>
@@ -323,7 +329,7 @@
 		<div class="hero">
 			<div>
 				<p class="eyebrow">Toolbox</p>
-				<h1>Radarr Overlay</h1>
+				<h1>HDR/DoVi Management</h1>
 				<p class="lede">
 					A consolidated readout of HDR truth, custom-format score posture, and per-profile
 					preference compliance.
@@ -364,7 +370,7 @@
 						class="segment"
 						class:active={selectedTags().includes(key)}
 						href={toggleTagHref(key)}
-						style={`--w:${pct(count, Math.max(data.data.total, 1))}`}
+						style={`--w:${pct(count, Math.max(data.data.total, 1))};--c:${DIST_COLORS[key] ?? 'var(--faint)'}`}
 					>
 						<span>{TAG_LABEL[key] ?? key}</span>
 						<strong>{count}</strong>
@@ -428,15 +434,6 @@
 						{/each}
 					</div>
 				</div>
-				<label class="check single">
-					<input
-						type="checkbox"
-						name="dovi_no_fallback"
-						value="true"
-						checked={data.query.dovi_no_fallback === true}
-					/>
-					<span>Only DoVi without fallback</span>
-				</label>
 				<button class="apply" type="submit">Apply filters</button>
 			</div>
 		</form>
@@ -467,85 +464,79 @@
 							</div>
 							<div class="pref-controls">
 								{#if expandedDrafts[draft.profile_id] || (draft.meet_target == null && draft.exceed_target == null)}
-									<!-- svelte-ignore a11y_click_events_have_key_events -->
-									<!-- svelte-ignore a11y_no_static_element_interactions -->
 									<div class="ladder">
-										{#if true}
-											{@const excludedChoices = draft.available_preference_targets.filter(
-												(choice) => isExcluded(draft, choice)
-											)}
+									{#if true}
 											{@const activeChoices = draft.available_preference_targets.filter(
 												(choice) => !isExcluded(draft, choice)
 											)}
-											<!-- Active rungs: reversed so DoVi+HDR is top, SDR is bottom -->
-											{#each [...activeChoices].reverse() as choice (choice)}
-												{@const zone = zoneForChoice(draft, choice)}
-												{@const isMeetBoundary = draft.meet_target === choice}
-												{@const isExceedBoundary = draft.exceed_target === choice}
+											{@const excludedChoices = draft.available_preference_targets.filter(
+												(choice) => isExcluded(draft, choice)
+											)}
+											{@const allChoices = [
+												...[...activeChoices].reverse(),
+												...[...excludedChoices].reverse()
+											]}
+										<!-- All rungs: DoVi top, SDR bottom, excluded at very bottom -->
+										{#each allChoices as choice (choice)}
+											{@const excluded = isExcluded(draft, choice)}
+											{@const zone = excluded ? null : zoneForChoice(draft, choice)}
+											{@const isMeetBoundary = draft.meet_target === choice}
+											{@const isExceedBoundary = draft.exceed_target === choice}
 												<!-- svelte-ignore a11y_click_events_have_key_events -->
 												<!-- svelte-ignore a11y_no_static_element_interactions -->
 												<div
-													class="rung"
-													class:exceed={zone === 'exceed'}
-													class:meet={zone === 'meet'}
-													class:fail={zone === 'fail'}
-													class:boundary={isMeetBoundary || isExceedBoundary}
-												>
-													<span class="rung-indicator"></span>
-													<span class="rung-label">{PREFERENCE_LABEL[choice]}</span>
-													{#if isMeetBoundary}
-														<span class="rung-tag meet-tag">meet</span>
-													{/if}
-													{#if isExceedBoundary}
-														<span class="rung-tag exceed-tag">exceed</span>
-													{/if}
-													{#if zone === 'fail'}
-														<span class="rung-tag fails-tag">fails</span>
-													{/if}
-													<div class="rung-actions">
-														<button
-															class="action-btn meet-btn"
-															class:active={isMeetBoundary}
-															type="button"
-															title="Set as meets target"
-															onclick={() => toggleMeetBoundary(draft, choice)}
-														>
-															✓
-														</button>
-														<button
-															class="action-btn exceed-btn"
-															class:active={isExceedBoundary}
-															type="button"
-															title="Set as exceeds target"
-															onclick={() => toggleExceedBoundary(draft, choice)}
-														>
-															★
-														</button>
-														<button
-															class="action-btn dismiss-btn"
-															type="button"
-															title="Mark as fails & exclude"
-															onclick={() => dismissRung(draft, choice)}
-														>
-															×
-														</button>
-													</div>
-												</div>
-											{/each}
-											<!-- Excluded rungs at the bottom -->
-											{#if excludedChoices.length > 0}
-												<div class="excluded-sep">Failed / Excluded</div>
-												{#each excludedChoices as choice (choice)}
-													<!-- svelte-ignore a11y_click_events_have_key_events -->
-													<!-- svelte-ignore a11y_no_static_element_interactions -->
-													<div class="rung dismissed" onclick={() => restoreRung(draft, choice)}>
+														class="rung"
+														class:exceed={zone === 'exceed'}
+														class:meet={zone === 'meet'}
+														class:fail={zone === 'fail'}
+														class:excluded={excluded}
+														class:boundary={isMeetBoundary || isExceedBoundary}
+													>
 														<span class="rung-indicator"></span>
 														<span class="rung-label">{PREFERENCE_LABEL[choice]}</span>
-														<span class="rung-restore">restore</span>
+														{#if !excluded}
+															{#if isMeetBoundary}
+																<span class="rung-tag meet-tag">meet</span>
+															{/if}
+															{#if isExceedBoundary}
+																<span class="rung-tag exceed-tag">exceed</span>
+															{/if}
+															{#if zone === 'fail'}
+																<span class="rung-tag fails-tag">fails</span>
+															{/if}
+															<div class="rung-actions">
+																<button
+																	class="action-btn meet-btn"
+																	class:active={isMeetBoundary}
+																	type="button"
+																	title="Set as meets target"
+																	onclick={() => toggleMeetBoundary(draft, choice)}
+																>✓</button>
+																<button
+																	class="action-btn exceed-btn"
+																	class:active={isExceedBoundary}
+																	type="button"
+																	title="Set as exceeds target"
+																	onclick={() => toggleExceedBoundary(draft, choice)}
+																>★</button>
+																<button
+																	class="action-btn dismiss-btn"
+																	type="button"
+																	title="Mark as fails & exclude"
+																	onclick={() => dismissRung(draft, choice)}
+																>×</button>
+															</div>
+														{:else}
+															<span class="rung-tag excluded-tag">excluded</span>
+															<button
+																class="rung-restore-btn"
+																type="button"
+																onclick={() => restoreRung(draft, choice)}
+															>restore</button>
+														{/if}
 													</div>
-												{/each}
+											{/each}
 											{/if}
-										{/if}
 									</div>
 									<button
 										class="collapse-ladder"
@@ -780,11 +771,11 @@
 		min-width: 120px;
 		padding: 12px 14px;
 		border-radius: 10px;
-		border: 1px solid var(--line);
+		border: 1px solid color-mix(in srgb, var(--c, var(--faint)) 30%, var(--line));
 		background:
 			linear-gradient(
 				90deg,
-				color-mix(in srgb, var(--gold-soft) 30%, transparent) var(--w),
+				color-mix(in srgb, var(--c, var(--faint)) 18%, transparent) var(--w),
 				transparent var(--w)
 			),
 			var(--panel2);
@@ -795,12 +786,12 @@
 		color: var(--muted);
 	}
 	.segment.active {
-		border-color: color-mix(in srgb, var(--gold) 40%, var(--line));
+		border-color: color-mix(in srgb, var(--c, var(--faint)) 50%, var(--line));
 		color: var(--text);
 	}
 	.segment strong {
 		font-family: var(--font-mono);
-		color: var(--text);
+		color: var(--c, var(--text));
 	}
 	.filters {
 		display: flex;
@@ -852,9 +843,7 @@
 		gap: 8px;
 		color: var(--text);
 	}
-	.check.single {
-		align-self: center;
-	}
+
 	.apply,
 	.save {
 		height: 40px;
@@ -1081,26 +1070,39 @@
 		border-color: var(--bad);
 		background: color-mix(in srgb, var(--bad) 15%, transparent);
 	}
-	/* ── dismissed (excluded) rungs ──────────────── */
-	.excluded-sep {
-		font-size: 9px;
-		text-transform: uppercase;
-		letter-spacing: 0.1em;
+	/* ── dismissed / excluded rungs ──────────────── */
+	.rung.excluded {
+		background: color-mix(in srgb, var(--bad) 8%, transparent);
 		color: var(--faint);
-		padding: 6px 12px 3px;
-		border-top: 1px solid var(--line);
 	}
-	.rung.dismissed {
-		background: var(--ink2);
+	.rung.excluded:hover {
+		background: color-mix(in srgb, var(--bad) 16%, transparent);
+	}
+	.rung.excluded .rung-indicator {
+		background: var(--bad);
+	}
+	.excluded-tag {
+		background: color-mix(in srgb, var(--bad) 25%, transparent);
+		color: var(--bad);
+	}
+	.rung-restore-btn {
+		font-size: 10px;
 		color: var(--faint);
+		background: transparent;
+		border: 1px solid var(--line);
+		border-radius: 4px;
+		padding: 2px 8px;
 		cursor: pointer;
+		margin-left: auto;
+		opacity: 0;
+		transition: opacity 0.12s ease;
 	}
-	.rung.dismissed:hover {
-		background: color-mix(in srgb, var(--faint) 12%, var(--ink2));
-		color: var(--muted);
+	.rung.excluded:hover .rung-restore-btn {
+		opacity: 1;
 	}
-	.rung.dismissed .rung-indicator {
-		background: var(--faint2);
+	.rung-restore-btn:hover {
+		color: var(--text);
+		border-color: var(--line2);
 	}
 	/* ── fail rungs (red) ─────────────────── */
 	.rung.fail {
@@ -1116,15 +1118,6 @@
 		box-shadow: 0 0 5px color-mix(in srgb, var(--bad) 40%, transparent);
 	}
 
-	.rung-restore {
-		font-size: 10px;
-		color: var(--faint);
-		opacity: 0;
-		transition: opacity 0.12s ease;
-	}
-	.rung.dismissed:hover .rung-restore {
-		opacity: 1;
-	}
 	.rows {
 		border: 1px solid var(--line);
 		border-radius: var(--radius-sm);

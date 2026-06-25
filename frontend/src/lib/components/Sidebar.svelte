@@ -27,7 +27,7 @@
 		{
 			name: 'Toolbox',
 			links: [
-				{ label: 'Radarr Overlay', href: '/hdr', icon: 'hdr' },
+				{ label: 'HDR', href: '/hdr', icon: 'hdr' },
 				{ label: 'Subtitles', href: '/subtitles', icon: 'subtitles' },
 				{ label: 'Letterbox', href: '/letterbox', icon: 'letterbox' }
 			]
