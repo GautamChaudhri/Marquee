@@ -5,14 +5,20 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import UTC, datetime
 from typing import Annotated, Any
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from marquee.api.library_serializers import enrich_movie
+from marquee.api.library_serializers import enrich_movie, resolution_label
+from marquee.api.routes.jobs import job_summary
 from marquee.api.routes.library import _coverage_by_media_file
+from marquee.core.dovi_analysis import conversion_eligibility
+from marquee.core.jobs import job_manager
+from marquee.core.jobs.manager import TERMINAL
+from marquee.core.media_files import ensure_media_file_for_movie
 from marquee.core.radarr_overlay import (
     classify_custom_format_tags,
     classify_hdr_tags,
@@ -28,7 +34,10 @@ from marquee.core.radarr_overlay import (
 )
 from marquee.core.sort_title import sort_title
 from marquee.database import get_db
+from marquee.media import binaries
 from marquee.models import (
+    DoviState,
+    Job,
     LetterboxState,
     MediaFile,
     Movie,
@@ -461,3 +470,202 @@ async def put_profile_preferences(
 
     await db.commit()
     return {"applied_profile_ids": applied}
+
+
+# ---------------------------------------------------------------------------
+# Per-movie Dolby Vision detail + analysis
+# ---------------------------------------------------------------------------
+
+
+class DoviAnalyzeBatchRequest(BaseModel):
+    movie_ids: list[int] | None = None
+
+
+async def _load_movie(db: AsyncSession, movie_id: int) -> Movie:
+    movie = (await db.execute(select(Movie).where(Movie.id == movie_id))).scalar_one_or_none()
+    if movie is None:
+        raise HTTPException(status_code=404, detail=f"Movie id={movie_id} not found")
+    return movie
+
+
+async def _active_dovi_job(db: AsyncSession, movie_id: int) -> Job | None:
+    return (
+        await db.execute(
+            select(Job)
+            .where(
+                Job.type == "dovi_analyze",
+                Job.subject_type == "movie",
+                Job.subject_id == str(movie_id),
+                Job.status.notin_(tuple(TERMINAL)),
+            )
+            .order_by(Job.created_at.desc(), Job.id.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
+
+def _dovi_state_to_dict(state: DoviState | None) -> dict[str, Any] | None:
+    if state is None:
+        return None
+    return {
+        "status": state.status,
+        "profile": state.dovi_profile,
+        "level": state.dovi_level,
+        "el_present": state.el_present,
+        "el_type": state.el_type,
+        "bl_signal_compatibility_id": state.bl_signal_compatibility_id,
+        "source_codec": state.source_codec,
+        "rpu_summary": state.rpu_summary_json,
+        "error_reason": state.error_reason,
+        "conversion": conversion_eligibility(state.dovi_profile, state.el_type),
+        "last_analyzed_at": state.last_analyzed_at.isoformat()
+        if state.last_analyzed_at
+        else None,
+    }
+
+
+def _movie_detail_dict(movie: Movie) -> dict[str, Any]:
+    return {
+        "id": movie.id,
+        "title": movie.title,
+        "year": movie.year,
+        "tmdb_id": movie.tmdb_id,
+        "radarr_id": movie.radarr_id,
+        "movie_file_path": movie.movie_file_path,
+        "container": movie.container,
+        "resolution": resolution_label(movie.video_width, movie.video_height),
+        "has_hdr": movie.has_hdr,
+        "has_dv": movie.has_dv,
+        "hdr_type_raw": movie.hdr_type_raw,
+        "quality_profile_id": movie.quality_profile_id,
+    }
+
+
+@router.get("/{movie_id}")
+async def hdr_movie_detail(
+    movie_id: int,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    """Per-movie HDR + Dolby Vision detail for the /hdr/[id] page."""
+    movie = await _load_movie(db, movie_id)
+    state = (
+        await db.execute(select(DoviState).where(DoviState.movie_id == movie_id))
+    ).scalar_one_or_none()
+    profile = (
+        await db.execute(
+            select(RadarrQualityProfile).where(
+                RadarrQualityProfile.id == movie.quality_profile_id
+            )
+        )
+    ).scalar_one_or_none() if movie.quality_profile_id is not None else None
+    hdr_tags = ordered_tags(classify_hdr_tags(movie.hdr_type_raw))
+    active = await _active_dovi_job(db, movie_id)
+    return {
+        "movie": _movie_detail_dict(movie),
+        "profile_name": profile.name if profile else None,
+        "hdr_tags": hdr_tags,
+        "hdr_bucket": overlay_bucket(movie.hdr_type_raw),
+        "dovi": _dovi_state_to_dict(state),
+        "binaries": {
+            "dovi_tool": binaries.resolve("dovi_tool") is not None,
+            "ffprobe": binaries.resolve("ffprobe") is not None,
+        },
+        "analysis_job": job_summary(active) if active else None,
+    }
+
+
+@router.post("/{movie_id}/analyze")
+async def analyze_movie_dovi(
+    movie_id: int,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    """Enqueue a single-movie DoVi analysis job; returns its job summary."""
+    if binaries.resolve("ffprobe") is None:
+        raise HTTPException(
+            status_code=503,
+            detail="ffprobe not found on PATH — install it to analyze Dolby Vision.",
+        )
+    movie = await _load_movie(db, movie_id)
+    active = await _active_dovi_job(db, movie.id)
+    if active is not None:
+        return job_summary(active)
+    media_file = await ensure_media_file_for_movie(db, movie)
+    file_lock = {f"media-file:{media_file.id}": 1} if media_file is not None else {}
+    job = await job_manager.create(
+        db,
+        job_type="dovi_analyze",
+        payload={"movie_id": movie.id},
+        priority=70,
+        resources={"media_read": 1, **file_lock},
+        subject_type="movie",
+        subject_id=movie.id,
+    )
+    return job_summary(job)
+
+
+@router.post("/analyze", status_code=202)
+async def analyze_dovi_batch(
+    body: DoviAnalyzeBatchRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    """Analyze every Radarr-known Dolby Vision movie (optionally a subset).
+
+    Only movies Radarr flagged as DoVi (``has_dv``) with a media file are
+    enqueued — there's no point probing files we already know are SDR/HDR10.
+    """
+    if binaries.resolve("ffprobe") is None:
+        raise HTTPException(
+            status_code=503,
+            detail="ffprobe not found on PATH — install it to analyze Dolby Vision.",
+        )
+    rows = (
+        await db.execute(
+            select(Movie).where(
+                Movie.has_dv.is_(True),
+                Movie.movie_file_path.is_not(None),
+                Movie.movie_file_path != "",
+            )
+        )
+    ).scalars().all()
+    if body.movie_ids:
+        wanted = set(body.movie_ids)
+        rows = [movie for movie in rows if movie.id in wanted]
+    if not rows:
+        raise HTTPException(
+            status_code=400, detail="No Dolby Vision movies with a media file to analyze"
+        )
+
+    children: list[dict[str, Any]] = []
+    for movie in rows:
+        media_file = await ensure_media_file_for_movie(db, movie)
+        if media_file is None:
+            continue
+        children.append(
+            {
+                "job_type": "dovi_analyze",
+                "payload": {"movie_id": movie.id},
+                "priority": 60,
+                "resources": {"media_read": 1, f"media-file:{media_file.id}": 1},
+                "subject_type": "movie",
+                "subject_id": movie.id,
+            }
+        )
+    if not children:
+        raise HTTPException(
+            status_code=400, detail="No Dolby Vision movies with a resolvable media file"
+        )
+
+    batch, _children = await job_manager.create_batch(
+        db,
+        parent_type="dovi_analyze_batch",
+        parent_payload={"movie_ids": [movie.id for movie in rows]},
+        parent_priority=60,
+        parent_subject_type="dovi_batch",
+        parent_subject_id=uuid4().hex,
+        children=children,
+    )
+    return {
+        "job_id": batch.id,
+        "total": len(children),
+        "events_url": f"/api/jobs/{batch.id}/events",
+    }

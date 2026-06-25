@@ -12,6 +12,7 @@ from uuid import uuid4
 from marquee.config import settings
 from marquee.core.jobs import (
     builtin_handlers,  # noqa: F401 - registers handlers
+    dovi_handlers,  # noqa: F401 - registers dovi analysis handler
     legacy_media,  # noqa: F401 - registers bridge handlers
 )
 from marquee.core.jobs.child_tracking import current_attempt_id

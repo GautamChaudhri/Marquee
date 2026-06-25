@@ -114,6 +114,52 @@ export interface RadarrOverlayResponse extends Paginated<RadarrOverlayItem> {
 	applied_filters: Record<string, unknown>;
 }
 
+export type DoviElType = 'FEL' | 'MEL' | null;
+
+export interface DoviConversion {
+	eligible: boolean | 'lossy';
+	target: string | null;
+	kind: 'p5_to_p81' | 'p7_strip_el' | null;
+	reason: string;
+}
+
+export interface DoviState {
+	status: 'unknown' | 'analyzing' | 'analyzed' | 'not_dovi' | 'error';
+	profile: number | null;
+	level: number | null;
+	el_present: boolean | null;
+	el_type: DoviElType;
+	bl_signal_compatibility_id: number | null;
+	source_codec: string | null;
+	rpu_summary: string | null;
+	error_reason: string | null;
+	conversion: DoviConversion;
+	last_analyzed_at: string | null;
+}
+
+export interface HdrMovieDetail {
+	movie: {
+		id: number;
+		title: string;
+		year: number;
+		tmdb_id: number | null;
+		radarr_id: number | null;
+		movie_file_path: string | null;
+		container: string | null;
+		resolution: string | null;
+		has_hdr: boolean | null;
+		has_dv: boolean | null;
+		hdr_type_raw: string | null;
+		quality_profile_id: number | null;
+	};
+	profile_name: string | null;
+	hdr_tags: HdrKind[];
+	hdr_bucket: string;
+	dovi: DoviState | null;
+	binaries: { dovi_tool: boolean; ffprobe: boolean };
+	analysis_job: import('./jobs').JobSnapshot | null;
+}
+
 export interface PipelineRunRef {
 	run_id: string;
 	events_url: string;
