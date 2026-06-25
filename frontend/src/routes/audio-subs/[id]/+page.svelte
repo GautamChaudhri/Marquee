@@ -1804,7 +1804,7 @@
 	}
 	.unified-action-bar {
 		position: sticky;
-		top: 12px;
+		top: calc(var(--header-h) + 12px);
 		z-index: 5;
 		background: var(--panel);
 		border: 1px solid var(--line);
