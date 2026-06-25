@@ -88,7 +88,7 @@
 </script>
 
 <svelte:head>
-	<title>Subtitles – Marquee</title>
+	<title>Audio & Subs – Marquee</title>
 </svelte:head>
 
 {#snippet pageActions()}
@@ -98,7 +98,7 @@
 {/snippet}
 
 <div class="page-container">
-	<SectionHeader title="Subtitle Management" subtitle="Manage container embedded and external subtitle tracks across your library." action={pageActions} />
+	<SectionHeader title="Audio and Subtitle Management" subtitle="Manage container embedded and external audio and subtitle tracks across your library." action={pageActions} />
 
 	{#if data.error}
 		<div class="error-banner">
