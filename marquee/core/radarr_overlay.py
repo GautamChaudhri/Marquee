@@ -225,9 +225,7 @@ def preference_rank(choice: str | None) -> int:
 
 def is_valid_preference_pair(meet_target: str | None, exceed_target: str | None) -> bool:
     """Return whether a meet/exceed pair is internally consistent."""
-    if meet_target is None:
-        return exceed_target is None
-    if exceed_target is None:
+    if meet_target is None or exceed_target is None:
         return True
     return preference_rank(exceed_target) > preference_rank(meet_target)
 
@@ -249,20 +247,48 @@ def preference_target_matches(choice: str, file_tags: set[str]) -> bool:
     return False
 
 
+def highest_matching_allowed_choice(file_tags: set[str], excluded_targets: set[str]) -> str | None:
+    """Return the highest-ranked preference choice matching the file's HDR tags, ignoring excluded targets."""
+    # Check in reverse order (highest rank first)
+    for choice in reversed(PREFERENCE_TARGET_ORDER):
+        if choice in excluded_targets:
+            continue
+        if preference_target_matches(choice, file_tags):
+            return choice
+    return None
+
+
 def preference_status(
     *,
     file_tags: set[str],
     profile_targets: set[str],
     meet_target: str | None,
     exceed_target: str | None,
+    excluded_targets: Iterable[str] | None = None,
 ) -> str:
     """Compare one file's HDR truth against the chosen preference targets."""
-    if not profile_targets or meet_target is None:
+    if not profile_targets:
         return "no_hdr_target"
-    if exceed_target and preference_target_matches(exceed_target, file_tags):
-        return "exceeds_target"
-    if preference_target_matches(meet_target, file_tags):
+    if meet_target is None and exceed_target is None:
         return "meets_target"
+
+    excluded = set(excluded_targets or [])
+    effective_choice = highest_matching_allowed_choice(file_tags, excluded)
+    if effective_choice is None:
+        return "below_target"
+
+    choice_rank = preference_rank(effective_choice)
+    meet_rank = preference_rank(meet_target)
+    exceed_rank = preference_rank(exceed_target)
+
+    if exceed_rank >= 0 and choice_rank >= exceed_rank:
+        return "exceeds_target"
+    if meet_rank >= 0 and choice_rank >= meet_rank:
+        return "meets_target"
+    if meet_target is None and exceed_target is not None:
+        # Exceeds-only mode: anything below exceed_target meets target
+        return "meets_target"
+
     return "below_target"
 
 
