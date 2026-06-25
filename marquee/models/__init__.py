@@ -2,6 +2,7 @@
 
 from marquee.models.artwork_event import ArtworkEvent
 from marquee.models.base import ArtworkMixin, TimestampMixin
+from marquee.models.dovi import DoviState
 from marquee.models.episode import Episode
 from marquee.models.job import (
     Job,
@@ -39,6 +40,7 @@ __all__ = [
     "ArtworkEvent",
     "ArtworkMixin",
     "TimestampMixin",
+    "DoviState",
     "LetterboxEvent",
     "LetterboxState",
     "LetterboxReencodeArtifact",
