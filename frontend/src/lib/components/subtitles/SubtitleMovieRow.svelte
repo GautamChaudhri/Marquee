@@ -60,7 +60,7 @@
 </script>
 
 <div class="row-container">
-	<a class="row-trigger" href="/subtitles/{movie.id}">
+	<a class="row-trigger" href="/audio-subs/{movie.id}">
 		<span class="thumb">
 			<PosterThumb
 				title={movie.title}

@@ -618,13 +618,13 @@
 </script>
 
 <svelte:head>
-	<title>{movie?.title || 'Subtitles Details'} — Marquee</title>
+	<title>{movie?.title || 'Audio & Subs'} — Marquee</title>
 </svelte:head>
 
 <div class="movie-subtitles-page">
 	<!-- Top Bar Navigation Back -->
 	<div class="top-nav">
-		<a href="/subtitles" class="back-link">← Back to Subtitles Library</a>
+		<a href="/audio-subs" class="back-link">← Back to Tracks Library</a>
 	</div>
 
 	{#if error}
