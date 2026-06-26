@@ -7,6 +7,89 @@ accumulation in `job_resources` and `job_workers`.
 
 ---
 
+## Implementation groups (ordered by dependency)
+
+The 17 problems below are grouped into 7 batches to minimize codebase churn.
+Within each group, problems touch overlapping files and can be implemented
+together in a single pass. Groups are ordered so earlier groups unblock later
+ones.  Parallel groups (F, G) are noted below.
+
+### Group A: Backend data hygiene — resource/worker table cleanup
+**Problems: 1, 2, 3** | Priority: Highest | Files: `jobs.py`, `builtin_handlers.py`, `main.py`
+
+All three are backend-only: filter metrics responses, purge stale rows, call
+`bootstrap_resources()` from the API lifespan. No visual changes. Must come
+first because every other group (especially E's UI redesign) assumes clean
+underlying data.
+
+### Group B: Job labeling — operation types + human-readable names
+**Problems: 4, 7** | Priority: High | Files: `subtitles.py`, `mutation.py`, `handlers.py`, `manager.py`, `labels.py` (new), frontend `humanizeType()`
+
+Define new operation types (`audio_remove`) and a shared label registry that
+maps internal `snake_case` types to operator-friendly names. Problem 7's
+registry should be built first, then Problem 4's new operation types slot into
+it. This touches both backend registration and frontend display — do them
+together to avoid rework.
+
+### Group C: Audit trail quality — result/error enrichment
+**Problems: 5, 6, 16b** | Priority: High | Files: `mutation.py`, `legacy_media.py`, `jobs.py`
+
+All three modify the same error/result code paths: enrich `execute_job()`
+results with track info (5), capture structured error context (6), and fix
+`_run_media` to check `cancel_requested` before forcing "failed" (16b). These
+are tightly coupled — changing the error shape in one place requires changing
+the consumer in another. Fix them in one pass.
+
+### Group D: Duplicate entries + batch visibility
+**Problems: 14, 8** | Priority: High | Files: `letterbox.py`, `subtitles.py`, `media_jobs/manager.py`, `jobs.py`, frontend detail page
+
+Problem 14 (orphaned generic Jobs from re-planning) must be fixed BEFORE
+Problem 8 (batch children endpoint). Otherwise the batch children view would
+show phantom entries. Both touch parent/child job relationships. Fix 14's
+supersede logic, then build 8's children endpoint and frontend rendering on
+clean data.
+
+### Group E: Resource pool + worker panel visual redesign
+**Problems: 9, 10** | Priority: Medium | Files: `ResourcePoolPanel.svelte`, `WorkerHealthPanel.svelte`, `StatCard.svelte`
+
+Frontend-only component rewrites. Depends on Group A (filtered data) and Group
+B (human-readable labels for pool keys and worker roles). Compact horizontal
+utilization bars replace StatCards; role-labeled rows replace UUIDs. Two
+components, same design language — implement together.
+
+### Group F: System metrics — GPU, graphs, overlay
+**Problems: 11, 12, 13** | Priority: Medium → High | Files: `system_metrics.py`, `system.py`, `SystemMetricsPanel.svelte`, new `MetricsChart.svelte`, `JobOverlay.svelte`
+
+Builds on itself: collect GPU enc/dec (11) → build history endpoint + time
+window + sparkline chart (12) → overlay job bands on graphs (13). Phase 1
+groundwork (sampler, `active_jobs` column, 15s samples, 14-day retention)
+already exists from `cadb3b1`. Self-contained subsystem with no dependencies on
+other groups — can be parallelized with Group G if bandwidth allows.
+
+### Group G: Job execution control — cancel, instant, reorder
+**Problems: 15, 16a/16c/16d, 17** | Priority: High | Files: `job_manager.py`, `handlers.py`, `builtin_handlers.py`, `letterbox_reencode.py`, `mutation.py`, `letterbox.py`, `backup.py`, `pipeline.py`, `jobs.py`, `QueuedJobRow.svelte`
+
+The most impactful group but also the riskiest — it touches the core job
+execution path. Add instant execution mode (15), add cancel checks to all
+non-encode phases (16a/16c/16d), and add queue reordering (17). Should come
+last when all other improvements are stable, so regressions are easier to
+isolate. Can be parallelized with Group F.
+
+### Implementation order
+
+```
+A (hygiene) → B (labeling) → C (enrichment) → D (batches) → E (UI polish)
+                                                              ↗
+                                         F (metrics) ──────────┘ (parallel)
+                                         G (exec control) ─────┘ (parallel)
+```
+
+Groups F and G can run in parallel after C or D, depending on team bandwidth.
+E should come after D (both are frontend-heavy and D provides the
+batch-children foundation E's detail page needs).
+
+---
+
 ## Problem 1: Per-file mutex rows dominate the Resource pools panel
 
 ### What users see
@@ -1136,6 +1219,457 @@ Job legend (clickable, navigates to /projection-room/jobs/{id}):
 
 ---
 
+## Problem 14: Re-encode re-planning orphans generic Jobs — duplicate entries in history
+
+### What users see
+
+A single letterbox re-encode operation produces **4 entries** in the Projection
+Room job history (or at least 2, when 1 is expected). The user can't tell which
+is the "real" job — both show the same type, subject, and resources. Re-planning
+(or clicking "Re-encode" twice while adjusting settings) compounds the problem.
+
+### Root cause
+
+Every re-encode plan creates **two** rows: one `MediaJob` and one generic `Job`,
+because `media_job_manager.create_job()` always pairs them:
+
+```
+POST /api/letterbox/movies/{id}/reencode-plan
+    → media_job_manager.create_job()
+        → INSERT MediaJob (operation="letterbox_reencode")
+        → job_manager.create()
+            → INSERT Job (type="letterbox_reencode", payload={"media_job_id": ...})
+```
+
+That's 2 rows per plan — this is intentional (the dual-table design).
+
+The bug is in the **supersede logic** at `letterbox.py:947-955`:
+
+```python
+# Supersede any still-pending plan for this file.
+await db.execute(
+    update(MediaJob)
+    .where(
+        MediaJob.operation == "letterbox_reencode",
+        MediaJob.media_file_id == media_file.id,
+        MediaJob.status == "planned",
+    )
+    .values(status="cancelled")
+)
+```
+
+This cancels old **MediaJob** rows, but does **NOT** cancel their paired
+**generic Job** rows. The generic Jobs remain in the `Job` table with
+`status="planned"`, fully visible in the Projection Room.
+
+### Step-by-step reproduction
+
+1. User creates a re-encode plan → 1 MediaJob + 1 Job = **2 entries**
+2. User adjusts settings and clicks "Re-encode" again (re-planning)
+3. Supersede cancels old MediaJob (`status="planned"` → `"cancelled"`)
+4. Supersede does NOT touch the old generic Job (still `status="planned"`)
+5. New plan creates 1 new MediaJob + 1 new Job = **2 more entries**
+6. **Total visible in Projection Room: 3 entries** (old cancelled MediaJob is
+   hidden since the projection room shows only `Job` rows, not `MediaJob` rows
+   — but the old generic Job is still visible)
+
+If the user confirmed the first plan before re-planning:
+1. First plan → confirm → MediaJob=confirmed, Job=queued
+2. Re-plan → supersede finds NO "planned" MediaJob (first one is "confirmed"),
+   so it cancels nothing
+3. Second plan creates new MediaJob + Job
+4. **Total: 4 entries** (2 old Jobs + 2 new Jobs all visible in the history)
+
+### The same bug applies to subtitle mutation plans
+
+`subtitles.py:create_subtitle_plan()` at lines 198-223 calls
+`media_job_manager.create_job()` which creates the same paired MediaJob+Job.
+But the subtitle plan endpoint does NOT have a supersede step at all — it
+always creates fresh pairs. This means every re-plan for subtitle
+remove/embed/metadata operations accumulates orphaned generic Jobs.
+
+### Why this matters beyond aesthetics
+
+- The history table and by-type metrics are polluted with phantom entries
+- The job overlay on metrics graphs (Problem 13) would show "planned" job bands
+  for jobs that were never meant to execute
+- Batch cleanup (`job_retention_purge`) won't purge these because they're
+  planned/cancelled, not terminal
+- Users can accidentally confirm the wrong planned job if multiple exist
+
+### Recommendations
+
+1. **Cancel paired generic Jobs in the supersede step** — In
+   `letterbox.py:create_reencode_plan()`, after cancelling old MediaJobs, also
+   cancel their paired generic Jobs by looking up `payload.media_job_id`:
+
+   ```python
+   # After the MediaJob supersede at lines 947-955, also clean up orphaned Jobs:
+   from marquee.models import Job
+   old_generic_ids = (
+       await db.execute(
+           select(Job.id).where(
+               Job.payload["media_job_id"].astext.in_(
+                   select(MediaJob.job_id).where(
+                       MediaJob.operation == "letterbox_reencode",
+                       MediaJob.media_file_id == media_file.id,
+                       MediaJob.status == "cancelled",
+                   )
+               ),
+               Job.status == "planned",
+           )
+       )
+   ).scalars().all()
+   for gid in old_generic_ids:
+       await db.execute(update(Job).where(Job.id == gid).values(status="cancelled"))
+   ```
+
+2. **Add the same logic to subtitle plan creation** — In
+   `subtitles.py:create_subtitle_plan()`, before creating a new plan, supersede
+   any existing planned MediaJobs for the same media file AND cancel their
+   paired generic Jobs.
+
+3. **Generalize the pattern** — Create a helper function
+   `supersede_planned_media_jobs(db, media_file_id, operation)` that cancels
+   both the MediaJob and its paired generic Job atomically. Use it in both
+   letterbox and subtitle plan endpoints.
+
+4. **Add a cleanup for orphaned planned Jobs** — As a belt-and-suspenders
+   measure, add a periodic cleanup to `job_retention_purge` that deletes
+   planned/cancelled generic Jobs whose paired MediaJob no longer exists (or
+   is terminal). This catches any edge cases missed by the direct cancellation.
+
+### How the rows are paired
+
+```
+MediaJob.job_id ──(stored in)──> Job.payload["media_job_id"]
+```
+
+There is no foreign key. The pairing is established at creation time in
+`media_job_manager.create_job()` at `manager.py:199-231`:
+
+```python
+await job_manager.create(
+    db,
+    job_type=operation,
+    payload={"media_job_id": job.job_id},  # <-- this is the link
+    ...
+)
+```
+
+To find the orphaned generic Job for a cancelled MediaJob, query:
+```sql
+SELECT j.* FROM jobs j
+WHERE j.payload->>'media_job_id' = '<media_job.job_id>'
+```
+
+---
+
+## Problem 15: Instant operations are needlessly queued — should execute inline
+
+### What users see
+
+Applying a letterbox crop tag to a single movie (Hot Fuzz) queues the job
+instead of executing immediately. The user sees "Queued" in the UI and waits
+for a worker to pick it up — even though mkvpropedit writes crop tags in
+~100 ms. The same applies to crop tag removal, poster heal, backup creation,
+and maintenance jobs (cache clear, deploy reset, retention purge, metrics
+purge). All of these are instant or trivially fast operations that gain nothing
+from the queuing infrastructure but lose auditability by bypassing it entirely.
+
+### Root cause
+
+**No concept of "instant" job execution** — `job_manager.create()` always
+persists the job with `status="queued"` (or "planned"). A worker must claim and
+execute it. There is no path in the job manager for "create this job AND run it
+inline, synchronously, in the same API request." Every `job_manager.create()`
+call — regardless of how trivial the operation — produces a row that sits in
+the queue until a free worker polls it.
+
+The user confirms the design intent:
+
+> "Everything should be routed through the job manager so that all of their
+> details and information and all of that is captured and stored, but, the jobs
+> that happen instantly and don't need processing power should go through a
+> special or dedicated route or something through the job manager where they
+> are allowed to happen instantly."
+
+In other words: the job manager should handle **all mutations** (for audit
+trail, history, error capture) but offer an **instant execution mode** for
+operations that don't need queuing.
+
+### Complete audit: what goes through job_manager and what doesn't
+
+#### A. Operations routed through `job_manager.create()` (queued)
+
+| Operation | Source | Resources | Duration | Should be |
+|-----------|--------|-----------|----------|------------|
+| `letterbox_detect` | `letterbox.py:666` | media_read + file_lock | 5–120s per file | **Queued** (ffmpeg) |
+| `letterbox_apply` | `letterbox.py:795` | media_write + file_lock | ~100ms | **Instant** ✗ |
+| `letterbox_apply` (batch children) | `letterbox.py:835` | media_write + file_lock | ~100ms each | **Instant** ✗ |
+| `letterbox_remove` | `letterbox.py:1046` | media_write + file_lock | ~100ms | **Instant** ✗ |
+| `letterbox_heal` | `letterbox.py:1109` | media_write | seconds | **Queued** (many files) |
+| `letterbox_detect_batch` | `letterbox.py:619` (create_batch) | children | varies | **Queued** |
+| `letterbox_apply_batch` | `letterbox.py:811` | children | seconds total | **Queued** (batch) |
+| `letterbox_reencode` (plan → confirm → queued) | `media_jobs/manager.py:226` | media_write + gpu + transcode + file_lock | minutes–hours | **Queued** (ffmpeg) |
+| `dovi_analyze` | `hdr.py:648` | media_read + file_lock | 10–60s | **Queued** (ffprobe + analysis) |
+| `dovi_convert` | `hdr.py:697` | media_write + file_lock | minutes | **Queued** (ffmpeg) |
+| `dovi_analyze_batch` | `hdr.py:762` (create_batch) | children | varies | **Queued** |
+| `taste_rebuild` | `taste.py:357`, `onboarding.py:87,165` | gpu | minutes–hours | **Queued** (ML training) |
+| `taste_map` | `taste.py:444` | gpu | minutes | **Queued** (ML clustering) |
+| `learned_head_train` | `taste.py:384`, `onboarding.py:175` | none (low priority) | minutes | **Queued** (ML) |
+| `poster_pipeline` | `pipeline.py:87` | gpu + network_external | minutes | **Queued** |
+| `poster_pipeline_batch` | `pipeline.py:308`, `onboarding.py:99` | gpu + network_external | hours | **Queued** |
+| `pipeline_cache_clear` | `pipeline.py:348` | maintenance_exclusive | <1s (file deletion) | **Instant** ✗ |
+| `poster_deploy_reset` | `pipeline.py:375` | maintenance_exclusive + media_write | <1s (DB update) | **Instant** ✗ |
+| `poster_heal` | `system.py:115` | network_external | seconds (stat check) | **Instant** (network-only) |
+| `backup_create` | `backup.py:21` | maintenance_exclusive | seconds (file copy) | **Instant** ✗ |
+| `subtitle_scan_all` | `subtitles.py:359` | none (creates children) | varies | **Queued** (batch) |
+| Subtitle child scans | `builtin_handlers.py:249` | (via `media_job_manager`) | 1–10s each | **Queued** |
+| `radarr_upgrade` | `webhooks.py:216` | network_external | seconds–minutes | **Queued** (network + poster restore) |
+| `library_sync` | scheduler periodic | none | seconds (network) | **Queued** (network, but lightweight) |
+| `job_retention_purge` | scheduler periodic | none | <1s (DB delete) | **Instant** ✗ |
+| `system_metrics_purge` | scheduler periodic | none | <1s (DB delete) | **Instant** ✗ |
+| `system_noop` | `handlers.py:35` (dev/test) | none | instant | **Instant** ✓ (trivial) |
+
+#### B. Operations routed through `media_job_manager.create_job()` (MediaJob + paired generic Job)
+
+| Operation | Source | Notes |
+|-----------|--------|-------|
+| `letterbox_reencode` (plan) | `letterbox.py:958` | Creates planned MediaJob+Job; confirmed separately |
+| `subtitle_remove` (plan) | `subtitles.py:198` | Same pattern — planned, then confirmed |
+| `subtitle_embed` | `subtitles.py:339` (extract pseudo-plan) | Direct to queued |
+| `subtitle_extract` | `subtitles.py:339` | Direct to queued (ffmpeg extraction) |
+| `subtitle_generate` | `subtitle_generators.py:50,76` | Direct to queued (external API + GPU) |
+| `subtitle_policy` (batch children) | `subtitle_policies.py:235` | Direct to queued |
+| `subtitle_restore` | `webhooks.py:282` | Direct to queued |
+| `subtitle_scan` (library batch children) | `builtin_handlers.py:249` | Direct to queued |
+
+#### C. Mutations that bypass the job manager entirely (no audit trail)
+
+| Operation | Where | What it does | Should route through? |
+|-----------|-------|-------------|----------------------|
+| Webhook folder rename | `webhooks.py:194-213` | Updates Movie.folder_path, re-scans poster | ❌ Not routed — direct DB mutation |
+| Settings updates | `settings.py` | Read/write config, no media effects | ✓ Read-only or config-only, doesn't need job routing |
+| Library listing | `library.py` | Read-only | ✓ Read-only, doesn't need job routing |
+| Subtitle inspect | `subtitles.py` | Read-only ffprobe | ✓ Read-only, doesn't need job routing |
+
+### Proposed instant execution path
+
+Add an `execute_now` parameter (or a separate `create_and_run` method) to
+`job_manager` that:
+
+1. Creates the Job row with `status="running"`
+2. Creates the first JobAttempt
+3. Dispatches to the registered handler **synchronously** (in the API request
+   thread, not via the worker pool)
+4. On success: sets `status="succeeded"`, stores result
+5. On failure: sets `status="failed"`, stores error — but does NOT retry (the
+   caller sees the error and can manually retry via the retry endpoint)
+6. Returns the completed Job dict (with result/error populated)
+
+The key constraint: instant execution must NOT hold resource locks. These
+operations should skip the resource reservation step entirely — they run in the
+API process context, not on a worker, so there's no possibility of GPU/media
+collision with other workers. The API's single-threaded async nature ensures
+only one instant job executes at a time.
+
+For operations that currently use `media_write` or `media-file:*` locks but are
+instant (`letterbox_apply`, `letterbox_remove`): the lock is a mutex that
+prevents a concurrent re-encode or subtitle remux from touching the same file.
+An instant mkvpropedit call completes in ~100 ms — the window is so small that
+the lock is unnecessary. The file-level mutex makes sense for multi-second
+operations (remux, re-encode), not for sub-second metadata writes.
+
+### Reclassification: instant vs queued
+
+| Instant (inline, no queue) | Queued (worker pool) |
+|---------------------------|---------------------|
+| `letterbox_apply` (single, ~100ms) | `letterbox_apply_batch` (many files, still fast but batched) |
+| `letterbox_remove` (single, ~100ms) | `letterbox_detect` |
+| `pipeline_cache_clear` (<1s, file deletion) | `letterbox_heal` |
+| `poster_deploy_reset` (<1s, DB update) | All re-encodes, DoVi ops |
+| `poster_heal` (seconds, network-only) | All ML: taste_rebuild, taste_map, learned_head_train |
+| `backup_create` (seconds, file copy) | All poster pipeline ops |
+| `job_retention_purge` (<1s, DB delete) | All subtitle mutations (remove/embed/metadata/extract/generate/restore) |
+| `system_metrics_purge` (<1s, DB delete) | Audio reorder |
+| `system_noop` (trivial) | Radarr upgrade (network + poster restore) |
+| | Library sync (network) |
+
+**Borderline cases — could go either way but staying queued is safer:**
+- `poster_heal`: seconds of disk stat calls, but network-external resource.
+  Instant is fine since it's non-blocking for other operations.
+- `library_sync`: network calls to Radarr/Sonarr/TMDB can take 10-30s. Staying
+  queued avoids holding an API connection open that long. But a background
+  asyncio task (not a worker job) would also work.
+- `radarr_upgrade`: triggers poster restore which needs GPU — must stay queued.
+
+### Recommendations
+
+1. **Add `create_and_run()` to `job_manager`** — Like `create()` but runs the
+   handler inline after creating the Job row. Returns the completed result. The
+   job goes directly from `running` to `succeeded`/`failed` — no queued state,
+   no worker claim, no JobAttempt retries. Errors propagate to the caller (no
+   dead-letter queue for instant jobs — the user sees the error immediately).
+
+2. **Add `instant=True` flag to `@register()`** — Mark handlers that are safe
+   for instant execution. This prevents accidentally routing a heavy job through
+   the instant path. The `create_and_run()` method asserts `instant=True` before
+   executing inline.
+
+   ```python
+   @register("letterbox_apply", instant=True)
+   async def letterbox_apply(job: Job) -> dict:
+       ...
+   ```
+
+3. **Convert `letterbox_apply` and `letterbox_remove` to instant** — In
+   `letterbox.py:apply_one()` and `remove_one()`, use
+   `job_manager.create_and_run()` instead of `job_manager.create()`. The
+   response changes from `{"job_id": ..., "status": "queued"}` to the full
+   result including what was applied/removed.
+
+4. **Convert maintenance/housekeeping jobs to instant** — `pipeline_cache_clear`,
+   `poster_deploy_reset`, `backup_create`, `poster_heal`, `job_retention_purge`,
+   `system_metrics_purge`, `system_noop` all switch to instant execution.
+
+5. **Keep batch operations queued** — `letterbox_apply_batch` processes many
+   files but each individual operation is instant. The batch itself queues
+   children normally (or the batch handler runs them inline). The batch parent
+   job still provides the aggregate progress/result.
+
+6. **Do NOT route read-only endpoints through the job manager** — Library
+   listings, subtitle inspections, settings reads are queries, not mutations.
+   They don't need job routing.
+
+7. **Do NOT route webhook renames through the job manager** — The folder rename
+   handler at `webhooks.py:194` does a direct DB mutation (updates
+   `Movie.folder_path`). This is a 1-row update — instant and safe inline.
+   Creating a job for this would add latency for no audit benefit.
+
+---
+
+## Problem 16: Cancel button on re-encode jobs doesn't work (or appears not to)
+
+### What users see
+
+Clicking Cancel on a running letterbox re-encode job in the Projection Room
+appears to have no effect. The progress bar keeps advancing, the status stays
+"running", and the job eventually completes on its own — or it ends up as
+"failed" instead of "cancelled". The user can't stop a long-running re-encode.
+
+### Root cause (two bugs)
+
+**Bug A: Cancel only checked during the encode loop — ignored in other phases.**
+
+`_run_encode_attempt()` at `letterbox_reencode.py:842-847` correctly polls
+`job.cancel_requested` every ~1 second during the ffmpeg encode. But the
+re-encode pipeline has several phases that **never check the flag**:
+
+| Phase | Lines | Duration | Cancel check? |
+|-------|-------|----------|---------------|
+| Preflight (signature check) | `execute_job:862-864` | <1s | ❌ None |
+| RPU extraction (DoVi) | `execute_job:886-898` | 5–30s (I/O bound) | ❌ None |
+| Encode | `execute_job:913` → `_run_encode_attempt:842` | minutes–hours | ✅ Every 1s |
+| Fallback encode retry | `execute_job:941` → `_run_encode_attempt:842` | minutes–hours | ✅ Every 1s |
+| DoVi preservation | `execute_job:953-971` | 10–60s | ❌ None |
+| Validation | `execute_job:974` | 5–30s | ❌ None |
+
+If the user clicks Cancel during RPU extraction (which runs in parallel as an
+asyncio task), the cancel flag is never polled until the encode loop starts.
+For a large DoVi file, RPU extraction can take 30+ seconds — the user sees
+no response and assumes the button is broken.
+
+**Bug B: Cancelled re-encodes are reported as "failed" instead of "cancelled."**
+
+When the encode handler detects `cancel_requested`, it raises
+`ReencodePlanError("cancelled", ...)` at `letterbox_reencode.py:847`. This
+propagates up through `execute_job` → `_mutate` handler → `dispatch` →
+`_run_media` in `legacy_media.py:82-88`:
+
+```python
+except Exception as exc:
+    async with factory() as fail_db:
+        media_job = await fail_db.get(MediaJob, media_job_id)
+        if media_job is not None:
+            media_job.status = "failed"                          # ← BUG: always "failed"
+            media_job.error_json = json.dumps(
+                {"error": str(exc), "type": type(exc).__name__}  # ← "ReencodePlanError"
+            )
+            await fail_db.commit()
+    raise
+```
+
+This unconditionally sets `MediaJob.status = "failed"` — it never checks
+`media_job.cancel_requested`. The exception is then re-raised, and the generic
+Job's worker handler calls `job_manager.fail()` at `manager.py:460`, which
+**does** check `cancel_requested` and correctly transitions to "cancelled"
+(line 471-472). So the generic Job shows "cancelled" but its paired MediaJob
+shows "failed" — an inconsistent state.
+
+Even without Bug B, the result is confusing: if the cancel IS caught in the
+encode loop, the job disappears from the "Running" section and appears in
+"History" as "failed" (when it was actually user-cancelled).
+
+### Why the generic cancel mechanism works (for the encode phase only)
+
+The two-pronged cancel flow:
+
+1. `POST /api/jobs/{job_id}/cancel` → `job_manager.request_cancel()` sets
+   `generic_job.cancel_requested = True`, calls `_bridge_media_cancel()` which
+   sets `MediaJob.cancel_requested = True` — both committed.
+2. `_run_encode_attempt()` refreshes `MediaJob.cancel_requested` from DB and
+   terminates ffmpeg if set.
+3. `job_manager.fail()` refreshes `cancel_requested` again and correctly sets
+   status to "cancelled" on the generic Job.
+
+This works for the encode phase, but leaves the non-encode phases unguarded and
+the MediaJob status wrong.
+
+### Recommendations
+
+1. **Add cancel checks to all non-encode phases** — In `execute_job()`, after
+   each major phase (preflight, RPU extraction start, DoVi preservation,
+   validation), refresh `job.cancel_requested` and abort with a clean
+   "cancelled" result rather than raising an exception:
+
+   ```python
+   await db.refresh(job, ["cancel_requested"])
+   if job.cancel_requested:
+       return {"status": "cancelled", "operation": "letterbox_reencode"}
+   ```
+
+2. **Fix `_run_media` to check cancel_requested before setting status** — In
+   `legacy_media.py:82-88`, before setting `media_job.status = "failed"`,
+   check `media_job.cancel_requested` and set `"cancelled"` instead:
+
+   ```python
+   media_job.status = "cancelled" if media_job.cancel_requested else "failed"
+   ```
+
+3. **Add cancel check to `_preserve_dovi()`** — The DoVi preservation function
+   runs piped ffmpeg + dovi_tool subprocesses. It should periodically refresh
+   `job.cancel_requested` and terminate the subprocess if set, matching the
+   `_run_encode_attempt` pattern.
+
+4. **Add cancel check to parallel RPU extraction** — The RPU extraction task
+   (`_extract_rpu_piped`) runs as a background asyncio task. When the main
+   job detects cancel before the encode starts, it should cancel the RPU task:
+
+   ```python
+   if rpu_task is not None and not rpu_task.done():
+       rpu_task.cancel()
+   ```
+
+   This requires hoisting the cancel check before the encode call at line 913.
+
+5. **Consider adding cancelability to the mutation path too** — The subtitle
+   mutation's `execute_job()` in `mutation.py:553` has similar phases
+   (preflight → remux → validate → backup → replace). It should also check
+   `cancel_requested` between phases.
+
+---
+
 ## Summary of changes needed
 
 | # | What | Where | Priority |
@@ -1175,6 +1709,92 @@ Job legend (clickable, navigates to /projection-room/jobs/{id}):
 | 13b | Build `JobOverlay` component for colored bands on charts | `frontend/.../JobOverlay.svelte` (new) | Medium |
 | 13c | Add job type → color palette to label registry | `labels.py` | Low |
 | 13d | Make overlay bands clickable (navigate to job detail) | `JobOverlay.svelte` | Low |
+| 14a | Cancel paired generic Jobs when superseding planned re-encodes | `letterbox.py:create_reencode_plan()` | High |
+| 14b | Add both-side supersede to subtitle plan creation | `subtitles.py:create_subtitle_plan()` | Medium |
+| 14c | Generalize into reusable `supersede_planned_media_jobs()` helper | `media_jobs/manager.py` | Medium |
+| 14d | Add orphan planned Job cleanup to `job_retention_purge` | `builtin_handlers.py` | Low |
+| 15a | Add `create_and_run()` instant execution path to `job_manager` | `marquee/core/jobs/manager.py` | High |
+| 15b | Add `instant=True` to `@register()` decorator | `marquee/core/jobs/handlers.py` | High |
+| 15c | Convert `letterbox_apply`/`remove` to instant | `letterbox.py:apply_one()`, `remove_one()` | High |
+| 15d | Convert maintenance jobs to instant | `backup.py`, `pipeline.py`, `system.py` | Medium |
+| 15e | Mark instant-safe handlers with `instant=True` | `builtin_handlers.py`, `handlers.py` | Medium |
+| 16a | Add cancel checks to non-encode phases (RPU, DoVi preserve, validate) | `letterbox_reencode.py:execute_job()` | High |
+| 16b | Fix `_run_media` to check cancel_requested before setting status | `legacy_media.py` exception handler | High |
+| 16c | Add cancel check to `_preserve_dovi()` subprocess | `letterbox_reencode.py:_preserve_dovi()` | Medium |
+| 16d | Add cancel checks to mutation `execute_job()` phases | `mutation.py:execute_job()` | Medium |
+| 17a | Add `PATCH /api/jobs/{id}/priority` endpoint | `api/routes/jobs.py` (new route) | Medium |
+| 17b | Change queued ordering from `created_at` to `priority desc, created_at` | `api/routes/jobs.py:list_jobs()` | Medium |
+| 17c | Add drag handles / up-down buttons to QueuedJobRow | `QueuedJobRow.svelte` | Medium |
+
+---
+
+## Problem 17: Queued jobs cannot be reordered
+
+### What users see
+
+The Queued section shows jobs in creation order (newest first). There is no way
+to change the execution order — if you queue a high-priority re-encode and then
+queue a low-priority scan, the scan runs first because it was created later.
+
+### Root cause
+
+**No endpoint to change job priority after creation.** The `Job` model has a
+`priority` integer column (used by the worker to pick the next job), but it's
+only set at creation time. There is no `PATCH` endpoint to update it.
+
+**Hardcoded creation-time ordering.** `list_jobs()` at `jobs.py:181` orders all
+queries by `Job.created_at.desc(), Job.id.desc()` — regardless of status. The
+queued list uses the same ordering, so newer jobs always appear (and are picked)
+first. The `priority` field exists but isn't reflected in the list order.
+
+### How the worker picks the next job
+
+The worker's polling loop at `worker.py:143-149` queries for the next job with:
+
+```python
+select(Job).where(
+    Job.status == "queued",
+    Job.pause_requested == False,
+    ...
+).order_by(Job.priority.desc(), Job.created_at)
+```
+
+So the worker already honors priority. If the API allowed changing priority and
+the queued list was ordered by priority, the user's chosen order would be the
+actual execution order.
+
+### Proposed design
+
+**API:** `PATCH /api/jobs/{job_id}/priority` with body `{"priority": 90}`.
+Only valid for jobs with status in `{queued, waiting_resource, planned}`.
+Returns the updated job summary.
+
+**Frontend:** Each queued job row shows:
+- An up arrow (increase priority by 10) and down arrow (decrease by 10), or
+- A numeric priority field editable inline, or  
+- Drag handles for full drag-and-drop reordering
+
+**List ordering:** Change the queued list query to `order_by(Job.priority.desc(), Job.created_at)` so the user's chosen order is reflected in the UI and matches what the worker will execute.
+
+**Batch reorder:** Optionally, allow reordering via drag-and-drop where dropping a job between two others sets its priority to the average of the neighbors' priorities.
+
+### Recommendations
+
+1. **Add `PATCH /api/jobs/{job_id}/priority`** — Accepts `{"priority": int}`.
+   Validates that the job is in a queued-ish status. Returns updated
+   `job_summary()`.
+
+2. **Change queued list ordering** — In `list_jobs()`, when `queued_only=True`,
+   order by `Job.priority.desc(), Job.created_at` instead of the default
+   `created_at.desc()`.
+
+3. **Add priority controls to `QueuedJobRow`** — Up/down arrow buttons that
+   increment/decrement priority by 10. Show current priority as an editable
+   field.
+
+4. **Consider drag-and-drop as a follow-up** — Full drag-and-drop requires a
+   drag-and-drop library or custom implementation. Arrow buttons are simpler
+   and satisfy the core need (reordering) with less complexity.
 
 ---
 
@@ -1185,27 +1805,46 @@ Job legend (clickable, navigates to /projection-room/jobs/{id}):
 - `marquee/core/jobs/manager.py` — `JobManager.create()`, `create_batch()`, `_reserve()`, `recover()`, `resource_capacity()`
 - `marquee/core/jobs/worker.py` — `DurableWorker` ID generation, heartbeat loop
 - `marquee/core/jobs/supervisor.py` — Embedded worker lifecycle
-- `marquee/core/jobs/builtin_handlers.py` — All `@register(...)` job type definitions + `system_metrics_purge`
+- `marquee/core/jobs/scheduler.py:100` — Periodic cron job creation (library_sync, purges)
+- `marquee/core/jobs/builtin_handlers.py` — All `@register(...)` job type definitions + `system_metrics_purge` + `job_retention_purge` + `letterbox_apply/remove` handlers
 - `marquee/core/jobs/handlers.py` — `_HANDLERS` dispatch table + `register()` decorator
 - `marquee/core/jobs/dovi_handlers.py` — DoVi analyze/convert registrations
 - `marquee/core/jobs/legacy_media.py` — Media bridge handler + operation registrations + error capture
 - `marquee/api/routes/jobs.py:129` — `job_summary()` (generic Job → API dict)
 - `marquee/api/routes/jobs.py:199` — `/api/jobs/metrics` endpoint
 - `marquee/api/routes/jobs.py:345` — Job detail endpoint (includes payload, result, error)
+- `marquee/api/routes/jobs.py:507` — Retry endpoint (creates new Job from failed)
 - `marquee/api/routes/system.py:92` — `GET /api/system/metrics` (point-in-time only, no history)
+- `marquee/api/routes/system.py:112` — `POST /api/system/heal` (creates `poster_heal`)
 - `marquee/api/routes/subtitles.py:149` — `PlanRequest` model (operation enum)
-- `marquee/api/routes/subtitles.py:199` — `create_subtitle_plan()` (job creation with request)
-- `marquee/api/routes/hdr.py:761` — `create_batch()` for DoVi analysis
-- `marquee/api/routes/letterbox.py:618` — `create_batch()` for letterbox detect
+- `marquee/api/routes/subtitles.py:199` — `create_subtitle_plan()` (creates paired MediaJob+Job, no supersede)
+- `marquee/api/routes/subtitles.py:339` — `extract_subtitle_track()` (creates paired MediaJob+Job)
+- `marquee/api/routes/subtitle_generators.py:50,76` — Generation job creation via `media_job_manager.create_job()`
+- `marquee/api/routes/subtitle_policies.py:235` — Policy batch child creation
+- `marquee/api/routes/letterbox.py:665` — `detect_one()` (queued, ffmpeg)
+- `marquee/api/routes/letterbox.py:794` — `apply_one()` (queued, **should be instant**)
+- `marquee/api/routes/letterbox.py:1045` — `remove_one()` (queued, **should be instant**)
+- `marquee/api/routes/letterbox.py:1108` — `letterbox_heal()` (queued, borderline)
+- `marquee/api/routes/letterbox.py:619` — `create_batch()` for letterbox detect
 - `marquee/api/routes/letterbox.py:810` — Manual batch creation for letterbox apply
+- `marquee/api/routes/letterbox.py:891` — `create_reencode_plan()` (supersedes MediaJobs only, not Jobs)
+- `marquee/api/routes/hdr.py:648,697` — DoVi analyze/convert (queued, heavy ffprobe/ffmpeg)
+- `marquee/api/routes/hdr.py:761` — `create_batch()` for DoVi analysis
+- `marquee/api/routes/backup.py:20` — `create_backup()` (queued, **should be instant**)
+- `marquee/api/routes/pipeline.py:86,308,348,374` — Pipeline endpoints (some queued, some **should be instant**)
+- `marquee/api/routes/taste.py:357,384,444` — Taste/ML training (queued, heavy GPU)
+- `marquee/api/routes/onboarding.py:87,99,165,176` — Onboarding batch jobs (queued)
+- `marquee/api/routes/webhooks.py:216` — Radarr upgrade webhook (queued)
+- `marquee/api/routes/webhooks.py:194` — Folder rename handler (direct DB mutation, bypasses job manager)
 - `marquee/api/routes/subtitle_policies.py:206` — `MediaBatch` creation for policy batches
-- `marquee/api/routes/onboarding.py:98` — Poster pipeline batch creation
-- `marquee/api/routes/pipeline.py:309` — Poster pipeline batch via `job_manager.create()`
+- `marquee/api/routes/media_jobs.py:96` — `confirm_job()` (transitions MediaJob→confirmed, Job→queued)
 - `marquee/core/subtitles/mutation.py:346` — `build_plan()` operation routing
 - `marquee/core/subtitles/mutation.py:553` — `execute_job()` (minimal result return)
 - `marquee/core/subtitles/mutation.py:651` — `_build_argv()` (audio + subtitle removal in one branch)
+- `marquee/core/letterbox_reencode.py:534` — `build_plan()` (re-encode plan creation)
+- `marquee/core/letterbox_reencode.py:858` — `execute_job()` (re-encode execution, no extra Job creation)
 - `marquee/core/media_jobs/manager.py:28` — `_OPERATION_ALIASES` (track_remove → subtitle_remove)
-- `marquee/core/media_jobs/manager.py:create_job()` — Generic Job creation with aliased type
+- `marquee/core/media_jobs/manager.py:154-231` — `create_job()` (creates paired MediaJob + generic Job)
 - `marquee/core/media_jobs/handlers.py:120` — `_HANDLERS` dispatch table
 - `marquee/core/media_jobs/serialize.py:30` — `job_dict()` (MediaJob → API dict, excludes request_json)
 - `marquee/core/system_metrics.py:159` — `gpu_metrics()` (collects `enc`, missing `dec`)
