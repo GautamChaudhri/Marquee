@@ -8,6 +8,7 @@ endpoint embedding the active job for a media file).
 from __future__ import annotations
 
 import json
+from datetime import datetime
 
 from marquee.models import MediaJob
 
@@ -26,11 +27,22 @@ _STAGE_PERCENT = {
 }
 
 
-def job_dict(job: MediaJob) -> dict:
-    progress = None
-    if job.status == "running" or job.status in ("succeeded", "completed"):
+def job_dict(
+    job: MediaJob,
+    *,
+    status: str | None = None,
+    progress: dict | None = None,
+    result: dict | None = None,
+    error: dict | str | None = None,
+    updated_at: datetime | None = None,
+    started_at: datetime | None = None,
+    completed_at: datetime | None = None,
+) -> dict:
+    effective_status = status or job.status
+    effective_progress = progress
+    if effective_status == "running" or effective_status in ("succeeded", "completed"):
         percent = 0
-        if job.status in ("succeeded", "completed"):
+        if effective_status in ("succeeded", "completed"):
             percent = 100
         elif job.progress_total > 0:
             percent = int((job.progress_done / job.progress_total) * 100)
@@ -41,7 +53,7 @@ def job_dict(job: MediaJob) -> dict:
                 or 0
             )
 
-        progress = {
+        effective_progress = effective_progress or {
             "stage": job.stage or "running",
             "percent": percent,
             "message": f"Stage: {job.stage or 'running'}",
@@ -50,18 +62,24 @@ def job_dict(job: MediaJob) -> dict:
     return {
         "job_id": job.job_id,
         "operation": job.operation,
-        "status": job.status,
+        "status": effective_status,
         "stage": job.stage,
         "trigger": job.trigger,
         "media_file_id": job.media_file_id,
         "batch_id": job.batch_id,
         "progress_done": job.progress_done,
         "progress_total": job.progress_total,
-        "progress": progress,
+        "progress": effective_progress,
         "events_url": f"/api/media-jobs/{job.job_id}/events",
         "plan": json.loads(job.plan_json) if job.plan_json else None,
-        "result": json.loads(job.result_json) if job.result_json else None,
-        "error": json.loads(job.error_json) if job.error_json else None,
+        "result": result if result is not None else (json.loads(job.result_json) if job.result_json else None),
+        "error": error if error is not None else (json.loads(job.error_json) if job.error_json else None),
         "plan_expires_at": job.plan_expires_at.isoformat() if job.plan_expires_at else None,
         "created_at": job.created_at.isoformat() if job.created_at else None,
+        "updated_at": (updated_at or job.updated_at or job.created_at).isoformat()
+        if (updated_at or job.updated_at or job.created_at)
+        else None,
+        "started_at": started_at.isoformat() if started_at else None,
+        "completed_at": completed_at.isoformat() if completed_at else None,
+        "backup_id": None,
     }

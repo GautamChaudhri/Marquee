@@ -28,6 +28,14 @@
 	let settings = $state(data.settings);
 	let error = $derived(data.error);
 
+	type FailedJobBanner = {
+		jobId: string;
+		stage: string;
+		progress: number;
+		message: string;
+		logs: string[];
+	};
+
 	// Tabs Configuration
 	const tabs = [
 		{ id: 'tracks', label: 'Tracks & Operations' },
@@ -320,6 +328,31 @@
 	// Terminal MediaJob statuses (mirrors the backend's `terminal` set in
 	// media_jobs.py's SSE endpoint).
 	const TERMINAL_STATUSES = ['succeeded', 'completed', 'failed', 'cancelled', 'interrupted'];
+	let failedJob = $state<FailedJobBanner | null>(null);
+
+	function jobErrorMessage(job: MediaJob): string {
+		if (typeof job.error === 'string' && job.error) return job.error;
+		if (job.error && typeof job.error === 'object') {
+			const record = job.error as Record<string, unknown>;
+			const message = record.error ?? record.message ?? record.code;
+			if (typeof message === 'string' && message) return message;
+		}
+		return 'Unknown error';
+	}
+
+	function rememberFailedJob(job: MediaJob) {
+		failedJob = {
+			jobId: job.job_id,
+			stage: job.progress?.stage ?? job.status,
+			progress: job.progress?.percent ?? progressPercent,
+			message: `Operation failed: ${jobErrorMessage(job)}`,
+			logs: [...jobLog]
+		};
+	}
+
+	function dismissFailedJob() {
+		failedJob = null;
+	}
 
 	/** Resume/attach the shared poll-plus-SSE tracker for a job whose initial
 	 *  progress state has already been seeded by the caller. Always goes
@@ -347,14 +380,19 @@
 					stopTracking = null;
 					runningJobId = null;
 					busy = false;
-					progressPercent = 100;
 					storeJobId(null);
 					if (job.status === 'succeeded' || job.status === 'completed') {
+						failedJob = null;
+						progressPercent = 100;
 						toast('Subtitles operation completed successfully!', 'good');
 						const freshInspect = await refreshInventory();
 						if (onCompleteCallback) await onCompleteCallback(freshInspect);
 					} else {
-						toast(`Operation failed: ${(job.error as any)?.error || job.error || 'Unknown error'}`, 'bad');
+						progressPercent = job.progress?.percent ?? progressPercent;
+						progressStage = job.progress?.stage ?? job.status;
+						progressMessage = job.progress?.message ?? `Operation failed: ${jobErrorMessage(job)}`;
+						rememberFailedJob(job);
+						toast(`Operation failed: ${jobErrorMessage(job)}`, 'bad');
 						await refreshInventory();
 					}
 					onSettled?.(job);
@@ -371,6 +409,7 @@
 		onSettled?: (job: MediaJob) => void
 	) {
 		runningJobId = jobId;
+		failedJob = null;
 		progressPercent = 0;
 		progressStage = 'queued';
 		progressMessage = 'Waiting in job queue...';
@@ -398,11 +437,18 @@
 		}
 
 		if (TERMINAL_STATUSES.includes(job.status)) {
+			runningJobId = null;
+			busy = false;
 			storeJobId(null);
 			if (job.status === 'succeeded' || job.status === 'completed') {
+				failedJob = null;
 				toast('Subtitles operation completed successfully!', 'good');
 			} else {
-				toast(`Operation failed: ${(job.error as any)?.error || job.error || 'Unknown error'}`, 'bad');
+				progressStage = job.progress?.stage ?? job.status;
+				progressPercent = job.progress?.percent ?? progressPercent;
+				progressMessage = job.progress?.message ?? `Operation failed: ${jobErrorMessage(job)}`;
+				rememberFailedJob(job);
+				toast(`Operation failed: ${jobErrorMessage(job)}`, 'bad');
 			}
 			await refreshInventory();
 			return;
@@ -452,7 +498,7 @@
 							throw new Error('Could not find original embedded track in updated inventory');
 						}
 						const plan = await createPlan(fetch, mediaFileId, {
-							operation: 'track_remove',
+							operation: 'subtitle_remove',
 							track_ids: [freshTrack.id]
 						});
 						await confirmJob(fetch, plan.job_id);
@@ -493,7 +539,7 @@
 							throw new Error('Could not find original external track in updated inventory');
 						}
 						const removePlan = await createPlan(fetch, mediaFileId, {
-							operation: 'track_remove',
+							operation: 'subtitle_remove',
 							track_ids: [freshTrack.id]
 						});
 						await confirmJob(fetch, removePlan.job_id);
@@ -556,7 +602,7 @@
 		batchDeleteOpen = false;
 		try {
 			const plan = await createPlan(fetch, movie.media_file_id, {
-				operation: 'track_remove',
+				operation: 'subtitle_remove',
 				track_ids: targetTrackIds,
 				audio_stream_indices: targetAudioIndices
 			});
@@ -955,7 +1001,7 @@
 		busy = true;
 		try {
 			const plan = await createPlan(fetch, movie.media_file_id, {
-				operation: 'track_remove',
+				operation: 'subtitle_remove',
 				track_ids: selectedTrackIds,
 				audio_stream_indices: selectedAudioIndices
 			});
@@ -1046,6 +1092,24 @@
 					<details class="logs-fold">
 						<summary>Show execution logs</summary>
 						<pre class="logs-pre">{jobLog.join('\n')}</pre>
+					</details>
+				{/if}
+			</div>
+		{:else if failedJob}
+			<div class="job-progress-banner job-progress-banner-failed mq-rise">
+				<div class="banner-head">
+					<span class="title">Subtitles Task Failed</span>
+					<div class="banner-actions">
+						<span class="status-badge status-badge-failed font-mono">{failedJob.stage.toUpperCase()}</span>
+						<button class="dismiss-btn" onclick={dismissFailedJob}>Dismiss</button>
+					</div>
+				</div>
+				<ProgressBar value={failedJob.progress} />
+				<p class="banner-message">{failedJob.message}</p>
+				{#if failedJob.logs.length > 0}
+					<details class="logs-fold">
+						<summary>Show execution logs</summary>
+						<pre class="logs-pre">{failedJob.logs.join('\n')}</pre>
 					</details>
 				{/if}
 			</div>
@@ -1728,6 +1792,11 @@
 		justify-content: space-between;
 		align-items: center;
 	}
+	.banner-actions {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+	}
 	.banner-head .title {
 		font-size: 14px;
 		font-weight: 600;
@@ -1740,10 +1809,30 @@
 		padding: 2px 6px;
 		border-radius: 4px;
 	}
+	.status-badge-failed {
+		background: color-mix(in srgb, var(--bad) 16%, transparent);
+		color: var(--bad);
+	}
+	.dismiss-btn {
+		border: 1px solid var(--line);
+		background: transparent;
+		color: var(--muted);
+		border-radius: 999px;
+		padding: 6px 12px;
+		font-size: 12px;
+		font-weight: 600;
+	}
+	.dismiss-btn:hover {
+		color: var(--text);
+		border-color: var(--bad);
+	}
 	.banner-message {
 		font-size: 13px;
 		color: var(--muted);
 		margin: 0;
+	}
+	.job-progress-banner-failed {
+		border-color: color-mix(in srgb, var(--bad) 36%, var(--line));
 	}
 	.logs-fold {
 		font-size: 12px;

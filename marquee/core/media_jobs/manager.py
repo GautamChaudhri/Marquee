@@ -24,6 +24,9 @@ from marquee.models import MediaJob, MediaJobEvent
 logger = logging.getLogger(__name__)
 
 _SENTINEL = object()
+_OPERATION_ALIASES = {
+    "track_remove": "subtitle_remove",
+}
 
 
 class JobStream:
@@ -164,6 +167,7 @@ class MediaJobManager:
         batch_id: str | None = None,
         commit: bool = True,
     ) -> MediaJob:
+        operation = _OPERATION_ALIASES.get(operation, operation)
         if idempotency_key:
             existing = (
                 await db.execute(

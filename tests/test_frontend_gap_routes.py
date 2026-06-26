@@ -17,6 +17,7 @@ from marquee.main import app
 from marquee.models import (
     ArtworkEvent,
     DoviState,
+    Job,
     MediaJob,
     MediaJobEvent,
     Movie,
@@ -91,6 +92,34 @@ async def test_review_queue_latest_unreviewed_run_per_movie(
     assert body["items"][0]["run"]["reviewed"] is False
     assert body["items"][0]["movie"]["hdr"] == "dovi"
     assert body["items"][0]["results_url"] == "/api/pipeline/runs/old-alpha"
+
+
+@pytest.mark.asyncio
+async def test_media_job_snapshot_reflects_generic_job_failure(
+    db: AsyncSession,
+    client: AsyncClient,
+):
+    media_job = MediaJob(
+        job_id="media-failed",
+        operation="subtitle_remove",
+        status="queued",
+        media_file_id=5,
+    )
+    generic_job = Job(
+        id="generic-failed",
+        type="subtitle_remove",
+        payload={"media_job_id": media_job.job_id},
+        status="failed",
+        error={"message": "no handler for 'track_remove'"},
+    )
+    db.add_all([media_job, generic_job])
+    await db.commit()
+
+    resp = await client.get(f"/api/media-jobs/{media_job.job_id}")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "failed"
+    assert body["error"] == {"message": "no handler for 'track_remove'"}
 
 
 @pytest.mark.asyncio
