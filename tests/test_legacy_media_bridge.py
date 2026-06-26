@@ -5,10 +5,12 @@ from __future__ import annotations
 import json
 
 import pytest
+from sqlalchemy import select
 
 from marquee.core.jobs import legacy_media
 from marquee.core.jobs.manager import job_manager
-from marquee.models import MediaBatch, MediaJob
+from marquee.core.media_jobs import media_job_manager
+from marquee.models import Job, MediaBatch, MediaJob
 
 
 async def _make_media_job(db, *, operation="subtitle_scan", batch_id=None):
@@ -94,3 +96,18 @@ async def test_run_media_emit_persists_progress_to_both_streams(db, monkeypatch)
     await db.refresh(job)
     assert job.current_stage == "scan"
     assert job.progress == {"percent": 50}
+
+
+async def test_create_job_normalizes_track_remove_to_subtitle_remove(db):
+    media_job = await media_job_manager.create_job(
+        db,
+        operation="track_remove",
+        media_file_id=5,
+        request={"track_ids": ["sub-fr"]},
+        status="queued",
+    )
+
+    generic_job = (await db.execute(select(Job))).scalar_one()
+
+    assert media_job.operation == "subtitle_remove"
+    assert generic_job.type == "subtitle_remove"

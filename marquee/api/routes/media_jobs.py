@@ -40,6 +40,60 @@ async def _generic_for_media_job(db: AsyncSession, media_job: MediaJob) -> Job |
     return next((row for row in rows if row.payload.get("media_job_id") == media_job.job_id), None)
 
 
+def _effective_media_status(media_status: str, generic_status: str | None) -> str:
+    if generic_status is None:
+        return media_status
+    if generic_status == "running":
+        return "running" if media_status in {"planned", "queued"} else media_status
+    if generic_status in {"claimed", "waiting_resource", "retry_scheduled", "paused", "queued"}:
+        return "queued" if media_status == "planned" else media_status
+    if generic_status == "succeeded":
+        return generic_status if media_status in {"planned", "queued", "running"} else media_status
+    if generic_status in {"failed", "dead_letter"}:
+        return "failed" if media_status in {"planned", "queued", "running"} else media_status
+    if generic_status in {"cancelled", "interrupted"}:
+        return generic_status if media_status in {"planned", "queued", "running"} else media_status
+    return media_status
+
+
+async def _media_job_snapshot(db: AsyncSession, media_job: MediaJob) -> dict:
+    generic = await _generic_for_media_job(db, media_job)
+    effective_status = _effective_media_status(media_job.status, generic.status if generic else None)
+    effective_error = json.loads(media_job.error_json) if media_job.error_json else None
+    effective_result = json.loads(media_job.result_json) if media_job.result_json else None
+    effective_progress = None
+    started_at = media_job.confirmed_at
+    completed_at = None
+    updated_at = media_job.updated_at or media_job.created_at
+
+    if generic is not None:
+        started_at = generic.started_at or generic.claimed_at or started_at
+        completed_at = generic.finished_at if effective_status in {"succeeded", "failed", "cancelled", "interrupted"} else None
+        updated_at = generic.updated_at or updated_at
+        if effective_error is None and effective_status in {"failed", "cancelled", "interrupted"}:
+            effective_error = generic.error
+        if effective_result is None and effective_status == "succeeded":
+            effective_result = generic.result
+        if media_job.status != "running" and generic.status == "running" and isinstance(generic.progress, dict):
+            detail = generic.progress
+            effective_progress = {
+                "stage": str(detail.get("stage") or generic.current_stage or "running"),
+                "percent": int(detail.get("percent") or detail.get("done") or 0),
+                "message": str(detail.get("message") or generic.current_stage or "Running"),
+            }
+
+    return _job_dict(
+        media_job,
+        status=effective_status,
+        progress=effective_progress,
+        result=effective_result,
+        error=effective_error,
+        updated_at=updated_at,
+        started_at=started_at,
+        completed_at=completed_at,
+    )
+
+
 @router.post("/{job_id}/confirm")
 async def confirm_job(job_id: str, db: Annotated[AsyncSession, Depends(get_db)]):
     """Revalidate a planned job against the live file, then queue it (§23.2)."""
@@ -118,7 +172,7 @@ async def get_job(job_id: str, db: Annotated[AsyncSession, Depends(get_db)]):
     job = await db.get(MediaJob, job_id)
     if job is None:
         raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
-    return _job_dict(job)
+    return await _media_job_snapshot(db, job)
 
 
 @router.get("/{job_id}/events")
@@ -236,12 +290,13 @@ async def list_jobs(
     limit: int = 100,
 ):
     query = select(MediaJob).order_by(MediaJob.created_at.desc()).limit(min(limit, 500))
-    if status:
-        query = query.where(MediaJob.status == status)
     if operation:
         query = query.where(MediaJob.operation == operation)
     rows = (await db.execute(query)).scalars().all()
-    return {"jobs": [_job_dict(j) for j in rows]}
+    jobs = [await _media_job_snapshot(db, job) for job in rows]
+    if status:
+        jobs = [job for job in jobs if job["status"] == status]
+    return {"jobs": jobs}
 
 
 @router.post("/{job_id}/restore")

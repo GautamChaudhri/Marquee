@@ -876,7 +876,6 @@ export interface SubtitlePlanRequest {
 		| 'subtitle_remove'
 		| 'subtitle_embed'
 		| 'subtitle_metadata'
-		| 'track_remove'
 		| 'audio_reorder';
 	track_ids: string[];
 	audio_stream_indices?: number[];
@@ -914,7 +913,7 @@ export interface MediaJob {
 	started_at: string | null;
 	completed_at: string | null;
 	result: Record<string, unknown> | null;
-	error: string | null;
+	error: Record<string, unknown> | string | null;
 	progress: {
 		stage: string;
 		percent: number;
