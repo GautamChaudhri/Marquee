@@ -2,17 +2,11 @@
 	import { retryJob } from '$lib/api/jobs';
 	import type { JobListItem } from '$lib/api/jobs';
 	import { durationH } from '$lib/display';
+	import { displayJobLabel } from '$lib/job-labels';
 	import { toast } from '$lib/toast';
 	import StatusDot from './StatusDot.svelte';
 
 	let { jobs, onRetried }: { jobs: JobListItem[]; onRetried?: () => void } = $props();
-
-	function humanizeType(type: string): string {
-		return type
-			.split('_')
-			.map((w) => w.charAt(0).toUpperCase() + w.slice(1))
-			.join(' ');
-	}
 
 	function statusTone(status: string): 'good' | 'bad' | 'warn' | 'info' | 'muted' {
 		if (status === 'succeeded') return 'good';
@@ -63,7 +57,7 @@
 		<tbody>
 			{#each jobs as job (job.job_id)}
 				<tr>
-					<td>{humanizeType(job.type)}</td>
+					<td>{displayJobLabel(job)}</td>
 					<td class="subject" title={job.subject?.title ?? job.subject?.id ?? ''}>
 						{job.subject?.title ?? job.subject?.id ?? '—'}
 					</td>

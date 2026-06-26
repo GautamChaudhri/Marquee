@@ -602,7 +602,7 @@
 		batchDeleteOpen = false;
 		try {
 			const plan = await createPlan(fetch, movie.media_file_id, {
-				operation: 'subtitle_remove',
+				operation: removalOperation(targetTrackIds, targetAudioIndices),
 				track_ids: targetTrackIds,
 				audio_stream_indices: targetAudioIndices
 			});
@@ -789,6 +789,14 @@
 	}
 	function audioFormatLabel(stream: any) {
 		return stream?.format_label || stream?.profile || stream?.codec_long_name || '—';
+	}
+	function removalOperation(
+		trackIds: string[],
+		audioIndices: number[]
+	): 'audio_remove' | 'subtitle_remove' | 'track_remove' {
+		if (trackIds.length > 0 && audioIndices.length > 0) return 'track_remove';
+		if (audioIndices.length > 0) return 'audio_remove';
+		return 'subtitle_remove';
 	}
 	function subtitleCodecLabel(track: any) {
 		return track?.codec_label || (track?.codec || '—').replaceAll('_', ' ').toUpperCase();
@@ -1001,7 +1009,7 @@
 		busy = true;
 		try {
 			const plan = await createPlan(fetch, movie.media_file_id, {
-				operation: 'subtitle_remove',
+				operation: removalOperation(selectedTrackIds, selectedAudioIndices),
 				track_ids: selectedTrackIds,
 				audio_stream_indices: selectedAudioIndices
 			});

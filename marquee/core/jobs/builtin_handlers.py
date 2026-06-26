@@ -571,18 +571,14 @@ def _copy_library_posters(movies: list[tuple], dest: Path) -> int:
 
 @register("job_retention_purge")
 async def job_retention_purge(_job: Job) -> dict[str, Any]:
-    """Delete terminal Job rows (and their bridged MediaJob, if any) past JOB_RETENTION_DAYS.
-
-    JobAttempt/JobEvent/JobResourceReservation cascade-delete with their
-    parent Job (FK ondelete=CASCADE); MediaJobEvent cascades with its parent
-    MediaJob the same way. Only terminal jobs are ever touched — anything
-    still active is left alone regardless of age.
-    """
+    """Delete expired terminal jobs and stale resource / worker rows."""
     from datetime import UTC, datetime, timedelta
 
-    from marquee.models import MediaJob
+    from marquee.models import JobResource, JobResourceReservation, JobWorker, MediaJob
 
     cutoff = datetime.now(UTC) - timedelta(days=settings.JOB_RETENTION_DAYS)
+    stopped_dead_cutoff = datetime.now(UTC) - timedelta(days=7)
+    stale_live_cutoff = datetime.now(UTC) - timedelta(hours=24)
     factory = _get_session_factory()
     async with factory() as db:
         rows = (
@@ -596,8 +592,6 @@ async def job_retention_purge(_job: Job) -> dict[str, Any]:
                 )
             )
         ).all()
-        if not rows:
-            return {"jobs_deleted": 0, "media_jobs_deleted": 0}
 
         job_ids = [row.id for row in rows]
         media_job_ids = [
@@ -613,17 +607,50 @@ async def job_retention_purge(_job: Job) -> dict[str, Any]:
             )
             media_jobs_deleted = result.rowcount or 0
 
-        result = await db.execute(Job.__table__.delete().where(Job.id.in_(job_ids)))
-        jobs_deleted = result.rowcount or 0
+        jobs_deleted = 0
+        if job_ids:
+            result = await db.execute(Job.__table__.delete().where(Job.id.in_(job_ids)))
+            jobs_deleted = result.rowcount or 0
+
+        active_resource_keys = select(JobResourceReservation.resource_key).where(
+            JobResourceReservation.released_at.is_(None)
+        )
+        resource_result = await db.execute(
+            JobResource.__table__.delete().where(
+                JobResource.key.like("media-file:%"),
+                JobResource.key.not_in(active_resource_keys),
+            )
+        )
+        resources_deleted = resource_result.rowcount or 0
+
+        stopped_dead_result = await db.execute(
+            JobWorker.__table__.delete().where(
+                JobWorker.status.in_(("stopped", "dead")),
+                JobWorker.heartbeat_at < stopped_dead_cutoff,
+            )
+        )
+        stale_live_result = await db.execute(
+            JobWorker.__table__.delete().where(
+                JobWorker.status.in_(("starting", "running", "draining")),
+                JobWorker.heartbeat_at < stale_live_cutoff,
+            )
+        )
+        workers_deleted = (stopped_dead_result.rowcount or 0) + (stale_live_result.rowcount or 0)
         await db.commit()
 
     logger.info(
-        "job_retention_purge: deleted %d job(s) and %d bridged media job(s) older than %d day(s)",
+        "job_retention_purge: deleted %d job(s), %d bridged media job(s), %d media-file resource row(s), and %d worker row(s)",
         jobs_deleted,
         media_jobs_deleted,
-        settings.JOB_RETENTION_DAYS,
+        resources_deleted,
+        workers_deleted,
     )
-    return {"jobs_deleted": jobs_deleted, "media_jobs_deleted": media_jobs_deleted}
+    return {
+        "jobs_deleted": jobs_deleted,
+        "media_jobs_deleted": media_jobs_deleted,
+        "resources_deleted": resources_deleted,
+        "workers_deleted": workers_deleted,
+    }
 
 
 @register("system_metrics_purge")

@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 from datetime import datetime
 
+from marquee.core.jobs.labels import humanize_job_type
 from marquee.models import MediaJob
 
 _STAGE_PERCENT = {
@@ -62,6 +63,7 @@ def job_dict(
     return {
         "job_id": job.job_id,
         "operation": job.operation,
+        "label": humanize_job_type(job.operation),
         "status": effective_status,
         "stage": job.stage,
         "trigger": job.trigger,

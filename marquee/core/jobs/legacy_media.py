@@ -96,6 +96,7 @@ async def _run_media(job: Job) -> dict:
 
 for _operation in (
     "subtitle_scan",
+    "audio_remove",
     "track_remove",
     "subtitle_remove",
     "subtitle_embed",

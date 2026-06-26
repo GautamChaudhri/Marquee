@@ -18,9 +18,10 @@ from sqlalchemy import text
 from marquee import __version__
 from marquee.api.auth import require_api_key
 from marquee.config import settings
+from marquee.core.jobs import job_manager
 from marquee.core.pipeline_config import migrate_legacy_runtime_state
 from marquee.core.rate_limit import RateLimiter
-from marquee.database import _get_engine, close_db, init_db
+from marquee.database import _get_engine, _get_session_factory, close_db, init_db
 from marquee.logging import setup_logging
 from marquee.ml.migrate_artifacts import migrate_live_artifacts
 
@@ -116,6 +117,8 @@ async def lifespan(app: FastAPI):
     logger.info("Initialising database ...")
     await init_db()
     logger.info("Database ready.")
+    async with _get_session_factory()() as db:
+        await job_manager.bootstrap_resources(db)
 
     # Rate limiters — shared across requests
     app.state.op_rate_limiter = _op_rate_limiter

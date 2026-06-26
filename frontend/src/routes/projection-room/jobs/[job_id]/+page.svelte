@@ -4,6 +4,7 @@
 	import type { JobDetail } from '$lib/api/jobs';
 	import { trackJob, type JobProgressDetail } from '$lib/jobs';
 	import { durationH } from '$lib/display';
+	import { displayJobLabel, humanizeJobType } from '$lib/job-labels';
 	import RunProgress from '$lib/components/RunProgress.svelte';
 	import StatusDot from '$lib/components/StatusDot.svelte';
 	import SectionHeader from '$lib/components/SectionHeader.svelte';
@@ -21,13 +22,6 @@
 	// svelte-ignore state_referenced_locally
 	let liveStatus = $state(data.job?.status ?? '');
 	let stop: (() => void) | null = null;
-
-	function humanize(s: string): string {
-		return s
-			.split('_')
-			.map((w) => w.charAt(0).toUpperCase() + w.slice(1))
-			.join(' ');
-	}
 
 	function statusTone(status: string): 'good' | 'bad' | 'warn' | 'info' | 'muted' {
 		if (status === 'succeeded') return 'good';
@@ -78,13 +72,13 @@
 	<SectionHeader title="Job not found" subtitle={data.error ?? 'This job no longer exists.'} />
 	<a class="back" href="/projection-room?tab=history">← Back to Projection Room</a>
 {:else}
-	<SectionHeader title={job.subject?.title ?? humanize(job.type)} subtitle={`${job.type} · ${job.job_id}`} />
+	<SectionHeader title={job.subject?.title ?? displayJobLabel(job)} subtitle={`${job.type} · ${job.job_id}`} />
 	<a class="back" href="/projection-room?tab=history">← Back to Projection Room</a>
 
 	<div class="head-row">
 		<div class="status-block">
 			<StatusDot tone={statusTone(liveStatus)} size={10} />
-			<span class="status-label">{humanize(liveStatus)}</span>
+			<span class="status-label">{humanizeJobType(liveStatus)}</span>
 		</div>
 		{#if !isTerminal(liveStatus) && !job.cancel_requested}
 			<button class="cancel" onclick={handleCancel}>Cancel</button>

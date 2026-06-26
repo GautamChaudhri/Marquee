@@ -29,6 +29,7 @@ from marquee.api.routes.jobs import job_summary
 from marquee.config import settings
 from marquee.core import letterbox_reencode
 from marquee.core.jobs import job_manager
+from marquee.core.jobs.labels import humanize_job_type
 from marquee.core.jobs.manager import ACTIVE, TERMINAL
 from marquee.core.letterbox_prefilter import (
     prefilter_category,
@@ -235,6 +236,7 @@ def _media_job_summary(job: MediaJob) -> dict:
     return {
         "job_id": job.job_id,
         "operation": job.operation,
+        "label": humanize_job_type(job.operation),
         "status": job.status,
         "stage": job.stage,
         "trigger": job.trigger,

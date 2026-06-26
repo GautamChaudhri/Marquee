@@ -343,7 +343,7 @@ async def build_plan(
     audio = inventory.get("audio_streams", [])
     after_audio: list[dict] = list(audio)
 
-    if operation in ("subtitle_remove", "track_remove"):
+    if operation in ("audio_remove", "subtitle_remove", "track_remove"):
         remove_ids = set(params.get("track_ids", []))
         unknown = remove_ids - set(by_id)
         if unknown:
@@ -671,7 +671,7 @@ async def _build_argv(db, job, operation, request, source_probe, adapter, out, r
             if aligned and aligned.tool_track_id is not None:
                 t.tool_track_id = aligned.tool_track_id
 
-    if operation in ("subtitle_remove", "track_remove"):
+    if operation in ("audio_remove", "subtitle_remove", "track_remove"):
         selected = [by_id[t] for t in request.get("track_ids", []) if t in by_id]
         remove = [t for t in selected if t.source == "embedded"]
         external_remove = [t for t in selected if t.source == "external"]

@@ -11,6 +11,7 @@ export interface JobProgress {
 export interface JobSnapshot {
 	job_id: string;
 	type: string;
+	label?: string;
 	status: string;
 	cancel_requested: boolean;
 	progress: JobProgress | null;
@@ -24,6 +25,7 @@ export interface JobSnapshot {
 export interface JobListItem {
 	job_id: string;
 	type: string;
+	label?: string;
 	status: string;
 	priority: number;
 	parent_id: string | null;

@@ -11,7 +11,16 @@ from httpx import ASGITransport, AsyncClient
 
 from marquee.core.jobs.manager import job_manager
 from marquee.main import app
-from marquee.models import Episode, EpisodeMediaFile, MediaFile, Movie, Series
+from marquee.models import (
+    Episode,
+    EpisodeMediaFile,
+    JobResource,
+    JobResourceReservation,
+    JobWorker,
+    MediaFile,
+    Movie,
+    Series,
+)
 
 
 @pytest.fixture
@@ -33,10 +42,12 @@ async def test_movie_subject_title_resolved_in_list_and_detail(db, client):
     list_resp = await client.get("/api/jobs", params={"subject_type": "movie"})
     assert list_resp.status_code == 200
     found = next(j for j in list_resp.json()["jobs"] if j["job_id"] == job.id)
+    assert found["label"] == "Poster Pipeline"
     assert found["subject"]["title"] == "Dune (2021)"
 
     detail_resp = await client.get(f"/api/jobs/{job.id}")
     assert detail_resp.status_code == 200
+    assert detail_resp.json()["label"] == "Poster Pipeline"
     assert detail_resp.json()["subject"]["title"] == "Dune (2021)"
 
 
@@ -141,3 +152,48 @@ async def test_metrics_by_type_reports_success_rate_and_duration(db, client):
     assert stats["sample_size"] == 4
     assert stats["success_rate"] == 0.75
     assert stats["duration_seconds"]["avg"] == pytest.approx(20.0, abs=1.0)
+
+
+async def test_job_metrics_hides_idle_media_file_rows_and_stale_workers(db, client):
+    await job_manager.bootstrap_resources(db)
+    db.add_all(
+        [
+            JobResource(key="media-file:101", capacity=1),
+            JobResource(key="media-file:202", capacity=1),
+            JobWorker(
+                id="worker-live",
+                status="running",
+                heartbeat_at=datetime.now(UTC),
+            ),
+            JobWorker(
+                id="worker-dead",
+                status="dead",
+                heartbeat_at=datetime.now(UTC) - timedelta(hours=2),
+            ),
+        ]
+    )
+    active_job = await job_manager.create(db, job_type="system_noop")
+    db.add(
+        JobResourceReservation(
+            job_id=active_job.id,
+            resource_key="media-file:202",
+            units=1,
+        )
+    )
+    await db.commit()
+
+    resp = await client.get("/api/jobs/metrics")
+    assert resp.status_code == 200
+    body = resp.json()
+
+    resource_keys = {row["key"] for row in body["resources"]}
+    assert "gpu" in resource_keys
+    assert "media-file:202" in resource_keys
+    assert "media-file:101" not in resource_keys
+    assert body["workers"] == [
+        {
+            "id": "worker-live",
+            "status": "running",
+            "heartbeat_at": body["workers"][0]["heartbeat_at"],
+        }
+    ]

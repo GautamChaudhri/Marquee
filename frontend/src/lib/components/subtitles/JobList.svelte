@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { listMediaJobs, cancelJob, restoreJob, deleteBackup } from '$lib/api/media-jobs';
 	import type { MediaJob } from '$lib/api/types';
+	import { displayMediaJobLabel } from '$lib/job-labels';
 	import ProgressBar from '../ProgressBar.svelte';
 	import StatusDot from '../StatusDot.svelte';
 	import { toast } from '$lib/toast';
@@ -120,7 +121,7 @@
 								<code title={job.job_id}>{job.job_id.substring(0, 8)}...</code>
 							</td>
 							<td>
-								<span class="op-badge">{job.operation.replace('subtitle_', '').toUpperCase()}</span>
+								<span class="op-badge">{displayMediaJobLabel(job)}</span>
 							</td>
 							<td class="mono">{job.media_file_id || '—'}</td>
 							<td>

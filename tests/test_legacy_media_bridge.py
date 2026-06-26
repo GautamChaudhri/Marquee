@@ -98,7 +98,7 @@ async def test_run_media_emit_persists_progress_to_both_streams(db, monkeypatch)
     assert job.progress == {"percent": 50}
 
 
-async def test_create_job_normalizes_track_remove_to_subtitle_remove(db):
+async def test_create_job_preserves_track_remove_operation(db):
     media_job = await media_job_manager.create_job(
         db,
         operation="track_remove",
@@ -109,5 +109,20 @@ async def test_create_job_normalizes_track_remove_to_subtitle_remove(db):
 
     generic_job = (await db.execute(select(Job))).scalar_one()
 
-    assert media_job.operation == "subtitle_remove"
-    assert generic_job.type == "subtitle_remove"
+    assert media_job.operation == "track_remove"
+    assert generic_job.type == "track_remove"
+
+
+async def test_create_job_preserves_audio_remove_operation(db):
+    media_job = await media_job_manager.create_job(
+        db,
+        operation="audio_remove",
+        media_file_id=5,
+        request={"audio_stream_indices": [2]},
+        status="queued",
+    )
+
+    generic_job = (await db.execute(select(Job))).scalar_one()
+
+    assert media_job.operation == "audio_remove"
+    assert generic_job.type == "audio_remove"
