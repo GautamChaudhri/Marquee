@@ -35,6 +35,7 @@
 		{
 			name: 'System',
 			links: [
+				{ label: 'Projection Room', href: '/projection-room', icon: 'projection-room' },
 				{ label: 'Activity', href: '/activity', icon: 'activity' },
 				{ label: 'Settings', href: '/settings', icon: 'settings' }
 			]

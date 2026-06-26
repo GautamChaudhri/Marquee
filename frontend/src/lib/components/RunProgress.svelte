@@ -29,11 +29,33 @@
 		rank: 'Ranking',
 		output: 'Finalizing',
 		queued: 'Queued',
-		prelude: 'Preparing'
+		prelude: 'Preparing',
+		// Media-job stages (subtitle ops, letterbox_reencode, dovi_convert) —
+		// these jobs don't share the pipeline's stage vocabulary above.
+		preflight: 'Preflight checks',
+		remux: 'Remuxing',
+		encode: 'Encoding',
+		validate: 'Validating output',
+		replace: 'Replacing file',
+		external: 'Updating external files',
+		scan: 'Scanning',
+		extract: 'Extracting',
+		policy: 'Applying policy'
 	};
 
+	/** Humanize any stage key this map doesn't know about yet (new job
+	 *  types keep getting a reasonable label without another edit here). */
+	function humanizeStage(stage: string): string {
+		return stage
+			.split('_')
+			.map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+			.join(' ');
+	}
+
 	const isBatch = $derived(typeof detail.movie_total === 'number' && (detail.movie_total ?? 0) > 1);
-	const stageLabel = $derived(detail.stage ? (STAGE_LABELS[detail.stage] ?? detail.stage) : '');
+	const stageLabel = $derived(
+		detail.stage ? STAGE_LABELS[detail.stage] ?? humanizeStage(detail.stage) : ''
+	);
 
 	const pct = $derived.by<number | null>(() => {
 		if (isBatch && detail.movie_total) {

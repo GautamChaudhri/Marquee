@@ -10,12 +10,13 @@ from fastapi import APIRouter, Depends, Request
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from marquee.api.routes.jobs import job_summary
+from marquee.api.routes.jobs import _QUEUED_ISH, job_summary
 from marquee.api.routes.webhooks import webhook_state
 from marquee.config import settings
 from marquee.core import system_metrics
 from marquee.core.heal import heal_state
 from marquee.core.jobs import job_manager
+from marquee.core.jobs.manager import ACTIVE
 from marquee.core.letterbox_heal import letterbox_heal_state
 from marquee.core.pipeline_config import pipeline_settings
 from marquee.database import get_db, reset_database
@@ -70,16 +71,21 @@ async def system_status(request: Request, db: Annotated[AsyncSession, Depends(ge
     }
 
 
-_ACTIVE_JOB_STATUSES = {"running", "in_progress", "processing"}
-_QUEUED_JOB_STATUSES = {"queued", "pending"}
-
-
 async def _worker_counts(db: AsyncSession) -> dict[str, int]:
+    """Active/queued job counts for the dashboard cards.
+
+    Bug fix: this used to define its own ``_ACTIVE_JOB_STATUSES``/
+    ``_QUEUED_JOB_STATUSES`` sets containing statuses the job manager never
+    actually sets (``"in_progress"``, ``"processing"``, ``"pending"``), so
+    these counts were silently wrong since the endpoint shipped. Reuses
+    ``manager.ACTIVE`` and ``jobs._QUEUED_ISH`` — the real status vocabulary
+    — instead of a second, drifted copy.
+    """
     rows = (await db.execute(select(Job.status, func.count()).group_by(Job.status))).all()
     counts = {str(status): n for status, n in rows}
     return {
-        "active": sum(n for s, n in counts.items() if s in _ACTIVE_JOB_STATUSES),
-        "queued": sum(n for s, n in counts.items() if s in _QUEUED_JOB_STATUSES),
+        "active": sum(n for s, n in counts.items() if s in ACTIVE),
+        "queued": sum(n for s, n in counts.items() if s in _QUEUED_ISH),
     }
 
 

@@ -409,6 +409,7 @@ export interface SystemMetrics {
 		cores: number | null;
 		threads: number | null;
 		avg: number;
+		perCore: number[];
 		freq: number | null;
 		load: number | null;
 		temp: number | null;
@@ -416,6 +417,7 @@ export interface SystemMetrics {
 	gpu: {
 		model: string;
 		util: number;
+		memUtil: number;
 		vramUsed: number;
 		vramTotal: number;
 		temp: number;
@@ -423,7 +425,14 @@ export interface SystemMetrics {
 		enc: number | null;
 	} | null;
 	ram: { used: number; total: number; pct: number };
-	disk: { used: number | null; total: number | null; pct: number | null };
+	disk: {
+		used: number | null;
+		total: number | null;
+		pct: number | null;
+		readBytes: number | null;
+		writeBytes: number | null;
+	};
+	net: { bytesSent: number | null; bytesRecv: number | null };
 	workers: { active: number; queued: number };
 	uptime: string;
 }

@@ -35,6 +35,7 @@ from marquee.models.subtitle_managed import (
     ManagedSubtitleBinding,
 )
 from marquee.models.subtitle_policy import SubtitlePolicy, SubtitlePolicyBinding
+from marquee.models.system_metrics import SystemMetricsSample
 
 __all__ = [
     "ArtworkEvent",
@@ -63,6 +64,7 @@ __all__ = [
     "ManagedSubtitleBinding",
     "SubtitlePolicy",
     "SubtitlePolicyBinding",
+    "SystemMetricsSample",
     "Movie",
     "PipelineRun",
     "RadarrCustomFormat",

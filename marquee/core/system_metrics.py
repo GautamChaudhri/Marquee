@@ -1,7 +1,8 @@
-"""Host telemetry for the dashboard (frontend G1).
+"""Host telemetry for the dashboard (frontend G1) and Projection Room.
 
-Point-in-time CPU / RAM / disk / GPU readings. The frontend accumulates the CPU
-sparkline history from successive polls — this module is stateless.
+Point-in-time CPU / RAM / disk / network / GPU readings. The frontend
+accumulates sparkline history and computes disk/network rates from deltas
+between successive polls — this module is stateless.
 
 GPU metrics use NVML via ``nvidia-ml-py`` (the ``[nvidia]`` extra). The import
 and init are lazy and cached; on hosts without an NVIDIA GPU (Mac, Intel, CPU)
@@ -69,6 +70,7 @@ def cpu_metrics() -> dict[str, Any]:
         # interval=None is non-blocking; the value is the load since the
         # previous call, so the first poll after startup reads ~0.
         "avg": psutil.cpu_percent(interval=None),
+        "perCore": psutil.cpu_percent(interval=None, percpu=True),
         "freq": round(freq.current, 0) if freq else None,
         "load": round(load1, 2) if load1 is not None else None,
         "temp": _cpu_temp(),
@@ -89,6 +91,32 @@ def disk_metrics(path: str | Path) -> dict[str, Any]:
     except OSError:
         return {"used": None, "total": None, "pct": None}
     return {"used": usage.used, "total": usage.total, "pct": usage.percent}
+
+
+def disk_io() -> dict[str, Any]:
+    """Cumulative (since-boot) disk read/write byte counters, host-wide.
+
+    Cumulative, not a rate — the frontend computes bytes/sec from the delta
+    between two polls, matching this module's stateless contract.
+    """
+    try:
+        io = psutil.disk_io_counters()
+    except OSError:
+        return {"readBytes": None, "writeBytes": None}
+    if io is None:
+        return {"readBytes": None, "writeBytes": None}
+    return {"readBytes": io.read_bytes, "writeBytes": io.write_bytes}
+
+
+def net_io() -> dict[str, Any]:
+    """Cumulative (since-boot) network byte counters, host-wide (all interfaces)."""
+    try:
+        io = psutil.net_io_counters()
+    except OSError:
+        return {"bytesSent": None, "bytesRecv": None}
+    if io is None:
+        return {"bytesSent": None, "bytesRecv": None}
+    return {"bytesSent": io.bytes_sent, "bytesRecv": io.bytes_recv}
 
 
 def _fmt_uptime(seconds: float) -> str:
@@ -152,6 +180,7 @@ def gpu_metrics() -> dict[str, Any] | None:
         return {
             "model": name,
             "util": util.gpu,
+            "memUtil": util.memory,
             "vramUsed": mem.used,
             "vramTotal": mem.total,
             "temp": temp,
@@ -169,6 +198,7 @@ def collect(disk_path: str | Path) -> dict[str, Any]:
         "cpu": cpu_metrics(),
         "gpu": gpu_metrics(),
         "ram": ram_metrics(),
-        "disk": disk_metrics(disk_path),
+        "disk": {**disk_metrics(disk_path), **disk_io()},
+        "net": net_io(),
         "uptime": uptime(),
     }

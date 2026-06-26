@@ -134,6 +134,14 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("JOB_EMBEDDED_WORKERS=false — expecting external worker/scheduler.")
 
+    # Host-telemetry sampler — independent of the job runtime above. Always
+    # on; it's a single lightweight asyncio task, not a supervised process.
+    from marquee.core.system_metrics_sampler import SystemMetricsSampler
+
+    metrics_sampler = SystemMetricsSampler()
+    await metrics_sampler.start()
+    app.state.system_metrics_sampler = metrics_sampler
+
     yield  # ── application runs here ──
 
     # ── SHUTDOWN ─────────────────────────────────────────────────────
@@ -148,6 +156,12 @@ async def lifespan(app: FastAPI):
                 await supervisor.shutdown()
             except Exception:
                 logger.warning("Error stopping embedded job runtime", exc_info=True)
+        sampler = getattr(app.state, "system_metrics_sampler", None)
+        if sampler is not None:
+            try:
+                await sampler.stop()
+            except Exception:
+                logger.warning("Error stopping system metrics sampler", exc_info=True)
         for name in ("radarr_client", "sonarr_client", "tmdb_client"):
             client = getattr(app.state, name, None)
             if client is not None:

@@ -1,7 +1,17 @@
 /** Display-model helpers: map raw API fields → labels, tones, gradients. */
 import type { PosterStatus } from './api/types';
 
-export type Tone = 'good' | 'warn' | 'low' | 'bad' | 'info' | 'gold' | 'dovi' | 'muted';
+export type Tone =
+	| 'good'
+	| 'warn'
+	| 'low'
+	| 'bad'
+	| 'info'
+	| 'gold'
+	| 'dovi'
+	| 'muted'
+	| 'cpu'
+	| 'gpu';
 
 /** Per-film deterministic gradient (handoff §1). hash(title) → palette index. */
 export const GRADS: [string, string, string][] = [
@@ -72,4 +82,16 @@ export function bytesH(n: number | null | undefined): string {
 		i++;
 	}
 	return `${v.toFixed(v < 10 && i > 0 ? 1 : 0)} ${u[i]}`;
+}
+
+/** Seconds → "2h 14m", "45s", etc. Used for job elapsed/queued/duration display. */
+export function durationH(seconds: number | null | undefined): string {
+	if (seconds == null || seconds < 0) return '—';
+	const s = Math.floor(seconds);
+	const h = Math.floor(s / 3600);
+	const m = Math.floor((s % 3600) / 60);
+	const sec = s % 60;
+	if (h > 0) return `${h}h ${m}m`;
+	if (m > 0) return `${m}m ${sec}s`;
+	return `${sec}s`;
 }
