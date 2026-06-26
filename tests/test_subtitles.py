@@ -279,7 +279,7 @@ async def test_audio_remove_plan(tmp_path):
         None,
         resolved,
         inventory,
-        operation="track_remove",
+        operation="audio_remove",
         params={"track_ids": [], "audio_stream_indices": [2]},
     )
 
@@ -292,11 +292,98 @@ async def test_audio_remove_plan(tmp_path):
         None,
         resolved,
         inventory,
-        operation="track_remove",
+        operation="audio_remove",
         params={"track_ids": [], "audio_stream_indices": [1, 2]},
     )
     # Check that it warns about all audio removed
     assert any(w["code"] == "all_audio_removed" for w in plan_all["warnings"])
+
+
+@pytest.mark.asyncio
+async def test_track_remove_plan_supports_mixed_subtitle_and_audio_removal(tmp_path):
+    media = tmp_path / "Movie.mkv"
+    media.write_bytes(b"fake")
+    resolved = ResolvedMediaFile(
+        media_file_id=1,
+        source="radarr",
+        path=media,
+        size_bytes=media.stat().st_size,
+        mtime_ns=media.stat().st_mtime_ns,
+        st_nlink=1,
+        signature="sig",
+        container="mkv",
+        movie_id=1,
+    )
+    inventory = {
+        "container_family": "mkv",
+        "capabilities": capabilities.capabilities_for("mkv"),
+        "coverage": {
+            "audio_languages": ["en", "fr"],
+            "full_dialogue_languages": ["en", "es"],
+        },
+        "audio_streams": [
+            {"index": 1, "language_tag": "en", "tool_track_id": 1},
+            {"index": 2, "language_tag": "fr", "tool_track_id": 2},
+        ],
+        "tracks": [
+            {
+                "id": "sub-es",
+                "source": "embedded",
+                "language_tag": "es",
+                "tool_track_id": 7,
+            }
+        ],
+    }
+
+    plan = await mutation.build_plan(
+        None,
+        resolved,
+        inventory,
+        operation="track_remove",
+        params={"track_ids": ["sub-es"], "audio_stream_indices": [2]},
+    )
+
+    assert plan["after"]["coverage"]["audio_languages"] == ["en"]
+    assert plan["after"]["tracks"] == []
+
+
+@pytest.mark.asyncio
+async def test_subtitle_remove_plan_keeps_legacy_audio_delete_compatibility(tmp_path):
+    media = tmp_path / "Movie.mkv"
+    media.write_bytes(b"fake")
+    resolved = ResolvedMediaFile(
+        media_file_id=1,
+        source="radarr",
+        path=media,
+        size_bytes=media.stat().st_size,
+        mtime_ns=media.stat().st_mtime_ns,
+        st_nlink=1,
+        signature="sig",
+        container="mkv",
+        movie_id=1,
+    )
+    inventory = {
+        "container_family": "mkv",
+        "capabilities": capabilities.capabilities_for("mkv"),
+        "coverage": {
+            "audio_languages": ["en", "fr"],
+        },
+        "audio_streams": [
+            {"index": 1, "language_tag": "en", "tool_track_id": 1},
+            {"index": 2, "language_tag": "fr", "tool_track_id": 2},
+        ],
+        "tracks": [],
+    }
+
+    plan = await mutation.build_plan(
+        None,
+        resolved,
+        inventory,
+        operation="subtitle_remove",
+        params={"track_ids": [], "audio_stream_indices": [2]},
+    )
+
+    assert plan["after"]["coverage"]["audio_languages"] == ["en"]
 
 
 @pytest.mark.asyncio

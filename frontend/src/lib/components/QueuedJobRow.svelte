@@ -2,16 +2,10 @@
 	import { onDestroy } from 'svelte';
 	import type { JobListItem, ResourcePoolStatus } from '$lib/api/jobs';
 	import { durationH } from '$lib/display';
+	import { displayJobLabel } from '$lib/job-labels';
 	import StatusDot from './StatusDot.svelte';
 
 	let { job, resources }: { job: JobListItem; resources: ResourcePoolStatus[] } = $props();
-
-	function humanizeType(type: string): string {
-		return type
-			.split('_')
-			.map((w) => w.charAt(0).toUpperCase() + w.slice(1))
-			.join(' ');
-	}
 
 	let now = $state(Date.now());
 	const timer = setInterval(() => (now = Date.now()), 1000);
@@ -39,8 +33,8 @@
 <div class="row">
 	<StatusDot tone={statusTone} />
 	<div class="main">
-		<span class="title">{job.subject?.title ?? humanizeType(job.type)}</span>
-		<span class="type">{humanizeType(job.type)}</span>
+		<span class="title">{job.subject?.title ?? displayJobLabel(job)}</span>
+		<span class="type">{displayJobLabel(job)}</span>
 	</div>
 	<span class="status">{job.status.replace(/_/g, ' ')}</span>
 	{#if waitingOn}

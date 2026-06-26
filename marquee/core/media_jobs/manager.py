@@ -24,9 +24,6 @@ from marquee.models import MediaJob, MediaJobEvent
 logger = logging.getLogger(__name__)
 
 _SENTINEL = object()
-_OPERATION_ALIASES = {
-    "track_remove": "subtitle_remove",
-}
 
 
 class JobStream:
@@ -167,7 +164,6 @@ class MediaJobManager:
         batch_id: str | None = None,
         commit: bool = True,
     ) -> MediaJob:
-        operation = _OPERATION_ALIASES.get(operation, operation)
         if idempotency_key:
             existing = (
                 await db.execute(
@@ -209,11 +205,13 @@ class MediaJobManager:
         if operation == "subtitle_generate":
             resources["gpu"] = 1
         elif operation in {
+            "audio_remove",
             "subtitle_remove",
             "subtitle_embed",
             "subtitle_metadata",
             "audio_reorder",
             "subtitle_restore",
+            "track_remove",
             "letterbox_reencode",
         }:
             resources["media_write"] = 1
@@ -237,11 +235,13 @@ class MediaJobManager:
             max_attempts=1
             if operation
             in {
+                "audio_remove",
                 "subtitle_remove",
                 "subtitle_embed",
                 "subtitle_metadata",
                 "audio_reorder",
                 "subtitle_restore",
+                "track_remove",
                 "letterbox_reencode",
             }
             else 3,

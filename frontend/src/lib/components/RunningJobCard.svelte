@@ -4,6 +4,7 @@
 	import type { JobListItem } from '$lib/api/jobs';
 	import type { JobProgressDetail } from '$lib/jobs';
 	import { durationH } from '$lib/display';
+	import { displayJobLabel } from '$lib/job-labels';
 
 	let {
 		job,
@@ -17,14 +18,7 @@
 		onCancel: () => void;
 	} = $props();
 
-	function humanizeType(type: string): string {
-		return type
-			.split('_')
-			.map((w) => w.charAt(0).toUpperCase() + w.slice(1))
-			.join(' ');
-	}
-
-	const title = $derived(job.subject?.title ?? humanizeType(job.type));
+	const title = $derived(job.subject?.title ?? displayJobLabel(job));
 	const resourceKeys = $derived(Object.keys(job.resource_request ?? {}));
 
 	// Tick once a second purely so the elapsed-time chip stays live between
@@ -51,7 +45,7 @@
 <div class="card">
 	<RunProgress {detail} {status} {title} onCancel={onCancel} />
 	<div class="meta">
-		<span class="chip type">{humanizeType(job.type)}</span>
+		<span class="chip type">{displayJobLabel(job)}</span>
 		{#each resourceKeys as key (key)}
 			<span class="chip resource">{key}</span>
 		{/each}

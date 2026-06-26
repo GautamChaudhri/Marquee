@@ -443,6 +443,7 @@ export interface SystemMetrics {
 export interface JobSummary {
 	job_id: string;
 	type: string;
+	label?: string;
 	status: string;
 	stage: string | null;
 	progress: Record<string, unknown> | null;
@@ -873,9 +874,11 @@ export interface TrackEdit {
 
 export interface SubtitlePlanRequest {
 	operation:
+		| 'audio_remove'
 		| 'subtitle_remove'
 		| 'subtitle_embed'
 		| 'subtitle_metadata'
+		| 'track_remove'
 		| 'audio_reorder';
 	track_ids: string[];
 	audio_stream_indices?: number[];
@@ -907,6 +910,7 @@ export interface MediaJob {
 	job_id: string;
 	status: string;
 	operation: string;
+	label?: string;
 	media_file_id: string | number | null;
 	created_at: string;
 	updated_at: string;

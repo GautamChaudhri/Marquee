@@ -147,7 +147,7 @@ async def download_track(
 
 
 class PlanRequest(BaseModel):
-    operation: str  # subtitle_remove | subtitle_embed | subtitle_metadata | audio_reorder
+    operation: str  # audio_remove | subtitle_remove | subtitle_embed | subtitle_metadata | track_remove | audio_reorder
     track_ids: list[str] = []
     audio_stream_indices: list[int] = []
     audio_stream_order: list[int] = []

@@ -118,6 +118,7 @@ async def test_media_job_snapshot_reflects_generic_job_failure(
     resp = await client.get(f"/api/media-jobs/{media_job.job_id}")
     assert resp.status_code == 200
     body = resp.json()
+    assert body["label"] == "Subtitle Removal"
     assert body["status"] == "failed"
     assert body["error"] == {"message": "no handler for 'track_remove'"}
 

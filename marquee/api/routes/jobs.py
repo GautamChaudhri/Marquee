@@ -6,7 +6,7 @@ import asyncio
 import json
 import logging
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
@@ -14,7 +14,9 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from marquee.config import settings
 from marquee.core.jobs import job_manager
+from marquee.core.jobs.labels import humanize_job_type
 from marquee.core.jobs.manager import ACTIVE, TERMINAL
 from marquee.database import _get_session_factory, get_db
 from marquee.models import (
@@ -131,6 +133,7 @@ def job_summary(job: Job, *, subject_title: str | None = None) -> dict:
     return {
         "job_id": job.id,
         "type": job.type,
+        "label": humanize_job_type(job.type),
         "status": job.status,
         "priority": job.priority,
         "parent_id": job.parent_id,
@@ -235,22 +238,47 @@ async def job_metrics(db: Annotated[AsyncSession, Depends(get_db)]):
         )
     ).all()
     in_use = dict(active)
+
+    logical_pools = {
+        "gpu",
+        "media_read",
+        "media_write",
+        "transcode",
+        "network_external",
+        "maintenance_exclusive",
+    }
+    filtered_resources = []
+    for row in resources:
+        used = int(in_use.get(row.key, 0))
+        if row.key not in logical_pools and not (row.key.startswith("media-file:") and used > 0):
+            continue
+        filtered_resources.append(
+            {
+                "key": row.key,
+                "capacity": row.capacity,
+                "in_use": used,
+                "enabled": row.enabled,
+            }
+        )
+
+    worker_cutoff = datetime.now(UTC) - timedelta(seconds=settings.JOB_LEASE_SECONDS)
     workers = (
-        (await db.execute(select(JobWorker).order_by(JobWorker.heartbeat_at.desc())))
+        (
+            await db.execute(
+                select(JobWorker)
+                .where(
+                    JobWorker.status.in_(("starting", "running", "draining")),
+                    JobWorker.heartbeat_at >= worker_cutoff,
+                )
+                .order_by(JobWorker.heartbeat_at.desc())
+            )
+        )
         .scalars()
         .all()
     )
     return {
         "counts": status_counts,
-        "resources": [
-            {
-                "key": row.key,
-                "capacity": row.capacity,
-                "in_use": int(in_use.get(row.key, 0)),
-                "enabled": row.enabled,
-            }
-            for row in resources
-        ],
+        "resources": filtered_resources,
         "workers": [
             {"id": row.id, "status": row.status, "heartbeat_at": row.heartbeat_at.isoformat()}
             for row in workers

@@ -119,6 +119,7 @@ async def _letterbox_reencode(db: AsyncSession, job: MediaJob, emit) -> dict:
 
 _HANDLERS = {
     "subtitle_scan": _scan,
+    "audio_remove": _mutate,
     "track_remove": _mutate,
     "subtitle_remove": _mutate,
     "subtitle_embed": _mutate,
