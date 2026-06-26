@@ -9,15 +9,18 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from marquee.core.media_files import ResolvedMediaFile
 from marquee.core.jobs.manager import job_manager
 from marquee.main import app
 from marquee.models import (
     Episode,
     EpisodeMediaFile,
+    Job,
     JobResource,
     JobResourceReservation,
     JobWorker,
     MediaFile,
+    MediaJob,
     Movie,
     Series,
 )
@@ -197,3 +200,183 @@ async def test_job_metrics_hides_idle_media_file_rows_and_stale_workers(db, clie
             "heartbeat_at": body["workers"][0]["heartbeat_at"],
         }
     ]
+
+
+async def test_job_detail_hydrates_linked_media_request_plan_and_error(db, client):
+    media_file = MediaFile(
+        source="radarr",
+        source_key="radarr:mf:detail",
+        path="/movies/detail/file.mkv",
+    )
+    db.add(media_file)
+    await db.commit()
+    media_job = MediaJob(
+        job_id="mj-detail-1",
+        operation="subtitle_remove",
+        media_file_id=media_file.id,
+        status="failed",
+        request_json='{"track_ids":["sub-en"],"backup":true}',
+        plan_json='{"operation":"subtitle_remove","before":{"tracks":[{"id":"sub-en"}],"audio_streams":[]},"after":{"tracks":[],"audio_streams":[]}}',
+        result_json='{"operation":"subtitle_remove","selection":{"tracks_removed":[{"id":"sub-en"}]}}',
+        error_json='{"type":"PreflightError","code":"remux_failed","error":"mkvmerge exited 2"}',
+    )
+    db.add(media_job)
+    await db.commit()
+    job = await job_manager.create(
+        db,
+        job_type="subtitle_remove",
+        payload={"media_job_id": media_job.job_id},
+        subject_type="media_file",
+        subject_id=str(media_file.id),
+        status="failed",
+    )
+    job.result = {"generic": True}
+    job.error = {"type": "RuntimeError", "message": "generic failure"}
+    await db.commit()
+
+    resp = await client.get(f"/api/jobs/{job.id}")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["media_job_id"] == "mj-detail-1"
+    assert body["request"] == {"track_ids": ["sub-en"], "backup": True}
+    assert body["plan"]["operation"] == "subtitle_remove"
+    assert body["result"]["selection"]["tracks_removed"] == [{"id": "sub-en"}]
+    assert body["error"]["code"] == "remux_failed"
+
+
+async def test_job_children_endpoint_and_detail_include_child_context(db, client):
+    movie = Movie(title="Batch Child", year=2022, folder_path="/movies/batch-child")
+    db.add(movie)
+    await db.flush()
+    media_file = MediaFile(
+        source="radarr",
+        source_key="radarr:mf:child",
+        path="/movies/batch-child/file.mkv",
+        movie_id=movie.id,
+    )
+    db.add(media_file)
+    await db.commit()
+
+    parent = await job_manager.create(
+        db,
+        job_type="letterbox_detect_batch",
+        status="waiting_external",
+        subject_type="letterbox_batch",
+        subject_id="batch-1",
+    )
+    media_job = MediaJob(
+        job_id="mj-child-1",
+        operation="subtitle_remove",
+        media_file_id=media_file.id,
+        status="succeeded",
+        request_json='{"track_ids":["sub-fr"]}',
+        plan_json='{"operation":"subtitle_remove"}',
+        result_json='{"selection":{"tracks_removed":[{"id":"sub-fr"}]}}',
+    )
+    db.add(media_job)
+    await db.commit()
+    child = await job_manager.create(
+        db,
+        job_type="subtitle_remove",
+        payload={"media_job_id": media_job.job_id},
+        parent_id=parent.id,
+        subject_type="media_file",
+        subject_id=str(media_file.id),
+        status="succeeded",
+    )
+    await db.commit()
+
+    children_resp = await client.get(f"/api/jobs/{parent.id}/children")
+    assert children_resp.status_code == 200
+    children = children_resp.json()["children"]
+    assert len(children) == 1
+    assert children[0]["job_id"] == child.id
+    assert children[0]["subject"]["title"] == "Batch Child (2022)"
+    assert children[0]["request"] == {"track_ids": ["sub-fr"]}
+    assert children[0]["result"]["selection"]["tracks_removed"] == [{"id": "sub-fr"}]
+
+    detail_resp = await client.get(f"/api/jobs/{parent.id}")
+    assert detail_resp.status_code == 200
+    detail_children = detail_resp.json()["children"]
+    assert len(detail_children) == 1
+    assert detail_children[0]["job_id"] == child.id
+
+
+async def test_subtitle_plan_supersedes_old_paired_generic_job(db, client, monkeypatch, tmp_path):
+    media = tmp_path / "Movie.mkv"
+    media.write_bytes(b"x")
+    media_file = MediaFile(
+        source="radarr",
+        source_key="radarr:mf:subtitle-plan",
+        path=str(media),
+    )
+    db.add(media_file)
+    await db.commit()
+
+    resolved = ResolvedMediaFile(
+        media_file_id=media_file.id,
+        source="radarr",
+        path=media,
+        size_bytes=media.stat().st_size,
+        mtime_ns=media.stat().st_mtime_ns,
+        st_nlink=1,
+        signature="sig-subtitle-plan",
+        container="mkv",
+        movie_id=None,
+    )
+
+    async def fake_resolve_media_file(_db, media_file_id):
+        assert media_file_id == media_file.id
+        return resolved
+
+    async def fake_inventory(_db, media_file_id):
+        assert media_file_id == media_file.id
+        return {
+            "inventory_id": 1,
+            "tracks": [],
+            "audio_streams": [],
+            "coverage": {},
+            "container_family": "mkv",
+            "capabilities": {"can_remove": True},
+        }
+
+    async def fake_build_plan(_db, _resolved, _inventory, **_kwargs):
+        return {
+            "operation": "subtitle_remove",
+            "before": {"tracks": [], "audio_streams": []},
+            "after": {"tracks": [], "audio_streams": []},
+            "warnings": [],
+            "capabilities": {"can_execute": True},
+        }
+
+    monkeypatch.setattr("marquee.api.routes.subtitles._require_ffprobe", lambda: None)
+    monkeypatch.setattr("marquee.api.routes.subtitles.resolve_media_file", fake_resolve_media_file)
+    monkeypatch.setattr("marquee.api.routes.subtitles.service.get_inventory_dict", fake_inventory)
+    monkeypatch.setattr("marquee.api.routes.subtitles.mutation.build_plan", fake_build_plan)
+
+    first = await client.post(
+        f"/api/media-files/{media_file.id}/subtitle-plans",
+        json={"operation": "subtitle_remove", "track_ids": ["sub-en"]},
+    )
+    second = await client.post(
+        f"/api/media-files/{media_file.id}/subtitle-plans",
+        json={"operation": "subtitle_remove", "track_ids": ["sub-en"]},
+    )
+
+    assert first.status_code == 201
+    assert second.status_code == 201
+
+    first_id = first.json()["job_id"]
+    second_id = second.json()["job_id"]
+    generic_jobs = (await db.execute(select(Job).where(Job.type == "subtitle_remove"))).scalars().all()
+    generic_by_media_id = {
+        row.payload.get("media_job_id"): row
+        for row in generic_jobs
+        if isinstance(row.payload, dict) and row.payload.get("media_job_id")
+    }
+
+    assert (await db.get(MediaJob, first_id)).status == "cancelled"
+    assert generic_by_media_id[first_id].status == "cancelled"
+    assert generic_by_media_id[first_id].finished_at is not None
+    assert (await db.get(MediaJob, second_id)).status == "planned"
+    assert generic_by_media_id[second_id].status == "planned"

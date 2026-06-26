@@ -1536,6 +1536,53 @@ async def test_movie_detail_uses_latest_active_reencode_job(client, db, tmp_path
 
 
 @pytest.mark.asyncio
+async def test_reencode_plan_supersedes_old_paired_generic_job(client, db, tmp_path, monkeypatch):
+    movie, _ = _movie_with_file(tmp_path)
+    db.add(movie)
+    await db.commit()
+    await db.refresh(movie)
+    db.add(
+        LetterboxState(
+            movie_id=movie.id,
+            status="candidate",
+            confidence="high",
+            recommended_crop_top=140,
+            recommended_crop_bottom=140,
+            prefilter_bucket="candidate",
+            prefilter_reason="sixteen_nine_container",
+        )
+    )
+    await db.commit()
+
+    monkeypatch.setattr(binaries, "resolve", lambda name: f"/usr/bin/{name}")
+
+    async def fake_build_plan(*_args, **_kwargs):
+        return _reencode_plan()
+
+    monkeypatch.setattr(letterbox_reencode, "build_plan", fake_build_plan)
+
+    first = await client.post(f"/api/letterbox/movies/{movie.id}/reencode-plan", json={})
+    second = await client.post(f"/api/letterbox/movies/{movie.id}/reencode-plan", json={})
+
+    assert first.status_code == 201
+    assert second.status_code == 201
+
+    first_id = first.json()["job_id"]
+    second_id = second.json()["job_id"]
+    generic_jobs = (await db.execute(select(Job).where(Job.type == "letterbox_reencode"))).scalars().all()
+    generic_by_media_id = {
+        row.payload.get("media_job_id"): row
+        for row in generic_jobs
+        if isinstance(row.payload, dict) and row.payload.get("media_job_id")
+    }
+
+    assert (await db.get(MediaJob, first_id)).status == "cancelled"
+    assert generic_by_media_id[first_id].status == "cancelled"
+    assert (await db.get(MediaJob, second_id)).status == "planned"
+    assert generic_by_media_id[second_id].status == "planned"
+
+
+@pytest.mark.asyncio
 async def test_movie_detail_includes_finished_reencode_artifact(client, db, tmp_path):
     movie, media = _movie_with_file(tmp_path)
     db.add(movie)

@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onDestroy, onMount } from 'svelte';
 	import { cancelJob, getJobDetail, isTerminal } from '$lib/api/jobs';
-	import type { JobDetail } from '$lib/api/jobs';
+	import type { JobChildDetail, JobDetail, JobContext } from '$lib/api/jobs';
 	import { trackJob, type JobProgressDetail } from '$lib/jobs';
 	import { durationH } from '$lib/display';
 	import { displayJobLabel, humanizeJobType } from '$lib/job-labels';
@@ -29,6 +29,25 @@
 		if (status === 'cancelled' || status === 'interrupted') return 'warn';
 		if (isTerminal(status)) return 'muted';
 		return 'info';
+	}
+
+	function prettyJson(value: unknown): string {
+		return JSON.stringify(value, null, 2);
+	}
+
+	function hasContent(value: unknown): value is Record<string, unknown> {
+		return !!value && typeof value === 'object' && Object.keys(value as Record<string, unknown>).length > 0;
+	}
+
+	function effectiveRequest(detail: JobDetail | JobChildDetail): JobContext | null {
+		if (hasContent(detail.request)) return detail.request;
+		const payloadKeys = Object.keys(detail.payload ?? {}).filter((key) => key !== 'media_job_id');
+		if (payloadKeys.length === 0) return null;
+		return detail.payload;
+	}
+
+	function displaySubject(detail: JobDetail | JobChildDetail): string {
+		return detail.subject?.title ?? displayJobLabel(detail);
 	}
 
 	async function refetch() {
@@ -72,7 +91,7 @@
 	<SectionHeader title="Job not found" subtitle={data.error ?? 'This job no longer exists.'} />
 	<a class="back" href="/projection-room?tab=history">← Back to Projection Room</a>
 {:else}
-	<SectionHeader title={job.subject?.title ?? displayJobLabel(job)} subtitle={`${job.type} · ${job.job_id}`} />
+	<SectionHeader title={displaySubject(job)} subtitle={`${job.type} · ${job.job_id}`} />
 	<a class="back" href="/projection-room?tab=history">← Back to Projection Room</a>
 
 	<div class="head-row">
@@ -127,7 +146,7 @@
 					{#each job.attempts as a (a.number)}
 						<tr>
 							<td class="mono">{a.number}</td>
-							<td>{humanize(a.status)}</td>
+							<td>{humanizeJobType(a.status)}</td>
 							<td class="mono">{a.worker_id}</td>
 							<td class="mono">{a.started_at ? new Date(a.started_at).toLocaleString() : '—'}</td>
 							<td class="mono">{a.finished_at ? new Date(a.finished_at).toLocaleString() : '—'}</td>
@@ -185,14 +204,74 @@
 	{#if job.result}
 		<section>
 			<h3>Result</h3>
-			<pre>{JSON.stringify(job.result, null, 2)}</pre>
+			<pre>{prettyJson(job.result)}</pre>
 		</section>
 	{/if}
 
 	{#if job.error}
 		<section>
 			<h3>Error</h3>
-			<pre class="err-block">{JSON.stringify(job.error, null, 2)}</pre>
+			<pre class="err-block">{prettyJson(job.error)}</pre>
+		</section>
+	{/if}
+
+	{#if effectiveRequest(job)}
+		<section>
+			<h3>Request</h3>
+			<pre>{prettyJson(effectiveRequest(job))}</pre>
+		</section>
+	{/if}
+
+	{#if job.plan}
+		<section>
+			<h3>Plan</h3>
+			<pre>{prettyJson(job.plan)}</pre>
+		</section>
+	{/if}
+
+	{#if job.children.length > 0}
+		<section>
+			<h3>Child jobs ({job.children.length})</h3>
+			<div class="children">
+				{#each job.children as child (child.job_id)}
+					<details class="child-card">
+						<summary>
+							<div class="child-head">
+								<div class="child-title">
+									<span>{displaySubject(child)}</span>
+									<span class="child-sub">{displayJobLabel(child)} · {child.job_id}</span>
+								</div>
+								<div class="child-state">
+									<StatusDot tone={statusTone(child.status)} size={9} />
+									<span>{humanizeJobType(child.status)}</span>
+								</div>
+							</div>
+						</summary>
+						<div class="child-meta">
+							<div><span class="k">Stage</span><span class="v">{child.stage ?? '—'}</span></div>
+							<div><span class="k">Created</span><span class="v mono">{child.created_at ? new Date(child.created_at).toLocaleString() : '—'}</span></div>
+							<div><span class="k">Started</span><span class="v mono">{child.started_at ? new Date(child.started_at).toLocaleString() : '—'}</span></div>
+							<div><span class="k">Finished</span><span class="v mono">{child.finished_at ? new Date(child.finished_at).toLocaleString() : '—'}</span></div>
+						</div>
+						{#if effectiveRequest(child)}
+							<h4>Request</h4>
+							<pre>{prettyJson(effectiveRequest(child))}</pre>
+						{/if}
+						{#if child.plan}
+							<h4>Plan</h4>
+							<pre>{prettyJson(child.plan)}</pre>
+						{/if}
+						{#if child.result}
+							<h4>Result</h4>
+							<pre>{prettyJson(child.result)}</pre>
+						{/if}
+						{#if child.error}
+							<h4>Error</h4>
+							<pre class="err-block">{prettyJson(child.error)}</pre>
+						{/if}
+					</details>
+				{/each}
+			</div>
 		</section>
 	{/if}
 {/if}
@@ -368,5 +447,65 @@
 	pre.err-block {
 		color: var(--bad);
 		border-color: color-mix(in srgb, var(--bad) 30%, transparent);
+	}
+	.children {
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
+	}
+	.child-card {
+		background: var(--panel);
+		border: 1px solid var(--line);
+		border-radius: var(--radius);
+		padding: 0;
+		overflow: hidden;
+	}
+	.child-card summary {
+		list-style: none;
+		cursor: pointer;
+		padding: 14px;
+	}
+	.child-card summary::-webkit-details-marker {
+		display: none;
+	}
+	.child-head {
+		display: flex;
+		justify-content: space-between;
+		gap: 12px;
+		align-items: center;
+		flex-wrap: wrap;
+	}
+	.child-title {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+	}
+	.child-sub {
+		color: var(--muted);
+		font-size: 12px;
+		font-family: var(--font-mono);
+	}
+	.child-state {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		font-size: 12.5px;
+		font-weight: 600;
+	}
+	.child-meta {
+		display: grid;
+		grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+		gap: 10px;
+		padding: 0 14px 14px;
+	}
+	.child-card h4 {
+		margin: 0 14px 8px;
+		font-size: 11px;
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+		color: var(--faint2);
+	}
+	.child-card pre {
+		margin: 0 14px 14px;
 	}
 </style>
