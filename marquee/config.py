@@ -117,6 +117,22 @@ class Settings(BaseSettings):
     # Filesystem the dashboard disk gauge reports on. Defaults to the volume
     # holding DATA_DIR; point it at the media volume for a more useful number.
     METRICS_DISK_PATH: str | None = None
+    METRICS_SAMPLE_INTERVAL_SECONDS: int = Field(
+        default=15,
+        ge=5,
+        le=300,
+        description="Seconds between host-telemetry samples written to "
+        "system_metrics_samples by the background sampler. Not a Job — never "
+        "visible in job history.",
+    )
+    METRICS_RETENTION_DAYS: int = Field(
+        default=14,
+        ge=1,
+        le=365,
+        description="Days to retain system_metrics_samples rows before the "
+        "daily system_metrics_purge job deletes them. Independent of "
+        "JOB_RETENTION_DAYS.",
+    )
 
     @property
     def _project_root(self) -> Path:

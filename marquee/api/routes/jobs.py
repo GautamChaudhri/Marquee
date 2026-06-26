@@ -15,8 +15,21 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.core.jobs import job_manager
+from marquee.core.jobs.manager import ACTIVE, TERMINAL
 from marquee.database import _get_session_factory, get_db
-from marquee.models import Job, JobAttempt, JobEvent, JobResource, JobResourceReservation, JobWorker
+from marquee.models import (
+    Episode,
+    EpisodeMediaFile,
+    Job,
+    JobAttempt,
+    JobEvent,
+    JobResource,
+    JobResourceReservation,
+    JobWorker,
+    MediaFile,
+    Movie,
+    Series,
+)
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
 logger = logging.getLogger(__name__)
@@ -25,8 +38,96 @@ logger = logging.getLogger(__name__)
 # Clients can reconnect using Last-Event-ID to resume from where they left off.
 _SSE_TIMEOUT_SECONDS = 3600
 
+# "Currently queued" statuses — the complement of manager.ACTIVE/TERMINAL.
+# Sourced from the literal status strings manager.py actually assigns (grep,
+# not guessed) — api/routes/system.py's _worker_counts() got this wrong by
+# inventing statuses ("in_progress", "pending") that are never real values.
+_QUEUED_ISH = {"queued", "waiting_resource", "paused", "retry_scheduled"}
 
-def job_summary(job: Job) -> dict:
+
+async def _resolve_subject_titles(
+    db: AsyncSession, jobs: list[Job]
+) -> dict[tuple[str | None, str | None], str]:
+    """Batch-resolve ``{(subject_type, subject_id): display_title}`` for a page of jobs.
+
+    Movie subjects (``subject_type in {"movie", "radarr_movie"}``) resolve
+    directly. ``media_file`` subjects (subtitle / letterbox-reencode jobs)
+    resolve through ``MediaFile.movie_id`` when movie-backed, or through
+    ``episode_media_files`` -> ``Episode`` -> ``Series`` for a
+    ``"Series S01E02"``-style label when episode-backed — there is no direct
+    ``series``/``episode`` ``subject_type`` anywhere in this codebase today.
+    Anything else (batch/maintenance pseudo-subjects) is left unresolved; the
+    frontend falls back to the raw id.
+    """
+    titles: dict[tuple[str | None, str | None], str] = {}
+
+    movie_ids = {
+        int(j.subject_id) for j in jobs if j.subject_type in ("movie", "radarr_movie") and j.subject_id
+    }
+    if movie_ids:
+        rows = (
+            await db.execute(select(Movie.id, Movie.title, Movie.year).where(Movie.id.in_(movie_ids)))
+        ).all()
+        for r in rows:
+            label = f"{r.title} ({r.year})" if r.year else r.title
+            titles[("movie", str(r.id))] = label
+            titles[("radarr_movie", str(r.id))] = label
+
+    media_file_ids = {
+        int(j.subject_id) for j in jobs if j.subject_type == "media_file" and j.subject_id
+    }
+    if media_file_ids:
+        mf_rows = (
+            await db.execute(
+                select(MediaFile.id, MediaFile.movie_id).where(MediaFile.id.in_(media_file_ids))
+            )
+        ).all()
+        movie_backed = {r.id: r.movie_id for r in mf_rows if r.movie_id}
+        if movie_backed:
+            mv_rows = (
+                await db.execute(
+                    select(Movie.id, Movie.title, Movie.year).where(Movie.id.in_(movie_backed.values()))
+                )
+            ).all()
+            mv_by_id = {r.id: (r.title, r.year) for r in mv_rows}
+            for mf_id, mv_id in movie_backed.items():
+                title, year = mv_by_id.get(mv_id, (None, None))
+                if title:
+                    titles[("media_file", str(mf_id))] = f"{title} ({year})" if year else title
+
+        episode_backed_ids = [r.id for r in mf_rows if not r.movie_id]
+        if episode_backed_ids:
+            ep_rows = (
+                await db.execute(
+                    select(
+                        EpisodeMediaFile.media_file_id,
+                        Episode.series_id,
+                        Episode.season_number,
+                        Episode.episode_number,
+                    )
+                    .join(Episode, Episode.id == EpisodeMediaFile.episode_id)
+                    .where(EpisodeMediaFile.media_file_id.in_(episode_backed_ids))
+                )
+            ).all()
+            series_ids = {r.series_id for r in ep_rows}
+            series_rows = (
+                (await db.execute(select(Series.id, Series.title).where(Series.id.in_(series_ids))))
+                .all()
+                if series_ids
+                else []
+            )
+            series_by_id = {r.id: r.title for r in series_rows}
+            for r in ep_rows:
+                series_title = series_by_id.get(r.series_id)
+                if series_title:
+                    titles[("media_file", str(r.media_file_id))] = (
+                        f"{series_title} S{r.season_number:02d}E{r.episode_number:02d}"
+                    )
+
+    return titles
+
+
+def job_summary(job: Job, *, subject_title: str | None = None) -> dict:
     return {
         "job_id": job.id,
         "type": job.type,
@@ -35,7 +136,11 @@ def job_summary(job: Job) -> dict:
         "parent_id": job.parent_id,
         "root_id": job.root_id,
         "correlation_id": job.correlation_id,
-        "subject": {"type": job.subject_type, "id": job.subject_id} if job.subject_type else None,
+        "subject": (
+            {"type": job.subject_type, "id": job.subject_id, "title": subject_title}
+            if job.subject_type
+            else None
+        ),
         "stage": job.current_stage,
         "progress": job.progress,
         "resource_request": job.resource_request,
@@ -62,12 +167,25 @@ async def list_jobs(
     subject_id: str | None = None,
     parent_id: str | None = None,
     correlation_id: str | None = None,
+    active: bool = False,
+    queued_only: bool = False,
     before: int | None = None,
+    since: int | None = None,
+    until: int | None = None,
     limit: int = Query(50, ge=1, le=200),
 ):
+    """``active=true`` / ``queued_only=true`` are shorthands over manager's
+    real ``ACTIVE``/queued-ish status sets — "currently running" or
+    "currently queued" isn't one status string, and inventing ad-hoc status
+    literals at the call site is exactly the mistake that made
+    ``system.py``'s worker counts silently wrong."""
     query = select(Job).order_by(Job.created_at.desc(), Job.id.desc()).limit(limit + 1)
     if status:
         query = query.where(Job.status == status)
+    if active:
+        query = query.where(Job.status.in_(ACTIVE))
+    if queued_only:
+        query = query.where(Job.status.in_(_QUEUED_ISH))
     if type:
         query = query.where(Job.type == type)
     if subject_type:
@@ -80,13 +198,24 @@ async def list_jobs(
         query = query.where(Job.correlation_id == correlation_id)
     if before:
         query = query.where(Job.created_at < datetime.fromtimestamp(before, UTC))
+    if since:
+        query = query.where(Job.created_at >= datetime.fromtimestamp(since, UTC))
+    if until:
+        query = query.where(Job.created_at <= datetime.fromtimestamp(until, UTC))
     rows = (await db.execute(query)).scalars().all()
     has_more = len(rows) > limit
     rows = rows[:limit]
     next_before = (
         int(rows[-1].created_at.timestamp()) if has_more and rows and rows[-1].created_at else None
     )
-    return {"jobs": [job_summary(row) for row in rows], "next_before": next_before}
+    titles = await _resolve_subject_titles(db, rows)
+    return {
+        "jobs": [
+            job_summary(row, subject_title=titles.get((row.subject_type, row.subject_id)))
+            for row in rows
+        ],
+        "next_before": next_before,
+    }
 
 
 @router.get("/metrics")
@@ -129,6 +258,56 @@ async def job_metrics(db: Annotated[AsyncSession, Depends(get_db)]):
     }
 
 
+def _percentile(durations: list[float], p: float) -> float | None:
+    if not durations:
+        return None
+    return round(durations[min(len(durations) - 1, int(len(durations) * p))], 3)
+
+
+@router.get("/metrics/by-type")
+async def job_metrics_by_type(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    limit_per_type: int = Query(200, ge=1, le=2000),
+):
+    """Success rate + duration percentiles per job type.
+
+    Computed over each type's most recent ``limit_per_type`` terminal jobs —
+    a bounded, in-Python percentile (mirroring ``pipeline.py``'s
+    ``pipeline_metrics()``) rather than a DB-side percentile function, for
+    portability. One query per distinct job type (~25 registered types);
+    acceptable for a low-traffic admin page.
+    """
+    types = (await db.execute(select(Job.type).distinct())).scalars().all()
+    out: dict[str, dict] = {}
+    for job_type in types:
+        rows = (
+            await db.execute(
+                select(Job.status, Job.started_at, Job.finished_at)
+                .where(Job.type == job_type, Job.status.in_(TERMINAL))
+                .order_by(Job.finished_at.desc())
+                .limit(limit_per_type)
+            )
+        ).all()
+        if not rows:
+            continue
+        durations = sorted(
+            (r.finished_at - r.started_at).total_seconds()
+            for r in rows
+            if r.started_at and r.finished_at
+        )
+        succeeded = sum(1 for r in rows if r.status == "succeeded")
+        out[job_type] = {
+            "sample_size": len(rows),
+            "success_rate": round(succeeded / len(rows), 3),
+            "duration_seconds": {
+                "avg": round(sum(durations) / len(durations), 3) if durations else None,
+                "p50": _percentile(durations, 0.5),
+                "p95": _percentile(durations, 0.95),
+            },
+        }
+    return {"by_type": out}
+
+
 @router.get("/{job_id}")
 async def get_job(job_id: str, db: Annotated[AsyncSession, Depends(get_db)]):
     job = await db.get(Job, job_id)
@@ -152,7 +331,20 @@ async def get_job(job_id: str, db: Annotated[AsyncSession, Depends(get_db)]):
         .scalars()
         .all()
     )
-    data = job_summary(job)
+    # The SSE endpoint (/{job_id}/events) only streams live updates — a
+    # terminal job's full audit trail has nowhere else to come from, so the
+    # detail view includes it directly, same as attempts/resources below.
+    events = (
+        (
+            await db.execute(
+                select(JobEvent).where(JobEvent.job_id == job_id).order_by(JobEvent.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    titles = await _resolve_subject_titles(db, [job])
+    data = job_summary(job, subject_title=titles.get((job.subject_type, job.subject_id)))
     data.update(
         {
             "payload": job.payload,
@@ -180,6 +372,17 @@ async def get_job(job_id: str, db: Annotated[AsyncSession, Depends(get_db)]):
                     "released_at": r.released_at.isoformat() if r.released_at else None,
                 }
                 for r in reservations
+            ],
+            "events": [
+                {
+                    "id": e.id,
+                    "stage": e.stage,
+                    "state": e.state,
+                    "message": e.message,
+                    "detail": e.detail,
+                    "created_at": e.created_at.isoformat() if e.created_at else None,
+                }
+                for e in events
             ],
         }
     )

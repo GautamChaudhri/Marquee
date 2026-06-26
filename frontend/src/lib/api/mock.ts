@@ -88,8 +88,7 @@ export function mockRadarrOverlay(params: RadarrOverlayQuery = {}): RadarrOverla
 					: [],
 		dovi_no_fallback: index % 2 === 1 && item.hdr === 'dovi',
 		dovi_status: item.hdr === 'dovi' ? 'analyzed' : 'unknown',
-		dovi_profile:
-			item.hdr === 'dovi' ? (index % 3 === 0 ? 5 : index % 3 === 1 ? 7 : 8) : null,
+		dovi_profile: item.hdr === 'dovi' ? (index % 3 === 0 ? 5 : index % 3 === 1 ? 7 : 8) : null,
 		dovi_el_type: item.hdr === 'dovi' && index % 3 === 1 ? (index % 2 ? 'FEL' : 'MEL') : null,
 		dovi_bl_signal_compatibility_id: item.hdr === 'dovi' ? (index % 3 === 2 ? 1 : 0) : null,
 		profile_id: index % 3 === 0 ? 3 : 4,
@@ -188,10 +187,20 @@ export function mockRadarrOverlay(params: RadarrOverlayQuery = {}): RadarrOverla
 
 export function mockMetrics(): SystemMetrics {
 	return {
-		cpu: { model: 'Mock CPU', cores: 8, threads: 16, avg: 23.4, freq: 3600, load: 1.2, temp: 48 },
+		cpu: {
+			model: 'Intel Core i5-13600KF',
+			cores: 14,
+			threads: 20,
+			avg: 23.4,
+			perCore: Array.from({ length: 20 }, (_, i) => 10 + ((i * 7) % 60)),
+			freq: 3600,
+			load: 1.2,
+			temp: 48
+		},
 		gpu: {
 			model: 'NVIDIA GeForce RTX 3070',
 			util: 17,
+			memUtil: 9,
 			vramUsed: 1_900_000_000,
 			vramTotal: 8_589_934_592,
 			temp: 44,
@@ -199,7 +208,14 @@ export function mockMetrics(): SystemMetrics {
 			enc: 0
 		},
 		ram: { used: 9_000_000_000, total: 25_000_000_000, pct: 36 },
-		disk: { used: 96_000_000_000, total: 134_000_000_000, pct: 71.6 },
+		disk: {
+			used: 96_000_000_000,
+			total: 134_000_000_000,
+			pct: 71.6,
+			readBytes: 482_000_000_000,
+			writeBytes: 119_000_000_000
+		},
+		net: { bytesSent: 21_400_000_000, bytesRecv: 88_900_000_000 },
 		workers: { active: 1, queued: 2 },
 		uptime: '13h 11m'
 	};

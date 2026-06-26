@@ -624,3 +624,33 @@ async def job_retention_purge(_job: Job) -> dict[str, Any]:
         settings.JOB_RETENTION_DAYS,
     )
     return {"jobs_deleted": jobs_deleted, "media_jobs_deleted": media_jobs_deleted}
+
+
+@register("system_metrics_purge")
+async def system_metrics_purge(_job: Job) -> dict[str, Any]:
+    """Delete SystemMetricsSample rows older than METRICS_RETENTION_DAYS.
+
+    Mirrors job_retention_purge's pattern. The samples this deletes are
+    written by the lightweight asyncio sampler (system_metrics_sampler.py),
+    not by a Job — but the daily cleanup itself is infrequent enough that
+    running it as a real Job is fine.
+    """
+    from datetime import UTC, datetime, timedelta
+
+    from marquee.models import SystemMetricsSample
+
+    cutoff = datetime.now(UTC) - timedelta(days=settings.METRICS_RETENTION_DAYS)
+    factory = _get_session_factory()
+    async with factory() as db:
+        result = await db.execute(
+            SystemMetricsSample.__table__.delete().where(SystemMetricsSample.created_at < cutoff)
+        )
+        deleted = result.rowcount or 0
+        await db.commit()
+
+    logger.info(
+        "system_metrics_purge: deleted %d sample(s) older than %d day(s)",
+        deleted,
+        settings.METRICS_RETENTION_DAYS,
+    )
+    return {"samples_deleted": deleted}
