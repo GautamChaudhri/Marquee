@@ -13,7 +13,7 @@ import logging
 from marquee.core.jobs.handlers import register
 from marquee.core.jobs.manager import job_manager
 from marquee.database import _get_session_factory
-from marquee.models import Job, MediaJob
+from marquee.models import Job, MediaFile, MediaJob
 
 logger = logging.getLogger(__name__)
 
@@ -83,8 +83,31 @@ async def _run_media(job: Job) -> dict:
         async with factory() as fail_db:
             media_job = await fail_db.get(MediaJob, media_job_id)
             if media_job is not None:
-                media_job.status = "failed"
-                media_job.error_json = json.dumps({"error": str(exc), "type": type(exc).__name__})
+                media_file = (
+                    await fail_db.get(MediaFile, media_job.media_file_id)
+                    if media_job.media_file_id is not None
+                    else None
+                )
+                request = None
+                if media_job.request_json:
+                    try:
+                        request = json.loads(media_job.request_json)
+                    except json.JSONDecodeError:
+                        request = media_job.request_json
+                media_job.status = "cancelled" if media_job.cancel_requested else "failed"
+                media_job.error_json = json.dumps(
+                    {
+                        "error": str(exc),
+                        "type": type(exc).__name__,
+                        "code": getattr(exc, "code", None),
+                        "operation": media_job.operation,
+                        "stage": media_job.stage,
+                        "media_file_id": media_job.media_file_id,
+                        "file_path": media_file.path if media_file is not None else None,
+                        "request": request,
+                    },
+                    default=str,
+                )
                 await fail_db.commit()
         raise
     finally:

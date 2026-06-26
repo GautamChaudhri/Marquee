@@ -260,6 +260,65 @@ class MediaJobManager:
         await db.commit()
         return True
 
+    async def supersede_planned_media_jobs(
+        self,
+        db: AsyncSession,
+        *,
+        media_file_id: int,
+        operation: str,
+        message: str = "superseded by a newer plan",
+    ) -> list[str]:
+        from marquee.core.jobs import job_manager  # noqa: PLC0415
+        from marquee.models import Job  # noqa: PLC0415
+
+        media_jobs = (
+            await db.execute(
+                select(MediaJob)
+                .where(
+                    MediaJob.operation == operation,
+                    MediaJob.media_file_id == media_file_id,
+                    MediaJob.status == "planned",
+                )
+                .order_by(MediaJob.created_at.asc(), MediaJob.job_id.asc())
+            )
+        ).scalars().all()
+        if not media_jobs:
+            return []
+
+        generic_jobs = (
+            await db.execute(
+                select(Job).where(
+                    Job.type == operation,
+                    Job.subject_type == "media_file",
+                    Job.subject_id == str(media_file_id),
+                    Job.status == "planned",
+                )
+            )
+        ).scalars().all()
+        generic_by_media_id = {
+            row.payload.get("media_job_id"): row
+            for row in generic_jobs
+            if isinstance(row.payload, dict) and row.payload.get("media_job_id")
+        }
+
+        now = datetime.now(UTC)
+        cancelled_ids: list[str] = []
+        for media_job in media_jobs:
+            media_job.status = "cancelled"
+            media_job.cancel_requested = True
+            cancelled_ids.append(media_job.job_id)
+            generic = generic_by_media_id.get(media_job.job_id)
+            if generic is not None:
+                await job_manager._cancel_before_execution(
+                    db,
+                    generic,
+                    now=now,
+                    message=message,
+                )
+
+        await db.commit()
+        return cancelled_ids
+
     # ------------------------------------------------------------------
     # Batch progress
     # ------------------------------------------------------------------

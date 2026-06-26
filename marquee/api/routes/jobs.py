@@ -29,6 +29,7 @@ from marquee.models import (
     JobResourceReservation,
     JobWorker,
     MediaFile,
+    MediaJob,
     Movie,
     Series,
 )
@@ -159,6 +160,89 @@ def job_summary(job: Job, *, subject_title: str | None = None) -> dict:
         "status_url": f"/api/jobs/{job.id}",
         "events_url": f"/api/jobs/{job.id}/events",
     }
+
+
+def _decode_media_blob(value):
+    if value is None:
+        return None
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            return value
+    return value
+
+
+def _linked_media_job_id(job: Job) -> str | None:
+    if not isinstance(job.payload, dict):
+        return None
+    media_job_id = job.payload.get("media_job_id")
+    return str(media_job_id) if media_job_id else None
+
+
+def _job_detail_data(job: Job, *, subject_title: str | None, media_job: MediaJob | None) -> dict:
+    request = _decode_media_blob(media_job.request_json) if media_job is not None else None
+    plan = _decode_media_blob(media_job.plan_json) if media_job is not None else None
+    media_result = _decode_media_blob(media_job.result_json) if media_job is not None else None
+    media_error = _decode_media_blob(media_job.error_json) if media_job is not None else None
+    data = job_summary(job, subject_title=subject_title)
+    data.update(
+        {
+            "payload": job.payload,
+            "checkpoint": job.checkpoint,
+            "request": request,
+            "plan": plan,
+            "result": media_result if media_result is not None else job.result,
+            "error": media_error if media_error is not None else job.error,
+            "media_job_id": media_job.job_id if media_job is not None else None,
+        }
+    )
+    return data
+
+
+async def _load_linked_media_jobs(db: AsyncSession, jobs: list[Job]) -> dict[str, MediaJob]:
+    media_job_ids = list(
+        {
+            media_job_id
+            for media_job_id in (_linked_media_job_id(job) for job in jobs)
+            if media_job_id
+        }
+    )
+    if not media_job_ids:
+        return {}
+    rows = (
+        await db.execute(select(MediaJob).where(MediaJob.job_id.in_(media_job_ids)))
+    ).scalars().all()
+    return {row.job_id: row for row in rows}
+
+
+async def _load_child_jobs(db: AsyncSession, parent_id: str) -> list[Job]:
+    return (
+        (
+            await db.execute(
+                select(Job)
+                .where(Job.parent_id == parent_id)
+                .order_by(Job.created_at.asc(), Job.id.asc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+
+async def _serialize_job_details(db: AsyncSession, jobs: list[Job]) -> list[dict]:
+    if not jobs:
+        return []
+    titles = await _resolve_subject_titles(db, jobs)
+    media_jobs = await _load_linked_media_jobs(db, jobs)
+    return [
+        _job_detail_data(
+            job,
+            subject_title=titles.get((job.subject_type, job.subject_id)),
+            media_job=media_jobs.get(_linked_media_job_id(job) or ""),
+        )
+        for job in jobs
+    ]
 
 
 @router.get("")
@@ -371,14 +455,17 @@ async def get_job(job_id: str, db: Annotated[AsyncSession, Depends(get_db)]):
         .scalars()
         .all()
     )
+    media_jobs = await _load_linked_media_jobs(db, [job])
+    children = await _load_child_jobs(db, job_id)
+    child_details = await _serialize_job_details(db, children)
     titles = await _resolve_subject_titles(db, [job])
-    data = job_summary(job, subject_title=titles.get((job.subject_type, job.subject_id)))
+    data = _job_detail_data(
+        job,
+        subject_title=titles.get((job.subject_type, job.subject_id)),
+        media_job=media_jobs.get(_linked_media_job_id(job) or ""),
+    )
     data.update(
         {
-            "payload": job.payload,
-            "checkpoint": job.checkpoint,
-            "result": job.result,
-            "error": job.error,
             "attempts": [
                 {
                     "number": a.number,
@@ -412,9 +499,19 @@ async def get_job(job_id: str, db: Annotated[AsyncSession, Depends(get_db)]):
                 }
                 for e in events
             ],
+            "children": child_details,
         }
     )
     return data
+
+
+@router.get("/{job_id}/children")
+async def get_job_children(job_id: str, db: Annotated[AsyncSession, Depends(get_db)]):
+    job = await db.get(Job, job_id)
+    if job is None:
+        raise HTTPException(404, "Job not found")
+    children = await _load_child_jobs(db, job_id)
+    return {"children": await _serialize_job_details(db, children)}
 
 
 @router.get("/{job_id}/events")

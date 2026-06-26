@@ -545,6 +545,146 @@ async def preflight(
     return resolved
 
 
+def _track_summary(track: dict) -> dict:
+    return {
+        "id": track.get("id"),
+        "source": track.get("source"),
+        "language_tag": track.get("language_tag"),
+        "title": track.get("title"),
+        "kind": track.get("kind"),
+        "stream_index": track.get("stream_index"),
+        "tool_track_id": track.get("tool_track_id"),
+        "is_default": track.get("is_default"),
+        "is_forced": track.get("is_forced"),
+        "is_sdh": track.get("is_sdh"),
+        "is_commentary": track.get("is_commentary"),
+        "external_path": track.get("external_path"),
+    }
+
+
+def _audio_summary(stream: dict) -> dict:
+    return {
+        "index": stream.get("index"),
+        "language_tag": stream.get("language_tag"),
+        "title": stream.get("title"),
+        "codec_name": stream.get("codec_name"),
+        "channels": stream.get("channels"),
+        "channel_layout": stream.get("channel_layout"),
+        "tool_track_id": stream.get("tool_track_id"),
+        "is_default": stream.get("is_default"),
+        "is_forced": stream.get("is_forced"),
+        "is_sdh": stream.get("is_sdh"),
+        "is_commentary": stream.get("is_commentary"),
+    }
+
+
+def _selection_counts(plan: dict | None) -> dict | None:
+    if not isinstance(plan, dict):
+        return None
+    before = plan.get("before", {})
+    after = plan.get("after", {})
+    return {
+        "subtitle_tracks_before": len(before.get("tracks", []) or []),
+        "subtitle_tracks_after": len(after.get("tracks", []) or []),
+        "audio_streams_before": len(before.get("audio_streams", []) or []),
+        "audio_streams_after": len(after.get("audio_streams", []) or []),
+    }
+
+
+def _selection_result(operation: str, request: dict, plan: dict | None) -> dict | None:
+    if not isinstance(plan, dict):
+        return None
+
+    before = plan.get("before", {})
+    before_tracks = before.get("tracks", []) or []
+    before_audio = before.get("audio_streams", []) or []
+    track_by_id = {track.get("id"): track for track in before_tracks if track.get("id")}
+    audio_by_index = {
+        stream.get("index"): stream for stream in before_audio if stream.get("index") is not None
+    }
+
+    if operation in ("audio_remove", "subtitle_remove", "track_remove"):
+        removed_track_ids = request.get("track_ids", []) or []
+        removed_audio_indices = request.get("audio_stream_indices", []) or []
+        return {
+            "tracks_removed": [
+                _track_summary(track_by_id[track_id])
+                for track_id in removed_track_ids
+                if track_id in track_by_id
+            ],
+            "audio_removed": [
+                _audio_summary(audio_by_index[index])
+                for index in removed_audio_indices
+                if index in audio_by_index
+            ],
+            "counts": _selection_counts(plan),
+        }
+
+    if operation == "subtitle_embed":
+        embed_ids = request.get("track_ids", []) or []
+        return {
+            "tracks_embedded": [
+                _track_summary(track_by_id[track_id])
+                for track_id in embed_ids
+                if track_id in track_by_id
+            ],
+            "counts": _selection_counts(plan),
+        }
+
+    if operation == "subtitle_metadata":
+        after = plan.get("after", {})
+        after_tracks = {
+            track.get("id"): track for track in (after.get("tracks", []) or []) if track.get("id")
+        }
+        after_audio = {
+            stream.get("index"): stream
+            for stream in (after.get("audio_streams", []) or [])
+            if stream.get("index") is not None
+        }
+        track_edits: list[dict] = []
+        audio_edits: list[dict] = []
+        for edit in request.get("edits", []) or []:
+            if edit.get("stream_type") == "audio" or edit.get("audio_stream_index") is not None:
+                index = edit.get("audio_stream_index", edit.get("stream_index"))
+                before_stream = audio_by_index.get(index, {})
+                after_stream = after_audio.get(index, {})
+                audio_edits.append(
+                    {
+                        "stream_index": index,
+                        "before": _audio_summary(before_stream) if before_stream else None,
+                        "after": _audio_summary(after_stream) if after_stream else None,
+                    }
+                )
+                continue
+            track_id = edit.get("track_id")
+            before_track = track_by_id.get(track_id, {})
+            after_track = after_tracks.get(track_id, {})
+            track_edits.append(
+                {
+                    "track_id": track_id,
+                    "before": _track_summary(before_track) if before_track else None,
+                    "after": _track_summary(after_track) if after_track else None,
+                }
+            )
+        return {
+            "subtitle_edits": track_edits,
+            "audio_edits": audio_edits,
+            "counts": _selection_counts(plan),
+        }
+
+    if operation == "audio_reorder":
+        return {
+            "audio_stream_order_before": [
+                stream.get("index") for stream in before_audio if stream.get("index") is not None
+            ],
+            "audio_stream_order_after": request.get("audio_stream_order", []) or [],
+            "audio_streams": [_audio_summary(stream) for stream in before_audio],
+            "counts": _selection_counts(plan),
+        }
+
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Execution transaction (real binaries required — not executed in CI/sandbox)
 # ---------------------------------------------------------------------------
@@ -553,6 +693,7 @@ async def preflight(
 async def execute_job(db: AsyncSession, job, emit) -> dict:
     """Run a confirmed mutation job end-to-end. Requires ffmpeg/mkvtoolnix."""
     request = json.loads(job.request_json) if job.request_json else {}
+    plan = json.loads(job.plan_json) if job.plan_json else None
     operation = job.operation
     allow_break = request.get("allow_break", False)
     backup_requested = request.get(
@@ -644,6 +785,8 @@ async def execute_job(db: AsyncSession, job, emit) -> dict:
     return {
         "path": str(resolved.path),
         "operation": operation,
+        "request": request,
+        "selection": _selection_result(operation, request, plan),
         "external_removed": external_result,
     }
 

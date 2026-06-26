@@ -7,6 +7,8 @@ export interface JobProgress {
 	children_failed?: number;
 }
 
+export type JobContext = Record<string, unknown> | unknown[] | string | number | boolean | null;
+
 /** Subset of the durable job record we need to re-attach a progress bar. */
 export interface JobSnapshot {
 	job_id: string;
@@ -15,8 +17,8 @@ export interface JobSnapshot {
 	status: string;
 	cancel_requested: boolean;
 	progress: JobProgress | null;
-	result: Record<string, unknown> | null;
-	error?: { type?: string; message?: string } | null;
+	result: JobContext | null;
+	error?: JobContext | null;
 	events_url: string;
 }
 
@@ -53,8 +55,11 @@ export interface JobListItem {
 export interface JobDetail extends JobListItem {
 	payload: Record<string, unknown>;
 	checkpoint: Record<string, unknown> | null;
-	result: Record<string, unknown> | null;
-	error: { type?: string; message?: string } | null;
+	request: JobContext | null;
+	plan: JobContext | null;
+	result: JobContext | null;
+	error: JobContext | null;
+	media_job_id: string | null;
 	attempts: {
 		number: number;
 		status: string;
@@ -79,6 +84,17 @@ export interface JobDetail extends JobListItem {
 		detail: Record<string, unknown> | null;
 		created_at: string | null;
 	}[];
+	children: JobChildDetail[];
+}
+
+export interface JobChildDetail extends JobListItem {
+	payload: Record<string, unknown>;
+	checkpoint: Record<string, unknown> | null;
+	request: JobContext | null;
+	plan: JobContext | null;
+	result: JobContext | null;
+	error: JobContext | null;
+	media_job_id: string | null;
 }
 
 export interface ResourcePoolStatus {
@@ -120,6 +136,13 @@ export function getJob(fetchFn: Fetch, jobId: string): Promise<JobSnapshot> {
 /** Fetch the full job detail (attempts, resource reservations, result/error). */
 export function getJobDetail(fetchFn: Fetch, jobId: string): Promise<JobDetail> {
 	return apiGet<JobDetail>(fetchFn, `/jobs/${jobId}`);
+}
+
+export function getJobChildren(
+	fetchFn: Fetch,
+	jobId: string
+): Promise<{ children: JobChildDetail[] }> {
+	return apiGet(fetchFn, `/jobs/${jobId}/children`);
 }
 
 /** List jobs, optionally filtered (e.g. the running children of a batch).

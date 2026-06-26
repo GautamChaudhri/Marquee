@@ -195,6 +195,12 @@ async def create_subtitle_plan(
             status_code=422, detail={"code": "plan_error", "message": str(exc)}
         ) from exc
 
+    await media_job_manager.supersede_planned_media_jobs(
+        db,
+        media_file_id=media_file_id,
+        operation=body.operation,
+    )
+
     expires_at = mutation.now_plus_ttl()
     job = await media_job_manager.create_job(
         db,

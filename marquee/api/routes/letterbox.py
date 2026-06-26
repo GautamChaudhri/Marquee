@@ -19,7 +19,7 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel
-from sqlalchemy import case, exists, func, select, update
+from sqlalchemy import case, exists, func, select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
@@ -944,17 +944,12 @@ async def create_reencode_plan(
         raise _map_reencode_error(exc) from exc
 
     # Supersede any still-pending plan for this file. Re-planning (e.g. tweaking
-    # a setting) creates a fresh job; without this, the old "planned" jobs pile
-    # up and the snapshot can surface a stale one, locking the UI on a plan the
-    # user already moved past.
-    await db.execute(
-        update(MediaJob)
-        .where(
-            MediaJob.operation == "letterbox_reencode",
-            MediaJob.media_file_id == media_file.id,
-            MediaJob.status == "planned",
-        )
-        .values(status="cancelled")
+    # a setting) creates a fresh job; without this, the old paired MediaJob +
+    # generic Job rows pile up and the Projection Room can surface stale plans.
+    await media_job_manager.supersede_planned_media_jobs(
+        db,
+        media_file_id=media_file.id,
+        operation="letterbox_reencode",
     )
 
     expires_at = datetime.now(UTC) + timedelta(hours=2)
