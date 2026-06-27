@@ -648,7 +648,15 @@ def _detail_batch(
             )
             continue
         record.features = detail
-        _, record.contributions = diagnostic_scorer.score(record.features)
+        try:
+            _, record.contributions = diagnostic_scorer.score(record.features)
+        except Exception as exc:
+            logger.warning(
+                "BATCH DETAIL SCORE FAILED | movie=%s | file=%s | %s",
+                ctx.title,
+                ocr_result.image_path.name,
+                exc,
+            )
         record.stage_reached = "gate"
         decision = gate.evaluate_detail(record.features)
         record.gate_decision = "passed" if decision.passed else "gated"
@@ -683,10 +691,17 @@ def _rank(ctx: _BatchMovie, scorer, progress: ProgressCallback | None) -> None:
         return
 
     _emit(progress, ctx, "rank", "start", total=len(ctx.passed))
-    ranked = scorer.rank(ctx.passed)
-    # Stage 6b: group same-design variants into stacks (auto-pick = 1A).
-    if pipeline_settings.STACK_ENABLED:
-        assign_stacks(ranked)
+    try:
+        ranked = scorer.rank(ctx.passed)
+        # Stage 6b: group same-design variants into stacks (auto-pick = 1A).
+        if pipeline_settings.STACK_ENABLED:
+            assign_stacks(ranked)
+    except Exception as exc:
+        ctx.status = "failed"
+        ctx.error = str(exc)
+        logger.warning("BATCH RANK FAILED | movie=%s | %s", ctx.title, exc)
+        _emit(progress, ctx, "rank", "end", survivors=0)
+        return
     ctx.ranked = ranked
     ctx.counts["ranked"] = len(ranked)
     ctx.status = "completed"
