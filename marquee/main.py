@@ -18,7 +18,12 @@ from sqlalchemy import text
 from marquee import __version__
 from marquee.api.auth import require_api_key
 from marquee.config import settings
-from marquee.core.jobs import job_manager
+from marquee.core.jobs import (
+    builtin_handlers,  # noqa: F401 - registers handlers for create_and_run
+    dovi_handlers,  # noqa: F401 - registers dovi analysis handler
+    job_manager,
+    legacy_media,  # noqa: F401 - registers bridge handlers
+)
 from marquee.core.pipeline_config import migrate_legacy_runtime_state
 from marquee.core.rate_limit import RateLimiter
 from marquee.database import _get_engine, _get_session_factory, close_db, init_db
