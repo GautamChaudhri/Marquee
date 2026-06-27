@@ -794,17 +794,17 @@ async def apply_one(
     if not top and not bottom:
         raise HTTPException(status_code=422, detail="No crop to apply (recommendation is 0).")
 
-    job = await job_manager.create(
+    job = await job_manager.create_and_run(
         db,
         job_type="letterbox_apply",
         payload={"movie_id": movie.id, "top": top or 0, "bottom": bottom or 0},
         priority=80,
-        resources={"media_write": 1, **(await _file_lock(db, movie))},
         subject_type="movie",
         subject_id=movie.id,
         max_attempts=1,
+        worker_id="inline-api",
     )
-    return job_summary(job)
+    return {**job_summary(job), **(job.result or {})}
 
 
 @router.post("/apply")
@@ -1040,17 +1040,17 @@ async def delete_reencode_artifact(
 async def remove_one(movie_id: int, db: Annotated[AsyncSession, Depends(get_db)]):
     movie = await _load_movie(db, movie_id)
     await _load_state(db, movie_id)
-    job = await job_manager.create(
+    job = await job_manager.create_and_run(
         db,
         job_type="letterbox_remove",
         payload={"movie_id": movie.id},
         priority=80,
-        resources={"media_write": 1, **(await _file_lock(db, movie))},
         subject_type="movie",
         subject_id=movie.id,
         max_attempts=1,
+        worker_id="inline-api",
     )
-    return job_summary(job)
+    return {**job_summary(job), **(job.result or {})}
 
 
 @router.post("/movies/{movie_id}/ignore")

@@ -1,15 +1,10 @@
 <script lang="ts">
 	import { onDestroy } from 'svelte';
 	import type { WorkerStatus } from '$lib/api/jobs';
-	import StatusDot from './StatusDot.svelte';
 	import { durationH } from '$lib/display';
+	import StatusDot from './StatusDot.svelte';
 
 	let { workers }: { workers: WorkerStatus[] } = $props();
-
-	// Mirrors the backend's JOB_HEARTBEAT_SECONDS default (config.py) — not
-	// exposed via API today, so this is a reasonable fixed multiple of it
-	// rather than a new endpoint just for a staleness threshold.
-	const HEARTBEAT_SECONDS = 10;
 
 	let now = $state(Date.now());
 	const timer = setInterval(() => (now = Date.now()), 1000);
@@ -18,22 +13,34 @@
 	function ageSeconds(heartbeatAt: string): number {
 		return (now - new Date(heartbeatAt).getTime()) / 1000;
 	}
+
+	function roleFor(worker: WorkerStatus, index: number): string {
+		if (worker.id.includes('scheduler')) return 'Scheduler';
+		return index === 0 ? 'Primary Worker' : `Worker ${index + 1}`;
+	}
+
+	function hostFor(worker: WorkerStatus): string {
+		return worker.id.split('-')[0] ?? worker.id;
+	}
+	const hostCount = $derived(new Set(workers.map((worker) => hostFor(worker))).size);
 </script>
 
 <div class="list">
 	{#if workers.length === 0}
-		<p class="empty">No workers registered.</p>
+		<p class="empty">No live workers registered.</p>
+	{:else}
+		<p class="summary">{workers.length} live worker{workers.length === 1 ? '' : 's'} across {hostCount} host{hostCount === 1 ? '' : 's'}.</p>
 	{/if}
-	{#each workers as w (w.id)}
-		{@const age = ageSeconds(w.heartbeat_at)}
-		{@const stale = age > HEARTBEAT_SECONDS * 3}
+	{#each workers as worker, index (worker.id)}
 		<div class="row">
-			<StatusDot tone={stale ? 'bad' : w.status === 'running' ? 'good' : 'muted'} />
-			<span class="id mono">{w.id}</span>
-			<span class="status">{w.status}</span>
-			<span class="chip mono" class:stale>
-				heartbeat {durationH(age)} ago{stale ? ' — stale' : ''}
-			</span>
+			<StatusDot tone={worker.status === 'running' ? 'good' : 'warn'} />
+			<div class="meta">
+				<span class="role">{roleFor(worker, index)}</span>
+				<span class="id mono">{worker.id}</span>
+			</div>
+			<span class="host mono">{hostFor(worker)}</span>
+			<span class="chip">{worker.status}</span>
+			<span class="heartbeat mono">heartbeat {durationH(ageSeconds(worker.heartbeat_at))} ago</span>
 		</div>
 	{/each}
 </div>
@@ -42,47 +49,62 @@
 	.list {
 		display: flex;
 		flex-direction: column;
+		gap: 10px;
 	}
+	.summary,
 	.empty {
 		color: var(--muted);
-		font-size: 13px;
+		font-size: 12px;
 		margin: 0;
-		padding: 8px 0;
 	}
 	.row {
-		display: flex;
+		display: grid;
+		grid-template-columns: auto minmax(0, 1fr) auto auto auto;
 		align-items: center;
 		gap: 10px;
-		padding: 8px 0;
+		padding-bottom: 10px;
 		border-bottom: 1px solid var(--line2);
-		flex-wrap: wrap;
 	}
 	.row:last-child {
 		border-bottom: none;
+		padding-bottom: 0;
+	}
+	.meta {
+		display: flex;
+		flex-direction: column;
+		min-width: 0;
+	}
+	.role {
+		font-size: 12.5px;
+		font-weight: 600;
+		color: var(--text);
 	}
 	.id {
-		font-size: 12.5px;
-		color: var(--text);
-		margin-right: auto;
+		font-size: 11px;
+		color: var(--faint);
+		overflow: hidden;
+		text-overflow: ellipsis;
 	}
-	.status {
-		font-size: 12px;
+	.host,
+	.heartbeat {
+		font-size: 11px;
 		color: var(--muted);
-		text-transform: capitalize;
 	}
 	.chip {
 		padding: 2px 8px;
-		border-radius: 99px;
+		border-radius: 999px;
 		background: var(--panel2);
 		border: 1px solid var(--line);
 		font-size: 11px;
 		color: var(--muted);
-	}
-	.chip.stale {
-		color: var(--bad);
-		border-color: color-mix(in srgb, var(--bad) 30%, transparent);
+		text-transform: capitalize;
 	}
 	.mono {
 		font-family: var(--font-mono);
+	}
+	@media (max-width: 900px) {
+		.row {
+			grid-template-columns: auto minmax(0, 1fr);
+		}
 	}
 </style>

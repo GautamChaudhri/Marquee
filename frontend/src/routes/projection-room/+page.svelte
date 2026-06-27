@@ -12,10 +12,17 @@
 	import WorkerHealthPanel from '$lib/components/WorkerHealthPanel.svelte';
 	import HistoryTable from '$lib/components/HistoryTable.svelte';
 	import SystemMetricsPanel from '$lib/components/SystemMetricsPanel.svelte';
-	import { cancelJob, getJobDetail, getJobMetrics, isTerminal, listJobs } from '$lib/api/jobs';
+	import {
+		cancelJob,
+		getJobDetail,
+		getJobMetrics,
+		isTerminal,
+		listJobs,
+		setJobPriority
+	} from '$lib/api/jobs';
 	import type { JobListItem, JobMetrics } from '$lib/api/jobs';
-	import { getMetrics } from '$lib/api/system';
-	import type { SystemMetrics } from '$lib/api/types';
+	import { getMetrics, getMetricsHistory } from '$lib/api/system';
+	import type { SystemMetrics, SystemMetricsHistory } from '$lib/api/types';
 	import { trackJob, type JobProgressDetail } from '$lib/jobs';
 	import type { PageData } from './$types';
 
@@ -142,12 +149,32 @@
 	// ── System tab ───────────────────────────────────────────────────────
 	// svelte-ignore state_referenced_locally
 	let hostMetrics = $state<SystemMetrics | null>(data.hostMetrics);
+	let historyWindow = $state<'15m' | '1h' | '6h' | '24h'>('1h');
+	let hostHistory = $state<SystemMetricsHistory | null>(data.hostHistory);
 	async function refreshHostMetrics() {
 		try {
 			hostMetrics = await getMetrics(fetch);
 		} catch {
 			/* keep stale reading */
 		}
+	}
+
+	async function refreshHostHistory() {
+		try {
+			hostHistory = await getMetricsHistory(fetch, { window: historyWindow });
+		} catch {
+			/* keep stale history */
+		}
+	}
+
+	async function changeHistoryWindow(next: '15m' | '1h' | '6h' | '24h') {
+		historyWindow = next;
+		await refreshHostHistory();
+	}
+
+	async function reprioritize(jobId: string, priority: number) {
+		await setJobPriority(fetch, jobId, priority);
+		await refreshTick();
 	}
 
 	let refreshTimer: ReturnType<typeof setInterval> | null = null;
@@ -165,6 +192,7 @@
 		refreshTimer = setInterval(() => {
 			void refreshTick();
 			void refreshHostMetrics();
+			void refreshHostHistory();
 		}, 4000);
 	});
 
@@ -286,7 +314,7 @@
 					<p class="empty">Nothing waiting.</p>
 				{:else}
 					{#each queuedJobs as job (job.job_id)}
-						<QueuedJobRow {job} resources={jobMetrics.resources} />
+						<QueuedJobRow {job} resources={jobMetrics.resources} onPriorityChange={reprioritize} />
 					{/each}
 				{/if}
 			</div>
@@ -384,7 +412,12 @@
 	{:else if tab === 'system'}
 		<section>
 			{#if hostMetrics}
-				<SystemMetricsPanel metrics={hostMetrics} />
+				<SystemMetricsPanel
+					metrics={hostMetrics}
+					history={hostHistory}
+					window={historyWindow}
+					onWindowChange={changeHistoryWindow}
+				/>
 			{:else}
 				<p class="empty">Host metrics unavailable.</p>
 			{/if}

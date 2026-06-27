@@ -20,7 +20,7 @@ from marquee.models import ArtworkEvent, Job, Movie, PipelineRun
 logger = logging.getLogger(__name__)
 
 
-@register("poster_heal")
+@register("poster_heal", instant=True)
 async def poster_heal(_job: Job) -> dict[str, Any]:
     from marquee.core.heal import heal_scan  # noqa: PLC0415
 
@@ -95,7 +95,7 @@ async def letterbox_detect(job: Job) -> dict[str, Any]:
             raise
 
 
-@register("letterbox_apply")
+@register("letterbox_apply", instant=True)
 async def letterbox_apply(job: Job) -> dict[str, Any]:
     from marquee.core.letterbox_service import letterbox_service  # noqa: PLC0415
 
@@ -115,7 +115,7 @@ async def letterbox_apply(job: Job) -> dict[str, Any]:
         }
 
 
-@register("letterbox_remove")
+@register("letterbox_remove", instant=True)
 async def letterbox_remove(job: Job) -> dict[str, Any]:
     from marquee.core.letterbox_service import letterbox_service  # noqa: PLC0415
 
@@ -128,7 +128,7 @@ async def letterbox_remove(job: Job) -> dict[str, Any]:
         return {"removed": result.removed, "path": result.path}
 
 
-@register("backup_create")
+@register("backup_create", instant=True)
 async def backup_create(_job: Job) -> dict[str, Any]:
     from marquee.core.backup import backup_service  # noqa: PLC0415
 
@@ -407,7 +407,7 @@ async def learned_head_train(_job: Job) -> dict[str, Any]:
     return {"trained": head is not None, **info}
 
 
-@register("pipeline_cache_clear")
+@register("pipeline_cache_clear", instant=True)
 async def pipeline_cache_clear(job: Job) -> dict[str, Any]:
     """Clear the downloaded-poster pipeline cache (never learned-head/taste data)."""
     from marquee.core.pipeline_cache import clear_pipeline_cache  # noqa: PLC0415
@@ -421,7 +421,7 @@ async def pipeline_cache_clear(job: Job) -> dict[str, Any]:
     )
 
 
-@register("poster_deploy_reset")
+@register("poster_deploy_reset", instant=True)
 async def poster_deploy_reset(job: Job) -> dict[str, Any]:
     """Delete every deployed poster and reset movies to missing.
 
@@ -569,7 +569,7 @@ def _copy_library_posters(movies: list[tuple], dest: Path) -> int:
     return count
 
 
-@register("job_retention_purge")
+@register("job_retention_purge", instant=True)
 async def job_retention_purge(_job: Job) -> dict[str, Any]:
     """Delete expired terminal jobs and stale resource / worker rows."""
     from datetime import UTC, datetime, timedelta
@@ -653,7 +653,7 @@ async def job_retention_purge(_job: Job) -> dict[str, Any]:
     }
 
 
-@register("system_metrics_purge")
+@register("system_metrics_purge", instant=True)
 async def system_metrics_purge(_job: Job) -> dict[str, Any]:
     """Delete SystemMetricsSample rows older than METRICS_RETENTION_DAYS.
 

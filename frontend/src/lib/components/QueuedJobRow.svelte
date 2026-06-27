@@ -5,9 +5,18 @@
 	import { displayJobLabel } from '$lib/job-labels';
 	import StatusDot from './StatusDot.svelte';
 
-	let { job, resources }: { job: JobListItem; resources: ResourcePoolStatus[] } = $props();
+	let {
+		job,
+		resources,
+		onPriorityChange
+	}: {
+		job: JobListItem;
+		resources: ResourcePoolStatus[];
+		onPriorityChange?: (jobId: string, priority: number) => Promise<void> | void;
+	} = $props();
 
 	let now = $state(Date.now());
+	let reprioritizing = $state(false);
 	const timer = setInterval(() => (now = Date.now()), 1000);
 	onDestroy(() => clearInterval(timer));
 
@@ -28,6 +37,16 @@
 	const statusTone = $derived(
 		job.status === 'waiting_resource' ? 'warn' : job.status === 'paused' ? 'low' : 'info'
 	);
+
+	async function shiftPriority(delta: number) {
+		if (!onPriorityChange || reprioritizing) return;
+		reprioritizing = true;
+		try {
+			await onPriorityChange(job.job_id, job.priority + delta);
+		} finally {
+			reprioritizing = false;
+		}
+	}
 </script>
 
 <div class="row">
@@ -40,6 +59,10 @@
 	{#if waitingOn}
 		<span class="chip waiting">waiting on {waitingOn}</span>
 	{/if}
+	<div class="priority-controls">
+		<button class="prio-btn" disabled={reprioritizing} onclick={() => shiftPriority(10)}>↑</button>
+		<button class="prio-btn" disabled={reprioritizing} onclick={() => shiftPriority(-10)}>↓</button>
+	</div>
 	<span class="chip mono">priority {job.priority}</span>
 	<span class="chip mono">queued {durationH(waitingSeconds)}</span>
 </div>
@@ -91,6 +114,22 @@
 	.chip.waiting {
 		color: var(--warn);
 		border-color: color-mix(in srgb, var(--warn) 30%, transparent);
+	}
+	.priority-controls {
+		display: inline-flex;
+		gap: 6px;
+	}
+	.prio-btn {
+		width: 28px;
+		height: 24px;
+		border-radius: 8px;
+		border: 1px solid var(--line2);
+		background: var(--panel2);
+		color: var(--text);
+		font-size: 12px;
+	}
+	.prio-btn:disabled {
+		opacity: 0.55;
 	}
 	.mono {
 		font-family: var(--font-mono);

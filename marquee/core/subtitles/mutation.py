@@ -47,6 +47,15 @@ class PreflightError(Exception):
         super().__init__(message)
 
 
+async def _raise_if_cancel_requested(db: AsyncSession, job, *, cleanup_paths: list[Path] | None = None):
+    await db.refresh(job, ["cancel_requested"])
+    if not job.cancel_requested:
+        return
+    for path in cleanup_paths or []:
+        path.unlink(missing_ok=True)
+    raise PreflightError("cancelled", "subtitle mutation cancelled")
+
+
 def _temp_output_path(source: Path, job_id: str) -> Path:
     return source.with_name(f".{source.name}.marquee.{job_id}.partial{source.suffix}")
 
@@ -707,6 +716,7 @@ async def execute_job(db: AsyncSession, job, emit) -> dict:
     source_probe = await asyncio.to_thread(probe.probe_container, resolved.path)
     if source_probe is None:
         raise PreflightError("probe_failed", "could not probe source before mutation")
+    await _raise_if_cancel_requested(db, job)
 
     family = capabilities.container_family(source_probe.container)
     adapter = adapter_for(family)
@@ -715,6 +725,7 @@ async def execute_job(db: AsyncSession, job, emit) -> dict:
     argv, expected_delta, expected_audio_delta, external_removals = await _build_argv(
         db, job, operation, request, source_probe, adapter, out, resolved
     )
+    await _raise_if_cancel_requested(db, job, cleanup_paths=[out])
 
     if argv is not None:
         binary, args = argv
@@ -746,6 +757,7 @@ async def execute_job(db: AsyncSession, job, emit) -> dict:
             )
             out.unlink(missing_ok=True)
             raise PreflightError("remux_failed", stderr_text)
+        await _raise_if_cancel_requested(db, job, cleanup_paths=[out])
 
         await emit(db, job.job_id, "validate", "start")
         result = await asyncio.to_thread(
@@ -758,12 +770,15 @@ async def execute_job(db: AsyncSession, job, emit) -> dict:
         if not result.ok:
             out.unlink(missing_ok=True)
             raise PreflightError("validation_failed", "; ".join(result.problems))
+        await _raise_if_cancel_requested(db, job, cleanup_paths=[out])
 
         if backup_requested:
             await emit(db, job.job_id, "backup", "start")
             await _make_backup(db, job, resolved, emit)
+            await _raise_if_cancel_requested(db, job, cleanup_paths=[out])
 
         await emit(db, job.job_id, "replace", "start")
+        await _raise_if_cancel_requested(db, job, cleanup_paths=[out])
         os.replace(out, resolved.path)
 
     external_result = []

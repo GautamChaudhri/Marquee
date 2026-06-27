@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+import pytest
 from sqlalchemy import select
 
 from marquee.config import settings
 from marquee.core.jobs.manager import job_manager
-from marquee.models import Job, JobEvent, JobResourceReservation
+from marquee.models import Job, JobAttempt, JobEvent, JobResourceReservation
 
 
 async def test_job_claim_reserves_resources_and_persists_attempt(db):
@@ -48,6 +49,47 @@ async def test_cancelling_queued_job_is_terminal(db):
 
     assert cancelled.status == "cancelled"
     assert cancelled.finished_at is not None
+
+
+async def test_create_and_run_completes_inline_job_without_queue(db):
+    job = await job_manager.create_and_run(
+        db,
+        job_type="system_noop",
+        payload={"scope": "inline"},
+        worker_id="inline-test",
+    )
+
+    attempt = (
+        await db.execute(select(JobAttempt).where(JobAttempt.job_id == job.id))
+    ).scalar_one()
+    assert job.status == "succeeded"
+    assert job.started_at is not None
+    assert job.finished_at is not None
+    assert job.result == {"echo": {"scope": "inline"}}
+    assert attempt.worker_id == "inline-test"
+    assert attempt.status == "succeeded"
+
+
+async def test_create_and_run_never_retries_even_for_retryable_types(db, monkeypatch):
+    async def broken(_job):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(
+        "marquee.core.jobs.manager.is_instant",
+        lambda job_type: job_type == "letterbox_detect",
+    )
+    monkeypatch.setattr("marquee.core.jobs.manager.resolve", lambda _job_type: broken)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        await job_manager.create_and_run(db, job_type="letterbox_detect", worker_id="inline-test")
+
+    job = (
+        await db.execute(select(Job).where(Job.type == "letterbox_detect").order_by(Job.created_at.desc()))
+    ).scalars().first()
+    assert job is not None
+    assert job.status == "failed"
+    assert job.attempt_count == 1
+    assert job.scheduled_at is None
 
 
 async def test_resource_conflict_waits_without_double_claim(db):

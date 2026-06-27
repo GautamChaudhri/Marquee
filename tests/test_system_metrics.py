@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 from marquee.core import system_metrics
+from marquee.core.jobs.manager import job_manager
 from marquee.main import app
+from marquee.models import SystemMetricsSample
 
 
 @pytest_asyncio.fixture
@@ -40,18 +44,73 @@ async def test_metrics_gpu_present(db, client: AsyncClient, monkeypatch):
     fake = {
         "model": "NVIDIA GeForce RTX 3070",
         "util": 42,
+        "memUtil": 17,
         "vramUsed": 1_000_000,
         "vramTotal": 8_000_000,
         "temp": 55,
         "power": 120.0,
         "enc": 0,
+        "dec": 11,
     }
     monkeypatch.setattr(system_metrics, "gpu_metrics", lambda: fake)
 
     body = (await client.get("/api/system/metrics")).json()
     assert body["gpu"]["model"] == "NVIDIA GeForce RTX 3070"
     assert body["gpu"]["util"] == 42
+    assert body["gpu"]["dec"] == 11
     assert body["gpu"]["vramTotal"] == 8_000_000
+
+
+@pytest.mark.asyncio
+async def test_metrics_history_returns_points_rates_and_job_overlay(db, client: AsyncClient):
+    now = datetime.now(UTC)
+    db.add_all(
+        [
+            SystemMetricsSample(
+                cpu={"avg": 10},
+                gpu={"util": 20, "memUtil": 5, "enc": 0, "dec": 0},
+                ram={"pct": 35},
+                disk={"readBytes": 1_000, "writeBytes": 2_000},
+                net={"bytesRecv": 4_000, "bytesSent": 5_000},
+                active_jobs=[],
+                created_at=now - timedelta(minutes=3),
+            ),
+            SystemMetricsSample(
+                cpu={"avg": 25},
+                gpu={"util": 35, "memUtil": 9, "enc": 4, "dec": 6},
+                ram={"pct": 41},
+                disk={"readBytes": 4_000, "writeBytes": 8_000},
+                net={"bytesRecv": 10_000, "bytesSent": 8_000},
+                active_jobs=[{"id": "job-1", "type": "system_noop"}],
+                created_at=now - timedelta(minutes=2),
+            ),
+            SystemMetricsSample(
+                cpu={"avg": 40},
+                gpu={"util": 55, "memUtil": 15, "enc": 8, "dec": 12},
+                ram={"pct": 48},
+                disk={"readBytes": 10_000, "writeBytes": 14_000},
+                net={"bytesRecv": 22_000, "bytesSent": 12_000},
+                active_jobs=[{"id": "job-1", "type": "system_noop"}],
+                created_at=now - timedelta(minutes=1),
+            ),
+        ]
+    )
+    job = await job_manager.create(db, job_type="system_noop")
+    job.status = "succeeded"
+    job.started_at = now - timedelta(minutes=2, seconds=30)
+    job.finished_at = now - timedelta(minutes=1, seconds=15)
+    await db.commit()
+
+    resp = await client.get("/api/system/metrics/history", params={"window": "1h", "resolution": 10})
+    assert resp.status_code == 200
+    body = resp.json()
+
+    assert len(body["points"]) == 3
+    assert body["points"][-1]["gpu_dec"] == 12
+    assert body["points"][1]["disk_read_bps"] is not None
+    assert body["points"][1]["net_recv_bps"] is not None
+    assert body["jobs"][0]["job_id"] == job.id
+    assert body["jobs"][0]["label"] == "System Noop"
 
 
 def test_fmt_uptime():

@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
 
 from marquee.config import settings
+from marquee.core.jobs.handlers import is_instant
 from marquee.core.jobs.manager import job_manager
 from marquee.database import _get_session_factory, close_db, init_db
-from marquee.models import JobSchedule
+from marquee.models import Job, JobSchedule
+
+logger = logging.getLogger(__name__)
 
 # Every recurring schedule Marquee knows about.  Whether each is actually
 # enabled is decided per-reconcile from the feature flags below, so toggling a
@@ -98,14 +102,31 @@ async def run() -> None:
                     .all()
                 )
                 for schedule in schedules:
-                    job = await job_manager.create(
-                        db,
-                        job_type=schedule.job_type,
-                        payload={"scheduled": True},
-                        priority=schedule.priority,
-                        idempotency_key=f"{schedule.id}:{schedule.next_run_at.isoformat()}",
-                    )
-                    schedule.last_job_id = job.id
+                    idempotency_key = f"{schedule.id}:{schedule.next_run_at.isoformat()}"
+                    if is_instant(schedule.job_type):
+                        try:
+                            job = await job_manager.create_and_run(
+                                db,
+                                job_type=schedule.job_type,
+                                payload={"scheduled": True},
+                                priority=schedule.priority,
+                                idempotency_key=idempotency_key,
+                                worker_id="inline-scheduler",
+                            )
+                        except Exception:
+                            logger.exception("scheduled instant job %s failed", schedule.job_type)
+                            job = await db.scalar(select(Job).where(Job.idempotency_key == idempotency_key))
+                    else:
+                        job = await job_manager.create(
+                            db,
+                            job_type=schedule.job_type,
+                            payload={"scheduled": True},
+                            priority=schedule.priority,
+                            idempotency_key=idempotency_key,
+                        )
+                    if job is None:
+                        job = await db.scalar(select(Job).where(Job.idempotency_key == idempotency_key))
+                    schedule.last_job_id = job.id if job is not None else None
                     schedule.last_run_at = now
                     schedule.next_run_at = now + timedelta(seconds=schedule.interval_seconds)
                 await db.commit()

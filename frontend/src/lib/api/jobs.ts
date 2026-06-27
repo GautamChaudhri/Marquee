@@ -214,3 +214,11 @@ export function resumeJob(fetchFn: Fetch, jobId: string): Promise<JobListItem> {
 export function retryJob(fetchFn: Fetch, jobId: string): Promise<JobListItem> {
 	return apiSend(fetchFn, 'POST', `/jobs/${jobId}/retry`, {});
 }
+
+export function setJobPriority(
+	fetchFn: Fetch,
+	jobId: string,
+	priority: number
+): Promise<JobListItem> {
+	return apiSend(fetchFn, 'PATCH', `/jobs/${jobId}/priority`, { priority });
+}
