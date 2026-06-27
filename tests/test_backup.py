@@ -238,12 +238,12 @@ async def test_backup_api_endpoints(client, monkeypatch: pytest.MonkeyPatch):
         return Job(
             id="backup-job",
             type=kwargs["job_type"],
-            status="queued",
+            status="succeeded",
             priority=kwargs["priority"],
             payload={},
-            resource_request=kwargs["resources"],
-            max_attempts=3,
-            attempt_count=0,
+            resource_request=kwargs.get("resources") or {},
+            max_attempts=1,
+            attempt_count=1,
             cancel_requested=False,
             pause_requested=False,
             subject_type=kwargs["subject_type"],
@@ -274,7 +274,7 @@ async def test_backup_api_endpoints(client, monkeypatch: pytest.MonkeyPatch):
     async def fake_delete(backup_id: str):
         return backup_id == "20260617-120000"
 
-    monkeypatch.setattr(job_manager, "create", fake_create_job)
+    monkeypatch.setattr(job_manager, "create_and_run", fake_create_job)
     monkeypatch.setattr(backup_service, "list_backups", fake_list)
     monkeypatch.setattr(backup_service, "restore_backup", fake_restore)
     monkeypatch.setattr(backup_service, "delete_backup", fake_delete)

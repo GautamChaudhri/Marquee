@@ -45,6 +45,25 @@ class ReencodePlanError(Exception):
         super().__init__(message)
 
 
+async def _raise_if_cancel_requested(
+    db: AsyncSession,
+    job: MediaJob,
+    *,
+    rpu_task: asyncio.Task | None = None,
+    cleanup_paths: list[Path] | None = None,
+) -> None:
+    await db.refresh(job, ["cancel_requested"])
+    if not job.cancel_requested:
+        return
+    if rpu_task is not None and not rpu_task.done():
+        rpu_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await rpu_task
+    for path in cleanup_paths or []:
+        path.unlink(missing_ok=True)
+    raise ReencodePlanError("cancelled", "letterbox re-encode cancelled")
+
+
 @dataclass
 class SourceVideo:
     codec: str | None
@@ -878,6 +897,7 @@ async def execute_job(db: AsyncSession, job: MediaJob, emit) -> dict:
     source_info = await gated(inspect_source, resolved.path)
     if source_info is None:
         raise ReencodePlanError("probe_failed", "could not inspect source before encoding")
+    await _raise_if_cancel_requested(db, job, cleanup_paths=[out, encoded_out])
 
     # Start DOVI RPU extraction in parallel with the main encode (Fix C).
     # Both operations read the source file; RPU extraction is I/O-bound and
@@ -896,6 +916,7 @@ async def execute_job(db: AsyncSession, job: MediaJob, emit) -> dict:
             name=f"dovi-rpu-{job.job_id}",
         )
         logger.info("DOVI RPU extraction started in parallel for %s", job.job_id)
+    await _raise_if_cancel_requested(db, job, rpu_task=rpu_task, cleanup_paths=[out, encoded_out])
 
     acceleration = plan.get("acceleration") or {}
     acceleration_active = bool(acceleration.get("enabled"))
@@ -948,6 +969,7 @@ async def execute_job(db: AsyncSession, job: MediaJob, emit) -> dict:
             with contextlib.suppress(asyncio.CancelledError):
                 await rpu_task
         raise ReencodePlanError("ffmpeg_failed", diagnostic[:500])
+    await _raise_if_cancel_requested(db, job, rpu_task=rpu_task, cleanup_paths=[out, encoded_out])
 
     dovi_status = plan.get("dovi", {}).get("status", "not_present")
     if dovi_preserve:
@@ -969,12 +991,14 @@ async def execute_job(db: AsyncSession, job: MediaJob, emit) -> dict:
             raise ReencodePlanError("dovi_preservation_failed", str(exc)) from exc
         finally:
             encoded_out.unlink(missing_ok=True)
+    await _raise_if_cancel_requested(db, job, cleanup_paths=[out])
 
     await emit(db, job.job_id, "validate", "start")
     validation = await gated(validate_candidate, resolved.path, out, plan, source_info)
     if validation:
         out.unlink(missing_ok=True)
         raise ReencodePlanError("validation_failed", "; ".join(validation))
+    await _raise_if_cancel_requested(db, job, cleanup_paths=[out])
 
     candidate_stat = out.stat()
     artifact = LetterboxReencodeArtifact(
@@ -1018,7 +1042,14 @@ async def execute_job(db: AsyncSession, job: MediaJob, emit) -> dict:
     }
 
 
-async def _run_checked(binary_name: str, args: list[str], *, timeout: float | None = 3600) -> None:
+async def _run_checked(
+    binary_name: str,
+    args: list[str],
+    *,
+    db: AsyncSession | None = None,
+    job: MediaJob | None = None,
+    timeout: float | None = 3600,
+) -> None:
     proc = await asyncio.create_subprocess_exec(
         binaries.resolve(binary_name) or binary_name,
         *args,
@@ -1027,7 +1058,23 @@ async def _run_checked(binary_name: str, args: list[str], *, timeout: float | No
     )
     await record_child_pid(proc.pid)
     try:
-        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        while proc.returncode is None:
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=1.0)
+            except TimeoutError:
+                if timeout is not None and (loop.time() - started) > timeout:
+                    proc.terminate()
+                    await proc.wait()
+                    raise RuntimeError(f"{binary_name} timed out")
+                if db is not None and job is not None:
+                    await db.refresh(job, ["cancel_requested"])
+                    if job.cancel_requested:
+                        proc.terminate()
+                        await proc.wait()
+                        raise ReencodePlanError("cancelled", "letterbox re-encode cancelled")
+        stderr = await proc.stderr.read() if proc.stderr is not None else b""
     finally:
         await clear_child_pid(proc.pid)
     if proc.returncode != 0:
@@ -1182,8 +1229,6 @@ async def _preserve_dovi(
     for long files) we simply await it here.
     """
     work = encoded_mkv.parent / f".dovi-{job_id}"
-    if work.exists():
-        shutil.rmtree(work)
     work.mkdir(parents=True, exist_ok=True)
     try:
         rpu = work / "RPU.bin"
@@ -1197,10 +1242,12 @@ async def _preserve_dovi(
             "running",
             message="Extracting Dolby Vision RPU from source (1/3)\u2026",
         )
+        await _raise_if_cancel_requested(db, job, rpu_task=rpu_task, cleanup_paths=[final_mkv])
         if rpu_task is not None:
             await rpu_task
         else:
             await _extract_rpu_piped(source_mkv, rpu)
+        await _raise_if_cancel_requested(db, job, cleanup_paths=[final_mkv])
 
         # Step 2: Pipe encoded HEVC → inject RPU (no intermediate file).
         await emit(
@@ -1211,6 +1258,7 @@ async def _preserve_dovi(
             message="Injecting RPU into encoded video (2/3)\u2026",
         )
         await _inject_rpu_piped(encoded_mkv, rpu, injected_hevc)
+        await _raise_if_cancel_requested(db, job, cleanup_paths=[final_mkv, injected_hevc])
 
         # Step 3: Final remux — encoded MKV audio/subs + injected HEVC video.
         await emit(
@@ -1223,6 +1271,8 @@ async def _preserve_dovi(
         await _run_checked(
             "ffmpeg",
             build_dovi_remux_args(encoded_mkv, injected_hevc, final_mkv),
+            db=db,
+            job=job,
             timeout=3600,
         )
     finally:

@@ -11,6 +11,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -46,6 +47,7 @@ _SSE_TIMEOUT_SECONDS = 3600
 # not guessed) — api/routes/system.py's _worker_counts() got this wrong by
 # inventing statuses ("in_progress", "pending") that are never real values.
 _QUEUED_ISH = {"queued", "waiting_resource", "paused", "retry_scheduled"}
+_REORDERABLE = {"planned", "queued", "waiting_resource", "retry_scheduled", "paused"}
 
 
 async def _resolve_subject_titles(
@@ -266,7 +268,7 @@ async def list_jobs(
     "currently queued" isn't one status string, and inventing ad-hoc status
     literals at the call site is exactly the mistake that made
     ``system.py``'s worker counts silently wrong."""
-    query = select(Job).order_by(Job.created_at.desc(), Job.id.desc()).limit(limit + 1)
+    query = select(Job)
     if status:
         query = query.where(Job.status == status)
     if active:
@@ -289,6 +291,11 @@ async def list_jobs(
         query = query.where(Job.created_at >= datetime.fromtimestamp(since, UTC))
     if until:
         query = query.where(Job.created_at <= datetime.fromtimestamp(until, UTC))
+    if queued_only:
+        query = query.order_by(Job.priority.desc(), Job.created_at.asc(), Job.id.asc())
+    else:
+        query = query.order_by(Job.created_at.desc(), Job.id.desc())
+    query = query.limit(limit + 1)
     rows = (await db.execute(query)).scalars().all()
     has_more = len(rows) > limit
     rows = rows[:limit]
@@ -623,6 +630,28 @@ async def resume_job(job_id: str, db: Annotated[AsyncSession, Depends(get_db)]):
     if job is None:
         raise HTTPException(404, "Job not found")
     return job_summary(await job_manager.set_paused(db, job, False))
+
+
+class PriorityUpdateRequest(BaseModel):
+    priority: int
+
+
+@router.patch("/{job_id}/priority")
+async def update_job_priority(
+    job_id: str,
+    body: PriorityUpdateRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    job = await db.get(Job, job_id)
+    if job is None:
+        raise HTTPException(404, "Job not found")
+    if job.status not in _REORDERABLE:
+        raise HTTPException(409, f"Cannot reorder a {job.status} job")
+    job.priority = body.priority
+    await db.commit()
+    await db.refresh(job)
+    titles = await _resolve_subject_titles(db, [job])
+    return job_summary(job, subject_title=titles.get((job.subject_type, job.subject_id)))
 
 
 @router.post("/{job_id}/retry", status_code=202)

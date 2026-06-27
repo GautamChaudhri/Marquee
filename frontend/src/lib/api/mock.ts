@@ -12,6 +12,7 @@ import type {
 	RadarrOverlayResponse,
 	RadarrOverlayStatus,
 	SystemMetrics,
+	SystemMetricsHistory,
 	SubtitleInventory,
 	SubtitleGenerator,
 	SubtitlePolicy,
@@ -205,7 +206,8 @@ export function mockMetrics(): SystemMetrics {
 			vramTotal: 8_589_934_592,
 			temp: 44,
 			power: 62.5,
-			enc: 0
+			enc: 0,
+			dec: 0
 		},
 		ram: { used: 9_000_000_000, total: 25_000_000_000, pct: 36 },
 		disk: {
@@ -218,6 +220,51 @@ export function mockMetrics(): SystemMetrics {
 		net: { bytesSent: 21_400_000_000, bytesRecv: 88_900_000_000 },
 		workers: { active: 1, queued: 2 },
 		uptime: '13h 11m'
+	};
+}
+
+export function mockMetricsHistory(window: '15m' | '1h' | '6h' | '24h' = '1h'): SystemMetricsHistory {
+	const now = Date.now();
+	const seconds = { '15m': 900, '1h': 3600, '6h': 21600, '24h': 86400 }[window];
+	const step = seconds / 30;
+	return {
+		window,
+		start_at: new Date(now - seconds * 1000).toISOString(),
+		end_at: new Date(now).toISOString(),
+		points: Array.from({ length: 30 }, (_, index) => ({
+			ts: new Date(now - (29 - index) * step * 1000).toISOString(),
+			cpu_avg: 20 + ((index * 7) % 35),
+			gpu_util: 10 + ((index * 9) % 40),
+			gpu_mem: 8 + ((index * 5) % 30),
+			gpu_enc: index % 8 === 0 ? 22 : 0,
+			gpu_dec: index % 10 === 0 ? 16 : 0,
+			ram_pct: 34 + ((index * 3) % 12),
+			disk_read_bps: 8_000_000 + ((index * 2_500_000) % 22_000_000),
+			disk_write_bps: 4_000_000 + ((index * 1_700_000) % 18_000_000),
+			net_recv_bps: 1_500_000 + ((index * 350_000) % 6_500_000),
+			net_sent_bps: 600_000 + ((index * 190_000) % 2_000_000),
+			active_jobs: index % 6 === 0 ? 2 : index % 4 === 0 ? 1 : 0
+		})),
+		jobs: [
+			{
+				job_id: 'job-1',
+				type: 'poster_pipeline',
+				label: 'Poster Pipeline',
+				status: 'succeeded',
+				subject: 'Blade Runner 2049',
+				started_at: new Date(now - seconds * 0.72 * 1000).toISOString(),
+				finished_at: new Date(now - seconds * 0.52 * 1000).toISOString()
+			},
+			{
+				job_id: 'job-2',
+				type: 'subtitle_generate',
+				label: 'Subtitle Generation',
+				status: 'running',
+				subject: 'Arrival',
+				started_at: new Date(now - seconds * 0.22 * 1000).toISOString(),
+				finished_at: null
+			}
+		]
 	};
 }
 

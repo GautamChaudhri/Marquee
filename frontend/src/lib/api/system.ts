@@ -1,13 +1,21 @@
 import { env } from '$env/dynamic/public';
 import { apiGet, apiSend, type Fetch } from './client';
-import { mockMetrics } from './mock';
-import type { SystemMetrics } from './types';
+import { mockMetrics, mockMetricsHistory } from './mock';
+import type { SystemMetrics, SystemMetricsHistory } from './types';
 
 const useMocks = () => env.PUBLIC_USE_MOCKS === 'true';
 
 export function getMetrics(fetch: Fetch): Promise<SystemMetrics> {
 	if (useMocks()) return Promise.resolve(mockMetrics());
 	return apiGet<SystemMetrics>(fetch, '/system/metrics');
+}
+
+export function getMetricsHistory(
+	fetch: Fetch,
+	params: { window?: '15m' | '1h' | '6h' | '24h'; resolution?: number } = {}
+): Promise<SystemMetricsHistory> {
+	if (useMocks()) return Promise.resolve(mockMetricsHistory(params.window ?? '1h'));
+	return apiGet<SystemMetricsHistory>(fetch, '/system/metrics/history', params);
 }
 
 export function getStatus(fetch: Fetch): Promise<Record<string, unknown>> {

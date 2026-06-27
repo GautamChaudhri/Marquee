@@ -177,6 +177,10 @@ def gpu_metrics() -> dict[str, Any] | None:
             enc = pynvml.nvmlDeviceGetEncoderUtilization(handle)[0]
         except Exception:  # noqa: BLE001 - encoder stats are optional
             enc = None
+        try:
+            dec = pynvml.nvmlDeviceGetDecoderUtilization(handle)[0]
+        except Exception:  # noqa: BLE001 - decoder stats are optional
+            dec = None
         return {
             "model": name,
             "util": util.gpu,
@@ -186,6 +190,7 @@ def gpu_metrics() -> dict[str, Any] | None:
             "temp": temp,
             "power": round(power, 1) if power is not None else None,
             "enc": enc,
+            "dec": dec,
         }
     except Exception as exc:  # noqa: BLE001 - degrade rather than 500
         logger.debug("NVML query failed: %s", exc)

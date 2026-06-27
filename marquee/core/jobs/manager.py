@@ -13,6 +13,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.config import settings
+from marquee.core.jobs.handlers import is_instant, resolve
 from marquee.models import Job, JobAttempt, JobEvent, JobResource, JobResourceReservation, JobWorker
 
 logger = logging.getLogger(__name__)
@@ -182,6 +183,74 @@ class JobManager:
         await db.commit()
         await db.refresh(parent)
         return parent, jobs
+
+    async def create_and_run(
+        self,
+        db: AsyncSession,
+        *,
+        job_type: str,
+        payload: dict[str, Any] | None = None,
+        priority: int = 50,
+        resources: dict[str, int] | None = None,
+        parent_id: str | None = None,
+        correlation_id: str | None = None,
+        subject_type: str | None = None,
+        subject_id: str | int | None = None,
+        idempotency_key: str | None = None,
+        max_attempts: int = 1,
+        worker_id: str = "inline",
+    ) -> Job:
+        if not is_instant(job_type):
+            raise ValueError(f"{job_type!r} is not registered for instant execution")
+        job = await self.create(
+            db,
+            job_type=job_type,
+            payload=payload,
+            priority=priority,
+            resources=resources,
+            parent_id=parent_id,
+            correlation_id=correlation_id,
+            subject_type=subject_type,
+            subject_id=subject_id,
+            idempotency_key=idempotency_key,
+            status="running",
+            max_attempts=max_attempts,
+            commit=False,
+        )
+        if job.attempt_count > 0 or job.status in TERMINAL:
+            await db.refresh(job)
+            return job
+        now = utcnow()
+        attempt = JobAttempt(
+            job_id=job.id,
+            number=1,
+            worker_id=worker_id,
+            status="running",
+            started_at=now,
+            heartbeat_at=now,
+        )
+        db.add(attempt)
+        job.attempt_count = 1
+        job.claimed_at = now
+        job.started_at = now
+        await db.flush()
+        await self.emit(db, job, state="running", attempt_id=attempt.id)
+        await db.commit()
+
+        handler = resolve(job.type)
+        if handler is None:
+            exc = RuntimeError(f"no handler for {job.type!r}")
+            await self.fail(db, job, attempt, exc, allow_retry=False)
+            raise exc
+        try:
+            timeout = settings.JOB_MAX_RUNTIME_SECONDS
+            result = await asyncio.wait_for(handler(job), timeout=timeout)
+        except Exception as exc:
+            await self.fail(db, job, attempt, exc, allow_retry=False)
+            raise
+        await self.finish(db, job, attempt, result=result or {})
+        await db.refresh(job)
+        return job
 
     async def emit(
         self,
@@ -458,7 +527,15 @@ class JobManager:
         await self._update_parent(db, job.parent_id, child=job)
         await db.commit()
 
-    async def fail(self, db: AsyncSession, job: Job, attempt: JobAttempt, exc: Exception) -> None:
+    async def fail(
+        self,
+        db: AsyncSession,
+        job: Job,
+        attempt: JobAttempt,
+        exc: Exception,
+        *,
+        allow_retry: bool = True,
+    ) -> None:
         now = utcnow()
         error = {"type": type(exc).__name__, "message": str(exc)}
         await self._release(db, attempt.id)
@@ -472,7 +549,7 @@ class JobManager:
         if job.cancel_requested:
             job.status = "cancelled"
             job.finished_at = now
-        elif job.type in RETRYABLE and job.attempt_count < job.max_attempts:
+        elif allow_retry and job.type in RETRYABLE and job.attempt_count < job.max_attempts:
             job.status = "retry_scheduled"
             job.scheduled_at = now + timedelta(
                 seconds=min(600, 30 * (2 ** (job.attempt_count - 1)))

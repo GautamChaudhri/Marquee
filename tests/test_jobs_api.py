@@ -121,6 +121,33 @@ async def test_queued_only_filter_matches_queued_ish_statuses_only(db, client):
     assert running.id not in ids
 
 
+async def test_queued_only_orders_by_priority_and_priority_patch_reorders(db, client):
+    low = await job_manager.create(db, job_type="system_noop", priority=10)
+    high = await job_manager.create(db, job_type="system_noop", priority=90)
+    await db.commit()
+
+    listed = await client.get("/api/jobs", params={"queued_only": "true"})
+    ids = [job["job_id"] for job in listed.json()["jobs"] if job["job_id"] in {low.id, high.id}]
+    assert ids[:2] == [high.id, low.id]
+
+    patched = await client.patch(f"/api/jobs/{low.id}/priority", json={"priority": 100})
+    assert patched.status_code == 200
+    assert patched.json()["priority"] == 100
+
+    reordered = await client.get("/api/jobs", params={"queued_only": "true"})
+    ids = [job["job_id"] for job in reordered.json()["jobs"] if job["job_id"] in {low.id, high.id}]
+    assert ids[:2] == [low.id, high.id]
+
+
+async def test_priority_patch_rejects_non_queued_jobs(db, client):
+    running = await job_manager.create(db, job_type="system_noop")
+    running.status = "running"
+    await db.commit()
+
+    resp = await client.patch(f"/api/jobs/{running.id}/priority", json={"priority": 5})
+    assert resp.status_code == 409
+
+
 async def test_since_until_filters_narrow_by_created_at(db, client):
     old = await job_manager.create(db, job_type="system_noop")
     old.created_at = datetime.now(UTC) - timedelta(days=10)

@@ -423,6 +423,7 @@ export interface SystemMetrics {
 		temp: number;
 		power: number | null;
 		enc: number | null;
+		dec: number | null;
 	} | null;
 	ram: { used: number; total: number; pct: number };
 	disk: {
@@ -435,6 +436,39 @@ export interface SystemMetrics {
 	net: { bytesSent: number | null; bytesRecv: number | null };
 	workers: { active: number; queued: number };
 	uptime: string;
+}
+
+export interface SystemMetricsHistoryPoint {
+	ts: string;
+	cpu_avg: number | null;
+	gpu_util: number | null;
+	gpu_mem: number | null;
+	gpu_enc: number | null;
+	gpu_dec: number | null;
+	ram_pct: number | null;
+	disk_read_bps: number | null;
+	disk_write_bps: number | null;
+	net_recv_bps: number | null;
+	net_sent_bps: number | null;
+	active_jobs: number;
+}
+
+export interface JobTimelineItem {
+	job_id: string;
+	type: string;
+	label: string;
+	status: string;
+	subject: string | null;
+	started_at: string | null;
+	finished_at: string | null;
+}
+
+export interface SystemMetricsHistory {
+	window: string;
+	start_at: string;
+	end_at: string;
+	points: SystemMetricsHistoryPoint[];
+	jobs: JobTimelineItem[];
 }
 
 // ── Background jobs ─────────────────────────────────────────────────────────

@@ -339,13 +339,13 @@ class CacheClearRequest(BaseModel):
     include_archives: bool = False
 
 
-@router.post("/cache/clear", status_code=202)
+@router.post("/cache/clear")
 async def clear_pipeline_cache(
     body: CacheClearRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
     """Clear downloaded-poster pipeline caches. Never touches head/taste data."""
-    job = await job_manager.create(
+    job = await job_manager.create_and_run(
         db,
         job_type="pipeline_cache_clear",
         payload={
@@ -353,15 +353,15 @@ async def clear_pipeline_cache(
             "include_archives": body.include_archives,
         },
         priority=40,
-        resources={"maintenance_exclusive": 1},
         subject_type="pipeline_cache",
         subject_id="default",
         max_attempts=1,
+        worker_id="inline-api",
     )
-    return job_summary(job)
+    return {**job_summary(job), **(job.result or {})}
 
 
-@router.post("/posters/reset", status_code=202)
+@router.post("/posters/reset")
 async def reset_deployed_posters(
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
@@ -372,17 +372,17 @@ async def reset_deployed_posters(
     (keeping the ``data/cache/posters`` copies as restore fallbacks), and
     resets all ``poster_*`` columns so the movies reappear in the Run tab.
     """
-    job = await job_manager.create(
+    job = await job_manager.create_and_run(
         db,
         job_type="poster_deploy_reset",
         payload={},
         priority=30,
-        resources={"maintenance_exclusive": 1, "media_write": 1},
         subject_type="pipeline_posters",
         subject_id="deploy_reset",
         max_attempts=1,
+        worker_id="inline-api",
     )
-    return job_summary(job)
+    return {**job_summary(job), **(job.result or {})}
 
 
 # ---------------------------------------------------------------------------

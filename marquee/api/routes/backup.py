@@ -18,15 +18,15 @@ router = APIRouter(prefix="/api/system", tags=["system"])
 @router.post("/backup")
 async def create_backup(db: Annotated[AsyncSession, Depends(get_db)]):
     """Create a local rollback backup of managed Marquee state."""
-    job = await job_manager.create(
+    job = await job_manager.create_and_run(
         db,
         job_type="backup_create",
         priority=10,
-        resources={"maintenance_exclusive": 1},
         subject_type="backup",
         subject_id="database",
+        worker_id="inline-api",
     )
-    return job_summary(job)
+    return {**job_summary(job), **(job.result or {})}
 
 
 @router.get("/backups")
