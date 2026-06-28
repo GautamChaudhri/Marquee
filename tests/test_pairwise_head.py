@@ -12,8 +12,8 @@ import numpy as np
 import pytest
 
 from marquee.core.pipeline_config import pipeline_settings
-from marquee.ml.head_trainer import build_pairwise_training_data
-from marquee.ml.learned_head import LogisticHead
+from marquee.ml.head_trainer import build_pairwise_training_data, build_pointwise_pseudo_labels
+from marquee.ml.learned_head import LogisticHead, fit_scale_bias
 
 
 def _event(movie_id, favorites, hated, feats, **extra):
@@ -126,3 +126,98 @@ def test_train_pairwise_recovers_ordering():
     hi, _ = head.score({"x": 1.0, "y": 0.0})
     lo, _ = head.score({"x": 0.0, "y": 0.0})
     assert hi > lo
+
+
+def test_pointwise_pseudo_labels_use_favorites_and_hated_only():
+    feats = {
+        "a.jpg": {"x": 1.0, "y": 0.0},  # fav tier 1
+        "b.jpg": {"x": 0.5, "y": 0.0},  # fav tier 2
+        "c.jpg": {"x": 0.2, "y": 0.0},  # indifferent — must be skipped
+        "d.jpg": {"x": 0.0, "y": 0.0},  # hated
+    }
+    rows = [_event(1, [["a.jpg"], ["b.jpg"]], ["d.jpg"], feats)]
+
+    x, y, n_movies = build_pointwise_pseudo_labels(rows, ["x", "y"])
+
+    assert n_movies == 1
+    assert sorted(y.tolist()) == [0.0, 1.0, 1.0]  # a, b -> 1; d -> 0; c skipped
+    assert x.shape == (3, 2)
+
+
+def test_pointwise_pseudo_labels_require_every_requested_feature():
+    feats = {
+        "a.jpg": {"x": 1.0, "y": 5.0},  # favorite, has both features
+        "b.jpg": {"x": 0.0},  # hated, missing "y" -> excluded
+    }
+    rows = [_event(1, [["a.jpg"]], ["b.jpg"], feats)]
+
+    x, y, n_movies = build_pointwise_pseudo_labels(rows, ["x", "y"])
+
+    assert n_movies == 1
+    assert y.tolist() == [1.0]
+    assert x.shape == (1, 2)
+
+
+def test_fit_scale_bias_recovers_separable_labels():
+    # Raw scores clearly separated by label -> calibration should produce a
+    # positive scale and put the decision boundary near the midpoint.
+    raw_scores = np.array([-6.0, -5.0, -4.5, 4.5, 5.0, 6.0])
+    labels = np.array([0.0, 0.0, 0.0, 1.0, 1.0, 1.0])
+
+    scale, bias = fit_scale_bias(raw_scores, labels)
+
+    assert scale > 0
+    probabilities = 1.0 / (1.0 + np.exp(-(scale * raw_scores + bias)))
+    assert np.all(probabilities[labels == 1.0] > 0.5)
+    assert np.all(probabilities[labels == 0.0] < 0.5)
+
+
+def test_fit_scale_bias_degenerate_labels_do_not_invert_score():
+    # Labels uncorrelated with (actually inverted vs.) the raw scores: the
+    # fit may legitimately come back with scale <= 0 — callers must guard
+    # against applying it, never assume a positive scale.
+    raw_scores = np.array([-3.0, -2.0, -1.0, 1.0, 2.0, 3.0])
+    labels = np.array([1.0, 1.0, 1.0, 0.0, 0.0, 0.0])
+
+    scale, _bias = fit_scale_bias(raw_scores, labels)
+
+    assert scale <= 0
+
+
+def test_train_pairwise_then_calibrate_fixes_saturation_without_reordering():
+    # Mirrors the live bug: large-magnitude pairwise weights (diffs are small
+    # per pair, so the optimizer needs big coefficients to separate them)
+    # saturate sigmoid(x.w + 0) for every candidate at ~0.999+.
+    rng_diffs = np.array([[0.2], [0.15], [0.25], [0.1], [0.3]] * 4)
+    weights = np.ones(len(rng_diffs))
+    raw_head = LogisticHead.train_pairwise(rng_diffs, weights, ["knn_sim"], l2=0.01)
+    assert raw_head.bias == 0.0
+    assert abs(raw_head.weights[0]) > 5  # reproduces the live artifact's magnitude
+
+    # Uncalibrated: a clearly-better and a clearly-worse candidate score much
+    # closer together than after calibration — the saturation that, with the
+    # full ~13-feature live artifact, compresses every candidate near 1.0.
+    good_raw, _ = raw_head.score({"knn_sim": 0.9})
+    bad_raw, _ = raw_head.score({"knn_sim": 0.1})
+    uncalibrated_gap = good_raw - bad_raw
+
+    favorites_data = {f"fav{i}.jpg": {"knn_sim": 0.85 + i * 0.01} for i in range(8)}
+    hated_data = {f"hate{i}.jpg": {"knn_sim": 0.15 - i * 0.01} for i in range(8)}
+    feats = {**favorites_data, **hated_data}
+    rows = [_event(1, [list(favorites_data.keys())], list(hated_data.keys()), feats)]
+    calib_x, calib_y, _ = build_pointwise_pseudo_labels(rows, raw_head.feature_names)
+    scale, bias = fit_scale_bias(calib_x @ raw_head.weights, calib_y)
+    assert scale > 0
+    calibrated = raw_head.calibrated(scale, bias)
+
+    good_score, _ = calibrated.score({"knn_sim": 0.9})
+    bad_score, _ = calibrated.score({"knn_sim": 0.1})
+    mid_score, _ = calibrated.score({"knn_sim": 0.5})
+
+    # Calibration recovers a real spread instead of saturated near-1.0 ties.
+    calibrated_gap = good_score - bad_score
+    assert calibrated_gap > uncalibrated_gap
+    assert calibrated_gap > 0.3
+    assert bad_score < mid_score < good_score
+    # Ordering from the original RankNet objective is preserved.
+    assert good_score > bad_score

@@ -5,10 +5,13 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
+import pytest
+
 import marquee.pipeline.batch_runner as batch_runner
-from marquee.pipeline.batch_runner import _BatchMovie, _detail_batch, _rank
+from marquee.core.poster_sources.tmdb import PosterCandidate
+from marquee.pipeline.batch_runner import _BatchMovie, _detail_batch, _download_phase, _rank
 from marquee.pipeline.gate import PosterGate
-from marquee.pipeline.runner import FetchOutcome
+from marquee.pipeline.runner import FetchOutcome, ProgressEvent
 from marquee.pipeline.types import CandidateScore, FeatureVector, OCRCandidateResult
 
 
@@ -157,3 +160,135 @@ def test_detail_batch_score_failure_is_isolated_to_one_candidate(
     assert bad_record.stage_reached == "gate"
     assert bad_record.contributions == {}
     assert bad_record in bad_ctx.passed
+
+
+class _FakeResponse:
+    content = b"fake-poster-bytes"
+
+    def raise_for_status(self) -> None:
+        return None
+
+
+class _FakeAsyncClient:
+    """Stands in for httpx.AsyncClient so downloads never hit the network."""
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        pass
+
+    async def __aenter__(self) -> _FakeAsyncClient:
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        return None
+
+    async def get(self, url: str) -> _FakeResponse:
+        return _FakeResponse()
+
+
+def _poster_candidate(file_path: str) -> PosterCandidate:
+    return PosterCandidate(
+        file_path=file_path,
+        width=2000,
+        height=3000,
+        aspect_ratio=0.67,
+        language="en",
+        vote_average=5.0,
+        vote_count=10,
+    )
+
+
+def _download_ctx(tmp_path: Path, movie_id: int, title: str, n_candidates: int) -> _BatchMovie:
+    originals_dir = tmp_path / title / "0-originals"
+    originals_dir.mkdir(parents=True)
+    candidates = [_poster_candidate(f"/{title}-{i}.jpg") for i in range(n_candidates)]
+    candidate_map = {batch_runner._candidate_filename(c): c for c in candidates}
+    records = {
+        name: CandidateScore(image_path=originals_dir / name, orig_filename=name)
+        for name in candidate_map
+    }
+    ctx = _BatchMovie(
+        run_id=f"run-{movie_id}",
+        movie_id=movie_id,
+        title=title,
+        tmdb_id=movie_id,
+        out_dir=tmp_path / title,
+        originals_dir=originals_dir,
+        started_at="2026-06-28T00:00:00Z",
+        start_perf=time.perf_counter(),
+        index=movie_id,
+        total=1,
+    )
+    ctx.fetch = FetchOutcome(
+        candidate_map=candidate_map,
+        records=records,
+        resolution_by_name={},
+        all_files=[],
+        primary_name=None,
+        counts={
+            "posters_found": n_candidates,
+            "downloaded": 0,
+            "skipped": 0,
+            "errors": 0,
+            "metadata_gated": 0,
+        },
+    )
+    ctx._downloadable = candidates
+    return ctx
+
+
+async def test_download_phase_emits_global_progress_ticks_during_downloads(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(batch_runner.httpx, "AsyncClient", _FakeAsyncClient)
+
+    ctx_a = _download_ctx(tmp_path, 1, "movie_a", 3)
+    ctx_b = _download_ctx(tmp_path, 2, "movie_b", 2)
+    ctx_empty = _download_ctx(tmp_path, 3, "movie_empty", 0)
+
+    events: list[ProgressEvent] = []
+    await _download_phase([ctx_a, ctx_b, ctx_empty], events.append)
+
+    global_events = [e for e in events if e.movie_id is None]
+    assert global_events[0].stage == "fetch"
+    assert global_events[0].state == "start"
+    assert global_events[0].total == 5  # 3 + 2 downloadable candidates; ctx_empty has none
+
+    # A "progress" tick fires per individual download, not just at phase
+    # boundaries — this is what keeps job.progress moving while the real
+    # download work (potentially long) is happening.
+    progress_ticks = [e for e in global_events if e.state == "progress"]
+    assert [t.done for t in progress_ticks] == [1, 2, 3, 4, 5]
+    assert all(t.total == 5 for t in progress_ticks)
+
+    assert global_events[-1].state == "end"
+    assert global_events[-1].survivors == 5
+
+    # Each movie's own "fetch end" fires (not batched to wait on every other
+    # movie), and the empty-candidate movie is finalized without ever
+    # entering the download pool.
+    per_movie_ends = {e.movie_id: e for e in events if e.movie_id is not None and e.state == "end"}
+    assert per_movie_ends.keys() == {1, 2, 3}
+    assert per_movie_ends[1].survivors == 3
+    assert per_movie_ends[2].survivors == 2
+    assert per_movie_ends[3].survivors == 0
+    assert ctx_empty.status == "failed"  # nothing to download -> no poster files
+    assert ctx_a.status != "failed"
+    assert ctx_b.status != "failed"
+
+
+async def test_download_phase_finalizes_movies_that_failed_metadata_fetch(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(batch_runner.httpx, "AsyncClient", _FakeAsyncClient)
+
+    ok_ctx = _download_ctx(tmp_path, 1, "ok_movie", 1)
+    failed_ctx = _download_ctx(tmp_path, 2, "failed_movie", 1)
+    failed_ctx.fetch = None  # simulates a Phase A metadata-fetch exception
+    failed_ctx.status = "failed"
+
+    events: list[ProgressEvent] = []
+    await _download_phase([ok_ctx, failed_ctx], events.append)
+
+    per_movie_ends = {e.movie_id: e for e in events if e.movie_id is not None and e.state == "end"}
+    assert per_movie_ends.keys() == {1, 2}
+    assert per_movie_ends[2].survivors == 0
