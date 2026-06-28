@@ -30,7 +30,7 @@ import numpy as np
 from marquee.config import settings
 from marquee.core.pipeline_config import pipeline_settings
 from marquee.ml import feedback_store
-from marquee.ml.learned_head import LogisticHead
+from marquee.ml.learned_head import LogisticHead, fit_scale_bias
 
 _RUNS_DIR = settings.runs_work_path
 _LEGACY_RUNS_DIRS = (
@@ -196,6 +196,57 @@ def build_pairwise_training_data(
     return diffs, weights, common, len(movies), len(all_pairs)
 
 
+def build_pointwise_pseudo_labels(
+    rows: list[dict],
+    feature_names: list[str],
+) -> tuple[np.ndarray, np.ndarray, int]:
+    """Derive 0/1 pseudo-labels from the same v3 ranking events, for Platt
+    calibration of a pairwise-trained head (see ``LogisticHead.calibrated``).
+
+    A favorite-tier candidate -> 1, a hated candidate -> 0; indifferent
+    candidates are skipped (inferred, not a real preference signal). Only
+    candidates carrying every name in ``feature_names`` are included — every
+    favorite/hated candidate already does, since they're the same candidates
+    ``build_pairwise_training_data`` paired on that same feature set.
+
+    Returns ``(X[N, len(feature_names)], y[N], n_movies)``.
+    """
+    samples: list[tuple[dict, int]] = []
+    movies: set[object] = set()
+
+    for row in rows:
+        if row.get("v") != 3 or row.get("type") != "ranking":
+            continue
+        feats = {
+            c["orig_filename"]: c["normalized_features"]
+            for c in row.get("candidates", [])
+            if c.get("orig_filename") and c.get("normalized_features")
+        }
+        favorites_flat = {name for tier in row.get("favorites") or [] for name in tier}
+        hated = set(row.get("hated") or [])
+
+        row_samples = [
+            (feats[name], 1)
+            for name in favorites_flat
+            if name in feats and all(f in feats[name] for f in feature_names)
+        ] + [
+            (feats[name], 0)
+            for name in hated
+            if name in feats and all(f in feats[name] for f in feature_names)
+        ]
+        if not row_samples:
+            continue
+        movies.add(row.get("movie_id") if row.get("movie_id") is not None else row.get("title"))
+        samples.extend(row_samples)
+
+    if not samples:
+        return np.empty((0, len(feature_names))), np.empty(0), 0
+
+    x = np.asarray([[feat[name] for name in feature_names] for feat, _ in samples], dtype=np.float64)
+    y = np.asarray([label for _, label in samples], dtype=np.float64)
+    return x, y, len(movies)
+
+
 def train_from_labels(
     *,
     runs_dir: Path | None = None,
@@ -234,6 +285,22 @@ def train_from_labels(
             )
             return None, info
         head = LogisticHead.train_pairwise(diffs, weights, names, l2=l2)
+
+        # The RankNet objective above only learns ordering (bias is fixed at
+        # 0.0 — see train_pairwise's docstring), which lets raw scores
+        # saturate sigmoid() for every candidate. Calibrate scale+bias against
+        # the same events' favorite/hated candidates as pointwise 0/1 labels
+        # so the absolute score is meaningful too, without touching the order.
+        calib_x, calib_y, _ = build_pointwise_pseudo_labels(rows, head.feature_names)
+        info["calibrated"] = False
+        if len(calib_y) >= 10 and len(np.unique(calib_y)) == 2:
+            raw_scores = calib_x @ head.weights
+            scale, bias = fit_scale_bias(raw_scores, calib_y)
+            if scale > 0:
+                head = head.calibrated(scale, bias)
+                info["calibrated"] = True
+                info["n_calibration_samples"] = int(len(calib_y))
+
         info["activated"] = True
         info["train_accuracy"] = head.train_accuracy
         info["features"] = names

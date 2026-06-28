@@ -20,6 +20,7 @@ Implementation notes:
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -43,6 +44,48 @@ logger = logging.getLogger(__name__)
 
 def _sigmoid(z: np.ndarray) -> np.ndarray:
     return 1.0 / (1.0 + np.exp(-np.clip(z, -30, 30)))
+
+
+def fit_scale_bias(
+    raw_scores: np.ndarray,
+    labels: np.ndarray,
+    *,
+    learning_rate: float = 0.5,
+    max_iterations: int = 5000,
+    tolerance: float = 1e-9,
+) -> tuple[float, float]:
+    """Platt-scale raw RankNet scores (``x·w``) against true 0/1 labels.
+
+    Fits ``a, b`` so ``sigmoid(a*s + b)`` matches the labels' actual
+    distribution, instead of letting an uncalibrated ``sigmoid(s)`` saturate
+    when ``s`` runs large (which is exactly what a pairwise-trained head with
+    no bias term produces — see ``LogisticHead.train_pairwise``). ``a`` is
+    initialized scaled to the data so convergence doesn't depend on how large
+    the raw scores happen to be.
+    """
+    s = np.asarray(raw_scores, dtype=np.float64)
+    y = np.asarray(labels, dtype=np.float64)
+    spread = float(s.std())
+    a = 1.0 / spread if spread > 1e-9 else 1.0
+    b = 0.0
+    previous_loss = np.inf
+    for _ in range(max_iterations):
+        probabilities = _sigmoid(a * s + b)
+        error = probabilities - y
+        grad_a = float((error * s).mean())
+        grad_b = float(error.mean())
+        a -= learning_rate * grad_a
+        b -= learning_rate * grad_b
+
+        loss = float(
+            -np.mean(
+                y * np.log(probabilities + 1e-12) + (1 - y) * np.log(1 - probabilities + 1e-12)
+            )
+        )
+        if abs(previous_loss - loss) < tolerance:
+            break
+        previous_loss = loss
+    return a, b
 
 
 @dataclass
@@ -183,6 +226,22 @@ class LogisticHead:
             train_accuracy=agreement,
             trained_at=datetime.now(UTC).isoformat(),
         )
+
+    # ------------------------------------------------------------------
+    # Calibration
+    # ------------------------------------------------------------------
+
+    def calibrated(self, scale: float, bias: float) -> LogisticHead:
+        """Return a copy with ``weights`` rescaled and ``bias`` replaced.
+
+        ``scale`` must be positive: a positive rescale of ``x·w`` cannot
+        change which of two candidates scores higher, so this can only
+        recalibrate the absolute probability — never the ranking that
+        ``train_pairwise()`` already learned.
+        """
+        if scale <= 0:
+            raise ValueError("calibration scale must be positive")
+        return dataclasses.replace(self, weights=self.weights * scale, bias=float(bias))
 
     # ------------------------------------------------------------------
     # Inference

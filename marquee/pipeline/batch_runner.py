@@ -119,6 +119,104 @@ class _BatchMovie:
         return time.perf_counter() - self.start_perf
 
 
+async def _download_phase(
+    contexts: list[_BatchMovie],
+    progress: ProgressCallback | None,
+) -> None:
+    """Download every metadata-gated candidate across the whole batch under
+    one shared semaphore (cross-movie interleaving — design 18 §8), emitting
+    a global progress tick per download and a per-movie "fetch end" as soon
+    as that movie's own downloads finish.
+
+    Without the global tick, ``job.progress`` freezes for the entire download
+    phase: the per-movie "fetch start"/"end" events fire all-at-once at each
+    end of the phase (start when metadata gating finishes, end only once
+    every movie's downloads are done), so nothing updates in between even
+    though real download work is happening for a while.
+    """
+    download_items: list[tuple[_BatchMovie, PosterCandidate]] = []
+    for ctx in contexts:
+        if ctx.fetch is None:
+            continue
+        for candidate in ctx._downloadable:
+            download_items.append((ctx, candidate))
+
+    def _finalize_fetch(ctx: _BatchMovie) -> None:
+        cached = {path.name: path for path in _root_images(ctx.originals_dir)}
+        ctx.fetch.all_files = sorted(cached[fn] for fn in ctx.fetch.candidate_map if fn in cached)
+        if not ctx.fetch.all_files:
+            ctx.status = "failed"
+            ctx.error = "No poster files were downloaded or found in the cache"
+        _emit(progress, ctx, "fetch", "end", survivors=len(ctx.fetch.all_files))
+
+    total_downloads = len(download_items)
+    downloads_done = 0
+    downloads_errored = 0
+    _emit_global(progress, "fetch", "start", total=total_downloads)
+
+    if download_items:
+        by_movie: dict[int, list[PosterCandidate]] = defaultdict(list)
+        ctx_by_key: dict[int, _BatchMovie] = {}
+        for ctx, candidate in download_items:
+            by_movie[id(ctx)].append(candidate)
+            ctx_by_key[id(ctx)] = ctx
+
+        async with httpx.AsyncClient(timeout=60.0) as client:
+
+            async def _dl(ctx: _BatchMovie, candidate: PosterCandidate) -> None:
+                nonlocal downloads_done, downloads_errored
+                dest = ctx.originals_dir / _candidate_filename(candidate)
+                if dest.exists():
+                    ctx.fetch.counts["skipped"] += 1
+                else:
+                    async with _BATCH_DOWNLOAD_SEMAPHORE:
+                        try:
+                            response = await client.get(
+                                candidate.url(size=pipeline_settings.TMDB_POSTER_SIZE)
+                            )
+                            response.raise_for_status()
+                            dest.write_bytes(response.content)
+                            ctx.fetch.counts["downloaded"] += 1
+                        except Exception as exc:
+                            filename = _candidate_filename(candidate)
+                            ctx.fetch.counts["errors"] += 1
+                            downloads_errored += 1
+                            ctx.fetch.records[filename].rejection_reason = f"download_error: {exc}"
+                            logger.error(
+                                "BATCH DOWNLOAD ERROR | movie=%s | file=%s | %s",
+                                ctx.title,
+                                filename,
+                                exc,
+                            )
+                downloads_done += 1
+                _emit_global(progress, "fetch", "progress", done=downloads_done, total=total_downloads)
+
+            async def _download_movie(ctx: _BatchMovie, candidates: list[PosterCandidate]) -> None:
+                # Each movie's "fetch end" fires as soon as ITS OWN downloads
+                # finish, not after the entire cross-movie pool — every _dl()
+                # call still draws from the same shared semaphore, so overall
+                # interleaving/throughput across movies is unchanged.
+                await asyncio.gather(*[_dl(ctx, c) for c in candidates])
+                _finalize_fetch(ctx)
+
+            await asyncio.gather(
+                *(_download_movie(ctx_by_key[key], cands) for key, cands in by_movie.items())
+            )
+
+    _emit_global(progress, "fetch", "end", survivors=total_downloads - downloads_errored)
+
+    # Movies that failed metadata fetch (Phase A) or had nothing to download
+    # never pass through the per-movie download group above — finalize them
+    # immediately instead of leaving their "fetch" stage dangling.
+    for ctx in contexts:
+        if ctx.status == "cancelled":
+            continue
+        if ctx.fetch is None:
+            _emit(progress, ctx, "fetch", "end", survivors=0)
+        elif not ctx._downloadable:
+            _finalize_fetch(ctx)
+
+
 # ---------------------------------------------------------------------------
 # Public async entry
 # ---------------------------------------------------------------------------
@@ -249,58 +347,7 @@ async def run_batch(
     # ── Phase B: cross-movie parallel download pool ─────────────────────
     # (design 18 §8 — all surviving posters across all movies interleave
     # under one semaphore so downloads from multiple movies overlap)
-    download_items: list[tuple[_BatchMovie, PosterCandidate]] = []
-    for ctx in contexts:
-        if ctx.fetch is None:
-            continue
-        for candidate in ctx._downloadable:
-            download_items.append((ctx, candidate))
-
-    if download_items:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-
-            async def _dl(ctx: _BatchMovie, candidate: PosterCandidate) -> None:
-                dest = ctx.originals_dir / _candidate_filename(candidate)
-                if dest.exists():
-                    ctx.fetch.counts["skipped"] += 1
-                    return
-                async with _BATCH_DOWNLOAD_SEMAPHORE:
-                    try:
-                        response = await client.get(
-                            candidate.url(size=pipeline_settings.TMDB_POSTER_SIZE)
-                        )
-                        response.raise_for_status()
-                        dest.write_bytes(response.content)
-                        ctx.fetch.counts["downloaded"] += 1
-                    except Exception as exc:
-                        filename = _candidate_filename(candidate)
-                        ctx.fetch.counts["errors"] += 1
-                        ctx.fetch.records[filename].rejection_reason = f"download_error: {exc}"
-                        logger.error(
-                            "BATCH DOWNLOAD ERROR | movie=%s | file=%s | %s",
-                            ctx.title,
-                            filename,
-                            exc,
-                        )
-
-            await asyncio.gather(*[_dl(ctx, c) for ctx, c in download_items])
-
-        # Build all_files per movie from what's actually on disk.
-        for ctx in contexts:
-            if ctx.fetch is None:
-                continue
-            cached = {path.name: path for path in _root_images(ctx.originals_dir)}
-            ctx.fetch.all_files = sorted(
-                cached[fn] for fn in ctx.fetch.candidate_map if fn in cached
-            )
-            if not ctx.fetch.all_files:
-                ctx.status = "failed"
-                ctx.error = "No poster files were downloaded or found in the cache"
-
-    for ctx in contexts:
-        if ctx.status == "cancelled":
-            continue
-        _emit(progress, ctx, "fetch", "end", survivors=len(ctx.fetch.all_files) if ctx.fetch else 0)
+    await _download_phase(contexts, progress)
 
     live = [c for c in contexts if c.fetch is not None]
 
