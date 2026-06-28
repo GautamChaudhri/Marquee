@@ -2,6 +2,7 @@ import type { PageLoad } from './$types';
 import { getPipelineConfig } from '$lib/api/config';
 import { getSettings } from '$lib/api/system';
 import type { PipelineConfig } from '$lib/api/config';
+import type { RuntimeSettings } from '$lib/api/types';
 
 export const load: PageLoad = async ({ fetch }) => {
 	try {
@@ -13,7 +14,7 @@ export const load: PageLoad = async ({ fetch }) => {
 	} catch (e) {
 		return {
 			config: null as PipelineConfig | null,
-			settings: null as any,
+			settings: null as RuntimeSettings | null,
 			error: e instanceof Error ? e.message : 'Failed to load settings'
 		};
 	}

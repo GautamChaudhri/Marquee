@@ -3,6 +3,7 @@
 	import SectionHeader from '$lib/components/SectionHeader.svelte';
 	import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
 	import { getPipelineConfig, putPipelineConfig, resetDeployedPosters } from '$lib/api/config';
+	import { clearOcrLabels } from '$lib/api/pipeline';
 	import type { KnobGroup, PipelineConfig } from '$lib/api/config';
 	import { toast } from '$lib/toast';
 	import SubtitleSettings from '$lib/components/subtitles/SubtitleSettings.svelte';
@@ -18,6 +19,8 @@
 	let resetDialogOpen = $state(false);
 	let resetBusy = $state(false);
 	let masterResetConfirm = $state(false);
+	let clearOcrDialogOpen = $state(false);
+	let clearOcrBusy = $state(false);
 
 	// ── Derived ──────────────────────────────────────────────────────
 	let currentValues = $derived({ ...config?.values, ...dirty });
@@ -110,6 +113,24 @@
 		} finally {
 			resetBusy = false;
 			resetDialogOpen = false;
+		}
+	}
+
+	async function handleClearOcrLabels() {
+		clearOcrBusy = true;
+		try {
+			const result = await clearOcrLabels(fetch);
+			toast(
+				`Cleared ${result.deleted_capture_dirs} OCR label capture${
+					result.deleted_capture_dirs === 1 ? '' : 's'
+				}`,
+				'good'
+			);
+		} catch (e) {
+			toast(e instanceof Error ? e.message : 'Clear failed', 'bad');
+		} finally {
+			clearOcrBusy = false;
+			clearOcrDialogOpen = false;
 		}
 	}
 </script>
@@ -288,6 +309,21 @@
 					Delete all deployed posters
 				</button>
 			</div>
+			{#if data.settings?.app?.debug}
+				<div class="danger-card">
+					<div class="danger-info">
+						<span class="danger-label">Clear OCR label captures</span>
+						<span class="danger-desc">
+							Deletes every debug-only OCR false-positive and false-negative capture under
+							<code>data/debug/ocr-labels</code>. This does not touch pipeline run archives, movie
+							posters, or taste-profile data.
+						</span>
+					</div>
+					<button class="danger-btn" onclick={() => (clearOcrDialogOpen = true)}>
+						Clear OCR label captures
+					</button>
+				</div>
+			{/if}
 		</div>
 		{/if}
 
@@ -312,6 +348,17 @@
 			tone="bad"
 			onConfirm={resetAllToDefaults}
 			onCancel={() => (masterResetConfirm = false)}
+		/>
+		<ConfirmDialog
+			open={clearOcrDialogOpen}
+			title="Clear OCR label captures?"
+			message="This deletes every debug OCR label capture under data/debug/ocr-labels. It does not affect pipeline archives, deployed posters, or taste-profile data."
+			confirmLabel="Clear OCR captures"
+			cancelLabel="Cancel"
+			tone="bad"
+			busy={clearOcrBusy}
+			onConfirm={handleClearOcrLabels}
+			onCancel={() => (clearOcrDialogOpen = false)}
 		/>
 	{:else}
 		<div class="loading">Loading settings…</div>

@@ -1,7 +1,7 @@
 import { env } from '$env/dynamic/public';
 import { apiGet, apiSend, type Fetch } from './client';
 import { mockMetrics, mockMetricsHistory } from './mock';
-import type { SystemMetrics, SystemMetricsHistory } from './types';
+import type { RuntimeSettings, SystemMetrics, SystemMetricsHistory } from './types';
 
 const useMocks = () => env.PUBLIC_USE_MOCKS === 'true';
 
@@ -22,9 +22,22 @@ export function getStatus(fetch: Fetch): Promise<Record<string, unknown>> {
 	return apiGet<Record<string, unknown>>(fetch, '/system/status');
 }
 
-export function getSettings(fetch: Fetch): Promise<any> {
+export function getSettings(fetch: Fetch): Promise<RuntimeSettings> {
 	if (useMocks()) {
 		return Promise.resolve({
+			app: {
+				name: 'Marquee',
+				host: '0.0.0.0',
+				port: 3165,
+				debug: true,
+				log_level: 'INFO',
+				log_format: 'text',
+				cors_origins: ['http://localhost:5173'],
+				auth: {
+					api_key_configured: false,
+					allow_local: true
+				}
+			},
 			subtitles: {
 				enabled: true,
 				scan_concurrency: 2,
@@ -51,10 +64,15 @@ export function getSettings(fetch: Fetch): Promise<any> {
 					model_label: 'medium',
 					mode: 'transcribe'
 				}
-			}
+			},
+			paths: {},
+			sync: {},
+			letterbox: {},
+			poster_formats: {},
+			writable: true
 		});
 	}
-	return apiGet<any>(fetch, '/settings');
+	return apiGet<RuntimeSettings>(fetch, '/settings');
 }
 
 export function putSettings(fetch: Fetch, payload: any): Promise<any> {

@@ -321,6 +321,10 @@ app.include_router(subtitle_policies_router)
 app.include_router(subtitle_generators_router)
 app.include_router(test_pipeline_router)
 app.include_router(webhooks_router)
+if settings.DEBUG:
+    from marquee.api.routes.dev_ocr_labels import router as dev_ocr_labels_router  # noqa: E402
+
+    app.include_router(dev_ocr_labels_router)
 
 
 # ---------------------------------------------------------------------------

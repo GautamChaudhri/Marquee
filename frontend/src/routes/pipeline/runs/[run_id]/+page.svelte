@@ -10,7 +10,12 @@
 	import PosterRankingPanel from '$lib/components/PosterRankingPanel.svelte';
 	import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
 	import Icon from '$lib/components/Icon.svelte';
-	import { getRunResults } from '$lib/api/pipeline';
+	import {
+		getRunResults,
+		markOcrFalseNegative,
+		markOcrFalsePositive
+	} from '$lib/api/pipeline';
+	import { ApiError } from '$lib/api/client';
 	import { submitFeedback, undoFeedback } from '$lib/api/feedback';
 	import { trackJob, type JobProgressDetail } from '$lib/jobs';
 	import { toast } from '$lib/toast';
@@ -35,6 +40,46 @@
 	const results = $derived(run && 'ranked' in run ? (run as RunResults) : null);
 	const running = $derived(run != null && !('ranked' in run));
 	const autoPick = $derived(results?.auto_pick ?? null);
+	const debugMode = $derived(Boolean(data.debugMode));
+	const tileSelectable = $derived(Boolean(debugMode || !results?.reviewed));
+	const REQUIRED_OCR_SNAPSHOT_KEYS = [
+		'device',
+		'workers',
+		'detail_passes',
+		'max_residual_boxes',
+		'max_residual_area_fraction',
+		'mode',
+		'require_title',
+		'accept_no_text_fallback',
+		'allow_title',
+		'allow_director',
+		'allow_studio',
+		'allow_rating',
+		'allow_tagline',
+		'confidence_threshold',
+		'strip_confidence_threshold',
+		'bottom_confidence_threshold',
+		'fuzzy_cutoff',
+		'title_proximity_pixels',
+		'residual_significant_area_fraction',
+		'residual_significant_width_fraction',
+		'enhance_retry'
+	] as const;
+	const hasFullOcrSnapshot = $derived.by(() => {
+		const ocr = results?.config_snapshot?.ocr;
+		if (!ocr || typeof ocr !== 'object') return false;
+		return REQUIRED_OCR_SNAPSHOT_KEYS.every((key) => key in (ocr as Record<string, unknown>));
+	});
+	const canCaptureOcrLabels = $derived(debugMode && hasFullOcrSnapshot);
+	const initialOcrLabels = data.ocrLabelState?.labels ?? {
+		false_positive: [],
+		false_negative: []
+	};
+	let ocrLabelState = $state({
+		false_positive: [...initialOcrLabels.false_positive],
+		false_negative: [...initialOcrLabels.false_negative]
+	});
+	const falsePositiveSet = $derived(new Set(ocrLabelState.false_positive));
 
 	const SHORT: Record<string, string> = {
 		sha256: 'SHA-256',
@@ -70,18 +115,19 @@
 		if (stackMethod === 'robust') return r; // default — no change needed
 
 		// Build groups keyed by stack_id.
-		const groups = new Map<number, CandidateView[]>();
+		const groups: Record<number, CandidateView[]> = {};
 		for (const c of r) {
 			if (c.stack_id == null) continue;
-			const g = groups.get(c.stack_id) ?? [];
+			const g = groups[c.stack_id] ?? [];
 			g.push(c);
-			groups.set(c.stack_id, g);
+			groups[c.stack_id] = g;
 		}
-		if (groups.size === 0) return r;
+		const groupEntries = Object.entries(groups);
+		if (groupEntries.length === 0) return r;
 
 		// Compute aggregate score per group using the selected method.
 		const scored: { id: number; score: number; members: CandidateView[] }[] = [];
-		for (const [id, members] of groups) {
+		for (const [id, members] of groupEntries) {
 			const scores = members.map((c) => c.final_score ?? 0).sort((a, b) => b - a);
 			let agg: number;
 			if (stackMethod === 'max') {
@@ -90,7 +136,7 @@
 				// mean
 				agg = scores.reduce((a, b) => a + b, 0) / scores.length;
 			}
-			scored.push({ id, score: agg, members });
+			scored.push({ id: Number(id), score: agg, members });
 		}
 		// Sort groups by aggregate score descending, then by size.
 		scored.sort((a, b) => b.score - a.score || b.members.length - a.members.length);
@@ -114,19 +160,19 @@
 		if (stackMethod === 'robust') return s;
 
 		const ranked = rankedByMethod;
-		const groups = new Map<number, CandidateView[]>();
+		const groups: Record<number, CandidateView[]> = {};
 		for (const c of ranked) {
 			if (c.stack_id == null) continue;
-			const g = groups.get(c.stack_id) ?? [];
+			const g = groups[c.stack_id] ?? [];
 			g.push(c);
-			groups.set(c.stack_id, g);
+			groups[c.stack_id] = g;
 		}
-		const ordered = [...groups.entries()]
+		const ordered = Object.entries(groups)
 			.map(([id, members]) => {
 				const rep = members[0];
 				return {
 					stack_rank: rep.stack_rank ?? 0,
-					stack_id: id,
+					stack_id: Number(id),
 					label: String(rep.stack_rank ?? ''),
 					size: rep.stack_size ?? members.length,
 					stack_score: rep.stack_score ?? null,
@@ -151,29 +197,28 @@
 	});
 
 	/** Which stack_ids are currently expanded (flat view only). */
-	let expandedStackIds = $state<Set<number>>(new Set());
+	let expandedStackIds = $state<number[]>([]);
+	let ocrLabelBusy = $state<Record<string, boolean>>({});
+	let batchFalsePositiveMode = $state(false);
+	let batchFalsePositiveBusy = $state(false);
+	let selectedFalsePositives = $state<string[]>([]);
 
 	function toggleStack(stackId: number) {
-		const next = new Set(expandedStackIds);
-		if (next.has(stackId)) {
-			next.delete(stackId);
-		} else {
-			next.add(stackId);
-		}
-		expandedStackIds = next;
+		expandedStackIds = expandedStackIds.includes(stackId)
+			? expandedStackIds.filter((id) => id !== stackId)
+			: [...expandedStackIds, stackId];
 	}
 
 	/** True when at least one stack is expanded in flat view. */
-	const anyExpanded = $derived(expandedStackIds.size > 0);
+	const anyExpanded = $derived(expandedStackIds.length > 0);
 
 	function expandAll() {
 		if (!results?.stacks) return;
-		const ids = new Set(stacksByMethod.map((s) => s.stack_id));
-		expandedStackIds = ids;
+		expandedStackIds = stacksByMethod.map((stack) => stack.stack_id);
 	}
 
 	function collapseAll() {
-		expandedStackIds = new Set();
+		expandedStackIds = [];
 	}
 
 	/** Deterministic palette for expanded stack grouping accents. */
@@ -191,10 +236,51 @@
 		return STACK_PALETTE[Math.abs(stackId) % STACK_PALETTE.length];
 	}
 
+	function ocrLabelBusyKey(labelKind: 'false_positive' | 'false_negative', origFilename: string): string {
+		return `${labelKind}:${origFilename}`;
+	}
+
+	function isOcrLabelBusy(
+		labelKind: 'false_positive' | 'false_negative',
+		origFilename: string
+	): boolean {
+		return Boolean(ocrLabelBusy[ocrLabelBusyKey(labelKind, origFilename)]);
+	}
+
+	function saveOcrLabels(labelKind: 'false_positive' | 'false_negative', origFilenames: string[]) {
+		const next = [...ocrLabelState[labelKind]];
+		for (const origFilename of origFilenames) {
+			if (!next.includes(origFilename)) {
+				next.push(origFilename);
+			}
+		}
+		ocrLabelState = { ...ocrLabelState, [labelKind]: next };
+	}
+
+	function toggleFalsePositiveSelection(origFilename: string) {
+		selectedFalsePositives = selectedFalsePositives.includes(origFilename)
+			? selectedFalsePositives.filter((name) => name !== origFilename)
+			: [...selectedFalsePositives, origFilename];
+	}
+
 	const currentPosters = $derived.by<CandidateView[]>(() => {
 		if (!results) return [];
-		if (activeStage === 'ranked') return rankedByMethod;
-		return results.rejected_by_stage.find((g) => g.stage === activeStage)?.posters ?? [];
+		const posters =
+			activeStage === 'ranked'
+				? rankedByMethod
+				: (results.rejected_by_stage.find((g) => g.stage === activeStage)?.posters ?? []);
+		if (activeStage !== 'ocr' || falsePositiveSet.size === 0) return posters;
+		return [...posters].sort(
+			(a, b) =>
+				Number(falsePositiveSet.has(a.orig_filename)) - Number(falsePositiveSet.has(b.orig_filename))
+		);
+	});
+
+	$effect(() => {
+		if ((!debugMode || activeStage !== 'ocr') && (batchFalsePositiveMode || selectedFalsePositives.length > 0)) {
+			batchFalsePositiveMode = false;
+			selectedFalsePositives = [];
+		}
 	});
 
 	/** Group ALL posters that share a stack into arrays (not just consecutive ones).
@@ -203,34 +289,33 @@
 	 *  become visual stacks; singles stay as individual tiles. */
 	const groupedRanked = $derived.by<Array<CandidateView | CandidateView[]>>(() => {
 		const r = rankedByMethod;
-		const s = stacksByMethod;
 		const hasStacks = !!results?.stacks?.length;
 		if (!hasStacks) return r;
 
 		// Collect every stack's members into a map, preserving rank order.
-		const byStack = new Map<number, CandidateView[]>();
+		const byStack: Record<number, CandidateView[]> = {};
 		for (const c of r) {
 			if (c.stack_id != null && (c.stack_size ?? 1) > 1) {
-				const group = byStack.get(c.stack_id) ?? [];
+				const group = byStack[c.stack_id] ?? [];
 				group.push(c);
-				byStack.set(c.stack_id, group);
+				byStack[c.stack_id] = group;
 			}
 		}
 		// Sort each group by stack_pos (A=1, B=2, …).
-		for (const group of byStack.values()) {
+		for (const group of Object.values(byStack)) {
 			group.sort((a, b) => (a.stack_pos ?? 0) - (b.stack_pos ?? 0));
 		}
 
 		// Rebuild in original rank order, emitting each stack only once (at its
 		// first member's position).
-		const seen = new Set<number>();
+		const seen: number[] = [];
 		const out: Array<CandidateView | CandidateView[]> = [];
 		for (const c of r) {
 			const sid = c.stack_id;
 			if (sid != null && (c.stack_size ?? 1) > 1) {
-				if (seen.has(sid)) continue;
-				seen.add(sid);
-				out.push(byStack.get(sid)!);
+				if (seen.includes(sid)) continue;
+				seen.push(sid);
+				out.push(byStack[sid]!);
 			} else {
 				out.push(c);
 			}
@@ -287,12 +372,41 @@
 	const pickIsAuto = $derived(
 		!!pickTarget && !!autoPick && pickTarget.orig_filename === autoPick.orig_filename
 	);
+	const pickDebugLabelKind = $derived.by<'false_positive' | 'false_negative' | null>(() => {
+		if (!pickTarget || !debugMode) return null;
+		if (pickTarget.rank != null) return 'false_negative';
+		return activeStage === 'ocr' ? 'false_positive' : null;
+	});
+	const pickDebugBusy = $derived.by(() =>
+		pickTarget && pickDebugLabelKind
+			? isOcrLabelBusy(pickDebugLabelKind, pickTarget.orig_filename)
+			: false
+	);
+	const pickAlreadyMarked = $derived.by(() =>
+		pickTarget && pickDebugLabelKind
+			? ocrLabelState[pickDebugLabelKind].includes(pickTarget.orig_filename)
+			: false
+	);
 
 	function openPick(c: CandidateView) {
 		if (!results) return;
 		pickTarget = c;
 		deploy = true;
 		pickOpen = true;
+	}
+
+	function handlePosterSelect(candidate: CandidateView) {
+		if (batchFalsePositiveMode && activeStage === 'ocr') {
+			toggleFalsePositiveSelection(candidate.orig_filename);
+			return;
+		}
+		openPick(candidate);
+	}
+
+	function selectAllVisibleFalsePositives() {
+		selectedFalsePositives = currentPosters
+			.filter((candidate) => !falsePositiveSet.has(candidate.orig_filename))
+			.map((candidate) => candidate.orig_filename);
 	}
 
 	async function confirmPick() {
@@ -344,6 +458,117 @@
 		} catch (e) {
 			toast(e instanceof Error ? e.message : 'Undo failed', 'bad');
 		}
+	}
+
+	async function markPoster(
+		candidate: CandidateView,
+		labelKind: 'false_positive' | 'false_negative'
+	) {
+		if (!results) return;
+		if (!canCaptureOcrLabels) {
+			toast('This run predates the OCR snapshot upgrade — re-run it first', 'info');
+			return;
+		}
+
+		const busyKey = ocrLabelBusyKey(labelKind, candidate.orig_filename);
+		ocrLabelBusy = { ...ocrLabelBusy, [busyKey]: true };
+		try {
+			const response =
+				labelKind === 'false_positive'
+					? await markOcrFalsePositive(fetch, {
+							run_id: results.run_id,
+							orig_filename: candidate.orig_filename
+						})
+					: await markOcrFalseNegative(fetch, {
+							run_id: results.run_id,
+							orig_filename: candidate.orig_filename
+						});
+			toast(
+				`${labelKind === 'false_positive' ? 'False positive' : 'False negative'} captured`,
+				'good'
+			);
+			saveOcrLabels(labelKind, [candidate.orig_filename]);
+			if (response.missing_artifacts.length > 0) {
+				toast(
+					`Capture completed with missing artifacts: ${response.missing_artifacts.join(', ')}`,
+					'info',
+					5000
+				);
+			}
+			} catch (error) {
+				toast(describeApiError(error, 'OCR label capture failed'), 'bad');
+			} finally {
+				ocrLabelBusy = Object.fromEntries(
+					Object.entries(ocrLabelBusy).filter(([key]) => key !== busyKey)
+				);
+			}
+		}
+
+	async function markSelectedFalsePositives() {
+		if (!results || selectedFalsePositives.length === 0 || batchFalsePositiveBusy) return;
+		batchFalsePositiveBusy = true;
+		const captured: string[] = [];
+		const warnings: string[] = [];
+		const failures: Array<{ origFilename: string; detail: string }> = [];
+		for (const origFilename of selectedFalsePositives) {
+			const busyKey = ocrLabelBusyKey('false_positive', origFilename);
+			ocrLabelBusy = { ...ocrLabelBusy, [busyKey]: true };
+			try {
+				const response = await markOcrFalsePositive(fetch, {
+					run_id: results.run_id,
+					orig_filename: origFilename
+				});
+				captured.push(origFilename);
+				if (response.missing_artifacts.length > 0) {
+					warnings.push(`${origFilename}: ${response.missing_artifacts.join(', ')}`);
+				}
+				} catch (error) {
+					failures.push({
+						origFilename,
+						detail: describeApiError(error, `Failed to mark ${origFilename}`)
+					});
+				} finally {
+					ocrLabelBusy = Object.fromEntries(
+						Object.entries(ocrLabelBusy).filter(([key]) => key !== busyKey)
+					);
+				}
+			}
+		if (captured.length > 0) {
+			saveOcrLabels('false_positive', captured);
+			toast(
+				`Marked ${captured.length} poster${captured.length === 1 ? '' : 's'} as OCR false positive`,
+				'good'
+			);
+		}
+		if (warnings.length > 0) {
+			toast(`Some captures were saved with missing artifacts`, 'info', 5000);
+		}
+			if (failures.length > 0) {
+				toast(
+					`Failed to mark ${failures.length} poster${failures.length === 1 ? '' : 's'} as false positive`,
+					'bad',
+					6000
+				);
+				selectedFalsePositives = failures.map((failure) => failure.origFilename);
+			} else {
+				selectedFalsePositives = [];
+				batchFalsePositiveMode = false;
+			}
+		batchFalsePositiveBusy = false;
+	}
+
+	function describeApiError(error: unknown, fallback: string): string {
+		if (error instanceof ApiError) {
+			const detail =
+				error.body &&
+				typeof error.body === 'object' &&
+				'detail' in error.body &&
+				typeof error.body.detail === 'string'
+					? error.body.detail
+					: null;
+			return detail ?? error.message;
+		}
+		return error instanceof Error ? error.message : fallback;
 	}
 
 	// ── Bucket ranking (Favorites/Hate/Neutral → pairwise learned head) ──────────
@@ -586,6 +811,51 @@
 				Rejected at this stage. Click to override and choose it anyway.
 			{/if}
 		</p>
+		{#if debugMode && !hasFullOcrSnapshot}
+			<div class="dev-hint">
+				Debug OCR labeling is disabled for this run because its archived OCR snapshot is incomplete.
+				Re-run the movie after the snapshot upgrade to capture false positives or false negatives.
+			</div>
+		{/if}
+		{#if debugMode && activeStage === 'ocr' && hasFullOcrSnapshot}
+			<div class="ocr-dev-tools">
+				{#if batchFalsePositiveMode}
+						<button
+							class="view-btn active"
+							onclick={markSelectedFalsePositives}
+							disabled={selectedFalsePositives.length === 0 || batchFalsePositiveBusy}
+						>
+							{batchFalsePositiveBusy
+								? 'Capturing…'
+								: `Mark selected false positive (${selectedFalsePositives.length})`}
+						</button>
+					<button class="view-btn" onclick={selectAllVisibleFalsePositives} disabled={batchFalsePositiveBusy}>
+						Select all visible
+					</button>
+						<button
+							class="view-btn"
+							onclick={() => (selectedFalsePositives = [])}
+							disabled={selectedFalsePositives.length === 0 || batchFalsePositiveBusy}
+						>
+							Clear selection
+						</button>
+					<button
+						class="view-btn"
+							onclick={() => {
+								batchFalsePositiveMode = false;
+								selectedFalsePositives = [];
+							}}
+							disabled={batchFalsePositiveBusy}
+						>
+						Cancel
+					</button>
+				{:else}
+					<button class="view-btn" onclick={() => (batchFalsePositiveMode = true)}>
+						Select multiple false positives
+					</button>
+				{/if}
+			</div>
+		{/if}
 
 		{#if activeStage === 'ranked' && results.stacks?.length}
 			{#if viewMode === 'flat'}
@@ -594,13 +864,13 @@
 						{#if Array.isArray(item)}
 							{@const group = item as CandidateView[]}
 							{@const sid = group[0].stack_id ?? 0}
-							{#if expandedStackIds.has(sid)}
+								{#if expandedStackIds.includes(sid)}
 								{#each group as c (c.orig_filename)}
 									<PosterCandidateTile
 										candidate={c}
 										kind="ranked"
-										selectable={!results.reviewed}
-										onSelect={openPick}
+										selectable={tileSelectable}
+										onSelect={handlePosterSelect}
 										accent={stackColor(sid)}
 										onCollapse={c.stack_pos === 1 ? () => toggleStack(sid) : undefined}
 									/>
@@ -608,7 +878,7 @@
 							{:else}
 								<PosterStack
 									members={group}
-									selectable={!results.reviewed}
+									selectable={tileSelectable}
 									onSelect={openPick}
 									onToggle={() => toggleStack(sid)}
 								/>
@@ -617,8 +887,8 @@
 							<PosterCandidateTile
 								candidate={item as CandidateView}
 								kind="ranked"
-								selectable={!results.reviewed}
-								onSelect={openPick}
+								selectable={tileSelectable}
+								onSelect={handlePosterSelect}
 							/>
 						{/if}
 					{/each}
@@ -639,8 +909,8 @@
 									<PosterCandidateTile
 										candidate={c}
 										kind="ranked"
-										selectable={!results.reviewed}
-										onSelect={openPick}
+										selectable={tileSelectable}
+										onSelect={handlePosterSelect}
 									/>
 								{/each}
 							</div>
@@ -656,8 +926,16 @@
 					<PosterCandidateTile
 						candidate={c}
 						kind={activeStage === 'ranked' ? 'ranked' : 'rejected'}
-						selectable={!results.reviewed}
-						onSelect={openPick}
+						selectable={tileSelectable}
+						onSelect={handlePosterSelect}
+							selected={
+								batchFalsePositiveMode &&
+								activeStage === 'ocr' &&
+								selectedFalsePositives.includes(c.orig_filename)
+							}
+						badgeText={activeStage === 'ocr' && falsePositiveSet.has(c.orig_filename)
+							? 'False positive'
+							: null}
 					/>
 				{/each}
 			</div>
@@ -670,6 +948,7 @@
 	open={pickOpen}
 	title={pickIsAuto ? 'Approve auto-pick' : 'Choose this poster'}
 	confirmLabel={pickIsAuto ? 'Approve' : 'Set as chosen'}
+	confirmDisabled={results?.reviewed ?? false}
 	{busy}
 	onConfirm={confirmPick}
 	onCancel={() => (pickOpen = false)}
@@ -696,6 +975,44 @@
 					<input type="checkbox" bind:checked={deploy} />
 					Deploy to the movie folder now
 				</label>
+				{#if results?.reviewed}
+					<p class="pick-note">
+						This run is already reviewed, so the selection action is disabled. Debug OCR labeling is
+						still available below.
+					</p>
+				{/if}
+				{#if debugMode && pickDebugLabelKind && !hasFullOcrSnapshot}
+					<p class="pick-debug-note">
+						Debug OCR labeling is disabled for this run because its archived OCR snapshot is incomplete.
+						Re-run the movie after the snapshot upgrade first.
+					</p>
+				{:else if debugMode && pickDebugLabelKind}
+					<div class="pick-debug-row">
+						<button
+							class="pick-debug-btn"
+							class:fp={pickDebugLabelKind === 'false_positive'}
+							class:fn={pickDebugLabelKind === 'false_negative'}
+							disabled={pickDebugBusy}
+							onclick={() => pickTarget && markPoster(pickTarget, pickDebugLabelKind)}
+						>
+							{#if pickDebugBusy}
+								Capturing…
+							{:else if pickDebugLabelKind === 'false_positive'}
+								{pickAlreadyMarked
+									? 'Refresh OCR false positive capture'
+									: 'Mark as OCR false positive'}
+							{:else}
+								{pickAlreadyMarked
+									? 'Refresh OCR false negative capture'
+									: 'Mark as OCR false negative'}
+							{/if}
+						</button>
+						<p class="pick-debug-note">
+							{pickAlreadyMarked ? 'Already captured. ' : ''}Saves the poster image and OCR
+							diagnostics under <code>data/debug/ocr-labels</code>.
+						</p>
+					</div>
+				{/if}
 			</div>
 		</div>
 	{/if}
@@ -945,6 +1262,22 @@
 		grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
 		gap: 14px;
 	}
+	.dev-hint {
+		margin: 0 0 14px;
+		padding: 10px 12px;
+		border-radius: var(--radius-sm);
+		border: 1px solid color-mix(in srgb, var(--warn) 35%, var(--line2));
+		background: color-mix(in srgb, var(--warn) 8%, var(--panel));
+		color: var(--muted);
+		font-size: 12px;
+		line-height: 1.45;
+	}
+	.ocr-dev-tools {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 8px;
+		margin: 0 0 14px;
+	}
 	.stacks {
 		display: flex;
 		flex-direction: column;
@@ -1028,6 +1361,47 @@
 		font-size: 12px;
 		color: var(--muted);
 		line-height: 1.45;
+	}
+	.pick-debug-row {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+		margin-top: 4px;
+	}
+	.pick-debug-btn {
+		align-self: flex-start;
+		padding: 8px 12px;
+		border-radius: 999px;
+		border: 1px solid transparent;
+		font-size: 12px;
+		font-weight: 700;
+	}
+	.pick-debug-btn.fp {
+		background: color-mix(in srgb, var(--warn) 22%, var(--panel2));
+		border-color: color-mix(in srgb, var(--warn) 45%, transparent);
+		color: var(--text);
+	}
+	.pick-debug-btn.fn {
+		background: color-mix(in srgb, var(--bad) 18%, var(--panel2));
+		border-color: color-mix(in srgb, var(--bad) 45%, transparent);
+		color: var(--text);
+	}
+	.pick-debug-btn:disabled {
+		opacity: 0.55;
+		cursor: wait;
+	}
+	.pick-debug-note {
+		margin: 0;
+		font-size: 11.5px;
+		color: var(--faint);
+		line-height: 1.45;
+	}
+	.pick-debug-note :global(code) {
+		font-size: 11px;
+		padding: 1px 4px;
+		border-radius: 4px;
+		background: var(--panel2);
+		font-family: var(--font-mono);
 	}
 	.toggle {
 		display: flex;

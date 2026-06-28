@@ -1,15 +1,44 @@
 import type { PageLoad } from './$types';
-import { getRunResults } from '$lib/api/pipeline';
-import type { RunResultsResponse } from '$lib/api/types';
+import { getOcrLabelState, getRunResults } from '$lib/api/pipeline';
+import { getSettings } from '$lib/api/system';
+import type { OcrLabelRunState, RunResultsResponse } from '$lib/api/types';
 
 export const load: PageLoad = async ({ fetch, params }) => {
 	try {
-		const run = await getRunResults(fetch, params.run_id);
-		return { run, runId: params.run_id, error: null as string | null };
+		const [run, settings] = await Promise.all([getRunResults(fetch, params.run_id), getSettings(fetch)]);
+		let ocrLabelState: OcrLabelRunState = {
+			run_id: params.run_id,
+			labels: {
+				false_positive: [],
+				false_negative: []
+			}
+		};
+		if (settings.app.debug) {
+			try {
+				ocrLabelState = await getOcrLabelState(fetch, params.run_id);
+			} catch {
+				// Keep the run page usable even if the dev-only label-state route errors.
+			}
+		}
+		return {
+			run,
+			runId: params.run_id,
+			debugMode: settings.app.debug,
+			ocrLabelState,
+			error: null as string | null
+		};
 	} catch (e) {
 		return {
 			run: null as RunResultsResponse | null,
 			runId: params.run_id,
+			debugMode: false,
+			ocrLabelState: {
+				run_id: params.run_id,
+				labels: {
+					false_positive: [],
+					false_negative: []
+				}
+			} as OcrLabelRunState,
 			error: e instanceof Error ? e.message : 'Failed to load run'
 		};
 	}

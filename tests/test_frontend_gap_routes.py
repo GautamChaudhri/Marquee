@@ -317,6 +317,7 @@ async def test_settings_redacts_secrets(client: AsyncClient, monkeypatch):
     monkeypatch.setattr(subtitle_settings, "SUBGEN_CALLBACK_TOKEN", "subgen-secret")
 
     body = (await client.get("/api/settings")).json()
+    assert body["app"]["debug"] is True
     assert body["integrations"]["radarr"]["configured"] is True
     assert body["integrations"]["radarr"]["api_key_configured"] is True
     assert body["integrations"]["subgen"]["callback_token_configured"] is True

@@ -41,6 +41,7 @@ Organized by the phase when attention is needed. Reference `design/03-migration-
 - [x] ~~**File write path validation.**~~ `PosterService.deploy()` and `PosterService.restore()` validate via `safe_translate_and_validate()` against `MEDIA_ROOTS` before any write.
 - [ ] **Expose poster counts in sync report.** Add `posters_found` / `posters_missing` to sync API response.
 - [ ] **Fix stale poster_path on file deletion.** `_check_existing_poster` should set `poster_path = NULL` when file no longer exists. Partially covered by self-heal scan (`heal.py`).
+- [ ] **[DEFERRED] OCR false-positive/negative labeling & log capture.** Design doc at `design/28-ocr-false-positive-labeling.md`. Debug-mode-only dev tool to manually mark OCR false positives/negatives from pipeline run results, capturing poster image + per-poster log diagnostics + OCR config snapshot into a structured directory for later LLM analysis.
 
 ---
 
