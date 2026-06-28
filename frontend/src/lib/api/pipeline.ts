@@ -4,6 +4,9 @@ import type {
 	CacheSizes,
 	JobSummary,
 	MovieRuns,
+	OcrLabelCaptureResult,
+	OcrLabelClearResult,
+	OcrLabelRunState,
 	PipelineMetrics,
 	PipelineRunRef,
 	ReviewQueue,
@@ -61,4 +64,26 @@ export function clearPipelineCache(
 /** Run history for one movie, newest first. */
 export function listMovieRuns(fetchFn: Fetch, movieId: number): Promise<MovieRuns> {
 	return apiGet<MovieRuns>(fetchFn, `/movies/${movieId}/runs`);
+}
+
+export function markOcrFalsePositive(
+	fetchFn: Fetch,
+	body: { run_id: string; orig_filename: string }
+): Promise<OcrLabelCaptureResult> {
+	return apiSend<OcrLabelCaptureResult>(fetchFn, 'POST', '/dev/ocr-labels/false-positive', body);
+}
+
+export function markOcrFalseNegative(
+	fetchFn: Fetch,
+	body: { run_id: string; orig_filename: string }
+): Promise<OcrLabelCaptureResult> {
+	return apiSend<OcrLabelCaptureResult>(fetchFn, 'POST', '/dev/ocr-labels/false-negative', body);
+}
+
+export function clearOcrLabels(fetchFn: Fetch): Promise<OcrLabelClearResult> {
+	return apiSend<OcrLabelClearResult>(fetchFn, 'POST', '/dev/ocr-labels/clear');
+}
+
+export function getOcrLabelState(fetchFn: Fetch, runId: string): Promise<OcrLabelRunState> {
+	return apiGet<OcrLabelRunState>(fetchFn, `/dev/ocr-labels/run/${runId}`);
 }

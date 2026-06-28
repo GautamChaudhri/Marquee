@@ -6,6 +6,8 @@
 		candidate,
 		kind = 'ranked',
 		selectable = true,
+		selected = false,
+		badgeText = null,
 		onSelect,
 		accent = '',
 		onCollapse
@@ -13,6 +15,8 @@
 		candidate: CandidateView;
 		kind?: 'ranked' | 'rejected';
 		selectable?: boolean;
+		selected?: boolean;
+		badgeText?: string | null;
 		onSelect?: (c: CandidateView) => void;
 		/** Optional CSS color for a left-edge accent (used by expanded stacks). */
 		accent?: string;
@@ -47,6 +51,7 @@
 	class:auto={isAutoPick}
 	class:rejected={kind === 'rejected'}
 	class:accented={accent !== ''}
+	class:selected
 	disabled={!selectable}
 	onclick={() => onSelect?.(candidate)}
 	title={kind === 'rejected' ? reason : stacked ? `Stack ${tag}` : `Rank ${candidate.rank}`}
@@ -62,6 +67,12 @@
 		{/if}
 		{#if kind === 'ranked' && candidate.final_score != null}
 			<div class="score mono">{candidate.final_score.toFixed(3)}</div>
+		{/if}
+		{#if selected}
+			<div class="selected-mark mono">✓</div>
+		{/if}
+		{#if badgeText}
+			<div class="status-badge">{badgeText}</div>
 		{/if}
 	</div>
 	<div class="cap" class:has-collapse={onCollapse != null}>
@@ -120,6 +131,10 @@
 		border-color: var(--gold);
 		box-shadow: 0 0 0 1px var(--gold-deep);
 	}
+	.tile.selected .art {
+		border-color: var(--gold);
+		box-shadow: 0 0 0 2px color-mix(in srgb, var(--gold) 55%, transparent);
+	}
 	.tile.rejected .art {
 		opacity: 0.82;
 	}
@@ -156,6 +171,37 @@
 		width: fit-content;
 		backdrop-filter: blur(2px);
 		z-index: 1;
+	}
+	.selected-mark {
+		position: absolute;
+		top: 6px;
+		right: 6px;
+		min-width: 18px;
+		height: 18px;
+		padding: 0 5px;
+		border-radius: 999px;
+		background: color-mix(in srgb, var(--gold) 82%, transparent);
+		color: var(--on-gold);
+		font-size: 11px;
+		font-weight: 700;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		z-index: 2;
+	}
+	.status-badge {
+		position: absolute;
+		top: 6px;
+		left: 6px;
+		max-width: calc(100% - 36px);
+		padding: 2px 7px;
+		border-radius: 999px;
+		background: color-mix(in srgb, var(--warn) 70%, transparent);
+		color: var(--ink);
+		font-size: 10px;
+		font-weight: 700;
+		line-height: 1.2;
+		z-index: 2;
 	}
 	.cap {
 		min-width: 0;

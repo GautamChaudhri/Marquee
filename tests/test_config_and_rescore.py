@@ -46,6 +46,34 @@ async def test_get_pipeline_config(client):
     assert "AI_MODEL" in data["restart_required"]
 
 
+def test_pipeline_snapshot_includes_full_ocr_context():
+    snapshot = pipeline_settings.snapshot()
+    assert "ocr" in snapshot
+    assert {
+        "device",
+        "workers",
+        "detail_passes",
+        "max_residual_boxes",
+        "max_residual_area_fraction",
+        "mode",
+        "require_title",
+        "accept_no_text_fallback",
+        "allow_title",
+        "allow_director",
+        "allow_studio",
+        "allow_rating",
+        "allow_tagline",
+        "confidence_threshold",
+        "strip_confidence_threshold",
+        "bottom_confidence_threshold",
+        "fuzzy_cutoff",
+        "title_proximity_pixels",
+        "residual_significant_area_fraction",
+        "residual_significant_width_fraction",
+        "enhance_retry",
+    }.issubset(snapshot["ocr"])
+
+
 @pytest.mark.asyncio
 async def test_put_valid_knob_applies_and_persists(client, tmp_path):
     original = pipeline_settings.GATE_MIN_AESTHETIC

@@ -9,6 +9,7 @@
 		cancelLabel = 'Cancel',
 		tone = 'gold',
 		busy = false,
+		confirmDisabled = false,
 		onConfirm,
 		onCancel,
 		children
@@ -20,6 +21,7 @@
 		cancelLabel?: string;
 		tone?: 'gold' | 'bad';
 		busy?: boolean;
+		confirmDisabled?: boolean;
 		onConfirm: () => void;
 		onCancel: () => void;
 		children?: Snippet;
@@ -55,7 +57,12 @@
 			{#if children}<div class="body">{@render children()}</div>{/if}
 			<div class="foot">
 				<button class="btn-sec" onclick={onCancel} disabled={busy}>{cancelLabel}</button>
-				<button class="btn-confirm" class:bad={tone === 'bad'} onclick={onConfirm} disabled={busy}>
+				<button
+					class="btn-confirm"
+					class:bad={tone === 'bad'}
+					onclick={onConfirm}
+					disabled={busy || confirmDisabled}
+				>
 					{#if busy}<span class="spin">⟳</span> Working…{:else}{confirmLabel}{/if}
 				</button>
 			</div>

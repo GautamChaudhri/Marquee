@@ -531,8 +531,26 @@ class PipelineSettings(BaseSettings):
                 "detail_passes": self.OCR_DETAIL_PASSES,
                 "max_residual_boxes": self.OCR_MAX_RESIDUAL_BOXES,
                 "max_residual_area_fraction": self.OCR_MAX_RESIDUAL_AREA_FRACTION,
+                "mode": self.OCR_TEXT_MODE,
                 "require_title": self.OCR_REQUIRE_TITLE,
                 "accept_no_text_fallback": self.OCR_ACCEPT_NO_TEXT,
+                "allow_title": self.OCR_ALLOW_TITLE,
+                "allow_director": self.OCR_ALLOW_DIRECTOR,
+                "allow_studio": self.OCR_ALLOW_STUDIO,
+                "allow_rating": self.OCR_ALLOW_RATING,
+                "allow_tagline": self.OCR_ALLOW_TAGLINE,
+                "confidence_threshold": self.OCR_CONFIDENCE_THRESHOLD,
+                "strip_confidence_threshold": self.OCR_STRIP_CONFIDENCE_THRESHOLD,
+                "bottom_confidence_threshold": self.OCR_BOTTOM_CONFIDENCE_THRESHOLD,
+                "fuzzy_cutoff": self.OCR_FUZZY_CUTOFF,
+                "title_proximity_pixels": self.OCR_TITLE_PROXIMITY_PIXELS,
+                "residual_significant_area_fraction": (
+                    self.OCR_RESIDUAL_SIGNIFICANT_AREA_FRACTION
+                ),
+                "residual_significant_width_fraction": (
+                    self.OCR_RESIDUAL_SIGNIFICANT_WIDTH_FRACTION
+                ),
+                "enhance_retry": self.OCR_ENHANCE_RETRY,
             },
             "extended_features": {
                 "dino_enabled": self.DINO_ENABLED,

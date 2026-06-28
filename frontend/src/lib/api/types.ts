@@ -8,6 +8,61 @@ export interface Paginated<T> {
 	items: T[];
 }
 
+export interface RuntimeSettings {
+	integrations: {
+		subgen?: {
+			configured?: boolean;
+			url_configured?: boolean;
+			callback_token_configured?: boolean;
+			url?: string | null;
+			profile_name?: string | null;
+			model_label?: string | null;
+			mode?: string | null;
+			local_path_prefix?: string | null;
+			remote_path_prefix?: string | null;
+			[key: string]: unknown;
+		};
+		[key: string]: unknown;
+	};
+	app: {
+		name: string;
+		host: string;
+		port: number;
+		debug: boolean;
+		log_level: string;
+		log_format: string;
+		cors_origins: string[];
+		auth: {
+			api_key_configured: boolean;
+			allow_local: boolean;
+		};
+		[key: string]: unknown;
+	};
+	paths: Record<string, unknown>;
+	sync: Record<string, unknown>;
+	letterbox: Record<string, unknown>;
+	subtitles: {
+		enabled?: boolean;
+		scan_concurrency?: number;
+		mutation_concurrency?: number;
+		generation_concurrency?: number;
+		preferred_languages?: string[];
+		preferred_audio_languages?: string[] | null;
+		preferred_subtitle_languages?: string[] | null;
+		effective_preferred_audio_languages?: string[];
+		effective_preferred_subtitle_languages?: string[];
+		unknown_language_action?: string;
+		protect_forced?: boolean;
+		protect_last_full_dialogue?: boolean;
+		backup_mode?: string;
+		external_delete_mode?: string;
+		[key: string]: unknown;
+	};
+	poster_formats: Record<string, unknown>;
+	writable: boolean;
+	[key: string]: unknown;
+}
+
 export type PosterStatus = 'missing' | 'review' | 'approved' | 'deployed';
 export type HdrKind = 'hdr' | 'hdr10' | 'hdr10p' | 'dovi' | 'dovi_no_fallback' | 'sdr';
 export type HdrPreferenceChoice =
@@ -574,6 +629,35 @@ export function isRunningRun(r: RunResultsResponse): r is RunningRun {
 	return r.status === 'running' && !('ranked' in r);
 }
 
+export type OcrLabelKind = 'false_positive' | 'false_negative';
+
+export interface OcrLabelCaptureRequest {
+	run_id: string;
+	orig_filename: string;
+}
+
+export interface OcrLabelCaptureResult {
+	status: 'captured';
+	label_kind: OcrLabelKind;
+	path: string;
+	image_copied: boolean;
+	log_captured: boolean;
+	missing_artifacts: string[];
+	metadata: Record<string, unknown>;
+}
+
+export interface OcrLabelClearResult {
+	status: 'cleared';
+	root_path: string;
+	deleted_run_dirs: number;
+	deleted_capture_dirs: number;
+}
+
+export interface OcrLabelRunState {
+	run_id: string;
+	labels: Record<OcrLabelKind, string[]>;
+}
+
 // ── Review queue + run history ──────────────────────────────────────────────
 export interface PipelineRunSummary {
 	run_id: string;
@@ -928,7 +1012,7 @@ export interface SubtitlePlan {
 	operation: string;
 	before: Record<string, unknown>;
 	after: Record<string, unknown>;
-	warnings: any[];
+	warnings: unknown[];
 	storage: {
 		source_bytes?: number;
 		estimated_temp_bytes?: number;
@@ -959,7 +1043,7 @@ export interface MediaJob {
 	} | null;
 	events_url: string;
 	backup_id: string | null;
-	plan: any | null;
+	plan: Record<string, unknown> | null;
 }
 
 // ── Generators ──
