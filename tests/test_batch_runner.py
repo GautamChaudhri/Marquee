@@ -12,7 +12,12 @@ from marquee.core.poster_sources.tmdb import PosterCandidate
 from marquee.pipeline.batch_runner import _BatchMovie, _detail_batch, _download_phase, _rank
 from marquee.pipeline.gate import PosterGate
 from marquee.pipeline.runner import FetchOutcome, ProgressEvent
-from marquee.pipeline.types import CandidateScore, FeatureVector, OCRCandidateResult
+from marquee.pipeline.types import (
+    CandidateScore,
+    FeatureVector,
+    OCRCandidateResult,
+    OCRTextBox,
+)
 
 
 def _ctx(movie_id: int, title: str) -> _BatchMovie:
@@ -274,6 +279,114 @@ async def test_download_phase_emits_global_progress_ticks_during_downloads(
     assert ctx_empty.status == "failed"  # nothing to download -> no poster files
     assert ctx_a.status != "failed"
     assert ctx_b.status != "failed"
+
+
+def test_ocr_batch_persists_diagnostics_to_records(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Regression: the batch engine (the path the UI uses) must persist OCR
+    diagnostics onto every record — accepted AND rejected — so the per-run
+    archive carries the real detected text / title bbox / residual boxes instead
+    of nulls. Null OCR data is what forced the label-capture flow to synthesize
+    logs. This keeps batch_runner._ocr_batch in lockstep with the single-movie
+    engine's shared _attach_ocr_diagnostics helper.
+    """
+    out_dir = tmp_path / "alien"
+    survivors_dir = out_dir / "1-style-survivors"
+    survivors_dir.mkdir(parents=True)
+    accepted_path = survivors_dir / "accepted.jpg"
+    rejected_path = survivors_dir / "rejected.jpg"
+    accepted_path.write_bytes(b"a")  # _copy_with_reason copies the rejected file
+    rejected_path.write_bytes(b"b")
+
+    records = {
+        "accepted.jpg": CandidateScore(image_path=accepted_path, orig_filename="accepted.jpg"),
+        "rejected.jpg": CandidateScore(image_path=rejected_path, orig_filename="rejected.jpg"),
+    }
+    ctx = _BatchMovie(
+        run_id="run-1",
+        movie_id=1,
+        title="Alien",
+        tmdb_id=None,
+        out_dir=out_dir,
+        originals_dir=out_dir / "0-originals",
+        started_at="2026-06-29T00:00:00Z",
+        start_perf=time.perf_counter(),
+        index=1,
+        total=1,
+    )
+    ctx.fetch = FetchOutcome(
+        candidate_map={},
+        records=records,
+        resolution_by_name={},
+        all_files=[],
+        primary_name=None,
+        counts={},
+    )
+    ctx.style_survivors = [accepted_path, rejected_path]
+
+    title_bbox = ((0.0, 0.0), (10.0, 0.0), (10.0, 5.0), (0.0, 5.0))
+    residual = OCRTextBox(
+        text="tagline noise",
+        confidence=0.8,
+        bbox=((0.0, 50.0), (40.0, 50.0), (40.0, 60.0), (0.0, 60.0)),
+        area=400.0,
+        geometry_valid=True,
+    )
+
+    def _fake_run_ocr_batch(items, *, num_workers=None, progress=None):
+        results = []
+        for path, _title_tokens, _director_tokens in items:
+            if path.name == "accepted.jpg":
+                results.append(
+                    OCRCandidateResult(
+                        image_path=path,
+                        accepted=True,
+                        detected_text="ALIEN",
+                        reason=None,
+                        title_bbox=title_bbox,
+                        residual_boxes=[],
+                        diagnostics={"decision": {"accepted": True, "reason": None}},
+                    )
+                )
+            else:
+                results.append(
+                    OCRCandidateResult(
+                        image_path=path,
+                        accepted=False,
+                        detected_text="ALIEN ROMULUS extra noise",
+                        reason="text_heavy",
+                        title_bbox=title_bbox,
+                        residual_boxes=[residual],
+                        diagnostics={"decision": {"accepted": False, "reason": "text_heavy"}},
+                    )
+                )
+        return results
+
+    monkeypatch.setattr(
+        batch_runner.PosterTextFilter,
+        "run_ocr_batch",
+        staticmethod(_fake_run_ocr_batch),
+    )
+
+    batch_runner._ocr_batch([ctx], progress=None)
+
+    accepted = records["accepted.jpg"]
+    assert accepted.stage_reached == "ocr"
+    assert accepted.ocr_detected_text == "ALIEN"
+    assert accepted.ocr_title_bbox == [[0.0, 0.0], [10.0, 0.0], [10.0, 5.0], [0.0, 5.0]]
+    assert accepted.ocr_residual_boxes == []
+    # The full structured trace is persisted on DEBUG runs (conftest forces DEBUG).
+    assert accepted.ocr_trace == {"decision": {"accepted": True, "reason": None}}
+
+    rejected = records["rejected.jpg"]
+    assert rejected.stage_reached == "ocr"
+    assert rejected.rejection_reason == "text_heavy"
+    assert rejected.ocr_detected_text == "ALIEN ROMULUS extra noise"
+    assert rejected.ocr_title_bbox == [[0.0, 0.0], [10.0, 0.0], [10.0, 5.0], [0.0, 5.0]]
+    assert rejected.ocr_residual_boxes is not None and len(rejected.ocr_residual_boxes) == 1
+    assert rejected.ocr_residual_boxes[0]["text"] == "tagline noise"
+    assert rejected.ocr_trace == {"decision": {"accepted": False, "reason": "text_heavy"}}
 
 
 async def test_download_phase_finalizes_movies_that_failed_metadata_fetch(

@@ -51,7 +51,12 @@ from marquee.pipeline.ocr_filter import PosterTextFilter
 from marquee.pipeline.output import OutputResult, place_gated, place_ranked
 from marquee.pipeline.scorer import select_scorer
 from marquee.pipeline.stacker import assign_stacks
-from marquee.pipeline.types import CandidateScore, OCRCandidateResult
+from marquee.pipeline.types import (
+    BoundingBox,
+    CandidateScore,
+    OCRCandidateResult,
+    OCRTextBox,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -184,6 +189,41 @@ def _copy_with_reason(path: Path, destination: Path, reason: str) -> Path:
     output = destination / f"{safe_reason}__{path.name}"
     shutil.copy2(path, output)
     return output
+
+
+def _ocr_bbox_to_list(bbox: BoundingBox | None) -> list | None:
+    """A title bbox (4 corner points) as JSON-native [[x, y], ...]."""
+    if bbox is None:
+        return None
+    return [[float(x), float(y)] for x, y in bbox]
+
+
+def _ocr_box_to_dict(box: OCRTextBox) -> dict:
+    """An OCR text box as a JSON-native dict for the per-run archive."""
+    return {
+        "text": box.text,
+        "confidence": float(box.confidence),
+        "bbox": _ocr_bbox_to_list(box.bbox),
+        "area": float(box.area),
+        "geometry_valid": bool(box.geometry_valid),
+    }
+
+
+def _attach_ocr_diagnostics(record: CandidateScore, result: OCRCandidateResult) -> None:
+    """Persist what OCR actually read onto the record so the diagnostics live in
+    the immutable per-run archive instead of only the volatile pipeline.log.
+
+    Shared by both sync-stage engines (``run_sync_stages`` here and
+    ``batch_runner._ocr_batch``) so they cannot drift on this again.
+
+    The full structured trace (``result.diagnostics``) is only persisted on
+    DEBUG runs — it is several KB per poster and only the OCR-label tooling
+    (a DEBUG-gated dev surface) consumes it, so production archives stay lean.
+    """
+    record.ocr_detected_text = result.detected_text
+    record.ocr_title_bbox = _ocr_bbox_to_list(result.title_bbox)
+    record.ocr_residual_boxes = [_ocr_box_to_dict(box) for box in result.residual_boxes]
+    record.ocr_trace = result.diagnostics if settings.DEBUG else None
 
 
 def _stage_done(
@@ -680,6 +720,10 @@ def run_sync_stages(
     for result in ocr_results:
         record = records[result.image_path.name]
         record.stage_reached = "ocr"
+        # Durably capture what OCR actually read — for every candidate that
+        # reached this stage, accepted or rejected — so the diagnostics live in
+        # the immutable per-run archive instead of only the volatile log.
+        _attach_ocr_diagnostics(record, result)
         logger.info(
             "OCR | file=%s | accepted=%s | reason=%s | text=%r | title_bbox=%s | residual_boxes=%d",
             result.image_path.name,

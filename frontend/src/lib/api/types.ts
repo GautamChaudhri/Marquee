@@ -629,7 +629,7 @@ export function isRunningRun(r: RunResultsResponse): r is RunningRun {
 	return r.status === 'running' && !('ranked' in r);
 }
 
-export type OcrLabelKind = 'false_positive' | 'false_negative';
+export type OcrLabelKind = 'false_rejection' | 'false_acceptance';
 
 export interface OcrLabelCaptureRequest {
 	run_id: string;
