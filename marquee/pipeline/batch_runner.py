@@ -44,16 +44,17 @@ from marquee.config import settings
 from marquee.core.pipeline_config import pipeline_settings
 from marquee.core.poster_sources.tmdb import PosterCandidate
 from marquee.database import _get_session_factory
+from marquee.ml.hardware import effective_ocr_workers
 from marquee.models import Movie, PipelineRun
 from marquee.pipeline.deduper import PosterDeduper
 from marquee.pipeline.features import FeatureExtractor
 from marquee.pipeline.gate import PosterGate
 from marquee.pipeline.ocr_filter import OcrPool, PosterTextFilter, apply_no_text_fallback
-from marquee.ml.hardware import effective_ocr_workers
 from marquee.pipeline.output import place_gated
 from marquee.pipeline.runner import (
     FetchOutcome,
     ProgressEvent,
+    _attach_ocr_diagnostics,
     _candidate_filename,
     _clear_generated_outputs,
     _copy_with_reason,
@@ -596,6 +597,12 @@ def _ocr_batch(
         for result in movie_results:
             record = records[result.image_path.name]
             record.stage_reached = "ocr"
+            # Persist OCR diagnostics for every candidate (accepted or rejected)
+            # — the UI runs through this batch engine, so without this the
+            # per-run archive carries null OCR data and label capture falls back
+            # to synthesized logs. Shared helper keeps this in lockstep with the
+            # single-movie engine in runner.run_sync_stages.
+            _attach_ocr_diagnostics(record, result)
             if not result.accepted:
                 reason = result.reason or "ocr_rejected"
                 record.rejection_reason = reason

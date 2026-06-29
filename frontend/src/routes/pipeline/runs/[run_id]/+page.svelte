@@ -12,8 +12,8 @@
 	import Icon from '$lib/components/Icon.svelte';
 	import {
 		getRunResults,
-		markOcrFalseNegative,
-		markOcrFalsePositive
+		markOcrFalseAcceptance,
+		markOcrFalseRejection
 	} from '$lib/api/pipeline';
 	import { ApiError } from '$lib/api/client';
 	import { submitFeedback, undoFeedback } from '$lib/api/feedback';
@@ -72,14 +72,14 @@
 	});
 	const canCaptureOcrLabels = $derived(debugMode && hasFullOcrSnapshot);
 	const initialOcrLabels = data.ocrLabelState?.labels ?? {
-		false_positive: [],
-		false_negative: []
+		false_rejection: [],
+		false_acceptance: []
 	};
 	let ocrLabelState = $state({
-		false_positive: [...initialOcrLabels.false_positive],
-		false_negative: [...initialOcrLabels.false_negative]
+		false_rejection: [...initialOcrLabels.false_rejection],
+		false_acceptance: [...initialOcrLabels.false_acceptance]
 	});
-	const falsePositiveSet = $derived(new Set(ocrLabelState.false_positive));
+	const falseRejectionSet = $derived(new Set(ocrLabelState.false_rejection));
 
 	const SHORT: Record<string, string> = {
 		sha256: 'SHA-256',
@@ -199,9 +199,9 @@
 	/** Which stack_ids are currently expanded (flat view only). */
 	let expandedStackIds = $state<number[]>([]);
 	let ocrLabelBusy = $state<Record<string, boolean>>({});
-	let batchFalsePositiveMode = $state(false);
-	let batchFalsePositiveBusy = $state(false);
-	let selectedFalsePositives = $state<string[]>([]);
+	let batchFalseRejectionMode = $state(false);
+	let batchFalseRejectionBusy = $state(false);
+	let selectedFalseRejections = $state<string[]>([]);
 
 	function toggleStack(stackId: number) {
 		expandedStackIds = expandedStackIds.includes(stackId)
@@ -236,18 +236,18 @@
 		return STACK_PALETTE[Math.abs(stackId) % STACK_PALETTE.length];
 	}
 
-	function ocrLabelBusyKey(labelKind: 'false_positive' | 'false_negative', origFilename: string): string {
+	function ocrLabelBusyKey(labelKind: 'false_rejection' | 'false_acceptance', origFilename: string): string {
 		return `${labelKind}:${origFilename}`;
 	}
 
 	function isOcrLabelBusy(
-		labelKind: 'false_positive' | 'false_negative',
+		labelKind: 'false_rejection' | 'false_acceptance',
 		origFilename: string
 	): boolean {
 		return Boolean(ocrLabelBusy[ocrLabelBusyKey(labelKind, origFilename)]);
 	}
 
-	function saveOcrLabels(labelKind: 'false_positive' | 'false_negative', origFilenames: string[]) {
+	function saveOcrLabels(labelKind: 'false_rejection' | 'false_acceptance', origFilenames: string[]) {
 		const next = [...ocrLabelState[labelKind]];
 		for (const origFilename of origFilenames) {
 			if (!next.includes(origFilename)) {
@@ -257,10 +257,10 @@
 		ocrLabelState = { ...ocrLabelState, [labelKind]: next };
 	}
 
-	function toggleFalsePositiveSelection(origFilename: string) {
-		selectedFalsePositives = selectedFalsePositives.includes(origFilename)
-			? selectedFalsePositives.filter((name) => name !== origFilename)
-			: [...selectedFalsePositives, origFilename];
+	function toggleFalseRejectionSelection(origFilename: string) {
+		selectedFalseRejections = selectedFalseRejections.includes(origFilename)
+			? selectedFalseRejections.filter((name) => name !== origFilename)
+			: [...selectedFalseRejections, origFilename];
 	}
 
 	const currentPosters = $derived.by<CandidateView[]>(() => {
@@ -269,17 +269,17 @@
 			activeStage === 'ranked'
 				? rankedByMethod
 				: (results.rejected_by_stage.find((g) => g.stage === activeStage)?.posters ?? []);
-		if (activeStage !== 'ocr' || falsePositiveSet.size === 0) return posters;
+		if (activeStage !== 'ocr' || falseRejectionSet.size === 0) return posters;
 		return [...posters].sort(
 			(a, b) =>
-				Number(falsePositiveSet.has(a.orig_filename)) - Number(falsePositiveSet.has(b.orig_filename))
+				Number(falseRejectionSet.has(a.orig_filename)) - Number(falseRejectionSet.has(b.orig_filename))
 		);
 	});
 
 	$effect(() => {
-		if ((!debugMode || activeStage !== 'ocr') && (batchFalsePositiveMode || selectedFalsePositives.length > 0)) {
-			batchFalsePositiveMode = false;
-			selectedFalsePositives = [];
+		if ((!debugMode || activeStage !== 'ocr') && (batchFalseRejectionMode || selectedFalseRejections.length > 0)) {
+			batchFalseRejectionMode = false;
+			selectedFalseRejections = [];
 		}
 	});
 
@@ -372,10 +372,10 @@
 	const pickIsAuto = $derived(
 		!!pickTarget && !!autoPick && pickTarget.orig_filename === autoPick.orig_filename
 	);
-	const pickDebugLabelKind = $derived.by<'false_positive' | 'false_negative' | null>(() => {
+	const pickDebugLabelKind = $derived.by<'false_rejection' | 'false_acceptance' | null>(() => {
 		if (!pickTarget || !debugMode) return null;
-		if (pickTarget.rank != null) return 'false_negative';
-		return activeStage === 'ocr' ? 'false_positive' : null;
+		if (pickTarget.rank != null) return 'false_acceptance';
+		return activeStage === 'ocr' ? 'false_rejection' : null;
 	});
 	const pickDebugBusy = $derived.by(() =>
 		pickTarget && pickDebugLabelKind
@@ -396,16 +396,16 @@
 	}
 
 	function handlePosterSelect(candidate: CandidateView) {
-		if (batchFalsePositiveMode && activeStage === 'ocr') {
-			toggleFalsePositiveSelection(candidate.orig_filename);
+		if (batchFalseRejectionMode && activeStage === 'ocr') {
+			toggleFalseRejectionSelection(candidate.orig_filename);
 			return;
 		}
 		openPick(candidate);
 	}
 
-	function selectAllVisibleFalsePositives() {
-		selectedFalsePositives = currentPosters
-			.filter((candidate) => !falsePositiveSet.has(candidate.orig_filename))
+	function selectAllVisibleFalseRejections() {
+		selectedFalseRejections = currentPosters
+			.filter((candidate) => !falseRejectionSet.has(candidate.orig_filename))
 			.map((candidate) => candidate.orig_filename);
 	}
 
@@ -462,7 +462,7 @@
 
 	async function markPoster(
 		candidate: CandidateView,
-		labelKind: 'false_positive' | 'false_negative'
+		labelKind: 'false_rejection' | 'false_acceptance'
 	) {
 		if (!results) return;
 		if (!canCaptureOcrLabels) {
@@ -474,17 +474,17 @@
 		ocrLabelBusy = { ...ocrLabelBusy, [busyKey]: true };
 		try {
 			const response =
-				labelKind === 'false_positive'
-					? await markOcrFalsePositive(fetch, {
+				labelKind === 'false_rejection'
+					? await markOcrFalseRejection(fetch, {
 							run_id: results.run_id,
 							orig_filename: candidate.orig_filename
 						})
-					: await markOcrFalseNegative(fetch, {
+					: await markOcrFalseAcceptance(fetch, {
 							run_id: results.run_id,
 							orig_filename: candidate.orig_filename
 						});
 			toast(
-				`${labelKind === 'false_positive' ? 'False positive' : 'False negative'} captured`,
+				`${labelKind === 'false_rejection' ? 'False rejection' : 'False acceptance'} captured`,
 				'good'
 			);
 			saveOcrLabels(labelKind, [candidate.orig_filename]);
@@ -504,17 +504,17 @@
 			}
 		}
 
-	async function markSelectedFalsePositives() {
-		if (!results || selectedFalsePositives.length === 0 || batchFalsePositiveBusy) return;
-		batchFalsePositiveBusy = true;
+	async function markSelectedFalseRejections() {
+		if (!results || selectedFalseRejections.length === 0 || batchFalseRejectionBusy) return;
+		batchFalseRejectionBusy = true;
 		const captured: string[] = [];
 		const warnings: string[] = [];
 		const failures: Array<{ origFilename: string; detail: string }> = [];
-		for (const origFilename of selectedFalsePositives) {
-			const busyKey = ocrLabelBusyKey('false_positive', origFilename);
+		for (const origFilename of selectedFalseRejections) {
+			const busyKey = ocrLabelBusyKey('false_rejection', origFilename);
 			ocrLabelBusy = { ...ocrLabelBusy, [busyKey]: true };
 			try {
-				const response = await markOcrFalsePositive(fetch, {
+				const response = await markOcrFalseRejection(fetch, {
 					run_id: results.run_id,
 					orig_filename: origFilename
 				});
@@ -534,9 +534,9 @@
 				}
 			}
 		if (captured.length > 0) {
-			saveOcrLabels('false_positive', captured);
+			saveOcrLabels('false_rejection', captured);
 			toast(
-				`Marked ${captured.length} poster${captured.length === 1 ? '' : 's'} as OCR false positive`,
+				`Marked ${captured.length} poster${captured.length === 1 ? '' : 's'} as OCR false rejection`,
 				'good'
 			);
 		}
@@ -545,16 +545,16 @@
 		}
 			if (failures.length > 0) {
 				toast(
-					`Failed to mark ${failures.length} poster${failures.length === 1 ? '' : 's'} as false positive`,
+					`Failed to mark ${failures.length} poster${failures.length === 1 ? '' : 's'} as false rejection`,
 					'bad',
 					6000
 				);
-				selectedFalsePositives = failures.map((failure) => failure.origFilename);
+				selectedFalseRejections = failures.map((failure) => failure.origFilename);
 			} else {
-				selectedFalsePositives = [];
-				batchFalsePositiveMode = false;
+				selectedFalseRejections = [];
+				batchFalseRejectionMode = false;
 			}
-		batchFalsePositiveBusy = false;
+		batchFalseRejectionBusy = false;
 	}
 
 	function describeApiError(error: unknown, fallback: string): string {
@@ -814,44 +814,44 @@
 		{#if debugMode && !hasFullOcrSnapshot}
 			<div class="dev-hint">
 				Debug OCR labeling is disabled for this run because its archived OCR snapshot is incomplete.
-				Re-run the movie after the snapshot upgrade to capture false positives or false negatives.
+				Re-run the movie after the snapshot upgrade to capture false rejections or false acceptances.
 			</div>
 		{/if}
 		{#if debugMode && activeStage === 'ocr' && hasFullOcrSnapshot}
 			<div class="ocr-dev-tools">
-				{#if batchFalsePositiveMode}
+				{#if batchFalseRejectionMode}
 						<button
 							class="view-btn active"
-							onclick={markSelectedFalsePositives}
-							disabled={selectedFalsePositives.length === 0 || batchFalsePositiveBusy}
+							onclick={markSelectedFalseRejections}
+							disabled={selectedFalseRejections.length === 0 || batchFalseRejectionBusy}
 						>
-							{batchFalsePositiveBusy
+							{batchFalseRejectionBusy
 								? 'Capturing…'
-								: `Mark selected false positive (${selectedFalsePositives.length})`}
+								: `Mark selected false rejection (${selectedFalseRejections.length})`}
 						</button>
-					<button class="view-btn" onclick={selectAllVisibleFalsePositives} disabled={batchFalsePositiveBusy}>
+					<button class="view-btn" onclick={selectAllVisibleFalseRejections} disabled={batchFalseRejectionBusy}>
 						Select all visible
 					</button>
 						<button
 							class="view-btn"
-							onclick={() => (selectedFalsePositives = [])}
-							disabled={selectedFalsePositives.length === 0 || batchFalsePositiveBusy}
+							onclick={() => (selectedFalseRejections = [])}
+							disabled={selectedFalseRejections.length === 0 || batchFalseRejectionBusy}
 						>
 							Clear selection
 						</button>
 					<button
 						class="view-btn"
 							onclick={() => {
-								batchFalsePositiveMode = false;
-								selectedFalsePositives = [];
+								batchFalseRejectionMode = false;
+								selectedFalseRejections = [];
 							}}
-							disabled={batchFalsePositiveBusy}
+							disabled={batchFalseRejectionBusy}
 						>
 						Cancel
 					</button>
 				{:else}
-					<button class="view-btn" onclick={() => (batchFalsePositiveMode = true)}>
-						Select multiple false positives
+					<button class="view-btn" onclick={() => (batchFalseRejectionMode = true)}>
+						Select multiple false rejections
 					</button>
 				{/if}
 			</div>
@@ -929,12 +929,12 @@
 						selectable={tileSelectable}
 						onSelect={handlePosterSelect}
 							selected={
-								batchFalsePositiveMode &&
+								batchFalseRejectionMode &&
 								activeStage === 'ocr' &&
-								selectedFalsePositives.includes(c.orig_filename)
+								selectedFalseRejections.includes(c.orig_filename)
 							}
-						badgeText={activeStage === 'ocr' && falsePositiveSet.has(c.orig_filename)
-							? 'False positive'
+						badgeText={activeStage === 'ocr' && falseRejectionSet.has(c.orig_filename)
+							? 'False rejection'
 							: null}
 					/>
 				{/each}
@@ -990,21 +990,21 @@
 					<div class="pick-debug-row">
 						<button
 							class="pick-debug-btn"
-							class:fp={pickDebugLabelKind === 'false_positive'}
-							class:fn={pickDebugLabelKind === 'false_negative'}
+							class:fr={pickDebugLabelKind === 'false_rejection'}
+							class:fa={pickDebugLabelKind === 'false_acceptance'}
 							disabled={pickDebugBusy}
 							onclick={() => pickTarget && markPoster(pickTarget, pickDebugLabelKind)}
 						>
 							{#if pickDebugBusy}
 								Capturing…
-							{:else if pickDebugLabelKind === 'false_positive'}
+							{:else if pickDebugLabelKind === 'false_rejection'}
 								{pickAlreadyMarked
-									? 'Refresh OCR false positive capture'
-									: 'Mark as OCR false positive'}
+									? 'Refresh OCR false rejection capture'
+									: 'Mark as OCR false rejection'}
 							{:else}
 								{pickAlreadyMarked
-									? 'Refresh OCR false negative capture'
-									: 'Mark as OCR false negative'}
+									? 'Refresh OCR false acceptance capture'
+									: 'Mark as OCR false acceptance'}
 							{/if}
 						</button>
 						<p class="pick-debug-note">
@@ -1376,12 +1376,12 @@
 		font-size: 12px;
 		font-weight: 700;
 	}
-	.pick-debug-btn.fp {
+	.pick-debug-btn.fr {
 		background: color-mix(in srgb, var(--warn) 22%, var(--panel2));
 		border-color: color-mix(in srgb, var(--warn) 45%, transparent);
 		color: var(--text);
 	}
-	.pick-debug-btn.fn {
+	.pick-debug-btn.fa {
 		background: color-mix(in srgb, var(--bad) 18%, var(--panel2));
 		border-color: color-mix(in srgb, var(--bad) 45%, transparent);
 		color: var(--text);

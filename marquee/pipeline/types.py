@@ -29,6 +29,10 @@ class OCRCandidateResult:
     reason: str | None
     title_bbox: BoundingBox | None
     residual_boxes: list[OCRTextBox] = field(default_factory=list)
+    # Full structured OCR trace (see ocr_filter._process_image). JSON-native;
+    # carried back from the worker so the pipeline can persist it for the
+    # OCR-label tooling. None on the no-text/error early paths if unbuilt.
+    diagnostics: dict | None = None
 
 
 @dataclass
@@ -90,6 +94,23 @@ class CandidateScore:
     # filename of the survivor it collapsed into (used by the feedback
     # endpoint to remap a dedup-twin override onto its survivor).
     dedup_kept: str | None = None
+    # ── OCR diagnostics (durable copy of the text gate's read) ───────────
+    # What PaddleOCR actually detected for this candidate, captured for every
+    # poster that reached the OCR stage (accepted or rejected). Persisted into
+    # the immutable per-run archive so it survives re-runs — the work-dir
+    # pipeline.log is deleted and is per-title, not per-run. None until OCR
+    # runs (rejected earlier, or an archive predating this field).
+    ocr_detected_text: str | None = None
+    # JSON-native serialized forms (bbox as a list of [x, y] points; each
+    # residual box a dict of text/confidence/bbox/area/geometry_valid).
+    ocr_title_bbox: list | None = None
+    ocr_residual_boxes: list[dict] | None = None
+    # Full structured OCR trace (every detected box across all passes, the
+    # title match, per-box classification + significance reasoning, and the
+    # accept/reject math). Only persisted on DEBUG runs — the OCR-label tooling
+    # feeds it to an LLM to tune the text gate. None on non-DEBUG runs and on
+    # archives predating this field. See ocr_filter._process_image.
+    ocr_trace: dict | None = None
     # ── Stack layer (design: poster stacks) ──────────────────────────────
     # Ranked survivors of the same base design are grouped into a "stack".
     # stack_rank orders designs against each other; within a stack, members
@@ -124,6 +145,10 @@ class CandidateScore:
             "rejection_reason": self.rejection_reason,
             "original_download": self.original_download,
             "dedup_kept": self.dedup_kept,
+            "ocr_detected_text": self.ocr_detected_text,
+            "ocr_title_bbox": self.ocr_title_bbox,
+            "ocr_residual_boxes": self.ocr_residual_boxes,
+            "ocr_trace": self.ocr_trace,
             "stack_id": self.stack_id,
             "stack_rank": self.stack_rank,
             "stack_pos": self.stack_pos,

@@ -66,18 +66,18 @@ export function listMovieRuns(fetchFn: Fetch, movieId: number): Promise<MovieRun
 	return apiGet<MovieRuns>(fetchFn, `/movies/${movieId}/runs`);
 }
 
-export function markOcrFalsePositive(
+export function markOcrFalseRejection(
 	fetchFn: Fetch,
 	body: { run_id: string; orig_filename: string }
 ): Promise<OcrLabelCaptureResult> {
-	return apiSend<OcrLabelCaptureResult>(fetchFn, 'POST', '/dev/ocr-labels/false-positive', body);
+	return apiSend<OcrLabelCaptureResult>(fetchFn, 'POST', '/dev/ocr-labels/false-rejection', body);
 }
 
-export function markOcrFalseNegative(
+export function markOcrFalseAcceptance(
 	fetchFn: Fetch,
 	body: { run_id: string; orig_filename: string }
 ): Promise<OcrLabelCaptureResult> {
-	return apiSend<OcrLabelCaptureResult>(fetchFn, 'POST', '/dev/ocr-labels/false-negative', body);
+	return apiSend<OcrLabelCaptureResult>(fetchFn, 'POST', '/dev/ocr-labels/false-acceptance', body);
 }
 
 export function clearOcrLabels(fetchFn: Fetch): Promise<OcrLabelClearResult> {

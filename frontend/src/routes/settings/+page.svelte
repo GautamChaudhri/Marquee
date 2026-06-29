@@ -314,7 +314,7 @@
 					<div class="danger-info">
 						<span class="danger-label">Clear OCR label captures</span>
 						<span class="danger-desc">
-							Deletes every debug-only OCR false-positive and false-negative capture under
+							Deletes every debug-only OCR false-rejection and false-acceptance capture under
 							<code>data/debug/ocr-labels</code>. This does not touch pipeline run archives, movie
 							posters, or taste-profile data.
 						</span>

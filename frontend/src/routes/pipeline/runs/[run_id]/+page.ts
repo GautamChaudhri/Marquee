@@ -9,8 +9,8 @@ export const load: PageLoad = async ({ fetch, params }) => {
 		let ocrLabelState: OcrLabelRunState = {
 			run_id: params.run_id,
 			labels: {
-				false_positive: [],
-				false_negative: []
+				false_rejection: [],
+				false_acceptance: []
 			}
 		};
 		if (settings.app.debug) {
@@ -35,8 +35,8 @@ export const load: PageLoad = async ({ fetch, params }) => {
 			ocrLabelState: {
 				run_id: params.run_id,
 				labels: {
-					false_positive: [],
-					false_negative: []
+					false_rejection: [],
+					false_acceptance: []
 				}
 			} as OcrLabelRunState,
 			error: e instanceof Error ? e.message : 'Failed to load run'

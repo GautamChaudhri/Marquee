@@ -28,22 +28,22 @@ class OcrLabelRequest(BaseModel):
     orig_filename: str
 
 
-@router.post("/false-positive")
-async def mark_false_positive(
+@router.post("/false-rejection")
+async def mark_false_rejection(
     body: OcrLabelRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
     run = await _load_run(db, body.run_id)
-    return await _capture(run, body.orig_filename, "false_positive")
+    return await _capture(run, body.orig_filename, "false_rejection")
 
 
-@router.post("/false-negative")
-async def mark_false_negative(
+@router.post("/false-acceptance")
+async def mark_false_acceptance(
     body: OcrLabelRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
     run = await _load_run(db, body.run_id)
-    return await _capture(run, body.orig_filename, "false_negative")
+    return await _capture(run, body.orig_filename, "false_acceptance")
 
 
 @router.post("/clear")

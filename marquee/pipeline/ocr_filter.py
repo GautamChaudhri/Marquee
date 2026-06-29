@@ -441,6 +441,101 @@ def _bbox_center_distance(b1: BoundingBox, b2: BoundingBox) -> float:
     return ((c1x - c2x) ** 2 + (c1y - c2y) ** 2) ** 0.5
 
 
+def _residual_significance(
+    box: _DetectedBox | OCRTextBox,
+    *,
+    title_box: _DetectedBox | None,
+    min_big_area: float,
+    min_big_width: float,
+    prox: float,
+    all_tokens: set[str],
+) -> tuple[bool, str | None, bool]:
+    """Decide whether one residual (non-title) box is "significant" text.
+
+    Returns ``(is_significant, reason, proximity_discounted)`` where reason is
+    ``big_area`` / ``big_width`` / ``word_level`` / ``None``. This is the single
+    source of truth for the residual-significance rule — used both by the live
+    gate decision and by the OCR trace builder so they can never drift.
+    """
+    xs = [p[0] for p in box.bbox]
+    area = _polygon_area(box.bbox)
+    box_is_big = (
+        box.geometry_valid
+        and box.confidence >= pipeline_settings.OCR_CONFIDENCE_THRESHOLD
+        and (area >= min_big_area or (max(xs) - min(xs)) >= min_big_width)
+    )
+    if (
+        not box_is_big
+        and title_box is not None
+        and _bbox_center_distance(box.bbox, title_box.bbox) <= prox
+    ):
+        return False, None, True
+    if box_is_big:
+        return True, ("big_area" if area >= min_big_area else "big_width"), False
+    words_in_box = _normalise(box.text).split()
+    if any(_is_significant_residual_word(w, all_tokens) for w in words_in_box):
+        return True, "word_level", False
+    return False, None, False
+
+
+def _build_detected_boxes_trace(
+    boxes: list[_DetectedBox],
+    *,
+    title_box: _DetectedBox | None,
+    all_tokens: set[str],
+    title_tokens: set[str],
+    director_tokens: set[str],
+    image_width: int,
+    image_height: int,
+    min_big_area: float,
+    min_big_width: float,
+    prox: float,
+    pass_by_id: dict[int, str],
+) -> list[dict]:
+    """Per-box trace: what OCR read, how it was classified, and the significance
+    decision for residual boxes. Read-only — never changes the gate outcome."""
+    out: list[dict] = []
+    for box in boxes:
+        is_title = box is title_box
+        is_residual = not _matches_allowed(box.text, all_tokens)
+        category = classify_text_box(
+            box,
+            image_w=image_width,
+            image_h=image_height,
+            title_box=title_box,
+            title_tokens=title_tokens,
+            director_tokens=director_tokens,
+        )
+        if is_residual:
+            is_sig, sig_reason, discounted = _residual_significance(
+                box,
+                title_box=title_box,
+                min_big_area=min_big_area,
+                min_big_width=min_big_width,
+                prox=prox,
+                all_tokens=all_tokens,
+            )
+        else:
+            is_sig, sig_reason, discounted = False, None, False
+        out.append(
+            {
+                "text": box.text,
+                "confidence": float(box.confidence),
+                "bbox": [[float(x), float(y)] for x, y in box.bbox],
+                "area": _polygon_area(box.bbox),
+                "geometry_valid": bool(box.geometry_valid),
+                "pass": pass_by_id.get(id(box), "full"),
+                "category": category,
+                "is_title": is_title,
+                "is_residual": is_residual,
+                "is_significant": is_sig,
+                "significant_reason": sig_reason,
+                "proximity_discounted": discounted,
+            }
+        )
+    return out
+
+
 def _enhance_contrast(image: np.ndarray) -> np.ndarray:
     """Return a contrast-boosted copy of *image* to help OCR find low-contrast text."""
     from PIL import ImageEnhance
@@ -590,6 +685,23 @@ def _process_image(
         logger.warning("OCR failed for %s: %s", path.name, exc)
         return OCRCandidateResult(path, False, "", f"ocr_error: {exc}", None)
 
+    # Track which detection pass each surviving box came from (object identity
+    # is preserved through _dedupe_boxes) so the trace can attribute every read.
+    image_height, image_width = int(image.shape[0]), int(image.shape[1])
+    image_area = float(image_height * image_width)
+    min_big_area = pipeline_settings.OCR_RESIDUAL_SIGNIFICANT_AREA_FRACTION * image_area
+    min_big_width = pipeline_settings.OCR_RESIDUAL_SIGNIFICANT_WIDTH_FRACTION * image_width
+    prox = pipeline_settings.OCR_TITLE_PROXIMITY_PIXELS
+    pass_by_id: dict[int, str] = {}
+    for _b in full:
+        pass_by_id.setdefault(id(_b), "full")
+    for _b in top:
+        pass_by_id.setdefault(id(_b), "top")
+    for _b in bottom:
+        pass_by_id.setdefault(id(_b), "bottom")
+    passes_run = ["full"] + (["top", "bottom"] if pipeline_settings.OCR_DETAIL_PASSES else [])
+    retry_triggered = False
+
     boxes = _dedupe_boxes(full + top + bottom)
     detected_text = _normalise(" ".join(box.text for box in boxes))
 
@@ -597,6 +709,8 @@ def _process_image(
     # Many stylized title fonts (embossed, low-contrast, metallic) are
     # invisible to the base model but emerge after a 2× contrast boost.
     if not detected_text and pipeline_settings.OCR_ENHANCE_RETRY:
+        retry_triggered = True
+        passes_run.append("enhance_retry")
         enhanced = _enhance_contrast(image)
         retry_boxes = _detect_boxes(
             _worker_ocr,
@@ -605,19 +719,72 @@ def _process_image(
         )
         if retry_boxes:
             boxes = _dedupe_boxes(retry_boxes)
+            for _b in boxes:
+                pass_by_id[id(_b)] = "retry"
             detected_text = _normalise(" ".join(box.text for box in boxes))
+
+    def _trace(*, title_box: _DetectedBox | None, decision: dict) -> dict:
+        """Assemble the JSON-native OCR trace from the current detection state."""
+        return {
+            "image_size": {"width": image_width, "height": image_height},
+            "passes_run": passes_run,
+            "enhance_retry": {
+                "triggered": retry_triggered,
+                "recovered_text": bool(detected_text),
+            },
+            "detected_boxes": _build_detected_boxes_trace(
+                boxes,
+                title_box=title_box,
+                all_tokens=title_tokens | director_tokens,
+                title_tokens=title_tokens,
+                director_tokens=director_tokens,
+                image_width=image_width,
+                image_height=image_height,
+                min_big_area=min_big_area,
+                min_big_width=min_big_width,
+                prox=prox,
+                pass_by_id=pass_by_id,
+            ),
+            "title": (
+                {
+                    "text": title_box.text,
+                    "bbox": [[float(x), float(y)] for x, y in title_box.bbox],
+                    "match_score": _title_match_score(title_box.text, title_tokens),
+                }
+                if title_box is not None
+                else None
+            ),
+            "decision": decision,
+        }
 
     if not detected_text:
         # Even after retry, OCR found nothing.  The project target is
         # title-only posters, so textless art is rejected here; filter_batch
         # rescues no_text results only when the whole movie has zero titled
         # survivors (OCR_ACCEPT_NO_TEXT fallback).
-        return OCRCandidateResult(path, False, "", "no_text", None)
+        return OCRCandidateResult(
+            path,
+            False,
+            "",
+            "no_text",
+            None,
+            diagnostics=_trace(title_box=None, decision={"accepted": False, "reason": "no_text"}),
+        )
 
     all_tokens = title_tokens | director_tokens
     words = set(detected_text.split())
     if words & FORMAT_BLOCKLIST:
-        return OCRCandidateResult(path, False, detected_text, "format_blocklist", None)
+        return OCRCandidateResult(
+            path,
+            False,
+            detected_text,
+            "format_blocklist",
+            None,
+            diagnostics=_trace(
+                title_box=None,
+                decision={"accepted": False, "reason": "format_blocklist"},
+            ),
+        )
 
     title_candidates = [box for box in boxes if _matches_allowed(box.text, title_tokens)]
     title_box = max(
@@ -648,42 +815,25 @@ def _process_image(
     #   • a box past the geometry thresholds (area/width fraction) is
     #     significant no matter what the recognizer read out of it — garbled
     #     reads of big text ("70MM" -> "mm") must not slip the word rule
-    prox = pipeline_settings.OCR_TITLE_PROXIMITY_PIXELS
-    image_height, image_width = image.shape[0], image.shape[1]
-    image_area = float(image_height * image_width)
-    min_big_area = pipeline_settings.OCR_RESIDUAL_SIGNIFICANT_AREA_FRACTION * image_area
-    min_big_width = pipeline_settings.OCR_RESIDUAL_SIGNIFICANT_WIDTH_FRACTION * image_width
-    significant_residual: list[OCRTextBox] = []
-    for box in residual:
-        xs = [p[0] for p in box.bbox]
-        # Geometry significance only trusts confident, geometrically valid
-        # detections: the low-confidence strip passes (0.50-0.65) routinely
-        # hallucinate big boxes on imagery (truck grilles, ferns), and
-        # rotated-frame vertical reads shed garbled title-edge fragments at
-        # high confidence — both must stay subject to the word rule.
-        box_is_big = (
-            box.geometry_valid
-            and box.confidence >= pipeline_settings.OCR_CONFIDENCE_THRESHOLD
-            and (box.area >= min_big_area or (max(xs) - min(xs)) >= min_big_width)
-        )
-        # Spatial proximity discount: small artifacts adjacent to the title
-        # area are almost always OCR noise from the stylized title typography
-        # itself. Big confident boxes near the title are real text (studio
-        # branding, directed-by lines) and stay eligible.
-        if (
-            not box_is_big
-            and title_box is not None
-            and _bbox_center_distance(box.bbox, title_box.bbox) <= prox
-        ):
-            continue
-        if box_is_big:
-            significant_residual.append(box)
-            continue
-        # Word-level significance: only flag the box if it contains at least
-        # one word that is clearly non-title (4+ chars, not all-digit).
-        words_in_box = _normalise(box.text).split()
-        if any(_is_significant_residual_word(w, all_tokens) for w in words_in_box):
-            significant_residual.append(box)
+    # Geometry significance only trusts confident, geometrically valid
+    # detections: the low-confidence strip passes (0.50-0.65) routinely
+    # hallucinate big boxes on imagery (truck grilles, ferns), and rotated-frame
+    # vertical reads shed garbled title-edge fragments at high confidence — both
+    # must stay subject to the word rule. Small artifacts within
+    # OCR_TITLE_PROXIMITY_PIXELS of the title are discounted as title noise. The
+    # rule lives in _residual_significance (shared with the trace builder).
+    significant_residual: list[OCRTextBox] = [
+        box
+        for box in residual
+        if _residual_significance(
+            box,
+            title_box=title_box,
+            min_big_area=min_big_area,
+            min_big_width=min_big_width,
+            prox=prox,
+            all_tokens=all_tokens,
+        )[0]
+    ]
 
     # Gate on validity, rank on taste: one tagline is normal on official
     # posters and is handled by the text_residual rank penalty. Only reject
@@ -769,6 +919,17 @@ def _process_image(
             accepted = False
             reason = "no_title"
 
+    decision = {
+        "mode": text_mode,
+        "accepted": accepted,
+        "reason": reason,
+        "has_title": title_box is not None,
+        "require_title": pipeline_settings.OCR_REQUIRE_TITLE,
+        "significant_residual_count": len(significant_residual),
+        "max_residual_boxes": pipeline_settings.OCR_MAX_RESIDUAL_BOXES,
+        "significant_area_fraction": significant_area_fraction,
+        "max_residual_area_fraction": pipeline_settings.OCR_MAX_RESIDUAL_AREA_FRACTION,
+    }
     return OCRCandidateResult(
         image_path=path,
         accepted=accepted,
@@ -776,6 +937,7 @@ def _process_image(
         reason=reason,
         title_bbox=title_box.bbox if title_box else None,
         residual_boxes=residual,
+        diagnostics=_trace(title_box=title_box, decision=decision),
     )
 
 
