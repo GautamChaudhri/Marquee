@@ -106,6 +106,7 @@ _DIGIT_WORDS = {
 }
 
 _worker_ocr = None
+_worker_title_text = ""
 _worker_title_tokens: set[str] = set()
 _worker_director_tokens: set[str] = set()
 _WORKER_READY = "ready"
@@ -131,6 +132,344 @@ class _DetectedBox:
 def _normalise(text: str) -> str:
     text = re.sub(r"[^a-z0-9\s]", " ", text.lower())
     return " ".join(text.split())
+
+
+@dataclass(frozen=True)
+class _TitleEvidence:
+    source: str
+    group_text: str
+    is_fragment: bool
+
+
+def _compact_text(text: str) -> str:
+    return _normalise(text).replace(" ", "")
+
+
+def _bbox_bounds(bbox: BoundingBox) -> tuple[float, float, float, float]:
+    xs = [p[0] for p in bbox]
+    ys = [p[1] for p in bbox]
+    return min(xs), min(ys), max(xs), max(ys)
+
+
+def _bbox_width(bbox: BoundingBox) -> float:
+    left, _, right, _ = _bbox_bounds(bbox)
+    return right - left
+
+
+def _bbox_height(bbox: BoundingBox) -> float:
+    _, top, _, bottom = _bbox_bounds(bbox)
+    return bottom - top
+
+
+def _bbox_union(boxes: list[_DetectedBox]) -> BoundingBox:
+    left = min(min(p[0] for p in box.bbox) for box in boxes)
+    top = min(min(p[1] for p in box.bbox) for box in boxes)
+    right = max(max(p[0] for p in box.bbox) for box in boxes)
+    bottom = max(max(p[1] for p in box.bbox) for box in boxes)
+    return ((left, top), (right, top), (right, bottom), (left, bottom))
+
+
+def _box_center(box: _DetectedBox) -> tuple[float, float]:
+    return sum(p[0] for p in box.bbox) / 4, sum(p[1] for p in box.bbox) / 4
+
+
+def _reading_order(box: _DetectedBox) -> tuple[float, float]:
+    x_center, y_center = _box_center(box)
+    return y_center, x_center
+
+
+def _is_ordered_subsequence(needle: str, haystack: str) -> bool:
+    if not needle:
+        return False
+    position = 0
+    for char in needle:
+        position = haystack.find(char, position)
+        if position < 0:
+            return False
+        position += 1
+    return True
+
+
+def _compact_matches_title(
+    compact: str,
+    *,
+    title_compact: str,
+    title_token_compacts: set[str],
+    allow_letter_cluster: bool = False,
+) -> bool:
+    if len(compact) < 2 or (not title_compact and not title_token_compacts):
+        return False
+    if compact == title_compact or compact in title_token_compacts:
+        return True
+    if len(compact) >= 3 and title_compact and compact in title_compact:
+        return True
+
+    fuzzy_cutoff = max(0.72, pipeline_settings.OCR_FUZZY_CUTOFF)
+    for token in title_token_compacts:
+        if len(token) < 3:
+            continue
+        if len(compact) >= 3 and len(compact) <= len(token) and compact in token:
+            return True
+        if (
+            len(compact) >= 3
+            and 0.40 <= len(compact) / len(token) <= 1.10
+            and difflib.SequenceMatcher(None, compact, token).ratio() >= fuzzy_cutoff
+        ):
+            return True
+        if (
+            len(compact) >= 4
+            and len(compact) / len(token) >= 0.55
+            and len(compact) <= len(token)
+            and _is_ordered_subsequence(compact, token)
+        ):
+            return True
+
+    if title_compact and len(compact) >= 4:
+        if (
+            0.35 <= len(compact) / len(title_compact) <= 1.15
+            and difflib.SequenceMatcher(None, compact, title_compact).ratio() >= fuzzy_cutoff
+        ):
+            return True
+        if (
+            len(compact) / len(title_compact) >= 0.35
+            and _is_ordered_subsequence(compact, title_compact)
+        ):
+            return True
+
+    if allow_letter_cluster:
+        haystacks = {title_compact, *title_token_compacts}
+        for haystack in haystacks:
+            if len(compact) < 3 or len(haystack) < 3:
+                continue
+            if len(compact) / len(haystack) < 0.50:
+                continue
+            if len(compact) > len(haystack) + 1:
+                continue
+            if _is_ordered_subsequence(compact, haystack):
+                return True
+            if (
+                len(compact) / len(haystack) >= 0.75
+                and difflib.SequenceMatcher(None, compact, haystack).ratio()
+                >= max(0.80, fuzzy_cutoff)
+            ):
+                return True
+    return False
+
+
+def _same_line_groups(boxes: list[_DetectedBox], image_height: int) -> list[list[_DetectedBox]]:
+    groups: list[list[_DetectedBox]] = []
+    for box in sorted((b for b in boxes if b.geometry_valid), key=_reading_order):
+        _, y_center = _box_center(box)
+        height = max(1.0, _bbox_height(box.bbox))
+        for group in groups:
+            centers = [_box_center(existing)[1] for existing in group]
+            heights = [max(1.0, _bbox_height(existing.bbox)) for existing in group]
+            group_center = sum(centers) / len(centers)
+            threshold = max(image_height * 0.018, max([height, *heights]) * 0.70)
+            if abs(y_center - group_center) <= threshold:
+                group.append(box)
+                break
+        else:
+            groups.append([box])
+    return groups
+
+
+# Spaced/stylized title bands. PaddleOCR splits a widely letter-spaced title
+# ("A L I E N", big red "R U N") into one box per glyph. Those per-letter boxes
+# rarely re-assemble through text matching, and left as residuals each large
+# glyph trips the geometry-significance rule (big_area) — so a single stray
+# title letter rejects the poster, or no title forms at all. _letter_band_evidence
+# folds a wide, tall row (or a stacked pair of rows) of short high-confidence
+# boxes into the title when their letters cover a title token. Coverage is
+# order-independent, so it tolerates the scrambled reading order and misreads
+# ("3"/"7"/"P") that defeat the sequence matchers above.
+_BAND_MIN_BOXES = 3
+_BAND_MIN_WIDTH_FRACTION = 0.18
+_BAND_MIN_GLYPH_HEIGHT_FRACTION = 0.035
+_BAND_MAX_MEMBER_CHARS = 4
+_BAND_LETTER_COVERAGE = 0.55
+_BAND_LETTER_PRECISION = 0.55
+# High-precision rescue: when nearly every large glyph in the band belongs to the
+# title (taglines mix in off-title letters and miss this bar), a band that only
+# covers part of a heavily-misread title is still unmistakably the title.
+_BAND_HIGH_PRECISION = 0.80
+_BAND_HIGH_PRECISION_COVERAGE = 0.40
+_BAND_MERGE_GAP_RATIO = 1.2
+
+
+def _band_letters(boxes: list[_DetectedBox]) -> set[str]:
+    return {ch for box in boxes for ch in _compact_text(box.text) if ch.isalpha()}
+
+
+def _coverage_precision(letters: set[str], target: str) -> tuple[float, float]:
+    """Order-independent overlap of *letters* with the alphabetic letters of
+    *target*. Returns (coverage, precision): how much of the title the band
+    covers, and how much of the band belongs to the title."""
+    target_letters = {ch for ch in target if ch.isalpha()}
+    if not target_letters or not letters:
+        return 0.0, 0.0
+    overlap = letters & target_letters
+    return len(overlap) / len(target_letters), len(overlap) / len(letters)
+
+
+def _median(values: list[float]) -> float:
+    ordered = sorted(values)
+    return ordered[len(ordered) // 2]
+
+
+def _letter_band_evidence(
+    boxes: list[_DetectedBox],
+    *,
+    title_compact: str,
+    title_token_compacts: set[str],
+    image_width: int,
+    image_height: int,
+) -> dict[int, _TitleEvidence]:
+    conf_thr = pipeline_settings.OCR_CONFIDENCE_THRESHOLD
+    members = [
+        box
+        for box in boxes
+        if box.geometry_valid
+        and box.confidence >= conf_thr
+        and 1 <= len(_compact_text(box.text)) <= _BAND_MAX_MEMBER_CHARS
+    ]
+    if len(members) < _BAND_MIN_BOXES:
+        return {}
+    targets = [t for t in (title_compact, *title_token_compacts) if len(t) >= 2]
+    if not targets:
+        return {}
+
+    groups = _same_line_groups(members, image_height)
+    groups.sort(key=lambda g: sum(_box_center(b)[1] for b in g) / len(g))
+
+    # Candidate bands: each line on its own, plus runs of vertically adjacent
+    # lines (a stacked title like "ALIEN" over "ROMULUS"). Only merge lines whose
+    # vertical gap is within ~1 glyph height so the title never fuses with a
+    # distant credits block.
+    candidates: list[list[_DetectedBox]] = list(groups)
+    for i in range(len(groups) - 1):
+        run = list(groups[i])
+        for j in range(i + 1, len(groups)):
+            run_bottom = _bbox_bounds(_bbox_union(run))[3]
+            next_top = _bbox_bounds(_bbox_union(groups[j]))[1]
+            median_h = _median([_bbox_height(b.bbox) for b in (*run, *groups[j])])
+            if next_top - run_bottom > _BAND_MERGE_GAP_RATIO * median_h:
+                break
+            run = [*run, *groups[j]]
+            candidates.append(list(run))
+
+    evidence: dict[int, _TitleEvidence] = {}
+    for band in candidates:
+        if len(band) < _BAND_MIN_BOXES:
+            continue
+        if _bbox_width(_bbox_union(band)) < image_width * _BAND_MIN_WIDTH_FRACTION:
+            continue
+        if _median([_bbox_height(b.bbox) for b in band]) < (
+            image_height * _BAND_MIN_GLYPH_HEIGHT_FRACTION
+        ):
+            continue
+        letters = _band_letters(band)
+        if not letters:
+            continue
+        coverage, precision = max(
+            (_coverage_precision(letters, t) for t in targets), key=lambda cp: cp[0]
+        )
+        strong = coverage >= _BAND_LETTER_COVERAGE and precision >= _BAND_LETTER_PRECISION
+        high_precision = (
+            precision >= _BAND_HIGH_PRECISION and coverage >= _BAND_HIGH_PRECISION_COVERAGE
+        )
+        if strong or high_precision:
+            group_text = " ".join(b.text for b in sorted(band, key=lambda b: _box_center(b)[0]))
+            for box in band:
+                evidence.setdefault(
+                    id(box),
+                    _TitleEvidence(source="letter_band", group_text=group_text, is_fragment=True),
+                )
+    return evidence
+
+
+def _find_title_evidence(
+    boxes: list[_DetectedBox],
+    *,
+    title_text: str,
+    title_tokens: set[str],
+    image_width: int,
+    image_height: int,
+) -> dict[int, _TitleEvidence]:
+    title_compact = _compact_text(title_text)
+    token_compacts = {_compact_text(token) for token in title_tokens if _compact_text(token)}
+    evidence: dict[int, _TitleEvidence] = {}
+
+    for box in boxes:
+        compact = _compact_text(box.text)
+        if _matches_allowed(box.text, title_tokens) or _compact_matches_title(
+            compact,
+            title_compact=title_compact,
+            title_token_compacts=token_compacts,
+        ):
+            evidence[id(box)] = _TitleEvidence(
+                source="box",
+                group_text=box.text,
+                is_fragment=not _matches_allowed(box.text, title_tokens),
+            )
+
+    for group in _same_line_groups(boxes, image_height):
+        ordered = sorted(group, key=lambda box: _box_center(box)[0])
+        for start in range(len(ordered)):
+            stop_limit = min(len(ordered), start + 8)
+            for stop in range(start + 2, stop_limit + 1):
+                window = ordered[start:stop]
+                compact_parts = [_compact_text(box.text) for box in window]
+                compact = "".join(compact_parts)
+                if not compact:
+                    continue
+                all_short = all(len(part) <= 2 for part in compact_parts if part)
+                window_width = _bbox_width(_bbox_union(window))
+                allow_letter_cluster = all_short and window_width >= image_width * 0.18
+                if not _compact_matches_title(
+                    compact,
+                    title_compact=title_compact,
+                    title_token_compacts=token_compacts,
+                    allow_letter_cluster=allow_letter_cluster,
+                ):
+                    continue
+                group_text = " ".join(box.text for box in window)
+                for box in window:
+                    evidence[id(box)] = _TitleEvidence(
+                        source="line_window",
+                        group_text=group_text,
+                        is_fragment=True,
+                    )
+
+    # Spaced-title band: absorb whole rows of large glyphs that cover a title
+    # token but never matched as text. Existing per-box / line-window matches win.
+    for box_id, band_evidence in _letter_band_evidence(
+        boxes,
+        title_compact=title_compact,
+        title_token_compacts=token_compacts,
+        image_width=image_width,
+        image_height=image_height,
+    ).items():
+        evidence.setdefault(box_id, band_evidence)
+    return evidence
+
+
+def _synthetic_title_box(
+    boxes: list[_DetectedBox],
+    *,
+    fallback_text: str,
+) -> _DetectedBox | None:
+    if not boxes:
+        return None
+    ordered = sorted(boxes, key=_reading_order)
+    text = _normalise(" ".join(box.text for box in ordered)) or fallback_text
+    confidence = max(box.confidence for box in boxes)
+    return _DetectedBox(
+        text=text,
+        confidence=confidence,
+        bbox=_bbox_union(boxes),
+        geometry_valid=all(box.geometry_valid for box in boxes),
+    )
 
 
 def _add_digit_words(tokens: set[str]) -> None:
@@ -459,8 +798,14 @@ def _residual_significance(
     """
     xs = [p[0] for p in box.bbox]
     area = _polygon_area(box.bbox)
+    # A lone glyph is title/design typography, never a promotional text block, so
+    # it must not be "significant" on size alone — this is what spaced titles
+    # ("A L I E N", "R U N") shed when a stray letter escapes the title band.
+    # Multi-char garble ("mm" from "70MM", "4K") stays subject to the geometry
+    # rule so genuine format/junk text is still caught.
     box_is_big = (
-        box.geometry_valid
+        len(_compact_text(box.text)) >= 2
+        and box.geometry_valid
         and box.confidence >= pipeline_settings.OCR_CONFIDENCE_THRESHOLD
         and (area >= min_big_area or (max(xs) - min(xs)) >= min_big_width)
     )
@@ -482,6 +827,7 @@ def _build_detected_boxes_trace(
     boxes: list[_DetectedBox],
     *,
     title_box: _DetectedBox | None,
+    title_evidence: dict[int, _TitleEvidence],
     all_tokens: set[str],
     title_tokens: set[str],
     director_tokens: set[str],
@@ -496,15 +842,20 @@ def _build_detected_boxes_trace(
     decision for residual boxes. Read-only — never changes the gate outcome."""
     out: list[dict] = []
     for box in boxes:
-        is_title = box is title_box
-        is_residual = not _matches_allowed(box.text, all_tokens)
-        category = classify_text_box(
-            box,
-            image_w=image_width,
-            image_h=image_height,
-            title_box=title_box,
-            title_tokens=title_tokens,
-            director_tokens=director_tokens,
+        evidence = title_evidence.get(id(box))
+        is_title = evidence is not None
+        is_residual = not is_title
+        category = (
+            "title"
+            if is_title
+            else classify_text_box(
+                box,
+                image_w=image_width,
+                image_h=image_height,
+                title_box=title_box,
+                title_tokens=title_tokens,
+                director_tokens=director_tokens,
+            )
         )
         if is_residual:
             is_sig, sig_reason, discounted = _residual_significance(
@@ -527,6 +878,9 @@ def _build_detected_boxes_trace(
                 "pass": pass_by_id.get(id(box), "full"),
                 "category": category,
                 "is_title": is_title,
+                "is_title_fragment": bool(evidence and evidence.is_fragment),
+                "title_match_source": evidence.source if evidence else None,
+                "title_group_text": evidence.group_text if evidence else None,
                 "is_residual": is_residual,
                 "is_significant": is_sig,
                 "significant_reason": sig_reason,
@@ -558,8 +912,13 @@ def _title_match_score(text: str, title_tokens: set[str]) -> float:
     return sum(scores) / len(scores)
 
 
-def _init_worker(title_tokens: set[str], director_tokens: set[str]) -> None:
-    global _worker_ocr, _worker_title_tokens, _worker_director_tokens
+def _init_worker(
+    title_tokens: set[str],
+    director_tokens: set[str],
+    title_text: str = "",
+) -> None:
+    global _worker_ocr, _worker_title_text, _worker_title_tokens, _worker_director_tokens
+    _worker_title_text = _normalise(title_text) if title_text else " ".join(sorted(title_tokens))
     _worker_title_tokens = title_tokens
     _worker_director_tokens = director_tokens
     # Idempotent on the model load: the taste trainer re-initializes the
@@ -610,12 +969,21 @@ def _worker_main(
         task = task_queue.get()
         if task is None:
             break
-        index, path_string, task_title_tokens, task_director_tokens = task
+        if len(task) == 5:
+            index, path_string, task_title_text, task_title_tokens, task_director_tokens = task
+        else:
+            index, path_string, task_title_tokens, task_director_tokens = task
+            task_title_text = " ".join(sorted(task_title_tokens))
         result_queue.put(
             (
                 _WORKER_RESULT,
                 index,
-                _process_image(path_string, task_title_tokens, task_director_tokens),
+                _process_image(
+                    path_string,
+                    task_title_tokens,
+                    task_director_tokens,
+                    title_text=task_title_text,
+                ),
             )
         )
 
@@ -627,6 +995,8 @@ def _process_image(
     path_string: str,
     title_tokens: set[str] | None = None,
     director_tokens: set[str] | None = None,
+    *,
+    title_text: str | None = None,
 ) -> OCRCandidateResult:
     """Detect text and decide accept/reject against this image's own title.
 
@@ -635,10 +1005,14 @@ def _process_image(
     once-per-worker while the cheap title matching varies per task. When omitted
     they fall back to the worker-global tokens (the single-movie / test path).
     """
+    using_worker_title_text = title_tokens is None
     if title_tokens is None:
         title_tokens = _worker_title_tokens
     if director_tokens is None:
         director_tokens = _worker_director_tokens
+    if title_text is None:
+        title_text = _worker_title_text if using_worker_title_text else " ".join(sorted(title_tokens))
+    title_text = _normalise(title_text) if title_text else " ".join(sorted(title_tokens))
     path = Path(path_string)
     if _worker_ocr is None:
         return OCRCandidateResult(path, False, "", "ocr_error", None)
@@ -723,8 +1097,197 @@ def _process_image(
                 pass_by_id[id(_b)] = "retry"
             detected_text = _normalise(" ".join(box.text for box in boxes))
 
-    def _trace(*, title_box: _DetectedBox | None, decision: dict) -> dict:
+    title_recovery_triggered = False
+    title_recovery_recovered = False
+    title_recovery_error: str | None = None
+
+    def _build_state() -> tuple[
+        dict[int, _TitleEvidence],
+        _DetectedBox | None,
+        list[OCRTextBox],
+        list[OCRTextBox],
+        float,
+    ]:
+        title_evidence = _find_title_evidence(
+            boxes,
+            title_text=title_text or "",
+            title_tokens=title_tokens,
+            image_width=image_width,
+            image_height=image_height,
+        )
+        title_boxes = [box for box in boxes if id(box) in title_evidence]
+        title_box = _synthetic_title_box(
+            title_boxes,
+            fallback_text=title_text or " ".join(sorted(title_tokens)),
+        )
+        all_tokens = title_tokens | director_tokens
+        residual = [
+            OCRTextBox(
+                text=box.text,
+                confidence=box.confidence,
+                bbox=box.bbox,
+                area=_polygon_area(box.bbox),
+                geometry_valid=box.geometry_valid,
+            )
+            for box in boxes
+            if id(box) not in title_evidence
+        ]
+
+        # RC-2 + RC-3 + RC-4 fix: evaluate significance at the *word* level, not
+        # the box level.  A box that mixes title words with noise fragments (e.g.
+        # "1917 ll6l") used to fail the box-level _matches_allowed check entirely,
+        # causing the title words inside to trigger significant_residual.  Now:
+        #   • title-evidence fragments are removed from residuals first
+        #   • each residual word is individually classified against tokens
+        #   • pure-digit strings (catalog numbers, scan labels) are not significant
+        #   • SMALL boxes whose centre lies within OCR_TITLE_PROXIMITY_PIXELS of
+        #     the title bbox are treated as OCR fragments of the title and skipped
+        #   • a box past the geometry thresholds (area/width fraction) is
+        #     significant no matter what the recognizer read out of it — garbled
+        #     reads of big text ("70MM" -> "mm") must not slip the word rule
+        # Geometry significance only trusts confident, geometrically valid
+        # detections: the low-confidence strip passes (0.50-0.65) routinely
+        # hallucinate big boxes on imagery (truck grilles, ferns), and rotated-frame
+        # vertical reads shed garbled title-edge fragments at high confidence — both
+        # must stay subject to the word rule. Small artifacts within
+        # OCR_TITLE_PROXIMITY_PIXELS of the title are discounted as title noise. The
+        # rule lives in _residual_significance (shared with the trace builder).
+        significant_residual = [
+            box
+            for box in residual
+            if _residual_significance(
+                box,
+                title_box=title_box,
+                min_big_area=min_big_area,
+                min_big_width=min_big_width,
+                prox=prox,
+                all_tokens=all_tokens,
+            )[0]
+        ]
+        significant_area_fraction = (
+            sum(box.area for box in significant_residual) / image_area if image_area > 0 else 0.0
+        )
+        return (
+            title_evidence,
+            title_box,
+            residual,
+            significant_residual,
+            significant_area_fraction,
+        )
+
+    def _decide(
+        *,
+        title_box: _DetectedBox | None,
+        significant_residual: list[OCRTextBox],
+        significant_area_fraction: float,
+        detected_text_current: str,
+    ) -> dict:
+        text_mode = pipeline_settings.OCR_TEXT_MODE
+        if not detected_text_current:
+            accepted = False
+            reason = "no_text"
+        elif set(detected_text_current.split()) & FORMAT_BLOCKLIST:
+            accepted = False
+            reason = "format_blocklist"
+        elif text_mode == "textless":
+            # Accept only if NO title AND no significant residual.
+            has_title = title_box is not None
+            has_residual = len(significant_residual) > 0
+            accepted = not has_title and not has_residual
+            reason = None if accepted else ("has_title" if has_title else "text_heavy")
+        elif text_mode == "custom":
+            # Classify each significant residual box against the allow toggles.
+            allow_map = {
+                "title": pipeline_settings.OCR_ALLOW_TITLE,
+                "director": pipeline_settings.OCR_ALLOW_DIRECTOR,
+                "studio": pipeline_settings.OCR_ALLOW_STUDIO,
+                "rating": pipeline_settings.OCR_ALLOW_RATING,
+                "tagline": pipeline_settings.OCR_ALLOW_TAGLINE,
+            }
+            denied_boxes: list[OCRTextBox] = []
+            for box in significant_residual:
+                # Reconstruct the _DetectedBox from the OCRTextBox fields for
+                # classification (OCRTextBox is derived from _DetectedBox).
+                source = _DetectedBox(
+                    text=box.text,
+                    confidence=box.confidence,
+                    bbox=box.bbox,
+                    geometry_valid=box.geometry_valid,
+                )
+                category = classify_text_box(
+                    source,
+                    image_w=image_width,
+                    image_h=image_height,
+                    title_box=title_box,
+                    title_tokens=title_tokens,
+                    director_tokens=director_tokens,
+                )
+                if not allow_map.get(category, False):
+                    denied_boxes.append(box)
+
+            title_allowed = pipeline_settings.OCR_ALLOW_TITLE
+            denied_count = len(denied_boxes)
+            denied_area = sum(b.area for b in denied_boxes) / image_area if image_area > 0 else 0.0
+
+            accepted = (
+                denied_count <= pipeline_settings.OCR_MAX_RESIDUAL_BOXES
+                and denied_area <= pipeline_settings.OCR_MAX_RESIDUAL_AREA_FRACTION
+            )
+            reason = None if accepted else "text_heavy"
+            # Title gate: if title is denied, require that one is actually present.
+            if accepted and not title_allowed and title_box is not None:
+                accepted = False
+                reason = "has_title"
+            # Title requirement: if title is required but absent (and no title box).
+            if accepted and title_allowed and title_box is None and pipeline_settings.OCR_REQUIRE_TITLE:
+                accepted = False
+                reason = "no_title"
+        else:
+            # title_only (default): require title; reject significant residual
+            # above the count/area thresholds.
+            accepted = (
+                len(significant_residual) <= pipeline_settings.OCR_MAX_RESIDUAL_BOXES
+                and significant_area_fraction <= pipeline_settings.OCR_MAX_RESIDUAL_AREA_FRACTION
+            )
+            reason = None if accepted else "text_heavy"
+            # Title-only target: text that never matches the title (logos, taglines
+            # read in isolation) does not make a titled poster. The fallback remains
+            # opt-in via OCR_ACCEPT_NO_TEXT and is disabled by default.
+            if accepted and title_box is None and pipeline_settings.OCR_REQUIRE_TITLE:
+                accepted = False
+                reason = "no_title"
+
+        return {
+            "mode": text_mode,
+            "accepted": accepted,
+            "reason": reason,
+            "has_text": bool(detected_text_current),
+            "has_title": title_box is not None,
+            "require_title": pipeline_settings.OCR_REQUIRE_TITLE,
+            "significant_residual_count": len(significant_residual),
+            "max_residual_boxes": pipeline_settings.OCR_MAX_RESIDUAL_BOXES,
+            "significant_area_fraction": significant_area_fraction,
+            "max_residual_area_fraction": pipeline_settings.OCR_MAX_RESIDUAL_AREA_FRACTION,
+        }
+
+    def _trace(
+        *,
+        title_box: _DetectedBox | None,
+        title_evidence: dict[int, _TitleEvidence],
+        decision: dict,
+    ) -> dict:
         """Assemble the JSON-native OCR trace from the current detection state."""
+        title_fragments = [
+            {
+                "text": box.text,
+                "bbox": [[float(x), float(y)] for x, y in box.bbox],
+                "source": evidence.source,
+                "group_text": evidence.group_text,
+                "is_fragment": evidence.is_fragment,
+            }
+            for box in boxes
+            if (evidence := title_evidence.get(id(box))) is not None
+        ]
         return {
             "image_size": {"width": image_width, "height": image_height},
             "passes_run": passes_run,
@@ -732,9 +1295,19 @@ def _process_image(
                 "triggered": retry_triggered,
                 "recovered_text": bool(detected_text),
             },
+            "title_recovery": {
+                "enabled": pipeline_settings.OCR_TITLE_RECOVERY_ENABLED,
+                "triggered": title_recovery_triggered,
+                "recovered_title": title_recovery_recovered,
+                "confidence_threshold": (
+                    pipeline_settings.OCR_TITLE_RECOVERY_CONFIDENCE_THRESHOLD
+                ),
+                "error": title_recovery_error,
+            },
             "detected_boxes": _build_detected_boxes_trace(
                 boxes,
                 title_box=title_box,
+                title_evidence=title_evidence,
                 all_tokens=title_tokens | director_tokens,
                 title_tokens=title_tokens,
                 director_tokens=director_tokens,
@@ -750,6 +1323,7 @@ def _process_image(
                     "text": title_box.text,
                     "bbox": [[float(x), float(y)] for x, y in title_box.bbox],
                     "match_score": _title_match_score(title_box.text, title_tokens),
+                    "fragments": title_fragments,
                 }
                 if title_box is not None
                 else None
@@ -757,199 +1331,97 @@ def _process_image(
             "decision": decision,
         }
 
-    if not detected_text:
-        # Even after retry, OCR found nothing.  The project target is
-        # title-only posters, so textless art is rejected here; filter_batch
-        # rescues no_text results only when the whole movie has zero titled
-        # survivors (OCR_ACCEPT_NO_TEXT fallback).
-        return OCRCandidateResult(
-            path,
-            False,
-            "",
-            "no_text",
-            None,
-            diagnostics=_trace(title_box=None, decision={"accepted": False, "reason": "no_text"}),
-        )
-
-    all_tokens = title_tokens | director_tokens
-    words = set(detected_text.split())
-    if words & FORMAT_BLOCKLIST:
-        return OCRCandidateResult(
-            path,
-            False,
-            detected_text,
-            "format_blocklist",
-            None,
-            diagnostics=_trace(
-                title_box=None,
-                decision={"accepted": False, "reason": "format_blocklist"},
-            ),
-        )
-
-    title_candidates = [box for box in boxes if _matches_allowed(box.text, title_tokens)]
-    title_box = max(
-        title_candidates,
-        key=lambda box: _title_match_score(box.text, title_tokens),
-        default=None,
+    title_evidence, title_box, residual, significant_residual, significant_area_fraction = (
+        _build_state()
     )
-    residual = [
-        OCRTextBox(
-            text=box.text,
-            confidence=box.confidence,
-            bbox=box.bbox,
-            area=_polygon_area(box.bbox),
-            geometry_valid=box.geometry_valid,
-        )
-        for box in boxes
-        if not _matches_allowed(box.text, all_tokens)
-    ]
-
-    # RC-2 + RC-3 + RC-4 fix: evaluate significance at the *word* level, not
-    # the box level.  A box that mixes title words with noise fragments (e.g.
-    # "1917 ll6l") used to fail the box-level _matches_allowed check entirely,
-    # causing the title words inside to trigger significant_residual.  Now:
-    #   • each word is individually classified against title/director tokens
-    #   • pure-digit strings (catalog numbers, scan labels) are not significant
-    #   • SMALL boxes whose centre lies within OCR_TITLE_PROXIMITY_PIXELS of
-    #     the title bbox are treated as OCR fragments of the title and skipped
-    #   • a box past the geometry thresholds (area/width fraction) is
-    #     significant no matter what the recognizer read out of it — garbled
-    #     reads of big text ("70MM" -> "mm") must not slip the word rule
-    # Geometry significance only trusts confident, geometrically valid
-    # detections: the low-confidence strip passes (0.50-0.65) routinely
-    # hallucinate big boxes on imagery (truck grilles, ferns), and rotated-frame
-    # vertical reads shed garbled title-edge fragments at high confidence — both
-    # must stay subject to the word rule. Small artifacts within
-    # OCR_TITLE_PROXIMITY_PIXELS of the title are discounted as title noise. The
-    # rule lives in _residual_significance (shared with the trace builder).
-    significant_residual: list[OCRTextBox] = [
-        box
-        for box in residual
-        if _residual_significance(
-            box,
-            title_box=title_box,
-            min_big_area=min_big_area,
-            min_big_width=min_big_width,
-            prox=prox,
-            all_tokens=all_tokens,
-        )[0]
-    ]
-
-    # Gate on validity, rank on taste: one tagline is normal on official
-    # posters and is handled by the text_residual rank penalty. Only reject
-    # when the poster is genuinely text-heavy — many significant boxes or a
-    # large fraction of the image covered by non-title text.
-    #
-    # Mode-specific gate logic (design 18 §4):
-    #   title_only = current strict (require title, reject residual)
-    #   textless   = accept only textless (reject title + residual)
-    #   custom     = per-category allow/deny toggles
-    text_mode = pipeline_settings.OCR_TEXT_MODE
-    significant_area_fraction = (
-        sum(box.area for box in significant_residual) / image_area if image_area > 0 else 0.0
+    decision = _decide(
+        title_box=title_box,
+        significant_residual=significant_residual,
+        significant_area_fraction=significant_area_fraction,
+        detected_text_current=detected_text,
     )
 
-    if text_mode == "textless":
-        # Accept only if NO title AND no significant residual.
-        has_title = title_box is not None
-        has_residual = len(significant_residual) > 0
-        accepted = not has_title and not has_residual
-        reason = None if accepted else ("has_title" if has_title else "text_heavy")
-
-    elif text_mode == "custom":
-        # Classify each significant residual box against the allow toggles.
-        allow_map = {
-            "title": pipeline_settings.OCR_ALLOW_TITLE,
-            "director": pipeline_settings.OCR_ALLOW_DIRECTOR,
-            "studio": pipeline_settings.OCR_ALLOW_STUDIO,
-            "rating": pipeline_settings.OCR_ALLOW_RATING,
-            "tagline": pipeline_settings.OCR_ALLOW_TAGLINE,
-        }
-        denied_boxes: list[OCRTextBox] = []
-        for box in significant_residual:
-            # Reconstruct the _DetectedBox from the OCRTextBox fields for
-            # classification (OCRTextBox is derived from _DetectedBox).
-            source = _DetectedBox(
-                text=box.text,
-                confidence=box.confidence,
-                bbox=box.bbox,
-                geometry_valid=box.geometry_valid,
+    if (
+        pipeline_settings.OCR_TITLE_RECOVERY_ENABLED
+        and not decision["accepted"]
+        and decision["reason"] in {"no_text", "no_title"}
+        and not significant_residual
+    ):
+        title_recovery_triggered = True
+        passes_run.append("title_recovery")
+        try:
+            enhanced = _enhance_contrast(image)
+            recovery_image = np.asarray(
+                Image.fromarray(enhanced).resize(
+                    (image_width * 2, image_height * 2),
+                    Image.Resampling.LANCZOS,
+                )
             )
-            category = classify_text_box(
-                source,
-                image_w=image_width,
-                image_h=image_height,
-                title_box=title_box,
+            recovery_boxes = _dedupe_boxes(
+                _detect_boxes(
+                    _worker_ocr,
+                    recovery_image,
+                    pipeline_settings.OCR_TITLE_RECOVERY_CONFIDENCE_THRESHOLD,
+                    scale=2.0,
+                )
+            )
+            recovery_evidence = _find_title_evidence(
+                recovery_boxes,
+                title_text=title_text or "",
                 title_tokens=title_tokens,
-                director_tokens=director_tokens,
+                image_width=image_width,
+                image_height=image_height,
             )
-            if not allow_map.get(category, False):
-                denied_boxes.append(box)
+            recovered_title_boxes = [
+                box for box in recovery_boxes if id(box) in recovery_evidence
+            ]
+            if recovered_title_boxes:
+                title_recovery_recovered = True
+                for box in recovered_title_boxes:
+                    pass_by_id[id(box)] = "title_recovery"
+                boxes = _dedupe_boxes(boxes + recovered_title_boxes)
+                detected_text = _normalise(" ".join(box.text for box in boxes))
+                (
+                    title_evidence,
+                    title_box,
+                    residual,
+                    significant_residual,
+                    significant_area_fraction,
+                ) = _build_state()
+                decision = _decide(
+                    title_box=title_box,
+                    significant_residual=significant_residual,
+                    significant_area_fraction=significant_area_fraction,
+                    detected_text_current=detected_text,
+                )
+        except Exception as exc:
+            title_recovery_error = f"{type(exc).__name__}: {exc}"
+            logger.warning("OCR title recovery failed for %s: %s", path.name, exc)
 
-        title_allowed = pipeline_settings.OCR_ALLOW_TITLE
-        denied_count = len(denied_boxes)
-        denied_area = sum(b.area for b in denied_boxes) / image_area if image_area > 0 else 0.0
-
-        accepted = (
-            denied_count <= pipeline_settings.OCR_MAX_RESIDUAL_BOXES
-            and denied_area <= pipeline_settings.OCR_MAX_RESIDUAL_AREA_FRACTION
-        )
-        reason = None if accepted else "text_heavy"
-        # Title gate: if title is denied, require that one is actually present.
-        if accepted and not title_allowed and title_box is not None:
-            accepted = False
-            reason = "has_title"
-        # Title requirement: if title is required but absent (and no title box).
-        if accepted and title_allowed and title_box is None and pipeline_settings.OCR_REQUIRE_TITLE:
-            accepted = False
-            reason = "no_title"
-
-    else:
-        # title_only (default): unchanged — require title; reject significant
-        # residual above the count/area thresholds.
-        accepted = (
-            len(significant_residual) <= pipeline_settings.OCR_MAX_RESIDUAL_BOXES
-            and significant_area_fraction <= pipeline_settings.OCR_MAX_RESIDUAL_AREA_FRACTION
-        )
-        reason = None if accepted else "text_heavy"
-        # Title-only target: text that never matches the title (logos, taglines
-        # read in isolation) does not make a titled poster.  Same fallback path
-        # as no_text — rescued by filter_batch only if nothing titled survives.
-        if accepted and title_box is None and pipeline_settings.OCR_REQUIRE_TITLE:
-            accepted = False
-            reason = "no_title"
-
-    decision = {
-        "mode": text_mode,
-        "accepted": accepted,
-        "reason": reason,
-        "has_title": title_box is not None,
-        "require_title": pipeline_settings.OCR_REQUIRE_TITLE,
-        "significant_residual_count": len(significant_residual),
-        "max_residual_boxes": pipeline_settings.OCR_MAX_RESIDUAL_BOXES,
-        "significant_area_fraction": significant_area_fraction,
-        "max_residual_area_fraction": pipeline_settings.OCR_MAX_RESIDUAL_AREA_FRACTION,
-    }
     return OCRCandidateResult(
         image_path=path,
-        accepted=accepted,
+        accepted=decision["accepted"],
         detected_text=detected_text,
-        reason=reason,
+        reason=decision["reason"],
         title_bbox=title_box.bbox if title_box else None,
         residual_boxes=residual,
-        diagnostics=_trace(title_box=title_box, decision=decision),
+        diagnostics=_trace(
+            title_box=title_box,
+            title_evidence=title_evidence,
+            decision=decision,
+        ),
     )
 
 
 def apply_no_text_fallback(
     results: list[OCRCandidateResult],
 ) -> list[OCRCandidateResult]:
-    """Rescue no_text/no_title posters ONLY when nothing titled survived.
+    """Rescue no_text/no_title posters ONLY when the opt-in fallback is enabled.
 
     Textless posters must never compete against titled ones (project target:
-    title-only text), but a movie whose every poster defeats OCR should still
-    get output rather than an empty run. Apply this over **one movie's** result
-    subset — never across a cross-movie batch.
+    title-only text). The default is to keep no_text/no_title rejected; when
+    ``OCR_ACCEPT_NO_TEXT`` is manually enabled, apply this over **one movie's**
+    result subset — never across a cross-movie batch.
     """
     if not pipeline_settings.OCR_ACCEPT_NO_TEXT:
         return results
@@ -999,7 +1471,10 @@ class PosterTextFilter:
         """Single-movie batch: every poster matched against this movie's title."""
         if not paths:
             return []
-        items = [(path, self.title_tokens, self.director_tokens) for path in paths]
+        items = [
+            (path, self.title, self.title_tokens, self.director_tokens)
+            for path in paths
+        ]
         results = self.run_ocr_batch(items, num_workers=self.num_workers, progress=progress)
         results = apply_no_text_fallback(results)
         logger.info(
@@ -1044,7 +1519,10 @@ class PosterTextFilter:
     @staticmethod
     def run_ocr_tasks(
         pool: OcrPool,
-        items: list[tuple[Path, set[str], set[str]]],
+        items: list[
+            tuple[Path, set[str], set[str]]
+            | tuple[Path, str, set[str], set[str]]
+        ],
         *,
         progress: Callable[[int, int], None] | None = None,
     ) -> list[OCRCandidateResult]:
@@ -1057,8 +1535,13 @@ class PosterTextFilter:
         if not items:
             return []
 
-        for index, (path, title_tokens, director_tokens) in enumerate(items):
-            pool.task_queue.put((index, str(path), title_tokens, director_tokens))
+        for index, item in enumerate(items):
+            if len(item) == 4:
+                path, title_text, title_tokens, director_tokens = item
+            else:
+                path, title_tokens, director_tokens = item
+                title_text = " ".join(sorted(title_tokens))
+            pool.task_queue.put((index, str(path), title_text, title_tokens, director_tokens))
         for _ in pool.workers:
             pool.task_queue.put(None)
 
@@ -1095,13 +1578,15 @@ class PosterTextFilter:
 
     @staticmethod
     def run_ocr_batch(
-        items: list[tuple[Path, set[str], set[str]]],
+        items: list[
+            tuple[Path, set[str], set[str]]
+            | tuple[Path, str, set[str], set[str]]
+        ],
         *,
         num_workers: int | None = None,
         progress: Callable[[int, int], None] | None = None,
     ) -> list[OCRCandidateResult]:
-        """Run OCR over many ``(path, title_tokens, director_tokens)`` items in
-        ONE worker pool, returning per-item results in input order.
+        """Run OCR over many OCR task items in ONE worker pool.
 
         Each worker loads PaddleOCR once and then processes a heterogeneous
         queue, so a cross-movie batch pays the model-load cost a single time
@@ -1209,5 +1694,10 @@ class PosterTextFilter:
         worker_queue.join_thread()
 
     def is_acceptable(self, path: Path) -> OCRCandidateResult:
-        _init_worker(self.title_tokens, self.director_tokens)
-        return _process_image(str(path), self.title_tokens, self.director_tokens)
+        _init_worker(self.title_tokens, self.director_tokens, self.title)
+        return _process_image(
+            str(path),
+            self.title_tokens,
+            self.director_tokens,
+            title_text=self.title,
+        )

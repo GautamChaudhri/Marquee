@@ -336,7 +336,8 @@ def test_ocr_batch_persists_diagnostics_to_records(
 
     def _fake_run_ocr_batch(items, *, num_workers=None, progress=None):
         results = []
-        for path, _title_tokens, _director_tokens in items:
+        for item in items:
+            path = item[0]
             if path.name == "accepted.jpg":
                 results.append(
                     OCRCandidateResult(

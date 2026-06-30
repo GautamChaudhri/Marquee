@@ -76,6 +76,8 @@ KNOB_GROUPS: list[dict[str, Any]] = [
             "OCR_REQUIRE_TITLE",
             "OCR_ACCEPT_NO_TEXT",
             "OCR_ENHANCE_RETRY",
+            "OCR_TITLE_RECOVERY_ENABLED",
+            "OCR_TITLE_RECOVERY_CONFIDENCE_THRESHOLD",
         ],
     },
     {
@@ -247,6 +249,13 @@ KNOB_META: dict[str, dict[str, Any]] = {
     "OCR_REQUIRE_TITLE": {"kind": "bool"},
     "OCR_ACCEPT_NO_TEXT": {"kind": "bool"},
     "OCR_ENHANCE_RETRY": {"kind": "bool"},
+    "OCR_TITLE_RECOVERY_ENABLED": {"kind": "bool"},
+    "OCR_TITLE_RECOVERY_CONFIDENCE_THRESHOLD": {
+        "kind": "float",
+        "min": 0,
+        "max": 1,
+        "step": 0.05,
+    },
     # ── Style / taste ────────────────────────────────────────────────
     "K_NEIGHBORS": {"kind": "int", "min": 1, "max": 100, "step": 1},
     "KNN_WEIGHTING": {"kind": "enum", "options": ["mean", "softmax"]},

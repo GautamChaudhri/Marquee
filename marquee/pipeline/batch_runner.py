@@ -557,12 +557,12 @@ def _ocr_batch(
     result collection runs.  Otherwise a fresh pool is created and destroyed
     inside the call (backward-compatible single-shot path).
     """
-    items: list[tuple[Path, set[str], set[str]]] = []
+    items: list[tuple[Path, str, set[str], set[str]]] = []
     owners: list[_BatchMovie] = []
     for ctx in contexts:
         tokens = PosterTextFilter(ctx.title)  # cheap — no model load
         for path in ctx.style_survivors:
-            items.append((path, tokens.title_tokens, tokens.director_tokens))
+            items.append((path, tokens.title, tokens.title_tokens, tokens.director_tokens))
             owners.append(ctx)
 
     for ctx in contexts:

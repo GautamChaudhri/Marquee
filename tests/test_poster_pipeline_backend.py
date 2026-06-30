@@ -116,7 +116,8 @@ def test_batch_ocr_fallback_is_isolated_per_movie(tmp_path: Path, monkeypatch: p
 
     def fake_run(items, *, num_workers=None, progress=None):
         results = []
-        for path, _title_tokens, _director_tokens in items:
+        for item in items:
+            path = item[0]
             if path.name == "a1.jpg":
                 results.append(OCRCandidateResult(path, True, "movie a", None, _BBOX))
             else:

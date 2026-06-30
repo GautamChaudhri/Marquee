@@ -71,6 +71,8 @@ def test_pipeline_snapshot_includes_full_ocr_context():
         "residual_significant_area_fraction",
         "residual_significant_width_fraction",
         "enhance_retry",
+        "title_recovery_enabled",
+        "title_recovery_confidence_threshold",
     }.issubset(snapshot["ocr"])
 
 
