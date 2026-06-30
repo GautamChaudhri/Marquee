@@ -672,6 +672,8 @@ export interface PipelineRunSummary {
 export interface ReviewQueueItem {
 	movie: MovieListItem;
 	run: PipelineRunSummary;
+	/** Image URL of the run's auto-pick ("1A"); null for runs predating the field. */
+	auto_pick_poster_url?: string | null;
 	results_url: string;
 }
 

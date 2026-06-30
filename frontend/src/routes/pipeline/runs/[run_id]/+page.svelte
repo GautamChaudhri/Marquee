@@ -330,7 +330,7 @@
 		return entries
 			.sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]))
 			.slice(0, 8)
-			.map(([k, v]) => ({ value: Math.abs(v) / max, label: k }));
+			.map(([k, v]) => ({ value: Math.abs(v) / max, label: k, signed: v }));
 	}
 
 	// ── Live tracking while running ──────────────────────────────────────────────
@@ -359,40 +359,56 @@
 	onMount(() => {
 		if (run && !('ranked' in run)) startTracking(run.events_url);
 	});
-	onDestroy(() => stop?.());
+	onDestroy(() => {
+		stop?.();
+		if (confirmTimer) clearTimeout(confirmTimer);
+	});
 
-	// ── Feedback (pick / approve / reject) ───────────────────────────────────────
-	let pickOpen = $state(false);
-	let pickTarget = $state<CandidateView | null>(null);
+	// ── Inspector + feedback (inspect / approve / override / reject) ──────────────
+	let inspectedPoster = $state<CandidateView | null>(null);
 	let deploy = $state(true);
 	let busy = $state(false);
 	let rejectOpen = $state(false);
 	let lastEventId = $state<string | null>(null);
+	let confirmingApprove = $state(false);
+	let confirmTimer: ReturnType<typeof setTimeout> | null = null;
+	let lightboxOpen = $state(false);
 
-	const pickIsAuto = $derived(
-		!!pickTarget && !!autoPick && pickTarget.orig_filename === autoPick.orig_filename
+	/** The poster the hero inspects — defaults to the auto-pick until the user
+	 *  clicks another tile. */
+	const inspected = $derived(inspectedPoster ?? autoPick);
+	const inspectIsAuto = $derived(
+		!!inspected && !!autoPick && inspected.orig_filename === autoPick.orig_filename
 	);
-	const pickDebugLabelKind = $derived.by<'false_rejection' | 'false_acceptance' | null>(() => {
-		if (!pickTarget || !debugMode) return null;
-		if (pickTarget.rank != null) return 'false_acceptance';
+	const inspectDebugLabelKind = $derived.by<'false_rejection' | 'false_acceptance' | null>(() => {
+		if (!inspected || !debugMode) return null;
+		if (inspected.rank != null) return 'false_acceptance';
 		return activeStage === 'ocr' ? 'false_rejection' : null;
 	});
-	const pickDebugBusy = $derived.by(() =>
-		pickTarget && pickDebugLabelKind
-			? isOcrLabelBusy(pickDebugLabelKind, pickTarget.orig_filename)
+	const inspectDebugBusy = $derived.by(() =>
+		inspected && inspectDebugLabelKind
+			? isOcrLabelBusy(inspectDebugLabelKind, inspected.orig_filename)
 			: false
 	);
-	const pickAlreadyMarked = $derived.by(() =>
-		pickTarget && pickDebugLabelKind
-			? ocrLabelState[pickDebugLabelKind].includes(pickTarget.orig_filename)
+	const inspectAlreadyMarked = $derived.by(() =>
+		inspected && inspectDebugLabelKind
+			? ocrLabelState[inspectDebugLabelKind].includes(inspected.orig_filename)
 			: false
 	);
 
-	function openPick(c: CandidateView) {
-		if (!results) return;
-		pickTarget = c;
-		deploy = true;
-		pickOpen = true;
+	/** Approve/Override uses a lightweight two-step inline confirm in the hero
+	 *  (the modal pick dialog is gone). First click arms; it auto-disarms after 3s. */
+	function startConfirm() {
+		confirmingApprove = true;
+		if (confirmTimer) clearTimeout(confirmTimer);
+		confirmTimer = setTimeout(() => (confirmingApprove = false), 3000);
+	}
+	function cancelConfirm() {
+		confirmingApprove = false;
+		if (confirmTimer) {
+			clearTimeout(confirmTimer);
+			confirmTimer = null;
+		}
 	}
 
 	function handlePosterSelect(candidate: CandidateView) {
@@ -400,7 +416,8 @@
 			toggleFalseRejectionSelection(candidate.orig_filename);
 			return;
 		}
-		openPick(candidate);
+		inspectedPoster = candidate;
+		cancelConfirm();
 	}
 
 	function selectAllVisibleFalseRejections() {
@@ -410,20 +427,20 @@
 	}
 
 	async function confirmPick() {
-		if (!pickTarget || !results) return;
+		if (!inspected || !results) return;
 		busy = true;
 		try {
 			const res = await submitFeedback(fetch, {
 				run_id: results.run_id,
-				action: pickIsAuto ? 'approve' : 'override',
-				selected_filename: pickTarget.orig_filename,
+				action: inspectIsAuto ? 'approve' : 'override',
+				selected_filename: inspected.orig_filename,
 				deploy
 			});
 			lastEventId = res.event_id;
 			const where = res.deployed_to ? ' · deployed' : res.deploy_error ? ' · deploy failed' : '';
 			toast(`Poster selected${where}`, res.deploy_error ? 'info' : 'good');
 			if (res.deploy_error) toast(res.deploy_error, 'bad', 5000);
-			pickOpen = false;
+			cancelConfirm();
 			await reload();
 		} catch (e) {
 			toast(e instanceof Error ? e.message : 'Selection failed', 'bad');
@@ -602,8 +619,12 @@
 		void reload();
 	}
 
-	const pickGrad = $derived(pickTarget ? gradientFor(pickTarget.orig_filename) : gradientFor('?'));
+	function onWindowKeydown(e: KeyboardEvent) {
+		if (e.key === 'Escape' && lightboxOpen) lightboxOpen = false;
+	}
 </script>
+
+<svelte:window onkeydown={onWindowKeydown} />
 
 <div class="crumb">
 	<a href="/pipeline">Pipeline</a><span>/</span><span>Run {data.runId.slice(0, 8)}</span>
@@ -623,7 +644,7 @@
 		<p class="run-hint">Live progress — results appear here as soon as the run finishes.</p>
 	</div>
 {:else if results}
-	<!-- ── Header / auto-pick hero ── -->
+	<!-- ── Header / inspector hero ── -->
 	<div class="hero">
 		<div
 			class="hero-poster"
@@ -631,8 +652,16 @@
 				results.movie.title ?? '?'
 			)[1]}"
 		>
-			{#if autoPick}
-				<img src={autoPick.poster_url} alt="Auto-pick" />
+			{#if inspected}
+				<img src={inspected.poster_url} alt="Inspected poster" />
+				<button
+					class="maximize-btn"
+					title="Maximize"
+					aria-label="Maximize poster"
+					onclick={() => (lightboxOpen = true)}
+				>
+					<Icon name="maximize" size={16} />
+				</button>
 			{:else}
 				<div class="no-pick">No rankable candidate</div>
 			{/if}
@@ -651,31 +680,103 @@
 				</div>
 			</div>
 
-			{#if autoPick}
+			{#if inspected}
 				<div class="auto-line">
-					<span class="auto-badge">AUTO-PICK</span>
-					{#if autoPick.final_score != null}<span class="mono score"
-							>{autoPick.final_score.toFixed(3)}</span
+					{#if inspectIsAuto}
+						<span class="auto-badge">AUTO-PICK</span>
+					{:else}
+						<span class="auto-badge inspect">INSPECTING</span>
+					{/if}
+					{#if inspected.final_score != null}<span class="mono score"
+							>{inspected.final_score.toFixed(3)}</span
 						>{/if}
 				</div>
-				{#if autoPick.explanations?.length}
+
+				<div class="hero-meta">
+					{#if inspected.rank != null}
+						<span class="meta-chip">Rank {inspected.rank}</span>
+					{/if}
+					{#if inspected.stack_rank != null}
+						<span class="meta-chip"
+							>Design {inspected.stack_rank}{#if inspected.stack_label}
+								· {inspected.stack_label}{/if}{#if inspected.stack_size && inspected.stack_size > 1}
+								(of {inspected.stack_size}){/if}</span
+						>
+					{/if}
+					{#if inspected.rank == null && (inspected.rejection_explanation || inspected.stage_reached)}
+						<span class="meta-chip low"
+							>{inspected.rejection_explanation ?? `Stopped at ${inspected.stage_reached}`}</span
+						>
+					{/if}
+				</div>
+
+				{#if inspected.explanations?.length}
 					<ul class="explain">
-						{#each autoPick.explanations.slice(0, 5) as line, i (i)}<li>{line}</li>{/each}
+						{#each inspected.explanations.slice(0, 5) as line, i (i)}<li>{line}</li>{/each}
 					</ul>
 				{/if}
-				{#if autoPick.contributions}
-					<div class="contrib"><ScoreBar segments={contribSegments(autoPick.contributions)} /></div>
+				{#if inspected.contributions}
+					<div class="contrib">
+						<ScoreBar showLabels segments={contribSegments(inspected.contributions)} />
+					</div>
+				{/if}
+
+				{#if !results.reviewed}
+					<label class="toggle">
+						<input type="checkbox" bind:checked={deploy} />
+						Deploy to the movie folder now
+					</label>
+				{/if}
+
+				{#if debugMode && inspectDebugLabelKind && !hasFullOcrSnapshot}
+					<p class="pick-debug-note">
+						Debug OCR labeling is disabled for this run because its archived OCR snapshot is
+						incomplete. Re-run the movie after the snapshot upgrade first.
+					</p>
+				{:else if debugMode && inspectDebugLabelKind}
+					<div class="pick-debug-row">
+						<button
+							class="pick-debug-btn"
+							class:fr={inspectDebugLabelKind === 'false_rejection'}
+							class:fa={inspectDebugLabelKind === 'false_acceptance'}
+							disabled={inspectDebugBusy}
+							onclick={() => inspected && markPoster(inspected, inspectDebugLabelKind)}
+						>
+							{#if inspectDebugBusy}
+								Capturing…
+							{:else if inspectDebugLabelKind === 'false_rejection'}
+								{inspectAlreadyMarked
+									? 'Refresh OCR false rejection capture'
+									: 'Mark as OCR false rejection'}
+							{:else}
+								{inspectAlreadyMarked
+									? 'Refresh OCR false acceptance capture'
+									: 'Mark as OCR false acceptance'}
+							{/if}
+						</button>
+						<p class="pick-debug-note">
+							{inspectAlreadyMarked ? 'Already captured. ' : ''}Saves the poster image and OCR
+							diagnostics under <code>data/debug/ocr-labels</code>.
+						</p>
+					</div>
 				{/if}
 			{/if}
 
 			<div class="hero-actions">
-				<button
-					class="btn-gold"
-					onclick={() => autoPick && openPick(autoPick)}
-					disabled={!autoPick || results.reviewed}
-				>
-					Approve auto-pick
-				</button>
+				{#if confirmingApprove}
+					<button class="btn-gold" onclick={confirmPick} disabled={busy}>
+						{busy ? 'Working…' : 'Confirm'}
+					</button>
+					<button class="btn-ghost" onclick={cancelConfirm} disabled={busy}>Cancel</button>
+				{:else}
+					<button
+						class="btn-gold"
+						onclick={startConfirm}
+						disabled={!inspected || results.reviewed}
+					>
+						{inspectIsAuto ? 'Approve auto-pick' : 'Override with this pick'}
+					</button>
+				{/if}
 				<button class="btn-ghost" onclick={() => (rejectOpen = true)} disabled={results.reviewed}>
 					Reject all
 				</button>
@@ -870,6 +971,7 @@
 										candidate={c}
 										kind="ranked"
 										selectable={tileSelectable}
+										inspected={inspected?.orig_filename === c.orig_filename}
 										onSelect={handlePosterSelect}
 										accent={stackColor(sid)}
 										onCollapse={c.stack_pos === 1 ? () => toggleStack(sid) : undefined}
@@ -879,7 +981,8 @@
 								<PosterStack
 									members={group}
 									selectable={tileSelectable}
-									onSelect={openPick}
+									inspected={inspected?.orig_filename === group[0].orig_filename}
+									onSelect={handlePosterSelect}
 									onToggle={() => toggleStack(sid)}
 								/>
 							{/if}
@@ -888,6 +991,7 @@
 								candidate={item as CandidateView}
 								kind="ranked"
 								selectable={tileSelectable}
+								inspected={inspected?.orig_filename === (item as CandidateView).orig_filename}
 								onSelect={handlePosterSelect}
 							/>
 						{/if}
@@ -910,6 +1014,7 @@
 										candidate={c}
 										kind="ranked"
 										selectable={tileSelectable}
+										inspected={inspected?.orig_filename === c.orig_filename}
 										onSelect={handlePosterSelect}
 									/>
 								{/each}
@@ -927,6 +1032,7 @@
 						candidate={c}
 						kind={activeStage === 'ranked' ? 'ranked' : 'rejected'}
 						selectable={tileSelectable}
+						inspected={inspected?.orig_filename === c.orig_filename}
 						onSelect={handlePosterSelect}
 							selected={
 								batchFalseRejectionMode &&
@@ -943,80 +1049,17 @@
 	{/if}
 {/if}
 
-<!-- ── Pick confirm ── -->
-<ConfirmDialog
-	open={pickOpen}
-	title={pickIsAuto ? 'Approve auto-pick' : 'Choose this poster'}
-	confirmLabel={pickIsAuto ? 'Approve' : 'Set as chosen'}
-	confirmDisabled={results?.reviewed ?? false}
-	{busy}
-	onConfirm={confirmPick}
-	onCancel={() => (pickOpen = false)}
->
-	{#if pickTarget}
-		<div class="pick-row">
-			<div class="pick-poster" style="--c0:{pickGrad[0]}; --c1:{pickGrad[1]}">
-				<img src={pickTarget.poster_url} alt="Selected poster" />
-			</div>
-			<div class="pick-info">
-				{#if pickTarget.rank != null}
-					<div class="pick-meta">
-						Rank {pickTarget.rank}{#if pickTarget.final_score != null}
-							· <span class="mono">{pickTarget.final_score.toFixed(3)}</span>{/if}
-					</div>
-				{:else if pickTarget.rejection_explanation}
-					<div class="pick-meta low">{pickTarget.rejection_explanation}</div>
-				{/if}
-				<p class="pick-note">
-					Writes a positive label, adds it to your taste profile{#if !pickIsAuto}, and marks the
-						auto-pick as passed over{/if}.
-				</p>
-				<label class="toggle">
-					<input type="checkbox" bind:checked={deploy} />
-					Deploy to the movie folder now
-				</label>
-				{#if results?.reviewed}
-					<p class="pick-note">
-						This run is already reviewed, so the selection action is disabled. Debug OCR labeling is
-						still available below.
-					</p>
-				{/if}
-				{#if debugMode && pickDebugLabelKind && !hasFullOcrSnapshot}
-					<p class="pick-debug-note">
-						Debug OCR labeling is disabled for this run because its archived OCR snapshot is incomplete.
-						Re-run the movie after the snapshot upgrade first.
-					</p>
-				{:else if debugMode && pickDebugLabelKind}
-					<div class="pick-debug-row">
-						<button
-							class="pick-debug-btn"
-							class:fr={pickDebugLabelKind === 'false_rejection'}
-							class:fa={pickDebugLabelKind === 'false_acceptance'}
-							disabled={pickDebugBusy}
-							onclick={() => pickTarget && markPoster(pickTarget, pickDebugLabelKind)}
-						>
-							{#if pickDebugBusy}
-								Capturing…
-							{:else if pickDebugLabelKind === 'false_rejection'}
-								{pickAlreadyMarked
-									? 'Refresh OCR false rejection capture'
-									: 'Mark as OCR false rejection'}
-							{:else}
-								{pickAlreadyMarked
-									? 'Refresh OCR false acceptance capture'
-									: 'Mark as OCR false acceptance'}
-							{/if}
-						</button>
-						<p class="pick-debug-note">
-							{pickAlreadyMarked ? 'Already captured. ' : ''}Saves the poster image and OCR
-							diagnostics under <code>data/debug/ocr-labels</code>.
-						</p>
-					</div>
-				{/if}
-			</div>
-		</div>
-	{/if}
-</ConfirmDialog>
+<!-- ── Maximized poster lightbox ── -->
+{#if lightboxOpen && inspected}
+	<!-- svelte-ignore a11y_click_events_have_key_events -->
+	<!-- svelte-ignore a11y_no_static_element_interactions -->
+	<div class="lightbox" onclick={() => (lightboxOpen = false)}>
+		<button class="lightbox-close" aria-label="Close" onclick={() => (lightboxOpen = false)}>
+			<Icon name="x" size={22} />
+		</button>
+		<img src={inspected.poster_url} alt="Maximized poster" />
+	</div>
+{/if}
 
 <!-- ── Reject-all confirm ── -->
 <ConfirmDialog
@@ -1160,9 +1203,30 @@
 		background: var(--gold);
 		color: var(--on-gold);
 	}
+	.auto-badge.inspect {
+		background: color-mix(in srgb, var(--info) 20%, var(--panel2));
+		color: var(--info);
+	}
 	.score {
 		font-size: 14px;
 		color: var(--gold);
+	}
+	.hero-meta {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 6px;
+	}
+	.meta-chip {
+		font-size: 11px;
+		padding: 2px 8px;
+		border-radius: 999px;
+		background: var(--panel2);
+		border: 1px solid var(--line);
+		color: var(--muted);
+	}
+	.meta-chip.low {
+		color: var(--low);
+		border-color: color-mix(in srgb, var(--low) 40%, transparent);
 	}
 	.explain {
 		margin: 0;
@@ -1182,6 +1246,61 @@
 		gap: 8px;
 		flex-wrap: wrap;
 		margin-top: 2px;
+	}
+	.maximize-btn {
+		position: absolute;
+		top: 8px;
+		right: 8px;
+		z-index: 2;
+		width: 30px;
+		height: 30px;
+		display: grid;
+		place-items: center;
+		border-radius: 8px;
+		border: 1px solid var(--line2);
+		background: color-mix(in srgb, var(--ink) 55%, transparent);
+		color: var(--text);
+		cursor: pointer;
+		opacity: 0.65;
+		transition: opacity 0.14s ease;
+		backdrop-filter: blur(3px);
+	}
+	.hero-poster:hover .maximize-btn,
+	.maximize-btn:focus-visible {
+		opacity: 1;
+	}
+
+	/* ── Maximized poster lightbox ── */
+	.lightbox {
+		position: fixed;
+		inset: 0;
+		z-index: 300;
+		background: rgba(0, 0, 0, 0.92);
+		display: grid;
+		place-items: center;
+		padding: 4vh 4vw;
+		cursor: zoom-out;
+	}
+	.lightbox img {
+		max-width: 90vw;
+		max-height: 90vh;
+		object-fit: contain;
+		border-radius: var(--radius-sm);
+		box-shadow: 0 12px 48px rgba(0, 0, 0, 0.6);
+	}
+	.lightbox-close {
+		position: fixed;
+		top: 18px;
+		right: 18px;
+		width: 40px;
+		height: 40px;
+		display: grid;
+		place-items: center;
+		border-radius: 999px;
+		border: 1px solid var(--line2);
+		background: color-mix(in srgb, var(--ink) 60%, transparent);
+		color: var(--text);
+		cursor: pointer;
 	}
 
 	/* ── Tabs + grid ── */
@@ -1319,49 +1438,7 @@
 		background: var(--panel);
 	}
 
-	/* ── Pick dialog ── */
-	.pick-row {
-		display: flex;
-		gap: 14px;
-	}
-	.pick-poster {
-		width: 92px;
-		flex: none;
-		aspect-ratio: 2 / 3;
-		border-radius: var(--radius-sm);
-		overflow: hidden;
-		border: 1px solid var(--line2);
-		background: linear-gradient(165deg, var(--c0), var(--c1));
-		position: relative;
-	}
-	.pick-poster img {
-		position: absolute;
-		inset: 0;
-		width: 100%;
-		height: 100%;
-		object-fit: cover;
-	}
-	.pick-info {
-		display: flex;
-		flex-direction: column;
-		gap: 8px;
-		min-width: 0;
-	}
-	.pick-meta {
-		font-size: 13px;
-		font-weight: 600;
-		color: var(--text);
-	}
-	.pick-meta.low {
-		color: var(--low);
-		font-weight: 500;
-	}
-	.pick-note {
-		margin: 0;
-		font-size: 12px;
-		color: var(--muted);
-		line-height: 1.45;
-	}
+	/* ── Debug OCR labeling (hosted in the hero) ── */
 	.pick-debug-row {
 		display: flex;
 		flex-direction: column;

@@ -69,7 +69,11 @@ from marquee.pipeline.runner import (
 )
 from marquee.pipeline.scorer import select_scorer
 from marquee.pipeline.stacker import assign_stacks
-from marquee.pipeline.types import CandidateScore, OCRCandidateResult
+from marquee.pipeline.types import (
+    CandidateScore,
+    OCRCandidateResult,
+    find_auto_pick_candidate,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -862,6 +866,7 @@ async def _finalize(
                 await db.execute(select(PipelineRun).where(PipelineRun.run_id == ctx.run_id))
             ).scalar_one_or_none()
             if run is not None:
+                auto_pick = find_auto_pick_candidate(payload.get("candidates", []))
                 run.status = ctx.status
                 run.completed_at = datetime.now(UTC)
                 run.scorer_name = scorer_name if ctx.ranked else None
@@ -869,6 +874,7 @@ async def _finalize(
                 run.timings_json = json.dumps(ctx.timings)
                 run.duration_seconds = round(ctx.duration, 3)
                 run.archive_path = str(archive_path)
+                run.auto_pick_filename = auto_pick["orig_filename"] if auto_pick else None
                 run.batch_id = job_id
                 run.error = ctx.error
             summary[ctx.status] = summary.get(ctx.status, 0) + 1

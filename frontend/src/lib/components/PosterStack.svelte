@@ -5,10 +5,14 @@
 	let {
 		members,
 		selectable = true,
+		inspected = false,
+		onSelect,
 		onToggle
 	}: {
 		members: CandidateView[];
 		selectable?: boolean;
+		/** Ring highlight when this stack's representative is the inspected poster. */
+		inspected?: boolean;
 		onSelect?: (c: CandidateView) => void;
 		onToggle?: () => void;
 	} = $props();
@@ -23,16 +27,23 @@
 	let imgFailed = $state(false);
 </script>
 
-<!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
 	class="stack-wrap"
-	onclick={() => onToggle?.()}
-	onkeydown={(e) => { if (e.key === 'Enter') onToggle?.(); }}
+	onclick={() => {
+		onSelect?.(representative);
+		onToggle?.();
+	}}
+	onkeydown={(e) => {
+		if (e.key === 'Enter') {
+			onSelect?.(representative);
+			onToggle?.();
+		}
+	}}
 	role="button"
 	tabindex={selectable ? 0 : -1}
 	style="--c0:{g[0]}; --c1:{g[1]}"
 >
-	<div class="art">
+	<div class="art" class:inspected>
 		{#if !imgFailed}
 			<img
 				src={representative.poster_url}
@@ -79,6 +90,10 @@
 		transform: translateY(-2px);
 		border-color: var(--gold);
 		box-shadow: 0 6px 18px var(--shadow);
+	}
+	.art.inspected {
+		border-color: var(--info);
+		box-shadow: 0 0 0 2px color-mix(in srgb, var(--info) 60%, transparent);
 	}
 	img {
 		position: absolute;

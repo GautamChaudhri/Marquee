@@ -549,6 +549,11 @@ async def review_queue(
                     "counts": json.loads(run.counts_json) if run.counts_json else None,
                     "reviewed": False,
                 },
+                "auto_pick_poster_url": (
+                    poster_url(run.run_id, run.auto_pick_filename)
+                    if run.auto_pick_filename
+                    else None
+                ),
                 "results_url": f"/api/pipeline/runs/{run.run_id}",
             }
         )

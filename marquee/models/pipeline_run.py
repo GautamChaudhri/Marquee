@@ -58,6 +58,11 @@ class PipelineRun(Base):
     # data/runs/archive/{run_id}.json — survives re-runs of the same movie.
     archive_path: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # orig_filename of the run's auto-pick ("1A") — denormalized at finalize so
+    # the Review queue can show the chosen poster without opening every archive.
+    # Null for runs predating this column or with no rankable candidate.
+    auto_pick_filename: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     # Working directory under data/runs/work/<title>/.
     output_dir: Mapped[str | None] = mapped_column(Text, nullable=True)
 
