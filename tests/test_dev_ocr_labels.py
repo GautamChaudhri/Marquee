@@ -55,6 +55,8 @@ def _full_ocr_snapshot() -> dict[str, object]:
         "residual_significant_area_fraction": 0.005,
         "residual_significant_width_fraction": 0.4,
         "enhance_retry": True,
+        "title_recovery_enabled": True,
+        "title_recovery_confidence_threshold": 0.5,
     }
 
 
@@ -64,6 +66,13 @@ def _sample_trace() -> dict[str, object]:
         "image_size": {"width": 1000, "height": 1500},
         "passes_run": ["full", "top", "bottom"],
         "enhance_retry": {"triggered": False, "recovered_text": False},
+        "title_recovery": {
+            "enabled": True,
+            "triggered": False,
+            "recovered_title": False,
+            "confidence_threshold": 0.5,
+            "error": None,
+        },
         "detected_boxes": [
             {
                 "text": "ALIEN ROMULUS",

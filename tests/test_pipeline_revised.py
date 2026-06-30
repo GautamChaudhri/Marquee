@@ -374,6 +374,286 @@ def test_ocr_rejects_text_without_title_match(
     assert result.accepted
 
 
+def _ocr_poly(left: float, top: float, right: float, bottom: float) -> list[list[float]]:
+    return [[left, top], [right, top], [right, bottom], [left, bottom]]
+
+
+def _ocr_box(
+    text: str,
+    left: float,
+    top: float,
+    right: float,
+    bottom: float,
+    *,
+    score: float = 0.95,
+) -> tuple[str, float, list[list[float]]]:
+    return text, score, _ocr_poly(left, top, right, bottom)
+
+
+def _letter_spaced_boxes(rows: list[list[str]]) -> list[tuple[str, float, list[list[float]]]]:
+    boxes: list[tuple[str, float, list[list[float]]]] = []
+    for row_index, row in enumerate(rows):
+        y = 500 + row_index * 70
+        for col_index, text in enumerate(row):
+            x = 50 + col_index * 48
+            boxes.append(_ocr_box(text, x, y, x + 28, y + 44))
+    return boxes
+
+
+class _StaticOCR:
+    def __init__(self, *responses: list[tuple[str, float, list[list[float]]]]):
+        self.responses = list(responses)
+        self.calls = 0
+
+    def predict(self, _image):
+        if not self.responses:
+            return []
+        index = min(self.calls, len(self.responses) - 1)
+        self.calls += 1
+        boxes = self.responses[index]
+        if not boxes:
+            return []
+        return [
+            {
+                "rec_texts": [text for text, _score, _poly in boxes],
+                "rec_scores": [score for _text, score, _poly in boxes],
+                "rec_polys": [poly for _text, _score, poly in boxes],
+            }
+        ]
+
+
+def _run_fake_ocr(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    title: str,
+    responses: list[list[tuple[str, float, list[list[float]]]]],
+    recovery_enabled: bool = False,
+) -> tuple[OCRCandidateResult, _StaticOCR]:
+    image_path = tmp_path / "poster.jpg"
+    Image.new("RGB", (500, 750), color="black").save(image_path)
+    title_text = ocr_filter._normalise(title)
+    title_tokens = set(title_text.split())
+    ocr_filter._add_digit_words(title_tokens)
+    fake_ocr = _StaticOCR(*responses)
+
+    monkeypatch.setattr(ocr_filter, "_worker_ocr", fake_ocr)
+    monkeypatch.setattr(ocr_filter, "_worker_title_text", title_text)
+    monkeypatch.setattr(ocr_filter, "_worker_title_tokens", title_tokens)
+    monkeypatch.setattr(ocr_filter, "_worker_director_tokens", set())
+    monkeypatch.setattr(ocr_filter.pipeline_settings, "OCR_DETAIL_PASSES", False)
+    monkeypatch.setattr(ocr_filter.pipeline_settings, "OCR_ENHANCE_RETRY", False)
+    monkeypatch.setattr(ocr_filter.pipeline_settings, "OCR_TITLE_RECOVERY_ENABLED", recovery_enabled)
+    monkeypatch.setattr(
+        ocr_filter.pipeline_settings,
+        "OCR_TITLE_RECOVERY_CONFIDENCE_THRESHOLD",
+        0.50,
+    )
+    monkeypatch.setattr(ocr_filter.pipeline_settings, "OCR_TEXT_MODE", "title_only")
+    monkeypatch.setattr(ocr_filter.pipeline_settings, "OCR_REQUIRE_TITLE", True)
+    monkeypatch.setattr(ocr_filter.pipeline_settings, "OCR_MAX_RESIDUAL_BOXES", 0)
+    monkeypatch.setattr(ocr_filter.pipeline_settings, "OCR_MAX_RESIDUAL_AREA_FRACTION", 0.0)
+
+    result = ocr_filter._process_image(
+        str(image_path),
+        title_tokens,
+        set(),
+        title_text=title_text,
+    )
+    return result, fake_ocr
+
+
+@pytest.mark.parametrize(
+    ("title", "rows"),
+    [
+        ("Alien Romulus", [list("ALIEN"), list("ROMULUS")]),
+        ("Dune", [list("DUNE")]),
+        ("Moana 2", [list("MOANA2")]),
+    ],
+)
+def test_ocr_letter_spaced_title_fragments_pass(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    title: str,
+    rows: list[list[str]],
+):
+    result, _fake_ocr = _run_fake_ocr(
+        tmp_path,
+        monkeypatch,
+        title=title,
+        responses=[_letter_spaced_boxes(rows)],
+    )
+
+    assert result.accepted
+    assert result.reason is None
+    assert result.title_bbox is not None
+    assert result.residual_boxes == []
+    assert any(box["is_title_fragment"] for box in result.diagnostics["detected_boxes"])
+
+
+def test_ocr_partial_title_boxes_pass(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    result, _fake_ocr = _run_fake_ocr(
+        tmp_path,
+        monkeypatch,
+        title="A Quiet Place Day One",
+        responses=[
+            [
+                _ocr_box("QUIET", 55, 500, 155, 550),
+                _ocr_box("T PLACE", 165, 500, 295, 550),
+                _ocr_box("DAY ONE", 305, 500, 455, 550),
+            ]
+        ],
+    )
+
+    assert result.accepted
+    assert result.reason is None
+    assert result.residual_boxes == []
+    trace_by_text = {box["text"]: box for box in result.diagnostics["detected_boxes"]}
+    assert trace_by_text["T PLACE"]["is_title"]
+    assert trace_by_text["T PLACE"]["title_match_source"] in {"box", "line_window"}
+
+
+@pytest.mark.parametrize(
+    ("title", "residual_text"),
+    [
+        ("A Quiet Place Day One", "ONLY IN THEATERS"),
+        ("A Quiet Place Day One", "MARVEL STUDIOS"),
+        ("A Quiet Place Day One", "DIRECTED BY"),
+        ("A Quiet Place Day One", "BE QUIET"),
+    ],
+)
+def test_ocr_big_non_title_residuals_still_reject(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    title: str,
+    residual_text: str,
+):
+    result, _fake_ocr = _run_fake_ocr(
+        tmp_path,
+        monkeypatch,
+        title=title,
+        responses=[
+            [
+                _ocr_box(title, 45, 500, 455, 560),
+                _ocr_box(residual_text, 40, 90, 460, 170),
+            ]
+        ],
+    )
+
+    assert not result.accepted
+    assert result.reason == "text_heavy"
+    residual_trace = [
+        box for box in result.diagnostics["detected_boxes"] if box["text"] == residual_text
+    ][0]
+    assert not residual_trace["is_title"]
+    assert residual_trace["is_residual"]
+    assert residual_trace["is_significant"]
+
+
+def test_ocr_lone_letter_residual_not_significant(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A single stray glyph — a spaced-title letter that escaped the title band —
+    is typography, not a text block, and must not gate-reject a titled poster.
+    (Multi-char garble like "mm" stays significant; see the watermark test.)"""
+    result, _fake_ocr = _run_fake_ocr(
+        tmp_path,
+        monkeypatch,
+        title="Alien Romulus",
+        responses=[
+            [
+                _ocr_box("ALIEN ROMULUS", 45, 600, 455, 660),
+                _ocr_box("N", 30, 60, 120, 150),  # big lone letter, far from title
+            ]
+        ],
+    )
+
+    assert result.accepted
+    assert result.reason is None
+    lone = [box for box in result.diagnostics["detected_boxes"] if box["text"] == "N"][0]
+    assert lone["is_residual"]
+    assert not lone["is_significant"]
+
+
+def test_ocr_spaced_title_partial_read_passes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A heavily-misread spaced title where OCR only recovered some glyphs, in
+    scrambled reading order, still passes: a wide, tall band of large letters that
+    all belong to the title is the title even at partial coverage (the
+    high-precision band rescue). The order-preserving matchers cannot match this
+    scramble, so only the order-independent band detector saves it."""
+    # Only 5 of the 10 distinct "ALIEN ROMULUS" letters survive (coverage 0.50),
+    # every one belongs to the title (precision 1.0), and their order is scrambled
+    # so it is not an ordered subsequence of the title.
+    result, _fake_ocr = _run_fake_ocr(
+        tmp_path,
+        monkeypatch,
+        title="Alien Romulus",
+        responses=[_letter_spaced_boxes([["S", "M", "R", "N", "A"]])],
+    )
+
+    assert result.accepted
+    assert result.reason is None
+    assert result.title_bbox is not None
+    assert result.residual_boxes == []
+    assert any(
+        box["title_match_source"] == "letter_band" for box in result.diagnostics["detected_boxes"]
+    )
+
+
+def test_ocr_no_text_recovery_accepts_only_recovered_title(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    result, fake_ocr = _run_fake_ocr(
+        tmp_path,
+        monkeypatch,
+        title="Dune",
+        responses=[
+            [],
+            _letter_spaced_boxes([list("DUNE")]),
+        ],
+        recovery_enabled=True,
+    )
+
+    assert fake_ocr.calls == 2
+    assert result.accepted
+    assert result.reason is None
+    assert result.diagnostics["title_recovery"]["triggered"] is True
+    assert result.diagnostics["title_recovery"]["recovered_title"] is True
+    assert {box["pass"] for box in result.diagnostics["detected_boxes"]} == {"title_recovery"}
+
+
+def test_ocr_no_text_recovery_ignores_non_title_text(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    result, fake_ocr = _run_fake_ocr(
+        tmp_path,
+        monkeypatch,
+        title="Dune",
+        responses=[
+            [],
+            [_ocr_box("ONLY IN THEATERS", 40, 90, 460, 170)],
+        ],
+        recovery_enabled=True,
+    )
+
+    assert fake_ocr.calls == 2
+    assert not result.accepted
+    assert result.reason == "no_text"
+    assert result.detected_text == ""
+    assert result.diagnostics["detected_boxes"] == []
+    assert result.diagnostics["title_recovery"]["triggered"] is True
+    assert result.diagnostics["title_recovery"]["recovered_title"] is False
+
+
 def _ocr_result(name: str, *, accepted: bool, reason: str | None) -> OCRCandidateResult:
     return OCRCandidateResult(
         image_path=Path(name),
@@ -420,6 +700,22 @@ def test_no_text_fallback_disabled(monkeypatch: pytest.MonkeyPatch):
     results = ocr_filter.PosterTextFilter._apply_no_text_fallback(
         [_ocr_result("a.jpg", accepted=False, reason="no_text")]
     )
+    assert not results[0].accepted
+
+
+def test_no_text_fallback_default_blocks_legacy_rescue(monkeypatch: pytest.MonkeyPatch):
+    default_settings = PipelineSettings()
+    monkeypatch.setattr(
+        ocr_filter.pipeline_settings,
+        "OCR_ACCEPT_NO_TEXT",
+        default_settings.OCR_ACCEPT_NO_TEXT,
+    )
+
+    results = ocr_filter.PosterTextFilter._apply_no_text_fallback(
+        [_ocr_result("ash-style.jpg", accepted=False, reason="no_title")]
+    )
+
+    assert default_settings.OCR_ACCEPT_NO_TEXT is False
     assert not results[0].accepted
 
 

@@ -351,12 +351,18 @@ class PipelineSettings(BaseSettings):
     # batch-level fallback below is not enough.
     OCR_REQUIRE_TITLE: bool = True
     # Batch-level FALLBACK ONLY: textless / no-title posters are rejected per
-    # image, but when an entire movie has zero titled survivors the rejected
-    # no_text/no_title posters are rescued so the movie still gets a poster.
-    # They never compete against titled candidates in ranking.
-    OCR_ACCEPT_NO_TEXT: bool = True
+    # image. When explicitly enabled, a movie with zero titled survivors can
+    # rescue no_text/no_title posters so it still gets output. Default False
+    # preserves the current target: title text is required and truly textless
+    # posters stay rejected.
+    OCR_ACCEPT_NO_TEXT: bool = False
     # Try a contrast-enhanced image pass before concluding no_text.
     OCR_ENHANCE_RETRY: bool = True
+    # Targeted title recovery: if the normal passes would reject a poster as
+    # no_text/no_title with no meaningful residuals, run a low-threshold
+    # contrast/upscaled OCR pass and keep only boxes that explain the title.
+    OCR_TITLE_RECOVERY_ENABLED: bool = True
+    OCR_TITLE_RECOVERY_CONFIDENCE_THRESHOLD: float = 0.50
 
     # ── Text-gate mode presets (design 18) ───────────────────────────
     # "title_only" = current strict behaviour (require title, reject residual).
@@ -428,6 +434,8 @@ class PipelineSettings(BaseSettings):
             raise ValueError("OCR_MAX_RESIDUAL_BOXES cannot be negative")
         if not 0 <= self.OCR_MAX_RESIDUAL_AREA_FRACTION <= 1:
             raise ValueError("OCR_MAX_RESIDUAL_AREA_FRACTION must be in [0, 1]")
+        if not 0 <= self.OCR_TITLE_RECOVERY_CONFIDENCE_THRESHOLD <= 1:
+            raise ValueError("OCR_TITLE_RECOVERY_CONFIDENCE_THRESHOLD must be in [0, 1]")
         if self.OCR_DEVICE not in ("auto", "cpu", "gpu"):
             raise ValueError("OCR_DEVICE must be 'auto', 'cpu', or 'gpu'")
         if self.TMDB_POSTER_SIZE not in _TMDB_SIZES:
@@ -551,6 +559,10 @@ class PipelineSettings(BaseSettings):
                     self.OCR_RESIDUAL_SIGNIFICANT_WIDTH_FRACTION
                 ),
                 "enhance_retry": self.OCR_ENHANCE_RETRY,
+                "title_recovery_enabled": self.OCR_TITLE_RECOVERY_ENABLED,
+                "title_recovery_confidence_threshold": (
+                    self.OCR_TITLE_RECOVERY_CONFIDENCE_THRESHOLD
+                ),
             },
             "extended_features": {
                 "dino_enabled": self.DINO_ENABLED,
