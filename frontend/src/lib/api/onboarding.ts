@@ -29,12 +29,12 @@ export function getTasteTestMovies(fetchFn: Fetch): Promise<{ movies: TasteTestM
 export function tasteTestRank(
 	fetchFn: Fetch,
 	movieId: string,
-	favorites: string[][],
+	order: string[],
 	hated: string[]
 ): Promise<{ status: OnboardingStatus }> {
 	return apiSend(fetchFn, 'POST', '/onboarding/taste-test/rank', {
 		movie_id: movieId,
-		favorites,
+		order,
 		hated
 	});
 }

@@ -7,7 +7,7 @@
 	import RunProgress from '$lib/components/RunProgress.svelte';
 	import PosterCandidateTile from '$lib/components/PosterCandidateTile.svelte';
 	import PosterStack from '$lib/components/PosterStack.svelte';
-	import PosterRankingPanel from '$lib/components/PosterRankingPanel.svelte';
+	import PosterRankPanel from '$lib/components/PosterRankPanel.svelte';
 	import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
 	import Icon from '$lib/components/Icon.svelte';
 	import {
@@ -792,7 +792,7 @@
 	</div>
 
 	{#if rankMode}
-		<PosterRankingPanel
+		<PosterRankPanel
 			runId={results.run_id}
 			items={rankItems}
 			disabled={results.reviewed}

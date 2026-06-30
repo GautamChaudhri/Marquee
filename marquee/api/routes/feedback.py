@@ -43,8 +43,9 @@ class FeedbackRequest(BaseModel):
     run_id: str
     action: str  # approve | override | reject_all | rank
     selected_filename: str | None = None
-    # action="rank": ordered favorite tiers (ties share a sublist) + hated set.
-    favorites: list[list[str]] | None = None
+    # action="rank": final order (best -> worst) of orig_filenames still in
+    # the orderable list, plus the set thrown into the hate pile (design 30).
+    order: list[str] | None = None
     hated: list[str] | None = None
     deploy: bool | None = None  # defaults to FEEDBACK_DEPLOY_DEFAULT
 
@@ -107,24 +108,26 @@ def _archive_features(candidate: dict) -> tuple[dict | None, dict | None, dict |
     )
 
 
-def _ranking_record(
+def _ranking_record_v4(
     *,
     event_id: str,
     ts: str,
     run: PipelineRun,
     movie: Movie | None,
-    favorites: list[list[str]],
-    hated: list[str],
-    candidates: list[dict],
+    order_entries: list[dict],
+    hated_entries: list[dict],
     favorites_exemplars: list[str],
     negatives_added: list[str],
 ) -> dict:
-    """One self-contained v3 ranking event (see design 19). Stores the raw
-    partial order + every paired candidate's normalized features, so the
-    pairwise trainer never depends on a run's working dir surviving."""
+    """One self-contained v4 ranking event (see design 30). Stores the final
+    drag order + hate set, each candidate's baseline (pipeline) rank and full
+    normalized features, so the pairwise trainer never depends on a run's
+    working dir surviving. Supersedes the v3 tier/bucket schema — the version
+    bump alone obsoletes old rows (abandoned, not migrated)."""
     return {
-        "v": 3,
+        "v": 4,
         "type": "ranking",
+        "source": "live",
         "event_id": event_id,
         "ts": ts,
         "run_id": run.run_id,
@@ -132,11 +135,10 @@ def _ranking_record(
         "tmdb_id": movie.tmdb_id if movie else None,
         "title": movie.title if movie else None,
         "year": movie.year if movie else None,
-        "favorites": favorites,
-        "hated": hated,
+        "order": order_entries,
+        "hated": hated_entries,
         "favorites_exemplars": favorites_exemplars,
         "negatives_added": negatives_added,
-        "candidates": candidates,
         "scorer_name": run.scorer_name,
         "model_name": pipeline_settings.AI_MODEL,
         "gate_snapshot": feedback_store.gate_snapshot(),
@@ -419,10 +421,18 @@ async def submit_feedback(
             _copy_negative(auto)
 
     elif body.action == "rank":
-        favorites_in = [tier for tier in (body.favorites or []) if tier]
-        hated_in = body.hated or []
-        if not favorites_in and not hated_in:
-            raise HTTPException(status_code=400, detail="rank requires favorites and/or hated")
+        # Dedup while preserving order — the frontend's orderable/hate-pile
+        # arrays are disjoint and unique by construction, but don't trust that.
+        order_in = list(dict.fromkeys(name for name in (body.order or []) if name))
+        hated_in = list(dict.fromkeys(name for name in (body.hated or []) if name))
+        if not order_in and not hated_in:
+            raise HTTPException(status_code=400, detail="rank requires order and/or hated")
+        overlap = set(order_in) & set(hated_in)
+        if overlap:
+            raise HTTPException(
+                status_code=400,
+                detail=f"a poster cannot be both ordered and hated: {sorted(overlap)}",
+            )
 
         def _resolve_all(names: list[str]) -> list[dict]:
             resolved = []
@@ -436,55 +446,63 @@ async def submit_feedback(
                 resolved.append(candidate)
             return resolved
 
-        fav_tiers = [_resolve_all(tier) for tier in favorites_in]
+        order_cands = _resolve_all(order_in)
         hated_cands = _resolve_all(hated_in)
-        chosen = {c["orig_filename"] for tier in fav_tiers for c in tier}
-        chosen |= {c["orig_filename"] for c in hated_cands}
 
-        # Embed every paired candidate with its (backfilled) normalized features.
-        embedded: list[dict] = []
-        seen: set[str] = set()
-
-        async def _emit(candidate: dict, bucket: str, tier: int | None) -> None:
-            name = candidate["orig_filename"]
-            if name in seen:
-                return
-            normalized = await _normalized_for(request, run, candidate, movie)
-            if not normalized:
-                return  # nothing trainable — skip (still added to profile below)
-            seen.add(name)
-            embedded.append(
-                {
-                    "orig_filename": name,
-                    "bucket": bucket,
-                    "tier": tier,
-                    "pipeline_rank": candidate.get("rank"),
-                    "rejection_reason": candidate.get("rejection_reason"),
-                    "normalized_features": normalized,
-                }
+        # order ∪ hated must cover every ranked candidate — there's no third
+        # "indifferent" bucket anymore; an untouched candidate just sits in
+        # its seeded position in `order`. Silently dropping one here would be
+        # indistinguishable from "this candidate never existed" to the
+        # inversion math, so it's a 400, not a silent skip.
+        covered = {c["orig_filename"] for c in order_cands} | {
+            c["orig_filename"] for c in hated_cands
+        }
+        ranked_filenames = {
+            c["orig_filename"] for c in archive.get("candidates", []) if c.get("rank") is not None
+        }
+        missing = ranked_filenames - covered
+        if missing:
+            raise HTTPException(
+                status_code=400,
+                detail=f"order/hated must cover every ranked candidate (missing: {sorted(missing)})",
             )
 
-        for tier_index, tier in enumerate(fav_tiers, start=1):
-            for candidate in tier:
-                await _emit(candidate, "fav", tier_index)
-        for candidate in hated_cands:
-            await _emit(candidate, "hate", None)
-        # Indifferent = ranked survivors the user left untouched.
-        for candidate in archive.get("candidates", []):
-            if candidate.get("rank") is not None and candidate["orig_filename"] not in chosen:
-                await _emit(candidate, "indiff", None)
+        # Embed each candidate with its (backfilled) normalized features and
+        # baseline (pipeline) rank, for the trainer's inversion math.
+        async def _entry(candidate: dict) -> dict | None:
+            normalized = await _normalized_for(request, run, candidate, movie)
+            if not normalized:
+                return None  # nothing trainable — skip (still staged below)
+            return {
+                "orig_filename": candidate["orig_filename"],
+                "pipeline_rank": candidate.get("rank"),
+                "baseline_rank": candidate.get("rank"),
+                "normalized_features": normalized,
+            }
 
-        # Channel 1 (positive exemplars): tier-1 favorites.
-        if fav_tiers:
-            for candidate in fav_tiers[0]:
-                added = await asyncio.to_thread(
-                    _add_to_profile,
-                    candidate["orig_filename"],
-                    Path(candidate.get("image_path") or ""),
-                    movie,
-                )
-                if added:
-                    favorites_exemplars.append(added)
+        order_entries: list[dict] = []
+        for candidate in order_cands:
+            entry = await _entry(candidate)
+            if entry is not None:
+                order_entries.append(entry)
+
+        hated_entries: list[dict] = []
+        for candidate in hated_cands:
+            entry = await _entry(candidate)
+            if entry is not None:
+                hated_entries.append(entry)
+
+        # Channel 1 (positive exemplars): top slice of the final order.
+        n_pos = feedback_store.positive_exemplar_count(len(order_cands))
+        for candidate in order_cands[:n_pos]:
+            added = await asyncio.to_thread(
+                _add_to_profile,
+                candidate["orig_filename"],
+                Path(candidate.get("image_path") or ""),
+                movie,
+            )
+            if added:
+                favorites_exemplars.append(added)
 
         # Channel 1 (hard negatives): hated posters the pipeline ranked high.
         rank_max = pipeline_settings.FEEDBACK_HARD_NEGATIVE_RANK_MAX
@@ -496,20 +514,19 @@ async def submit_feedback(
                     negatives_added.append(added)
 
         records.append(
-            _ranking_record(
+            _ranking_record_v4(
                 event_id=event_id,
                 ts=ts,
                 run=run,
                 movie=movie,
-                favorites=[[c["orig_filename"] for c in tier] for tier in fav_tiers],
-                hated=[c["orig_filename"] for c in hated_cands],
-                candidates=embedded,
+                order_entries=order_entries,
+                hated_entries=hated_entries,
                 favorites_exemplars=favorites_exemplars,
                 negatives_added=negatives_added,
             )
         )
         exemplar_added = favorites_exemplars[0] if favorites_exemplars else None
-        pick = fav_tiers[0][0] if fav_tiers else None
+        pick = order_cands[0] if order_cands else None
 
     else:
         raise HTTPException(status_code=400, detail=f"Unknown action {body.action!r}")

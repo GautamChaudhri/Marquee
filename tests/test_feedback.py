@@ -239,35 +239,36 @@ async def test_undo_unknown_event_404(client, db):
 
 
 # ---------------------------------------------------------------------------
-# rank action (v3 bucket-ranking events)
+# rank action (v4 sortable-list ranking events — design 30)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_rank_writes_v3_ranking_event(client, db, tmp_path):
+async def test_rank_writes_v4_ranking_event(client, db, tmp_path):
     await _seed(db, tmp_path)
     resp = await client.post(
         "/api/feedback",
         json={
             "run_id": "r1",
             "action": "rank",
-            "favorites": [["auto.jpg"], ["alt.jpg"]],
+            "order": ["auto.jpg", "alt.jpg"],
             "hated": [],
         },
     )
     assert resp.status_code == 200
     data = resp.json()
     assert data["labels_written"] == 1
+    # positive_exemplar_count(2) == 1 -> only the top of the order is staged.
     assert data["favorites_exemplars"] == ["Die Hard (1988).jpg"]
 
     rows = feedback_store.read_all()
     assert len(rows) == 1
     row = rows[0]
-    assert row["v"] == 3 and row["type"] == "ranking"
-    assert row["favorites"] == [["auto.jpg"], ["alt.jpg"]]
-    buckets = {c["orig_filename"]: c for c in row["candidates"]}
-    assert buckets["auto.jpg"]["bucket"] == "fav" and buckets["auto.jpg"]["tier"] == 1
-    assert buckets["alt.jpg"]["bucket"] == "fav" and buckets["alt.jpg"]["tier"] == 2
+    assert row["v"] == 4 and row["type"] == "ranking"
+    assert [c["orig_filename"] for c in row["order"]] == ["auto.jpg", "alt.jpg"]
+    assert row["order"][0]["pipeline_rank"] == 1
+    assert row["order"][0]["baseline_rank"] == 1
+    assert row["order"][1]["pipeline_rank"] == 4
 
 
 @pytest.mark.asyncio
@@ -285,7 +286,7 @@ async def test_rank_mines_hard_negatives_by_rank(client, db, tmp_path, monkeypat
         json={
             "run_id": "r1",
             "action": "rank",
-            "favorites": [["auto.jpg"]],
+            "order": ["auto.jpg"],
             "hated": ["alt.jpg", "ocrreject.jpg"],
         },
     )
@@ -316,7 +317,7 @@ async def test_rank_undo_removes_exemplars_and_negatives(client, db, tmp_path, m
         json={
             "run_id": "r1",
             "action": "rank",
-            "favorites": [["auto.jpg"]],
+            "order": ["auto.jpg"],
             "hated": ["alt.jpg"],
         },
     )
@@ -331,11 +332,11 @@ async def test_rank_undo_removes_exemplars_and_negatives(client, db, tmp_path, m
 
 
 @pytest.mark.asyncio
-async def test_rank_requires_buckets(client, db, tmp_path):
+async def test_rank_requires_order_or_hated(client, db, tmp_path):
     await _seed(db, tmp_path)
     resp = await client.post(
         "/api/feedback",
-        json={"run_id": "r1", "action": "rank", "favorites": [], "hated": []},
+        json={"run_id": "r1", "action": "rank", "order": [], "hated": []},
     )
     assert resp.status_code == 400
 
@@ -345,9 +346,20 @@ async def test_rank_unknown_filename_404(client, db, tmp_path):
     await _seed(db, tmp_path)
     resp = await client.post(
         "/api/feedback",
-        json={"run_id": "r1", "action": "rank", "favorites": [["nope.jpg"]]},
+        json={"run_id": "r1", "action": "rank", "order": ["nope.jpg"]},
     )
     assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_rank_rejects_incomplete_coverage(client, db, tmp_path):
+    await _seed(db, tmp_path)
+    resp = await client.post(
+        "/api/feedback",
+        # alt.jpg is also ranked but missing from both order and hated.
+        json={"run_id": "r1", "action": "rank", "order": ["auto.jpg"], "hated": []},
+    )
+    assert resp.status_code == 400
 
 
 # ---------------------------------------------------------------------------
@@ -375,16 +387,22 @@ def test_summary_counts_ranking_events(tmp_path, monkeypatch):
             {
                 "event_id": "e1",
                 "type": "ranking",
+                "v": 4,
                 "movie_id": 1,
-                "favorites": [["a.jpg"], ["b.jpg"]],
-                "hated": ["c.jpg"],
+                "order": [
+                    {"orig_filename": "a.jpg"},
+                    {"orig_filename": "b.jpg"},
+                    {"orig_filename": "c.jpg"},
+                ],
+                "hated": [{"orig_filename": "d.jpg"}],
             }
         ]
     )
     summary = feedback_store.summary()
-    assert summary["positives"] == 2  # two favorited posters
+    # positive_exemplar_count(3) == max(1, min(3, ceil(0.6))) == 1.
+    assert summary["positives"] == 1
     assert summary["negatives"] == 1  # one hated poster
-    assert summary["total"] == 3
+    assert summary["total"] == 2
     assert summary["movies"] == 1
 
 

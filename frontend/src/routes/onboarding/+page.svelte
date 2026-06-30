@@ -3,7 +3,7 @@
 	import { goto } from '$app/navigation';
 	import SectionHeader from '$lib/components/SectionHeader.svelte';
 	import ProgressBar from '$lib/components/ProgressBar.svelte';
-	import PosterRankingPanel from '$lib/components/PosterRankingPanel.svelte';
+	import PosterRankPanel from '$lib/components/PosterRankPanel.svelte';
 	import { toast } from '$lib/toast';
 	import {
 		startOnboarding,
@@ -65,9 +65,9 @@
 		}
 	}
 
-	async function submitRanking(payload: { favorites: string[][]; hated: string[] }) {
+	async function submitRanking(payload: { order: string[]; hated: string[] }) {
 		if (!current) return;
-		const res = await tasteTestRank(fetch, current.id, payload.favorites, payload.hated);
+		const res = await tasteTestRank(fetch, current.id, payload.order, payload.hated);
 		status = res.status;
 		toast(`Ranked ${current.title ?? 'movie'}`, 'good');
 	}
@@ -118,8 +118,8 @@
 	<!-- Intro / begin -->
 	<div class="intro-card">
 		<p>
-			The engine starts knowing nothing about your taste. Rank a handful of movies — drag your
-			favorites into tiers, drop the ones you dislike into <em>Hate</em>, leave the rest — and it
+			The engine starts knowing nothing about your taste. Rank a handful of movies — drag
+			posters into your preferred order, drop the ones you dislike into <em>Hate</em> — and it
 			learns what good key art means to you.
 		</p>
 		<ul>
@@ -172,7 +172,7 @@
 				{#if current.genres.length}<span class="genres">{current.genres.join(' · ')}</span>{/if}
 			</div>
 			{#key current.id}
-				<PosterRankingPanel
+				<PosterRankPanel
 					{items}
 					submitLabel="Save & next"
 					onSubmit={submitRanking}

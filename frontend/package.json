@@ -33,6 +33,7 @@
 		"vite": "^8.0.16"
 	},
 	"dependencies": {
-		"plotly.js-dist-min": "^3.6.0"
+		"plotly.js-dist-min": "^3.6.0",
+		"svelte-dnd-action": "^0.9.70"
 	}
 }

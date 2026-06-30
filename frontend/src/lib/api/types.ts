@@ -720,9 +720,9 @@ export interface FeedbackRequestBody {
 	run_id: string;
 	action: FeedbackAction;
 	selected_filename?: string;
-	/** action="rank": ordered favorite tiers (ties share a sublist) of
-	 *  orig_filenames, plus the unordered hated set. */
-	favorites?: string[][];
+	/** action="rank": final order (best -> worst) of orig_filenames still in
+	 *  the orderable list, plus the set thrown into the hate pile. */
+	order?: string[];
 	hated?: string[];
 	deploy?: boolean;
 }
@@ -772,7 +772,7 @@ export interface TasteTestMovie {
 	posters: TasteTestPoster[];
 }
 
-/** One rankable unit in the bucket-ranking panel — a whole design stack (its
+/** One rankable unit in the sortable ranking list — a whole design stack (its
  *  members move together) or a single poster. ``filenames`` is what the rank
  *  payload references. */
 export interface RankItem {
