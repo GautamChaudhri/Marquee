@@ -1,7 +1,7 @@
 """Cold-start onboarding tests (design 20) — no ML extras required.
 
 Exercises the onboarding service (state, stratified sampler, progress/completion
-gate, taste-test ranking → v3 events + image staging, starter-profile copy) and
+gate, taste-test ranking → v4 events + image staging, starter-profile copy) and
 the routes (status, taste-test rank, completion gate). Job creation in the
 complete endpoint is monkeypatched.
 """
@@ -79,15 +79,18 @@ def test_stratified_sample_spreads_genres():
 
 def test_taste_test_rank_writes_event_and_stages(bundle):
     service.start(service.PATH_TASTE_TEST)
-    result = service.taste_test_rank("tt_a", [["a1.jpg"]], ["a3.jpg"])
+    result = service.taste_test_rank("tt_a", ["a1.jpg", "a2.jpg"], ["a3.jpg"])
 
     rows = feedback_store.read_all()
     assert len(rows) == 1
     row = rows[0]
-    assert row["v"] == 3 and row["type"] == "ranking" and row["source"] == "taste_test"
+    assert row["v"] == 4 and row["type"] == "ranking" and row["source"] == "taste_test"
     assert row["movie_id"] == "tt_a"
-    buckets = {c["orig_filename"]: c["bucket"] for c in row["candidates"]}
-    assert buckets == {"a1.jpg": "fav", "a2.jpg": "indiff", "a3.jpg": "hate"}
+    assert [c["orig_filename"] for c in row["order"]] == ["a1.jpg", "a2.jpg"]
+    assert [c["orig_filename"] for c in row["hated"]] == ["a3.jpg"]
+    # No real pipeline ran -- baseline is the manifest listing position.
+    assert row["order"][0]["pipeline_rank"] is None
+    assert row["order"][0]["baseline_rank"] == 1
     # Favorite staged to positives, hated to negatives.
     assert result["favorites_exemplars"]
     assert (pipeline_settings.TRAINING_DATA_DIR / result["favorites_exemplars"][0]).is_file()
@@ -96,18 +99,18 @@ def test_taste_test_rank_writes_event_and_stages(bundle):
 
 def test_rerank_replaces_prior_event(bundle):
     service.start(service.PATH_TASTE_TEST)
-    service.taste_test_rank("tt_a", [["a1.jpg"]], [])
-    service.taste_test_rank("tt_a", [["a2.jpg"]], [])  # re-rank same movie
+    service.taste_test_rank("tt_a", ["a1.jpg", "a2.jpg", "a3.jpg"], [])
+    service.taste_test_rank("tt_a", ["a2.jpg", "a1.jpg", "a3.jpg"], [])  # re-rank same movie
     rows = [r for r in feedback_store.read_all() if r.get("movie_id") == "tt_a"]
     assert len(rows) == 1  # prior replaced
-    assert rows[0]["favorites"] == [["a2.jpg"]]
+    assert [c["orig_filename"] for c in rows[0]["order"]] == ["a2.jpg", "a1.jpg", "a3.jpg"]
 
 
 def test_progress_and_completion_gate(bundle):
     service.start(service.PATH_TASTE_TEST)
     assert service.progress()["can_complete"] is False
-    service.taste_test_rank("tt_a", [["a1.jpg"]], [])
-    service.taste_test_rank("tt_b", [["b1.jpg"]], [])
+    service.taste_test_rank("tt_a", ["a1.jpg", "a2.jpg", "a3.jpg"], [])
+    service.taste_test_rank("tt_b", ["b1.jpg", "b2.jpg", "b3.jpg"], [])
     prog = service.progress()
     assert prog["ranked"] == 2 and prog["min"] == 2
     assert prog["can_complete"] is True
@@ -150,7 +153,7 @@ async def test_taste_test_rank_endpoint(bundle, client):
     service.start(service.PATH_TASTE_TEST)
     resp = await client.post(
         "/api/onboarding/taste-test/rank",
-        json={"movie_id": "tt_a", "favorites": [["a1.jpg"]], "hated": ["a3.jpg"]},
+        json={"movie_id": "tt_a", "order": ["a1.jpg", "a2.jpg"], "hated": ["a3.jpg"]},
     )
     assert resp.status_code == 200
     assert resp.json()["status"]["ranked"] == 1
@@ -172,8 +175,8 @@ async def test_complete_requires_minimum(bundle, client):
 @pytest.mark.asyncio
 async def test_complete_succeeds_after_minimum(bundle, client, monkeypatch):
     service.start(service.PATH_TASTE_TEST)
-    service.taste_test_rank("tt_a", [["a1.jpg"]], [])
-    service.taste_test_rank("tt_b", [["b1.jpg"]], [])
+    service.taste_test_rank("tt_a", ["a1.jpg", "a2.jpg", "a3.jpg"], [])
+    service.taste_test_rank("tt_b", ["b1.jpg", "b2.jpg", "b3.jpg"], [])
 
     async def _fake_create(*args, **kwargs):
         return object()

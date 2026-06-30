@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from math import log2
 from pathlib import Path
 
 import numpy as np
@@ -109,26 +110,62 @@ def build_training_data(
     return matrix, targets, common, len(movies)
 
 
-_BUCKET_FAV = "fav"
-_BUCKET_INDIFF = "indiff"
-_BUCKET_HATE = "hate"
+def _position_discount(rank: int) -> float:
+    """DCG-style discount for a 1-based position in the user's FINAL order —
+    top of the list matters more than the tail, regardless of whether `rank`
+    came from a real model prediction (live runs) or an arbitrary baseline
+    (onboarding's taste-test manifest order has no real prediction at all;
+    see design/30) — the discount is defined purely on the final order, so
+    the same formula applies either way with no special-casing."""
+    return 1.0 / log2(rank + 1)
 
 
-def build_pairwise_training_data(
+def _pair_magnitude(winner_final_rank: int, loser_final_rank: int) -> float:
+    """How much one pair's correction matters, from where it landed in the
+    final order. Average of both endpoints' discounts: symmetric, and a
+    dramatic mover's pairs are dominated by its own high discount regardless
+    of where the displaced posters end up, while a small adjacent swap's
+    pairs stay low on both sides — verified against the design's worked
+    examples (a rank-9->2 jump's pairs outweigh a rank-7<->8 swap's pair).
+    Empirically unvalidated combination rule (vs. e.g. taking whichever
+    endpoint is more extreme) — revisit once real ranking data exists.
+    """
+    return (_position_discount(winner_final_rank) + _position_discount(loser_final_rank)) / 2.0
+
+
+def build_inversion_training_data(
     rows: list[dict],
 ) -> tuple[np.ndarray, np.ndarray, list[str], int, int]:
-    """Expand v3 ranking events into weighted within-movie preference pairs.
+    """Expand v4 ranking events into weighted within-movie preference pairs.
 
-    Each ranking event encodes a partial order over a movie's candidates:
-    ``Favorites`` (ordered tiers, ties within a tier) ≻ ``Indifferent`` ≻
-    ``Hate``. We turn that into ``(x_winner - x_loser, weight)`` rows — one per
-    cross-group/cross-tier pair, none within a tier (ties = no constraint).
+    Each event stores a final ``order`` (best -> worst) plus a ``hated`` set;
+    every candidate also carries a ``baseline_rank`` (the pipeline's own
+    predicted rank for live runs, or an arbitrary manifest position for
+    onboarding's taste test — see design/30). Pairs come from two sources:
 
-    Weight = ``movie_norm × confidence`` where ``movie_norm = 1/pairs-in-movie``
-    (so a 30-candidate movie can't drown a 6-candidate one) and ``confidence``
-    is 1.0 for explicit pairs (between favorite tiers, favorite↔hate) and
-    ``FEEDBACK_INDIFF_HATE_PAIR_WEIGHT`` for pairs touching the inferred
-    indifferent set. Legacy v1/v2 rows are ignored here (decision: start fresh).
+    - **Inversions**: any pair of candidates still in ``order`` whose final
+      relative order disagrees with their baseline relative order. Agreement
+      produces nothing — the model already had that comparison right, so
+      re-asserting it teaches nothing new. Confidence 1.0 (both endpoints are
+      in the list the user actively arranged).
+    - **Hate-pile pairs**: a hated candidate vs. every surviving candidate the
+      baseline had ranked *worse* than it (the hate action contradicts that
+      prediction). Confidence ``FEEDBACK_INDIFF_HATE_PAIR_WEIGHT`` (one click,
+      not an explicit per-item comparison). No pair where the baseline
+      already agreed the hated poster was worse — no contradiction there.
+      The hated poster's own position, for discount purposes only, is
+      ``len(order) + 1`` (one past the end — hate places you at the bottom).
+
+    Weight = ``movie_norm * confidence * magnitude`` (see ``_pair_magnitude``
+    for the position-discount). ``movie_norm`` normalizes by the *sum of a
+    movie's raw magnitudes*, not its raw pair count — dividing by pair count
+    alone would make a 1-swap and a 7-jump *from the same movie* land on the
+    same per-pair weight (both share one denominator), which defeats the
+    point of the magnitude term. Normalizing by the magnitude-weighted total
+    still caps each movie's total contribution to a constant (so a
+    30-candidate movie can't drown a 6-candidate one — the original purpose),
+    while preserving the relative weight of a big jump vs a small swap within
+    that movie's own budget.
 
     Returns ``(diffs[N,F], weights[N], feature_names, n_movies, n_pairs)``.
     Feature names are the intersection present on every paired candidate.
@@ -138,50 +175,54 @@ def build_pairwise_training_data(
     movies: set[object] = set()
 
     for row in rows:
-        if row.get("v") != 3 or row.get("type") != "ranking":
+        if row.get("v") != 4 or row.get("type") != "ranking":
             continue
-        feats = {
-            c["orig_filename"]: c["normalized_features"]
-            for c in row.get("candidates", [])
-            if c.get("orig_filename") and c.get("normalized_features")
-        }
 
-        # Ordered groups, best → worst, tagged explicit/implicit. Favorites
-        # arrive as tiers (list of lists); indifferent + hate are single groups.
-        groups: list[tuple[list[str], bool]] = []
-        favorites_flat: set[str] = set()
-        for tier in row.get("favorites") or []:
-            members = [name for name in tier if name in feats]
-            favorites_flat.update(tier)
-            if members:
-                groups.append((members, True))  # explicit
-        hated = [name for name in (row.get("hated") or []) if name in feats]
-        indifferent = [
-            name
-            for name in feats
-            if name not in favorites_flat and name not in set(row.get("hated") or [])
-        ]
-        if indifferent:
-            groups.append((indifferent, False))  # implicit (inferred)
-        if hated:
-            groups.append((hated, True))  # explicit
+        order = [c for c in (row.get("order") or []) if c.get("normalized_features")]
+        hated = [c for c in (row.get("hated") or []) if c.get("normalized_features")]
+        final_rank = {c["orig_filename"]: i + 1 for i, c in enumerate(order)}
+        feats = {c["orig_filename"]: c["normalized_features"] for c in order}
 
         movie_pairs: list[tuple[dict, dict, float]] = []
-        for hi, (winners, w_explicit) in enumerate(groups):
-            for losers, l_explicit in groups[hi + 1 :]:
-                # Pair is explicit only when BOTH endpoints were stated by the
-                # user (favorite or hate); anything touching indifferent is soft.
-                confidence = 1.0 if (w_explicit and l_explicit) else implicit_weight
-                for winner in winners:
-                    for loser in losers:
-                        movie_pairs.append((feats[winner], feats[loser], confidence))
+
+        # Orderable-list inversions: i < j in final order, so order[i] is the
+        # final winner over order[j]. An inversion exists only when the
+        # baseline preferred the loser (lower baseline_rank = better).
+        for i, winner_c in enumerate(order):
+            w_baseline = winner_c.get("baseline_rank")
+            if w_baseline is None:
+                continue
+            for loser_c in order[i + 1 :]:
+                l_baseline = loser_c.get("baseline_rank")
+                if l_baseline is None or l_baseline >= w_baseline:
+                    continue  # baseline agreed (or ties) — no signal
+                w_name, l_name = winner_c["orig_filename"], loser_c["orig_filename"]
+                magnitude = _pair_magnitude(final_rank[w_name], final_rank[l_name])
+                movie_pairs.append((feats[w_name], feats[l_name], magnitude))
+
+        # Hate-pile pairs: hated vs. every survivor the baseline ranked worse
+        # than the hated poster (contradicting that prediction).
+        virtual_rank = len(order) + 1
+        for h in hated:
+            h_baseline = h.get("baseline_rank")
+            if h_baseline is None:
+                continue
+            for s in order:
+                s_baseline = s.get("baseline_rank")
+                if s_baseline is None or h_baseline >= s_baseline:
+                    continue  # baseline already agreed hated < s — no contradiction
+                magnitude = _pair_magnitude(final_rank[s["orig_filename"]], virtual_rank)
+                movie_pairs.append(
+                    (feats[s["orig_filename"]], h["normalized_features"], implicit_weight * magnitude)
+                )
 
         if not movie_pairs:
             continue
         movies.add(row.get("movie_id") if row.get("movie_id") is not None else row.get("title"))
-        movie_norm = 1.0 / len(movie_pairs)
+        total_raw = sum(weight for _, _, weight in movie_pairs)
+        movie_norm = 1.0 / total_raw if total_raw > 0 else 0.0
         all_pairs.extend(
-            (winner, loser, confidence * movie_norm) for winner, loser, confidence in movie_pairs
+            (winner, loser, weight * movie_norm) for winner, loser, weight in movie_pairs
         )
 
     if not all_pairs:
@@ -200,14 +241,14 @@ def build_pointwise_pseudo_labels(
     rows: list[dict],
     feature_names: list[str],
 ) -> tuple[np.ndarray, np.ndarray, int]:
-    """Derive 0/1 pseudo-labels from the same v3 ranking events, for Platt
-    calibration of a pairwise-trained head (see ``LogisticHead.calibrated``).
+    """Derive 0/1 pseudo-labels from the same v4 ranking events, for Platt
+    calibration of an inversion-trained head (see ``LogisticHead.calibrated``).
 
-    A favorite-tier candidate -> 1, a hated candidate -> 0; indifferent
-    candidates are skipped (inferred, not a real preference signal). Only
-    candidates carrying every name in ``feature_names`` are included — every
-    favorite/hated candidate already does, since they're the same candidates
-    ``build_pairwise_training_data`` paired on that same feature set.
+    The top slice of each event's final order (the same cutoff used for
+    positive-exemplar staging — see ``feedback_store.positive_exemplar_count``)
+    -> 1; hated candidates -> 0. Everything else in the order is an untouched
+    relative position, not a stated preference, and is skipped. Only
+    candidates carrying every name in ``feature_names`` are included.
 
     Returns ``(X[N, len(feature_names)], y[N], n_movies)``.
     """
@@ -215,24 +256,22 @@ def build_pointwise_pseudo_labels(
     movies: set[object] = set()
 
     for row in rows:
-        if row.get("v") != 3 or row.get("type") != "ranking":
+        if row.get("v") != 4 or row.get("type") != "ranking":
             continue
-        feats = {
-            c["orig_filename"]: c["normalized_features"]
-            for c in row.get("candidates", [])
-            if c.get("orig_filename") and c.get("normalized_features")
-        }
-        favorites_flat = {name for tier in row.get("favorites") or [] for name in tier}
-        hated = set(row.get("hated") or [])
+        order = row.get("order") or []
+        hated = row.get("hated") or []
+        n_pos = feedback_store.positive_exemplar_count(len(order))
 
         row_samples = [
-            (feats[name], 1)
-            for name in favorites_flat
-            if name in feats and all(f in feats[name] for f in feature_names)
+            (c["normalized_features"], 1)
+            for c in order[:n_pos]
+            if c.get("normalized_features")
+            and all(f in c["normalized_features"] for f in feature_names)
         ] + [
-            (feats[name], 0)
-            for name in hated
-            if name in feats and all(f in feats[name] for f in feature_names)
+            (c["normalized_features"], 0)
+            for c in hated
+            if c.get("normalized_features")
+            and all(f in c["normalized_features"] for f in feature_names)
         ]
         if not row_samples:
             continue
@@ -260,8 +299,9 @@ def train_from_labels(
     """Train + (optionally) save the head. Returns (head|None, info).
 
     ``mode`` selects the trainer (defaults to ``HEAD_TRAIN_MODE``): "pairwise"
-    learns a RankNet head from v3 ranking events; "pointwise" is the legacy
-    logistic regression over v1/v2 approve/override labels.
+    learns a RankNet head from v4 ranking events (rank-inversion pairs —
+    design/30); "pointwise" is the legacy logistic regression over v1/v2
+    approve/override labels.
     """
     mode = pipeline_settings.HEAD_TRAIN_MODE if mode is None else mode
     min_movies = pipeline_settings.HEAD_MIN_MOVIES if min_movies is None else min_movies
@@ -269,7 +309,7 @@ def train_from_labels(
 
     if mode == "pairwise":
         min_pairs = pipeline_settings.HEAD_MIN_PAIRS if min_pairs is None else min_pairs
-        diffs, weights, names, n_movies, n_pairs = build_pairwise_training_data(rows)
+        diffs, weights, names, n_movies, n_pairs = build_inversion_training_data(rows)
         info = {
             "mode": "pairwise",
             "n_pairs": n_pairs,

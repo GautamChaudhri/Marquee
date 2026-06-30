@@ -86,10 +86,10 @@ def reset() -> None:
 
 
 def ranked_movie_keys(since_iso: str | None) -> set:
-    """Distinct movies with a v3 ranking event at/after ``since_iso``."""
+    """Distinct movies with a v4 ranking event at/after ``since_iso``."""
     keys: set = set()
     for row in feedback_store.read_all():
-        if row.get("type") != "ranking":
+        if row.get("type") != "ranking" or row.get("v") != 4:
             continue
         if since_iso and (row.get("ts") or "") < since_iso:
             continue
@@ -277,6 +277,7 @@ def _remove_prior_taste_test_event(movie_id: str) -> None:
     for row in feedback_store.read_all():
         if (
             row.get("type") == "ranking"
+            and row.get("v") == 4
             and row.get("source") == "taste_test"
             and row.get("movie_id") == movie_id
         ):
@@ -296,14 +297,20 @@ def _unstage(directory: Path | str, name: str) -> None:
 
 def taste_test_rank(
     movie_id: str,
-    favorites: list[list[str]],
+    order: list[str],
     hated: list[str],
 ) -> dict:
-    """Record one bundled taste-test movie's ranking as a v3 event.
+    """Record one bundled taste-test movie's ranking as a v4 event (design 30).
 
-    Stages tier-1 favorite images into the positive training folder and hated
-    images into the negative folder (a later ``rebuild_profile`` consolidates
-    them into Layer A). The v3 event's candidate features come from the bundled
+    A taste-test movie never runs the real pipeline — there's no model
+    prediction to correct, just the manifest's arbitrary poster listing
+    order, used as the baseline the inversion trainer needs *some* numeric
+    key for. Stages the top slice of the final order into the positive
+    training folder, and *every* hated image into the negative folder
+    unconditionally (no rank-gate like the live path's hard-negative mining —
+    ``pipeline_rank`` is always None here, so that gate could never fire
+    anyway). A later ``rebuild_profile`` consolidates staged images into
+    Layer A. The v4 event's candidate features come from the bundled
     manifest, so the pairwise trainer reads it exactly like a live rank event.
     """
     data = load_taste_test()
@@ -314,20 +321,26 @@ def taste_test_rank(
         raise ValueError(f"{movie_id!r} is not a taste-test movie")
 
     features = {p["file"]: p.get("normalized_features") for p in movie.get("posters", [])}
+    baseline_rank = {p["file"]: i + 1 for i, p in enumerate(movie.get("posters", []))}
     valid = set(features)
-    fav_tiers = [[f for f in tier if f in valid] for tier in favorites]
-    fav_tiers = [tier for tier in fav_tiers if tier]
-    hated_files = [f for f in hated if f in valid]
-    if not fav_tiers and not hated_files:
-        raise ValueError("rank requires favorites and/or hated")
 
-    chosen = {f for tier in fav_tiers for f in tier} | set(hated_files)
+    order_files = list(dict.fromkeys(f for f in order if f in valid))
+    hated_files = list(dict.fromkeys(f for f in hated if f in valid))
+    if not order_files and not hated_files:
+        raise ValueError("rank requires order and/or hated")
+    overlap = set(order_files) & set(hated_files)
+    if overlap:
+        raise ValueError(f"a poster cannot be both ordered and hated: {sorted(overlap)}")
+    missing = valid - (set(order_files) | set(hated_files))
+    if missing:
+        raise ValueError(f"order/hated must cover every poster (missing: {sorted(missing)})")
 
     _remove_prior_taste_test_event(movie_id)
 
     # Stage images → training folders.
+    n_pos = feedback_store.positive_exemplar_count(len(order_files))
     favorites_exemplars: list[str] = []
-    for file in fav_tiers[0] if fav_tiers else []:
+    for file in order_files[:n_pos]:
         src = taste_test_image_path(file)
         if src is not None:
             name = _stage_image(src, Path(pipeline_settings.TRAINING_DATA_DIR))
@@ -341,34 +354,22 @@ def taste_test_rank(
             if name:
                 negatives_added.append(name)
 
-    # Build the v3 candidates (favorites/tiers, hate, indifferent) from manifest.
-    candidates: list[dict] = []
+    def _entry(file: str) -> dict | None:
+        if not features.get(file):
+            return None
+        return {
+            "orig_filename": file,
+            "pipeline_rank": None,  # taste-test posters never run the real pipeline
+            "baseline_rank": baseline_rank.get(file),
+            "normalized_features": features[file],
+        }
 
-    def _emit(file: str, bucket: str, tier: int | None) -> None:
-        if features.get(file):
-            candidates.append(
-                {
-                    "orig_filename": file,
-                    "bucket": bucket,
-                    "tier": tier,
-                    "pipeline_rank": None,
-                    "rejection_reason": None,
-                    "normalized_features": features[file],
-                }
-            )
-
-    for tier_index, tier in enumerate(fav_tiers, start=1):
-        for file in tier:
-            _emit(file, "fav", tier_index)
-    for file in hated_files:
-        _emit(file, "hate", None)
-    for file in valid:
-        if file not in chosen:
-            _emit(file, "indiff", None)
+    order_entries = [e for e in (_entry(f) for f in order_files) if e is not None]
+    hated_entries = [e for e in (_entry(f) for f in hated_files) if e is not None]
 
     event_id = uuid4().hex
     record = {
-        "v": 3,
+        "v": 4,
         "type": "ranking",
         "source": "taste_test",
         "event_id": event_id,
@@ -378,11 +379,10 @@ def taste_test_rank(
         "tmdb_id": None,
         "title": movie.get("title"),
         "year": movie.get("year"),
-        "favorites": fav_tiers,
-        "hated": hated_files,
+        "order": order_entries,
+        "hated": hated_entries,
         "favorites_exemplars": favorites_exemplars,
         "negatives_added": negatives_added,
-        "candidates": candidates,
         "scorer_name": None,
         "model_name": pipeline_settings.AI_MODEL,
         "gate_snapshot": feedback_store.gate_snapshot(),

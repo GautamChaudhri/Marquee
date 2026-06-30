@@ -95,7 +95,7 @@ def _head_status() -> dict:
     within-movie preference-pair counts."""
     from marquee.ml.head_trainer import (  # noqa: PLC0415
         _LEGACY_RUNS_DIRS,
-        build_pairwise_training_data,
+        build_inversion_training_data,
         build_training_data,
     )
 
@@ -103,7 +103,7 @@ def _head_status() -> dict:
     active = Path(pipeline_settings.LEARNED_HEAD_PATH).exists()
 
     if pipeline_settings.HEAD_TRAIN_MODE == "pairwise":
-        _d, _w, _names, n_movies, n_pairs = build_pairwise_training_data(rows)
+        _d, _w, _names, n_movies, n_pairs = build_inversion_training_data(rows)
         return {
             "active": active,
             "mode": "pairwise",

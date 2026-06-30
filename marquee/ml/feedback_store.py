@@ -18,6 +18,7 @@ import json
 import logging
 import os
 from collections import Counter
+from math import ceil
 from pathlib import Path
 
 from marquee.core.pipeline_config import pipeline_settings
@@ -117,12 +118,29 @@ def _movie_key(row: dict) -> object:
     return row.get("movie_id") if row.get("movie_id") is not None else row.get("title")
 
 
+def positive_exemplar_count(n_orderable: int) -> int:
+    """How many top-of-final-order posters become positive exemplars/pseudo-
+    labels for one ranking submission (live or taste-test). Shared by the
+    feedback route's staging logic, the pairwise trainer's pseudo-label
+    builder, and this module's own stats so all three agree.
+
+    ``min(3, 20% of the list)``, floor 1 — small slates still stage their #1;
+    long slates don't stage an unbounded chunk from a single session.
+    """
+    if n_orderable <= 0:
+        return 0
+    return max(1, min(3, ceil(0.2 * n_orderable)))
+
+
 def summary() -> dict:
     """Label-derived stats (movie/genre augmentation happens in the route).
 
-    Counts label-equivalent signals: a v1/v2 row is one label; a v3 ranking
-    event contributes one positive per favorited poster and one negative per
-    hated poster (its indifferent set is unlabeled and not counted).
+    Counts label-equivalent signals: a v1/v2 row is one label; a v4 ranking
+    event contributes one positive per staged exemplar (the top slice of its
+    final order — see ``positive_exemplar_count``) and one negative per hated
+    poster (everything else in the order is an untouched relative position,
+    not a stated preference, and isn't counted). Pre-cutover v3 ranking rows
+    are ignored — see design/30 and the v4 cutover.
     """
     rows = read_all()
     movies = {_movie_key(row) for row in rows if _movie_key(row) is not None}
@@ -130,12 +148,13 @@ def summary() -> dict:
     negatives = 0
     total = 0
     for row in rows:
-        if row.get("type") == "ranking":
-            favorites = sum(len(tier) for tier in (row.get("favorites") or []))
-            hated = len(row.get("hated") or [])
+        if row.get("type") == "ranking" and row.get("v") == 4:
+            order = row.get("order") or []
+            hated = row.get("hated") or []
+            favorites = positive_exemplar_count(len(order))
             positives += favorites
-            negatives += hated
-            total += favorites + hated
+            negatives += len(hated)
+            total += favorites + len(hated)
         elif row.get("label") is not None:
             total += 1
             if row.get("label") == 1:
@@ -171,14 +190,20 @@ def gate_override_alerts() -> list[dict]:
 
     counts: Counter[str] = Counter()
     for row in rows:
-        if row.get("type") == "ranking":
-            # A favorited poster the pipeline had gate-rejected is an override
-            # of that gate, same as a v2 override pick.
+        if row.get("type") == "ranking" and row.get("v") == 4:
+            # A staged-exemplar poster the pipeline had gate-rejected would be
+            # an override of that gate, same as a v2 override pick. In
+            # practice `order` only ever contains already-ranked (gate-passed)
+            # candidates today, so this rarely fires — kept for symmetry/
+            # forward-compat if ranking ever exposes gate-rejected candidates.
             snapshot = row.get("gate_snapshot") or {}
-            for candidate in row.get("candidates", []):
-                if candidate.get("bucket") == "fav" and candidate.get("rejection_reason"):
+            order = row.get("order") or []
+            for candidate in order[: positive_exemplar_count(len(order))]:
+                if candidate.get("rejection_reason"):
                     _tally(candidate.get("rejection_reason"), snapshot)
             continue
+        if row.get("type") == "ranking":
+            continue  # pre-cutover v3 ranking row — ignored
         if row.get("role") != "user_pick" or row.get("action") != "override":
             continue
         _tally(row.get("rejection_reason"), row.get("gate_snapshot") or {})

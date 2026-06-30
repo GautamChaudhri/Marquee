@@ -3,7 +3,7 @@
 Seeds the engine on a fresh install. Most heavy lifting reuses existing jobs:
 ``taste_rebuild`` (Layer A) and ``learned_head_train`` (Layer B). This router
 adds onboarding state/progress, path selection, the stratified sample, and the
-bundled taste test. The actual ranking reuses the v3 ``rank`` flow.
+bundled taste test. The actual ranking reuses the v4 ``rank`` flow (design 30).
 """
 
 from __future__ import annotations
@@ -37,7 +37,7 @@ class StartRequest(BaseModel):
 
 class TasteTestRankRequest(BaseModel):
     movie_id: str
-    favorites: list[list[str]] | None = None
+    order: list[str] | None = None
     hated: list[str] | None = None
 
 
@@ -146,7 +146,7 @@ async def taste_test_poster(file: str):
 @router.post("/taste-test/rank")
 async def taste_test_rank(body: TasteTestRankRequest):
     try:
-        result = service.taste_test_rank(body.movie_id, body.favorites or [], body.hated or [])
+        result = service.taste_test_rank(body.movie_id, body.order or [], body.hated or [])
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {**result, "status": service.status()}
