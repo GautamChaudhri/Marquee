@@ -58,6 +58,7 @@ from marquee.pipeline.runner import (
     run_sync_stages,
     write_run_json,
 )
+from marquee.pipeline.types import find_auto_pick_candidate
 
 logger = logging.getLogger(__name__)
 
@@ -358,6 +359,7 @@ class RunManager:
         except Exception:
             logger.exception("RUN | failed to write run JSON for %s", run_id)
 
+        auto_pick = find_auto_pick_candidate(payload.get("candidates", []))
         await self._finalize_db(
             run_id=run_id,
             status=status,
@@ -365,6 +367,7 @@ class RunManager:
             counts=counts,
             archive_path=str(archive_path),
             error=error,
+            auto_pick_filename=auto_pick["orig_filename"] if auto_pick else None,
         )
 
         logger.info("RUN END | run_id=%s | status=%s | total=%.3fs", run_id, status, total_duration)
@@ -422,6 +425,7 @@ class RunManager:
         counts: dict,
         archive_path: str,
         error: str | None,
+        auto_pick_filename: str | None,
     ) -> None:
         factory = _get_session_factory()
         async with factory() as session:
@@ -435,6 +439,7 @@ class RunManager:
             run.scorer_name = scorer_name
             run.counts_json = json.dumps(counts)
             run.archive_path = archive_path
+            run.auto_pick_filename = auto_pick_filename
             run.error = error
             await session.commit()
 

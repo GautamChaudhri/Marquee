@@ -7,6 +7,7 @@
 		kind = 'ranked',
 		selectable = true,
 		selected = false,
+		inspected = false,
 		badgeText = null,
 		onSelect,
 		accent = '',
@@ -16,6 +17,8 @@
 		kind?: 'ranked' | 'rejected';
 		selectable?: boolean;
 		selected?: boolean;
+		/** Ring highlight when this tile is the one the hero inspector is showing. */
+		inspected?: boolean;
 		badgeText?: string | null;
 		onSelect?: (c: CandidateView) => void;
 		/** Optional CSS color for a left-edge accent (used by expanded stacks). */
@@ -52,6 +55,7 @@
 	class:rejected={kind === 'rejected'}
 	class:accented={accent !== ''}
 	class:selected
+	class:inspected
 	disabled={!selectable}
 	onclick={() => onSelect?.(candidate)}
 	title={kind === 'rejected' ? reason : stacked ? `Stack ${tag}` : `Rank ${candidate.rank}`}
@@ -134,6 +138,10 @@
 	.tile.selected .art {
 		border-color: var(--gold);
 		box-shadow: 0 0 0 2px color-mix(in srgb, var(--gold) 55%, transparent);
+	}
+	.tile.inspected .art {
+		border-color: var(--info);
+		box-shadow: 0 0 0 2px color-mix(in srgb, var(--info) 60%, transparent);
 	}
 	.tile.rejected .art {
 		opacity: 0.82;

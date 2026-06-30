@@ -18,6 +18,7 @@ from marquee.api.explanations import (
     explain_top_contributions,
     suggest_for_summary,
 )
+from marquee.pipeline.types import find_auto_pick_candidate
 
 
 @dataclass(frozen=True)
@@ -205,18 +206,10 @@ def build_results_payload(
     # stack, members ordered by stack_pos (A,B,C…), stacks by stack_rank.
     stacks = _build_stacks(run_id, ranked)
 
-    # Auto-pick is "1A" — the representative of the top stack. With the robust
-    # top-K-mean stack score this can differ from the single globally
-    # highest-scored poster (= ranked[0]); fall back to that when stacking is
-    # off or the archive predates the stack layer.
-    auto_src = None
-    if stacks:
-        auto_src = next(
-            (c for c in ranked if c.get("stack_rank") == 1 and c.get("stack_pos") == 1),
-            None,
-        )
-    if auto_src is None and ranked:
-        auto_src = ranked[0]
+    # Auto-pick is "1A" — the representative of the top stack (shared with the
+    # persisted pipeline_runs.auto_pick_filename so the Review thumbnail and
+    # this payload always agree on which poster won).
+    auto_src = find_auto_pick_candidate(candidates)
 
     auto_pick = None
     if auto_src is not None:
