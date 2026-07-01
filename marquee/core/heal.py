@@ -11,11 +11,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
+from marquee.config import settings
 from marquee.core.poster_service import poster_service
 from marquee.database import _get_session_factory
 from marquee.models import Movie
@@ -30,9 +31,26 @@ async def heal_scan() -> dict:
     """Stat every deployed poster; restore the missing ones from cache/URL."""
     factory = _get_session_factory()
     checked = restored = failed = 0
+    # Freshly deployed posters get a grace window: the deploy may still be
+    # mid-flight in the API process, and restoring over it would clobber it.
+    grace_cutoff = datetime.now(UTC) - timedelta(
+        minutes=settings.HEAL_RECENT_DEPLOY_GRACE_MINUTES
+    )
     async with factory() as db:
         movies = (
-            (await db.execute(select(Movie).where(Movie.poster_path.is_not(None)))).scalars().all()
+            (
+                await db.execute(
+                    select(Movie).where(
+                        Movie.poster_path.is_not(None),
+                        or_(
+                            Movie.poster_deployed_at.is_(None),
+                            Movie.poster_deployed_at < grace_cutoff,
+                        ),
+                    )
+                )
+            )
+            .scalars()
+            .all()
         )
         for movie in movies:
             checked += 1
