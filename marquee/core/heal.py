@@ -9,6 +9,7 @@ run periodically from the app lifespan.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import UTC, datetime
 from pathlib import Path
@@ -35,7 +36,7 @@ async def heal_scan() -> dict:
         )
         for movie in movies:
             checked += 1
-            if movie.poster_path and Path(movie.poster_path).is_file():
+            if movie.poster_path and await asyncio.to_thread(Path(movie.poster_path).is_file):
                 continue
             logger.info("HEAL | poster missing for %s — restoring", movie.title)
             result = await poster_service.restore(db, movie, source="heal")
