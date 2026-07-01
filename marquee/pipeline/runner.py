@@ -42,6 +42,7 @@ import httpx
 import numpy as np
 
 from marquee.config import settings
+from marquee.core.download_guard import ensure_image_response
 from marquee.core.pipeline_config import pipeline_settings
 from marquee.core.poster_sources.tmdb import PosterCandidate, TMDBClient
 from marquee.models import Movie
@@ -407,6 +408,7 @@ async def _download_poster(
         async with _DOWNLOAD_SEMAPHORE:
             response = await client.get(poster.url(size=pipeline_settings.TMDB_POSTER_SIZE))
             response.raise_for_status()
+            ensure_image_response(response)
             destination.write_bytes(response.content)
         return "downloaded", None
     except Exception as exc:
