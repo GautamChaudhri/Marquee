@@ -15,16 +15,37 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from sqlalchemy import or_, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.config import settings
 from marquee.core.poster_service import poster_service
 from marquee.database import _get_session_factory
-from marquee.models import Movie
+from marquee.models import Job, Movie
 
 logger = logging.getLogger(__name__)
 
-# Last-run state for /api/system/status.
-heal_state: dict = {"last_run": None, "checked": 0, "restored": 0, "failed": 0}
+
+async def latest_heal_summary(db: AsyncSession) -> dict | None:
+    """Last completed heal scan, from the durable job row.
+
+    The scan runs as a ``poster_heal`` job in the scheduler child process, so
+    an in-memory dict would never be visible here — the Job table is the only
+    truthful cross-process record.
+    """
+    job = await db.scalar(
+        select(Job)
+        .where(Job.type == "poster_heal", Job.status == "succeeded")
+        .order_by(Job.finished_at.desc())
+        .limit(1)
+    )
+    if job is None:
+        return None
+    return {
+        "last_run": job.finished_at.isoformat() if job.finished_at else None,
+        "checked": (job.result or {}).get("checked", 0),
+        "restored": (job.result or {}).get("restored", 0),
+        "failed": (job.result or {}).get("failed", 0),
+    }
 
 
 async def heal_scan() -> dict:
@@ -63,12 +84,6 @@ async def heal_scan() -> dict:
             else:
                 failed += 1
 
-    heal_state.update(
-        last_run=datetime.now(UTC).isoformat(),
-        checked=checked,
-        restored=restored,
-        failed=failed,
-    )
     logger.info(
         "HEAL | scan complete | checked=%d restored=%d failed=%d",
         checked,

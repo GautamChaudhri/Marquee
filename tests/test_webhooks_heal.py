@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -165,6 +166,9 @@ async def test_webhook_upgrade_noop_when_poster_survives(client, db, tmp_path):
 async def test_heal_restores_missing_poster(db, tmp_path):
     movie, folder = await _deployed_movie(db, tmp_path)
     (folder / "poster.jpg").unlink()  # poster vanished from disk
+    # Age the deploy past the recent-deploy grace window so the scan sees it.
+    movie.poster_deployed_at = datetime.now(UTC) - timedelta(hours=1)
+    await db.commit()
 
     result = await heal_scan()
     assert result["restored"] >= 1
