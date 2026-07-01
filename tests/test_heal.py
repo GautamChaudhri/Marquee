@@ -95,3 +95,42 @@ async def test_heal_scan_counts_failures(db, tmp_path, monkeypatch):
 
     result = await heal.heal_scan()
     assert result == {"checked": 1, "restored": 0, "failed": 1}
+
+
+@pytest.mark.asyncio
+async def test_latest_heal_summary_reads_job_rows(db):
+    from marquee.core.heal import latest_heal_summary
+    from marquee.models import Job
+
+    assert await latest_heal_summary(db) is None
+
+    older = datetime.now(UTC) - timedelta(hours=2)
+    newer = datetime.now(UTC) - timedelta(minutes=5)
+    db.add_all(
+        [
+            Job(
+                id="healjob1",
+                type="poster_heal",
+                status="succeeded",
+                finished_at=older,
+                result={"checked": 10, "restored": 1, "failed": 0},
+            ),
+            Job(
+                id="healjob2",
+                type="poster_heal",
+                status="succeeded",
+                finished_at=newer,
+                result={"checked": 12, "restored": 2, "failed": 1},
+            ),
+            Job(id="healjob3", type="poster_heal", status="failed", finished_at=None),
+            Job(id="otherjob", type="poster_pipeline", status="succeeded", finished_at=newer),
+        ]
+    )
+    await db.commit()
+
+    summary = await latest_heal_summary(db)
+    assert summary is not None
+    assert summary["checked"] == 12
+    assert summary["restored"] == 2
+    assert summary["failed"] == 1
+    assert summary["last_run"] is not None

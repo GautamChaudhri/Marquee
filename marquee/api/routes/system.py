@@ -16,7 +16,7 @@ from marquee.api.routes.jobs import _QUEUED_ISH, _resolve_subject_titles, job_su
 from marquee.api.routes.webhooks import webhook_state
 from marquee.config import settings
 from marquee.core import system_metrics
-from marquee.core.heal import heal_state
+from marquee.core.heal import latest_heal_summary
 from marquee.core.jobs import job_manager
 from marquee.core.jobs.labels import humanize_job_type
 from marquee.core.jobs.manager import ACTIVE
@@ -64,7 +64,7 @@ async def system_status(request: Request, db: Annotated[AsyncSession, Depends(ge
     supervisor = getattr(request.app.state, "worker_supervisor", None)
     return {
         "cache": _cache_stats(),
-        "heal": heal_state,
+        "heal": await latest_heal_summary(db),
         "letterbox_heal": letterbox_heal_state,
         "webhook": webhook_state,
         "tools": binaries.availability(),
