@@ -10,6 +10,7 @@ from pathlib import Path
 
 import httpx
 
+from marquee.core.download_guard import ensure_image_response
 from marquee.core.poster_sources.tmdb import PosterCandidate
 from marquee.pipeline.types import CandidateScore
 
@@ -27,6 +28,7 @@ async def _download_original(
         try:
             response = await client.get(candidate.url(size="original"))
             response.raise_for_status()
+            ensure_image_response(response)
             score.image_path.write_bytes(response.content)
             return score, True, None
         except Exception as exc:

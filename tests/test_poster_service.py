@@ -143,6 +143,7 @@ async def test_restore_download_fallback(db, tmp_path, monkeypatch):
 
     class _Resp:
         content = png_bytes
+        headers = {"content-type": "image/jpeg"}
 
         def raise_for_status(self):
             return None

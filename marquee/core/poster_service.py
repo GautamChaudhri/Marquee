@@ -29,6 +29,7 @@ from PIL import Image
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.config import settings
+from marquee.core.download_guard import ensure_image_response
 from marquee.core.path_utils import PathValidationError, safe_translate_and_validate
 from marquee.models import ArtworkEvent, Movie
 
@@ -316,6 +317,7 @@ class PosterService:
                 async with httpx.AsyncClient(timeout=30.0) as client:
                     response = await client.get(movie.poster_source_url)
                     response.raise_for_status()
+                    ensure_image_response(response)
                 await asyncio.to_thread(_atomic_write_bytes, response.content, dest)
                 await self._finalize_restore(db, movie, dest, folder_raw, source, "download")
                 return RestoreResult(restored=True, source="download", path=str(dest))
