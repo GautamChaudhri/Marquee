@@ -45,8 +45,8 @@ from marquee.core.media_files import (
 )
 from marquee.core.media_jobs import media_job_manager
 from marquee.core.rate_limit import RateLimiter
-from marquee.database import get_db
 from marquee.core.sort_title import title_sort_expr
+from marquee.database import get_db
 from marquee.media import binaries, letterbox_preview
 from marquee.media.concurrency import gated
 from marquee.models import (

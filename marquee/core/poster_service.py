@@ -12,6 +12,7 @@ Cache layout (design 10 §12):
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import logging
@@ -101,10 +102,8 @@ def _atomic_copy(source: Path, dest: Path) -> None:
     # If the destination file already exists and we can't overwrite it,
     # try to make it writable first.
     if dest.exists() and not os.access(dest, os.W_OK):
-        try:
+        with contextlib.suppress(OSError):
             dest.chmod(0o664)
-        except OSError:
-            pass
     tmp = dest.parent / f".{dest.name}.tmp"
     shutil.copy2(source, tmp)
     try:
