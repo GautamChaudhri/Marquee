@@ -1067,13 +1067,15 @@ async def _run_checked(
                 if timeout is not None and (loop.time() - started) > timeout:
                     proc.terminate()
                     await proc.wait()
-                    raise RuntimeError(f"{binary_name} timed out")
+                    raise RuntimeError(f"{binary_name} timed out") from None
                 if db is not None and job is not None:
                     await db.refresh(job, ["cancel_requested"])
                     if job.cancel_requested:
                         proc.terminate()
                         await proc.wait()
-                        raise ReencodePlanError("cancelled", "letterbox re-encode cancelled")
+                        raise ReencodePlanError(
+                            "cancelled", "letterbox re-encode cancelled"
+                        ) from None
         stderr = await proc.stderr.read() if proc.stderr is not None else b""
     finally:
         await clear_child_pid(proc.pid)

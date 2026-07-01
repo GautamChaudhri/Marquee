@@ -466,10 +466,8 @@ async def poster_deploy_reset(job: Job) -> dict[str, Any]:
                     movie.title,
                     exc,
                 )
-                try:
+                with contextlib.suppress(Exception):
                     Path(movie.poster_path).unlink(missing_ok=True)
-                except Exception:
-                    pass
 
             # Always reset DB columns — the file is gone or unreachable.
             movie.poster_path = None

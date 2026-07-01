@@ -14,7 +14,7 @@ import re
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from sqlalchemy.sql.elements import ColumnElement
+    pass
 
 # Leading articles stripped for sorting purposes.  Ordered longest-first so
 # multi-word articles ("Los") match before their prefix ("Lo").
@@ -81,7 +81,8 @@ def title_sort_expr(title_column=None):
 
 def _build_expr(title_column):
     """Build a SQL ``CASE`` expression that strips leading articles."""
-    from sqlalchemy import case as sa_case, func
+    from sqlalchemy import case as sa_case
+    from sqlalchemy import func
 
     clauses: list = []
     for article in _ARTICLES_SORTED:

@@ -236,9 +236,10 @@ class WorkerSupervisor:
         The database tracks these PIDs so we can clean them up.
         """
         try:
+            from sqlalchemy import select  # noqa: PLC0415
+
             from marquee.database import _get_session_factory  # noqa: PLC0415
             from marquee.models import JobAttempt  # noqa: PLC0415
-            from sqlalchemy import select  # noqa: PLC0415
 
             factory = _get_session_factory()
             async with factory() as db:
