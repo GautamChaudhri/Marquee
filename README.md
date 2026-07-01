@@ -1,41 +1,82 @@
 # Marquee
 
-AI-powered automatic poster finder for Plex and Jellyfin media servers.
+AI-powered media library management for Radarr and Sonarr, centered on a
+movie-first poster pipeline and related library tooling.
 
-**Status: Pre-alpha — Phase 3 (revised AI pipeline)**
+## Current Status
+
+Marquee is in active development. The documented product surface is movie-only
+today; TV support is planned after the movie workflows have reached the desired
+level of reliability and quality.
+
+## What It Does
+
+- Runs an AI-assisted poster selection pipeline with OCR, taste matching,
+  ranking, review, and deployment workflows.
+- Manages audio and subtitle inventories, cleanup policies, mutation jobs, and
+  optional AI subtitle generation through an external Subgen service.
+- Surfaces HDR and Dolby Vision information from Radarr, and provides
+  letterbox detection, crop-tag management, and re-encode planning for movies.
+
+## Tech Stack
+
+- Backend: FastAPI, SQLAlchemy async, Alembic
+- Frontend: SvelteKit
+- Database: PostgreSQL by default, SQLite in tests and some local scenarios
+- ML/runtime: ONNX Runtime, PaddleOCR, OpenCV, NumPy
+- Deployment: Docker Compose plus host-run development workflows
 
 ## Quick Start
+
+Backend:
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install -e ".[all]"
+pip install -e ".[dev]"
+pip install -e ".[all]"   # include OCR / ML extras
+uvicorn marquee.main:app --reload
+```
+
+Frontend:
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Container stack:
+
+```bash
 docker compose -f docker/docker-compose.yml up -d
 ```
 
-Set `POSTGRES_PASSWORD` in `.env` before starting Compose. The stack starts a
-private PostgreSQL database, a migration job, API service, durable worker, and
-scheduler. Open http://localhost:3165/health once all services are healthy.
+Set any required secrets and client settings in `.env` before starting the
+stack. When running the API directly, point `DB_URL` at a reachable database
+and run migrations as needed with `alembic upgrade head`.
 
-To run Uvicorn directly on the host, first start the database and migration
-services, install the refreshed dependencies, and set the localhost `DB_URL`
-shown in `.env.example`:
+## Project Structure
 
-```bash
-docker compose -f docker/docker-compose.yml up -d postgres migrate
-pip install -e ".[all]"
-# One process — the API auto-spawns the durable worker + scheduler as
-# supervised child processes (no separate terminals needed).
-python -m uvicorn marquee.main:app --host 127.0.0.1 --port 3165 --reload
-```
+- `marquee/` - FastAPI app, services, pipeline, ML wrappers, models, and jobs
+- `frontend/` - SvelteKit web UI
+- `design/` - core design docs, plans, and archived historical notes
+- `tests/` - pytest suite
+- `docker/` - compose files and hardware profiles
+- `alembic/` - database migrations
 
-The job worker and scheduler start and stop with the API; on shutdown the whole
-process group is reaped, so background work is never left orphaned. Set
-`JOB_EMBEDDED_WORKERS=false` to run them as dedicated processes instead — this is
-what the Compose stack does, so its API container does **not** double-spawn them.
-The schema must be migrated first (the Compose `migrate` service, or
-`alembic upgrade head` against a fresh database).
+## Documentation
 
-## Design
+Start with `design/overview.md`, then use the subsystem docs:
 
-See `design/` for the project specification and migration notes.
+- `design/poster-pipeline.md`
+- `design/hdr-overlay.md`
+- `design/letterbox.md`
+- `design/audio-subs.md`
+- `design/library.md`
+- `design/job-platform.md`
+- `design/timeline.md`
+
+## License
+
+MIT
