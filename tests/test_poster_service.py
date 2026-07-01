@@ -10,7 +10,12 @@ from sqlalchemy import select
 
 from marquee.config import settings
 from marquee.core.path_utils import PathValidationError
-from marquee.core.poster_service import cache_paths, poster_service, render_filename
+from marquee.core.poster_service import (
+    cache_paths,
+    poster_service,
+    render_filename,
+    sanitize_poster_filename,
+)
 from marquee.models import ArtworkEvent, Movie
 
 
@@ -174,3 +179,88 @@ async def test_restore_fails_flags_for_repipeline(db, tmp_path):
     assert result.restored is False
     await db.refresh(movie)
     assert movie.poster_path is None  # flagged for re-pipeline
+
+
+# ---------------------------------------------------------------------------
+# Filename sanitization + destination confinement
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "",
+        "   ",
+        "../poster.jpg",
+        "..",
+        "a/b.jpg",
+        "a\\b.jpg",
+        "/etc/passwd.jpg",
+        ".hidden.jpg",
+        "nul\x00l.jpg",
+    ],
+)
+def test_sanitize_poster_filename_rejects(bad):
+    with pytest.raises(PathValidationError):
+        sanitize_poster_filename(bad)
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        ("poster.jpg", "poster.jpg"),
+        ("poster.JPG", "poster.JPG"),
+        ("poster.jpeg", "poster.jpeg"),
+        ("Dune (2021)", "Dune (2021).jpg"),
+        ("Dune (2021)-poster", "Dune (2021)-poster.jpg"),
+        ("weird..name.jpg", "weird..name.jpg"),
+    ],
+)
+def test_sanitize_poster_filename_accepts(name, expected):
+    assert sanitize_poster_filename(name) == expected
+
+
+def test_render_filename_rejects_traversal_format(monkeypatch):
+    monkeypatch.setattr(settings, "MOVIE_POSTER_FORMAT", "{movie_basename}/../../evil")
+    movie = Movie(title="X", year=2000, folder_path="/x", movie_file_path="/media/X (2000).mkv")
+    with pytest.raises(PathValidationError):
+        render_filename(movie)
+
+
+def test_render_filename_rejects_malicious_basename(monkeypatch):
+    monkeypatch.setattr(settings, "MOVIE_POSTER_FORMAT", "{movie_basename}.jpg")
+    # A hostile movie_file_path stem cannot introduce separators (stem strips
+    # them), but a dot-leading stem must still be rejected.
+    movie = Movie(title="X", year=2000, folder_path="/x", movie_file_path="/media/.evil.mkv")
+    with pytest.raises(PathValidationError):
+        render_filename(movie)
+
+
+def test_render_filename_appends_extension(monkeypatch):
+    monkeypatch.setattr(settings, "MOVIE_POSTER_FORMAT", "{movie_basename}-poster")
+    movie = Movie(
+        title="Dune", year=2021, folder_path="/x", movie_file_path="/media/Dune (2021).mkv"
+    )
+    assert render_filename(movie) == "Dune (2021)-poster.jpg"
+
+
+def test_render_filename_rejects_broken_format(monkeypatch):
+    monkeypatch.setattr(settings, "MOVIE_POSTER_FORMAT", "{movie_basename}{oops}.jpg")
+    movie = Movie(title="X", year=2000, folder_path="/x", movie_file_path="/media/X.mkv")
+    with pytest.raises(PathValidationError):
+        render_filename(movie)
+
+
+@pytest.mark.asyncio
+async def test_restore_rejects_traversal_deployed_filename(db, tmp_path):
+    folder = tmp_path / "Alien (1979)"
+    folder.mkdir(parents=True)
+    movie = await _movie(db, folder, tmdb_id=349)
+    movie.poster_deployed_filename = "../outside.jpg"
+    movie.poster_path = str(folder / "poster.jpg")
+    await db.commit()
+
+    result = await poster_service.restore(db, movie)
+    assert result.restored is False
+    assert "filename" in (result.error or "").lower() or "poster" in (result.error or "").lower()
+    assert not (tmp_path / "outside.jpg").exists()

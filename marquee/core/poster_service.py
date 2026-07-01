@@ -52,13 +52,46 @@ class RestoreResult:
     error: str | None = None
 
 
+def sanitize_poster_filename(name: str) -> str:
+    """Validate a rendered poster filename down to one safe path component.
+
+    The format string is UI-configurable and the basename substitution comes
+    from Radarr, so both are treated as untrusted: no separators, no ``..``,
+    no hidden/tmp-style leading dot, and the extension is normalized to
+    ``.jpg`` (``.jpeg`` accepted). Raises PathValidationError.
+    """
+    candidate = (name or "").strip()
+    if not candidate or "\x00" in candidate:
+        raise PathValidationError(f"Invalid poster filename: {name!r}")
+    if "/" in candidate or "\\" in candidate:
+        raise PathValidationError(f"Poster filename must not contain path separators: {name!r}")
+    if candidate.startswith(".") or Path(candidate).name != candidate:
+        raise PathValidationError(f"Poster filename must be a bare filename: {name!r}")
+    if Path(candidate).suffix.lower() not in (".jpg", ".jpeg"):
+        candidate += ".jpg"
+    return candidate
+
+
 def render_filename(movie: Movie) -> str:
     """Render the configured movie poster filename (handles {movie_basename})."""
     fmt = settings.MOVIE_POSTER_FORMAT
     if "{movie_basename}" in fmt:
         basename = Path(movie.movie_file_path).stem if movie.movie_file_path else "poster"
-        return fmt.format(movie_basename=basename)
-    return fmt
+        try:
+            rendered = fmt.format(movie_basename=basename)
+        except (KeyError, IndexError, ValueError) as exc:
+            raise PathValidationError(f"Invalid MOVIE_POSTER_FORMAT {fmt!r}: {exc}") from exc
+    else:
+        rendered = fmt
+    return sanitize_poster_filename(rendered)
+
+
+def _confine_dest(folder: Path, filename: str) -> Path:
+    """Join folder/filename and re-verify the result stays inside folder."""
+    dest = folder / filename
+    if dest.resolve().parent != folder.resolve():
+        raise PathValidationError(f"Poster destination escapes movie folder: {dest}")
+    return dest
 
 
 def _cache_dir() -> Path:
@@ -170,7 +203,7 @@ class PosterService:
         folder = safe_translate_and_validate(movie.folder_path, source="radarr")
         if not await asyncio.to_thread(folder.is_dir):
             raise PathValidationError(f"Movie folder does not exist: {folder}")
-        dest = folder / filename
+        dest = _confine_dest(folder, filename)
 
         await asyncio.to_thread(_atomic_copy, source_file, dest)
 
@@ -248,8 +281,17 @@ class PosterService:
             await db.commit()
             return RestoreResult(restored=False, source="none", error=str(exc))
 
-        filename = movie.poster_deployed_filename or render_filename(movie)
-        dest = folder / filename
+        try:
+            filename = (
+                sanitize_poster_filename(movie.poster_deployed_filename)
+                if movie.poster_deployed_filename
+                else render_filename(movie)
+            )
+            dest = _confine_dest(folder, filename)
+        except PathValidationError as exc:
+            await _log_event(db, movie.id, "restore_failed", source, {"error": str(exc)})
+            await db.commit()
+            return RestoreResult(restored=False, source="none", error=str(exc))
 
         # Primary: restore from the local cache (verify integrity if we can).
         cache_file = None
