@@ -418,7 +418,7 @@ async def submit_feedback(
             and pipeline_settings.FEEDBACK_NEGATIVES_FROM_OVERRIDES
             and auto is not None
         ):
-            _copy_negative(auto)
+            await asyncio.to_thread(_copy_negative, auto)
 
     elif body.action == "rank":
         # Dedup while preserving order — the frontend's orderable/hate-pile
@@ -509,7 +509,7 @@ async def submit_feedback(
         for candidate in hated_cands:
             rank = candidate.get("rank")
             if rank is not None and rank <= rank_max:
-                added = _copy_negative(candidate)
+                added = await asyncio.to_thread(_copy_negative, candidate)
                 if added:
                     negatives_added.append(added)
 
@@ -585,7 +585,7 @@ async def undo_feedback(
             if exemplar and await asyncio.to_thread(profile_updater.remove_exemplar, exemplar):
                 removed_exemplars.append(exemplar)
         for negative in row.get("negatives_added") or []:
-            if _remove_negative(negative):
+            if await asyncio.to_thread(_remove_negative, negative):
                 removed_negatives.append(negative)
 
     if removed_exemplars:

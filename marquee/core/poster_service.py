@@ -12,6 +12,7 @@ Cache layout (design 10 §12):
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import hashlib
 import json
@@ -122,6 +123,17 @@ def _atomic_write_bytes(data: bytes, dest: Path) -> None:
     os.replace(tmp, dest)
 
 
+def _populate_cache_sync(dest: Path, cache_file: Path, cache_meta: Path, meta: dict) -> None:
+    """Copy deployed bytes + provenance sidecar into the poster cache."""
+    _atomic_copy(dest, cache_file)
+    with Image.open(dest) as image:
+        width, height = image.size
+    cache_meta.write_text(
+        json.dumps({**meta, "width": width, "height": height}, indent=2),
+        encoding="utf-8",
+    )
+
+
 async def _log_event(
     db: AsyncSession, movie_id: int, action: str, source: str, detail: dict
 ) -> None:
@@ -156,37 +168,32 @@ class PosterService:
 
         filename = render_filename(movie)
         folder = safe_translate_and_validate(movie.folder_path, source="radarr")
-        if not folder.is_dir():
+        if not await asyncio.to_thread(folder.is_dir):
             raise PathValidationError(f"Movie folder does not exist: {folder}")
         dest = folder / filename
 
-        _atomic_copy(source_file, dest)
+        await asyncio.to_thread(_atomic_copy, source_file, dest)
 
-        sha256 = _sha256(dest)
-        phash = _phash(dest)
+        sha256 = await asyncio.to_thread(_sha256, dest)
+        phash = await asyncio.to_thread(_phash, dest)
 
         # Cache exact deployed bytes + provenance sidecar.
         cache_file = cache_meta = None
         if movie.tmdb_id is not None:
             cache_file, cache_meta = cache_paths(movie.tmdb_id)
-            _atomic_copy(dest, cache_file)
-            with Image.open(dest) as image:
-                width, height = image.size
-            cache_meta.write_text(
-                json.dumps(
-                    {
-                        "source": poster_source,
-                        "source_url": poster_source_url,
-                        "sha256": sha256,
-                        "phash": phash,
-                        "deployed_filename": filename,
-                        "deployed_at": datetime.now(UTC).isoformat(),
-                        "width": width,
-                        "height": height,
-                    },
-                    indent=2,
-                ),
-                encoding="utf-8",
+            await asyncio.to_thread(
+                _populate_cache_sync,
+                dest,
+                cache_file,
+                cache_meta,
+                {
+                    "source": poster_source,
+                    "source_url": poster_source_url,
+                    "sha256": sha256,
+                    "phash": phash,
+                    "deployed_filename": filename,
+                    "deployed_at": datetime.now(UTC).isoformat(),
+                },
             )
 
         movie.poster_path = str(dest)
@@ -248,11 +255,14 @@ class PosterService:
         cache_file = None
         if movie.tmdb_id is not None:
             cache_file, _ = cache_paths(movie.tmdb_id)
-        if cache_file and cache_file.is_file():
-            if movie.poster_sha256 and _sha256(cache_file) != movie.poster_sha256:
+        if cache_file and await asyncio.to_thread(cache_file.is_file):
+            if (
+                movie.poster_sha256
+                and await asyncio.to_thread(_sha256, cache_file) != movie.poster_sha256
+            ):
                 logger.warning("RESTORE | cache sha mismatch for %s — using it anyway", movie.title)
             try:
-                _atomic_copy(cache_file, dest)
+                await asyncio.to_thread(_atomic_copy, cache_file, dest)
                 await self._finalize_restore(db, movie, dest, folder_raw, source, "cache")
                 return RestoreResult(restored=True, source="cache", path=str(dest))
             except OSError as exc:
@@ -264,7 +274,7 @@ class PosterService:
                 async with httpx.AsyncClient(timeout=30.0) as client:
                     response = await client.get(movie.poster_source_url)
                     response.raise_for_status()
-                _atomic_write_bytes(response.content, dest)
+                await asyncio.to_thread(_atomic_write_bytes, response.content, dest)
                 await self._finalize_restore(db, movie, dest, folder_raw, source, "download")
                 return RestoreResult(restored=True, source="download", path=str(dest))
             except Exception as exc:  # noqa: BLE001
