@@ -29,6 +29,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import re
 import shutil
 import time
@@ -365,14 +366,34 @@ def _json_default(obj: object) -> object:
     if isinstance(obj, np.integer):
         return int(obj)
     if isinstance(obj, np.floating):
-        return float(obj)
+        value = float(obj)
+        return value if math.isfinite(value) else None
     if isinstance(obj, np.ndarray):
-        return obj.tolist()
+        return _strip_nonfinite(obj.tolist())
     raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
 
 
+def _strip_nonfinite(obj: object) -> object:
+    """Replace NaN/±Infinity with None throughout a JSON-bound structure.
+
+    Archives are echoed back through Starlette responses, which render with
+    ``allow_nan=False`` — a single NaN feature (e.g. title geometry with no
+    title box) would 500 every endpoint that replays the archive.
+    """
+    if isinstance(obj, float):
+        return obj if math.isfinite(obj) else None
+    if isinstance(obj, dict):
+        return {key: _strip_nonfinite(value) for key, value in obj.items()}
+    if isinstance(obj, list | tuple):
+        return [_strip_nonfinite(item) for item in obj]
+    return obj
+
+
 def write_run_json(path: Path, payload: dict[str, object]) -> None:
-    path.write_text(json.dumps(payload, indent=2, default=_json_default), encoding="utf-8")
+    path.write_text(
+        json.dumps(_strip_nonfinite(payload), indent=2, default=_json_default),
+        encoding="utf-8",
+    )
 
 
 async def _download_poster(

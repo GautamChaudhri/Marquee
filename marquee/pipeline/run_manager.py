@@ -453,7 +453,9 @@ class RunManager:
         if not path.exists():
             return None
         try:
-            return json.loads(path.read_text())
+            # parse_constant only fires for NaN/Infinity/-Infinity literals —
+            # legacy archives contain them, and Starlette responses reject them.
+            return json.loads(path.read_text(), parse_constant=lambda _c: None)
         except (OSError, json.JSONDecodeError):
             logger.warning("Could not read run archive %s", path)
             return None
