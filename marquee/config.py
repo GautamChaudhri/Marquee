@@ -437,6 +437,12 @@ class Settings(BaseSettings):
         default=True,
         description="Run the periodic self-heal poster existence scan.",
     )
+    HEAL_RECENT_DEPLOY_GRACE_MINUTES: int = Field(
+        default=10,
+        description="Skip heal-restoring movies deployed within this window — "
+        "the scan runs in the worker process, so a time window (not a lock) "
+        "is what prevents it racing a concurrent deploy from the API process.",
+    )
 
     # ------------------------------------------------------------------
     # Request size cap
