@@ -270,14 +270,46 @@ class MediaJobManager:
         await db.commit()
         return True
 
+    @staticmethod
+    def _selection_key(request: dict | None) -> tuple | None:
+        """Normalize what a plan targets, for supersede comparisons.
+
+        Returns None when the request carries no selection at all (scan-style
+        operations), in which case any older plan of the same operation is a
+        duplicate.
+        """
+        if not isinstance(request, dict):
+            return None
+        track_ids = request.get("track_ids") or []
+        audio = request.get("audio_stream_indices") or []
+        edits = request.get("edits") or []
+        order = request.get("audio_stream_order") or []
+        if not (track_ids or audio or edits or order):
+            return None
+        return (
+            tuple(sorted(str(t) for t in track_ids)),
+            tuple(sorted(int(i) for i in audio)),
+            json.dumps(edits, sort_keys=True, default=str),
+            tuple(int(i) for i in order),
+        )
+
     async def supersede_planned_media_jobs(
         self,
         db: AsyncSession,
         *,
         media_file_id: int,
         operation: str,
+        request: dict | None = None,
         message: str = "superseded by a newer plan",
     ) -> list[str]:
+        """Cancel older *planned* jobs this new plan replaces.
+
+        When ``request`` is given, only plans targeting the same selection
+        (same track ids / audio indices / edits) are superseded — two plans
+        for the same file removing *different* languages are siblings, not
+        duplicates, and cancelling one silently dropped the user's other
+        language selection.
+        """
         from marquee.core.jobs import job_manager  # noqa: PLC0415
         from marquee.models import Job  # noqa: PLC0415
 
@@ -292,6 +324,16 @@ class MediaJobManager:
                 .order_by(MediaJob.created_at.asc(), MediaJob.job_id.asc())
             )
         ).scalars().all()
+        new_key = self._selection_key(request)
+        if new_key is not None:
+            def _same_selection(mj: MediaJob) -> bool:
+                try:
+                    old_request = json.loads(mj.request_json) if mj.request_json else None
+                except (TypeError, json.JSONDecodeError):
+                    return True  # unreadable request — treat as duplicate
+                return self._selection_key(old_request) == new_key
+
+            media_jobs = [mj for mj in media_jobs if _same_selection(mj)]
         if not media_jobs:
             return []
 

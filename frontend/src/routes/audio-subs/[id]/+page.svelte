@@ -198,6 +198,13 @@
 	let jobLog = $state<string[]>([]);
 	let busy = $state(false);
 
+	// Surface the backend's structured error message (e.g. the 409
+	// mutation_pending guard: "another mutation is already queued or running
+	// for this file") instead of the generic "POST … → 409" ApiError text.
+	function apiErrorText(e: any, fallback: string): string {
+		return e?.body?.detail?.message || e?.message || fallback;
+	}
+
 	// Persist the active job id per-movie so the bar survives a refresh or
 	// a navigate-away-and-back (the root layout remounts this component on
 	// every route change). Mirrors routes/pipeline + routes/letterbox.
@@ -510,7 +517,7 @@
 				}
 			});
 		} catch (e: any) {
-			toast(e.message || 'Extraction failed', 'bad');
+			toast(apiErrorText(e, 'Extraction failed'), 'bad');
 			busy = false;
 		}
 	}
@@ -551,7 +558,7 @@
 				}
 			});
 		} catch (e: any) {
-			toast(e.message || 'Embedding failed', 'bad');
+			toast(apiErrorText(e, 'Embedding failed'), 'bad');
 			busy = false;
 		}
 	}
@@ -609,7 +616,7 @@
 			await confirmJob(fetch, plan.job_id);
 			monitorJob(plan.job_id);
 		} catch (e: any) {
-			toast(e.message || 'Batch delete failed', 'bad');
+			toast(apiErrorText(e, 'Batch delete failed'), 'bad');
 			busy = false;
 		}
 	}
@@ -953,7 +960,7 @@
 			}
 			audioDirty = false;
 		} catch (e: any) {
-			toast(e.message || 'Save failed', 'bad');
+			toast(apiErrorText(e, 'Save failed'), 'bad');
 		} finally {
 			busy = false;
 		}
@@ -998,7 +1005,7 @@
 			await runJobAndWait(plan.job_id);
 			subtitleDirty = false;
 		} catch (e: any) {
-			toast(e.message || 'Save failed', 'bad');
+			toast(apiErrorText(e, 'Save failed'), 'bad');
 		} finally {
 			busy = false;
 		}
@@ -1016,7 +1023,7 @@
 			await confirmJob(fetch, plan.job_id);
 			monitorJob(plan.job_id);
 		} catch (e: any) {
-			toast(e.message || 'Delete failed', 'bad');
+			toast(apiErrorText(e, 'Delete failed'), 'bad');
 			busy = false;
 		}
 	}
