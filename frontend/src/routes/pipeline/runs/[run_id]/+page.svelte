@@ -627,7 +627,7 @@
 <svelte:window onkeydown={onWindowKeydown} />
 
 <div class="crumb">
-	<a href="/pipeline">Pipeline</a><span>/</span><span>Run {data.runId.slice(0, 8)}</span>
+	<a href="/pipeline/movies">Movie posters</a><span>/</span><span>Run {data.runId.slice(0, 8)}</span>
 </div>
 
 {#if data.error || !run}
@@ -635,7 +635,7 @@
 		<Icon name="pipeline" size={40} stroke={1} />
 		<strong>Could not load run</strong>
 		<span>{data.error ?? 'Unknown error'}</span>
-		<button onclick={() => goto('/pipeline')}>← Back to Pipeline</button>
+		<button onclick={() => goto('/pipeline/movies')}>← Back to Movie posters</button>
 	</div>
 {:else if running}
 	<div class="running-wrap">

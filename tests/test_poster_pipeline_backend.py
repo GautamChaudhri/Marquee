@@ -268,4 +268,7 @@ def test_new_job_handlers_registered():
         "poster_pipeline_batch",
         "learned_head_train",
         "pipeline_cache_clear",
+        "poster_backup_all",
+        "poster_maintenance",
+        "poster_rescan",
     } <= registered_types()

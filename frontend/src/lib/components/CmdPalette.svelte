@@ -11,7 +11,7 @@
 		{ label: 'Dashboard', href: '/dashboard', icon: 'dashboard' },
 		{ label: 'Films', href: '/films', icon: 'film' },
 		{ label: 'Shows', href: '/shows', icon: 'tv' },
-		{ label: 'Review queue', href: '/pipeline', icon: 'pipeline' },
+		{ label: 'Review queue', href: '/pipeline/movies?tab=review', icon: 'pipeline' },
 		{ label: 'Taste map', href: '/taste', icon: 'taste' },
 		{ label: 'Radarr Overlay', href: '/hdr', icon: 'hdr' },
 		{ label: 'Audio & Subs', href: '/audio-subs', icon: 'subtitles' },

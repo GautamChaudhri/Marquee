@@ -5,19 +5,53 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import shutil
 import threading
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import exists, or_, select
 
 from marquee.config import settings
 from marquee.core.jobs import job_manager
 from marquee.core.jobs.handlers import register
 from marquee.database import _get_session_factory
-from marquee.models import ArtworkEvent, Job, Movie, PipelineRun
+from marquee.models import ArtworkEvent, Job, MediaFile, Movie, PipelineRun
 
 logger = logging.getLogger(__name__)
+
+
+async def _update_progress(job_id: str, stage: str, done: int, total: int, **detail: Any) -> None:
+    factory = _get_session_factory()
+    async with factory() as db:
+        current = await db.get(Job, job_id)
+        if current is None:
+            return
+        progress = {"stage": stage, "state": "running", "done": done, "total": total, **detail}
+        current.current_stage = stage
+        current.progress = progress
+        await job_manager.emit(
+            db,
+            current,
+            state="running",
+            stage=stage,
+            message=f"{stage}: {done}/{total}",
+            detail=progress,
+        )
+        await db.commit()
+
+
+def _downloaded_condition():
+    return or_(
+        Movie.movie_file_path.is_not(None),
+        exists(
+            select(MediaFile.id).where(
+                MediaFile.movie_id == Movie.id,
+                MediaFile.is_active.is_(True),
+            )
+        ),
+    )
 
 
 @register("poster_heal", instant=True)
@@ -428,8 +462,10 @@ async def poster_deploy_reset(job: Job) -> dict[str, Any]:
     Walks every ``Movie`` with a non-NULL ``poster_path``, validates the
     folder via ``safe_translate_and_validate``, deletes the poster file
     (confinement check: the file must reside in the validated folder), and
-    resets all ``poster_*`` columns to the missing state.  Cache copies
-    under ``data/cache/posters/`` are KEPT as fallback restore sources.
+    resets deploy-selection ``poster_*`` columns to the missing state. Cache
+    copies under ``data/cache/posters/`` and local backup paths/files are KEPT
+    as fallback restore sources; poster maintenance owns backup garbage
+    collection.
 
     Idempotent — a second run finds zero deploy rows and returns reset=0.
     """
@@ -511,6 +547,294 @@ async def poster_deploy_reset(job: Job) -> dict[str, Any]:
 
     logger.info("DEPLOY RESET | reset=%d | failed=%d", reset, failed)
     return {"reset": reset, "failed": failed, "errors": errors}
+
+
+@register("poster_rescan")
+async def poster_rescan(job: Job) -> dict[str, Any]:
+    """Re-stat expected poster files after filename/path settings change."""
+    from marquee.core.path_utils import safe_translate_and_validate
+    from marquee.core.poster_service import render_filename
+
+    factory = _get_session_factory()
+    async with factory() as db:
+        rows = (
+            (await db.execute(select(Movie).where(_downloaded_condition()).order_by(Movie.id)))
+            .scalars()
+            .all()
+        )
+        total = len(rows)
+        updated = missing = unchanged = failed = 0
+        errors: list[dict] = []
+
+        for index, movie in enumerate(rows, 1):
+            if index == 1 or index % 25 == 0 or index == total:
+                await _update_progress(job.id, "rescan", index, total)
+                current = await db.get(Job, job.id)
+                if current is not None and current.cancel_requested:
+                    return {
+                        "updated": updated,
+                        "missing": missing,
+                        "unchanged": unchanged,
+                        "failed": failed,
+                        "cancelled": True,
+                        "errors": errors,
+                    }
+            try:
+                folder = safe_translate_and_validate(movie.folder_path, source="radarr")
+                expected = folder / render_filename(movie)
+                exists_on_disk = await asyncio.to_thread(expected.is_file)
+                expected_str = str(expected)
+                if exists_on_disk:
+                    if movie.poster_path != expected_str:
+                        movie.poster_path = expected_str
+                        updated += 1
+                    else:
+                        unchanged += 1
+                elif movie.poster_path is not None:
+                    movie.poster_path = None
+                    missing += 1
+                else:
+                    unchanged += 1
+            except Exception as exc:  # noqa: BLE001
+                failed += 1
+                errors.append({"movie_id": movie.id, "title": movie.title, "error": str(exc)})
+
+        await db.commit()
+        return {
+            "updated": updated,
+            "missing": missing,
+            "unchanged": unchanged,
+            "failed": failed,
+            "errors": errors,
+        }
+
+
+@register("poster_backup_all")
+async def poster_backup_all(job: Job) -> dict[str, Any]:
+    """Copy all deployed poster bytes into the local backup directory."""
+    from marquee.core.poster_service import _atomic_copy, _sha256, backup_path, cache_paths
+
+    factory = _get_session_factory()
+    async with factory() as db:
+        rows = (
+            (await db.execute(select(Movie).where(Movie.poster_path.is_not(None)).order_by(Movie.id)))
+            .scalars()
+            .all()
+        )
+        total = len(rows)
+        copied = skipped = failed = 0
+        errors: list[dict] = []
+
+        for index, movie in enumerate(rows, 1):
+            if index == 1 or index % 25 == 0 or index == total:
+                await _update_progress(job.id, "backup", index, total)
+                current = await db.get(Job, job.id)
+                if current is not None and current.cancel_requested:
+                    return {
+                        "checked": index,
+                        "copied": copied,
+                        "skipped": skipped,
+                        "failed": failed,
+                        "cancelled": True,
+                        "errors": errors,
+                    }
+
+            dest = backup_path(movie)
+            try:
+                if await asyncio.to_thread(dest.is_file):
+                    if movie.poster_sha256:
+                        if await asyncio.to_thread(_sha256, dest) == movie.poster_sha256:
+                            skipped += 1
+                            movie.poster_local_backup_path = str(dest)
+                            continue
+                    elif movie.poster_deployed_at:
+                        mtime = datetime.fromtimestamp(dest.stat().st_mtime, UTC)
+                        if mtime >= movie.poster_deployed_at:
+                            skipped += 1
+                            movie.poster_local_backup_path = str(dest)
+                            continue
+                    else:
+                        skipped += 1
+                        movie.poster_local_backup_path = str(dest)
+                        continue
+
+                source: Path | None = None
+                if movie.tmdb_id is not None:
+                    cache_file, _ = cache_paths(movie.tmdb_id)
+                    if await asyncio.to_thread(cache_file.is_file):
+                        source = cache_file
+                if source is None and movie.poster_path:
+                    poster_file = Path(movie.poster_path)
+                    if await asyncio.to_thread(poster_file.is_file):
+                        source = poster_file
+                if source is None:
+                    raise FileNotFoundError("no deployed poster file or cache copy found")
+
+                await asyncio.to_thread(_atomic_copy, source, dest)
+                movie.poster_local_backup_path = str(dest)
+                copied += 1
+            except Exception as exc:  # noqa: BLE001
+                failed += 1
+                errors.append({"movie_id": movie.id, "title": movie.title, "error": str(exc)})
+
+        await db.commit()
+        return {
+            "checked": total,
+            "copied": copied,
+            "skipped": skipped,
+            "failed": failed,
+            "errors": errors,
+        }
+
+
+def _confined_existing_path(path: str | None, root: Path) -> Path | None:
+    if not path:
+        return None
+    resolved = Path(path).resolve()
+    root_resolved = root.resolve()
+    if not str(resolved).startswith(str(root_resolved)):
+        raise RuntimeError(f"path {resolved} is outside {root_resolved}")
+    return resolved
+
+
+def _delete_path(path: Path) -> int:
+    if path.is_dir():
+        shutil.rmtree(path)
+        return 1
+    if path.exists():
+        path.unlink()
+        return 1
+    return 0
+
+
+@register("poster_maintenance")
+async def poster_maintenance(job: Job) -> dict[str, Any]:
+    """Reconcile Radarr-deleted movies and prune orphaned poster caches/backups.
+
+    Job result/events are the audit trail. ArtworkEvents cascade when Movie rows
+    are deleted; taste/feedback training data is intentionally left alone.
+    """
+    from marquee.core.arr_clients.radarr_client import RadarrClient
+    from marquee.core.poster_service import backup_path, cache_paths
+
+    dry_run = bool(job.payload.get("dry_run", False))
+    force = bool(job.payload.get("force", False))
+    if not settings.radarr_configured:
+        return {"skipped": "radarr not configured", "dry_run": dry_run}
+
+    radarr = RadarrClient(settings.RADARR_URL, settings.RADARR_API_KEY)
+    try:
+        await radarr.connect()
+        try:
+            radarr_movies = await radarr.get_movies()
+        except Exception as exc:  # noqa: BLE001
+            return {"skipped": f"radarr fetch failed: {exc}", "dry_run": dry_run}
+    finally:
+        await radarr.disconnect()
+
+    if not radarr_movies:
+        return {"skipped": "radarr returned no movies", "dry_run": dry_run}
+
+    radarr_ids = {int(row["id"]) for row in radarr_movies if row.get("id") is not None}
+    factory = _get_session_factory()
+    async with factory() as db:
+        current_movie_ids = set((await db.execute(select(Movie.id))).scalars().all())
+        current_tmdb_ids = {
+            tmdb_id
+            for tmdb_id in (await db.execute(select(Movie.tmdb_id))).scalars().all()
+            if tmdb_id is not None
+        }
+        candidates = (
+            (
+                await db.execute(
+                    select(Movie)
+                    .where(Movie.radarr_id.is_not(None), Movie.radarr_id.not_in(radarr_ids))
+                    .order_by(Movie.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        threshold = max(5, int(0.1 * max(len(radarr_ids), 1)))
+        if len(candidates) > threshold and not force:
+            raise RuntimeError(
+                f"refusing to delete {len(candidates)} movies; exceeds threshold {threshold}"
+            )
+
+        deleted_manifest: list[dict] = []
+        file_paths: list[Path] = []
+        for movie in candidates:
+            deleted_manifest.append(
+                {
+                    "movie_id": movie.id,
+                    "title": movie.title,
+                    "tmdb_id": movie.tmdb_id,
+                    "radarr_id": movie.radarr_id,
+                }
+            )
+            runs = (
+                (
+                    await db.execute(
+                        select(PipelineRun.archive_path, PipelineRun.output_dir).where(
+                            PipelineRun.movie_id == movie.id
+                        )
+                    )
+                )
+                .all()
+            )
+            for archive_path, output_dir in runs:
+                path = _confined_existing_path(archive_path, settings.runs_archive_path)
+                if path is not None:
+                    file_paths.append(path)
+                path = _confined_existing_path(output_dir, settings.runs_work_path)
+                if path is not None:
+                    file_paths.append(path)
+            if movie.tmdb_id is not None:
+                cache_file, cache_meta = cache_paths(movie.tmdb_id)
+                file_paths.extend([cache_file, cache_meta])
+            file_paths.append(backup_path(movie))
+
+        backups_pruned = cache_pruned = files_deleted = 0
+        backup_dir = settings.poster_backup_path
+        cache_dir = settings.poster_cache_path / "movies"
+        orphan_backups = [
+            entry
+            for entry in backup_dir.glob("*.jpg")
+            if entry.stem.isdigit() and int(entry.stem) not in current_movie_ids
+        ]
+        orphan_cache = [
+            entry
+            for entry in cache_dir.glob("*")
+            if entry.suffix in {".jpg", ".json"}
+            and entry.stem.removesuffix(".meta").isdigit()
+            and int(entry.stem.removesuffix(".meta")) not in current_tmdb_ids
+        ]
+
+        if not dry_run:
+            for path in file_paths:
+                try:
+                    files_deleted += await asyncio.to_thread(_delete_path, path)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("poster maintenance could not delete %s: %s", path, exc)
+            for path in orphan_backups:
+                backups_pruned += await asyncio.to_thread(_delete_path, path)
+            for path in orphan_cache:
+                cache_pruned += await asyncio.to_thread(_delete_path, path)
+            for movie in candidates:
+                await db.delete(movie)
+            await db.commit()
+
+        return {
+            "movies_deleted": 0 if dry_run else len(candidates),
+            "files_deleted": files_deleted,
+            "backups_pruned": 0 if dry_run else backups_pruned,
+            "cache_pruned": 0 if dry_run else cache_pruned,
+            "dry_run": dry_run,
+            "deleted": deleted_manifest,
+            "orphan_backups": len(orphan_backups),
+            "orphan_cache": len(orphan_cache),
+            "errors": [],
+        }
 
 
 async def _gather_library_posters() -> tuple[Path, Any, int]:

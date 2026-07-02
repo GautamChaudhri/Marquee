@@ -2,11 +2,22 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from datetime import UTC, datetime, timedelta
+from typing import Annotated, Literal
 
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, Field
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from marquee.config import Settings
+from marquee.config import load_overrides as load_settings_overrides
+from marquee.config import save_overrides as save_settings_overrides
 from marquee.config import settings as app_settings
+from marquee.core.path_utils import PathValidationError
+from marquee.core.poster_service import sanitize_poster_filename
 from marquee.core.subtitles.config import subtitle_settings
+from marquee.database import get_db
+from marquee.models import JobSchedule
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
@@ -78,6 +89,10 @@ async def get_settings():
             "heal_interval_minutes": app_settings.HEAL_INTERVAL_MINUTES,
             "webhook_dry_run": app_settings.WEBHOOK_DRY_RUN,
         },
+        "posters": {
+            "restore_method": app_settings.POSTER_RESTORE_METHOD,
+            "backup_dir": app_settings.POSTER_BACKUP_DIR,
+        },
         "letterbox": {
             "enabled": app_settings.LETTERBOX_ENABLED,
             "method": app_settings.LETTERBOX_DETECT_METHOD,
@@ -141,14 +156,67 @@ class SubgenSettingsUpdate(BaseModel):
     callback_token: str | None = None
 
 
+class PostersSettingsUpdate(BaseModel):
+    movie_poster_format: str | None = None
+    restore_method: Literal["download", "local"] | None = None
+
+
+class HealSettingsUpdate(BaseModel):
+    enabled: bool | None = None
+    interval_minutes: int | None = Field(default=None, ge=5, le=10080)
+
+
 class SettingsUpdatePayload(BaseModel):
     subtitles: SubtitlesSettingsUpdate | None = None
     subgen: SubgenSettingsUpdate | None = None
+    posters: PostersSettingsUpdate | None = None
+    heal: HealSettingsUpdate | None = None
+
+
+def _validate_movie_poster_format(value: str) -> str:
+    try:
+        rendered = value.format(movie_basename="Example Movie")
+        sanitize_poster_filename(rendered)
+    except (IndexError, KeyError, PathValidationError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid movie poster format: {exc}") from exc
+    return value
+
+
+async def _upsert_poster_heal_schedule(
+    db: AsyncSession,
+    *,
+    enabled: bool,
+    interval_minutes: int,
+) -> None:
+    interval_seconds = max(60, interval_minutes * 60)
+    next_run_at = datetime.now(UTC) + timedelta(seconds=interval_seconds)
+    row = await db.get(JobSchedule, "poster-heal")
+    if row is None:
+        db.add(
+            JobSchedule(
+                id="poster-heal",
+                job_type="poster_heal",
+                interval_seconds=interval_seconds,
+                enabled=enabled,
+                next_run_at=next_run_at,
+            )
+        )
+    else:
+        changed = row.interval_seconds != interval_seconds or row.enabled != enabled
+        row.job_type = "poster_heal"
+        row.interval_seconds = interval_seconds
+        row.enabled = enabled
+        if changed:
+            row.next_run_at = next_run_at
+    await db.commit()
 
 
 @router.put("")
-async def put_settings(payload: SettingsUpdatePayload):
-    """Update subtitle settings, validate, mutate singleton, and save overrides."""
+async def put_settings(
+    payload: SettingsUpdatePayload,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    """Update mutable UI settings, validate, mutate singleton, and save overrides."""
     current = subtitle_settings.model_dump()
 
     if payload.subtitles:
@@ -167,6 +235,31 @@ async def put_settings(payload: SettingsUpdatePayload):
         SubtitleSettings(**current)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    app_updates: dict[str, object] = {}
+    if payload.posters:
+        poster_update = payload.posters.model_dump(exclude_unset=True)
+        if "movie_poster_format" in poster_update:
+            app_updates["MOVIE_POSTER_FORMAT"] = _validate_movie_poster_format(
+                poster_update["movie_poster_format"]
+            )
+        if "restore_method" in poster_update:
+            app_updates["POSTER_RESTORE_METHOD"] = poster_update["restore_method"]
+
+    if payload.heal:
+        heal_update = payload.heal.model_dump(exclude_unset=True)
+        if "enabled" in heal_update:
+            app_updates["HEAL_ENABLED"] = heal_update["enabled"]
+        if "interval_minutes" in heal_update:
+            app_updates["HEAL_INTERVAL_MINUTES"] = heal_update["interval_minutes"]
+
+    if app_updates:
+        app_current = app_settings.model_dump()
+        app_current.update(app_updates)
+        try:
+            Settings(**app_current)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     from marquee.core.subtitles.config import load_overrides, save_overrides
 
@@ -193,4 +286,19 @@ async def put_settings(payload: SettingsUpdatePayload):
         current_overrides[setting_key] = val
 
     save_overrides(current_overrides)
+    if app_updates:
+        current_app_overrides = load_settings_overrides()
+        for setting_key, val in app_updates.items():
+            setattr(app_settings, setting_key, val)
+            current_app_overrides[setting_key] = val
+            updated_fields[setting_key] = val
+        save_settings_overrides(current_app_overrides)
+
+    if any(key in app_updates for key in ("HEAL_ENABLED", "HEAL_INTERVAL_MINUTES")):
+        await _upsert_poster_heal_schedule(
+            db,
+            enabled=app_settings.HEAL_ENABLED,
+            interval_minutes=app_settings.HEAL_INTERVAL_MINUTES,
+        )
+
     return {"applied": sorted(updated_fields.keys()), "settings": await get_settings()}

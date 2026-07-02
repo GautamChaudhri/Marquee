@@ -33,6 +33,11 @@ def cache_to_tmp(tmp_path, monkeypatch):
         "poster_cache_path",
         property(lambda self: tmp_path / "cache" / "posters"),
     )
+    monkeypatch.setattr(
+        type(settings),
+        "poster_backup_path",
+        property(lambda self: tmp_path / "backups" / "posters"),
+    )
     # Disable media-root enforcement so tmp folders validate (dev mode).
     monkeypatch.setattr(settings, "RADARR_MEDIA_PATH", None)
     monkeypatch.setattr(settings, "SONARR_MEDIA_PATH", None)
@@ -73,6 +78,8 @@ async def test_deploy_writes_file_cache_meta_db_event(db, tmp_path):
     deployed = folder / "poster.jpg"
     assert deployed.is_file()
     assert result.deployed_path == str(deployed)
+    assert result.backup_path == str(tmp_path / "backups" / "posters" / f"{movie.id}.jpg")
+    assert (tmp_path / "backups" / "posters" / f"{movie.id}.jpg").is_file()
 
     # Cache + meta sidecar.
     cache_file, cache_meta = cache_paths(movie.tmdb_id)
@@ -87,6 +94,7 @@ async def test_deploy_writes_file_cache_meta_db_event(db, tmp_path):
     assert movie.poster_user_approved is True
     assert movie.poster_deployed_filename == "poster.jpg"
     assert movie.poster_sha256 == result.sha256
+    assert movie.poster_local_backup_path == result.backup_path
 
     # Audit event.
     events = (
@@ -95,6 +103,7 @@ async def test_deploy_writes_file_cache_meta_db_event(db, tmp_path):
         .all()
     )
     assert any(e.action == "deploy" for e in events)
+    assert any(json.loads(e.detail)["backup"] == result.backup_path for e in events)
 
 
 @pytest.mark.asyncio
@@ -126,6 +135,33 @@ async def test_restore_from_cache(db, tmp_path):
     await db.refresh(movie)
     assert movie.poster_path == str(new_folder / "poster.jpg")
     assert movie.folder_path == str(new_folder)
+
+
+@pytest.mark.asyncio
+async def test_restore_prefers_local_backup_when_configured(db, tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "POSTER_RESTORE_METHOD", "local")
+    folder = tmp_path / "Sneakers (1992)"
+    folder.mkdir(parents=True)
+    movie = await _movie(db, folder, tmdb_id=2322)
+    source = _make_image(tmp_path / "src.jpg")
+    await poster_service.deploy(db, movie, source)
+
+    (folder / "poster.jpg").unlink()
+    cache_file, _ = cache_paths(movie.tmdb_id)
+    cache_file.unlink()
+
+    result = await poster_service.restore(db, movie, source="heal")
+
+    assert result.restored is True
+    assert result.source == "local"
+    assert (folder / "poster.jpg").is_file()
+    events = (
+        (await db.execute(select(ArtworkEvent).where(ArtworkEvent.movie_id == movie.id)))
+        .scalars()
+        .all()
+    )
+    restore_events = [e for e in events if e.action == "heal_restore"]
+    assert json.loads(restore_events[-1].detail)["via"] == "local"
 
 
 @pytest.mark.asyncio

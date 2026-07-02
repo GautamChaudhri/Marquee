@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -26,11 +27,21 @@ from marquee.api.results import (
 from marquee.api.routes.jobs import job_summary
 from marquee.api.routes.library import _coverage_by_media_file
 from marquee.config import settings
+from marquee.core.heal import latest_heal_summary
 from marquee.core.jobs import job_manager
+from marquee.core.jobs.manager import ACTIVE
 from marquee.core.pipeline_config import PipelineSettings, pipeline_settings
 from marquee.core.rate_limit import RateLimiter
 from marquee.database import get_db
-from marquee.models import ArtworkEvent, LetterboxState, MediaFile, Movie, PipelineRun
+from marquee.models import (
+    ArtworkEvent,
+    Job,
+    JobSchedule,
+    LetterboxState,
+    MediaFile,
+    Movie,
+    PipelineRun,
+)
 from marquee.pipeline.gate import PosterGate
 from marquee.pipeline.run_manager import run_manager
 from marquee.pipeline.scorer import WeightedScorer
@@ -56,6 +67,39 @@ def _downloaded():
             )
         ),
     )
+
+
+def _review_queue_latest():
+    return (
+        select(
+            PipelineRun.movie_id.label("movie_id"),
+            func.max(PipelineRun.started_at).label("started_at"),
+        )
+        .join(Movie, Movie.id == PipelineRun.movie_id)
+        .where(
+            PipelineRun.feedback_event_id.is_(None),
+            PipelineRun.status.in_(_REVIEW_QUEUE_STATUSES),
+            _downloaded(),
+        )
+        .group_by(PipelineRun.movie_id)
+        .subquery()
+    )
+
+
+def _backup_stats() -> dict[str, int]:
+    count = total_bytes = 0
+    base = settings.poster_backup_path
+    if base.is_dir():
+        for entry in os.scandir(base):
+            if entry.is_file() and entry.name.endswith(".jpg"):
+                count += 1
+                total_bytes += entry.stat().st_size
+    return {"count": count, "bytes": total_bytes}
+
+
+class MaintenanceRequest(BaseModel):
+    dry_run: bool = False
+    force: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -321,6 +365,123 @@ async def run_pipeline_batch(
     return response
 
 
+@router.get("/summary")
+async def pipeline_summary(db: Annotated[AsyncSession, Depends(get_db)]):
+    downloaded = _downloaded()
+    total_movies = await db.scalar(select(func.count(Movie.id)).where(downloaded))
+    movies_with_poster = await db.scalar(
+        select(func.count(Movie.id)).where(downloaded, Movie.poster_path.is_not(None))
+    )
+    latest = _review_queue_latest()
+    movies_in_review = await db.scalar(select(func.count()).select_from(latest))
+    movies_in_run = await db.scalar(
+        select(func.count(func.distinct(PipelineRun.movie_id)))
+        .join(Movie, Movie.id == PipelineRun.movie_id)
+        .where(PipelineRun.status == "running", downloaded)
+    )
+
+    active_jobs = (
+        (
+            await db.execute(
+                select(Job)
+                .where(Job.type.in_(("poster_pipeline", "poster_pipeline_batch")), Job.status.in_(ACTIVE))
+                .order_by(Job.created_at.desc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    running_jobs = []
+    for job in active_jobs:
+        summary = job_summary(job)
+        payload = job.payload if isinstance(job.payload, dict) else {}
+        if job.type == "poster_pipeline_batch":
+            summary["movie_count"] = len(payload.get("movie_ids") or [])
+        elif job.subject_type == "movie" or payload.get("movie_id") is not None:
+            summary["movie_count"] = 1
+        else:
+            summary["movie_count"] = 0
+        running_jobs.append(summary)
+
+    schedule = await db.get(JobSchedule, "poster-heal")
+    heal_schedule = (
+        {
+            "enabled": schedule.enabled,
+            "interval_minutes": schedule.interval_seconds // 60,
+            "next_run_at": schedule.next_run_at.isoformat() if schedule.next_run_at else None,
+        }
+        if schedule
+        else None
+    )
+
+    total = total_movies or 0
+    with_poster = movies_with_poster or 0
+    return {
+        "total_movies": total,
+        "movies_with_poster": with_poster,
+        "movies_missing_poster": max(total - with_poster, 0),
+        "movies_in_review": movies_in_review or 0,
+        "movies_in_run": movies_in_run or 0,
+        "running_jobs": running_jobs,
+        "last_heal": await latest_heal_summary(db),
+        "heal_schedule": heal_schedule,
+        "backups": _backup_stats(),
+    }
+
+
+@router.post("/rescan-posters", status_code=202)
+async def rescan_posters(db: Annotated[AsyncSession, Depends(get_db)]):
+    job = await job_manager.create(
+        db,
+        job_type="poster_rescan",
+        payload={},
+        priority=35,
+        resources={"media_read": 1},
+        subject_type="maintenance",
+        subject_id="poster-rescan",
+        max_attempts=1,
+        idempotency_key=f"poster-rescan:{int(time.time() // 30)}",
+    )
+    return job_summary(job)
+
+
+@router.post("/backup-all", status_code=202)
+async def backup_all_posters(db: Annotated[AsyncSession, Depends(get_db)]):
+    job = await job_manager.create(
+        db,
+        job_type="poster_backup_all",
+        payload={},
+        priority=35,
+        resources={"media_read": 1},
+        subject_type="maintenance",
+        subject_id="poster-backup-all",
+        max_attempts=1,
+        idempotency_key=f"poster-backup-all:{int(time.time() // 30)}",
+    )
+    return job_summary(job)
+
+
+@router.post("/maintenance", status_code=202)
+async def poster_maintenance(
+    body: MaintenanceRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    job = await job_manager.create(
+        db,
+        job_type="poster_maintenance",
+        payload=body.model_dump(),
+        priority=30,
+        resources={"network_external": 1, "maintenance_exclusive": 1},
+        subject_type="maintenance",
+        subject_id="poster-maintenance",
+        max_attempts=1,
+        idempotency_key=(
+            f"poster-maintenance:{body.dry_run}:{body.force}:{int(time.time() // 30)}"
+        ),
+    )
+    return job_summary(job)
+
+
 # ---------------------------------------------------------------------------
 # Pipeline cache (downloaded posters + working artifacts — never head/taste data)
 # ---------------------------------------------------------------------------
@@ -473,20 +634,7 @@ async def review_queue(
     page = max(page, 1)
     page_size = min(max(page_size, 1), 200)
 
-    latest = (
-        select(
-            PipelineRun.movie_id.label("movie_id"),
-            func.max(PipelineRun.started_at).label("started_at"),
-        )
-        .join(Movie, Movie.id == PipelineRun.movie_id)
-        .where(
-            PipelineRun.feedback_event_id.is_(None),
-            PipelineRun.status.in_(_REVIEW_QUEUE_STATUSES),
-            _downloaded(),
-        )
-        .group_by(PipelineRun.movie_id)
-        .subquery()
-    )
+    latest = _review_queue_latest()
     base = (
         select(PipelineRun, Movie, LetterboxState)
         .join(

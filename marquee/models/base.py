@@ -107,6 +107,12 @@ class ArtworkMixin:
         comment="When the poster was last deployed to the media folder",
     )
 
+    poster_local_backup_path: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+        comment="Local backup copy for restoring deployed poster bytes",
+    )
+
     @property
     def needs_poster(self) -> bool:
         """True when this entity still needs a poster."""

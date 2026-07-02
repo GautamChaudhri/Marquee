@@ -1,1043 +1,576 @@
 <script lang="ts">
 	import { onDestroy, onMount } from 'svelte';
-	import { browser } from '$app/environment';
 	import { goto } from '$app/navigation';
-	import { page } from '$app/state';
-	import { SvelteSet } from 'svelte/reactivity';
-	import SectionHeader from '$lib/components/SectionHeader.svelte';
-	import TabBar from '$lib/components/TabBar.svelte';
-	import PosterThumb from '$lib/components/PosterThumb.svelte';
-	import StatCard from '$lib/components/StatCard.svelte';
-	import ProgressBar from '$lib/components/ProgressBar.svelte';
-	import RunProgress from '$lib/components/RunProgress.svelte';
 	import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
-	import Icon from '$lib/components/Icon.svelte';
+	import RunProgress from '$lib/components/RunProgress.svelte';
+	import SectionHeader from '$lib/components/SectionHeader.svelte';
+	import StatCard from '$lib/components/StatCard.svelte';
 	import {
-		clearPipelineCache,
-		getPipelineCache,
-		getPipelineMetrics,
-		getReviewQueue,
-		runBatch,
-		triggerRun
+		backupAllPosters,
+		getPipelineSummary,
+		rescanPosters,
+		runPosterMaintenance
 	} from '$lib/api/pipeline';
-	import { listMovies } from '$lib/api/library';
-	import { cancelJob, getJob, isTerminal } from '$lib/api/jobs';
-	import { ApiError } from '$lib/api/client';
+	import { putSettings } from '$lib/api/system';
+	import type { JobSnapshot } from '$lib/api/jobs';
+	import { bytesH } from '$lib/display';
 	import { trackJob, type JobProgressDetail } from '$lib/jobs';
 	import { toast } from '$lib/toast';
-	import { bytesH } from '$lib/display';
-	import { submitFeedback } from '$lib/api/feedback';
-	import type {
-		BatchScope,
-		CacheSizes,
-		MovieListItem,
-		PipelineMetrics,
-		ReviewQueue
-	} from '$lib/api/types';
+	import type { JobSummary, PipelineSummary, RuntimeSettings, SummaryRunningJob } from '$lib/api/types';
 	import type { PageData } from './$types';
 
 	let { data }: { data: PageData } = $props();
 
-	type Tab = 'run' | 'review' | 'metrics';
-	let tab = $state<Tab>((page.url.searchParams.get('tab') as Tab) ?? 'run');
-	function setTab(id: string) {
-		tab = id as Tab;
-		// eslint-disable-next-line svelte/prefer-svelte-reactivity -- transient query builder
-		const sp = new URLSearchParams(page.url.searchParams);
-		sp.set('tab', id);
-		goto(`/pipeline?${sp.toString()}`, { replaceState: true, keepFocus: true, noScroll: true });
-	}
+	type Preset = 'movie' | 'poster' | 'custom';
+	type RunningDisplay = SummaryRunningJob & { detail: JobProgressDetail; status: string };
 
 	// svelte-ignore state_referenced_locally
-	let queue = $state<ReviewQueue>(data.queue);
+	let summary = $state<PipelineSummary>(data.summary);
 	// svelte-ignore state_referenced_locally
-	let cache = $state<CacheSizes | null>(data.cache);
+	let runtimeSettings = $state<RuntimeSettings | null>(data.settings);
 	// svelte-ignore state_referenced_locally
-	let metrics = $state<PipelineMetrics | null>(data.metrics);
-	// svelte-ignore state_referenced_locally
-	let missing = $state<MovieListItem[]>(data.missing.items);
-	// svelte-ignore state_referenced_locally
-	let missingTotal = $state<number>(data.missing.total);
-	let missingPage = $state(1);
-	let loadingMore = $state(false);
-	const selected = new SvelteSet<number>();
-
-	const tabs = $derived([
-		{ id: 'run', label: 'Run', count: missingTotal },
-		{ id: 'review', label: 'Review', count: queue.total },
-		{ id: 'metrics', label: 'Metrics' }
-	]);
-
-	async function refreshAll() {
-		try {
-			const [qd, cd, md, mv] = await Promise.all([
-				getReviewQueue(fetch, { page_size: 60 }),
-				getPipelineCache(fetch).catch(() => cache),
-				getPipelineMetrics(fetch, { limit: 500 }).catch(() => metrics),
-				listMovies(fetch, { poster_status: 'missing', sort: 'title', page_size: 60 }).catch(
-					() => null
-				)
-			]);
-			queue = qd;
-			cache = cd;
-			metrics = md;
-			if (mv) {
-				missing = mv.items;
-				missingTotal = mv.total;
-				missingPage = 1;
-			}
-		} catch {
-			/* keep stale data on a transient failure */
-		}
-	}
-
-	// ── Auto-approve all review queue items ───────────────────────────────────
-	let approveAllOpen = $state(false);
-	let approveAllBusy = $state(false);
-	let approveAllDone = $state(0);
-	let approveAllTotal = $state(0);
-	let approveAllErrors = $state<string[]>([]);
-
-	async function approveAllAutoPicks() {
-		if (!queue.items.length) return;
-		approveAllBusy = true;
-		approveAllDone = 0;
-		approveAllTotal = queue.items.length;
-		approveAllErrors = [];
-		for (const item of queue.items) {
-			try {
-				await submitFeedback(fetch, {
-					run_id: item.run.run_id,
-					action: 'approve',
-					deploy: true
-				});
-				approveAllDone++;
-			} catch (e) {
-				const title = item.movie.title ?? item.run.run_id.slice(0, 8);
-				approveAllErrors.push(`${title}: ${e instanceof Error ? e.message : 'failed'}`);
-			}
-		}
-		approveAllBusy = false;
-		approveAllOpen = false;
-		if (approveAllErrors.length) {
-			toast(`${approveAllDone} approved · ${approveAllErrors.length} failed`, 'info');
-		} else {
-			toast(`${approveAllDone} auto-picks approved`, 'good');
-		}
-		await refreshAll();
-	}
-
-	// ── Runs (batch + single) ────────────────────────────────────────────────────
-	const BATCH_STORAGE_KEY = 'marquee:pipeline:activeBatch';
-	let batchJobId = $state<string | null>(null);
-	let batchDetail = $state<JobProgressDetail>({});
-	let batchStatus = $state('running');
-	let batchRunning = $state(false);
-	let stopBatch: (() => void) | null = null;
-
-	/** Persist batch ID to localStorage so the bar survives a page refresh. */
-	function storeBatchId(id: string | null) {
-		if (!browser) return;
-		if (id) {
-			localStorage.setItem(BATCH_STORAGE_KEY, id);
-		} else {
-			localStorage.removeItem(BATCH_STORAGE_KEY);
-		}
-	}
-
-	/** Re-attach to a batch after page load: fetch snapshot, then either show
-	 *  the result summary or resume tracking via SSE + poll. Mirrors the
-	 *  proven letterbox rehydrateBatch pattern. */
-	async function rehydrateBatch(jobId: string) {
-		let job;
-		try {
-			job = await getJob(fetch, jobId);
-		} catch {
-			batchRunning = false;
-			batchJobId = null;
-			batchStatus = '';
-			storeBatchId(null);
-			return;
-		}
-		batchJobId = jobId;
-		batchStatus = job.status;
-
-		if (isTerminal(job.status)) {
-			batchRunning = false;
-			stopBatch?.();
-			stopBatch = null;
-			storeBatchId(null);
-			toast(
-				`Batch ${job.status}`,
-				job.status === 'succeeded' ? 'good' : job.status === 'cancelled' ? 'info' : 'bad'
-			);
-			void refreshAll();
-		} else {
-			batchRunning = true;
-			batchDetail = {};
-			stopBatch?.();
-			stopBatch = trackJob(
-				fetch,
-				jobId,
-				{
-					onProgress: ({ status, detail }) => {
-						batchStatus = status;
-						batchDetail = detail;
-					},
-					onDone: (j) => {
-						batchRunning = false;
-						batchStatus = j.status;
-						storeBatchId(null);
-						toast(`Batch ${j.status}`, j.status === 'succeeded' ? 'good' : 'bad');
-						void refreshAll();
-					}
-				},
-				{ eventsUrl: job.events_url }
-			);
-		}
-	}
-
-	onMount(() => {
-		// Priority 1: the load function found an active batch job.
-		if (data.activeJob?.job_id) {
-			void rehydrateBatch(data.activeJob.job_id);
-			return;
-		}
-		// Priority 2: localStorage still holds a batch ID from before refresh.
-		if (browser) {
-			const stored = localStorage.getItem(BATCH_STORAGE_KEY);
-			if (stored) void rehydrateBatch(stored);
-		}
-	});
-
-	const eligibleLoaded = $derived(missing.filter((m) => m.tmdb_id != null));
-	const selectedCount = $derived(selected.size);
-	const allSelected = $derived(
-		eligibleLoaded.length > 0 && eligibleLoaded.every((m) => selected.has(m.id))
+	let runningJobs = $state<RunningDisplay[]>(
+		summary.running_jobs.map((job) => ({
+			...job,
+			status: job.status,
+			detail: (job.progress ?? {}) as JobProgressDetail
+		}))
 	);
 
-	function toggleSelect(id: number) {
-		if (selected.has(id)) selected.delete(id);
-		else selected.add(id);
+	let savingPoster = $state(false);
+	let savingRestore = $state(false);
+	let savingHeal = $state(false);
+	let backupBusy = $state(false);
+	let maintenanceOpen = $state(false);
+	let maintenanceBusy = $state(false);
+	let maintenancePreview = $state<Record<string, unknown> | null>(null);
+
+	const currentMovieFormat = $derived(String(runtimeSettings?.poster_formats?.movie ?? 'poster.jpg'));
+	const currentRestoreMethod = $derived(
+		(runtimeSettings?.posters?.restore_method as 'download' | 'local' | undefined) ?? 'download'
+	);
+	const currentHealEnabled = $derived(Boolean(runtimeSettings?.sync?.heal_enabled ?? true));
+	const currentHealInterval = $derived(Number(runtimeSettings?.sync?.heal_interval_minutes ?? 60));
+
+	// svelte-ignore state_referenced_locally
+	let preset = $state<Preset>(formatToPreset(currentMovieFormat));
+	// svelte-ignore state_referenced_locally
+	let customName = $state(formatToCustom(currentMovieFormat));
+	// svelte-ignore state_referenced_locally
+	let restoreMethod = $state<'download' | 'local'>(currentRestoreMethod);
+	// svelte-ignore state_referenced_locally
+	let healEnabled = $state(currentHealEnabled);
+	// svelte-ignore state_referenced_locally
+	let healInterval = $state(currentHealInterval);
+
+	const deployedPct = $derived(
+		summary.total_movies ? Math.round((summary.movies_with_poster / summary.total_movies) * 100) : 0
+	);
+	const posterDirty = $derived(nextMovieFormat() !== currentMovieFormat);
+	const restoreDirty = $derived(restoreMethod !== currentRestoreMethod);
+	const healDirty = $derived(
+		healEnabled !== currentHealEnabled || Number(healInterval) !== currentHealInterval
+	);
+
+	let stops: (() => void)[] = [];
+
+	function formatToPreset(format: string): Preset {
+		if (format === '{movie_basename}.jpg') return 'movie';
+		if (format === 'poster.jpg') return 'poster';
+		return 'custom';
 	}
-	function toggleAll() {
-		if (allSelected) {
-			for (const m of missing) selected.delete(m.id);
-		} else {
-			for (const m of eligibleLoaded) selected.add(m.id);
+
+	function formatToCustom(format: string): string {
+		return format.replaceAll('{movie_basename}', '<base_filename>').replace(/\.jpe?g$/i, '');
+	}
+
+	function nextMovieFormat(): string {
+		if (preset === 'movie') return '{movie_basename}.jpg';
+		if (preset === 'poster') return 'poster.jpg';
+		const base = (customName || 'poster')
+			.trim()
+			.replaceAll('{movie_basename}', '<base_filename>')
+			.replace(/\.jpe?g$/i, '');
+		return `${base.replaceAll('<base_filename>', '{movie_basename}')}.jpg`;
+	}
+
+	function resetFormsFromSettings() {
+		preset = formatToPreset(currentMovieFormat);
+		customName = formatToCustom(currentMovieFormat);
+		restoreMethod = currentRestoreMethod;
+		healEnabled = currentHealEnabled;
+		healInterval = currentHealInterval;
+	}
+
+	async function refreshSummary() {
+		try {
+			summary = await getPipelineSummary(fetch);
+			runningJobs = summary.running_jobs.map((job) => ({
+				...job,
+				status: job.status,
+				detail: (job.progress ?? {}) as JobProgressDetail
+			}));
+			trackRunningJobs();
+		} catch {
+			/* keep stale cards */
 		}
 	}
 
-	async function startBatch(scope: BatchScope, movieIds?: number[]) {
-		if (batchRunning) return;
-		if (scope === 'selected' && (!movieIds || movieIds.length === 0)) return;
-		batchRunning = true;
-		batchDetail = {};
-		batchStatus = 'running';
-		batchJobId = null;
-		try {
-			const job = await runBatch(fetch, { scope, movie_ids: movieIds });
-			batchJobId = job.job_id;
-			storeBatchId(job.job_id);
-			const n = job.movie_count ?? 0;
-			toast(`Batch queued — ${n} movie${n === 1 ? '' : 's'}`, 'info');
-			if (scope === 'selected') selected.clear();
-			stopBatch?.();
-			stopBatch = trackJob(
+	function stopTracking() {
+		for (const stop of stops) stop();
+		stops = [];
+	}
+
+	function trackRunningJobs() {
+		stopTracking();
+		for (const job of runningJobs) {
+			const stop = trackJob(
 				fetch,
 				job.job_id,
 				{
 					onProgress: ({ status, detail }) => {
-						batchStatus = status;
-						batchDetail = detail;
+						runningJobs = runningJobs.map((item) =>
+							item.job_id === job.job_id ? { ...item, status, detail } : item
+						);
 					},
-					onDone: (j) => {
-						batchRunning = false;
-						batchStatus = j.status;
-						storeBatchId(null);
-						toast(`Batch ${j.status}`, j.status === 'succeeded' ? 'good' : 'bad');
-						void refreshAll();
+					onDone: (done) => {
+						toast(
+							`${done.label ?? job.label ?? 'Job'} ${done.status}`,
+							done.status === 'succeeded' ? 'good' : 'bad'
+						);
+						void refreshSummary();
 					}
 				},
 				{ eventsUrl: job.events_url }
 			);
-		} catch (e) {
-			batchRunning = false;
-			const msg =
-				e instanceof ApiError && e.status === 404
-					? 'No eligible movies for that scope'
-					: e instanceof Error
-						? e.message
-						: 'Batch failed to start';
-			toast(msg, 'bad');
+			stops.push(stop);
 		}
 	}
 
-	async function cancelBatch() {
-		if (!batchJobId) return;
-		try {
-			await cancelJob(fetch, batchJobId);
-			toast('Cancellation requested', 'info');
-		} catch {
-			toast('Could not cancel', 'bad');
-		}
-	}
-
-	async function runSingle(m: MovieListItem) {
-		if (m.tmdb_id == null || batchRunning) return;
-		try {
-			const ref = await triggerRun(fetch, m.id);
-			await goto(`/pipeline/runs/${ref.run_id}`);
-		} catch (e) {
-			if (e instanceof ApiError && e.status === 409) {
-				const d = (e.body as { detail?: { active_run_id?: string } })?.detail;
-				if (d?.active_run_id) {
-					await goto(`/pipeline/runs/${d.active_run_id}`);
-					return;
+	function trackAction(job: JobSummary, label: string, onDone?: (job: JobSnapshot) => void) {
+		const stop = trackJob(
+			fetch,
+			job.job_id,
+			{
+				onDone: (done) => {
+					toast(`${label} ${done.status}`, done.status === 'succeeded' ? 'good' : 'bad');
+					onDone?.(done);
+					void refreshSummary();
 				}
-				toast('A run is already active for this movie', 'info');
-			} else {
-				toast(e instanceof Error ? e.message : 'Run failed to start', 'bad');
-			}
-		}
+			},
+			{ eventsUrl: job.events_url }
+		);
+		stops.push(stop);
 	}
 
-	async function loadMore() {
-		if (loadingMore) return;
-		loadingMore = true;
+	async function savePosterFormat() {
+		savingPoster = true;
 		try {
-			const next = await listMovies(fetch, {
-				poster_status: 'missing',
-				sort: 'title',
-				page_size: 60,
-				page: missingPage + 1
+			const result = await putSettings(fetch, { posters: { movie_poster_format: nextMovieFormat() } });
+			runtimeSettings = result.settings;
+			resetFormsFromSettings();
+			const job = await rescanPosters(fetch);
+			trackAction(job, 'Poster rescan', (done) => {
+				const result = (done.result ?? {}) as Record<string, unknown>;
+				const updated = Number(result.updated ?? 0);
+				const missing = Number(result.missing ?? 0);
+				toast(`${updated} updated, ${missing} missing`, missing ? 'info' : 'good');
 			});
-			missingPage += 1;
-			missing = [...missing, ...next.items];
-			missingTotal = next.total;
-		} catch {
-			toast('Could not load more', 'bad');
-		} finally {
-			loadingMore = false;
-		}
-	}
-
-	// ── Cache clear ─────────────────────────────────────────────────────────────
-	let clearOpen = $state(false);
-	let clearBusy = $state(false);
-	let inclEmbeddings = $state(true);
-	let inclArchives = $state(false);
-
-	async function doClear() {
-		clearBusy = true;
-		try {
-			await clearPipelineCache(fetch, {
-				include_embeddings: inclEmbeddings,
-				include_archives: inclArchives
-			});
-			toast('Cache clear queued', 'good');
-			clearOpen = false;
-			setTimeout(() => void refreshAll(), 1500);
 		} catch (e) {
-			toast(e instanceof Error ? e.message : 'Clear failed', 'bad');
+			toast(e instanceof Error ? e.message : 'Could not save poster filename', 'bad');
 		} finally {
-			clearBusy = false;
+			savingPoster = false;
 		}
 	}
 
-	// ── Helpers ─────────────────────────────────────────────────────────────────
-	function ago(iso: string | null): string {
-		if (!iso) return '—';
-		const t = new Date(iso).getTime();
-		if (Number.isNaN(t)) return '—';
-		const s = Math.max(0, (Date.now() - t) / 1000);
-		if (s < 60) return 'just now';
-		if (s < 3600) return `${Math.floor(s / 60)}m ago`;
-		if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
-		return `${Math.floor(s / 86400)}d ago`;
+	async function saveRestoreMethod() {
+		savingRestore = true;
+		try {
+			const result = await putSettings(fetch, { posters: { restore_method: restoreMethod } });
+			runtimeSettings = result.settings;
+			resetFormsFromSettings();
+			toast('Restoration saved', 'good');
+		} catch (e) {
+			toast(e instanceof Error ? e.message : 'Could not save restoration method', 'bad');
+		} finally {
+			savingRestore = false;
+		}
 	}
-	function fmtSecs(s: number | null | undefined): string {
-		if (s == null) return '—';
-		if (s < 1) return `${(s * 1000).toFixed(0)}ms`;
-		if (s < 60) return `${s.toFixed(1)}s`;
-		return `${(s / 60).toFixed(1)}m`;
+
+	async function saveHeal() {
+		savingHeal = true;
+		try {
+			const result = await putSettings(fetch, {
+				heal: { enabled: healEnabled, interval_minutes: Number(healInterval) }
+			});
+			runtimeSettings = result.settings;
+			resetFormsFromSettings();
+			toast('Heal scan saved', 'good');
+			await refreshSummary();
+		} catch (e) {
+			toast(e instanceof Error ? e.message : 'Could not save heal scan', 'bad');
+		} finally {
+			savingHeal = false;
+		}
 	}
-	const stageMax = $derived(metrics ? Math.max(1, ...Object.values(metrics.avg_stage_seconds)) : 1);
-	const stageRows = $derived(
-		metrics ? Object.entries(metrics.avg_stage_seconds).sort((a, b) => b[1] - a[1]) : []
-	);
+
+	async function runBackupAll() {
+		backupBusy = true;
+		try {
+			const job = await backupAllPosters(fetch);
+			trackAction(job, 'Poster backup');
+		} catch (e) {
+			toast(e instanceof Error ? e.message : 'Could not start backup', 'bad');
+		} finally {
+			backupBusy = false;
+		}
+	}
+
+	async function previewMaintenance() {
+		maintenanceOpen = true;
+		maintenanceBusy = true;
+		maintenancePreview = null;
+		try {
+			const job = await runPosterMaintenance(fetch, { dry_run: true });
+			trackAction(job, 'Maintenance preview', (done) => {
+				maintenancePreview = (done.result ?? {}) as Record<string, unknown>;
+				maintenanceBusy = false;
+			});
+		} catch (e) {
+			maintenanceBusy = false;
+			toast(e instanceof Error ? e.message : 'Could not start maintenance preview', 'bad');
+		}
+	}
+
+	async function confirmMaintenance() {
+		maintenanceBusy = true;
+		try {
+			const job = await runPosterMaintenance(fetch, { dry_run: false });
+			trackAction(job, 'Poster maintenance', () => {
+				maintenanceOpen = false;
+				maintenanceBusy = false;
+			});
+		} catch (e) {
+			maintenanceBusy = false;
+			toast(e instanceof Error ? e.message : 'Could not start maintenance', 'bad');
+		}
+	}
+
+	function isoDate(value: string | null | undefined): string {
+		return value ? new Date(value).toLocaleString() : 'Never';
+	}
+
+	onMount(() => {
+		trackRunningJobs();
+	});
 
 	onDestroy(() => {
-		stopBatch?.();
+		stopTracking();
 	});
 </script>
 
-<SectionHeader title="Poster pipeline" subtitle="Run, review, and tune poster selection">
-	{#snippet action()}
-		<button class="btn-sec clear-btn" onclick={() => (clearOpen = true)} disabled={!cache}>
-			<Icon name="refresh" size={14} />
-			Clear cache{#if cache}
-				({bytesH(cache.clearable_bytes)}){/if}
-		</button>
-	{/snippet}
-</SectionHeader>
+<SectionHeader title="Poster Pipeline" subtitle="Manage poster selection and restoration" />
 
-{#if data.onboarding?.needs_onboarding}
-	<a
-		href="/onboarding"
-		style="display:flex; align-items:center; gap:12px; padding:12px 16px; margin-bottom:16px; border:1px solid var(--gold-deep); border-radius:var(--radius-sm); background:var(--gold-soft); color:var(--text); text-decoration:none;"
-	>
-		<span style="color:var(--gold); display:flex;"><Icon name="taste" size={18} /></span>
-		<div style="flex:1; display:flex; flex-direction:column;">
-			<strong style="color:var(--text);">Jump-start the Key Art Engine</strong>
-			<span style="font-size:12px; color:var(--muted);">
-				Rank a few movies to teach it your taste — {data.onboarding.ranked}/{data.onboarding.min} so far.
-			</span>
-		</div>
-		<span style="color:var(--gold); font-weight:600;">Start →</span>
-	</a>
-{/if}
-
-<div class="tabwrap">
-	<TabBar {tabs} active={tab} onSelect={setTab} />
+<div class="stats">
+	<StatCard label="Movies" value={summary.total_movies} sub="downloaded" tone="info" />
+	<StatCard
+		label="Deployed"
+		value={summary.movies_with_poster}
+		sub={`${deployedPct}% coverage`}
+		bar={deployedPct}
+		tone={deployedPct >= 90 ? 'good' : deployedPct >= 70 ? 'warn' : 'bad'}
+	/>
+	<StatCard label="Missing" value={summary.movies_missing_poster} tone={summary.movies_missing_poster ? 'warn' : 'good'} />
+	<StatCard label="In review" value={summary.movies_in_review} tone="gold" />
+	<StatCard label="Running" value={summary.running_jobs.length || summary.movies_in_run} tone="info" />
 </div>
 
-<!-- ═══ REVIEW ═══ -->
-{#if tab === 'review'}
-	{#if queue.items.length === 0}
-		<div class="empty">
-			<Icon name="pipeline" size={34} stroke={1} />
-			<strong>Nothing to review</strong>
-			<span>Runs awaiting a poster decision will collect here. Start one from the Run tab.</span>
-		</div>
-	{:else}
-		<div class="rev-bar">
-			<span class="rev-count">{queue.total} run{queue.total === 1 ? '' : 's'} awaiting</span>
-			<button class="btn-gold" onclick={() => (approveAllOpen = true)} disabled={queue.total === 0}>
-				Approve all auto-picks
-			</button>
-		</div>
-		<div class="rev-grid">
-			{#each queue.items as item (item.run.run_id)}
-				{@const c = item.run.counts ?? {}}
-				<button class="rev-card" onclick={() => goto(`/pipeline/runs/${item.run.run_id}`)}>
-					<div class="rev-poster">
-						<PosterThumb
-							title={item.movie.title}
-							year={item.movie.year}
-							posterStatus={item.movie.poster_status}
-							posterUrl={item.auto_pick_poster_url ?? item.movie.poster_url}
-							hdr={item.movie.hdr}
-						/>
-					</div>
-					<div class="rev-meta">
-						<div class="rev-title">{item.movie.title}</div>
-						<div class="rev-sub">{item.movie.year ?? '—'}</div>
-						<div class="rev-stats mono">
-							{c.ranked ?? '?'} ranked · {c.total_candidates ?? '?'} cand.
-						</div>
-						<div class="rev-foot">
-							<span class="rev-scorer">{item.run.scorer_name ?? 'scored'}</span>
-							<span class="rev-age">{ago(item.run.started_at)}</span>
-						</div>
-					</div>
-				</button>
+<div class="actions">
+	<button class="action" onclick={() => goto('/pipeline/movies')}>
+		<span>Movie posters</span>
+		<b>{summary.movies_missing_poster}</b>
+	</button>
+	<button class="action" onclick={() => goto('/pipeline/tv')}>
+		<span>TV posters</span>
+		<b>Later</b>
+	</button>
+</div>
+
+{#if runningJobs.length}
+	<section class="band">
+		<h2>Running Jobs</h2>
+		<div class="runs">
+			{#each runningJobs as job (job.job_id)}
+				<RunProgress title={job.label ?? job.type} status={job.status} detail={job.detail} />
 			{/each}
 		</div>
-	{/if}
-
-	<!-- ═══ RUN ═══ -->
-{:else if tab === 'run'}
-	{#if batchRunning || batchJobId}
-		<div class="batch-status">
-			<RunProgress
-				detail={batchDetail}
-				status={batchStatus}
-				title="Batch running"
-				onCancel={batchRunning ? cancelBatch : undefined}
-			/>
-		</div>
-	{/if}
-
-	{#if missing.length === 0}
-		<div class="empty">
-			<Icon name="pipeline" size={34} stroke={1} />
-			<strong>Every movie has a poster</strong>
-			<span>Nothing is missing artwork right now. You can still re-evaluate the whole library.</span
-			>
-			<button class="btn-sec" onclick={() => startBatch('all')} disabled={batchRunning}>
-				Re-run whole library
-			</button>
-		</div>
-	{:else}
-		<div class="run-bar">
-			<label class="selall">
-				<input type="checkbox" checked={allSelected} onchange={toggleAll} disabled={batchRunning} />
-				<span>
-					{selectedCount > 0
-						? `${selectedCount} selected`
-						: `${missingTotal} movie${missingTotal === 1 ? '' : 's'} missing posters`}
-				</span>
-			</label>
-			<div class="run-actions">
-				<button class="btn-ghost" onclick={() => startBatch('all')} disabled={batchRunning}>
-					Re-run whole library
-				</button>
-				<button
-					class="btn-sec"
-					onclick={() => startBatch('selected', [...selected])}
-					disabled={batchRunning || selectedCount === 0}
-				>
-					Run selected ({selectedCount})
-				</button>
-				<button class="btn-gold" onclick={() => startBatch('missing')} disabled={batchRunning}>
-					Run all missing ({missingTotal})
-				</button>
-			</div>
-		</div>
-
-		<div class="missing-list">
-			{#each missing as m (m.id)}
-				{@const ok = m.tmdb_id != null}
-				<div class="mv-row" class:sel={selected.has(m.id)} class:dis={!ok}>
-					<label class="mv-check">
-						<input
-							type="checkbox"
-							checked={selected.has(m.id)}
-							disabled={!ok || batchRunning}
-							onchange={() => toggleSelect(m.id)}
-						/>
-					</label>
-					<button class="mv-main" disabled={!ok || batchRunning} onclick={() => toggleSelect(m.id)}>
-						<div class="mv-thumb">
-							<PosterThumb
-								title={m.title}
-								year={m.year}
-								posterStatus={m.poster_status}
-								posterUrl={m.poster_url}
-								hdr={m.hdr}
-							/>
-						</div>
-						<div class="mv-meta">
-							<span class="mv-title">{m.title}</span>
-							<span class="mv-year mono">{m.year ?? ''}</span>
-							{#if !ok}<span class="mv-hint">No TMDB id — sync first</span>{/if}
-						</div>
-					</button>
-					<button
-						class="btn-sec mv-run"
-						onclick={() => runSingle(m)}
-						disabled={!ok || batchRunning}
-						title={ok ? 'Run pipeline for this movie' : 'No TMDB id'}
-					>
-						Run
-					</button>
-				</div>
-			{/each}
-		</div>
-
-		{#if missing.length < missingTotal}
-			<div class="loadmore">
-				<button class="btn-sec" onclick={loadMore} disabled={loadingMore}>
-					{loadingMore ? 'Loading…' : `Load more — ${missing.length} of ${missingTotal}`}
-				</button>
-			</div>
-		{/if}
-	{/if}
-
-	<!-- ═══ METRICS ═══ -->
-{:else if tab === 'metrics'}
-	{#if !metrics || metrics.window_runs === 0}
-		<div class="empty">
-			<Icon name="pipeline" size={34} stroke={1} />
-			<strong>No metrics yet</strong>
-			<span>Run the pipeline and aggregates over recent runs will appear here.</span>
-		</div>
-	{:else}
-		<div class="stat-grid">
-			<StatCard label="Runs (window)" value={metrics.window_runs} tone="gold" />
-			<StatCard label="Batches" value={metrics.distinct_batches} tone="info" />
-			<StatCard
-				label="Avg duration"
-				value={fmtSecs(metrics.duration_seconds.avg)}
-				sub={`p50 ${fmtSecs(metrics.duration_seconds.p50)} · p90 ${fmtSecs(metrics.duration_seconds.p90)}`}
-				tone="dovi"
-			/>
-			<StatCard
-				label="Avg candidates"
-				value={metrics.avg_counts.total_candidates?.toFixed(1) ?? '—'}
-				sub={`${metrics.avg_counts.ranked?.toFixed(1) ?? '—'} ranked`}
-				tone="good"
-			/>
-		</div>
-
-		<div class="chip-rows">
-			<div class="chip-row">
-				<span class="chip-label">Status</span>
-				{#each Object.entries(metrics.by_status) as [k, v] (k)}
-					<span class="m-chip">{k}<b>{v}</b></span>
-				{/each}
-			</div>
-			{#if Object.keys(metrics.by_scorer).length}
-				<div class="chip-row">
-					<span class="chip-label">Scorer</span>
-					{#each Object.entries(metrics.by_scorer) as [k, v] (k)}
-						<span class="m-chip">{k}<b>{v}</b></span>
-					{/each}
-				</div>
-			{/if}
-		</div>
-
-		{#if stageRows.length}
-			<div class="panel">
-				<div class="panel-head">Mean stage time</div>
-				{#each stageRows as [stage, secs] (stage)}
-					<div class="stage-row">
-						<span class="stage-name">{stage}</span>
-						<div class="stage-bar"><ProgressBar value={(secs / stageMax) * 100} tone="gold" /></div>
-						<span class="stage-val mono">{fmtSecs(secs)}</span>
-					</div>
-				{/each}
-			</div>
-		{/if}
-
-		{#if Object.keys(metrics.avg_counts).length}
-			<div class="panel">
-				<div class="panel-head">Avg counts per run</div>
-				<div class="counts-grid">
-					{#each Object.entries(metrics.avg_counts) as [k, v] (k)}
-						<div class="count-cell">
-							<span class="count-k">{k.replace(/_/g, ' ')}</span>
-							<span class="count-v mono">{v.toFixed(1)}</span>
-						</div>
-					{/each}
-				</div>
-			</div>
-		{/if}
-	{/if}
+	</section>
 {/if}
 
+<div class="settings-grid">
+	<details class="panel" open>
+		<summary>Poster Filename</summary>
+		<div class="panel-body">
+			<label class="radio">
+				<input type="radio" bind:group={preset} value="movie" />
+				<span>Movie filename</span>
+				<small>{'{movie_basename}.jpg'}</small>
+			</label>
+			<label class="radio">
+				<input type="radio" bind:group={preset} value="poster" />
+				<span>Poster</span>
+				<small>poster.jpg</small>
+			</label>
+			<label class="radio">
+				<input type="radio" bind:group={preset} value="custom" />
+				<span>Custom</span>
+				<input class="inline-input" bind:value={customName} disabled={preset !== 'custom'} />
+			</label>
+			<div class="panel-foot">
+				<code>{nextMovieFormat()}</code>
+				<button onclick={savePosterFormat} disabled={!posterDirty || savingPoster}>
+					{savingPoster ? 'Saving' : 'Save'}
+				</button>
+			</div>
+		</div>
+	</details>
+
+	<details class="panel" open>
+		<summary>Restoration</summary>
+		<div class="panel-body">
+			<label class="radio">
+				<input type="radio" bind:group={restoreMethod} value="download" />
+				<span>Download</span>
+				<small>cache, download, local</small>
+			</label>
+			<label class="radio">
+				<input type="radio" bind:group={restoreMethod} value="local" />
+				<span>Local</span>
+				<small>local, cache, download</small>
+			</label>
+			<div class="backup-row">
+				<span>{summary.backups.count} backups</span>
+				<span>{bytesH(summary.backups.bytes)}</span>
+			</div>
+			<div class="panel-foot">
+				<button onclick={runBackupAll} disabled={backupBusy}>
+					{backupBusy ? 'Starting' : 'Backup all'}
+				</button>
+				<button onclick={previewMaintenance}>Run maintenance</button>
+				<button onclick={saveRestoreMethod} disabled={!restoreDirty || savingRestore}>
+					{savingRestore ? 'Saving' : 'Save'}
+				</button>
+			</div>
+		</div>
+	</details>
+
+	<details class="panel" open>
+		<summary>Heal Scan</summary>
+		<div class="panel-body">
+			<label class="toggle">
+				<input type="checkbox" bind:checked={healEnabled} />
+				<span>{healEnabled ? 'Enabled' : 'Disabled'}</span>
+			</label>
+			<label class="field">
+				<span>Interval</span>
+				<select bind:value={healInterval}>
+					{#each [15, 30, 60, 120, 180, 360, 720, 1440] as minutes}
+						<option value={minutes}>{minutes} min</option>
+					{/each}
+				</select>
+			</label>
+			<div class="facts">
+				<span>Last: {isoDate(summary.last_heal?.last_run)}</span>
+				<span>Next: {isoDate(summary.heal_schedule?.next_run_at)}</span>
+			</div>
+			<div class="panel-foot">
+				<button onclick={saveHeal} disabled={!healDirty || savingHeal}>
+					{savingHeal ? 'Saving' : 'Save'}
+				</button>
+			</div>
+		</div>
+	</details>
+</div>
+
 <ConfirmDialog
-	open={clearOpen}
-	title="Clear poster-pipeline cache"
-	confirmLabel="Clear cache"
+	open={maintenanceOpen}
+	title="Poster Maintenance"
+	message="Dry-run results are shown before destructive changes run."
+	confirmLabel="Run"
+	cancelLabel="Close"
 	tone="bad"
-	busy={clearBusy}
-	onConfirm={doClear}
-	onCancel={() => (clearOpen = false)}
+	busy={maintenanceBusy}
+	confirmDisabled={!maintenancePreview}
+	onConfirm={confirmMaintenance}
+	onCancel={() => {
+		if (!maintenanceBusy) maintenanceOpen = false;
+	}}
 >
-	<p class="dlg-note">
-		Removes downloaded poster candidates and working artifacts. Never touches your labels, taste
-		profile, the Key Art Engine, or deployed posters.
-	</p>
-	{#if cache}
-		<div class="size-line">
-			<span>Work + staging</span><span class="mono"
-				>{bytesH(cache.sizes_bytes.runs_work + cache.sizes_bytes.staging)}</span
-			>
+	{#if maintenancePreview}
+		<div class="preview">
+			<span>Movies: {maintenancePreview.movies_deleted ?? 0}</span>
+			<span>Backups: {maintenancePreview.orphan_backups ?? 0}</span>
+			<span>Cache: {maintenancePreview.orphan_cache ?? 0}</span>
 		</div>
-		<div class="size-line">
-			<span>Embedding cache</span><span class="mono">{bytesH(cache.sizes_bytes.embeddings)}</span>
-		</div>
-		<div class="size-line">
-			<span>Run archives (history)</span><span class="mono"
-				>{bytesH(cache.sizes_bytes.archives)}</span
-			>
-		</div>
+	{:else}
+		<div class="preview">Preparing preview</div>
 	{/if}
-	<label class="toggle">
-		<input type="checkbox" bind:checked={inclEmbeddings} />
-		Include embedding cache (re-derived next run)
-	</label>
-	<label class="toggle">
-		<input type="checkbox" bind:checked={inclArchives} />
-		Include run archives — <b>deletes results history</b>
-	</label>
 </ConfirmDialog>
 
-<ConfirmDialog
-	open={approveAllOpen}
-	title="Approve all auto-picks"
-	message="This will approve the auto-pick for all {queue.total} run{queue.total === 1
-		? ''
-		: 's'} in the review queue, deploy posters to movie folders, and train the Key Art Engine. Continue?"
-	confirmLabel={approveAllBusy
-		? `Approving ${approveAllDone}/${approveAllTotal}…`
-		: `Approve all {queue.total}`}
-	tone="bad"
-	busy={approveAllBusy}
-	onConfirm={approveAllAutoPicks}
-	onCancel={() => (approveAllOpen = false)}
-/>
-
 <style>
-	.tabwrap {
-		padding-bottom: 14px;
-		border-bottom: 1px solid var(--line);
-		margin-bottom: 20px;
-	}
-	.clear-btn {
-		display: inline-flex;
-		align-items: center;
-		gap: 7px;
-	}
-
-	/* ── Empty ── */
-	.empty {
-		display: flex;
-		flex-direction: column;
-		align-items: center;
-		gap: 8px;
-		padding: 70px 24px;
-		text-align: center;
-		color: var(--faint);
-		border: 1px dashed var(--line2);
-		border-radius: var(--radius);
-		background: var(--panel);
-	}
-	.empty strong {
-		color: var(--text);
-		font-size: 15px;
-	}
-	.empty span {
-		font-size: 13px;
-		max-width: 360px;
-		line-height: 1.5;
-	}
-	.empty button {
-		margin-top: 6px;
-	}
-
-	/* ── Review grid ── */
-	.rev-bar {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: 12px;
-		flex-wrap: wrap;
-		margin-bottom: 14px;
-	}
-	.rev-count {
-		font-size: 13px;
-		color: var(--muted);
-	}
-	.rev-grid {
+	.stats {
 		display: grid;
-		grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-		gap: 16px;
-	}
-	.rev-card {
-		display: flex;
-		flex-direction: column;
-		gap: 8px;
-		padding: 0;
-		border: none;
-		background: transparent;
-		text-align: left;
-		cursor: pointer;
-	}
-	.rev-poster {
-		transition: transform 0.14s ease;
-	}
-	.rev-card:hover .rev-poster {
-		transform: translateY(-2px);
-	}
-	.rev-title {
-		font-size: 13px;
-		font-weight: 600;
-		color: var(--text);
-		line-height: 1.25;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-	.rev-sub {
-		font-size: 11px;
-		color: var(--muted);
-	}
-	.rev-stats {
-		font-size: 11px;
-		color: var(--gold);
-		margin-top: 2px;
-	}
-	.rev-foot {
-		display: flex;
-		justify-content: space-between;
-		gap: 6px;
-		font-size: 10.5px;
-		color: var(--faint);
-		margin-top: 2px;
-	}
-
-	/* ── Run: missing-poster list ── */
-	.batch-status {
+		grid-template-columns: repeat(5, minmax(0, 1fr));
+		gap: 12px;
 		margin-bottom: 16px;
 	}
-	.run-bar {
+	.actions {
+		display: grid;
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+		gap: 12px;
+		margin-bottom: 18px;
+	}
+	.action {
+		min-height: 72px;
+		border: 1px solid var(--line);
+		border-radius: var(--radius);
+		background: var(--panel);
+		color: var(--text);
+		padding: 14px 16px;
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
-		gap: 12px;
-		flex-wrap: wrap;
-		margin-bottom: 14px;
+		font-size: 14px;
 	}
-	.selall {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		font-size: 13px;
-		color: var(--muted);
-		cursor: pointer;
-	}
-	.run-actions {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		flex-wrap: wrap;
-	}
-	.missing-list {
-		display: flex;
-		flex-direction: column;
-		border: 1px solid var(--line);
-		border-radius: var(--radius-sm);
-		overflow: hidden;
-		background: var(--panel);
-	}
-	.mv-row {
-		display: flex;
-		align-items: center;
-		gap: 10px;
-		padding: 8px 12px;
-		border-bottom: 1px solid var(--line);
-	}
-	.mv-row:last-child {
-		border-bottom: none;
-	}
-	.mv-row.sel {
-		background: var(--gold-soft);
-	}
-	.mv-row.dis {
-		opacity: 0.55;
-	}
-	.mv-check {
-		display: flex;
-		align-items: center;
-	}
-	.mv-main {
-		flex: 1;
-		display: flex;
-		align-items: center;
-		gap: 11px;
-		min-width: 0;
-		padding: 0;
-		border: none;
-		background: transparent;
-		text-align: left;
-		cursor: pointer;
-		color: inherit;
-	}
-	.mv-main:disabled {
-		cursor: default;
-	}
-	.mv-thumb {
-		width: 34px;
-		flex: none;
-	}
-	.mv-meta {
-		display: flex;
-		align-items: baseline;
-		gap: 8px;
-		min-width: 0;
-	}
-	.mv-title {
-		font-size: 13px;
-		font-weight: 550;
-		color: var(--text);
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-	.mv-year {
-		font-size: 11px;
-		color: var(--faint);
-		flex: none;
-	}
-	.mv-hint {
-		font-size: 11px;
-		color: var(--low);
-		flex: none;
-	}
-	.mv-run {
-		flex: none;
-		padding: 6px 14px;
-	}
-	.loadmore {
-		display: flex;
-		justify-content: center;
-		margin-top: 14px;
-	}
-
-	/* ── Metrics ── */
-	.stat-grid {
-		display: grid;
-		grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-		gap: 12px;
-		margin-bottom: 18px;
-	}
-	.chip-rows {
-		display: flex;
-		flex-direction: column;
-		gap: 8px;
-		margin-bottom: 18px;
-	}
-	.chip-row {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		flex-wrap: wrap;
-	}
-	.chip-label {
-		font-size: 10.5px;
-		text-transform: uppercase;
-		letter-spacing: 0.06em;
-		color: var(--faint);
-		font-weight: 700;
-		min-width: 54px;
-	}
-	.m-chip {
-		display: inline-flex;
-		align-items: center;
-		gap: 6px;
-		padding: 3px 9px;
-		border-radius: 99px;
-		background: var(--panel2);
-		border: 1px solid var(--line);
-		font-size: 12px;
-		color: var(--muted);
-	}
-	.m-chip b {
+	.action b {
 		font-family: var(--font-mono);
-		color: var(--text);
+		color: var(--gold);
+		font-size: 13px;
+	}
+	.band {
+		margin-bottom: 18px;
+	}
+	h2 {
+		font-size: 14px;
+		margin: 0 0 10px;
+	}
+	.runs {
+		display: grid;
+		gap: 10px;
+	}
+	.settings-grid {
+		display: grid;
+		grid-template-columns: repeat(3, minmax(0, 1fr));
+		gap: 12px;
 	}
 	.panel {
-		background: var(--panel);
 		border: 1px solid var(--line);
 		border-radius: var(--radius);
-		padding: 14px 16px;
-		margin-bottom: 16px;
+		background: var(--panel);
+		overflow: hidden;
 	}
-	.panel-head {
-		font-size: 10.5px;
-		text-transform: uppercase;
-		letter-spacing: 0.06em;
-		color: var(--faint);
-		font-weight: 700;
-		margin-bottom: 12px;
-	}
-	.stage-row {
-		display: grid;
-		grid-template-columns: 140px 1fr 56px;
-		align-items: center;
-		gap: 10px;
-		margin-bottom: 8px;
-	}
-	.stage-name {
-		font-size: 12px;
+	summary {
+		cursor: pointer;
+		padding: 13px 15px;
+		font-size: 13px;
+		font-weight: 650;
 		color: var(--text);
-		text-transform: capitalize;
-	}
-	.stage-val {
-		font-size: 11.5px;
-		color: var(--muted);
-		text-align: right;
-	}
-	.counts-grid {
-		display: grid;
-		grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
-		gap: 10px;
-	}
-	.count-cell {
-		display: flex;
-		flex-direction: column;
-		gap: 2px;
-	}
-	.count-k {
-		font-size: 11px;
-		color: var(--faint);
-		text-transform: capitalize;
-	}
-	.count-v {
-		font-size: 16px;
-		color: var(--text);
-	}
-
-	/* ── Dialog body ── */
-	.dlg-note {
-		margin: 0;
-		font-size: 12.5px;
-		color: var(--muted);
-		line-height: 1.5;
-	}
-	.size-line {
-		display: flex;
-		justify-content: space-between;
-		font-size: 12px;
-		color: var(--muted);
-		padding: 3px 0;
 		border-bottom: 1px solid var(--line);
 	}
-	.toggle {
+	.panel-body {
+		padding: 14px 15px;
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
+	}
+	.radio,
+	.toggle,
+	.field,
+	.backup-row,
+	.facts {
 		display: flex;
 		align-items: center;
-		gap: 8px;
-		font-size: 12.5px;
-		color: var(--text);
-		margin-top: 4px;
-	}
-
-	/* ── Buttons ── */
-	.btn-gold {
-		padding: 9px 18px;
-		border-radius: 8px;
-		border: 1px solid var(--gold-deep);
-		background: linear-gradient(180deg, var(--gold), var(--gold-deep));
-		color: var(--on-gold);
+		gap: 10px;
 		font-size: 13px;
-		font-weight: 600;
-	}
-	.btn-gold:disabled {
-		opacity: 0.55;
-		cursor: not-allowed;
-	}
-	.btn-sec {
-		padding: 8px 14px;
-		border-radius: 8px;
-		border: 1px solid var(--line2);
-		background: var(--panel2);
 		color: var(--text);
-		font-size: 13px;
 	}
-	.btn-sec:disabled {
-		opacity: 0.5;
-		cursor: not-allowed;
-	}
-	.btn-ghost {
-		padding: 8px 14px;
-		border-radius: 8px;
-		border: 1px solid transparent;
-		background: transparent;
+	.radio small {
+		margin-left: auto;
 		color: var(--muted);
+		font-family: var(--font-mono);
+		font-size: 11px;
+	}
+	.inline-input,
+	select {
+		min-width: 0;
+		border: 1px solid var(--line2);
+		border-radius: 7px;
+		background: var(--ink2);
+		color: var(--text);
+		padding: 7px 9px;
 		font-size: 13px;
 	}
-	.btn-ghost:hover:not(:disabled) {
-		color: var(--text);
-		background: var(--panel2);
+	.inline-input {
+		flex: 1;
 	}
-	.btn-ghost:disabled {
+	.field {
+		justify-content: space-between;
+	}
+	.backup-row,
+	.facts {
+		justify-content: space-between;
+		color: var(--muted);
+	}
+	.facts {
+		flex-direction: column;
+		align-items: flex-start;
+		gap: 5px;
+	}
+	.panel-foot {
+		display: flex;
+		align-items: center;
+		justify-content: flex-end;
+		gap: 8px;
+		border-top: 1px solid var(--line);
+		padding-top: 12px;
+	}
+	code {
+		margin-right: auto;
+		color: var(--muted);
+		font-size: 11px;
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+	button {
+		border: 1px solid var(--line2);
+		border-radius: 8px;
+		background: var(--panel2);
+		color: var(--text);
+		padding: 8px 12px;
+		font-size: 13px;
+	}
+	button:disabled {
 		opacity: 0.5;
 		cursor: not-allowed;
 	}
-	.mono {
-		font-family: var(--font-mono);
+	.preview {
+		display: grid;
+		gap: 6px;
+		font-size: 13px;
+		color: var(--muted);
+	}
+	@media (max-width: 980px) {
+		.stats,
+		.settings-grid {
+			grid-template-columns: repeat(2, minmax(0, 1fr));
+		}
+	}
+	@media (max-width: 680px) {
+		.stats,
+		.actions,
+		.settings-grid {
+			grid-template-columns: 1fr;
+		}
 	}
 </style>

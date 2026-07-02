@@ -41,6 +41,11 @@ export interface RuntimeSettings {
 	paths: Record<string, unknown>;
 	sync: Record<string, unknown>;
 	letterbox: Record<string, unknown>;
+	posters?: {
+		restore_method?: 'download' | 'local';
+		backup_dir?: string;
+		[key: string]: unknown;
+	};
 	subtitles: {
 		enabled?: boolean;
 		scan_concurrency?: number;
@@ -542,6 +547,40 @@ export interface JobSummary {
 	status_url: string;
 	movie_count?: number; // batch runs only
 	[k: string]: unknown;
+}
+
+export interface LastHeal {
+	last_run: string | null;
+	checked: number;
+	restored: number;
+	failed: number;
+}
+
+export interface HealScheduleInfo {
+	enabled: boolean;
+	interval_minutes: number;
+	next_run_at: string | null;
+}
+
+export interface BackupStats {
+	count: number;
+	bytes: number;
+}
+
+export interface SummaryRunningJob extends JobSummary {
+	movie_count: number;
+}
+
+export interface PipelineSummary {
+	total_movies: number;
+	movies_with_poster: number;
+	movies_missing_poster: number;
+	movies_in_review: number;
+	movies_in_run: number;
+	running_jobs: SummaryRunningJob[];
+	last_heal: LastHeal | null;
+	heal_schedule: HealScheduleInfo | null;
+	backups: BackupStats;
 }
 
 // ── Pipeline run results (GET /pipeline/runs/{id}) ──────────────────────────

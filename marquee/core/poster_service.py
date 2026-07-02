@@ -36,6 +36,10 @@ from marquee.models import ArtworkEvent, Movie
 logger = logging.getLogger(__name__)
 
 _TMDB_ORIGINAL = "https://image.tmdb.org/t/p/original"
+_RESTORE_CHAINS = {
+    "local": ("local", "cache", "download"),
+    "download": ("cache", "download", "local"),
+}
 
 
 @dataclass
@@ -43,12 +47,13 @@ class DeployResult:
     deployed_path: str
     cache_path: str
     sha256: str
+    backup_path: str = ""
 
 
 @dataclass
 class RestoreResult:
     restored: bool
-    source: str  # "cache" | "download" | "none"
+    source: str  # "local" | "cache" | "download" | "none"
     path: str | None = None
     error: str | None = None
 
@@ -102,6 +107,12 @@ def _cache_dir() -> Path:
 def cache_paths(tmdb_id: int) -> tuple[Path, Path]:
     base = _cache_dir()
     return base / f"{tmdb_id}.jpg", base / f"{tmdb_id}.meta.json"
+
+
+def backup_path(movie: Movie) -> Path:
+    if movie.poster_local_backup_path:
+        return Path(movie.poster_local_backup_path)
+    return settings.poster_backup_path / f"{movie.id}.jpg"
 
 
 def _sha256(path: Path) -> str:
@@ -230,6 +241,15 @@ class PosterService:
                 },
             )
 
+        backup_file = backup_path(movie)
+        backup_error = None
+        try:
+            await asyncio.to_thread(_atomic_copy, dest, backup_file)
+            movie.poster_local_backup_path = str(backup_file)
+        except Exception as exc:  # noqa: BLE001 — backup must not fail deployment
+            backup_error = str(exc)
+            logger.warning("POSTER BACKUP FAILED | movie=%s | %s", movie.title, exc)
+
         movie.poster_path = str(dest)
         movie.poster_source = poster_source
         if poster_source_url:
@@ -250,6 +270,8 @@ class PosterService:
             {
                 "path": str(dest),
                 "cache": str(cache_file) if cache_file else None,
+                "backup": str(backup_file) if backup_error is None else None,
+                "backup_error": backup_error,
                 "user_approved": user_approved,
             },
         )
@@ -260,6 +282,7 @@ class PosterService:
             deployed_path=str(dest),
             cache_path=str(cache_file) if cache_file else "",
             sha256=sha256,
+            backup_path=str(backup_file) if backup_error is None else "",
         )
 
     async def restore(
@@ -271,9 +294,6 @@ class PosterService:
         source: str = "webhook",
     ) -> RestoreResult:
         """Restore the deployed poster to the (new) movie folder."""
-        if movie.poster_path is None and movie.poster_source_url is None:
-            return RestoreResult(restored=False, source="none", error="movie never had a poster")
-
         folder_raw = new_folder or movie.folder_path
         try:
             folder = safe_translate_and_validate(folder_raw, source="radarr")
@@ -294,40 +314,74 @@ class PosterService:
             await db.commit()
             return RestoreResult(restored=False, source="none", error=str(exc))
 
-        # Primary: restore from the local cache (verify integrity if we can).
+        errors: list[str] = []
         cache_file = None
         if movie.tmdb_id is not None:
             cache_file, _ = cache_paths(movie.tmdb_id)
-        if cache_file and await asyncio.to_thread(cache_file.is_file):
-            if (
-                movie.poster_sha256
-                and await asyncio.to_thread(_sha256, cache_file) != movie.poster_sha256
-            ):
-                logger.warning("RESTORE | cache sha mismatch for %s — using it anyway", movie.title)
-            try:
-                await asyncio.to_thread(_atomic_copy, cache_file, dest)
-                await self._finalize_restore(db, movie, dest, folder_raw, source, "cache")
-                return RestoreResult(restored=True, source="cache", path=str(dest))
-            except OSError as exc:
-                logger.warning("RESTORE | cache copy failed (%s) — trying download", exc)
 
-        # Fallback: re-download from the stored source URL.
-        if movie.poster_source_url:
-            try:
-                async with httpx.AsyncClient(timeout=30.0) as client:
-                    response = await client.get(movie.poster_source_url)
-                    response.raise_for_status()
-                    ensure_image_response(response)
-                await asyncio.to_thread(_atomic_write_bytes, response.content, dest)
-                await self._finalize_restore(db, movie, dest, folder_raw, source, "download")
-                return RestoreResult(restored=True, source="download", path=str(dest))
-            except Exception as exc:  # noqa: BLE001
-                error = f"download failed: {exc}"
-        else:
-            error = "cache missing and no source URL"
+        for candidate in _RESTORE_CHAINS.get(settings.POSTER_RESTORE_METHOD, _RESTORE_CHAINS["download"]):
+            if candidate == "local":
+                local_file = backup_path(movie)
+                if not await asyncio.to_thread(local_file.is_file):
+                    errors.append(f"local missing: {local_file}")
+                    continue
+                try:
+                    if (
+                        movie.poster_sha256
+                        and await asyncio.to_thread(_sha256, local_file) != movie.poster_sha256
+                    ):
+                        logger.warning(
+                            "RESTORE | local backup sha mismatch for %s — using it anyway",
+                            movie.title,
+                        )
+                    await asyncio.to_thread(_atomic_copy, local_file, dest)
+                    await self._finalize_restore(db, movie, dest, folder_raw, source, "local")
+                    return RestoreResult(restored=True, source="local", path=str(dest))
+                except OSError as exc:
+                    errors.append(f"local failed: {exc}")
+                    logger.warning("RESTORE | local backup copy failed (%s)", exc)
+                    continue
+
+            if candidate == "cache":
+                if not cache_file or not await asyncio.to_thread(cache_file.is_file):
+                    errors.append("cache missing")
+                    continue
+                try:
+                    if (
+                        movie.poster_sha256
+                        and await asyncio.to_thread(_sha256, cache_file) != movie.poster_sha256
+                    ):
+                        logger.warning(
+                            "RESTORE | cache sha mismatch for %s — using it anyway",
+                            movie.title,
+                        )
+                    await asyncio.to_thread(_atomic_copy, cache_file, dest)
+                    await self._finalize_restore(db, movie, dest, folder_raw, source, "cache")
+                    return RestoreResult(restored=True, source="cache", path=str(dest))
+                except OSError as exc:
+                    errors.append(f"cache failed: {exc}")
+                    logger.warning("RESTORE | cache copy failed (%s)", exc)
+                    continue
+
+            if candidate == "download":
+                if not movie.poster_source_url:
+                    errors.append("download missing source URL")
+                    continue
+                try:
+                    async with httpx.AsyncClient(timeout=30.0) as client:
+                        response = await client.get(movie.poster_source_url)
+                        response.raise_for_status()
+                        ensure_image_response(response)
+                    await asyncio.to_thread(_atomic_write_bytes, response.content, dest)
+                    await self._finalize_restore(db, movie, dest, folder_raw, source, "download")
+                    return RestoreResult(restored=True, source="download", path=str(dest))
+                except Exception as exc:  # noqa: BLE001
+                    errors.append(f"download failed: {exc}")
+                    continue
 
         movie.poster_path = None  # flag for re-pipeline (needs_poster index)
-        await _log_event(db, movie.id, "restore_failed", source, {"error": error})
+        error = "; ".join(errors) if errors else "no restore sources available"
+        await _log_event(db, movie.id, "restore_failed", source, {"error": error, "errors": errors})
         await db.commit()
         logger.error("POSTER RESTORE FAILED | movie=%s | %s", movie.title, error)
         return RestoreResult(restored=False, source="none", error=error)
