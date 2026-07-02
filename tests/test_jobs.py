@@ -8,6 +8,7 @@ import pytest
 from sqlalchemy import select
 
 from marquee.config import settings
+from marquee.core.jobs.cancel_registry import JobCancelledError
 from marquee.core.jobs.manager import job_manager
 from marquee.models import Job, JobAttempt, JobEvent, JobResourceReservation
 
@@ -49,6 +50,23 @@ async def test_cancelling_queued_job_is_terminal(db):
 
     assert cancelled.status == "cancelled"
     assert cancelled.finished_at is not None
+
+
+async def test_job_cancelled_error_marks_running_job_cancelled(db):
+    await job_manager.bootstrap_resources(db)
+    await job_manager.create(db, job_type="system_noop")
+    claim = await job_manager.claim_next(db, "worker-a")
+    assert claim is not None
+    job, attempt = claim
+
+    await job_manager.start(db, job, attempt)
+    await job_manager.fail(db, job, attempt, JobCancelledError("cancelled cooperatively"))
+
+    await db.refresh(job)
+    await db.refresh(attempt)
+    assert job.status == "cancelled"
+    assert attempt.status == "cancelled"
+    assert attempt.error["type"] == "Cancelled"
 
 
 async def test_create_and_run_completes_inline_job_without_queue(db):
@@ -107,6 +125,52 @@ async def test_resource_conflict_waits_without_double_claim(db):
     await job_manager.finish(db, *first_claim, result={"ok": True})
     second_claim = await job_manager.claim_next(db, "worker-b")
     assert second_claim is not None and second_claim[0].id == second.id
+
+
+async def test_claim_next_skips_blocked_media_write_and_claims_non_conflicting_job(db):
+    await job_manager.bootstrap_resources(db)
+    await job_manager.create(db, job_type="system_noop", resources={"media-file:1": 1})
+    blocked = await job_manager.create(
+        db, job_type="system_noop", resources={"media-file:1": 1}
+    )
+    claimable = await job_manager.create(
+        db, job_type="system_noop", resources={"media-file:2": 1}
+    )
+
+    first_claim = await job_manager.claim_next(db, "worker-a")
+    assert first_claim is not None
+    await job_manager.start(db, *first_claim)
+
+    second_claim = await job_manager.claim_next(db, "worker-b")
+    assert second_claim is not None
+    assert second_claim[0].id == claimable.id
+    blocked_row = await db.get(Job, blocked.id)
+    assert blocked_row is not None and blocked_row.status == "waiting_resource"
+
+    await job_manager.finish(db, *first_claim, result={"ok": True})
+    previously_blocked = await job_manager.claim_next(db, "worker-c")
+    assert previously_blocked is not None
+    assert previously_blocked[0].id == blocked.id
+
+
+async def test_claim_next_limit_can_reach_claimable_job_beyond_default_window(db):
+    await job_manager.bootstrap_resources(db)
+    await job_manager.create(db, job_type="system_noop", resources={"media-file:blocked": 1})
+    held = await job_manager.claim_next(db, "worker-a")
+    assert held is not None
+    await job_manager.start(db, *held)
+
+    for _ in range(32):
+        await job_manager.create(db, job_type="system_noop", resources={"media-file:blocked": 1})
+    target = await job_manager.create(
+        db, job_type="system_noop", resources={"media-file:claimable": 1}
+    )
+
+    assert await job_manager.claim_next(db, "worker-b", limit=32) is None
+    widened = await job_manager.claim_next(db, "worker-b", limit=64)
+
+    assert widened is not None
+    assert widened[0].id == target.id
 
 
 async def _drive_to_finish(db, worker_id: str, *, status: str) -> None:

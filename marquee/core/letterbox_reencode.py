@@ -18,6 +18,8 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.config import settings
+from marquee.core.jobs import cancel_registry
+from marquee.core.jobs.cancel_registry import JobCancelledError
 from marquee.core.jobs.child_tracking import clear_child_pid, record_child_pid
 from marquee.core.media_files import (
     ResolvedMediaFile,
@@ -53,7 +55,9 @@ async def _raise_if_cancel_requested(
     cleanup_paths: list[Path] | None = None,
 ) -> None:
     await db.refresh(job, ["cancel_requested"])
-    if not job.cancel_requested:
+    cancel_event = cancel_registry.get(job.job_id)
+    registry_cancelled = cancel_event is not None and cancel_event.is_set()
+    if not job.cancel_requested and not registry_cancelled:
         return
     if rpu_task is not None and not rpu_task.done():
         rpu_task.cancel()
@@ -61,6 +65,8 @@ async def _raise_if_cancel_requested(
             await rpu_task
     for path in cleanup_paths or []:
         path.unlink(missing_ok=True)
+    if registry_cancelled and not job.cancel_requested:
+        raise JobCancelledError("letterbox re-encode interrupted")
     raise ReencodePlanError("cancelled", "letterbox re-encode cancelled")
 
 
@@ -871,6 +877,9 @@ async def _run_encode_attempt(
             output.unlink(missing_ok=True)
             return False, diagnostic
         return True, diagnostic
+    except asyncio.CancelledError:
+        output.unlink(missing_ok=True)
+        raise
     finally:
         await clear_child_pid(proc.pid)
 
@@ -938,6 +947,7 @@ async def execute_job(db: AsyncSession, job: MediaJob, emit) -> dict:
     succeeded, diagnostic = await _run_encode_attempt(
         db, job, emit, resolved.path, ffmpeg_out, plan, source_info
     )
+    await _raise_if_cancel_requested(db, job, rpu_task=rpu_task, cleanup_paths=[out, encoded_out])
     execution_acceleration = dict(acceleration)
     if not succeeded and acceleration_active:
         logger.warning(

@@ -15,6 +15,8 @@ from pathlib import Path
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from marquee.core.jobs import cancel_registry
+from marquee.core.jobs.cancel_registry import JobCancelledError
 from marquee.core.media_files import resolve_media_file
 from marquee.core.subtitles import service
 from marquee.core.subtitles.config import subtitle_settings
@@ -108,11 +110,22 @@ def validate_generated_srt(path: Path | str) -> dict:
 
 async def run_generation_job(db: AsyncSession, job: MediaJob, emit) -> dict:
     """Submit to the generator, await the output, validate, and optionally embed."""
+    cancel_event = cancel_registry.get(job.job_id)
+    produced: str | None = None
+
+    def check_cancelled(*, cleanup: bool = False) -> None:
+        if cancel_event is None or not cancel_event.is_set():
+            return
+        if cleanup and produced is not None:
+            Path(produced).unlink(missing_ok=True)
+        raise JobCancelledError("subtitle generation cancelled")
+
     request_data = json.loads(job.request_json) if job.request_json else {}
     generator = get_generator(request_data.get("generator_id"))
     if generator is None or not subtitle_settings.generation_enabled:
         raise RuntimeError("no generation provider configured (set SUBGEN_URL)")
 
+    check_cancelled()
     resolved = await resolve_media_file(db, job.media_file_id)
     gen_request = GenerationRequest(
         media_file_id=job.media_file_id,
@@ -133,6 +146,7 @@ async def run_generation_job(db: AsyncSession, job: MediaJob, emit) -> dict:
     submission = await generator.submit(gen_request)
     if not submission.accepted:
         raise RuntimeError(f"provider rejected submission: {submission.detail}")
+    check_cancelled()
 
     await emit(
         db,
@@ -142,8 +156,8 @@ async def run_generation_job(db: AsyncSession, job: MediaJob, emit) -> dict:
         message=f"Generating {lang} subtitles via {provider}…",
     )
     deadline = asyncio.get_running_loop().time() + subtitle_settings.SUBGEN_TIMEOUT_MINUTES * 60
-    produced: str | None = None
     while asyncio.get_running_loop().time() < deadline:
+        check_cancelled()
         state = await generator.reconcile(gen_request)
         if state.state == "produced":
             produced = state.output_path
@@ -154,17 +168,21 @@ async def run_generation_job(db: AsyncSession, job: MediaJob, emit) -> dict:
     if produced is None:
         raise TimeoutError("generation timed out waiting for output")
 
+    check_cancelled(cleanup=True)
     await emit(db, job.job_id, "validating", "running")
     validation = validate_generated_srt(produced)
     if not validation["valid"]:
         raise RuntimeError(f"generated subtitle invalid: {validation['reason']}")
+    check_cancelled(cleanup=True)
 
     # Rescan so the new sidecar shows up as an external (generated) track.
     await service.scan_inventory(db, await resolve_media_file(db, job.media_file_id))
+    check_cancelled(cleanup=True)
 
     result = {"output_path": produced, "validation": validation, "embedded": False}
     if gen_request.output == "embedded":
         await emit(db, job.job_id, "embedding", "running")
+        check_cancelled(cleanup=True)
         track = await _find_external_track(db, job.media_file_id, produced)
         if track is not None:
             from marquee.core.subtitles import mutation  # noqa: PLC0415
@@ -174,6 +192,7 @@ async def run_generation_job(db: AsyncSession, job: MediaJob, emit) -> dict:
             job.request_json = json.dumps({"inventory_id": inv_id, "track_ids": [track.id]})
             await mutation.execute_job(db, job, emit)
             result["embedded"] = True
+    check_cancelled(cleanup=False)
     await emit(db, job.job_id, "done", "complete")
     return result
 

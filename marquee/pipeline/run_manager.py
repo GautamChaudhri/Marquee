@@ -42,6 +42,7 @@ from uuid import uuid4
 from sqlalchemy import select
 
 from marquee.config import settings
+from marquee.core.jobs.cancel_registry import JobCancelledError
 from marquee.core.poster_sources.tmdb import TMDBClient
 from marquee.database import _get_session_factory
 from marquee.models import Movie, PipelineRun
@@ -255,6 +256,7 @@ class RunManager:
         movie_title: str,
         movie_tmdb_id: int | None,
         progress_sink: Callable[[ProgressEvent], None] | None = None,
+        should_cancel: Callable[[], bool] | None = None,
     ) -> None:
         loop = asyncio.get_running_loop()
         state = self._runs[run_id]
@@ -266,6 +268,10 @@ class RunManager:
             # one progress contract).
             if progress_sink is not None:
                 progress_sink(event)
+
+        def check_cancelled() -> None:
+            if should_cancel is not None and should_cancel():
+                raise JobCancelledError("poster pipeline cancelled")
 
         out_dir = settings.runs_work_path / _sanitise_filename(movie_title)
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -300,6 +306,7 @@ class RunManager:
                 raise RuntimeError("Movie has no TMDB ID — run sync first")
 
             async with self._lock:
+                check_cancelled()
                 fetch = await fetch_and_download(
                     tmdb=tmdb,
                     movie=movie,
@@ -307,6 +314,7 @@ class RunManager:
                     timings=timings,
                     progress=progress,
                 )
+                check_cancelled()
                 records = fetch.records
 
                 outcome = await asyncio.to_thread(
@@ -316,11 +324,14 @@ class RunManager:
                     fetch=fetch,
                     timings=timings,
                     progress=progress,
+                    should_cancel=should_cancel,
                 )
+                check_cancelled()
                 status = outcome.status
                 counts = {**fetch.counts, **outcome.counts}
 
                 if outcome.ranked:
+                    check_cancelled()
                     await place_outputs(
                         outcome.ranked,
                         candidate_map=fetch.candidate_map,
@@ -335,6 +346,10 @@ class RunManager:
 
                 scorer_name = select_scorer().name
 
+        except JobCancelledError as exc:
+            status = "cancelled"
+            error = str(exc)
+            logger.info("RUN CANCELLED | run_id=%s | error=%s", run_id, exc)
         except Exception as exc:  # noqa: BLE001 — recorded as a failed run
             status = "failed"
             error = str(exc)
@@ -401,7 +416,9 @@ class RunManager:
             except Exception:  # noqa: BLE001
                 logger.exception("Failed to release GPU resources after run")
 
-    def _run_stages_blocking(self, *, movie_title, out_dir, fetch, timings, progress):
+    def _run_stages_blocking(
+        self, *, movie_title, out_dir, fetch, timings, progress, should_cancel=None
+    ):
         extractor = self._ensure_extractor()
         return run_sync_stages(
             movie_title=movie_title,
@@ -414,6 +431,7 @@ class RunManager:
             feature_extractor=extractor,
             primary_name=fetch.primary_name,
             progress=progress,
+            should_cancel=should_cancel,
         )
 
     async def _finalize_db(

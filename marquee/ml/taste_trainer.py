@@ -30,6 +30,7 @@ from __future__ import annotations
 import argparse
 import logging
 import re
+import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -39,6 +40,7 @@ import numpy as np
 from PIL import Image, ImageFile
 from tqdm import tqdm
 
+from marquee.core.jobs.cancel_registry import raise_if_cancelled
 from marquee.core.pipeline_config import pipeline_settings
 from marquee.ml.aesthetic import AestheticPredictor
 from marquee.ml.artifact_codec import (
@@ -107,6 +109,7 @@ def extract_embeddings(
     label: str,
     progress_callback: ProgressCallback | None = None,
     stage: str | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> tuple[np.ndarray, list[Path]]:
     """Batch-embed images; returns embeddings + the paths that succeeded."""
     embeddings: list[np.ndarray] = []
@@ -117,6 +120,7 @@ def extract_embeddings(
     def flush() -> None:
         if not batch:
             return
+        raise_if_cancelled(cancel_event, "taste profile rebuild cancelled")
         for vector in encoder.encode_batch(batch):
             embeddings.append(vector)
         kept.extend(batch_paths)
@@ -136,6 +140,7 @@ def extract_embeddings(
         total=len(paths),
     )
     for path in tqdm(paths, desc=f"Embedding {label}", unit="poster"):
+        raise_if_cancelled(cancel_event, "taste profile rebuild cancelled")
         try:
             with Image.open(path) as image:
                 batch.append(image.convert("RGB"))
@@ -167,6 +172,7 @@ def measure_exemplar_features(
     person_detector: PersonDetector | None,
     run_ocr: bool,
     progress_callback: ProgressCallback | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> tuple[list[str], np.ndarray]:
     """Measure every calibratable feature on each positive exemplar.
 
@@ -174,6 +180,7 @@ def measure_exemplar_features(
     values (corrupt image, no title found, detector unavailable).
     """
     rows: list[dict[str, float]] = []
+    raise_if_cancelled(cancel_event, "taste profile rebuild cancelled")
 
     started = time.perf_counter()
     logger.info("Taste calibration starting for %d exemplars", len(paths))
@@ -182,6 +189,7 @@ def measure_exemplar_features(
         from marquee.pipeline import ocr_filter as ocr_filter_module  # noqa: PLC0415
 
     aesthetic_scores = aesthetic.score_batch(clip_embeddings)
+    raise_if_cancelled(cancel_event, "taste profile rebuild cancelled")
 
     total = len(paths)
     _emit_progress(
@@ -194,6 +202,7 @@ def measure_exemplar_features(
     )
     ocr_logged = False
     for index, path in enumerate(tqdm(paths, desc="Measuring features", unit="poster")):
+        raise_if_cancelled(cancel_event, "taste profile rebuild cancelled")
         display_index = index + 1
         features: dict[str, float] = {"aesthetic": float(aesthetic_scores[index])}
         item_label = path.name
@@ -414,6 +423,7 @@ def rebuild_profile(
     skip_ocr: bool = False,
     skip_dino: bool = False,
     progress_callback: ProgressCallback | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> Path:
     """Build the taste profile from the training folders and save it.
 
@@ -430,6 +440,7 @@ def rebuild_profile(
         skip_ocr=skip_ocr,
         skip_dino=skip_dino,
         progress_callback=progress_callback,
+        cancel_event=cancel_event,
     )
     return _run_build(args)
 
@@ -470,6 +481,8 @@ def _run_build(args) -> Path:
 
     started = time.perf_counter()
     progress_callback = getattr(args, "progress_callback", None)
+    cancel_event = getattr(args, "cancel_event", None)
+    raise_if_cancelled(cancel_event, "taste profile rebuild cancelled")
     _emit_progress(
         progress_callback,
         stage="starting",
@@ -479,6 +492,7 @@ def _run_build(args) -> Path:
     )
     logger.info("Taste profile rebuild starting")
     encoder = CLIPImageEncoder(args.model)
+    raise_if_cancelled(cancel_event, "taste profile rebuild cancelled")
     paths = scan_images(args.training_dir)
     embeddings, kept_paths = extract_embeddings(
         paths,
@@ -486,7 +500,9 @@ def _run_build(args) -> Path:
         label="positives (CLIP)",
         progress_callback=progress_callback,
         stage="clip",
+        cancel_event=cancel_event,
     )
+    raise_if_cancelled(cancel_event, "taste profile rebuild cancelled")
     logger.info("Taste profile CLIP embeddings complete: %d exemplars", len(kept_paths))
 
     neg_embeddings: np.ndarray | None = None
@@ -499,6 +515,7 @@ def _run_build(args) -> Path:
             label="negatives (CLIP)",
             progress_callback=progress_callback,
             stage="clip-negatives",
+            cancel_event=cancel_event,
         )
 
     # ── DINOv2 space (optional) ──────────────────────────────────────
@@ -507,6 +524,7 @@ def _run_build(args) -> Path:
     dino_self_knn: np.ndarray | None = None
     dino_model_name: str | None = None
     dino_encoder = DinoImageEncoder()
+    raise_if_cancelled(cancel_event, "taste profile rebuild cancelled")
     if args.skip_dino:
         print("[INFO] DINOv2 skipped (--skip-dino)")
     elif not dino_encoder.available:
@@ -521,6 +539,7 @@ def _run_build(args) -> Path:
             label="positives (DINOv2)",
             progress_callback=progress_callback,
             stage="dino",
+            cancel_event=cancel_event,
         )
         if dino_kept != kept_paths:
             raise RuntimeError(
@@ -537,6 +556,7 @@ def _run_build(args) -> Path:
                 label="negatives (DINOv2)",
                 progress_callback=progress_callback,
                 stage="dino-negatives",
+                cancel_event=cancel_event,
             )
             if neg_dino_kept != neg_paths:
                 raise RuntimeError(
@@ -565,7 +585,9 @@ def _run_build(args) -> Path:
         person_detector=person_detector,
         run_ocr=not args.skip_ocr,
         progress_callback=progress_callback,
+        cancel_event=cancel_event,
     )
+    raise_if_cancelled(cancel_event, "taste profile rebuild cancelled")
 
     # ── Save ─────────────────────────────────────────────────────────
     _emit_progress(
@@ -594,6 +616,7 @@ def _run_build(args) -> Path:
         if neg_dino is not None:
             payload["neg_dino_embeddings"] = neg_dino
     save_npz_atomic(args.output, payload)
+    raise_if_cancelled(cancel_event, "taste profile rebuild cancelled")
     negatives = 0 if neg_embeddings is None else len(neg_embeddings)
     print(
         f"[INFO] Saved {len(kept_paths)} exemplars (+{negatives} negatives, "

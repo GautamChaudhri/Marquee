@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 import pytest
@@ -122,6 +123,22 @@ async def test_run_media_marks_cancel_requested_failure_as_cancelled(db, monkeyp
 
     await db.refresh(media_job)
     assert media_job.status == "cancelled"
+
+
+async def test_run_media_marks_shutdown_cancellation_as_interrupted(db, monkeypatch):
+    media_job, job = await _make_media_job(db, operation="letterbox_reencode")
+
+    async def fake_dispatch(_db, _job, _emit):
+        raise asyncio.CancelledError("worker shutdown")
+
+    monkeypatch.setattr("marquee.core.media_jobs.handlers.dispatch", fake_dispatch)
+
+    with pytest.raises(asyncio.CancelledError):
+        await legacy_media._run_media(job)
+
+    await db.refresh(media_job)
+    assert media_job.status == "interrupted"
+    assert "worker shutdown" in media_job.error_json
 
 
 async def test_run_media_updates_batch_progress_on_completion(db, monkeypatch):

@@ -17,6 +17,7 @@ free). The previous map is archived to ``data/cache/taste_map_history/``.
 from __future__ import annotations
 
 import logging
+import threading
 from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
@@ -24,6 +25,7 @@ from pathlib import Path
 import numpy as np
 
 from marquee.config import settings
+from marquee.core.jobs.cancel_registry import raise_if_cancelled
 from marquee.core.pipeline_config import pipeline_settings
 from marquee.ml.artifact_codec import (
     GENRES_JSON_KEY,
@@ -184,7 +186,7 @@ def _load_profile_arrays() -> dict:
 # ---------------------------------------------------------------------------
 
 
-def build_map(progress_callback=None) -> dict:
+def build_map(progress_callback=None, cancel_event: threading.Event | None = None) -> dict:
     """Project the profile, cluster, generate thumbnails, save atomically.
 
     ``progress_callback`` (thread-safe ``callback(dict)``, e.g. a
@@ -193,6 +195,7 @@ def build_map(progress_callback=None) -> dict:
     """
 
     def _phase(stage: str, message: str) -> None:
+        raise_if_cancelled(cancel_event, "taste map build cancelled")
         if progress_callback is not None:
             progress_callback({"stage": stage, "state": "start", "message": message})
 
@@ -205,9 +208,11 @@ def build_map(progress_callback=None) -> dict:
 
     _phase("project", f"Projecting {n} exemplars to 3D/2D…")
     coords_3d, method = _reduce(embeddings, 3)
+    raise_if_cancelled(cancel_event, "taste map build cancelled")
     coords_2d, _ = _reduce(embeddings, 2)
     _phase("cluster", "Clustering the taste space…")
     labels = _cluster(coords_3d)
+    raise_if_cancelled(cancel_event, "taste map build cancelled")
     genres = profile.get("genres")
     names_map = _cluster_names(labels, genres)
     self_knn = _self_knn(embeddings, pipeline_settings.K_NEIGHBORS)
@@ -248,6 +253,7 @@ def build_map(progress_callback=None) -> dict:
 
     _phase("save", "Saving taste map…")
     save_npz_atomic(map_path, payload)
+    raise_if_cancelled(cancel_event, "taste map build cancelled")
 
     _phase("thumbnails", "Generating exemplar thumbnails…")
     _generate_thumbnails(profile["poster_names"])

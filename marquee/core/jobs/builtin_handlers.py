@@ -6,7 +6,6 @@ import asyncio
 import contextlib
 import logging
 import shutil
-import threading
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -14,7 +13,7 @@ from typing import Any
 from sqlalchemy import exists, or_, select
 
 from marquee.config import settings
-from marquee.core.jobs import job_manager
+from marquee.core.jobs import cancel_registry, job_manager
 from marquee.core.jobs.handlers import register
 from marquee.database import _get_session_factory
 from marquee.models import ArtworkEvent, Job, MediaFile, Movie, PipelineRun
@@ -211,11 +210,13 @@ async def taste_rebuild(job: Job) -> dict[str, Any]:
     from marquee.pipeline.progress_bridge import JobProgressBridge  # noqa: PLC0415
     from marquee.pipeline.run_manager import run_manager  # noqa: PLC0415
 
+    cancel_event = cancel_registry.get(job.id)
     source = job.payload.get("source", "training_dir")
     training_dir: Path | None = None
     tmp = None
     gathered: int | None = None
     if source == "library":
+        cancel_registry.raise_if_cancelled(cancel_event, "taste rebuild cancelled")
         await _emit_stage(job.id, "gather", "Gathering library posters as exemplars…")
         training_dir, tmp, gathered = await _gather_library_posters()
     try:
@@ -224,11 +225,15 @@ async def taste_rebuild(job: Job) -> dict[str, Any]:
         # those onto the job stream with throttling.
         async with JobProgressBridge(job.id) as bridge:
             await asyncio.to_thread(
-                rebuild_profile, training_dir=training_dir, progress_callback=bridge.callback
+                rebuild_profile,
+                training_dir=training_dir,
+                progress_callback=bridge.callback,
+                cancel_event=cancel_event,
             )
+        cancel_registry.raise_if_cancelled(cancel_event, "taste rebuild cancelled")
         if pipeline_settings.HEAD_AUTO_RETRAIN:
             await _emit_stage(job.id, "train_head", "Training learned ranking head…")
-            head = await asyncio.to_thread(train_from_labels)
+            head = await asyncio.to_thread(train_from_labels, cancel_event=cancel_event)
         else:
             head = None
     finally:
@@ -249,8 +254,11 @@ async def taste_map(job: Job) -> dict[str, Any]:
     from marquee.ml.taste_map import build_map  # noqa: PLC0415
     from marquee.pipeline.progress_bridge import JobProgressBridge  # noqa: PLC0415
 
+    cancel_event = cancel_registry.get(job.id)
     async with JobProgressBridge(job.id) as bridge:
-        return await asyncio.to_thread(build_map, progress_callback=bridge.callback)
+        return await asyncio.to_thread(
+            build_map, progress_callback=bridge.callback, cancel_event=cancel_event
+        )
 
 
 @register("library_sync")
@@ -278,14 +286,19 @@ async def library_sync(job: Job) -> dict[str, Any]:
     for client in (radarr, sonarr, tmdb):
         if client is not None:
             await client.connect()
+
+    cancel_event = cancel_registry.get(job.id)
+
     async def _phase_progress(stage: str, message: str) -> None:
+        cancel_registry.raise_if_cancelled(cancel_event, "library sync cancelled")
         await _emit_stage(job.id, stage, message)
 
     try:
         factory = _get_session_factory()
         async with factory() as db:
             report = await SyncService(db, radarr=radarr, sonarr=sonarr, tmdb=tmdb).sync_all(
-                progress=_phase_progress
+                progress=_phase_progress,
+                cancel_event=cancel_event,
             )
         return {
             "duration_seconds": report.duration_seconds,
@@ -308,6 +321,7 @@ async def subtitle_scan_all(job: Job) -> dict[str, Any]:
     from marquee.core.media_jobs import media_job_manager  # noqa: PLC0415
     from marquee.models import MediaFile, SubtitleInventory  # noqa: PLC0415
 
+    cancel_event = cancel_registry.get(job.id)
     force = job.payload.get("force", False)
     factory = _get_session_factory()
     async with factory() as db:
@@ -323,6 +337,7 @@ async def subtitle_scan_all(job: Job) -> dict[str, Any]:
         count = 0
         total = len(media_files)
         for index, mf in enumerate(media_files, 1):
+            cancel_registry.raise_if_cancelled(cancel_event, "subtitle scan-all cancelled")
             if index == 1 or index % 25 == 0 or index == total:
                 await _update_progress(
                     job.id, "queue", index, total, message=f"Queueing scan {index}/{total}"
@@ -388,6 +403,7 @@ async def poster_pipeline(job: Job) -> dict[str, Any]:
         raise RuntimeError("movie has no TMDB ID")
     from marquee.pipeline.progress_bridge import JobProgressBridge  # noqa: PLC0415
 
+    cancel_event = cancel_registry.get(job.id)
     tmdb = TMDBClient(read_access_token=settings.TMDB_READ_ACCESS_TOKEN)
     await tmdb.connect()
     run_manager._active_run_id = run_id
@@ -401,6 +417,7 @@ async def poster_pipeline(job: Job) -> dict[str, Any]:
                 movie_title=title,
                 movie_tmdb_id=tmdb_id,
                 progress_sink=bridge.callback,
+                should_cancel=cancel_event.is_set if cancel_event is not None else None,
             )
     finally:
         await tmdb.disconnect()
@@ -438,22 +455,11 @@ async def poster_pipeline_batch(job: Job) -> dict[str, Any]:
     if not movies:
         return {"status": "empty", "movies": 0}
 
-    cancel_event = threading.Event()
-
-    async def _watch_cancel() -> None:
-        while not cancel_event.is_set():
-            await asyncio.sleep(2.0)
-            async with factory() as watch_db:
-                current = await watch_db.get(Job, job.id)
-            if current is None or current.cancel_requested:
-                cancel_event.set()
-                return
-
+    cancel_event = cancel_registry.get(job.id)
     tmdb = TMDBClient(read_access_token=settings.TMDB_READ_ACCESS_TOKEN)
     await tmdb.connect()
     # Load the model stack once, off the event loop, for the whole batch.
     extractor = await asyncio.to_thread(run_manager._ensure_extractor)
-    watcher = asyncio.create_task(_watch_cancel())
     try:
         async with JobProgressBridge(job.id) as bridge:
             summary = await run_batch(
@@ -462,13 +468,9 @@ async def poster_pipeline_batch(job: Job) -> dict[str, Any]:
                 tmdb=tmdb,
                 extractor=extractor,
                 progress=bridge.callback,
-                should_cancel=cancel_event.is_set,
+                should_cancel=cancel_event.is_set if cancel_event is not None else None,
             )
     finally:
-        cancel_event.set()
-        watcher.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await watcher
         await tmdb.disconnect()
         if not settings.PIPELINE_CACHE_EXTRACTOR:
             with contextlib.suppress(Exception):
@@ -485,7 +487,8 @@ async def learned_head_train(_job: Job) -> dict[str, Any]:
     """
     from marquee.ml.head_trainer import train_from_labels  # noqa: PLC0415
 
-    head, info = await asyncio.to_thread(train_from_labels)
+    cancel_event = cancel_registry.get(_job.id)
+    head, info = await asyncio.to_thread(train_from_labels, cancel_event=cancel_event)
     return {"trained": head is not None, **info}
 
 

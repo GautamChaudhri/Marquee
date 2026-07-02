@@ -115,6 +115,8 @@
 	}
 
 	function cancelTracked(jobId: string) {
+		const entry = trackedJobs.get(jobId);
+		if (entry) trackedJobs.set(jobId, { ...entry, status: 'cancelling' });
 		void cancelJob(fetch, jobId);
 	}
 

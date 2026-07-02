@@ -20,6 +20,18 @@
 
 	const title = $derived(job.subject?.title ?? displayJobLabel(job));
 	const resourceKeys = $derived(Object.keys(job.resource_request ?? {}));
+	// svelte-ignore state_referenced_locally
+	let localStatus = $state(status);
+
+	$effect(() => {
+		if (localStatus === 'cancelling' && status === 'running') return;
+		localStatus = status;
+	});
+
+	function handleCancel() {
+		localStatus = 'cancelling';
+		onCancel();
+	}
 
 	// Tick once a second purely so the elapsed-time chip stays live between
 	// progress events — those can be sparse during a long, quiet stage.
@@ -43,7 +55,7 @@
 </script>
 
 <div class="card">
-	<RunProgress {detail} {status} {title} onCancel={onCancel} />
+	<RunProgress {detail} status={localStatus} {title} onCancel={handleCancel} />
 	<div class="meta">
 		<span class="chip type">{displayJobLabel(job)}</span>
 		{#each resourceKeys as key (key)}

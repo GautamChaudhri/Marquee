@@ -7,10 +7,13 @@ the generic Job is the authoritative scheduling, lease, and UI record.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from pathlib import Path
 
+from marquee.config import settings
+from marquee.core.jobs.cancel_registry import JobCancelledError
 from marquee.core.jobs.handlers import register
 from marquee.core.jobs.manager import job_manager
 from marquee.database import _get_session_factory
@@ -136,6 +139,24 @@ async def _run_media(job: Job) -> dict:
             media_job.result_json = json.dumps(result, default=str)
             await dispatch_db.commit()
         return result
+    except asyncio.CancelledError as exc:
+        async with factory() as fail_db:
+            media_job = await fail_db.get(MediaJob, media_job_id)
+            if media_job is not None:
+                await fail_db.refresh(media_job, ["cancel_requested"])
+                media_job.status = "cancelled" if media_job.cancel_requested else "interrupted"
+                media_job.error_json = json.dumps(
+                    {
+                        "error": str(exc) or "media job interrupted",
+                        "type": type(exc).__name__,
+                        "operation": media_job.operation,
+                        "stage": media_job.stage,
+                        "media_file_id": media_job.media_file_id,
+                    },
+                    default=str,
+                )
+                await fail_db.commit()
+        raise
     except Exception as exc:
         async with factory() as fail_db:
             media_job = await fail_db.get(MediaJob, media_job_id)
@@ -151,7 +172,12 @@ async def _run_media(job: Job) -> dict:
                         request = json.loads(media_job.request_json)
                     except json.JSONDecodeError:
                         request = media_job.request_json
-                media_job.status = "cancelled" if media_job.cancel_requested else "failed"
+                if media_job.cancel_requested:
+                    media_job.status = "cancelled"
+                elif isinstance(exc, JobCancelledError):
+                    media_job.status = "interrupted"
+                else:
+                    media_job.status = "failed"
                 media_job.error_json = json.dumps(
                     {
                         "error": str(exc),
@@ -187,4 +213,4 @@ for _operation in (
     "subtitle_restore",
     "letterbox_reencode",
 ):
-    register(_operation)(_run_media)
+    register(_operation, max_runtime_seconds=settings.JOB_MEDIA_MAX_RUNTIME_SECONDS)(_run_media)
