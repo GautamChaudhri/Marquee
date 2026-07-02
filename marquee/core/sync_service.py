@@ -108,15 +108,24 @@ class SyncService:
 
     # ── Public API ───────────────────────────────────────────────────
 
-    async def sync_all(self) -> SyncReport:
-        """Run every sync step and return an aggregate report."""
+    async def sync_all(self, progress=None) -> SyncReport:
+        """Run every sync step and return an aggregate report.
+
+        ``progress`` is an optional ``async (stage, message) -> None`` callback
+        fired at each phase boundary so the job progress bar can narrate what
+        is being synced instead of spinning silently.
+        """
         report = SyncReport()
         t0 = time.monotonic()
 
         if self.radarr:
+            if progress is not None:
+                await progress("sync_movies", "Syncing movies from Radarr…")
             report.movies = await self._sync_movies()
 
         if self.sonarr:
+            if progress is not None:
+                await progress("sync_series", "Syncing series from Sonarr…")
             sr = await self._sync_series()
             report.series = sr.series
             report.seasons = sr.seasons

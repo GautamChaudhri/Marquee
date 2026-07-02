@@ -156,7 +156,8 @@ async def test_run_media_emit_persists_progress_to_both_streams(db, monkeypatch)
 
     await db.refresh(job)
     assert job.current_stage == "scan"
-    assert job.progress == {"percent": 50}
+    assert job.progress["percent"] == 50
+    assert job.progress["stage"] == "scan"
 
 
 async def _make_media_file(db, key: str) -> MediaFile:

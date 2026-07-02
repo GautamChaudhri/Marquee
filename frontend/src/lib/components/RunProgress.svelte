@@ -98,6 +98,9 @@
 			</span>
 		{/if}
 		{#if detail.title}<span class="rp-movie">{detail.title}</span>{/if}
+		{#if detail.message}
+			<span class="rp-message">{detail.message}</span>
+		{/if}
 		{#if stageLabel}
 			<span class="rp-stage">{stageLabel}</span>
 		{/if}
@@ -169,6 +172,10 @@
 	.rp-movie {
 		color: var(--text);
 		font-weight: 550;
+	}
+	.rp-message {
+		color: var(--text);
+		font-weight: 500;
 	}
 	.rp-stage {
 		color: var(--gold);

@@ -143,7 +143,9 @@
 											<span class="pct">{pct}%</span>
 											<ProgressBar value={pct} />
 										</div>
-										<span class="stage" title={job.progress?.message}>{job.progress?.stage || 'Mutating'}</span>
+										<span class="stage" title={job.progress?.message}>
+											{job.progress?.message || job.progress?.stage || 'Mutating'}
+										</span>
 									{:else if job.status === 'completed' || job.status === 'succeeded'}
 										<span class="progress-done">Done</span>
 									{:else if job.status === 'failed'}

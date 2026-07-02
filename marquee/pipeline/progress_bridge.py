@@ -53,9 +53,13 @@ class JobProgressBridge:
 
     # -- thread-side -------------------------------------------------------
 
-    def callback(self, event: _SupportsToDict) -> None:
-        """Thread-safe sink handed to the runner as its ``progress`` callback."""
-        payload = event.to_dict()
+    def callback(self, event: _SupportsToDict | dict[str, Any]) -> None:
+        """Thread-safe sink handed to the runner as its ``progress`` callback.
+
+        Accepts pipeline ``ProgressEvent``s or plain payload dicts (the ML
+        trainers emit dicts), so every to_thread workload can share this bridge.
+        """
+        payload = event if isinstance(event, dict) else event.to_dict()
         self._loop.call_soon_threadsafe(self._queue.put_nowait, payload)
 
     # -- lifecycle ---------------------------------------------------------
@@ -111,6 +115,8 @@ class JobProgressBridge:
 
 
 def _message(event: dict[str, Any]) -> str:
+    if event.get("message"):
+        return str(event["message"])
     stage = event.get("stage", "?")
     state = event.get("state", "?")
     title = event.get("title")
@@ -118,7 +124,8 @@ def _message(event: dict[str, Any]) -> str:
         idx, total = event.get("movie_index"), event.get("movie_total")
         where = f" [{idx}/{total}]" if idx and total else ""
         return f"{stage} {state}{where} — {title}"
-    done, total = event.get("done"), event.get("total")
+    done = event.get("done", event.get("processed"))
+    total = event.get("total")
     if done is not None and total is not None:
         return f"{stage} {state} ({done}/{total})"
     return f"{stage} {state}"

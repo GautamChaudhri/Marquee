@@ -923,12 +923,16 @@ async def execute_job(db: AsyncSession, job: MediaJob, emit) -> dict:
     pipeline_label = (
         "NVIDIA NVDEC \u2192 GPU crop \u2192 NVENC" if acceleration_active else "CPU decode/crop"
     )
+    crop = plan.get("crop") or {}
+    crop_label = (
+        f"crop top={crop.get('top')} bottom={crop.get('bottom')} \u2014 " if crop else ""
+    )
     await emit(
         db,
         job.job_id,
         "encode",
         "start",
-        message=f"Running {plan['encoder']['encoder']} ({pipeline_label})",
+        message=f"Re-encoding with {crop_label}{plan['encoder']['encoder']} ({pipeline_label})",
     )
 
     succeeded, diagnostic = await _run_encode_attempt(

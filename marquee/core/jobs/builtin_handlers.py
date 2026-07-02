@@ -22,13 +22,25 @@ from marquee.models import ArtworkEvent, Job, MediaFile, Movie, PipelineRun
 logger = logging.getLogger(__name__)
 
 
-async def _update_progress(job_id: str, stage: str, done: int, total: int, **detail: Any) -> None:
+async def _update_progress(
+    job_id: str, stage: str, done: int, total: int, message: str | None = None, **detail: Any
+) -> None:
     factory = _get_session_factory()
     async with factory() as db:
         current = await db.get(Job, job_id)
         if current is None:
             return
-        progress = {"stage": stage, "state": "running", "done": done, "total": total, **detail}
+        text = message or f"{stage}: {done}/{total}"
+        # message rides inside the progress dict so both delivery paths — the
+        # polled job.progress snapshot and the SSE event detail — can show it.
+        progress = {
+            "stage": stage,
+            "state": "running",
+            "done": done,
+            "total": total,
+            "message": text,
+            **detail,
+        }
         current.current_stage = stage
         current.progress = progress
         await job_manager.emit(
@@ -36,8 +48,24 @@ async def _update_progress(job_id: str, stage: str, done: int, total: int, **det
             current,
             state="running",
             stage=stage,
-            message=f"{stage}: {done}/{total}",
+            message=text,
             detail=progress,
+        )
+        await db.commit()
+
+
+async def _emit_stage(job_id: str, stage: str, message: str, **detail: Any) -> None:
+    """Persist a countless stage transition ("Syncing movies from Radarr…")."""
+    factory = _get_session_factory()
+    async with factory() as db:
+        current = await db.get(Job, job_id)
+        if current is None:
+            return
+        progress = {"stage": stage, "state": "running", "message": message, **detail}
+        current.current_stage = stage
+        current.progress = progress
+        await job_manager.emit(
+            db, current, state="running", stage=stage, message=message, detail=progress
         )
         await db.commit()
 
@@ -180,6 +208,7 @@ async def taste_rebuild(job: Job) -> dict[str, Any]:
     from marquee.core.pipeline_config import pipeline_settings  # noqa: PLC0415
     from marquee.ml.head_trainer import train_from_labels  # noqa: PLC0415
     from marquee.ml.taste_trainer import rebuild_profile  # noqa: PLC0415
+    from marquee.pipeline.progress_bridge import JobProgressBridge  # noqa: PLC0415
     from marquee.pipeline.run_manager import run_manager  # noqa: PLC0415
 
     source = job.payload.get("source", "training_dir")
@@ -187,14 +216,21 @@ async def taste_rebuild(job: Job) -> dict[str, Any]:
     tmp = None
     gathered: int | None = None
     if source == "library":
+        await _emit_stage(job.id, "gather", "Gathering library posters as exemplars…")
         training_dir, tmp, gathered = await _gather_library_posters()
     try:
-        await asyncio.to_thread(rebuild_profile, training_dir=training_dir)
-        head = (
-            await asyncio.to_thread(train_from_labels)
-            if pipeline_settings.HEAD_AUTO_RETRAIN
-            else None
-        )
+        # The trainer reports per-batch/per-exemplar progress from its worker
+        # thread (clip → calibration substages → dino); the bridge marshals
+        # those onto the job stream with throttling.
+        async with JobProgressBridge(job.id) as bridge:
+            await asyncio.to_thread(
+                rebuild_profile, training_dir=training_dir, progress_callback=bridge.callback
+            )
+        if pipeline_settings.HEAD_AUTO_RETRAIN:
+            await _emit_stage(job.id, "train_head", "Training learned ranking head…")
+            head = await asyncio.to_thread(train_from_labels)
+        else:
+            head = None
     finally:
         if tmp is not None:
             tmp.cleanup()
@@ -209,14 +245,16 @@ async def taste_rebuild(job: Job) -> dict[str, Any]:
 
 
 @register("taste_map")
-async def taste_map(_job: Job) -> dict[str, Any]:
+async def taste_map(job: Job) -> dict[str, Any]:
     from marquee.ml.taste_map import build_map  # noqa: PLC0415
+    from marquee.pipeline.progress_bridge import JobProgressBridge  # noqa: PLC0415
 
-    return await asyncio.to_thread(build_map)
+    async with JobProgressBridge(job.id) as bridge:
+        return await asyncio.to_thread(build_map, progress_callback=bridge.callback)
 
 
 @register("library_sync")
-async def library_sync(_job: Job) -> dict[str, Any]:
+async def library_sync(job: Job) -> dict[str, Any]:
     from marquee.core.arr_clients.radarr_client import RadarrClient  # noqa: PLC0415
     from marquee.core.arr_clients.sonarr_client import SonarrClient  # noqa: PLC0415
     from marquee.core.poster_sources.tmdb import TMDBClient  # noqa: PLC0415
@@ -240,10 +278,15 @@ async def library_sync(_job: Job) -> dict[str, Any]:
     for client in (radarr, sonarr, tmdb):
         if client is not None:
             await client.connect()
+    async def _phase_progress(stage: str, message: str) -> None:
+        await _emit_stage(job.id, stage, message)
+
     try:
         factory = _get_session_factory()
         async with factory() as db:
-            report = await SyncService(db, radarr=radarr, sonarr=sonarr, tmdb=tmdb).sync_all()
+            report = await SyncService(db, radarr=radarr, sonarr=sonarr, tmdb=tmdb).sync_all(
+                progress=_phase_progress
+            )
         return {
             "duration_seconds": report.duration_seconds,
             "movies": report.movies.__dict__,
@@ -278,7 +321,12 @@ async def subtitle_scan_all(job: Job) -> dict[str, Any]:
         media_files = (await db.execute(stmt)).scalars().all()
 
         count = 0
-        for mf in media_files:
+        total = len(media_files)
+        for index, mf in enumerate(media_files, 1):
+            if index == 1 or index % 25 == 0 or index == total:
+                await _update_progress(
+                    job.id, "queue", index, total, message=f"Queueing scan {index}/{total}"
+                )
             key = f"manual:subtitle-scan:{mf.id}:{job.id}"
             await media_job_manager.create_job(
                 db,
