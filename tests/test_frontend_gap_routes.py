@@ -783,6 +783,7 @@ async def test_build_argv_heals_null_tool_track_id(db: AsyncSession):
         None,
         "subtitle_remove",
         request,
+        None,
         source_probe,
         adapter,
         Path("/tmp/dummy_out.mkv"),

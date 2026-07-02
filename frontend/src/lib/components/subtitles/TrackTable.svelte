@@ -239,7 +239,9 @@
 			planResult = plan;
 			submitting = false;
 		} catch (e: any) {
-			toast(e.message || 'Failed to build plan', 'bad');
+			// Prefer the backend's structured message (e.g. the mutation_pending
+			// 409 guard) over the generic "POST … → 409" ApiError text.
+			toast(e?.body?.detail?.message || e.message || 'Failed to build plan', 'bad');
 			submitting = false;
 		}
 	}

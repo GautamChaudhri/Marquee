@@ -694,6 +694,69 @@ def _selection_result(operation: str, request: dict, plan: dict | None) -> dict 
     return None
 
 
+def _plan_snapshot_tracks(plan: dict | None) -> dict[str, dict]:
+    """Index the plan's before-tracks snapshot by the track id it was built with."""
+    if not isinstance(plan, dict):
+        return {}
+    tracks = (plan.get("before") or {}).get("tracks") or []
+    return {t.get("id"): t for t in tracks if isinstance(t, dict) and t.get("id")}
+
+
+def _stable_track_key(source, stream_index, external_path) -> tuple | None:
+    """Identity that survives inventory rescans (uuids do not)."""
+    if source == "embedded" and stream_index is not None:
+        return ("embedded", int(stream_index))
+    if source == "external" and external_path:
+        return ("external", str(external_path))
+    return None
+
+
+def _resolve_track_ids(track_ids, by_id: dict, plan: dict | None) -> dict:
+    """Resolve requested track ids against the live inventory, surviving rescans.
+
+    Every inventory rescan regenerates all SubtitleTrack uuids — even when the
+    file is untouched — and a ``subtitle_scan`` job can run while this mutation
+    waits for its ``media_write`` slot. Ids captured at plan time may therefore
+    no longer exist at execution. Re-match them through the plan snapshot's
+    stable identity (embedded → stream_index, external → sidecar path) and
+    refuse to run if anything stays unresolved: silently skipping ids used to
+    turn "remove eng+fra subtitles + eng audio" into an audio-only remux that
+    still reported success.
+    """
+    resolved = {tid: by_id[tid] for tid in track_ids if tid in by_id}
+    missing = [tid for tid in track_ids if tid not in by_id]
+    if not missing:
+        return resolved
+    snapshot = _plan_snapshot_tracks(plan)
+    current_by_key = {}
+    for track in by_id.values():
+        key = _stable_track_key(track.source, track.stream_index, track.external_path)
+        if key is not None:
+            current_by_key[key] = track
+    unresolved = []
+    for tid in missing:
+        snap = snapshot.get(tid)
+        key = (
+            _stable_track_key(
+                snap.get("source"), snap.get("stream_index"), snap.get("external_path")
+            )
+            if snap
+            else None
+        )
+        track = current_by_key.get(key) if key is not None else None
+        if track is None:
+            unresolved.append(tid)
+        else:
+            resolved[tid] = track
+    if unresolved:
+        raise PreflightError(
+            "plan_stale",
+            "track ids no longer present — inventory changed since the plan "
+            f"was created: {sorted(unresolved)}",
+        )
+    return resolved
+
+
 # ---------------------------------------------------------------------------
 # Execution transaction (real binaries required — not executed in CI/sandbox)
 # ---------------------------------------------------------------------------
@@ -723,7 +786,7 @@ async def execute_job(db: AsyncSession, job, emit) -> dict:
     out = _temp_output_path(resolved.path, job.job_id)
 
     argv, expected_delta, expected_audio_delta, external_removals = await _build_argv(
-        db, job, operation, request, source_probe, adapter, out, resolved
+        db, job, operation, request, plan, source_probe, adapter, out, resolved
     )
     await _raise_if_cancel_requested(db, job, cleanup_paths=[out])
 
@@ -806,7 +869,7 @@ async def execute_job(db: AsyncSession, job, emit) -> dict:
     }
 
 
-async def _build_argv(db, job, operation, request, source_probe, adapter, out, resolved):
+async def _build_argv(db, job, operation, request, plan, source_probe, adapter, out, resolved):
     """Translate a job request into (binary, args) + the expected subtitle and audio deltas."""
     tracks = (
         (
@@ -830,13 +893,23 @@ async def _build_argv(db, job, operation, request, source_probe, adapter, out, r
                 t.tool_track_id = aligned.tool_track_id
 
     if operation in ("audio_remove", "subtitle_remove", "track_remove"):
-        selected = [by_id[t] for t in request.get("track_ids", []) if t in by_id]
+        requested_ids = request.get("track_ids", [])
+        resolved_map = _resolve_track_ids(requested_ids, by_id, plan)
+        selected = [resolved_map[t] for t in requested_ids]
         remove = [t for t in selected if t.source == "embedded"]
         external_remove = [t for t in selected if t.source == "external"]
 
         # Audio track deletion support
         audio_remove_indices = request.get("audio_stream_indices", [])
         probe_audio = source_probe.audio_streams if source_probe else []
+        missing_audio = set(audio_remove_indices) - {
+            a.get("index") for a in probe_audio if a.get("index") is not None
+        }
+        if missing_audio:
+            raise PreflightError(
+                "plan_stale",
+                f"audio stream indices no longer present: {sorted(missing_audio)}",
+            )
 
         remove_audio_tool_track_ids = []
         remove_audio_stream_indices = []
@@ -878,18 +951,25 @@ async def _build_argv(db, job, operation, request, source_probe, adapter, out, r
         )
 
     if operation == "subtitle_embed":
-        sources = [
-            EmbedSource(
-                path=Path(by_id[t].external_path),
-                language_tag=by_id[t].language_tag,
-                title=by_id[t].title,
-                is_forced=by_id[t].is_forced,
-                is_sdh=by_id[t].is_sdh,
-                kind=by_id[t].kind,
+        embed_ids = request.get("track_ids", [])
+        resolved_map = _resolve_track_ids(embed_ids, by_id, plan)
+        sources = []
+        for t in embed_ids:
+            track = resolved_map[t]
+            if not track.external_path:
+                raise PreflightError(
+                    "plan_stale", f"track {t} is no longer an external sidecar"
+                )
+            sources.append(
+                EmbedSource(
+                    path=Path(track.external_path),
+                    language_tag=track.language_tag,
+                    title=track.title,
+                    is_forced=track.is_forced,
+                    is_sdh=track.is_sdh,
+                    kind=track.kind,
+                )
             )
-            for t in request.get("track_ids", [])
-            if t in by_id and by_id[t].external_path
-        ]
         return (
             (adapter.binary, adapter.build_embed(resolved.path, out, sources)),
             len(sources),
@@ -905,6 +985,14 @@ async def _build_argv(db, job, operation, request, source_probe, adapter, out, r
             for stream in source_probe.audio_streams
             if stream.get("index") is not None
         }
+        subtitle_edit_ids = [
+            e.get("track_id")
+            for e in request.get("edits", [])
+            if e.get("track_id")
+            and e.get("stream_type") != "audio"
+            and e.get("audio_stream_index") is None
+        ]
+        resolved_edit_map = _resolve_track_ids(subtitle_edit_ids, by_id, plan)
         edits: list[MetadataEdit] = []
         for edit in request.get("edits", []):
             if edit.get("stream_type") == "audio" or edit.get("audio_stream_index") is not None:
@@ -939,8 +1027,9 @@ async def _build_argv(db, job, operation, request, source_probe, adapter, out, r
                 )
                 continue
 
-            track = by_id.get(edit.get("track_id"))
+            track = resolved_edit_map.get(edit.get("track_id"))
             if track is None or track.source != "embedded":
+                # External-track edits are DB-side; only embedded edits remux.
                 continue
             track_ref = _metadata_track_ref(
                 family=family,

@@ -162,6 +162,21 @@ class MovieSubtitlePreferencesUpdate(BaseModel):
     use_global: bool = False
 
 
+# Operations that rewrite the media container itself. A plan created while one
+# of these is queued/running for the same file is guaranteed to fail preflight
+# with plan_stale after the earlier job replaces the file — reject it up front.
+_CONTAINER_MUTATING_OPS = (
+    "audio_remove",
+    "subtitle_remove",
+    "track_remove",
+    "subtitle_embed",
+    "subtitle_metadata",
+    "audio_reorder",
+    "subtitle_restore",
+    "letterbox_reencode",
+)
+
+
 @router.post("/api/media-files/{media_file_id}/subtitle-plans", status_code=201)
 async def create_subtitle_plan(
     media_file_id: int,
@@ -170,6 +185,27 @@ async def create_subtitle_plan(
 ):
     """Persist an expiring before/after plan as a ``planned`` job (no writes)."""
     _require_ffprobe()
+    pending = (
+        await db.execute(
+            select(MediaJob.job_id)
+            .where(
+                MediaJob.media_file_id == media_file_id,
+                MediaJob.operation.in_(_CONTAINER_MUTATING_OPS),
+                MediaJob.status.in_(("confirmed", "queued", "running")),
+            )
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if pending is not None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "mutation_pending",
+                "message": "Another mutation is already queued or running for this "
+                "file — wait for it to finish, then plan again.",
+                "pending_job_id": pending,
+            },
+        )
     try:
         resolved = await resolve_media_file(db, media_file_id)
         inventory = await service.get_inventory_dict(db, media_file_id)
@@ -199,6 +235,12 @@ async def create_subtitle_plan(
         db,
         media_file_id=media_file_id,
         operation=body.operation,
+        request={
+            "track_ids": body.track_ids,
+            "audio_stream_indices": body.audio_stream_indices,
+            "audio_stream_order": body.audio_stream_order,
+            "edits": body.edits,
+        },
     )
 
     expires_at = mutation.now_plus_ttl()

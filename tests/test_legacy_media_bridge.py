@@ -159,11 +159,19 @@ async def test_run_media_emit_persists_progress_to_both_streams(db, monkeypatch)
     assert job.progress == {"percent": 50}
 
 
+async def _make_media_file(db, key: str) -> MediaFile:
+    media_file = MediaFile(source="radarr", source_key=key, path=f"/movies/{key}.mkv")
+    db.add(media_file)
+    await db.commit()
+    return media_file
+
+
 async def test_create_job_preserves_track_remove_operation(db):
+    media_file = await _make_media_file(db, "radarr:mf:track-remove")
     media_job = await media_job_manager.create_job(
         db,
         operation="track_remove",
-        media_file_id=5,
+        media_file_id=media_file.id,
         request={"track_ids": ["sub-fr"]},
         status="queued",
     )
@@ -175,10 +183,11 @@ async def test_create_job_preserves_track_remove_operation(db):
 
 
 async def test_create_job_preserves_audio_remove_operation(db):
+    media_file = await _make_media_file(db, "radarr:mf:audio-remove")
     media_job = await media_job_manager.create_job(
         db,
         operation="audio_remove",
-        media_file_id=5,
+        media_file_id=media_file.id,
         request={"audio_stream_indices": [2]},
         status="queued",
     )
@@ -190,10 +199,11 @@ async def test_create_job_preserves_audio_remove_operation(db):
 
 
 async def test_supersede_planned_media_jobs_cancels_paired_generic_jobs(db):
+    media_file = await _make_media_file(db, "radarr:mf:supersede")
     media_job = await media_job_manager.create_job(
         db,
         operation="subtitle_remove",
-        media_file_id=9,
+        media_file_id=media_file.id,
         request={"track_ids": ["sub-en"]},
         status="planned",
     )
@@ -201,7 +211,7 @@ async def test_supersede_planned_media_jobs_cancels_paired_generic_jobs(db):
 
     cancelled_ids = await media_job_manager.supersede_planned_media_jobs(
         db,
-        media_file_id=9,
+        media_file_id=media_file.id,
         operation="subtitle_remove",
     )
 
