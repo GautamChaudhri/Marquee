@@ -67,7 +67,7 @@ class MediaJobManager:
 
     async def emit(
         self,
-        db: AsyncSession,
+        db: AsyncSession | None,
         job_id: str,
         stage: str,
         state: str,
@@ -75,14 +75,22 @@ class MediaJobManager:
         message: str | None = None,
         progress: dict | None = None,
         persist: bool = True,
-    ) -> None:
+        commit: bool = True,
+    ) -> dict:
         """Publish a job event to live SSE subscribers, optionally persisting it.
 
-        ``persist=False`` publishes to the in-memory stream only (no DB write) —
-        used for high-frequency encode progress ticks so the live bar stays
-        smooth without one ``media_job_events`` row (and write-lock acquisition)
-        per ffmpeg frame. Stage/state transitions and terminal events persist so
-        a reconnecting client can replay the meaningful history cheaply.
+        ``persist=False`` publishes to the in-memory stream only (no DB write,
+        ``db`` may be None) — used for high-frequency encode progress ticks so
+        the live bar stays smooth without one ``media_job_events`` row (and
+        write-lock acquisition) per ffmpeg frame. Stage/state transitions and
+        terminal events persist so a reconnecting client can replay the
+        meaningful history cheaply.
+
+        ``commit=False`` flushes the event into the caller's open transaction
+        instead of committing, and skips the stream publish — the caller
+        commits once and publishes the returned payload afterwards. Used by the
+        legacy_media bridge to fold this write and the generic-job mirror into
+        a single transaction (one commit per progress tick instead of two).
         """
         event_id: int | None = None
         if persist:
@@ -106,19 +114,21 @@ class MediaJobManager:
                     job.progress_done = int(progress["progress"])
                     job.progress_total = 100
 
-            await db.commit()
-            await db.refresh(event)
+            await db.flush()
             event_id = event.id
-        self.stream(job_id).publish(
-            {
-                "id": event_id,
-                "job_id": job_id,
-                "stage": stage,
-                "state": state,
-                "message": message,
-                "progress": progress,
-            }
-        )
+            if commit:
+                await db.commit()
+        payload = {
+            "id": event_id,
+            "job_id": job_id,
+            "stage": stage,
+            "state": state,
+            "message": message,
+            "progress": progress,
+        }
+        if commit or not persist:
+            self.stream(job_id).publish(payload)
+        return payload
 
     async def persisted_events(self, db: AsyncSession, job_id: str) -> list[dict]:
         rows = (

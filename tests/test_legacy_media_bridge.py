@@ -84,7 +84,11 @@ async def test_run_media_records_structured_error_context(db, monkeypatch):
     )
 
     async def fake_dispatch(_db, _job, _emit):
+        # Production writes the stage through emit(), which commits before any
+        # failure propagates; commit here so the fail handler's fresh session
+        # sees it (test sessions no longer share state post-PostgreSQL move).
         _job.stage = "remux"
+        await _db.commit()
         raise PreflightError("remux_failed", "mkvmerge exited 2")
 
     monkeypatch.setattr("marquee.core.media_jobs.handlers.dispatch", fake_dispatch)

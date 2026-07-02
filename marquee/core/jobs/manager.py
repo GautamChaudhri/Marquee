@@ -254,7 +254,7 @@ class JobManager:
 
     async def emit(
         self,
-        db: AsyncSession,
+        db: AsyncSession | None,
         job: Job,
         *,
         state: str,
@@ -264,6 +264,8 @@ class JobManager:
         attempt_id: int | None = None,
         persist: bool = True,
     ) -> None:
+        # ``db`` may be None only with ``persist=False`` — publish-only calls
+        # (e.g. the media bridge's ephemeral ticks) never touch the session.
         event_data = {
             "job_id": job.id,
             "state": state,

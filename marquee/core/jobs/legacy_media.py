@@ -42,24 +42,44 @@ async def _run_media(job: Job) -> dict:
 
     async def emit(_db, _job_id, stage, state, *, message=None, progress=None, persist=True):
         # Preserve the legacy event/audit stream while mirroring it into the
-        # generic stream consumed by the job-management UI. Opens its own
-        # short-lived session per call rather than holding one open for the
-        # whole job — this fires frequently during long encodes/remuxes.
-        async with factory() as emit_db:
+        # generic stream consumed by the job-management UI. Persisted ticks use
+        # one short-lived session and ONE commit covering both event rows —
+        # during concurrent batch remuxes the old session-per-emit/two-commit
+        # pattern was enough DB churn to starve the connection pool.
+        if not persist:
+            # Publish-only: no session at all. The polling UI reads persisted
+            # Job.progress, so an emitter that only ever sends persist=False
+            # would freeze the polled bar — letterbox self-throttles to one
+            # persisted tick per second for exactly this reason.
             await media_job_manager.emit(
+                None, media_job_id, stage, state, message=message, progress=progress, persist=False
+            )
+            await job_manager.emit(
+                None, job, state=state, stage=stage, message=message, detail=progress, persist=False
+            )
+            return
+        async with factory() as emit_db:
+            # Touch the generic Job row before the MediaJob so this transaction
+            # takes row locks in the same order as request_cancel() (Job, then
+            # MediaJob via _bridge_media_cancel); the reverse order can deadlock
+            # against a cancel arriving mid-remux.
+            current = await emit_db.get(Job, job.id)
+            if current is not None:
+                current.current_stage = stage
+                if progress is not None:
+                    current.progress = progress
+                await emit_db.flush()
+            payload = await media_job_manager.emit(
                 emit_db,
                 media_job_id,
                 stage,
                 state,
                 message=message,
                 progress=progress,
-                persist=persist,
+                persist=True,
+                commit=False,
             )
-            current = await emit_db.get(Job, job.id)
             if current is not None:
-                current.current_stage = stage
-                if progress is not None:
-                    current.progress = progress
                 await job_manager.emit(
                     emit_db,
                     current,
@@ -67,9 +87,10 @@ async def _run_media(job: Job) -> dict:
                     stage=stage,
                     message=message,
                     detail=progress,
-                    persist=persist,
+                    persist=True,
                 )
             await emit_db.commit()
+        media_job_manager.stream(media_job_id).publish(payload)
 
     try:
         async with factory() as dispatch_db:

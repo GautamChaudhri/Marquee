@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { listMediaJobs, cancelJob, restoreJob, deleteBackup } from '$lib/api/media-jobs';
+	import { jitterMs } from '$lib/jobs';
 	import type { MediaJob } from '$lib/api/types';
 	import { displayMediaJobLabel } from '$lib/job-labels';
 	import ProgressBar from '../ProgressBar.svelte';
@@ -67,10 +68,10 @@
 
 	// Polling for active jobs
 	$effect(() => {
-		// Set up polling interval every 4 seconds
+		// Set up polling interval every ~4 seconds (jittered)
 		timerId = setInterval(() => {
 			loadJobs();
-		}, 4000);
+		}, jitterMs(4000));
 
 		return () => {
 			if (timerId) clearInterval(timerId);

@@ -22,7 +22,7 @@ from marquee.core.jobs.labels import humanize_job_type
 from marquee.core.jobs.manager import ACTIVE
 from marquee.core.letterbox_heal import letterbox_heal_state
 from marquee.core.pipeline_config import pipeline_settings
-from marquee.database import get_db, reset_database
+from marquee.database import get_db, pool_stats, reset_database
 from marquee.media import binaries
 from marquee.ml.hardware import effective_ocr_workers
 from marquee.models import Job, MediaJob, SystemMetricsSample
@@ -263,6 +263,7 @@ async def system_metrics_endpoint(db: Annotated[AsyncSession, Depends(get_db)]):
     """
     data = system_metrics.collect(settings.metrics_disk_path)
     data["workers"] = await _worker_counts(db)
+    data["db_pool"] = pool_stats()
     return data
 
 

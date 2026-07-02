@@ -27,6 +27,7 @@
 	} from '$lib/api/letterbox';
 	import { subscribe } from '$lib/sse';
 	import { getJob, isTerminal, type JobSnapshot } from '$lib/api/jobs';
+	import { jitterMs } from '$lib/jobs';
 	import StatusDot from './StatusDot.svelte';
 	import ProgressBar from './ProgressBar.svelte';
 	import Icon from './Icon.svelte';
@@ -532,7 +533,7 @@
 		encodeDone = false;
 		subscribeToEncode(jobId);
 		if (encodePoll) clearInterval(encodePoll);
-		encodePoll = setInterval(() => void pollEncodeOnce(jobId), 1500);
+		encodePoll = setInterval(() => void pollEncodeOnce(jobId), jitterMs(1500));
 		void pollEncodeOnce(jobId);
 	}
 
