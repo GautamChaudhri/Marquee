@@ -4,6 +4,7 @@
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { subscribe } from '$lib/sse';
+	import { jitterMs } from '$lib/jobs';
 	import { toast } from '$lib/toast';
 	import {
 		analyzeAll,
@@ -338,7 +339,7 @@
 
 	function startPolling() {
 		if (pollInterval) return;
-		pollInterval = setInterval(() => void pollActive(), 1500);
+		pollInterval = setInterval(() => void pollActive(), jitterMs(1500));
 	}
 
 	function stopPolling() {

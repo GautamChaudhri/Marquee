@@ -44,6 +44,12 @@ export interface TrackOptions<T = JobSnapshot> {
 	fetchJob?: (fetchFn: Fetch, jobId: string) => Promise<T>;
 }
 
+/** Apply ±20% jitter to a poll interval so many concurrent pollers (batch
+ *  pages, multiple tabs) don't hit the API — and its DB pool — in lockstep. */
+export function jitterMs(base: number): number {
+	return base * (0.8 + Math.random() * 0.4);
+}
+
 /** Start tracking; returns a stop() that clears the poll + closes the stream.
  *  Always call it on teardown (component unmount). */
 export function trackJob<T extends { status: string; progress?: unknown } = JobSnapshot>(
@@ -106,6 +112,6 @@ export function trackJob<T extends { status: string; progress?: unknown } = JobS
 
 	if (browser && opts.eventsUrl) unsub = subscribe(opts.eventsUrl, ['message', 'done'], onEvent);
 	void poll(); // seed immediately so the bar appears
-	timer = setInterval(() => void poll(), pollMs);
+	timer = setInterval(() => void poll(), jitterMs(pollMs));
 	return stop;
 }

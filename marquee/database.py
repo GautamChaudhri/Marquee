@@ -81,6 +81,32 @@ def _get_session_factory() -> async_sessionmaker:
     return _session_factory
 
 
+def pool_stats() -> dict[str, int | None]:
+    """Point-in-time connection-pool telemetry for /api/system/metrics.
+
+    ``checked_out + checked_in == size + overflow`` at steady state; sustained
+    ``checked_out`` near ``size + max_overflow`` (30) means pool exhaustion.
+    Pool implementations without counters (test SQLite ``StaticPool``/
+    ``NullPool``) report ``None`` for the metrics they lack.
+    """
+    if _engine is None:
+        return {"size": None, "checked_in": None, "checked_out": None, "overflow": None}
+    pool = _engine.pool
+    stats: dict[str, int | None] = {}
+    for key, attr in (
+        ("size", "size"),
+        ("checked_in", "checkedin"),
+        ("checked_out", "checkedout"),
+        ("overflow", "overflow"),
+    ):
+        method = getattr(pool, attr, None)
+        try:
+            stats[key] = method() if callable(method) else None
+        except (NotImplementedError, AttributeError):
+            stats[key] = None
+    return stats
+
+
 # ---------------------------------------------------------------------------
 # FastAPI Dependency
 # ---------------------------------------------------------------------------

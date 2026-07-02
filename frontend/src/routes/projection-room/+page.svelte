@@ -23,7 +23,7 @@
 	import type { JobListItem, JobMetrics } from '$lib/api/jobs';
 	import { getMetrics, getMetricsHistory } from '$lib/api/system';
 	import type { SystemMetrics, SystemMetricsHistory } from '$lib/api/types';
-	import { trackJob, type JobProgressDetail } from '$lib/jobs';
+	import { jitterMs, trackJob, type JobProgressDetail } from '$lib/jobs';
 	import type { PageData } from './$types';
 
 	let { data }: { data: PageData } = $props();
@@ -193,7 +193,7 @@
 			void refreshTick();
 			void refreshHostMetrics();
 			void refreshHostHistory();
-		}, 4000);
+		}, jitterMs(4000));
 	});
 
 	onDestroy(() => {
