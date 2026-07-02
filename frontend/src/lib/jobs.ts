@@ -23,6 +23,8 @@ export interface JobProgressDetail {
 	movies_done?: number;
 	movie_id?: number;
 	title?: string;
+	/** Operation-specific narration ("Removing English subtitle (SDH) — mkvmerge"). */
+	message?: string;
 	[k: string]: unknown;
 }
 

@@ -25,7 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.core.jobs.child_tracking import clear_child_pid, record_child_pid
 from marquee.core.media_files import ResolvedMediaFile, compute_signature, resolve_media_file
-from marquee.core.subtitles import capabilities, coverage, probe, service, validation
+from marquee.core.subtitles import capabilities, coverage, languages, probe, service, validation
 from marquee.core.subtitles.adapters import adapter_for
 from marquee.core.subtitles.adapters.base import EmbedSource, MetadataEdit, RemovePlan
 from marquee.core.subtitles.config import subtitle_settings
@@ -694,6 +694,79 @@ def _selection_result(operation: str, request: dict, plan: dict | None) -> dict 
     return None
 
 
+def _track_phrase(track: dict) -> str:
+    """``"English subtitle (SDH)"`` from a plan-snapshot track dict."""
+    lang = languages.display_name(track.get("language_tag"))
+    qualifiers = [
+        label
+        for flag, label in (
+            ("is_forced", "Forced"),
+            ("is_sdh", "SDH"),
+            ("is_commentary", "Commentary"),
+        )
+        if track.get(flag)
+    ]
+    if not qualifiers and track.get("title"):
+        qualifiers = [str(track["title"])]
+    suffix = f" ({', '.join(qualifiers)})" if qualifiers else ""
+    return f"{lang} subtitle{suffix}"
+
+
+def _describe_operation(operation: str, request: dict, plan: dict | None) -> str | None:
+    """Human summary of what this mutation does, for the live progress bar.
+
+    Best-effort: returns None (caller falls back to the generic message)
+    whenever the plan snapshot is missing or malformed.
+    """
+    try:
+        before = (plan or {}).get("before") or {}
+        tracks_by_id = {
+            t.get("id"): t for t in before.get("tracks") or [] if isinstance(t, dict)
+        }
+        audio_by_index = {
+            a.get("index"): a for a in before.get("audio_streams") or [] if isinstance(a, dict)
+        }
+        if operation in ("audio_remove", "subtitle_remove", "track_remove"):
+            parts = []
+            subs = [t for t in (tracks_by_id.get(tid) for tid in request.get("track_ids") or []) if t]
+            if subs:
+                if len(subs) <= 2:
+                    parts.append(" & ".join(_track_phrase(t) for t in subs))
+                else:
+                    langs = ", ".join(
+                        sorted({languages.display_name(t.get("language_tag")) for t in subs})
+                    )
+                    parts.append(f"{len(subs)} subtitles ({langs})")
+            audio = [
+                a
+                for a in (audio_by_index.get(i) for i in request.get("audio_stream_indices") or [])
+                if a
+            ]
+            if audio:
+                langs = sorted({languages.display_name(a.get("language_tag")) for a in audio})
+                if len(audio) == 1:
+                    parts.append(f"{langs[0]} audio")
+                else:
+                    parts.append(f"{len(audio)} audio streams ({', '.join(langs)})")
+            return f"Removing {' & '.join(parts)}" if parts else None
+        if operation == "subtitle_embed":
+            subs = [t for t in (tracks_by_id.get(tid) for tid in request.get("track_ids") or []) if t]
+            if not subs:
+                return None
+            if len(subs) <= 2:
+                return "Embedding " + " & ".join(_track_phrase(t) for t in subs)
+            return f"Embedding {len(subs)} subtitles"
+        if operation == "subtitle_metadata":
+            count = len(request.get("edits") or [])
+            return f"Editing metadata on {count} track{'s' if count != 1 else ''}"
+        if operation == "audio_reorder":
+            count = len(request.get("audio_stream_order") or [])
+            return f"Reordering {count} audio streams"
+    except Exception:  # noqa: BLE001 — a describe bug must never kill a mutation
+        logger.debug("could not describe %s operation", operation, exc_info=True)
+    return None
+
+
 def _plan_snapshot_tracks(plan: dict | None) -> dict[str, dict]:
     """Index the plan's before-tracks snapshot by the track id it was built with."""
     if not isinstance(plan, dict):
@@ -792,7 +865,14 @@ async def execute_job(db: AsyncSession, job, emit) -> dict:
 
     if argv is not None:
         binary, args = argv
-        await emit(db, job.job_id, "remux", "start", message=f"Running {binary}")
+        description = _describe_operation(operation, request, plan)
+        await emit(
+            db,
+            job.job_id,
+            "remux",
+            "start",
+            message=f"{description} — {binary}" if description else f"Running {binary}",
+        )
         binary_path = binaries.resolve(binary) or binary
 
         # Prefix execution with nice and ionice if available to prioritize system and web server stability

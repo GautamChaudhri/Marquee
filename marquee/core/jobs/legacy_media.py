@@ -9,11 +9,12 @@ from __future__ import annotations
 
 import json
 import logging
+from pathlib import Path
 
 from marquee.core.jobs.handlers import register
 from marquee.core.jobs.manager import job_manager
 from marquee.database import _get_session_factory
-from marquee.models import Job, MediaFile, MediaJob
+from marquee.models import Job, MediaFile, MediaJob, Movie
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +39,32 @@ async def _run_media(job: Job) -> dict:
             raise RuntimeError("media bridge state is missing")
         media_job.status = "running"
         batch_id = media_job.batch_id
+        # Resolve subject context once so every mirrored progress event can say
+        # WHAT is being worked on ("Dune (2021)" / file name), not just a stage.
+        enrich: dict = {}
+        if media_job.media_file_id is not None:
+            media_file = await db.get(MediaFile, media_job.media_file_id)
+            if media_file is not None:
+                if media_file.path:
+                    enrich["file"] = Path(media_file.path).name
+                if media_file.movie_id is not None:
+                    movie = await db.get(Movie, media_file.movie_id)
+                    if movie is not None and movie.title:
+                        enrich["title"] = movie.title
         await db.commit()
+
+    def _detail(progress: dict | None, message: str | None = None) -> dict | None:
+        """Generic-stream detail: media progress + subject context + message.
+
+        The message rides inside the detail dict (not just the event column)
+        so the polled ``Job.progress`` snapshot can narrate the operation.
+        """
+        detail = dict(enrich)
+        if progress:
+            detail.update(progress)
+        if message:
+            detail["message"] = message
+        return detail or None
 
     async def emit(_db, _job_id, stage, state, *, message=None, progress=None, persist=True):
         # Preserve the legacy event/audit stream while mirroring it into the
@@ -55,7 +81,13 @@ async def _run_media(job: Job) -> dict:
                 None, media_job_id, stage, state, message=message, progress=progress, persist=False
             )
             await job_manager.emit(
-                None, job, state=state, stage=stage, message=message, detail=progress, persist=False
+                None,
+                job,
+                state=state,
+                stage=stage,
+                message=message,
+                detail=_detail(progress, message),
+                persist=False,
             )
             return
         async with factory() as emit_db:
@@ -66,8 +98,12 @@ async def _run_media(job: Job) -> dict:
             current = await emit_db.get(Job, job.id)
             if current is not None:
                 current.current_stage = stage
-                if progress is not None:
-                    current.progress = progress
+                detail = _detail(progress, message)
+                if detail is not None:
+                    # Merge so a message-only stage tick doesn't wipe the
+                    # percent a previous progress tick established.
+                    base = current.progress if isinstance(current.progress, dict) else {}
+                    current.progress = {**base, **detail, "stage": stage}
                 await emit_db.flush()
             payload = await media_job_manager.emit(
                 emit_db,
@@ -86,7 +122,7 @@ async def _run_media(job: Job) -> dict:
                     state=state,
                     stage=stage,
                     message=message,
-                    detail=progress,
+                    detail=_detail(progress, message),
                     persist=True,
                 )
             await emit_db.commit()

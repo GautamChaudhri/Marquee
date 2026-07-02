@@ -121,12 +121,26 @@ async def run_generation_job(db: AsyncSession, job: MediaJob, emit) -> dict:
         output=request_data.get("output", "external"),
     )
 
-    await emit(db, job.job_id, "queued", "running", message="submitting to provider")
+    provider = getattr(generator, "id", None) or type(generator).__name__
+    lang = request_data.get("language_hint") or "auto-detected language"
+    await emit(
+        db,
+        job.job_id,
+        "queued",
+        "running",
+        message=f"Submitting to {provider} ({lang})",
+    )
     submission = await generator.submit(gen_request)
     if not submission.accepted:
         raise RuntimeError(f"provider rejected submission: {submission.detail}")
 
-    await emit(db, job.job_id, "provider-running", "running")
+    await emit(
+        db,
+        job.job_id,
+        "provider-running",
+        "running",
+        message=f"Generating {lang} subtitles via {provider}…",
+    )
     deadline = asyncio.get_running_loop().time() + subtitle_settings.SUBGEN_TIMEOUT_MINUTES * 60
     produced: str | None = None
     while asyncio.get_running_loop().time() < deadline:

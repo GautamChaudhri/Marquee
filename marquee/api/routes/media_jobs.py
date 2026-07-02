@@ -74,11 +74,17 @@ async def _media_job_snapshot(db: AsyncSession, media_job: MediaJob) -> dict:
             effective_error = generic.error
         if effective_result is None and effective_status == "succeeded":
             effective_result = generic.result
-        if media_job.status != "running" and generic.status == "running" and isinstance(generic.progress, dict):
+        if generic.status == "running" and isinstance(generic.progress, dict):
+            # The mirrored generic progress carries the operation narration
+            # ("Removing English subtitle (SDH) — mkvmerge") — prefer it over
+            # the MediaJob row's bare stage whenever the job is live.
             detail = generic.progress
+            percent = detail.get("percent") or detail.get("done")
+            if percent is None and media_job.progress_total:
+                percent = int((media_job.progress_done / media_job.progress_total) * 100)
             effective_progress = {
                 "stage": str(detail.get("stage") or generic.current_stage or "running"),
-                "percent": int(detail.get("percent") or detail.get("done") or 0),
+                "percent": int(percent or 0),
                 "message": str(detail.get("message") or generic.current_stage or "Running"),
             }
 

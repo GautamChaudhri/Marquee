@@ -184,16 +184,29 @@ def _load_profile_arrays() -> dict:
 # ---------------------------------------------------------------------------
 
 
-def build_map() -> dict:
-    """Project the profile, cluster, generate thumbnails, save atomically."""
+def build_map(progress_callback=None) -> dict:
+    """Project the profile, cluster, generate thumbnails, save atomically.
+
+    ``progress_callback`` (thread-safe ``callback(dict)``, e.g. a
+    ``JobProgressBridge.callback``) receives a payload at each phase boundary
+    so the job's progress bar narrates the build instead of spinning silently.
+    """
+
+    def _phase(stage: str, message: str) -> None:
+        if progress_callback is not None:
+            progress_callback({"stage": stage, "state": "start", "message": message})
+
+    _phase("load", "Loading taste profile…")
     profile = _load_profile_arrays()
     embeddings = profile["embeddings"]
     # L2-normalize for cosine-correct projection + barycentric placement.
     embeddings = embeddings / np.maximum(np.linalg.norm(embeddings, axis=1, keepdims=True), 1e-10)
     n = embeddings.shape[0]
 
+    _phase("project", f"Projecting {n} exemplars to 3D/2D…")
     coords_3d, method = _reduce(embeddings, 3)
     coords_2d, _ = _reduce(embeddings, 2)
+    _phase("cluster", "Clustering the taste space…")
     labels = _cluster(coords_3d)
     genres = profile.get("genres")
     names_map = _cluster_names(labels, genres)
@@ -233,8 +246,10 @@ def build_map() -> dict:
         if key in profile:
             payload[key] = np.asarray(profile[key], dtype=np.float64)
 
+    _phase("save", "Saving taste map…")
     save_npz_atomic(map_path, payload)
 
+    _phase("thumbnails", "Generating exemplar thumbnails…")
     _generate_thumbnails(profile["poster_names"])
     logger.info("TASTE MAP | built %d points (%s), %d clusters", n, method, len(names_map))
     return load_map()
