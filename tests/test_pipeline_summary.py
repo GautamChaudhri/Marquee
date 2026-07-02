@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.config import settings
@@ -106,3 +107,59 @@ async def test_pipeline_summary_counts_jobs_heal_and_backups(
     assert body["last_heal"]["checked"] == 2
     assert body["heal_schedule"]["interval_minutes"] == 15
     assert body["backups"] == {"count": 1, "bytes": 6}
+
+
+@pytest.mark.asyncio
+async def test_pipeline_summary_ignores_and_repairs_stale_running_rows(
+    db: AsyncSession, client: AsyncClient, tmp_path
+):
+    now = datetime.now(UTC)
+    movie = Movie(
+        title="Stale Runner",
+        year=2024,
+        folder_path=str(tmp_path / "stale"),
+        movie_file_path="stale.mkv",
+        tmdb_id=99,
+    )
+    db.add(movie)
+    await db.flush()
+    db.add_all(
+        [
+            PipelineRun(
+                run_id="stale-running",
+                movie_id=movie.id,
+                status="running",
+                started_at=now - timedelta(days=1),
+                batch_id="dead-batch",
+            ),
+            PipelineRun(
+                run_id="fresh-completed",
+                movie_id=movie.id,
+                status="completed",
+                started_at=now,
+            ),
+            Job(
+                id="dead-batch",
+                type="poster_pipeline_batch",
+                payload={"movie_ids": [movie.id]},
+                status="dead_letter",
+                finished_at=now - timedelta(days=1) + timedelta(minutes=1),
+                error={"message": "ocr init failed"},
+            ),
+        ]
+    )
+    await db.commit()
+
+    response = await client.get("/api/pipeline/summary")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["movies_in_run"] == 0
+
+    stale = (
+        await db.execute(select(PipelineRun).where(PipelineRun.run_id == "stale-running"))
+    ).scalar_one()
+    await db.refresh(stale)
+    assert stale.status == "failed"
+    assert stale.completed_at is not None
+    assert stale.error == "ocr init failed"

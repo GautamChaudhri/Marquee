@@ -33,6 +33,7 @@ from marquee.ml import feedback_store, profile_updater
 from marquee.models import Movie, PipelineRun
 from marquee.pipeline.features import load_cached_embedding
 from marquee.pipeline.run_manager import run_manager
+from marquee.pipeline.types import find_auto_pick_candidate
 
 logger = logging.getLogger(__name__)
 
@@ -281,31 +282,31 @@ async def _deploy_pick(
         return None, str(exc)
 
 
-# ---------------------------------------------------------------------------
-# Endpoints
-# ---------------------------------------------------------------------------
-
-
-@router.post("")
-async def submit_feedback(
-    body: FeedbackRequest,
-    request: Request,
-    db: Annotated[AsyncSession, Depends(get_db)],
-):
-    run = (
-        await db.execute(select(PipelineRun).where(PipelineRun.run_id == body.run_id))
-    ).scalar_one_or_none()
+async def _load_feedback_run(
+    db: AsyncSession, run_id: str
+) -> tuple[PipelineRun, dict, Movie | None, dict[str, dict], dict | None]:
+    run = (await db.execute(select(PipelineRun).where(PipelineRun.run_id == run_id))).scalar_one_or_none()
     if run is None:
-        raise HTTPException(status_code=404, detail=f"Run {body.run_id} not found")
+        raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
 
-    archive = run_manager.load_archive(body.run_id, run.archive_path)
+    archive = run_manager.load_archive(run_id, run.archive_path)
     if archive is None:
         raise HTTPException(status_code=404, detail="Run archive unavailable")
 
     movie = (await db.execute(select(Movie).where(Movie.id == run.movie_id))).scalar_one_or_none()
-
     by_name = {c["orig_filename"]: c for c in archive.get("candidates", [])}
-    auto = next((c for c in archive.get("candidates", []) if c.get("rank") == 1), None)
+    auto = by_name.get(run.auto_pick_filename) if run.auto_pick_filename else None
+    if auto is None:
+        auto = find_auto_pick_candidate(archive.get("candidates", []))
+    return run, archive, movie, by_name, auto
+
+
+async def apply_feedback_request(
+    body: FeedbackRequest,
+    request: Request,
+    db: AsyncSession,
+) -> dict:
+    run, archive, movie, by_name, auto = await _load_feedback_run(db, body.run_id)
 
     event_id = uuid4().hex
     ts = datetime.now(UTC).isoformat()
@@ -564,6 +565,20 @@ async def submit_feedback(
         "deployed_to": deployed_to,
         "deploy_error": deploy_error,
     }
+
+
+# ---------------------------------------------------------------------------
+# Endpoints
+# ---------------------------------------------------------------------------
+
+
+@router.post("")
+async def submit_feedback(
+    body: FeedbackRequest,
+    request: Request,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    return await apply_feedback_request(body, request, db)
 
 
 @router.post("/undo")

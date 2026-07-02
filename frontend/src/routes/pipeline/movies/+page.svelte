@@ -13,6 +13,7 @@
 	import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
 	import Icon from '$lib/components/Icon.svelte';
 	import {
+		approveReviewQueueAutoPicks,
 		clearPipelineCache,
 		getPipelineCache,
 		getPipelineMetrics,
@@ -26,7 +27,6 @@
 	import { trackJob, type JobProgressDetail } from '$lib/jobs';
 	import { toast } from '$lib/toast';
 	import { bytesH } from '$lib/display';
-	import { submitFeedback } from '$lib/api/feedback';
 	import type {
 		BatchScope,
 		CacheSizes,
@@ -39,6 +39,7 @@
 	let { data }: { data: PageData } = $props();
 
 	type Tab = 'run' | 'review' | 'metrics';
+	const PAGE_SIZE = 60;
 	let tab = $state<Tab>((page.url.searchParams.get('tab') as Tab) ?? 'run');
 	function setTab(id: string) {
 		tab = id as Tab;
@@ -64,6 +65,8 @@
 	let missingTotal = $state<number>(data.missing.total);
 	let missingPage = $state(1);
 	let loadingMore = $state(false);
+	let queuePage = $state(1);
+	let reviewLoadingMore = $state(false);
 	const selected = new SvelteSet<number>();
 
 	const tabs = $derived([
@@ -75,14 +78,18 @@
 	async function refreshAll() {
 		try {
 			const [qd, cd, md, mv] = await Promise.all([
-				getReviewQueue(fetch, { page_size: 60 }),
+				getReviewQueue(fetch, { page_size: PAGE_SIZE }),
 				getPipelineCache(fetch).catch(() => cache),
 				getPipelineMetrics(fetch, { limit: 500 }).catch(() => metrics),
-				listMovies(fetch, { poster_status: 'missing', sort: 'title', page_size: 60 }).catch(
-					() => null
-				)
+				listMovies(fetch, {
+					poster_status: 'missing',
+					sort: 'title',
+					page_size: PAGE_SIZE,
+					exclude_in_review: true
+				}).catch(() => null)
 			]);
 			queue = qd;
+			queuePage = 1;
 			cache = cd;
 			metrics = md;
 			if (mv) {
@@ -98,37 +105,31 @@
 	// ── Auto-approve all review queue items ───────────────────────────────────
 	let approveAllOpen = $state(false);
 	let approveAllBusy = $state(false);
-	let approveAllDone = $state(0);
-	let approveAllTotal = $state(0);
-	let approveAllErrors = $state<string[]>([]);
 
 	async function approveAllAutoPicks() {
-		if (!queue.items.length) return;
+		if (queue.total === 0) return;
 		approveAllBusy = true;
-		approveAllDone = 0;
-		approveAllTotal = queue.items.length;
-		approveAllErrors = [];
-		for (const item of queue.items) {
-			try {
-				await submitFeedback(fetch, {
-					run_id: item.run.run_id,
-					action: 'approve',
-					deploy: true
-				});
-				approveAllDone++;
-			} catch (e) {
-				const title = item.movie.title ?? item.run.run_id.slice(0, 8);
-				approveAllErrors.push(`${title}: ${e instanceof Error ? e.message : 'failed'}`);
+		try {
+			const res = await approveReviewQueueAutoPicks(fetch, { deploy: true });
+			const parts = [`${res.approved} approved`];
+			if (res.skipped_no_auto) parts.push(`${res.skipped_no_auto} skipped`);
+			if (res.failed) parts.push(`${res.failed} failed`);
+			toast(parts.join(' · '), res.failed ? 'info' : 'good');
+			if (res.failed && res.errors.length) {
+				const first = res.errors[0];
+				toast(
+					`${first.title ?? first.run_id.slice(0, 8)}: ${String(first.error ?? 'failed')}`,
+					'bad',
+					5000
+				);
 			}
+			approveAllOpen = false;
+			await refreshAll();
+		} catch (e) {
+			toast(e instanceof Error ? e.message : 'Bulk approval failed', 'bad');
+		} finally {
+			approveAllBusy = false;
 		}
-		approveAllBusy = false;
-		approveAllOpen = false;
-		if (approveAllErrors.length) {
-			toast(`${approveAllDone} approved · ${approveAllErrors.length} failed`, 'info');
-		} else {
-			toast(`${approveAllDone} auto-picks approved`, 'good');
-		}
-		await refreshAll();
 	}
 
 	// ── Runs (batch + single) ────────────────────────────────────────────────────
@@ -313,7 +314,8 @@
 			const next = await listMovies(fetch, {
 				poster_status: 'missing',
 				sort: 'title',
-				page_size: 60,
+				page_size: PAGE_SIZE,
+				exclude_in_review: true,
 				page: missingPage + 1
 			});
 			missingPage += 1;
@@ -323,6 +325,23 @@
 			toast('Could not load more', 'bad');
 		} finally {
 			loadingMore = false;
+		}
+	}
+
+	async function loadMoreReview() {
+		if (reviewLoadingMore) return;
+		reviewLoadingMore = true;
+		try {
+			const next = await getReviewQueue(fetch, {
+				page_size: PAGE_SIZE,
+				page: queuePage + 1
+			});
+			queuePage += 1;
+			queue = { ...next, items: [...queue.items, ...next.items] };
+		} catch {
+			toast('Could not load more review items', 'bad');
+		} finally {
+			reviewLoadingMore = false;
 		}
 	}
 
@@ -448,6 +467,15 @@
 				</button>
 			{/each}
 		</div>
+		{#if queue.items.length < queue.total}
+			<div class="loadmore">
+				<button class="btn-sec" onclick={loadMoreReview} disabled={reviewLoadingMore}>
+					{reviewLoadingMore
+						? 'Loading…'
+						: `Load more review items — ${queue.items.length} of ${queue.total}`}
+				</button>
+			</div>
+		{/if}
 	{/if}
 
 	<!-- ═══ RUN ═══ -->
@@ -664,10 +692,8 @@
 	title="Approve all auto-picks"
 	message="This will approve the auto-pick for all {queue.total} run{queue.total === 1
 		? ''
-		: 's'} in the review queue, deploy posters to movie folders, and train the Key Art Engine. Continue?"
-	confirmLabel={approveAllBusy
-		? `Approving ${approveAllDone}/${approveAllTotal}…`
-		: `Approve all {queue.total}`}
+		: 's'} in the review queue, deploy posters to movie folders, and skip any run that does not have an auto-pick. Continue?"
+	confirmLabel={approveAllBusy ? 'Approving…' : `Approve all ${queue.total}`}
 	tone="bad"
 	busy={approveAllBusy}
 	onConfirm={approveAllAutoPicks}

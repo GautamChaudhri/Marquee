@@ -15,15 +15,21 @@ import type {
 
 const EMPTY_QUEUE: ReviewQueue = { total: 0, page: 1, page_size: 60, items: [] };
 const EMPTY_MISSING: Paginated<MovieListItem> = { total: 0, page: 1, page_size: 60, items: [] };
+const PAGE_SIZE = 60;
 
 export const load: PageLoad = async ({ fetch }) => {
 	const safe = <T>(p: Promise<T>, fallback: T): Promise<T> => p.catch(() => fallback);
 	const [queue, cache, metrics, missing, activeJob, onboarding] = await Promise.all([
-		safe<ReviewQueue>(getReviewQueue(fetch, { page_size: 60 }), EMPTY_QUEUE),
+		safe<ReviewQueue>(getReviewQueue(fetch, { page_size: PAGE_SIZE }), EMPTY_QUEUE),
 		safe<CacheSizes | null>(getPipelineCache(fetch), null),
 		safe<PipelineMetrics | null>(getPipelineMetrics(fetch, { limit: 500 }), null),
 		safe<Paginated<MovieListItem>>(
-			listMovies(fetch, { poster_status: 'missing', sort: 'title', page_size: 60 }),
+			listMovies(fetch, {
+				poster_status: 'missing',
+				sort: 'title',
+				page_size: PAGE_SIZE,
+				exclude_in_review: true
+			}),
 			EMPTY_MISSING
 		),
 		// Re-attach to a running batch so the progress bar survives refresh.

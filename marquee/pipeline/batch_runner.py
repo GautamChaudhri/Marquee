@@ -243,6 +243,10 @@ async def run_batch(
     with ``batch_id=job_id``.
     """
     should_cancel = should_cancel or (lambda: False)
+    persisted_running = False
+    caught: Exception | None = None
+    summary: dict[str, object] | None = None
+    scorer_name: str | None = None
 
     contexts: list[_BatchMovie] = []
     total = len(movies)
@@ -266,9 +270,6 @@ async def run_batch(
                 total=total,
             )
         )
-
-    await _persist_running(contexts, job_id)
-    logger.info("BATCH START | job=%s | movies=%d", job_id, total)
 
     # ── Phase A: fetch TMDB metadata for ALL movies concurrently ────────
     # (design 18 §8 — metadata calls are fast and independent)
@@ -331,55 +332,76 @@ async def run_batch(
         )
         ctx._downloadable = downloadable
 
-    fetch_tasks = []
-    for ctx in contexts:
-        if should_cancel():
-            ctx.status = "cancelled"
-            continue
-        _emit(progress, ctx, "fetch", "start")
-        fetch_tasks.append(_fetch_meta(ctx))
+    try:
+        await _persist_running(contexts, job_id)
+        persisted_running = True
+        logger.info("BATCH START | job=%s | movies=%d", job_id, total)
 
-    fetch_results = await asyncio.gather(*fetch_tasks, return_exceptions=True)
-    fetchable = [c for c in contexts if c.status != "cancelled"]
-    for ctx, result in zip(fetchable, fetch_results, strict=True):
-        if isinstance(result, Exception):
-            ctx.status = "failed"
-            ctx.error = str(result)
-            logger.warning("BATCH FETCH FAILED | movie=%s | %s", ctx.title, result)
-        if ctx.fetch is not None:
-            ctx.counts.update(ctx.fetch.counts)
+        fetch_tasks = []
+        for ctx in contexts:
+            if should_cancel():
+                ctx.status = "cancelled"
+                continue
+            _emit(progress, ctx, "fetch", "start")
+            fetch_tasks.append(_fetch_meta(ctx))
 
-    # ── Phase B: cross-movie parallel download pool ─────────────────────
-    # (design 18 §8 — all surviving posters across all movies interleave
-    # under one semaphore so downloads from multiple movies overlap)
-    await _download_phase(contexts, progress)
+        fetch_results = await asyncio.gather(*fetch_tasks, return_exceptions=True)
+        fetchable = [c for c in contexts if c.status != "cancelled"]
+        for ctx, result in zip(fetchable, fetch_results, strict=True):
+            if isinstance(result, Exception):
+                ctx.status = "failed"
+                ctx.error = str(result)
+                logger.warning("BATCH FETCH FAILED | movie=%s | %s", ctx.title, result)
+            if ctx.fetch is not None:
+                ctx.counts.update(ctx.fetch.counts)
 
-    live = [c for c in contexts if c.fetch is not None]
+        # ── Phase B: cross-movie parallel download pool ─────────────────────
+        # (design 18 §8 — all surviving posters across all movies interleave
+        # under one semaphore so downloads from multiple movies overlap)
+        await _download_phase(contexts, progress)
 
-    # ── Shared CPU/GPU stages off the event loop ─────────────────────────
-    if live and not should_cancel():
-        await asyncio.to_thread(_run_sync_stages, live, extractor, progress, should_cancel)
+        live = [c for c in contexts if c.fetch is not None]
 
-    # ── OUTPUT (async best-effort full-res re-download) ──────────────────
-    for ctx in live:
-        if should_cancel():
-            break
-        if ctx.ranked:
-            _emit(progress, ctx, "output", "start", total=len(ctx.ranked))
-            await place_outputs(
-                ctx.ranked,
-                candidate_map=ctx.fetch.candidate_map,
-                out_dir=ctx.out_dir,
-                timings=ctx.timings,
-                progress=None,
+        # ── Shared CPU/GPU stages off the event loop ─────────────────────────
+        if live and not should_cancel():
+            await asyncio.to_thread(_run_sync_stages, live, extractor, progress, should_cancel)
+
+        # ── OUTPUT (async best-effort full-res re-download) ──────────────────
+        for ctx in live:
+            if should_cancel():
+                break
+            if ctx.ranked:
+                _emit(progress, ctx, "output", "start", total=len(ctx.ranked))
+                await place_outputs(
+                    ctx.ranked,
+                    candidate_map=ctx.fetch.candidate_map,
+                    out_dir=ctx.out_dir,
+                    timings=ctx.timings,
+                    progress=None,
+                )
+                _emit(progress, ctx, "output", "end", survivors=len(ctx.ranked))
+
+        scorer_name = select_scorer().name
+    except Exception as exc:
+        caught = exc
+        logger.exception("BATCH FAILED | job=%s | %s", job_id, exc)
+    finally:
+        if persisted_running:
+            if caught is not None:
+                for ctx in contexts:
+                    if ctx.status not in _TERMINAL:
+                        ctx.error = ctx.error or str(caught)
+            summary = await _finalize(
+                contexts,
+                job_id=job_id,
+                scorer_name=scorer_name,
+                cancelled=should_cancel(),
             )
-            _emit(progress, ctx, "output", "end", survivors=len(ctx.ranked))
+            logger.info("BATCH END | job=%s | %s", job_id, summary)
 
-    scorer_name = select_scorer().name
-    summary = await _finalize(
-        contexts, job_id=job_id, scorer_name=scorer_name, cancelled=should_cancel()
-    )
-    logger.info("BATCH END | job=%s | %s", job_id, summary)
+    if caught is not None:
+        raise caught
+    assert summary is not None
     return summary
 
 

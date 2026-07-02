@@ -116,6 +116,7 @@ export interface MovieQuery {
 	poster_status?: PosterStatus;
 	hdr?: HdrKind | 'unknown';
 	letterbox_status?: string;
+	exclude_in_review?: boolean;
 	include_unavailable?: boolean;
 	sort?: 'title' | 'year' | 'added';
 }
@@ -721,6 +722,21 @@ export interface ReviewQueue {
 	page: number;
 	page_size: number;
 	items: ReviewQueueItem[];
+}
+
+export interface ReviewQueueAutoApproveError {
+	run_id: string;
+	movie_id: number;
+	title: string | null;
+	error: unknown;
+}
+
+export interface ReviewQueueAutoApproveResult {
+	total: number;
+	approved: number;
+	skipped_no_auto: number;
+	failed: number;
+	errors: ReviewQueueAutoApproveError[];
 }
 
 export interface MovieRuns {

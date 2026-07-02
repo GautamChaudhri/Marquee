@@ -30,6 +30,7 @@ from marquee.models import (
     LetterboxState,
     MediaFile,
     Movie,
+    PipelineRun,
     Season,
     Series,
     SubtitleInventory,
@@ -87,6 +88,10 @@ async def list_movies(
     letterbox_status: str | None = Query(
         None, description="Filter on LetterboxState.status, or 'none' for unanalyzed"
     ),
+    exclude_in_review: bool = Query(
+        False,
+        description="Exclude movies whose latest unreviewed pipeline result is already in review.",
+    ),
     include_unavailable: bool = Query(
         False, description="Include Radarr movies that do not have a downloaded file yet."
     ),
@@ -115,6 +120,17 @@ async def list_movies(
         conditions.append(Movie.title.ilike(f"%{q}%"))
     if poster_status and (pred := poster_status_filter(poster_status)) is not None:
         conditions.append(pred)
+    if exclude_in_review:
+        latest_review = (
+            select(PipelineRun.movie_id.label("movie_id"))
+            .where(
+                PipelineRun.feedback_event_id.is_(None),
+                PipelineRun.status.in_(("completed", "flagged_manual")),
+            )
+            .group_by(PipelineRun.movie_id)
+            .subquery()
+        )
+        conditions.append(Movie.id.not_in(select(latest_review.c.movie_id)))
     if hdr and (pred := hdr_filter(hdr)) is not None:
         conditions.append(pred)
     if letterbox_status == "none":

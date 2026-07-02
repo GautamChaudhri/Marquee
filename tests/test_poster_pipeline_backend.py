@@ -15,10 +15,12 @@ from pathlib import Path
 
 import pytest
 from PIL import Image
+from sqlalchemy import select
 
 from marquee.api.results import build_results_payload
 from marquee.config import settings
 from marquee.core import pipeline_cache as pc
+from marquee.models import Movie, PipelineRun
 from marquee.pipeline import batch_runner as br
 from marquee.pipeline import ocr_filter
 from marquee.pipeline.runner import FetchOutcome
@@ -133,6 +135,47 @@ def test_batch_ocr_fallback_is_isolated_per_movie(tmp_path: Path, monkeypatch: p
     assert {r.image_path.name for r in movie_a.ocr_survivors} == {"a1.jpg"}
     # B had nothing titled → its lone textless poster is rescued by the fallback.
     assert {r.image_path.name for r in movie_b.ocr_survivors} == {"b1.jpg"}
+
+
+@pytest.mark.asyncio
+async def test_run_batch_finalizes_rows_when_exception_escapes(db, tmp_path: Path, monkeypatch):
+    async def fake_fetch_candidates(_tmdb, _movie):
+        return [], None
+
+    async def boom(_contexts, _progress):
+        raise RuntimeError("download exploded")
+
+    monkeypatch.setattr(br, "fetch_candidates", fake_fetch_candidates)
+    monkeypatch.setattr(br, "_download_phase", boom)
+
+    movie = Movie(
+        title="Boom",
+        year=2024,
+        folder_path=str(tmp_path / "boom"),
+        movie_file_path="boom.mkv",
+        tmdb_id=700,
+    )
+    db.add(movie)
+    await db.commit()
+    await db.refresh(movie)
+
+    with pytest.raises(RuntimeError, match="download exploded"):
+        await br.run_batch(
+            job_id="batch-boom",
+            movies=[(movie.id, movie.title, movie.tmdb_id)],
+            tmdb=object(),
+            extractor=object(),
+            progress=None,
+            should_cancel=lambda: False,
+        )
+
+    run = (
+        await db.execute(select(PipelineRun).where(PipelineRun.movie_id == movie.id))
+    ).scalar_one()
+    await db.refresh(run)
+    assert run.status == "failed"
+    assert run.completed_at is not None
+    assert run.error == "download exploded"
 
 
 # ---------------------------------------------------------------------------
