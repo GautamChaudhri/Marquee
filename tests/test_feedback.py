@@ -206,6 +206,96 @@ async def test_run_marked_reviewed(client, db, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_bulk_auto_approve_reviews_entire_queue(client, db, tmp_path, monkeypatch):
+    from sqlalchemy import func, select
+
+    async def fake_deploy(_db, movie, _pick, _run):
+        movie.poster_path = f"/deployed/{movie.id}.jpg"
+        movie.poster_user_approved = True
+        movie.poster_ai_selected = True
+        return movie.poster_path, None
+
+    monkeypatch.setattr(feedback_route, "_deploy_pick", fake_deploy)
+
+    completed_ids: list[int] = []
+    for i in range(61):
+        movie = Movie(
+            title=f"Bulk Movie {i}",
+            year=2000 + i,
+            folder_path=str(tmp_path / f"movie-{i}"),
+            movie_file_path=f"bulk-{i}.mkv",
+            tmdb_id=1000 + i,
+        )
+        db.add(movie)
+        await db.flush()
+
+        archive_file = tmp_path / f"bulk-{i}.json"
+        archive = _archive(movie.id)
+        archive_file.write_text(json.dumps(archive))
+        db.add(
+            PipelineRun(
+                run_id=f"bulk-{i}",
+                movie_id=movie.id,
+                status="completed",
+                scorer_name="weighted",
+                archive_path=str(archive_file),
+                output_dir=str(tmp_path),
+                auto_pick_filename="auto.jpg",
+            )
+        )
+        completed_ids.append(movie.id)
+
+    manual_movie = Movie(
+        title="Manual Review",
+        year=1999,
+        folder_path=str(tmp_path / "manual"),
+        movie_file_path="manual.mkv",
+        tmdb_id=4242,
+    )
+    db.add(manual_movie)
+    await db.flush()
+    manual_archive = tmp_path / "manual.json"
+    manual_archive.write_text(json.dumps({"movie_id": manual_movie.id, "title": "Manual", "candidates": []}))
+    db.add(
+        PipelineRun(
+            run_id="manual-run",
+            movie_id=manual_movie.id,
+            status="flagged_manual",
+            scorer_name=None,
+            archive_path=str(manual_archive),
+            output_dir=str(tmp_path),
+            auto_pick_filename=None,
+        )
+    )
+    await db.commit()
+
+    resp = await client.post("/api/pipeline/review-queue/approve-auto", json={"deploy": True})
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 62
+    assert data["approved"] == 61
+    assert data["skipped_no_auto"] == 1
+    assert data["failed"] == 0
+
+    reviewed = await db.scalar(
+        select(func.count()).select_from(PipelineRun).where(PipelineRun.feedback_event_id.is_not(None))
+    )
+    assert reviewed == 61
+
+    posters = await db.scalar(
+        select(func.count()).select_from(Movie).where(Movie.poster_path.is_not(None))
+    )
+    assert posters == 61
+
+    manual = (
+        await db.execute(select(PipelineRun).where(PipelineRun.run_id == "manual-run"))
+    ).scalar_one()
+    await db.refresh(manual)
+    assert manual.feedback_event_id is None
+
+
+@pytest.mark.asyncio
 async def test_undo_round_trip(client, db, tmp_path, monkeypatch):
     from sqlalchemy import select
 

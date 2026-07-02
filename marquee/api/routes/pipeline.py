@@ -7,10 +7,11 @@ import logging
 import os
 import time
 from collections import Counter, defaultdict
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel
 from sqlalchemy import exists, func, or_, select
@@ -52,6 +53,12 @@ router = APIRouter(prefix="/api/pipeline", tags=["pipeline"])
 movies_router = APIRouter(prefix="/api/movies", tags=["movies"])
 
 _REVIEW_QUEUE_STATUSES = {"completed", "flagged_manual"}
+_STALE_BATCH_JOB_TO_RUN_STATUS = {
+    "failed": "failed",
+    "dead_letter": "failed",
+    "cancelled": "cancelled",
+    "interrupted": "interrupted",
+}
 
 
 def _downloaded():
@@ -84,6 +91,55 @@ def _review_queue_latest():
         .group_by(PipelineRun.movie_id)
         .subquery()
     )
+
+
+def _latest_run_per_movie():
+    return (
+        select(
+            PipelineRun.movie_id.label("movie_id"),
+            func.max(PipelineRun.started_at).label("started_at"),
+        )
+        .join(Movie, Movie.id == PipelineRun.movie_id)
+        .where(_downloaded())
+        .group_by(PipelineRun.movie_id)
+        .subquery()
+    )
+
+
+async def _repair_stale_batch_pipeline_runs(db: AsyncSession) -> int:
+    rows = (
+        await db.execute(
+            select(PipelineRun, Job)
+            .join(Job, Job.id == PipelineRun.batch_id)
+            .where(
+                PipelineRun.status == "running",
+                PipelineRun.batch_id.is_not(None),
+                Job.status.in_(tuple(_STALE_BATCH_JOB_TO_RUN_STATUS)),
+            )
+        )
+    ).all()
+    if not rows:
+        return 0
+
+    repaired = 0
+    now = datetime.now(UTC)
+    for run, job in rows:
+        new_status = _STALE_BATCH_JOB_TO_RUN_STATUS.get(job.status)
+        if new_status is None:
+            continue
+        run.status = new_status
+        run.completed_at = run.completed_at or job.finished_at or now
+        if not run.error and job.error:
+            if isinstance(job.error, dict):
+                run.error = str(job.error.get("message") or job.error.get("type") or job.error)
+            else:
+                run.error = str(job.error)
+        repaired += 1
+
+    if repaired:
+        await db.commit()
+        logger.info("PIPELINE RUN REPAIR | repaired=%d stale batch run row(s)", repaired)
+    return repaired
 
 
 def _backup_stats() -> dict[str, int]:
@@ -367,17 +423,24 @@ async def run_pipeline_batch(
 
 @router.get("/summary")
 async def pipeline_summary(db: Annotated[AsyncSession, Depends(get_db)]):
+    await _repair_stale_batch_pipeline_runs(db)
     downloaded = _downloaded()
     total_movies = await db.scalar(select(func.count(Movie.id)).where(downloaded))
     movies_with_poster = await db.scalar(
         select(func.count(Movie.id)).where(downloaded, Movie.poster_path.is_not(None))
     )
     latest = _review_queue_latest()
+    latest_runs = _latest_run_per_movie()
     movies_in_review = await db.scalar(select(func.count()).select_from(latest))
     movies_in_run = await db.scalar(
-        select(func.count(func.distinct(PipelineRun.movie_id)))
-        .join(Movie, Movie.id == PipelineRun.movie_id)
-        .where(PipelineRun.status == "running", downloaded)
+        select(func.count())
+        .select_from(latest_runs)
+        .join(
+            PipelineRun,
+            (PipelineRun.movie_id == latest_runs.c.movie_id)
+            & (PipelineRun.started_at == latest_runs.c.started_at),
+        )
+        .where(PipelineRun.status == "running")
     )
 
     active_jobs = (
@@ -498,6 +561,10 @@ async def get_pipeline_cache():
 class CacheClearRequest(BaseModel):
     include_embeddings: bool = True
     include_archives: bool = False
+
+
+class ReviewQueueApproveAutoRequest(BaseModel):
+    deploy: bool = True
 
 
 @router.post("/cache/clear")
@@ -631,6 +698,7 @@ async def review_queue(
     page_size: int = 50,
 ):
     """Latest unreviewed poster-pipeline run per movie for the review page."""
+    await _repair_stale_batch_pipeline_runs(db)
     page = max(page, 1)
     page_size = min(max(page_size, 1), 200)
 
@@ -707,6 +775,83 @@ async def review_queue(
         )
 
     return {"total": total, "page": page, "page_size": page_size, "items": items}
+
+
+@router.post("/review-queue/approve-auto")
+async def approve_review_queue_auto(
+    body: ReviewQueueApproveAutoRequest,
+    request: Request,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    """Approve every approvable run in the current review queue."""
+    from marquee.api.routes.feedback import FeedbackRequest, apply_feedback_request  # noqa: PLC0415
+
+    await _repair_stale_batch_pipeline_runs(db)
+
+    latest = _review_queue_latest()
+    rows = (
+        await db.execute(
+            select(PipelineRun, Movie)
+            .join(
+                latest,
+                (latest.c.movie_id == PipelineRun.movie_id)
+                & (latest.c.started_at == PipelineRun.started_at),
+            )
+            .join(Movie, Movie.id == PipelineRun.movie_id)
+            .where(
+                PipelineRun.feedback_event_id.is_(None),
+                PipelineRun.status.in_(_REVIEW_QUEUE_STATUSES),
+            )
+            .order_by(PipelineRun.started_at.desc())
+        )
+    ).all()
+
+    approved = 0
+    skipped_no_auto = 0
+    failed = 0
+    errors: list[dict[str, object]] = []
+
+    for run, movie in rows:
+        if run.status != "completed" or not run.auto_pick_filename:
+            skipped_no_auto += 1
+            continue
+        try:
+            await apply_feedback_request(
+                FeedbackRequest(run_id=run.run_id, action="approve", deploy=body.deploy),
+                request,
+                db,
+            )
+            approved += 1
+        except HTTPException as exc:
+            await db.rollback()
+            failed += 1
+            errors.append(
+                {
+                    "run_id": run.run_id,
+                    "movie_id": movie.id,
+                    "title": movie.title,
+                    "error": exc.detail,
+                }
+            )
+        except Exception as exc:  # noqa: BLE001
+            await db.rollback()
+            failed += 1
+            errors.append(
+                {
+                    "run_id": run.run_id,
+                    "movie_id": movie.id,
+                    "title": movie.title,
+                    "error": str(exc),
+                }
+            )
+
+    return {
+        "total": len(rows),
+        "approved": approved,
+        "skipped_no_auto": skipped_no_auto,
+        "failed": failed,
+        "errors": errors,
+    }
 
 
 @router.post("/review/reset", status_code=200)
@@ -790,6 +935,7 @@ async def list_movie_runs(
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
     """Run history for a movie, newest first."""
+    await _repair_stale_batch_pipeline_runs(db)
     runs = (
         (
             await db.execute(

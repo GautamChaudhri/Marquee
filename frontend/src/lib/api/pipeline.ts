@@ -10,6 +10,7 @@ import type {
 	PipelineMetrics,
 	PipelineRunRef,
 	PipelineSummary,
+	ReviewQueueAutoApproveResult,
 	ReviewQueue,
 	RunResultsResponse
 } from './types';
@@ -58,6 +59,13 @@ export function getReviewQueue(
 	params: { page?: number; page_size?: number } = {}
 ): Promise<ReviewQueue> {
 	return apiGet<ReviewQueue>(fetchFn, '/pipeline/review-queue', params);
+}
+
+export function approveReviewQueueAutoPicks(
+	fetchFn: Fetch,
+	body: { deploy?: boolean } = {}
+): Promise<ReviewQueueAutoApproveResult> {
+	return apiSend<ReviewQueueAutoApproveResult>(fetchFn, 'POST', '/pipeline/review-queue/approve-auto', body);
 }
 
 /** Cross-run aggregates for the Metrics tab. */

@@ -96,6 +96,47 @@ async def test_review_queue_latest_unreviewed_run_per_movie(
 
 
 @pytest.mark.asyncio
+async def test_library_missing_filter_can_exclude_review_queue_movies(
+    db: AsyncSession,
+    client: AsyncClient,
+):
+    now = datetime.now(UTC)
+    review = Movie(
+        title="Needs Review",
+        year=2020,
+        folder_path="/m/review",
+        movie_file_path="review.mkv",
+        tmdb_id=10,
+    )
+    missing = Movie(
+        title="Still Missing",
+        year=2021,
+        folder_path="/m/missing",
+        movie_file_path="missing.mkv",
+        tmdb_id=11,
+    )
+    db.add_all([review, missing])
+    await db.flush()
+    db.add(
+        PipelineRun(
+            run_id="review-run",
+            movie_id=review.id,
+            status="completed",
+            started_at=now,
+            auto_pick_filename="auto.jpg",
+        )
+    )
+    await db.commit()
+
+    resp = await client.get("/api/library/movies?poster_status=missing&exclude_in_review=true")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["total"] == 1
+    assert [item["title"] for item in body["items"]] == ["Still Missing"]
+
+
+@pytest.mark.asyncio
 async def test_media_job_snapshot_reflects_generic_job_failure(
     db: AsyncSession,
     client: AsyncClient,
