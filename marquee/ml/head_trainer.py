@@ -23,12 +23,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import threading
 from math import log2
 from pathlib import Path
 
 import numpy as np
 
 from marquee.config import settings
+from marquee.core.jobs.cancel_registry import raise_if_cancelled
 from marquee.core.pipeline_config import pipeline_settings
 from marquee.ml import feedback_store
 from marquee.ml.learned_head import LogisticHead, fit_scale_bias
@@ -295,6 +297,7 @@ def train_from_labels(
     mode: str | None = None,
     l2: float = 1.0,
     save: bool = True,
+    cancel_event: threading.Event | None = None,
 ) -> tuple[LogisticHead | None, dict]:
     """Train + (optionally) save the head. Returns (head|None, info).
 
@@ -305,11 +308,14 @@ def train_from_labels(
     """
     mode = pipeline_settings.HEAD_TRAIN_MODE if mode is None else mode
     min_movies = pipeline_settings.HEAD_MIN_MOVIES if min_movies is None else min_movies
+    raise_if_cancelled(cancel_event, "learned head training cancelled")
     rows = feedback_store.read_all()
+    raise_if_cancelled(cancel_event, "learned head training cancelled")
 
     if mode == "pairwise":
         min_pairs = pipeline_settings.HEAD_MIN_PAIRS if min_pairs is None else min_pairs
         diffs, weights, names, n_movies, n_pairs = build_inversion_training_data(rows)
+        raise_if_cancelled(cancel_event, "learned head training cancelled")
         info = {
             "mode": "pairwise",
             "n_pairs": n_pairs,
@@ -324,7 +330,9 @@ def train_from_labels(
                 f"have {n_movies} movies / {n_pairs} pairs"
             )
             return None, info
-        head = LogisticHead.train_pairwise(diffs, weights, names, l2=l2)
+        head = LogisticHead.train_pairwise(
+            diffs, weights, names, l2=l2, cancel_event=cancel_event
+        )
 
         # The RankNet objective above only learns ordering (bias is fixed at
         # 0.0 — see train_pairwise's docstring), which lets raw scores
@@ -335,7 +343,7 @@ def train_from_labels(
         info["calibrated"] = False
         if len(calib_y) >= 10 and len(np.unique(calib_y)) == 2:
             raw_scores = calib_x @ head.weights
-            scale, bias = fit_scale_bias(raw_scores, calib_y)
+            scale, bias = fit_scale_bias(raw_scores, calib_y, cancel_event=cancel_event)
             if scale > 0:
                 head = head.calibrated(scale, bias)
                 info["calibrated"] = True
@@ -355,6 +363,7 @@ def train_from_labels(
     runs_dirs = (current_runs_dir, *_LEGACY_RUNS_DIRS)
 
     features, targets, names, n_movies = build_training_data(rows, runs_dirs)
+    raise_if_cancelled(cancel_event, "learned head training cancelled")
     n_samples = int(len(targets))
     info = {
         "mode": "pointwise",
@@ -377,7 +386,7 @@ def train_from_labels(
         info["reason"] = "labels must contain both classes (0 and 1)"
         return None, info
 
-    head = LogisticHead.train(features, targets, names, l2=l2)
+    head = LogisticHead.train(features, targets, names, l2=l2, cancel_event=cancel_event)
     info["activated"] = True
     info["train_accuracy"] = head.train_accuracy
     info["features"] = names

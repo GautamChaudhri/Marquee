@@ -22,12 +22,14 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
 
+from marquee.core.jobs.cancel_registry import raise_if_cancelled
 from marquee.core.pipeline_config import pipeline_settings
 from marquee.ml.artifact_codec import (
     decode_unicode_list,
@@ -53,6 +55,7 @@ def fit_scale_bias(
     learning_rate: float = 0.5,
     max_iterations: int = 5000,
     tolerance: float = 1e-9,
+    cancel_event: threading.Event | None = None,
 ) -> tuple[float, float]:
     """Platt-scale raw RankNet scores (``x·w``) against true 0/1 labels.
 
@@ -69,7 +72,9 @@ def fit_scale_bias(
     a = 1.0 / spread if spread > 1e-9 else 1.0
     b = 0.0
     previous_loss = np.inf
-    for _ in range(max_iterations):
+    for iteration in range(max_iterations):
+        if iteration % 100 == 0:
+            raise_if_cancelled(cancel_event, "learned head training cancelled")
         probabilities = _sigmoid(a * s + b)
         error = probabilities - y
         grad_a = float((error * s).mean())
@@ -116,6 +121,7 @@ class LogisticHead:
         max_iterations: int = 5000,
         tolerance: float = 1e-7,
         model_name: str | None = None,
+        cancel_event: threading.Event | None = None,
     ) -> LogisticHead:
         """Full-batch gradient descent with early stopping on loss delta."""
         x = np.asarray(features, dtype=np.float64)
@@ -131,7 +137,9 @@ class LogisticHead:
         weights = np.zeros(f)
         bias = 0.0
         previous_loss = np.inf
-        for _ in range(max_iterations):
+        for iteration in range(max_iterations):
+            if iteration % 100 == 0:
+                raise_if_cancelled(cancel_event, "learned head training cancelled")
             probabilities = _sigmoid(x @ weights + bias)
             error = probabilities - y
             grad_w = (x.T @ error) / n + l2 * weights / n
@@ -173,6 +181,7 @@ class LogisticHead:
         max_iterations: int = 5000,
         tolerance: float = 1e-7,
         model_name: str | None = None,
+        cancel_event: threading.Event | None = None,
     ) -> LogisticHead:
         """RankNet head: learn ``w`` so ``w·x`` orders posters as the user ranked.
 
@@ -200,7 +209,9 @@ class LogisticHead:
         weight_total = float(w_sample.sum()) or float(n)
         coef = np.zeros(f)
         previous_loss = np.inf
-        for _ in range(max_iterations):
+        for iteration in range(max_iterations):
+            if iteration % 100 == 0:
+                raise_if_cancelled(cancel_event, "learned head training cancelled")
             probabilities = _sigmoid(d @ coef)
             # ∂/∂w of weighted BCE(target=1): -weight·(1-p)·d, plus L2.
             grad = -(((1.0 - probabilities) * w_sample) @ d) / weight_total

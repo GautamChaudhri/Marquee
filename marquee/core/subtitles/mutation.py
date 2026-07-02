@@ -23,6 +23,8 @@ from uuid import uuid4
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from marquee.core.jobs import cancel_registry
+from marquee.core.jobs.cancel_registry import JobCancelledError
 from marquee.core.jobs.child_tracking import clear_child_pid, record_child_pid
 from marquee.core.media_files import ResolvedMediaFile, compute_signature, resolve_media_file
 from marquee.core.subtitles import capabilities, coverage, languages, probe, service, validation
@@ -49,10 +51,14 @@ class PreflightError(Exception):
 
 async def _raise_if_cancel_requested(db: AsyncSession, job, *, cleanup_paths: list[Path] | None = None):
     await db.refresh(job, ["cancel_requested"])
-    if not job.cancel_requested:
+    cancel_event = cancel_registry.get(job.job_id)
+    registry_cancelled = cancel_event is not None and cancel_event.is_set()
+    if not job.cancel_requested and not registry_cancelled:
         return
     for path in cleanup_paths or []:
         path.unlink(missing_ok=True)
+    if registry_cancelled and not job.cancel_requested:
+        raise JobCancelledError("subtitle mutation interrupted")
     raise PreflightError("cancelled", "subtitle mutation cancelled")
 
 
@@ -888,6 +894,9 @@ async def execute_job(db: AsyncSession, job, emit) -> dict:
         await record_child_pid(proc.pid)
         try:
             _, stderr = await proc.communicate()
+        except asyncio.CancelledError:
+            out.unlink(missing_ok=True)
+            raise
         finally:
             await clear_child_pid(proc.pid)
         if proc.returncode != 0:

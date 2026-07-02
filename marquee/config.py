@@ -102,6 +102,12 @@ class Settings(BaseSettings):
         description="Maximum runtime for any job (seconds). Jobs exceeding this "
         "are terminated to prevent hung workers from blocking resources.",
     )
+    JOB_MEDIA_MAX_RUNTIME_SECONDS: int = Field(
+        default=21600,
+        ge=60,
+        le=86400,
+        description="Maximum runtime for long media mutation jobs (seconds).",
+    )
     JOB_GPU_SLOTS: int = Field(default=1, ge=0, le=8)
     JOB_MEDIA_READ_SLOTS: int = Field(default=2, ge=1, le=16)
     JOB_MEDIA_WRITE_SLOTS: int = Field(default=1, ge=1, le=8)

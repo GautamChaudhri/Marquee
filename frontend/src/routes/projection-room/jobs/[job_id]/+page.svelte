@@ -26,7 +26,7 @@
 	function statusTone(status: string): 'good' | 'bad' | 'warn' | 'info' | 'muted' {
 		if (status === 'succeeded') return 'good';
 		if (status === 'failed' || status === 'dead_letter') return 'bad';
-		if (status === 'cancelled' || status === 'interrupted') return 'warn';
+		if (status === 'cancelled' || status === 'interrupted' || status === 'cancelling') return 'warn';
 		if (isTerminal(status)) return 'muted';
 		return 'info';
 	}
@@ -54,6 +54,7 @@
 		if (!job) return;
 		try {
 			job = await getJobDetail(fetch, job.job_id);
+			liveStatus = job.cancel_requested && !isTerminal(job.status) ? 'cancelling' : job.status;
 		} catch {
 			/* keep showing the last known detail */
 		}
@@ -61,6 +62,8 @@
 
 	async function handleCancel() {
 		if (!job) return;
+		liveStatus = 'cancelling';
+		job = { ...job, cancel_requested: true, status: 'cancelling' };
 		await cancelJob(fetch, job.job_id);
 		toast('Cancellation requested', 'info');
 		void refetch();
@@ -75,7 +78,7 @@
 			job.job_id,
 			{
 				onProgress: ({ status, detail }) => {
-					liveStatus = status;
+					liveStatus = liveStatus === 'cancelling' && status === 'running' ? 'cancelling' : status;
 					liveDetail = detail;
 				},
 				onDone: () => void refetch()

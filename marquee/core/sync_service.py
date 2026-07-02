@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from marquee.config import settings
 from marquee.core.arr_clients.radarr_client import RadarrClient
 from marquee.core.arr_clients.sonarr_client import SonarrClient
+from marquee.core.jobs.cancel_registry import raise_if_cancelled
 from marquee.core.letterbox_prefilter import refresh_letterbox_prefilter_for_movie
 from marquee.core.path_utils import safe_translate_and_validate
 from marquee.core.poster_sources.tmdb import TMDBClient
@@ -108,7 +109,7 @@ class SyncService:
 
     # ── Public API ───────────────────────────────────────────────────
 
-    async def sync_all(self, progress=None) -> SyncReport:
+    async def sync_all(self, progress=None, cancel_event=None) -> SyncReport:
         """Run every sync step and return an aggregate report.
 
         ``progress`` is an optional ``async (stage, message) -> None`` callback
@@ -117,19 +118,24 @@ class SyncService:
         """
         report = SyncReport()
         t0 = time.monotonic()
+        raise_if_cancelled(cancel_event, "library sync cancelled")
 
         if self.radarr:
             if progress is not None:
                 await progress("sync_movies", "Syncing movies from Radarr…")
+            raise_if_cancelled(cancel_event, "library sync cancelled")
             report.movies = await self._sync_movies()
+            raise_if_cancelled(cancel_event, "library sync cancelled")
 
         if self.sonarr:
             if progress is not None:
                 await progress("sync_series", "Syncing series from Sonarr…")
+            raise_if_cancelled(cancel_event, "library sync cancelled")
             sr = await self._sync_series()
             report.series = sr.series
             report.seasons = sr.seasons
             report.episodes = sr.episodes
+            raise_if_cancelled(cancel_event, "library sync cancelled")
 
         report.duration_seconds = round(time.monotonic() - t0, 2)
 

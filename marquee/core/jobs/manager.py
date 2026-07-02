@@ -13,6 +13,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.config import settings
+from marquee.core.jobs.cancel_registry import JobCancelledError
 from marquee.core.jobs.handlers import is_instant, resolve
 from marquee.models import Job, JobAttempt, JobEvent, JobResource, JobResourceReservation, JobWorker
 
@@ -348,7 +349,9 @@ class JobManager:
             )
         return True
 
-    async def claim_next(self, db: AsyncSession, worker_id: str) -> tuple[Job, JobAttempt] | None:
+    async def claim_next(
+        self, db: AsyncSession, worker_id: str, limit: int = 32
+    ) -> tuple[Job, JobAttempt] | None:
         now = utcnow()
         candidates = (
             (
@@ -360,7 +363,7 @@ class JobManager:
                     )
                     .order_by(Job.priority.desc(), Job.created_at)
                     .with_for_update(skip_locked=True)
-                    .limit(32)
+                    .limit(limit)
                 )
             )
             .scalars()
@@ -539,7 +542,8 @@ class JobManager:
         allow_retry: bool = True,
     ) -> None:
         now = utcnow()
-        error = {"type": type(exc).__name__, "message": str(exc)}
+        error_type = "Cancelled" if isinstance(exc, JobCancelledError) else type(exc).__name__
+        error = {"type": error_type, "message": str(exc)}
         await self._release(db, attempt.id)
         attempt.status = "failed"
         attempt.finished_at = now
@@ -548,7 +552,7 @@ class JobManager:
         # is running, so refresh the durable flag before deciding whether to
         # retry or terminalize the job.
         await db.refresh(job, ["cancel_requested"])
-        if job.cancel_requested:
+        if job.cancel_requested or isinstance(exc, JobCancelledError):
             job.status = "cancelled"
             job.finished_at = now
         elif allow_retry and job.type in RETRYABLE and job.attempt_count < job.max_attempts:

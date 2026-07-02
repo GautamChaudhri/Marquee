@@ -68,10 +68,12 @@
 		return null; // indeterminate
 	});
 
+	const isCancelling = $derived(status === 'cancelling');
+	const displayTitle = $derived(isCancelling ? 'Cancelling...' : title);
 	const tone = $derived(
 		status === 'failed' || status === 'dead_letter'
 			? 'bad'
-			: status === 'cancelled' || status === 'interrupted'
+			: status === 'cancelled' || status === 'interrupted' || isCancelling
 				? 'warn'
 				: 'gold'
 	);
@@ -80,9 +82,9 @@
 <div class="run-progress">
 	<div class="rp-head">
 		<span class="dot mq-pulse" style="--c:var(--{tone})"></span>
-		<span class="rp-title">{title}</span>
+		<span class="rp-title">{displayTitle}</span>
 		{#if pct != null}<span class="rp-pct mono">{pct}%</span>{/if}
-		{#if onCancel}
+		{#if onCancel && !isCancelling}
 			<button class="rp-cancel" onclick={onCancel}>Cancel</button>
 		{/if}
 	</div>

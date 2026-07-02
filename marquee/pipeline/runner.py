@@ -43,6 +43,7 @@ import numpy as np
 
 from marquee.config import settings
 from marquee.core.download_guard import ensure_image_response
+from marquee.core.jobs.cancel_registry import JobCancelledError
 from marquee.core.pipeline_config import pipeline_settings
 from marquee.core.poster_sources.tmdb import PosterCandidate, TMDBClient
 from marquee.models import Movie
@@ -134,6 +135,7 @@ class ProgressEvent:
 
 
 ProgressCallback = Callable[[ProgressEvent], None]
+ShouldCancel = Callable[[], bool]
 
 
 def _emit(progress: ProgressCallback | None, event: ProgressEvent) -> None:
@@ -606,13 +608,19 @@ def run_sync_stages(
     feature_extractor: FeatureExtractor,
     primary_name: str | None = None,
     progress: ProgressCallback | None = None,
+    should_cancel: ShouldCancel | None = None,
 ) -> SyncOutcome:
     """All CPU/GPU-bound stages, run off the event loop via asyncio.to_thread."""
+    def check_cancelled() -> None:
+        if should_cancel is not None and should_cancel():
+            raise JobCancelledError("poster pipeline cancelled")
+
     outcome = SyncOutcome()
     gate = PosterGate()
     gated: list[CandidateScore] = []
     errored_dir = out_dir / "errored"
     errored_dir.mkdir(exist_ok=True)
+    check_cancelled()
 
     # Stage 2a: exact SHA-256 dedup.
     stage_started = _stage_start("sha256", total=len(all_files), progress=progress)
@@ -622,6 +630,7 @@ def run_sync_stages(
         sha256_only=True,
         resolution_by_name=resolution_by_name,
     ).deduplicate(all_files)
+    check_cancelled()
     for removal in sha_result.removals:
         _log_dedup_removal(removal)
         record = records[removal.removed.name]
@@ -645,6 +654,7 @@ def run_sync_stages(
     stage_started = _stage_start("gate-resolution", total=sha_result.final, progress=progress)
     resolution_survivors: list[Path] = []
     for path in sorted(sha_result.survivors):
+        check_cancelled()
         record = records[path.name]
         candidate = candidate_map[path.name]
         decision = gate.evaluate_metadata(original_width=candidate.width)
@@ -677,9 +687,11 @@ def run_sync_stages(
         "style-features", total=len(resolution_survivors), progress=progress
     )
     style_items = [(path, candidate_map[path.name]) for path in resolution_survivors]
+    check_cancelled()
     style_results = feature_extractor.extract_style_batch(style_items, primary_name=primary_name)
     styled: list[Path] = []
     for (path, _candidate), result in zip(style_items, style_results, strict=True):
+        check_cancelled()
         record = records[path.name]
         record.stage_reached = "features"
         if isinstance(result, Exception):
@@ -706,6 +718,7 @@ def run_sync_stages(
     style_survivors: list[Path] = []
     style_gated = 0
     for path in styled:
+        check_cancelled()
         record = records[path.name]
         decision = gate.evaluate_style(record.features)
         if decision.passed:
@@ -734,13 +747,16 @@ def run_sync_stages(
     ocr_rejected_dir.mkdir()
 
     def _ocr_tick(done: int, total: int) -> None:
+        check_cancelled()
         _emit(progress, ProgressEvent(stage="ocr", state="progress", done=done, total=total))
 
+    check_cancelled()
     ocr_results = PosterTextFilter(movie_title, director=None).filter_batch(
         style_survivors, progress=_ocr_tick
     )
     ocr_survivors: list[OCRCandidateResult] = []
     for result in ocr_results:
+        check_cancelled()
         record = records[result.image_path.name]
         record.stage_reached = "ocr"
         # Durably capture what OCR actually read — for every candidate that
@@ -796,6 +812,7 @@ def run_sync_stages(
             resolution_by_name=resolution_by_name,
             preference_by_name=dedup_preference,
         ).deduplicate(ocr_survivor_paths)
+        check_cancelled()
         phash_survivor_names = {path.name for path in phash_result.survivors}
         for removal in phash_result.removals:
             if removal.reason != "phash":
@@ -824,10 +841,12 @@ def run_sync_stages(
     # The stacker reuses the DINOv2 vectors computed here as its grouping
     # signal — capture them keyed by item index (aligned to ocr_survivors).
     dino_vectors: dict = {}
+    check_cancelled()
     detail_results = feature_extractor.complete_batch(detail_items, dino_vectors_out=dino_vectors)
     for index, (ocr_result, detail_result) in enumerate(
         zip(ocr_survivors, detail_results, strict=True)
     ):
+        check_cancelled()
         filename = ocr_result.image_path.name
         record = records[filename]
         record.stage_reached = "features"
@@ -879,6 +898,7 @@ def run_sync_stages(
     # Stage 6: within-movie ranking.
     stage_started = _stage_start("rank", total=len(passed), progress=progress)
     logger.info("RANK | scorer=%s", diagnostic_scorer.name)
+    check_cancelled()
     ranked = diagnostic_scorer.rank(passed)
     # Stage 6b: group same-design variants into stacks and rank designs
     # against each other (auto-pick = 1A). Mutates stack fields on records;
@@ -886,6 +906,7 @@ def run_sync_stages(
     if pipeline_settings.STACK_ENABLED:
         assign_stacks(ranked)
     for record in ranked:
+        check_cancelled()
         logger.info(
             "RANK | rank=%d | file=%s | final_score=%.4f | scorer=%s",
             record.rank,
