@@ -9,6 +9,7 @@ import type {
 	OcrLabelRunState,
 	PipelineMetrics,
 	PipelineRunRef,
+	PipelineSummary,
 	ReviewQueue,
 	RunResultsResponse
 } from './types';
@@ -30,6 +31,25 @@ export function runBatch(
 	body: { scope: BatchScope; movie_ids?: number[] }
 ): Promise<JobSummary> {
 	return apiSend<JobSummary>(fetchFn, 'POST', '/pipeline/batch', body);
+}
+
+export function getPipelineSummary(fetchFn: Fetch): Promise<PipelineSummary> {
+	return apiGet<PipelineSummary>(fetchFn, '/pipeline/summary');
+}
+
+export function rescanPosters(fetchFn: Fetch): Promise<JobSummary> {
+	return apiSend<JobSummary>(fetchFn, 'POST', '/pipeline/rescan-posters', {});
+}
+
+export function backupAllPosters(fetchFn: Fetch): Promise<JobSummary> {
+	return apiSend<JobSummary>(fetchFn, 'POST', '/pipeline/backup-all', {});
+}
+
+export function runPosterMaintenance(
+	fetchFn: Fetch,
+	body: { dry_run?: boolean; force?: boolean } = {}
+): Promise<JobSummary> {
+	return apiSend<JobSummary>(fetchFn, 'POST', '/pipeline/maintenance', body);
 }
 
 /** Latest unreviewed run per movie, for the Review tab. */

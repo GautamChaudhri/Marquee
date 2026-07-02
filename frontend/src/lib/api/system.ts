@@ -68,6 +68,7 @@ export function getSettings(fetch: Fetch): Promise<RuntimeSettings> {
 			paths: {},
 			sync: {},
 			letterbox: {},
+			posters: { restore_method: 'download', backup_dir: 'data/backups/posters' },
 			poster_formats: {},
 			writable: true
 		});

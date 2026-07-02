@@ -18,6 +18,7 @@ from marquee.models import (
     ArtworkEvent,
     DoviState,
     Job,
+    JobSchedule,
     MediaJob,
     MediaJobEvent,
     Movie,
@@ -321,6 +322,8 @@ async def test_settings_redacts_secrets(client: AsyncClient, monkeypatch):
     assert body["integrations"]["radarr"]["configured"] is True
     assert body["integrations"]["radarr"]["api_key_configured"] is True
     assert body["integrations"]["subgen"]["callback_token_configured"] is True
+    assert body["posters"]["restore_method"] == settings.POSTER_RESTORE_METHOD
+    assert body["posters"]["backup_dir"] == settings.POSTER_BACKUP_DIR
     serialized = json.dumps(body)
     assert "radarr-secret" not in serialized
     assert "subgen-secret" not in serialized
@@ -329,7 +332,9 @@ async def test_settings_redacts_secrets(client: AsyncClient, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_put_settings_success(client: AsyncClient, monkeypatch, tmp_path):
+async def test_put_settings_success(
+    db: AsyncSession, client: AsyncClient, monkeypatch, tmp_path
+):
     monkeypatch.setattr(
         "marquee.core.subtitles.config._overrides_path",
         lambda: tmp_path / "subtitle_overrides.json",
@@ -389,7 +394,75 @@ async def test_put_settings_success(client: AsyncClient, monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_put_settings_validation_failure(client: AsyncClient, monkeypatch, tmp_path):
+async def test_put_settings_persists_poster_and_heal_overrides(
+    db: AsyncSession, client: AsyncClient, monkeypatch, tmp_path
+):
+    monkeypatch.setattr(
+        "marquee.config._overrides_path",
+        lambda: tmp_path / "settings_overrides.json",
+    )
+    monkeypatch.setattr(settings, "MOVIE_POSTER_FORMAT", "poster.jpg")
+    monkeypatch.setattr(settings, "POSTER_RESTORE_METHOD", "download")
+    monkeypatch.setattr(settings, "HEAL_ENABLED", True)
+    monkeypatch.setattr(settings, "HEAL_INTERVAL_MINUTES", 60)
+
+    resp = await client.put(
+        "/api/settings",
+        json={
+            "posters": {
+                "movie_poster_format": "{movie_basename}-poster",
+                "restore_method": "local",
+            },
+            "heal": {"enabled": False, "interval_minutes": 15},
+        },
+    )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "MOVIE_POSTER_FORMAT" in data["applied"]
+    assert "POSTER_RESTORE_METHOD" in data["applied"]
+    assert "HEAL_ENABLED" in data["applied"]
+    assert "HEAL_INTERVAL_MINUTES" in data["applied"]
+    assert data["settings"]["poster_formats"]["movie"] == "{movie_basename}-poster"
+    assert data["settings"]["posters"]["restore_method"] == "local"
+    assert data["settings"]["sync"]["heal_enabled"] is False
+    assert data["settings"]["sync"]["heal_interval_minutes"] == 15
+
+    content = json.loads((tmp_path / "settings_overrides.json").read_text())
+    assert content["MOVIE_POSTER_FORMAT"] == "{movie_basename}-poster"
+    assert content["POSTER_RESTORE_METHOD"] == "local"
+    assert content["HEAL_ENABLED"] is False
+    assert content["HEAL_INTERVAL_MINUTES"] == 15
+
+    schedule = await db.get(JobSchedule, "poster-heal")
+    assert schedule is not None
+    assert schedule.job_type == "poster_heal"
+    assert schedule.enabled is False
+    assert schedule.interval_seconds == 15 * 60
+
+
+@pytest.mark.asyncio
+async def test_put_settings_rejects_invalid_poster_format(
+    db: AsyncSession, client: AsyncClient, monkeypatch, tmp_path
+):
+    monkeypatch.setattr(
+        "marquee.config._overrides_path",
+        lambda: tmp_path / "settings_overrides.json",
+    )
+
+    resp = await client.put(
+        "/api/settings",
+        json={"posters": {"movie_poster_format": "../poster"}},
+    )
+
+    assert resp.status_code == 400
+    assert not (tmp_path / "settings_overrides.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_put_settings_validation_failure(
+    db: AsyncSession, client: AsyncClient, monkeypatch, tmp_path
+):
     monkeypatch.setattr(
         "marquee.core.subtitles.config._overrides_path",
         lambda: tmp_path / "subtitle_overrides.json",

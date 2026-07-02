@@ -188,7 +188,7 @@
 		<!-- Library path: ranking happens on the run-results pages -->
 		<div class="note">
 			We queued a genre-diverse batch of your library to rank. Review and rank them from the
-			<a class="link" href="/pipeline">Pipeline review queue</a> — each one you rank counts toward
+			<a class="link" href="/pipeline/movies?tab=review">Pipeline review queue</a> — each one you rank counts toward
 			the meter above. Come back here to activate when you hit {status?.min ?? 15}.
 		</div>
 	{/if}
