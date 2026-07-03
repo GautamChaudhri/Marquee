@@ -5,6 +5,7 @@
 	import RunProgress from '$lib/components/RunProgress.svelte';
 	import SectionHeader from '$lib/components/SectionHeader.svelte';
 	import StatCard from '$lib/components/StatCard.svelte';
+	import TextProfilePanel from '$lib/components/pipeline/TextProfilePanel.svelte';
 	import {
 		backupAllPosters,
 		getPipelineSummary,
@@ -318,6 +319,8 @@
 		<b>Later</b>
 	</button>
 </div>
+
+<TextProfilePanel initial={data.textProfiles} />
 
 {#if runningJobs.length}
 	<section class="band">
