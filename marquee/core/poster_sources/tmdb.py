@@ -7,7 +7,7 @@ Image CDN: https://image.tmdb.org/t/p/{size}{file_path}
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import httpx
 
@@ -41,6 +41,15 @@ class PosterCandidate:
     def url(self, size: str = "original") -> str:
         """Build the full CDN URL for this poster at the given size."""
         return f"{IMAGE_BASE_URL}/{size}{self.file_path}"
+
+
+@dataclass
+class MovieDetails:
+    """TMDB movie metadata used to classify poster text."""
+
+    director: str | None = None
+    production_companies: list[str] = field(default_factory=list)
+    tagline: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -171,6 +180,46 @@ class TMDBClient:
         if not poster_path:
             return None
         return poster_path.lstrip("/").split("/")[-1]
+
+    async def get_movie_details(self, tmdb_id: int) -> MovieDetails:
+        """Fetch movie metadata used by the OCR text gate.
+
+        Pulls the director from credits, the production company names, and the
+        public TMDB tagline. Missing values stay ``None`` / ``[]``.
+        """
+        data = await self._get(
+            f"/movie/{tmdb_id}",
+            params={"append_to_response": "credits"},
+        )
+        if not isinstance(data, dict):
+            return MovieDetails()
+
+        credits = data.get("credits")
+        crew = credits.get("crew", []) if isinstance(credits, dict) else []
+
+        director = None
+        for member in crew:
+            if not isinstance(member, dict) or member.get("job") != "Director":
+                continue
+            name = str(member.get("name") or "").strip()
+            if name:
+                director = name
+                break
+
+        companies: list[str] = []
+        for company in data.get("production_companies", []):
+            if not isinstance(company, dict):
+                continue
+            name = str(company.get("name") or "").strip()
+            if name and name not in companies:
+                companies.append(name)
+
+        tagline = str(data.get("tagline") or "").strip() or None
+        return MovieDetails(
+            director=director,
+            production_companies=companies,
+            tagline=tagline,
+        )
 
     # ── TV Endpoints ─────────────────────────────────────────────────
 

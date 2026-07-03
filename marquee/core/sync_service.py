@@ -11,6 +11,7 @@ Design:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
@@ -43,6 +44,19 @@ from marquee.models import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _needs_tmdb_enrichment(movie: Movie) -> bool:
+    """Whether this movie still needs the one-time TMDB OCR metadata backfill.
+
+    ``tagline`` is intentionally not part of the retry gate. Many movies have
+    no tagline at all; retrying on every ``NULL`` tagline would re-hit TMDB on
+    every sync for those rows. We still populate ``tagline`` whenever we do
+    fetch details for a movie.
+    """
+    return bool(movie.tmdb_id) and (
+        movie.director is None or movie.production_companies_json is None
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -190,6 +204,7 @@ class SyncService:
 
         # Index existing rows by radarr_id → O(1) lookups
         existing = {m.radarr_id: m for m in (await self.db.execute(select(Movie))).scalars()}
+        enrich_candidates: list[Movie] = []
 
         for data in raw_movies:
             radarr_id = data["id"]
@@ -207,11 +222,16 @@ class SyncService:
                     result.created += 1
                 else:
                     result.updated += 1
+                previous_tmdb_id = movie.tmdb_id
 
                 # ── Identity ──────────────────────────────────────────
                 movie.title = data["title"]
                 movie.year = data.get("year", 0)
                 movie.tmdb_id = data.get("tmdbId")
+                if previous_tmdb_id != movie.tmdb_id:
+                    movie.director = None
+                    movie.production_companies_json = None
+                    movie.tagline = None
                 movie.imdb_id = data.get("imdbId")
                 movie.folder_path = data.get("path") or ""
 
@@ -265,13 +285,44 @@ class SyncService:
                 )
                 await _upsert_movie_media_file(self.db, movie, movie_file)
                 await refresh_letterbox_prefilter_for_movie(self.db, movie)
+                if _needs_tmdb_enrichment(movie):
+                    enrich_candidates.append(movie)
 
             except Exception:
                 logger.error("Error syncing movie radarr_id=%s", radarr_id, exc_info=True)
                 result.errors += 1
 
+        if self.tmdb and enrich_candidates:
+            await self._enrich_movies_from_tmdb(enrich_candidates)
+
         await self.db.commit()
         return result
+
+    async def _enrich_movies_from_tmdb(self, movies: list[Movie]) -> None:
+        """Backfill OCR metadata from TMDB without blocking the sync on failures."""
+        semaphore = asyncio.Semaphore(5)
+
+        async def enrich(movie: Movie) -> None:
+            tmdb_id = movie.tmdb_id
+            if tmdb_id is None or not _needs_tmdb_enrichment(movie):
+                return
+            try:
+                async with semaphore:
+                    details = await self.tmdb.get_movie_details(tmdb_id)
+            except Exception:
+                logger.warning(
+                    "TMDB enrichment failed for movie radarr_id=%s tmdb_id=%s",
+                    movie.radarr_id,
+                    tmdb_id,
+                    exc_info=True,
+                )
+                return
+
+            movie.director = details.director
+            movie.production_companies_json = details.production_companies
+            movie.tagline = details.tagline
+
+        await asyncio.gather(*(enrich(movie) for movie in movies))
 
     # ── Series ───────────────────────────────────────────────────────
 

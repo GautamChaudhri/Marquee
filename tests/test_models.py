@@ -83,6 +83,9 @@ async def test_movie_columns(db):
     assert "current_cf_score" in cols
     assert "has_hdr" in cols
     assert "has_dv" in cols
+    assert "director" in cols
+    assert "production_companies_json" in cols
+    assert "tagline" in cols
     # ArtworkMixin
     assert "poster_path" in cols
     assert "poster_source" in cols

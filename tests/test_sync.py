@@ -9,6 +9,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from marquee.core.poster_sources.tmdb import MovieDetails
 from marquee.core.sync_service import SyncService, _resolve_poster_path
 from marquee.models import (
     Episode,
@@ -145,6 +146,105 @@ async def test_sync_movies_updates_existing(db: AsyncSession):
     await db.refresh(movie)
     assert movie.title == "Dune"
     assert movie.year == 2021
+
+
+@pytest.mark.asyncio
+async def test_sync_movies_enriches_tmdb_metadata(db: AsyncSession):
+    radarr = AsyncMock()
+    radarr.get_movies.return_value = [_radarr_movie()]
+    tmdb = AsyncMock()
+    tmdb.get_movie_details.return_value = MovieDetails(
+        director="Denis Villeneuve",
+        production_companies=["Legendary Pictures", "Warner Bros."],
+        tagline="It begins.",
+    )
+
+    svc = SyncService(db, radarr=radarr, tmdb=tmdb)
+    await svc.sync_all()
+
+    movie = (await db.execute(select(Movie).where(Movie.radarr_id == 1))).scalar_one()
+    assert movie.director == "Denis Villeneuve"
+    assert movie.production_companies_json == ["Legendary Pictures", "Warner Bros."]
+    assert movie.tagline == "It begins."
+    tmdb.get_movie_details.assert_awaited_once_with(438631)
+
+
+@pytest.mark.asyncio
+async def test_sync_movies_skips_tmdb_fetch_for_enriched_rows(db: AsyncSession):
+    movie = Movie(
+        radarr_id=1,
+        title="Old Title",
+        year=2000,
+        folder_path="/old",
+        tmdb_id=438631,
+        director="Already Set",
+        production_companies_json=["Studio"],
+        tagline=None,
+    )
+    db.add(movie)
+    await db.flush()
+
+    radarr = AsyncMock()
+    radarr.get_movies.return_value = [_radarr_movie()]
+    tmdb = AsyncMock()
+
+    svc = SyncService(db, radarr=radarr, tmdb=tmdb)
+    await svc.sync_all()
+
+    tmdb.get_movie_details.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_sync_movies_refreshes_tmdb_metadata_when_tmdb_id_changes(db: AsyncSession):
+    movie = Movie(
+        radarr_id=1,
+        title="Old Title",
+        year=2000,
+        folder_path="/old",
+        tmdb_id=99,
+        director="Wrong Director",
+        production_companies_json=["Old Studio"],
+        tagline="Old tagline",
+    )
+    db.add(movie)
+    await db.flush()
+
+    radarr = AsyncMock()
+    radarr.get_movies.return_value = [_radarr_movie(tmdbId=438631)]
+    tmdb = AsyncMock()
+    tmdb.get_movie_details.return_value = MovieDetails(
+        director="Denis Villeneuve",
+        production_companies=["Legendary Pictures"],
+        tagline="It begins.",
+    )
+
+    svc = SyncService(db, radarr=radarr, tmdb=tmdb)
+    await svc.sync_all()
+
+    await db.refresh(movie)
+    assert movie.tmdb_id == 438631
+    assert movie.director == "Denis Villeneuve"
+    assert movie.production_companies_json == ["Legendary Pictures"]
+    assert movie.tagline == "It begins."
+    tmdb.get_movie_details.assert_awaited_once_with(438631)
+
+
+@pytest.mark.asyncio
+async def test_sync_movies_tmdb_enrichment_failure_tolerated(db: AsyncSession):
+    radarr = AsyncMock()
+    radarr.get_movies.return_value = [_radarr_movie()]
+    tmdb = AsyncMock()
+    tmdb.get_movie_details.side_effect = RuntimeError("boom")
+
+    svc = SyncService(db, radarr=radarr, tmdb=tmdb)
+    report = await svc.sync_all()
+
+    movie = (await db.execute(select(Movie).where(Movie.radarr_id == 1))).scalar_one()
+    assert report.movies.errors == 0
+    assert movie.director is None
+    assert movie.production_companies_json is None
+    assert movie.tagline is None
+    tmdb.get_movie_details.assert_awaited_once_with(438631)
 
 
 @pytest.mark.asyncio
