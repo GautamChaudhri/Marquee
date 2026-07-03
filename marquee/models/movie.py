@@ -83,6 +83,32 @@ class Movie(Base, TimestampMixin, ArtworkMixin):
     preferred_audio_languages_json: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     preferred_subtitle_languages_json: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
 
+    # ── TMDB-enriched metadata (OCR text-gate classification) ─────────
+    director: Mapped[str | None] = mapped_column(
+        String(500),
+        nullable=True,
+        comment=(
+            "Director name from TMDB movie credits — used by the text gate "
+            "to identify director-credit text on posters."
+        ),
+    )
+    production_companies_json: Mapped[list[str] | None] = mapped_column(
+        JSON,
+        nullable=True,
+        comment=(
+            "Production company names from TMDB — used by the text gate to "
+            "identify studio branding text on posters (e.g. 'Marvel Studios')."
+        ),
+    )
+    tagline: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+        comment=(
+            "Movie tagline from TMDB — used by the text gate to allow "
+            "matching promotional text on posters."
+        ),
+    )
+
     # ── Indexes ──────────────────────────────────────────────────────
     __table_args__ = (
         Index(
