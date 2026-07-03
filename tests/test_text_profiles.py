@@ -203,7 +203,9 @@ async def test_api_crud_and_default(client: AsyncClient):
     assert (await client.put(f"/api/text-profiles/default/{profile_id}")).status_code == 200
     assert (await client.get("/api/text-profiles")).json()["default_id"] == profile_id
 
-    assert (await client.delete(f"/api/text-profiles/{profile_id}")).status_code == 204
+    deleted = await client.delete(f"/api/text-profiles/{profile_id}")
+    assert deleted.status_code == 200
+    assert deleted.json() == {"deleted": profile_id}
     assert (await client.get("/api/text-profiles")).json()["default_id"] == "title_only"
 
 

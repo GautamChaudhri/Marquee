@@ -80,7 +80,7 @@ async def update_text_profile(profile_id: str, body: ProfileUpdate):
     return profile.to_dict()
 
 
-@router.delete("/{profile_id}", status_code=204)
+@router.delete("/{profile_id}")
 async def delete_text_profile(profile_id: str):
     try:
         delete_profile(profile_id)
@@ -88,3 +88,5 @@ async def delete_text_profile(profile_id: str):
         status = 404 if "Unknown" in str(exc) else 400
         raise HTTPException(status_code=status, detail=str(exc)) from exc
     logger.info("TEXT PROFILES | deleted %s", profile_id)
+    # Plain JSON body — the frontend client unconditionally parses JSON.
+    return {"deleted": profile_id}

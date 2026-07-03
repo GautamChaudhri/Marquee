@@ -1,6 +1,7 @@
 import type { PageLoad } from './$types';
 import { getPipelineSummary } from '$lib/api/pipeline';
 import { getSettings } from '$lib/api/system';
+import { listTextProfiles, type TextProfileList } from '$lib/api/text-profiles';
 import type { PipelineSummary, RuntimeSettings } from '$lib/api/types';
 
 const EMPTY_SUMMARY: PipelineSummary = {
@@ -17,9 +18,10 @@ const EMPTY_SUMMARY: PipelineSummary = {
 
 export const load: PageLoad = async ({ fetch }) => {
 	const safe = <T>(p: Promise<T>, fallback: T): Promise<T> => p.catch(() => fallback);
-	const [summary, settings] = await Promise.all([
+	const [summary, settings, textProfiles] = await Promise.all([
 		safe<PipelineSummary>(getPipelineSummary(fetch), EMPTY_SUMMARY),
-		safe<RuntimeSettings | null>(getSettings(fetch), null)
+		safe<RuntimeSettings | null>(getSettings(fetch), null),
+		safe<TextProfileList | null>(listTextProfiles(fetch), null)
 	]);
-	return { summary, settings };
+	return { summary, settings, textProfiles };
 };
