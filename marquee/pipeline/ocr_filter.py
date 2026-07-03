@@ -14,12 +14,15 @@ from collections.abc import Callable
 from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, NoReturn
+from typing import TYPE_CHECKING, Any, NoReturn
 
 import numpy as np
 from PIL import Image
 
 from marquee.core.pipeline_config import pipeline_settings
+
+if TYPE_CHECKING:
+    from marquee.core.text_profiles import TextProfile
 from marquee.ml.hardware import effective_ocr_omp_threads, effective_ocr_workers
 from marquee.pipeline.types import BoundingBox, OCRCandidateResult, OCRTextBox
 
@@ -579,6 +582,38 @@ _RATING_PATTERN = re.compile(
 )
 
 
+def effective_gate_knobs(profile: dict | None) -> dict:
+    """Resolve the text-gate knobs from an injected profile payload.
+
+    A text profile (resolved per movie by the runner and pickled into the OCR
+    workers) wins over the raw ``pipeline_settings`` knobs; any key the
+    profile omits falls back to the live setting, so built-in presets pin only
+    the mode while the advanced knobs keep working.
+    """
+    prof = profile or {}
+    return {
+        "mode": prof.get("mode") or pipeline_settings.OCR_TEXT_MODE,
+        "allow_map": {
+            "title": bool(prof.get("allow_title", pipeline_settings.OCR_ALLOW_TITLE)),
+            "director": bool(prof.get("allow_director", pipeline_settings.OCR_ALLOW_DIRECTOR)),
+            "studio": bool(prof.get("allow_studio", pipeline_settings.OCR_ALLOW_STUDIO)),
+            "rating": bool(prof.get("allow_rating", pipeline_settings.OCR_ALLOW_RATING)),
+            "tagline": bool(prof.get("allow_tagline", pipeline_settings.OCR_ALLOW_TAGLINE)),
+            "billing": bool(prof.get("allow_billing", False)),
+        },
+        "max_residual_boxes": int(
+            prof.get("max_residual_boxes", pipeline_settings.OCR_MAX_RESIDUAL_BOXES)
+        ),
+        "max_residual_area_fraction": float(
+            prof.get(
+                "max_residual_area_fraction",
+                pipeline_settings.OCR_MAX_RESIDUAL_AREA_FRACTION,
+            )
+        ),
+        "require_title": bool(prof.get("require_title", pipeline_settings.OCR_REQUIRE_TITLE)),
+    }
+
+
 def classify_text_box(
     box: _DetectedBox,
     *,
@@ -966,7 +1001,17 @@ def _worker_main(
         task = task_queue.get()
         if task is None:
             break
-        if len(task) == 5:
+        task_extras: dict | None = None
+        if len(task) == 6:
+            (
+                index,
+                path_string,
+                task_title_text,
+                task_title_tokens,
+                task_director_tokens,
+                task_extras,
+            ) = task
+        elif len(task) == 5:
             index, path_string, task_title_text, task_title_tokens, task_director_tokens = task
         else:
             index, path_string, task_title_tokens, task_director_tokens = task
@@ -980,6 +1025,7 @@ def _worker_main(
                     task_title_tokens,
                     task_director_tokens,
                     title_text=task_title_text,
+                    extras=task_extras,
                 ),
             )
         )
@@ -994,6 +1040,7 @@ def _process_image(
     director_tokens: set[str] | None = None,
     *,
     title_text: str | None = None,
+    extras: dict | None = None,
 ) -> OCRCandidateResult:
     """Detect text and decide accept/reject against this image's own title.
 
@@ -1001,7 +1048,13 @@ def _process_image(
     many movies in one batch — the expensive PaddleOCR model load stays
     once-per-worker while the cheap title matching varies per task. When omitted
     they fall back to the worker-global tokens (the single-movie / test path).
+
+    ``extras`` carries the optional per-movie text-gate context: a resolved
+    text profile dict (``TextProfileSettings`` as a plain dict — must survive
+    pickling into worker processes). When absent, ``_decide`` falls back to the
+    raw ``pipeline_settings`` knobs.
     """
+    profile: dict | None = (extras or {}).get("profile") or None
     using_worker_title_text = title_tokens is None
     if title_tokens is None:
         title_tokens = _worker_title_tokens
@@ -1181,7 +1234,12 @@ def _process_image(
         significant_area_fraction: float,
         detected_text_current: str,
     ) -> dict:
-        text_mode = pipeline_settings.OCR_TEXT_MODE
+        knobs = effective_gate_knobs(profile)
+        text_mode = knobs["mode"]
+        allow_title = knobs["allow_map"]["title"]
+        max_residual_boxes = knobs["max_residual_boxes"]
+        max_residual_area = knobs["max_residual_area_fraction"]
+        require_title = knobs["require_title"]
         if not detected_text_current:
             accepted = False
             reason = "no_text"
@@ -1196,13 +1254,7 @@ def _process_image(
             reason = None if accepted else ("has_title" if has_title else "text_heavy")
         elif text_mode == "custom":
             # Classify each significant residual box against the allow toggles.
-            allow_map = {
-                "title": pipeline_settings.OCR_ALLOW_TITLE,
-                "director": pipeline_settings.OCR_ALLOW_DIRECTOR,
-                "studio": pipeline_settings.OCR_ALLOW_STUDIO,
-                "rating": pipeline_settings.OCR_ALLOW_RATING,
-                "tagline": pipeline_settings.OCR_ALLOW_TAGLINE,
-            }
+            allow_map = knobs["allow_map"]
             denied_boxes: list[OCRTextBox] = []
             for box in significant_residual:
                 # Reconstruct the _DetectedBox from the OCRTextBox fields for
@@ -1224,40 +1276,31 @@ def _process_image(
                 if not allow_map.get(category, False):
                     denied_boxes.append(box)
 
-            title_allowed = pipeline_settings.OCR_ALLOW_TITLE
             denied_count = len(denied_boxes)
             denied_area = sum(b.area for b in denied_boxes) / image_area if image_area > 0 else 0.0
 
-            accepted = (
-                denied_count <= pipeline_settings.OCR_MAX_RESIDUAL_BOXES
-                and denied_area <= pipeline_settings.OCR_MAX_RESIDUAL_AREA_FRACTION
-            )
+            accepted = denied_count <= max_residual_boxes and denied_area <= max_residual_area
             reason = None if accepted else "text_heavy"
             # Title gate: if title is denied, require that one is actually present.
-            if accepted and not title_allowed and title_box is not None:
+            if accepted and not allow_title and title_box is not None:
                 accepted = False
                 reason = "has_title"
             # Title requirement: if title is required but absent (and no title box).
-            if (
-                accepted
-                and title_allowed
-                and title_box is None
-                and pipeline_settings.OCR_REQUIRE_TITLE
-            ):
+            if accepted and allow_title and title_box is None and require_title:
                 accepted = False
                 reason = "no_title"
         else:
             # title_only (default): require title; reject significant residual
             # above the count/area thresholds.
             accepted = (
-                len(significant_residual) <= pipeline_settings.OCR_MAX_RESIDUAL_BOXES
-                and significant_area_fraction <= pipeline_settings.OCR_MAX_RESIDUAL_AREA_FRACTION
+                len(significant_residual) <= max_residual_boxes
+                and significant_area_fraction <= max_residual_area
             )
             reason = None if accepted else "text_heavy"
             # Title-only target: text that never matches the title (logos, taglines
             # read in isolation) does not make a titled poster. The fallback remains
             # opt-in via OCR_ACCEPT_NO_TEXT and is disabled by default.
-            if accepted and title_box is None and pipeline_settings.OCR_REQUIRE_TITLE:
+            if accepted and title_box is None and require_title:
                 accepted = False
                 reason = "no_title"
 
@@ -1267,11 +1310,11 @@ def _process_image(
             "reason": reason,
             "has_text": bool(detected_text_current),
             "has_title": title_box is not None,
-            "require_title": pipeline_settings.OCR_REQUIRE_TITLE,
+            "require_title": require_title,
             "significant_residual_count": len(significant_residual),
-            "max_residual_boxes": pipeline_settings.OCR_MAX_RESIDUAL_BOXES,
+            "max_residual_boxes": max_residual_boxes,
             "significant_area_fraction": significant_area_fraction,
-            "max_residual_area_fraction": pipeline_settings.OCR_MAX_RESIDUAL_AREA_FRACTION,
+            "max_residual_area_fraction": max_residual_area,
         }
 
     def _trace(
@@ -1452,6 +1495,7 @@ class PosterTextFilter:
         director: str | None = None,
         media_type: str = "movie",
         num_workers: int | None = None,
+        profile: TextProfile | None = None,
     ):
         self.title = _normalise(title)
         self.director = _normalise(director) if director else ""
@@ -1461,6 +1505,15 @@ class PosterTextFilter:
         self.title_tokens = set(self.title.split())
         _add_digit_words(self.title_tokens)
         self.director_tokens = set(self.director.split())
+        # Resolved text profile, serialized as a plain dict so it pickles into
+        # spawned worker processes. None → _decide uses pipeline_settings.
+        self.profile_payload: dict | None = profile.gate_payload() if profile else None
+
+    def task_extras(self) -> dict | None:
+        """Per-task text-gate context for run_ocr_tasks item tuples."""
+        if self.profile_payload is None:
+            return None
+        return {"profile": self.profile_payload}
 
     def filter_batch(
         self,
@@ -1471,7 +1524,11 @@ class PosterTextFilter:
         """Single-movie batch: every poster matched against this movie's title."""
         if not paths:
             return []
-        items = [(path, self.title, self.title_tokens, self.director_tokens) for path in paths]
+        extras = self.task_extras()
+        items = [
+            (path, self.title, self.title_tokens, self.director_tokens, extras)
+            for path in paths
+        ]
         results = self.run_ocr_batch(items, num_workers=self.num_workers, progress=progress)
         results = apply_no_text_fallback(results)
         logger.info(
@@ -1530,12 +1587,17 @@ class PosterTextFilter:
             return []
 
         for index, item in enumerate(items):
-            if len(item) == 4:
+            extras: dict | None = None
+            if len(item) == 5:
+                path, title_text, title_tokens, director_tokens, extras = item
+            elif len(item) == 4:
                 path, title_text, title_tokens, director_tokens = item
             else:
                 path, title_tokens, director_tokens = item
                 title_text = " ".join(sorted(title_tokens))
-            pool.task_queue.put((index, str(path), title_text, title_tokens, director_tokens))
+            pool.task_queue.put(
+                (index, str(path), title_text, title_tokens, director_tokens, extras)
+            )
         for _ in pool.workers:
             pool.task_queue.put(None)
 
@@ -1691,4 +1753,5 @@ class PosterTextFilter:
             self.title_tokens,
             self.director_tokens,
             title_text=self.title,
+            extras=self.task_extras(),
         )

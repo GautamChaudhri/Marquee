@@ -50,36 +50,10 @@ KNOB_GROUPS: list[dict[str, Any]] = [
             "GATE_FAN_JUNK_MAX_RESOLUTION_MP",
         ],
     },
-    {
-        "id": "text_gate",
-        "label": "Text gate / OCR",
-        "description": "OCR text-detection, gate presets, and per-category toggles.",
-        "knobs": [
-            "OCR_TEXT_MODE",
-            "OCR_ALLOW_TITLE",
-            "OCR_ALLOW_DIRECTOR",
-            "OCR_ALLOW_STUDIO",
-            "OCR_ALLOW_RATING",
-            "OCR_ALLOW_TAGLINE",
-            "OCR_DEVICE",
-            "OCR_WORKERS",
-            "OCR_DETAIL_PASSES",
-            "OCR_MAX_RESIDUAL_BOXES",
-            "OCR_MAX_RESIDUAL_AREA_FRACTION",
-            "OCR_CONFIDENCE_THRESHOLD",
-            "OCR_STRIP_CONFIDENCE_THRESHOLD",
-            "OCR_BOTTOM_CONFIDENCE_THRESHOLD",
-            "OCR_FUZZY_CUTOFF",
-            "OCR_TITLE_PROXIMITY_PIXELS",
-            "OCR_RESIDUAL_SIGNIFICANT_AREA_FRACTION",
-            "OCR_RESIDUAL_SIGNIFICANT_WIDTH_FRACTION",
-            "OCR_REQUIRE_TITLE",
-            "OCR_ACCEPT_NO_TEXT",
-            "OCR_ENHANCE_RETRY",
-            "OCR_TITLE_RECOVERY_ENABLED",
-            "OCR_TITLE_RECOVERY_CONFIDENCE_THRESHOLD",
-        ],
-    },
+    # The "text_gate" group was removed from the settings UI: text-gate
+    # behaviour is managed through the Text Profiles system on the pipeline
+    # landing page (design/plans/03). The OCR_* knobs below stay in KNOB_META
+    # so the config API still serves and validates them.
     {
         "id": "style",
         "label": "Style / taste",

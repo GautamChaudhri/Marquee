@@ -297,6 +297,7 @@ from marquee.api.routes.sync import router as sync_router  # noqa: E402
 from marquee.api.routes.system import router as system_router  # noqa: E402
 from marquee.api.routes.taste import router as taste_router  # noqa: E402
 from marquee.api.routes.test_pipeline import router as test_pipeline_router  # noqa: E402
+from marquee.api.routes.text_profiles import router as text_profiles_router  # noqa: E402
 from marquee.api.routes.webhooks import router as webhooks_router  # noqa: E402
 
 app.include_router(sync_router)
@@ -307,6 +308,7 @@ app.include_router(feedback_router)
 app.include_router(taste_router)
 app.include_router(onboarding_router)
 app.include_router(config_router)
+app.include_router(text_profiles_router)
 app.include_router(backup_router)
 app.include_router(activity_router)
 app.include_router(hdr_router)
