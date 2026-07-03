@@ -374,6 +374,7 @@ class PipelineSettings(BaseSettings):
     OCR_ALLOW_STUDIO: bool = False
     OCR_ALLOW_RATING: bool = False
     OCR_ALLOW_TAGLINE: bool = False
+    OCR_ALLOW_BILLING: bool = False
 
     FACE_CONFIDENCE_THRESHOLD: float = 0.5
     FACE_NMS_THRESHOLD: float = 0.4
@@ -547,6 +548,7 @@ class PipelineSettings(BaseSettings):
                 "allow_studio": self.OCR_ALLOW_STUDIO,
                 "allow_rating": self.OCR_ALLOW_RATING,
                 "allow_tagline": self.OCR_ALLOW_TAGLINE,
+                "allow_billing": self.OCR_ALLOW_BILLING,
                 "confidence_threshold": self.OCR_CONFIDENCE_THRESHOLD,
                 "strip_confidence_threshold": self.OCR_STRIP_CONFIDENCE_THRESHOLD,
                 "bottom_confidence_threshold": self.OCR_BOTTOM_CONFIDENCE_THRESHOLD,

@@ -203,6 +203,7 @@ KNOB_META: dict[str, dict[str, Any]] = {
     "OCR_ALLOW_STUDIO": {"kind": "bool"},
     "OCR_ALLOW_RATING": {"kind": "bool"},
     "OCR_ALLOW_TAGLINE": {"kind": "bool"},
+    "OCR_ALLOW_BILLING": {"kind": "bool"},
     "OCR_DEVICE": {"kind": "enum", "options": ["auto", "cpu", "gpu"]},
     "OCR_WORKERS": {"kind": "int", "min": 0, "max": 16, "step": 1},
     "OCR_DETAIL_PASSES": {"kind": "bool"},

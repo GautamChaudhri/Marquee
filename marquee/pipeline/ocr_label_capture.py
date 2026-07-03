@@ -33,6 +33,7 @@ REQUIRED_OCR_SNAPSHOT_KEYS = frozenset(
         "allow_studio",
         "allow_rating",
         "allow_tagline",
+        "allow_billing",
         "confidence_threshold",
         "strip_confidence_threshold",
         "bottom_confidence_threshold",
