@@ -136,6 +136,7 @@ async def letterbox_detect(job: Job) -> dict[str, Any]:
                 db,
                 movie,
                 detector=job.payload.get("detector", "v2"),
+                thorough=bool(job.payload.get("thorough", False)),
                 parent_job_id=job.parent_id,
             )
             return {"movie_id": movie.id, "status": state.status, "confidence": state.confidence}

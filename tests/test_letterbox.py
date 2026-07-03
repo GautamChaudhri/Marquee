@@ -347,6 +347,13 @@ def test_sample_minutes_movie_and_tv():
     assert ld.sample_minutes(1800, is_tv=True) == [5, 10, 15]
 
 
+def test_sample_minutes_thorough_uses_denser_movie_schedule():
+    regular = ld.sample_minutes(7200, is_tv=False)
+    thorough = ld.sample_minutes(7200, is_tv=False, thorough=True)
+    assert thorough[:4] == [5, 6, 7, 8]
+    assert len(thorough) > len(regular)
+
+
 def test_sample_minutes_clamped_to_short_duration():
     # 12-minute file: only samples before minute 12 survive.
     minutes = ld.sample_minutes(12 * 60, is_tv=False)
@@ -1455,6 +1462,38 @@ async def test_movie_detail_without_reencode_snapshot(client, db, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_movie_detail_includes_sample_previews_even_when_reviewed(client, db):
+    movie = Movie(title="Reviewed", year=2000, folder_path="/m/rev", tmdb_id=10)
+    db.add(movie)
+    await db.commit()
+    await db.refresh(movie)
+    db.add(
+        LetterboxState(
+            movie_id=movie.id,
+            status="tagged",
+            confidence="high",
+            reviewed=True,
+            samples_json=json.dumps(
+                [
+                    {"minute": 5, "ok": True},
+                    {"minute": 10, "ok": False, "error": "dark frame"},
+                ]
+            ),
+        )
+    )
+    await db.commit()
+
+    resp = await client.get(f"/api/letterbox/movies/{movie.id}")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "preview_urls" not in body
+    assert body["sample_previews"] == [
+        {"minute": 5, "ok": True, "url": f"/api/letterbox/movies/{movie.id}/preview?mode=before&minute=5"},
+        {"minute": 10, "ok": False, "url": None},
+    ]
+
+
+@pytest.mark.asyncio
 async def test_movie_detail_includes_active_reencode_snapshot(client, db, tmp_path):
     movie, _ = _movie_with_file(tmp_path)
     db.add(movie)
@@ -1532,7 +1571,7 @@ async def test_movie_detail_uses_latest_active_reencode_job(client, db, tmp_path
     assert body["reencode"]["job"]["job_id"] == "job-new"
     assert body["reencode"]["job"]["status"] == "running"
     assert body["reencode"]["job"]["progress_done"] == 50
-    assert body["reencode"]["job"]["plan"]["operation"] == "letterbox_reencode"
+    assert body["reencode"]["job"]["plan"]["encoder"]["encoder"] == "hevc_nvenc"
 
 
 @pytest.mark.asyncio
@@ -1578,9 +1617,15 @@ async def test_reencode_plan_supersedes_old_paired_generic_job(client, db, tmp_p
         if isinstance(row.payload, dict) and row.payload.get("media_job_id")
     }
 
-    assert (await db.get(MediaJob, first_id)).status == "cancelled"
+    first_job = (
+        await db.execute(select(MediaJob).where(MediaJob.job_id == first_id))
+    ).scalar_one()
+    second_job = (
+        await db.execute(select(MediaJob).where(MediaJob.job_id == second_id))
+    ).scalar_one()
+    assert first_job.status == "cancelled"
     assert generic_by_media_id[first_id].status == "cancelled"
-    assert (await db.get(MediaJob, second_id)).status == "planned"
+    assert second_job.status == "planned"
     assert generic_by_media_id[second_id].status == "planned"
 
 
@@ -1601,6 +1646,7 @@ async def test_movie_detail_includes_finished_reencode_artifact(client, db, tmp_
             status="succeeded",
         )
     )
+    await db.commit()
     db.add(
         LetterboxReencodeArtifact(
             job_id="job1",
@@ -1629,6 +1675,67 @@ async def test_movie_detail_includes_finished_reencode_artifact(client, db, tmp_
 
 
 @pytest.mark.asyncio
+async def test_batch_reencode_queues_only_eligible_movies(client, db, tmp_path, monkeypatch):
+    first, _ = _movie_with_file(tmp_path, "First (2020).mkv")
+    second, _ = _movie_with_file(tmp_path, "Second (2020).mkv")
+    second.tmdb_id = 112
+    db.add_all([first, second])
+    await db.commit()
+    await db.refresh(first)
+    await db.refresh(second)
+    db.add_all(
+        [
+            LetterboxState(
+                movie_id=first.id,
+                status="candidate",
+                confidence="high",
+                recommended_crop_top=140,
+                recommended_crop_bottom=140,
+            ),
+            LetterboxState(
+                movie_id=second.id,
+                status="variable_unsafe",
+                confidence="low",
+                recommended_crop_top=140,
+                recommended_crop_bottom=140,
+            ),
+        ]
+    )
+    await db.commit()
+
+    monkeypatch.setattr(binaries, "resolve", lambda name: f"/usr/bin/{name}")
+
+    async def fake_build_plan(*_args, **_kwargs):
+        return _reencode_plan()
+
+    monkeypatch.setattr(letterbox_reencode, "build_plan", fake_build_plan)
+
+    resp = await client.post(
+        "/api/letterbox/batch/reencode",
+        json={
+            "movie_ids": [first.id, second.id],
+            "settings": {"quality_profile": "balanced", "codec": "preserve", "allow_cpu": True},
+        },
+    )
+    assert resp.status_code == 202
+    body = resp.json()
+    assert body["count"] == 1
+    assert len(body["job_ids"]) == 1
+    assert body["skipped"] == [
+        {
+            "movie_id": second.id,
+            "code": "variable_unsafe",
+            "reason": "Variable aspect ratio is unsafe to crop permanently.",
+        }
+    ]
+    queued_job = (
+        await db.execute(select(MediaJob).where(MediaJob.job_id == body["job_ids"][0]))
+    ).scalar_one()
+    assert queued_job is not None
+    assert queued_job.status == "queued"
+
+
+@pytest.mark.asyncio
 async def test_detect_returns_503_without_ffmpeg(client, db, monkeypatch):
     monkeypatch.setattr(binaries, "resolve", lambda name: None)
     movie = Movie(title="X", year=2000, folder_path="/m/x", tmdb_id=8)
@@ -1637,6 +1744,21 @@ async def test_detect_returns_503_without_ffmpeg(client, db, monkeypatch):
     await db.refresh(movie)
     resp = await client.post(f"/api/letterbox/movies/{movie.id}/detect")
     assert resp.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_detect_passes_thorough_flag_into_job_payload(client, db, monkeypatch):
+    monkeypatch.setattr(binaries, "resolve", lambda name: "/usr/bin/ffmpeg")
+    movie = Movie(title="X", year=2000, folder_path="/m/x", tmdb_id=81)
+    db.add(movie)
+    await db.commit()
+    await db.refresh(movie)
+
+    resp = await client.post(f"/api/letterbox/movies/{movie.id}/detect?thorough=true")
+    assert resp.status_code == 200
+    job = await db.get(Job, resp.json()["job_id"])
+    assert job is not None
+    assert job.payload["thorough"] is True
 
 
 @pytest.mark.asyncio
@@ -1825,8 +1947,9 @@ async def test_preview_route_does_not_regenerate_for_reviewed_movie(client, db, 
 
 @pytest.mark.asyncio
 async def test_job_events_404_unknown(client):
-    resp = await client.get("/api/letterbox/jobs/nope/events")
-    assert resp.status_code == 404
+    resp = await client.get("/api/letterbox/jobs/nope/events", follow_redirects=False)
+    assert resp.status_code == 307
+    assert resp.headers["location"] == "/api/jobs/nope/events"
 
 
 def test_job_state_summary_tracks_requested_totals():

@@ -261,6 +261,7 @@ export interface LetterboxDetail {
 	title?: string;
 	year?: number | null;
 	samples?: LetterboxSample[];
+	sample_previews?: LetterboxSamplePreview[];
 	preview_minute?: number;
 	preview_urls?: { before: string; after: string };
 	reencode?: {
@@ -283,6 +284,12 @@ export interface LetterboxSample {
 	error?: string | null;
 	backend?: 'cpu' | 'nvdec';
 	elapsed_ms?: number | null;
+}
+
+export interface LetterboxSamplePreview {
+	minute: number;
+	ok: boolean;
+	url: string | null;
 }
 
 /** One row in a kanban column (from GET /letterbox/candidates items). */
@@ -323,6 +330,23 @@ export interface LetterboxAnalyzeSummary {
 	failed: number;
 	total: number;
 	completed: number;
+}
+
+export interface BatchReencodeSettings {
+	quality_profile?: 'speed' | 'balanced' | 'quality' | null;
+	encoder?: string | null;
+	quality?: number | null;
+	preset?: string | null;
+	codec?: 'preserve' | 'hevc' | 'h264' | null;
+	allow_cpu?: boolean | null;
+	crop_top_override?: number | null;
+	crop_bottom_override?: number | null;
+}
+
+export interface BatchReencodeResponse {
+	job_ids: string[];
+	count: number;
+	skipped: Array<{ movie_id: number; code?: string | null; reason: string }>;
 }
 
 export interface MediaJobSnapshot {
