@@ -395,6 +395,7 @@ async def radarr_upgrade(job: Job) -> dict[str, Any]:
 async def poster_pipeline(job: Job) -> dict[str, Any]:
     """Run one pipeline inside the worker instead of a detached API task."""
     from marquee.core.poster_sources.tmdb import TMDBClient  # noqa: PLC0415
+    from marquee.core.text_profiles import OcrGateContext  # noqa: PLC0415
     from marquee.pipeline.run_manager import RunState, run_manager  # noqa: PLC0415
 
     movie_id = int(job.payload["movie_id"])
@@ -414,6 +415,7 @@ async def poster_pipeline(job: Job) -> dict[str, Any]:
             )
             await db.commit()
         movie_id, title, tmdb_id = movie.id, movie.title, movie.tmdb_id
+        ocr_gate = OcrGateContext.from_movie(movie)
     if tmdb_id is None:
         raise RuntimeError("movie has no TMDB ID")
     from marquee.pipeline.progress_bridge import JobProgressBridge  # noqa: PLC0415
@@ -433,6 +435,7 @@ async def poster_pipeline(job: Job) -> dict[str, Any]:
                 movie_tmdb_id=tmdb_id,
                 progress_sink=bridge.callback,
                 should_cancel=cancel_event.is_set if cancel_event is not None else None,
+                ocr_gate=ocr_gate,
             )
     finally:
         await tmdb.disconnect()
@@ -448,6 +451,7 @@ async def poster_pipeline_batch(job: Job) -> dict[str, Any]:
     + ``PipelineRun`` row, tagged ``batch_id=<this job>``.
     """
     from marquee.core.poster_sources.tmdb import TMDBClient  # noqa: PLC0415
+    from marquee.core.text_profiles import OcrGateContext  # noqa: PLC0415
     from marquee.pipeline.batch_runner import run_batch  # noqa: PLC0415
     from marquee.pipeline.progress_bridge import JobProgressBridge  # noqa: PLC0415
     from marquee.pipeline.run_manager import run_manager  # noqa: PLC0415
@@ -467,6 +471,7 @@ async def poster_pipeline_batch(job: Job) -> dict[str, Any]:
             for mid in movie_ids
             if (movie := by_id.get(mid)) is not None
         ]
+        ocr_meta = {movie.id: OcrGateContext.from_movie(movie) for movie in rows}
     if not movies:
         return {"status": "empty", "movies": 0}
 
@@ -484,6 +489,7 @@ async def poster_pipeline_batch(job: Job) -> dict[str, Any]:
                 extractor=extractor,
                 progress=bridge.callback,
                 should_cancel=cancel_event.is_set if cancel_event is not None else None,
+                ocr_meta=ocr_meta,
             )
     finally:
         await tmdb.disconnect()

@@ -43,6 +43,7 @@ from sqlalchemy import select
 from marquee.config import settings
 from marquee.core.pipeline_config import pipeline_settings
 from marquee.core.poster_sources.tmdb import PosterCandidate
+from marquee.core.text_profiles import OcrGateContext
 from marquee.database import _get_session_factory
 from marquee.ml.hardware import effective_ocr_workers
 from marquee.models import Movie, PipelineRun
@@ -101,6 +102,8 @@ class _BatchMovie:
     index: int  # 1-based position in the batch (for progress)
     total: int
     fetch: FetchOutcome | None = None
+    # Per-movie OCR gate context (director tokens + effective text profile).
+    ocr_gate: OcrGateContext | None = None
     timings: dict[str, float] = field(default_factory=dict)
     counts: dict[str, int] = field(default_factory=dict)
     status: str = "running"  # coerced to a terminal status at finalize
@@ -237,8 +240,13 @@ async def run_batch(
     extractor: FeatureExtractor,
     progress: ProgressCallback | None = None,
     should_cancel: ShouldCancel | None = None,
+    ocr_meta: dict[int, OcrGateContext] | None = None,
 ) -> dict[str, object]:
     """Run the stage-batched pipeline over ``movies`` (id, title, tmdb_id).
+
+    ``ocr_meta`` maps movie_id → per-movie OCR gate context (director tokens +
+    effective text profile). Movies without an entry use the global default
+    profile.
 
     Returns a summary dict (per-status counts + per-movie run ids) for the job
     result. Each movie gets its own archived run + ``PipelineRun`` row tagged
@@ -252,6 +260,7 @@ async def run_batch(
 
     contexts: list[_BatchMovie] = []
     total = len(movies)
+    default_gate = OcrGateContext.default()
     for index, (movie_id, title, tmdb_id) in enumerate(movies, 1):
         out_dir = settings.runs_work_path / _sanitise_filename(title)
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -270,6 +279,7 @@ async def run_batch(
                 start_perf=time.perf_counter(),
                 index=index,
                 total=total,
+                ocr_gate=(ocr_meta or {}).get(movie_id, default_gate),
             )
         )
 
@@ -585,12 +595,20 @@ def _ocr_batch(
     result collection runs.  Otherwise a fresh pool is created and destroyed
     inside the call (backward-compatible single-shot path).
     """
-    items: list[tuple[Path, str, set[str], set[str]]] = []
+    items: list[tuple[Path, str, set[str], set[str], dict | None]] = []
     owners: list[_BatchMovie] = []
     for ctx in contexts:
-        tokens = PosterTextFilter(ctx.title)  # cheap — no model load
+        gate_ctx = ctx.ocr_gate
+        tokens = PosterTextFilter(  # cheap — no model load
+            ctx.title,
+            director=gate_ctx.director if gate_ctx else None,
+            profile=gate_ctx.profile if gate_ctx else None,
+        )
+        extras = tokens.task_extras()
         for path in ctx.style_survivors:
-            items.append((path, tokens.title, tokens.title_tokens, tokens.director_tokens))
+            items.append(
+                (path, tokens.title, tokens.title_tokens, tokens.director_tokens, extras)
+            )
             owners.append(ctx)
 
     for ctx in contexts:

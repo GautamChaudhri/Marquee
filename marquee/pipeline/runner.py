@@ -46,6 +46,7 @@ from marquee.core.download_guard import ensure_image_response
 from marquee.core.jobs.cancel_registry import JobCancelledError
 from marquee.core.pipeline_config import pipeline_settings
 from marquee.core.poster_sources.tmdb import PosterCandidate, TMDBClient
+from marquee.core.text_profiles import OcrGateContext
 from marquee.models import Movie
 from marquee.pipeline.deduper import DedupRemoval, PosterDeduper
 from marquee.pipeline.features import FeatureExtractor, load_cached_embedding
@@ -609,6 +610,7 @@ def run_sync_stages(
     primary_name: str | None = None,
     progress: ProgressCallback | None = None,
     should_cancel: ShouldCancel | None = None,
+    ocr_gate: OcrGateContext | None = None,
 ) -> SyncOutcome:
     """All CPU/GPU-bound stages, run off the event loop via asyncio.to_thread."""
 
@@ -752,9 +754,14 @@ def run_sync_stages(
         _emit(progress, ProgressEvent(stage="ocr", state="progress", done=done, total=total))
 
     check_cancelled()
-    ocr_results = PosterTextFilter(movie_title, director=None).filter_batch(
-        style_survivors, progress=_ocr_tick
-    )
+    # Per-movie gate context (director tokens + effective text profile); the
+    # direct/test path without one falls back to the global default profile.
+    gate_ctx = ocr_gate or OcrGateContext.default()
+    ocr_results = PosterTextFilter(
+        movie_title,
+        director=gate_ctx.director,
+        profile=gate_ctx.profile,
+    ).filter_batch(style_survivors, progress=_ocr_tick)
     ocr_survivors: list[OCRCandidateResult] = []
     for result in ocr_results:
         check_cancelled()

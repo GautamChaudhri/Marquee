@@ -44,6 +44,7 @@ from sqlalchemy import select
 from marquee.config import settings
 from marquee.core.jobs.cancel_registry import JobCancelledError
 from marquee.core.poster_sources.tmdb import TMDBClient
+from marquee.core.text_profiles import OcrGateContext
 from marquee.database import _get_session_factory
 from marquee.models import Movie, PipelineRun
 from marquee.pipeline.features import FeatureExtractor
@@ -239,6 +240,7 @@ class RunManager:
                 movie_id=movie.id,
                 movie_title=movie.title,
                 movie_tmdb_id=movie.tmdb_id,
+                ocr_gate=OcrGateContext.from_movie(movie),
             )
         )
         return run_id
@@ -257,6 +259,7 @@ class RunManager:
         movie_tmdb_id: int | None,
         progress_sink: Callable[[ProgressEvent], None] | None = None,
         should_cancel: Callable[[], bool] | None = None,
+        ocr_gate: OcrGateContext | None = None,
     ) -> None:
         loop = asyncio.get_running_loop()
         state = self._runs[run_id]
@@ -325,6 +328,7 @@ class RunManager:
                     timings=timings,
                     progress=progress,
                     should_cancel=should_cancel,
+                    ocr_gate=ocr_gate,
                 )
                 check_cancelled()
                 status = outcome.status
@@ -417,7 +421,7 @@ class RunManager:
                 logger.exception("Failed to release GPU resources after run")
 
     def _run_stages_blocking(
-        self, *, movie_title, out_dir, fetch, timings, progress, should_cancel=None
+        self, *, movie_title, out_dir, fetch, timings, progress, should_cancel=None, ocr_gate=None
     ):
         extractor = self._ensure_extractor()
         return run_sync_stages(
@@ -432,6 +436,7 @@ class RunManager:
             primary_name=fetch.primary_name,
             progress=progress,
             should_cancel=should_cancel,
+            ocr_gate=ocr_gate,
         )
 
     async def _finalize_db(
