@@ -93,7 +93,9 @@ async def _worker_counts(db: AsyncSession) -> dict[str, int]:
     }
 
 
-def _counter_rate(current: int | float | None, previous: int | float | None, elapsed: float) -> float | None:
+def _counter_rate(
+    current: int | float | None, previous: int | float | None, elapsed: float
+) -> float | None:
     if current is None or previous is None or elapsed <= 0 or current < previous:
         return None
     return (current - previous) / elapsed

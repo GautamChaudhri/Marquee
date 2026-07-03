@@ -373,9 +373,7 @@ async def test_settings_redacts_secrets(client: AsyncClient, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_put_settings_success(
-    db: AsyncSession, client: AsyncClient, monkeypatch, tmp_path
-):
+async def test_put_settings_success(db: AsyncSession, client: AsyncClient, monkeypatch, tmp_path):
     monkeypatch.setattr(
         "marquee.core.subtitles.config._overrides_path",
         lambda: tmp_path / "subtitle_overrides.json",

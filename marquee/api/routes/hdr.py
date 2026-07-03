@@ -330,7 +330,9 @@ async def hdr_index(
                 profile_targets=set(profile_targets),
                 meet_target=preference_summary["meet_target"] if preference_summary else None,
                 exceed_target=preference_summary["exceed_target"] if preference_summary else None,
-                excluded_targets=preference_summary["excluded_targets"] if preference_summary else None,
+                excluded_targets=preference_summary["excluded_targets"]
+                if preference_summary
+                else None,
             ),
         }
         all_items.append(item)
@@ -457,9 +459,11 @@ async def put_profile_preferences(
                 status_code=400,
                 detail=f"exceed_target must be stricter than meet_target for profile {update.profile_id}",
             )
-        if update.exceed_target is not None and update.meet_target is not None and preference_rank(
-            update.exceed_target
-        ) <= preference_rank(update.meet_target):
+        if (
+            update.exceed_target is not None
+            and update.meet_target is not None
+            and preference_rank(update.exceed_target) <= preference_rank(update.meet_target)
+        ):
             raise HTTPException(
                 status_code=400,
                 detail=f"exceed_target must rank above meet_target for profile {update.profile_id}",
@@ -569,9 +573,7 @@ def _dovi_state_to_dict(state: DoviState | None) -> dict[str, Any] | None:
         "rpu_summary": state.rpu_summary_json,
         "error_reason": state.error_reason,
         "conversion": conversion_eligibility(state.dovi_profile, state.el_type),
-        "last_analyzed_at": state.last_analyzed_at.isoformat()
-        if state.last_analyzed_at
-        else None,
+        "last_analyzed_at": state.last_analyzed_at.isoformat() if state.last_analyzed_at else None,
     }
 
 
@@ -603,12 +605,16 @@ async def hdr_movie_detail(
         await db.execute(select(DoviState).where(DoviState.movie_id == movie_id))
     ).scalar_one_or_none()
     profile = (
-        await db.execute(
-            select(RadarrQualityProfile).where(
-                RadarrQualityProfile.id == movie.quality_profile_id
+        (
+            await db.execute(
+                select(RadarrQualityProfile).where(
+                    RadarrQualityProfile.id == movie.quality_profile_id
+                )
             )
-        )
-    ).scalar_one_or_none() if movie.quality_profile_id is not None else None
+        ).scalar_one_or_none()
+        if movie.quality_profile_id is not None
+        else None
+    )
     hdr_tags = ordered_tags(classify_hdr_tags(movie.hdr_type_raw))
     active = await _active_dovi_job(db, movie_id)
     conversion_job = await _latest_dovi_conversion_job(db, movie_id)
@@ -664,7 +670,9 @@ async def convert_movie_dovi(
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
     """Enqueue a supported Dolby Vision Profile 8.1 remediation job."""
-    missing = [name for name in ("ffmpeg", "ffprobe", "dovi_tool") if binaries.resolve(name) is None]
+    missing = [
+        name for name in ("ffmpeg", "ffprobe", "dovi_tool") if binaries.resolve(name) is None
+    ]
     if missing:
         raise HTTPException(
             status_code=503,
@@ -723,14 +731,18 @@ async def analyze_dovi_batch(
             detail="ffprobe not found on PATH — install it to analyze Dolby Vision.",
         )
     rows = (
-        await db.execute(
-            select(Movie).where(
-                Movie.has_dv.is_(True),
-                Movie.movie_file_path.is_not(None),
-                Movie.movie_file_path != "",
+        (
+            await db.execute(
+                select(Movie).where(
+                    Movie.has_dv.is_(True),
+                    Movie.movie_file_path.is_not(None),
+                    Movie.movie_file_path != "",
+                )
             )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     if body.movie_ids:
         wanted = set(body.movie_ids)
         rows = [movie for movie in rows if movie.id in wanted]

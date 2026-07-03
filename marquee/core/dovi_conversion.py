@@ -231,6 +231,7 @@ async def _pipe_hevc_to_dovi(
     assert dovi_proc.stdin is not None
 
     try:
+
         async def _pump() -> None:
             try:
                 while True:
@@ -299,7 +300,9 @@ async def _inject_converted_rpu(
     await _pipe_hevc_to_dovi(encoded_mkv, args)
 
 
-def _validate_output(source_path: Path, output_path: Path, source_info, kind: ConversionKind) -> list[str]:
+def _validate_output(
+    source_path: Path, output_path: Path, source_info, kind: ConversionKind
+) -> list[str]:
     problems: list[str] = []
     out = inspect_source(output_path)
     if out is None:
@@ -320,7 +323,11 @@ def _validate_output(source_path: Path, output_path: Path, source_info, kind: Co
         problems.append(
             f"attachment stream count changed: {source_info.attachment_streams} -> {out.attachment_streams}"
         )
-    if source_info.duration_s and out.duration_s and abs(source_info.duration_s - out.duration_s) > 2.0:
+    if (
+        source_info.duration_s
+        and out.duration_s
+        and abs(source_info.duration_s - out.duration_s) > 2.0
+    ):
         problems.append(f"duration drifted: {source_info.duration_s:.1f}s -> {out.duration_s:.1f}s")
     if not out.has_dovi:
         problems.append("Dolby Vision metadata was not detected in the output")
@@ -405,7 +412,9 @@ async def _run_p5_to_p81(
         message="Remuxing Profile 8.1 candidate",
         progress={"percent": 92, "message": "Remuxing Profile 8.1 candidate"},
     )
-    await _run_checked("ffmpeg", build_dovi_remux_args(encoded_mkv, injected_hevc, out), timeout=3600)
+    await _run_checked(
+        "ffmpeg", build_dovi_remux_args(encoded_mkv, injected_hevc, out), timeout=3600
+    )
 
 
 async def execute_conversion(
@@ -424,11 +433,15 @@ async def execute_conversion(
     if source_info is None:
         raise DoviConversionError("probe_failed", "Could not inspect the source video.")
     if source_info.codec != "hevc":
-        raise DoviConversionError("unsupported_codec", "Dolby Vision conversion requires HEVC video.")
+        raise DoviConversionError(
+            "unsupported_codec", "Dolby Vision conversion requires HEVC video."
+        )
     if not source_info.has_dovi:
         raise DoviConversionError("not_dovi", "No Dolby Vision stream was detected.")
     if kind == "p5_to_p81" and source_info.dovi_profile != 5:
-        raise DoviConversionError("wrong_profile", "Profile 5 conversion requires a Profile 5 source.")
+        raise DoviConversionError(
+            "wrong_profile", "Profile 5 conversion requires a Profile 5 source."
+        )
     if kind == "p7_strip_el" and source_info.dovi_profile != 7:
         raise DoviConversionError("wrong_profile", "Profile 7 strip requires a Profile 7 source.")
 
@@ -478,7 +491,9 @@ async def execute_conversion(
             "original_path": str(resolved.path),
             "candidate_path": str(out),
             "candidate_size_bytes": stat.st_size,
-            "candidate_signature": compute_signature(out, size=stat.st_size, mtime_ns=stat.st_mtime_ns),
+            "candidate_signature": compute_signature(
+                out, size=stat.st_size, mtime_ns=stat.st_mtime_ns
+            ),
             "input_signature": resolved.signature,
             "original_untouched": True,
         }

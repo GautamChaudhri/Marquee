@@ -67,11 +67,15 @@ async def _resolve_subject_titles(
     titles: dict[tuple[str | None, str | None], str] = {}
 
     movie_ids = {
-        int(j.subject_id) for j in jobs if j.subject_type in ("movie", "radarr_movie") and j.subject_id
+        int(j.subject_id)
+        for j in jobs
+        if j.subject_type in ("movie", "radarr_movie") and j.subject_id
     }
     if movie_ids:
         rows = (
-            await db.execute(select(Movie.id, Movie.title, Movie.year).where(Movie.id.in_(movie_ids)))
+            await db.execute(
+                select(Movie.id, Movie.title, Movie.year).where(Movie.id.in_(movie_ids))
+            )
         ).all()
         for r in rows:
             label = f"{r.title} ({r.year})" if r.year else r.title
@@ -91,7 +95,9 @@ async def _resolve_subject_titles(
         if movie_backed:
             mv_rows = (
                 await db.execute(
-                    select(Movie.id, Movie.title, Movie.year).where(Movie.id.in_(movie_backed.values()))
+                    select(Movie.id, Movie.title, Movie.year).where(
+                        Movie.id.in_(movie_backed.values())
+                    )
                 )
             ).all()
             mv_by_id = {r.id: (r.title, r.year) for r in mv_rows}
@@ -116,8 +122,11 @@ async def _resolve_subject_titles(
             ).all()
             series_ids = {r.series_id for r in ep_rows}
             series_rows = (
-                (await db.execute(select(Series.id, Series.title).where(Series.id.in_(series_ids))))
-                .all()
+                (
+                    await db.execute(
+                        select(Series.id, Series.title).where(Series.id.in_(series_ids))
+                    )
+                ).all()
                 if series_ids
                 else []
             )
@@ -213,8 +222,10 @@ async def _load_linked_media_jobs(db: AsyncSession, jobs: list[Job]) -> dict[str
     if not media_job_ids:
         return {}
     rows = (
-        await db.execute(select(MediaJob).where(MediaJob.job_id.in_(media_job_ids)))
-    ).scalars().all()
+        (await db.execute(select(MediaJob).where(MediaJob.job_id.in_(media_job_ids))))
+        .scalars()
+        .all()
+    )
     return {row.job_id: row for row in rows}
 
 
@@ -454,11 +465,7 @@ async def get_job(job_id: str, db: Annotated[AsyncSession, Depends(get_db)]):
     # terminal job's full audit trail has nowhere else to come from, so the
     # detail view includes it directly, same as attempts/resources below.
     events = (
-        (
-            await db.execute(
-                select(JobEvent).where(JobEvent.job_id == job_id).order_by(JobEvent.id)
-            )
-        )
+        (await db.execute(select(JobEvent).where(JobEvent.job_id == job_id).order_by(JobEvent.id)))
         .scalars()
         .all()
     )

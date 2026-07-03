@@ -1,5 +1,5 @@
 import { env } from '$env/dynamic/public';
-import { apiGet, type Fetch } from './client';
+import { apiGet, apiSend, type Fetch } from './client';
 import { mockMovieDetail, mockMovies } from './mock';
 import type { MovieDetail, MovieListItem, MovieQuery, Paginated } from './types';
 
@@ -20,4 +20,9 @@ export function listMovies(
 export function getMovie(fetch: Fetch, id: number): Promise<MovieDetail> {
 	if (useMocks()) return Promise.resolve(mockMovieDetail(id));
 	return apiGet<MovieDetail>(fetch, `/library/movies/${id}`);
+}
+
+export function deleteMoviePoster(fetch: Fetch, id: number): Promise<{ ok: boolean; deleted: boolean; error: string | null }> {
+	if (useMocks()) return Promise.resolve({ ok: true, deleted: true, error: null });
+	return apiSend(fetch, 'DELETE', `/library/movies/${id}/poster`);
 }

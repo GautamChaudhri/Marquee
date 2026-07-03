@@ -611,6 +611,7 @@ def run_sync_stages(
     should_cancel: ShouldCancel | None = None,
 ) -> SyncOutcome:
     """All CPU/GPU-bound stages, run off the event loop via asyncio.to_thread."""
+
     def check_cancelled() -> None:
         if should_cancel is not None and should_cancel():
             raise JobCancelledError("poster pipeline cancelled")

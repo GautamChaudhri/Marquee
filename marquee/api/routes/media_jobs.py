@@ -58,7 +58,9 @@ def _effective_media_status(media_status: str, generic_status: str | None) -> st
 
 async def _media_job_snapshot(db: AsyncSession, media_job: MediaJob) -> dict:
     generic = await _generic_for_media_job(db, media_job)
-    effective_status = _effective_media_status(media_job.status, generic.status if generic else None)
+    effective_status = _effective_media_status(
+        media_job.status, generic.status if generic else None
+    )
     effective_error = json.loads(media_job.error_json) if media_job.error_json else None
     effective_result = json.loads(media_job.result_json) if media_job.result_json else None
     effective_progress = None
@@ -68,7 +70,11 @@ async def _media_job_snapshot(db: AsyncSession, media_job: MediaJob) -> dict:
 
     if generic is not None:
         started_at = generic.started_at or generic.claimed_at or started_at
-        completed_at = generic.finished_at if effective_status in {"succeeded", "failed", "cancelled", "interrupted"} else None
+        completed_at = (
+            generic.finished_at
+            if effective_status in {"succeeded", "failed", "cancelled", "interrupted"}
+            else None
+        )
         updated_at = generic.updated_at or updated_at
         if effective_error is None and effective_status in {"failed", "cancelled", "interrupted"}:
             effective_error = generic.error

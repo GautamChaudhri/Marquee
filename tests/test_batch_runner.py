@@ -125,7 +125,9 @@ class _StubExtractor:
 
     def complete_batch(self, items, *, dino_vectors_out=None):
         return [
-            _feature_vector(official_family=None if "bad_movie" in ocr_result.image_path.name else 0.8)
+            _feature_vector(
+                official_family=None if "bad_movie" in ocr_result.image_path.name else 0.8
+            )
             for _features, ocr_result in items
         ]
 

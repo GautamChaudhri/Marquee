@@ -443,7 +443,9 @@ def _run_fake_ocr(
     monkeypatch.setattr(ocr_filter, "_worker_director_tokens", set())
     monkeypatch.setattr(ocr_filter.pipeline_settings, "OCR_DETAIL_PASSES", False)
     monkeypatch.setattr(ocr_filter.pipeline_settings, "OCR_ENHANCE_RETRY", False)
-    monkeypatch.setattr(ocr_filter.pipeline_settings, "OCR_TITLE_RECOVERY_ENABLED", recovery_enabled)
+    monkeypatch.setattr(
+        ocr_filter.pipeline_settings, "OCR_TITLE_RECOVERY_ENABLED", recovery_enabled
+    )
     monkeypatch.setattr(
         ocr_filter.pipeline_settings,
         "OCR_TITLE_RECOVERY_CONFIDENCE_THRESHOLD",

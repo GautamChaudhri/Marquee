@@ -1569,7 +1569,9 @@ async def test_reencode_plan_supersedes_old_paired_generic_job(client, db, tmp_p
 
     first_id = first.json()["job_id"]
     second_id = second.json()["job_id"]
-    generic_jobs = (await db.execute(select(Job).where(Job.type == "letterbox_reencode"))).scalars().all()
+    generic_jobs = (
+        (await db.execute(select(Job).where(Job.type == "letterbox_reencode"))).scalars().all()
+    )
     generic_by_media_id = {
         row.payload.get("media_job_id"): row
         for row in generic_jobs

@@ -447,7 +447,10 @@ async def pipeline_summary(db: Annotated[AsyncSession, Depends(get_db)]):
         (
             await db.execute(
                 select(Job)
-                .where(Job.type.in_(("poster_pipeline", "poster_pipeline_batch")), Job.status.in_(ACTIVE))
+                .where(
+                    Job.type.in_(("poster_pipeline", "poster_pipeline_batch")),
+                    Job.status.in_(ACTIVE),
+                )
                 .order_by(Job.created_at.desc())
             )
         )

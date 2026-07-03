@@ -77,9 +77,7 @@ async def test_create_and_run_completes_inline_job_without_queue(db):
         worker_id="inline-test",
     )
 
-    attempt = (
-        await db.execute(select(JobAttempt).where(JobAttempt.job_id == job.id))
-    ).scalar_one()
+    attempt = (await db.execute(select(JobAttempt).where(JobAttempt.job_id == job.id))).scalar_one()
     assert job.status == "succeeded"
     assert job.started_at is not None
     assert job.finished_at is not None
@@ -102,8 +100,14 @@ async def test_create_and_run_never_retries_even_for_retryable_types(db, monkeyp
         await job_manager.create_and_run(db, job_type="letterbox_detect", worker_id="inline-test")
 
     job = (
-        await db.execute(select(Job).where(Job.type == "letterbox_detect").order_by(Job.created_at.desc()))
-    ).scalars().first()
+        (
+            await db.execute(
+                select(Job).where(Job.type == "letterbox_detect").order_by(Job.created_at.desc())
+            )
+        )
+        .scalars()
+        .first()
+    )
     assert job is not None
     assert job.status == "failed"
     assert job.attempt_count == 1
@@ -130,12 +134,8 @@ async def test_resource_conflict_waits_without_double_claim(db):
 async def test_claim_next_skips_blocked_media_write_and_claims_non_conflicting_job(db):
     await job_manager.bootstrap_resources(db)
     await job_manager.create(db, job_type="system_noop", resources={"media-file:1": 1})
-    blocked = await job_manager.create(
-        db, job_type="system_noop", resources={"media-file:1": 1}
-    )
-    claimable = await job_manager.create(
-        db, job_type="system_noop", resources={"media-file:2": 1}
-    )
+    blocked = await job_manager.create(db, job_type="system_noop", resources={"media-file:1": 1})
+    claimable = await job_manager.create(db, job_type="system_noop", resources={"media-file:2": 1})
 
     first_claim = await job_manager.claim_next(db, "worker-a")
     assert first_claim is not None

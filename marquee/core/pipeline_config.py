@@ -552,9 +552,7 @@ class PipelineSettings(BaseSettings):
                 "bottom_confidence_threshold": self.OCR_BOTTOM_CONFIDENCE_THRESHOLD,
                 "fuzzy_cutoff": self.OCR_FUZZY_CUTOFF,
                 "title_proximity_pixels": self.OCR_TITLE_PROXIMITY_PIXELS,
-                "residual_significant_area_fraction": (
-                    self.OCR_RESIDUAL_SIGNIFICANT_AREA_FRACTION
-                ),
+                "residual_significant_area_fraction": (self.OCR_RESIDUAL_SIGNIFICANT_AREA_FRACTION),
                 "residual_significant_width_fraction": (
                     self.OCR_RESIDUAL_SIGNIFICANT_WIDTH_FRACTION
                 ),

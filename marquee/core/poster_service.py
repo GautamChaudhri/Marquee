@@ -319,7 +319,9 @@ class PosterService:
         if movie.tmdb_id is not None:
             cache_file, _ = cache_paths(movie.tmdb_id)
 
-        for candidate in _RESTORE_CHAINS.get(settings.POSTER_RESTORE_METHOD, _RESTORE_CHAINS["download"]):
+        for candidate in _RESTORE_CHAINS.get(
+            settings.POSTER_RESTORE_METHOD, _RESTORE_CHAINS["download"]
+        ):
             if candidate == "local":
                 local_file = backup_path(movie)
                 if not await asyncio.to_thread(local_file.is_file):

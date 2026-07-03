@@ -101,7 +101,9 @@ async def test_metrics_history_returns_points_rates_and_job_overlay(db, client: 
     job.finished_at = now - timedelta(minutes=1, seconds=15)
     await db.commit()
 
-    resp = await client.get("/api/system/metrics/history", params={"window": "1h", "resolution": 10})
+    resp = await client.get(
+        "/api/system/metrics/history", params={"window": "1h", "resolution": 10}
+    )
     assert resp.status_code == 200
     body = resp.json()
 

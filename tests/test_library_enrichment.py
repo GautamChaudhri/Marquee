@@ -183,3 +183,53 @@ async def test_detail_has_derived_fields(db: AsyncSession, client: AsyncClient):
     assert detail["resolution"] == "4K"
     assert detail["letterbox_status"] == "candidate"
     assert "media_file_path" in detail
+
+
+@pytest.mark.asyncio
+async def test_delete_movie_poster(db: AsyncSession, client: AsyncClient, tmp_path):
+    from sqlalchemy import select  # noqa: PLC0415
+
+    from marquee.models import ArtworkEvent  # noqa: PLC0415
+
+    # 1. Create a dummy movie with a valid folder_path and poster_path
+    movie_folder = tmp_path / "Dune (2021)"
+    movie_folder.mkdir()
+    poster_file = movie_folder / "poster.jpg"
+    poster_file.write_bytes(b"dummy image data")
+
+    movie = Movie(
+        title="Dune Delete Test",
+        year=2021,
+        folder_path=str(movie_folder),
+        poster_path=str(poster_file),
+        poster_user_approved=True,
+    )
+    db.add(movie)
+    await db.commit()
+    await db.refresh(movie)
+
+    # 2. Call DELETE endpoint
+    resp = await client.delete(f"/api/library/movies/{movie.id}/poster")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["deleted"] is True
+    assert body["error"] is None
+
+    # 3. Verify file is deleted on disk
+    assert not poster_file.exists()
+
+    # 4. Verify DB state is reset
+    await db.refresh(movie)
+    assert movie.poster_path is None
+    assert movie.poster_user_approved is False
+
+    # 5. Verify ArtworkEvent is inserted
+    events = (
+        (await db.execute(select(ArtworkEvent).where(ArtworkEvent.movie_id == movie.id)))
+        .scalars()
+        .all()
+    )
+    assert len(events) == 1
+    assert events[0].action == "deploy_reset"
+    assert events[0].source == "maintenance"

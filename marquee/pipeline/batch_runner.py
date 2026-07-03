@@ -194,7 +194,9 @@ async def _download_phase(
                                 exc,
                             )
                 downloads_done += 1
-                _emit_global(progress, "fetch", "progress", done=downloads_done, total=total_downloads)
+                _emit_global(
+                    progress, "fetch", "progress", done=downloads_done, total=total_downloads
+                )
 
             async def _download_movie(ctx: _BatchMovie, candidates: list[PosterCandidate]) -> None:
                 # Each movie's "fetch end" fires as soon as ITS OWN downloads

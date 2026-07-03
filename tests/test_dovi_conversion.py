@@ -62,9 +62,7 @@ async def test_p5_inject_uses_mode_3(monkeypatch, tmp_path):
     rpu = tmp_path / "RPU.bin"
     out = tmp_path / "injected.hevc"
 
-    await dovi_conversion._inject_converted_rpu(
-        Path("/movies/base.mkv"), rpu, out, mode=3
-    )
+    await dovi_conversion._inject_converted_rpu(Path("/movies/base.mkv"), rpu, out, mode=3)
 
     assert captured["args"] == [
         "--mode",
@@ -87,9 +85,12 @@ def test_validate_output_accepts_profile_8_candidate(monkeypatch, tmp_path):
 
     monkeypatch.setattr(dovi_conversion, "inspect_source", lambda _p: _source(dovi_profile=8))
 
-    assert dovi_conversion._validate_output(
-        source_path, output_path, _source(dovi_profile=5), "p5_to_p81"
-    ) == []
+    assert (
+        dovi_conversion._validate_output(
+            source_path, output_path, _source(dovi_profile=5), "p5_to_p81"
+        )
+        == []
+    )
 
 
 def test_validate_output_rejects_profile_7_el_still_present(monkeypatch, tmp_path):

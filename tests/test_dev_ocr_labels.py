@@ -166,7 +166,9 @@ def _archive_payload(
     }
 
 
-async def _seed_run(db, tmp_path: Path, *, archive_payload: dict[str, object], output_dir: Path) -> str:
+async def _seed_run(
+    db, tmp_path: Path, *, archive_payload: dict[str, object], output_dir: Path
+) -> str:
     movie = Movie(title="Debug Movie", year=2024, folder_path="/m/debug", tmdb_id=42)
     db.add(movie)
     await db.commit()
@@ -215,7 +217,9 @@ async def test_capture_false_rejection_uses_this_runs_log(client, db, tmp_path):
     await _seed_run(
         db,
         tmp_path,
-        archive_payload=_archive_payload(image_path=rejected_image, config_ocr=_full_ocr_snapshot()),
+        archive_payload=_archive_payload(
+            image_path=rejected_image, config_ocr=_full_ocr_snapshot()
+        ),
         output_dir=output_dir,
     )
 
@@ -260,7 +264,9 @@ async def test_capture_synthesises_from_archive_when_log_missing(client, db, tmp
     await _seed_run(
         db,
         tmp_path,
-        archive_payload=_archive_payload(image_path=rejected_image, config_ocr=_full_ocr_snapshot()),
+        archive_payload=_archive_payload(
+            image_path=rejected_image, config_ocr=_full_ocr_snapshot()
+        ),
         output_dir=output_dir,
     )
 
@@ -307,7 +313,9 @@ async def test_capture_ignores_stale_pipeline_log_from_another_run(client, db, t
     await _seed_run(
         db,
         tmp_path,
-        archive_payload=_archive_payload(image_path=rejected_image, config_ocr=_full_ocr_snapshot()),
+        archive_payload=_archive_payload(
+            image_path=rejected_image, config_ocr=_full_ocr_snapshot()
+        ),
         output_dir=output_dir,
     )
 
@@ -377,7 +385,9 @@ async def test_capture_rejects_stale_snapshot(client, db, tmp_path):
     await _seed_run(
         db,
         tmp_path,
-        archive_payload=_archive_payload(image_path=output_dir / "missing.jpg", config_ocr={"device": "cpu"}),
+        archive_payload=_archive_payload(
+            image_path=output_dir / "missing.jpg", config_ocr={"device": "cpu"}
+        ),
         output_dir=output_dir,
     )
 
@@ -553,7 +563,9 @@ async def test_list_run_labels_returns_persisted_filenames(client, db, tmp_path)
     await _seed_run(
         db,
         tmp_path,
-        archive_payload=_archive_payload(image_path=rejected_image, config_ocr=_full_ocr_snapshot()),
+        archive_payload=_archive_payload(
+            image_path=rejected_image, config_ocr=_full_ocr_snapshot()
+        ),
         output_dir=output_dir,
     )
     capture_resp = await client.post(

@@ -12,9 +12,7 @@ from marquee.core.jobs.manager import job_manager
 from marquee.models import Job, JobAttempt
 
 
-async def test_worker_cancel_watcher_sets_event_kills_children_and_marks_cancelled(
-    db, monkeypatch
-):
+async def test_worker_cancel_watcher_sets_event_kills_children_and_marks_cancelled(db, monkeypatch):
     await job_manager.bootstrap_resources(db)
     job = await job_manager.create(db, job_type="system_noop")
     claim = await job_manager.claim_next(db, "worker-a")
@@ -85,7 +83,9 @@ async def test_worker_timeout_sets_event_terminates_children_and_fails_job(db, m
         return {"ok": True}
 
     async def fake_terminate(_db, running_attempt: JobAttempt, *, grace_seconds: float = 2.0):
-        terminated.append((running_attempt.id, list(running_attempt.child_pids or []), grace_seconds))
+        terminated.append(
+            (running_attempt.id, list(running_attempt.child_pids or []), grace_seconds)
+        )
         running_attempt.child_pids = []
         await _db.flush()
         return [444]

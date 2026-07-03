@@ -81,7 +81,10 @@ async def test_movie_backed_media_file_subject_title_resolved(db, client):
     db.add(movie)
     await db.flush()
     media_file = MediaFile(
-        source="radarr", source_key="radarr:mf:1", path="/movies/arrival/file.mkv", movie_id=movie.id
+        source="radarr",
+        source_key="radarr:mf:1",
+        path="/movies/arrival/file.mkv",
+        movie_id=movie.id,
     )
     db.add(media_file)
     await db.commit()
@@ -396,7 +399,9 @@ async def test_subtitle_plan_supersedes_old_paired_generic_job(db, client, monke
 
     first_id = first.json()["job_id"]
     second_id = second.json()["job_id"]
-    generic_jobs = (await db.execute(select(Job).where(Job.type == "subtitle_remove"))).scalars().all()
+    generic_jobs = (
+        (await db.execute(select(Job).where(Job.type == "subtitle_remove"))).scalars().all()
+    )
     generic_by_media_id = {
         row.payload.get("media_job_id"): row
         for row in generic_jobs
