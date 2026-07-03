@@ -760,6 +760,8 @@ def run_sync_stages(
     ocr_results = PosterTextFilter(
         movie_title,
         director=gate_ctx.director,
+        studios=gate_ctx.studios,
+        tagline=gate_ctx.tagline,
         profile=gate_ctx.profile,
     ).filter_batch(style_survivors, progress=_ocr_tick)
     ocr_survivors: list[OCRCandidateResult] = []

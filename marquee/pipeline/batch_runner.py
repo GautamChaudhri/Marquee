@@ -602,13 +602,13 @@ def _ocr_batch(
         tokens = PosterTextFilter(  # cheap — no model load
             ctx.title,
             director=gate_ctx.director if gate_ctx else None,
+            studios=gate_ctx.studios if gate_ctx else None,
+            tagline=gate_ctx.tagline if gate_ctx else None,
             profile=gate_ctx.profile if gate_ctx else None,
         )
         extras = tokens.task_extras()
         for path in ctx.style_survivors:
-            items.append(
-                (path, tokens.title, tokens.title_tokens, tokens.director_tokens, extras)
-            )
+            items.append((path, tokens.title, tokens.title_tokens, tokens.director_tokens, extras))
             owners.append(ctx)
 
     for ctx in contexts:

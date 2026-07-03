@@ -295,6 +295,10 @@ _BAND_LETTER_PRECISION = 0.55
 _BAND_HIGH_PRECISION = 0.80
 _BAND_HIGH_PRECISION_COVERAGE = 0.40
 _BAND_MERGE_GAP_RATIO = 1.2
+_TOP_BILLING_MIN_BOXES = 3
+_TOP_BILLING_MIN_WIDTH_FRACTION = 0.28
+_TOP_BILLING_MAX_HEIGHT_FRACTION = 0.055
+_TOP_BILLING_MAX_HEIGHT_RATIO = 1.8
 
 
 def _band_letters(boxes: list[_DetectedBox]) -> set[str]:
@@ -454,6 +458,42 @@ def _find_title_evidence(
     return evidence
 
 
+def _detect_top_billing_bands(
+    boxes: list[_DetectedBox],
+    *,
+    image_width: int,
+    image_height: int,
+) -> set[int]:
+    candidates = [
+        box
+        for box in boxes
+        if box.geometry_valid
+        and box.confidence >= pipeline_settings.OCR_STRIP_CONFIDENCE_THRESHOLD
+        and _box_center(box)[1] <= image_height * TOP_STRIP_FRACTION
+        and _compact_text(box.text)
+    ]
+    if len(candidates) < _TOP_BILLING_MIN_BOXES:
+        return set()
+
+    billing_ids: set[int] = set()
+    for group in _same_line_groups(candidates, image_height):
+        meaningful = [
+            box for box in group if not (set(_normalise(box.text).split()) & FORMAT_BLOCKLIST)
+        ]
+        if len(meaningful) < _TOP_BILLING_MIN_BOXES:
+            continue
+        union = _bbox_union(meaningful)
+        if _bbox_width(union) < image_width * _TOP_BILLING_MIN_WIDTH_FRACTION:
+            continue
+        heights = [max(1.0, _bbox_height(box.bbox)) for box in meaningful]
+        if _median(heights) > image_height * _TOP_BILLING_MAX_HEIGHT_FRACTION:
+            continue
+        if max(heights) / min(heights) > _TOP_BILLING_MAX_HEIGHT_RATIO:
+            continue
+        billing_ids.update(id(box) for box in meaningful)
+    return billing_ids
+
+
 def _synthetic_title_box(
     boxes: list[_DetectedBox],
     *,
@@ -599,7 +639,7 @@ def effective_gate_knobs(profile: dict | None) -> dict:
             "studio": bool(prof.get("allow_studio", pipeline_settings.OCR_ALLOW_STUDIO)),
             "rating": bool(prof.get("allow_rating", pipeline_settings.OCR_ALLOW_RATING)),
             "tagline": bool(prof.get("allow_tagline", pipeline_settings.OCR_ALLOW_TAGLINE)),
-            "billing": bool(prof.get("allow_billing", False)),
+            "billing": bool(prof.get("allow_billing", pipeline_settings.OCR_ALLOW_BILLING)),
         },
         "max_residual_boxes": int(
             prof.get("max_residual_boxes", pipeline_settings.OCR_MAX_RESIDUAL_BOXES)
@@ -622,6 +662,9 @@ def classify_text_box(
     title_box: _DetectedBox | None,
     title_tokens: set[str],
     director_tokens: set[str],
+    studio_tokens: set[str] | None = None,
+    tagline_text: str | None = None,
+    billing_band_ids: set[int] | None = None,
 ) -> str:
     """Classify a detected text box into a semantic category.
 
@@ -639,10 +682,13 @@ def classify_text_box(
     if title_box is not None and box is title_box:
         return "title"
 
+    if billing_band_ids and id(box) in billing_band_ids:
+        return "billing"
+
     # Director: regex match OR word match against director_tokens.
     if re.search(r"directed\s+by", box.text, re.IGNORECASE):
         return "director"
-    if director_tokens and _matches_allowed(box.text, director_tokens):
+    if director_tokens and _contains_director_tokens(box.text, director_tokens):
         return "director"
 
     # Rating: MPAA-ish certification marks.
@@ -652,6 +698,17 @@ def classify_text_box(
     # Studio: any word in the known studio keyword set.
     if words & STUDIO_KEYWORDS:
         return "studio"
+    if studio_tokens and _matches_allowed(box.text, studio_tokens):
+        return "studio"
+
+    compact_tagline = _compact_text(tagline_text or "")
+    compact_text = _compact_text(box.text)
+    if (
+        compact_tagline
+        and compact_text
+        and difflib.SequenceMatcher(None, compact_text, compact_tagline).ratio() >= 0.70
+    ):
+        return "tagline"
 
     # Tagline heuristic: not any of the above, short-ish, roughly centered,
     # upper/mid zone — promotional text.
@@ -791,6 +848,18 @@ def _word_matches_token(word: str, allowed_tokens: set[str]) -> bool:
     return any(word in token for token in allowed_tokens if len(word) >= 3)
 
 
+def _contains_director_tokens(text: str, director_tokens: set[str]) -> bool:
+    words = _normalise(text).split()
+    if not words or not director_tokens:
+        return False
+    tokens = {token for token in director_tokens if len(token) > 2} or set(director_tokens)
+    matched = sum(
+        1 for token in tokens if any(_word_matches_token(word, {token}) for word in words)
+    )
+    required = max(1, (len(tokens) + 1) // 2)
+    return len(words) <= len(tokens) + 5 and matched >= required
+
+
 def _is_significant_residual_word(word: str, allowed_tokens: set[str]) -> bool:
     """Return True if *word* is unambiguously non-title and long enough to matter.
 
@@ -863,6 +932,9 @@ def _build_detected_boxes_trace(
     all_tokens: set[str],
     title_tokens: set[str],
     director_tokens: set[str],
+    studio_tokens: set[str] | None,
+    tagline_text: str | None,
+    billing_band_ids: set[int] | None,
     image_width: int,
     image_height: int,
     min_big_area: float,
@@ -887,6 +959,9 @@ def _build_detected_boxes_trace(
                 title_box=title_box,
                 title_tokens=title_tokens,
                 director_tokens=director_tokens,
+                studio_tokens=studio_tokens,
+                tagline_text=tagline_text,
+                billing_band_ids=billing_band_ids,
             )
         )
         if is_residual:
@@ -1055,6 +1130,8 @@ def _process_image(
     raw ``pipeline_settings`` knobs.
     """
     profile: dict | None = (extras or {}).get("profile") or None
+    studio_tokens = set((extras or {}).get("studio_tokens") or ())
+    tagline_text = (extras or {}).get("tagline") or None
     using_worker_title_text = title_tokens is None
     if title_tokens is None:
         title_tokens = _worker_title_tokens
@@ -1159,11 +1236,17 @@ def _process_image(
         list[OCRTextBox],
         list[OCRTextBox],
         float,
+        set[int],
     ]:
         title_evidence = _find_title_evidence(
             boxes,
             title_text=title_text or "",
             title_tokens=title_tokens,
+            image_width=image_width,
+            image_height=image_height,
+        )
+        billing_band_ids = _detect_top_billing_bands(
+            boxes,
             image_width=image_width,
             image_height=image_height,
         )
@@ -1225,6 +1308,7 @@ def _process_image(
             residual,
             significant_residual,
             significant_area_fraction,
+            billing_band_ids,
         )
 
     def _decide(
@@ -1272,6 +1356,9 @@ def _process_image(
                     title_box=title_box,
                     title_tokens=title_tokens,
                     director_tokens=director_tokens,
+                    studio_tokens=studio_tokens,
+                    tagline_text=tagline_text,
+                    billing_band_ids=billing_band_ids,
                 )
                 if not allow_map.get(category, False):
                     denied_boxes.append(box)
@@ -1356,6 +1443,9 @@ def _process_image(
                 all_tokens=title_tokens | director_tokens,
                 title_tokens=title_tokens,
                 director_tokens=director_tokens,
+                studio_tokens=studio_tokens,
+                tagline_text=tagline_text,
+                billing_band_ids=billing_band_ids,
                 image_width=image_width,
                 image_height=image_height,
                 min_big_area=min_big_area,
@@ -1376,9 +1466,14 @@ def _process_image(
             "decision": decision,
         }
 
-    title_evidence, title_box, residual, significant_residual, significant_area_fraction = (
-        _build_state()
-    )
+    (
+        title_evidence,
+        title_box,
+        residual,
+        significant_residual,
+        significant_area_fraction,
+        billing_band_ids,
+    ) = _build_state()
     decision = _decide(
         title_box=title_box,
         significant_residual=significant_residual,
@@ -1430,6 +1525,7 @@ def _process_image(
                     residual,
                     significant_residual,
                     significant_area_fraction,
+                    billing_band_ids,
                 ) = _build_state()
                 decision = _decide(
                     title_box=title_box,
@@ -1493,27 +1589,39 @@ class PosterTextFilter:
         title: str,
         *,
         director: str | None = None,
+        studios: list[str] | None = None,
+        tagline: str | None = None,
         media_type: str = "movie",
         num_workers: int | None = None,
         profile: TextProfile | None = None,
     ):
         self.title = _normalise(title)
         self.director = _normalise(director) if director else ""
+        self.studios = [_normalise(studio) for studio in (studios or []) if _normalise(studio)]
+        self.tagline = _normalise(tagline) if tagline else ""
         self.media_type = media_type
         # Explicit argument > OCR_WORKERS env > hardware-profile auto-sizing.
         self.num_workers = num_workers or effective_ocr_workers()
         self.title_tokens = set(self.title.split())
         _add_digit_words(self.title_tokens)
         self.director_tokens = set(self.director.split())
+        self.studio_tokens = {token for studio in self.studios for token in studio.split()}
         # Resolved text profile, serialized as a plain dict so it pickles into
         # spawned worker processes. None → _decide uses pipeline_settings.
         self.profile_payload: dict | None = profile.gate_payload() if profile else None
 
     def task_extras(self) -> dict | None:
         """Per-task text-gate context for run_ocr_tasks item tuples."""
-        if self.profile_payload is None:
+        extras: dict[str, object] = {}
+        if self.profile_payload is not None:
+            extras["profile"] = self.profile_payload
+        if self.studio_tokens:
+            extras["studio_tokens"] = self.studio_tokens
+        if self.tagline:
+            extras["tagline"] = self.tagline
+        if not extras:
             return None
-        return {"profile": self.profile_payload}
+        return extras
 
     def filter_batch(
         self,
@@ -1526,8 +1634,7 @@ class PosterTextFilter:
             return []
         extras = self.task_extras()
         items = [
-            (path, self.title, self.title_tokens, self.director_tokens, extras)
-            for path in paths
+            (path, self.title, self.title_tokens, self.director_tokens, extras) for path in paths
         ]
         results = self.run_ocr_batch(items, num_workers=self.num_workers, progress=progress)
         results = apply_no_text_fallback(results)

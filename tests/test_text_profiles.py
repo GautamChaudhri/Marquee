@@ -17,7 +17,13 @@ from marquee.core.text_profiles import (
     update_profile,
 )
 from marquee.main import app
-from marquee.pipeline.ocr_filter import PosterTextFilter, effective_gate_knobs
+from marquee.pipeline.ocr_filter import (
+    PosterTextFilter,
+    _detect_top_billing_bands,
+    _DetectedBox,
+    classify_text_box,
+    effective_gate_knobs,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -30,6 +36,22 @@ async def client():
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         yield ac
+
+
+def _box(
+    text: str,
+    *,
+    left: float = 10,
+    top: float = 10,
+    right: float = 210,
+    bottom: float = 60,
+    confidence: float = 0.99,
+) -> _DetectedBox:
+    return _DetectedBox(
+        text=text,
+        confidence=confidence,
+        bbox=((left, top), (right, top), (right, bottom), (left, bottom)),
+    )
 
 
 # ── Persistence + CRUD ────────────────────────────────────────────────────
@@ -167,6 +189,123 @@ def test_poster_text_filter_carries_profile_payload():
     assert PosterTextFilter("Dune").task_extras() is None
 
 
+def test_classify_text_box_matches_director_anchor():
+    box = _box("A film by Nolan")
+    assert (
+        classify_text_box(
+            box,
+            image_w=1000,
+            image_h=1500,
+            title_box=None,
+            title_tokens={"dune"},
+            director_tokens={"christopher", "nolan"},
+        )
+        == "director"
+    )
+
+
+def test_classify_text_box_matches_studio_tokens():
+    box = _box("Syncopy Films")
+    assert (
+        classify_text_box(
+            box,
+            image_w=1000,
+            image_h=1500,
+            title_box=None,
+            title_tokens={"dune"},
+            director_tokens=set(),
+            studio_tokens={"syncopy", "films"},
+        )
+        == "studio"
+    )
+
+
+def test_classify_text_box_matches_tmdb_tagline():
+    box = _box("Long live the fighters", left=10, top=1280, right=420, bottom=1340)
+    assert (
+        classify_text_box(
+            box,
+            image_w=1000,
+            image_h=1500,
+            title_box=None,
+            title_tokens={"dune"},
+            director_tokens=set(),
+            tagline_text="Long live the fighter!",
+        )
+        == "tagline"
+    )
+
+
+def test_classify_text_box_matches_rating():
+    box = _box("Rated PG-13")
+    assert (
+        classify_text_box(
+            box,
+            image_w=1000,
+            image_h=1500,
+            title_box=None,
+            title_tokens={"dune"},
+            director_tokens=set(),
+        )
+        == "rating"
+    )
+
+
+def test_classify_text_box_prefers_billing_band_ids():
+    box = _box("Christopher Nolan", left=70, top=20, right=260, bottom=52, confidence=0.8)
+    assert (
+        classify_text_box(
+            box,
+            image_w=1000,
+            image_h=1500,
+            title_box=None,
+            title_tokens={"dune"},
+            director_tokens={"christopher", "nolan"},
+            billing_band_ids={id(box)},
+        )
+        == "billing"
+    )
+
+
+def test_detect_top_billing_bands_flags_actor_strip():
+    boxes = [
+        _box("Timothee", left=70, top=20, right=210, bottom=52, confidence=0.8),
+        _box("Zendaya", left=280, top=22, right=420, bottom=54, confidence=0.82),
+        _box("Rebecca", left=500, top=24, right=640, bottom=56, confidence=0.81),
+    ]
+    ids = _detect_top_billing_bands(boxes, image_width=1000, image_height=1500)
+    assert ids == {id(box) for box in boxes}
+
+
+def test_detect_top_billing_bands_ignores_format_junk_members():
+    actor_boxes = [
+        _box("Timothee", left=70, top=20, right=210, bottom=52, confidence=0.8),
+        _box("Zendaya", left=280, top=22, right=420, bottom=54, confidence=0.82),
+        _box("Rebecca", left=500, top=24, right=640, bottom=56, confidence=0.81),
+    ]
+    junk = _box("IMAX", left=760, top=20, right=860, bottom=52, confidence=0.85)
+    ids = _detect_top_billing_bands([*actor_boxes, junk], image_width=1000, image_height=1500)
+    assert ids == {id(box) for box in actor_boxes}
+
+
+def test_detect_top_billing_bands_rejects_narrow_strip():
+    boxes = [
+        _box("Timothee", left=70, top=20, right=130, bottom=52, confidence=0.8),
+        _box("Zendaya", left=150, top=22, right=210, bottom=54, confidence=0.82),
+        _box("Rebecca", left=230, top=24, right=290, bottom=56, confidence=0.81),
+    ]
+    assert _detect_top_billing_bands(boxes, image_width=1000, image_height=1500) == set()
+
+
+def test_detect_top_billing_bands_rejects_inconsistent_heights():
+    boxes = [
+        _box("Timothee", left=70, top=20, right=210, bottom=52, confidence=0.8),
+        _box("Zendaya", left=280, top=22, right=420, bottom=54, confidence=0.82),
+        _box("Rebecca", left=500, top=10, right=640, bottom=120, confidence=0.81),
+    ]
+    assert _detect_top_billing_bands(boxes, image_width=1000, image_height=1500) == set()
+
+
 def test_ocr_gate_context_from_movie_without_columns():
     class Stub:
         pass
@@ -212,9 +351,7 @@ async def test_api_crud_and_default(client: AsyncClient):
 @pytest.mark.asyncio
 async def test_api_builtin_protection_and_errors(client: AsyncClient):
     assert (await client.delete("/api/text-profiles/title_only")).status_code == 400
-    assert (
-        await client.put("/api/text-profiles/textless", json={"name": "No"})
-    ).status_code == 400
+    assert (await client.put("/api/text-profiles/textless", json={"name": "No"})).status_code == 400
     assert (await client.put("/api/text-profiles/default/unknown")).status_code == 404
     assert (
         await client.post("/api/text-profiles", json={"name": "Bad", "settings": {"mode": "x"}})
