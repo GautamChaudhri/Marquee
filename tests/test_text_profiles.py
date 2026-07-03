@@ -17,6 +17,7 @@ from marquee.core.text_profiles import (
     update_profile,
 )
 from marquee.main import app
+from marquee.models import Movie
 from marquee.pipeline.ocr_filter import (
     PosterTextFilter,
     _detect_top_billing_bands,
@@ -356,6 +357,64 @@ async def test_api_builtin_protection_and_errors(client: AsyncClient):
     assert (
         await client.post("/api/text-profiles", json={"name": "Bad", "settings": {"mode": "x"}})
     ).status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_api_movie_override_roundtrip(client: AsyncClient, db):
+    movie = Movie(title="Dune", year=2021, folder_path="/movies/Dune")
+    db.add(movie)
+    await db.commit()
+
+    current = await client.get(f"/api/text-profiles/movie/{movie.id}")
+    assert current.status_code == 200
+    assert current.json() == {
+        "movie_id": movie.id,
+        "profile_id": None,
+        "effective_id": "title_only",
+    }
+
+    created = await client.post(
+        "/api/text-profiles",
+        json={"name": "Credits OK", "settings": {"mode": "custom", "allow_director": True}},
+    )
+    profile_id = created.json()["id"]
+
+    updated = await client.put(
+        f"/api/text-profiles/movie/{movie.id}",
+        json={"profile_id": profile_id},
+    )
+    assert updated.status_code == 200
+    assert updated.json() == {
+        "movie_id": movie.id,
+        "profile_id": profile_id,
+        "effective_id": profile_id,
+    }
+
+    await db.refresh(movie)
+    assert movie.text_profile_id == profile_id
+
+    reset = await client.put(f"/api/text-profiles/movie/{movie.id}", json={"profile_id": None})
+    assert reset.status_code == 200
+    assert reset.json()["effective_id"] == "title_only"
+
+    await db.refresh(movie)
+    assert movie.text_profile_id is None
+
+
+@pytest.mark.asyncio
+async def test_api_movie_override_validation(client: AsyncClient, db):
+    movie = Movie(title="Heat", year=1995, folder_path="/movies/Heat")
+    db.add(movie)
+    await db.commit()
+
+    missing_movie = await client.get("/api/text-profiles/movie/999999")
+    assert missing_movie.status_code == 404
+
+    bad_profile = await client.put(
+        f"/api/text-profiles/movie/{movie.id}",
+        json={"profile_id": "missing"},
+    )
+    assert bad_profile.status_code == 400
 
 
 @pytest.mark.asyncio

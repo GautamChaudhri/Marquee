@@ -108,6 +108,11 @@ class Movie(Base, TimestampMixin, ArtworkMixin):
             "matching promotional text on posters."
         ),
     )
+    text_profile_id: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+        comment="Optional per-movie text-profile override for the OCR text gate.",
+    )
 
     # ── Indexes ──────────────────────────────────────────────────────
     __table_args__ = (
