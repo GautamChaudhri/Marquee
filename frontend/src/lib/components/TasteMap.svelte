@@ -19,6 +19,7 @@
 
 	let mode = $state<ViewMode>('2d');
 	let colorBy = $state<ColorMode>('cluster');
+	let showNoise = $state(true);
 	let selectedPoint = $state<TasteMapPoint | null>(null);
 	let neighbors = $state<TasteNeighbor[]>([]);
 	let neighborsLoading = $state(false);
@@ -54,6 +55,10 @@
 
 	function formatName(name: string): string {
 		return name.replace(/\.(jpg|jpeg|png|webp)$/i, '').replace(/[-_]/g, ' ');
+	}
+
+	function displayTitle(point: TasteMapPoint): string {
+		return point.movie_title || formatName(point.name);
 	}
 
 	function formatGenres(genres: string[] | null): string {
@@ -216,87 +221,101 @@
 
 		const points = mapData.points;
 		const { colors, legendGroups, colorbar, showLegend } = buildColors(points);
+		const indexed = points.map((point, index) => ({ point, index }));
+		const clustered = indexed.filter(({ point }) => !point.is_noise);
+		const noise = indexed.filter(({ point }) => point.is_noise);
+		const visibleClustered = clustered;
+		const visibleNoise = showNoise ? noise : [];
 
 		const getX = (p: TasteMapPoint) => (mode === '3d' ? p.x : p.x2);
 		const getY = (p: TasteMapPoint) => (mode === '3d' ? p.y : p.y2);
 		const getZ = (p: TasteMapPoint) => (mode === '3d' ? p.z : 0);
 
-		const x = points.map(getX);
-		const y = points.map(getY);
-		const z = points.map(getZ);
+		const hoverText = (p: TasteMapPoint) =>
+			`<b>${displayTitle(p)}</b><br>` +
+			`${formatGenres(p.genres)}` +
+			(p.year ? ` · ${p.year}` : '') +
+			(p.aesthetic != null ? `<br>Aesthetic: ${p.aesthetic.toFixed(1)}` : '') +
+			(p.colorfulness != null ? ` · Color: ${p.colorfulness.toFixed(0)}` : '') +
+			`<br>Self k-NN: ${p.self_knn.toFixed(3)}`;
 
-		const hoverText = points.map(
-			(p) =>
-				`<b>${formatName(p.name)}</b><br>` +
-				`${formatGenres(p.genres)}` +
-				(p.year ? ` · ${p.year}` : '') +
-				(p.aesthetic != null
-					? `<br>Aesthetic: ${p.aesthetic.toFixed(1)}`
-					: '') +
-				(p.colorfulness != null
-					? ` · Color: ${p.colorfulness.toFixed(0)}`
-					: '') +
-				`<br>Self k-NN: ${p.self_knn.toFixed(3)}`
-		);
-
-		const glowLineColor = (c: string): string =>
-			c.replace('rgb', 'rgba').replace(')', ',0.55)');
-
-		// Noise points get reduced opacity and smaller size.
-		const isNoise = points.map((p) => p.cluster == null || p.cluster === -1);
-		const hasNoise = isNoise.some(Boolean);
-		const sizes = hasNoise
-			? points.map((_p, i) => isNoise[i] ? (mode === '3d' ? 3.5 : 4.5) : (mode === '3d' ? 5 : 8))
-			: undefined;
-		const opacities = hasNoise
-			? points.map((_p, i) => isNoise[i] ? 0.4 : 0.88)
-			: undefined;
-
-		const markerBase: Record<string, unknown> = {
-			size: sizes ?? (mode === '3d' ? 5 : 8),
-			color: colors,
-			opacity: opacities ?? 0.88,
-			line: {
-				width: mode === '3d' ? (hasNoise ? points.map((_p, i) => isNoise[i] ? 0.5 : 1.2) : 1.2) : 0.6,
-				color: mode === '3d' ? colors.map(glowLineColor) : 'rgba(255,255,255,0.12)'
-			},
-			symbol: 'circle'
-		};
-
-		const trace: Record<string, unknown> = {
-			x,
-			y,
-			text: hoverText,
-			hoverinfo: 'text',
-			hoverlabel: {
-				bgcolor: '#15171e',
-				bordercolor: '#323744',
-				font: { color: '#e8e9ef', size: 12, family: 'ui-sans-serif, system-ui, sans-serif' },
-				align: 'left',
-				namelength: -1
-			},
-			type: mode === '3d' ? 'scatter3d' : 'scattergl',
-			mode: 'markers',
-			marker: markerBase,
-			showlegend: false
-		};
-
-		if (mode === '3d') {
-			trace.z = z;
-			trace.marker = {
-				...markerBase,
-				size: sizes ? points.map((_p, i) => isNoise[i] ? 3.0 : 5.5) : 5.5,
-				opacity: opacities ? points.map((_p, i) => isNoise[i] ? 0.35 : 0.9) : 0.9,
-				line: {
-					width: hasNoise ? points.map((_p, i) => isNoise[i] ? 0.4 : 1.5) : 1.5,
-					color: colors.map((c: string) =>
-						c.replace('rgb', 'rgba').replace(')', ',0.45)')
-					)
-				}
+		function buildTrace(
+			items: Array<{ point: TasteMapPoint; index: number }>,
+			kind: 'main' | 'noise'
+		): Record<string, unknown> | null {
+			if (items.length === 0) return null;
+			const trace: Record<string, unknown> = {
+				x: items.map(({ point }) => getX(point)),
+				y: items.map(({ point }) => getY(point)),
+				customdata: items.map(({ index }) => index),
+				text: items.map(({ point }) => hoverText(point)),
+				hoverinfo: 'text',
+				hoverlabel: {
+					bgcolor: '#15171e',
+					bordercolor: '#323744',
+					font: { color: '#e8e9ef', size: 12, family: 'ui-sans-serif, system-ui, sans-serif' },
+					align: 'left',
+					namelength: -1
+				},
+				type: mode === '3d' ? 'scatter3d' : 'scattergl',
+				mode: 'markers',
+				showlegend: false
 			};
+			const mainColors = items.map(({ index }) => colors[index]);
+			trace.marker = {
+				size: kind === 'main' ? (mode === '3d' ? 5.5 : 8) : (mode === '3d' ? 3 : 4.5),
+				color: kind === 'main' ? mainColors : '#3f4452',
+				opacity: kind === 'main' ? 0.9 : 0.26,
+				line: {
+					width: kind === 'main' ? (mode === '3d' ? 1.2 : 0.6) : 0,
+					color: kind === 'main' ? 'rgba(255,255,255,0.12)' : 'rgba(0,0,0,0)'
+				},
+				symbol: 'circle'
+			};
+			if (mode === '3d') {
+				trace.z = items.map(({ point }) => getZ(point));
+			}
+			if (kind === 'main' && colorbar) {
+				const numericValues = items.map(({ point }) => {
+					if (colorBy === 'aesthetic') return point.aesthetic ?? 0;
+					if (colorBy === 'colorfulness') return point.colorfulness ?? 0;
+					if (colorBy === 'year') return point.year ?? 2000;
+					return point.self_knn;
+				});
+				trace.marker = {
+					...(trace.marker as Record<string, unknown>),
+					color: numericValues,
+					colorscale: colorbar.colorscale,
+					cmin: colorbar.colorscale[0][0],
+					cmax: colorbar.colorscale[colorbar.colorscale.length - 1][0],
+					showscale: mode !== '3d',
+					colorbar: {
+						title: colorbar.title,
+						titleside: 'right',
+						titlefont: { color: '#8a909f', size: 10 },
+						tickfont: { color: '#5b6170', size: 9 },
+						thickness: 12,
+						len: 0.5,
+						x: 1.01,
+						outlinecolor: '#272b36',
+						outlinewidth: 1,
+						bgcolor: 'rgba(21,23,30,0.8)',
+						colorscale: colorbar.colorscale
+					}
+				};
+			}
+			return trace;
 		}
 
-		const traces: Record<string, unknown>[] = [trace];
+		const traces: Record<string, unknown>[] = [];
+		const noiseTrace = buildTrace(visibleNoise, 'noise');
+		const mainTrace = buildTrace(visibleClustered, 'main');
+		if (noiseTrace) traces.push(noiseTrace);
+		if (mainTrace) traces.push(mainTrace);
+		if (traces.length === 0) {
+			const fallback = buildTrace(noise, 'noise');
+			if (fallback) traces.push(fallback);
+		}
 
 		// Add legend traces for cluster/genre modes
 		if (showLegend && legendGroups.length > 0 && mode === '2d') {
@@ -351,46 +370,6 @@
 				tickfont: { color: '#5b6170', size: 10 }
 			}
 		};
-
-		if (colorbar) {
-			const cbar: Record<string, unknown> = {
-				title: colorbar.title,
-				titleside: 'right',
-				titlefont: { color: '#8a909f', size: 10 },
-				tickfont: { color: '#5b6170', size: 9 },
-				thickness: 12,
-				len: 0.5,
-				x: 1.01,
-				outlinecolor: '#272b36',
-				outlinewidth: 1,
-				bgcolor: 'rgba(21,23,30,0.8)',
-				colorscale: colorbar.colorscale
-			};
-			if (mode === '3d') {
-				(trace.marker as Record<string, unknown>) = {
-					...(trace.marker as Record<string, unknown>),
-					colorbar: cbar,
-					colorscale: colorbar.colorscale,
-					cmin: colorbar.colorscale[0][0],
-					cmax: colorbar.colorscale[colorbar.colorscale.length - 1][0],
-					color: points.map((p) => {
-						if (colorBy === 'aesthetic') return p.aesthetic ?? 0;
-						if (colorBy === 'colorfulness') return p.colorfulness ?? 0;
-						if (colorBy === 'year') return p.year ?? 2000;
-						return p.self_knn;
-					})
-				};
-			} else {
-				(trace.marker as Record<string, unknown>) = {
-					...(trace.marker as Record<string, unknown>),
-					colorbar: cbar,
-					colorscale: colorbar.colorscale,
-					cmin: colorbar.colorscale[0][0],
-					cmax: colorbar.colorscale[colorbar.colorscale.length - 1][0],
-					showscale: true
-				};
-			}
-		}
 
 		if (mode === '3d') {
 			layout.scene = {
@@ -447,12 +426,18 @@
 
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any
 		(Plotly as any).react(plotEl, traces, layout, config);
+		const graph = plotEl as HTMLDivElement & {
+			on?: (name: string, cb: (event: unknown) => void) => void;
+			removeListener?: (name: string, cb: (event: unknown) => void) => void;
+		};
+		graph.removeListener?.('plotly_click', handleClick);
+		graph.on?.('plotly_click', handleClick);
 	}
 
 	// ── Click handler ────────────────────────────────────────────────────
 	function handleClick(event: unknown) {
-		const e = event as { points?: Array<{ pointIndex: number }> };
-		const idx = e.points?.[0]?.pointIndex;
+		const e = event as { points?: Array<{ customdata?: number; pointIndex?: number }> };
+		const idx = e.points?.[0]?.customdata ?? e.points?.[0]?.pointIndex;
 		if (idx == null || !mapData) return;
 		const point = mapData.points[idx];
 		if (!point) return;
@@ -481,7 +466,6 @@
 
 		const el = plotEl;
 		if (el) {
-			el.addEventListener('plotly_click', handleClick as unknown as EventListener);
 			resizeObs = new ResizeObserver(() => {
 				if (Plotly && el) // eslint-disable-next-line @typescript-eslint/no-explicit-any
 				(Plotly as any).Plots.resize(el);
@@ -492,6 +476,12 @@
 
 	onDestroy(() => {
 		resizeObs?.disconnect();
+		const el = plotEl as
+			| (HTMLDivElement & {
+					removeListener?: (name: string, cb: (event: unknown) => void) => void;
+			  })
+			| null;
+		el?.removeListener?.('plotly_click', handleClick);
 		if (Plotly && plotEl) // eslint-disable-next-line @typescript-eslint/no-explicit-any
 		(Plotly as any).purge(plotEl);
 	});
@@ -499,7 +489,7 @@
 	// Rebuild on mode/colorBy/mapData changes
 	$effect(() => {
 		// Access reactive state to trigger the effect
-		void mode; void colorBy; void mapData;
+		void mode; void colorBy; void mapData; void showNoise;
 		if (Plotly && mapData) buildPlot();
 	});
 </script>
@@ -552,9 +542,30 @@
 					<option value="self_knn">Self k-NN</option>
 				</select>
 			</div>
+			<div class="control-group">
+				<span class="ctrl-label">Noise</span>
+				<div class="toggle-pair">
+					<button
+						class="toggle-btn"
+						class:active={showNoise}
+						onclick={() => (showNoise = true)}
+					>
+						Show
+					</button>
+					<button
+						class="toggle-btn"
+						class:active={!showNoise}
+						onclick={() => (showNoise = false)}
+					>
+						Hide
+					</button>
+				</div>
+			</div>
 			<div class="map-meta">
 				<span class="meta-badge">{mapData.projection.method.toUpperCase()}</span>
-				<span class="meta-count">{mapData.points.length} exemplars</span>
+				<span class="meta-count">{mapData.summary.exemplars} exemplars</span>
+				<span class="meta-count">{mapData.summary.unique_movies} movies</span>
+				<span class="meta-count">{mapData.summary.noise} noise</span>
 				{#if mapData.clusters}
 					<span class="meta-count">{mapData.clusters.length} clusters</span>
 				{/if}
@@ -585,8 +596,12 @@
 							class="thumb"
 						/>
 					{/if}
-					<h3 class="p-name">{formatName(selectedPoint.name)}</h3>
+					<h3 class="p-name">{displayTitle(selectedPoint)}</h3>
 					<div class="p-meta">
+						<div class="p-row">
+							<span class="p-label">Poster</span>
+							<span class="p-val mono">{selectedPoint.name}</span>
+						</div>
 						{#if selectedPoint.genres}
 							<div class="p-row">
 								<span class="p-label">Genres</span>
@@ -615,6 +630,24 @@
 							<span class="p-label">Self k-NN</span>
 							<span class="p-val mono">{selectedPoint.self_knn.toFixed(3)}</span>
 						</div>
+						{#if selectedPoint.movie_id != null}
+							<div class="p-row">
+								<span class="p-label">Movie ID</span>
+								<span class="p-val mono">{selectedPoint.movie_id}</span>
+							</div>
+						{/if}
+						{#if selectedPoint.tmdb_id != null}
+							<div class="p-row">
+								<span class="p-label">TMDB</span>
+								<span class="p-val mono">{selectedPoint.tmdb_id}</span>
+							</div>
+						{/if}
+						{#if selectedPoint.is_noise}
+							<div class="p-row">
+								<span class="p-label">Clustering</span>
+								<span class="p-val">Noise / outlier</span>
+							</div>
+						{/if}
 						{#if selectedPoint.cluster != null && selectedPoint.cluster !== -1 && mapData?.clusters}
 							{@const cluster = mapData.clusters.find((c: { id: number; name: string }) => c.id === selectedPoint!.cluster)}
 							{#if cluster}

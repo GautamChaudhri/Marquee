@@ -28,6 +28,7 @@ what you like, not diluted by what you don't.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import logging
 import re
 import threading
@@ -74,6 +75,7 @@ logger = logging.getLogger(__name__)
 _DEFAULT_TRAINING_DIR = Path(pipeline_settings.TRAINING_DATA_DIR)
 _IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff"}
 _YEAR_SUFFIX = re.compile(r"\s*\(\d{4}\)\s*$")
+_HASH_ARRAY_KEY = "poster_sha256s"
 ProgressCallback = Callable[[dict], None]
 
 
@@ -95,6 +97,14 @@ def scan_images(directory: Path) -> list[Path]:
 def title_from_filename(path: Path) -> str:
     """'Movie Title (Year).jpg' -> 'Movie Title'."""
     return _YEAR_SUFFIX.sub("", path.stem).strip()
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 # ---------------------------------------------------------------------------
@@ -601,6 +611,7 @@ def _run_build(args) -> Path:
     payload: dict[str, np.ndarray] = {
         "embeddings": embeddings,
         "poster_names": unicode_array([p.name for p in kept_paths]),
+        _HASH_ARRAY_KEY: unicode_array([_file_sha256(path) for path in kept_paths]),
         "centroid_emb": compute_centroid(embeddings),
         "model_name": unicode_scalar(pipeline_settings.AI_MODEL),
         CALIB_NAMES_KEY: unicode_array(calib_names),

@@ -205,6 +205,8 @@ async def taste_rebuild(job: Job) -> dict[str, Any]:
       * ``"library"`` — every movie's currently-deployed poster.
     """
     from marquee.core.pipeline_config import pipeline_settings  # noqa: PLC0415
+    from marquee.database import _get_session_factory  # noqa: PLC0415
+    from marquee.ml import artifact_registry  # noqa: PLC0415
     from marquee.ml.head_trainer import train_from_labels  # noqa: PLC0415
     from marquee.ml.taste_trainer import rebuild_profile  # noqa: PLC0415
     from marquee.pipeline.progress_bridge import JobProgressBridge  # noqa: PLC0415
@@ -236,6 +238,19 @@ async def taste_rebuild(job: Job) -> dict[str, Any]:
             head = await asyncio.to_thread(train_from_labels, cancel_event=cancel_event)
         else:
             head = None
+        async with _get_session_factory()() as db:
+            if (await artifact_registry.registry_status(db))["available"]:
+                await artifact_registry.register_active_artifact(
+                    db,
+                    artifact_registry.KIND_TASTE_PROFILE,
+                    source_mode=source,
+                )
+                if head and head[0] is not None:
+                    await artifact_registry.register_active_artifact(
+                        db,
+                        artifact_registry.KIND_LEARNED_HEAD,
+                        info=head[1],
+                    )
     finally:
         if tmp is not None:
             tmp.cleanup()
@@ -485,10 +500,20 @@ async def learned_head_train(_job: Job) -> dict[str, Any]:
     Pure-numpy logistic head — cheap, no GPU. Picks accumulate labels +
     exemplars into storage; this is the manual trigger that consumes them.
     """
+    from marquee.database import _get_session_factory  # noqa: PLC0415
+    from marquee.ml import artifact_registry  # noqa: PLC0415
     from marquee.ml.head_trainer import train_from_labels  # noqa: PLC0415
 
     cancel_event = cancel_registry.get(_job.id)
     head, info = await asyncio.to_thread(train_from_labels, cancel_event=cancel_event)
+    if head is not None:
+        async with _get_session_factory()() as db:
+            if (await artifact_registry.registry_status(db))["available"]:
+                await artifact_registry.register_active_artifact(
+                    db,
+                    artifact_registry.KIND_LEARNED_HEAD,
+                    info=info,
+                )
     return {"trained": head is not None, **info}
 
 

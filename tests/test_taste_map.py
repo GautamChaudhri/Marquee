@@ -69,12 +69,14 @@ def test_build_and_load_map_pca(synthetic_profile):
     result = load_map(recompute=True)
     assert result["projection"]["method"] == "pca"  # umap not installed
     assert len(result["points"]) == 12
+    assert result["summary"]["exemplars"] == 12
+    assert result["summary"]["unique_movies"] == 12
     # < 50 exemplars → no clustering, with a guidance note.
     assert result["clustering"] is None
     assert result["note"] is not None
     # Each point has 3D + 2D coords.
     p = result["points"][0]
-    assert {"x", "y", "z", "x2", "y2", "self_knn"} <= set(p)
+    assert {"x", "y", "z", "x2", "y2", "self_knn", "movie_title", "is_noise"} <= set(p)
 
 
 def test_map_is_deterministic(synthetic_profile):

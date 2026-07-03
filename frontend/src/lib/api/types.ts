@@ -839,6 +839,11 @@ export interface RankItem {
 }
 
 // ── Taste / Key Art Engine status (GET /taste/status) ───────────────────────
+export interface ArtifactRegistryStatus {
+	available: boolean;
+	reason?: 'missing_schema';
+}
+
 export interface TasteStatus {
 	labels: {
 		total: number;
@@ -852,6 +857,8 @@ export interface TasteStatus {
 		negatives: number;
 		last_rebuild: string | null;
 		profile_present: boolean;
+		unique_movies?: number;
+		duplicate_groups?: number;
 	};
 	learned_head: {
 		active: boolean;
@@ -864,6 +871,9 @@ export interface TasteStatus {
 			labels: { have: number; need: number };
 		};
 	};
+	active_profile?: ManagedArtifactSummary | null;
+	active_head?: ManagedArtifactSummary | null;
+	artifact_registry?: ArtifactRegistryStatus;
 	gate_alerts: { gate: string; overrides: number; threshold?: number | string }[];
 	rebuild?: Record<string, unknown>;
 }
@@ -875,12 +885,16 @@ export type BatchScope = 'missing' | 'all' | 'selected';
 // ── Taste map (GET /taste/map) ─────────────────────────────────────────────
 export interface TasteMapPoint {
 	name: string;
+	movie_title: string;
+	movie_id: number | null;
+	tmdb_id: number | null;
 	x: number;
 	y: number;
 	z: number;
 	x2: number;
 	y2: number;
 	cluster: number | null;
+	is_noise: boolean;
 	self_knn: number;
 	genres: string[] | null;
 	year: number | null;
@@ -898,6 +912,12 @@ export interface TasteMapCluster {
 export interface TasteMapData {
 	projection: { method: string; computed_at: string };
 	points: TasteMapPoint[];
+	summary: {
+		exemplars: number;
+		unique_movies: number;
+		duplicate_groups: number;
+		noise: number;
+	};
 	clusters: TasteMapCluster[] | null;
 	outliers: string[];
 	clustering: TasteMapCluster[] | null;
@@ -923,6 +943,79 @@ export interface TasteMapCandidateOverlay {
 export interface TasteNeighbor {
 	name: string;
 	similarity: number;
+}
+
+export interface ManagedArtifactMovie {
+	movie_id: number | null;
+	title: string;
+	year: number | null;
+	tmdb_id: number | null;
+	contribution_count: number;
+}
+
+export interface ManagedArtifactSummary {
+	id: string;
+	kind: 'taste_profile' | 'learned_head';
+	status: 'active' | 'archived';
+	label: string;
+	model_name: string | null;
+	source_mode: string | null;
+	imported_from_active: boolean;
+	created_at: string | null;
+	updated_at: string | null;
+	trained_at: string | null;
+	activated_at: string | null;
+	storage_path: string;
+	summary: Record<string, unknown> & {
+		exemplars?: number;
+		unique_movies?: number;
+		negative_exemplars?: number;
+		duplicate_groups?: number;
+		duplicate_exemplars?: number;
+		source_mode?: string;
+		mode?: string;
+		sample_count?: number;
+		train_accuracy?: number;
+		top_features?: { name: string; weight: number }[];
+	};
+}
+
+export interface ManagedProfileDetail extends ManagedArtifactSummary {
+	movies: ManagedArtifactMovie[];
+	duplicate_groups: {
+		title: string;
+		year: number | null;
+		count: number;
+		exemplars: string[];
+	}[];
+	negative_exemplars: string[];
+}
+
+export interface ManagedHeadDetail extends ManagedArtifactSummary {
+	movies: ManagedArtifactMovie[];
+}
+
+export interface ManagedProfilesResponse {
+	profiles: ManagedArtifactSummary[];
+	artifact_registry?: ArtifactRegistryStatus;
+}
+
+export interface ManagedHeadsResponse {
+	heads: ManagedArtifactSummary[];
+	artifact_registry?: ArtifactRegistryStatus;
+}
+
+export interface ManagedExemplarRow {
+	name: string;
+	title: string;
+	year: number | null;
+	movie_id: number | null;
+	movie_title: string;
+	tmdb_id: number | null;
+	is_duplicate: boolean;
+	duplicate_count: number;
+	exists_in_training_dir: boolean;
+	thumb_url: string;
 }
 
 // ── Subtitle Inventory ──

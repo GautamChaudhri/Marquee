@@ -55,6 +55,8 @@ docker compose -f docker/docker-compose.yml up -d
 Set any required secrets and client settings in `.env` before starting the
 stack. When running the API directly, point `DB_URL` at a reachable database
 and run migrations as needed with `alembic upgrade head`.
+After pulling the artifact-management taste-page changes, run that migration
+before expecting taste profile / learned head management to appear in the UI.
 
 ## Project Structure
 
