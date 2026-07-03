@@ -1,7 +1,8 @@
 <script lang="ts">
 	import { onDestroy } from 'svelte';
-	import { goto } from '$app/navigation';
+	import { goto, invalidateAll } from '$app/navigation';
 	import { page } from '$app/state';
+	import { deleteMoviePoster } from '$lib/api/library';
 	import { posterStatusMeta, letterboxMeta, toneVar } from '$lib/display';
 	import { ApiError } from '$lib/api/client';
 	import type { LetterboxDetail, PipelineRunSummary, RunResults } from '$lib/api/types';
@@ -121,6 +122,31 @@
 			/* ignore */
 		}
 	}
+
+	let deletingPoster = $state(false);
+	let deletePosterError = $state<string | null>(null);
+
+	async function handleDeletePoster() {
+		if (!movie) return;
+		if (!confirm('Are you sure you want to delete the deployed poster? This will remove the file from the movie folder and reset the status to missing.')) {
+			return;
+		}
+		deletingPoster = true;
+		deletePosterError = null;
+		try {
+			const res = await deleteMoviePoster(fetch, movie.id);
+			if (res.ok) {
+				await invalidateAll();
+			} else {
+				deletePosterError = res.error ?? 'Failed to delete poster';
+			}
+		} catch (e) {
+			deletePosterError = e instanceof Error ? e.message : 'Failed to delete poster';
+		} finally {
+			deletingPoster = false;
+		}
+	}
+
 
 	$effect(() => {
 		if (tab === 'poster' && !posterLoaded) {
@@ -326,7 +352,22 @@
 						{:else}
 							<div class="info-note">No TMDB ID — sync Radarr first</div>
 						{/if}
+						{#if movie.poster_status !== 'missing'}
+							<button class="btn-danger" onclick={handleDeletePoster} disabled={deletingPoster}>
+								{#if deletingPoster}
+									<span class="spin">⟳</span> Deleting…
+								{:else}
+									Delete poster
+								{/if}
+							</button>
+						{/if}
 					</div>
+
+					{#if deletePosterError}
+						<div class="alert-box err">
+							{deletePosterError}
+						</div>
+					{/if}
 
 					{#if pipeError}
 						<div class="alert-box err">
@@ -1078,6 +1119,26 @@
 		white-space: nowrap;
 	}
 	.btn-gold:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
+	}
+	.btn-danger {
+		padding: 9px 18px;
+		border-radius: 8px;
+		border: 1px solid var(--bad);
+		background: transparent;
+		color: var(--bad);
+		font-size: 13px;
+		font-weight: 600;
+		white-space: nowrap;
+		cursor: pointer;
+		transition: background 0.15s, color 0.15s;
+	}
+	.btn-danger:hover {
+		background: var(--bad);
+		color: var(--ink);
+	}
+	.btn-danger:disabled {
 		opacity: 0.5;
 		cursor: not-allowed;
 	}

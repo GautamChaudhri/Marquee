@@ -933,9 +933,7 @@ async def execute_job(db: AsyncSession, job: MediaJob, emit) -> dict:
         "NVIDIA NVDEC \u2192 GPU crop \u2192 NVENC" if acceleration_active else "CPU decode/crop"
     )
     crop = plan.get("crop") or {}
-    crop_label = (
-        f"crop top={crop.get('top')} bottom={crop.get('bottom')} \u2014 " if crop else ""
-    )
+    crop_label = f"crop top={crop.get('top')} bottom={crop.get('bottom')} \u2014 " if crop else ""
     await emit(
         db,
         job.job_id,

@@ -215,7 +215,11 @@ def build_inversion_training_data(
                     continue  # baseline already agreed hated < s — no contradiction
                 magnitude = _pair_magnitude(final_rank[s["orig_filename"]], virtual_rank)
                 movie_pairs.append(
-                    (feats[s["orig_filename"]], h["normalized_features"], implicit_weight * magnitude)
+                    (
+                        feats[s["orig_filename"]],
+                        h["normalized_features"],
+                        implicit_weight * magnitude,
+                    )
                 )
 
         if not movie_pairs:
@@ -283,7 +287,9 @@ def build_pointwise_pseudo_labels(
     if not samples:
         return np.empty((0, len(feature_names))), np.empty(0), 0
 
-    x = np.asarray([[feat[name] for name in feature_names] for feat, _ in samples], dtype=np.float64)
+    x = np.asarray(
+        [[feat[name] for name in feature_names] for feat, _ in samples], dtype=np.float64
+    )
     y = np.asarray([label for _, label in samples], dtype=np.float64)
     return x, y, len(movies)
 
@@ -330,9 +336,7 @@ def train_from_labels(
                 f"have {n_movies} movies / {n_pairs} pairs"
             )
             return None, info
-        head = LogisticHead.train_pairwise(
-            diffs, weights, names, l2=l2, cancel_event=cancel_event
-        )
+        head = LogisticHead.train_pairwise(diffs, weights, names, l2=l2, cancel_event=cancel_event)
 
         # The RankNet objective above only learns ordering (bias is fixed at
         # 0.0 — see train_pairwise's docstring), which lets raw scores

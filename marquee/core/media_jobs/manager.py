@@ -314,18 +314,23 @@ class MediaJobManager:
         from marquee.models import Job  # noqa: PLC0415
 
         media_jobs = (
-            await db.execute(
-                select(MediaJob)
-                .where(
-                    MediaJob.operation == operation,
-                    MediaJob.media_file_id == media_file_id,
-                    MediaJob.status == "planned",
+            (
+                await db.execute(
+                    select(MediaJob)
+                    .where(
+                        MediaJob.operation == operation,
+                        MediaJob.media_file_id == media_file_id,
+                        MediaJob.status == "planned",
+                    )
+                    .order_by(MediaJob.created_at.asc(), MediaJob.job_id.asc())
                 )
-                .order_by(MediaJob.created_at.asc(), MediaJob.job_id.asc())
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         new_key = self._selection_key(request)
         if new_key is not None:
+
             def _same_selection(mj: MediaJob) -> bool:
                 try:
                     old_request = json.loads(mj.request_json) if mj.request_json else None
@@ -338,15 +343,19 @@ class MediaJobManager:
             return []
 
         generic_jobs = (
-            await db.execute(
-                select(Job).where(
-                    Job.type == operation,
-                    Job.subject_type == "media_file",
-                    Job.subject_id == str(media_file_id),
-                    Job.status == "planned",
+            (
+                await db.execute(
+                    select(Job).where(
+                        Job.type == operation,
+                        Job.subject_type == "media_file",
+                        Job.subject_id == str(media_file_id),
+                        Job.status == "planned",
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         generic_by_media_id = {
             row.payload.get("media_job_id"): row
             for row in generic_jobs

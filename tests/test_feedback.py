@@ -255,7 +255,9 @@ async def test_bulk_auto_approve_reviews_entire_queue(client, db, tmp_path, monk
     db.add(manual_movie)
     await db.flush()
     manual_archive = tmp_path / "manual.json"
-    manual_archive.write_text(json.dumps({"movie_id": manual_movie.id, "title": "Manual", "candidates": []}))
+    manual_archive.write_text(
+        json.dumps({"movie_id": manual_movie.id, "title": "Manual", "candidates": []})
+    )
     db.add(
         PipelineRun(
             run_id="manual-run",
@@ -279,7 +281,9 @@ async def test_bulk_auto_approve_reviews_entire_queue(client, db, tmp_path, monk
     assert data["failed"] == 0
 
     reviewed = await db.scalar(
-        select(func.count()).select_from(PipelineRun).where(PipelineRun.feedback_event_id.is_not(None))
+        select(func.count())
+        .select_from(PipelineRun)
+        .where(PipelineRun.feedback_event_id.is_not(None))
     )
     assert reviewed == 61
 

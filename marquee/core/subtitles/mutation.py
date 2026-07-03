@@ -49,7 +49,9 @@ class PreflightError(Exception):
         super().__init__(message)
 
 
-async def _raise_if_cancel_requested(db: AsyncSession, job, *, cleanup_paths: list[Path] | None = None):
+async def _raise_if_cancel_requested(
+    db: AsyncSession, job, *, cleanup_paths: list[Path] | None = None
+):
     await db.refresh(job, ["cancel_requested"])
     cancel_event = cancel_registry.get(job.job_id)
     registry_cancelled = cancel_event is not None and cancel_event.is_set()
@@ -63,6 +65,13 @@ async def _raise_if_cancel_requested(db: AsyncSession, job, *, cleanup_paths: li
 
 
 def _temp_output_path(source: Path, job_id: str) -> Path:
+    if subtitle_settings.SUBTITLE_MUTATION_USE_TEMP_DIR:
+        import tempfile  # noqa: PLC0415
+
+        temp_dir = subtitle_settings.SUBTITLE_MUTATION_TEMP_DIR or tempfile.gettempdir()
+        temp_path = Path(temp_dir)
+        temp_path.mkdir(parents=True, exist_ok=True)
+        return temp_path / f"{source.name}.marquee.{job_id}.partial{source.suffix}"
     return source.with_name(f".{source.name}.marquee.{job_id}.partial{source.suffix}")
 
 
@@ -107,7 +116,58 @@ def _backup_dir(source: Path, source_key: str) -> Path:
     return root / ".marquee" / "backups" / safe_key
 
 
-def _nice_ionice_prefix() -> list[str]:
+def is_network_filesystem(path: Path) -> bool:
+    """Check if the given path resides on a network/remote filesystem."""
+    try:
+        import psutil  # noqa: PLC0415
+
+        resolved_path = path.resolve()
+        best_match = None
+        best_len = -1
+        # Inspect system partitions
+        for part in psutil.disk_partitions(all=True):
+            try:
+                mount = Path(part.mountpoint).resolve()
+            except Exception:
+                continue
+            # We want the longest matching mountpoint prefix
+            if (resolved_path == mount or mount in resolved_path.parents) and len(
+                part.mountpoint
+            ) > best_len:
+                best_len = len(part.mountpoint)
+                best_match = part
+        if best_match:
+            fstype = best_match.fstype.lower()
+            # Common network/remote file systems
+            network_types = {
+                "nfs",
+                "nfs3",
+                "nfs4",
+                "cifs",
+                "smbfs",
+                "sshfs",
+                "glusterfs",
+                "ceph",
+                "lustre",
+                "gfs2",
+                "ocfs2",
+                "davfs",
+                "fuse.rclone",
+                "rclone",
+                "s3fs",
+                "fuse.s3fs",
+                "afs",
+            }
+            if fstype in network_types or any(
+                t in fstype for t in ("nfs", "smb", "cifs", "rclone")
+            ):
+                return True
+    except Exception as e:
+        logger.warning("Error checking partition type for %s: %s", path, e)
+    return False
+
+
+def _nice_ionice_prefix(path: Path | None = None) -> list[str]:
     """Best-effort low-priority prefix for heavy media I/O subprocesses.
 
     Without this, a full-priority backup/remux copy can saturate the disks
@@ -118,6 +178,11 @@ def _nice_ionice_prefix() -> list[str]:
     nice_bin = shutil.which("nice")
     if nice_bin:
         prefix += [nice_bin, "-n", "19"]
+
+    if path and is_network_filesystem(path):
+        logger.info("Bypassing ionice wrapping for network filesystem path: %s", path)
+        return prefix
+
     ionice_bin = shutil.which("ionice")
     if ionice_bin:
         prefix += [ionice_bin, "-c", "3"]
@@ -144,7 +209,7 @@ async def link_or_copy(src: Path, dst: Path, *, bwlimit_kbps: int) -> str:
     if await asyncio.to_thread(try_link):
         return "hardlink"
 
-    prefix = _nice_ionice_prefix()
+    prefix = _nice_ionice_prefix(src)
     cp_bin = shutil.which("cp")
     if cp_bin:
         proc = await asyncio.create_subprocess_exec(
@@ -485,9 +550,7 @@ async def build_plan(
         audio_indices = [a.get("index") for a in audio if a.get("index") is not None]
         if not audio_indices:
             raise PlanError("no audio streams available to reorder")
-        if len(requested_order) != len(audio_indices) or set(requested_order) != set(
-            audio_indices
-        ):
+        if len(requested_order) != len(audio_indices) or set(requested_order) != set(audio_indices):
             raise PlanError("audio_stream_order must contain every audio stream index once")
         audio_by_index = {a.get("index"): a for a in audio}
         after_audio = [audio_by_index[index] for index in requested_order]
@@ -726,15 +789,15 @@ def _describe_operation(operation: str, request: dict, plan: dict | None) -> str
     """
     try:
         before = (plan or {}).get("before") or {}
-        tracks_by_id = {
-            t.get("id"): t for t in before.get("tracks") or [] if isinstance(t, dict)
-        }
+        tracks_by_id = {t.get("id"): t for t in before.get("tracks") or [] if isinstance(t, dict)}
         audio_by_index = {
             a.get("index"): a for a in before.get("audio_streams") or [] if isinstance(a, dict)
         }
         if operation in ("audio_remove", "subtitle_remove", "track_remove"):
             parts = []
-            subs = [t for t in (tracks_by_id.get(tid) for tid in request.get("track_ids") or []) if t]
+            subs = [
+                t for t in (tracks_by_id.get(tid) for tid in request.get("track_ids") or []) if t
+            ]
             if subs:
                 if len(subs) <= 2:
                     parts.append(" & ".join(_track_phrase(t) for t in subs))
@@ -756,7 +819,9 @@ def _describe_operation(operation: str, request: dict, plan: dict | None) -> str
                     parts.append(f"{len(audio)} audio streams ({', '.join(langs)})")
             return f"Removing {' & '.join(parts)}" if parts else None
         if operation == "subtitle_embed":
-            subs = [t for t in (tracks_by_id.get(tid) for tid in request.get("track_ids") or []) if t]
+            subs = [
+                t for t in (tracks_by_id.get(tid) for tid in request.get("track_ids") or []) if t
+            ]
             if not subs:
                 return None
             if len(subs) <= 2:
@@ -882,7 +947,7 @@ async def execute_job(db: AsyncSession, job, emit) -> dict:
         binary_path = binaries.resolve(binary) or binary
 
         # Prefix execution with nice and ionice if available to prioritize system and web server stability
-        run_args = [*_nice_ionice_prefix(), binary_path, *args]
+        run_args = [*_nice_ionice_prefix(resolved.path), binary_path, *args]
         executable, cmd_args = run_args[0], run_args[1:]
 
         proc = await asyncio.create_subprocess_exec(
@@ -931,7 +996,27 @@ async def execute_job(db: AsyncSession, job, emit) -> dict:
 
         await emit(db, job.job_id, "replace", "start")
         await _raise_if_cancel_requested(db, job, cleanup_paths=[out])
-        os.replace(out, resolved.path)
+        try:
+            os.replace(out, resolved.path)
+        except OSError as e:
+            import errno  # noqa: PLC0415
+
+            if e.errno == errno.EXDEV:
+                dest_temp = resolved.path.with_name(
+                    f".{resolved.path.name}.marquee-replace-{job.job_id}.tmp"
+                )
+                try:
+                    import shutil  # noqa: PLC0415
+
+                    await asyncio.to_thread(shutil.copy2, out, dest_temp)
+                    os.replace(dest_temp, resolved.path)
+                except Exception:
+                    dest_temp.unlink(missing_ok=True)
+                    raise
+                finally:
+                    out.unlink(missing_ok=True)
+            else:
+                raise
 
     external_result = []
     if external_removals:
@@ -1046,9 +1131,7 @@ async def _build_argv(db, job, operation, request, plan, source_probe, adapter, 
         for t in embed_ids:
             track = resolved_map[t]
             if not track.external_path:
-                raise PreflightError(
-                    "plan_stale", f"track {t} is no longer an external sidecar"
-                )
+                raise PreflightError("plan_stale", f"track {t} is no longer an external sidecar")
             sources.append(
                 EmbedSource(
                     path=Path(track.external_path),
@@ -1158,7 +1241,12 @@ async def _build_argv(db, job, operation, request, plan, source_probe, adapter, 
         current_order = [stream.get("index") for stream in source_probe.audio_streams]
         if order == current_order:
             return None, 0, 0, []
-        return ("ffmpeg", _build_audio_reorder_args(resolved.path, out, source_probe, order)), 0, 0, []
+        return (
+            ("ffmpeg", _build_audio_reorder_args(resolved.path, out, source_probe, order)),
+            0,
+            0,
+            [],
+        )
 
     raise PreflightError("unsupported_operation", operation)
 

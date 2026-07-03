@@ -93,9 +93,7 @@ class DurableWorker:
 
             async def terminate_tracked_children(*, grace_seconds: float = 2.0) -> None:
                 await db.refresh(current_attempt, ["child_pids"])
-                pids = await terminate_child_pids(
-                    db, current_attempt, grace_seconds=grace_seconds
-                )
+                pids = await terminate_child_pids(db, current_attempt, grace_seconds=grace_seconds)
                 if pids:
                     logger.warning(
                         "terminated child process(es) for job %s attempt %s: %s",

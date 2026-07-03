@@ -41,6 +41,10 @@ class SubtitleSettings(BaseSettings):
     # quarantine | delete
     SUBTITLE_EXTERNAL_DELETE_MODE: str = "quarantine"
 
+    # Temporary directory configuration for media mutations (SSD temp space)
+    SUBTITLE_MUTATION_USE_TEMP_DIR: bool = False
+    SUBTITLE_MUTATION_TEMP_DIR: str | None = None
+
     # ── Policy defaults ───────────────────────────────────────────────
     # keep | review | remove
     SUBTITLE_UNKNOWN_LANGUAGE_ACTION: str = "keep"

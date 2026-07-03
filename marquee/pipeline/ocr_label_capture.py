@@ -217,9 +217,9 @@ def clear_ocr_labels() -> dict[str, object]:
     root = capture_root()
     with _CAPTURE_LOCK:
         run_dirs = [path for path in root.iterdir() if path.is_dir()] if root.exists() else []
-        capture_dirs = [
-            path for path in root.glob("*/*/*") if path.is_dir()
-        ] if root.exists() else []
+        capture_dirs = (
+            [path for path in root.glob("*/*/*") if path.is_dir()] if root.exists() else []
+        )
         if root.exists():
             shutil.rmtree(root)
         root.mkdir(parents=True, exist_ok=True)
@@ -326,9 +326,7 @@ def _extract_log_lines(
         text = log_source.read_text(encoding="utf-8", errors="replace")
         if _log_belongs_to_run(text, run_id):
             lines = [
-                line.rstrip("\n")
-                for line in text.splitlines()
-                if f"file={orig_filename}" in line
+                line.rstrip("\n") for line in text.splitlines() if f"file={orig_filename}" in line
             ]
             if lines:
                 return lines, [], "pipeline.log"

@@ -48,17 +48,17 @@ async def _coverage_by_media_file(db: AsyncSession, media_file_ids: list[int]) -
                 SubtitleInventory.media_file_id,
                 SubtitleInventory.coverage_json,
                 SubtitleInventory.audio_streams_json,
-            ).where(
-                SubtitleInventory.media_file_id.in_(media_file_ids)
-            )
+            ).where(SubtitleInventory.media_file_id.in_(media_file_ids))
         )
     ).all()
     result = {}
     for mid, cov, audio_json in rows:
         summary = (cov if isinstance(cov, dict) else json.loads(cov)) if cov else {}
         audio_streams = (
-            audio_json if isinstance(audio_json, list) else json.loads(audio_json)
-        ) if audio_json else []
+            (audio_json if isinstance(audio_json, list) else json.loads(audio_json))
+            if audio_json
+            else []
+        )
         if summary and "audio_channels_by_language" not in summary:
             by_language: dict[str, list[str]] = {}
             for stream in audio_streams:
@@ -303,3 +303,76 @@ async def get_episode(episode_id: int, db: Annotated[AsyncSession, Depends(get_d
         "title": episode.title,
         "media_file_id": media_file_id,
     }
+
+
+@router.delete("/movies/{movie_id}/poster")
+async def delete_movie_poster(
+    movie_id: int,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    """Delete a movie's deployed poster and reset all its poster_* columns.
+
+    This is the single-movie equivalent of the global poster_deploy_reset job.
+    """
+    from pathlib import Path  # noqa: PLC0415
+
+    from marquee.core.path_utils import safe_translate_and_validate  # noqa: PLC0415
+    from marquee.core.poster_service import cache_paths  # noqa: PLC0415
+    from marquee.models import ArtworkEvent  # noqa: PLC0415
+
+    movie = (await db.execute(select(Movie).where(Movie.id == movie_id))).scalar_one_or_none()
+    if movie is None:
+        raise HTTPException(status_code=404, detail=f"Movie id={movie_id} not found")
+
+    if not movie.poster_path:
+        return {"ok": True, "detail": "Movie does not have a deployed poster"}
+
+    stored_path = str(movie.poster_path)
+    deleted = False
+    error_msg = None
+
+    try:
+        poster_file = Path(movie.poster_path)
+        folder = safe_translate_and_validate(movie.folder_path, source="radarr")
+        if poster_file.parent.resolve() != folder.resolve():
+            raise RuntimeError(f"Poster parent {poster_file.parent} != folder {folder}")
+        poster_file.unlink(missing_ok=True)
+        deleted = True
+    except Exception:
+        # Fallback raw unlink if confinement check fails or raises
+        try:
+            Path(movie.poster_path).unlink(missing_ok=True)
+            deleted = True
+        except Exception as raw_exc:
+            error_msg = str(raw_exc)
+
+    # Always reset DB columns
+    movie.poster_path = None
+    movie.poster_source = None
+    movie.poster_source_url = None
+    movie.poster_ai_selected = False
+    movie.poster_embedding = None
+    movie.poster_sha256 = None
+    movie.poster_phash = None
+    movie.poster_user_approved = False
+    movie.poster_deployed_filename = None
+    movie.poster_deployed_at = None
+
+    detail_json = {
+        "deleted_path": stored_path,
+        "cache_kept": str(cache_paths(movie.tmdb_id)[0]) if movie.tmdb_id else None,
+    }
+    if error_msg:
+        detail_json["error"] = error_msg
+
+    db.add(
+        ArtworkEvent(
+            movie_id=movie.id,
+            action="deploy_reset",
+            source="maintenance",
+            detail=json.dumps(detail_json),
+        )
+    )
+    await db.commit()
+
+    return {"ok": True, "deleted": deleted, "error": error_msg}

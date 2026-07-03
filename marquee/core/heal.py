@@ -54,9 +54,7 @@ async def heal_scan() -> dict:
     checked = restored = failed = 0
     # Freshly deployed posters get a grace window: the deploy may still be
     # mid-flight in the API process, and restoring over it would clobber it.
-    grace_cutoff = datetime.now(UTC) - timedelta(
-        minutes=settings.HEAL_RECENT_DEPLOY_GRACE_MINUTES
-    )
+    grace_cutoff = datetime.now(UTC) - timedelta(minutes=settings.HEAL_RECENT_DEPLOY_GRACE_MINUTES)
     async with factory() as db:
         movies = (
             (

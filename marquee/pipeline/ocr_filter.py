@@ -230,9 +230,8 @@ def _compact_matches_title(
             and difflib.SequenceMatcher(None, compact, title_compact).ratio() >= fuzzy_cutoff
         ):
             return True
-        if (
-            len(compact) / len(title_compact) >= 0.35
-            and _is_ordered_subsequence(compact, title_compact)
+        if len(compact) / len(title_compact) >= 0.35 and _is_ordered_subsequence(
+            compact, title_compact
         ):
             return True
 
@@ -247,11 +246,9 @@ def _compact_matches_title(
                 continue
             if _is_ordered_subsequence(compact, haystack):
                 return True
-            if (
-                len(compact) / len(haystack) >= 0.75
-                and difflib.SequenceMatcher(None, compact, haystack).ratio()
-                >= max(0.80, fuzzy_cutoff)
-            ):
+            if len(compact) / len(haystack) >= 0.75 and difflib.SequenceMatcher(
+                None, compact, haystack
+            ).ratio() >= max(0.80, fuzzy_cutoff):
                 return True
     return False
 
@@ -1011,7 +1008,9 @@ def _process_image(
     if director_tokens is None:
         director_tokens = _worker_director_tokens
     if title_text is None:
-        title_text = _worker_title_text if using_worker_title_text else " ".join(sorted(title_tokens))
+        title_text = (
+            _worker_title_text if using_worker_title_text else " ".join(sorted(title_tokens))
+        )
     title_text = _normalise(title_text) if title_text else " ".join(sorted(title_tokens))
     path = Path(path_string)
     if _worker_ocr is None:
@@ -1239,7 +1238,12 @@ def _process_image(
                 accepted = False
                 reason = "has_title"
             # Title requirement: if title is required but absent (and no title box).
-            if accepted and title_allowed and title_box is None and pipeline_settings.OCR_REQUIRE_TITLE:
+            if (
+                accepted
+                and title_allowed
+                and title_box is None
+                and pipeline_settings.OCR_REQUIRE_TITLE
+            ):
                 accepted = False
                 reason = "no_title"
         else:
@@ -1299,9 +1303,7 @@ def _process_image(
                 "enabled": pipeline_settings.OCR_TITLE_RECOVERY_ENABLED,
                 "triggered": title_recovery_triggered,
                 "recovered_title": title_recovery_recovered,
-                "confidence_threshold": (
-                    pipeline_settings.OCR_TITLE_RECOVERY_CONFIDENCE_THRESHOLD
-                ),
+                "confidence_threshold": (pipeline_settings.OCR_TITLE_RECOVERY_CONFIDENCE_THRESHOLD),
                 "error": title_recovery_error,
             },
             "detected_boxes": _build_detected_boxes_trace(
@@ -1372,9 +1374,7 @@ def _process_image(
                 image_width=image_width,
                 image_height=image_height,
             )
-            recovered_title_boxes = [
-                box for box in recovery_boxes if id(box) in recovery_evidence
-            ]
+            recovered_title_boxes = [box for box in recovery_boxes if id(box) in recovery_evidence]
             if recovered_title_boxes:
                 title_recovery_recovered = True
                 for box in recovered_title_boxes:
@@ -1471,10 +1471,7 @@ class PosterTextFilter:
         """Single-movie batch: every poster matched against this movie's title."""
         if not paths:
             return []
-        items = [
-            (path, self.title, self.title_tokens, self.director_tokens)
-            for path in paths
-        ]
+        items = [(path, self.title, self.title_tokens, self.director_tokens) for path in paths]
         results = self.run_ocr_batch(items, num_workers=self.num_workers, progress=progress)
         results = apply_no_text_fallback(results)
         logger.info(
@@ -1519,10 +1516,7 @@ class PosterTextFilter:
     @staticmethod
     def run_ocr_tasks(
         pool: OcrPool,
-        items: list[
-            tuple[Path, set[str], set[str]]
-            | tuple[Path, str, set[str], set[str]]
-        ],
+        items: list[tuple[Path, set[str], set[str]] | tuple[Path, str, set[str], set[str]]],
         *,
         progress: Callable[[int, int], None] | None = None,
     ) -> list[OCRCandidateResult]:
@@ -1578,10 +1572,7 @@ class PosterTextFilter:
 
     @staticmethod
     def run_ocr_batch(
-        items: list[
-            tuple[Path, set[str], set[str]]
-            | tuple[Path, str, set[str], set[str]]
-        ],
+        items: list[tuple[Path, set[str], set[str]] | tuple[Path, str, set[str], set[str]]],
         *,
         num_workers: int | None = None,
         progress: Callable[[int, int], None] | None = None,

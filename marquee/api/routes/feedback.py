@@ -285,7 +285,9 @@ async def _deploy_pick(
 async def _load_feedback_run(
     db: AsyncSession, run_id: str
 ) -> tuple[PipelineRun, dict, Movie | None, dict[str, dict], dict | None]:
-    run = (await db.execute(select(PipelineRun).where(PipelineRun.run_id == run_id))).scalar_one_or_none()
+    run = (
+        await db.execute(select(PipelineRun).where(PipelineRun.run_id == run_id))
+    ).scalar_one_or_none()
     if run is None:
         raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
 

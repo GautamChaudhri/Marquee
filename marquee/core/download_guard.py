@@ -29,9 +29,7 @@ def ensure_image_response(response: httpx.Response) -> None:
         )
     declared = response.headers.get("content-length", "")
     if declared.isdigit() and int(declared) > MAX_POSTER_BYTES:
-        raise DownloadRejectedError(
-            f"poster too large: {declared} bytes (cap {MAX_POSTER_BYTES})"
-        )
+        raise DownloadRejectedError(f"poster too large: {declared} bytes (cap {MAX_POSTER_BYTES})")
     if len(response.content) > MAX_POSTER_BYTES:
         raise DownloadRejectedError(
             f"poster too large: {len(response.content)} bytes (cap {MAX_POSTER_BYTES})"

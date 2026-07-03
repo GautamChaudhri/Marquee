@@ -489,3 +489,86 @@ async def test_audio_reorder_plan_reorders_preview(tmp_path):
 
     assert [stream["index"] for stream in plan["after"]["audio_streams"]] == [2, 1]
     assert plan["capabilities"]["can_execute"] is True
+
+
+def test_is_network_filesystem(monkeypatch):
+    from collections import namedtuple  # noqa: PLC0415
+    from pathlib import Path  # noqa: PLC0415
+
+    import psutil  # noqa: PLC0415
+
+    Partition = namedtuple("Partition", ["device", "mountpoint", "fstype", "opts"])
+
+    def mock_partitions(all=False):
+        return [
+            Partition("/dev/sda2", "/boot", "xfs", "rw"),
+            Partition("192.168.4.200:/Marquee", "/mnt/ARK", "nfs4", "rw"),
+            Partition("192.168.4.200:/PLUNDER", "/mnt/PLUNDER", "nfs", "rw"),
+            Partition("/dev/mapper/fedora-root", "/", "ext4", "rw"),
+        ]
+
+    monkeypatch.setattr(psutil, "disk_partitions", mock_partitions)
+
+    assert mutation.is_network_filesystem(Path("/mnt/ARK/Movies/F1.mkv")) is True
+    assert mutation.is_network_filesystem(Path("/mnt/PLUNDER/Movies/Arrival.mkv")) is True
+    assert mutation.is_network_filesystem(Path("/boot/grub/grub.cfg")) is False
+    assert mutation.is_network_filesystem(Path("/etc/resolv.conf")) is False
+
+
+def test_nice_ionice_prefix_with_network_bypass(monkeypatch):
+    import shutil  # noqa: PLC0415
+    from collections import namedtuple  # noqa: PLC0415
+    from pathlib import Path  # noqa: PLC0415
+
+    import psutil  # noqa: PLC0415
+
+    Partition = namedtuple("Partition", ["device", "mountpoint", "fstype", "opts"])
+
+    def mock_partitions(all=False):
+        return [
+            Partition("192.168.4.200:/Marquee", "/mnt/ARK", "nfs4", "rw"),
+            Partition("/dev/mapper/fedora-root", "/", "ext4", "rw"),
+        ]
+
+    monkeypatch.setattr(psutil, "disk_partitions", mock_partitions)
+    monkeypatch.setattr(shutil, "which", lambda cmd: f"/usr/bin/{cmd}")
+
+    # For local paths, we get both nice and ionice
+    prefix_local = mutation._nice_ionice_prefix(Path("/home/quartermaster/local.mkv"))
+    assert "/usr/bin/nice" in prefix_local
+    assert "/usr/bin/ionice" in prefix_local
+
+    # For network paths, we get nice but ionice is bypassed
+    prefix_network = mutation._nice_ionice_prefix(Path("/mnt/ARK/Movies/network.mkv"))
+    assert "/usr/bin/nice" in prefix_network
+    assert "/usr/bin/ionice" not in prefix_network
+
+
+def test_temp_output_path_ssd_toggle(monkeypatch, tmp_path):
+    from pathlib import Path  # noqa: PLC0415
+
+    from marquee.core.subtitles.config import subtitle_settings  # noqa: PLC0415
+
+    # Default (off)
+    monkeypatch.setattr(subtitle_settings, "SUBTITLE_MUTATION_USE_TEMP_DIR", False)
+    src = Path("/movies/Movie.mkv")
+    out = mutation._temp_output_path(src, "job123")
+    assert out.parent == src.parent
+    assert out.name.startswith(".Movie.mkv.marquee.job123.partial")
+
+    # Enabled (on) without custom dir -> falls back to tempfile.gettempdir()
+    monkeypatch.setattr(subtitle_settings, "SUBTITLE_MUTATION_USE_TEMP_DIR", True)
+    monkeypatch.setattr(subtitle_settings, "SUBTITLE_MUTATION_TEMP_DIR", None)
+    import tempfile  # noqa: PLC0415
+
+    expected_temp = Path(tempfile.gettempdir())
+    out_toggle = mutation._temp_output_path(src, "job123")
+    assert out_toggle.parent == expected_temp
+    assert out_toggle.name == "Movie.mkv.marquee.job123.partial.mkv"
+
+    # Enabled (on) with custom dir
+    custom_temp_dir = tmp_path / "ssd/temp"
+    monkeypatch.setattr(subtitle_settings, "SUBTITLE_MUTATION_TEMP_DIR", str(custom_temp_dir))
+    out_custom = mutation._temp_output_path(src, "job123")
+    assert out_custom.parent == custom_temp_dir
+    assert out_custom.name == "Movie.mkv.marquee.job123.partial.mkv"

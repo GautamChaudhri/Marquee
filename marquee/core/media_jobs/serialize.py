@@ -74,8 +74,12 @@ def job_dict(
         "progress": effective_progress,
         "events_url": f"/api/media-jobs/{job.job_id}/events",
         "plan": json.loads(job.plan_json) if job.plan_json else None,
-        "result": result if result is not None else (json.loads(job.result_json) if job.result_json else None),
-        "error": error if error is not None else (json.loads(job.error_json) if job.error_json else None),
+        "result": result
+        if result is not None
+        else (json.loads(job.result_json) if job.result_json else None),
+        "error": error
+        if error is not None
+        else (json.loads(job.error_json) if job.error_json else None),
         "plan_expires_at": job.plan_expires_at.isoformat() if job.plan_expires_at else None,
         "created_at": job.created_at.isoformat() if job.created_at else None,
         "updated_at": (updated_at or job.updated_at or job.created_at).isoformat()

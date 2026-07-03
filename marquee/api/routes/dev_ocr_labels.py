@@ -61,7 +61,9 @@ async def get_run_labels(
 
 
 async def _load_run(db: AsyncSession, run_id: str) -> PipelineRun:
-    run = (await db.execute(select(PipelineRun).where(PipelineRun.run_id == run_id))).scalar_one_or_none()
+    run = (
+        await db.execute(select(PipelineRun).where(PipelineRun.run_id == run_id))
+    ).scalar_one_or_none()
     if run is None:
         raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
     return run

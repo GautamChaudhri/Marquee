@@ -668,7 +668,11 @@ async def poster_backup_all(job: Job) -> dict[str, Any]:
     factory = _get_session_factory()
     async with factory() as db:
         rows = (
-            (await db.execute(select(Movie).where(Movie.poster_path.is_not(None)).order_by(Movie.id)))
+            (
+                await db.execute(
+                    select(Movie).where(Movie.poster_path.is_not(None)).order_by(Movie.id)
+                )
+            )
             .scalars()
             .all()
         )
@@ -824,15 +828,12 @@ async def poster_maintenance(job: Job) -> dict[str, Any]:
                 }
             )
             runs = (
-                (
-                    await db.execute(
-                        select(PipelineRun.archive_path, PipelineRun.output_dir).where(
-                            PipelineRun.movie_id == movie.id
-                        )
+                await db.execute(
+                    select(PipelineRun.archive_path, PipelineRun.output_dir).where(
+                        PipelineRun.movie_id == movie.id
                     )
                 )
-                .all()
-            )
+            ).all()
             for archive_path, output_dir in runs:
                 path = _confined_existing_path(archive_path, settings.runs_archive_path)
                 if path is not None:

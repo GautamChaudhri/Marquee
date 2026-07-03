@@ -118,7 +118,9 @@ async def test_analyze_path_profile_5_skips_el_probe(monkeypatch):
     monkeypatch.setattr(
         dovi_analysis,
         "inspect_source",
-        lambda _p: _source(dovi_profile=5, dovi_el_present=False, dovi_bl_signal_compatibility_id=0),
+        lambda _p: _source(
+            dovi_profile=5, dovi_el_present=False, dovi_bl_signal_compatibility_id=0
+        ),
     )
 
     async def _boom(*_a, **_k):  # must NOT be called for single-layer profiles

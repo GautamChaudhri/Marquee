@@ -249,9 +249,7 @@ def inventory_to_dict(
     family = capabilities.container_family(inventory.container)
     caps = capabilities.capabilities_for(family)
     stored_coverage = json.loads(inventory.coverage_json) if inventory.coverage_json else {}
-    audio_streams = (
-        json.loads(inventory.audio_streams_json) if inventory.audio_streams_json else []
-    )
+    audio_streams = json.loads(inventory.audio_streams_json) if inventory.audio_streams_json else []
     if stored_coverage and "audio_channels_by_language" not in stored_coverage:
         by_language: dict[str, list[str]] = {}
         for stream in audio_streams:

@@ -74,7 +74,9 @@ async def test_run_media_records_error_on_failure(db, monkeypatch):
 
 
 async def test_run_media_records_structured_error_context(db, monkeypatch):
-    media_file = MediaFile(source="radarr", source_key="radarr:mf:55", path="/movies/failure/file.mkv")
+    media_file = MediaFile(
+        source="radarr", source_key="radarr:mf:55", path="/movies/failure/file.mkv"
+    )
     db.add(media_file)
     await db.commit()
     media_job, job = await _make_media_job(

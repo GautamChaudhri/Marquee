@@ -216,9 +216,7 @@ def _wire_plan_route_fakes(monkeypatch, media_file):
     monkeypatch.setattr("marquee.api.routes.subtitles.mutation.build_plan", fake_build_plan)
 
 
-async def test_create_plan_rejected_while_mutation_pending_on_same_file(
-    db, client, monkeypatch
-):
+async def test_create_plan_rejected_while_mutation_pending_on_same_file(db, client, monkeypatch):
     media_file = await _media_file(db, key="radarr:mf:g4")
     _wire_plan_route_fakes(monkeypatch, media_file)
 

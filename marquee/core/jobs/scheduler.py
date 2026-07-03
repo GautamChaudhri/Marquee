@@ -115,7 +115,9 @@ async def run() -> None:
                             )
                         except Exception:
                             logger.exception("scheduled instant job %s failed", schedule.job_type)
-                            job = await db.scalar(select(Job).where(Job.idempotency_key == idempotency_key))
+                            job = await db.scalar(
+                                select(Job).where(Job.idempotency_key == idempotency_key)
+                            )
                     else:
                         job = await job_manager.create(
                             db,
@@ -125,7 +127,9 @@ async def run() -> None:
                             idempotency_key=idempotency_key,
                         )
                     if job is None:
-                        job = await db.scalar(select(Job).where(Job.idempotency_key == idempotency_key))
+                        job = await db.scalar(
+                            select(Job).where(Job.idempotency_key == idempotency_key)
+                        )
                     schedule.last_job_id = job.id if job is not None else None
                     schedule.last_run_at = now
                     schedule.next_run_at = now + timedelta(seconds=schedule.interval_seconds)

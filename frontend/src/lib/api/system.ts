@@ -85,3 +85,8 @@ export function putSettings(fetch: Fetch, payload: any): Promise<any> {
 	}
 	return apiSend<any>(fetch, 'PUT', '/settings', payload);
 }
+
+export function runHealScan(fetch: Fetch): Promise<any> {
+	if (useMocks()) return Promise.resolve({ checked: 1, restored: 0, failed: 0 });
+	return apiSend<any>(fetch, 'POST', '/system/heal');
+}

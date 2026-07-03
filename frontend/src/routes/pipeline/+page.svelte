@@ -11,7 +11,7 @@
 		rescanPosters,
 		runPosterMaintenance
 	} from '$lib/api/pipeline';
-	import { putSettings } from '$lib/api/system';
+	import { putSettings, runHealScan } from '$lib/api/system';
 	import type { JobSnapshot } from '$lib/api/jobs';
 	import { bytesH } from '$lib/display';
 	import { trackJob, type JobProgressDetail } from '$lib/jobs';
@@ -214,6 +214,29 @@
 		}
 	}
 
+	let healBusy = $state(false);
+
+	async function runHeal() {
+		healBusy = true;
+		try {
+			const job = await runHealScan(fetch);
+			trackAction(job, 'Heal scan', (done) => {
+				const result = (done.result ?? {}) as Record<string, unknown>;
+				const checked = Number(result.checked ?? 0);
+				const restored = Number(result.restored ?? 0);
+				const failed = Number(result.failed ?? 0);
+				toast(
+					`Heal scan complete: ${checked} checked, ${restored} restored, ${failed} failed`,
+					restored ? 'good' : 'info'
+				);
+			});
+		} catch (e) {
+			toast(e instanceof Error ? e.message : 'Could not start heal scan', 'bad');
+		} finally {
+			healBusy = false;
+		}
+	}
+
 	async function runBackupAll() {
 		backupBusy = true;
 		try {
@@ -384,6 +407,9 @@
 				<span>Next: {isoDate(summary.heal_schedule?.next_run_at)}</span>
 			</div>
 			<div class="panel-foot">
+				<button onclick={runHeal} disabled={healBusy}>
+					{healBusy ? 'Running…' : 'Run scan'}
+				</button>
 				<button onclick={saveHeal} disabled={!healDirty || savingHeal}>
 					{savingHeal ? 'Saving' : 'Save'}
 				</button>
