@@ -1,5 +1,18 @@
 import { apiGet, apiSend, type Fetch } from './client';
-import type { JobSummary, TasteSource, TasteStatus } from './types';
+import type {
+	JobSummary,
+	ManagedHeadsResponse,
+	ManagedArtifactSummary,
+	ManagedExemplarRow,
+	ManagedHeadDetail,
+	ManagedProfilesResponse,
+	ManagedProfileDetail,
+	TasteMapCandidateOverlay,
+	TasteMapData,
+	TasteNeighbor,
+	TasteSource,
+	TasteStatus
+} from './types';
 
 /** Taste-profile + learned-head ("Key Art Engine") status, labels, exemplars. */
 export function getTasteStatus(fetchFn: Fetch): Promise<TasteStatus> {
@@ -26,13 +39,6 @@ export function cancelRetrain(
 ): Promise<{ status: string } & Record<string, unknown>> {
 	return apiSend(fetchFn, 'POST', '/taste/retrain/cancel', {});
 }
-
-// ── Taste map ──────────────────────────────────────────────────────────────
-import type {
-	TasteMapCandidateOverlay,
-	TasteMapData,
-	TasteNeighbor
-} from './types';
 
 /** Load (or force-rebuild) the 3D/2D taste-map projection. */
 export function getTasteMap(
@@ -68,4 +74,83 @@ export function getExemplarNeighbors(
 		fetchFn,
 		`/taste/exemplars/${encodeURIComponent(name)}/neighbors`
 	);
+}
+
+export function getTasteProfiles(fetchFn: Fetch): Promise<ManagedProfilesResponse> {
+	return apiGet(fetchFn, '/taste/profiles');
+}
+
+export function getTasteProfileDetail(
+	fetchFn: Fetch,
+	artifactId: string
+): Promise<ManagedProfileDetail> {
+	return apiGet(fetchFn, `/taste/profiles/${artifactId}`);
+}
+
+export function activateTasteProfile(
+	fetchFn: Fetch,
+	artifactId: string
+): Promise<{ profile: ManagedArtifactSummary; map_rebuilt: boolean }> {
+	return apiSend(fetchFn, 'POST', `/taste/profiles/${artifactId}/activate`);
+}
+
+export function archiveTasteProfile(
+	fetchFn: Fetch,
+	artifactId: string
+): Promise<{ profile: ManagedArtifactSummary }> {
+	return apiSend(fetchFn, 'POST', `/taste/profiles/${artifactId}/archive`);
+}
+
+export function deleteTasteProfile(
+	fetchFn: Fetch,
+	artifactId: string
+): Promise<{ deleted: string }> {
+	return apiSend(fetchFn, 'DELETE', `/taste/profiles/${artifactId}`);
+}
+
+export function getTasteProfileExemplars(
+	fetchFn: Fetch,
+	artifactId: string
+): Promise<{ exemplars: ManagedExemplarRow[] }> {
+	return apiGet(fetchFn, `/taste/profiles/${artifactId}/exemplars`);
+}
+
+export function deleteTasteProfileExemplar(
+	fetchFn: Fetch,
+	artifactId: string,
+	name: string
+): Promise<{ profile: ManagedArtifactSummary; removed: string }> {
+	return apiSend(fetchFn, 'DELETE', `/taste/profiles/${artifactId}/exemplars/${encodeURIComponent(name)}`);
+}
+
+export function getLearnedHeads(fetchFn: Fetch): Promise<ManagedHeadsResponse> {
+	return apiGet(fetchFn, '/taste/heads');
+}
+
+export function getLearnedHeadDetail(
+	fetchFn: Fetch,
+	artifactId: string
+): Promise<ManagedHeadDetail> {
+	return apiGet(fetchFn, `/taste/heads/${artifactId}`);
+}
+
+export function activateLearnedHead(
+	fetchFn: Fetch,
+	artifactId: string
+): Promise<{ head: ManagedArtifactSummary }> {
+	return apiSend(fetchFn, 'POST', `/taste/heads/${artifactId}/activate`);
+}
+
+export function archiveLearnedHead(
+	fetchFn: Fetch,
+	artifactId: string
+): Promise<{ head: ManagedArtifactSummary }> {
+	return apiSend(fetchFn, 'POST', `/taste/heads/${artifactId}/archive`);
+}
+
+export function deleteLearnedHead(
+	fetchFn: Fetch,
+	artifactId: string
+): Promise<{ deleted: string }> {
+	return apiSend(fetchFn, 'DELETE', `/taste/heads/${artifactId}`);
 }

@@ -17,6 +17,7 @@ free). The previous map is archived to ``data/cache/taste_map_history/``.
 from __future__ import annotations
 
 import logging
+import re
 import threading
 from collections import Counter
 from datetime import UTC, datetime
@@ -45,6 +46,9 @@ from marquee.ml.taste_store import weighted_topk_mean
 logger = logging.getLogger(__name__)
 
 _SMALL_PROFILE = 50  # below this, clustering isn't meaningful
+_YEAR = re.compile(r"\((\d{4})\)")
+_YEAR_SUFFIX = re.compile(r"\s*\(\d{4}\)\s*$")
+_DEDUP_SUFFIX = re.compile(r"\s*-\s*\d+$")
 
 
 def _map_path() -> Path:
@@ -57,6 +61,74 @@ def _history_dir() -> Path:
 
 def _thumbs_dir() -> Path:
     return settings.poster_cache_path.parent / "taste_thumbs"
+
+
+def _parse_name(name: str) -> tuple[str, int | None]:
+    stem = Path(name).stem
+    year_match = _YEAR.search(stem)
+    year = int(year_match.group(1)) if year_match else None
+    title = _YEAR_SUFFIX.sub("", stem).strip()
+    title = _DEDUP_SUFFIX.sub("", title).strip()
+    return title, year
+
+
+def _resolve_profile_movie_rows(profile: dict) -> list[dict]:
+    import psycopg  # noqa: PLC0415
+
+    names: list[str] = profile["poster_names"]
+    years = profile.get("years") or [None] * len(names)
+    tmdb_ids = profile.get("tmdb_ids") or [None] * len(names)
+    movie_ids = profile.get("movie_ids") or [None] * len(names)
+    movie_titles = profile.get("movie_titles") or [None] * len(names)
+    rows = []
+    for index, name in enumerate(names):
+        title, parsed_year = _parse_name(name)
+        rows.append(
+            {
+                "title": movie_titles[index] or title,
+                "year": years[index] or parsed_year,
+                "tmdb_id": tmdb_ids[index] if index < len(tmdb_ids) else None,
+                "movie_id": movie_ids[index] if index < len(movie_ids) else None,
+                "movie_title": movie_titles[index] or title,
+            }
+        )
+
+    db_url = settings.db_url_resolved.replace("postgresql+asyncpg://", "postgresql://", 1)
+    by_id: dict[int, tuple[int, str, int | None, int | None]] = {}
+    by_tmdb: dict[int, tuple[int, str, int | None, int | None]] = {}
+    by_title: dict[str, list[tuple[int, str, int | None, int | None]]] = {}
+    try:
+        with psycopg.connect(db_url) as conn, conn.cursor() as cursor:
+            cursor.execute("SELECT id, title, year, tmdb_id FROM movies")
+            for movie_id, title, year, tmdb_id in cursor:
+                by_id[int(movie_id)] = (int(movie_id), str(title), year, tmdb_id)
+                if tmdb_id:
+                    by_tmdb[int(tmdb_id)] = (int(movie_id), str(title), year, tmdb_id)
+                by_title.setdefault(str(title).lower(), []).append(
+                    (int(movie_id), str(title), year, tmdb_id)
+                )
+    except Exception:  # noqa: BLE001
+        logger.warning("Could not resolve taste-map movie metadata from PostgreSQL", exc_info=True)
+        return rows
+
+    for row in rows:
+        resolved = None
+        if row["movie_id"]:
+            resolved = by_id.get(int(row["movie_id"]))
+        if row["tmdb_id"]:
+            resolved = by_tmdb.get(int(row["tmdb_id"]))
+        if resolved is None:
+            candidates = by_title.get(str(row["title"]).lower(), [])
+            if row["year"] is not None:
+                resolved = next((item for item in candidates if item[2] == row["year"]), None)
+            if resolved is None and len(candidates) == 1:
+                resolved = candidates[0]
+        if resolved is not None:
+            row["movie_id"] = resolved[0]
+            row["movie_title"] = resolved[1]
+            row["year"] = row["year"] or resolved[2]
+            row["tmdb_id"] = row["tmdb_id"] or resolved[3]
+    return rows
 
 
 # ---------------------------------------------------------------------------
@@ -166,9 +238,11 @@ def _load_profile_arrays() -> dict:
         }
         if GENRES_JSON_KEY in data.files:
             result["genres"] = decode_json_string_array(data[GENRES_JSON_KEY])
-        for key in ("years", "tmdb_ids"):
+        for key in ("years", "tmdb_ids", "movie_ids"):
             if key in data.files:
                 result[key] = data[key].tolist()
+        if "movie_titles" in data.files:
+            result["movie_titles"] = decode_unicode_list(data["movie_titles"])
         if "neg_embeddings" in data.files:
             result["neg_embeddings"] = np.asarray(data["neg_embeddings"], dtype=np.float32)
         # Per-exemplar aesthetic / colorfulness from the calibration arrays.
@@ -216,6 +290,11 @@ def build_map(progress_callback=None, cancel_event: threading.Event | None = Non
     genres = profile.get("genres")
     names_map = _cluster_names(labels, genres)
     self_knn = _self_knn(embeddings, pipeline_settings.K_NEIGHBORS)
+    movie_rows = _resolve_profile_movie_rows(profile)
+    grouped = Counter((row["movie_title"].lower(), row["year"]) for row in movie_rows)
+    unique_movie_count = len(grouped)
+    duplicate_group_count = sum(1 for count in grouped.values() if count > 1)
+    noise_count = int(sum(1 for label in labels if int(label) == -1)) if labels is not None else 0
 
     # Archive the previous map before overwriting.
     map_path = _map_path()
@@ -230,12 +309,20 @@ def build_map(progress_callback=None, cancel_event: threading.Event | None = Non
         "coords_2d": coords_2d,
         "poster_names": unicode_array(profile["poster_names"]),
         "self_knn": self_knn,
+        "movie_ids": np.asarray(
+            [row["movie_id"] if row["movie_id"] is not None else 0 for row in movie_rows],
+            dtype=np.int64,
+        ),
+        "movie_titles": unicode_array([row["movie_title"] for row in movie_rows]),
         "projection_method": unicode_scalar(method),
         "profile_mtime": np.float64(profile["mtime"]),
         "computed_at": unicode_scalar(datetime.now(UTC).isoformat()),
         "cluster_ratio": np.float64(pipeline_settings.TASTE_MAP_MIN_CLUSTER_SIZE_RATIO),
         "cluster_epsilon": np.float64(pipeline_settings.TASTE_MAP_CLUSTER_EPSILON),
         "cluster_method": unicode_scalar(pipeline_settings.TASTE_MAP_CLUSTER_METHOD),
+        "unique_movie_count": np.int64(unique_movie_count),
+        "duplicate_group_count": np.int64(duplicate_group_count),
+        "noise_count": np.int64(noise_count),
     }
     if labels is not None:
         payload["cluster_labels"] = labels
@@ -303,29 +390,53 @@ def load_map(recompute: bool = False) -> dict:
             else None
         )
         years = data["years"].tolist() if "years" in data.files else None
+        tmdb_ids = data["tmdb_ids"].tolist() if "tmdb_ids" in data.files else None
+        movie_ids = data["movie_ids"].tolist() if "movie_ids" in data.files else None
+        movie_titles = decode_unicode_list(data["movie_titles"]) if "movie_titles" in data.files else None
         aesthetic = data["aesthetic"].tolist() if "aesthetic" in data.files else None
         colorfulness = (
             data["global_colorfulness"].tolist() if "global_colorfulness" in data.files else None
         )
         method = decode_unicode_scalar(data["projection_method"])
         computed_at = decode_unicode_scalar(data["computed_at"])
+        unique_movie_count = (
+            int(np.asarray(data["unique_movie_count"]).item())
+            if "unique_movie_count" in data.files
+            else None
+        )
+        duplicate_group_count = (
+            int(np.asarray(data["duplicate_group_count"]).item())
+            if "duplicate_group_count" in data.files
+            else None
+        )
+        noise_count = (
+            int(np.asarray(data["noise_count"]).item())
+            if "noise_count" in data.files
+            else None
+        )
 
     points = []
     for i, name in enumerate(names):
+        title, parsed_year = _parse_name(name)
+        is_noise = labels is not None and int(labels[i]) == -1
         points.append(
             {
                 "name": name,
+                "movie_title": movie_titles[i] if movie_titles is not None else title,
+                "movie_id": movie_ids[i] if movie_ids is not None and movie_ids[i] else None,
                 "x": float(coords_3d[i][0]),
                 "y": float(coords_3d[i][1]),
                 "z": float(coords_3d[i][2]),
                 "x2": float(coords_2d[i][0]),
                 "y2": float(coords_2d[i][1]),
                 "cluster": int(labels[i]) if labels is not None else None,
+                "is_noise": is_noise,
                 "self_knn": float(self_knn[i]),
                 "genres": genres[i] if genres is not None else None,
-                "year": years[i] if years is not None else None,
+                "year": years[i] if years is not None else parsed_year,
                 "aesthetic": aesthetic[i] if aesthetic is not None else None,
                 "colorfulness": colorfulness[i] if colorfulness is not None else None,
+                "tmdb_id": tmdb_ids[i] if tmdb_ids is not None and tmdb_ids[i] else None,
                 "thumb_url": f"/api/taste/exemplars/{name}/image?size=thumb",
             }
         )
@@ -353,10 +464,23 @@ def load_map(recompute: bool = False) -> dict:
     else:
         note = "Install the 'viz' extra (umap-learn/scikit-learn) for clustering."
 
+    if unique_movie_count is None:
+        grouped = Counter((str(point["movie_title"]).lower(), point["year"]) for point in points)
+        unique_movie_count = len(grouped)
+        duplicate_group_count = sum(1 for count in grouped.values() if count > 1)
+    if noise_count is None:
+        noise_count = sum(1 for point in points if point["is_noise"])
+
     return {
         "projection": {"method": method, "computed_at": computed_at},
         "points": points,
         "clusters": clusters,
+        "summary": {
+            "exemplars": len(points),
+            "unique_movies": unique_movie_count,
+            "duplicate_groups": duplicate_group_count or 0,
+            "noise": noise_count,
+        },
         "outliers": outliers,
         "clustering": clusters or None,
         "note": note,

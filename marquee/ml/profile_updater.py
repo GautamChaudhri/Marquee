@@ -18,6 +18,7 @@ calibration already tolerates. A full rebuild fills them in.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 from pathlib import Path
@@ -37,6 +38,7 @@ logger = logging.getLogger(__name__)
 
 _YEAR_SUFFIX = re.compile(r"\s*\(\d{4}\)\s*$")
 _IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff"}
+_HASH_ARRAY_KEY = "poster_sha256s"
 
 
 def _profile_path() -> Path:
@@ -68,6 +70,35 @@ def _compute_centroid(embeddings: np.ndarray) -> np.ndarray:
     centroid = embeddings.mean(axis=0)
     norm = float(np.linalg.norm(centroid))
     return (centroid / norm if norm > 1e-10 else centroid).astype(np.float32)
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _existing_exemplar_name(
+    profile: dict[str, np.ndarray],
+    training_dir: Path,
+    source_hash: str,
+) -> str | None:
+    names = decode_unicode_list(profile["poster_names"])
+    existing_hashes = (
+        decode_unicode_list(profile[_HASH_ARRAY_KEY]) if _HASH_ARRAY_KEY in profile else []
+    )
+    if existing_hashes:
+        for index, digest in enumerate(existing_hashes):
+            if digest == source_hash:
+                return names[index]
+
+    for name in names:
+        candidate = training_dir / name
+        if candidate.is_file() and _file_sha256(candidate) == source_hash:
+            return name
+    return None
 
 
 def _load_profile() -> dict[str, np.ndarray]:
@@ -102,6 +133,10 @@ def add_exemplar(
     # 1. Copy the image into training_data (source of truth).
     training_dir = Path(pipeline_settings.TRAINING_DATA_DIR)
     training_dir.mkdir(parents=True, exist_ok=True)
+    source_hash = _file_sha256(source_image)
+    if existing := _existing_exemplar_name(profile, training_dir, source_hash):
+        logger.info("PROFILE | exemplar already staged as %s; skipping duplicate add", existing)
+        return existing
     suffix = source_image.suffix if source_image.suffix.lower() in _IMAGE_EXTENSIONS else ".jpg"
     target = _dedupe_target(training_dir, exemplar_filename(title, year, suffix))
     import shutil  # noqa: PLC0415
@@ -113,9 +148,17 @@ def add_exemplar(
     vector /= np.maximum(np.linalg.norm(vector, axis=1, keepdims=True), 1e-10)
     embeddings = np.concatenate((profile["embeddings"], vector), axis=0)
     profile["embeddings"] = embeddings
-    profile["poster_names"] = unicode_array(
-        [*decode_unicode_list(profile["poster_names"]), target.name]
+    names = decode_unicode_list(profile["poster_names"])
+    profile["poster_names"] = unicode_array([*names, target.name])
+    existing_hashes = (
+        decode_unicode_list(profile[_HASH_ARRAY_KEY])
+        if _HASH_ARRAY_KEY in profile
+        else [
+            _file_sha256(training_dir / name) if (training_dir / name).is_file() else ""
+            for name in names
+        ]
     )
+    profile[_HASH_ARRAY_KEY] = unicode_array([*existing_hashes, source_hash])
     profile["centroid_emb"] = _compute_centroid(embeddings)
 
     # 3. Append a calibration column reindexed to the profile's feature names.
@@ -153,6 +196,9 @@ def remove_exemplar(poster_name: str) -> bool:
     keep = [i for i in range(len(names)) if i != index]
     profile["embeddings"] = profile["embeddings"][keep]
     profile["poster_names"] = unicode_array([names[i] for i in keep])
+    if _HASH_ARRAY_KEY in profile:
+        hashes = decode_unicode_list(profile[_HASH_ARRAY_KEY])
+        profile[_HASH_ARRAY_KEY] = unicode_array([hashes[i] for i in keep])
     profile["centroid_emb"] = _compute_centroid(profile["embeddings"])
 
     from marquee.ml.calibration import CALIB_VALUES_KEY  # noqa: PLC0415

@@ -29,7 +29,7 @@ from marquee.core.jobs import job_manager
 from marquee.core.pipeline_config import pipeline_settings
 from marquee.core.rate_limit import RateLimiter
 from marquee.database import get_db
-from marquee.ml import feedback_store
+from marquee.ml import artifact_registry, feedback_store
 from marquee.models import Job, Movie
 
 logger = logging.getLogger(__name__)
@@ -64,6 +64,16 @@ def _new_rebuild_state() -> dict:
 _rebuild_state: dict = _new_rebuild_state()
 _active_rebuild_process = None
 _rebuild_cancel_requested: str | None = None
+
+
+def _artifact_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, artifact_registry.ArtifactRegistryUnavailableError):
+        return HTTPException(status_code=503, detail=str(exc))
+    if isinstance(exc, FileNotFoundError):
+        return HTTPException(status_code=404, detail=str(exc))
+    if isinstance(exc, RuntimeError):
+        return HTTPException(status_code=409, detail=str(exc))
+    return HTTPException(status_code=400, detail=str(exc))
 
 
 def _exemplar_stats() -> dict:
@@ -131,6 +141,7 @@ def _head_status() -> dict:
 
 @router.get("/status")
 async def taste_status(db: Annotated[AsyncSession, Depends(get_db)]):
+    registry_state = await artifact_registry.ensure_registry(db)
     summary = feedback_store.summary()
 
     # Genre spread over labeled movies (v2 rows carry movie_id).
@@ -144,6 +155,18 @@ async def taste_status(db: Annotated[AsyncSession, Depends(get_db)]):
             for genre in movie_genres or []:
                 genres[genre] += 1
 
+    active_profile = await artifact_registry.active_artifact_summary(
+        db, artifact_registry.KIND_TASTE_PROFILE
+    )
+    active_head = await artifact_registry.active_artifact_summary(
+        db, artifact_registry.KIND_LEARNED_HEAD
+    )
+    exemplars = _exemplar_stats()
+    if active_profile is not None:
+        profile_summary = active_profile.get("summary") or {}
+        exemplars["unique_movies"] = profile_summary.get("unique_movies", 0)
+        exemplars["duplicate_groups"] = profile_summary.get("duplicate_groups", 0)
+
     return {
         "labels": {
             "total": summary["total"],
@@ -152,8 +175,11 @@ async def taste_status(db: Annotated[AsyncSession, Depends(get_db)]):
             "negatives": summary["negatives"],
             "genres": dict(genres.most_common()),
         },
-        "exemplars": _exemplar_stats(),
+        "exemplars": exemplars,
         "learned_head": _head_status(),
+        "active_profile": active_profile,
+        "active_head": active_head,
+        "artifact_registry": registry_state,
         "gate_alerts": feedback_store.gate_override_alerts(),
         "rebuild": _rebuild_state,
     }
@@ -410,6 +436,163 @@ async def cancel_retrain_taste(db: Annotated[AsyncSession, Depends(get_db)]):
     if job is None:
         return {"status": "not_running"}
     return job_summary(await job_manager.request_cancel(db, job))
+
+
+@router.get("/profiles")
+async def list_taste_profiles(db: Annotated[AsyncSession, Depends(get_db)]):
+    registry_state = await artifact_registry.registry_status(db)
+    rows = await artifact_registry.list_artifacts(db, artifact_registry.KIND_TASTE_PROFILE)
+    return {
+        "profiles": [artifact_registry.artifact_to_summary(row) for row in rows],
+        "artifact_registry": registry_state,
+    }
+
+
+@router.get("/profiles/{artifact_id}")
+async def get_taste_profile(
+    artifact_id: str,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    try:
+        return await artifact_registry.artifact_detail(
+            db, artifact_registry.KIND_TASTE_PROFILE, artifact_id
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise _artifact_error(exc) from exc
+
+
+@router.post("/profiles/{artifact_id}/activate")
+async def activate_taste_profile(
+    artifact_id: str,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    from marquee.ml.taste_map import build_map  # noqa: PLC0415
+
+    try:
+        row = await artifact_registry.activate_artifact(
+            db, artifact_registry.KIND_TASTE_PROFILE, artifact_id
+        )
+        await asyncio.to_thread(build_map)
+        return {"profile": artifact_registry.artifact_to_summary(row), "map_rebuilt": True}
+    except Exception as exc:  # noqa: BLE001
+        raise _artifact_error(exc) from exc
+
+
+@router.post("/profiles/{artifact_id}/archive")
+async def archive_taste_profile(
+    artifact_id: str,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    try:
+        row = await artifact_registry.archive_artifact(
+            db, artifact_registry.KIND_TASTE_PROFILE, artifact_id
+        )
+        return {"profile": artifact_registry.artifact_to_summary(row)}
+    except Exception as exc:  # noqa: BLE001
+        raise _artifact_error(exc) from exc
+
+
+@router.delete("/profiles/{artifact_id}")
+async def delete_taste_profile(
+    artifact_id: str,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    try:
+        await artifact_registry.delete_artifact(db, artifact_registry.KIND_TASTE_PROFILE, artifact_id)
+        return {"deleted": artifact_id}
+    except Exception as exc:  # noqa: BLE001
+        raise _artifact_error(exc) from exc
+
+
+@router.get("/profiles/{artifact_id}/exemplars")
+async def list_taste_profile_exemplars(
+    artifact_id: str,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    try:
+        return {"exemplars": await artifact_registry.profile_exemplars(db, artifact_id)}
+    except Exception as exc:  # noqa: BLE001
+        raise _artifact_error(exc) from exc
+
+
+@router.delete("/profiles/{artifact_id}/exemplars/{name}")
+async def delete_taste_profile_exemplar(
+    artifact_id: str,
+    name: str,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    from marquee.ml.taste_map import build_map  # noqa: PLC0415
+
+    try:
+        name = _safe_exemplar_name(name)
+        row = await artifact_registry.delete_profile_exemplar(db, artifact_id, name)
+        await asyncio.to_thread(build_map)
+        return {"profile": artifact_registry.artifact_to_summary(row), "removed": name}
+    except Exception as exc:  # noqa: BLE001
+        raise _artifact_error(exc) from exc
+
+
+@router.get("/heads")
+async def list_learned_heads(db: Annotated[AsyncSession, Depends(get_db)]):
+    registry_state = await artifact_registry.registry_status(db)
+    rows = await artifact_registry.list_artifacts(db, artifact_registry.KIND_LEARNED_HEAD)
+    return {
+        "heads": [artifact_registry.artifact_to_summary(row) for row in rows],
+        "artifact_registry": registry_state,
+    }
+
+
+@router.get("/heads/{artifact_id}")
+async def get_learned_head(
+    artifact_id: str,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    try:
+        return await artifact_registry.artifact_detail(
+            db, artifact_registry.KIND_LEARNED_HEAD, artifact_id
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise _artifact_error(exc) from exc
+
+
+@router.post("/heads/{artifact_id}/activate")
+async def activate_learned_head(
+    artifact_id: str,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    try:
+        row = await artifact_registry.activate_artifact(
+            db, artifact_registry.KIND_LEARNED_HEAD, artifact_id
+        )
+        return {"head": artifact_registry.artifact_to_summary(row)}
+    except Exception as exc:  # noqa: BLE001
+        raise _artifact_error(exc) from exc
+
+
+@router.post("/heads/{artifact_id}/archive")
+async def archive_learned_head(
+    artifact_id: str,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    try:
+        row = await artifact_registry.archive_artifact(
+            db, artifact_registry.KIND_LEARNED_HEAD, artifact_id
+        )
+        return {"head": artifact_registry.artifact_to_summary(row)}
+    except Exception as exc:  # noqa: BLE001
+        raise _artifact_error(exc) from exc
+
+
+@router.delete("/heads/{artifact_id}")
+async def delete_learned_head(
+    artifact_id: str,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    try:
+        await artifact_registry.delete_artifact(db, artifact_registry.KIND_LEARNED_HEAD, artifact_id)
+        return {"deleted": artifact_id}
+    except Exception as exc:  # noqa: BLE001
+        raise _artifact_error(exc) from exc
 
 
 # ---------------------------------------------------------------------------
