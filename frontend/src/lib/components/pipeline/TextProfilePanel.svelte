@@ -5,9 +5,13 @@
 		deleteTextProfile,
 		listTextProfiles,
 		setDefaultProfile,
+		updateTextProfile,
 		type TextProfile,
-		type TextProfileList
+		type TextProfileList,
+		type TextProfileSettings
 	} from '$lib/api/text-profiles';
+	import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
+	import TextProfileEditor from '$lib/components/pipeline/TextProfileEditor.svelte';
 	import { toast } from '$lib/toast';
 
 	let { initial = null }: { initial?: TextProfileList | null } = $props();
@@ -18,13 +22,33 @@
 	let defaultId = $state<string>(initial?.default_id ?? 'title_only');
 	let selectedId = $state<string | null>(null);
 	let busy = $state(false);
-	let creating = $state(false);
-	let newName = $state('');
+	let createOpen = $state(false);
+	let createName = $state('');
+	let createPreset = $state<'title_only' | 'textless' | 'blank'>('title_only');
 
 	const builtins = $derived(profiles.filter((p) => p.builtin));
 	const customs = $derived(profiles.filter((p) => !p.builtin));
 	const activeProfile = $derived(profiles.find((p) => p.id === defaultId) ?? null);
 	const selected = $derived(profiles.find((p) => p.id === selectedId) ?? null);
+	const canCreate = $derived(createName.trim().length > 0);
+
+	const PRESET_OPTIONS = [
+		{
+			id: 'title_only',
+			label: 'Title Only',
+			description: 'Start strict: title yes, everything else off.'
+		},
+		{
+			id: 'textless',
+			label: 'Textless',
+			description: 'Start from a no-text profile for iconic key art.'
+		},
+		{
+			id: 'blank',
+			label: 'Blank',
+			description: 'Start empty and tune every toggle yourself.'
+		}
+	] as const;
 
 	function tone(profile: TextProfile): string {
 		if (profile.id === 'title_only') return 'blue';
@@ -80,16 +104,17 @@
 	}
 
 	async function createProfile() {
-		const name = newName.trim();
+		const name = createName.trim();
 		if (!name || busy) return;
 		busy = true;
 		try {
 			const profile = await createTextProfile(fetch, {
 				name,
-				settings: { ...DEFAULT_PROFILE_SETTINGS }
+				settings: presetSettings(createPreset)
 			});
-			newName = '';
-			creating = false;
+			createName = '';
+			createPreset = 'title_only';
+			createOpen = false;
 			await refresh();
 			selectedId = profile.id;
 			toast(`Profile “${profile.name}” created`, 'good');
@@ -98,6 +123,26 @@
 		} finally {
 			busy = false;
 		}
+	}
+
+	function presetSettings(preset: 'title_only' | 'textless' | 'blank'): TextProfileSettings {
+		if (preset === 'textless') {
+			return {
+				...DEFAULT_PROFILE_SETTINGS,
+				mode: 'custom',
+				allow_title: false,
+				require_title: false
+			};
+		}
+		if (preset === 'blank') {
+			return {
+				...DEFAULT_PROFILE_SETTINGS,
+				mode: 'custom',
+				allow_title: false,
+				require_title: false
+			};
+		}
+		return { ...DEFAULT_PROFILE_SETTINGS, mode: 'custom' };
 	}
 
 	async function removeProfile(profile: TextProfile) {
@@ -110,6 +155,20 @@
 			toast(`Profile “${profile.name}” deleted`, 'info');
 		} catch (e) {
 			toast(e instanceof Error ? e.message : 'Could not delete profile', 'bad');
+		} finally {
+			busy = false;
+		}
+	}
+
+	async function saveProfile(payload: { name: string; settings: TextProfileSettings }) {
+		if (!selected || selected.builtin || busy) return;
+		busy = true;
+		try {
+			await updateTextProfile(fetch, selected.id, payload);
+			await refresh();
+			toast('Profile saved — applies on next pipeline run', 'good');
+		} catch (e) {
+			toast(e instanceof Error ? e.message : 'Could not save profile', 'bad');
 		} finally {
 			busy = false;
 		}
@@ -178,22 +237,7 @@
 				<p class="empty">No custom profiles yet.</p>
 			{/each}
 
-			{#if creating}
-				<div class="new-row">
-					<input
-						placeholder="Profile name"
-						bind:value={newName}
-						maxlength="64"
-						onkeydown={(e) => e.key === 'Enter' && createProfile()}
-					/>
-					<button class="mini" disabled={busy || !newName.trim()} onclick={createProfile}>
-						Create
-					</button>
-					<button class="mini" onclick={() => (creating = false)}>Cancel</button>
-				</div>
-			{:else}
-				<button class="new-btn" onclick={() => (creating = true)}>+ New profile</button>
-			{/if}
+			<button class="new-btn" onclick={() => (createOpen = true)}>+ New profile</button>
 		</div>
 	</div>
 
@@ -204,9 +248,65 @@
 				{#if selected.builtin}<span class="readonly-tag">built-in · read-only</span>{/if}
 			</div>
 			<p class="summary">{summary(selected)}</p>
+			<TextProfileEditor
+				profile={selected}
+				busy={busy}
+				onSave={saveProfile}
+				onDelete={selected.builtin ? null : () => removeProfile(selected)}
+			/>
 		</div>
 	{/if}
 </section>
+
+<ConfirmDialog
+	open={createOpen}
+	title="New text profile"
+	message="Choose a starting preset, then fine-tune it in the editor."
+	confirmLabel="Create profile"
+	cancelLabel="Cancel"
+	busy={busy}
+	confirmDisabled={!canCreate}
+	onConfirm={createProfile}
+	onCancel={() => {
+		if (!busy) {
+			createOpen = false;
+			createName = '';
+			createPreset = 'title_only';
+		}
+	}}
+>
+	<div class="create-modal">
+		<label class="modal-field">
+			<span>Name</span>
+			<input
+				placeholder="Profile name"
+				bind:value={createName}
+				maxlength="64"
+				onkeydown={(e) => e.key === 'Enter' && canCreate && createProfile()}
+			/>
+		</label>
+		<div class="modal-field">
+			<span>Start from</span>
+			<div class="preset-list">
+				{#each PRESET_OPTIONS as option (option.id)}
+					<label class="preset-option" class:selected={createPreset === option.id}>
+						<input
+							type="radio"
+							name="profile-preset"
+							value={option.id}
+							checked={createPreset === option.id}
+							onchange={() => (createPreset = option.id)}
+						/>
+						<div>
+							<strong>{option.label}</strong>
+							<span>{option.description}</span>
+						</div>
+					</label>
+				{/each}
+			</div>
+		</div>
+	</div>
+</ConfirmDialog>
 
 <style>
 	.tp-card {
@@ -366,20 +466,6 @@
 		color: var(--text);
 		border-color: var(--line);
 	}
-	.new-row {
-		display: flex;
-		gap: 6px;
-		margin-top: 6px;
-	}
-	.new-row input {
-		flex: 1;
-		border: 1px solid var(--line2);
-		background: var(--ink2);
-		color: var(--text);
-		border-radius: 7px;
-		padding: 6px 9px;
-		font-size: 13px;
-	}
 	.detail {
 		margin-top: 14px;
 		border-top: 1px solid var(--line);
@@ -395,5 +481,61 @@
 		color: var(--muted);
 		font-size: 12.5px;
 		line-height: 1.5;
+	}
+	.create-modal {
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
+	}
+	.modal-field {
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+	}
+	.modal-field > span {
+		font-size: 11px;
+		text-transform: uppercase;
+		letter-spacing: 0.06em;
+		color: var(--faint);
+		font-weight: 700;
+	}
+	.modal-field input {
+		border: 1px solid var(--line2);
+		background: var(--ink2);
+		color: var(--text);
+		border-radius: 8px;
+		padding: 8px 10px;
+		font-size: 13px;
+	}
+	.preset-list {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+	}
+	.preset-option {
+		display: flex;
+		align-items: flex-start;
+		gap: 10px;
+		padding: 10px 11px;
+		border: 1px solid var(--line2);
+		border-radius: 10px;
+		background: var(--panel2);
+		cursor: pointer;
+	}
+	.preset-option.selected {
+		border-color: color-mix(in srgb, var(--gold) 35%, transparent);
+		background: color-mix(in srgb, var(--gold) 8%, var(--panel2));
+	}
+	.preset-option strong {
+		display: block;
+		font-size: 13px;
+		color: var(--text);
+	}
+	.preset-option span {
+		display: block;
+		margin-top: 3px;
+		font-size: 11.5px;
+		color: var(--muted);
+		line-height: 1.45;
 	}
 </style>
