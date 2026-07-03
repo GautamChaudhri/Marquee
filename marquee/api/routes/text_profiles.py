@@ -9,24 +9,29 @@ Profiles govern what text the OCR gate tolerates on posters. Built-ins
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Annotated, Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.core.text_profiles import (
     TextProfileError,
     create_profile,
     delete_profile,
+    get_active_profile,
     get_default_profile_id,
     load_profiles,
     set_default_profile,
     update_profile,
 )
+from marquee.database import get_db
+from marquee.models import Movie
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/text-profiles", tags=["text-profiles"])
+DbSession = Annotated[AsyncSession, Depends(get_db)]
 
 
 class ProfileCreate(BaseModel):
@@ -37,6 +42,10 @@ class ProfileCreate(BaseModel):
 class ProfileUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=64)
     settings: dict[str, Any] | None = None
+
+
+class MovieProfileUpdate(BaseModel):
+    profile_id: str | None = None
 
 
 @router.get("")
@@ -90,3 +99,41 @@ async def delete_text_profile(profile_id: str):
     logger.info("TEXT PROFILES | deleted %s", profile_id)
     # Plain JSON body — the frontend client unconditionally parses JSON.
     return {"deleted": profile_id}
+
+
+@router.get("/movie/{movie_id}")
+async def get_movie_text_profile(movie_id: int, db: DbSession):
+    movie = await db.get(Movie, movie_id)
+    if movie is None:
+        raise HTTPException(status_code=404, detail=f"Movie {movie_id} not found")
+    effective = get_active_profile(movie.text_profile_id).id
+    return {
+        "movie_id": movie_id,
+        "profile_id": movie.text_profile_id,
+        "effective_id": effective,
+    }
+
+
+@router.put("/movie/{movie_id}")
+async def set_movie_text_profile(
+    movie_id: int,
+    body: MovieProfileUpdate,
+    db: DbSession,
+):
+    movie = await db.get(Movie, movie_id)
+    if movie is None:
+        raise HTTPException(status_code=404, detail=f"Movie {movie_id} not found")
+
+    profiles = load_profiles()
+    if body.profile_id is not None and body.profile_id not in profiles:
+        raise HTTPException(status_code=400, detail=f"Unknown text profile {body.profile_id!r}")
+
+    movie.text_profile_id = body.profile_id
+    await db.commit()
+    effective = get_active_profile(movie.text_profile_id).id
+    logger.info("TEXT PROFILES | movie %s override -> %s", movie_id, movie.text_profile_id)
+    return {
+        "movie_id": movie_id,
+        "profile_id": movie.text_profile_id,
+        "effective_id": effective,
+    }

@@ -3,8 +3,10 @@
 	import { goto, invalidateAll } from '$app/navigation';
 	import { page } from '$app/state';
 	import { deleteMoviePoster } from '$lib/api/library';
+	import { setMovieTextProfile, type TextProfile } from '$lib/api/text-profiles';
 	import { posterStatusMeta, letterboxMeta, toneVar } from '$lib/display';
 	import { ApiError } from '$lib/api/client';
+	import { toast } from '$lib/toast';
 	import type { LetterboxDetail, PipelineRunSummary, RunResults } from '$lib/api/types';
 	import {
 		getLetterboxState,
@@ -28,6 +30,17 @@
 	const movie = $derived(data.movie);
 	// svelte-ignore state_referenced_locally
 	let tab = $state(data.tab ?? 'poster');
+	const textProfiles = $derived(data.textProfiles?.profiles ?? []);
+	// svelte-ignore state_referenced_locally
+	let movieTextProfileId = $state<string | null>(data.movieTextProfile?.profile_id ?? null);
+	// svelte-ignore state_referenced_locally
+	let effectiveTextProfileId = $state(
+		data.movieTextProfile?.effective_id ?? data.textProfiles?.default_id ?? 'title_only'
+	);
+	let savingTextProfile = $state(false);
+	const effectiveTextProfile = $derived(
+		textProfiles.find((profile) => profile.id === effectiveTextProfileId) ?? null
+	);
 
 	function setTab(id: string) {
 		tab = id;
@@ -233,6 +246,36 @@
 		if (!p) return '—';
 		return p.split('/').pop() ?? p;
 	}
+
+	function textProfileLabel(profile: TextProfile | null): string {
+		return profile?.name ?? 'Title Only';
+	}
+
+	function apiText(error: unknown, fallback: string): string {
+		if (error instanceof ApiError) {
+			const detail = (error.body as { detail?: string } | undefined)?.detail;
+			if (typeof detail === 'string' && detail) return detail;
+		}
+		return error instanceof Error ? error.message : fallback;
+	}
+
+	async function saveMovieTextProfile(profileId: string | null) {
+		if (!movie || savingTextProfile) return;
+		savingTextProfile = true;
+		try {
+			const saved = await setMovieTextProfile(fetch, movie.id, profileId);
+			movieTextProfileId = saved.profile_id;
+			effectiveTextProfileId = saved.effective_id;
+			toast(
+				profileId ? 'Movie text profile saved' : 'Movie text profile reset to the default',
+				'good'
+			);
+		} catch (e) {
+			toast(apiText(e, 'Failed to save movie text profile'), 'bad');
+		} finally {
+			savingTextProfile = false;
+		}
+	}
 </script>
 
 {#if data.error || !movie}
@@ -362,6 +405,36 @@
 							</button>
 						{/if}
 					</div>
+
+					{#if data.textProfiles}
+						<div class="status-card profile-card">
+							<div class="sc-label">Text profile</div>
+							<div class="profile-row">
+								<select
+									class="profile-select"
+									value={movieTextProfileId ?? ''}
+									disabled={savingTextProfile}
+									onchange={(e) =>
+										saveMovieTextProfile(
+											(e.currentTarget as HTMLSelectElement).value || null
+										)}
+								>
+									<option value="">
+										Use default ({textProfileLabel(effectiveTextProfile)})
+									</option>
+									{#each textProfiles as profile (profile.id)}
+										<option value={profile.id}>{profile.name}</option>
+									{/each}
+								</select>
+								<div class="profile-meta">
+									<span>Effective: {textProfileLabel(effectiveTextProfile)}</span>
+									<span>
+										Applies to future pipeline runs for this movie’s poster selection.
+									</span>
+								</div>
+							</div>
+						</div>
+					{/if}
 
 					{#if deletePosterError}
 						<div class="alert-box err">
@@ -799,6 +872,29 @@
 		font-size: 11px;
 		color: var(--muted);
 		margin-top: 4px;
+	}
+	.profile-card {
+		min-width: 0;
+	}
+	.profile-row {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+	}
+	.profile-select {
+		border: 1px solid var(--line2);
+		border-radius: 8px;
+		background: var(--ink2);
+		color: var(--text);
+		padding: 8px 10px;
+		font-size: 13px;
+	}
+	.profile-meta {
+		display: flex;
+		flex-direction: column;
+		gap: 3px;
+		font-size: 11.5px;
+		color: var(--muted);
 	}
 
 	/* ── Video tab ───────────────────────────────────────── */
