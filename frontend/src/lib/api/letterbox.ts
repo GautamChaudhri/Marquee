@@ -1,5 +1,7 @@
 import { ApiError, apiGet, apiSend, type Fetch } from './client';
 import type {
+	BatchReencodeResponse,
+	BatchReencodeSettings,
 	LetterboxColumn,
 	LetterboxDetail,
 	LetterboxJobRef,
@@ -26,8 +28,13 @@ export async function getLetterboxState(
 	}
 }
 
-export function detectLetterbox(fetchFn: Fetch, movieId: number): Promise<JobSnapshot> {
-	return apiSend<JobSnapshot>(fetchFn, 'POST', `/letterbox/movies/${movieId}/detect`);
+export function detectLetterbox(
+	fetchFn: Fetch,
+	movieId: number,
+	options: { thorough?: boolean } = {}
+): Promise<JobSnapshot> {
+	const suffix = options.thorough ? '?thorough=true' : '';
+	return apiSend<JobSnapshot>(fetchFn, 'POST', `/letterbox/movies/${movieId}/detect${suffix}`);
 }
 
 export function applyLetterbox(fetchFn: Fetch, movieId: number): Promise<unknown> {
@@ -118,6 +125,17 @@ export function createReencodePlan(
 	opts: ReencodeOptions = {}
 ): Promise<ReencodePlan> {
 	return apiSend<ReencodePlan>(fetchFn, 'POST', `/letterbox/movies/${movieId}/reencode-plan`, opts);
+}
+
+export function batchReencode(
+	fetchFn: Fetch,
+	movieIds: number[],
+	settings: BatchReencodeSettings
+): Promise<BatchReencodeResponse> {
+	return apiSend<BatchReencodeResponse>(fetchFn, 'POST', '/letterbox/batch/reencode', {
+		movie_ids: movieIds,
+		settings
+	});
 }
 
 /** Confirm a planned media job → queues it for the durable worker. */

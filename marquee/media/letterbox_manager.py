@@ -162,7 +162,7 @@ class LetterboxManager:
     # Single-file detection (shared by batch / single / webhook)
     # ------------------------------------------------------------------
 
-    def detect_movie_blocking(self, movie: Movie) -> dict:
+    def detect_movie_blocking(self, movie: Movie, *, thorough: bool = False) -> dict:
         """Run detection for one movie (blocking — call in a thread).
 
         Returns a dict of ``LetterboxState`` field updates. Probing the file
@@ -203,6 +203,7 @@ class LetterboxManager:
             color_transfer=color_transfer,
             codec=info.codec if info else None,
             pix_fmt=info.pix_fmt if info else None,
+            thorough=thorough,
         )
         return {
             "status": result.status,
@@ -384,6 +385,7 @@ class LetterboxManager:
         movie: Movie,
         *,
         detector: str = "v2",
+        thorough: bool = False,
         parent_job_id: str | None = None,
     ) -> LetterboxState:
         """Detect one movie and persist its ``LetterboxState`` + event."""
@@ -393,17 +395,19 @@ class LetterboxManager:
             {"movie_id": movie.id, "title": movie.title, "stage": "probing", "progress": 10},
         )
 
-        detect_fn = (
-            self.detect_movie_blocking_v1 if detector == "v1" else self.detect_movie_blocking
-        )
-
         await _emit_child_progress(
             db,
             parent_job_id,
             {"movie_id": movie.id, "title": movie.title, "stage": "analyzing", "progress": 30},
         )
 
-        updates = await gated(detect_fn, movie)
+        if detector == "v1":
+            updates = await gated(self.detect_movie_blocking_v1, movie)
+        else:
+            if thorough:
+                updates = await gated(self.detect_movie_blocking, movie, thorough=True)
+            else:
+                updates = await gated(self.detect_movie_blocking, movie)
 
         await _emit_child_progress(
             db,

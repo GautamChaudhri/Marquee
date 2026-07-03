@@ -28,103 +28,19 @@
 	import { subscribe } from '$lib/sse';
 	import { getJob, isTerminal, type JobSnapshot } from '$lib/api/jobs';
 	import { jitterMs } from '$lib/jobs';
+	import {
+		CPU_PRESETS,
+		KNOWN_ENCODERS,
+		NVENC_PRESETS,
+		PROFILE_META,
+		PROFILE_SETTINGS,
+		prettyEncoder,
+		profileFamilyKey,
+		type QualityProfile
+	} from '$lib/letterbox/encodeSettings';
 	import StatusDot from './StatusDot.svelte';
 	import ProgressBar from './ProgressBar.svelte';
 	import Icon from './Icon.svelte';
-
-	// Encoders the re-encode backend actually drives; intersected with the
-	// FFmpeg build's available list to populate the encoder dropdown.
-	const KNOWN_ENCODERS = [
-		'hevc_nvenc',
-		'h264_nvenc',
-		'hevc_qsv',
-		'h264_qsv',
-		'hevc_vaapi',
-		'h264_vaapi',
-		'libx265',
-		'libx264'
-	];
-	const NVENC_PRESETS = ['p1', 'p2', 'p3', 'p4', 'p5', 'p6', 'p7'];
-	const CPU_PRESETS = [
-		'ultrafast',
-		'superfast',
-		'veryfast',
-		'faster',
-		'fast',
-		'medium',
-		'slow',
-		'slower',
-		'veryslow'
-	];
-
-	const ENCODER_LABELS: Record<string, string> = {
-		hevc_nvenc: 'NVIDIA NVENC (HEVC)',
-		h264_nvenc: 'NVIDIA NVENC (H.264)',
-		hevc_qsv: 'Intel QuickSync (HEVC)',
-		h264_qsv: 'Intel QuickSync (H.264)',
-		hevc_vaapi: 'Intel VAAPI (HEVC)',
-		h264_vaapi: 'Intel VAAPI (H.264)',
-		libx265: 'Software x265 (HEVC)',
-		libx264: 'Software x264 (H.264)'
-	};
-
-	function prettyEncoder(enc: string): string {
-		return ENCODER_LABELS[enc] ?? enc;
-	}
-
-	type QualityProfile = 'speed' | 'balanced' | 'quality';
-
-	// Per-family encoding parameters for each profile tier.
-	const PROFILE_SETTINGS: Record<
-		QualityProfile,
-		Record<string, { preset: string | null; quality: number }>
-	> = {
-		speed: {
-			nvidia: { preset: 'p4', quality: 20 },
-			cpu_x265: { preset: 'fast', quality: 20 },
-			cpu_x264: { preset: 'fast', quality: 23 },
-			intel_qsv: { preset: null, quality: 23 },
-			intel_vaapi: { preset: null, quality: 25 }
-		},
-		balanced: {
-			nvidia: { preset: 'p5', quality: 18 },
-			cpu_x265: { preset: 'medium', quality: 18 },
-			cpu_x264: { preset: 'medium', quality: 21 },
-			intel_qsv: { preset: null, quality: 20 },
-			intel_vaapi: { preset: null, quality: 22 }
-		},
-		quality: {
-			nvidia: { preset: 'p7', quality: 16 },
-			cpu_x265: { preset: 'slow', quality: 16 },
-			cpu_x264: { preset: 'slow', quality: 19 },
-			intel_qsv: { preset: null, quality: 18 },
-			intel_vaapi: { preset: null, quality: 18 }
-		}
-	};
-
-	const PROFILE_META: Record<QualityProfile, { icon: string; label: string; description: string }> =
-		{
-			speed: {
-				icon: '\u26a1',
-				label: 'Prefer Speed',
-				description: 'Faster encode, slightly larger files'
-			},
-			balanced: {
-				icon: '\u2696',
-				label: 'Balanced',
-				description: 'Best tradeoff for most content'
-			},
-			quality: {
-				icon: '\ud83c\udfaf',
-				label: 'Prefer Quality',
-				description: 'Reference quality, slower encode'
-			}
-		};
-
-	function profileFamilyKey(family: string, encoder: string): string {
-		if (family === 'cpu') return encoder === 'libx264' ? 'cpu_x264' : 'cpu_x265';
-		return family;
-	}
 
 	function fmtBytes(n: number | null | undefined): string {
 		if (!n) return '—';
@@ -348,7 +264,11 @@
 			if (job.status === 'succeeded') {
 				toast('Analysis complete', 'good');
 			} else {
-				toast(job.error?.message ?? `Analysis ${job.status}`, 'bad');
+				const message =
+					job.error && typeof job.error === 'object' && 'message' in job.error
+						? String(job.error.message)
+						: null;
+				toast(message ?? `Analysis ${job.status}`, 'bad');
 			}
 		} catch {
 			toast('Analysis finished; refreshing the movie state', 'info');
@@ -392,6 +312,19 @@
 		}
 	}
 
+	async function startThoroughDetection() {
+		if (id == null || busy || detecting) return;
+		busy = true;
+		try {
+			trackDetection(await detectLetterbox(fetch, id, { thorough: true }));
+			toast('Thorough analysis queued', 'info');
+		} catch (e) {
+			toast(e instanceof Error ? e.message : 'Could not queue thorough analysis', 'bad');
+		} finally {
+			busy = false;
+		}
+	}
+
 	async function startReprocess() {
 		if (id == null || busy || detecting) return;
 		busy = true;
@@ -422,6 +355,10 @@
 	}
 
 	const id = $derived(movieId);
+	const samplePreviews = $derived(detail?.sample_previews ?? []);
+	const detectedAtLabel = $derived(
+		detail?.last_detected_at ? new Date(detail.last_detected_at).toLocaleString() : null
+	);
 
 	// ── Permanent re-encode flow ────────────────────────────────────────────────
 	type Method = 'quick' | 'permanent';
@@ -1348,6 +1285,31 @@
 						Resolution scan flagged this file. Run frame analysis to confirm and measure exact crop
 						values before applying any fix.
 					</div>
+				{:else if stage === 'clean' && samplePreviews.length > 0}
+					<div class="ptitle">Cleared sample frames</div>
+					{#if beforeUrl}
+						<img class="frame" src={beforeUrl} alt="cleared sample frame" loading="lazy" />
+					{:else}
+						<div class="frame unanalyzed"><span class="ph">No preview available</span></div>
+					{/if}
+					<div class="strip" role="list" aria-label="Cleared sample frames">
+						{#each samplePreviews as sample (sample.minute)}
+							<button
+								class="thumb"
+								class:active={sample.minute === activeMinute}
+								class:bad={!sample.ok}
+								disabled={!sample.ok}
+								onclick={() => sample.ok && (previewMinute = sample.minute)}
+							>
+								{#if sample.ok && sample.url}
+									<img src={sample.url} alt={`Sample frame at ${sample.minute} minutes`} loading="lazy" />
+								{:else}
+									<span class="thumb-miss">✕</span>
+								{/if}
+								<span class="thumb-label mono">{sample.minute}m</span>
+							</button>
+						{/each}
+					</div>
 				{:else if detail.preview_urls}
 					<img class="frame" src={detail.preview_urls.before} alt="before crop" loading="lazy" />
 					<img class="frame good" src={detail.preview_urls.after} alt="after crop" loading="lazy" />
@@ -1377,8 +1339,21 @@
 						No fix needed.{#if detail.status === 'variable_unsafe'}
 							Variable aspect ratio — unsafe to crop.{/if}
 					</div>
+					{#if detail.variable_ar_note}
+						<div class="note">{detail.variable_ar_note}</div>
+					{/if}
+					{#if detail.detect_method || detectedAtLabel}
+						<div class="note">
+							{#if detail.detect_method}<span class="mono">{detail.detect_method}</span>{/if}
+							{#if detail.detect_method && detectedAtLabel} · {/if}
+							{#if detectedAtLabel}last analyzed {detectedAtLabel}{/if}
+						</div>
+					{/if}
 					<button class="btn-sec" disabled={busy || detecting} onclick={startDetection}>
 						{detecting ? 'Analyzing…' : 'Re-detect'}
+					</button>
+					<button class="btn-gold" disabled={busy || detecting} onclick={startThoroughDetection}>
+						{detecting ? 'Analyzing…' : 'Re-analyze (thorough)'}
 					</button>
 				{:else}
 					<button class="btn-sec" disabled={busy || detecting} onclick={startDetection}>
@@ -1649,6 +1624,49 @@
 		font-family: var(--font-mono);
 		font-size: 12px;
 		color: var(--gold);
+	}
+	.strip {
+		display: grid;
+		grid-template-columns: repeat(auto-fill, minmax(76px, 1fr));
+		gap: 8px;
+	}
+	.thumb {
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+		padding: 6px;
+		border: 1px solid var(--line2);
+		border-radius: 10px;
+		background: var(--panel2);
+		color: inherit;
+	}
+	.thumb.active {
+		border-color: color-mix(in srgb, var(--gold) 50%, transparent);
+		background: color-mix(in srgb, var(--gold) 8%, var(--panel2));
+	}
+	.thumb.bad {
+		opacity: 0.55;
+	}
+	.thumb img,
+	.thumb-miss {
+		width: 100%;
+		aspect-ratio: 16 / 9;
+		border-radius: 7px;
+		border: 1px solid var(--line);
+		background: var(--ink2);
+		object-fit: cover;
+	}
+	.thumb-miss {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		color: var(--bad);
+		font-size: 20px;
+	}
+	.thumb-label {
+		font-size: 11px;
+		color: var(--muted);
+		text-align: center;
 	}
 
 	/* actions */

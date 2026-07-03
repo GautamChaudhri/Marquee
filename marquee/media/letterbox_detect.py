@@ -123,17 +123,24 @@ def parse_trim(info_line: str) -> tuple[int, int, int, int] | None:
 
 
 def sample_minutes(
-    duration_s: float | None, *, is_tv: bool, config: Settings = settings
+    duration_s: float | None,
+    *,
+    is_tv: bool,
+    thorough: bool = False,
+    config: Settings = settings,
 ) -> list[int]:
     """Minutes to sample, clamped to the file's duration when known."""
     if is_tv:
         minutes = list(config.LETTERBOX_TV_SAMPLES)
     else:
+        step = max(1, config.LETTERBOX_MOVIE_SAMPLE_STEP)
+        if thorough:
+            step = max(1, step // 3)
         minutes = list(
             range(
                 config.LETTERBOX_MOVIE_SAMPLES_MIN,
                 config.LETTERBOX_MOVIE_SAMPLES_MAX + 1,
-                max(1, config.LETTERBOX_MOVIE_SAMPLE_STEP),
+                step,
             )
         )
     if duration_s and duration_s > 0:
@@ -570,6 +577,7 @@ def detect(
     codec: str | None = None,
     pix_fmt: str | None = None,
     is_tv: bool = False,
+    thorough: bool = False,
     method: str | None = None,
     config: Settings = settings,
 ) -> DetectionResult:
@@ -578,7 +586,7 @@ def detect(
     method = (method or config.LETTERBOX_DETECT_METHOD).lower()
     cropdetect_limit = cropdetect_limit_for(color_transfer, config=config)
 
-    minutes = sample_minutes(duration_s, is_tv=is_tv, config=config)
+    minutes = sample_minutes(duration_s, is_tv=is_tv, thorough=thorough, config=config)
     measurements: list[WindowMeasurement] = []
     consecutive_clear = 0
     nvdec_decoder = _nvdec_decoder_for(codec, config=config) if method == "cropdetect" else None
@@ -628,7 +636,7 @@ def detect(
                         path, minute, height, config=config, cropdetect_limit=cropdetect_limit
                     )
         measurements.append(m)
-        if m.ok and m.bar <= config.LETTERBOX_NOISE_PX:
+        if not thorough and m.ok and m.bar <= config.LETTERBOX_NOISE_PX:
             consecutive_clear += 1
             if consecutive_clear >= config.LETTERBOX_EARLY_STOP_WINDOWS:
                 break

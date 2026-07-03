@@ -54,6 +54,7 @@ from marquee.models import (
     LetterboxEvent,
     LetterboxReencodeArtifact,
     LetterboxState,
+    MediaFile,
     MediaJob,
     Movie,
 )
@@ -143,8 +144,40 @@ def _state_to_dict(state: LetterboxState, movie: Movie | None = None) -> dict:
     return data
 
 
+def _sample_preview_entries(movie_id: int, samples: list[dict]) -> list[dict]:
+    entries: list[dict] = []
+    for sample in samples:
+        minute = sample.get("minute")
+        if not isinstance(minute, int):
+            continue
+        ok = bool(sample.get("ok"))
+        entries.append(
+            {
+                "minute": minute,
+                "ok": ok,
+                "url": (
+                    f"/api/letterbox/movies/{movie_id}/preview?mode=before&minute={minute}"
+                    if ok
+                    else None
+                ),
+            }
+        )
+    return entries
+
+
 def _iso_or_none(value) -> str | None:
     return value.isoformat() if value else None
+
+
+def _as_utc(value: datetime | None) -> datetime | None:
+    if value is None or value.tzinfo is not None:
+        return value
+    return value.replace(tzinfo=UTC)
+
+
+async def _generic_media_job_bridge(db: AsyncSession, media_job: MediaJob) -> Job | None:
+    rows = (await db.execute(select(Job).where(Job.type == media_job.operation))).scalars().all()
+    return next((row for row in rows if row.payload.get("media_job_id") == media_job.job_id), None)
 
 
 def _resolution_label(width: int | None, height: int | None) -> str | None:
@@ -558,6 +591,7 @@ async def get_movie_detail(movie_id: int, db: Annotated[AsyncSession, Depends(ge
     if detect_job is not None:
         detail["detection_job"] = job_summary(detect_job)
     detail["preview_minute"] = preview_minute
+    detail["sample_previews"] = _sample_preview_entries(movie_id, samples)
     if not state.reviewed:
         detail["preview_urls"] = {
             "before": f"/api/letterbox/movies/{movie_id}/preview?mode=before&minute={preview_minute}",
@@ -656,6 +690,7 @@ async def detect_one(
     movie_id: int,
     db: Annotated[AsyncSession, Depends(get_db)],
     limiter: Annotated[RateLimiter, Depends(get_rate_limiter)],
+    thorough: bool = Query(False),
 ):
     """Enqueue a durable single-movie detect job; returns its job summary."""
     _require_ffmpeg()
@@ -668,7 +703,7 @@ async def detect_one(
     job = await job_manager.create(
         db,
         job_type="letterbox_detect",
-        payload={"movie_id": movie.id, "detector": "v2"},
+        payload={"movie_id": movie.id, "detector": "v2", "thorough": thorough},
         priority=80,
         resources={"media_read": 1, **(await _file_lock(db, movie))},
         subject_type="movie",
@@ -772,6 +807,22 @@ class ReencodePlanRequest(BaseModel):
     codec: str | None = None
 
 
+class BatchReencodeSettings(BaseModel):
+    quality_profile: str | None = None
+    encoder: str | None = None
+    quality: int | None = None
+    preset: str | None = None
+    codec: str | None = None
+    allow_cpu: bool | None = None
+    crop_top_override: int | None = None
+    crop_bottom_override: int | None = None
+
+
+class BatchReencodeRequest(BaseModel):
+    movie_ids: list[int]
+    settings: BatchReencodeSettings
+
+
 class RestoreReencodeRequest(BaseModel):
     keep_candidate: bool = False
 
@@ -784,6 +835,9 @@ async def apply_one(
 ):
     movie = await _load_movie(db, movie_id)
     state = await _load_state(db, movie_id)
+    eligibility = letterbox_service.check_eligibility(movie)
+    if not eligibility.eligible:
+        raise HTTPException(status_code=422, detail=eligibility.reason or "ineligible")
     if state.status == "variable_unsafe":
         raise HTTPException(
             status_code=422,
@@ -891,14 +945,11 @@ async def _load_reencode_artifact(db: AsyncSession, artifact_id: int) -> Letterb
     return artifact
 
 
-@router.post("/movies/{movie_id}/reencode-plan", status_code=201)
-async def create_reencode_plan(
+async def _create_reencode_plan_job(
+    db: AsyncSession,
     movie_id: int,
     body: ReencodePlanRequest,
-    db: Annotated[AsyncSession, Depends(get_db)],
-):
-    """Plan a permanent cropped re-encode. No media file is written here."""
-    _require_ffmpeg()
+) -> tuple[MediaJob, dict, datetime]:
     movie = await _load_movie(db, movie_id)
     state = await _load_state(db, movie_id)
     if state.status == "variable_unsafe":
@@ -943,9 +994,6 @@ async def create_reencode_plan(
     except letterbox_reencode.ReencodePlanError as exc:
         raise _map_reencode_error(exc) from exc
 
-    # Supersede any still-pending plan for this file. Re-planning (e.g. tweaking
-    # a setting) creates a fresh job; without this, the old paired MediaJob +
-    # generic Job rows pile up and the Projection Room can surface stale plans.
     await media_job_manager.supersede_planned_media_jobs(
         db,
         media_file_id=media_file.id,
@@ -969,12 +1017,121 @@ async def create_reencode_plan(
         input_signature=resolved.signature,
         plan_expires_at=expires_at,
     )
+    return job, plan, expires_at
+
+
+async def _confirm_media_job_plan(db: AsyncSession, job: MediaJob) -> None:
+    if job.status != "planned":
+        raise HTTPException(status_code=409, detail={"code": "not_planned", "status": job.status})
+    plan_expires_at = _as_utc(job.plan_expires_at)
+    if plan_expires_at and plan_expires_at < datetime.now(UTC):
+        job.status = "failed"
+        job.error_json = json.dumps({"code": "plan_stale", "error": "plan expired"})
+        await db.commit()
+        raise HTTPException(
+            status_code=409, detail={"code": "plan_stale", "message": "plan expired"}
+        )
+
+    if job.plan_json:
+        plan = json.loads(job.plan_json)
+        if not plan.get("capabilities", {}).get("can_execute", True):
+            blocking = [
+                w["code"]
+                for w in plan.get("warnings", [])
+                if w.get("code") in ("container_not_writable", "mkv_track_ids_unavailable")
+            ]
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "plan_not_executable",
+                    "message": "plan cannot be executed",
+                    "blocking_warnings": blocking,
+                },
+            )
+
+    try:
+        resolved = await resolve_media_file(db, job.media_file_id)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=422, detail={"code": "file_unavailable", "message": str(exc)}
+        ) from exc
+    if job.input_signature and resolved.signature != job.input_signature:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "plan_stale", "message": "file changed since plan was created"},
+        )
+
+    job.status = "queued"
+    job.confirmed_at = datetime.now(UTC)
+    generic = await _generic_media_job_bridge(db, job)
+    if generic is not None:
+        generic.status = "queued"
+        generic.scheduled_at = datetime.now(UTC)
+
+    if job.operation == "letterbox_reencode" and job.media_file_id is not None:
+        movie_file = await db.get(MediaFile, job.media_file_id)
+        if movie_file and movie_file.movie_id is not None:
+            stmt = select(LetterboxState).where(LetterboxState.movie_id == movie_file.movie_id)
+            state = (await db.execute(stmt)).scalar_one_or_none()
+            if state and state.status == "candidate":
+                state.status = "tagged"
+                state.reviewed = False
+
+    await db.commit()
+
+
+@router.post("/movies/{movie_id}/reencode-plan", status_code=201)
+async def create_reencode_plan(
+    movie_id: int,
+    body: ReencodePlanRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    """Plan a permanent cropped re-encode. No media file is written here."""
+    _require_ffmpeg()
+    job, plan, expires_at = await _create_reencode_plan_job(db, movie_id, body)
     return {
+        **plan,
         "job_id": job.job_id,
         "status": "planned",
         "expires_at": expires_at.isoformat(),
-        **plan,
     }
+
+
+@router.post("/batch/reencode", status_code=202)
+async def batch_reencode(
+    body: BatchReencodeRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    _require_ffmpeg()
+    if not body.movie_ids:
+        raise HTTPException(status_code=400, detail="Provide at least one movie_id")
+
+    plan_body = ReencodePlanRequest(
+        top=body.settings.crop_top_override,
+        bottom=body.settings.crop_bottom_override,
+        allow_cpu_fallback=body.settings.allow_cpu,
+        encoder=body.settings.encoder,
+        quality=body.settings.quality,
+        preset=body.settings.preset,
+        codec=body.settings.codec,
+    )
+    job_ids: list[str] = []
+    skipped: list[dict] = []
+    for movie_id in body.movie_ids:
+        try:
+            job, _plan, _expires = await _create_reencode_plan_job(db, movie_id, plan_body)
+            await _confirm_media_job_plan(db, job)
+            job_ids.append(job.job_id)
+        except HTTPException as exc:
+            detail = exc.detail if isinstance(exc.detail, dict) else {"message": str(exc.detail)}
+            skipped.append(
+                {
+                    "movie_id": movie_id,
+                    "code": detail.get("code"),
+                    "reason": detail.get("message") or str(exc.detail),
+                }
+            )
+    return {"job_ids": job_ids, "count": len(job_ids), "skipped": skipped}
 
 
 @router.get("/reencode-artifacts")

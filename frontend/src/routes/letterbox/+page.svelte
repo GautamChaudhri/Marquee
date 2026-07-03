@@ -10,6 +10,7 @@
 		analyzeAll,
 		healDrift,
 		applyBatch,
+		batchReencode,
 		confirmLetterbox,
 		listColumn
 	} from '$lib/api/letterbox';
@@ -19,13 +20,18 @@
 		isTerminal,
 		runningChildMovieId
 	} from '$lib/api/jobs';
-	import type { LetterboxAnalyzeSummary, LetterboxColumnItem } from '$lib/api/types';
+	import type {
+		BatchReencodeSettings,
+		LetterboxAnalyzeSummary,
+		LetterboxColumnItem
+	} from '$lib/api/types';
 	import SectionHeader from '$lib/components/SectionHeader.svelte';
 	import StatusDot from '$lib/components/StatusDot.svelte';
 	import ProgressBar from '$lib/components/ProgressBar.svelte';
 	import Icon from '$lib/components/Icon.svelte';
 	import LetterboxCard from '$lib/components/LetterboxCard.svelte';
 	import LetterboxDetail from '$lib/components/LetterboxDetail.svelte';
+	import BatchReencodeModal from '$lib/components/letterbox/BatchReencodeModal.svelte';
 	import type { PageData } from './$types';
 
 	let { data }: { data: PageData } = $props();
@@ -35,6 +41,7 @@
 	type ColKey = 'candidates' | 'detected' | 'preview' | 'notLetterboxed' | 'processed';
 
 	// ── Reactive tray state (initialized from load, updated via SSE + poll) ─────
+	// svelte-ignore state_referenced_locally
 	// eslint-disable-next-line svelte/prefer-writable-derived -- cols is mutated locally (optimistic moves + poll refresh); $state avoids prop-ownership warnings on nested writes
 	let cols = $state(data.columns);
 
@@ -127,6 +134,8 @@
 	let healing = $state(false);
 	let processing = $state(false);
 	let confirming = $state(false);
+	let batchReencodeOpen = $state(false);
+	let batchReencodeBusy = $state(false);
 
 	async function doHeal() {
 		healing = true;
@@ -195,6 +204,33 @@
 		}
 	}
 
+	async function startBatchReencode(payload: {
+		movieIds: number[];
+		settings: BatchReencodeSettings;
+	}) {
+		if (batchReencodeBusy) return;
+		batchReencodeBusy = true;
+		try {
+			const result = await batchReencode(fetch, payload.movieIds, payload.settings);
+			if (result.count > 0) {
+				toast(`Queued ${result.count} permanent re-encodes`, 'good');
+			} else {
+				toast('No eligible films matched the selected confidence filter', 'info');
+			}
+			if (result.skipped.length > 0) {
+				toast(
+					`Skipped ${result.skipped.length} ineligible film${result.skipped.length === 1 ? '' : 's'}`,
+					'info'
+				);
+			}
+			batchReencodeOpen = false;
+		} catch (e) {
+			toast(e instanceof Error ? e.message : 'Could not queue permanent re-encodes', 'bad');
+		} finally {
+			batchReencodeBusy = false;
+		}
+	}
+
 	// ── Analyze (batch frame analysis tracked via the durable job) ─────────────
 	// The bar is driven by SSE *and* a snapshot poll (the SSE opened right after
 	// the POST doesn't always stream on the first run, so the poll guarantees the
@@ -251,6 +287,12 @@
 			total,
 			completed: total
 		};
+	}
+
+	function summaryFromResult(resultValue: unknown): LetterboxAnalyzeSummary | null {
+		if (!resultValue || typeof resultValue !== 'object' || !('summary' in resultValue)) return null;
+		const summary = (resultValue as { summary?: Record<string, number> | null }).summary;
+		return summaryFrom(summary ?? null);
 	}
 
 	/** Fetch updated tray data from the backend and merge into reactive state. */
@@ -320,7 +362,7 @@
 			progress = progressTotal > 0 ? (progressDone / progressTotal) * 100 : 0;
 			if (isTerminal(job.status)) {
 				batchStatus = job.status;
-				result = summaryFrom((job.result?.summary ?? null) as Record<string, number> | null);
+				result = summaryFromResult(job.result);
 				finishAnalyze();
 				return;
 			}
@@ -541,7 +583,7 @@
 			stopPolling();
 			currentMovie = null;
 			currentScanId = null;
-			result = summaryFrom((job.result?.summary ?? null) as Record<string, number> | null);
+			result = summaryFromResult(job.result);
 			if (!result && !progressTotal) storeBatch(null); // nothing to show → forget it
 		} else {
 			analyzing = true;
@@ -815,7 +857,13 @@
 							conf {data.detectedDesc ? '▼' : '▲'}
 						</button>
 						<span class="tb quick-active">⚡ All Quick</span>
-						<span class="tb perm-disabled" title="Re-encode coming soon">🔧 All Perm</span>
+						<button
+							class="tb perm-active"
+							onclick={() => (batchReencodeOpen = true)}
+							disabled={cols.detected.total === 0}
+						>
+							🔧 Batch Re-encode
+						</button>
 						<button
 							class="tb gold"
 							onclick={processDetected}
@@ -911,6 +959,16 @@
 		</div>
 	</div>
 {/if}
+
+<BatchReencodeModal
+	open={batchReencodeOpen}
+	items={cols.detected.items}
+	busy={batchReencodeBusy}
+	onStart={startBatchReencode}
+	onClose={() => {
+		if (!batchReencodeBusy) batchReencodeOpen = false;
+	}}
+/>
 
 <style>
 	.page {
@@ -1176,12 +1234,10 @@
 		border-color: color-mix(in srgb, var(--info) 28%, transparent);
 		cursor: default;
 	}
-	.tb.perm-disabled {
-		background: color-mix(in srgb, var(--low) 8%, transparent);
-		color: var(--low);
-		border-color: color-mix(in srgb, var(--low) 22%, transparent);
-		opacity: 0.55;
-		cursor: not-allowed;
+	.tb.perm-active {
+		background: color-mix(in srgb, var(--gold) 8%, transparent);
+		color: var(--gold);
+		border-color: color-mix(in srgb, var(--gold) 28%, transparent);
 	}
 	.tb:disabled {
 		opacity: 0.5;
