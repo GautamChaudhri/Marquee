@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy import select
 
 from marquee.core import letterbox_reencode as lr
 from marquee.core.media_files import ResolvedMediaFile, compute_signature
@@ -471,6 +472,7 @@ async def test_replace_and_restore_artifact(db, tmp_path, monkeypatch):
             status="candidate",
             recommended_crop_top=10,
             recommended_crop_bottom=10,
+            aspect_label="2.40:1",
         )
     )
     artifact = LetterboxReencodeArtifact(
@@ -497,8 +499,26 @@ async def test_replace_and_restore_artifact(db, tmp_path, monkeypatch):
     assert Path(replaced["saved_original_path"]).read_bytes() == b"original"
     assert original.read_bytes() == b"candidate"
     assert artifact.status == "replaced"
+    state = (
+        await db.execute(
+            select(LetterboxState).where(
+                LetterboxState.media_type == "movie",
+                LetterboxState.movie_id == movie.id,
+            )
+        )
+    ).scalar_one()
+    assert state.status == "reencoded"
+    assert state.resolved_by == "reencode"
+    assert state.original_crop_top == 10
+    assert state.original_crop_bottom == 10
+    assert state.original_aspect_label == "2.40:1"
 
     restored = await lr.restore_original(db, artifact, keep_candidate=False)
     assert restored["status"] == "restored"
     assert original.read_bytes() == b"original"
     assert not Path(replaced["saved_original_path"]).exists()
+    await db.refresh(state)
+    assert state.status == "candidate"
+    assert state.resolved_by is None
+    assert state.original_crop_top is None
+    assert state.original_aspect_label is None

@@ -31,7 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.core.path_utils import PathValidationError, safe_translate_and_validate
 from marquee.media import binaries
-from marquee.models import LetterboxEvent, LetterboxState, Movie
+from marquee.models import Episode, LetterboxEvent, LetterboxState, Movie
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +86,25 @@ def _resolve_media_file(movie: Movie) -> Path:
     return candidate
 
 
+def _resolve_episode_media_file(episodes: list[Episode]) -> Path:
+    """Validated absolute path shared by a batch of Sonarr episodes."""
+    if not episodes:
+        raise PathValidationError("Episode set is empty")
+    resolved: Path | None = None
+    for episode in episodes:
+        if not episode.episode_file_path:
+            raise PathValidationError(f"Episode {episode.id} has no media file path (run sync)")
+        candidate = safe_translate_and_validate(episode.episode_file_path, source="sonarr")
+        if resolved is None:
+            resolved = candidate
+            continue
+        if candidate != resolved:
+            raise PathValidationError("Episode set does not share one media file")
+    if resolved is None:
+        raise PathValidationError("Episode set is empty")
+    return resolved
+
+
 def _file_lock(path: str) -> asyncio.Lock:
     return _file_locks.setdefault(path, asyncio.Lock())
 
@@ -122,13 +141,7 @@ def read_applied_crop(path: Path | str) -> tuple[int, int] | None:
 class LetterboxService:
     """Apply / remove MKV crop tags through one validated, audited path."""
 
-    def check_eligibility(self, movie: Movie) -> Eligibility:
-        """Validate that *movie*'s file can be tagged (design §20)."""
-        try:
-            path = _resolve_media_file(movie)
-        except PathValidationError as exc:
-            return Eligibility(False, f"path_invalid: {exc}", None)
-
+    def _check_path_eligibility(self, path: Path) -> Eligibility:
         if path.suffix.lower() != ".mkv":
             return Eligibility(False, "not_mkv", path)
         if not path.is_file():
@@ -152,6 +165,22 @@ class LetterboxService:
                     return Eligibility(False, "no_video_track", path)
         return Eligibility(True, None, path)
 
+    def check_eligibility(self, movie: Movie) -> Eligibility:
+        """Validate that *movie*'s file can be tagged (design §20)."""
+        try:
+            path = _resolve_media_file(movie)
+        except PathValidationError as exc:
+            return Eligibility(False, f"path_invalid: {exc}", None)
+        return self._check_path_eligibility(path)
+
+    def check_episode_set_eligibility(self, episodes: list[Episode]) -> Eligibility:
+        """Validate that a shared episode file can be tagged."""
+        try:
+            path = _resolve_episode_media_file(episodes)
+        except PathValidationError as exc:
+            return Eligibility(False, f"path_invalid: {exc}", None)
+        return self._check_path_eligibility(path)
+
     async def get_or_create_state(self, db: AsyncSession, movie_id: int) -> LetterboxState:
         state = (
             await db.execute(
@@ -169,6 +198,69 @@ class LetterboxService:
             )
             db.add(state)
         return state
+
+    async def get_or_create_episode_state(self, db: AsyncSession, episode_id: int) -> LetterboxState:
+        state = (
+            await db.execute(
+                select(LetterboxState).where(
+                    LetterboxState.media_type == "episode",
+                    LetterboxState.episode_id == episode_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if state is None:
+            state = LetterboxState(
+                media_type="episode",
+                episode_id=episode_id,
+                status="prefilter_candidate",
+            )
+            db.add(state)
+        return state
+
+    async def _apply_tags(self, path: Path, *, top: int, bottom: int) -> bool:
+        async with self._file_lock(str(path)):
+            result = await asyncio.to_thread(
+                binaries.run,
+                "mkvpropedit",
+                [
+                    binaries.safe_media_path(path),
+                    "--edit",
+                    "track:v1",
+                    "--set",
+                    f"pixel-crop-top={top}",
+                    "--set",
+                    f"pixel-crop-bottom={bottom}",
+                    "--set",
+                    "pixel-crop-left=0",
+                    "--set",
+                    "pixel-crop-right=0",
+                ],
+            )
+            if not result.ok:
+                raise IneligibleError(f"mkvpropedit failed: {result.stderr.strip()[:200]}")
+
+            read_back = await asyncio.to_thread(read_applied_crop, path)
+            return read_back is None or read_back == (top, bottom)
+
+    async def _remove_tags(self, path: Path) -> None:
+        async with self._file_lock(str(path)):
+            await asyncio.to_thread(
+                binaries.run,
+                "mkvpropedit",
+                [
+                    binaries.safe_media_path(path),
+                    "--edit",
+                    "track:v1",
+                    "--delete",
+                    "pixel-crop-top",
+                    "--delete",
+                    "pixel-crop-bottom",
+                    "--delete",
+                    "pixel-crop-left",
+                    "--delete",
+                    "pixel-crop-right",
+                ],
+            )
 
     async def apply(
         self,
@@ -189,38 +281,18 @@ class LetterboxService:
             raise IneligibleError(eligibility.reason or "ineligible")
 
         path = eligibility.path
-        async with self._file_lock(str(path)):
-            result = await asyncio.to_thread(
-                binaries.run,
-                "mkvpropedit",
-                [
-                    binaries.safe_media_path(path),
-                    "--edit",
-                    "track:v1",
-                    "--set",
-                    f"pixel-crop-top={top}",
-                    "--set",
-                    f"pixel-crop-bottom={bottom}",
-                    "--set",
-                    "pixel-crop-left=0",
-                    "--set",
-                    "pixel-crop-right=0",
-                ],
+        try:
+            verified = await self._apply_tags(path, top=top, bottom=bottom)
+        except IneligibleError as exc:
+            await self._log(
+                db,
+                movie.id,
+                "error",
+                source,
+                {"reason": "mkvpropedit_failed", "stderr": exc.reason[:300]},
             )
-            if not result.ok:
-                await self._log(
-                    db,
-                    movie.id,
-                    "error",
-                    source,
-                    {"reason": "mkvpropedit_failed", "stderr": result.stderr.strip()[:300]},
-                )
-                await db.commit()
-                raise IneligibleError(f"mkvpropedit failed: {result.stderr.strip()[:200]}")
-
-            # Verify: re-read if the build supports it; else trust exit code 0.
-            read_back = await asyncio.to_thread(read_applied_crop, path)
-            verified = read_back is None or read_back == (top, bottom)
+            await db.commit()
+            raise
 
         state = await self.get_or_create_state(db, movie.id)
         state.status = "tagged"
@@ -245,30 +317,78 @@ class LetterboxService:
         )
         return ApplyResult(applied=True, top=top, bottom=bottom, path=str(path), verified=verified)
 
+    async def apply_episode_group(
+        self,
+        db: AsyncSession,
+        episodes: list[Episode],
+        *,
+        top: int,
+        bottom: int,
+        source: str = "api",
+    ) -> ApplyResult:
+        """Write pixel-crop tags once for a shared episode file and fan state out."""
+        if top < 0 or bottom < 0:
+            raise IneligibleError("crop values must be non-negative")
+        eligibility = await asyncio.to_thread(self.check_episode_set_eligibility, episodes)
+        if not eligibility.eligible or eligibility.path is None:
+            for episode in episodes:
+                await self._log_episode(
+                    db,
+                    episode.id,
+                    "error",
+                    source,
+                    {"reason": eligibility.reason},
+                )
+            await db.commit()
+            raise IneligibleError(eligibility.reason or "ineligible")
+
+        path = eligibility.path
+        try:
+            verified = await self._apply_tags(path, top=top, bottom=bottom)
+        except IneligibleError as exc:
+            for episode in episodes:
+                await self._log_episode(
+                    db,
+                    episode.id,
+                    "error",
+                    source,
+                    {"reason": "mkvpropedit_failed", "stderr": exc.reason[:300]},
+                )
+            await db.commit()
+            raise
+
+        now = datetime.now(UTC)
+        for episode in episodes:
+            state = await self.get_or_create_episode_state(db, episode.id)
+            state.status = "tagged"
+            state.applied_crop_top = top
+            state.applied_crop_bottom = bottom
+            state.last_applied_at = now
+            state.error = None
+            await self._log_episode(
+                db,
+                episode.id,
+                "apply",
+                source,
+                {"top": top, "bottom": bottom, "verified": verified, "path": str(path)},
+            )
+        await db.commit()
+        logger.info(
+            "LETTERBOX APPLIED | episodes=%s | %d/%dpx | verified=%s",
+            [episode.id for episode in episodes],
+            top,
+            bottom,
+            verified,
+        )
+        return ApplyResult(applied=True, top=top, bottom=bottom, path=str(path), verified=verified)
+
     async def remove(self, db: AsyncSession, movie: Movie, *, source: str = "api") -> RemoveResult:
         """Delete pixel-crop tags (idempotent)."""
         eligibility = await asyncio.to_thread(self.check_eligibility, movie)
         if not eligibility.eligible or eligibility.path is None:
             raise IneligibleError(eligibility.reason or "ineligible")
         path = eligibility.path
-        async with self._file_lock(str(path)):
-            await asyncio.to_thread(
-                binaries.run,
-                "mkvpropedit",
-                [
-                    binaries.safe_media_path(path),
-                    "--edit",
-                    "track:v1",
-                    "--delete",
-                    "pixel-crop-top",
-                    "--delete",
-                    "pixel-crop-bottom",
-                    "--delete",
-                    "pixel-crop-left",
-                    "--delete",
-                    "pixel-crop-right",
-                ],
-            )
+        await self._remove_tags(path)
 
         state = await self.get_or_create_state(db, movie.id)
         state.applied_crop_top = None
@@ -278,6 +398,30 @@ class LetterboxService:
         await self._log(db, movie.id, "remove", source, {"path": str(path)})
         await db.commit()
         logger.info("LETTERBOX REMOVED | movie=%s | path=%s", movie.title, path)
+        return RemoveResult(removed=True, path=str(path))
+
+    async def remove_episode_group(
+        self,
+        db: AsyncSession,
+        episodes: list[Episode],
+        *,
+        source: str = "api",
+    ) -> RemoveResult:
+        """Delete crop tags once for a shared episode file and fan state out."""
+        eligibility = await asyncio.to_thread(self.check_episode_set_eligibility, episodes)
+        if not eligibility.eligible or eligibility.path is None:
+            raise IneligibleError(eligibility.reason or "ineligible")
+        path = eligibility.path
+        await self._remove_tags(path)
+
+        for episode in episodes:
+            state = await self.get_or_create_episode_state(db, episode.id)
+            state.applied_crop_top = None
+            state.applied_crop_bottom = None
+            state.status = "candidate" if state.recommended_crop_top else "skipped"
+            await self._log_episode(db, episode.id, "remove", source, {"path": str(path)})
+        await db.commit()
+        logger.info("LETTERBOX REMOVED | episodes=%s | path=%s", [episode.id for episode in episodes], path)
         return RemoveResult(removed=True, path=str(path))
 
     def _file_lock(self, path: str) -> asyncio.Lock:
@@ -290,6 +434,19 @@ class LetterboxService:
             LetterboxEvent(
                 media_type="movie",
                 movie_id=movie_id,
+                action=action,
+                source=source,
+                detail=json.dumps(detail, default=str),
+            )
+        )
+
+    async def _log_episode(
+        self, db: AsyncSession, episode_id: int, action: str, source: str, detail: dict
+    ) -> None:
+        db.add(
+            LetterboxEvent(
+                media_type="episode",
+                episode_id=episode_id,
                 action=action,
                 source=source,
                 detail=json.dumps(detail, default=str),

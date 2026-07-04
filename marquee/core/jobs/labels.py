@@ -15,6 +15,8 @@ JOB_LABELS: dict[str, str] = {
     "letterbox_apply_batch": "Letterbox Crop Apply (Batch)",
     "letterbox_detect": "Letterbox Detection",
     "letterbox_detect_batch": "Letterbox Detection (Batch)",
+    "letterbox_detect_tv_batch": "TV Letterbox Detection (Batch)",
+    "letterbox_detect_tv_scope": "TV Letterbox Detection",
     "letterbox_heal": "Letterbox Healing",
     "letterbox_reencode": "Letterbox Re-encode",
     "letterbox_remove": "Letterbox Crop Remove",

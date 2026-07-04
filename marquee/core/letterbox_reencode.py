@@ -26,7 +26,7 @@ from marquee.core.media_files import (
     compute_signature,
     resolve_media_file,
 )
-from marquee.media import binaries
+from marquee.media import binaries, letterbox_detect
 from marquee.media.concurrency import gated
 from marquee.models import (
     LetterboxReencodeArtifact,
@@ -1357,7 +1357,9 @@ def artifact_to_dict(artifact: LetterboxReencodeArtifact) -> dict:
     return {
         "id": artifact.id,
         "job_id": artifact.job_id,
+        "media_type": artifact.media_type,
         "movie_id": artifact.movie_id,
+        "episode_id": artifact.episode_id,
         "media_file_id": artifact.media_file_id,
         "status": artifact.status,
         "original_path": artifact.original_path,
@@ -1411,24 +1413,47 @@ async def replace_original(db: AsyncSession, artifact: LetterboxReencodeArtifact
     artifact.saved_original_signature = compute_signature(
         saved, size=stat.st_size, mtime_ns=stat.st_mtime_ns
     )
+    resolved_at = datetime.now(UTC)
     artifact.status = "replaced"
-    artifact.updated_at = datetime.now(UTC)
+    artifact.updated_at = resolved_at
     if media_row is not None:
         media_row.size_bytes = original.stat().st_size
     state = (
         await db.execute(
             select(LetterboxState).where(
-                LetterboxState.media_type == "movie",
+                LetterboxState.media_type == artifact.media_type,
                 LetterboxState.movie_id == artifact.movie_id,
+                LetterboxState.episode_id == artifact.episode_id,
             )
         )
     ).scalar_one_or_none()
     if state is not None:
+        aspect_label = state.aspect_label
+        if aspect_label is None and artifact.detail_json:
+            try:
+                detail = json.loads(artifact.detail_json)
+            except json.JSONDecodeError:
+                detail = {}
+            plan = detail.get("plan") if isinstance(detail, dict) else {}
+            source = plan.get("source") if isinstance(plan, dict) else {}
+            crop = plan.get("crop") if isinstance(plan, dict) else {}
+            try:
+                width = int(source.get("width") or 0)
+                output_height = int(crop.get("output_height") or 0)
+            except (TypeError, ValueError):
+                width = output_height = 0
+            if width > 0 and output_height > 0:
+                aspect_label = letterbox_detect.aspect_label(width, output_height)
         state.status = "reencoded"
         state.applied_crop_top = artifact.crop_top
         state.applied_crop_bottom = artifact.crop_bottom
-        state.last_applied_at = datetime.now(UTC)
+        state.last_applied_at = resolved_at
         state.error = None
+        state.resolved_by = "reencode"
+        state.resolved_at = resolved_at
+        state.original_crop_top = artifact.crop_top
+        state.original_crop_bottom = artifact.crop_bottom
+        state.original_aspect_label = aspect_label
     await db.commit()
     return artifact_to_dict(artifact)
 
@@ -1463,8 +1488,9 @@ async def restore_original(
     state = (
         await db.execute(
             select(LetterboxState).where(
-                LetterboxState.media_type == "movie",
+                LetterboxState.media_type == artifact.media_type,
                 LetterboxState.movie_id == artifact.movie_id,
+                LetterboxState.episode_id == artifact.episode_id,
             )
         )
     ).scalar_one_or_none()
@@ -1472,6 +1498,11 @@ async def restore_original(
         state.status = "candidate"
         state.applied_crop_top = None
         state.applied_crop_bottom = None
+        state.resolved_by = None
+        state.resolved_at = None
+        state.original_crop_top = None
+        state.original_crop_bottom = None
+        state.original_aspect_label = None
     await db.commit()
     return artifact_to_dict(artifact)
 

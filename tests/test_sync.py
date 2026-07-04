@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -10,10 +11,19 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.core.poster_sources.tmdb import MovieDetails
-from marquee.core.sync_service import SyncService, _resolve_poster_path
+from marquee.core.sync_service import (
+    SyncService,
+    _resolve_poster_path,
+    _upsert_episode_media_files,
+    _upsert_movie_media_file,
+)
 from marquee.models import (
     Episode,
+    EpisodeMediaFile,
+    LetterboxEvent,
+    LetterboxReencodeArtifact,
     LetterboxState,
+    MediaFile,
     Movie,
     MovieCustomFormatScore,
     RadarrCustomFormat,
@@ -437,6 +447,210 @@ async def test_sync_movies_prefilter_does_not_overwrite_detector_truth(db: Async
 
 
 @pytest.mark.asyncio
+async def test_movie_media_replacement_keeps_reencode_provenance_on_signature_match(
+    db: AsyncSession, monkeypatch
+):
+    movie = Movie(
+        radarr_id=1,
+        title="Dune",
+        year=2021,
+        folder_path="/movies/Dune (2021)",
+        movie_file_path="old.mkv",
+    )
+    db.add(movie)
+    await db.flush()
+    old_media_file = MediaFile(
+        movie_id=movie.id,
+        source="radarr",
+        source_key="radarr:movie-file:2001",
+        path="/movies/Dune (2021)/old.mkv",
+        relative_path="old.mkv",
+        container="mkv",
+        is_active=True,
+    )
+    db.add(old_media_file)
+    db.add(
+        LetterboxState(
+            media_type="movie",
+            movie_id=movie.id,
+            status="reencoded",
+            resolved_by="reencode",
+            resolved_at=datetime.now(UTC),
+            original_crop_top=140,
+            original_crop_bottom=140,
+            original_aspect_label="2.40:1",
+        )
+    )
+    artifact = LetterboxReencodeArtifact(
+        media_type="movie",
+        movie_id=movie.id,
+        media_file_id=old_media_file.id,
+        original_path="/movies/Dune (2021)/old.mkv",
+        candidate_path="/movies/Dune (2021)/new.mkv",
+        original_size_bytes=10,
+        candidate_size_bytes=9,
+        original_signature="old",
+        candidate_signature="sig-match",
+        encoder="hevc_nvenc",
+        encoder_family="nvidia",
+        codec="hevc",
+        crop_top=140,
+        crop_bottom=140,
+        status="replaced",
+    )
+    db.add(artifact)
+    await db.commit()
+
+    monkeypatch.setattr("marquee.core.sync_service.compute_signature", lambda _path: "sig-match")
+
+    await _upsert_movie_media_file(
+        db,
+        movie,
+        {
+            "id": 2002,
+            "path": "/movies/Dune (2021)/new.mkv",
+            "relativePath": "new.mkv",
+            "size": 12,
+        },
+    )
+    await db.commit()
+
+    state = (
+        await db.execute(
+            select(LetterboxState).where(
+                LetterboxState.media_type == "movie",
+                LetterboxState.movie_id == movie.id,
+            )
+        )
+    ).scalar_one()
+    reset_events = (
+        await db.execute(
+            select(LetterboxEvent).where(
+                LetterboxEvent.media_type == "movie",
+                LetterboxEvent.movie_id == movie.id,
+                LetterboxEvent.action == "reset",
+            )
+        )
+    ).scalars().all()
+    current_media = (
+        await db.execute(
+            select(MediaFile).where(MediaFile.source_key == "radarr:movie-file:2002")
+        )
+    ).scalar_one()
+
+    assert state.status == "reencoded"
+    assert state.resolved_by == "reencode"
+    assert old_media_file.is_active is False
+    assert artifact.media_file_id == current_media.id
+    assert reset_events == []
+
+
+@pytest.mark.asyncio
+async def test_movie_media_replacement_resets_letterbox_state_on_signature_mismatch(
+    db: AsyncSession, monkeypatch
+):
+    movie = Movie(
+        radarr_id=1,
+        title="Dune",
+        year=2021,
+        folder_path="/movies/Dune (2021)",
+        movie_file_path="old.mkv",
+    )
+    db.add(movie)
+    await db.flush()
+    old_media_file = MediaFile(
+        movie_id=movie.id,
+        source="radarr",
+        source_key="radarr:movie-file:2001",
+        path="/movies/Dune (2021)/old.mkv",
+        relative_path="old.mkv",
+        container="mkv",
+        is_active=True,
+    )
+    db.add(old_media_file)
+    db.add(
+        LetterboxState(
+            media_type="movie",
+            movie_id=movie.id,
+            status="reencoded",
+            confidence="high",
+            recommended_crop_top=140,
+            recommended_crop_bottom=140,
+            applied_crop_top=140,
+            applied_crop_bottom=140,
+            aspect_label="2.40:1",
+            detect_method="cropdetect",
+            samples_json="[]",
+            reviewed=True,
+            last_detected_at=datetime.now(UTC),
+            resolved_by="reencode",
+            resolved_at=datetime.now(UTC),
+            original_crop_top=140,
+            original_crop_bottom=140,
+            original_aspect_label="2.40:1",
+        )
+    )
+    db.add(
+        LetterboxReencodeArtifact(
+            media_type="movie",
+            movie_id=movie.id,
+            media_file_id=old_media_file.id,
+            original_path="/movies/Dune (2021)/old.mkv",
+            candidate_path="/movies/Dune (2021)/new.mkv",
+            original_size_bytes=10,
+            candidate_size_bytes=9,
+            original_signature="old",
+            candidate_signature="sig-match",
+            encoder="hevc_nvenc",
+            encoder_family="nvidia",
+            codec="hevc",
+            crop_top=140,
+            crop_bottom=140,
+            status="replaced",
+        )
+    )
+    await db.commit()
+
+    monkeypatch.setattr("marquee.core.sync_service.compute_signature", lambda _path: "sig-new")
+
+    await _upsert_movie_media_file(
+        db,
+        movie,
+        {
+            "id": 2002,
+            "path": "/movies/Dune (2021)/new.mkv",
+            "relativePath": "new.mkv",
+            "size": 12,
+        },
+    )
+    await db.commit()
+
+    state = (
+        await db.execute(
+            select(LetterboxState).where(
+                LetterboxState.media_type == "movie",
+                LetterboxState.movie_id == movie.id,
+            )
+        )
+    ).scalar_one()
+    reset_event = (
+        await db.execute(
+            select(LetterboxEvent).where(
+                LetterboxEvent.media_type == "movie",
+                LetterboxEvent.movie_id == movie.id,
+                LetterboxEvent.action == "reset",
+            )
+        )
+    ).scalar_one()
+
+    assert state.status == "prefilter_candidate"
+    assert state.recommended_crop_top is None
+    assert state.applied_crop_top is None
+    assert state.resolved_by is None
+    assert "media_file_replaced" in reset_event.detail
+
+
+@pytest.mark.asyncio
 async def test_sync_movies_hdr_sdr_vs_unknown(db: AsyncSession):
     """Explicit SDR → False/False; absent dynamic-range info → NULL (unchecked)."""
     radarr = AsyncMock()
@@ -465,6 +679,98 @@ async def test_sync_movies_hdr_sdr_vs_unknown(db: AsyncSession):
     assert unknown.hdr_type_raw is None
     assert unknown.has_hdr is None
     assert unknown.has_dv is None
+
+
+@pytest.mark.asyncio
+async def test_episode_media_replacement_resets_stale_letterbox_state_and_links(
+    db: AsyncSession, monkeypatch
+):
+    series = Series(title="Breaking Bad", year=2008, sonarr_id=100, series_path="/tv/Breaking Bad")
+    db.add(series)
+    await db.flush()
+    episode = Episode(
+        series_id=series.id,
+        sonarr_episode_id=1001,
+        season_number=1,
+        episode_number=1,
+        title="Pilot",
+        episode_file_path="/tv/Breaking Bad/Season 1/old.mkv",
+    )
+    db.add(episode)
+    await db.flush()
+    old_media_file = MediaFile(
+        source="sonarr",
+        source_key="sonarr:episode-file:5001",
+        path="/tv/Breaking Bad/Season 1/old.mkv",
+        relative_path="Season 1/old.mkv",
+        container="mkv",
+        is_active=True,
+    )
+    db.add(old_media_file)
+    await db.flush()
+    db.add(EpisodeMediaFile(episode_id=episode.id, media_file_id=old_media_file.id))
+    db.add(
+        LetterboxState(
+            media_type="episode",
+            episode_id=episode.id,
+            status="candidate",
+            confidence="high",
+            recommended_crop_top=120,
+            recommended_crop_bottom=120,
+            reviewed=True,
+            last_detected_at=datetime.now(UTC),
+        )
+    )
+    await db.commit()
+
+    monkeypatch.setattr("marquee.core.sync_service.compute_signature", lambda _path: "sig-new")
+
+    await _upsert_episode_media_files(
+        db,
+        [_sonarr_episode(episodeFileId=5002)],
+        {
+            5002: _sonarr_episode_file(
+                id=5002,
+                relativePath="Season 1/new.mkv",
+                path="/tv/Breaking Bad/Season 1/new.mkv",
+            )
+        },
+    )
+    await db.commit()
+
+    state = (
+        await db.execute(
+            select(LetterboxState).where(
+                LetterboxState.media_type == "episode",
+                LetterboxState.episode_id == episode.id,
+            )
+        )
+    ).scalar_one()
+    links = (
+        await db.execute(
+            select(EpisodeMediaFile).where(EpisodeMediaFile.episode_id == episode.id)
+        )
+    ).scalars().all()
+    new_media = (
+        await db.execute(
+            select(MediaFile).where(MediaFile.source_key == "sonarr:episode-file:5002")
+        )
+    ).scalar_one()
+    reset_event = (
+        await db.execute(
+            select(LetterboxEvent).where(
+                LetterboxEvent.media_type == "episode",
+                LetterboxEvent.episode_id == episode.id,
+                LetterboxEvent.action == "reset",
+            )
+        )
+    ).scalar_one()
+
+    assert state.status == "prefilter_candidate"
+    assert state.recommended_crop_top is None
+    assert old_media_file.is_active is False
+    assert [link.media_file_id for link in links] == [new_media.id]
+    assert "media_file_replaced" in reset_event.detail
 
 
 @pytest.mark.asyncio

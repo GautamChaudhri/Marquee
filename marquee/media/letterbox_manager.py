@@ -32,13 +32,24 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.config import settings
-from marquee.core.letterbox_prefilter import refresh_letterbox_prefilter_for_episode
+from marquee.core.letterbox_prefilter import (
+    episode_state_has_detector_truth,
+    prefilter_category_episode,
+    refresh_letterbox_prefilter_for_episode,
+)
 from marquee.core.letterbox_service import letterbox_service
 from marquee.core.media_files import MediaFileUnavailableError, resolve_media_file
 from marquee.database import _get_session_factory
 from marquee.media import binaries, letterbox_detect, letterbox_preview, probe
 from marquee.media.concurrency import gated
-from marquee.models import Episode, LetterboxEvent, LetterboxState, Movie
+from marquee.models import (
+    Episode,
+    EpisodeMediaFile,
+    LetterboxEvent,
+    LetterboxState,
+    MediaFile,
+    Movie,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -212,6 +223,12 @@ def select_season_sample_episodes(
         return [unique[len(unique) // 2]]
     indices = sorted({round(index * (len(unique) - 1) / (count - 1)) for index in range(count)})
     return [unique[index] for index in indices]
+
+
+def _episode_result_has_real_bar(state: LetterboxState) -> bool:
+    return state.status in {"candidate", "variable_unsafe", "tagged", "reencoded"} or (
+        (state.recommended_crop_top or 0) > 0 or (state.recommended_crop_bottom or 0) > 0
+    )
 
 
 class LetterboxManager:
@@ -639,6 +656,18 @@ class LetterboxManager:
                         detail=json.dumps({"error": str(exc)}),
                     )
                 )
+                await _emit_child_progress(
+                    db,
+                    parent_job_id,
+                    {
+                        "episode_id": episode.id,
+                        "title": episode.title,
+                        "stage": "finished",
+                        "progress": 100,
+                        "status": "ineligible",
+                        "error": str(exc),
+                    },
+                )
                 states.append(state)
             await db.commit()
             return states
@@ -710,6 +739,18 @@ class LetterboxManager:
                     ),
                 )
             )
+            await _emit_child_progress(
+                db,
+                parent_job_id,
+                {
+                    "episode_id": episode.id,
+                    "title": episode.title,
+                    "stage": "finished",
+                    "progress": 100,
+                    "status": state.status,
+                    "confidence": state.confidence,
+                },
+            )
             stored_states.append(state)
         await db.commit()
         return stored_states
@@ -720,6 +761,7 @@ class LetterboxManager:
         episodes: list[Episode],
         *,
         source: str = "detect",
+        parent_job_id: str | None = None,
     ) -> list[LetterboxState]:
         """Mark episodes as triaged clear without an individual scan."""
         now = datetime.now(UTC)
@@ -749,9 +791,193 @@ class LetterboxManager:
                     detail=json.dumps({"status": "sampled_clear"}),
                 )
             )
+            await _emit_child_progress(
+                db,
+                parent_job_id,
+                {
+                    "episode_id": episode.id,
+                    "title": episode.title,
+                    "stage": "finished",
+                    "progress": 100,
+                    "status": "sampled_clear",
+                    "confidence": "none",
+                },
+            )
             states.append(state)
         await db.commit()
         return states
+
+    async def detect_episode_batch_and_store(
+        self,
+        db: AsyncSession,
+        episodes: list[Episode],
+        *,
+        exhaustive: bool = False,
+        force: bool = False,
+        use_season_triage: bool = True,
+        parent_job_id: str | None = None,
+    ) -> list[LetterboxState]:
+        """Detect a TV scope using season triage and per-file fanout."""
+        if not episodes:
+            return []
+
+        ordered_episodes = sorted(
+            [episode for episode in episodes if episode.id is not None],
+            key=lambda episode: (episode.season_number, episode.episode_number, episode.id or 0),
+        )
+        episode_ids = [episode.id for episode in ordered_episodes if episode.id is not None]
+        link_rows = (
+            await db.execute(
+                select(EpisodeMediaFile.episode_id, MediaFile.id)
+                .join(MediaFile, MediaFile.id == EpisodeMediaFile.media_file_id)
+                .where(
+                    EpisodeMediaFile.episode_id.in_(episode_ids),
+                    MediaFile.is_active.is_(True),
+                )
+                .order_by(EpisodeMediaFile.episode_id, MediaFile.id)
+            )
+        ).all()
+        media_file_by_episode: dict[int, int] = {}
+        for episode_id, media_file_id in link_rows:
+            media_file_by_episode.setdefault(episode_id, media_file_id)
+
+        now = datetime.now(UTC)
+        touched_states: list[LetterboxState] = []
+        pending_items: list[EpisodeBatchItem] = []
+        episodes_by_id = {episode.id: episode for episode in ordered_episodes if episode.id is not None}
+
+        for episode in ordered_episodes:
+            state = await refresh_letterbox_prefilter_for_episode(db, episode, now=now)
+            if state is None:
+                continue
+
+            media_file_id = media_file_by_episode.get(episode.id)
+            if media_file_id is None:
+                state.status = "ineligible"
+                state.eligible = False
+                state.ineligible_reason = "no_active_media_file"
+                state.error = "no_active_media_file"
+                state.last_detected_at = now
+                db.add(
+                    LetterboxEvent(
+                        media_type="episode",
+                        episode_id=episode.id,
+                        action="error",
+                        source="detect",
+                        detail=json.dumps({"error": "no_active_media_file"}),
+                    )
+                )
+                await _emit_child_progress(
+                    db,
+                    parent_job_id,
+                    {
+                        "episode_id": episode.id,
+                        "title": episode.title,
+                        "stage": "finished",
+                        "progress": 100,
+                        "status": "ineligible",
+                        "error": "no_active_media_file",
+                    },
+                )
+                touched_states.append(state)
+                continue
+
+            if not force and episode_state_has_detector_truth(state):
+                continue
+
+            category, _prefilter = prefilter_category_episode(episode)
+            if not force and category not in {"candidate", "unknown_resolution"}:
+                continue
+
+            pending_items.append(
+                EpisodeBatchItem(
+                    episode_id=episode.id,
+                    series_id=episode.series_id,
+                    season_number=episode.season_number,
+                    episode_number=episode.episode_number,
+                    media_file_id=media_file_id,
+                    title=episode.title,
+                    episode_file_path=episode.episode_file_path,
+                    video_width=episode.video_width,
+                    video_height=episode.video_height,
+                )
+            )
+
+        async def scan_groups(groups: list[list[EpisodeBatchItem]]) -> list[LetterboxState]:
+            results: list[LetterboxState] = []
+            for group in groups:
+                group_media_file_id = group[0].media_file_id
+                if group_media_file_id is None:
+                    continue
+                results.extend(
+                    await self.detect_episode_group_and_store(
+                        db,
+                        [episodes_by_id[item.episode_id] for item in group],
+                        media_file_id=group_media_file_id,
+                        parent_job_id=parent_job_id,
+                    )
+                )
+            return results
+
+        if not pending_items:
+            await db.commit()
+            return touched_states
+
+        if exhaustive or force or not use_season_triage:
+            touched_states.extend(await scan_groups(group_episode_items_by_media_file(pending_items)))
+            return touched_states
+
+        seasons: dict[int, list[EpisodeBatchItem]] = {}
+        for item in pending_items:
+            seasons.setdefault(item.season_number, []).append(item)
+
+        if specials := seasons.pop(0, None):
+            touched_states.extend(await scan_groups(group_episode_items_by_media_file(specials)))
+
+        for season_number in sorted(seasons):
+            season_items = seasons[season_number]
+            season_groups = group_episode_items_by_media_file(season_items)
+            sample_items = select_season_sample_episodes(
+                season_items,
+                count=settings.LETTERBOX_TV_SEASON_SAMPLE_EPISODES,
+            )
+            if not sample_items:
+                touched_states.extend(await scan_groups(season_groups))
+                continue
+
+            sample_keys = {_episode_group_key(item) for item in sample_items}
+            sample_groups = [
+                group for group in season_groups if _episode_group_key(group[0]) in sample_keys
+            ]
+            remaining_groups = [
+                group for group in season_groups if _episode_group_key(group[0]) not in sample_keys
+            ]
+
+            sample_states = await scan_groups(sample_groups)
+            touched_states.extend(sample_states)
+            if any(_episode_result_has_real_bar(state) for state in sample_states):
+                touched_states.extend(await scan_groups(remaining_groups))
+                continue
+
+            remaining_episode_ids = {
+                item.episode_id for group in remaining_groups for item in group if item.episode_id is not None
+            }
+            if not remaining_episode_ids:
+                continue
+            touched_states.extend(
+                await self.mark_sampled_clear(
+                    db,
+                    [
+                        episodes_by_id[episode_id]
+                        for episode_id in sorted(remaining_episode_ids)
+                        if episode_id in episodes_by_id
+                    ],
+                    source="detect",
+                    parent_job_id=parent_job_id,
+                )
+            )
+
+        return touched_states
 
     # ------------------------------------------------------------------
     # Batch lifecycle
