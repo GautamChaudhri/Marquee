@@ -8,8 +8,10 @@ from the older roadmap are already partially implemented in code, so the phase
 labels should be read as planning buckets rather than as a strict historical
 sequence.
 
-Current product scope remains movie-only. TV support is deferred until the
-movie workflows have reached the desired level of reliability and polish.
+TV support is landing feature-by-feature: the TV library, TV poster pipeline,
+and TV taste engine have shipped (`design/plans/04`–`05`); HDR management for
+TV is planned in `design/plans/06`–`07`. Letterbox and subtitle workflows
+remain movie-only for now.
 
 ## Phase 1 - Core Infrastructure
 
@@ -115,10 +117,24 @@ Remaining:
 
 ## Deferred
 
+Needs validation:
+
+- **Dolby Vision conversion (movies)**: the Profile 5 / FEL → 8.1 remediation
+  path (`dovi_convert`) is implemented but has **not been tested on real
+  files** — it must be validated end-to-end (analysis → conversion → playback
+  check → restore path) before it can be relied on.
+
 Deferred with no active target phase:
 
-- TV versions of the poster pipeline, letterbox workflow, subtitle workflow,
-  and the broader movie-centric features
+- **Dolby Vision conversion for TV episodes** — deferred until the movie
+  conversion path above is tested and trusted (episode DoVi *analysis* ships
+  with `design/plans/06`).
+- per-episode custom-format score breakdown (planned for a future dedicated
+  page, not the HDR pages)
+- Sonarr webhook-driven poster restoration (heal scan covers it meanwhile)
+- TV cold-start onboarding (rank test)
+- TV versions of the letterbox workflow, subtitle workflow, and the remaining
+  movie-centric features
 - additional poster sources beyond TMDB in the active pipeline
 - broader artwork types such as backdrops, logos, and banners
 - deeper health probes and some storage/runtime follow-up work
