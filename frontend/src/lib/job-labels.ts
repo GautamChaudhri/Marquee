@@ -15,11 +15,13 @@ export function displayJobLabel(job: {
 	label?: string | null;
 	type: string;
 	payload?: Record<string, unknown> | null;
+	subject?: { type: string } | null;
 }): string {
 	const library = job.payload?.library;
 	if (job.type === 'taste_rebuild' && library === 'tv') return 'Taste rebuild (TV)';
 	if (job.type === 'taste_map' && library === 'tv') return 'Taste map (TV)';
 	if (job.type === 'learned_head_train' && library === 'tv') return 'Taste head train (TV)';
+	if (job.subject?.type === 'dovi_tv_batch') return 'DoVi analysis (TV)';
 	return job.label || humanizeJobType(job.type);
 }
 
