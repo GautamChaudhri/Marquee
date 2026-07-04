@@ -75,6 +75,11 @@
 		return number === 0 ? 'S00' : `S${String(number).padStart(2, '0')}`;
 	}
 
+	type PreviewPoster = {
+		url: string;
+		label: string;
+	};
+
 	function compressAssets(
 		assets: { media_type: 'series' | 'season'; number?: number }[]
 	): string[] {
@@ -94,6 +99,22 @@
 			i = j + 1;
 		}
 		return out;
+	}
+
+	function previewPosters(item: (typeof reviewQueue.items)[number]): PreviewPoster[] {
+		const previews: PreviewPoster[] = [];
+		const showUrl = item.show_run?.auto_pick_poster_url;
+		if (showUrl) {
+			previews.push({ url: showUrl, label: 'Show' });
+		}
+		for (const seasonRun of item.season_runs) {
+			if (!seasonRun.auto_pick_poster_url) continue;
+			previews.push({
+				url: seasonRun.auto_pick_poster_url,
+				label: seasonLabel(seasonRun.season_number)
+			});
+		}
+		return previews;
 	}
 
 	async function startBatch(scope: 'missing' | 'all' | 'selected', seriesIds?: number[]) {
@@ -262,12 +283,23 @@
 	<div class="review-grid">
 		{#each reviewQueue.items as item (item.series.id)}
 			<div class="review-card">
-				<PosterThumb
-					title={item.series.title}
-					year={item.series.year}
-					posterStatus={item.display_poster_url ? 'deployed' : 'missing'}
-					posterUrl={item.display_poster_url}
-				/>
+				{#if previewPosters(item).length}
+					<div class="preview-strip" aria-label={`${item.series.title} poster previews`}>
+						{#each previewPosters(item) as preview (preview.url)}
+							<div class="preview-tile" title={preview.label}>
+								<img src={preview.url} alt={`${item.series.title} ${preview.label} poster`} />
+								<span>{preview.label}</span>
+							</div>
+						{/each}
+					</div>
+				{:else}
+					<PosterThumb
+						title={item.series.title}
+						year={item.series.year}
+						posterStatus={item.display_poster_url ? 'deployed' : 'missing'}
+						posterUrl={item.display_poster_url}
+					/>
+				{/if}
 				<div class="series-meta">
 					<strong>{item.series.title}</strong>
 					<span
@@ -338,6 +370,33 @@
 		gap: 14px;
 		text-align: left;
 	}
+	.preview-strip {
+		display: flex;
+		gap: 10px;
+		overflow-x: auto;
+		padding-bottom: 4px;
+		scrollbar-width: thin;
+	}
+	.preview-tile {
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+		min-width: 96px;
+	}
+	.preview-tile img {
+		width: 96px;
+		height: 144px;
+		object-fit: cover;
+		border-radius: 10px;
+		border: 1px solid var(--line2);
+		background: var(--panel2);
+	}
+	.preview-tile span {
+		font-size: 11px;
+		color: var(--muted);
+		text-align: center;
+		white-space: nowrap;
+	}
 	.series-meta {
 		display: flex;
 		flex-direction: column;
@@ -388,5 +447,15 @@
 		border: 1px solid var(--line2);
 		background: var(--panel2);
 		color: var(--text);
+	}
+	@media (max-width: 900px) {
+		.review-card {
+			grid-template-columns: minmax(0, 1fr);
+		}
+		.review-actions {
+			display: flex;
+			flex-wrap: wrap;
+			gap: 10px;
+		}
 	}
 </style>

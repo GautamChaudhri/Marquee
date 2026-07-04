@@ -10,8 +10,10 @@ sequence.
 
 TV support is landing feature-by-feature: the TV library, TV poster pipeline,
 TV taste engine, and TV HDR management backend have shipped (`design/plans/04`–`06`);
-the HDR management frontend is planned in `design/plans/07`. Letterbox and
-subtitle workflows remain movie-only for now.
+the HDR management frontend is planned in `design/plans/07`. The audio/subtitle
+and letterbox workflows are next: landing pages + TV support (coverage rollups,
+season × episode granularity, embedded Subgen) are planned in
+`design/plans/08`–`11`.
 
 ## Phase 1 - Core Infrastructure
 
@@ -133,8 +135,12 @@ Deferred with no active target phase:
   page, not the HDR pages)
 - Sonarr webhook-driven poster restoration (heal scan covers it meanwhile)
 - TV cold-start onboarding (rank test)
-- TV versions of the letterbox workflow, subtitle workflow, and the remaining
-  movie-centric features
+- **TV letterbox re-encode execution** — schema ships TV-ready in
+  `design/plans/10`, but the episode re-encode planner/executor is deferred
+  until the movie re-encode path is validated on real files (see above)
+- a native faster-whisper generation engine inside Marquee (the
+  `SubtitleGenerator` protocol keeps this open; embedded Subgen ships first
+  via `design/plans/08`)
 - additional poster sources beyond TMDB in the active pipeline
 - broader artwork types such as backdrops, logos, and banners
 - deeper health probes and some storage/runtime follow-up work
