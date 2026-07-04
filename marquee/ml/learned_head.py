@@ -310,7 +310,8 @@ class LogisticHead:
         artifact = Path(path or pipeline_settings.LEARNED_HEAD_PATH)
         if not artifact.exists():
             raise FileNotFoundError(f"Learned head not found: {artifact}")
-        ensure_safe_artifact(artifact, "learned_head")
+        kind = "learned_head_tv" if "tv" in artifact.name else "learned_head"
+        ensure_safe_artifact(artifact, kind)
         with load_npz_safe(artifact) as data:
             stored_model = decode_unicode_scalar(data["model_name"])
             expected = expected_model_name or pipeline_settings.AI_MODEL

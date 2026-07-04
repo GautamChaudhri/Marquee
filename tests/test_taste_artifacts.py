@@ -160,6 +160,7 @@ async def test_artifact_lists_return_empty_when_registry_schema_missing(
     profiles = await client.get("/api/taste/profiles")
     assert profiles.status_code == 200
     assert profiles.json() == {
+        "library": "movies",
         "profiles": [],
         "artifact_registry": {
             "available": False,

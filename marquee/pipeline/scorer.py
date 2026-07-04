@@ -21,6 +21,7 @@ from abc import ABC, abstractmethod
 
 from marquee.core.pipeline_config import PipelineSettings, pipeline_settings
 from marquee.ml.learned_head import LogisticHead
+from marquee.ml.namespaces import TasteNamespace
 from marquee.pipeline.types import CandidateScore, FeatureVector
 
 logger = logging.getLogger(__name__)
@@ -96,16 +97,27 @@ class LearnedScorer(PosterScorer):
         return self.head.score(features.normalized)
 
 
-def select_scorer(config: PipelineSettings = pipeline_settings) -> PosterScorer:
-    """Resolve SCORER=auto|weighted|learned, logging the decision."""
+def select_scorer(
+    config: PipelineSettings = pipeline_settings,
+    namespace: TasteNamespace | None = None,
+) -> PosterScorer:
+    """Resolve SCORER=auto|weighted|learned, logging the decision.
+
+    ``namespace=None`` (movie default) lets ``LogisticHead.load()`` resolve its
+    own head path dynamically, matching pre-namespace behavior exactly; a TV
+    caller passes an explicit namespace to score against the TV head instead.
+    """
     mode = config.SCORER
+    head_path = namespace.head_path if namespace is not None else None
+    library = namespace.library if namespace is not None else "movies"
     if mode == "weighted":
-        logger.info("SCORER | weighted (forced)")
+        logger.info("SCORER | weighted (forced) for library %s", library)
         return WeightedScorer(config)
     if mode == "learned":
-        head = LogisticHead.load()  # missing/mismatched artifact raises loudly
+        head = LogisticHead.load(head_path)  # missing/mismatched artifact raises loudly
         logger.info(
-            "SCORER | learned (forced) | n_samples=%d acc=%.3f trained_at=%s",
+            "SCORER | learned (forced) for library %s | n_samples=%d acc=%.3f trained_at=%s",
+            library,
             head.n_samples,
             head.train_accuracy,
             head.trained_at,
@@ -114,15 +126,16 @@ def select_scorer(config: PipelineSettings = pipeline_settings) -> PosterScorer:
 
     # auto: learned head when a valid artifact exists, else hand weights.
     try:
-        head = LogisticHead.load()
+        head = LogisticHead.load(head_path)
     except FileNotFoundError:
-        logger.info("SCORER | weighted (auto: no learned head artifact)")
+        logger.info("SCORER | weighted (auto: no learned head artifact) for library %s", library)
         return WeightedScorer(config)
     except RuntimeError as exc:
-        logger.warning("SCORER | weighted (auto: learned head rejected: %s)", exc)
+        logger.warning("SCORER | weighted (auto: learned head rejected: %s) for library %s", exc, library)
         return WeightedScorer(config)
     logger.info(
-        "SCORER | learned (auto) | n_samples=%d acc=%.3f trained_at=%s | features=%s",
+        "SCORER | learned (auto) for library %s | n_samples=%d acc=%.3f trained_at=%s | features=%s",
+        library,
         head.n_samples,
         head.train_accuracy,
         head.trained_at,

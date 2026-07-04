@@ -22,6 +22,7 @@ from math import ceil
 from pathlib import Path
 
 from marquee.core.pipeline_config import pipeline_settings
+from marquee.ml.namespaces import TasteNamespace, get_namespace
 
 logger = logging.getLogger(__name__)
 
@@ -37,8 +38,11 @@ GATE_REASON_KNOBS: dict[str, str] = {
 }
 
 
-def labels_path() -> Path:
-    return Path(pipeline_settings.FEEDBACK_LABELS_PATH)
+def labels_path(namespace: TasteNamespace | None = None) -> Path:
+    namespace = namespace or get_namespace("movies")
+    if namespace.library == "movies":
+        return Path(pipeline_settings.FEEDBACK_LABELS_PATH)
+    return namespace.feedback_dir / "labels.jsonl"
 
 
 def gate_snapshot() -> dict[str, object]:
@@ -48,11 +52,12 @@ def gate_snapshot() -> dict[str, object]:
     }
 
 
-def append_labels(records: list[dict]) -> None:
+def append_labels(records: list[dict], namespace: TasteNamespace | None = None) -> None:
     """Atomically append label rows (single write under O_APPEND)."""
     if not records:
         return
-    path = labels_path()
+    ns = namespace or get_namespace("movies")
+    path = labels_path(ns)
     path.parent.mkdir(parents=True, exist_ok=True)
     blob = "".join(json.dumps(record, sort_keys=True) + "\n" for record in records)
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
@@ -62,9 +67,10 @@ def append_labels(records: list[dict]) -> None:
         os.close(fd)
 
 
-def read_all() -> list[dict]:
+def read_all(namespace: TasteNamespace | None = None) -> list[dict]:
     """Parse every label row (v1 + v2), skipping malformed lines."""
-    path = labels_path()
+    ns = namespace or get_namespace("movies")
+    path = labels_path(ns)
     if not path.exists():
         return []
     rows: list[dict] = []
@@ -79,9 +85,10 @@ def read_all() -> list[dict]:
     return rows
 
 
-def remove_event(event_id: str) -> list[dict]:
+def remove_event(event_id: str, namespace: TasteNamespace | None = None) -> list[dict]:
     """Remove all rows for an event_id; return the removed rows (for undo)."""
-    path = labels_path()
+    ns = namespace or get_namespace("movies")
+    path = labels_path(ns)
     if not path.exists():
         return []
     kept: list[str] = []
@@ -132,7 +139,7 @@ def positive_exemplar_count(n_orderable: int) -> int:
     return max(1, min(3, ceil(0.2 * n_orderable)))
 
 
-def summary() -> dict:
+def summary(namespace: TasteNamespace | None = None) -> dict:
     """Label-derived stats (movie/genre augmentation happens in the route).
 
     Counts label-equivalent signals: a v1/v2 row is one label; a v4 ranking
@@ -142,7 +149,8 @@ def summary() -> dict:
     not a stated preference, and isn't counted). Pre-cutover v3 ranking rows
     are ignored — see design/30 and the v4 cutover.
     """
-    rows = read_all()
+    ns = namespace or get_namespace("movies")
+    rows = read_all(ns)
     movies = {_movie_key(row) for row in rows if _movie_key(row) is not None}
     positives = 0
     negatives = 0
@@ -170,13 +178,14 @@ def summary() -> dict:
     }
 
 
-def gate_override_alerts() -> list[dict]:
+def gate_override_alerts(namespace: TasteNamespace | None = None) -> list[dict]:
     """Per-gate override counts, filtered to labels whose snapshot still
     matches the current knob value (decision 3 — changing a threshold zeroes
     its counter automatically)."""
     from marquee.api.explanations import REJECTION_SUGGESTIONS  # noqa: PLC0415
 
-    rows = read_all()
+    ns = namespace or get_namespace("movies")
+    rows = read_all(ns)
     current = {knob: getattr(pipeline_settings, knob) for knob in set(GATE_REASON_KNOBS.values())}
 
     def _tally(reason_raw: str | None, snapshot: dict) -> None:

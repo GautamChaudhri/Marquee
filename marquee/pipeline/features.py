@@ -35,6 +35,7 @@ from marquee.ml.colorfulness import title_colorfulness
 from marquee.ml.dino import DinoImageEncoder, dino_active, preprocess_dino
 from marquee.ml.embedding import CLIPImageEncoder
 from marquee.ml.face import FaceDetector
+from marquee.ml.namespaces import TasteNamespace
 from marquee.ml.normalize import normalize_features, quality_artifact_raw
 from marquee.ml.person import PersonDetector
 from marquee.ml.preprocessing import preprocess_image
@@ -121,6 +122,21 @@ class FeatureExtractor:
         self._quality_on = False
         self._calibration = None
         self._dino_knn_range: tuple[float, float] | None = None
+
+    def set_taste_namespace(self, ns: TasteNamespace) -> None:
+        """Swap the taste store and calibration arrays without reloading ONNX sessions."""
+        self.taste_store = NumpyTasteStore(ns.profile_path, expected_model_name=self.config.AI_MODEL)
+
+        calibration = getattr(self.taste_store, "calibration", None)
+        if calibration is not None:
+            self._calibration = calibration
+        else:
+            self._calibration = None
+
+        if getattr(self.taste_store, "has_dino", False) and self.dino_encoder.available and self.taste_store.dino_model_name == self.dino_encoder.model_name:
+            self._dino_knn_range = self.taste_store.dino_knn_norm_range()
+        else:
+            self._dino_knn_range = None
 
     # ------------------------------------------------------------------
     # Preflight — resolve and LOG every optional-feature decision

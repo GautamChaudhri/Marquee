@@ -133,7 +133,8 @@ class NumpyTasteStore(TasteStore):
                 f"Taste profile not found: {self.profile_path}. "
                 "Rebuild it with `python -m marquee.ml.taste_trainer`."
             )
-        ensure_safe_artifact(self.profile_path, "taste_profile")
+        _kind = "taste_profile_tv" if "taste_profile_tv" in self.profile_path.name else "taste_profile"
+        ensure_safe_artifact(self.profile_path, _kind)
         with load_npz_safe(self.profile_path) as data:
             stored_model = decode_unicode_scalar(data["model_name"])
             if stored_model != self.expected_model_name:
@@ -144,13 +145,14 @@ class NumpyTasteStore(TasteStore):
             self._embeddings = np.asarray(data["embeddings"], dtype=np.float32)
             self._centroid = np.asarray(data["centroid_emb"], dtype=np.float32)
             names = decode_unicode_list(data["poster_names"])
+            kinds = decode_unicode_list(data["asset_kinds"]) if "asset_kinds" in data else ["movie"] * len(names)
             if self._embeddings.ndim != 2 or self._embeddings.shape[1] != 512:
                 raise RuntimeError(f"Invalid taste embedding shape: {self._embeddings.shape}")
             if self._centroid.shape != (512,):
                 raise RuntimeError(f"Invalid taste centroid shape: {self._centroid.shape}")
             if len(names) != self._embeddings.shape[0]:
                 raise RuntimeError("Taste profile poster_names length does not match embeddings")
-            self._metadata = [{"filename": str(name)} for name in names]
+            self._metadata = [{"filename": str(name), "asset_kind": str(kind)} for name, kind in zip(names, kinds, strict=True)]
 
             if "neg_embeddings" in data:
                 negatives = np.asarray(data["neg_embeddings"], dtype=np.float32)
@@ -223,6 +225,11 @@ class NumpyTasteStore(TasteStore):
     def calibration(self) -> TasteCalibration | None:
         self._ensure_loaded()
         return self._calibration
+
+    @property
+    def metadata(self) -> list[dict | None]:
+        self._ensure_loaded()
+        return list(self._metadata)
 
     def dino_knn_norm_range(self) -> tuple[float, float] | None:
         """p5/p95 of the exemplars' own dino k-NN sims — the empirically

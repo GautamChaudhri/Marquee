@@ -41,6 +41,7 @@ from marquee.ml.artifact_codec import (
     unicode_scalar,
 )
 from marquee.ml.calibration import CALIB_NAMES_KEY, CALIB_VALUES_KEY
+from marquee.ml.namespaces import TasteNamespace, get_namespace
 from marquee.ml.taste_store import weighted_topk_mean
 
 logger = logging.getLogger(__name__)
@@ -51,16 +52,23 @@ _YEAR_SUFFIX = re.compile(r"\s*\(\d{4}\)\s*$")
 _DEDUP_SUFFIX = re.compile(r"\s*-\s*\d+$")
 
 
-def _map_path() -> Path:
-    return settings.poster_cache_path.parent / f"taste_map.{pipeline_settings.AI_MODEL}.npz"
+def _map_path(ns: TasteNamespace | None = None) -> Path:
+    ns = ns or get_namespace("movies")
+    if ns.library == "movies":
+        return settings.poster_cache_path.parent / f"taste_map.{pipeline_settings.AI_MODEL}.npz"
+    return settings.poster_cache_path.parent / f"taste_map.tv.{pipeline_settings.AI_MODEL}.npz"
 
 
-def _history_dir() -> Path:
-    return settings.poster_cache_path.parent / "taste_map_history"
+def _history_dir(ns: TasteNamespace | None = None) -> Path:
+    ns = ns or get_namespace("movies")
+    return ns.map_history_dir
 
 
-def _thumbs_dir() -> Path:
-    return settings.poster_cache_path.parent / "taste_thumbs"
+def _thumbs_dir(ns: TasteNamespace | None = None) -> Path:
+    ns = ns or get_namespace("movies")
+    if ns.library == "movies":
+        return settings.poster_cache_path.parent / "taste_thumbs"
+    return settings.poster_cache_path.parent / "taste_thumbs_tv"
 
 
 def _parse_name(name: str) -> tuple[str, int | None]:
@@ -225,17 +233,20 @@ def _self_knn(embeddings: np.ndarray, k: int) -> np.ndarray:
 # ---------------------------------------------------------------------------
 
 
-def _load_profile_arrays() -> dict:
-    path = Path(pipeline_settings.TASTE_PROFILE_PATH)
+def _load_profile_arrays(ns: TasteNamespace | None = None) -> dict:
+    ns = ns or get_namespace("movies")
+    path = ns.profile_path
     if not path.exists():
         raise FileNotFoundError(f"Taste profile not found: {path}")
-    ensure_safe_artifact(path, "taste_profile")
+    ensure_safe_artifact(path, ns.artifact_kind_profile)
     with load_npz_safe(path) as data:
         result = {
             "embeddings": np.asarray(data["embeddings"], dtype=np.float32),
             "poster_names": decode_unicode_list(data["poster_names"]),
             "mtime": path.stat().st_mtime,
         }
+        if "asset_kinds" in data.files:
+            result["asset_kinds"] = decode_unicode_list(data["asset_kinds"])
         if GENRES_JSON_KEY in data.files:
             result["genres"] = decode_json_string_array(data[GENRES_JSON_KEY])
         for key in ("years", "tmdb_ids", "movie_ids"):
@@ -260,13 +271,18 @@ def _load_profile_arrays() -> dict:
 # ---------------------------------------------------------------------------
 
 
-def build_map(progress_callback=None, cancel_event: threading.Event | None = None) -> dict:
+def build_map(
+    progress_callback=None,
+    cancel_event: threading.Event | None = None,
+    namespace: TasteNamespace | None = None,
+) -> dict:
     """Project the profile, cluster, generate thumbnails, save atomically.
 
     ``progress_callback`` (thread-safe ``callback(dict)``, e.g. a
     ``JobProgressBridge.callback``) receives a payload at each phase boundary
     so the job's progress bar narrates the build instead of spinning silently.
     """
+    ns = namespace or get_namespace("movies")
 
     def _phase(stage: str, message: str) -> None:
         raise_if_cancelled(cancel_event, "taste map build cancelled")
@@ -274,8 +290,23 @@ def build_map(progress_callback=None, cancel_event: threading.Event | None = Non
             progress_callback({"stage": stage, "state": "start", "message": message})
 
     _phase("load", "Loading taste profile…")
-    profile = _load_profile_arrays()
+    profile = _load_profile_arrays(ns)
     embeddings = profile["embeddings"]
+    poster_names = profile["poster_names"]
+
+    # D4: for tv, filter exemplars to asset_kind == "show"
+    if ns.library == "tv" and "asset_kinds" in profile:
+        keep = [i for i, kind in enumerate(profile["asset_kinds"]) if kind == "show"]
+        if keep:
+            embeddings = embeddings[keep]
+            poster_names = [poster_names[i] for i in keep]
+            profile["poster_names"] = poster_names
+            if "genres" in profile:
+                profile["genres"] = [profile["genres"][i] for i in keep]
+            for key in ("years", "tmdb_ids", "movie_ids", "movie_titles", "aesthetic", "global_colorfulness"):
+                if key in profile:
+                    profile[key] = [profile[key][i] for i in keep]
+
     # L2-normalize for cosine-correct projection + barycentric placement.
     embeddings = embeddings / np.maximum(np.linalg.norm(embeddings, axis=1, keepdims=True), 1e-10)
     n = embeddings.shape[0]
@@ -297,9 +328,9 @@ def build_map(progress_callback=None, cancel_event: threading.Event | None = Non
     noise_count = int(sum(1 for label in labels if int(label) == -1)) if labels is not None else 0
 
     # Archive the previous map before overwriting.
-    map_path = _map_path()
+    map_path = _map_path(ns)
     if map_path.exists():
-        history = _history_dir()
+        history = _history_dir(ns)
         history.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
         (history / f"{stamp}.npz").write_bytes(map_path.read_bytes())
@@ -343,13 +374,14 @@ def build_map(progress_callback=None, cancel_event: threading.Event | None = Non
     raise_if_cancelled(cancel_event, "taste map build cancelled")
 
     _phase("thumbnails", "Generating exemplar thumbnails…")
-    _generate_thumbnails(profile["poster_names"])
+    _generate_thumbnails(profile["poster_names"], ns)
     logger.info("TASTE MAP | built %d points (%s), %d clusters", n, method, len(names_map))
-    return load_map()
+    return load_map(namespace=ns)
 
 
-def _is_stale() -> bool:
-    map_path = _map_path()
+def _is_stale(ns: TasteNamespace | None = None) -> bool:
+    ns = ns or get_namespace("movies")
+    map_path = _map_path(ns)
     if not map_path.exists():
         return True
     try:
@@ -365,17 +397,19 @@ def _is_stale() -> bool:
                     return True
     except Exception:
         return True
-    profile_path = Path(pipeline_settings.TASTE_PROFILE_PATH)
+    profile_path = ns.profile_path
     return profile_path.exists() and profile_path.stat().st_mtime > map_mtime + 1e-6
 
 
-def load_map(recompute: bool = False) -> dict:
+def load_map(recompute: bool = False, namespace: TasteNamespace | None = None) -> dict:
     """Return the cached map as a JSON-ready dict, rebuilding if stale."""
-    if recompute or _is_stale():
-        return build_map()
+    ns = namespace or get_namespace("movies")
+    if recompute or _is_stale(ns):
+        return build_map(namespace=ns)
 
-    ensure_safe_artifact(_map_path(), "taste_map")
-    with load_npz_safe(_map_path()) as data:
+    map_path = _map_path(ns)
+    ensure_safe_artifact(map_path, "taste_map")
+    with load_npz_safe(map_path) as data:
         names = decode_unicode_list(data["poster_names"])
         coords_3d = data["coords_3d"]
         coords_2d = data["coords_2d"]
@@ -492,20 +526,35 @@ def load_map(recompute: bool = False) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def project(embeddings: np.ndarray, k: int | None = None) -> list[dict]:
+def project(
+    embeddings: np.ndarray,
+    k: int | None = None,
+    namespace: TasteNamespace | None = None,
+) -> list[dict]:
     """k-NN barycentric placement of candidate embeddings into the map space."""
     k = k or pipeline_settings.K_NEIGHBORS
-    if _is_stale():
-        build_map()
+    ns = namespace or get_namespace("movies")
+    if _is_stale(ns):
+        build_map(namespace=ns)
 
-    profile = _load_profile_arrays()
+    profile = _load_profile_arrays(ns)
     profile_emb = profile["embeddings"]
+    if ns.library == "tv" and "asset_kinds" in profile:
+        keep = [i for i, kind in enumerate(profile["asset_kinds"]) if kind == "show"]
+        if keep:
+            profile_emb = profile_emb[keep]
+            names = [profile["poster_names"][i] for i in keep]
+        else:
+            names = profile["poster_names"]
+    else:
+        names = profile["poster_names"]
+
     profile_emb = profile_emb / np.maximum(
         np.linalg.norm(profile_emb, axis=1, keepdims=True), 1e-10
     )
-    names = profile["poster_names"]
-    ensure_safe_artifact(_map_path(), "taste_map")
-    with load_npz_safe(_map_path()) as data:
+    map_path = _map_path(ns)
+    ensure_safe_artifact(map_path, "taste_map")
+    with load_npz_safe(map_path) as data:
         coords = np.asarray(data["coords_3d"], dtype=np.float64)
 
     temp = pipeline_settings.KNN_SOFTMAX_TEMP
@@ -532,10 +581,15 @@ def project(embeddings: np.ndarray, k: int | None = None) -> list[dict]:
     return results
 
 
-def neighbors_of(poster_name: str, k: int | None = None) -> list[dict] | None:
+def neighbors_of(
+    poster_name: str,
+    k: int | None = None,
+    namespace: TasteNamespace | None = None,
+) -> list[dict] | None:
     """The k nearest exemplars to a given exemplar (click-to-explore)."""
     k = k or pipeline_settings.K_NEIGHBORS
-    profile = _load_profile_arrays()
+    ns = namespace or get_namespace("movies")
+    profile = _load_profile_arrays(ns)
     names = profile["poster_names"]
     if poster_name not in names:
         return None
@@ -554,18 +608,23 @@ def neighbors_of(poster_name: str, k: int | None = None) -> list[dict] | None:
 # ---------------------------------------------------------------------------
 
 
-def _generate_thumbnails(poster_names: list[str]) -> None:
+def _generate_thumbnails(poster_names: list[str], ns: TasteNamespace | None = None) -> None:
+    ns = ns or get_namespace("movies")
     from PIL import Image  # noqa: PLC0415
 
-    training_dir = Path(pipeline_settings.TRAINING_DATA_DIR)
-    thumbs = _thumbs_dir()
+    thumbs = _thumbs_dir(ns)
     thumbs.mkdir(parents=True, exist_ok=True)
     for name in poster_names:
         thumb = thumbs / f"{name}.webp"
         if thumb.exists():
             continue
-        source = training_dir / name
-        if not source.is_file():
+        source = None
+        for training_dir in ns.training_dirs.values():
+            candidate = training_dir / name
+            if candidate.is_file():
+                source = candidate
+                break
+        if source is None:
             continue
         try:
             with Image.open(source) as image:
@@ -577,11 +636,16 @@ def _generate_thumbnails(poster_names: list[str]) -> None:
             logger.warning("thumb failed for %s: %s", name, exc)
 
 
-def thumbnail_path(poster_name: str) -> Path | None:
-    thumb = _thumbs_dir() / f"{poster_name}.webp"
+def thumbnail_path(poster_name: str, namespace: TasteNamespace | None = None) -> Path | None:
+    ns = namespace or get_namespace("movies")
+    thumb = _thumbs_dir(ns) / f"{poster_name}.webp"
     return thumb if thumb.is_file() else None
 
 
-def exemplar_source(poster_name: str) -> Path | None:
-    source = Path(pipeline_settings.TRAINING_DATA_DIR) / poster_name
-    return source if source.is_file() else None
+def exemplar_source(poster_name: str, namespace: TasteNamespace | None = None) -> Path | None:
+    ns = namespace or get_namespace("movies")
+    for training_dir in ns.training_dirs.values():
+        source = training_dir / poster_name
+        if source.is_file():
+            return source
+    return None

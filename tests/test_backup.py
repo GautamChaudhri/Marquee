@@ -107,7 +107,7 @@ def test_pipeline_settings_default_runtime_state_paths_are_under_data():
     cfg = PipelineSettings(AI_MODEL="siglip-so400m")
 
     assert str(cfg.FEEDBACK_LABELS_PATH).endswith("data/feedback/labels.jsonl")
-    assert str(cfg.TRAINING_DATA_DIR).endswith("data/training/positive")
+    assert str(cfg.TRAINING_DATA_DIR).endswith("data/taste_seeding/movies")
     assert str(cfg.NEGATIVE_DATA_DIR).endswith("data/training/negative")
     assert str(cfg.TASTE_PROFILE_PATH).endswith("data/ml/taste_profile.siglip-so400m.npz")
     assert str(cfg.LEARNED_HEAD_PATH).endswith("data/ml/learned_head.siglip-so400m.npz")

@@ -46,6 +46,7 @@ from marquee.core.jobs.cancel_registry import JobCancelledError
 from marquee.core.poster_sources.tmdb import TMDBClient
 from marquee.core.text_profiles import OcrGateContext
 from marquee.database import _get_session_factory
+from marquee.ml.namespaces import get_namespace
 from marquee.models import Movie, PipelineRun
 from marquee.pipeline.features import FeatureExtractor
 from marquee.pipeline.runner import (
@@ -424,6 +425,7 @@ class RunManager:
         self, *, movie_title, out_dir, fetch, timings, progress, should_cancel=None, ocr_gate=None
     ):
         extractor = self._ensure_extractor()
+        extractor.set_taste_namespace(get_namespace("movies"))
         return run_sync_stages(
             movie_title=movie_title,
             out_dir=out_dir,

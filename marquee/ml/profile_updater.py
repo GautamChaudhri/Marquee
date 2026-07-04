@@ -33,6 +33,7 @@ from marquee.ml.artifact_codec import (
     save_npz_atomic,
     unicode_array,
 )
+from marquee.ml.namespaces import TasteNamespace, get_namespace
 
 logger = logging.getLogger(__name__)
 
@@ -41,8 +42,9 @@ _IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff"}
 _HASH_ARRAY_KEY = "poster_sha256s"
 
 
-def _profile_path() -> Path:
-    return Path(pipeline_settings.TASTE_PROFILE_PATH)
+def _profile_path(ns: TasteNamespace | None = None) -> Path:
+    ns = ns or get_namespace("movies")
+    return ns.profile_path
 
 
 def exemplar_filename(title: str, year: int | None, suffix: str = ".jpg") -> str:
@@ -101,17 +103,18 @@ def _existing_exemplar_name(
     return None
 
 
-def _load_profile() -> dict[str, np.ndarray]:
-    path = _profile_path()
+def _load_profile(ns: TasteNamespace | None = None) -> dict[str, np.ndarray]:
+    ns = ns or get_namespace("movies")
+    path = _profile_path(ns)
     if not path.exists():
         raise FileNotFoundError(f"Taste profile not found: {path}")
-    ensure_safe_artifact(path, "taste_profile")
+    ensure_safe_artifact(path, ns.artifact_kind_profile)
     with load_npz_safe(path) as data:
         return {key: data[key] for key in data.files}
 
 
-def _save_profile(payload: dict[str, np.ndarray]) -> None:
-    save_npz_atomic(_profile_path(), payload)
+def _save_profile(ns: TasteNamespace, payload: dict[str, np.ndarray]) -> None:
+    save_npz_atomic(_profile_path(ns), payload)
 
 
 def add_exemplar(
@@ -120,6 +123,8 @@ def add_exemplar(
     title: str,
     year: int | None,
     clip_embedding: np.ndarray,
+    namespace: TasteNamespace | None = None,
+    asset_kind: str = "movie",
 ) -> str:
     """Append a positive exemplar to the profile + training_data folder.
 
@@ -128,10 +133,13 @@ def add_exemplar(
     """
     from marquee.ml.calibration import CALIB_NAMES_KEY, CALIB_VALUES_KEY  # noqa: PLC0415
 
-    profile = _load_profile()
+    ns = namespace or get_namespace("movies")
+    profile = _load_profile(ns)
 
     # 1. Copy the image into training_data (source of truth).
-    training_dir = Path(pipeline_settings.TRAINING_DATA_DIR)
+    training_dir = ns.training_dirs.get(asset_kind)
+    if not training_dir:
+        training_dir = next(iter(ns.training_dirs.values()))
     training_dir.mkdir(parents=True, exist_ok=True)
     source_hash = _file_sha256(source_image)
     if existing := _existing_exemplar_name(profile, training_dir, source_hash):
@@ -150,6 +158,14 @@ def add_exemplar(
     profile["embeddings"] = embeddings
     names = decode_unicode_list(profile["poster_names"])
     profile["poster_names"] = unicode_array([*names, target.name])
+
+    # 2b. Append the asset kind
+    if "asset_kinds" in profile:
+        kinds = decode_unicode_list(profile["asset_kinds"])
+    else:
+        kinds = ["movie"] * len(names)
+    profile["asset_kinds"] = unicode_array([*kinds, asset_kind])
+
     existing_hashes = (
         decode_unicode_list(profile[_HASH_ARRAY_KEY])
         if _HASH_ARRAY_KEY in profile
@@ -176,7 +192,7 @@ def add_exemplar(
     if "dino_embeddings" in profile:
         _append_dino(profile, target)
 
-    _save_profile(profile)
+    _save_profile(ns, profile)
     logger.info(
         "PROFILE | added exemplar %s (now %d exemplars)",
         target.name,
@@ -185,9 +201,10 @@ def add_exemplar(
     return target.name
 
 
-def remove_exemplar(poster_name: str) -> bool:
+def remove_exemplar(poster_name: str, namespace: TasteNamespace | None = None) -> bool:
     """Remove an exemplar by training_data filename (undo). Returns True if found."""
-    profile = _load_profile()
+    ns = namespace or get_namespace("movies")
+    profile = _load_profile(ns)
     names = decode_unicode_list(profile["poster_names"])
     if poster_name not in names:
         return False
@@ -196,6 +213,9 @@ def remove_exemplar(poster_name: str) -> bool:
     keep = [i for i in range(len(names)) if i != index]
     profile["embeddings"] = profile["embeddings"][keep]
     profile["poster_names"] = unicode_array([names[i] for i in keep])
+    if "asset_kinds" in profile:
+        kinds = decode_unicode_list(profile["asset_kinds"])
+        profile["asset_kinds"] = unicode_array([kinds[i] for i in keep])
     if _HASH_ARRAY_KEY in profile:
         hashes = decode_unicode_list(profile[_HASH_ARRAY_KEY])
         profile[_HASH_ARRAY_KEY] = unicode_array([hashes[i] for i in keep])
@@ -210,12 +230,13 @@ def remove_exemplar(poster_name: str) -> bool:
         profile["dino_embeddings"] = profile["dino_embeddings"][keep]
         _recompute_dino_self_knn(profile)
 
-    _save_profile(profile)
+    _save_profile(ns, profile)
 
-    # Remove the training_data copy.
-    target = Path(pipeline_settings.TRAINING_DATA_DIR) / poster_name
-    if target.exists():
-        target.unlink()
+    # Remove the training_data copy from whichever dir contains it.
+    for training_dir in ns.training_dirs.values():
+        target = training_dir / poster_name
+        if target.exists():
+            target.unlink()
     logger.info("PROFILE | removed exemplar %s", poster_name)
     return True
 
