@@ -33,6 +33,7 @@ from marquee.media import letterbox_detect as ld
 from marquee.media.letterbox_manager import JobState, letterbox_manager
 from marquee.media.probe import prefilter_bucket
 from marquee.models import (
+    Episode,
     Job,
     LetterboxEvent,
     LetterboxReencodeArtifact,
@@ -41,6 +42,8 @@ from marquee.models import (
     MediaJob,
     MediaJobEvent,
     Movie,
+    Season,
+    Series,
 )
 
 
@@ -1081,6 +1084,64 @@ async def test_status_snapshot_preserves_movie_payload_shape(client, db, monkeyp
         "last_scan": "2024-01-02T03:04:05+00:00",
         "batch_active": "lb-batch",
     }
+
+
+@pytest.mark.asyncio
+async def test_movie_endpoints_ignore_episode_letterbox_rows(client, db, monkeypatch):
+    monkeypatch.setattr(binaries, "reset_cache", lambda: None)
+    monkeypatch.setattr(
+        binaries,
+        "availability",
+        lambda: {"ffmpeg": True, "ffprobe": True, "mkvmerge": False, "mkvpropedit": False},
+    )
+
+    movie = Movie(
+        title="Movie Only",
+        year=2000,
+        folder_path="/m/movie-only",
+        movie_file_path="MovieOnly.mkv",
+        tmdb_id=250,
+    )
+    series = Series(title="Show", year=2020, series_path="/tv/show", tvdb_id=1250)
+    db.add_all([movie, series])
+    await db.commit()
+    await db.refresh(movie)
+    await db.refresh(series)
+
+    season = Season(series_id=series.id, season_number=1, episode_file_count=1)
+    db.add(season)
+    await db.commit()
+    episode = Episode(series_id=series.id, season_number=1, episode_number=1)
+    db.add(episode)
+    await db.commit()
+    await db.refresh(episode)
+
+    db.add_all(
+        [
+            LetterboxState(
+                media_type="movie",
+                movie_id=movie.id,
+                status="candidate",
+                confidence="high",
+            ),
+            LetterboxState(
+                media_type="episode",
+                episode_id=episode.id,
+                status="tagged",
+                confidence="low",
+            ),
+        ]
+    )
+    await db.commit()
+
+    status_resp = await client.get("/api/letterbox/status")
+    candidates_resp = await client.get("/api/letterbox/candidates")
+
+    assert status_resp.status_code == 200
+    assert status_resp.json()["counts"] == {"candidate": 1}
+    assert candidates_resp.status_code == 200
+    assert candidates_resp.json()["total"] == 1
+    assert [item["movie_id"] for item in candidates_resp.json()["items"]] == [movie.id]
 
 
 @pytest.mark.asyncio

@@ -182,7 +182,8 @@ async def list_movies(
     filters subtitle gaps within the returned page.
     """
     base = select(Movie, LetterboxState).outerjoin(
-        LetterboxState, LetterboxState.movie_id == Movie.id
+        LetterboxState,
+        (LetterboxState.movie_id == Movie.id) & (LetterboxState.media_type == "movie"),
     )
 
     conditions = []
@@ -281,7 +282,10 @@ async def get_movie(movie_id: int, db: Annotated[AsyncSession, Depends(get_db)])
     row = (
         await db.execute(
             select(Movie, LetterboxState)
-            .outerjoin(LetterboxState, LetterboxState.movie_id == Movie.id)
+            .outerjoin(
+                LetterboxState,
+                (LetterboxState.movie_id == Movie.id) & (LetterboxState.media_type == "movie"),
+            )
             .where(Movie.id == movie_id)
         )
     ).first()

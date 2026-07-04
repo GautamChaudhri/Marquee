@@ -730,7 +730,10 @@ async def review_queue(
             & (latest.c.started_at == PipelineRun.started_at),
         )
         .join(Movie, Movie.id == PipelineRun.movie_id)
-        .outerjoin(LetterboxState, LetterboxState.movie_id == Movie.id)
+        .outerjoin(
+            LetterboxState,
+            (LetterboxState.movie_id == Movie.id) & (LetterboxState.media_type == "movie"),
+        )
         .where(
             PipelineRun.feedback_event_id.is_(None),
             PipelineRun.status.in_(_REVIEW_QUEUE_STATUSES),

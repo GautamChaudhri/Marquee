@@ -1416,7 +1416,12 @@ async def replace_original(db: AsyncSession, artifact: LetterboxReencodeArtifact
     if media_row is not None:
         media_row.size_bytes = original.stat().st_size
     state = (
-        await db.execute(select(LetterboxState).where(LetterboxState.movie_id == artifact.movie_id))
+        await db.execute(
+            select(LetterboxState).where(
+                LetterboxState.media_type == "movie",
+                LetterboxState.movie_id == artifact.movie_id,
+            )
+        )
     ).scalar_one_or_none()
     if state is not None:
         state.status = "reencoded"
@@ -1456,7 +1461,12 @@ async def restore_original(
     if media_row is not None:
         media_row.size_bytes = original.stat().st_size
     state = (
-        await db.execute(select(LetterboxState).where(LetterboxState.movie_id == artifact.movie_id))
+        await db.execute(
+            select(LetterboxState).where(
+                LetterboxState.media_type == "movie",
+                LetterboxState.movie_id == artifact.movie_id,
+            )
+        )
     ).scalar_one_or_none()
     if state is not None:
         state.status = "candidate"

@@ -41,7 +41,10 @@ async def letterbox_heal_scan() -> dict:
             await db.execute(
                 select(LetterboxState, Movie)
                 .join(Movie, Movie.id == LetterboxState.movie_id)
-                .where(LetterboxState.status == "tagged")
+                .where(
+                    LetterboxState.media_type == "movie",
+                    LetterboxState.status == "tagged",
+                )
             )
         ).all()
         for state, movie in rows:

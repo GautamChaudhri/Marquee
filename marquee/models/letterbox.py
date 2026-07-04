@@ -1,14 +1,13 @@
-"""Letterbox models — per-movie crop-detection state + an audit trail.
+"""Letterbox models — crop-detection state + an audit trail.
 
-``LetterboxState`` is one row per movie: the latest detection verdict, the
-recommended crop, what's currently applied, and the workflow status that drives
-the three UI tabs (Candidates / Tagged / Skipped). ``LetterboxEvent`` is the
-append-only history (detect / apply / remove / ignore / heal / error), mirroring
+``LetterboxState`` stores the latest detector + workflow truth for one movie or
+episode. Status vocabulary: ``prefilter_candidate`` | ``prefilter_unknown`` |
+``prefilter_skipped`` | ``candidate`` | ``sampled_clear`` |
+``not_letterboxed`` | ``variable_unsafe`` | ``tagged`` | ``reencoded`` |
+``skipped`` | ``ineligible`` | ``errored``. ``LetterboxEvent`` is the
+append-only audit history (detect / apply / remove / ignore / confirm /
+mark_not_letterboxed / heal_reapply / reset / error), mirroring
 ``ArtworkEvent`` for posters.
-
-Phase 1 is movies-only (matching ``PosterService``); the engine itself is
-media-type agnostic, so TV support later adds nullable ``series_id`` /
-``episode_id`` columns without reshaping this table.
 """
 
 from __future__ import annotations
@@ -17,6 +16,7 @@ from datetime import datetime
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     DateTime,
     Float,
     ForeignKey,
@@ -33,22 +33,42 @@ from marquee.models.base import TimestampMixin
 
 
 class LetterboxState(Base, TimestampMixin):
-    """Latest letterbox detection/application state for one movie."""
+    """Latest letterbox detection/application state for one movie or episode."""
 
     __tablename__ = "letterbox_state"
+    __table_args__ = (
+        CheckConstraint(
+            "(media_type = 'movie' AND movie_id IS NOT NULL AND episode_id IS NULL) OR "
+            "(media_type = 'episode' AND episode_id IS NOT NULL AND movie_id IS NULL)",
+            name="ck_letterbox_state_subject",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
 
-    movie_id: Mapped[int] = mapped_column(
+    movie_id: Mapped[int | None] = mapped_column(
         ForeignKey("movies.id", ondelete="CASCADE"),
         unique=True,
         index=True,
+        nullable=True,
+    )
+    media_type: Mapped[str] = mapped_column(
+        String(10),
         nullable=False,
+        default="movie",
+        server_default=text("'movie'"),
+        index=True,
+    )
+    episode_id: Mapped[int | None] = mapped_column(
+        ForeignKey("episodes.id", ondelete="CASCADE"),
+        unique=True,
+        index=True,
+        nullable=True,
     )
 
     # prefilter_candidate | prefilter_unknown | prefilter_skipped
-    #   | candidate | not_letterboxed | variable_unsafe | tagged | skipped
-    #   | ineligible | errored
+    #   | candidate | sampled_clear | not_letterboxed | variable_unsafe
+    #   | tagged | reencoded | skipped | ineligible | errored
     status: Mapped[str] = mapped_column(
         String(24), nullable=False, server_default=text("'prefilter_candidate'")
     )
@@ -100,6 +120,11 @@ class LetterboxState(Base, TimestampMixin):
         DateTime(timezone=True), nullable=True
     )
     last_applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    resolved_by: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    original_crop_top: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    original_crop_bottom: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    original_aspect_label: Mapped[str | None] = mapped_column(String(12), nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # True when the detector found two or more well-supported, mutually
@@ -113,22 +138,42 @@ class LetterboxState(Base, TimestampMixin):
 
     def __repr__(self) -> str:
         return (
-            f"<LetterboxState(movie_id={self.movie_id}, status={self.status!r}, "
+            f"<LetterboxState(media_type={self.media_type!r}, movie_id={self.movie_id}, "
+            f"episode_id={self.episode_id}, status={self.status!r}, "
             f"confidence={self.confidence!r})>"
         )
 
 
 class LetterboxEvent(Base):
-    """One letterbox-lifecycle event for a movie (append-only audit trail)."""
+    """One letterbox-lifecycle event for a movie or episode subject."""
 
     __tablename__ = "letterbox_events"
+    __table_args__ = (
+        CheckConstraint(
+            "(media_type = 'movie' AND movie_id IS NOT NULL AND episode_id IS NULL) OR "
+            "(media_type = 'episode' AND episode_id IS NOT NULL AND movie_id IS NULL)",
+            name="ck_letterbox_event_subject",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
 
-    movie_id: Mapped[int] = mapped_column(
+    movie_id: Mapped[int | None] = mapped_column(
         ForeignKey("movies.id", ondelete="CASCADE"),
         index=True,
+        nullable=True,
+    )
+    media_type: Mapped[str] = mapped_column(
+        String(10),
         nullable=False,
+        default="movie",
+        server_default=text("'movie'"),
+        index=True,
+    )
+    episode_id: Mapped[int | None] = mapped_column(
+        ForeignKey("episodes.id", ondelete="CASCADE"),
+        index=True,
+        nullable=True,
     )
 
     # detect | apply | remove | ignore | confirm | heal_reapply | error
@@ -144,4 +189,7 @@ class LetterboxEvent(Base):
     )
 
     def __repr__(self) -> str:
-        return f"<LetterboxEvent(id={self.id}, movie_id={self.movie_id}, action={self.action!r})>"
+        return (
+            f"<LetterboxEvent(id={self.id}, media_type={self.media_type!r}, "
+            f"movie_id={self.movie_id}, episode_id={self.episode_id}, action={self.action!r})>"
+        )

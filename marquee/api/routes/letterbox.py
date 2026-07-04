@@ -357,7 +357,12 @@ async def _load_movie(db: AsyncSession, movie_id: int) -> Movie:
 
 async def _load_state(db: AsyncSession, movie_id: int) -> LetterboxState:
     state = (
-        await db.execute(select(LetterboxState).where(LetterboxState.movie_id == movie_id))
+        await db.execute(
+            select(LetterboxState).where(
+                LetterboxState.media_type == "movie",
+                LetterboxState.movie_id == movie_id,
+            )
+        )
     ).scalar_one_or_none()
     if state is None:
         raise HTTPException(
@@ -377,12 +382,18 @@ async def letterbox_status(db: Annotated[AsyncSession, Depends(get_db)]):
     child_job = aliased(Job)
     rows = (
         await db.execute(
-            select(LetterboxState.status, func.count()).group_by(LetterboxState.status)
+            select(LetterboxState.status, func.count())
+            .where(LetterboxState.media_type == "movie")
+            .group_by(LetterboxState.status)
         )
     ).all()
     counts = dict(rows)
     last_scan = (
-        await db.execute(select(func.max(LetterboxState.last_detected_at)))
+        await db.execute(
+            select(func.max(LetterboxState.last_detected_at)).where(
+                LetterboxState.media_type == "movie"
+            )
+        )
     ).scalar_one_or_none()
     full_frame = (
         await db.execute(
@@ -390,6 +401,7 @@ async def letterbox_status(db: Annotated[AsyncSession, Depends(get_db)]):
             .select_from(LetterboxState)
             .join(Movie, Movie.id == LetterboxState.movie_id)
             .where(
+                LetterboxState.media_type == "movie",
                 LetterboxState.status == "prefilter_skipped",
                 Movie.movie_file_path.is_not(None),
                 LetterboxState.prefilter_reason != "missing_movie_file_path",
@@ -445,7 +457,10 @@ async def list_candidates(
 ):
     """Paginated letterbox state, joined to movie identity. Drives all 3 tabs."""
     query = select(LetterboxState, Movie).join(Movie, Movie.id == LetterboxState.movie_id)
-    query = query.where(Movie.movie_file_path.is_not(None))
+    query = query.where(
+        LetterboxState.media_type == "movie",
+        Movie.movie_file_path.is_not(None),
+    )
     if status:
         query = query.where(LetterboxState.status.in_(status.split(",")))
     if confidence:
@@ -501,7 +516,10 @@ async def find_candidate_movies(
         rows = (
             await db.execute(
                 select(Movie, LetterboxState)
-                .outerjoin(LetterboxState, LetterboxState.movie_id == Movie.id)
+                .outerjoin(
+                    LetterboxState,
+                    (LetterboxState.movie_id == Movie.id) & (LetterboxState.media_type == "movie"),
+                )
                 .order_by(title_sort_expr(), Movie.year)
             )
         ).all()
@@ -617,7 +635,10 @@ async def _resolve_batch_movie_ids(body: BatchDetectRequest, db: AsyncSession) -
         rows = (
             await db.execute(
                 select(Movie, LetterboxState)
-                .outerjoin(LetterboxState, LetterboxState.movie_id == Movie.id)
+                .outerjoin(
+                    LetterboxState,
+                    (LetterboxState.movie_id == Movie.id) & (LetterboxState.media_type == "movie"),
+                )
                 .where(Movie.movie_file_path.is_not(None))
             )
         ).all()
@@ -878,7 +899,12 @@ async def apply_batch(body: BatchApplyRequest, db: Annotated[AsyncSession, Depen
     for movie_id in body.movie_ids:
         movie = (await db.execute(select(Movie).where(Movie.id == movie_id))).scalar_one_or_none()
         state = (
-            await db.execute(select(LetterboxState).where(LetterboxState.movie_id == movie_id))
+            await db.execute(
+                select(LetterboxState).where(
+                    LetterboxState.media_type == "movie",
+                    LetterboxState.movie_id == movie_id,
+                )
+            )
         ).scalar_one_or_none()
         if movie is None or state is None:
             skipped.append({"movie_id": movie_id, "reason": "not_found"})
@@ -925,7 +951,15 @@ async def confirm_one(movie_id: int, db: Annotated[AsyncSession, Depends(get_db)
         raise HTTPException(status_code=422, detail="Can only confirm a tagged movie.")
     state.reviewed = True
     response = _state_to_dict(state)
-    db.add(LetterboxEvent(movie_id=movie_id, action="confirm", source="api", detail="{}"))
+    db.add(
+        LetterboxEvent(
+            media_type="movie",
+            movie_id=movie_id,
+            action="confirm",
+            source="api",
+            detail="{}",
+        )
+    )
     await db.commit()
     letterbox_preview.purge_movie_previews(movie_id)
     return response
@@ -1071,7 +1105,10 @@ async def _confirm_media_job_plan(db: AsyncSession, job: MediaJob) -> None:
     if job.operation == "letterbox_reencode" and job.media_file_id is not None:
         movie_file = await db.get(MediaFile, job.media_file_id)
         if movie_file and movie_file.movie_id is not None:
-            stmt = select(LetterboxState).where(LetterboxState.movie_id == movie_file.movie_id)
+            stmt = select(LetterboxState).where(
+                LetterboxState.media_type == "movie",
+                LetterboxState.movie_id == movie_file.movie_id,
+            )
             state = (await db.execute(stmt)).scalar_one_or_none()
             if state and state.status == "candidate":
                 state.status = "tagged"
@@ -1218,7 +1255,15 @@ async def ignore_one(movie_id: int, db: Annotated[AsyncSession, Depends(get_db)]
     state.status = "skipped"
     state.reviewed = True
     response = _state_to_dict(state)
-    db.add(LetterboxEvent(movie_id=movie_id, action="ignore", source="api", detail="{}"))
+    db.add(
+        LetterboxEvent(
+            media_type="movie",
+            movie_id=movie_id,
+            action="ignore",
+            source="api",
+            detail="{}",
+        )
+    )
     await db.commit()
     letterbox_preview.purge_movie_previews(movie_id)
     return response
@@ -1246,6 +1291,7 @@ async def mark_not_letterboxed(movie_id: int, db: Annotated[AsyncSession, Depend
     response = _state_to_dict(state)
     db.add(
         LetterboxEvent(
+            media_type="movie",
             movie_id=movie_id,
             action="mark_not_letterboxed",
             source="api",
@@ -1300,7 +1346,10 @@ def _wipe_detection(state: LetterboxState, _now: datetime) -> None:
 async def dev_reset_not_letterboxed(db: Annotated[AsyncSession, Depends(get_db)]):
     """Dev: move all not_letterboxed / variable_unsafe / skipped back to Candidates."""
     result = await db.execute(
-        select(LetterboxState).where(LetterboxState.status.in_(list(_NOT_LB_STATUSES)))
+        select(LetterboxState).where(
+            LetterboxState.media_type == "movie",
+            LetterboxState.status.in_(list(_NOT_LB_STATUSES)),
+        )
     )
     states = result.scalars().all()
     now = datetime.now(UTC)
@@ -1313,7 +1362,12 @@ async def dev_reset_not_letterboxed(db: Annotated[AsyncSession, Depends(get_db)]
 @router.post("/dev/reset-detected")
 async def dev_reset_detected(db: Annotated[AsyncSession, Depends(get_db)]):
     """Dev: move all detected (candidate) movies back to Candidates."""
-    result = await db.execute(select(LetterboxState).where(LetterboxState.status == "candidate"))
+    result = await db.execute(
+        select(LetterboxState).where(
+            LetterboxState.media_type == "movie",
+            LetterboxState.status == "candidate",
+        )
+    )
     states = result.scalars().all()
     now = datetime.now(UTC)
     for state in states:
@@ -1325,7 +1379,7 @@ async def dev_reset_detected(db: Annotated[AsyncSession, Depends(get_db)]):
 @router.post("/dev/reset-all")
 async def dev_reset_all(db: Annotated[AsyncSession, Depends(get_db)]):
     """Dev: fully clear all letterbox workflow rows back to Candidates."""
-    result = await db.execute(select(LetterboxState))
+    result = await db.execute(select(LetterboxState).where(LetterboxState.media_type == "movie"))
     states = result.scalars().all()
     now = datetime.now(UTC)
     for state in states:
@@ -1338,7 +1392,12 @@ async def dev_reset_all(db: Annotated[AsyncSession, Depends(get_db)]):
 async def dev_reset_movie(movie_id: int, db: Annotated[AsyncSession, Depends(get_db)]):
     """Dev: fully clear all letterbox data for one movie → back to Candidates."""
     await _load_movie(db, movie_id)
-    result = await db.execute(select(LetterboxState).where(LetterboxState.movie_id == movie_id))
+    result = await db.execute(
+        select(LetterboxState).where(
+            LetterboxState.media_type == "movie",
+            LetterboxState.movie_id == movie_id,
+        )
+    )
     state = result.scalar_one_or_none()
     if state is None:
         raise HTTPException(status_code=404, detail="No letterbox state found for this movie")

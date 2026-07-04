@@ -154,10 +154,19 @@ class LetterboxService:
 
     async def get_or_create_state(self, db: AsyncSession, movie_id: int) -> LetterboxState:
         state = (
-            await db.execute(select(LetterboxState).where(LetterboxState.movie_id == movie_id))
+            await db.execute(
+                select(LetterboxState).where(
+                    LetterboxState.media_type == "movie",
+                    LetterboxState.movie_id == movie_id,
+                )
+            )
         ).scalar_one_or_none()
         if state is None:
-            state = LetterboxState(movie_id=movie_id, status="prefilter_candidate")
+            state = LetterboxState(
+                media_type="movie",
+                movie_id=movie_id,
+                status="prefilter_candidate",
+            )
             db.add(state)
         return state
 
@@ -279,6 +288,7 @@ class LetterboxService:
     ) -> None:
         db.add(
             LetterboxEvent(
+                media_type="movie",
                 movie_id=movie_id,
                 action=action,
                 source=source,

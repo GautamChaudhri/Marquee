@@ -436,6 +436,7 @@ class LetterboxManager:
 
         db.add(
             LetterboxEvent(
+                media_type="movie",
                 movie_id=movie.id,
                 action="detect",
                 source="detect_v1" if detector == "v1" else "detect",
