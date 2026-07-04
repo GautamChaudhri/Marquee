@@ -24,6 +24,7 @@ JOB_LABELS: dict[str, str] = {
     "poster_heal": "Poster Healing",
     "poster_pipeline": "Poster Pipeline",
     "poster_pipeline_batch": "Poster Pipeline (Batch)",
+    "poster_pipeline_tv_batch": "TV Poster Pipeline (Batch)",
     "radarr_upgrade": "Radarr Upgrade",
     "subtitle_embed": "Subtitle Embedding",
     "subtitle_extract": "Subtitle Extraction",

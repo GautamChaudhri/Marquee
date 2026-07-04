@@ -338,11 +338,19 @@ def build_run_payload(
     total_duration: float,
     run_id: str | None = None,
     error: str | None = None,
+    media_type: str = "movie",
+    subject: dict[str, object] | None = None,
+    official_pick: dict[str, object] | None = None,
 ) -> dict[str, object]:
-    """The full ``pipeline_run.json`` payload (also archived per run_id)."""
+    """The full ``pipeline_run.json`` payload (also archived per run_id).
+
+    ``media_type``/``subject`` are additive TV fields (design 04 §9.2) — movie
+    callers keep the default, so the payload shape only gains the new
+    ``media_type: "movie"`` key.
+    """
     from marquee.ml.taste_store import compute_taste_profile_hash  # noqa: PLC0415
 
-    return {
+    payload: dict[str, object] = {
         "run_id": run_id,
         "movie_id": movie.id,
         "title": movie.title,
@@ -357,7 +365,13 @@ def build_run_payload(
         "stage_timings_seconds": timings,
         "total_duration_seconds": round(total_duration, 3),
         "candidates": [records[name].to_dict() for name in sorted(records)],
+        "media_type": media_type,
     }
+    if subject is not None:
+        payload["subject"] = subject
+    if official_pick is not None:
+        payload["official_pick"] = official_pick
+    return payload
 
 
 def _json_default(obj: object) -> object:

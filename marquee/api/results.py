@@ -235,7 +235,7 @@ def build_results_payload(
         for key, label in _STAGE_LABELS
     ]
     rejection_summary = dict(summary)
-    return {
+    payload = {
         "run_id": run_id,
         "movie": {
             "id": archive.get("movie_id"),
@@ -255,7 +255,13 @@ def build_results_payload(
         "counts": archive.get("counts") or _counts_from_candidates(candidates),
         "stage_timings_s": archive.get("stage_timings_seconds", {}),
         "config_snapshot": archive.get("config", {}),
+        "media_type": archive.get("media_type", "movie"),
     }
+    if "subject" in archive:
+        payload["subject"] = archive["subject"]
+    if "official_pick" in archive:
+        payload["official_pick"] = archive["official_pick"]
+    return payload
 
 
 def _counts_from_candidates(candidates: list[dict]) -> dict[str, int]:

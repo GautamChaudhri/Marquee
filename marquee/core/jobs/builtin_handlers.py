@@ -510,6 +510,117 @@ async def poster_pipeline_batch(job: Job) -> dict[str, Any]:
     return summary
 
 
+@register("poster_pipeline_tv_batch")
+async def poster_pipeline_tv_batch(job: Job) -> dict[str, Any]:
+    """Stage-batched pipeline over TV show/season assets — mirrors
+    ``poster_pipeline_batch`` but sources candidates from Sonarr/TMDB series +
+    season endpoints and scores against the TV taste namespace.
+
+    Payload: ``{"assets": [{"media_type": "series"|"season", "series_id": int,
+    "season_id": int | None}], "scope": str}``.
+    """
+    from marquee.core.poster_sources.tmdb import TMDBClient  # noqa: PLC0415
+    from marquee.core.text_profiles import OcrGateContext  # noqa: PLC0415
+    from marquee.pipeline.batch_runner import AssetSpec, run_batch_assets  # noqa: PLC0415
+    from marquee.pipeline.progress_bridge import JobProgressBridge  # noqa: PLC0415
+    from marquee.pipeline.run_manager import run_manager  # noqa: PLC0415
+
+    requested = job.payload.get("assets", [])
+    series_ids = {int(a["series_id"]) for a in requested if a.get("series_id") is not None}
+    season_ids = {
+        int(a["season_id"]) for a in requested if a.get("media_type") == "season" and a.get("season_id") is not None
+    }
+
+    factory = _get_session_factory()
+    assets: list[AssetSpec] = []
+    ocr_meta: dict[tuple[str, int], OcrGateContext] = {}
+    skipped_no_tmdb = 0
+    async with factory() as db:
+        series_rows = (
+            (await db.execute(select(Series).where(Series.id.in_(series_ids)))).scalars().all()
+            if series_ids
+            else []
+        )
+        series_by_id = {s.id: s for s in series_rows}
+        season_rows = (
+            (await db.execute(select(Season).where(Season.id.in_(season_ids)))).scalars().all()
+            if season_ids
+            else []
+        )
+        season_by_id = {s.id: s for s in season_rows}
+
+        for item in requested:
+            media_type = item.get("media_type")
+            series = series_by_id.get(int(item["series_id"])) if item.get("series_id") is not None else None
+            if series is None:
+                continue
+            if series.tmdb_id is None:
+                skipped_no_tmdb += 1
+                continue
+            if media_type == "series":
+                subject = PosterSubject.from_series(series)
+                assets.append(
+                    AssetSpec(
+                        media_type="series",
+                        subject_id=series.id,
+                        title=subject.title,
+                        tmdb_id=series.tmdb_id,
+                        series_id=series.id,
+                        ocr_title=series.title,
+                    )
+                )
+                ocr_meta[("series", series.id)] = OcrGateContext.from_series(series)
+            elif media_type == "season":
+                season_id = item.get("season_id")
+                season = season_by_id.get(int(season_id)) if season_id is not None else None
+                if season is None:
+                    continue
+                subject = PosterSubject.from_season(season, series)
+                assets.append(
+                    AssetSpec(
+                        media_type="season",
+                        subject_id=season.id,
+                        title=subject.title,
+                        tmdb_id=series.tmdb_id,
+                        series_id=series.id,
+                        season_id=season.id,
+                        season_number=season.season_number,
+                        ocr_title=series.title,
+                    )
+                )
+                ocr_meta[("season", season.id)] = OcrGateContext.from_season(season, series)
+            # Unknown media_type entries are silently dropped.
+
+    if not assets:
+        return {"status": "empty", "assets": 0, "skipped_no_tmdb": skipped_no_tmdb}
+
+    cancel_event = cancel_registry.get(job.id)
+    tmdb = TMDBClient(read_access_token=settings.TMDB_READ_ACCESS_TOKEN)
+    await tmdb.connect()
+    # Load the model stack once, off the event loop, for the whole batch.
+    extractor = await asyncio.to_thread(run_manager._ensure_extractor)
+    tv_namespace = get_namespace("tv")
+    try:
+        async with JobProgressBridge(job.id) as bridge:
+            summary = await run_batch_assets(
+                job_id=job.id,
+                assets=assets,
+                tmdb=tmdb,
+                extractor=extractor,
+                taste_namespace=tv_namespace,
+                progress=bridge.callback,
+                should_cancel=cancel_event.is_set if cancel_event is not None else None,
+                ocr_meta=ocr_meta,
+            )
+    finally:
+        await tmdb.disconnect()
+        if not settings.PIPELINE_CACHE_EXTRACTOR:
+            with contextlib.suppress(Exception):
+                run_manager.release_gpu_resources()
+    summary["skipped_no_tmdb"] = skipped_no_tmdb
+    return summary
+
+
 @register("learned_head_train")
 async def learned_head_train(_job: Job) -> dict[str, Any]:
     """Train the learned head (the UI's 'Key Art Engine') from accumulated labels.

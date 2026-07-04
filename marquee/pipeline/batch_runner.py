@@ -41,11 +41,12 @@ import httpx
 from sqlalchemy import select
 
 from marquee.config import settings
-from marquee.core.pipeline_config import pipeline_settings
+from marquee.core.pipeline_config import PipelineSettings, pipeline_settings
 from marquee.core.poster_sources.tmdb import PosterCandidate
 from marquee.core.text_profiles import OcrGateContext
 from marquee.database import _get_session_factory
 from marquee.ml.hardware import effective_ocr_workers
+from marquee.ml.namespaces import TasteNamespace, get_namespace
 from marquee.models import Movie, PipelineRun
 from marquee.pipeline.deduper import PosterDeduper
 from marquee.pipeline.features import FeatureExtractor
@@ -85,6 +86,23 @@ _BATCH_DOWNLOAD_SEMAPHORE = asyncio.Semaphore(15)
 
 
 # ---------------------------------------------------------------------------
+# Asset input contract (movie | series | season) for the generalized batch
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class AssetSpec:
+    media_type: str  # movie | series | season
+    subject_id: int  # movie.id / series.id / season.id
+    title: str  # display title (PosterSubject.title convention)
+    tmdb_id: int | None  # movie tmdb or series tmdb
+    series_id: int | None = None
+    season_id: int | None = None
+    season_number: int | None = None
+    ocr_title: str | None = None  # series title (bare, no season suffix) for TV OCR
+
+
+# ---------------------------------------------------------------------------
 # Per-movie context carried through the shared stages
 # ---------------------------------------------------------------------------
 
@@ -92,7 +110,7 @@ _BATCH_DOWNLOAD_SEMAPHORE = asyncio.Semaphore(15)
 @dataclass
 class _BatchMovie:
     run_id: str
-    movie_id: int
+    movie_id: int  # subject_id for TV assets (series.id / season.id)
     title: str
     tmdb_id: int | None
     out_dir: Path
@@ -104,6 +122,13 @@ class _BatchMovie:
     fetch: FetchOutcome | None = None
     # Per-movie OCR gate context (director tokens + effective text profile).
     ocr_gate: OcrGateContext | None = None
+    # media_type/series_id/season_id/season_number/ocr_title are additive TV
+    # fields — movie assets keep every default, so movie behavior is unchanged.
+    media_type: str = "movie"
+    series_id: int | None = None
+    season_id: int | None = None
+    season_number: int | None = None
+    ocr_title: str | None = None  # None => use `title` for OCR tokens (movie default)
     timings: dict[str, float] = field(default_factory=dict)
     counts: dict[str, int] = field(default_factory=dict)
     status: str = "running"  # coerced to a terminal status at finalize
@@ -114,6 +139,7 @@ class _BatchMovie:
     passed: list[CandidateScore] = field(default_factory=list)
     gated: list[CandidateScore] = field(default_factory=list)
     ranked: list[CandidateScore] = field(default_factory=list)
+    official_pick: dict[str, object] | None = None
     # Transient — candidates that passed metadata gates, pending Phase B download.
     _downloadable: list[PosterCandidate] = field(default_factory=list)
 
@@ -125,6 +151,100 @@ class _BatchMovie:
     @property
     def duration(self) -> float:
         return time.perf_counter() - self.start_perf
+
+
+# Generalized name per design/plans/04-television-backend.md §9.2. Kept as an
+# alias (not a rename) so existing direct `_BatchMovie(...)` construction in
+# tests/test_batch_runner.py keeps working unchanged.
+_BatchItem = _BatchMovie
+
+
+def _run_fk_kwargs(ctx: _BatchMovie) -> dict[str, object]:
+    """PipelineRun/ArtworkEvent subject FK columns for this context's asset."""
+    if ctx.media_type == "movie":
+        return {"media_type": "movie", "movie_id": ctx.movie_id, "series_id": None, "season_id": None}
+    elif ctx.media_type == "series":
+        return {"media_type": "series", "movie_id": None, "series_id": ctx.series_id, "season_id": None}
+    elif ctx.media_type == "season":
+        return {
+            "media_type": "season",
+            "movie_id": None,
+            "series_id": ctx.series_id,
+            "season_id": ctx.season_id,
+        }
+    raise ValueError(f"Unknown media_type {ctx.media_type!r}")
+
+
+def _official_pick_enabled(media_type: str, config: PipelineSettings) -> bool:
+    flags = {
+        "movie": config.OFFICIAL_PICK_MOVIE,
+        "series": config.OFFICIAL_PICK_SHOW,
+        "season": config.OFFICIAL_PICK_SEASON,
+    }
+    try:
+        return flags[media_type]
+    except KeyError:
+        raise ValueError(f"Unknown media_type {media_type!r}") from None
+
+
+def apply_official_pick(
+    ranked: list[CandidateScore],
+    primary_name: str | None,
+    *,
+    enabled: bool,
+    fallback: str,
+) -> dict[str, object]:
+    """Post-stacking promotion: bump the TMDB primary poster's stack to rank 1.
+
+    Call after ``assign_stacks()`` and before the archive/output are written.
+    Mutates ``stack_rank`` on every affected member so
+    ``find_auto_pick_candidate`` (``stack_rank == 1 and stack_pos == 1``)
+    picks up the promotion automatically — no other code path needs to change.
+    """
+    if not enabled or primary_name is None or not ranked:
+        return {"enabled": enabled, "primary_name": primary_name, "applied": None}
+    if ranked[0].stack_rank is None:
+        # STACK_ENABLED=False — no stack metadata to promote.
+        return {
+            "enabled": enabled,
+            "primary_name": primary_name,
+            "applied": None,
+            "reason": "stacking_disabled",
+        }
+
+    def _promote(target_rank: int) -> None:
+        for candidate in ranked:
+            if candidate.stack_rank < target_rank:
+                candidate.stack_rank += 1
+            elif candidate.stack_rank == target_rank:
+                candidate.stack_rank = 1
+
+    target = next((c for c in ranked if c.orig_filename == primary_name), None)
+    if target is not None:
+        if target.stack_rank != 1:
+            _promote(target.stack_rank)
+        return {"enabled": enabled, "primary_name": primary_name, "applied": "primary_stack"}
+
+    if fallback == "largest_stack":
+        stack_sizes: dict[int, int] = {}
+        for candidate in ranked:
+            stack_sizes.setdefault(candidate.stack_rank, candidate.stack_size or 1)
+        largest_rank = min(stack_sizes, key=lambda rank: (-stack_sizes[rank], rank))
+        if largest_rank != 1:
+            _promote(largest_rank)
+        return {
+            "enabled": enabled,
+            "primary_name": primary_name,
+            "applied": "largest_stack",
+            "fallback_used": True,
+        }
+
+    return {
+        "enabled": enabled,
+        "primary_name": primary_name,
+        "applied": None,
+        "fallback_used": True,
+    }
 
 
 async def _download_phase(
@@ -248,8 +368,46 @@ async def run_batch(
     effective text profile). Movies without an entry use the global default
     profile.
 
-    Returns a summary dict (per-status counts + per-movie run ids) for the job
-    result. Each movie gets its own archived run + ``PipelineRun`` row tagged
+    Thin adapter over ``run_batch_assets`` — signature and observable behavior
+    are unchanged (guarded by tests/test_batch_runner.py and
+    tests/test_poster_pipeline_backend.py).
+    """
+    assets = [
+        AssetSpec(media_type="movie", subject_id=movie_id, title=title, tmdb_id=tmdb_id)
+        for movie_id, title, tmdb_id in movies
+    ]
+    asset_ocr_meta = {("movie", movie_id): ctx for movie_id, ctx in (ocr_meta or {}).items()}
+    return await run_batch_assets(
+        job_id=job_id,
+        assets=assets,
+        tmdb=tmdb,
+        extractor=extractor,
+        taste_namespace=get_namespace("movies"),
+        progress=progress,
+        should_cancel=should_cancel,
+        ocr_meta=asset_ocr_meta,
+    )
+
+
+async def run_batch_assets(
+    *,
+    job_id: str,
+    assets: list[AssetSpec],
+    tmdb,
+    extractor: FeatureExtractor,
+    taste_namespace: TasteNamespace,
+    progress: ProgressCallback | None = None,
+    should_cancel: ShouldCancel | None = None,
+    ocr_meta: dict[tuple[str, int], OcrGateContext] | None = None,
+) -> dict[str, object]:
+    """Run the stage-batched pipeline over a mix of movie/series/season assets.
+
+    ``ocr_meta`` maps ``(media_type, subject_id)`` → per-asset OCR gate context
+    (director tokens + effective text profile). Assets without an entry use
+    the global default profile.
+
+    Returns a summary dict (per-status counts + per-asset run ids) for the job
+    result. Each asset gets its own archived run + ``PipelineRun`` row tagged
     with ``batch_id=job_id``.
     """
     should_cancel = should_cancel or (lambda: False)
@@ -259,10 +417,10 @@ async def run_batch(
     scorer_name: str | None = None
 
     contexts: list[_BatchMovie] = []
-    total = len(movies)
+    total = len(assets)
     default_gate = OcrGateContext.default()
-    for index, (movie_id, title, tmdb_id) in enumerate(movies, 1):
-        out_dir = settings.runs_work_path / _sanitise_filename(title)
+    for index, asset in enumerate(assets, 1):
+        out_dir = settings.runs_work_path / _sanitise_filename(asset.title)
         out_dir.mkdir(parents=True, exist_ok=True)
         _clear_generated_outputs(out_dir)
         originals = out_dir / "0-originals"
@@ -270,26 +428,56 @@ async def run_batch(
         contexts.append(
             _BatchMovie(
                 run_id=uuid4().hex,
-                movie_id=movie_id,
-                title=title,
-                tmdb_id=tmdb_id,
+                movie_id=asset.subject_id,
+                title=asset.title,
+                tmdb_id=asset.tmdb_id,
                 out_dir=out_dir,
                 originals_dir=originals,
                 started_at=datetime.now(UTC).isoformat(),
                 start_perf=time.perf_counter(),
                 index=index,
                 total=total,
-                ocr_gate=(ocr_meta or {}).get(movie_id, default_gate),
+                ocr_gate=(ocr_meta or {}).get(
+                    (asset.media_type, asset.subject_id), default_gate
+                ),
+                media_type=asset.media_type,
+                series_id=asset.series_id,
+                season_id=asset.season_id,
+                season_number=asset.season_number,
+                ocr_title=asset.ocr_title,
             )
         )
 
-    # ── Phase A: fetch TMDB metadata for ALL movies concurrently ────────
+    # ── Phase A: fetch TMDB metadata for ALL assets concurrently ────────
     # (design 18 §8 — metadata calls are fast and independent)
     async def _fetch_meta(ctx: _BatchMovie) -> None:
         if ctx.tmdb_id is None:
-            raise RuntimeError("movie has no TMDB ID — run sync first")
-        movie = Movie(id=ctx.movie_id, title=ctx.title, tmdb_id=ctx.tmdb_id)
-        candidates, primary_name = await fetch_candidates(tmdb, movie)
+            raise RuntimeError("no TMDB ID — run sync first")
+        if ctx.media_type == "movie":
+            movie = Movie(id=ctx.movie_id, title=ctx.title, tmdb_id=ctx.tmdb_id)
+            candidates, primary_name = await fetch_candidates(tmdb, movie)
+        elif ctx.media_type == "series":
+            candidates = await tmdb.get_tv_images(ctx.tmdb_id)
+            try:
+                primary_name = await tmdb.get_tv_primary_poster(ctx.tmdb_id)
+            except Exception as exc:
+                primary_name = None
+                logger.warning(
+                    "FETCH | series primary poster lookup failed (%s) — official_family disabled",
+                    exc,
+                )
+        elif ctx.media_type == "season":
+            candidates = await tmdb.get_season_images(ctx.tmdb_id, ctx.season_number)
+            try:
+                primary_name = await tmdb.get_season_primary_poster(ctx.tmdb_id, ctx.season_number)
+            except Exception as exc:
+                primary_name = None
+                logger.warning(
+                    "FETCH | season primary poster lookup failed (%s) — official_family disabled",
+                    exc,
+                )
+        else:
+            raise ValueError(f"Unknown media_type {ctx.media_type!r}")
 
         # Build candidate_map, records, resolution_by_name for ALL candidates.
         candidate_map: dict[str, PosterCandidate] = {}
@@ -376,7 +564,9 @@ async def run_batch(
 
         # ── Shared CPU/GPU stages off the event loop ─────────────────────────
         if live and not should_cancel():
-            await asyncio.to_thread(_run_sync_stages, live, extractor, progress, should_cancel)
+            await asyncio.to_thread(
+                _run_sync_stages, live, extractor, progress, should_cancel, taste_namespace
+            )
 
         # ── OUTPUT (async best-effort full-res re-download) ──────────────────
         for ctx in live:
@@ -393,7 +583,7 @@ async def run_batch(
                 )
                 _emit(progress, ctx, "output", "end", survivors=len(ctx.ranked))
 
-        scorer_name = select_scorer().name
+        scorer_name = select_scorer(pipeline_settings, namespace=taste_namespace).name
     except Exception as exc:
         caught = exc
         logger.exception("BATCH FAILED | job=%s | %s", job_id, exc)
@@ -427,8 +617,14 @@ def _run_sync_stages(
     extractor: FeatureExtractor,
     progress: ProgressCallback | None,
     should_cancel: ShouldCancel,
+    taste_namespace: TasteNamespace | None = None,
 ) -> None:
     gate = PosterGate()
+    ns = taste_namespace or get_namespace("movies")
+    # Idempotent per batch — swaps the taste store + calibration arrays
+    # without reloading any ONNX session, so an interleaved worker never
+    # scores this batch against the wrong profile.
+    extractor.set_taste_namespace(ns)
 
     # Stage 1 (per movie): SHA-256 dedup → resolution gate → style features → style gate.
     for ctx in contexts:
@@ -477,10 +673,10 @@ def _run_sync_stages(
         return
 
     # Stage 4 (batched): detail features (DINOv2) over the union of survivors.
-    _detail_batch(contexts, extractor, gate, progress)
+    _detail_batch(contexts, extractor, gate, progress, ns)
 
     # Stage 5 (per movie): place gated, rank survivors.
-    scorer = select_scorer()
+    scorer = select_scorer(pipeline_settings, namespace=ns)
     for ctx in contexts:
         _rank(ctx, scorer, progress)
 
@@ -600,7 +796,7 @@ def _ocr_batch(
     for ctx in contexts:
         gate_ctx = ctx.ocr_gate
         tokens = PosterTextFilter(  # cheap — no model load
-            ctx.title,
+            ctx.ocr_title or ctx.title,
             director=gate_ctx.director if gate_ctx else None,
             studios=gate_ctx.studios if gate_ctx else None,
             tagline=gate_ctx.tagline if gate_ctx else None,
@@ -717,6 +913,7 @@ def _detail_batch(
     extractor: FeatureExtractor,
     gate: PosterGate,
     progress: ProgressCallback | None,
+    namespace: TasteNamespace | None = None,
 ) -> None:
     """Detail features (DINOv2 batched once) over the union of survivors, then
     the detail gate per candidate."""
@@ -736,7 +933,7 @@ def _detail_batch(
     # by index into the union `items`/`owners`).
     dino_vectors: dict = {}
     detail_results = extractor.complete_batch(items, dino_vectors_out=dino_vectors)
-    diagnostic_scorer = select_scorer()
+    diagnostic_scorer = select_scorer(pipeline_settings, namespace=namespace)
 
     for index, ((ctx, ocr_result), detail) in enumerate(zip(owners, detail_results, strict=True)):
         record = ctx.records[ocr_result.image_path.name]
@@ -796,6 +993,12 @@ def _rank(ctx: _BatchMovie, scorer, progress: ProgressCallback | None) -> None:
         # Stage 6b: group same-design variants into stacks (auto-pick = 1A).
         if pipeline_settings.STACK_ENABLED:
             assign_stacks(ranked)
+        ctx.official_pick = apply_official_pick(
+            ranked,
+            ctx.fetch.primary_name if ctx.fetch is not None else None,
+            enabled=_official_pick_enabled(ctx.media_type, pipeline_settings),
+            fallback=pipeline_settings.OFFICIAL_PICK_FALLBACK,
+        )
     except Exception as exc:
         ctx.status = "failed"
         ctx.error = str(exc)
@@ -862,10 +1065,10 @@ async def _persist_running(contexts: list[_BatchMovie], job_id: str) -> None:
                 db.add(
                     PipelineRun(
                         run_id=ctx.run_id,
-                        movie_id=ctx.movie_id,
                         status="running",
                         output_dir=str(ctx.out_dir),
                         batch_id=job_id,
+                        **_run_fk_kwargs(ctx),
                     )
                 )
         await db.commit()
@@ -886,8 +1089,22 @@ async def _finalize(
             # attribute it to cancellation when the batch was cancelled.
             if ctx.status not in _TERMINAL:
                 ctx.status = "cancelled" if cancelled else "failed"
+            subject = (
+                None
+                if ctx.media_type == "movie"
+                else {
+                    "series_id": ctx.series_id,
+                    "season_id": ctx.season_id,
+                    "season_number": ctx.season_number,
+                    "title": ctx.title,
+                }
+            )
             payload = build_run_payload(
-                movie=Movie(id=ctx.movie_id, title=ctx.title, tmdb_id=ctx.tmdb_id),
+                movie=Movie(
+                    id=ctx.movie_id if ctx.media_type == "movie" else None,
+                    title=ctx.title,
+                    tmdb_id=ctx.tmdb_id,
+                ),
                 started_at=ctx.started_at,
                 status=ctx.status,
                 timings=ctx.timings,
@@ -895,6 +1112,9 @@ async def _finalize(
                 total_duration=ctx.duration,
                 run_id=ctx.run_id,
                 error=ctx.error,
+                media_type=ctx.media_type,
+                subject=subject,
+                official_pick=ctx.official_pick,
             )
             archive_path = settings.runs_archive_path / f"{ctx.run_id}.json"
             try:
