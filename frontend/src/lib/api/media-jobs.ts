@@ -18,7 +18,11 @@ export function getMediaJob(fetch: Fetch, jobId: string): Promise<MediaJob> {
 			completed_at: null,
 			result: null,
 			error: null,
-			progress: { stage: 'remux.start', percent: 45, message: 'Remuxing container to remove track' },
+			progress: {
+				stage: 'remux.start',
+				percent: 45,
+				message: 'Remuxing container to remove track'
+			},
 			events_url: `/media-jobs/${jobId}/events`,
 			backup_id: 'backup-1',
 			plan: null
@@ -57,9 +61,16 @@ export function listMediaJobs(
 	return apiGet<{ jobs: MediaJob[] }>(fetch, '/media-jobs', params);
 }
 
-export function confirmJob(fetch: Fetch, jobId: string): Promise<{ job_id: string; status: 'queued' }> {
+export function confirmJob(
+	fetch: Fetch,
+	jobId: string
+): Promise<{ job_id: string; status: 'queued' }> {
 	if (useMocks()) return Promise.resolve({ job_id: jobId, status: 'queued' });
-	return apiSend<{ job_id: string; status: 'queued' }>(fetch, 'POST', `/media-jobs/${jobId}/confirm`);
+	return apiSend<{ job_id: string; status: 'queued' }>(
+		fetch,
+		'POST',
+		`/media-jobs/${jobId}/confirm`
+	);
 }
 
 export function cancelJob(
@@ -67,7 +78,11 @@ export function cancelJob(
 	jobId: string
 ): Promise<{ job_id: string; cancel_requested: boolean }> {
 	if (useMocks()) return Promise.resolve({ job_id: jobId, cancel_requested: true });
-	return apiSend<{ job_id: string; cancel_requested: boolean }>(fetch, 'POST', `/media-jobs/${jobId}/cancel`);
+	return apiSend<{ job_id: string; cancel_requested: boolean }>(
+		fetch,
+		'POST',
+		`/media-jobs/${jobId}/cancel`
+	);
 }
 
 export function restoreJob(fetch: Fetch, jobId: string): Promise<Record<string, unknown>> {

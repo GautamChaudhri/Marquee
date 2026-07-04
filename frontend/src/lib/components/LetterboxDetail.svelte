@@ -1302,7 +1302,11 @@
 								onclick={() => sample.ok && (previewMinute = sample.minute)}
 							>
 								{#if sample.ok && sample.url}
-									<img src={sample.url} alt={`Sample frame at ${sample.minute} minutes`} loading="lazy" />
+									<img
+										src={sample.url}
+										alt={`Sample frame at ${sample.minute} minutes`}
+										loading="lazy"
+									/>
 								{:else}
 									<span class="thumb-miss">✕</span>
 								{/if}
@@ -1345,7 +1349,9 @@
 					{#if detail.detect_method || detectedAtLabel}
 						<div class="note">
 							{#if detail.detect_method}<span class="mono">{detail.detect_method}</span>{/if}
-							{#if detail.detect_method && detectedAtLabel} · {/if}
+							{#if detail.detect_method && detectedAtLabel}
+								·
+							{/if}
 							{#if detectedAtLabel}last analyzed {detectedAtLabel}{/if}
 						</div>
 					{/if}

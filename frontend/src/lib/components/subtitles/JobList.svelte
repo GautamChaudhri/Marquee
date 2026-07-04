@@ -1,3 +1,4 @@
+<!-- eslint-disable @typescript-eslint/no-explicit-any svelte/require-each-key -->
 <script lang="ts">
 	import { listMediaJobs, cancelJob, restoreJob, deleteBackup } from '$lib/api/media-jobs';
 	import { jitterMs } from '$lib/jobs';
@@ -40,7 +41,12 @@
 	}
 
 	async function handleRestore(id: string) {
-		if (!confirm('Are you sure you want to restore the pre-mutation backup for this file? This will undo the changes.')) return;
+		if (
+			!confirm(
+				'Are you sure you want to restore the pre-mutation backup for this file? This will undo the changes.'
+			)
+		)
+			return;
 		try {
 			await restoreJob(fetch, id);
 			toast('Backup restored successfully', 'good');
@@ -51,7 +57,12 @@
 	}
 
 	async function handleDeleteBackup(id: string) {
-		if (!confirm('Are you sure you want to permanently delete the backup file? This cannot be undone.')) return;
+		if (
+			!confirm(
+				'Are you sure you want to permanently delete the backup file? This cannot be undone.'
+			)
+		)
+			return;
 		try {
 			await deleteBackup(fetch, id);
 			toast('Backup deleted successfully', 'good');
@@ -77,6 +88,14 @@
 			if (timerId) clearInterval(timerId);
 		};
 	});
+
+	function jobErrorText(errorValue: MediaJob['error']): string | null {
+		if (typeof errorValue === 'string') return errorValue;
+		if (errorValue && typeof errorValue === 'object') {
+			return typeof errorValue.error === 'string' ? errorValue.error : JSON.stringify(errorValue);
+		}
+		return null;
+	}
 </script>
 
 <div class="jobs-list-panel">
@@ -84,10 +103,26 @@
 		<h4>Subtitle Mutation Jobs History</h4>
 		<div class="controls">
 			<div class="filter-group">
-				<button class="filter-btn" class:active={filterStatus === 'all'} onclick={() => filterStatus = 'all'}>All</button>
-				<button class="filter-btn" class:active={filterStatus === 'running'} onclick={() => filterStatus = 'running'}>Running</button>
-				<button class="filter-btn" class:active={filterStatus === 'completed'} onclick={() => filterStatus = 'completed'}>Completed</button>
-				<button class="filter-btn" class:active={filterStatus === 'failed'} onclick={() => filterStatus = 'failed'}>Failed</button>
+				<button
+					class="filter-btn"
+					class:active={filterStatus === 'all'}
+					onclick={() => (filterStatus = 'all')}>All</button
+				>
+				<button
+					class="filter-btn"
+					class:active={filterStatus === 'running'}
+					onclick={() => (filterStatus = 'running')}>Running</button
+				>
+				<button
+					class="filter-btn"
+					class:active={filterStatus === 'completed'}
+					onclick={() => (filterStatus = 'completed')}>Completed</button
+				>
+				<button
+					class="filter-btn"
+					class:active={filterStatus === 'failed'}
+					onclick={() => (filterStatus = 'failed')}>Failed</button
+				>
 			</div>
 			<button class="btn secondary btn-sm" onclick={loadJobs} disabled={loading}>
 				🔄 Refresh
@@ -127,11 +162,15 @@
 							<td class="mono">{job.media_file_id || '—'}</td>
 							<td>
 								<div class="status-cell">
-									<StatusDot tone={
-										job.status === 'completed' || job.status === 'succeeded' ? 'good' :
-										job.status === 'failed' ? 'bad' :
-										job.status === 'planned' ? 'info' : 'warn'
-									} />
+									<StatusDot
+										tone={job.status === 'completed' || job.status === 'succeeded'
+											? 'good'
+											: job.status === 'failed'
+												? 'bad'
+												: job.status === 'planned'
+													? 'info'
+													: 'warn'}
+									/>
 									<span class="status-lbl">{job.status}</span>
 								</div>
 							</td>
@@ -149,7 +188,9 @@
 									{:else if job.status === 'completed' || job.status === 'succeeded'}
 										<span class="progress-done">Done</span>
 									{:else if job.status === 'failed'}
-										<span class="progress-err" title={job.error}>Error: {job.error || 'Job failed'}</span>
+										<span class="progress-err" title={jobErrorText(job.error) ?? undefined}
+											>Error: {jobErrorText(job.error) ?? 'Job failed'}</span
+										>
 									{:else}
 										<span class="progress-pending">Queued</span>
 									{/if}
@@ -168,7 +209,10 @@
 									<button class="action-btn restore" onclick={() => handleRestore(job.job_id)}>
 										Restore
 									</button>
-									<button class="action-btn delete-bk" onclick={() => handleDeleteBackup(job.job_id)}>
+									<button
+										class="action-btn delete-bk"
+										onclick={() => handleDeleteBackup(job.job_id)}
+									>
 										Delete Backup
 									</button>
 								{/if}

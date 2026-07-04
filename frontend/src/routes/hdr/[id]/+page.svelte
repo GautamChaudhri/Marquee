@@ -36,8 +36,16 @@
 		original_untouched?: boolean;
 	};
 
-	let conversionResult = $derived((detail?.conversion_job?.result ?? null) as ConversionResult | null);
-	let conversionError = $derived(detail?.conversion_job?.error?.message ?? null);
+	let conversionResult = $derived(
+		(detail?.conversion_job?.result ?? null) as ConversionResult | null
+	);
+	let conversionError = $derived.by(() => {
+		const error = detail?.conversion_job?.error;
+		if (error && typeof error === 'object' && 'message' in error) {
+			return typeof error.message === 'string' ? error.message : null;
+		}
+		return null;
+	});
 
 	function storeJob(key: string | null, id: string | null) {
 		if (!browser || !key) return;
@@ -195,9 +203,9 @@
 		if (dovi.profile == null) return 'DoVi P?';
 		const profile =
 			dovi.profile === 8
-				? (dovi.bl_signal_compatibility_id != null
+				? ((dovi.bl_signal_compatibility_id != null
 						? DOVI_P8_VARIANT[dovi.bl_signal_compatibility_id]
-						: null) ?? 'P8'
+						: null) ?? 'P8')
 				: `P${dovi.profile}`;
 		const suffix = dovi.profile === 7 && dovi.el_type ? ` ${dovi.el_type}` : '';
 		return `DoVi ${profile}${suffix}`;
@@ -214,9 +222,12 @@
 		if (!dovi || dovi.status === 'unknown' || dovi.profile == null) {
 			return `${label}. Dolby Vision is present, but this file has not been analyzed yet.`;
 		}
-		if (dovi.profile === 5) return `${label}. Profile 5 can show green/purple tint on non-DV playback.`;
-		if (dovi.el_type === 'FEL') return `${label}. Full enhancement layer can trigger playback issues.`;
-		if (dovi.el_type === 'MEL') return `${label}. Minimal enhancement layer is generally safe to drop.`;
+		if (dovi.profile === 5)
+			return `${label}. Profile 5 can show green/purple tint on non-DV playback.`;
+		if (dovi.el_type === 'FEL')
+			return `${label}. Full enhancement layer can trigger playback issues.`;
+		if (dovi.el_type === 'MEL')
+			return `${label}. Minimal enhancement layer is generally safe to drop.`;
 		return label;
 	}
 </script>
@@ -245,8 +256,8 @@
 				{:else if !detail.binaries.ffmpeg}
 					<strong>ffmpeg not found on PATH.</strong> DoVi remediation is unavailable until it is installed.
 				{:else}
-					<strong>dovi_tool not found on PATH.</strong> Profiles can be read, but FEL/MEL detection
-					and remediation need dovi_tool.
+					<strong>dovi_tool not found on PATH.</strong> Profiles can be read, but FEL/MEL detection and
+					remediation need dovi_tool.
 				{/if}
 			</div>
 		{/if}
@@ -260,7 +271,9 @@
 
 		{#if converting}
 			<div class="banner">
-				<div class="bar convert-bar"><span style={`width:${Math.max(4, convertPercent)}%`}></span></div>
+				<div class="bar convert-bar">
+					<span style={`width:${Math.max(4, convertPercent)}%`}></span>
+				</div>
 				<small>{convertMessage}</small>
 			</div>
 		{/if}
@@ -364,9 +377,7 @@
 					<div class="kv">
 						<span class="lbl">Last analyzed</span>
 						<span class="val">
-							{dovi.last_analyzed_at
-								? new Date(dovi.last_analyzed_at).toLocaleString()
-								: '—'}
+							{dovi.last_analyzed_at ? new Date(dovi.last_analyzed_at).toLocaleString() : '—'}
 						</span>
 					</div>
 					{#if dovi.rpu_summary}
@@ -399,7 +410,11 @@
 									? 'Create Profile 8.1 candidate'
 									: 'Strip EL to Profile 8.1'}
 							</button>
-							<span class="soon">{dovi.conversion.eligible === 'lossy' ? 'Lossy step' : 'Non-destructive candidate'}</span>
+							<span class="soon"
+								>{dovi.conversion.eligible === 'lossy'
+									? 'Lossy step'
+									: 'Non-destructive candidate'}</span
+							>
 						</div>
 						{#if conversionResult?.candidate_path}
 							<div class="result">
@@ -409,7 +424,9 @@
 								</div>
 								<div class="kv">
 									<span class="lbl">Original</span>
-									<span class="val">{conversionResult.original_untouched ? 'untouched' : 'replaced'}</span>
+									<span class="val"
+										>{conversionResult.original_untouched ? 'untouched' : 'replaced'}</span
+									>
 								</div>
 							</div>
 						{:else if conversionError}

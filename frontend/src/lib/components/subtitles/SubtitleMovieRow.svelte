@@ -1,3 +1,4 @@
+<!-- eslint-disable @typescript-eslint/no-explicit-any svelte/prefer-svelte-reactivity svelte/require-each-key -->
 <script lang="ts">
 	import type { MovieListItem } from '$lib/api/types';
 	import type { Tone } from '$lib/display';
@@ -12,7 +13,9 @@
 
 	// Parse subtitle coverage safely
 	let coverage = $derived(movie.subtitle_coverage as any);
-	let embeddedCount = $derived(coverage?.embedded_present ? (coverage?.track_count || 'Yes') : 'None');
+	let embeddedCount = $derived(
+		coverage?.embedded_present ? coverage?.track_count || 'Yes' : 'None'
+	);
 	let externalCount = $derived(coverage?.external_present ? 'Yes' : 'None');
 
 	// Collect unique subtitle languages
@@ -61,7 +64,16 @@
 	});
 
 	// Map language code to color class for nice visual aesthetics (8-color accent palette)
-	const colorPalette = ['lang-1', 'lang-2', 'lang-3', 'lang-4', 'lang-5', 'lang-6', 'lang-7', 'lang-8'];
+	const colorPalette = [
+		'lang-1',
+		'lang-2',
+		'lang-3',
+		'lang-4',
+		'lang-5',
+		'lang-6',
+		'lang-7',
+		'lang-8'
+	];
 	function getLanguageClass(lang: string) {
 		let hash = 0;
 		for (let i = 0; i < lang.length; i++) {
@@ -123,9 +135,7 @@
 			<StatusDot tone={statusTone} />
 			<span class="status-lbl">{statusLabel}</span>
 		</span>
-		<span class="chev">
-			→
-		</span>
+		<span class="chev"> → </span>
 	</a>
 </div>
 
@@ -220,14 +230,38 @@
 		color: var(--ink);
 	}
 	/* 8-color accent palette */
-	:global(.lang-1) { background: #ff7b72; color: #fff; }
-	:global(.lang-2) { background: #79c0ff; color: #0d1117; }
-	:global(.lang-3) { background: #7ee787; color: #0d1117; }
-	:global(.lang-4) { background: #d2a8ff; color: #0d1117; }
-	:global(.lang-5) { background: #ffca28; color: #0d1117; }
-	:global(.lang-6) { background: #ffa657; color: #0d1117; }
-	:global(.lang-7) { background: #56d364; color: #0d1117; }
-	:global(.lang-8) { background: #ec407a; color: #fff; }
+	:global(.lang-1) {
+		background: #ff7b72;
+		color: #fff;
+	}
+	:global(.lang-2) {
+		background: #79c0ff;
+		color: #0d1117;
+	}
+	:global(.lang-3) {
+		background: #7ee787;
+		color: #0d1117;
+	}
+	:global(.lang-4) {
+		background: #d2a8ff;
+		color: #0d1117;
+	}
+	:global(.lang-5) {
+		background: #ffca28;
+		color: #0d1117;
+	}
+	:global(.lang-6) {
+		background: #ffa657;
+		color: #0d1117;
+	}
+	:global(.lang-7) {
+		background: #56d364;
+		color: #0d1117;
+	}
+	:global(.lang-8) {
+		background: #ec407a;
+		color: #fff;
+	}
 
 	.status-cell {
 		display: flex;

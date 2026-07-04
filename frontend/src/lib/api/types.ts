@@ -63,7 +63,12 @@ export interface RuntimeSettings {
 		external_delete_mode?: string;
 		[key: string]: unknown;
 	};
-	poster_formats: Record<string, unknown>;
+	poster_formats: {
+		movie?: string;
+		series?: string;
+		season?: string;
+		[key: string]: unknown;
+	};
 	writable: boolean;
 	[key: string]: unknown;
 }
@@ -107,6 +112,42 @@ export interface MovieListItem {
 
 export interface MovieDetail extends MovieListItem {
 	media_file_path: string | null;
+}
+
+export interface PosterSummary {
+	has_poster: boolean;
+	ai_selected: boolean;
+	user_approved: boolean;
+	deployed_at: string | null;
+}
+
+export type SeasonPosterStatus = 'complete' | 'partial' | 'missing';
+
+export interface SeriesListItem {
+	id: number;
+	title: string;
+	year: number | null;
+	tmdb_id: number | null;
+	poster: PosterSummary;
+	downloaded_seasons: number;
+	seasons_with_poster: number;
+	season_poster_status: SeasonPosterStatus;
+	season_count: number | null;
+}
+
+export interface SeasonSummary {
+	id: number;
+	season_number: number;
+	episode_count: number | null;
+	episode_file_count: number | null;
+	poster: PosterSummary;
+}
+
+export interface SeriesDetail extends SeriesListItem {
+	tvdb_id: number | null;
+	show_text_profile_id: string | null;
+	season_text_profile_id: string | null;
+	seasons: SeasonSummary[];
 }
 
 export interface MovieQuery {
@@ -678,6 +719,14 @@ export interface RunResults {
 	counts: Record<string, number>;
 	stage_timings_s: Record<string, number>;
 	config_snapshot?: Record<string, unknown>;
+	media_type?: 'movie' | 'series' | 'season';
+	subject?: {
+		series_id: number | null;
+		season_id: number | null;
+		season_number: number | null;
+		title: string | null;
+	};
+	official_pick?: OfficialPick | null;
 }
 
 /** Returned by `GET /pipeline/runs/{id}` while the run is still executing. */
@@ -731,6 +780,9 @@ export interface PipelineRunSummary {
 	scorer_name: string | null;
 	counts: Record<string, number> | null;
 	reviewed: boolean;
+	media_type?: 'movie' | 'series' | 'season';
+	season_id?: number | null;
+	season_number?: number | null;
 }
 
 export interface ReviewQueueItem {
@@ -766,6 +818,110 @@ export interface ReviewQueueAutoApproveResult {
 export interface MovieRuns {
 	movie_id: number;
 	runs: PipelineRunSummary[];
+}
+
+export interface OfficialPick {
+	enabled?: boolean;
+	primary_name?: string | null;
+	applied?: string | null;
+	reason?: string | null;
+}
+
+export interface TvPipelineSummary {
+	shows_total: number;
+	shows_with_show_poster: number;
+	shows_missing_show_poster: number;
+	seasons_total: number;
+	seasons_with_poster: number;
+	seasons_missing_poster: number;
+	shows_fully_covered: number;
+	shows_in_review: number;
+	running_jobs: (JobSummary & { asset_count?: number; series_count?: number })[];
+	last_heal: LastHeal | null;
+	heal_schedule: HealScheduleInfo | null;
+	backups: BackupStats;
+}
+
+export interface TvRunQueueAsset {
+	media_type: 'series' | 'season';
+	season_id?: number;
+	number?: number;
+}
+
+export interface TvRunQueueItem {
+	series: {
+		id: number;
+		title: string;
+		year: number | null;
+		tmdb_id: number | null;
+		poster_url: string | null;
+	};
+	show_poster_missing: boolean;
+	missing_seasons: { season_id: number; number: number; episode_file_count: number | null }[];
+	assets_to_run: TvRunQueueAsset[];
+	no_tmdb: boolean;
+}
+
+export interface TvRunQueue {
+	items: TvRunQueueItem[];
+	total: number;
+}
+
+export interface TvReviewSeasonRun {
+	season_number: number;
+	season_id: number;
+	run: PipelineRunSummary;
+	auto_pick_poster_url: string | null;
+	flagged_no_candidates: boolean;
+	official_pick?: OfficialPick | null;
+}
+
+export interface TvReviewGroup {
+	series: {
+		id: number;
+		title: string;
+		year: number | null;
+		tmdb_id: number | null;
+	};
+	show_run: (PipelineRunSummary & { auto_pick_poster_url?: string | null }) | null;
+	season_runs: TvReviewSeasonRun[];
+	seasons_only: boolean;
+	display_poster_url: string | null;
+}
+
+export interface TvReviewQueue {
+	total_series: number;
+	page: number;
+	page_size: number;
+	items: TvReviewGroup[];
+}
+
+export interface TvAutoApproveResult {
+	total: number;
+	approved: number;
+	skipped_no_auto: number;
+	failed: number;
+	errors: { run_id: string; error: unknown }[];
+}
+
+export interface SeriesRunsResponse {
+	series_id: number;
+	runs: PipelineRunSummary[];
+}
+
+export interface SeriesArtworkEvent {
+	id: number;
+	action: string;
+	source: string;
+	media_type: 'series' | 'season';
+	season_id: number | null;
+	detail: Record<string, unknown> | null;
+	created_at: string | null;
+}
+
+export interface SeriesArtworkEventsResponse {
+	series_id: number;
+	events: SeriesArtworkEvent[];
 }
 
 // ── Metrics + cache ─────────────────────────────────────────────────────────

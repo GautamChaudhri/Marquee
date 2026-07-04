@@ -30,12 +30,14 @@
 	const movie = $derived(data.movie);
 	// svelte-ignore state_referenced_locally
 	let tab = $state(data.tab ?? 'poster');
-	const textProfiles = $derived(data.textProfiles?.profiles ?? []);
+	const textProfiles = $derived(data.textProfiles?.scopes.movie.profiles ?? []);
 	// svelte-ignore state_referenced_locally
 	let movieTextProfileId = $state<string | null>(data.movieTextProfile?.profile_id ?? null);
 	// svelte-ignore state_referenced_locally
 	let effectiveTextProfileId = $state(
-		data.movieTextProfile?.effective_id ?? data.textProfiles?.default_id ?? 'title_only'
+		data.movieTextProfile?.effective_id ??
+			data.textProfiles?.scopes.movie.default_id ??
+			'title_only'
 	);
 	let savingTextProfile = $state(false);
 	const effectiveTextProfile = $derived(
@@ -141,7 +143,11 @@
 
 	async function handleDeletePoster() {
 		if (!movie) return;
-		if (!confirm('Are you sure you want to delete the deployed poster? This will remove the file from the movie folder and reset the status to missing.')) {
+		if (
+			!confirm(
+				'Are you sure you want to delete the deployed poster? This will remove the file from the movie folder and reset the status to missing.'
+			)
+		) {
 			return;
 		}
 		deletingPoster = true;
@@ -159,7 +165,6 @@
 			deletingPoster = false;
 		}
 	}
-
 
 	$effect(() => {
 		if (tab === 'poster' && !posterLoaded) {
@@ -415,9 +420,7 @@
 									value={movieTextProfileId ?? ''}
 									disabled={savingTextProfile}
 									onchange={(e) =>
-										saveMovieTextProfile(
-											(e.currentTarget as HTMLSelectElement).value || null
-										)}
+										saveMovieTextProfile((e.currentTarget as HTMLSelectElement).value || null)}
 								>
 									<option value="">
 										Use default ({textProfileLabel(effectiveTextProfile)})
@@ -428,9 +431,7 @@
 								</select>
 								<div class="profile-meta">
 									<span>Effective: {textProfileLabel(effectiveTextProfile)}</span>
-									<span>
-										Applies to future pipeline runs for this movie’s poster selection.
-									</span>
+									<span> Applies to future pipeline runs for this movie’s poster selection. </span>
 								</div>
 							</div>
 						</div>
@@ -1228,7 +1229,9 @@
 		font-weight: 600;
 		white-space: nowrap;
 		cursor: pointer;
-		transition: background 0.15s, color 0.15s;
+		transition:
+			background 0.15s,
+			color 0.15s;
 	}
 	.btn-danger:hover {
 		background: var(--bad);

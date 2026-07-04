@@ -28,7 +28,14 @@
 	}
 
 	const ordered = $derived.by(() => {
-		const rank = ['gpu', 'media_read', 'media_write', 'transcode', 'network_external', 'maintenance_exclusive'];
+		const rank = [
+			'gpu',
+			'media_read',
+			'media_write',
+			'transcode',
+			'network_external',
+			'maintenance_exclusive'
+		];
 		return [...resources].sort((a, b) => {
 			const ai = rank.indexOf(a.key);
 			const bi = rank.indexOf(b.key);
@@ -37,7 +44,9 @@
 		});
 	});
 
-	const allIdle = $derived(ordered.length > 0 && ordered.every((resource) => resource.in_use === 0));
+	const allIdle = $derived(
+		ordered.length > 0 && ordered.every((resource) => resource.in_use === 0)
+	);
 </script>
 
 <div class="panel-box">
@@ -47,14 +56,15 @@
 	<div class="list">
 		{#each ordered as resource (resource.key)}
 			{@const tone = resourceTone(resource)}
-			{@const pct = resource.capacity > 0 ? Math.min(100, (resource.in_use / resource.capacity) * 100) : 0}
+			{@const pct =
+				resource.capacity > 0 ? Math.min(100, (resource.in_use / resource.capacity) * 100) : 0}
 			<div class="row">
 				<div class="meta">
 					<span class="label">{resourceLabel(resource.key)}</span>
 					<span class="detail">{resource.key}</span>
 				</div>
 				<div class="bar-shell">
-					<div class={`bar ${tone}`} style={`width: ${pct}%`} />
+					<div class={`bar ${tone}`} style={`width: ${pct}%`}></div>
 				</div>
 				<span class="value mono">{resource.in_use}/{resource.capacity}</span>
 			</div>

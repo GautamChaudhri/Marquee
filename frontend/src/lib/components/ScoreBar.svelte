@@ -52,7 +52,9 @@
 					title={seg.label}
 					style="--c:var({seg.color ?? PALETTE[i % PALETTE.length]})"
 				>
-					{#if seg.signed != null && seg.signed < 0}<span class="sign">−</span>{/if}{abbr(seg.label)}
+					{#if seg.signed != null && seg.signed < 0}<span class="sign">−</span>{/if}{abbr(
+						seg.label
+					)}
 				</span>
 			{/each}
 		</div>

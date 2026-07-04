@@ -1,13 +1,15 @@
 <script lang="ts">
-	import type { TextProfile, TextProfileSettings } from '$lib/api/text-profiles';
+	import type { TextProfile, TextProfileScope, TextProfileSettings } from '$lib/api/text-profiles';
 
 	let {
 		profile,
+		scope = 'movie',
 		busy = false,
 		onSave,
 		onDelete
 	}: {
 		profile: TextProfile;
+		scope?: TextProfileScope;
 		busy?: boolean;
 		onSave: (payload: { name: string; settings: TextProfileSettings }) => void;
 		onDelete?: (() => void) | null;
@@ -21,6 +23,7 @@
 	let allowRating = $state(false);
 	let allowTagline = $state(false);
 	let allowBilling = $state(false);
+	let allowSeason = $state(false);
 	let maxResidualBoxes = $state(0);
 	let maxResidualAreaPercent = $state(0);
 	let requireTitle = $state(false);
@@ -34,6 +37,7 @@
 		allowRating = next.settings.allow_rating;
 		allowTagline = next.settings.allow_tagline;
 		allowBilling = next.settings.allow_billing;
+		allowSeason = Boolean(next.settings.allow_season);
 		maxResidualBoxes = next.settings.max_residual_boxes;
 		maxResidualAreaPercent = Math.round(next.settings.max_residual_area_fraction * 100);
 		requireTitle = next.settings.require_title;
@@ -53,6 +57,7 @@
 		allow_rating: allowRating,
 		allow_tagline: allowTagline,
 		allow_billing: allowBilling,
+		allow_season: allowSeason,
 		max_residual_boxes: maxResidualBoxes,
 		max_residual_area_fraction: maxResidualAreaPercent / 100,
 		require_title: requireTitle
@@ -74,6 +79,7 @@
 				allow_rating: allowRating,
 				allow_tagline: allowTagline,
 				allow_billing: allowBilling,
+				allow_season: allowSeason,
 				max_residual_boxes: maxResidualBoxes,
 				max_residual_area_fraction: maxResidualAreaPercent / 100,
 				require_title: requireTitle
@@ -131,6 +137,12 @@
 			<input type="checkbox" bind:checked={allowBilling} disabled={builtIn || busy} />
 			<span>Billing</span>
 		</label>
+		{#if scope === 'season'}
+			<label class="toggle" title="Allow season text such as Season 3 or Part 2.">
+				<input type="checkbox" bind:checked={allowSeason} disabled={builtIn || busy} />
+				<span>Season text</span>
+			</label>
+		{/if}
 	</div>
 
 	<div class="sliders">

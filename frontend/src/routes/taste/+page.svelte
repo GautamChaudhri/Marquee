@@ -1,5 +1,7 @@
 <script lang="ts">
 	import { onDestroy } from 'svelte';
+	import { goto } from '$app/navigation';
+	import { page } from '$app/state';
 	import SectionHeader from '$lib/components/SectionHeader.svelte';
 	import StatCard from '$lib/components/StatCard.svelte';
 	import ProgressBar from '$lib/components/ProgressBar.svelte';
@@ -41,10 +43,16 @@
 	import type { PageData } from './$types';
 
 	let { data }: { data: PageData } = $props();
+	// svelte-ignore state_referenced_locally
 	const initialStatus = data.status;
+	// svelte-ignore state_referenced_locally
 	const initialMapData = data.mapData ?? null;
+	// svelte-ignore state_referenced_locally
 	const initialProfiles = data.profiles ?? [];
+	// svelte-ignore state_referenced_locally
 	const initialHeads = data.heads ?? [];
+	// svelte-ignore state_referenced_locally
+	let library = $state<'movies' | 'tv'>(data.library ?? 'movies');
 
 	let status = $state<TasteStatus | null>(initialStatus);
 	let mapData = $state<TasteMapData | null>(initialMapData);
@@ -62,7 +70,10 @@
 	const artifactRegistry = $derived(status?.artifact_registry ?? { available: true });
 	const registryUnavailable = $derived(artifactRegistry.available === false);
 
-	function preferredArtifactId(rows: ManagedArtifactSummary[], currentId: string | null): string | null {
+	function preferredArtifactId(
+		rows: ManagedArtifactSummary[],
+		currentId: string | null
+	): string | null {
 		if (currentId && rows.some((row) => row.id === currentId)) return currentId;
 		return rows.find((row) => row.status === 'active')?.id ?? rows[0]?.id ?? null;
 	}
@@ -70,9 +81,9 @@
 	async function refresh() {
 		try {
 			const [nextStatus, nextMap, nextProfiles, nextHeads] = await Promise.all([
-				getTasteStatus(fetch),
-				getTasteMap(fetch).catch(() => mapData),
-				getTasteProfiles(fetch).then((value) => value.profiles),
+				getTasteStatus(fetch, library),
+				getTasteMap(fetch, false, library).catch(() => mapData),
+				getTasteProfiles(fetch, library).then((value) => value.profiles),
 				getLearnedHeads(fetch).then((value) => value.heads)
 			]);
 			status = nextStatus;
@@ -99,10 +110,17 @@
 		}
 	}
 
-	const SOURCES: { id: TasteSource; label: string; hint: string }[] = [
-		{ id: 'training_dir', label: 'Training folder', hint: 'Curated data/training/positive' },
+	const SOURCES = $derived.by<{ id: TasteSource; label: string; hint: string }[]>(() => [
+		{
+			id: 'training_dir',
+			label: 'Training folder',
+			hint:
+				library === 'movies'
+					? 'Movies: data/taste_seeding/movies'
+					: 'TV: data/taste_seeding/shows + seasons'
+		},
 		{ id: 'library', label: 'Library posters', hint: 'Every deployed poster' }
-	];
+	]);
 	let source = $state<TasteSource>('training_dir');
 	let rebuildDetail = $state<JobProgressDetail>({});
 	let rebuildStatus = $state('running');
@@ -116,7 +134,7 @@
 		rebuildDetail = {};
 		rebuildStatus = 'running';
 		try {
-			const job = await retrainTaste(fetch, source);
+			const job = await retrainTaste(fetch, source, library);
 			rebuildJobId = job.job_id;
 			toast('Taste rebuild queued', 'info');
 			stopRebuild?.();
@@ -169,7 +187,7 @@
 		headDetailProgress = {};
 		headStatus = 'running';
 		try {
-			const job = await retrainHead(fetch);
+			const job = await retrainHead(fetch, library);
 			toast('Key Art Engine training queued', 'info');
 			stopHead?.();
 			stopHead = trackJob(
@@ -199,7 +217,7 @@
 		mapLoading = true;
 		mapError = null;
 		try {
-			mapData = await getTasteMap(fetch, true);
+			mapData = await getTasteMap(fetch, true, library);
 			toast('Taste map rebuilt', 'good');
 		} catch (e) {
 			mapError = e instanceof Error ? e.message : 'Map rebuild failed';
@@ -230,8 +248,8 @@
 		detailLoading = true;
 		try {
 			const [detail, exemplars] = await Promise.all([
-				getTasteProfileDetail(fetch, artifactId),
-				getTasteProfileExemplars(fetch, artifactId).then((value) => value.exemplars)
+				getTasteProfileDetail(fetch, artifactId, library),
+				getTasteProfileExemplars(fetch, artifactId, library).then((value) => value.exemplars)
 			]);
 			profileDetail = detail;
 			profileExemplars = exemplars;
@@ -257,7 +275,7 @@
 	async function manageProfile(action: 'activate' | 'archive' | 'delete', artifactId: string) {
 		try {
 			if (action === 'activate') {
-				await activateTasteProfile(fetch, artifactId);
+				await activateTasteProfile(fetch, artifactId, library);
 				toast('Taste profile activated', 'good');
 			} else if (action === 'archive') {
 				await archiveTasteProfile(fetch, artifactId);
@@ -307,7 +325,7 @@
 		try {
 			await deleteTasteProfileExemplar(fetch, profileDetail.id, name);
 			toast('Exemplar removed', 'good');
-			mapData = await getTasteMap(fetch);
+			mapData = await getTasteMap(fetch, false, library);
 			await refresh();
 		} catch (e) {
 			toast(e instanceof Error ? e.message : 'Could not remove exemplar', 'bad');
@@ -316,6 +334,15 @@
 
 	function pct(have: number, need: number): number {
 		return need > 0 ? Math.min(100, (have / need) * 100) : 100;
+	}
+
+	function setLibrary(next: 'movies' | 'tv') {
+		if (next === library) return;
+		library = next;
+		const url = new URL(page.url);
+		const sp = url.searchParams;
+		sp.set('library', next);
+		goto(`/taste?${sp.toString()}`);
 	}
 
 	function fmtDate(iso: string | null | undefined): string {
@@ -348,6 +375,11 @@
 
 <SectionHeader title="Key Art Engine" subtitle="Taste profile & learned poster ranker" />
 
+<div class="library-switch">
+	<button class:active={library === 'movies'} onclick={() => setLibrary('movies')}>Movies</button>
+	<button class:active={library === 'tv'} onclick={() => setLibrary('tv')}>Television</button>
+</div>
+
 {#if data.error || !status}
 	<div class="empty">
 		<Icon name="taste" size={34} stroke={1} />
@@ -358,7 +390,10 @@
 	{#if registryUnavailable}
 		<div class="registry-warning">
 			<strong>Artifact management unavailable</strong>
-			<span>Run <code>alembic upgrade head</code> and restart Marquee to enable taste profile and learned head management.</span>
+			<span
+				>Run <code>alembic upgrade head</code> and restart Marquee to enable taste profile and learned
+				head management.</span
+			>
 		</div>
 	{/if}
 
@@ -388,7 +423,9 @@
 				<div class="gauges">
 					<div class="gauge">
 						<div class="gl">
-							<span>Movies</span><span class="mono">{head.activation.movies.have}/{head.activation.movies.need}</span>
+							<span>Movies</span><span class="mono"
+								>{head.activation.movies.have}/{head.activation.movies.need}</span
+							>
 						</div>
 						<ProgressBar
 							value={pct(head.activation.movies.have, head.activation.movies.need)}
@@ -398,7 +435,9 @@
 					</div>
 					<div class="gauge">
 						<div class="gl">
-							<span>{head.mode === 'pairwise' ? 'Pairs' : 'Labels'}</span><span class="mono">{head.activation.labels.have}/{head.activation.labels.need}</span>
+							<span>{head.mode === 'pairwise' ? 'Pairs' : 'Labels'}</span><span class="mono"
+								>{head.activation.labels.have}/{head.activation.labels.need}</span
+							>
 						</div>
 						<ProgressBar
 							value={pct(head.activation.labels.have, head.activation.labels.need)}
@@ -423,10 +462,18 @@
 	<div class="train-cols">
 		<section class="train-card">
 			<h3>Initial training</h3>
-			<p class="card-note">Rebuild the active taste profile from your curated folder or deployed library posters.</p>
+			<p class="card-note">
+				Rebuild the active taste profile from your curated folder or deployed library posters.
+			</p>
 			<div class="scope-row">
 				{#each SOURCES as s (s.id)}
-					<button class="scope" class:on={source === s.id} disabled={rebuilding} onclick={() => (source = s.id)} title={s.hint}>
+					<button
+						class="scope"
+						class:on={source === s.id}
+						disabled={rebuilding}
+						onclick={() => (source = s.id)}
+						title={s.hint}
+					>
 						{s.label}
 						<small>{s.hint}</small>
 					</button>
@@ -447,12 +494,21 @@
 
 		<section class="train-card">
 			<h3>Train the Key Art Engine</h3>
-			<p class="card-note">Picks accumulate labels automatically. Train the learned ranker whenever you want to fold in your latest choices.</p>
+			<p class="card-note">
+				Picks accumulate labels automatically. Train the learned ranker whenever you want to fold in
+				your latest choices.
+			</p>
 			{#if headTraining}
-				<RunProgress detail={headDetailProgress} status={headStatus} title="Training Key Art Engine" />
+				<RunProgress
+					detail={headDetailProgress}
+					status={headStatus}
+					title="Training Key Art Engine"
+				/>
 			{/if}
 			{#if !ready}
-				<div class="hint">Needs more data to activate. Keep approving posters to reach the thresholds above.</div>
+				<div class="hint">
+					Needs more data to activate. Keep approving posters to reach the thresholds above.
+				</div>
 			{/if}
 			<button class="btn-gold" onclick={startHead} disabled={headTraining || !ready}>
 				{headTraining ? 'Training…' : 'Train Key Art Engine'}
@@ -470,7 +526,14 @@
 			</div>
 			<div class="artifact-list">
 				{#each profiles as profile (profile.id)}
-					<div class="artifact-row" class:selected={selectedProfileId === profile.id} onclick={() => loadProfileDetail(profile.id)} onkeydown={(event) => event.key === 'Enter' && loadProfileDetail(profile.id)} tabindex="0" role="button">
+					<div
+						class="artifact-row"
+						class:selected={selectedProfileId === profile.id}
+						onclick={() => loadProfileDetail(profile.id)}
+						onkeydown={(event) => event.key === 'Enter' && loadProfileDetail(profile.id)}
+						tabindex="0"
+						role="button"
+					>
 						<div class="artifact-main">
 							<div class="artifact-title">
 								<strong>{profile.label}</strong>
@@ -487,9 +550,30 @@
 							<div class="artifact-date">Updated {fmtDate(profile.updated_at)}</div>
 						</div>
 						<div class="artifact-actions">
-							<button class="mini-btn" onclick={(event) => { event.stopPropagation(); manageProfile('activate', profile.id); }} disabled={profile.status === 'active'}>Activate</button>
-							<button class="mini-btn" onclick={(event) => { event.stopPropagation(); manageProfile('archive', profile.id); }} disabled={profile.status !== 'active'}>Archive</button>
-							<button class="mini-btn danger" onclick={(event) => { event.stopPropagation(); manageProfile('delete', profile.id); }} disabled={profile.status === 'active'}>Delete</button>
+							<button
+								class="mini-btn"
+								onclick={(event) => {
+									event.stopPropagation();
+									manageProfile('activate', profile.id);
+								}}
+								disabled={profile.status === 'active'}>Activate</button
+							>
+							<button
+								class="mini-btn"
+								onclick={(event) => {
+									event.stopPropagation();
+									manageProfile('archive', profile.id);
+								}}
+								disabled={profile.status !== 'active'}>Archive</button
+							>
+							<button
+								class="mini-btn danger"
+								onclick={(event) => {
+									event.stopPropagation();
+									manageProfile('delete', profile.id);
+								}}
+								disabled={profile.status === 'active'}>Delete</button
+							>
 						</div>
 					</div>
 				{/each}
@@ -509,9 +593,15 @@
 					<div class="detail-head">
 						<div>
 							<h4>{profileDetail.label}</h4>
-							<div class="artifact-date">Created {fmtDate(profileDetail.created_at)} · Activated {fmtDate(profileDetail.activated_at)}</div>
+							<div class="artifact-date">
+								Created {fmtDate(profileDetail.created_at)} · Activated {fmtDate(
+									profileDetail.activated_at
+								)}
+							</div>
 						</div>
-						<span class="badge" class:active={profileDetail.status === 'active'}>{profileDetail.status}</span>
+						<span class="badge" class:active={profileDetail.status === 'active'}
+							>{profileDetail.status}</span
+						>
 					</div>
 					<div class="detail-metrics">
 						<span>{profileDetail.summary.exemplars ?? 0} exemplars</span>
@@ -552,8 +642,18 @@
 						<div class="detail-list exemplars">
 							{#each profileExemplars as exemplar (exemplar.name)}
 								<div class="detail-row exemplar-row">
-									<span>{exemplar.title}{exemplar.year ? ` (${exemplar.year})` : ''}{exemplar.is_duplicate ? ` · dup x${exemplar.duplicate_count}` : ''}</span>
-									<button class="mini-btn danger" onclick={() => removeExemplar(exemplar.name)} disabled={profileDetail.status !== 'active'}>Remove</button>
+									<span
+										>{exemplar.title}{exemplar.year
+											? ` (${exemplar.year})`
+											: ''}{exemplar.is_duplicate
+											? ` · dup x${exemplar.duplicate_count}`
+											: ''}</span
+									>
+									<button
+										class="mini-btn danger"
+										onclick={() => removeExemplar(exemplar.name)}
+										disabled={profileDetail.status !== 'active'}>Remove</button
+									>
 								</div>
 							{/each}
 						</div>
@@ -571,7 +671,14 @@
 			</div>
 			<div class="artifact-list">
 				{#each heads as managedHead (managedHead.id)}
-					<div class="artifact-row" class:selected={selectedHeadId === managedHead.id} onclick={() => loadHeadDetail(managedHead.id)} onkeydown={(event) => event.key === 'Enter' && loadHeadDetail(managedHead.id)} tabindex="0" role="button">
+					<div
+						class="artifact-row"
+						class:selected={selectedHeadId === managedHead.id}
+						onclick={() => loadHeadDetail(managedHead.id)}
+						onkeydown={(event) => event.key === 'Enter' && loadHeadDetail(managedHead.id)}
+						tabindex="0"
+						role="button"
+					>
 						<div class="artifact-main">
 							<div class="artifact-title">
 								<strong>{managedHead.label}</strong>
@@ -587,9 +694,29 @@
 							<div class="artifact-date">Trained {fmtDate(managedHead.trained_at)}</div>
 						</div>
 						<div class="artifact-actions">
-							<button class="mini-btn" onclick={(event) => { event.stopPropagation(); manageHead('activate', managedHead.id); }} disabled={managedHead.status === 'active'}>Activate</button>
-							<button class="mini-btn" onclick={(event) => { event.stopPropagation(); manageHead('archive', managedHead.id); }} disabled={managedHead.status !== 'active'}>Archive</button>
-							<button class="mini-btn danger" onclick={(event) => { event.stopPropagation(); manageHead('delete', managedHead.id); }}>Delete</button>
+							<button
+								class="mini-btn"
+								onclick={(event) => {
+									event.stopPropagation();
+									manageHead('activate', managedHead.id);
+								}}
+								disabled={managedHead.status === 'active'}>Activate</button
+							>
+							<button
+								class="mini-btn"
+								onclick={(event) => {
+									event.stopPropagation();
+									manageHead('archive', managedHead.id);
+								}}
+								disabled={managedHead.status !== 'active'}>Archive</button
+							>
+							<button
+								class="mini-btn danger"
+								onclick={(event) => {
+									event.stopPropagation();
+									manageHead('delete', managedHead.id);
+								}}>Delete</button
+							>
 						</div>
 					</div>
 				{/each}
@@ -609,14 +736,20 @@
 					<div class="detail-head">
 						<div>
 							<h4>{headDetail.label}</h4>
-							<div class="artifact-date">Created {fmtDate(headDetail.created_at)} · Trained {fmtDate(headDetail.trained_at)}</div>
+							<div class="artifact-date">
+								Created {fmtDate(headDetail.created_at)} · Trained {fmtDate(headDetail.trained_at)}
+							</div>
 						</div>
-						<span class="badge" class:active={headDetail.status === 'active'}>{headDetail.status}</span>
+						<span class="badge" class:active={headDetail.status === 'active'}
+							>{headDetail.status}</span
+						>
 					</div>
 					<div class="detail-metrics">
 						<span>{headDetail.summary.sample_count ?? 0} samples</span>
 						<span>{headDetail.summary.unique_movies ?? 0} movies</span>
-						<span>{((headDetail.summary.train_accuracy as number | undefined) ?? 0).toFixed(3)} accuracy</span>
+						<span
+							>{((headDetail.summary.train_accuracy as number | undefined) ?? 0).toFixed(3)} accuracy</span
+						>
 					</div>
 					<div class="detail-columns">
 						<div>
@@ -664,6 +797,7 @@
 		<div class="map-header">
 			<div>
 				<span class="map-title">Taste map</span>
+				{#if library === 'tv'}<div class="map-subtitle">Show posters only</div>{/if}
 				{#if mapData?.summary}
 					<div class="map-stats">
 						<span>{mapData.summary.exemplars} exemplars</span>
@@ -682,11 +816,31 @@
 				</button>
 			</div>
 		</div>
-		<TasteMap {mapData} loading={mapLoading} error={mapError} />
+		<TasteMap {mapData} {library} loading={mapLoading} error={mapError} />
 	</div>
 {/if}
 
 <style>
+	.library-switch {
+		display: inline-flex;
+		gap: 4px;
+		padding: 4px;
+		border: 1px solid var(--line);
+		border-radius: 999px;
+		background: var(--panel);
+		margin-bottom: 16px;
+	}
+	.library-switch button {
+		padding: 7px 12px;
+		border-radius: 999px;
+		border: none;
+		background: transparent;
+		color: var(--muted);
+	}
+	.library-switch button.active {
+		background: var(--gold);
+		color: var(--on-gold);
+	}
 	.empty {
 		display: flex;
 		flex-direction: column;

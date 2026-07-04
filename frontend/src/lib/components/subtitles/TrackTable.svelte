@@ -1,10 +1,11 @@
+<!-- eslint-disable @typescript-eslint/no-explicit-any @typescript-eslint/no-unused-vars svelte/require-each-key -->
 <script lang="ts">
 	import type { SubtitleTrack, ContainerCapabilities, SubtitlePlan } from '$lib/api/types';
 	import TrackRow from './TrackRow.svelte';
 	import PlanReview from './PlanReview.svelte';
 	import ConfirmDialog from '../ConfirmDialog.svelte';
 	import ProgressBar from '../ProgressBar.svelte';
-		import { createPlan, extractTrack, getInventory } from '$lib/api/subtitles';
+	import { createPlan, extractTrack, getInventory } from '$lib/api/subtitles';
 	import { confirmJob, cancelJob } from '$lib/api/media-jobs';
 	import { subscribe } from '$lib/sse';
 	import { toast } from '$lib/toast';
@@ -54,35 +55,41 @@
 	let progressMessage = $state('');
 
 	// Select helpers
-	let selectedTracks = $derived(tracks.filter(t => selectedIds.has(t.id)));
+	let selectedTracks = $derived(tracks.filter((t) => selectedIds.has(t.id)));
 	let allSelected = $derived(tracks.length > 0 && selectedIds.size === tracks.length);
 
 	function toggleSelectAll() {
 		if (allSelected) {
 			selectedIds.clear();
 		} else {
-			tracks.forEach(t => selectedIds.add(t.id));
+			tracks.forEach((t) => selectedIds.add(t.id));
 		}
 		lastSelectedIndex = null;
 	}
 
 	function selectSource(source: 'embedded' | 'external') {
-		tracks.forEach(t => {
+		tracks.forEach((t) => {
 			if (t.source === source) selectedIds.add(t.id);
 		});
 	}
 
 	function selectFlag(flag: 'is_forced' | 'is_sdh' | 'is_commentary') {
-		tracks.forEach(t => {
+		tracks.forEach((t) => {
 			if (t[flag]) selectedIds.add(t.id);
 		});
 	}
 
 	function applyWhitelist() {
-		const codes = whitelistText.split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+		const codes = whitelistText
+			.split(',')
+			.map((s) => s.trim().toLowerCase())
+			.filter(Boolean);
 		if (codes.length === 0) return;
-		tracks.forEach(t => {
-			if (codes.includes(t.language_tag.toLowerCase()) || codes.includes((t.language_raw || '').toLowerCase())) {
+		tracks.forEach((t) => {
+			if (
+				codes.includes(t.language_tag.toLowerCase()) ||
+				codes.includes((t.language_raw || '').toLowerCase())
+			) {
 				selectedIds.add(t.id);
 			}
 		});
@@ -90,10 +97,16 @@
 	}
 
 	function applyBlacklist() {
-		const codes = blacklistText.split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+		const codes = blacklistText
+			.split(',')
+			.map((s) => s.trim().toLowerCase())
+			.filter(Boolean);
 		if (codes.length === 0) return;
-		tracks.forEach(t => {
-			if (codes.includes(t.language_tag.toLowerCase()) || codes.includes((t.language_raw || '').toLowerCase())) {
+		tracks.forEach((t) => {
+			if (
+				codes.includes(t.language_tag.toLowerCase()) ||
+				codes.includes((t.language_raw || '').toLowerCase())
+			) {
 				selectedIds.delete(t.id);
 			}
 		});
@@ -136,64 +149,64 @@
 		}
 	}
 
-		// Subscribes to and monitors a backend job until terminal state.
-		// Listens for generic SSE ``message`` events (the default for unnamed
-		// ``data:`` lines) plus the terminal ``done`` event.  The backend emits
-		// ``{stage, state, message, progress}`` on every state change and
-		// ``event: done`` with status when the job finishes.
-		function monitorJob(jobId: string, onDone: () => Promise<void> | void): Promise<void> {
-			return new Promise((resolve, reject) => {
-				const unsub = subscribe(
-					`/api/media-jobs/${jobId}/events`,
-					['message', 'done'],
-					(type, data: any) => {
-						if (type === 'message') {
-							if (data?.stage) progressStage = data.stage;
-							if (data?.message) progressMessage = data.message;
-							// Drive the bar from the stage sequence:
-							//   preflight→remux→validate→replace→done
-							const stage = data?.stage;
-							const state = data?.state;
-							if (stage && state) {
-								if (stage === 'preflight') progressPercent = state === 'start' ? 5 : 15;
-								else if (stage === 'remux') progressPercent = state === 'start' ? 20 : 65;
-								else if (stage === 'validate') progressPercent = state === 'start' ? 70 : 80;
-								else if (stage === 'replace') progressPercent = 85;
-								else if (stage === 'external') progressPercent = 92;
-								else if (stage === 'done') progressPercent = 100;
-								else if (stage === 'start') progressPercent = 1;
-							}
-						} else if (type === 'done') {
-							unsub();
-							const status = data?.status ?? '';
-							if (status === 'succeeded' || status === 'completed' || !status) {
-								progressPercent = 100;
-								resolve(onDone());
-							} else {
-								reject(new Error(data?.error || `Job ended with status: ${status}`));
-							}
+	// Subscribes to and monitors a backend job until terminal state.
+	// Listens for generic SSE ``message`` events (the default for unnamed
+	// ``data:`` lines) plus the terminal ``done`` event.  The backend emits
+	// ``{stage, state, message, progress}`` on every state change and
+	// ``event: done`` with status when the job finishes.
+	function monitorJob(jobId: string, onDone: () => Promise<void> | void): Promise<void> {
+		return new Promise((resolve, reject) => {
+			const unsub = subscribe(
+				`/api/media-jobs/${jobId}/events`,
+				['message', 'done'],
+				(type, data: any) => {
+					if (type === 'message') {
+						if (data?.stage) progressStage = data.stage;
+						if (data?.message) progressMessage = data.message;
+						// Drive the bar from the stage sequence:
+						//   preflight→remux→validate→replace→done
+						const stage = data?.stage;
+						const state = data?.state;
+						if (stage && state) {
+							if (stage === 'preflight') progressPercent = state === 'start' ? 5 : 15;
+							else if (stage === 'remux') progressPercent = state === 'start' ? 20 : 65;
+							else if (stage === 'validate') progressPercent = state === 'start' ? 70 : 80;
+							else if (stage === 'replace') progressPercent = 85;
+							else if (stage === 'external') progressPercent = 92;
+							else if (stage === 'done') progressPercent = 100;
+							else if (stage === 'start') progressPercent = 1;
+						}
+					} else if (type === 'done') {
+						unsub();
+						const status = data?.status ?? '';
+						if (status === 'succeeded' || status === 'completed' || !status) {
+							progressPercent = 100;
+							resolve(onDone());
+						} else {
+							reject(new Error(data?.error || `Job ended with status: ${status}`));
 						}
 					}
-				);
-				// If the EventSource connection itself fails, reject so the UI
-				// doesn't hang forever.
-				setTimeout(() => {
-					if (progressPercent < 100 && progressPercent > 0) {
-						// The job may have finished while we were disconnected — poll once.
-						fetch(`/api/media-jobs/${jobId}`)
-							.then((r) => r.json())
-							.then((j) => {
-								if (j.status === 'succeeded' || j.status === 'completed') {
-									unsub();
-									progressPercent = 100;
-									resolve(onDone());
-								}
-							})
-							.catch(() => {});
-					}
-				}, 8000);
-			});
-		}
+				}
+			);
+			// If the EventSource connection itself fails, reject so the UI
+			// doesn't hang forever.
+			setTimeout(() => {
+				if (progressPercent < 100 && progressPercent > 0) {
+					// The job may have finished while we were disconnected — poll once.
+					fetch(`/api/media-jobs/${jobId}`)
+						.then((r) => r.json())
+						.then((j) => {
+							if (j.status === 'succeeded' || j.status === 'completed') {
+								unsub();
+								progressPercent = 100;
+								resolve(onDone());
+							}
+						})
+						.catch(() => {});
+				}
+			}, 8000);
+		});
+	}
 
 	function cleanupAndRefresh() {
 		submitting = false;
@@ -214,7 +227,7 @@
 		try {
 			let edits: any[] = [];
 			if (selectedOp === 'metadata') {
-				edits = selectedTracks.map(t => {
+				edits = selectedTracks.map((t) => {
 					const edit: any = { track_id: t.id };
 					if (metaTitle.trim()) edit.title = metaTitle;
 					if (metaLang.trim()) edit.language_tag = metaLang;
@@ -226,11 +239,16 @@
 				});
 			}
 
-			const planOp = selectedOp === 'remove' ? 'subtitle_remove' : selectedOp === 'embed' ? 'subtitle_embed' : 'subtitle_metadata';
+			const planOp =
+				selectedOp === 'remove'
+					? 'subtitle_remove'
+					: selectedOp === 'embed'
+						? 'subtitle_embed'
+						: 'subtitle_metadata';
 
 			const plan = await createPlan(fetch, mediaFileId, {
 				operation: planOp,
-				track_ids: selectedTracks.map(t => t.id),
+				track_ids: selectedTracks.map((t) => t.id),
 				edits,
 				backup: true,
 				allow_break: false
@@ -268,65 +286,65 @@
 		}
 	}
 
-		// Multi-step Extract execution
-		async function handleExtract() {
-			if (selectedTracks.length !== 1) return;
-			const track = selectedTracks[0];
-			submitting = true;
-			progressMessage = `Extracting track ${track.language_tag.toUpperCase()}...`;
-			progressPercent = 10;
+	// Multi-step Extract execution
+	async function handleExtract() {
+		if (selectedTracks.length !== 1) return;
+		const track = selectedTracks[0];
+		submitting = true;
+		progressMessage = `Extracting track ${track.language_tag.toUpperCase()}...`;
+		progressPercent = 10;
 
-			try {
-				const res = await extractTrack(fetch, mediaFileId, track.id);
-				activeJobId = res.job_id;
-				progressMessage = 'Extraction started...';
+		try {
+			const res = await extractTrack(fetch, mediaFileId, track.id);
+			activeJobId = res.job_id;
+			progressMessage = 'Extraction started...';
 
-				await monitorJob(res.job_id, async () => {
-					if (deleteOriginalAfterExtract) {
-						progressMessage = 'Extraction finished. Removing original embedded track (remuxing)...';
-						progressPercent = 85;
+			await monitorJob(res.job_id, async () => {
+				if (deleteOriginalAfterExtract) {
+					progressMessage = 'Extraction finished. Removing original embedded track (remuxing)...';
+					progressPercent = 85;
 
-						// Re-fetch the inventory — the extract handler rescans,
-						// which replaces all track IDs.  Find the embedded track
-						// by its stable attributes (tool_track_id + language).
-						const fresh = await getInventory(fetch, mediaFileId);
-						const embedded = fresh.tracks.find(
-							(t: SubtitleTrack) =>
-								t.source === 'embedded' &&
-								t.tool_track_id === track.tool_track_id &&
-								t.language_tag === track.language_tag
-						);
-						if (!embedded) {
-							toast('Original track not found after extraction — it may already be gone.', 'info');
-							cleanupAndRefresh();
-							return;
-						}
-
-						const plan = await createPlan(fetch, mediaFileId, {
-							operation: 'subtitle_remove',
-							track_ids: [embedded.id],
-							backup: true,
-							allow_break: false
-						});
-
-						progressMessage = 'Confirming original track removal...';
-						const confirmRes = await confirmJob(fetch, plan.job_id);
-						activeJobId = plan.job_id;
-
-						await monitorJob(plan.job_id, () => {
-							toast('Track extracted and original embedded track removed successfully', 'good');
-							cleanupAndRefresh();
-						});
-					} else {
-						toast('Track extracted successfully', 'good');
+					// Re-fetch the inventory — the extract handler rescans,
+					// which replaces all track IDs.  Find the embedded track
+					// by its stable attributes (tool_track_id + language).
+					const fresh = await getInventory(fetch, mediaFileId);
+					const embedded = fresh.tracks.find(
+						(t: SubtitleTrack) =>
+							t.source === 'embedded' &&
+							t.tool_track_id === track.tool_track_id &&
+							t.language_tag === track.language_tag
+					);
+					if (!embedded) {
+						toast('Original track not found after extraction — it may already be gone.', 'info');
 						cleanupAndRefresh();
+						return;
 					}
-				});
-			} catch (e: any) {
-				toast(`Extraction failed: ${e.message}`, 'bad');
-				submitting = false;
-			}
+
+					const plan = await createPlan(fetch, mediaFileId, {
+						operation: 'subtitle_remove',
+						track_ids: [embedded.id],
+						backup: true,
+						allow_break: false
+					});
+
+					progressMessage = 'Confirming original track removal...';
+					const confirmRes = await confirmJob(fetch, plan.job_id);
+					activeJobId = plan.job_id;
+
+					await monitorJob(plan.job_id, () => {
+						toast('Track extracted and original embedded track removed successfully', 'good');
+						cleanupAndRefresh();
+					});
+				} else {
+					toast('Track extracted successfully', 'good');
+					cleanupAndRefresh();
+				}
+			});
+		} catch (e: any) {
+			toast(`Extraction failed: ${e.message}`, 'bad');
+			submitting = false;
 		}
+	}
 
 	// Cancel running job
 	async function handleCancelJob() {
@@ -361,7 +379,7 @@
 		confirmLabel="Execute Plan"
 		tone="gold"
 		onConfirm={handleConfirmPlan}
-		onCancel={() => planResult = null}
+		onCancel={() => (planResult = null)}
 	>
 		<PlanReview plan={planResult} />
 	</ConfirmDialog>
@@ -394,11 +412,7 @@
 		<thead>
 			<tr>
 				<th class="checkbox-cell">
-					<input
-						type="checkbox"
-						checked={allSelected}
-						onclick={toggleSelectAll}
-					/>
+					<input type="checkbox" checked={allSelected} onclick={toggleSelectAll} />
 				</th>
 				<th>Source</th>
 				<th>Language</th>
@@ -426,13 +440,15 @@
 		<div class="operation-picker">
 			<span class="selected-count">{selectedTracks.length} track(s) selected</span>
 			<div class="picker-btns">
-				{#if selectedTracks.every(t => t.source === 'embedded')}
+				{#if selectedTracks.every((t) => t.source === 'embedded')}
 					<button
 						class="action-btn"
 						class:active={selectedOp === 'remove'}
-						onclick={() => selectedOp = 'remove'}
+						onclick={() => (selectedOp = 'remove')}
 						disabled={!capabilities.can_remove}
-						title={!capabilities.can_remove ? 'Container capabilities do not allow removing tracks' : ''}
+						title={!capabilities.can_remove
+							? 'Container capabilities do not allow removing tracks'
+							: ''}
 					>
 						🗑️ Remove
 					</button>
@@ -440,19 +456,21 @@
 						<button
 							class="action-btn"
 							class:active={selectedOp === 'extract'}
-							onclick={() => selectedOp = 'extract'}
+							onclick={() => (selectedOp = 'extract')}
 						>
 							📦 Extract to Sidecar
 						</button>
 					{/if}
 				{/if}
-				{#if selectedTracks.every(t => t.source === 'external')}
+				{#if selectedTracks.every((t) => t.source === 'external')}
 					<button
 						class="action-btn"
 						class:active={selectedOp === 'embed'}
-						onclick={() => selectedOp = 'embed'}
+						onclick={() => (selectedOp = 'embed')}
 						disabled={!capabilities.can_embed_text}
-						title={!capabilities.can_embed_text ? 'Container capabilities do not allow embedding tracks' : ''}
+						title={!capabilities.can_embed_text
+							? 'Container capabilities do not allow embedding tracks'
+							: ''}
 					>
 						📥 Embed
 					</button>
@@ -460,9 +478,11 @@
 				<button
 					class="action-btn"
 					class:active={selectedOp === 'metadata'}
-					onclick={() => selectedOp = 'metadata'}
+					onclick={() => (selectedOp = 'metadata')}
 					disabled={!capabilities.can_edit_metadata}
-					title={!capabilities.can_edit_metadata ? 'Container capabilities do not allow editing metadata' : ''}
+					title={!capabilities.can_edit_metadata
+						? 'Container capabilities do not allow editing metadata'
+						: ''}
 				>
 					🏷️ Edit Metadata
 				</button>
@@ -471,7 +491,11 @@
 
 		{#if selectedOp === 'remove'}
 			<div class="op-panel mq-rise">
-				<p>Removes the selected embedded track(s) from the container. This operation remuxes the file via <code>mkvmerge</code> or <code>ffmpeg</code>, preserving audio/video streams at full untouched quality.</p>
+				<p>
+					Removes the selected embedded track(s) from the container. This operation remuxes the file
+					via <code>mkvmerge</code> or <code>ffmpeg</code>, preserving audio/video streams at full
+					untouched quality.
+				</p>
 				<div class="op-foot">
 					<button class="btn primary" onclick={handleCreatePlan}>Create Removal Plan</button>
 				</div>
@@ -480,7 +504,11 @@
 
 		{#if selectedOp === 'embed'}
 			<div class="op-panel mq-rise">
-				<p>Embeds selected external subtitle sidecars into the media container. Original sidecar files are deleted after completion by default. Audio/video streams remain untouched and at full quality.</p>
+				<p>
+					Embeds selected external subtitle sidecars into the media container. Original sidecar
+					files are deleted after completion by default. Audio/video streams remain untouched and at
+					full quality.
+				</p>
 				<div class="op-foot">
 					<button class="btn primary" onclick={handleCreatePlan}>Create Embed Plan</button>
 				</div>
@@ -489,10 +517,15 @@
 
 		{#if selectedOp === 'extract'}
 			<div class="op-panel mq-rise">
-				<p>Extracts the selected embedded subtitle track into a Plex/Jellyfin compatible sidecar file next to the video. Audio/video streams remain untouched.</p>
+				<p>
+					Extracts the selected embedded subtitle track into a Plex/Jellyfin compatible sidecar file
+					next to the video. Audio/video streams remain untouched.
+				</p>
 				<div class="checkbox-option">
 					<input type="checkbox" id="del-orig" bind:checked={deleteOriginalAfterExtract} />
-					<label for="del-orig">Delete original embedded track after extraction (clean extract via remux)</label>
+					<label for="del-orig"
+						>Delete original embedded track after extraction (clean extract via remux)</label
+					>
 				</div>
 				<div class="op-foot">
 					<button class="btn primary" onclick={handleExtract}>Execute Extraction</button>
@@ -505,7 +538,12 @@
 				<div class="form-grid">
 					<div class="field">
 						<label for="meta-title">Title</label>
-						<input type="text" id="meta-title" placeholder="e.g. English SDH" bind:value={metaTitle} />
+						<input
+							type="text"
+							id="meta-title"
+							placeholder="e.g. English SDH"
+							bind:value={metaTitle}
+						/>
 					</div>
 					<div class="field">
 						<label for="meta-lang">Language Tag</label>
@@ -768,7 +806,8 @@
 		text-transform: uppercase;
 		letter-spacing: 0.03em;
 	}
-	.field input, .field select {
+	.field input,
+	.field select {
 		background: var(--panel2);
 		border: 1px solid var(--line);
 		border-radius: 5px;
@@ -777,7 +816,8 @@
 		color: var(--text);
 		outline: none;
 	}
-	.field input:focus, .field select:focus {
+	.field input:focus,
+	.field select:focus {
 		border-color: var(--gold);
 	}
 

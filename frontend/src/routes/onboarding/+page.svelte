@@ -118,9 +118,9 @@
 	<!-- Intro / begin -->
 	<div class="intro-card">
 		<p>
-			The engine starts knowing nothing about your taste. Rank a handful of movies — drag
-			posters into your preferred order, drop the ones you dislike into <em>Hate</em> — and it
-			learns what good key art means to you.
+			The engine starts knowing nothing about your taste. Rank a handful of movies — drag posters
+			into your preferred order, drop the ones you dislike into <em>Hate</em> — and it learns what good
+			key art means to you.
 		</p>
 		<ul>
 			<li><strong>{status?.min ?? 15}</strong> movies minimum to activate</li>
@@ -188,8 +188,9 @@
 		<!-- Library path: ranking happens on the run-results pages -->
 		<div class="note">
 			We queued a genre-diverse batch of your library to rank. Review and rank them from the
-			<a class="link" href="/pipeline/movies?tab=review">Pipeline review queue</a> — each one you rank counts toward
-			the meter above. Come back here to activate when you hit {status?.min ?? 15}.
+			<a class="link" href="/pipeline/movies?tab=review">Pipeline review queue</a> — each one you
+			rank counts toward the meter above. Come back here to activate when you hit {status?.min ??
+				15}.
 		</div>
 	{/if}
 {/if}

@@ -22,7 +22,10 @@ export function scanSubtitles(fetch: Fetch, mediaFileId: number): Promise<Subtit
 }
 
 export function previewTrack(fetch: Fetch, mediaFileId: number, trackId: string): Promise<string> {
-	if (useMocks()) return Promise.resolve('1\n00:00:01,000 --> 00:00:04,000\n[Mock Preview] Subtitle content line.');
+	if (useMocks())
+		return Promise.resolve(
+			'1\n00:00:01,000 --> 00:00:04,000\n[Mock Preview] Subtitle content line.'
+		);
 	return apiGet<string>(fetch, `/media-files/${mediaFileId}/subtitles/${trackId}/preview`);
 }
 
@@ -111,7 +114,10 @@ export function createPlan(
 			operation: request.operation,
 			before: {},
 			after: {},
-			warnings: request.operation === 'subtitle_remove' ? ['This will permanently remux the video file.'] : [],
+			warnings:
+				request.operation === 'subtitle_remove'
+					? ['This will permanently remux the video file.']
+					: [],
 			capabilities: {
 				can_remove: true,
 				can_embed_text: true,
@@ -124,7 +130,12 @@ export function createPlan(
 			}
 		});
 	}
-	return apiSend<SubtitlePlan>(fetch, 'POST', `/media-files/${mediaFileId}/subtitle-plans`, request);
+	return apiSend<SubtitlePlan>(
+		fetch,
+		'POST',
+		`/media-files/${mediaFileId}/subtitle-plans`,
+		request
+	);
 }
 
 export function extractTrack(

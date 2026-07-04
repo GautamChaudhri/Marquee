@@ -1,3 +1,4 @@
+<!-- eslint-disable @typescript-eslint/no-explicit-any svelte/require-each-key -->
 <script lang="ts">
 	import type { SubtitlePlan } from '$lib/api/types';
 	import { bytesH } from '$lib/display';
@@ -14,6 +15,15 @@
 
 	// Hardlink warning
 	let isHardlinked = $derived((plan as any).hardlinked ?? false);
+
+	type PlanWarning = {
+		code?: string;
+		message?: string;
+	};
+
+	function asPlanWarning(warning: unknown): PlanWarning {
+		return warning && typeof warning === 'object' ? (warning as PlanWarning) : {};
+	}
 </script>
 
 <div class="plan-review">
@@ -23,7 +33,10 @@
 			<span class="icon">⚠️</span>
 			<div class="content">
 				<strong>Hardlink Detected</strong>
-				<p>This media file is a hardlink (e.g. from Radarr/Sonarr seeding). Mutating it directly will break the link and copy the file, doubling disk usage if seeding continues.</p>
+				<p>
+					This media file is a hardlink (e.g. from Radarr/Sonarr seeding). Mutating it directly will
+					break the link and copy the file, doubling disk usage if seeding continues.
+				</p>
 			</div>
 		</div>
 	{/if}
@@ -33,12 +46,13 @@
 		<div class="warnings-section">
 			<h5>Warnings & Safety Alerts</h5>
 			{#each warnings as warning}
+				{@const item = asPlanWarning(warning)}
 				<div class="alert warning">
 					<span class="icon">⚠️</span>
 					<div class="content">
-						<strong>{warning.code ? warning.code.replace(/_/g, ' ').toUpperCase() : 'Warning'}</strong>
-						{#if warning.message}
-							<p>{warning.message}</p>
+						<strong>{item.code ? item.code.replace(/_/g, ' ').toUpperCase() : 'Warning'}</strong>
+						{#if item.message}
+							<p>{item.message}</p>
 						{/if}
 					</div>
 				</div>
@@ -106,13 +120,21 @@
 				</div>
 				<div class="metric">
 					<span class="label">Free Disk Space</span>
-					<span class="val" class:low-space={storage.free_bytes != null && storage.estimated_temp_bytes != null && storage.free_bytes < (storage.estimated_temp_bytes * 1.5)}>
+					<span
+						class="val"
+						class:low-space={storage.free_bytes != null &&
+							storage.estimated_temp_bytes != null &&
+							storage.free_bytes < storage.estimated_temp_bytes * 1.5}
+					>
 						{bytesH(storage.free_bytes || 0)}
 					</span>
 				</div>
 			</div>
-			{#if storage.free_bytes != null && storage.estimated_temp_bytes != null && storage.free_bytes < (storage.estimated_temp_bytes * 1.5)}
-				<p class="space-warning">⚠️ Free disk space is low relative to the required temporary size. Remuxing might fail due to lack of space.</p>
+			{#if storage.free_bytes != null && storage.estimated_temp_bytes != null && storage.free_bytes < storage.estimated_temp_bytes * 1.5}
+				<p class="space-warning">
+					⚠️ Free disk space is low relative to the required temporary size. Remuxing might fail due
+					to lack of space.
+				</p>
 			{/if}
 		</div>
 	{/if}
@@ -240,8 +262,14 @@
 		border-radius: 2px;
 		text-transform: uppercase;
 	}
-	.pill.forced { background: rgba(255, 166, 87, 0.15); color: #ffa657; }
-	.pill.sdh { background: rgba(86, 211, 100, 0.15); color: #56d364; }
+	.pill.forced {
+		background: rgba(255, 166, 87, 0.15);
+		color: #ffa657;
+	}
+	.pill.sdh {
+		background: rgba(86, 211, 100, 0.15);
+		color: #56d364;
+	}
 
 	.empty-track-list {
 		color: var(--faint);

@@ -172,7 +172,11 @@
 			{#each hatePile as item (item.id)}
 				{@const g = gradientFor(item.filenames[0] ?? item.key)}
 				<div class="cell small" animate:flip={{ duration: FLIP_MS }}>
-					<div class="card hated" aria-label={item.label || item.key} style="--c0:{g[0]}; --c1:{g[1]}">
+					<div
+						class="card hated"
+						aria-label={item.label || item.key}
+						style="--c0:{g[0]}; --c1:{g[1]}"
+					>
 						<div class="art">
 							<img src={item.posterUrl} alt={item.label} draggable="false" />
 							{#if item.filenames.length > 1}

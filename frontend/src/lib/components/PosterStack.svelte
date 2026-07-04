@@ -21,9 +21,7 @@
 	const representative = $derived(members[0]);
 	const showBadge = $derived(count > 1);
 	const g = $derived(gradientFor(representative?.orig_filename ?? ''));
-	const tag = $derived(
-		representative.stack_rank != null ? String(representative.stack_rank) : ''
-	);
+	const tag = $derived(representative.stack_rank != null ? String(representative.stack_rank) : '');
 	let imgFailed = $state(false);
 </script>
 

@@ -61,9 +61,9 @@
 			<a href={`/projection-room/jobs/${job.job_id}`}>
 				<rect
 					x={xFor(job.started_at)}
-					y={y}
+					{y}
 					width={widthFor(job)}
-					height={height}
+					{height}
 					fill={colorFor(job)}
 					fill-opacity="0.18"
 					stroke={colorFor(job)}

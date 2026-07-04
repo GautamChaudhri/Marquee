@@ -1,3 +1,4 @@
+<!-- eslint-disable @typescript-eslint/no-explicit-any svelte/require-each-key -->
 <script lang="ts">
 	import { getGenerators } from '$lib/api/subtitle-generators';
 	import type { SubtitleGenerator } from '$lib/api/types';
@@ -90,7 +91,10 @@
 						</div>
 					{:else}
 						<div class="card-body offline-body">
-							<p>Generator at <code>{gen.url}</code> is currently offline or unreachable. Check if the Subgen container is running and mounted correctly.</p>
+							<p>
+								Generator at <code>{gen.url}</code> is currently offline or unreachable. Check if the
+								Subgen container is running and mounted correctly.
+							</p>
 						</div>
 					{/if}
 				</div>

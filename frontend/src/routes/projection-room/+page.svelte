@@ -35,7 +35,11 @@
 		// eslint-disable-next-line svelte/prefer-svelte-reactivity -- transient query builder
 		const sp = new URLSearchParams(page.url.searchParams);
 		sp.set('tab', id);
-		goto(`/projection-room?${sp.toString()}`, { replaceState: true, keepFocus: true, noScroll: true });
+		goto(`/projection-room?${sp.toString()}`, {
+			replaceState: true,
+			keepFocus: true,
+			noScroll: true
+		});
 	}
 	// ── Live: running jobs (multi-job design/21 pattern) ────────────────────
 	const ACTIVE_KEY = 'marquee:projection-room:activeJobs';
@@ -152,6 +156,7 @@
 	// svelte-ignore state_referenced_locally
 	let hostMetrics = $state<SystemMetrics | null>(data.hostMetrics);
 	let historyWindow = $state<'15m' | '1h' | '6h' | '24h'>('1h');
+	// svelte-ignore state_referenced_locally
 	let hostHistory = $state<SystemMetricsHistory | null>(data.hostHistory);
 	async function refreshHostMetrics() {
 		try {
@@ -205,7 +210,9 @@
 
 	// ── History tab ──────────────────────────────────────────────────────
 	const knownTypes = $derived(
-		[...new Set([...Object.keys(data.byType.by_type), ...data.running.jobs.map((j) => j.type)])].sort()
+		[
+			...new Set([...Object.keys(data.byType.by_type), ...data.running.jobs.map((j) => j.type)])
+		].sort()
 	);
 	const RESOURCE_KEYS = [
 		'gpu',
@@ -261,7 +268,9 @@
 			}
 			if (subjectQuery.trim()) {
 				const q = subjectQuery.trim().toLowerCase();
-				jobs = jobs.filter((j) => (j.subject?.title ?? j.subject?.id ?? '').toLowerCase().includes(q));
+				jobs = jobs.filter((j) =>
+					(j.subject?.title ?? j.subject?.id ?? '').toLowerCase().includes(q)
+				);
 			}
 			historyJobs = jobs;
 		} catch {
@@ -285,7 +294,10 @@
 	});
 </script>
 
-<SectionHeader title="Projection Room" subtitle="Every job the platform is running, queued, or has run — plus live host metrics." />
+<SectionHeader
+	title="Projection Room"
+	subtitle="Every job the platform is running, queued, or has run — plus live host metrics."
+/>
 
 <TabBar {tabs} active={tab} onSelect={setTab} />
 

@@ -65,7 +65,12 @@ export function approveReviewQueueAutoPicks(
 	fetchFn: Fetch,
 	body: { deploy?: boolean } = {}
 ): Promise<ReviewQueueAutoApproveResult> {
-	return apiSend<ReviewQueueAutoApproveResult>(fetchFn, 'POST', '/pipeline/review-queue/approve-auto', body);
+	return apiSend<ReviewQueueAutoApproveResult>(
+		fetchFn,
+		'POST',
+		'/pipeline/review-queue/approve-auto',
+		body
+	);
 }
 
 /** Cross-run aggregates for the Metrics tab. */

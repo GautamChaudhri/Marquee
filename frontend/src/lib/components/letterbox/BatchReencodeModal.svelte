@@ -57,7 +57,10 @@
 		return ENCODER_LABELS[encoder] ?? encoder;
 	}
 
-	function simpleSettings(profile: QualityProfile, encoder: string): {
+	function simpleSettings(
+		profile: QualityProfile,
+		encoder: string
+	): {
 		quality: number | null;
 		preset: string | null;
 	} {
@@ -134,7 +137,9 @@
 				</div>
 				<div class="checks">
 					<label><input type="checkbox" bind:checked={includeHigh} disabled={busy} /> High</label>
-					<label><input type="checkbox" bind:checked={includeMedium} disabled={busy} /> Medium</label>
+					<label
+						><input type="checkbox" bind:checked={includeMedium} disabled={busy} /> Medium</label
+					>
 					<label
 						><input type="checkbox" bind:checked={includeVariable} disabled={busy} /> Variable</label
 					>
@@ -146,7 +151,11 @@
 			<div class="section">
 				<div class="section-head">
 					<span>Encode profile</span>
-					<button class="mini" disabled={busy} onclick={() => (settingsMode = settingsMode === 'simple' ? 'advanced' : 'simple')}>
+					<button
+						class="mini"
+						disabled={busy}
+						onclick={() => (settingsMode = settingsMode === 'simple' ? 'advanced' : 'simple')}
+					>
 						{settingsMode === 'simple' ? 'Advanced' : 'Simple'}
 					</button>
 				</div>

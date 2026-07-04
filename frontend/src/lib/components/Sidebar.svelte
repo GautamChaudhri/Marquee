@@ -14,7 +14,7 @@
 			links: [
 				{ label: 'Dashboard', href: '/dashboard', icon: 'dashboard' },
 				{ label: 'Films', href: '/films', icon: 'film' },
-				{ label: 'Shows', href: '/shows', icon: 'tv' }
+				{ label: 'Television', href: '/television', icon: 'tv' }
 			]
 		},
 		{

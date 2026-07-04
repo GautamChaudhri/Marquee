@@ -5,7 +5,10 @@ import type { OcrLabelRunState, RunResultsResponse } from '$lib/api/types';
 
 export const load: PageLoad = async ({ fetch, params }) => {
 	try {
-		const [run, settings] = await Promise.all([getRunResults(fetch, params.run_id), getSettings(fetch)]);
+		const [run, settings] = await Promise.all([
+			getRunResults(fetch, params.run_id),
+			getSettings(fetch)
+		]);
 		let ocrLabelState: OcrLabelRunState = {
 			run_id: params.run_id,
 			labels: {

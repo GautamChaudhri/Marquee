@@ -1,5 +1,5 @@
 /** Display-model helpers: map raw API fields → labels, tones, gradients. */
-import type { PosterStatus } from './api/types';
+import type { PosterStatus, PosterSummary } from './api/types';
 
 export type Tone =
 	| 'good'
@@ -44,6 +44,13 @@ export const posterStatusMeta: Record<PosterStatus, { label: string; tone: Tone 
 	review: { label: 'Review', tone: 'gold' },
 	missing: { label: 'No poster', tone: 'bad' }
 };
+
+export function posterStatusFromSummary(summary: PosterSummary): PosterStatus {
+	if (!summary.has_poster) return 'missing';
+	if (summary.deployed_at) return 'deployed';
+	if (summary.user_approved) return 'approved';
+	return 'review';
+}
 
 export function toneVar(tone: Tone): string {
 	return tone === 'muted' ? 'var(--faint)' : `var(--${tone})`;

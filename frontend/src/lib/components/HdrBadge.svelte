@@ -1,9 +1,6 @@
 <script lang="ts">
 	import type { HdrKind } from '$lib/api/types';
-	let {
-		kind = null,
-		kinds = []
-	}: { kind?: HdrKind | null; kinds?: HdrKind[] } = $props();
+	let { kind = null, kinds = [] }: { kind?: HdrKind | null; kinds?: HdrKind[] } = $props();
 
 	const META: Record<HdrKind, { label: string; v: string }> = {
 		hdr: { label: 'HDR', v: '--good' },

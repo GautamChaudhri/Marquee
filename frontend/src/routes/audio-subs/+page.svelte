@@ -1,3 +1,4 @@
+<!-- eslint-disable @typescript-eslint/no-explicit-any -->
 <script lang="ts">
 	import { browser } from '$app/environment';
 	import SectionHeader from '$lib/components/SectionHeader.svelte';
@@ -26,7 +27,9 @@
 	let activeTab = $state('inventory');
 
 	// Local reactive state for movies
+	// svelte-ignore state_referenced_locally
 	let movies = $state(data.movies?.items || []);
+	// svelte-ignore state_referenced_locally
 	let settings = $state(data.settings);
 	let scanningLibrary = $state(false);
 	let savingPreferences = $state(false);
@@ -49,14 +52,12 @@
 			preferredAudio = (
 				sub.preferred_audio_languages ||
 				sub.effective_preferred_audio_languages ||
-				sub.preferred_languages ||
-				['en']
+				sub.preferred_languages || ['en']
 			).join(', ');
 			preferredSubtitles = (
 				sub.preferred_subtitle_languages ||
 				sub.effective_preferred_subtitle_languages ||
-				sub.preferred_languages ||
-				['en']
+				sub.preferred_languages || ['en']
 			).join(', ');
 			separatePreferred = Boolean(
 				sub.preferred_audio_languages || sub.preferred_subtitle_languages
@@ -160,7 +161,11 @@
 {/snippet}
 
 <div class="page-container">
-	<SectionHeader title="Audio and Subtitle Management" subtitle="Manage container embedded and external audio and subtitle tracks across your library." action={pageActions} />
+	<SectionHeader
+		title="Audio and Subtitle Management"
+		subtitle="Manage container embedded and external audio and subtitle tracks across your library."
+		action={pageActions}
+	/>
 
 	{#if data.error}
 		<div class="error-banner">
@@ -215,7 +220,11 @@
 							/>
 						</label>
 					{/if}
-					<button class="btn-save-preferences" onclick={savePreferredLanguages} disabled={savingPreferences}>
+					<button
+						class="btn-save-preferences"
+						onclick={savePreferredLanguages}
+						disabled={savingPreferences}
+					>
 						{savingPreferences ? 'Saving...' : 'Save'}
 					</button>
 				</div>
@@ -309,12 +318,17 @@
 		background: var(--ink2);
 		cursor: pointer;
 		box-shadow: inset 0 0 0 4px var(--ink2);
-		transition: border-color 0.15s, background-color 0.15s, box-shadow 0.15s;
+		transition:
+			border-color 0.15s,
+			background-color 0.15s,
+			box-shadow 0.15s;
 	}
 	.toggle-row input[type='checkbox']:checked {
 		border-color: var(--gold);
 		background: var(--gold);
-		box-shadow: 0 0 0 3px var(--gold-soft), 0 0 14px rgba(255, 190, 73, 0.35);
+		box-shadow:
+			0 0 0 3px var(--gold-soft),
+			0 0 14px rgba(255, 190, 73, 0.35);
 	}
 	.preferences-grid {
 		display: grid;
@@ -406,7 +420,10 @@
 		background: var(--panel2);
 		border: 1px solid var(--line);
 		color: var(--text);
-		transition: background-color 0.15s, border-color 0.15s, color 0.15s;
+		transition:
+			background-color 0.15s,
+			border-color 0.15s,
+			color 0.15s;
 		display: inline-flex;
 		align-items: center;
 		gap: 6px;
