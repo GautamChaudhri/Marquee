@@ -30,6 +30,7 @@ from marquee.core.letterbox_prefilter import refresh_letterbox_prefilter_for_mov
 from marquee.core.path_utils import safe_translate_and_validate
 from marquee.core.poster_sources.tmdb import TMDBClient
 from marquee.core.radarr_overlay import classify_hdr_flags
+from marquee.core.subtitles import languages as subtitle_languages
 from marquee.models import (
     Episode,
     EpisodeMediaFile,
@@ -588,6 +589,8 @@ class SyncService:
                 width, height, _ = _extract_media_info(fdata)
                 episode.video_width = width
                 episode.video_height = height
+                episode.audio_languages_json = _extract_language_list(fdata, "audioLanguages")
+                episode.subtitle_languages_json = _extract_language_list(fdata, "subtitles")
             else:
                 # File was deleted — HDR/resolution truth is no longer known.
                 episode.hdr_type_raw = None
@@ -595,6 +598,8 @@ class SyncService:
                 episode.has_dv = None
                 episode.video_width = None
                 episode.video_height = None
+                episode.audio_languages_json = None
+                episode.subtitle_languages_json = None
 
         # ── Physical media-file rows + episode associations (§19.3) ──
         await self.db.flush()  # assign episode.id for new rows
@@ -810,6 +815,35 @@ def _extract_media_info(movie_file: dict) -> tuple[int | None, int | None, str |
         container = suffix or None
 
     return width, height, container
+
+
+def _extract_language_list(media_file: dict, key: str) -> list[str] | None:
+    """Normalize Sonarr ``mediaInfo`` language strings into ordered unique tags.
+
+    ``None`` means the file has no ``mediaInfo`` payload at all, so sync learned
+    nothing about that dimension. ``[]`` means ``mediaInfo`` existed but Sonarr
+    reported no languages for the requested field.
+    """
+    media_info = media_file.get("mediaInfo")
+    if media_info is None or not isinstance(media_info, dict):
+        return None
+
+    raw = media_info.get(key)
+    if raw is None:
+        return []
+
+    values = raw if isinstance(raw, list) else str(raw).split("/")
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        token = str(value).strip()
+        if not token:
+            continue
+        tag, _ = subtitle_languages.normalize(token)
+        if tag not in seen:
+            normalized.append(tag)
+            seen.add(tag)
+    return normalized
 
 
 def _extract_hdr(movie_file: dict) -> tuple[str | None, bool | None, bool | None]:
