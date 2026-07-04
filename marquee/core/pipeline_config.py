@@ -375,6 +375,7 @@ class PipelineSettings(BaseSettings):
     OCR_ALLOW_RATING: bool = False
     OCR_ALLOW_TAGLINE: bool = False
     OCR_ALLOW_BILLING: bool = False
+    OCR_ALLOW_SEASON: bool = False
 
     FACE_CONFIDENCE_THRESHOLD: float = 0.5
     FACE_NMS_THRESHOLD: float = 0.4

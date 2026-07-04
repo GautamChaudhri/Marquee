@@ -369,7 +369,7 @@ class SyncService:
                 series.imdb_id = data.get("imdbId")
                 if data.get("tmdbId"):
                     series.tmdb_id = data.get("tmdbId")
-                
+
                 # Resolve tmdb_id if missing
                 if series.tmdb_id is None and self.tmdb:
                     try:

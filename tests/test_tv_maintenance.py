@@ -1,8 +1,8 @@
-import json
-import pytest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
+
+import pytest
 from PIL import Image
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,14 +10,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from marquee.config import settings
 from marquee.core.heal import heal_scan
 from marquee.core.jobs.builtin_handlers import (
-    poster_rescan,
     poster_backup_all,
     poster_deploy_reset,
     poster_maintenance,
+    poster_rescan,
 )
 from marquee.core.poster_service import poster_service
 from marquee.core.poster_subjects import PosterSubject
-from marquee.models import ArtworkEvent, Job, Movie, Season, Series
+from marquee.models import Job, Season, Series
 
 
 def _make_image(path, color=(20, 100, 150)):

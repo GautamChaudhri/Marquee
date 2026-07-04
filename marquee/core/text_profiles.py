@@ -26,9 +26,16 @@ _PROFILES_PATH = _PROJECT_ROOT / "data" / "text_profiles.json"
 
 _lock = threading.Lock()
 
+SCOPES = ("movie", "show", "season")
 VALID_MODES = ("title_only", "textless", "custom")
 MAX_NAME_LENGTH = 64
 MAX_RESIDUAL_BOXES_CAP = 20
+
+FALLBACK_PROFILE_IDS = {
+    "movie": "title_only",
+    "show": "title_only",
+    "season": "title_and_season",
+}
 
 
 @dataclass
@@ -40,6 +47,7 @@ class TextProfileSettings:
     allow_rating: bool = False
     allow_tagline: bool = False
     allow_billing: bool = False
+    allow_season: bool = False
     max_residual_boxes: int = 0
     max_residual_area_fraction: float = 0.04
     require_title: bool = True
@@ -65,40 +73,67 @@ class TextProfile:
     def gate_payload(self) -> dict:
         """Settings dict injected into the OCR gate (pickled into workers).
 
-        Built-ins pin only the mode: the residual/require-title knobs stay
-        governed by the raw ``pipeline_settings`` so the advanced settings
-        page keeps working when a preset is active. Custom profiles are fully
-        explicit — every knob comes from the profile.
+        Built-ins whose mode is title_only/textless pin only the mode.
+        The title_and_season built-in (mode custom) returns the full dict.
         """
-        if self.builtin:
+        if self.builtin and self.settings.mode in ("title_only", "textless"):
             return {"mode": self.settings.mode}
         return asdict(self.settings)
 
 
-def _builtin_profiles() -> dict[str, TextProfile]:
-    """Fresh built-in instances — always code defaults, never persisted."""
-    return {
-        "title_only": TextProfile(
-            id="title_only",
-            name="Title Only",
-            builtin=True,
-            settings=TextProfileSettings(mode="title_only"),
-        ),
-        "textless": TextProfile(
-            id="textless",
-            name="Textless",
-            builtin=True,
-            settings=TextProfileSettings(
-                mode="textless",
-                allow_title=False,
-                require_title=False,
+def _builtin_profiles(scope: str) -> dict[str, TextProfile]:
+    """Fresh built-in instances per scope — always code defaults, never persisted."""
+    if scope == "movie" or scope == "show":
+        return {
+            "title_only": TextProfile(
+                id="title_only",
+                name="Title Only",
+                builtin=True,
+                settings=TextProfileSettings(mode="title_only"),
             ),
-        ),
-    }
-
-
-BUILTIN_PROFILE_IDS = frozenset(_builtin_profiles())
-FALLBACK_PROFILE_ID = "title_only"
+            "textless": TextProfile(
+                id="textless",
+                name="Textless",
+                builtin=True,
+                settings=TextProfileSettings(
+                    mode="textless",
+                    allow_title=False,
+                    require_title=False,
+                ),
+            ),
+        }
+    elif scope == "season":
+        return {
+            "title_and_season": TextProfile(
+                id="title_and_season",
+                name="Title and Season",
+                builtin=True,
+                settings=TextProfileSettings(
+                    mode="custom",
+                    allow_title=True,
+                    allow_season=True,
+                    require_title=False,
+                ),
+            ),
+            "title_only": TextProfile(
+                id="title_only",
+                name="Title Only",
+                builtin=True,
+                settings=TextProfileSettings(mode="title_only"),
+            ),
+            "textless": TextProfile(
+                id="textless",
+                name="Textless",
+                builtin=True,
+                settings=TextProfileSettings(
+                    mode="textless",
+                    allow_title=False,
+                    require_title=False,
+                ),
+            ),
+        }
+    else:
+        raise TextProfileError(f"Unknown scope: {scope!r}")
 
 
 class TextProfileError(ValueError):
@@ -125,6 +160,7 @@ def settings_from_dict(data: dict) -> TextProfileSettings:
         allow_rating=bool(data.get("allow_rating", defaults.allow_rating)),
         allow_tagline=bool(data.get("allow_tagline", defaults.allow_tagline)),
         allow_billing=bool(data.get("allow_billing", defaults.allow_billing)),
+        allow_season=bool(data.get("allow_season", defaults.allow_season)),
         max_residual_boxes=boxes,
         max_residual_area_fraction=area,
         require_title=bool(data.get("require_title", defaults.require_title)),
@@ -136,7 +172,29 @@ def _read_raw() -> dict:
         return {}
     try:
         data = json.loads(_PROFILES_PATH.read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else {}
+        if not isinstance(data, dict):
+            return {}
+        # If it's v2:
+        if "scopes" in data:
+            return data
+        # Migrate v1 to v2:
+        return {
+            "version": 2,
+            "scopes": {
+                "movie": {
+                    "_default_profile": data.get("_default_profile", "title_only"),
+                    "profiles": data.get("profiles", []),
+                },
+                "show": {
+                    "_default_profile": "title_only",
+                    "profiles": [],
+                },
+                "season": {
+                    "_default_profile": "title_and_season",
+                    "profiles": [],
+                },
+            },
+        }
     except (OSError, json.JSONDecodeError):
         logger.warning("Unreadable text profiles file %s — using built-ins", _PROFILES_PATH)
         return {}
@@ -149,15 +207,30 @@ def _write_raw(data: dict) -> None:
     os.replace(tmp, _PROFILES_PATH)
 
 
-def _load_unlocked() -> tuple[dict[str, TextProfile], str]:
-    """All profiles (built-ins + customs) and the default id."""
+def _load_unlocked(scope: str) -> tuple[dict[str, TextProfile], str]:
+    """All profiles (built-ins + customs) and the default id for a scope."""
+    if scope not in SCOPES:
+        raise TextProfileError(f"Unknown scope: {scope!r}")
     raw = _read_raw()
-    profiles = _builtin_profiles()
-    for entry in raw.get("profiles", []):
+    if "scopes" not in raw:
+        raw = {
+            "version": 2,
+            "scopes": {
+                "movie": {"_default_profile": "title_only", "profiles": []},
+                "show": {"_default_profile": "title_only", "profiles": []},
+                "season": {"_default_profile": "title_and_season", "profiles": []},
+            },
+        }
+    scope_data = raw["scopes"].get(scope) or {}
+    profiles = _builtin_profiles(scope)
+    builtin_ids = frozenset(profiles)
+    fallback_id = FALLBACK_PROFILE_IDS[scope]
+
+    for entry in scope_data.get("profiles", []):
         if not isinstance(entry, dict):
             continue
         profile_id = str(entry.get("id", ""))
-        if not profile_id or profile_id in BUILTIN_PROFILE_IDS:
+        if not profile_id or profile_id in builtin_ids:
             continue
         try:
             settings = settings_from_dict(entry.get("settings") or {})
@@ -169,47 +242,63 @@ def _load_unlocked() -> tuple[dict[str, TextProfile], str]:
             name=str(entry.get("name", profile_id))[:MAX_NAME_LENGTH],
             settings=settings,
         )
-    default_id = str(raw.get("_default_profile", FALLBACK_PROFILE_ID))
+    default_id = str(scope_data.get("_default_profile", fallback_id))
     if default_id not in profiles:
-        default_id = FALLBACK_PROFILE_ID
+        default_id = fallback_id
     for profile in profiles.values():
         profile.is_default = profile.id == default_id
     return profiles, default_id
 
 
-def _save_unlocked(profiles: dict[str, TextProfile], default_id: str) -> None:
-    """Persist custom profiles + default pointer (built-ins stay in code)."""
-    _write_raw(
-        {
-            "_default_profile": default_id,
-            "profiles": [
-                {"id": p.id, "name": p.name, "settings": asdict(p.settings)}
-                for p in profiles.values()
-                if not p.builtin
-            ],
+def _save_unlocked(scope: str, profiles: dict[str, TextProfile], default_id: str) -> None:
+    """Persist custom profiles + default pointer for a scope (built-ins stay in code)."""
+    raw = _read_raw()
+    if "scopes" not in raw:
+        raw = {
+            "version": 2,
+            "scopes": {
+                "movie": {"_default_profile": "title_only", "profiles": []},
+                "show": {"_default_profile": "title_only", "profiles": []},
+                "season": {"_default_profile": "title_and_season", "profiles": []},
+            },
         }
-    )
+    raw["scopes"][scope] = {
+        "_default_profile": default_id,
+        "profiles": [
+            {"id": p.id, "name": p.name, "settings": asdict(p.settings)}
+            for p in profiles.values()
+            if not p.builtin
+        ],
+    }
+    _write_raw(raw)
 
 
-def load_profiles() -> dict[str, TextProfile]:
+def load_profiles(scope: str = "movie") -> dict[str, TextProfile]:
+    if scope not in SCOPES:
+        raise TextProfileError(f"Unknown scope: {scope!r}")
     with _lock:
-        profiles, _ = _load_unlocked()
+        profiles, _ = _load_unlocked(scope)
         return profiles
 
 
-def get_default_profile_id() -> str:
+def get_default_profile_id(scope: str = "movie") -> str:
+    if scope not in SCOPES:
+        raise TextProfileError(f"Unknown scope: {scope!r}")
     with _lock:
-        _, default_id = _load_unlocked()
+        _, default_id = _load_unlocked(scope)
         return default_id
 
 
-def get_active_profile(override_id: str | None = None) -> TextProfile:
-    """Effective profile: override → global default → title_only."""
+def get_active_profile(scope: str = "movie", override_id: str | None = None) -> TextProfile:
+    if scope not in SCOPES:
+        override_id = scope
+        scope = "movie"
     with _lock:
-        profiles, default_id = _load_unlocked()
+        profiles, default_id = _load_unlocked(scope)
         if override_id and override_id in profiles:
             return replace(profiles[override_id])
-        return replace(profiles.get(default_id) or profiles[FALLBACK_PROFILE_ID])
+        fallback_id = FALLBACK_PROFILE_IDS[scope]
+        return replace(profiles.get(default_id) or profiles[fallback_id])
 
 
 def _slugify(name: str) -> str:
@@ -231,22 +320,31 @@ def _validate_name(name: str, profiles: dict[str, TextProfile], *, skip_id: str 
     return name
 
 
-def create_profile(name: str, settings: dict) -> TextProfile:
+def create_profile(scope: str = "movie", name: str = "", settings: dict | None = None) -> TextProfile:
+    if scope not in SCOPES:
+        settings = name
+        name = scope
+        scope = "movie"
     with _lock:
-        profiles, default_id = _load_unlocked()
+        profiles, default_id = _load_unlocked(scope)
         name = _validate_name(name, profiles)
         profile_id = _slugify(name)
         if profile_id in profiles:
             raise TextProfileError(f"A profile with id {profile_id!r} already exists")
-        profile = TextProfile(id=profile_id, name=name, settings=settings_from_dict(settings))
+        profile = TextProfile(id=profile_id, name=name, settings=settings_from_dict(settings or {}))
         profiles[profile_id] = profile
-        _save_unlocked(profiles, default_id)
+        _save_unlocked(scope, profiles, default_id)
         return profile
 
 
-def update_profile(profile_id: str, *, name: str | None = None, settings: dict | None = None):
+def update_profile(
+    scope: str, profile_id: str | None = None, *, name: str | None = None, settings: dict | None = None
+) -> TextProfile:
+    if scope not in SCOPES:
+        profile_id = scope
+        scope = "movie"
     with _lock:
-        profiles, default_id = _load_unlocked()
+        profiles, default_id = _load_unlocked(scope)
         profile = profiles.get(profile_id)
         if profile is None:
             raise TextProfileError(f"Unknown text profile {profile_id!r}")
@@ -256,36 +354,43 @@ def update_profile(profile_id: str, *, name: str | None = None, settings: dict |
             profile.name = _validate_name(name, profiles, skip_id=profile_id)
         if settings is not None:
             profile.settings = settings_from_dict(settings)
-        _save_unlocked(profiles, default_id)
+        _save_unlocked(scope, profiles, default_id)
         return profile
 
 
-def delete_profile(profile_id: str) -> None:
+def delete_profile(scope: str, profile_id: str | None = None) -> None:
+    if scope not in SCOPES:
+        profile_id = scope
+        scope = "movie"
     with _lock:
-        profiles, default_id = _load_unlocked()
+        profiles, default_id = _load_unlocked(scope)
         profile = profiles.get(profile_id)
         if profile is None:
             raise TextProfileError(f"Unknown text profile {profile_id!r}")
         if profile.builtin:
             raise TextProfileError("Built-in profiles cannot be deleted")
         del profiles[profile_id]
+        fallback_id = FALLBACK_PROFILE_IDS[scope]
         if default_id == profile_id:
-            default_id = FALLBACK_PROFILE_ID
-        _save_unlocked(profiles, default_id)
+            default_id = fallback_id
+        _save_unlocked(scope, profiles, default_id)
 
 
-def set_default_profile(profile_id: str) -> str:
+def set_default_profile(scope: str, profile_id: str | None = None) -> str:
+    if scope not in SCOPES:
+        profile_id = scope
+        scope = "movie"
     with _lock:
-        profiles, _ = _load_unlocked()
+        profiles, _ = _load_unlocked(scope)
         if profile_id not in profiles:
             raise TextProfileError(f"Unknown text profile {profile_id!r}")
-        _save_unlocked(profiles, profile_id)
+        _save_unlocked(scope, profiles, profile_id)
         return profile_id
 
 
 @dataclass
 class OcrGateContext:
-    """Per-movie inputs for the OCR text gate, resolved once per run.
+    """Per-movie/series/season inputs for the OCR text gate, resolved once per run.
 
     Carries the TMDB-enriched metadata (director/studios/tagline) and the
     effective text profile so both pipeline engines construct the
@@ -296,22 +401,44 @@ class OcrGateContext:
     studios: list[str] | None = None
     tagline: str | None = None
     profile: TextProfile | None = None
+    scope: str = "movie"
+    season_number: int | None = None
 
     @classmethod
     def from_movie(cls, movie) -> OcrGateContext:
-        """Snapshot the gate inputs from a Movie row (detached-safe scalars).
-
-        Uses getattr so it works before the enrichment/override columns exist
-        in a deployment that hasn't migrated yet.
-        """
+        """Snapshot the gate inputs from a Movie row (detached-safe scalars)."""
         return cls(
             director=getattr(movie, "director", None),
             studios=getattr(movie, "production_companies_json", None),
             tagline=getattr(movie, "tagline", None),
-            profile=get_active_profile(getattr(movie, "text_profile_id", None)),
+            profile=get_active_profile("movie", getattr(movie, "text_profile_id", None)),
+            scope="movie",
+        )
+
+    @classmethod
+    def from_series(cls, series) -> OcrGateContext:
+        """Snapshot the gate inputs from a Series row."""
+        return cls(
+            director=getattr(series, "director", None),
+            studios=getattr(series, "production_companies_json", None),
+            tagline=getattr(series, "tagline", None),
+            profile=get_active_profile("show", getattr(series, "show_text_profile_id", None)),
+            scope="show",
+        )
+
+    @classmethod
+    def from_season(cls, season, series) -> OcrGateContext:
+        """Snapshot the gate inputs from a Season row, joining Series metadata."""
+        return cls(
+            director=getattr(series, "director", None),
+            studios=getattr(series, "production_companies_json", None),
+            tagline=getattr(series, "tagline", None),
+            profile=get_active_profile("season", getattr(series, "season_text_profile_id", None)),
+            scope="season",
+            season_number=season.season_number,
         )
 
     @classmethod
     def default(cls) -> OcrGateContext:
         """Global-default profile, no movie metadata (direct/test paths)."""
-        return cls(profile=get_active_profile(None))
+        return cls(profile=get_active_profile("movie", None), scope="movie")
