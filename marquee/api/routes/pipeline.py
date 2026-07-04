@@ -84,6 +84,7 @@ def _review_queue_latest():
         )
         .join(Movie, Movie.id == PipelineRun.movie_id)
         .where(
+            PipelineRun.media_type == "movie",
             PipelineRun.feedback_event_id.is_(None),
             PipelineRun.status.in_(_REVIEW_QUEUE_STATUSES),
             _downloaded(),
@@ -100,7 +101,7 @@ def _latest_run_per_movie():
             func.max(PipelineRun.started_at).label("started_at"),
         )
         .join(Movie, Movie.id == PipelineRun.movie_id)
-        .where(_downloaded())
+        .where(PipelineRun.media_type == "movie", _downloaded())
         .group_by(PipelineRun.movie_id)
         .subquery()
     )
@@ -621,19 +622,12 @@ async def reset_deployed_posters(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/metrics")
-async def pipeline_metrics(
-    db: Annotated[AsyncSession, Depends(get_db)],
-    limit: int = 500,
-):
-    """Cross-run aggregates for a metrics dashboard, from recent PipelineRun rows."""
-    limit = min(max(limit, 1), 5000)
-    runs = (
-        (await db.execute(select(PipelineRun).order_by(PipelineRun.started_at.desc()).limit(limit)))
-        .scalars()
-        .all()
-    )
+def aggregate_run_metrics(runs: list[PipelineRun]) -> dict:
+    """Cross-run aggregates from a list of PipelineRun rows.
 
+    Shared by the movie ``/metrics`` endpoint and the TV
+    ``/api/pipeline/tv/metrics`` endpoint — only the run query filter differs.
+    """
     by_status: Counter[str] = Counter()
     by_scorer: Counter[str] = Counter()
     count_totals: dict[str, float] = defaultdict(float)
@@ -687,6 +681,28 @@ async def pipeline_metrics(
         },
         "total_stage_seconds": {k: round(v, 3) for k, v in stage_totals.items()},
     }
+
+
+@router.get("/metrics")
+async def pipeline_metrics(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    limit: int = 500,
+):
+    """Cross-run aggregates for a metrics dashboard, from recent PipelineRun rows."""
+    limit = min(max(limit, 1), 5000)
+    runs = (
+        (
+            await db.execute(
+                select(PipelineRun)
+                .where(PipelineRun.media_type == "movie")
+                .order_by(PipelineRun.started_at.desc())
+                .limit(limit)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return aggregate_run_metrics(runs)
 
 
 # ---------------------------------------------------------------------------
@@ -869,6 +885,7 @@ async def reset_review_queue(
     # Find all PipelineRuns currently in the review queue.
     result = await db.execute(
         select(PipelineRun).where(
+            PipelineRun.media_type == "movie",
             PipelineRun.feedback_event_id.is_(None),
             PipelineRun.status.in_(_REVIEW_QUEUE_STATUSES),
         )

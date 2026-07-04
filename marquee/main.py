@@ -286,6 +286,8 @@ from marquee.api.routes.media_jobs import router as media_jobs_router  # noqa: E
 from marquee.api.routes.onboarding import router as onboarding_router  # noqa: E402
 from marquee.api.routes.pipeline import movies_router  # noqa: E402
 from marquee.api.routes.pipeline import router as pipeline_router  # noqa: E402
+from marquee.api.routes.pipeline_tv import router as pipeline_tv_router  # noqa: E402
+from marquee.api.routes.pipeline_tv import series_router as tv_series_router  # noqa: E402
 from marquee.api.routes.settings import router as settings_router  # noqa: E402
 from marquee.api.routes.subtitle_generators import (  # noqa: E402
     router as subtitle_generators_router,
@@ -302,6 +304,8 @@ from marquee.api.routes.webhooks import router as webhooks_router  # noqa: E402
 
 app.include_router(sync_router)
 app.include_router(library_router)
+app.include_router(pipeline_tv_router)
+app.include_router(tv_series_router)
 app.include_router(pipeline_router)
 app.include_router(movies_router)
 app.include_router(feedback_router)
