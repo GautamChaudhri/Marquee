@@ -6,7 +6,11 @@ import type {
 	PreferredLanguageState,
 	SubtitleInventory,
 	SubtitlePlanRequest,
-	SubtitlePlan
+	SubtitlePlan,
+	AudioSubsSummary,
+	AudioSubsTvIndex,
+	AudioSubsTvDetail,
+	AudioSubsTvItem
 } from './types';
 
 const useMocks = () => env.PUBLIC_USE_MOCKS === 'true';
@@ -170,5 +174,314 @@ export function scanLibrarySubtitles(
 		fetch,
 		'POST',
 		`/subtitles/scan-library?force=${force}`
+	);
+}
+
+export function getAudioSubsSummary(fetch: Fetch): Promise<AudioSubsSummary> {
+	if (useMocks()) {
+		return Promise.resolve({
+			movies: {
+				total: 10,
+				audio_ok: 8,
+				audio_gap: 2,
+				subtitle_ok: 7,
+				subtitle_gap: 3,
+				both_gap: 1,
+				unknown: 1,
+				forced_coverage: 5,
+				sdh_coverage: 4,
+				unknown_language_tracks: 2,
+				generated_tracks: 1
+			},
+			tv: {
+				audio_ok: 50,
+				audio_gap: 10,
+				subtitle_ok: 45,
+				subtitle_gap: 15,
+				both_gap: 5,
+				unknown: 2,
+				forced_coverage: 20,
+				sdh_coverage: 15,
+				show_status_counts: { ok: 4, gaps: 1, 'none met': 0, unknown: 0 },
+				uniformity_counts: { uniform: 3, uniform_by_season: 1, mixed: 1 },
+				dub_coverage_highlights: [
+					{
+						series_id: 1,
+						title: 'Mock Show 1',
+						missing_audio_languages: ['fr'],
+						coverage: { ok: 8, of: 10 }
+					}
+				]
+			},
+			preferred: {
+				audio: ['en'],
+				subtitles: ['en'],
+				shared: ['en']
+			},
+			policies: {
+				active_count: 1,
+				last_audit_summary: null
+			},
+			generator: [
+				{
+					name: 'Mock Generator',
+					type: 'whisper',
+					url: 'http://localhost:3165',
+					online: true,
+					version: '1.0.0',
+					model: 'large-v3',
+					device: 'cuda',
+					capabilities: {
+						language_hint: true,
+						translate: true,
+						concurrent: 2
+					}
+				}
+			],
+			deep_scan: {
+				enabled: true,
+				hour: 3,
+				last_run_at: '2026-07-04T03:00:00Z',
+				pending_file_count: 0
+			}
+		});
+	}
+	return apiGet<AudioSubsSummary>(fetch, '/audio-subs/summary');
+}
+
+export function getAudioSubsTv(
+	fetch: Fetch,
+	params: {
+		status?: string | null;
+		uniformity?: string | null;
+		missing_language?: string | null;
+		q?: string | null;
+		sort_by?: 'title' | 'status' | 'coverage';
+	} = {}
+): Promise<AudioSubsTvIndex> {
+	if (useMocks()) {
+		const items: AudioSubsTvItem[] = [
+			{
+				series_id: 1,
+				title: 'Mock Show 1',
+				year: 2020,
+				rollup: {
+					episodes_total: 10,
+					episodes_counted: 10,
+					status_counts: { ok: 8, audio_gap: 1, subtitle_gap: 1, both_gap: 0, unknown: 0 },
+					missing_languages: ['fr'],
+					missing_audio_languages: ['fr'],
+					missing_subtitle_languages: [],
+					dub_coverage: { ok: 9, of: 10 },
+					subtitle_coverage: { ok: 9, of: 10 },
+					status: 'gaps',
+					uniformity: 'uniform_by_season'
+				},
+				missing_languages: ['fr'],
+				dub_coverage: { ok: 9, of: 10 },
+				uniformity: 'uniform_by_season',
+				episode_fraction: '9/10',
+				active_scan_job_ids: [],
+				active_generation_job_ids: []
+			},
+			{
+				series_id: 2,
+				title: 'Mock Show 2',
+				year: 2021,
+				rollup: {
+					episodes_total: 5,
+					episodes_counted: 5,
+					status_counts: { ok: 5, audio_gap: 0, subtitle_gap: 0, both_gap: 0, unknown: 0 },
+					missing_languages: [],
+					missing_audio_languages: [],
+					missing_subtitle_languages: [],
+					dub_coverage: { ok: 5, of: 5 },
+					subtitle_coverage: { ok: 5, of: 5 },
+					status: 'ok',
+					uniformity: 'uniform'
+				},
+				missing_languages: [],
+				dub_coverage: { ok: 5, of: 5 },
+				uniformity: 'uniform',
+				episode_fraction: '5/5',
+				active_scan_job_ids: [],
+				active_generation_job_ids: []
+			}
+		];
+		return Promise.resolve({
+			total: items.length,
+			items,
+			applied_filters: {
+				status: params.status || null,
+				uniformity: params.uniformity || null,
+				missing_language: params.missing_language || null,
+				q: params.q || null,
+				sort_by: params.sort_by || 'title'
+			}
+		});
+	}
+
+	const searchParams = new URLSearchParams();
+	if (params.status) searchParams.set('status', params.status);
+	if (params.uniformity) searchParams.set('uniformity', params.uniformity);
+	if (params.missing_language) searchParams.set('missing_language', params.missing_language);
+	if (params.q) searchParams.set('q', params.q);
+	if (params.sort_by) searchParams.set('sort_by', params.sort_by);
+
+	const query = searchParams.toString();
+	return apiGet<AudioSubsTvIndex>(fetch, `/audio-subs/tv${query ? '?' + query : ''}`);
+}
+
+export function getAudioSubsTvDetail(fetch: Fetch, seriesId: number): Promise<AudioSubsTvDetail> {
+	if (useMocks()) {
+		return Promise.resolve({
+			series: {
+				id: seriesId,
+				title: 'Mock Show ' + seriesId,
+				year: 2020
+			},
+			preferred_audio_languages: ['en'],
+			preferred_subtitle_languages: ['en'],
+			rollup: {
+				episodes_total: 2,
+				episodes_counted: 2,
+				status_counts: { ok: 2, audio_gap: 0, subtitle_gap: 0, both_gap: 0, unknown: 0 },
+				missing_languages: [],
+				missing_audio_languages: [],
+				missing_subtitle_languages: [],
+				dub_coverage: { ok: 2, of: 2 },
+				subtitle_coverage: { ok: 2, of: 2 },
+				status: 'ok',
+				uniformity: 'uniform'
+			},
+			seasons: [
+				{
+					season_number: 1,
+					rollup: {
+						episodes_total: 2,
+						episodes_counted: 2,
+						status_counts: { ok: 2, audio_gap: 0, subtitle_gap: 0, both_gap: 0, unknown: 0 },
+						missing_languages: [],
+						missing_audio_languages: [],
+						missing_subtitle_languages: [],
+						dub_coverage: { ok: 2, of: 2 },
+						subtitle_coverage: { ok: 2, of: 2 },
+						status: 'ok',
+						uniformity: 'uniform'
+					},
+					episodes: [
+						{
+							episode_id: 101,
+							code: 's01e01',
+							title: 'Episode 1',
+							audio_languages: ['en'],
+							subtitle_languages: ['en'],
+							forced_languages: [],
+							sdh_languages: [],
+							tier: 'synced',
+							status: 'ok',
+							media_file_id: 1001
+						},
+						{
+							episode_id: 102,
+							code: 's01e02',
+							title: 'Episode 2',
+							audio_languages: ['en'],
+							subtitle_languages: ['en'],
+							forced_languages: [],
+							sdh_languages: [],
+							tier: 'probed',
+							status: 'ok',
+							media_file_id: 1002
+						}
+					],
+					active_scan_job_ids: [],
+					active_generation_job_ids: []
+				}
+			]
+		});
+	}
+	return apiGet<AudioSubsTvDetail>(fetch, `/audio-subs/tv/${seriesId}`);
+}
+
+export function putAudioSubsPreferences(
+	fetch: Fetch,
+	prefs: {
+		preferred_languages?: string[] | null;
+		preferred_audio_languages?: string[] | null;
+		preferred_subtitle_languages?: string[] | null;
+	}
+): Promise<{ ok: boolean }> {
+	if (useMocks()) {
+		return Promise.resolve({ ok: true });
+	}
+	return apiSend<{ ok: boolean }>(fetch, 'PUT', '/audio-subs/preferences', prefs);
+}
+
+export function putSeriesPreferences(
+	fetch: Fetch,
+	seriesId: number,
+	prefs: {
+		preferred_audio_languages?: string[] | null;
+		preferred_subtitle_languages?: string[] | null;
+	}
+): Promise<{ ok: boolean }> {
+	if (useMocks()) {
+		return Promise.resolve({ ok: true });
+	}
+	return apiSend<{ ok: boolean }>(fetch, 'PUT', `/audio-subs/tv/${seriesId}/preferences`, prefs);
+}
+
+export function deepScan(
+	fetch: Fetch,
+	scope: 'movies' | 'tv' | 'all' = 'all'
+): Promise<{ job_id: string; status: string }> {
+	if (useMocks()) {
+		return Promise.resolve({ job_id: `job-mock-deep-scan-${Date.now()}`, status: 'queued' });
+	}
+	return apiSend<{ job_id: string; status: string }>(fetch, 'POST', '/audio-subs/deep-scan', {
+		scope
+	});
+}
+
+export function deepScanSeries(
+	fetch: Fetch,
+	seriesId: number,
+	seasonNumber?: number | null
+): Promise<{ job_id: string; status: string }> {
+	if (useMocks()) {
+		return Promise.resolve({ job_id: `job-mock-deep-scan-tv-${Date.now()}`, status: 'queued' });
+	}
+	return apiSend<{ job_id: string; status: string }>(
+		fetch,
+		'POST',
+		`/audio-subs/tv/${seriesId}/deep-scan`,
+		{ season_number: seasonNumber ?? null }
+	);
+}
+
+export function generateTv(
+	fetch: Fetch,
+	seriesId: number,
+	body: {
+		season_number?: number | null;
+		language_hint?: string | null;
+		output?: 'external' | 'embedded';
+		task?: 'transcribe' | 'translate';
+		stream_index?: number | null;
+	}
+): Promise<{ job_id: string; total: number; events_url: string }> {
+	if (useMocks()) {
+		return Promise.resolve({
+			job_id: `job-mock-gen-tv-${Date.now()}`,
+			total: 5,
+			events_url: `/api/jobs/job-mock-gen-tv-${Date.now()}/events`
+		});
+	}
+	return apiSend<{ job_id: string; total: number; events_url: string }>(
+		fetch,
+		'POST',
+		`/audio-subs/tv/${seriesId}/generate`,
+		body
 	);
 }

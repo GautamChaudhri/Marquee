@@ -1082,7 +1082,7 @@
 <div class="movie-subtitles-page">
 	<!-- Top Bar Navigation Back -->
 	<div class="top-nav">
-		<a href="/audio-subs" class="back-link">← Back to Tracks Library</a>
+		<a href="/audio-subs/movies" class="back-link">← Back to Tracks Library</a>
 	</div>
 
 	{#if error}

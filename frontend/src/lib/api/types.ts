@@ -1602,3 +1602,191 @@ export interface PolicyAuditResult {
 	total_removals: number;
 	items: PolicyAuditResultItem[];
 }
+
+// ── Audio & Subtitles TV & Subgen Types ──
+export type AudioSubStatus = 'ok' | 'audio_gap' | 'subtitle_gap' | 'both_gap' | 'unknown';
+
+export interface AudioSubsSummary {
+	movies: {
+		total: number;
+		audio_ok: number;
+		audio_gap: number;
+		subtitle_ok: number;
+		subtitle_gap: number;
+		both_gap: number;
+		unknown: number;
+		forced_coverage: number;
+		sdh_coverage: number;
+		unknown_language_tracks: number;
+		generated_tracks: number;
+	};
+	tv: {
+		audio_ok: number;
+		audio_gap: number;
+		subtitle_ok: number;
+		subtitle_gap: number;
+		both_gap: number;
+		unknown: number;
+		forced_coverage: number;
+		sdh_coverage: number;
+		show_status_counts: Record<string, number>;
+		uniformity_counts: Record<string, number>;
+		dub_coverage_highlights: Array<{
+			series_id: number;
+			title: string;
+			missing_audio_languages: string[];
+			coverage: { ok: number; of: number };
+		}>;
+	};
+	preferred: {
+		audio: string[];
+		subtitles: string[];
+		shared: string[];
+	};
+	policies: {
+		active_count: number;
+		last_audit_summary: null | Record<string, unknown>;
+	};
+	generator: SubtitleGenerator[];
+	deep_scan: {
+		enabled: boolean;
+		hour: number;
+		last_run_at: string | null;
+		pending_file_count: number;
+	};
+}
+
+export interface TvShowRollup {
+	episodes_total: number;
+	episodes_counted: number;
+	status_counts: Record<string, number>;
+	missing_languages: string[];
+	missing_audio_languages: string[];
+	missing_subtitle_languages: string[];
+	dub_coverage: { ok: number; of: number };
+	subtitle_coverage: { ok: number; of: number };
+	status: AudioSubStatus;
+	uniformity: ShowUniformity;
+}
+
+export interface AudioSubsTvItem {
+	series_id: number;
+	title: string;
+	year: number;
+	rollup: TvShowRollup;
+	missing_languages: string[];
+	dub_coverage: { ok: number; of: number };
+	uniformity: ShowUniformity;
+	episode_fraction: string;
+	active_scan_job_ids: string[];
+	active_generation_job_ids: string[];
+}
+
+export interface AudioSubsTvIndex {
+	total: number;
+	items: AudioSubsTvItem[];
+	applied_filters: {
+		status: string | null;
+		uniformity: string | null;
+		missing_language: string | null;
+		q: string | null;
+		sort_by: 'title' | 'status' | 'coverage';
+	};
+}
+
+export interface TvEpisodeCoverage {
+	episode_id: number;
+	code: string;
+	title: string;
+	audio_languages: string[];
+	subtitle_languages: string[];
+	forced_languages: string[];
+	sdh_languages: string[];
+	tier: 'synced' | 'probed';
+	status: AudioSubStatus;
+	media_file_id: number | null;
+}
+
+export interface TvSeasonDetail {
+	season_number: number;
+	rollup: TvShowRollup;
+	episodes: TvEpisodeCoverage[];
+	active_scan_job_ids: string[];
+	active_generation_job_ids: string[];
+}
+
+export interface AudioSubsTvDetail {
+	series: {
+		id: number;
+		title: string;
+		year: number;
+	};
+	preferred_audio_languages: string[];
+	preferred_subtitle_languages: string[];
+	rollup: TvShowRollup;
+	seasons: TvSeasonDetail[];
+}
+
+export interface SubgenGpuHardware {
+	index: number;
+	name: string;
+	vram_total: number;
+	vram_free: number;
+}
+
+export interface SubgenHardwareResponse {
+	hardware: {
+		gpus: SubgenGpuHardware[];
+		cpu_count: number;
+		ram_total: number;
+	};
+	models: Record<
+		string,
+		{
+			supported: boolean;
+			reason?: string;
+			vram_estimate_gb?: number;
+			verdict?: 'supported' | 'vram_low' | 'too_big' | 'unsupported';
+			note?: string;
+		}
+	>;
+	catalog: Array<{
+		id: string;
+		params: string;
+		vram_fp16_gb: number | null;
+		vram_int8_gb: number | null;
+		multilingual: boolean | null;
+		can_translate: boolean | null;
+		notes: string;
+		cpu_ram_int8_gb?: number | null;
+	}>;
+	recommendation: {
+		model: string;
+		device: 'cpu' | 'cuda';
+		gpu_index: number | null;
+		compute_type: string;
+		reason: string;
+	} | null;
+}
+
+export interface SubgenSettings {
+	deployment?: 'disabled' | 'external' | 'embedded';
+	url?: string | null;
+	profile_name?: string | null;
+	model_label?: string | null;
+	mode?: 'transcribe' | 'translate';
+	local_path_prefix?: string | null;
+	remote_path_prefix?: string | null;
+	callback_token?: string | null;
+	whisper_model?: string | null;
+	embedded_port?: number | null;
+	transcribe_device?: 'auto' | 'cpu' | 'cuda';
+	gpu_index?: number | null;
+	compute_type?: string | null;
+	concurrent_transcriptions?: number | null;
+	whisper_threads?: number | null;
+	model_path?: string | null;
+	naming_type?: 'ISO_639_1' | 'ISO_639_2_T' | 'ISO_639_2_B' | 'NAME' | 'NATIVE';
+	name_includes_subgen?: boolean;
+	name_includes_model?: boolean;
+}

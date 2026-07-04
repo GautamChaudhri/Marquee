@@ -3,22 +3,42 @@
 	import SubtitleMovieRow from './SubtitleMovieRow.svelte';
 
 	let {
-		movies
+		movies,
+		initialFilter = 'all'
 	}: {
 		movies: MovieListItem[];
+		initialFilter?: string;
 	} = $props();
 
 	let searchQuery = $state('');
-	let filterStatus = $state<'all' | 'ok' | 'gap' | 'none'>('all');
+	let filterStatus = $state<string>(initialFilter);
+
+	$effect(() => {
+		if (initialFilter) {
+			filterStatus = initialFilter;
+		}
+	});
 
 	let filteredMovies = $derived(
 		movies.filter((m) => {
 			const matchesSearch = m.title.toLowerCase().includes(searchQuery.toLowerCase());
-			if (filterStatus === 'all') return matchesSearch;
-			if (filterStatus === 'ok') return matchesSearch && m.subtitle_status === 'ok';
-			if (filterStatus === 'gap') return matchesSearch && m.subtitle_status === 'gap';
-			if (filterStatus === 'none') return matchesSearch && !m.subtitle_status;
-			return matchesSearch;
+			if (!matchesSearch) return false;
+			if (filterStatus === 'all') return true;
+			if (filterStatus === 'ok') return m.subtitle_status === 'ok';
+			if (filterStatus === 'gap') return m.subtitle_status === 'gap';
+			if (filterStatus === 'none') return !m.subtitle_status;
+
+			const cov = m.subtitle_coverage as any;
+			const audio_missing = cov ? cov.missing_preferred_audio_languages?.length > 0 : true;
+			const sub_missing = cov ? cov.missing_preferred_subtitle_languages?.length > 0 : true;
+
+			if (filterStatus === 'audio_ok') return cov && !audio_missing;
+			if (filterStatus === 'audio_gap') return cov && audio_missing;
+			if (filterStatus === 'subtitle_ok') return cov && !sub_missing;
+			if (filterStatus === 'subtitle_gap') return cov && sub_missing;
+			if (filterStatus === 'both_gap') return cov && audio_missing && sub_missing;
+			if (filterStatus === 'unknown') return !cov;
+			return true;
 		})
 	);
 </script>
