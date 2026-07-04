@@ -83,10 +83,12 @@ async def test_poster_backup_all_copies_deployed_posters(db: AsyncSession, tmp_p
 async def test_poster_maintenance_skips_when_radarr_unconfigured(monkeypatch):
     monkeypatch.setattr(settings, "RADARR_URL", None)
     monkeypatch.setattr(settings, "RADARR_API_KEY", None)
+    monkeypatch.setattr(settings, "SONARR_URL", None)
+    monkeypatch.setattr(settings, "SONARR_API_KEY", None)
 
     result = await poster_maintenance(
         Job(id="maintenance", type="poster_maintenance", payload={"dry_run": True})
     )
 
-    assert result["skipped"] == "radarr not configured"
+    assert result["skipped"] == "neither radarr nor sonarr configured"
     assert result["dry_run"] is True

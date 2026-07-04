@@ -26,12 +26,14 @@ from pathlib import Path
 import httpx
 import imagehash
 from PIL import Image
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.config import settings
 from marquee.core.download_guard import ensure_image_response
 from marquee.core.path_utils import PathValidationError, safe_translate_and_validate
-from marquee.models import ArtworkEvent, Movie
+from marquee.core.poster_subjects import PosterSubject
+from marquee.models import ArtworkEvent, Movie, Season, Series
 
 logger = logging.getLogger(__name__)
 
@@ -80,16 +82,7 @@ def sanitize_poster_filename(name: str) -> str:
 
 def render_filename(movie: Movie) -> str:
     """Render the configured movie poster filename (handles {movie_basename})."""
-    fmt = settings.MOVIE_POSTER_FORMAT
-    if "{movie_basename}" in fmt:
-        basename = Path(movie.movie_file_path).stem if movie.movie_file_path else "poster"
-        try:
-            rendered = fmt.format(movie_basename=basename)
-        except (KeyError, IndexError, ValueError) as exc:
-            raise PathValidationError(f"Invalid MOVIE_POSTER_FORMAT {fmt!r}: {exc}") from exc
-    else:
-        rendered = fmt
-    return sanitize_poster_filename(rendered)
+    return PosterSubject.from_movie(movie).render_filename()
 
 
 def _confine_dest(folder: Path, filename: str) -> Path:
@@ -140,7 +133,7 @@ def _atomic_copy(source: Path, dest: Path) -> None:
         except Exception:
             user = str(os.geteuid())
         raise PermissionError(
-            f"Cannot write to movie folder {dest.parent} — "
+            f"Cannot write to folder {dest.parent} — "
             f"the backend runs as user '{user}' but this directory is not "
             f'group-writable. Run: chmod g+w "{dest.parent}" '
             f"(or add '{user}' to the owning group)."
@@ -157,7 +150,7 @@ def _atomic_copy(source: Path, dest: Path) -> None:
     except PermissionError:
         raise PermissionError(
             f"Cannot write poster to {dest} — the backend lacks write permission "
-            f'on the movie folder. Run: chmod g+w "{dest.parent}"'
+            f'on the folder. Run: chmod g+w "{dest.parent}"'
         ) from None
 
 
@@ -180,11 +173,11 @@ def _populate_cache_sync(dest: Path, cache_file: Path, cache_meta: Path, meta: d
 
 
 async def _log_event(
-    db: AsyncSession, movie_id: int, action: str, source: str, detail: dict
+    db: AsyncSession, subject: PosterSubject, action: str, source: str, detail: dict
 ) -> None:
     db.add(
         ArtworkEvent(
-            movie_id=movie_id,
+            **subject.event_fk_kwargs(),
             action=action,
             source=source,
             detail=json.dumps(detail, default=str),
@@ -198,7 +191,7 @@ class PosterService:
     async def deploy(
         self,
         db: AsyncSession,
-        movie: Movie,
+        subject: PosterSubject | Movie | Series | Season,
         source_file: Path,
         *,
         source: str = "pipeline",
@@ -207,14 +200,23 @@ class PosterService:
         poster_source: str | None = "tmdb",
         poster_source_url: str | None = None,
     ) -> DeployResult:
-        """Write ``source_file`` into the movie folder + cache + DB + event."""
+        """Write ``source_file`` into the subject's folder + cache + DB + event."""
+        if not isinstance(subject, PosterSubject):
+            if isinstance(subject, Movie):
+                subject = PosterSubject.from_movie(subject)
+            elif isinstance(subject, Series):
+                subject = PosterSubject.from_series(subject)
+            elif isinstance(subject, Season):
+                series = (await db.execute(select(Series).where(Series.id == subject.series_id))).scalar_one()
+                subject = PosterSubject.from_season(subject, series)
+
         if not source_file.is_file():
             raise FileNotFoundError(f"Poster source file missing: {source_file}")
 
-        filename = render_filename(movie)
-        folder = safe_translate_and_validate(movie.folder_path, source="radarr")
+        filename = subject.render_filename()
+        folder = safe_translate_and_validate(subject.folder_raw, source=subject.path_source)
         if not await asyncio.to_thread(folder.is_dir):
-            raise PathValidationError(f"Movie folder does not exist: {folder}")
+            raise PathValidationError(f"Folder does not exist: {folder}")
         dest = _confine_dest(folder, filename)
 
         await asyncio.to_thread(_atomic_copy, source_file, dest)
@@ -224,47 +226,49 @@ class PosterService:
 
         # Cache exact deployed bytes + provenance sidecar.
         cache_file = cache_meta = None
-        if movie.tmdb_id is not None:
-            cache_file, cache_meta = cache_paths(movie.tmdb_id)
-            await asyncio.to_thread(
-                _populate_cache_sync,
-                dest,
-                cache_file,
-                cache_meta,
-                {
-                    "source": poster_source,
-                    "source_url": poster_source_url,
-                    "sha256": sha256,
-                    "phash": phash,
-                    "deployed_filename": filename,
-                    "deployed_at": datetime.now(UTC).isoformat(),
-                },
-            )
+        if subject.tmdb_id is not None:
+            cpaths = subject.cache_paths()
+            if cpaths:
+                cache_file, cache_meta = cpaths
+                await asyncio.to_thread(
+                    _populate_cache_sync,
+                    dest,
+                    cache_file,
+                    cache_meta,
+                    {
+                        "source": poster_source,
+                        "source_url": poster_source_url,
+                        "sha256": sha256,
+                        "phash": phash,
+                        "deployed_filename": filename,
+                        "deployed_at": datetime.now(UTC).isoformat(),
+                    },
+                )
 
-        backup_file = backup_path(movie)
+        backup_file = subject.backup_file()
         backup_error = None
         try:
             await asyncio.to_thread(_atomic_copy, dest, backup_file)
-            movie.poster_local_backup_path = str(backup_file)
+            subject.entity.poster_local_backup_path = str(backup_file)
         except Exception as exc:  # noqa: BLE001 — backup must not fail deployment
             backup_error = str(exc)
-            logger.warning("POSTER BACKUP FAILED | movie=%s | %s", movie.title, exc)
+            logger.warning("POSTER BACKUP FAILED | subject=%s | %s", subject.title, exc)
 
-        movie.poster_path = str(dest)
-        movie.poster_source = poster_source
+        subject.entity.poster_path = str(dest)
+        subject.entity.poster_source = poster_source
         if poster_source_url:
-            movie.poster_source_url = poster_source_url
-        movie.poster_ai_selected = ai_selected
-        movie.poster_user_approved = user_approved
-        movie.poster_deployed_filename = filename
-        movie.poster_deployed_at = datetime.now(UTC)
-        movie.poster_sha256 = sha256
+            subject.entity.poster_source_url = poster_source_url
+        subject.entity.poster_ai_selected = ai_selected
+        subject.entity.poster_user_approved = user_approved
+        subject.entity.poster_deployed_filename = filename
+        subject.entity.poster_deployed_at = datetime.now(UTC)
+        subject.entity.poster_sha256 = sha256
         if phash:
-            movie.poster_phash = phash
+            subject.entity.poster_phash = phash
 
         await _log_event(
             db,
-            movie.id,
+            subject,
             "deploy",
             source,
             {
@@ -277,7 +281,7 @@ class PosterService:
         )
         await db.commit()
 
-        logger.info("POSTER DEPLOYED | movie=%s | path=%s | source=%s", movie.title, dest, source)
+        logger.info("POSTER DEPLOYED | subject=%s | path=%s | source=%s", subject.title, dest, source)
         return DeployResult(
             deployed_path=str(dest),
             cache_path=str(cache_file) if cache_file else "",
@@ -288,56 +292,67 @@ class PosterService:
     async def restore(
         self,
         db: AsyncSession,
-        movie: Movie,
+        subject: PosterSubject | Movie | Series | Season,
         *,
         new_folder: str | None = None,
         source: str = "webhook",
     ) -> RestoreResult:
-        """Restore the deployed poster to the (new) movie folder."""
-        folder_raw = new_folder or movie.folder_path
+        """Restore the deployed poster to the (new) subject folder."""
+        if not isinstance(subject, PosterSubject):
+            if isinstance(subject, Movie):
+                subject = PosterSubject.from_movie(subject)
+            elif isinstance(subject, Series):
+                subject = PosterSubject.from_series(subject)
+            elif isinstance(subject, Season):
+                series = (await db.execute(select(Series).where(Series.id == subject.series_id))).scalar_one()
+                subject = PosterSubject.from_season(subject, series)
+
+        folder_raw = subject.folder_raw if subject.media_type != "movie" else (new_folder or subject.folder_raw)
         try:
-            folder = safe_translate_and_validate(folder_raw, source="radarr")
+            folder = safe_translate_and_validate(folder_raw, source=subject.path_source)
         except PathValidationError as exc:
-            await _log_event(db, movie.id, "restore_failed", source, {"error": str(exc)})
+            await _log_event(db, subject, "restore_failed", source, {"error": str(exc)})
             await db.commit()
             return RestoreResult(restored=False, source="none", error=str(exc))
 
         try:
             filename = (
-                sanitize_poster_filename(movie.poster_deployed_filename)
-                if movie.poster_deployed_filename
-                else render_filename(movie)
+                sanitize_poster_filename(subject.entity.poster_deployed_filename)
+                if subject.entity.poster_deployed_filename
+                else subject.render_filename()
             )
             dest = _confine_dest(folder, filename)
         except PathValidationError as exc:
-            await _log_event(db, movie.id, "restore_failed", source, {"error": str(exc)})
+            await _log_event(db, subject, "restore_failed", source, {"error": str(exc)})
             await db.commit()
             return RestoreResult(restored=False, source="none", error=str(exc))
 
         errors: list[str] = []
         cache_file = None
-        if movie.tmdb_id is not None:
-            cache_file, _ = cache_paths(movie.tmdb_id)
+        if subject.tmdb_id is not None:
+            cpaths = subject.cache_paths()
+            if cpaths:
+                cache_file, _ = cpaths
 
         for candidate in _RESTORE_CHAINS.get(
             settings.POSTER_RESTORE_METHOD, _RESTORE_CHAINS["download"]
         ):
             if candidate == "local":
-                local_file = backup_path(movie)
+                local_file = subject.backup_file()
                 if not await asyncio.to_thread(local_file.is_file):
                     errors.append(f"local missing: {local_file}")
                     continue
                 try:
                     if (
-                        movie.poster_sha256
-                        and await asyncio.to_thread(_sha256, local_file) != movie.poster_sha256
+                        subject.entity.poster_sha256
+                        and await asyncio.to_thread(_sha256, local_file) != subject.entity.poster_sha256
                     ):
                         logger.warning(
                             "RESTORE | local backup sha mismatch for %s — using it anyway",
-                            movie.title,
+                            subject.title,
                         )
                     await asyncio.to_thread(_atomic_copy, local_file, dest)
-                    await self._finalize_restore(db, movie, dest, folder_raw, source, "local")
+                    await self._finalize_restore(db, subject, dest, folder_raw, source, "local")
                     return RestoreResult(restored=True, source="local", path=str(dest))
                 except OSError as exc:
                     errors.append(f"local failed: {exc}")
@@ -350,15 +365,15 @@ class PosterService:
                     continue
                 try:
                     if (
-                        movie.poster_sha256
-                        and await asyncio.to_thread(_sha256, cache_file) != movie.poster_sha256
+                        subject.entity.poster_sha256
+                        and await asyncio.to_thread(_sha256, cache_file) != subject.entity.poster_sha256
                     ):
                         logger.warning(
                             "RESTORE | cache sha mismatch for %s — using it anyway",
-                            movie.title,
+                            subject.title,
                         )
                     await asyncio.to_thread(_atomic_copy, cache_file, dest)
-                    await self._finalize_restore(db, movie, dest, folder_raw, source, "cache")
+                    await self._finalize_restore(db, subject, dest, folder_raw, source, "cache")
                     return RestoreResult(restored=True, source="cache", path=str(dest))
                 except OSError as exc:
                     errors.append(f"cache failed: {exc}")
@@ -366,43 +381,44 @@ class PosterService:
                     continue
 
             if candidate == "download":
-                if not movie.poster_source_url:
+                if not subject.entity.poster_source_url:
                     errors.append("download missing source URL")
                     continue
                 try:
                     async with httpx.AsyncClient(timeout=30.0) as client:
-                        response = await client.get(movie.poster_source_url)
+                        response = await client.get(subject.entity.poster_source_url)
                         response.raise_for_status()
                         ensure_image_response(response)
                     await asyncio.to_thread(_atomic_write_bytes, response.content, dest)
-                    await self._finalize_restore(db, movie, dest, folder_raw, source, "download")
+                    await self._finalize_restore(db, subject, dest, folder_raw, source, "download")
                     return RestoreResult(restored=True, source="download", path=str(dest))
                 except Exception as exc:  # noqa: BLE001
                     errors.append(f"download failed: {exc}")
                     continue
 
-        movie.poster_path = None  # flag for re-pipeline (needs_poster index)
+        subject.entity.poster_path = None  # flag for re-pipeline
         error = "; ".join(errors) if errors else "no restore sources available"
-        await _log_event(db, movie.id, "restore_failed", source, {"error": error, "errors": errors})
+        await _log_event(db, subject, "restore_failed", source, {"error": error, "errors": errors})
         await db.commit()
-        logger.error("POSTER RESTORE FAILED | movie=%s | %s", movie.title, error)
+        logger.error("POSTER RESTORE FAILED | subject=%s | %s", subject.title, error)
         return RestoreResult(restored=False, source="none", error=error)
 
     async def _finalize_restore(
-        self, db, movie, dest: Path, folder_raw: str, source: str, via: str
+        self, db, subject: PosterSubject, dest: Path, folder_raw: str, source: str, via: str
     ) -> None:
-        movie.poster_path = str(dest)
-        movie.folder_path = folder_raw
-        movie.poster_deployed_at = datetime.now(UTC)
+        subject.entity.poster_path = str(dest)
+        if subject.media_type == "movie":
+            subject.entity.folder_path = folder_raw
+        subject.entity.poster_deployed_at = datetime.now(UTC)
         await _log_event(
             db,
-            movie.id,
+            subject,
             "restore" if source != "heal" else "heal_restore",
             source,
             {"path": str(dest), "via": via},
         )
         await db.commit()
-        logger.info("POSTER RESTORED | movie=%s | via=%s | path=%s", movie.title, via, dest)
+        logger.info("POSTER RESTORED | subject=%s | via=%s | path=%s", subject.title, via, dest)
 
 
 poster_service = PosterService()
