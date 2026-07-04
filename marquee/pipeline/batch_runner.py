@@ -825,13 +825,16 @@ def _ocr_batch(
     else:
         results = PosterTextFilter.run_ocr_batch(items, progress=_tick)
 
-    by_movie: dict[int, list[OCRCandidateResult]] = defaultdict(list)
+    # Keyed by context identity, not ctx.movie_id — for TV assets movie_id is
+    # really series.id or season.id, two independent PK sequences that can
+    # collide, which would merge unrelated assets' OCR results together.
+    by_ctx: dict[int, list[OCRCandidateResult]] = defaultdict(list)
     for owner, result in zip(owners, results, strict=True):
-        by_movie[owner.movie_id].append(result)
+        by_ctx[id(owner)].append(result)
 
     survivors_total = 0
     for ctx in contexts:
-        movie_results = apply_no_text_fallback(by_movie.get(ctx.movie_id, []))
+        movie_results = apply_no_text_fallback(by_ctx.get(id(ctx), []))
         records = ctx.records
         ocr_rejected_dir = ctx.out_dir / "2-ocr-rejected"
         errored_dir = ctx.out_dir / "errored"
