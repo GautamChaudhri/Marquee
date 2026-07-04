@@ -25,17 +25,20 @@ import re
 import subprocess
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from pathlib import Path
 from uuid import uuid4
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.config import settings
+from marquee.core.letterbox_prefilter import refresh_letterbox_prefilter_for_episode
 from marquee.core.letterbox_service import letterbox_service
+from marquee.core.media_files import MediaFileUnavailableError, resolve_media_file
 from marquee.database import _get_session_factory
 from marquee.media import binaries, letterbox_detect, letterbox_preview, probe
 from marquee.media.concurrency import gated
-from marquee.models import LetterboxEvent, LetterboxState, Movie
+from marquee.models import Episode, LetterboxEvent, LetterboxState, Movie
 
 logger = logging.getLogger(__name__)
 
@@ -151,6 +154,64 @@ def _max_parallel() -> int:
     if configured and configured > 0:
         return configured
     return max(1, (os.cpu_count() or 2) - 1)
+
+
+@dataclass(frozen=True)
+class EpisodeBatchItem:
+    episode_id: int
+    series_id: int
+    season_number: int
+    episode_number: int
+    media_file_id: int | None
+    title: str | None = None
+    episode_file_path: str | None = None
+    video_width: int | None = None
+    video_height: int | None = None
+
+
+def _episode_sort_key(item: EpisodeBatchItem) -> tuple[int, int, int]:
+    return (item.season_number, item.episode_number, item.episode_id)
+
+
+def _episode_group_key(item: EpisodeBatchItem) -> tuple[str, int]:
+    if item.media_file_id is not None:
+        return ("media", item.media_file_id)
+    return ("episode", item.episode_id)
+
+
+def group_episode_items_by_media_file(
+    items: list[EpisodeBatchItem],
+) -> list[list[EpisodeBatchItem]]:
+    groups: dict[tuple[str, int], list[EpisodeBatchItem]] = {}
+    for item in sorted(items, key=_episode_sort_key):
+        groups.setdefault(_episode_group_key(item), []).append(item)
+    return list(groups.values())
+
+
+def select_season_sample_episodes(
+    items: list[EpisodeBatchItem],
+    *,
+    count: int,
+) -> list[EpisodeBatchItem]:
+    """Pick first/middle/last downloaded episodes, distinct by media file."""
+    ordered = sorted(
+        [item for item in items if item.season_number > 0 and item.episode_file_path],
+        key=_episode_sort_key,
+    )
+    unique: list[EpisodeBatchItem] = []
+    seen: set[tuple[str, int]] = set()
+    for item in ordered:
+        key = _episode_group_key(item)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(item)
+    if len(unique) <= count:
+        return unique
+    if count <= 1:
+        return [unique[len(unique) // 2]]
+    indices = sorted({round(index * (len(unique) - 1) / (count - 1)) for index in range(count)})
+    return [unique[index] for index in indices]
 
 
 class LetterboxManager:
@@ -468,6 +529,229 @@ class LetterboxManager:
                 height=state.source_height,
             )
         return state
+
+    def detect_episode_blocking(
+        self,
+        episode: Episode,
+        *,
+        path: str,
+        video_width: int | None = None,
+        video_height: int | None = None,
+        thorough: bool = False,
+    ) -> dict:
+        """Run detection for one episode file (blocking — call in a thread)."""
+        source_path = Path(path)
+        info = probe.probe_video(source_path)
+        width = info.width if info else video_width or episode.video_width
+        height = info.height if info else video_height or episode.video_height
+        duration = info.duration_s if info else None
+        container = info.container if info else source_path.suffix.lstrip(".").lower() or None
+        color_transfer = info.color_transfer if info else None
+        eligible = source_path.suffix.lower() == ".mkv" and os.access(source_path, os.W_OK)
+        ineligible_reason = None if eligible else "not_mkv_or_read_only"
+
+        if not width or not height:
+            return {
+                "status": "errored",
+                "confidence": "none",
+                "eligible": eligible,
+                "ineligible_reason": ineligible_reason,
+                "error": "could not determine video dimensions",
+                "source_width": width,
+                "source_height": height,
+                "_source_path": str(source_path),
+                "_container": container,
+            }
+
+        result = letterbox_detect.detect(
+            str(source_path),
+            width=width,
+            height=height,
+            duration_s=duration,
+            color_transfer=color_transfer,
+            codec=info.codec if info else None,
+            pix_fmt=info.pix_fmt if info else None,
+            is_tv=True,
+            thorough=thorough,
+        )
+        return {
+            "status": result.status,
+            "confidence": result.confidence,
+            "eligible": eligible,
+            "ineligible_reason": ineligible_reason,
+            "source_width": result.source_width,
+            "source_height": result.source_height,
+            "recommended_crop_top": result.recommended_crop_top,
+            "recommended_crop_bottom": result.recommended_crop_bottom,
+            "aspect_label": result.aspect_label,
+            "detect_method": result.method,
+            "samples_json": json.dumps(result.samples),
+            "error": result.error,
+            "variable_ar": result.variable_ar,
+            "variable_ar_note": result.variable_ar_note,
+            "_source_path": str(source_path),
+            "_container": container,
+        }
+
+    async def detect_episode_group_and_store(
+        self,
+        db: AsyncSession,
+        episodes: list[Episode],
+        *,
+        media_file_id: int,
+        thorough: bool = False,
+        parent_job_id: str | None = None,
+    ) -> list[LetterboxState]:
+        """Detect one physical file and fan the result out to every linked episode."""
+        if not episodes:
+            return []
+        for episode in episodes:
+            await refresh_letterbox_prefilter_for_episode(db, episode, now=datetime.now(UTC))
+
+        try:
+            resolved = await resolve_media_file(db, media_file_id)
+        except MediaFileUnavailableError as exc:
+            now = datetime.now(UTC)
+            states: list[LetterboxState] = []
+            for episode in episodes:
+                state = (
+                    await db.execute(
+                        select(LetterboxState).where(
+                            LetterboxState.media_type == "episode",
+                            LetterboxState.episode_id == episode.id,
+                        )
+                    )
+                ).scalar_one_or_none()
+                if state is None:
+                    state = LetterboxState(media_type="episode", episode_id=episode.id)
+                    db.add(state)
+                state.status = "ineligible"
+                state.eligible = False
+                state.ineligible_reason = str(exc)
+                state.error = str(exc)
+                state.last_detected_at = now
+                db.add(
+                    LetterboxEvent(
+                        media_type="episode",
+                        episode_id=episode.id,
+                        action="error",
+                        source="detect",
+                        detail=json.dumps({"error": str(exc)}),
+                    )
+                )
+                states.append(state)
+            await db.commit()
+            return states
+
+        probe_episode = episodes[0]
+        await _emit_child_progress(
+            db,
+            parent_job_id,
+            {
+                "episode_id": probe_episode.id,
+                "title": probe_episode.title,
+                "stage": "probing",
+                "progress": 10,
+            },
+        )
+        updates = await gated(
+            self.detect_episode_blocking,
+            probe_episode,
+            path=str(resolved.path),
+            video_width=probe_episode.video_width,
+            video_height=probe_episode.video_height,
+            thorough=thorough,
+        )
+        await _emit_child_progress(
+            db,
+            parent_job_id,
+            {
+                "episode_id": probe_episode.id,
+                "title": probe_episode.title,
+                "stage": "consensus",
+                "progress": 90,
+            },
+        )
+        source_path = updates.pop("_source_path", None)
+        now = datetime.now(UTC)
+        stored_states: list[LetterboxState] = []
+        for episode in episodes:
+            state = (
+                await db.execute(
+                    select(LetterboxState).where(
+                        LetterboxState.media_type == "episode",
+                        LetterboxState.episode_id == episode.id,
+                    )
+                )
+            ).scalar_one_or_none()
+            if state is None:
+                state = LetterboxState(media_type="episode", episode_id=episode.id)
+                db.add(state)
+            for key, value in updates.items():
+                setattr(state, key, value)
+            state.last_detected_at = now
+            if updates["status"] in ("not_letterboxed", "variable_unsafe"):
+                state.reviewed = True
+            db.add(
+                LetterboxEvent(
+                    media_type="episode",
+                    episode_id=episode.id,
+                    action="detect",
+                    source="detect",
+                    detail=json.dumps(
+                        {
+                            "status": updates["status"],
+                            "confidence": updates.get("confidence"),
+                            "top": updates.get("recommended_crop_top"),
+                            "bottom": updates.get("recommended_crop_bottom"),
+                            "media_file_id": media_file_id,
+                            "path": source_path,
+                        }
+                    ),
+                )
+            )
+            stored_states.append(state)
+        await db.commit()
+        return stored_states
+
+    async def mark_sampled_clear(
+        self,
+        db: AsyncSession,
+        episodes: list[Episode],
+        *,
+        source: str = "detect",
+    ) -> list[LetterboxState]:
+        """Mark episodes as triaged clear without an individual scan."""
+        now = datetime.now(UTC)
+        states: list[LetterboxState] = []
+        for episode in episodes:
+            state = await refresh_letterbox_prefilter_for_episode(db, episode, now=now)
+            if state is None:
+                continue
+            state.status = "sampled_clear"
+            state.confidence = "none"
+            state.recommended_crop_top = 0
+            state.recommended_crop_bottom = 0
+            state.aspect_label = None
+            state.detect_method = "season_sample"
+            state.samples_json = None
+            state.error = None
+            state.variable_ar = False
+            state.variable_ar_note = None
+            state.last_detected_at = now
+            state.reviewed = False
+            db.add(
+                LetterboxEvent(
+                    media_type="episode",
+                    episode_id=episode.id,
+                    action="detect",
+                    source=source,
+                    detail=json.dumps({"status": "sampled_clear"}),
+                )
+            )
+            states.append(state)
+        await db.commit()
+        return states
 
     # ------------------------------------------------------------------
     # Batch lifecycle

@@ -129,9 +129,17 @@ def sample_minutes(
     thorough: bool = False,
     config: Settings = settings,
 ) -> list[int]:
-    """Minutes to sample, clamped to the file's duration when known."""
+    """Display-minute labels for sampling, clamped to the file's duration when known."""
     if is_tv:
-        minutes = list(config.LETTERBOX_TV_SAMPLES)
+        offsets = sample_offsets_proportional(
+            duration_s,
+            config.LETTERBOX_TV_THOROUGH_WINDOWS
+            if thorough
+            else config.LETTERBOX_TV_QUICK_WINDOWS,
+            config.LETTERBOX_TV_HEAD_SKIP_PCT,
+            config.LETTERBOX_TV_TAIL_SKIP_PCT,
+        )
+        return [round(offset / 60) for offset in offsets]
     else:
         step = max(1, config.LETTERBOX_MOVIE_SAMPLE_STEP)
         if thorough:
@@ -153,6 +161,54 @@ def sample_minutes(
     return minutes
 
 
+def sample_offsets_proportional(
+    duration_s: float | None,
+    count: int,
+    head_pct: int,
+    tail_pct: int,
+) -> list[int]:
+    """Evenly spaced TV sample offsets within the usable runtime span."""
+    if duration_s is None or duration_s <= 0 or count <= 0:
+        return []
+    head = max(0, min(head_pct, 99)) / 100.0
+    tail = max(0, min(tail_pct, 99)) / 100.0
+    start = duration_s * head
+    end = duration_s * max(head, 1.0 - tail)
+    if end < start:
+        end = start
+    if count == 1:
+        return [round((start + end) / 2)]
+    raw = [start + ((end - start) * index / (count - 1)) for index in range(count)]
+    # Keep offsets monotonic and within the usable span even on short clips.
+    clamped = [min(max(round(offset), round(start)), round(end)) for offset in raw]
+    deduped: list[int] = []
+    for offset in clamped:
+        if not deduped or offset > deduped[-1]:
+            deduped.append(offset)
+    return deduped
+
+
+def _sample_offsets(
+    duration_s: float | None,
+    *,
+    is_tv: bool,
+    thorough: bool = False,
+    config: Settings = settings,
+) -> list[tuple[int, int | None]]:
+    """Sampling schedule as ``(minute_label, absolute_offset_seconds)`` pairs."""
+    if is_tv:
+        offsets = sample_offsets_proportional(
+            duration_s,
+            config.LETTERBOX_TV_THOROUGH_WINDOWS
+            if thorough
+            else config.LETTERBOX_TV_QUICK_WINDOWS,
+            config.LETTERBOX_TV_HEAD_SKIP_PCT,
+            config.LETTERBOX_TV_TAIL_SKIP_PCT,
+        )
+        return [(round(offset / 60), offset) for offset in offsets]
+    return [(minute, None) for minute in sample_minutes(duration_s, is_tv=False, thorough=thorough, config=config)]
+
+
 # ---------------------------------------------------------------------------
 # Measurement backends (shell out)
 # ---------------------------------------------------------------------------
@@ -160,6 +216,12 @@ def sample_minutes(
 
 def _timestamp(minute: int) -> str:
     return f"{minute // 60:02d}:{minute % 60:02d}:00"
+
+
+def _timestamp_seconds(offset_s: int) -> str:
+    minutes, seconds = divmod(max(0, offset_s), 60)
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
 
 def _bars_from_box(full_height: int, h: int, y: int) -> tuple[int, int]:
@@ -207,6 +269,7 @@ def measure_window_cropdetect(
     minute: int,
     full_height: int,
     *,
+    offset_s: int | None = None,
     config: Settings = settings,
     cropdetect_limit: int | None = None,
     nvdec_decoder: str | None = None,
@@ -235,7 +298,7 @@ def measure_window_cropdetect(
     args.extend(
         [
             "-ss",
-            _timestamp(minute),
+            _timestamp_seconds(offset_s) if offset_s is not None else _timestamp(minute),
             "-i",
             path,
             "-an",
@@ -295,7 +358,12 @@ def measure_window_cropdetect(
 
 
 def measure_window_trim(
-    path: str, minute: int, full_height: int, *, config: Settings = settings
+    path: str,
+    minute: int,
+    full_height: int,
+    *,
+    offset_s: int | None = None,
+    config: Settings = settings,
 ) -> WindowMeasurement:
     """ImageMagick fallback: extract a frame and trim it at several fuzz levels."""
     fd, tmp = tempfile.mkstemp(suffix=".png")
@@ -309,7 +377,7 @@ def measure_window_trim(
                 "-loglevel",
                 "error",
                 "-ss",
-                _timestamp(minute),
+                _timestamp_seconds(offset_s) if offset_s is not None else _timestamp(minute),
                 "-i",
                 path,
                 "-frames:v",
@@ -586,24 +654,30 @@ def detect(
     method = (method or config.LETTERBOX_DETECT_METHOD).lower()
     cropdetect_limit = cropdetect_limit_for(color_transfer, config=config)
 
-    minutes = sample_minutes(duration_s, is_tv=is_tv, thorough=thorough, config=config)
+    schedule = _sample_offsets(duration_s, is_tv=is_tv, thorough=thorough, config=config)
     measurements: list[WindowMeasurement] = []
     consecutive_clear = 0
     nvdec_decoder = _nvdec_decoder_for(codec, config=config) if method == "cropdetect" else None
     benchmark_key = (codec or "", pix_fmt or "", width, height)
-    for minute in minutes:
+    for minute, offset_s in schedule:
         if method == "trim":
-            m = measure_window_trim(path, minute, height, config=config)
+            m = measure_window_trim(path, minute, height, offset_s=offset_s, config=config)
         else:
             use_nvdec = bool(nvdec_decoder and _NVDEC_BENCHMARKS.get(benchmark_key, False))
             if nvdec_decoder and benchmark_key not in _NVDEC_BENCHMARKS:
                 cpu = measure_window_cropdetect(
-                    path, minute, height, config=config, cropdetect_limit=cropdetect_limit
+                    path,
+                    minute,
+                    height,
+                    offset_s=offset_s,
+                    config=config,
+                    cropdetect_limit=cropdetect_limit,
                 )
                 gpu = measure_window_cropdetect(
                     path,
                     minute,
                     height,
+                    offset_s=offset_s,
                     config=config,
                     cropdetect_limit=cropdetect_limit,
                     nvdec_decoder=nvdec_decoder,
@@ -625,6 +699,7 @@ def detect(
                     path,
                     minute,
                     height,
+                    offset_s=offset_s,
                     config=config,
                     cropdetect_limit=cropdetect_limit,
                     nvdec_decoder=nvdec_decoder if use_nvdec else None,
@@ -633,7 +708,12 @@ def detect(
                 if use_nvdec and not m.ok:
                     _NVDEC_BENCHMARKS[benchmark_key] = False
                     m = measure_window_cropdetect(
-                        path, minute, height, config=config, cropdetect_limit=cropdetect_limit
+                        path,
+                        minute,
+                        height,
+                        offset_s=offset_s,
+                        config=config,
+                        cropdetect_limit=cropdetect_limit,
                     )
         measurements.append(m)
         if not thorough and m.ok and m.bar <= config.LETTERBOX_NOISE_PX:
@@ -646,9 +726,24 @@ def detect(
     resolved_method = (
         "cropdetect_nvdec" if any(m.backend == "nvdec" for m in measurements) else method
     )
-    return consensus(
+    result = consensus(
         measurements, width=width, height=height, method=resolved_method, config=config
     )
+    if is_tv and not thorough and any(m.ok and m.bar > config.LETTERBOX_MIN_BAR_PX for m in measurements):
+        return detect(
+            path,
+            width=width,
+            height=height,
+            duration_s=duration_s,
+            color_transfer=color_transfer,
+            codec=codec,
+            pix_fmt=pix_fmt,
+            is_tv=True,
+            thorough=True,
+            method=method,
+            config=config,
+        )
+    return result
 
 
 def result_to_dict(result: DetectionResult) -> dict:

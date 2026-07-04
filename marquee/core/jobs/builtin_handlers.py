@@ -264,6 +264,58 @@ async def letterbox_detect(job: Job) -> dict[str, Any]:
             raise
 
 
+@register("letterbox_detect_episode")
+async def letterbox_detect_episode(job: Job) -> dict[str, Any]:
+    from marquee.media.letterbox_manager import letterbox_manager  # noqa: PLC0415
+
+    factory = _get_session_factory()
+    episode_ids = [int(episode_id) for episode_id in job.payload.get("episode_ids", [])]
+    media_file_id = job.payload.get("media_file_id")
+    if not episode_ids or media_file_id is None:
+        raise RuntimeError("episode_ids and media_file_id are required")
+
+    async with factory() as db:
+        episodes = (
+            await db.execute(select(Episode).where(Episode.id.in_(episode_ids)).order_by(Episode.id))
+        ).scalars().all()
+        if not episodes:
+            raise RuntimeError("episodes not found")
+
+        parent = await db.get(Job, job.parent_id) if job.parent_id else None
+        if parent is not None:
+            for episode in episodes:
+                try:
+                    await job_manager.emit(
+                        db,
+                        parent,
+                        state="child_progress",
+                        message=f"Analyzing episode {episode.id}",
+                        detail={
+                            "episode_id": episode.id,
+                            "stage": "started",
+                            "progress": 0,
+                        },
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.exception(
+                        "could not emit letterbox child-start progress for episode %d", episode.id
+                    )
+
+        states = await letterbox_manager.detect_episode_group_and_store(
+            db,
+            episodes,
+            media_file_id=int(media_file_id),
+            thorough=bool(job.payload.get("thorough", False)),
+            parent_job_id=job.parent_id,
+        )
+        first = states[0] if states else None
+        return {
+            "episode_ids": episode_ids,
+            "status": first.status if first is not None else "errored",
+            "confidence": first.confidence if first is not None else "none",
+        }
+
+
 @register("letterbox_apply", instant=True)
 async def letterbox_apply(job: Job) -> dict[str, Any]:
     from marquee.core.letterbox_service import letterbox_service  # noqa: PLC0415
