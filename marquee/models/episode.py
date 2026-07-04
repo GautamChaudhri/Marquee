@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from sqlalchemy import Boolean, ForeignKey, Integer, String, Text
+from sqlalchemy import JSON, Boolean, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from marquee.database import Base
@@ -57,6 +57,8 @@ class Episode(Base, TimestampMixin):
     )
     video_width: Mapped[int | None] = mapped_column(Integer, nullable=True)
     video_height: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    audio_languages_json: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    subtitle_languages_json: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
 
     def __repr__(self) -> str:
         return (

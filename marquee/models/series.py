@@ -57,6 +57,14 @@ class Series(Base, TimestampMixin, ArtworkMixin):
     director: Mapped[str | None] = mapped_column(String(500), nullable=True)
     production_companies_json: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
 
+    # ── Audio/subtitle preference overrides ───────────────────────────
+    # NULL means inherit the global subtitle settings. Lists are normalized
+    # BCP-47 language tags and apply to all seasons/episodes in the series.
+    preferred_audio_languages_json: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    preferred_subtitle_languages_json: Mapped[list[str] | None] = mapped_column(
+        JSON, nullable=True
+    )
+
     # ── Text Profile Overrides ───────────────────────────────────────
     show_text_profile_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     season_text_profile_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
