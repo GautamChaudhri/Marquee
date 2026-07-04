@@ -44,7 +44,7 @@ export default defineConfig(
 		files: [
 			'src/lib/components/subtitles/**/*.svelte',
 			'src/routes/audio-subs/**/*.svelte',
-			'src/routes/hdr/+page.svelte'
+			'src/routes/hdr/movies/+page.svelte'
 		],
 		rules: {
 			// Existing subtitle/HDR screens still carry broad legacy patterns that predate
