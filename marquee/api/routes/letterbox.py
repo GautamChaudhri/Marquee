@@ -36,6 +36,7 @@ from marquee.core.letterbox_prefilter import (
     refresh_letterbox_prefilter_for_movie,
     state_has_detector_truth,
 )
+from marquee.core.letterbox_rollups import EpisodeLetterbox, season_rollup, show_rollup
 from marquee.core.letterbox_service import letterbox_service
 from marquee.core.media_files import (
     MediaFileNotFoundError,
@@ -46,10 +47,13 @@ from marquee.core.media_files import (
 from marquee.core.media_jobs import media_job_manager
 from marquee.core.rate_limit import RateLimiter
 from marquee.core.sort_title import title_sort_expr
+from marquee.core.tv_queries import series_visible
 from marquee.database import get_db
 from marquee.media import binaries, letterbox_preview
 from marquee.media.concurrency import gated
 from marquee.models import (
+    Episode,
+    EpisodeMediaFile,
     Job,
     LetterboxEvent,
     LetterboxReencodeArtifact,
@@ -57,6 +61,7 @@ from marquee.models import (
     MediaFile,
     MediaJob,
     Movie,
+    Series,
 )
 
 logger = logging.getLogger(__name__)
@@ -372,6 +377,167 @@ async def _load_state(db: AsyncSession, movie_id: int) -> LetterboxState:
     return state
 
 
+def _workflow_funnel_from_status_rows(rows: list[tuple[str | None, bool]]) -> dict[str, int]:
+    return {
+        "candidates": sum(
+            1
+            for status, _reviewed in rows
+            if status in {"prefilter_candidate", "prefilter_unknown"}
+        ),
+        "staging": sum(1 for status, _reviewed in rows if status == "candidate"),
+        "preview": sum(
+            1 for status, reviewed in rows if status == "tagged" and not reviewed
+        ),
+        "processed": sum(
+            1 for status, reviewed in rows if status == "tagged" and reviewed
+        ),
+    }
+
+
+def _workflow_funnel_from_states(states: list[LetterboxState | None]) -> dict[str, int]:
+    return _workflow_funnel_from_status_rows(
+        [
+            (state.status if state is not None else None, bool(state.reviewed) if state is not None else False)
+            for state in states
+        ]
+    )
+
+
+def _verdict_breakdown_key(state: LetterboxState | None) -> str:
+    if state is None or state.status in {"prefilter_candidate", "prefilter_unknown", "prefilter_skipped"}:
+        return "unanalyzed"
+    if state.status == "not_letterboxed":
+        return "clear"
+    if state.status == "sampled_clear":
+        return "sampled_clear"
+    if state.status in {"candidate", "skipped"}:
+        return "letterboxed_untreated"
+    if state.status == "tagged":
+        return "tagged"
+    if state.status == "reencoded":
+        return "reencoded"
+    if state.status == "variable_unsafe":
+        return "variable"
+    if state.status == "ineligible":
+        return "ineligible"
+    if state.status == "errored":
+        return "error"
+    return "unanalyzed"
+
+
+def _aggregate_verdict_breakdown(states: list[LetterboxState | None]) -> dict[str, int]:
+    counts = {
+        "clear": 0,
+        "sampled_clear": 0,
+        "letterboxed_untreated": 0,
+        "tagged": 0,
+        "reencoded": 0,
+        "variable": 0,
+        "ineligible": 0,
+        "error": 0,
+        "unanalyzed": 0,
+    }
+    for state in states:
+        counts[_verdict_breakdown_key(state)] += 1
+    return counts
+
+
+def _episode_letterbox_row(
+    episode: Episode,
+    state: LetterboxState | None,
+    media_file_id: int | None,
+) -> tuple[EpisodeLetterbox, dict]:
+    status = state.status if state is not None else None
+    item = EpisodeLetterbox(
+        episode_id=episode.id,
+        season_number=episode.season_number,
+        episode_number=episode.episode_number,
+        title=episode.title,
+        status=status,
+        confidence=state.confidence if state is not None else None,
+        aspect_label=state.aspect_label if state is not None else None,
+        recommended_crop_top=state.recommended_crop_top if state is not None else None,
+        recommended_crop_bottom=state.recommended_crop_bottom if state is not None else None,
+        applied_crop_top=state.applied_crop_top if state is not None else None,
+        applied_crop_bottom=state.applied_crop_bottom if state is not None else None,
+        eligible=state.eligible if state is not None else None,
+        reviewed=bool(state.reviewed) if state is not None else False,
+        media_file_id=media_file_id,
+    )
+    matrix_row = {
+        "episode_id": episode.id,
+        "season_number": episode.season_number,
+        "episode_number": episode.episode_number,
+        "code": f"S{episode.season_number:02d}E{episode.episode_number:02d}",
+        "title": episode.title,
+        "bucket": item.bucket,
+        "status": item.status,
+        "confidence": item.confidence,
+        "aspect_label": item.aspect_label,
+        "recommended_crop_top": item.recommended_crop_top,
+        "recommended_crop_bottom": item.recommended_crop_bottom,
+        "applied_crop_top": item.applied_crop_top,
+        "applied_crop_bottom": item.applied_crop_bottom,
+        "resolution": _resolution_label(episode.video_width, episode.video_height),
+        "source_width": episode.video_width,
+        "source_height": episode.video_height,
+        "media_file_id": media_file_id,
+        "eligible": item.eligible,
+        "reviewed": item.reviewed,
+    }
+    return item, matrix_row
+
+
+async def _load_tv_episode_rows(
+    db: AsyncSession,
+    *,
+    series_id: int | None = None,
+) -> list[tuple[Episode, Series, LetterboxState | None, int | None]]:
+    media_subq = (
+        select(
+            EpisodeMediaFile.episode_id.label("episode_id"),
+            func.min(MediaFile.id).label("media_file_id"),
+        )
+        .join(MediaFile, MediaFile.id == EpisodeMediaFile.media_file_id)
+        .where(MediaFile.is_active.is_(True))
+        .group_by(EpisodeMediaFile.episode_id)
+        .subquery()
+    )
+    query = (
+        select(Episode, Series, LetterboxState, media_subq.c.media_file_id)
+        .join(Series, Series.id == Episode.series_id)
+        .outerjoin(
+            LetterboxState,
+            (LetterboxState.media_type == "episode") & (LetterboxState.episode_id == Episode.id),
+        )
+        .outerjoin(media_subq, media_subq.c.episode_id == Episode.id)
+        .where(
+            series_visible(),
+            Episode.episode_file_path.is_not(None),
+            Episode.episode_file_path != "",
+        )
+        .order_by(Series.title, Episode.season_number, Episode.episode_number, Episode.id)
+    )
+    if series_id is not None:
+        query = query.where(Series.id == series_id)
+    return (await db.execute(query)).all()
+
+
+async def _active_tv_job_ids(db: AsyncSession, series_id: int) -> list[str]:
+    rows = (
+        await db.execute(
+            select(Job.id)
+            .where(
+                Job.subject_type == "series",
+                Job.subject_id == str(series_id),
+                Job.status.notin_(tuple(TERMINAL)),
+            )
+            .order_by(Job.created_at.desc(), Job.id.desc())
+        )
+    ).scalars().all()
+    return rows
+
+
 # ---------------------------------------------------------------------------
 # Status + listing
 # ---------------------------------------------------------------------------
@@ -590,6 +756,216 @@ async def find_candidate_movies(
     }
 
 
+@router.get("/summary")
+async def letterbox_summary(db: Annotated[AsyncSession, Depends(get_db)]):
+    movie_rows = (
+        await db.execute(
+            select(Movie, LetterboxState)
+            .outerjoin(
+                LetterboxState,
+                (LetterboxState.media_type == "movie") & (LetterboxState.movie_id == Movie.id),
+            )
+            .where(Movie.movie_file_path.is_not(None), Movie.movie_file_path != "")
+            .order_by(title_sort_expr(), Movie.year)
+        )
+    ).all()
+    movie_states = [state for _movie, state in movie_rows]
+    movie_aspects: dict[str, int] = {}
+    for state in movie_states:
+        if state is not None and state.aspect_label:
+            movie_aspects[state.aspect_label] = movie_aspects.get(state.aspect_label, 0) + 1
+
+    movie_breakdown = _aggregate_verdict_breakdown(movie_states)
+    movie_artifacts = (
+        await db.execute(
+            select(LetterboxReencodeArtifact).where(LetterboxReencodeArtifact.media_type == "movie")
+        )
+    ).scalars().all()
+    movie_reencode = {
+        "count": len(movie_artifacts),
+        "space_reclaimed_bytes": sum(
+            max(0, (artifact.original_size_bytes or 0) - (artifact.candidate_size_bytes or 0))
+            for artifact in movie_artifacts
+            if artifact.status == "replaced"
+        ),
+        "awaiting_decision": sum(
+            1 for artifact in movie_artifacts if artifact.status in {"candidate_ready", "kept"}
+        ),
+        "saved_originals_on_disk": sum(
+            1 for artifact in movie_artifacts if artifact.saved_original_path
+        ),
+    }
+
+    tv_rows = await _load_tv_episode_rows(db)
+    tv_items: list[EpisodeLetterbox] = []
+    series_rollups: list[dict] = []
+    grouped_by_series: dict[int, list[EpisodeLetterbox]] = {}
+    for episode, _series, state, media_file_id in tv_rows:
+        item, _matrix = _episode_letterbox_row(episode, state, media_file_id)
+        grouped_by_series.setdefault(episode.series_id, []).append(item)
+        if episode.season_number != 0:
+            tv_items.append(item)
+    for items in grouped_by_series.values():
+        season_rollups = {
+            number: season_rollup([item for item in items if item.season_number == number])
+            for number in sorted({item.season_number for item in items})
+        }
+        series_rollups.append(show_rollup(season_rollups))
+
+    tv_aspects: dict[str, int] = {}
+    for item in tv_items:
+        if item.aspect_label:
+            tv_aspects[item.aspect_label] = tv_aspects.get(item.aspect_label, 0) + 1
+
+    show_verdict_counts: dict[str, int] = {}
+    uniformity_counts: dict[str, int] = {}
+    for rollup in series_rollups:
+        show_verdict_counts[rollup["verdict"]] = show_verdict_counts.get(rollup["verdict"], 0) + 1
+        uniformity_counts[rollup["uniformity"]] = uniformity_counts.get(rollup["uniformity"], 0) + 1
+
+    return {
+        "movies": {
+            "workflow_funnel": _workflow_funnel_from_states(movie_states),
+            "verdict_breakdown": movie_breakdown,
+            "aspect_distribution": movie_aspects,
+            "coverage": {
+                "analyzed": len(movie_states) - movie_breakdown["unanalyzed"],
+                "total": len(movie_states),
+                "percent": round(
+                    (100.0 * (len(movie_states) - movie_breakdown["unanalyzed"]) / len(movie_states)),
+                    2,
+                )
+                if movie_states
+                else 0.0,
+            },
+            "reencode": movie_reencode,
+        },
+        "tv": {
+            "workflow_funnel": _workflow_funnel_from_status_rows(
+                [(item.status, item.reviewed) for item in tv_items]
+            ),
+            "verdict_breakdown": {
+                "clear": sum(1 for item in tv_items if item.bucket == "clear"),
+                "sampled_clear": sum(1 for item in tv_items if item.bucket == "sampled_clear"),
+                "letterboxed_untreated": sum(1 for item in tv_items if item.bucket == "candidate"),
+                "tagged": sum(1 for item in tv_items if item.bucket == "tagged"),
+                "reencoded": sum(1 for item in tv_items if item.bucket == "reencoded"),
+                "variable": sum(1 for item in tv_items if item.bucket == "variable"),
+                "ineligible": sum(1 for item in tv_items if item.bucket == "ineligible"),
+                "error": sum(1 for item in tv_items if item.bucket == "error"),
+                "unanalyzed": sum(1 for item in tv_items if item.bucket == "unanalyzed"),
+            },
+            "aspect_distribution": tv_aspects,
+            "coverage": {
+                "analyzed": sum(1 for item in tv_items if item.bucket != "unanalyzed"),
+                "total": len(tv_items),
+                "percent": round(
+                    100.0 * sum(1 for item in tv_items if item.bucket != "unanalyzed") / len(tv_items),
+                    2,
+                )
+                if tv_items
+                else 0.0,
+            },
+            "shows_total": len(grouped_by_series),
+            "episodes_total": len(tv_items),
+            "show_verdict_counts": show_verdict_counts,
+            "uniformity_counts": uniformity_counts,
+        },
+    }
+
+
+@router.get("/tv")
+async def list_tv_letterbox(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    verdict: str | None = None,
+    uniformity: str | None = None,
+    has_candidates: bool | None = None,
+    q: str | None = None,
+):
+    rows = await _load_tv_episode_rows(db)
+    series_map: dict[int, Series] = {}
+    episodes_by_series: dict[int, list[EpisodeLetterbox]] = {}
+    for episode, series, state, media_file_id in rows:
+        series_map[series.id] = series
+        item, _matrix = _episode_letterbox_row(episode, state, media_file_id)
+        episodes_by_series.setdefault(series.id, []).append(item)
+
+    items: list[dict] = []
+    for series_id, episode_items in episodes_by_series.items():
+        series = series_map[series_id]
+        season_rollups = {
+            number: season_rollup([item for item in episode_items if item.season_number == number])
+            for number in sorted({item.season_number for item in episode_items})
+        }
+        rollup = show_rollup(season_rollups)
+        item = {
+            "series_id": series.id,
+            "title": series.title,
+            "year": series.year,
+            "episodes_total": rollup["episodes_total"],
+            "dominant_aspect_label": rollup["dominant_aspect_label"],
+            "rollup": rollup,
+            "active_job_ids": await _active_tv_job_ids(db, series.id),
+        }
+        if verdict and rollup["verdict"] != verdict:
+            continue
+        if uniformity and rollup["uniformity"] != uniformity:
+            continue
+        if has_candidates is not None and rollup["has_candidates"] is not has_candidates:
+            continue
+        if q and q.lower() not in (series.title or "").lower():
+            continue
+        items.append(item)
+
+    items.sort(key=lambda item: ((item["title"] or "").lower(), item["series_id"]))
+    return {"total": len(items), "items": items}
+
+
+@router.get("/tv/{series_id}")
+async def tv_letterbox_detail(series_id: int, db: Annotated[AsyncSession, Depends(get_db)]):
+    rows = await _load_tv_episode_rows(db, series_id=series_id)
+    if not rows:
+        raise HTTPException(status_code=404, detail=f"Series id={series_id} not found")
+
+    series = rows[0][1]
+    season_payloads: list[dict] = []
+    episode_items: list[EpisodeLetterbox] = []
+    matrix_by_season: dict[int, list[dict]] = {}
+    items_by_season: dict[int, list[EpisodeLetterbox]] = {}
+    for episode, _series, state, media_file_id in rows:
+        item, matrix = _episode_letterbox_row(episode, state, media_file_id)
+        episode_items.append(item)
+        items_by_season.setdefault(episode.season_number, []).append(item)
+        matrix_by_season.setdefault(episode.season_number, []).append(matrix)
+
+    season_rollups = {
+        number: season_rollup(items_by_season[number]) for number in sorted(items_by_season)
+    }
+    for season_number in sorted(items_by_season):
+        season_payloads.append(
+            {
+                "season_number": season_number,
+                "is_specials": season_number == 0,
+                "rollup": season_rollups[season_number],
+                "episodes": sorted(
+                    matrix_by_season[season_number],
+                    key=lambda row: (row["episode_number"], row["episode_id"]),
+                ),
+            }
+        )
+
+    return {
+        "series": {
+            "id": series.id,
+            "title": series.title,
+            "year": series.year,
+        },
+        "rollup": show_rollup(season_rollups),
+        "seasons": season_payloads,
+        "active_job_ids": await _active_tv_job_ids(db, series.id),
+    }
+
+
 @router.get("/movies/{movie_id}")
 async def get_movie_detail(movie_id: int, db: Annotated[AsyncSession, Depends(get_db)]):
     movie = await _load_movie(db, movie_id)
@@ -626,6 +1002,17 @@ async def get_movie_detail(movie_id: int, db: Annotated[AsyncSession, Depends(ge
 class BatchDetectRequest(BaseModel):
     movie_ids: list[int] | None = None
     all_candidates: bool = False
+
+
+class TvDetectRequest(BaseModel):
+    season_number: int | None = None
+    episode_id: int | None = None
+    exhaustive: bool = False
+    force: bool = False
+
+
+class TvLibraryDetectRequest(BaseModel):
+    exhaustive: bool = False
 
 
 async def _resolve_batch_movie_ids(body: BatchDetectRequest, db: AsyncSession) -> list[int]:
@@ -706,6 +1093,45 @@ async def _active_detect_job(db: AsyncSession, movie_id: int) -> Job | None:
     ).scalar_one_or_none()
 
 
+async def _tv_scope_rows(
+    db: AsyncSession,
+    series_id: int,
+    *,
+    season_number: int | None = None,
+    episode_id: int | None = None,
+) -> list[tuple[Episode, Series, LetterboxState | None, int | None]]:
+    rows = await _load_tv_episode_rows(db, series_id=series_id)
+    if episode_id is not None:
+        rows = [row for row in rows if row[0].id == episode_id]
+    elif season_number is not None:
+        rows = [row for row in rows if row[0].season_number == season_number]
+    return rows
+
+
+def _tv_scope_child(
+    *,
+    series_id: int,
+    exhaustive: bool,
+    force: bool,
+    season_number: int | None = None,
+    episode_id: int | None = None,
+) -> dict:
+    return {
+        "job_type": "letterbox_detect_tv_scope",
+        "payload": {
+            "series_id": series_id,
+            "season_number": season_number,
+            "episode_id": episode_id,
+            "exhaustive": exhaustive,
+            "force": force,
+        },
+        "priority": 60,
+        "resources": {"media_read": 1},
+        "subject_type": "series",
+        "subject_id": series_id,
+    }
+
+
 @router.post("/movies/{movie_id}/detect")
 async def detect_one(
     movie_id: int,
@@ -745,6 +1171,110 @@ async def detect_batch(
     result = await _start_detect_job(body, db, detector="v2")
     limiter.record("lb_detect_batch")
     return result
+
+
+@router.post("/tv/detect", status_code=202)
+async def detect_tv_batch(
+    body: TvLibraryDetectRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    limiter: Annotated[RateLimiter, Depends(get_rate_limiter)],
+):
+    _require_ffmpeg()
+    enforce_rate_limit(limiter, "lb_detect_batch_tv", settings.RATE_LETTERBOX_BATCH_SECONDS)
+    series_rows = sorted(
+        {series.id: series for _episode, series, _state, _media_file_id in await _load_tv_episode_rows(db)}.values(),
+        key=lambda series: ((series.title or "").lower(), series.id),
+    )
+    if not series_rows:
+        raise HTTPException(status_code=400, detail="No downloaded TV series to analyze")
+
+    children = [
+        _tv_scope_child(series_id=series.id, exhaustive=body.exhaustive, force=False)
+        for series in series_rows
+    ]
+    batch, _children = await job_manager.create_batch(
+        db,
+        parent_type="letterbox_detect_tv_batch",
+        parent_payload={"series_ids": [series.id for series in series_rows], "exhaustive": body.exhaustive},
+        parent_priority=60,
+        parent_subject_type="letterbox_tv_batch",
+        parent_subject_id=uuid4().hex,
+        children=children,
+    )
+    limiter.record("lb_detect_batch_tv")
+    return {
+        "job_id": batch.id,
+        "total": len(children),
+        "events_url": f"/api/jobs/{batch.id}/events",
+    }
+
+
+@router.post("/tv/{series_id}/detect", status_code=202)
+async def detect_tv_series(
+    series_id: int,
+    body: TvDetectRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    _require_ffmpeg()
+    rows = await _tv_scope_rows(
+        db,
+        series_id,
+        season_number=body.season_number,
+        episode_id=body.episode_id,
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail=f"Series id={series_id} not found")
+
+    if body.episode_id is not None:
+        children = [
+            _tv_scope_child(
+                series_id=series_id,
+                exhaustive=True,
+                force=body.force,
+                episode_id=body.episode_id,
+            )
+        ]
+    elif body.season_number is not None:
+        children = [
+            _tv_scope_child(
+                series_id=series_id,
+                exhaustive=body.exhaustive,
+                force=body.force,
+                season_number=body.season_number,
+            )
+        ]
+    else:
+        season_numbers = sorted({episode.season_number for episode, *_rest in rows})
+        children = [
+            _tv_scope_child(
+                series_id=series_id,
+                exhaustive=body.exhaustive,
+                force=body.force,
+                season_number=season_number,
+            )
+            for season_number in season_numbers
+        ]
+
+    batch, _children = await job_manager.create_batch(
+        db,
+        parent_type="letterbox_detect_tv_batch",
+        parent_payload={
+            "series_id": series_id,
+            "season_number": body.season_number,
+            "episode_id": body.episode_id,
+            "exhaustive": body.exhaustive,
+            "force": body.force,
+        },
+        parent_priority=60,
+        parent_subject_type="letterbox_tv_batch",
+        parent_subject_id=str(series_id),
+        children=children,
+    )
+    return {
+        "job_id": batch.id,
+        "total": len(children),
+        "events_url": f"/api/jobs/{batch.id}/events",
+    }
 
 
 @router.get("/jobs/{job_id}/events")
@@ -813,6 +1343,11 @@ class ApplyRequest(BaseModel):
     bottom: int | None = None
 
 
+class TvApplyRequest(BaseModel):
+    season_number: int | None = None
+    episode_id: int | None = None
+
+
 class BatchApplyRequest(BaseModel):
     movie_ids: list[int]
     only_high: bool = False
@@ -846,6 +1381,70 @@ class BatchReencodeRequest(BaseModel):
 
 class RestoreReencodeRequest(BaseModel):
     keep_candidate: bool = False
+
+
+def _scope_episode_group(
+    rows: list[tuple[Episode, Series, LetterboxState | None, int | None]],
+    episode_id: int,
+) -> list[tuple[Episode, Series, LetterboxState | None, int | None]]:
+    target_row = next((row for row in rows if row[0].id == episode_id), None)
+    if target_row is None:
+        raise HTTPException(status_code=404, detail=f"Episode id={episode_id} not found")
+    media_file_id = target_row[3]
+    if media_file_id is None:
+        return [target_row]
+    return [row for row in rows if row[3] == media_file_id]
+
+
+@router.post("/tv/{series_id}/apply")
+async def apply_tv_scope(
+    series_id: int,
+    body: TvApplyRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    rows = await _tv_scope_rows(
+        db,
+        series_id,
+        season_number=body.season_number,
+        episode_id=body.episode_id,
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail=f"Series id={series_id} not found")
+
+    groups: dict[int, tuple[list[tuple[Episode, Series, LetterboxState | None, int | None]], LetterboxState]] = {}
+    for row in rows:
+        episode, _series, state, media_file_id = row
+        if state is None or state.status != "candidate":
+            continue
+        if not (state.recommended_crop_top or state.recommended_crop_bottom):
+            continue
+        group_key = media_file_id if media_file_id is not None else -(episode.id or 0)
+        groups.setdefault(group_key, (_scope_episode_group(rows, episode.id), state))
+    if not groups:
+        raise HTTPException(status_code=400, detail="No eligible TV episodes with a crop to apply")
+
+    results: list[dict] = []
+    for group_rows, state in groups.values():
+        result = await letterbox_service.apply_episode_group(
+            db,
+            [episode for episode, *_rest in group_rows],
+            top=state.recommended_crop_top or 0,
+            bottom=state.recommended_crop_bottom or 0,
+        )
+        results.append(
+            {
+                "episode_ids": [episode.id for episode, *_rest in group_rows],
+                "top": result.top,
+                "bottom": result.bottom,
+                "path": result.path,
+                "verified": result.verified,
+            }
+        )
+    return {
+        "applied_groups": len(results),
+        "applied_episodes": sum(len(item["episode_ids"]) for item in results),
+        "items": results,
+    }
 
 
 @router.post("/movies/{movie_id}/apply")
@@ -1230,6 +1829,26 @@ async def delete_reencode_artifact(
     return await letterbox_reencode.delete_artifact_files(db, artifact)
 
 
+@router.post("/tv/{series_id}/episodes/{episode_id}/remove")
+async def remove_tv_episode(
+    series_id: int,
+    episode_id: int,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    rows = await _tv_scope_rows(db, series_id)
+    group_rows = _scope_episode_group(rows, episode_id)
+    result = await letterbox_service.remove_episode_group(
+        db,
+        [episode for episode, *_rest in group_rows],
+        source="api",
+    )
+    return {
+        "removed": result.removed,
+        "path": result.path,
+        "episode_ids": [episode.id for episode, *_rest in group_rows],
+    }
+
+
 @router.post("/movies/{movie_id}/remove")
 async def remove_one(movie_id: int, db: Annotated[AsyncSession, Depends(get_db)]):
     movie = await _load_movie(db, movie_id)
@@ -1245,6 +1864,34 @@ async def remove_one(movie_id: int, db: Annotated[AsyncSession, Depends(get_db)]
         worker_id="inline-api",
     )
     return {**job_summary(job), **(job.result or {})}
+
+
+@router.post("/tv/{series_id}/episodes/{episode_id}/ignore")
+async def ignore_tv_episode(
+    series_id: int,
+    episode_id: int,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    rows = await _tv_scope_rows(db, series_id)
+    target_row = next((row for row in rows if row[0].id == episode_id), None)
+    if target_row is None:
+        raise HTTPException(status_code=404, detail=f"Episode id={episode_id} not found")
+    episode, _series, state, media_file_id = target_row
+    if state is None:
+        raise HTTPException(status_code=404, detail="Run detect first for this episode.")
+    state.status = "skipped"
+    state.reviewed = True
+    db.add(
+        LetterboxEvent(
+            media_type="episode",
+            episode_id=episode_id,
+            action="ignore",
+            source="api",
+            detail="{}",
+        )
+    )
+    await db.commit()
+    return _episode_letterbox_row(episode, state, media_file_id)[1]
 
 
 @router.post("/movies/{movie_id}/ignore")
@@ -1267,6 +1914,37 @@ async def ignore_one(movie_id: int, db: Annotated[AsyncSession, Depends(get_db)]
     await db.commit()
     letterbox_preview.purge_movie_previews(movie_id)
     return response
+
+
+@router.post("/tv/{series_id}/episodes/{episode_id}/mark-not-letterboxed")
+async def mark_tv_episode_not_letterboxed(
+    series_id: int,
+    episode_id: int,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    rows = await _tv_scope_rows(db, series_id)
+    target_row = next((row for row in rows if row[0].id == episode_id), None)
+    if target_row is None:
+        raise HTTPException(status_code=404, detail=f"Episode id={episode_id} not found")
+    episode, _series, state, media_file_id = target_row
+    if state is None or state.status != "candidate":
+        raise HTTPException(
+            status_code=422,
+            detail="Can only mark detected candidate episodes as not letterboxed.",
+        )
+    state.status = "not_letterboxed"
+    state.reviewed = True
+    db.add(
+        LetterboxEvent(
+            media_type="episode",
+            episode_id=episode.id,
+            action="mark_not_letterboxed",
+            source="api",
+            detail="{}",
+        )
+    )
+    await db.commit()
+    return _episode_letterbox_row(episode, state, media_file_id)[1]
 
 
 @router.post("/movies/{movie_id}/mark-not-letterboxed")

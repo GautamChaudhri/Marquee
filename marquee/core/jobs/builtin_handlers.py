@@ -316,6 +316,102 @@ async def letterbox_detect_episode(job: Job) -> dict[str, Any]:
         }
 
 
+def _summarize_tv_letterbox_states(states: list[Any]) -> tuple[str, dict[str, int]]:
+    counts: dict[str, int] = {}
+    for state in states:
+        counts[state.status] = counts.get(state.status, 0) + 1
+    for status in (
+        "candidate",
+        "tagged",
+        "reencoded",
+        "sampled_clear",
+        "not_letterboxed",
+        "variable_unsafe",
+        "ineligible",
+        "errored",
+    ):
+        if counts.get(status):
+            return status, counts
+    return "prefilter_candidate", counts
+
+
+@register("letterbox_detect_tv_scope")
+async def letterbox_detect_tv_scope(job: Job) -> dict[str, Any]:
+    from marquee.media.letterbox_manager import letterbox_manager  # noqa: PLC0415
+
+    factory = _get_session_factory()
+    series_id = int(job.payload["series_id"])
+    season_number = job.payload.get("season_number")
+    episode_id = job.payload.get("episode_id")
+    exhaustive = bool(job.payload.get("exhaustive", False))
+    force = bool(job.payload.get("force", False))
+
+    async with factory() as db:
+        series = await db.get(Series, series_id)
+        if series is None:
+            raise RuntimeError("series not found")
+
+        episode_query = select(Episode).where(
+            Episode.series_id == series_id,
+            Episode.episode_file_path.is_not(None),
+            Episode.episode_file_path != "",
+        )
+        if episode_id is not None:
+            episode_query = episode_query.where(Episode.id == int(episode_id))
+        elif season_number is not None:
+            episode_query = episode_query.where(Episode.season_number == int(season_number))
+        episodes = (
+            await db.execute(
+                episode_query.order_by(
+                    Episode.season_number,
+                    Episode.episode_number,
+                    Episode.id,
+                )
+            )
+        ).scalars().all()
+        if not episodes:
+            raise RuntimeError("episodes not found")
+
+        parent = await db.get(Job, job.parent_id) if job.parent_id else None
+        if parent is not None:
+            for episode in episodes:
+                try:
+                    await job_manager.emit(
+                        db,
+                        parent,
+                        state="child_progress",
+                        message=f"Analyzing S{episode.season_number:02d}E{episode.episode_number:02d}",
+                        detail={
+                            "episode_id": episode.id,
+                            "stage": "started",
+                            "progress": 0,
+                            "title": episode.title,
+                        },
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.exception(
+                        "could not emit letterbox child-start progress for episode %d", episode.id
+                    )
+
+        states = await letterbox_manager.detect_episode_batch_and_store(
+            db,
+            episodes,
+            exhaustive=exhaustive,
+            force=force,
+            use_season_triage=episode_id is None,
+            parent_job_id=job.parent_id,
+        )
+        summary_status, counts = _summarize_tv_letterbox_states(states)
+        return {
+            "series_id": series_id,
+            "season_number": int(season_number) if season_number is not None else None,
+            "episode_id": int(episode_id) if episode_id is not None else None,
+            "status": summary_status,
+            "counts": counts,
+            "episodes": len(states),
+        }
+
+
 @register("letterbox_apply", instant=True)
 async def letterbox_apply(job: Job) -> dict[str, Any]:
     from marquee.core.letterbox_service import letterbox_service  # noqa: PLC0415
