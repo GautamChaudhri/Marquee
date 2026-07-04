@@ -11,3 +11,9 @@
 - Next steps: update `_sync_episodes` to parse Sonarr `mediaInfo.audioLanguages` and `mediaInfo.subtitles`, fan out shared file truth across multi-episode files, clear the columns on file removal, and add sync tests for normalization and clear-on-removal.
 - Deviations: none from Plan 08 in phase 0.
 - Pending operator actions: none yet.
+
+- Completed: phase 1 Sonarr tier-1 capture in `3cbd488` (`capture episode audio subs`). `_sync_episodes` now normalizes `mediaInfo.audioLanguages` and `mediaInfo.subtitles` into ordered deduped tag lists, shares them across multi-episode files, stores `[]` when `mediaInfo` exists but reports no languages, and resets both columns to `NULL` when the file is removed. Added focused sync tests covering normalization, fan-out, empty-report semantics, and clear-on-removal.
+- In progress: phase 2 pure audio/subs rollup engine.
+- Next steps: build `marquee/core/audio_subs_rollups.py` mirroring `hdr_rollups.py`; add pure unit tests for status, tier precedence, specials exclusion, same-language matching, uniformity, and dub coverage; then wire preferred-language resolution for series/global settings.
+- Deviations: none from Plan 08 in phase 1.
+- Pending operator actions: none yet.
