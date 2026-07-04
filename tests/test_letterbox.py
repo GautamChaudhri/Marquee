@@ -977,6 +977,113 @@ async def test_status_reports_binaries(client, db):
 
 
 @pytest.mark.asyncio
+async def test_status_snapshot_preserves_movie_payload_shape(client, db, monkeypatch):
+    monkeypatch.setattr(binaries, "reset_cache", lambda: None)
+    monkeypatch.setattr(
+        binaries,
+        "availability",
+        lambda: {"ffmpeg": True, "ffprobe": True, "mkvmerge": False, "mkvpropedit": False},
+    )
+
+    candidate = Movie(
+        title="Candidate",
+        year=2000,
+        folder_path="/m/candidate",
+        movie_file_path="Candidate.mkv",
+        tmdb_id=201,
+    )
+    tagged = Movie(
+        title="Tagged",
+        year=2001,
+        folder_path="/m/tagged",
+        movie_file_path="Tagged.mkv",
+        tmdb_id=202,
+    )
+    full_frame = Movie(
+        title="Full Frame",
+        year=2002,
+        folder_path="/m/full-frame",
+        movie_file_path="FullFrame.mkv",
+        tmdb_id=203,
+    )
+    db.add_all([candidate, tagged, full_frame])
+    await db.commit()
+    for movie in (candidate, tagged, full_frame):
+        await db.refresh(movie)
+
+    db.add_all(
+        [
+            LetterboxState(
+                movie_id=candidate.id,
+                status="candidate",
+                confidence="high",
+                last_detected_at=datetime(2024, 1, 2, 3, 4, 5, tzinfo=UTC),
+            ),
+            LetterboxState(
+                movie_id=tagged.id,
+                status="tagged",
+                confidence="medium",
+            ),
+            LetterboxState(
+                movie_id=full_frame.id,
+                status="prefilter_skipped",
+                prefilter_reason="native_wide",
+            ),
+        ]
+    )
+    db.add(Job(id="lb-batch", type="letterbox_detect_batch", status="running"))
+    db.add(
+        Job(
+            id="lb-child",
+            type="letterbox_detect",
+            parent_id="lb-batch",
+            status="queued",
+        )
+    )
+    await db.commit()
+
+    resp = await client.get("/api/letterbox/status")
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "enabled": settings.LETTERBOX_ENABLED,
+        "method": settings.LETTERBOX_DETECT_METHOD,
+        "counts": {
+            "candidate": 1,
+            "prefilter_skipped": 1,
+            "tagged": 1,
+        },
+        "full_frame": 1,
+        "binaries": {
+            "ffmpeg": True,
+            "ffprobe": True,
+            "mkvmerge": False,
+            "mkvpropedit": False,
+        },
+        "honored_by": [
+            "plex-web",
+            "plex-htpc",
+            "plex-desktop",
+            "jellyfin-web",
+            "jellyfin-media-player",
+            "mpv",
+            "vlc",
+            "Kodi (with ffmpeg >= 6 / mpv backend)",
+        ],
+        "not_honored_by": [
+            "plex-android-tv",
+            "plex-google-tv",
+            "plex-apple-tv",
+            "plex-ios",
+            "plex-roku",
+            "most smart-tv DLNA clients",
+        ],
+        "last_scan": "2024-01-02T03:04:05+00:00",
+        "batch_active": "lb-batch",
+    }
+
+
+@pytest.mark.asyncio
 async def test_status_counts_full_frame_present_prefilter_skips(client, db):
     native = Movie(
         title="Native Wide",
@@ -1102,6 +1209,145 @@ async def test_candidates_filter_and_paginate(client, db):
     assert len(items) == 1
     assert items[0]["title"] == "Scope"
     assert items[0]["recommended_crop_top"] == 140
+
+
+@pytest.mark.asyncio
+async def test_candidates_snapshot_preserves_movie_payload_shape(client, db):
+    alpha = Movie(
+        title="Alpha Scope",
+        year=2000,
+        folder_path="/m/alpha",
+        movie_file_path="Alpha.mkv",
+        tmdb_id=301,
+    )
+    beta = Movie(
+        title="Beta Tagged",
+        year=2001,
+        folder_path="/m/beta",
+        movie_file_path="Beta.mkv",
+        tmdb_id=302,
+    )
+    db.add_all([alpha, beta])
+    await db.commit()
+    for movie in (alpha, beta):
+        await db.refresh(movie)
+
+    db.add_all(
+        [
+            LetterboxState(
+                movie_id=alpha.id,
+                status="candidate",
+                confidence="high",
+                eligible=True,
+                source_width=1920,
+                source_height=1080,
+                recommended_crop_top=140,
+                recommended_crop_bottom=140,
+                aspect_label="2.40:1",
+                detect_method="cropdetect",
+                reviewed=False,
+                last_detected_at=datetime(2024, 1, 2, 3, 4, 5, tzinfo=UTC),
+                error=None,
+                prefilter_bucket="candidate",
+                prefilter_reason="ratio_16_9",
+                prefilter_aspect_ratio=1.7777777778,
+                last_prefiltered_at=datetime(2024, 1, 1, 0, 0, 0, tzinfo=UTC),
+                variable_ar=False,
+                variable_ar_note=None,
+            ),
+            LetterboxState(
+                movie_id=beta.id,
+                status="tagged",
+                confidence="low",
+                eligible=False,
+                ineligible_reason="read_only",
+                source_width=3840,
+                source_height=2160,
+                recommended_crop_top=280,
+                recommended_crop_bottom=280,
+                aspect_label="2.40:1",
+                applied_crop_top=280,
+                applied_crop_bottom=280,
+                detect_method="cropdetect_nvdec",
+                reviewed=True,
+                last_detected_at=datetime(2024, 1, 3, 4, 5, 6, tzinfo=UTC),
+                last_applied_at=datetime(2024, 1, 3, 5, 6, 7, tzinfo=UTC),
+                error="kept for regression snapshot",
+                prefilter_bucket="candidate",
+                prefilter_reason="ratio_16_9",
+                prefilter_aspect_ratio=1.7777777778,
+                last_prefiltered_at=datetime(2024, 1, 2, 0, 0, 0, tzinfo=UTC),
+                variable_ar=True,
+                variable_ar_note="mixed bars",
+            ),
+        ]
+    )
+    await db.commit()
+
+    resp = await client.get("/api/letterbox/candidates?sort=confidence")
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "total": 2,
+        "page": 1,
+        "page_size": 50,
+        "items": [
+            {
+                "movie_id": alpha.id,
+                "status": "candidate",
+                "confidence": "high",
+                "eligible": True,
+                "ineligible_reason": None,
+                "source_width": 1920,
+                "source_height": 1080,
+                "recommended_crop_top": 140,
+                "recommended_crop_bottom": 140,
+                "aspect_label": "2.40:1",
+                "applied_crop_top": None,
+                "applied_crop_bottom": None,
+                "detect_method": "cropdetect",
+                "reviewed": False,
+                "last_detected_at": "2024-01-02T03:04:05+00:00",
+                "last_applied_at": None,
+                "error": None,
+                "prefilter_bucket": "candidate",
+                "prefilter_reason": "ratio_16_9",
+                "prefilter_aspect_ratio": 1.7777777778,
+                "last_prefiltered_at": "2024-01-01T00:00:00+00:00",
+                "variable_ar": False,
+                "variable_ar_note": None,
+                "title": "Alpha Scope",
+                "year": 2000,
+            },
+            {
+                "movie_id": beta.id,
+                "status": "tagged",
+                "confidence": "low",
+                "eligible": False,
+                "ineligible_reason": "read_only",
+                "source_width": 3840,
+                "source_height": 2160,
+                "recommended_crop_top": 280,
+                "recommended_crop_bottom": 280,
+                "aspect_label": "2.40:1",
+                "applied_crop_top": 280,
+                "applied_crop_bottom": 280,
+                "detect_method": "cropdetect_nvdec",
+                "reviewed": True,
+                "last_detected_at": "2024-01-03T04:05:06+00:00",
+                "last_applied_at": "2024-01-03T05:06:07+00:00",
+                "error": "kept for regression snapshot",
+                "prefilter_bucket": "candidate",
+                "prefilter_reason": "ratio_16_9",
+                "prefilter_aspect_ratio": 1.7777777778,
+                "last_prefiltered_at": "2024-01-02T00:00:00+00:00",
+                "variable_ar": True,
+                "variable_ar_note": "mixed bars",
+                "title": "Beta Tagged",
+                "year": 2001,
+            },
+        ],
+    }
 
 
 @pytest.mark.asyncio
