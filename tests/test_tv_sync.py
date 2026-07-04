@@ -6,12 +6,11 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from marquee.config import settings
 from marquee.core.poster_sources.tmdb import TVDetails
 from marquee.core.sync_service import SyncService
 from marquee.core.tv_queries import season_downloaded, series_visible
 from marquee.main import app
-from marquee.models import Episode, Season, Series
+from marquee.models import Season, Series
 
 
 @pytest.fixture

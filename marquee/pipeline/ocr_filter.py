@@ -640,6 +640,7 @@ def effective_gate_knobs(profile: dict | None) -> dict:
             "rating": bool(prof.get("allow_rating", pipeline_settings.OCR_ALLOW_RATING)),
             "tagline": bool(prof.get("allow_tagline", pipeline_settings.OCR_ALLOW_TAGLINE)),
             "billing": bool(prof.get("allow_billing", pipeline_settings.OCR_ALLOW_BILLING)),
+            "season": bool(prof.get("allow_season", pipeline_settings.OCR_ALLOW_SEASON)),
         },
         "max_residual_boxes": int(
             prof.get("max_residual_boxes", pipeline_settings.OCR_MAX_RESIDUAL_BOXES)
@@ -652,6 +653,26 @@ def effective_gate_knobs(profile: dict | None) -> dict:
         ),
         "require_title": bool(prof.get("require_title", pipeline_settings.OCR_REQUIRE_TITLE)),
     }
+
+
+_SEASON_PATTERNS = [
+    re.compile(r"^season\s*\d{1,3}$"),
+    re.compile(r"^s\d{1,2}$"),
+    re.compile(r"^\d{1,2}(?:st|nd|rd|th)?\s+season$"),
+    re.compile(r"^(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth)\s+season$"),
+    re.compile(r"^season\s+(?:one|two|three|four|five|six|seven|eight|nine|ten)$"),
+    re.compile(r"^(?:the\s+)?(?:final|last)\s+season$"),
+    re.compile(r"^part\s+(?:\d{1,2}|one|two|three|four|five|six)$"),
+    re.compile(r"^vol(?:ume)?\s*\d{1,2}$"),
+    re.compile(r"^book\s+\w+$"),
+    re.compile(r"^chapter\s+\w+$"),
+    re.compile(r"^[ivxlc]{1,4}$"),
+    re.compile(r"^\d{1,2}$"),
+]
+
+
+def _is_season_text(text: str) -> bool:
+    return any(pattern.match(text) for pattern in _SEASON_PATTERNS)
 
 
 def classify_text_box(
@@ -700,6 +721,9 @@ def classify_text_box(
         return "studio"
     if studio_tokens and _matches_allowed(box.text, studio_tokens):
         return "studio"
+
+    if _is_season_text(text):
+        return "season"
 
     compact_tagline = _compact_text(tagline_text or "")
     compact_text = _compact_text(box.text)

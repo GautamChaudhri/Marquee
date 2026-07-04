@@ -64,7 +64,7 @@ async def heal_scan() -> dict:
     # mid-flight in the API process, and restoring over it would clobber it.
     grace_cutoff = datetime.now(UTC) - timedelta(minutes=settings.HEAL_RECENT_DEPLOY_GRACE_MINUTES)
     from marquee.core.poster_subjects import PosterSubject
-    from marquee.models import Series, Season
+    from marquee.models import Season, Series
 
     async with factory() as db:
         # 1. Walk Movies

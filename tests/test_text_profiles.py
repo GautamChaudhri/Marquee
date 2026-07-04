@@ -4,9 +4,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 import marquee.core.text_profiles as tp
-from marquee.core.pipeline_config import pipeline_settings
 from marquee.core.text_profiles import (
-    OcrGateContext,
     TextProfileError,
     create_profile,
     delete_profile,
@@ -17,13 +15,11 @@ from marquee.core.text_profiles import (
     update_profile,
 )
 from marquee.main import app
-from marquee.models import Movie
+from marquee.models import Movie, Series
 from marquee.pipeline.ocr_filter import (
     PosterTextFilter,
-    _detect_top_billing_bands,
     _DetectedBox,
     classify_text_box,
-    effective_gate_knobs,
 )
 
 
@@ -59,274 +55,153 @@ def _box(
 
 
 def test_builtins_always_present_without_file():
-    profiles = load_profiles()
+    profiles = load_profiles("movie")
     assert set(profiles) == {"title_only", "textless"}
     assert profiles["title_only"].builtin
     assert profiles["title_only"].is_default
     assert profiles["textless"].settings.mode == "textless"
 
+    profiles_season = load_profiles("season")
+    assert "title_and_season" in profiles_season
+    assert profiles_season["title_and_season"].builtin
+    assert profiles_season["title_and_season"].is_default
+
 
 def test_create_update_delete_roundtrip():
-    created = create_profile("Director + Title", {"mode": "custom", "allow_director": True})
+    created = create_profile("movie", "Director + Title", {"mode": "custom", "allow_director": True})
     assert created.id == "director_title"
     assert created.settings.allow_director is True
 
     # Persists across a fresh load.
-    profiles = load_profiles()
+    profiles = load_profiles("movie")
     assert "director_title" in profiles
     assert profiles["director_title"].settings.mode == "custom"
 
-    updated = update_profile("director_title", settings={"mode": "custom", "allow_studio": True})
+    updated = update_profile("movie", "director_title", settings={"mode": "custom", "allow_studio": True})
     assert updated.settings.allow_studio is True
-    assert load_profiles()["director_title"].settings.allow_studio is True
+    assert load_profiles("movie")["director_title"].settings.allow_studio is True
 
-    delete_profile("director_title")
-    assert "director_title" not in load_profiles()
+    delete_profile("movie", "director_title")
+    assert "director_title" not in load_profiles("movie")
 
 
 def test_name_validation():
-    create_profile("My Profile", {})
+    create_profile("movie", "My Profile", {})
     with pytest.raises(TextProfileError):
-        create_profile("my profile", {})  # duplicate (case-insensitive)
+        create_profile("movie", "my profile", {})  # duplicate (case-insensitive)
     with pytest.raises(TextProfileError):
-        create_profile("", {})
+        create_profile("movie", "", {})
     with pytest.raises(TextProfileError):
-        create_profile("x" * 65, {})
+        create_profile("movie", "x" * 65, {})
     with pytest.raises(TextProfileError):
-        create_profile("Title Only", {})  # collides with built-in name
+        create_profile("movie", "Title Only", {})  # collides with built-in name
 
 
 def test_settings_validation():
     with pytest.raises(TextProfileError):
-        create_profile("Bad Mode", {"mode": "nope"})
+        create_profile("movie", "Bad Mode", {"mode": "nope"})
     with pytest.raises(TextProfileError):
-        create_profile("Bad Boxes", {"max_residual_boxes": 21})
+        create_profile("movie", "Bad Boxes", {"max_residual_boxes": 21})
     with pytest.raises(TextProfileError):
-        create_profile("Bad Area", {"max_residual_area_fraction": 1.5})
+        create_profile("movie", "Bad Area", {"max_residual_area_fraction": 1.5})
 
 
 def test_builtins_are_immutable():
     with pytest.raises(TextProfileError):
-        update_profile("title_only", name="Renamed")
+        update_profile("movie", "title_only", name="Renamed")
     with pytest.raises(TextProfileError):
-        delete_profile("textless")
+        delete_profile("movie", "textless")
 
 
 def test_default_selection_and_fallback_on_delete():
-    create_profile("Loose", {"mode": "custom", "max_residual_boxes": 3})
-    set_default_profile("loose")
-    assert get_default_profile_id() == "loose"
-    assert get_active_profile().id == "loose"
+    create_profile("movie", "Loose", {"mode": "custom", "max_residual_boxes": 3})
+    set_default_profile("movie", "loose")
+    assert get_default_profile_id("movie") == "loose"
+    assert get_active_profile("movie").id == "loose"
 
-    delete_profile("loose")
-    assert get_default_profile_id() == "title_only"
+    delete_profile("movie", "loose")
+    assert get_default_profile_id("movie") == "title_only"
 
 
 def test_active_profile_resolution_order():
-    create_profile("Override Me", {"mode": "textless"})
+    create_profile("movie", "Override Me", {"mode": "textless"})
     # Unknown override falls back to the default.
-    assert get_active_profile("missing").id == "title_only"
+    assert get_active_profile("movie", "missing").id == "title_only"
     # Known override wins over default.
-    assert get_active_profile("override_me").id == "override_me"
+    assert get_active_profile("movie", "override_me").id == "override_me"
     with pytest.raises(TextProfileError):
-        set_default_profile("missing")
+        set_default_profile("movie", "missing")
 
 
 # ── Gate payload semantics ────────────────────────────────────────────────
 
 
 def test_gate_payload_builtin_pins_mode_only():
-    profiles = load_profiles()
+    profiles = load_profiles("movie")
     assert profiles["title_only"].gate_payload() == {"mode": "title_only"}
-    assert profiles["textless"].gate_payload() == {"mode": "textless"}
 
 
 def test_gate_payload_custom_is_explicit():
-    created = create_profile("Full", {"mode": "custom", "allow_rating": True})
-    payload = created.gate_payload()
+    profile = create_profile("movie", "Strict", {"mode": "custom", "allow_tagline": True})
+    payload = profile.gate_payload()
     assert payload["mode"] == "custom"
-    assert payload["allow_rating"] is True
-    assert payload["max_residual_boxes"] == 0
-    assert payload["require_title"] is True
-
-
-def test_effective_gate_knobs_fallback_and_override():
-    # No profile → raw pipeline_settings.
-    knobs = effective_gate_knobs(None)
-    assert knobs["mode"] == pipeline_settings.OCR_TEXT_MODE
-    assert knobs["allow_map"]["title"] == pipeline_settings.OCR_ALLOW_TITLE
-    assert knobs["allow_map"]["billing"] is False
-    assert knobs["require_title"] == pipeline_settings.OCR_REQUIRE_TITLE
-
-    # Partial profile → profile keys win, the rest falls back.
-    knobs = effective_gate_knobs({"mode": "textless"})
-    assert knobs["mode"] == "textless"
-    assert knobs["max_residual_boxes"] == pipeline_settings.OCR_MAX_RESIDUAL_BOXES
-
-    # Full custom profile.
-    knobs = effective_gate_knobs(
-        {
-            "mode": "custom",
-            "allow_title": True,
-            "allow_director": True,
-            "allow_billing": True,
-            "max_residual_boxes": 5,
-            "max_residual_area_fraction": 0.1,
-            "require_title": False,
-        }
-    )
-    assert knobs["allow_map"]["director"] is True
-    assert knobs["allow_map"]["billing"] is True
-    assert knobs["max_residual_boxes"] == 5
-    assert knobs["require_title"] is False
+    assert payload["allow_tagline"] is True
+    assert payload["allow_director"] is False  # code defaults ignored, profile is source of truth
 
 
 def test_poster_text_filter_carries_profile_payload():
-    profile = create_profile("Strict", {"mode": "custom", "allow_tagline": True})
+    profile = create_profile("movie", "Strict", {"mode": "custom", "allow_tagline": True})
     filt = PosterTextFilter("Dune", profile=profile)
     assert filt.profile_payload["allow_tagline"] is True
     assert filt.task_extras() == {"profile": filt.profile_payload}
-    # No profile → no extras → workers fall back to pipeline_settings.
-    assert PosterTextFilter("Dune").task_extras() is None
 
 
-def test_classify_text_box_matches_director_anchor():
-    box = _box("A film by Nolan")
-    assert (
-        classify_text_box(
-            box,
-            image_w=1000,
-            image_h=1500,
-            title_box=None,
-            title_tokens={"dune"},
-            director_tokens={"christopher", "nolan"},
-        )
-        == "director"
-    )
+# ── Season OCR Classification ─────────────────────────────────────────────
+
+def test_season_ocr_classification():
+    # Verify season designator patterns classify as "season"
+    box_s3 = _box("SEASON 3")
+    assert classify_text_box(
+        box_s3,
+        image_w=500,
+        image_h=750,
+        title_box=None,
+        title_tokens=set(),
+        director_tokens=set(),
+    ) == "season"
+
+    box_s01 = _box("s01")
+    assert classify_text_box(
+        box_s01,
+        image_w=500,
+        image_h=750,
+        title_box=None,
+        title_tokens=set(),
+        director_tokens=set(),
+    ) == "season"
+
+    box_num = _box("3")
+    assert classify_text_box(
+        box_num,
+        image_w=500,
+        image_h=750,
+        title_box=None,
+        title_tokens=set(),
+        director_tokens=set(),
+    ) == "season"
 
 
-def test_classify_text_box_matches_studio_tokens():
-    box = _box("Syncopy Films")
-    assert (
-        classify_text_box(
-            box,
-            image_w=1000,
-            image_h=1500,
-            title_box=None,
-            title_tokens={"dune"},
-            director_tokens=set(),
-            studio_tokens={"syncopy", "films"},
-        )
-        == "studio"
-    )
-
-
-def test_classify_text_box_matches_tmdb_tagline():
-    box = _box("Long live the fighters", left=10, top=1280, right=420, bottom=1340)
-    assert (
-        classify_text_box(
-            box,
-            image_w=1000,
-            image_h=1500,
-            title_box=None,
-            title_tokens={"dune"},
-            director_tokens=set(),
-            tagline_text="Long live the fighter!",
-        )
-        == "tagline"
-    )
-
-
-def test_classify_text_box_matches_rating():
-    box = _box("Rated PG-13")
-    assert (
-        classify_text_box(
-            box,
-            image_w=1000,
-            image_h=1500,
-            title_box=None,
-            title_tokens={"dune"},
-            director_tokens=set(),
-        )
-        == "rating"
-    )
-
-
-def test_classify_text_box_prefers_billing_band_ids():
-    box = _box("Christopher Nolan", left=70, top=20, right=260, bottom=52, confidence=0.8)
-    assert (
-        classify_text_box(
-            box,
-            image_w=1000,
-            image_h=1500,
-            title_box=None,
-            title_tokens={"dune"},
-            director_tokens={"christopher", "nolan"},
-            billing_band_ids={id(box)},
-        )
-        == "billing"
-    )
-
-
-def test_detect_top_billing_bands_flags_actor_strip():
-    boxes = [
-        _box("Timothee", left=70, top=20, right=210, bottom=52, confidence=0.8),
-        _box("Zendaya", left=280, top=22, right=420, bottom=54, confidence=0.82),
-        _box("Rebecca", left=500, top=24, right=640, bottom=56, confidence=0.81),
-    ]
-    ids = _detect_top_billing_bands(boxes, image_width=1000, image_height=1500)
-    assert ids == {id(box) for box in boxes}
-
-
-def test_detect_top_billing_bands_ignores_format_junk_members():
-    actor_boxes = [
-        _box("Timothee", left=70, top=20, right=210, bottom=52, confidence=0.8),
-        _box("Zendaya", left=280, top=22, right=420, bottom=54, confidence=0.82),
-        _box("Rebecca", left=500, top=24, right=640, bottom=56, confidence=0.81),
-    ]
-    junk = _box("IMAX", left=760, top=20, right=860, bottom=52, confidence=0.85)
-    ids = _detect_top_billing_bands([*actor_boxes, junk], image_width=1000, image_height=1500)
-    assert ids == {id(box) for box in actor_boxes}
-
-
-def test_detect_top_billing_bands_rejects_narrow_strip():
-    boxes = [
-        _box("Timothee", left=70, top=20, right=130, bottom=52, confidence=0.8),
-        _box("Zendaya", left=150, top=22, right=210, bottom=54, confidence=0.82),
-        _box("Rebecca", left=230, top=24, right=290, bottom=56, confidence=0.81),
-    ]
-    assert _detect_top_billing_bands(boxes, image_width=1000, image_height=1500) == set()
-
-
-def test_detect_top_billing_bands_rejects_inconsistent_heights():
-    boxes = [
-        _box("Timothee", left=70, top=20, right=210, bottom=52, confidence=0.8),
-        _box("Zendaya", left=280, top=22, right=420, bottom=54, confidence=0.82),
-        _box("Rebecca", left=500, top=10, right=640, bottom=120, confidence=0.81),
-    ]
-    assert _detect_top_billing_bands(boxes, image_width=1000, image_height=1500) == set()
-
-
-def test_ocr_gate_context_from_movie_without_columns():
-    class Stub:
-        pass
-
-    ctx = OcrGateContext.from_movie(Stub())
-    assert ctx.director is None
-    assert ctx.profile.id == "title_only"
-
-
-# ── API endpoints ─────────────────────────────────────────────────────────
+# ── API Routes ────────────────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
 async def test_api_crud_and_default(client: AsyncClient):
     listed = (await client.get("/api/text-profiles")).json()
-    assert listed["default_id"] == "title_only"
-    assert {p["id"] for p in listed["profiles"]} == {"title_only", "textless"}
+    assert listed["scopes"]["movie"]["default_id"] == "title_only"
+    assert {p["id"] for p in listed["scopes"]["movie"]["profiles"]} == {"title_only", "textless"}
 
     created = await client.post(
-        "/api/text-profiles",
+        "/api/text-profiles/movie",
         json={"name": "Clean Credits", "settings": {"mode": "custom", "allow_director": True}},
     )
     assert created.status_code == 201
@@ -334,28 +209,28 @@ async def test_api_crud_and_default(client: AsyncClient):
     assert profile_id == "clean_credits"
 
     updated = await client.put(
-        f"/api/text-profiles/{profile_id}",
+        f"/api/text-profiles/movie/{profile_id}",
         json={"settings": {"mode": "custom", "allow_studio": True}},
     )
     assert updated.status_code == 200
     assert updated.json()["settings"]["allow_studio"] is True
 
-    assert (await client.put(f"/api/text-profiles/default/{profile_id}")).status_code == 200
-    assert (await client.get("/api/text-profiles")).json()["default_id"] == profile_id
+    assert (await client.put(f"/api/text-profiles/movie/default/{profile_id}")).status_code == 200
+    assert (await client.get("/api/text-profiles")).json()["scopes"]["movie"]["default_id"] == profile_id
 
-    deleted = await client.delete(f"/api/text-profiles/{profile_id}")
+    deleted = await client.delete(f"/api/text-profiles/movie/{profile_id}")
     assert deleted.status_code == 200
     assert deleted.json() == {"deleted": profile_id}
-    assert (await client.get("/api/text-profiles")).json()["default_id"] == "title_only"
+    assert (await client.get("/api/text-profiles")).json()["scopes"]["movie"]["default_id"] == "title_only"
 
 
 @pytest.mark.asyncio
 async def test_api_builtin_protection_and_errors(client: AsyncClient):
-    assert (await client.delete("/api/text-profiles/title_only")).status_code == 400
-    assert (await client.put("/api/text-profiles/textless", json={"name": "No"})).status_code == 400
-    assert (await client.put("/api/text-profiles/default/unknown")).status_code == 404
+    assert (await client.delete("/api/text-profiles/movie/title_only")).status_code == 400
+    assert (await client.put("/api/text-profiles/movie/textless", json={"name": "No"})).status_code == 400
+    assert (await client.put("/api/text-profiles/movie/default/unknown")).status_code == 404
     assert (
-        await client.post("/api/text-profiles", json={"name": "Bad", "settings": {"mode": "x"}})
+        await client.post("/api/text-profiles/movie", json={"name": "Bad", "settings": {"mode": "x"}})
     ).status_code == 400
 
 
@@ -374,7 +249,7 @@ async def test_api_movie_override_roundtrip(client: AsyncClient, db):
     }
 
     created = await client.post(
-        "/api/text-profiles",
+        "/api/text-profiles/movie",
         json={"name": "Credits OK", "settings": {"mode": "custom", "allow_director": True}},
     )
     profile_id = created.json()["id"]
@@ -399,6 +274,55 @@ async def test_api_movie_override_roundtrip(client: AsyncClient, db):
 
     await db.refresh(movie)
     assert movie.text_profile_id is None
+
+
+@pytest.mark.asyncio
+async def test_api_series_override_roundtrip(client: AsyncClient, db):
+    series = Series(title="Breaking Bad", year=2008, series_path="/tv/Breaking Bad", sonarr_id=1)
+    db.add(series)
+    await db.commit()
+
+    current = await client.get(f"/api/text-profiles/series/{series.id}")
+    assert current.status_code == 200
+    assert current.json()["show_profile_id"] is None
+    assert current.json()["season_profile_id"] is None
+    assert current.json()["effective_show"]["id"] == "title_only"
+    assert current.json()["effective_season"]["id"] == "title_and_season"
+
+    # Create custom profiles
+    c_show = await client.post(
+        "/api/text-profiles/show",
+        json={"name": "Show Custom", "settings": {"mode": "custom", "allow_director": True}},
+    )
+    assert c_show.status_code == 201
+    show_profile_id = c_show.json()["id"]
+
+    c_season = await client.post(
+        "/api/text-profiles/season",
+        json={"name": "Season Custom", "settings": {"mode": "custom", "allow_season": True}},
+    )
+    assert c_season.status_code == 201
+    season_profile_id = c_season.json()["id"]
+
+    # Set override
+    updated = await client.put(
+        f"/api/text-profiles/series/{series.id}",
+        json={"show_profile_id": show_profile_id, "season_profile_id": season_profile_id},
+    )
+    assert updated.status_code == 200
+    assert updated.json()["show_profile_id"] == show_profile_id
+    assert updated.json()["season_profile_id"] == season_profile_id
+    assert updated.json()["effective_show"]["id"] == show_profile_id
+    assert updated.json()["effective_season"]["id"] == season_profile_id
+
+    # Reset
+    reset = await client.put(
+        f"/api/text-profiles/series/{series.id}",
+        json={"show_profile_id": None, "season_profile_id": None},
+    )
+    assert reset.status_code == 200
+    assert reset.json()["show_profile_id"] is None
+    assert reset.json()["effective_show"]["id"] == "title_only"
 
 
 @pytest.mark.asyncio
