@@ -276,7 +276,7 @@ def _duplicate_groups(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for entry in entries:
         grouped[(str(entry["title"]).lower(), entry["year"])].append(entry["name"])
     result = []
-    for (lower_title, year), exemplars in grouped.items():
+    for (_lower_title, year), exemplars in grouped.items():
         if len(exemplars) < 2:
             continue
         title, _ = _parse_name(exemplars[0])

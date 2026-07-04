@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, Float, ForeignKey, String, Text, func
+from sqlalchemy import CheckConstraint, DateTime, Float, ForeignKey, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from marquee.database import Base
@@ -21,12 +21,41 @@ class PipelineRun(Base):
 
     __tablename__ = "pipeline_runs"
 
+    __table_args__ = (
+        CheckConstraint(
+            "(media_type = 'movie'  AND movie_id  IS NOT NULL) OR "
+            "(media_type = 'series' AND series_id IS NOT NULL) OR "
+            "(media_type = 'season' AND season_id IS NOT NULL)",
+            name="ck_pipeline_runs_subject",
+        ),
+    )
+
     run_id: Mapped[str] = mapped_column(String(32), primary_key=True)
 
-    movie_id: Mapped[int] = mapped_column(
+    movie_id: Mapped[int | None] = mapped_column(
         ForeignKey("movies.id", ondelete="CASCADE"),
         index=True,
+        nullable=True,
+    )
+
+    media_type: Mapped[str] = mapped_column(
+        String(10),
+        index=True,
         nullable=False,
+        default="movie",
+        server_default="movie",
+    )
+
+    series_id: Mapped[int | None] = mapped_column(
+        ForeignKey("series.id", ondelete="CASCADE"),
+        index=True,
+        nullable=True,
+    )
+
+    season_id: Mapped[int | None] = mapped_column(
+        ForeignKey("seasons.id", ondelete="CASCADE"),
+        index=True,
+        nullable=True,
     )
 
     # running | completed | flagged_manual | failed

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from sqlalchemy import Index, Integer, String, Text, text
+from sqlalchemy import JSON, Index, Integer, String, Text, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from marquee.database import Base
@@ -51,6 +51,15 @@ class Series(Base, TimestampMixin, ArtworkMixin):
     # ── Sonarr Metadata ──────────────────────────────────────────────
     quality_profile_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     season_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    # ── TMDB-enriched metadata (OCR text-gate classification) ─────────
+    tagline: Mapped[str | None] = mapped_column(Text, nullable=True)
+    director: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    production_companies_json: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+
+    # ── Text Profile Overrides ───────────────────────────────────────
+    show_text_profile_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    season_text_profile_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     # ── Indexes ──────────────────────────────────────────────────────
     __table_args__ = (
