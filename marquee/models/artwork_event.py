@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from marquee.database import Base
@@ -21,12 +21,41 @@ class ArtworkEvent(Base):
 
     __tablename__ = "artwork_events"
 
+    __table_args__ = (
+        CheckConstraint(
+            "(media_type = 'movie'  AND movie_id  IS NOT NULL) OR "
+            "(media_type = 'series' AND series_id IS NOT NULL) OR "
+            "(media_type = 'season' AND season_id IS NOT NULL)",
+            name="ck_artwork_events_subject",
+        ),
+    )
+
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
 
-    movie_id: Mapped[int] = mapped_column(
+    movie_id: Mapped[int | None] = mapped_column(
         ForeignKey("movies.id", ondelete="CASCADE"),
         index=True,
+        nullable=True,
+    )
+
+    media_type: Mapped[str] = mapped_column(
+        String(10),
+        index=True,
         nullable=False,
+        default="movie",
+        server_default="movie",
+    )
+
+    series_id: Mapped[int | None] = mapped_column(
+        ForeignKey("series.id", ondelete="CASCADE"),
+        index=True,
+        nullable=True,
+    )
+
+    season_id: Mapped[int | None] = mapped_column(
+        ForeignKey("seasons.id", ondelete="CASCADE"),
+        index=True,
+        nullable=True,
     )
 
     # deploy | restore | restore_failed | heal_restore | webhook_noop | webhook_error

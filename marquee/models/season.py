@@ -33,6 +33,14 @@ class Season(Base, TimestampMixin, ArtworkMixin):
         Integer, nullable=True, comment="TMDB season ID for artwork lookup"
     )
 
+    # ── Statistics ───────────────────────────────────────────────────
+    episode_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    episode_file_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0", index=True
+    )
+
     # ── Constraints ──────────────────────────────────────────────────
     __table_args__ = (
         UniqueConstraint("series_id", "season_number", name="uq_seasons_series_number"),
