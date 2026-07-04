@@ -12,12 +12,19 @@
 		rescanPosters,
 		runPosterMaintenance
 	} from '$lib/api/pipeline';
+	import { getTvSummary } from '$lib/api/pipeline-tv';
 	import { putSettings, runHealScan } from '$lib/api/system';
 	import type { JobSnapshot } from '$lib/api/jobs';
 	import { bytesH } from '$lib/display';
 	import { trackJob, type JobProgressDetail } from '$lib/jobs';
 	import { toast } from '$lib/toast';
-	import type { JobSummary, PipelineSummary, RuntimeSettings, SummaryRunningJob } from '$lib/api/types';
+	import type {
+		JobSummary,
+		PipelineSummary,
+		RuntimeSettings,
+		SummaryRunningJob,
+		TvPipelineSummary
+	} from '$lib/api/types';
 	import type { PageData } from './$types';
 
 	let { data }: { data: PageData } = $props();
@@ -27,6 +34,8 @@
 
 	// svelte-ignore state_referenced_locally
 	let summary = $state<PipelineSummary>(data.summary);
+	// svelte-ignore state_referenced_locally
+	let tvSummary = $state<TvPipelineSummary | null>(data.tvSummary);
 	// svelte-ignore state_referenced_locally
 	let runtimeSettings = $state<RuntimeSettings | null>(data.settings);
 	// svelte-ignore state_referenced_locally
@@ -46,7 +55,13 @@
 	let maintenanceBusy = $state(false);
 	let maintenancePreview = $state<Record<string, unknown> | null>(null);
 
-	const currentMovieFormat = $derived(String(runtimeSettings?.poster_formats?.movie ?? 'poster.jpg'));
+	const currentMovieFormat = $derived(
+		String(runtimeSettings?.poster_formats?.movie ?? 'poster.jpg')
+	);
+	const currentShowFormat = $derived(String(runtimeSettings?.poster_formats?.series ?? 'show.jpg'));
+	const currentSeasonFormat = $derived(
+		String(runtimeSettings?.poster_formats?.season ?? 'season{season:02d}.jpg')
+	);
 	const currentRestoreMethod = $derived(
 		(runtimeSettings?.posters?.restore_method as 'download' | 'local' | undefined) ?? 'download'
 	);
@@ -58,6 +73,10 @@
 	// svelte-ignore state_referenced_locally
 	let customName = $state(formatToCustom(currentMovieFormat));
 	// svelte-ignore state_referenced_locally
+	let showName = $state(currentShowFormat.replace(/\.jpe?g$/i, ''));
+	// svelte-ignore state_referenced_locally
+	let seasonTemplate = $state(currentSeasonFormat);
+	// svelte-ignore state_referenced_locally
 	let restoreMethod = $state<'download' | 'local'>(currentRestoreMethod);
 	// svelte-ignore state_referenced_locally
 	let healEnabled = $state(currentHealEnabled);
@@ -67,7 +86,11 @@
 	const deployedPct = $derived(
 		summary.total_movies ? Math.round((summary.movies_with_poster / summary.total_movies) * 100) : 0
 	);
-	const posterDirty = $derived(nextMovieFormat() !== currentMovieFormat);
+	const posterDirty = $derived(
+		nextMovieFormat() !== currentMovieFormat ||
+			nextShowFormat() !== currentShowFormat ||
+			nextSeasonFormat() !== currentSeasonFormat
+	);
 	const restoreDirty = $derived(restoreMethod !== currentRestoreMethod);
 	const healDirty = $derived(
 		healEnabled !== currentHealEnabled || Number(healInterval) !== currentHealInterval
@@ -95,9 +118,20 @@
 		return `${base.replaceAll('<base_filename>', '{movie_basename}')}.jpg`;
 	}
 
+	function nextShowFormat(): string {
+		const base = showName.trim().replace(/\.jpe?g$/i, '') || 'show';
+		return `${base}.jpg`;
+	}
+
+	function nextSeasonFormat(): string {
+		return seasonTemplate.trim() || 'season{season:02d}.jpg';
+	}
+
 	function resetFormsFromSettings() {
 		preset = formatToPreset(currentMovieFormat);
 		customName = formatToCustom(currentMovieFormat);
+		showName = currentShowFormat.replace(/\.jpe?g$/i, '');
+		seasonTemplate = currentSeasonFormat;
 		restoreMethod = currentRestoreMethod;
 		healEnabled = currentHealEnabled;
 		healInterval = currentHealInterval;
@@ -105,7 +139,10 @@
 
 	async function refreshSummary() {
 		try {
-			summary = await getPipelineSummary(fetch);
+			[summary, tvSummary] = await Promise.all([
+				getPipelineSummary(fetch),
+				getTvSummary(fetch).catch(() => tvSummary)
+			]);
 			runningJobs = summary.running_jobs.map((job) => ({
 				...job,
 				status: job.status,
@@ -167,7 +204,13 @@
 	async function savePosterFormat() {
 		savingPoster = true;
 		try {
-			const result = await putSettings(fetch, { posters: { movie_poster_format: nextMovieFormat() } });
+			const result = await putSettings(fetch, {
+				posters: {
+					movie_poster_format: nextMovieFormat(),
+					series_poster_format: nextShowFormat(),
+					season_poster_format: nextSeasonFormat()
+				}
+			});
 			runtimeSettings = result.settings;
 			resetFormsFromSettings();
 			const job = await rescanPosters(fetch);
@@ -304,9 +347,17 @@
 		bar={deployedPct}
 		tone={deployedPct >= 90 ? 'good' : deployedPct >= 70 ? 'warn' : 'bad'}
 	/>
-	<StatCard label="Missing" value={summary.movies_missing_poster} tone={summary.movies_missing_poster ? 'warn' : 'good'} />
+	<StatCard
+		label="Missing"
+		value={summary.movies_missing_poster}
+		tone={summary.movies_missing_poster ? 'warn' : 'good'}
+	/>
 	<StatCard label="In review" value={summary.movies_in_review} tone="gold" />
-	<StatCard label="Running" value={summary.running_jobs.length || summary.movies_in_run} tone="info" />
+	<StatCard
+		label="Running"
+		value={summary.running_jobs.length || summary.movies_in_run}
+		tone="info"
+	/>
 </div>
 
 <div class="actions">
@@ -316,7 +367,11 @@
 	</button>
 	<button class="action" onclick={() => goto('/pipeline/tv')}>
 		<span>TV posters</span>
-		<b>Later</b>
+		<b
+			>{tvSummary
+				? `${tvSummary.shows_missing_show_poster + tvSummary.seasons_missing_poster} missing`
+				: 'Open'}</b
+		>
 	</button>
 </div>
 
@@ -337,6 +392,7 @@
 	<details class="panel" open>
 		<summary>Poster Filename</summary>
 		<div class="panel-body">
+			<div class="section-title">Movie</div>
 			<label class="radio">
 				<input type="radio" bind:group={preset} value="movie" />
 				<span>Movie filename</span>
@@ -352,8 +408,23 @@
 				<span>Custom</span>
 				<input class="inline-input" bind:value={customName} disabled={preset !== 'custom'} />
 			</label>
+			<div class="section-title">Show</div>
+			<label class="field">
+				<span>Filename</span>
+				<input class="inline-input" bind:value={showName} />
+			</label>
+			<div class="section-title">Season</div>
+			<label class="field field-col">
+				<span>Template</span>
+				<input class="inline-input" bind:value={seasonTemplate} />
+				<small
+					>Preview: {nextSeasonFormat()
+						.replace('{season:02d}', '01')
+						.replace('{season}', '1')}</small
+				>
+			</label>
 			<div class="panel-foot">
-				<code>{nextMovieFormat()}</code>
+				<code>{nextMovieFormat()} · {nextShowFormat()} · {nextSeasonFormat()}</code>
 				<button onclick={savePosterFormat} disabled={!posterDirty || savingPoster}>
 					{savingPoster ? 'Saving' : 'Save'}
 				</button>
@@ -400,7 +471,7 @@
 			<label class="field">
 				<span>Interval</span>
 				<select bind:value={healInterval}>
-					{#each [15, 30, 60, 120, 180, 360, 720, 1440] as minutes}
+					{#each [15, 30, 60, 120, 180, 360, 720, 1440] as minutes (minutes)}
 						<option value={minutes}>{minutes} min</option>
 					{/each}
 				</select>
@@ -544,6 +615,17 @@
 	}
 	.field {
 		justify-content: space-between;
+	}
+	.field-col {
+		flex-direction: column;
+		align-items: flex-start;
+	}
+	.section-title {
+		font-size: 11px;
+		font-weight: 700;
+		letter-spacing: 0.06em;
+		text-transform: uppercase;
+		color: var(--faint);
 	}
 	.backup-row,
 	.facts {

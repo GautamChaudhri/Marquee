@@ -10,7 +10,7 @@
 	const TARGETS = [
 		{ label: 'Dashboard', href: '/dashboard', icon: 'dashboard' },
 		{ label: 'Films', href: '/films', icon: 'film' },
-		{ label: 'Shows', href: '/shows', icon: 'tv' },
+		{ label: 'Television', href: '/television', icon: 'tv' },
 		{ label: 'Review queue', href: '/pipeline/movies?tab=review', icon: 'pipeline' },
 		{ label: 'Taste map', href: '/taste', icon: 'taste' },
 		{ label: 'Radarr Overlay', href: '/hdr', icon: 'hdr' },

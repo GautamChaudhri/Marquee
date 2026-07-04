@@ -10,10 +10,23 @@
 /** Leading articles stripped for sorting purposes. Ordered longest-first so
  *  multi-word articles ("Los") match before their prefix ("Lo"). */
 export const SORT_TITLE_ARTICLES: readonly string[] = [
-	'The', 'Les', 'Los', 'Das', 'Gli',  // 3-4 char
-	'Die', 'Der', 'Las', 'Le', 'As',    // 3 char
-	'An', 'El', 'Il', 'Lo', 'Os',       // 2 char
-	'A', 'O',                             // 1 char
+	'The',
+	'Les',
+	'Los',
+	'Das',
+	'Gli', // 3-4 char
+	'Die',
+	'Der',
+	'Las',
+	'Le',
+	'As', // 3 char
+	'An',
+	'El',
+	'Il',
+	'Lo',
+	'Os', // 2 char
+	'A',
+	'O' // 1 char
 ];
 
 const _lowered = SORT_TITLE_ARTICLES.map((a) => a.toLowerCase());

@@ -26,7 +26,8 @@
 	function statusTone(status: string): 'good' | 'bad' | 'warn' | 'info' | 'muted' {
 		if (status === 'succeeded') return 'good';
 		if (status === 'failed' || status === 'dead_letter') return 'bad';
-		if (status === 'cancelled' || status === 'interrupted' || status === 'cancelling') return 'warn';
+		if (status === 'cancelled' || status === 'interrupted' || status === 'cancelling')
+			return 'warn';
 		if (isTerminal(status)) return 'muted';
 		return 'info';
 	}
@@ -36,7 +37,11 @@
 	}
 
 	function hasContent(value: unknown): value is Record<string, unknown> {
-		return !!value && typeof value === 'object' && Object.keys(value as Record<string, unknown>).length > 0;
+		return (
+			!!value &&
+			typeof value === 'object' &&
+			Object.keys(value as Record<string, unknown>).length > 0
+		);
 	}
 
 	function effectiveRequest(detail: JobDetail | JobChildDetail): JobContext | null {
@@ -113,19 +118,37 @@
 
 	<div class="meta-grid">
 		<div><span class="k">Priority</span><span class="v mono">{job.priority}</span></div>
-		<div><span class="k">Attempts</span><span class="v mono">{job.attempt_count}/{job.max_attempts}</span></div>
+		<div>
+			<span class="k">Attempts</span><span class="v mono"
+				>{job.attempt_count}/{job.max_attempts}</span
+			>
+		</div>
 		<div>
 			<span class="k">Resources</span>
 			<span class="v mono">{Object.keys(job.resource_request ?? {}).join(', ') || '—'}</span>
 		</div>
-		<div><span class="k">Created</span><span class="v mono">{job.created_at ? new Date(job.created_at).toLocaleString() : '—'}</span></div>
-		<div><span class="k">Started</span><span class="v mono">{job.started_at ? new Date(job.started_at).toLocaleString() : '—'}</span></div>
-		<div><span class="k">Finished</span><span class="v mono">{job.finished_at ? new Date(job.finished_at).toLocaleString() : '—'}</span></div>
+		<div>
+			<span class="k">Created</span><span class="v mono"
+				>{job.created_at ? new Date(job.created_at).toLocaleString() : '—'}</span
+			>
+		</div>
+		<div>
+			<span class="k">Started</span><span class="v mono"
+				>{job.started_at ? new Date(job.started_at).toLocaleString() : '—'}</span
+			>
+		</div>
+		<div>
+			<span class="k">Finished</span><span class="v mono"
+				>{job.finished_at ? new Date(job.finished_at).toLocaleString() : '—'}</span
+			>
+		</div>
 		{#if job.started_at}
 			{@const end = job.finished_at ? new Date(job.finished_at) : new Date()}
 			<div>
 				<span class="k">Duration</span>
-				<span class="v mono">{durationH((end.getTime() - new Date(job.started_at).getTime()) / 1000)}</span>
+				<span class="v mono"
+					>{durationH((end.getTime() - new Date(job.started_at).getTime()) / 1000)}</span
+				>
 			</div>
 		{/if}
 		{#if job.parent_id}
@@ -143,7 +166,11 @@
 		{:else}
 			<table>
 				<thead>
-					<tr><th>#</th><th>Status</th><th>Worker</th><th>Started</th><th>Finished</th><th>Metrics</th><th>Error</th></tr>
+					<tr
+						><th>#</th><th>Status</th><th>Worker</th><th>Started</th><th>Finished</th><th
+							>Metrics</th
+						><th>Error</th></tr
+					>
 				</thead>
 				<tbody>
 					{#each job.attempts as a (a.number)}
@@ -178,7 +205,9 @@
 							<td class="mono">{r.units}</td>
 							<td>{r.stage ?? '—'}</td>
 							<td class="mono">{r.acquired_at ? new Date(r.acquired_at).toLocaleString() : '—'}</td>
-							<td class="mono">{r.released_at ? new Date(r.released_at).toLocaleString() : 'held'}</td>
+							<td class="mono"
+								>{r.released_at ? new Date(r.released_at).toLocaleString() : 'held'}</td
+							>
 						</tr>
 					{/each}
 				</tbody>
@@ -194,7 +223,9 @@
 			<div class="timeline">
 				{#each job.events as e (e.id)}
 					<div class="event">
-						<span class="event-time mono">{e.created_at ? new Date(e.created_at).toLocaleTimeString() : '—'}</span>
+						<span class="event-time mono"
+							>{e.created_at ? new Date(e.created_at).toLocaleTimeString() : '—'}</span
+						>
 						<span class="event-state">{e.state}</span>
 						{#if e.stage}<span class="event-stage">{e.stage}</span>{/if}
 						{#if e.message}<span class="event-msg">{e.message}</span>{/if}
@@ -252,9 +283,21 @@
 						</summary>
 						<div class="child-meta">
 							<div><span class="k">Stage</span><span class="v">{child.stage ?? '—'}</span></div>
-							<div><span class="k">Created</span><span class="v mono">{child.created_at ? new Date(child.created_at).toLocaleString() : '—'}</span></div>
-							<div><span class="k">Started</span><span class="v mono">{child.started_at ? new Date(child.started_at).toLocaleString() : '—'}</span></div>
-							<div><span class="k">Finished</span><span class="v mono">{child.finished_at ? new Date(child.finished_at).toLocaleString() : '—'}</span></div>
+							<div>
+								<span class="k">Created</span><span class="v mono"
+									>{child.created_at ? new Date(child.created_at).toLocaleString() : '—'}</span
+								>
+							</div>
+							<div>
+								<span class="k">Started</span><span class="v mono"
+									>{child.started_at ? new Date(child.started_at).toLocaleString() : '—'}</span
+								>
+							</div>
+							<div>
+								<span class="k">Finished</span><span class="v mono"
+									>{child.finished_at ? new Date(child.finished_at).toLocaleString() : '—'}</span
+								>
+							</div>
 						</div>
 						{#if effectiveRequest(child)}
 							<h4>Request</h4>

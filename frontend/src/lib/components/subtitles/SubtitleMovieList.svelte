@@ -26,17 +26,29 @@
 <div class="controls">
 	<div class="search-box">
 		<span class="icon">🔍</span>
-		<input
-			type="text"
-			placeholder="Search movies..."
-			bind:value={searchQuery}
-		/>
+		<input type="text" placeholder="Search movies..." bind:value={searchQuery} />
 	</div>
 	<div class="filter-group">
-		<button class="filter-btn" class:active={filterStatus === 'all'} onclick={() => filterStatus = 'all'}>All</button>
-		<button class="filter-btn" class:active={filterStatus === 'ok'} onclick={() => filterStatus = 'ok'}>OK</button>
-		<button class="filter-btn" class:active={filterStatus === 'gap'} onclick={() => filterStatus = 'gap'}>Gaps</button>
-		<button class="filter-btn" class:active={filterStatus === 'none'} onclick={() => filterStatus = 'none'}>Unscanned</button>
+		<button
+			class="filter-btn"
+			class:active={filterStatus === 'all'}
+			onclick={() => (filterStatus = 'all')}>All</button
+		>
+		<button
+			class="filter-btn"
+			class:active={filterStatus === 'ok'}
+			onclick={() => (filterStatus = 'ok')}>OK</button
+		>
+		<button
+			class="filter-btn"
+			class:active={filterStatus === 'gap'}
+			onclick={() => (filterStatus = 'gap')}>Gaps</button
+		>
+		<button
+			class="filter-btn"
+			class:active={filterStatus === 'none'}
+			onclick={() => (filterStatus = 'none')}>Unscanned</button
+		>
 	</div>
 </div>
 
@@ -57,9 +69,7 @@
 		<div class="empty">No movies found matching current filters.</div>
 	{:else}
 		{#each filteredMovies as m (m.id)}
-			<SubtitleMovieRow
-				movie={m}
-			/>
+			<SubtitleMovieRow movie={m} />
 		{/each}
 	{/if}
 </div>
@@ -97,7 +107,9 @@
 		color: var(--text);
 		font-size: 14px;
 		outline: none;
-		transition: border-color 0.2s, box-shadow 0.2s;
+		transition:
+			border-color 0.2s,
+			box-shadow 0.2s;
 	}
 	.search-box input:focus {
 		border-color: var(--gold);
@@ -120,7 +132,9 @@
 		font-weight: 500;
 		border-radius: calc(var(--radius-sm) - 2px);
 		cursor: pointer;
-		transition: color 0.15s, background-color 0.15s;
+		transition:
+			color 0.15s,
+			background-color 0.15s;
 	}
 	.filter-btn:hover {
 		color: var(--text);

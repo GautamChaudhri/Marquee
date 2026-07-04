@@ -100,7 +100,7 @@
 		<div class="legend">
 			{#each series as item (item.key)}
 				<span class="legend-item">
-					<span class="dot" style={`background:${item.color}`} />
+					<span class="dot" style={`background:${item.color}`}></span>
 					{item.label}
 					{#if latest(item.key) != null}
 						<strong>{Math.round(latest(item.key) ?? 0)}</strong>
@@ -114,7 +114,7 @@
 	{:else}
 		<svg viewBox={`0 0 ${width} ${height}`} class="chart" role="img" aria-label={title}>
 			<rect x={padX} y={plotTop} width={plotWidth} height={plotHeight} rx="12" class="plot-bg" />
-			{#each [0.25, 0.5, 0.75, 1] as step}
+			{#each [0.25, 0.5, 0.75, 1] as step (step)}
 				<line
 					x1={padX}
 					x2={padX + plotWidth}
@@ -123,10 +123,24 @@
 					class="grid-line"
 				/>
 			{/each}
-			<JobOverlay jobs={jobs} {startAt} {endAt} x={padX} y={overlayY} width={plotWidth} height={overlayHeight} />
+			<JobOverlay
+				{jobs}
+				{startAt}
+				{endAt}
+				x={padX}
+				y={overlayY}
+				width={plotWidth}
+				height={overlayHeight}
+			/>
 			{#each series as item (item.key)}
 				{#if pathFor(item.key)}
-					<path d={pathFor(item.key)} fill="none" stroke={item.color} stroke-width="3" stroke-linecap="round" />
+					<path
+						d={pathFor(item.key)}
+						fill="none"
+						stroke={item.color}
+						stroke-width="3"
+						stroke-linecap="round"
+					/>
 				{/if}
 			{/each}
 		</svg>

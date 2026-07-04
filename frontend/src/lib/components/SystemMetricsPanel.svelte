@@ -4,6 +4,7 @@
 	import MetricsChart from './MetricsChart.svelte';
 	import { bytesH } from '$lib/display';
 	import type { SystemMetrics, SystemMetricsHistory } from '$lib/api/types';
+	import type { ComponentProps } from 'svelte';
 
 	let {
 		metrics,
@@ -18,21 +19,27 @@
 	} = $props();
 
 	const WINDOW_OPTIONS: Array<'15m' | '1h' | '6h' | '24h'> = ['15m', '1h', '6h', '24h'];
-	const computeSeries = $derived([
-		{ key: 'cpu_avg', label: 'CPU', color: 'var(--cpu)' },
-		{ key: 'ram_pct', label: 'RAM', color: 'var(--accent)' },
-		...(metrics.gpu ? [{ key: 'gpu_util', label: 'GPU', color: 'var(--gpu)' }] : [])
-	]);
-	const gpuSeries = [
+	type MetricSeries = ComponentProps<typeof MetricsChart>['series'];
+	const computeSeries = $derived.by<MetricSeries>(() => {
+		const series: MetricSeries = [
+			{ key: 'cpu_avg', label: 'CPU', color: 'var(--cpu)' },
+			{ key: 'ram_pct', label: 'RAM', color: 'var(--accent)' }
+		];
+		if (metrics.gpu) {
+			series.push({ key: 'gpu_util', label: 'GPU', color: 'var(--gpu)' });
+		}
+		return series;
+	});
+	const gpuSeries: MetricSeries = [
 		{ key: 'gpu_mem', label: 'Memory Ctrl', color: '#60a5fa' },
 		{ key: 'gpu_enc', label: 'Encode', color: '#f59e0b' },
 		{ key: 'gpu_dec', label: 'Decode', color: '#10b981' }
 	];
-	const diskSeries = [
+	const diskSeries: MetricSeries = [
 		{ key: 'disk_read_bps', label: 'Read', color: '#38bdf8' },
 		{ key: 'disk_write_bps', label: 'Write', color: '#fb7185' }
 	];
-	const netSeries = [
+	const netSeries: MetricSeries = [
 		{ key: 'net_recv_bps', label: 'Receive', color: '#34d399' },
 		{ key: 'net_sent_bps', label: 'Send', color: '#f97316' }
 	];
@@ -43,7 +50,11 @@
 	let netSentRate = $state<number | null>(null);
 	let netRecvRate = $state<number | null>(null);
 
-	function rateOf(curr: number | null, prior: number | null, elapsedSeconds: number): number | null {
+	function rateOf(
+		curr: number | null,
+		prior: number | null,
+		elapsedSeconds: number
+	): number | null {
 		if (curr == null || prior == null || elapsedSeconds <= 0 || curr < prior) return null;
 		return (curr - prior) / elapsedSeconds;
 	}
@@ -104,7 +115,8 @@
 			<div class="panel">
 				<div class="panel-head">
 					<span class="panel-title">{metrics.gpu.model}</span>
-					{#if metrics.gpu.power != null}<span class="panel-sub mono">{metrics.gpu.power} W</span>{/if}
+					{#if metrics.gpu.power != null}<span class="panel-sub mono">{metrics.gpu.power} W</span
+						>{/if}
 				</div>
 				<div class="dual">
 					<StatCard
@@ -133,7 +145,12 @@
 			</div>
 		{/if}
 
-		<StatCard label="RAM" value={`${metrics.ram.pct.toFixed(0)}%`} sub={`${bytesH(metrics.ram.used)} / ${bytesH(metrics.ram.total)}`} bar={metrics.ram.pct} />
+		<StatCard
+			label="RAM"
+			value={`${metrics.ram.pct.toFixed(0)}%`}
+			sub={`${bytesH(metrics.ram.used)} / ${bytesH(metrics.ram.total)}`}
+			bar={metrics.ram.pct}
+		/>
 
 		<StatCard
 			label="Disk"
@@ -159,7 +176,9 @@
 		</div>
 		<div class="window-picker">
 			{#each WINDOW_OPTIONS as option (option)}
-				<button class:active={window === option} onclick={() => onWindowChange?.(option)}>{option}</button>
+				<button class:active={window === option} onclick={() => onWindowChange?.(option)}
+					>{option}</button
+				>
 			{/each}
 		</div>
 	</div>

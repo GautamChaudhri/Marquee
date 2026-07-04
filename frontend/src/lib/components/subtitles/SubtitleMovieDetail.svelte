@@ -1,3 +1,4 @@
+<!-- eslint-disable @typescript-eslint/no-explicit-any svelte/require-each-key -->
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { getInventory, scanSubtitles } from '$lib/api/subtitles';
@@ -71,13 +72,16 @@
 		<div class="detail-header">
 			<div class="meta-info">
 				<span class="meta-item">
-					<strong>Container:</strong> <span class="badge">{(inventory.container || '').toUpperCase()}</span>
+					<strong>Container:</strong>
+					<span class="badge">{(inventory.container || '').toUpperCase()}</span>
 				</span>
 				<span class="meta-item">
-					<strong>Duration:</strong> {inventory.duration_seconds ? Math.round(inventory.duration_seconds / 60) : '—'} mins
+					<strong>Duration:</strong>
+					{inventory.duration_seconds ? Math.round(inventory.duration_seconds / 60) : '—'} mins
 				</span>
 				<span class="meta-item">
-					<strong>Last Scanned:</strong> {inventory.scanned_at ? new Date(inventory.scanned_at).toLocaleString() : 'Never'}
+					<strong>Last Scanned:</strong>
+					{inventory.scanned_at ? new Date(inventory.scanned_at).toLocaleString() : 'Never'}
 				</span>
 			</div>
 			<button class="btn secondary btn-sm" onclick={forceScan} disabled={scanning}>
@@ -126,26 +130,34 @@
 						<div class="coverage-item">
 							<span>Full Dialogue:</span>
 							<span class="val">
-								{((inventory.coverage && inventory.coverage.full_dialogue_languages) || []).map(l => l.toUpperCase()).join(', ') || 'None'}
+								{((inventory.coverage && inventory.coverage.full_dialogue_languages) || [])
+									.map((l) => l.toUpperCase())
+									.join(', ') || 'None'}
 							</span>
 						</div>
 						<div class="coverage-item">
 							<span>Forced Only:</span>
 							<span class="val">
-								{((inventory.coverage && inventory.coverage.forced_only_languages) || []).map(l => l.toUpperCase()).join(', ') || 'None'}
+								{((inventory.coverage && inventory.coverage.forced_only_languages) || [])
+									.map((l) => l.toUpperCase())
+									.join(', ') || 'None'}
 							</span>
 						</div>
 						<div class="coverage-item">
 							<span>SDH present:</span>
 							<span class="val">
-								{((inventory.coverage && inventory.coverage.sdh_languages) || []).map(l => l.toUpperCase()).join(', ') || 'None'}
+								{((inventory.coverage && inventory.coverage.sdh_languages) || [])
+									.map((l) => l.toUpperCase())
+									.join(', ') || 'None'}
 							</span>
 						</div>
 						{#if inventory.coverage && inventory.coverage.missing_preferred_languages && inventory.coverage.missing_preferred_languages.length > 0}
 							<div class="coverage-item gap">
 								<span>Missing Preferred:</span>
 								<span class="val text-warn">
-									{inventory.coverage.missing_preferred_languages.map(l => l.toUpperCase()).join(', ')}
+									{inventory.coverage.missing_preferred_languages
+										.map((l) => l.toUpperCase())
+										.join(', ')}
 								</span>
 							</div>
 						{/if}
@@ -313,12 +325,20 @@
 		width: 40%;
 		height: 24px;
 	}
-	.skeleton.body1 { width: 80%; }
-	.skeleton.body2 { width: 60%; }
+	.skeleton.body1 {
+		width: 80%;
+	}
+	.skeleton.body2 {
+		width: 60%;
+	}
 
 	@keyframes loading {
-		0% { background-position: 200% 0; }
-		100% { background-position: -200% 0; }
+		0% {
+			background-position: 200% 0;
+		}
+		100% {
+			background-position: -200% 0;
+		}
 	}
 
 	/* Common button styles */
@@ -333,7 +353,9 @@
 		display: inline-flex;
 		align-items: center;
 		justify-content: center;
-		transition: background-color 0.15s, opacity 0.15s;
+		transition:
+			background-color 0.15s,
+			opacity 0.15s;
 	}
 	.btn:disabled {
 		opacity: 0.5;

@@ -9,7 +9,8 @@
 	const TITLES: Record<string, { title: string; sub: string }> = {
 		dashboard: { title: 'Dashboard', sub: 'Library health & system status' },
 		films: { title: 'Films', sub: 'Movie library' },
-		shows: { title: 'Shows', sub: 'Series library' },
+		television: { title: 'Television', sub: 'Series library' },
+		shows: { title: 'Television', sub: 'Series library' },
 		pipeline: { title: 'Poster pipeline', sub: 'Run, review & tune selection' },
 		taste: { title: 'Key Art Engine', sub: 'Taste profile & learned ranker' },
 		hdr: { title: 'Radarr Overlay', sub: 'HDR targets, scores & upgrade signals' },

@@ -54,7 +54,7 @@
 
 	const isBatch = $derived(typeof detail.movie_total === 'number' && (detail.movie_total ?? 0) > 1);
 	const stageLabel = $derived(
-		detail.stage ? STAGE_LABELS[detail.stage] ?? humanizeStage(detail.stage) : ''
+		detail.stage ? (STAGE_LABELS[detail.stage] ?? humanizeStage(detail.stage)) : ''
 	);
 
 	const pct = $derived.by<number | null>(() => {

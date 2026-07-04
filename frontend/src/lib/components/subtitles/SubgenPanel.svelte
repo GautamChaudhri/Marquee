@@ -1,3 +1,4 @@
+<!-- eslint-disable @typescript-eslint/no-explicit-any @typescript-eslint/no-unused-vars svelte/require-each-key -->
 <script lang="ts">
 	import { onDestroy } from 'svelte';
 	import { submitMovieGeneration, submitGeneration } from '$lib/api/subtitle-generators';
@@ -43,6 +44,7 @@
 
 	// Movie select state (for global tab mode)
 	let movies = $state<MovieListItem[]>([]);
+	// svelte-ignore state_referenced_locally
 	let selectedMovieId = $state<number | null>(movieId);
 	let loadingMovies = $state(false);
 
@@ -73,7 +75,7 @@
 		try {
 			const res = await listMovies(fetch, { page_size: 200 });
 			// Filter movies that have a media_file_id
-			movies = res.items.filter(m => m.media_file_id != null);
+			movies = res.items.filter((m) => m.media_file_id != null);
 		} catch (e: any) {
 			toast('Failed to load movies list', 'bad');
 		} finally {
@@ -111,38 +113,45 @@
 
 			// Subscribe to SSE events
 			let unsub: () => void;
-			unsub = subscribe(`/api/media-jobs/${res.job_id}/events`, ['message', 'done'], async (type, data: any) => {
-				if (type === 'message') {
-					progressPercent = data.percent ?? progressPercent;
-					progressStage = data.stage ?? progressStage;
-					progressMessage = data.message ?? progressMessage;
-				} else if (type === 'done') {
-					unsub();
-					if (pollInterval) {
-						clearInterval(pollInterval);
-						pollInterval = null;
-					}
-					generating = false;
-					activeJobId = null;
-					progressPercent = 100;
-					try {
-						const job = await getMediaJob(fetch, res.job_id);
-						if (job.status === 'succeeded' || job.status === 'completed') {
-							toast('Subtitles generated successfully!', 'good');
-							if (onComplete) onComplete();
-						} else {
-							toast(`Generation failed: ${(job.error as any)?.error || job.error || 'Unknown error'}`, 'bad');
+			unsub = subscribe(
+				`/api/media-jobs/${res.job_id}/events`,
+				['message', 'done'],
+				async (type, data: any) => {
+					if (type === 'message') {
+						progressPercent = data.percent ?? progressPercent;
+						progressStage = data.stage ?? progressStage;
+						progressMessage = data.message ?? progressMessage;
+					} else if (type === 'done') {
+						unsub();
+						if (pollInterval) {
+							clearInterval(pollInterval);
+							pollInterval = null;
 						}
-					} catch (e: any) {
-						toast(`Generation completed. Failed to verify status: ${e.message}`, 'info');
-						if (onComplete) onComplete();
+						generating = false;
+						activeJobId = null;
+						progressPercent = 100;
+						try {
+							const job = await getMediaJob(fetch, res.job_id);
+							if (job.status === 'succeeded' || job.status === 'completed') {
+								toast('Subtitles generated successfully!', 'good');
+								if (onComplete) onComplete();
+							} else {
+								toast(
+									`Generation failed: ${(job.error as any)?.error || job.error || 'Unknown error'}`,
+									'bad'
+								);
+							}
+						} catch (e: any) {
+							toast(`Generation completed. Failed to verify status: ${e.message}`, 'info');
+							if (onComplete) onComplete();
+						}
+					} else if (type === 'error') {
+						// Transient connection drop: EventSource auto-reconnects and the
+						// backend replays history, so just wait it out rather than breaking.
+						return;
 					}
-				} else if (type === 'error') {
-					// Transient connection drop: EventSource auto-reconnects and the
-					// backend replays history, so just wait it out rather than breaking.
-					return;
 				}
-			});
+			);
 
 			// Fallback polling loop to ensure progress clears even if SSE drops
 			pollInterval = setInterval(async () => {
@@ -162,7 +171,10 @@
 								toast('Subtitles generated successfully!', 'good');
 								if (onComplete) onComplete();
 							} else {
-								toast(`Generation failed: ${(job.error as any)?.error || job.error || 'Unknown error'}`, 'bad');
+								toast(
+									`Generation failed: ${(job.error as any)?.error || job.error || 'Unknown error'}`,
+									'bad'
+								);
 								if (onComplete) onComplete();
 							}
 						}
@@ -171,7 +183,6 @@
 					// Ignore transient errors
 				}
 			}, 1500);
-
 		} catch (e: any) {
 			toast(e.message || 'Generation submission failed', 'bad');
 			generating = false;
@@ -193,7 +204,12 @@
 			<p class="progress-message">{progressMessage}</p>
 		</div>
 	{:else}
-		<form onsubmit={(e) => { e.preventDefault(); handleGenerate(); }}>
+		<form
+			onsubmit={(e) => {
+				e.preventDefault();
+				handleGenerate();
+			}}
+		>
 			<!-- Movie selector (shown in global tab mode) -->
 			{#if !movieId}
 				<div class="form-group">
@@ -221,13 +237,15 @@
 						<option value={lang.code}>{lang.label}</option>
 					{/each}
 				</select>
-				<small class="help">Providing the spoken language avoids Whisper auto-detection errors.</small>
+				<small class="help"
+					>Providing the spoken language avoids Whisper auto-detection errors.</small
+				>
 			</div>
 
 			<!-- Output Type -->
 			<div class="form-group radio-group">
-				<label>Output Target</label>
-				<div class="radio-options">
+				<div class="group-label">Output Target</div>
+				<div class="radio-options" role="group" aria-label="Output Target">
 					<label class="radio-option">
 						<input type="radio" value="external" bind:group={outputTarget} />
 						<div class="opt-desc">

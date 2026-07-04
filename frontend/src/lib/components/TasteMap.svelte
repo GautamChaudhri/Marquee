@@ -6,10 +6,12 @@
 
 	let {
 		mapData,
+		library = 'movies',
 		loading = false,
 		error = null as string | null
 	}: {
 		mapData: TasteMapData | null;
+		library?: 'movies' | 'tv';
 		loading?: boolean;
 		error?: string | null;
 	} = $props();
@@ -29,19 +31,47 @@
 
 	// ── Color palettes (Marquee-dark compatible) ──────────────────────────
 	const CLUSTER_COLORS = [
-		'#ffc24b', '#5ca8fb', '#46d18a', '#f87171', '#b794f6',
-		'#fb923c', '#4ade80', '#f472b6', '#60a5fa', '#fbbf24',
-		'#a78bfa', '#34d399', '#fb7185', '#38bdf8', '#facc15',
-		'#818cf8', '#2dd4bf', '#e879f9', '#94a3b8', '#f59e0b'
+		'#ffc24b',
+		'#5ca8fb',
+		'#46d18a',
+		'#f87171',
+		'#b794f6',
+		'#fb923c',
+		'#4ade80',
+		'#f472b6',
+		'#60a5fa',
+		'#fbbf24',
+		'#a78bfa',
+		'#34d399',
+		'#fb7185',
+		'#38bdf8',
+		'#facc15',
+		'#818cf8',
+		'#2dd4bf',
+		'#e879f9',
+		'#94a3b8',
+		'#f59e0b'
 	];
 
 	const GENRE_COLORS: Record<string, string> = {
-		Action: '#f87171', Adventure: '#fb923c', Animation: '#fbbf24',
-		Comedy: '#facc15', Crime: '#a3a3a3', Documentary: '#94a3b8',
-		Drama: '#5ca8fb', Family: '#4ade80', Fantasy: '#b794f6',
-		History: '#d4a574', Horror: '#8b5cf6', Music: '#f472b6',
-		Mystery: '#6366f1', Romance: '#fb7185', 'Science Fiction': '#38bdf8',
-		Thriller: '#ef4444', War: '#78716c', Western: '#d4a574',
+		Action: '#f87171',
+		Adventure: '#fb923c',
+		Animation: '#fbbf24',
+		Comedy: '#facc15',
+		Crime: '#a3a3a3',
+		Documentary: '#94a3b8',
+		Drama: '#5ca8fb',
+		Family: '#4ade80',
+		Fantasy: '#b794f6',
+		History: '#d4a574',
+		Horror: '#8b5cf6',
+		Music: '#f472b6',
+		Mystery: '#6366f1',
+		Romance: '#fb7185',
+		'Science Fiction': '#38bdf8',
+		Thriller: '#ef4444',
+		War: '#78716c',
+		Western: '#d4a574',
 		'TV Movie': '#a78bfa'
 	};
 
@@ -73,24 +103,25 @@
 		showLegend: boolean;
 	} {
 		if (colorBy === 'cluster') {
-			const clusterMap = new Map<number, string>();
-			const clusterNames = new Map<number, string>();
+			const clusterColorsById: Record<number, string> = {};
+			const clusterNamesById: Record<number, string> = {};
 			if (mapData?.clusters) {
 				for (const c of mapData.clusters) {
-					clusterMap.set(c.id, CLUSTER_COLORS[c.id % CLUSTER_COLORS.length]);
-					clusterNames.set(c.id, c.name);
+					clusterColorsById[c.id] = CLUSTER_COLORS[c.id % CLUSTER_COLORS.length];
+					clusterNamesById[c.id] = c.name;
 				}
 			}
 			const noiseColor = '#3f4452';
 			const noiseCount = points.filter((p) => p.cluster == null || p.cluster === -1).length;
 			const colors = points.map((p) =>
 				p.cluster != null && p.cluster !== -1
-					? (clusterMap.get(p.cluster) ?? noiseColor)
+					? (clusterColorsById[p.cluster] ?? noiseColor)
 					: noiseColor
 			);
-			const legend = [...clusterMap.entries()]
-				.filter(([id]) => clusterNames.has(id))
-				.map(([id, color]) => ({ name: clusterNames.get(id)!, color }));
+			const legend = Object.entries(clusterColorsById)
+				.map(([id, color]) => ({ id: Number(id), color }))
+				.filter(({ id }) => Boolean(clusterNamesById[id]))
+				.map(({ id, color }) => ({ name: clusterNamesById[id], color }));
 			if (noiseCount > 0) {
 				legend.push({ name: `Noise (${noiseCount})`, color: noiseColor });
 			}
@@ -99,8 +130,10 @@
 
 		if (colorBy === 'genre') {
 			const colors = points.map((p) => genreColor(p.genres));
-			const present = new Set(colors.map((c, i) => points[i].genres?.[0] ?? 'unknown'));
-			const legend = [...present]
+			const present = colors
+				.map((_, i) => points[i].genres?.[0] ?? 'unknown')
+				.filter((genre, index, all) => all.indexOf(genre) === index);
+			const legend = present
 				.filter((g) => GENRE_COLORS[g])
 				.map((g) => ({ name: g, color: GENRE_COLORS[g] }));
 			return { colors, legendGroups: legend, showLegend: true };
@@ -263,7 +296,7 @@
 			};
 			const mainColors = items.map(({ index }) => colors[index]);
 			trace.marker = {
-				size: kind === 'main' ? (mode === '3d' ? 5.5 : 8) : (mode === '3d' ? 3 : 4.5),
+				size: kind === 'main' ? (mode === '3d' ? 5.5 : 8) : mode === '3d' ? 3 : 4.5,
 				color: kind === 'main' ? mainColors : '#3f4452',
 				opacity: kind === 'main' ? 0.9 : 0.26,
 				line: {
@@ -416,12 +449,16 @@
 			scrollZoom: true,
 			displayModeBar: true,
 			modeBarButtonsToRemove: [
-				'toImage', 'sendDataToCloud', 'autoScale2d', 'hoverClosestCartesian',
-				'hoverCompareCartesian', 'toggleSpikelines', 'lasso2d', 'select2d'
+				'toImage',
+				'sendDataToCloud',
+				'autoScale2d',
+				'hoverClosestCartesian',
+				'hoverCompareCartesian',
+				'toggleSpikelines',
+				'lasso2d',
+				'select2d'
 			],
-			modeBarButtonsToAdd: mode === '3d'
-				? ['resetCameraDefault3d']
-				: ['resetScale2d']
+			modeBarButtonsToAdd: mode === '3d' ? ['resetCameraDefault3d'] : ['resetScale2d']
 		};
 
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -444,7 +481,7 @@
 		selectedPoint = point;
 		neighborsLoading = true;
 		neighbors = [];
-		getExemplarNeighbors(fetch, point.name)
+		getExemplarNeighbors(fetch, point.name, library)
 			.then((r: { neighbors: TasteNeighbor[] }) => {
 				neighbors = r.neighbors;
 			})
@@ -467,8 +504,9 @@
 		const el = plotEl;
 		if (el) {
 			resizeObs = new ResizeObserver(() => {
-				if (Plotly && el) // eslint-disable-next-line @typescript-eslint/no-explicit-any
-				(Plotly as any).Plots.resize(el);
+				if (Plotly && el)
+					// eslint-disable-next-line @typescript-eslint/no-explicit-any
+					(Plotly as any).Plots.resize(el);
 			});
 			resizeObs.observe(el);
 		}
@@ -482,14 +520,18 @@
 			  })
 			| null;
 		el?.removeListener?.('plotly_click', handleClick);
-		if (Plotly && plotEl) // eslint-disable-next-line @typescript-eslint/no-explicit-any
-		(Plotly as any).purge(plotEl);
+		if (Plotly && plotEl)
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			(Plotly as any).purge(plotEl);
 	});
 
 	// Rebuild on mode/colorBy/mapData changes
 	$effect(() => {
 		// Access reactive state to trigger the effect
-		void mode; void colorBy; void mapData; void showNoise;
+		void mode;
+		void colorBy;
+		void mapData;
+		void showNoise;
 		if (Plotly && mapData) buildPlot();
 	});
 </script>
@@ -515,18 +557,10 @@
 			<div class="control-group">
 				<span class="ctrl-label">View</span>
 				<div class="toggle-pair">
-					<button
-						class="toggle-btn"
-						class:active={mode === '2d'}
-						onclick={() => (mode = '2d')}
-					>
+					<button class="toggle-btn" class:active={mode === '2d'} onclick={() => (mode = '2d')}>
 						2D
 					</button>
-					<button
-						class="toggle-btn"
-						class:active={mode === '3d'}
-						onclick={() => (mode = '3d')}
-					>
+					<button class="toggle-btn" class:active={mode === '3d'} onclick={() => (mode = '3d')}>
 						3D
 					</button>
 				</div>
@@ -545,18 +579,10 @@
 			<div class="control-group">
 				<span class="ctrl-label">Noise</span>
 				<div class="toggle-pair">
-					<button
-						class="toggle-btn"
-						class:active={showNoise}
-						onclick={() => (showNoise = true)}
-					>
+					<button class="toggle-btn" class:active={showNoise} onclick={() => (showNoise = true)}>
 						Show
 					</button>
-					<button
-						class="toggle-btn"
-						class:active={!showNoise}
-						onclick={() => (showNoise = false)}
-					>
+					<button class="toggle-btn" class:active={!showNoise} onclick={() => (showNoise = false)}>
 						Hide
 					</button>
 				</div>
@@ -574,8 +600,8 @@
 
 		{#if colorBy === 'genre' && mapData.points.every((p) => !p.genres || p.genres.length === 0)}
 			<div class="map-warn">
-				Genre metadata not available. Run <b>Enrich metadata</b> from the Key Art Engine
-				page to populate genres from the database.
+				Genre metadata not available. Run <b>Enrich metadata</b> from the Key Art Engine page to populate
+				genres from the database.
 			</div>
 		{/if}
 
@@ -586,15 +612,9 @@
 			<!-- Side panel -->
 			{#if selectedPoint}
 				<div class="side-panel mq-rise">
-					<button class="close-btn" onclick={() => (selectedPoint = null)}>
-						&times;
-					</button>
+					<button class="close-btn" onclick={() => (selectedPoint = null)}> &times; </button>
 					{#if selectedPoint.thumb_url}
-						<img
-							src={selectedPoint.thumb_url}
-							alt={selectedPoint.name}
-							class="thumb"
-						/>
+						<img src={selectedPoint.thumb_url} alt={selectedPoint.name} class="thumb" />
 					{/if}
 					<h3 class="p-name">{displayTitle(selectedPoint)}</h3>
 					<div class="p-meta">
@@ -649,7 +669,9 @@
 							</div>
 						{/if}
 						{#if selectedPoint.cluster != null && selectedPoint.cluster !== -1 && mapData?.clusters}
-							{@const cluster = mapData.clusters.find((c: { id: number; name: string }) => c.id === selectedPoint!.cluster)}
+							{@const cluster = mapData.clusters.find(
+								(c: { id: number; name: string }) => c.id === selectedPoint!.cluster
+							)}
 							{#if cluster}
 								<div class="p-row">
 									<span class="p-label">Cluster</span>
@@ -730,7 +752,9 @@
 		animation: spin 0.8s linear infinite;
 	}
 	@keyframes spin {
-		to { transform: rotate(360deg); }
+		to {
+			transform: rotate(360deg);
+		}
 	}
 
 	.map-wrap {

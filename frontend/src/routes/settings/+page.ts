@@ -6,10 +6,7 @@ import type { RuntimeSettings } from '$lib/api/types';
 
 export const load: PageLoad = async ({ fetch }) => {
 	try {
-		const [config, settings] = await Promise.all([
-			getPipelineConfig(fetch),
-			getSettings(fetch)
-		]);
+		const [config, settings] = await Promise.all([getPipelineConfig(fetch), getSettings(fetch)]);
 		return { config, settings, error: null as string | null };
 	} catch (e) {
 		return {

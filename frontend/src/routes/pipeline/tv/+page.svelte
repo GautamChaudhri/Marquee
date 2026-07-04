@@ -1,9 +1,392 @@
 <script lang="ts">
-	import Stub from '$lib/components/Stub.svelte';
+	import { onMount } from 'svelte';
+	import { browser } from '$app/environment';
+	import { goto } from '$app/navigation';
+	import { page } from '$app/state';
+	import { SvelteSet } from 'svelte/reactivity';
+	import SectionHeader from '$lib/components/SectionHeader.svelte';
+	import TabBar from '$lib/components/TabBar.svelte';
+	import PosterThumb from '$lib/components/PosterThumb.svelte';
+	import RunProgress from '$lib/components/RunProgress.svelte';
+	import MetricsChart from '$lib/components/MetricsChart.svelte';
+	import {
+		approveTvAuto,
+		getTvMetrics,
+		getTvReviewQueue,
+		getTvRunQueue,
+		runSeries,
+		runTvBatch
+	} from '$lib/api/pipeline-tv';
+	import { getJob, isTerminal } from '$lib/api/jobs';
+	import { trackJob, type JobProgressDetail } from '$lib/jobs';
+	import { toast } from '$lib/toast';
+	import type { PageData } from './$types';
+
+	let { data }: { data: PageData } = $props();
+
+	type Tab = 'run' | 'review' | 'metrics';
+	let tab = $state<Tab>((page.url.searchParams.get('tab') as Tab) ?? 'run');
+	const tabs = $derived([
+		{ id: 'run', label: 'Run', count: data.runQueue.total },
+		{ id: 'review', label: 'Review', count: data.reviewQueue.total_series },
+		{ id: 'metrics', label: 'Metrics' }
+	]);
+
+	function setTab(id: string) {
+		tab = id as Tab;
+		const url = new URL(page.url);
+		const sp = url.searchParams;
+		sp.set('tab', id);
+		goto(`/pipeline/tv?${sp.toString()}`, { replaceState: true, keepFocus: true, noScroll: true });
+	}
+
+	// svelte-ignore state_referenced_locally
+	let runQueue = $state(data.runQueue);
+	// svelte-ignore state_referenced_locally
+	let reviewQueue = $state(data.reviewQueue);
+	// svelte-ignore state_referenced_locally
+	let metrics = $state(data.metrics);
+	const selected = new SvelteSet<number>();
+
+	const BATCH_STORAGE_KEY = 'marquee:pipeline:activeTvBatch';
+	let batchRunning = $state(false);
+	let batchStatus = $state('running');
+	let batchDetail = $state<JobProgressDetail>({});
+
+	function storeBatchId(id: string | null) {
+		if (!browser) return;
+		if (id) localStorage.setItem(BATCH_STORAGE_KEY, id);
+		else localStorage.removeItem(BATCH_STORAGE_KEY);
+	}
+
+	async function refresh() {
+		try {
+			[runQueue, reviewQueue, metrics] = await Promise.all([
+				getTvRunQueue(fetch),
+				getTvReviewQueue(fetch, { page_size: 200 }),
+				getTvMetrics(fetch, { limit: 500 }).catch(() => metrics)
+			]);
+		} catch {
+			/* keep stale */
+		}
+	}
+
+	function seasonLabel(number: number): string {
+		return number === 0 ? 'S00' : `S${String(number).padStart(2, '0')}`;
+	}
+
+	function compressAssets(
+		assets: { media_type: 'series' | 'season'; number?: number }[]
+	): string[] {
+		const out: string[] = [];
+		const seasons = assets
+			.filter((asset) => asset.media_type === 'season' && typeof asset.number === 'number')
+			.map((asset) => asset.number as number)
+			.sort((a, b) => a - b);
+		if (assets.some((asset) => asset.media_type === 'series')) out.push('Show');
+		let i = 0;
+		while (i < seasons.length) {
+			let j = i;
+			while (j + 1 < seasons.length && seasons[j + 1] === seasons[j] + 1) j += 1;
+			out.push(
+				i === j ? seasonLabel(seasons[i]) : `${seasonLabel(seasons[i])}–${seasonLabel(seasons[j])}`
+			);
+			i = j + 1;
+		}
+		return out;
+	}
+
+	async function startBatch(scope: 'missing' | 'all' | 'selected', seriesIds?: number[]) {
+		try {
+			const job = await runTvBatch(fetch, { scope, series_ids: seriesIds });
+			batchRunning = true;
+			batchStatus = job.status;
+			storeBatchId(job.job_id);
+			trackJob(
+				fetch,
+				job.job_id,
+				{
+					onProgress: ({ status, detail }) => {
+						batchStatus = status;
+						batchDetail = detail;
+					},
+					onDone: async (snapshot) => {
+						batchRunning = false;
+						storeBatchId(null);
+						toast(`TV batch ${snapshot.status}`, snapshot.status === 'succeeded' ? 'good' : 'bad');
+						await refresh();
+					}
+				},
+				{ eventsUrl: job.events_url }
+			);
+		} catch (e) {
+			toast(e instanceof Error ? e.message : 'Failed to start TV batch', 'bad');
+		}
+	}
+
+	async function startOne(seriesId: number) {
+		try {
+			const job = await runSeries(fetch, seriesId, { include: 'all_missing' });
+			trackJob(
+				fetch,
+				job.job_id,
+				{
+					onDone: async (snapshot) => {
+						toast(
+							`Series run ${snapshot.status}`,
+							snapshot.status === 'succeeded' ? 'good' : 'bad'
+						);
+						await refresh();
+					}
+				},
+				{ eventsUrl: job.events_url }
+			);
+		} catch (e) {
+			toast(e instanceof Error ? e.message : 'Failed to run series', 'bad');
+		}
+	}
+
+	async function rehydrate(jobId: string) {
+		const job = await getJob(fetch, jobId).catch(() => null);
+		if (!job) return;
+		if (isTerminal(job.status)) {
+			storeBatchId(null);
+			return;
+		}
+		batchRunning = true;
+		trackJob(
+			fetch,
+			jobId,
+			{
+				onProgress: ({ status, detail }) => {
+					batchStatus = status;
+					batchDetail = detail;
+				},
+				onDone: async () => {
+					batchRunning = false;
+					storeBatchId(null);
+					await refresh();
+				}
+			},
+			{ eventsUrl: job.events_url }
+		);
+	}
+
+	onMount(() => {
+		if (data.activeJob?.job_id) {
+			void rehydrate(data.activeJob.job_id);
+			return;
+		}
+		if (browser) {
+			const stored = localStorage.getItem(BATCH_STORAGE_KEY);
+			if (stored) void rehydrate(stored);
+		}
+	});
+
+	async function approveAll(seriesId?: number) {
+		try {
+			const result = await approveTvAuto(fetch, { deploy: true, series_id: seriesId });
+			toast(
+				`${result.approved} approved${result.skipped_no_auto ? ` · ${result.skipped_no_auto} skipped` : ''}`,
+				result.failed ? 'info' : 'good'
+			);
+			await refresh();
+		} catch (e) {
+			toast(e instanceof Error ? e.message : 'Bulk approval failed', 'bad');
+		}
+	}
 </script>
 
-<Stub
+<SectionHeader
 	title="TV posters"
-	subtitle="Coming in a future release"
-	note="The TV poster pipeline is not yet implemented."
+	subtitle={`${data.summary.shows_fully_covered}/${data.summary.shows_total} shows fully covered`}
 />
+
+<TabBar {tabs} active={tab} onSelect={setTab} />
+
+{#if batchRunning}
+	<RunProgress detail={batchDetail} status={batchStatus} title="Running TV poster batch" />
+{/if}
+
+{#if tab === 'run'}
+	<div class="run-head">
+		<button class="btn-gold" onclick={() => startBatch('missing')}>Run all missing</button>
+		<button class="btn-sec" onclick={() => startBatch('all')}>Re-run whole library</button>
+		<button
+			class="btn-sec"
+			onclick={() => startBatch('selected', [...selected])}
+			disabled={selected.size === 0}
+		>
+			Run selected ({selected.size})
+		</button>
+	</div>
+	<div class="run-list">
+		{#each runQueue.items as item (item.series.id)}
+			<div class="run-row">
+				<label class="pick">
+					<input
+						type="checkbox"
+						disabled={item.no_tmdb}
+						onchange={() =>
+							selected.has(item.series.id)
+								? selected.delete(item.series.id)
+								: selected.add(item.series.id)}
+					/>
+				</label>
+				<PosterThumb
+					title={item.series.title}
+					year={item.series.year}
+					posterStatus={item.series.poster_url ? 'deployed' : 'missing'}
+					posterUrl={item.series.poster_url}
+				/>
+				<div class="series-meta">
+					<strong>{item.series.title}</strong>
+					<span>{item.series.year ?? '—'}</span>
+					<div class="chips">
+						{#each compressAssets(item.assets_to_run) as chip (chip)}
+							<span class="chip">{chip}</span>
+						{/each}
+					</div>
+					{#if item.no_tmdb}<span class="note">No TMDB match — run sync.</span>{/if}
+				</div>
+				<button class="btn-sec" onclick={() => startOne(item.series.id)} disabled={item.no_tmdb}
+					>Run</button
+				>
+			</div>
+		{/each}
+	</div>
+{:else if tab === 'review'}
+	<div class="run-head">
+		<button class="btn-gold" onclick={() => approveAll()}>Approve all auto-picks</button>
+	</div>
+	<div class="review-grid">
+		{#each reviewQueue.items as item (item.series.id)}
+			<div class="review-card">
+				<PosterThumb
+					title={item.series.title}
+					year={item.series.year}
+					posterStatus={item.display_poster_url ? 'deployed' : 'missing'}
+					posterUrl={item.display_poster_url}
+				/>
+				<div class="series-meta">
+					<strong>{item.series.title}</strong>
+					<span
+						>{item.seasons_only
+							? 'Seasons only'
+							: item.show_run
+								? `Show + ${item.season_runs.length} seasons`
+								: `${item.season_runs.length} seasons`}</span
+					>
+					{#if item.seasons_only}
+						<span class="flag">Seasons only</span>
+					{/if}
+				</div>
+				<div class="review-actions">
+					<button class="btn-sec" onclick={() => approveAll(item.series.id)}> Approve all </button>
+					<button class="btn-sec" onclick={() => goto(`/pipeline/tv/series/${item.series.id}`)}>
+						Open review
+					</button>
+				</div>
+			</div>
+		{/each}
+	</div>
+{:else if metrics}
+	<div class="metrics-grid">
+		<MetricsChart title="By status" points={[]} series={[]} />
+		<div class="metric-card">
+			<h3>Run window</h3>
+			<div class="rows">
+				<div><span>Runs</span><strong>{metrics.window_runs}</strong></div>
+				<div><span>Statuses</span><strong>{Object.keys(metrics.by_status).length}</strong></div>
+				<div><span>Scorers</span><strong>{Object.keys(metrics.by_scorer).length}</strong></div>
+			</div>
+		</div>
+	</div>
+{/if}
+
+<style>
+	.run-head {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 10px;
+		margin: 16px 0;
+	}
+	.run-list,
+	.review-grid,
+	.metrics-grid {
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
+	}
+	.run-row,
+	.review-card,
+	.metric-card {
+		background: var(--panel);
+		border: 1px solid var(--line);
+		border-radius: var(--radius);
+		padding: 14px;
+	}
+	.run-row {
+		display: grid;
+		grid-template-columns: auto 96px minmax(0, 1fr) auto;
+		gap: 14px;
+		align-items: center;
+	}
+	.review-card {
+		display: grid;
+		grid-template-columns: 96px minmax(0, 1fr) auto;
+		gap: 14px;
+		text-align: left;
+	}
+	.series-meta {
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+	}
+	.chips {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 6px;
+	}
+	.chip,
+	.flag {
+		padding: 4px 8px;
+		border-radius: 999px;
+		background: var(--panel2);
+		border: 1px solid var(--line2);
+		font-size: 11px;
+	}
+	.flag {
+		color: var(--gold);
+		border-color: color-mix(in srgb, var(--gold) 35%, var(--line2));
+	}
+	.note {
+		font-size: 12px;
+		color: var(--bad);
+	}
+	.rows {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+	}
+	.rows div {
+		display: flex;
+		justify-content: space-between;
+	}
+	.btn-gold,
+	.btn-sec {
+		padding: 9px 12px;
+		border-radius: 8px;
+		font-size: 13px;
+	}
+	.btn-gold {
+		border: 1px solid var(--gold-deep);
+		background: linear-gradient(180deg, var(--gold), var(--gold-deep));
+		color: var(--on-gold);
+	}
+	.btn-sec {
+		border: 1px solid var(--line2);
+		background: var(--panel2);
+		color: var(--text);
+	}
+</style>

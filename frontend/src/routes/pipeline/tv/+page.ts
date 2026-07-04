@@ -1,0 +1,42 @@
+import type { PageLoad } from './$types';
+import { getTvMetrics, getTvReviewQueue, getTvRunQueue, getTvSummary } from '$lib/api/pipeline-tv';
+import { listJobs } from '$lib/api/jobs';
+import type { JobListItem } from '$lib/api/jobs';
+import type { PipelineMetrics, TvPipelineSummary, TvReviewQueue, TvRunQueue } from '$lib/api/types';
+
+const EMPTY_SUMMARY: TvPipelineSummary = {
+	shows_total: 0,
+	shows_with_show_poster: 0,
+	shows_missing_show_poster: 0,
+	seasons_total: 0,
+	seasons_with_poster: 0,
+	seasons_missing_poster: 0,
+	shows_fully_covered: 0,
+	shows_in_review: 0,
+	running_jobs: [],
+	last_heal: null,
+	heal_schedule: null,
+	backups: { count: 0, bytes: 0 }
+};
+
+export const load: PageLoad = async ({ fetch }) => {
+	const safe = <T>(p: Promise<T>, fallback: T): Promise<T> => p.catch(() => fallback);
+	const [summary, runQueue, reviewQueue, metrics, activeJob] = await Promise.all([
+		safe<TvPipelineSummary>(getTvSummary(fetch), EMPTY_SUMMARY),
+		safe<TvRunQueue>(getTvRunQueue(fetch), { items: [], total: 0 }),
+		safe<TvReviewQueue>(getTvReviewQueue(fetch, { page_size: 200 }), {
+			total_series: 0,
+			page: 1,
+			page_size: 200,
+			items: []
+		}),
+		safe<PipelineMetrics | null>(getTvMetrics(fetch, { limit: 500 }), null),
+		safe<JobListItem | null>(
+			listJobs(fetch, { type: 'poster_pipeline_tv_batch', status: 'running', limit: 1 }).then(
+				(r) => r.jobs[0] ?? null
+			),
+			null
+		)
+	]);
+	return { summary, runQueue, reviewQueue, metrics, activeJob };
+};

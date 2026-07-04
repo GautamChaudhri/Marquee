@@ -1,3 +1,4 @@
+<!-- eslint-disable @typescript-eslint/no-explicit-any @typescript-eslint/no-unused-vars svelte/prefer-svelte-reactivity svelte/require-each-key -->
 <script lang="ts">
 	import { onDestroy, onMount } from 'svelte';
 	import { browser } from '$app/environment';
@@ -23,8 +24,11 @@
 	let { data } = $props();
 
 	// Page State loaded from loader
+	// svelte-ignore state_referenced_locally
 	let movie = $state(data.movie);
+	// svelte-ignore state_referenced_locally
 	let inspect = $state(data.inspect);
+	// svelte-ignore state_referenced_locally
 	let settings = $state(data.settings);
 	let error = $derived(data.error);
 
@@ -144,22 +148,24 @@
 		if (coverage?.missing_preferred_audio_languages) {
 			return coverage.missing_preferred_audio_languages;
 		}
-		const audioLangs = new Set((coverage?.audio_languages || []).map((l: string) => l.toLowerCase()));
+		const audioLangs = new Set(
+			(coverage?.audio_languages || []).map((l: string) => l.toLowerCase())
+		);
 		const preferred = effectiveAudioPreferredLangs.map((l: string) => l.toLowerCase());
 		return preferred.filter((l: string) => !audioLangs.has(l));
 	});
 	let missingPreferredSubtitles = $derived(coverage?.missing_preferred_languages || []);
-	let audioStatus = $derived(coverage?.audio_status || (missingPreferredAudio.length > 0 ? 'gap' : 'ok'));
-	let subtitleStatus = $derived(coverage?.subtitle_status || (missingPreferredSubtitles.length > 0 ? 'gap' : 'ok'));
+	let audioStatus = $derived(
+		coverage?.audio_status || (missingPreferredAudio.length > 0 ? 'gap' : 'ok')
+	);
+	let subtitleStatus = $derived(
+		coverage?.subtitle_status || (missingPreferredSubtitles.length > 0 ? 'gap' : 'ok')
+	);
 
 	// Track Selection Details (derived from the draft, so action buttons
 	// reflect staged-but-unsaved edits)
-	let selectedTracks = $derived(
-		subtitleDraft.filter((t: any) => selectedTrackIds.includes(t.id))
-	);
-	let singleSelectedTrack = $derived(
-		selectedTracks.length === 1 ? selectedTracks[0] : null
-	);
+	let selectedTracks = $derived(subtitleDraft.filter((t: any) => selectedTrackIds.includes(t.id)));
+	let singleSelectedTrack = $derived(selectedTracks.length === 1 ? selectedTracks[0] : null);
 
 	// Subgen Connection & Status
 	let testing = $state(false);
@@ -283,7 +289,7 @@
 		testResult = null;
 		try {
 			const res = await getGenerators(fetch);
-			const subgen = res.generators.find(g => g.type === 'subgen');
+			const subgen = res.generators.find((g) => g.type === 'subgen');
 			if (subgen && subgen.online) {
 				testResult = {
 					success: true,
@@ -500,7 +506,9 @@
 					busy = true;
 					try {
 						const freshTracks = freshInspect?.inventory?.tracks || [];
-						const freshTrack = freshTracks.find((t: any) => t.source === 'embedded' && t.stream_index === originalStreamIndex);
+						const freshTrack = freshTracks.find(
+							(t: any) => t.source === 'embedded' && t.stream_index === originalStreamIndex
+						);
 						if (!freshTrack) {
 							throw new Error('Could not find original embedded track in updated inventory');
 						}
@@ -541,7 +549,9 @@
 					busy = true;
 					try {
 						const freshTracks = freshInspect?.inventory?.tracks || [];
-						const freshTrack = freshTracks.find((t: any) => t.source === 'external' && t.external_path === originalExternalPath);
+						const freshTrack = freshTracks.find(
+							(t: any) => t.source === 'external' && t.external_path === originalExternalPath
+						);
 						if (!freshTrack) {
 							throw new Error('Could not find original external track in updated inventory');
 						}
@@ -647,7 +657,16 @@
 	}
 
 	// Map language tags to colors
-	const colorPalette = ['lang-1', 'lang-2', 'lang-3', 'lang-4', 'lang-5', 'lang-6', 'lang-7', 'lang-8'];
+	const colorPalette = [
+		'lang-1',
+		'lang-2',
+		'lang-3',
+		'lang-4',
+		'lang-5',
+		'lang-6',
+		'lang-7',
+		'lang-8'
+	];
 	function getLanguageClass(lang: string) {
 		let hash = 0;
 		for (let i = 0; i < lang.length; i++) {
@@ -660,7 +679,7 @@
 	// Track selection checkbox helpers
 	function toggleTrackSelect(id: string) {
 		if (selectedTrackIds.includes(id)) {
-			selectedTrackIds = selectedTrackIds.filter(tid => tid !== id);
+			selectedTrackIds = selectedTrackIds.filter((tid) => tid !== id);
 		} else {
 			selectedTrackIds = [...selectedTrackIds, id];
 		}
@@ -683,7 +702,7 @@
 	// Audio selection checkbox helpers
 	function toggleAudioSelect(index: number) {
 		if (selectedAudioIndices.includes(index)) {
-			selectedAudioIndices = selectedAudioIndices.filter(i => i !== index);
+			selectedAudioIndices = selectedAudioIndices.filter((i) => i !== index);
 		} else {
 			selectedAudioIndices = [...selectedAudioIndices, index];
 		}
@@ -716,10 +735,13 @@
 
 	$effect(() => {
 		if (!inspect || moviePreferencesInitialized) return;
-		const prefs = inspect.preferred_languages || coverage?.preferences || movie?.preferred_languages;
+		const prefs =
+			inspect.preferred_languages || coverage?.preferences || movie?.preferred_languages;
 		const shared = prefs?.shared || settings?.subtitles?.preferred_languages || ['en'];
-		const audio = prefs?.audio || settings?.subtitles?.effective_preferred_audio_languages || shared;
-		const subtitles = prefs?.subtitles || settings?.subtitles?.effective_preferred_subtitle_languages || shared;
+		const audio =
+			prefs?.audio || settings?.subtitles?.effective_preferred_audio_languages || shared;
+		const subtitles =
+			prefs?.subtitles || settings?.subtitles?.effective_preferred_subtitle_languages || shared;
 		movieOverrideEnabled = Boolean(prefs?.override);
 		moviePreferredShared = shared.join(', ');
 		moviePreferredAudio = audio.join(', ');
@@ -775,10 +797,14 @@
 	}
 
 	function audioDefault(stream: any) {
-		return Boolean(stream?.is_default || stream?.disposition?.default || stream?.disposition?.default_flag);
+		return Boolean(
+			stream?.is_default || stream?.disposition?.default || stream?.disposition?.default_flag
+		);
 	}
 	function audioForced(stream: any) {
-		return Boolean(stream?.is_forced || stream?.disposition?.forced || stream?.disposition?.forced_flag);
+		return Boolean(
+			stream?.is_forced || stream?.disposition?.forced || stream?.disposition?.forced_flag
+		);
 	}
 	function audioSdh(stream: any) {
 		return Boolean(stream?.is_sdh || stream?.disposition?.hearing_impaired);
@@ -786,9 +812,9 @@
 	function audioCommentary(stream: any) {
 		return Boolean(
 			stream?.is_commentary ||
-				stream?.disposition?.comment ||
-				stream?.disposition?.commentary ||
-				stream?.disposition?.original
+			stream?.disposition?.comment ||
+			stream?.disposition?.commentary ||
+			stream?.disposition?.original
 		);
 	}
 	function audioChannelLabel(stream: any) {
@@ -846,7 +872,11 @@
 		audioDraft = audioDraft.map((s) => {
 			if (s.index !== index) return s;
 			const current =
-				field === 'is_forced' ? audioForced(s) : field === 'is_sdh' ? audioSdh(s) : audioCommentary(s);
+				field === 'is_forced'
+					? audioForced(s)
+					: field === 'is_sdh'
+						? audioSdh(s)
+						: audioCommentary(s);
 			return { ...s, [field]: !current };
 		});
 		audioDirty = true;
@@ -897,7 +927,8 @@
 	}
 	function applyToggleFlag(field: 'is_forced' | 'is_sdh' | 'is_commentary') {
 		if (singleSelectedAudio) draftToggleAudioFlag(singleSelectedAudio.index, field);
-		if (singleSelectedTrack?.source === 'embedded') draftToggleSubtitleFlag(singleSelectedTrack.id, field);
+		if (singleSelectedTrack?.source === 'embedded')
+			draftToggleSubtitleFlag(singleSelectedTrack.id, field);
 	}
 	async function saveAllChanges() {
 		if (audioDirty) await saveAudioChanges();
@@ -1031,7 +1062,7 @@
 	// Language checkbox helpers for Batch Delete
 	function toggleBatchLang(lang: string) {
 		if (batchLanguages.includes(lang)) {
-			batchLanguages = batchLanguages.filter(l => l !== lang);
+			batchLanguages = batchLanguages.filter((l) => l !== lang);
 		} else {
 			batchLanguages = [...batchLanguages, lang];
 		}
@@ -1077,13 +1108,15 @@
 				<div class="meta-details">
 					<div class="detail-item">
 						<span class="lbl">File Path:</span>
-						<span class="val font-mono truncate" title={movie.media_file_path}>{movie.media_file_path}</span>
+						<span class="val font-mono truncate" title={movie.media_file_path}
+							>{movie.media_file_path}</span
+						>
 					</div>
 					{#if inventory.duration_seconds}
-					<div class="detail-item">
-						<span class="lbl">Duration:</span>
-						<span class="val">{Math.floor(inventory.duration_seconds / 60)} minutes</span>
-					</div>
+						<div class="detail-item">
+							<span class="lbl">Duration:</span>
+							<span class="val">{Math.floor(inventory.duration_seconds / 60)} minutes</span>
+						</div>
 					{/if}
 				</div>
 			</div>
@@ -1091,7 +1124,7 @@
 
 		<!-- Main Tab Layout -->
 		<div class="tabs-wrap">
-			<TabBar {tabs} active={activeTab} onSelect={(id) => activeTab = id} />
+			<TabBar {tabs} active={activeTab} onSelect={(id) => (activeTab = id)} />
 		</div>
 
 		<!-- Progress Overlay when job runs -->
@@ -1115,7 +1148,9 @@
 				<div class="banner-head">
 					<span class="title">Subtitles Task Failed</span>
 					<div class="banner-actions">
-						<span class="status-badge status-badge-failed font-mono">{failedJob.stage.toUpperCase()}</span>
+						<span class="status-badge status-badge-failed font-mono"
+							>{failedJob.stage.toUpperCase()}</span
+						>
 						<button class="dismiss-btn" onclick={dismissFailedJob}>Dismiss</button>
 					</div>
 				</div>
@@ -1135,31 +1170,51 @@
 			{#if activeTab === 'tracks'}
 				<!-- ── TRACKS TAB ── -->
 				<div class="subtitles-tab-grid">
-					
 					<!-- Left Main: Tracks list and controls -->
 					<div class="left-panel">
 						<div class="unified-action-bar">
 							<div class="bar-row">
 								<button
 									class="chip-action"
-									class:active={(singleSelectedAudio && audioDefault(singleSelectedAudio)) || singleSelectedTrack?.is_default}
+									class:active={(singleSelectedAudio && audioDefault(singleSelectedAudio)) ||
+										singleSelectedTrack?.is_default}
 									onclick={applySetDefault}
-									disabled={busy || (!singleSelectedAudio && singleSelectedTrack?.source !== 'embedded')}
+									disabled={busy ||
+										(!singleSelectedAudio && singleSelectedTrack?.source !== 'embedded')}
 								>
 									Set Default
 								</button>
-								
+
 								<details class="action-dropdown">
 									<summary class="chip-action">Set Flags ▾</summary>
 									<div class="dropdown-menu">
 										{#if singleSelectedAudio || singleSelectedTrack?.source === 'embedded'}
-											<button class="dropdown-menu-row" class:checked={(singleSelectedAudio && audioForced(singleSelectedAudio)) || (singleSelectedTrack?.source === 'embedded' && singleSelectedTrack.is_forced)} onclick={() => applyToggleFlag('is_forced')}>
+											<button
+												class="dropdown-menu-row"
+												class:checked={(singleSelectedAudio && audioForced(singleSelectedAudio)) ||
+													(singleSelectedTrack?.source === 'embedded' &&
+														singleSelectedTrack.is_forced)}
+												onclick={() => applyToggleFlag('is_forced')}
+											>
 												<span class="flag-dot warn"></span> Forced
 											</button>
-											<button class="dropdown-menu-row" class:checked={(singleSelectedAudio && audioSdh(singleSelectedAudio)) || (singleSelectedTrack?.source === 'embedded' && singleSelectedTrack.is_sdh)} onclick={() => applyToggleFlag('is_sdh')}>
+											<button
+												class="dropdown-menu-row"
+												class:checked={(singleSelectedAudio && audioSdh(singleSelectedAudio)) ||
+													(singleSelectedTrack?.source === 'embedded' &&
+														singleSelectedTrack.is_sdh)}
+												onclick={() => applyToggleFlag('is_sdh')}
+											>
 												<span class="flag-dot good"></span> HI / SDH
 											</button>
-											<button class="dropdown-menu-row" class:checked={(singleSelectedAudio && audioCommentary(singleSelectedAudio)) || (singleSelectedTrack?.source === 'embedded' && singleSelectedTrack.is_commentary)} onclick={() => applyToggleFlag('is_commentary')}>
+											<button
+												class="dropdown-menu-row"
+												class:checked={(singleSelectedAudio &&
+													audioCommentary(singleSelectedAudio)) ||
+													(singleSelectedTrack?.source === 'embedded' &&
+														singleSelectedTrack.is_commentary)}
+												onclick={() => applyToggleFlag('is_commentary')}
+											>
 												<span class="flag-dot dovi"></span> Commentary
 											</button>
 										{:else}
@@ -1167,57 +1222,105 @@
 										{/if}
 									</div>
 								</details>
-								
+
 								{#if singleSelectedAudio}
 									<div class="icon-btn-group">
-										<button class="chip-action" aria-label="Move to first" title="Move to first" onclick={() => draftReorderAudio('first')} disabled={busy}>⏮</button>
-										<button class="chip-action" aria-label="Move up" title="Move up" onclick={() => draftReorderAudio('up')} disabled={busy}>▲</button>
-										<button class="chip-action" aria-label="Move down" title="Move down" onclick={() => draftReorderAudio('down')} disabled={busy}>▼</button>
-										<button class="chip-action" aria-label="Move to last" title="Move to last" onclick={() => draftReorderAudio('last')} disabled={busy}>⏭</button>
+										<button
+											class="chip-action"
+											aria-label="Move to first"
+											title="Move to first"
+											onclick={() => draftReorderAudio('first')}
+											disabled={busy}>⏮</button
+										>
+										<button
+											class="chip-action"
+											aria-label="Move up"
+											title="Move up"
+											onclick={() => draftReorderAudio('up')}
+											disabled={busy}>▲</button
+										>
+										<button
+											class="chip-action"
+											aria-label="Move down"
+											title="Move down"
+											onclick={() => draftReorderAudio('down')}
+											disabled={busy}>▼</button
+										>
+										<button
+											class="chip-action"
+											aria-label="Move to last"
+											title="Move to last"
+											onclick={() => draftReorderAudio('last')}
+											disabled={busy}>⏭</button
+										>
 									</div>
 								{/if}
-								
+
 								{#if singleSelectedTrack}
 									<details class="action-dropdown">
-										<summary class="chip-action">{singleSelectedTrack.source === 'embedded' ? 'Extract' : 'Embed'} ▾</summary>
+										<summary class="chip-action"
+											>{singleSelectedTrack.source === 'embedded' ? 'Extract' : 'Embed'} ▾</summary
+										>
 										<div class="dropdown-menu">
 											{#if singleSelectedTrack.source === 'embedded'}
-												<button class="dropdown-menu-row" onclick={() => handleExtractTrack(false)}>Extract to Sidecar</button>
-												<button class="dropdown-menu-row" onclick={() => handleExtractTrack(true)}>Extract &amp; Delete Embedded</button>
+												<button class="dropdown-menu-row" onclick={() => handleExtractTrack(false)}
+													>Extract to Sidecar</button
+												>
+												<button class="dropdown-menu-row" onclick={() => handleExtractTrack(true)}
+													>Extract &amp; Delete Embedded</button
+												>
 											{:else}
-												<button class="dropdown-menu-row" onclick={() => handleEmbedTrack(false)}>Embed into Container</button>
-												<button class="dropdown-menu-row" onclick={() => handleEmbedTrack(true)}>Embed &amp; Delete Sidecar</button>
+												<button class="dropdown-menu-row" onclick={() => handleEmbedTrack(false)}
+													>Embed into Container</button
+												>
+												<button class="dropdown-menu-row" onclick={() => handleEmbedTrack(true)}
+													>Embed &amp; Delete Sidecar</button
+												>
 											{/if}
 										</div>
 									</details>
 								{/if}
 							</div>
-							
+
 							<div class="bar-row bar-row-bottom">
 								<span class="selection-summary">
 									{#if totalSelected === 0}
 										No tracks selected
 									{:else}
 										{#if audioActive}{selectedAudioIndices.length} audio{/if}
-										{#if audioActive && subtitleActive} + {/if}
+										{#if audioActive && subtitleActive}
+											+
+										{/if}
 										{#if subtitleActive}{selectedTrackIds.length} subtitle{/if}
 										selected
 									{/if}
 								</span>
 								<div class="action-group">
-									<button class="chip-action danger" onclick={deleteSelected} disabled={busy || totalSelected === 0}>
+									<button
+										class="chip-action danger"
+										onclick={deleteSelected}
+										disabled={busy || totalSelected === 0}
+									>
 										Delete ({totalSelected})
 									</button>
-									<button class="chip-action" onclick={discardAllChanges} disabled={busy || (!audioDirty && !subtitleDirty)}>
+									<button
+										class="chip-action"
+										onclick={discardAllChanges}
+										disabled={busy || (!audioDirty && !subtitleDirty)}
+									>
 										Discard
 									</button>
-									<button class="chip-action primary" onclick={saveAllChanges} disabled={busy || (!audioDirty && !subtitleDirty)}>
+									<button
+										class="chip-action primary"
+										onclick={saveAllChanges}
+										disabled={busy || (!audioDirty && !subtitleDirty)}
+									>
 										Save Changes
 									</button>
 								</div>
 							</div>
 						</div>
-						
+
 						<!-- Audio Tracks Section -->
 						<div class="tracks-list-header">
 							<h5>Audio Tracks ({audioDraft.length})</h5>
@@ -1227,7 +1330,13 @@
 								<thead>
 									<tr>
 										<th class="chk-col">
-											<input class="select-circle" type="checkbox" checked={audioDraft.length > 0 && selectedAudioIndices.length === audioDraft.length} onchange={toggleAllAudio} />
+											<input
+												class="select-circle"
+												type="checkbox"
+												checked={audioDraft.length > 0 &&
+													selectedAudioIndices.length === audioDraft.length}
+												onchange={toggleAllAudio}
+											/>
 										</th>
 										<th>Language</th>
 										<th>Source</th>
@@ -1241,28 +1350,37 @@
 								<tbody>
 									{#if audioDraft.length === 0}
 										<tr>
-											<td colspan="8" class="empty-table">No audio tracks found. Re-scan the media file.</td>
+											<td colspan="8" class="empty-table"
+												>No audio tracks found. Re-scan the media file.</td
+											>
 										</tr>
 									{:else}
 										{#each audioDraft as stream (stream.index)}
 											<tr
 												class:selected={selectedAudioIndices.includes(stream.index)}
 												onclick={() => selectOnlyAudio(stream.index)}
-												onkeydown={(event) => toggleRowFromKeyboard(event, () => selectOnlyAudio(stream.index))}
+												onkeydown={(event) =>
+													toggleRowFromKeyboard(event, () => selectOnlyAudio(stream.index))}
 												role="button"
 												tabindex="0"
 											>
 												<td class="chk-col">
-													<input class="select-circle" type="checkbox" checked={selectedAudioIndices.includes(stream.index)} onclick={(event) => event.stopPropagation()} onchange={() => toggleAudioSelect(stream.index)} />
+													<input
+														class="select-circle"
+														type="checkbox"
+														checked={selectedAudioIndices.includes(stream.index)}
+														onclick={(event) => event.stopPropagation()}
+														onchange={() => toggleAudioSelect(stream.index)}
+													/>
 												</td>
 												<td>
-													<span class="lang-tag font-mono uppercase">{stream.language_tag || 'und'}</span>
+													<span class="lang-tag font-mono uppercase"
+														>{stream.language_tag || 'und'}</span
+													>
 													<span class="lang-name">{getLanguageName(stream.language_tag)}</span>
 												</td>
 												<td>
-													<span class="source-badge">
-														embedded
-													</span>
+													<span class="source-badge"> embedded </span>
 												</td>
 												<td class="font-mono">{stream.codec || '—'}</td>
 												<td>{audioFormatLabel(stream)}</td>
@@ -1271,10 +1389,14 @@
 												</td>
 												<td>
 													<div class="flags-row">
-														{#if audioDefault(stream)}<span class="flag-pill default">DEFAULT</span>{/if}
-														{#if audioForced(stream)}<span class="flag-pill forced">FORCED</span>{/if}
+														{#if audioDefault(stream)}<span class="flag-pill default">DEFAULT</span
+															>{/if}
+														{#if audioForced(stream)}<span class="flag-pill forced">FORCED</span
+															>{/if}
 														{#if audioSdh(stream)}<span class="flag-pill sdh">HI</span>{/if}
-														{#if audioCommentary(stream)}<span class="flag-pill commentary">COMMENT</span>{/if}
+														{#if audioCommentary(stream)}<span class="flag-pill commentary"
+																>COMMENT</span
+															>{/if}
 													</div>
 												</td>
 												<td class="font-mono font-sm">#{stream.index}</td>
@@ -1294,7 +1416,13 @@
 								<thead>
 									<tr>
 										<th class="chk-col">
-											<input class="select-circle" type="checkbox" checked={subtitleDraft.length > 0 && selectedTrackIds.length === subtitleDraft.length} onchange={toggleAllTracks} />
+											<input
+												class="select-circle"
+												type="checkbox"
+												checked={subtitleDraft.length > 0 &&
+													selectedTrackIds.length === subtitleDraft.length}
+												onchange={toggleAllTracks}
+											/>
 										</th>
 										<th>Language</th>
 										<th>Source</th>
@@ -1307,22 +1435,33 @@
 								<tbody>
 									{#if subtitleDraft.length === 0}
 										<tr>
-											<td colspan="7" class="empty-table">No subtitle tracks found. Re-scan the media file or run AI generation.</td>
+											<td colspan="7" class="empty-table"
+												>No subtitle tracks found. Re-scan the media file or run AI generation.</td
+											>
 										</tr>
 									{:else}
 										{#each subtitleDraft as track (track.id)}
 											<tr
 												class:selected={selectedTrackIds.includes(track.id)}
 												onclick={() => selectOnlyTrack(track.id)}
-												onkeydown={(event) => toggleRowFromKeyboard(event, () => selectOnlyTrack(track.id))}
+												onkeydown={(event) =>
+													toggleRowFromKeyboard(event, () => selectOnlyTrack(track.id))}
 												role="button"
 												tabindex="0"
 											>
 												<td class="chk-col">
-													<input class="select-circle" type="checkbox" checked={selectedTrackIds.includes(track.id)} onclick={(event) => event.stopPropagation()} onchange={() => toggleTrackSelect(track.id)} />
+													<input
+														class="select-circle"
+														type="checkbox"
+														checked={selectedTrackIds.includes(track.id)}
+														onclick={(event) => event.stopPropagation()}
+														onchange={() => toggleTrackSelect(track.id)}
+													/>
 												</td>
 												<td>
-													<span class="lang-tag font-mono uppercase">{track.language_tag || 'und'}</span>
+													<span class="lang-tag font-mono uppercase"
+														>{track.language_tag || 'und'}</span
+													>
 													<span class="lang-name">{getLanguageName(track.language_tag)}</span>
 												</td>
 												<td>
@@ -1340,19 +1479,23 @@
 													<div class="flags-row">
 														{#if track.is_forced}<span class="flag-pill forced">FORCED</span>{/if}
 														{#if track.is_sdh}<span class="flag-pill sdh">SDH</span>{/if}
-														{#if track.is_commentary}<span class="flag-pill commentary">COMMENT</span>{/if}
-														{#if track.is_default}<span class="flag-pill default">DEFAULT</span>{/if}
+														{#if track.is_commentary}<span class="flag-pill commentary"
+																>COMMENT</span
+															>{/if}
+														{#if track.is_default}<span class="flag-pill default">DEFAULT</span
+															>{/if}
 														{#if track.is_generated}<span class="flag-pill generated">AI</span>{/if}
 													</div>
 												</td>
-												<td class="font-mono font-sm">{track.size_bytes ? bytesH(track.size_bytes) : '—'}</td>
+												<td class="font-mono font-sm"
+													>{track.size_bytes ? bytesH(track.size_bytes) : '—'}</td
+												>
 											</tr>
 										{/each}
 									{/if}
 								</tbody>
 							</table>
 						</div>
-
 					</div>
 
 					<!-- Right Panel: Coverage & Batch Delete Drawer -->
@@ -1369,28 +1512,55 @@
 								</span>
 							</div>
 							<label class="checkbox-row compact-row">
-								<input class="select-circle" type="checkbox" bind:checked={movieSeparatePreferred} />
+								<input
+									class="select-circle"
+									type="checkbox"
+									bind:checked={movieSeparatePreferred}
+								/>
 								<span>Separate audio and subtitles</span>
 							</label>
 							<label class="pref-field">
 								<span>{movieSeparatePreferred ? 'Shared fallback' : 'Audio & subtitles'}</span>
-								<input type="text" bind:value={moviePreferredShared} placeholder="en, es, fr" autocomplete="off" />
+								<input
+									type="text"
+									bind:value={moviePreferredShared}
+									placeholder="en, es, fr"
+									autocomplete="off"
+								/>
 							</label>
 							{#if movieSeparatePreferred}
 								<label class="pref-field">
 									<span>Audio</span>
-									<input type="text" bind:value={moviePreferredAudio} placeholder="en, es" autocomplete="off" />
+									<input
+										type="text"
+										bind:value={moviePreferredAudio}
+										placeholder="en, es"
+										autocomplete="off"
+									/>
 								</label>
 								<label class="pref-field">
 									<span>Subtitles</span>
-									<input type="text" bind:value={moviePreferredSubtitles} placeholder="en, fr" autocomplete="off" />
+									<input
+										type="text"
+										bind:value={moviePreferredSubtitles}
+										placeholder="en, fr"
+										autocomplete="off"
+									/>
 								</label>
 							{/if}
 							<div class="preferences-actions">
-								<button class="btn secondary btn-sm" onclick={resetMoviePreferences} disabled={savingMoviePreferences || !movieOverrideEnabled}>
+								<button
+									class="btn secondary btn-sm"
+									onclick={resetMoviePreferences}
+									disabled={savingMoviePreferences || !movieOverrideEnabled}
+								>
 									Reset
 								</button>
-								<button class="btn primary btn-sm" onclick={saveMoviePreferences} disabled={savingMoviePreferences}>
+								<button
+									class="btn primary btn-sm"
+									onclick={saveMoviePreferences}
+									disabled={savingMoviePreferences}
+								>
 									{savingMoviePreferences ? 'Saving...' : 'Save'}
 								</button>
 							</div>
@@ -1399,24 +1569,30 @@
 						<!-- Coverage Box -->
 						<div class="panel-section coverage-box">
 							<h4>Language Coverage Status</h4>
-							
+
 							<!-- Audio Coverage Part -->
 							<div class="coverage-section">
 								<div class="section-subtitle">Audio</div>
 								<div class="coverage-row">
 									<span class="lbl">Status:</span>
-									<span class="val status-lbl" class:ok={audioStatus === 'ok'} class:gap={audioStatus === 'gap'}>
+									<span
+										class="val status-lbl"
+										class:ok={audioStatus === 'ok'}
+										class:gap={audioStatus === 'gap'}
+									>
 										{audioStatus === 'ok' ? 'Full Coverage' : 'Gaps Present'}
 									</span>
 								</div>
-								
+
 								<div class="coverage-details">
 									<div class="detail-row">
 										<span class="label">Languages Present:</span>
 										<div class="tags">
 											{#if coverage?.audio_languages && coverage.audio_languages.length > 0}
 												{#each coverage.audio_languages as lang}
-													<span class="lang-pill {getLanguageClass(lang)}">{lang.toUpperCase()}</span>
+													<span class="lang-pill {getLanguageClass(lang)}"
+														>{lang.toUpperCase()}</span
+													>
 												{/each}
 											{:else}
 												<span class="muted">—</span>
@@ -1432,14 +1608,14 @@
 										</div>
 									</div>
 									{#if missingPreferredAudio.length > 0}
-									<div class="detail-row">
-										<span class="label">Missing Preferred:</span>
-										<div class="tags">
-											{#each missingPreferredAudio as lang}
-												<span class="lang-pill missing">{lang.toUpperCase()}</span>
-											{/each}
+										<div class="detail-row">
+											<span class="label">Missing Preferred:</span>
+											<div class="tags">
+												{#each missingPreferredAudio as lang}
+													<span class="lang-pill missing">{lang.toUpperCase()}</span>
+												{/each}
+											</div>
 										</div>
-									</div>
 									{/if}
 								</div>
 							</div>
@@ -1452,8 +1628,16 @@
 								<div class="section-subtitle">Subtitles</div>
 								<div class="coverage-row">
 									<span class="lbl">Status:</span>
-									<span class="val status-lbl" class:ok={subtitleStatus === 'ok'} class:gap={subtitleStatus === 'gap'}>
-										{subtitleStatus === 'ok' ? 'Full Coverage' : subtitleStatus === 'gap' ? 'Gaps Present' : 'Unscanned'}
+									<span
+										class="val status-lbl"
+										class:ok={subtitleStatus === 'ok'}
+										class:gap={subtitleStatus === 'gap'}
+									>
+										{subtitleStatus === 'ok'
+											? 'Full Coverage'
+											: subtitleStatus === 'gap'
+												? 'Gaps Present'
+												: 'Unscanned'}
 									</span>
 								</div>
 
@@ -1464,7 +1648,9 @@
 											<div class="tags">
 												{#if coverage.full_dialogue_languages && coverage.full_dialogue_languages.length > 0}
 													{#each coverage.full_dialogue_languages as lang}
-														<span class="lang-pill {getLanguageClass(lang)}">{lang.toUpperCase()}</span>
+														<span class="lang-pill {getLanguageClass(lang)}"
+															>{lang.toUpperCase()}</span
+														>
 													{/each}
 												{:else}
 													<span class="muted">—</span>
@@ -1487,19 +1673,21 @@
 											<span class="label">Preferred:</span>
 											<div class="tags">
 												{#each effectiveSubtitlePreferredLangs as lang}
-													<span class="lang-pill {getLanguageClass(lang)}">{lang.toUpperCase()}</span>
+													<span class="lang-pill {getLanguageClass(lang)}"
+														>{lang.toUpperCase()}</span
+													>
 												{/each}
 											</div>
 										</div>
 										{#if missingPreferredSubtitles.length > 0}
-										<div class="detail-row">
-											<span class="label">Missing Preferred:</span>
-											<div class="tags">
-												{#each missingPreferredSubtitles as lang}
-													<span class="lang-pill missing">{lang.toUpperCase()}</span>
-												{/each}
+											<div class="detail-row">
+												<span class="label">Missing Preferred:</span>
+												<div class="tags">
+													{#each missingPreferredSubtitles as lang}
+														<span class="lang-pill missing">{lang.toUpperCase()}</span>
+													{/each}
+												</div>
 											</div>
-										</div>
 										{/if}
 									</div>
 								{/if}
@@ -1508,7 +1696,7 @@
 
 						<!-- Batch / Quick Delete Panel -->
 						<div class="panel-section batch-delete-panel">
-							<button class="btn-batch-toggle" onclick={() => batchDeleteOpen = !batchDeleteOpen}>
+							<button class="btn-batch-toggle" onclick={() => (batchDeleteOpen = !batchDeleteOpen)}>
 								<span>⚡ Batch / Quick Delete</span>
 								<span class="arrow">{batchDeleteOpen ? '▲' : '▼'}</span>
 							</button>
@@ -1516,7 +1704,7 @@
 							{#if batchDeleteOpen}
 								<div class="batch-delete-body mq-rise">
 									<p class="help">Quickly wipe multiple tracks based on specific languages.</p>
-									
+
 									<div class="batch-step">
 										<span class="step-label">1. Target Tracks:</span>
 										<div class="option-group">
@@ -1557,7 +1745,12 @@
 											<div class="checklist-grid">
 												{#each uniqueLanguagesForBatch as lang}
 													<label class="chk-item">
-														<input class="select-circle" type="checkbox" checked={batchLanguages.includes(lang)} onchange={() => toggleBatchLang(lang)} />
+														<input
+															class="select-circle"
+															type="checkbox"
+															checked={batchLanguages.includes(lang)}
+															onchange={() => toggleBatchLang(lang)}
+														/>
 														<span>{lang.toUpperCase()}</span>
 													</label>
 												{/each}
@@ -1565,7 +1758,13 @@
 										{/if}
 									</div>
 
-									<button class="btn danger btn-sm mt-10 w-full" onclick={handleBatchDelete} disabled={busy || uniqueLanguagesForBatch.length === 0 || batchLanguages.length === 0}>
+									<button
+										class="btn danger btn-sm mt-10 w-full"
+										onclick={handleBatchDelete}
+										disabled={busy ||
+											uniqueLanguagesForBatch.length === 0 ||
+											batchLanguages.length === 0}
+									>
 										🔥 Execute Batch Delete
 									</button>
 								</div>
@@ -1573,26 +1772,40 @@
 						</div>
 					</div>
 				</div>
-
 			{:else if activeTab === 'generation'}
 				<!-- ── AI SUBTITLE GENERATION TAB ── -->
 				<div class="generation-tab-grid">
-					
 					<!-- Left: Subgen status & overrides settings -->
 					<div class="settings-col">
 						<div class="panel-section">
 							<h3>AI Subgen Connection Override</h3>
 							<div class="setting-row">
 								<label for="subgen-url" class="lbl">Subgen URL:</label>
-								<input type="text" id="subgen-url" class="str-input wide" bind:value={subgenUrl} placeholder="e.g. http://localhost:9000" />
+								<input
+									type="text"
+									id="subgen-url"
+									class="str-input wide"
+									bind:value={subgenUrl}
+									placeholder="e.g. http://localhost:9000"
+								/>
 							</div>
 							<div class="setting-row">
 								<label for="profile-name" class="lbl">Profile Name:</label>
-								<input type="text" id="profile-name" class="str-input" bind:value={subgenProfileName} />
+								<input
+									type="text"
+									id="profile-name"
+									class="str-input"
+									bind:value={subgenProfileName}
+								/>
 							</div>
 							<div class="setting-row">
 								<label for="model-label" class="lbl">Model Label:</label>
-								<input type="text" id="model-label" class="str-input" bind:value={subgenModelLabel} />
+								<input
+									type="text"
+									id="model-label"
+									class="str-input"
+									bind:value={subgenModelLabel}
+								/>
 							</div>
 							<div class="setting-row">
 								<label for="subgen-mode" class="lbl">Translation Mode:</label>
@@ -1603,15 +1816,35 @@
 							</div>
 							<div class="setting-row">
 								<label for="l-prefix" class="lbl">Local Path Prefix:</label>
-								<input type="text" id="l-prefix" class="str-input" bind:value={subgenLocalPathPrefix} placeholder="e.g. /mnt/Movies" />
+								<input
+									type="text"
+									id="l-prefix"
+									class="str-input"
+									bind:value={subgenLocalPathPrefix}
+									placeholder="e.g. /mnt/Movies"
+								/>
 							</div>
 							<div class="setting-row">
 								<label for="r-prefix" class="lbl">Remote Path Prefix:</label>
-								<input type="text" id="r-prefix" class="str-input" bind:value={subgenRemotePathPrefix} placeholder="e.g. /movies" />
+								<input
+									type="text"
+									id="r-prefix"
+									class="str-input"
+									bind:value={subgenRemotePathPrefix}
+									placeholder="e.g. /movies"
+								/>
 							</div>
 							<div class="setting-row">
 								<label for="callback-token" class="lbl">Callback Token:</label>
-								<input type="password" id="callback-token" class="str-input" bind:value={subgenCallbackToken} placeholder={settings?.integrations?.subgen?.callback_token_configured ? "••••••••" : "Not set"} />
+								<input
+									type="password"
+									id="callback-token"
+									class="str-input"
+									bind:value={subgenCallbackToken}
+									placeholder={settings?.integrations?.subgen?.callback_token_configured
+										? '••••••••'
+										: 'Not set'}
+								/>
 							</div>
 
 							<div class="preview-output mt-10">
@@ -1636,7 +1869,7 @@
 					<div class="form-col">
 						<div class="panel-section">
 							<h3>Generate Subtitles via Whisper</h3>
-							
+
 							<div class="form-group">
 								<label for="lang-select">Audio Language Hint</label>
 								<select id="lang-select" class="enum-select full-width" bind:value={audioLangHint}>
@@ -1644,24 +1877,30 @@
 										<option value={lang.code}>{lang.label}</option>
 									{/each}
 								</select>
-								<span class="help">Providing the spoken language prevents Whisper auto-detection errors.</span>
+								<span class="help"
+									>Providing the spoken language prevents Whisper auto-detection errors.</span
+								>
 							</div>
 
 							<div class="form-group">
-								<label>Output Target</label>
-								<div class="radio-options">
+								<div class="group-label">Output Target</div>
+								<div class="radio-options" role="group" aria-label="Output Target">
 									<label class="radio-option">
 										<input type="radio" value="external" bind:group={subgenOutputTarget} />
 										<div class="opt-desc">
 											<strong>External Sidecar (.srt)</strong>
-											<span>Saves as Plex-compatible sidecar file next to the video. (Recommended)</span>
+											<span
+												>Saves as Plex-compatible sidecar file next to the video. (Recommended)</span
+											>
 										</div>
 									</label>
 									<label class="radio-option">
 										<input type="radio" value="embedded" bind:group={subgenOutputTarget} />
 										<div class="opt-desc">
 											<strong>Embed in Video Container</strong>
-											<span>Remuxes the container to embed the generated track. Preservation remux.</span>
+											<span
+												>Remuxes the container to embed the generated track. Preservation remux.</span
+											>
 										</div>
 									</label>
 								</div>
@@ -2066,7 +2305,8 @@
 		text-align: left;
 		font-size: 13px;
 	}
-	.tracks-table th, .tracks-table td {
+	.tracks-table th,
+	.tracks-table td {
 		padding: 10px 14px;
 		border-bottom: 1px solid var(--line);
 	}
@@ -2082,7 +2322,7 @@
 		border-bottom: none;
 	}
 	.tracks-table tr:hover td {
-		background: rgba(255,255,255,0.015);
+		background: rgba(255, 255, 255, 0.015);
 	}
 	.tracks-table tr.selected td {
 		background: color-mix(in srgb, var(--gold) 5%, transparent);
@@ -2107,13 +2347,18 @@
 		background: var(--ink2);
 		cursor: pointer;
 		box-shadow: inset 0 0 0 4px var(--ink2);
-		transition: background-color 0.15s, border-color 0.15s, box-shadow 0.15s;
+		transition:
+			background-color 0.15s,
+			border-color 0.15s,
+			box-shadow 0.15s;
 		vertical-align: middle;
 	}
 	.select-circle:checked {
 		border-color: var(--gold);
 		background: var(--gold);
-		box-shadow: 0 0 0 3px var(--gold-soft), 0 0 14px rgba(255, 190, 73, 0.42);
+		box-shadow:
+			0 0 0 3px var(--gold-soft),
+			0 0 14px rgba(255, 190, 73, 0.42);
 	}
 	.select-circle:focus-visible {
 		outline: 2px solid color-mix(in srgb, var(--gold) 50%, transparent);
@@ -2141,14 +2386,38 @@
 		color: var(--warn);
 	}
 	/* 8-color accent palette — matches SubtitleMovieRow */
-	:global(.lang-1) { background: #ff7b72; color: #fff; }
-	:global(.lang-2) { background: #79c0ff; color: #0d1117; }
-	:global(.lang-3) { background: #7ee787; color: #0d1117; }
-	:global(.lang-4) { background: #d2a8ff; color: #0d1117; }
-	:global(.lang-5) { background: #ffca28; color: #0d1117; }
-	:global(.lang-6) { background: #ffa657; color: #0d1117; }
-	:global(.lang-7) { background: #56d364; color: #0d1117; }
-	:global(.lang-8) { background: #ec407a; color: #fff; }
+	:global(.lang-1) {
+		background: #ff7b72;
+		color: #fff;
+	}
+	:global(.lang-2) {
+		background: #79c0ff;
+		color: #0d1117;
+	}
+	:global(.lang-3) {
+		background: #7ee787;
+		color: #0d1117;
+	}
+	:global(.lang-4) {
+		background: #d2a8ff;
+		color: #0d1117;
+	}
+	:global(.lang-5) {
+		background: #ffca28;
+		color: #0d1117;
+	}
+	:global(.lang-6) {
+		background: #ffa657;
+		color: #0d1117;
+	}
+	:global(.lang-7) {
+		background: #56d364;
+		color: #0d1117;
+	}
+	:global(.lang-8) {
+		background: #ec407a;
+		color: #fff;
+	}
 	.lang-name {
 		color: var(--muted);
 		font-size: 12px;
@@ -2191,12 +2460,36 @@
 		color: var(--muted);
 		border: 1px solid var(--line2);
 	}
-	.flag-pill.forced { background: rgba(255, 123, 114, 0.15); color: #ff7b72; border-color: rgba(255, 123, 114, 0.25); }
-	.flag-pill.sdh { background: rgba(126, 231, 135, 0.15); color: #7ee787; border-color: rgba(126, 231, 135, 0.25); }
-	.flag-pill.commentary { background: rgba(210, 168, 255, 0.15); color: #d2a8ff; border-color: rgba(210, 168, 255, 0.25); }
-	.flag-pill.default { background: rgba(255, 202, 40, 0.15); color: #ffca28; border-color: rgba(255, 202, 40, 0.25); }
-	.flag-pill.generated { background: rgba(86, 211, 100, 0.15); color: #56d364; border-color: rgba(86, 211, 100, 0.25); }
-	.flag-pill.missing { background: rgba(239, 83, 80, 0.15); color: var(--bad); border-color: rgba(239, 83, 80, 0.25); }
+	.flag-pill.forced {
+		background: rgba(255, 123, 114, 0.15);
+		color: #ff7b72;
+		border-color: rgba(255, 123, 114, 0.25);
+	}
+	.flag-pill.sdh {
+		background: rgba(126, 231, 135, 0.15);
+		color: #7ee787;
+		border-color: rgba(126, 231, 135, 0.25);
+	}
+	.flag-pill.commentary {
+		background: rgba(210, 168, 255, 0.15);
+		color: #d2a8ff;
+		border-color: rgba(210, 168, 255, 0.25);
+	}
+	.flag-pill.default {
+		background: rgba(255, 202, 40, 0.15);
+		color: #ffca28;
+		border-color: rgba(255, 202, 40, 0.25);
+	}
+	.flag-pill.generated {
+		background: rgba(86, 211, 100, 0.15);
+		color: #56d364;
+		border-color: rgba(86, 211, 100, 0.25);
+	}
+	.flag-pill.missing {
+		background: rgba(239, 83, 80, 0.15);
+		color: var(--bad);
+		border-color: rgba(239, 83, 80, 0.25);
+	}
 	.empty-table {
 		text-align: center;
 		padding: 32px;
@@ -2317,8 +2610,12 @@
 	.coverage-row .val {
 		font-weight: 600;
 	}
-	.status-lbl.ok { color: var(--good); }
-	.status-lbl.gap { color: var(--warn); }
+	.status-lbl.ok {
+		color: var(--good);
+	}
+	.status-lbl.gap {
+		color: var(--warn);
+	}
 	.coverage-details {
 		border-top: 1px solid var(--line);
 		padding-top: 10px;
@@ -2436,12 +2733,14 @@
 			grid-template-columns: 1fr;
 		}
 	}
-	.settings-col, .form-col {
+	.settings-col,
+	.form-col {
 		display: flex;
 		flex-direction: column;
 		gap: 20px;
 	}
-	.settings-col h3, .form-col h3 {
+	.settings-col h3,
+	.form-col h3 {
 		margin: 0;
 		font-size: 15px;
 		font-weight: 650;
@@ -2469,8 +2768,12 @@
 		width: 130px;
 		outline: none;
 	}
-	.str-input:focus { border-color: var(--gold); }
-	.str-input.wide { width: 200px; }
+	.str-input:focus {
+		border-color: var(--gold);
+	}
+	.str-input.wide {
+		width: 200px;
+	}
 	.enum-select {
 		padding: 5px 24px 5px 10px;
 		border-radius: 6px;
@@ -2498,9 +2801,14 @@
 		align-items: center;
 		font-size: 12px;
 	}
-	.preview-output .lbl { color: var(--muted); }
-	.preview-output .val { color: var(--gold); font-family: var(--font-mono); }
-	
+	.preview-output .lbl {
+		color: var(--muted);
+	}
+	.preview-output .val {
+		color: var(--gold);
+		font-family: var(--font-mono);
+	}
+
 	.test-conn-area {
 		margin-top: 6px;
 		border-top: 1px dashed var(--line);
@@ -2566,8 +2874,13 @@
 		gap: 2px;
 		font-size: 12.5px;
 	}
-	.opt-desc strong { color: var(--text); }
-	.opt-desc span { color: var(--muted); font-size: 11px; }
+	.opt-desc strong {
+		color: var(--text);
+	}
+	.opt-desc span {
+		color: var(--muted);
+		font-size: 11px;
+	}
 	.form-foot {
 		display: flex;
 		justify-content: flex-end;
@@ -2626,7 +2939,9 @@
 		border-radius: var(--radius-sm);
 		cursor: pointer;
 		border: 1px solid transparent;
-		transition: background-color 0.15s, border-color 0.15s;
+		transition:
+			background-color 0.15s,
+			border-color 0.15s;
 		display: inline-flex;
 		align-items: center;
 		gap: 6px;
@@ -2668,15 +2983,27 @@
 		width: 100%;
 		justify-content: center;
 	}
-	.mt-10 { margin-top: 10px; }
-	.center { text-align: center; }
-	.uppercase { text-transform: uppercase; }
+	.mt-10 {
+		margin-top: 10px;
+	}
+	.center {
+		text-align: center;
+	}
+	.uppercase {
+		text-transform: uppercase;
+	}
 	.truncate {
 		white-space: nowrap;
 		overflow: hidden;
 		text-overflow: ellipsis;
 	}
-	.font-sm { font-size: 11.5px; }
-	.font-good { color: var(--good); }
-	.font-mono { font-family: var(--font-mono); }
+	.font-sm {
+		font-size: 11.5px;
+	}
+	.font-good {
+		color: var(--good);
+	}
+	.font-mono {
+		font-family: var(--font-mono);
+	}
 </style>

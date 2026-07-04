@@ -29,7 +29,12 @@
 	{#if workers.length === 0}
 		<p class="empty">No live workers registered.</p>
 	{:else}
-		<p class="summary">{workers.length} live worker{workers.length === 1 ? '' : 's'} across {hostCount} host{hostCount === 1 ? '' : 's'}.</p>
+		<p class="summary">
+			{workers.length} live worker{workers.length === 1 ? '' : 's'} across {hostCount} host{hostCount ===
+			1
+				? ''
+				: 's'}.
+		</p>
 	{/if}
 	{#each workers as worker, index (worker.id)}
 		<div class="row">

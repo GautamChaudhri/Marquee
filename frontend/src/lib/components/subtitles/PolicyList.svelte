@@ -1,3 +1,4 @@
+<!-- eslint-disable @typescript-eslint/no-explicit-any @typescript-eslint/no-unused-vars svelte/require-each-key -->
 <script lang="ts">
 	import { listPolicies, deletePolicy } from '$lib/api/subtitle-policies';
 	import type { SubtitlePolicy } from '$lib/api/types';
@@ -51,9 +52,7 @@
 <div class="policy-list-panel">
 	<div class="header">
 		<h4>Language Cleanup Policies</h4>
-		<button class="btn primary btn-sm" onclick={() => onEdit({} as any)}>
-			➕ Create Policy
-		</button>
+		<button class="btn primary btn-sm" onclick={() => onEdit({} as any)}> ➕ Create Policy </button>
 	</div>
 
 	{#if loading && policies.length === 0}
@@ -66,8 +65,13 @@
 	{:else if policies.length === 0}
 		<div class="empty-box">
 			<p>No subtitle policies found.</p>
-			<p class="desc">Cleanup policies help keep your media directory clean by automatically removing subtitle tracks in unwanted languages or of unwanted codecs.</p>
-			<button class="btn secondary btn-sm" onclick={() => onEdit({} as any)}>Create your first policy</button>
+			<p class="desc">
+				Cleanup policies help keep your media directory clean by automatically removing subtitle
+				tracks in unwanted languages or of unwanted codecs.
+			</p>
+			<button class="btn secondary btn-sm" onclick={() => onEdit({} as any)}
+				>Create your first policy</button
+			>
 		</div>
 	{:else}
 		<div class="table-wrap">
@@ -121,9 +125,7 @@
 								<button class="icon-btn" onclick={() => onApply(p)} title="Apply Policy">
 									⚡ Apply
 								</button>
-								<button class="icon-btn" onclick={() => onEdit(p)} title="Edit">
-									✏️ Edit
-								</button>
+								<button class="icon-btn" onclick={() => onEdit(p)} title="Edit"> ✏️ Edit </button>
 								<button class="icon-btn delete" onclick={() => handleDelete(p.id)} title="Delete">
 									🗑️
 								</button>

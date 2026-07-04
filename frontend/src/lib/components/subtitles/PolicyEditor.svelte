@@ -1,3 +1,4 @@
+<!-- eslint-disable @typescript-eslint/no-explicit-any svelte/require-each-key -->
 <script lang="ts">
 	import { createPolicy, updatePolicy, auditPolicy, applyPolicy } from '$lib/api/subtitle-policies';
 	import { listMovies } from '$lib/api/library';
@@ -17,20 +18,33 @@
 	let isNew = $derived(!policy.id);
 
 	// Form states
+	// svelte-ignore state_referenced_locally
 	let name = $state(policy.name || '');
+	// svelte-ignore state_referenced_locally
 	let enabled = $state(policy.enabled !== false);
+	// svelte-ignore state_referenced_locally
 	let mode = $state<'allowlist' | 'blocklist'>(policy.mode || 'allowlist');
+	// svelte-ignore state_referenced_locally
 	let languagesText = $state(policy.languages ? policy.languages.join(', ') : 'en');
+	// svelte-ignore state_referenced_locally
 	let unknownAction = $state<'keep' | 'review' | 'remove'>(policy.unknown_action || 'review');
 
+	// svelte-ignore state_referenced_locally
 	let protectForced = $state(policy.protect_forced !== false);
+	// svelte-ignore state_referenced_locally
 	let protectDefault = $state(policy.protect_default !== false);
+	// svelte-ignore state_referenced_locally
 	let protectLastFullDialogue = $state(policy.protect_last_full_dialogue !== false);
+	// svelte-ignore state_referenced_locally
 	let includeExternal = $state(policy.include_external !== false);
+	// svelte-ignore state_referenced_locally
 	let autoApply = $state(!!policy.auto_apply);
+	// svelte-ignore state_referenced_locally
 	let auditOnly = $state(!!policy.audit_only);
 
+	// svelte-ignore state_referenced_locally
 	let hardlinkAction = $state<'block' | 'allow_break'>(policy.hardlink_action || 'block');
+	// svelte-ignore state_referenced_locally
 	let backupMode = $state<'none' | 'keep_original'>(policy.backup_mode || 'keep_original');
 
 	// Audit & Apply state
@@ -48,7 +62,10 @@
 			name,
 			enabled,
 			mode,
-			languages: languagesText.split(',').map(s => s.trim().toLowerCase()).filter(Boolean),
+			languages: languagesText
+				.split(',')
+				.map((s) => s.trim().toLowerCase())
+				.filter(Boolean),
 			unknown_action: unknownAction,
 			protect_forced: protectForced,
 			protect_default: protectDefault,
@@ -81,7 +98,7 @@
 		try {
 			// Fetch movies first
 			const libraryRes = await listMovies(fetch, { page_size: 10 });
-			const movieIds = libraryRes.items.map(m => m.id);
+			const movieIds = libraryRes.items.map((m) => m.id);
 
 			if (movieIds.length === 0) {
 				toast('No movies found in library to audit', 'info');
@@ -112,12 +129,17 @@
 			toast('Please save the policy first', 'info');
 			return;
 		}
-		if (!confirm('Are you sure you want to apply this policy now? This will queue batch subtitle removal jobs.')) return;
+		if (
+			!confirm(
+				'Are you sure you want to apply this policy now? This will queue batch subtitle removal jobs.'
+			)
+		)
+			return;
 
 		applying = true;
 		try {
 			const libraryRes = await listMovies(fetch, { page_size: 100 });
-			const movieIds = libraryRes.items.map(m => m.id);
+			const movieIds = libraryRes.items.map((m) => m.id);
 
 			const res = await applyPolicy(fetch, policy.id, movieIds);
 			toast(`Policy applied: Queued ${res.queued} jobs (skipped ${res.skipped})`, 'good');
@@ -140,7 +162,12 @@
 			<div class="form-row">
 				<div class="field">
 					<label for="p-name">Policy Name</label>
-					<input type="text" id="p-name" placeholder="e.g. Keep English & Spanish" bind:value={name} />
+					<input
+						type="text"
+						id="p-name"
+						placeholder="e.g. Keep English & Spanish"
+						bind:value={name}
+					/>
 				</div>
 				<div class="checkbox-field flex-end">
 					<input type="checkbox" id="p-enabled" bind:checked={enabled} />
@@ -150,8 +177,8 @@
 
 			<div class="form-row split">
 				<div class="field">
-					<label>Classification Mode</label>
-					<div class="radio-group">
+					<div class="field-label">Classification Mode</div>
+					<div class="radio-group" role="group" aria-label="Classification Mode">
 						<label class="radio-lbl">
 							<input type="radio" value="allowlist" bind:group={mode} />
 							<span>Allowlist (Keep selected languages)</span>
@@ -165,7 +192,12 @@
 
 				<div class="field">
 					<label for="p-langs">Languages (comma-separated codes)</label>
-					<input type="text" id="p-langs" placeholder="e.g. en, es, ja" bind:value={languagesText} />
+					<input
+						type="text"
+						id="p-langs"
+						placeholder="e.g. en, es, ja"
+						bind:value={languagesText}
+					/>
 					<small class="help">Use 2-letter (ISO 639-1) or 3-letter (ISO 639-2) codes.</small>
 				</div>
 			</div>
@@ -241,8 +273,12 @@
 					</button>
 				{/if}
 				<div class="right-btns">
-					<button class="btn secondary" onclick={onCancel} disabled={auditing || applying}>Cancel</button>
-					<button class="btn primary" onclick={handleSave} disabled={auditing || applying}>Save Policy</button>
+					<button class="btn secondary" onclick={onCancel} disabled={auditing || applying}
+						>Cancel</button
+					>
+					<button class="btn primary" onclick={handleSave} disabled={auditing || applying}
+						>Save Policy</button
+					>
 				</div>
 			</div>
 		</div>
@@ -278,8 +314,14 @@
 								</div>
 							{/if}
 							<div class="cov-comp">
-								<div class="cov">Before: {item.coverage_before.full_dialogue_languages.join(', ').toUpperCase() || 'None'}</div>
-								<div class="cov">After: {item.coverage_after.full_dialogue_languages.join(', ').toUpperCase() || 'None'}</div>
+								<div class="cov">
+									Before: {item.coverage_before.full_dialogue_languages.join(', ').toUpperCase() ||
+										'None'}
+								</div>
+								<div class="cov">
+									After: {item.coverage_after.full_dialogue_languages.join(', ').toUpperCase() ||
+										'None'}
+								</div>
 							</div>
 						</div>
 					{/each}
@@ -289,7 +331,8 @@
 				</div>
 			{:else}
 				<div class="audit-placeholder">
-					Save changes and click "Audit" to evaluate this cleanup policy against your library without making any actual filesystem writes.
+					Save changes and click "Audit" to evaluate this cleanup policy against your library
+					without making any actual filesystem writes.
 				</div>
 			{/if}
 		</div>
@@ -360,7 +403,8 @@
 		letter-spacing: 0.03em;
 		color: var(--faint2);
 	}
-	.field input[type="text"], .field select {
+	.field input[type='text'],
+	.field select {
 		background: var(--panel2);
 		border: 1px solid var(--line);
 		border-radius: 6px;
@@ -369,7 +413,8 @@
 		color: var(--text);
 		outline: none;
 	}
-	.field input[type="text"]:focus, .field select:focus {
+	.field input[type='text']:focus,
+	.field select:focus {
 		border-color: var(--gold);
 	}
 	.checkbox-field {
@@ -582,9 +627,5 @@
 	}
 	.btn.secondary:hover:not(:disabled) {
 		background: var(--panel);
-	}
-	.btn-sm {
-		padding: 5px 10px;
-		font-size: 12px;
 	}
 </style>

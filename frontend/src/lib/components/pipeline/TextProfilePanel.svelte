@@ -5,32 +5,44 @@
 		deleteTextProfile,
 		listTextProfiles,
 		setDefaultProfile,
+		type ScopedTextProfileList,
+		type TextProfileScope,
 		updateTextProfile,
 		type TextProfile,
-		type TextProfileList,
 		type TextProfileSettings
 	} from '$lib/api/text-profiles';
 	import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
 	import TextProfileEditor from '$lib/components/pipeline/TextProfileEditor.svelte';
+	import TabBar from '$lib/components/TabBar.svelte';
 	import { toast } from '$lib/toast';
 
-	let { initial = null }: { initial?: TextProfileList | null } = $props();
+	let { initial = null }: { initial?: ScopedTextProfileList | null } = $props();
 
+	const EMPTY_SCOPE = { profiles: [] as TextProfile[], default_id: 'title_only' };
+	let activeScope = $state<TextProfileScope>('movie');
 	// svelte-ignore state_referenced_locally
-	let profiles = $state<TextProfile[]>(initial?.profiles ?? []);
-	// svelte-ignore state_referenced_locally
-	let defaultId = $state<string>(initial?.default_id ?? 'title_only');
+	let scoped = $state<Record<TextProfileScope, { profiles: TextProfile[]; default_id: string }>>(
+		initial?.scopes ?? { movie: EMPTY_SCOPE, show: EMPTY_SCOPE, season: EMPTY_SCOPE }
+	);
 	let selectedId = $state<string | null>(null);
 	let busy = $state(false);
 	let createOpen = $state(false);
 	let createName = $state('');
 	let createPreset = $state<'title_only' | 'textless' | 'blank'>('title_only');
 
+	const scopeData = $derived(scoped[activeScope] ?? EMPTY_SCOPE);
+	const profiles = $derived(scopeData.profiles);
+	const defaultId = $derived(scopeData.default_id);
 	const builtins = $derived(profiles.filter((p) => p.builtin));
 	const customs = $derived(profiles.filter((p) => !p.builtin));
 	const activeProfile = $derived(profiles.find((p) => p.id === defaultId) ?? null);
 	const selected = $derived(profiles.find((p) => p.id === selectedId) ?? null);
 	const canCreate = $derived(createName.trim().length > 0);
+	const tabs = [
+		{ id: 'movie', label: 'Movie' },
+		{ id: 'show', label: 'Show' },
+		{ id: 'season', label: 'Season' }
+	];
 
 	const PRESET_OPTIONS = [
 		{
@@ -68,7 +80,8 @@
 			s.allow_studio && 'studio',
 			s.allow_rating && 'rating',
 			s.allow_tagline && 'tagline',
-			s.allow_billing && 'billing'
+			s.allow_billing && 'billing',
+			s.allow_season && 'season text'
 		].filter(Boolean);
 		const parts = [
 			allowed.length ? `Allows: ${allowed.join(', ')}` : 'Allows no text categories',
@@ -81,8 +94,7 @@
 	async function refresh() {
 		try {
 			const data = await listTextProfiles(fetch);
-			profiles = data.profiles;
-			defaultId = data.default_id;
+			scoped = data.scopes;
 		} catch {
 			/* keep stale list */
 		}
@@ -92,8 +104,7 @@
 		if (id === defaultId || busy) return;
 		busy = true;
 		try {
-			await setDefaultProfile(fetch, id);
-			defaultId = id;
+			await setDefaultProfile(fetch, activeScope, id);
 			await refresh();
 			toast('Default text profile updated — applies on next pipeline run', 'good');
 		} catch (e) {
@@ -108,7 +119,7 @@
 		if (!name || busy) return;
 		busy = true;
 		try {
-			const profile = await createTextProfile(fetch, {
+			const profile = await createTextProfile(fetch, activeScope, {
 				name,
 				settings: presetSettings(createPreset)
 			});
@@ -142,6 +153,9 @@
 				require_title: false
 			};
 		}
+		if (activeScope === 'season') {
+			return { ...DEFAULT_PROFILE_SETTINGS, mode: 'custom', allow_season: true };
+		}
 		return { ...DEFAULT_PROFILE_SETTINGS, mode: 'custom' };
 	}
 
@@ -149,7 +163,7 @@
 		if (busy) return;
 		busy = true;
 		try {
-			await deleteTextProfile(fetch, profile.id);
+			await deleteTextProfile(fetch, activeScope, profile.id);
 			if (selectedId === profile.id) selectedId = null;
 			await refresh();
 			toast(`Profile “${profile.name}” deleted`, 'info');
@@ -164,7 +178,7 @@
 		if (!selected || selected.builtin || busy) return;
 		busy = true;
 		try {
-			await updateTextProfile(fetch, selected.id, payload);
+			await updateTextProfile(fetch, activeScope, selected.id, payload);
 			await refresh();
 			toast('Profile saved — applies on next pipeline run', 'good');
 		} catch (e) {
@@ -180,6 +194,16 @@
 		<div>
 			<h2>Poster text profiles</h2>
 			<p class="sub">Controls what text is allowed on posters the pipeline accepts.</p>
+		</div>
+		<div class="scope-tabs">
+			<TabBar
+				{tabs}
+				active={activeScope}
+				onSelect={(id: string) => {
+					activeScope = id as TextProfileScope;
+					selectedId = null;
+				}}
+			/>
 		</div>
 		<div class="active">
 			<span class="label">Active</span>
@@ -250,7 +274,8 @@
 			<p class="summary">{summary(selected)}</p>
 			<TextProfileEditor
 				profile={selected}
-				busy={busy}
+				scope={activeScope}
+				{busy}
 				onSave={saveProfile}
 				onDelete={selected.builtin ? null : () => removeProfile(selected)}
 			/>
@@ -264,7 +289,7 @@
 	message="Choose a starting preset, then fine-tune it in the editor."
 	confirmLabel="Create profile"
 	cancelLabel="Cancel"
-	busy={busy}
+	{busy}
 	confirmDisabled={!canCreate}
 	onConfirm={createProfile}
 	onCancel={() => {

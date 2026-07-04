@@ -14,23 +14,33 @@ import type {
 	TasteStatus
 } from './types';
 
+export type TasteLibrary = 'movies' | 'tv';
+
 /** Taste-profile + learned-head ("Key Art Engine") status, labels, exemplars. */
-export function getTasteStatus(fetchFn: Fetch): Promise<TasteStatus> {
-	return apiGet<TasteStatus>(fetchFn, '/taste/status');
+export function getTasteStatus(
+	fetchFn: Fetch,
+	library: TasteLibrary = 'movies'
+): Promise<TasteStatus> {
+	return apiGet<TasteStatus>(fetchFn, '/taste/status', { library });
 }
 
 /** Rebuild the taste profile (initial training). `training_dir` (default) uses
  *  the curated folder; `library` rebuilds from every deployed poster. */
 export function retrainTaste(
 	fetchFn: Fetch,
-	source: TasteSource = 'training_dir'
+	source: TasteSource = 'training_dir',
+	library: TasteLibrary = 'movies'
 ): Promise<JobSummary> {
-	return apiSend<JobSummary>(fetchFn, 'POST', '/taste/retrain', { source });
+	return apiSend<JobSummary>(fetchFn, 'POST', '/taste/retrain', { source, library });
 }
 
 /** Train the learned head (UI "Key Art Engine") from accumulated labels. */
-export function retrainHead(fetchFn: Fetch): Promise<JobSummary> {
-	return apiSend<JobSummary>(fetchFn, 'POST', '/taste/head/retrain');
+export function retrainHead(fetchFn: Fetch, library: TasteLibrary = 'movies'): Promise<JobSummary> {
+	return apiSend<JobSummary>(
+		fetchFn,
+		'POST',
+		`/taste/head/retrain${library === 'movies' ? '' : `?library=${library}`}`
+	);
 }
 
 /** Request cancellation of a running taste-profile rebuild. */
@@ -43,17 +53,19 @@ export function cancelRetrain(
 /** Load (or force-rebuild) the 3D/2D taste-map projection. */
 export function getTasteMap(
 	fetchFn: Fetch,
-	recompute = false
+	recompute = false,
+	library: TasteLibrary = 'movies'
 ): Promise<TasteMapData> {
-	const params = recompute ? '?recompute=true' : '';
-	return apiGet<TasteMapData>(fetchFn, `/taste/map${params}`);
+	return apiGet<TasteMapData>(fetchFn, '/taste/map', { recompute, library });
 }
 
 /** Project a pipeline run's ranked candidates into the taste-map space. */
 export function overlayCandidates(
 	fetchFn: Fetch,
-	runId: string
+	runId: string,
+	library: TasteLibrary = 'movies'
 ): Promise<TasteMapCandidateOverlay> {
+	void library;
 	return apiSend<TasteMapCandidateOverlay>(fetchFn, 'POST', '/taste/map/candidates', {
 		run_id: runId
 	});
@@ -68,30 +80,41 @@ export function enrichProfile(fetchFn: Fetch): Promise<TasteMapData> {
 /** The k nearest exemplars to a given exemplar (click-to-explore). */
 export function getExemplarNeighbors(
 	fetchFn: Fetch,
-	name: string
+	name: string,
+	library: TasteLibrary = 'movies'
 ): Promise<{ name: string; neighbors: TasteNeighbor[] }> {
 	return apiGet<{ name: string; neighbors: TasteNeighbor[] }>(
 		fetchFn,
-		`/taste/exemplars/${encodeURIComponent(name)}/neighbors`
+		`/taste/exemplars/${encodeURIComponent(name)}/neighbors`,
+		{ library }
 	);
 }
 
-export function getTasteProfiles(fetchFn: Fetch): Promise<ManagedProfilesResponse> {
-	return apiGet(fetchFn, '/taste/profiles');
+export function getTasteProfiles(
+	fetchFn: Fetch,
+	library: TasteLibrary = 'movies'
+): Promise<ManagedProfilesResponse> {
+	return apiGet(fetchFn, '/taste/profiles', { library });
 }
 
 export function getTasteProfileDetail(
 	fetchFn: Fetch,
-	artifactId: string
+	artifactId: string,
+	library: TasteLibrary = 'movies'
 ): Promise<ManagedProfileDetail> {
-	return apiGet(fetchFn, `/taste/profiles/${artifactId}`);
+	return apiGet(fetchFn, `/taste/profiles/${artifactId}`, { library });
 }
 
 export function activateTasteProfile(
 	fetchFn: Fetch,
-	artifactId: string
+	artifactId: string,
+	library: TasteLibrary = 'movies'
 ): Promise<{ profile: ManagedArtifactSummary; map_rebuilt: boolean }> {
-	return apiSend(fetchFn, 'POST', `/taste/profiles/${artifactId}/activate`);
+	return apiSend(
+		fetchFn,
+		'POST',
+		`/taste/profiles/${artifactId}/activate${library === 'movies' ? '' : `?library=${library}`}`
+	);
 }
 
 export function archiveTasteProfile(
@@ -110,8 +133,10 @@ export function deleteTasteProfile(
 
 export function getTasteProfileExemplars(
 	fetchFn: Fetch,
-	artifactId: string
+	artifactId: string,
+	library: TasteLibrary = 'movies'
 ): Promise<{ exemplars: ManagedExemplarRow[] }> {
+	void library;
 	return apiGet(fetchFn, `/taste/profiles/${artifactId}/exemplars`);
 }
 
@@ -120,7 +145,11 @@ export function deleteTasteProfileExemplar(
 	artifactId: string,
 	name: string
 ): Promise<{ profile: ManagedArtifactSummary; removed: string }> {
-	return apiSend(fetchFn, 'DELETE', `/taste/profiles/${artifactId}/exemplars/${encodeURIComponent(name)}`);
+	return apiSend(
+		fetchFn,
+		'DELETE',
+		`/taste/profiles/${artifactId}/exemplars/${encodeURIComponent(name)}`
+	);
 }
 
 export function getLearnedHeads(fetchFn: Fetch): Promise<ManagedHeadsResponse> {
@@ -129,8 +158,10 @@ export function getLearnedHeads(fetchFn: Fetch): Promise<ManagedHeadsResponse> {
 
 export function getLearnedHeadDetail(
 	fetchFn: Fetch,
-	artifactId: string
+	artifactId: string,
+	library: TasteLibrary = 'movies'
 ): Promise<ManagedHeadDetail> {
+	void library;
 	return apiGet(fetchFn, `/taste/heads/${artifactId}`);
 }
 

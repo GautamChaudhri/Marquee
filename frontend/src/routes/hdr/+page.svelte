@@ -1,3 +1,4 @@
+<!-- eslint-disable @typescript-eslint/no-unused-vars svelte/prefer-svelte-reactivity svelte/no-unused-svelte-ignore svelte/require-each-key -->
 <script lang="ts">
 	import { onDestroy } from 'svelte';
 	import { goto } from '$app/navigation';
@@ -188,9 +189,9 @@
 		if (item.dovi_profile == null) return 'DoVi P?';
 		const profile =
 			item.dovi_profile === 8
-				? (item.dovi_bl_signal_compatibility_id != null
+				? ((item.dovi_bl_signal_compatibility_id != null
 						? DOVI_P8_VARIANT[item.dovi_bl_signal_compatibility_id]
-						: null) ?? 'P8'
+						: null) ?? 'P8')
 				: `P${item.dovi_profile}`;
 		const suffix = item.dovi_profile === 7 && item.dovi_el_type ? ` ${item.dovi_el_type}` : '';
 		return `DoVi ${profile}${suffix}`;
@@ -207,9 +208,12 @@
 		if (item.dovi_profile == null) {
 			return `${label}. Dolby Vision is present, but this file has not been analyzed yet.`;
 		}
-		if (item.dovi_profile === 5) return `${label}. Profile 5 can show green/purple tint on non-DV playback.`;
-		if (item.dovi_el_type === 'FEL') return `${label}. Full enhancement layer can trigger playback issues.`;
-		if (item.dovi_el_type === 'MEL') return `${label}. Minimal enhancement layer is generally safe to drop.`;
+		if (item.dovi_profile === 5)
+			return `${label}. Profile 5 can show green/purple tint on non-DV playback.`;
+		if (item.dovi_el_type === 'FEL')
+			return `${label}. Full enhancement layer can trigger playback issues.`;
+		if (item.dovi_el_type === 'MEL')
+			return `${label}. Minimal enhancement layer is generally safe to drop.`;
 		return label;
 	}
 
@@ -248,10 +252,7 @@
 		} else {
 			draft.meet_target = choice;
 			// If exceeds target is set but is lower or equal, clear/reset it
-			if (
-				draft.exceed_target &&
-				PREFERENCE_RANK[draft.exceed_target] <= PREFERENCE_RANK[choice]
-			) {
+			if (draft.exceed_target && PREFERENCE_RANK[draft.exceed_target] <= PREFERENCE_RANK[choice]) {
 				draft.exceed_target = null;
 			}
 		}
@@ -263,10 +264,7 @@
 		} else {
 			draft.exceed_target = choice;
 			// If meets target is set but is higher or equal, clear/reset it
-			if (
-				draft.meet_target &&
-				PREFERENCE_RANK[draft.meet_target] >= PREFERENCE_RANK[choice]
-			) {
+			if (draft.meet_target && PREFERENCE_RANK[draft.meet_target] >= PREFERENCE_RANK[choice]) {
 				draft.meet_target = null;
 			}
 		}
@@ -562,7 +560,7 @@
 							<div class="pref-controls">
 								{#if expandedDrafts[draft.profile_id] || (draft.meet_target == null && draft.exceed_target == null)}
 									<div class="ladder">
-									{#if true}
+										{#if true}
 											{@const activeChoices = draft.available_preference_targets.filter(
 												(choice) => !isExcluded(draft, choice)
 											)}
@@ -573,67 +571,67 @@
 												...[...activeChoices].reverse(),
 												...[...excludedChoices].reverse()
 											]}
-										<!-- All rungs: DoVi top, SDR bottom, excluded at very bottom -->
-										{#each allChoices as choice (choice)}
-											{@const excluded = isExcluded(draft, choice)}
-											{@const zone = excluded ? null : zoneForChoice(draft, choice)}
-											{@const isMeetBoundary = draft.meet_target === choice}
-											{@const isExceedBoundary = draft.exceed_target === choice}
+											<!-- All rungs: DoVi top, SDR bottom, excluded at very bottom -->
+											{#each allChoices as choice (choice)}
+												{@const excluded = isExcluded(draft, choice)}
+												{@const zone = excluded ? null : zoneForChoice(draft, choice)}
+												{@const isMeetBoundary = draft.meet_target === choice}
+												{@const isExceedBoundary = draft.exceed_target === choice}
 												<!-- svelte-ignore a11y_click_events_have_key_events -->
 												<!-- svelte-ignore a11y_no_static_element_interactions -->
 												<div
-														class="rung"
-														class:exceed={zone === 'exceed'}
-														class:meet={zone === 'meet'}
-														class:fail={zone === 'fail'}
-														class:excluded={excluded}
-														class:boundary={isMeetBoundary || isExceedBoundary}
-													>
-														<span class="rung-indicator"></span>
-														<span class="rung-label">{PREFERENCE_LABEL[choice]}</span>
-														{#if !excluded}
-															{#if isMeetBoundary}
-																<span class="rung-tag meet-tag">meet</span>
-															{/if}
-															{#if isExceedBoundary}
-																<span class="rung-tag exceed-tag">exceed</span>
-															{/if}
-															{#if zone === 'fail'}
-																<span class="rung-tag fails-tag">fails</span>
-															{/if}
-															<div class="rung-actions">
-																<button
-																	class="action-btn meet-btn"
-																	class:active={isMeetBoundary}
-																	type="button"
-																	title="Set as meets target"
-																	onclick={() => toggleMeetBoundary(draft, choice)}
-																>✓</button>
-																<button
-																	class="action-btn exceed-btn"
-																	class:active={isExceedBoundary}
-																	type="button"
-																	title="Set as exceeds target"
-																	onclick={() => toggleExceedBoundary(draft, choice)}
-																>★</button>
-																<button
-																	class="action-btn dismiss-btn"
-																	type="button"
-																	title="Mark as fails & exclude"
-																	onclick={() => dismissRung(draft, choice)}
-																>×</button>
-															</div>
-														{:else}
-															<span class="rung-tag excluded-tag">excluded</span>
-															<button
-																class="rung-restore-btn"
-																type="button"
-																onclick={() => restoreRung(draft, choice)}
-															>restore</button>
+													class="rung"
+													class:exceed={zone === 'exceed'}
+													class:meet={zone === 'meet'}
+													class:fail={zone === 'fail'}
+													class:excluded
+													class:boundary={isMeetBoundary || isExceedBoundary}
+												>
+													<span class="rung-indicator"></span>
+													<span class="rung-label">{PREFERENCE_LABEL[choice]}</span>
+													{#if !excluded}
+														{#if isMeetBoundary}
+															<span class="rung-tag meet-tag">meet</span>
 														{/if}
-													</div>
+														{#if isExceedBoundary}
+															<span class="rung-tag exceed-tag">exceed</span>
+														{/if}
+														{#if zone === 'fail'}
+															<span class="rung-tag fails-tag">fails</span>
+														{/if}
+														<div class="rung-actions">
+															<button
+																class="action-btn meet-btn"
+																class:active={isMeetBoundary}
+																type="button"
+																title="Set as meets target"
+																onclick={() => toggleMeetBoundary(draft, choice)}>✓</button
+															>
+															<button
+																class="action-btn exceed-btn"
+																class:active={isExceedBoundary}
+																type="button"
+																title="Set as exceeds target"
+																onclick={() => toggleExceedBoundary(draft, choice)}>★</button
+															>
+															<button
+																class="action-btn dismiss-btn"
+																type="button"
+																title="Mark as fails & exclude"
+																onclick={() => dismissRung(draft, choice)}>×</button
+															>
+														</div>
+													{:else}
+														<span class="rung-tag excluded-tag">excluded</span>
+														<button
+															class="rung-restore-btn"
+															type="button"
+															onclick={() => restoreRung(draft, choice)}>restore</button
+														>
+													{/if}
+												</div>
 											{/each}
-											{/if}
+										{/if}
 									</div>
 									<button
 										class="collapse-ladder"
@@ -656,9 +654,7 @@
 											</span>
 										{/if}
 										{#if !draft.meet_target && !draft.exceed_target}
-											<span class="summary-meet">
-												No targets set
-											</span>
+											<span class="summary-meet"> No targets set </span>
 										{/if}
 										{#if excludedCount(draft) > 0}
 											·
@@ -737,13 +733,16 @@
 			{#if totalPages > 1}
 				<div class="pagination">
 					<span class="pagination-info">
-						Showing <strong>{startIndex}</strong> – <strong>{endIndex}</strong> of <strong>{totalItems}</strong> movies
+						Showing <strong>{startIndex}</strong> – <strong>{endIndex}</strong> of
+						<strong>{totalItems}</strong> movies
 					</span>
 					<div class="pagination-buttons">
 						<a
 							class="page-btn"
 							class:disabled={currentPage <= 1}
-							href={currentPage > 1 ? withParams({ page: (currentPage - 1).toString() }) : undefined}
+							href={currentPage > 1
+								? withParams({ page: (currentPage - 1).toString() })
+								: undefined}
 						>
 							← Prev
 						</a>
@@ -759,7 +758,9 @@
 						<a
 							class="page-btn"
 							class:disabled={currentPage >= totalPages}
-							href={currentPage < totalPages ? withParams({ page: (currentPage + 1).toString() }) : undefined}
+							href={currentPage < totalPages
+								? withParams({ page: (currentPage + 1).toString() })
+								: undefined}
 						>
 							Next →
 						</a>

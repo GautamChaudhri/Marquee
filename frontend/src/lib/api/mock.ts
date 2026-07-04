@@ -223,7 +223,9 @@ export function mockMetrics(): SystemMetrics {
 	};
 }
 
-export function mockMetricsHistory(window: '15m' | '1h' | '6h' | '24h' = '1h'): SystemMetricsHistory {
+export function mockMetricsHistory(
+	window: '15m' | '1h' | '6h' | '24h' = '1h'
+): SystemMetricsHistory {
 	const now = Date.now();
 	const seconds = { '15m': 900, '1h': 3600, '6h': 21600, '24h': 86400 }[window];
 	const step = seconds / 30;

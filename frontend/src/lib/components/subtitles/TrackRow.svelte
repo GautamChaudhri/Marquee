@@ -1,3 +1,4 @@
+<!-- eslint-disable svelte/require-each-key -->
 <script lang="ts">
 	import type { SubtitleTrack } from '$lib/api/types';
 	import { bytesH } from '$lib/display';
@@ -31,11 +32,7 @@
 <tr class="track-row" class:selected onclick={() => onSelect()}>
 	<td class="checkbox-cell" onclick={(e) => e.stopPropagation()}>
 		{#if canCheck}
-			<input
-				type="checkbox"
-				checked={selected}
-				onclick={(e) => onToggle(e)}
-			/>
+			<input type="checkbox" checked={selected} onclick={(e) => onToggle(e)} />
 		{/if}
 	</td>
 	<td>
@@ -150,11 +147,26 @@
 		padding: 1px 4px;
 		border-radius: 3px;
 	}
-	.flag-pill.info { background: rgba(121, 192, 255, 0.15); color: #79c0ff; }
-	.flag-pill.warn { background: rgba(255, 166, 87, 0.15); color: #ffa657; }
-	.flag-pill.good { background: rgba(86, 211, 100, 0.15); color: #56d364; }
-	.flag-pill.dovi { background: rgba(210, 168, 255, 0.15); color: #d2a8ff; }
-	.flag-pill.generated { background: rgba(255, 123, 114, 0.15); color: #ff7b72; }
+	.flag-pill.info {
+		background: rgba(121, 192, 255, 0.15);
+		color: #79c0ff;
+	}
+	.flag-pill.warn {
+		background: rgba(255, 166, 87, 0.15);
+		color: #ffa657;
+	}
+	.flag-pill.good {
+		background: rgba(86, 211, 100, 0.15);
+		color: #56d364;
+	}
+	.flag-pill.dovi {
+		background: rgba(210, 168, 255, 0.15);
+		color: #d2a8ff;
+	}
+	.flag-pill.generated {
+		background: rgba(255, 123, 114, 0.15);
+		color: #ff7b72;
+	}
 
 	.size-col {
 		text-align: right;
