@@ -11,6 +11,7 @@ from sqlalchemy import select
 from marquee.config import settings
 from marquee.core.jobs.handlers import is_instant
 from marquee.core.jobs.manager import job_manager
+from marquee.core.subtitles.config import subtitle_settings
 from marquee.database import _get_session_factory, close_db, init_db
 from marquee.models import Job, JobSchedule
 
@@ -22,6 +23,7 @@ logger = logging.getLogger(__name__)
 ALL_SCHEDULE_IDS = (
     "poster-heal",
     "letterbox-heal",
+    "audio-subs-deep-scan",
     "backup",
     "job-retention-purge",
     "system-metrics-purge",
@@ -38,6 +40,8 @@ def _enabled_schedules() -> dict[str, tuple[str, int]]:
             "letterbox_heal",
             settings.LETTERBOX_HEAL_INTERVAL_MINUTES * 60,
         )
+    if subtitle_settings.AUDIO_SUBS_DEEP_SCAN_ENABLED:
+        schedules["audio-subs-deep-scan"] = ("audio_subs_deep_scan", 86400)
     # Scheduled backups are skipped in DEBUG (matches the prior lifespan gate).
     if settings.BACKUP_INTERVAL_HOURS > 0 and not settings.DEBUG:
         schedules["backup"] = ("backup_create", settings.BACKUP_INTERVAL_HOURS * 3600)
@@ -49,6 +53,14 @@ def _enabled_schedules() -> dict[str, tuple[str, int]]:
     return schedules
 
 
+def _next_local_hour(hour: int, *, now: datetime | None = None) -> datetime:
+    local_now = (now or datetime.now(UTC)).astimezone()
+    candidate = local_now.replace(hour=hour, minute=0, second=0, microsecond=0)
+    if candidate <= local_now:
+        candidate += timedelta(days=1)
+    return candidate.astimezone(UTC)
+
+
 async def reconcile_schedules() -> None:
     desired = _enabled_schedules()
     factory = _get_session_factory()
@@ -56,20 +68,28 @@ async def reconcile_schedules() -> None:
         for schedule_id, (job_type, interval) in desired.items():
             interval = max(60, interval)
             row = await db.get(JobSchedule, schedule_id)
+            next_run_at = (
+                _next_local_hour(subtitle_settings.AUDIO_SUBS_DEEP_SCAN_HOUR)
+                if schedule_id == "audio-subs-deep-scan"
+                else datetime.now(UTC) + timedelta(seconds=interval)
+            )
             if row is None:
                 db.add(
                     JobSchedule(
                         id=schedule_id,
                         job_type=job_type,
                         interval_seconds=interval,
-                        next_run_at=datetime.now(UTC) + timedelta(seconds=interval),
+                        next_run_at=next_run_at,
                         enabled=True,
                     )
                 )
             else:
+                changed = row.interval_seconds != interval or row.enabled is not True
                 row.job_type = job_type
                 row.interval_seconds = interval
                 row.enabled = True
+                if changed:
+                    row.next_run_at = next_run_at
         # Durably disable any known schedule whose flag was turned off.
         for schedule_id in set(ALL_SCHEDULE_IDS) - set(desired):
             row = await db.get(JobSchedule, schedule_id)
@@ -132,7 +152,13 @@ async def run() -> None:
                         )
                     schedule.last_job_id = job.id if job is not None else None
                     schedule.last_run_at = now
-                    schedule.next_run_at = now + timedelta(seconds=schedule.interval_seconds)
+                    if schedule.id == "audio-subs-deep-scan":
+                        schedule.next_run_at = _next_local_hour(
+                            subtitle_settings.AUDIO_SUBS_DEEP_SCAN_HOUR,
+                            now=now,
+                        )
+                    else:
+                        schedule.next_run_at = now + timedelta(seconds=schedule.interval_seconds)
                 await db.commit()
             await asyncio.sleep(settings.JOB_POLL_SECONDS)
     finally:

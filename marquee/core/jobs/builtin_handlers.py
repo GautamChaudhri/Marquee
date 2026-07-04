@@ -15,10 +15,24 @@ from sqlalchemy import exists, or_, select
 from marquee.config import settings
 from marquee.core.jobs import cancel_registry, job_manager
 from marquee.core.jobs.handlers import register
+from marquee.core.media_files import MediaFileUnavailableError, resolve_media_file
 from marquee.core.poster_subjects import PosterSubject
+from marquee.core.subtitles.config import subtitle_settings
+from marquee.core.tv_queries import season_downloaded, series_visible
 from marquee.database import _get_session_factory
 from marquee.ml.namespaces import TasteNamespace, get_namespace
-from marquee.models import ArtworkEvent, Job, MediaFile, Movie, PipelineRun, Season, Series
+from marquee.models import (
+    ArtworkEvent,
+    Episode,
+    EpisodeMediaFile,
+    Job,
+    MediaFile,
+    Movie,
+    PipelineRun,
+    Season,
+    Series,
+    SubtitleInventory,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +95,97 @@ def _downloaded_condition():
             )
         ),
     )
+
+
+def _subtitle_scan_stmt(
+    scope: str,
+    *,
+    series_id: int | None = None,
+    season_number: int | None = None,
+):
+    if scope == "movies":
+        return select(MediaFile).where(MediaFile.is_active.is_(True), MediaFile.movie_id.is_not(None))
+    if scope == "tv":
+        return (
+            select(MediaFile)
+            .join(EpisodeMediaFile, EpisodeMediaFile.media_file_id == MediaFile.id)
+            .join(Episode, Episode.id == EpisodeMediaFile.episode_id)
+            .join(Series, Series.id == Episode.series_id)
+            .join(
+                Season,
+                (Season.series_id == Episode.series_id)
+                & (Season.season_number == Episode.season_number),
+            )
+            .where(MediaFile.is_active.is_(True), series_visible(), season_downloaded())
+        )
+    if scope == "series":
+        if series_id is None:
+            raise RuntimeError("series_id is required when scope='series'")
+        stmt = (
+            select(MediaFile)
+            .join(EpisodeMediaFile, EpisodeMediaFile.media_file_id == MediaFile.id)
+            .join(Episode, Episode.id == EpisodeMediaFile.episode_id)
+            .join(
+                Season,
+                (Season.series_id == Episode.series_id)
+                & (Season.season_number == Episode.season_number),
+            )
+            .where(
+                MediaFile.is_active.is_(True),
+                Episode.series_id == series_id,
+                season_downloaded(),
+            )
+        )
+        if season_number is not None:
+            stmt = stmt.where(Episode.season_number == season_number)
+        return stmt
+    if scope == "all":
+        return select(MediaFile).where(MediaFile.is_active.is_(True))
+    raise RuntimeError(f"unsupported subtitle scan scope: {scope}")
+
+
+async def _stale_or_missing_subtitle_scan_candidates(
+    db,
+    *,
+    scope: str,
+    force: bool,
+    series_id: int | None = None,
+    season_number: int | None = None,
+    limit: int | None = None,
+) -> list[MediaFile]:
+    stmt = _subtitle_scan_stmt(scope, series_id=series_id, season_number=season_number)
+    stmt = stmt.outerjoin(SubtitleInventory, SubtitleInventory.media_file_id == MediaFile.id).order_by(
+        SubtitleInventory.scanned_at.asc().nullsfirst(),
+        MediaFile.id.asc(),
+    )
+    media_files = (await db.execute(stmt)).scalars().unique().all()
+
+    candidates: list[MediaFile] = []
+    for media_file in media_files:
+        if force:
+            candidates.append(media_file)
+        else:
+            inventory = (
+                await db.execute(
+                    select(SubtitleInventory).where(SubtitleInventory.media_file_id == media_file.id)
+                )
+            ).scalar_one_or_none()
+            if inventory is None:
+                candidates.append(media_file)
+            else:
+                try:
+                    resolved = await resolve_media_file(db, media_file.id)
+                except MediaFileUnavailableError:
+                    logger.warning(
+                        "subtitle scan candidate media_file_id=%s is unavailable; skipping",
+                        media_file.id,
+                    )
+                    continue
+                if inventory.file_signature != resolved.signature:
+                    candidates.append(media_file)
+        if limit is not None and len(candidates) >= limit:
+            break
+    return candidates
 
 
 @register("poster_heal", instant=True)
@@ -342,23 +447,22 @@ async def library_sync(job: Job) -> dict[str, Any]:
 @register("subtitle_scan_all")
 async def subtitle_scan_all(job: Job) -> dict[str, Any]:
     """Scan subtitle coverage for all active media files in the library."""
-    from sqlalchemy import select  # noqa: PLC0415
-
     from marquee.core.media_jobs import media_job_manager  # noqa: PLC0415
-    from marquee.models import MediaFile, SubtitleInventory  # noqa: PLC0415
 
     cancel_event = cancel_registry.get(job.id)
     force = job.payload.get("force", False)
+    scope = job.payload.get("scope", "movies")
+    series_id = job.payload.get("series_id")
+    season_number = job.payload.get("season_number")
     factory = _get_session_factory()
     async with factory() as db:
-        if force:
-            stmt = select(MediaFile).where(MediaFile.is_active.is_(True))
-        else:
-            subquery = select(SubtitleInventory.media_file_id)
-            stmt = select(MediaFile).where(
-                MediaFile.is_active.is_(True), MediaFile.id.not_in(subquery)
-            )
-        media_files = (await db.execute(stmt)).scalars().all()
+        media_files = await _stale_or_missing_subtitle_scan_candidates(
+            db,
+            scope=scope,
+            force=force,
+            series_id=series_id,
+            season_number=season_number,
+        )
 
         count = 0
         total = len(media_files)
@@ -381,7 +485,51 @@ async def subtitle_scan_all(job: Job) -> dict[str, Any]:
             count += 1
 
         await db.commit()
-        return {"queued_scans": count}
+        return {
+            "queued_scans": count,
+            "scope": scope,
+            "series_id": series_id,
+            "season_number": season_number,
+        }
+
+
+@register("audio_subs_deep_scan")
+async def audio_subs_deep_scan(job: Job) -> dict[str, Any]:
+    """Queue stale or missing subtitle inventory scans for movies + TV."""
+    from marquee.core.media_jobs import media_job_manager  # noqa: PLC0415
+
+    cancel_event = cancel_registry.get(job.id)
+    batch_limit = subtitle_settings.AUDIO_SUBS_DEEP_SCAN_BATCH
+    factory = _get_session_factory()
+    async with factory() as db:
+        media_files = await _stale_or_missing_subtitle_scan_candidates(
+            db,
+            scope="all",
+            force=False,
+            limit=batch_limit,
+        )
+        total = len(media_files)
+        for index, media_file in enumerate(media_files, 1):
+            cancel_registry.raise_if_cancelled(cancel_event, "audio/subs deep scan cancelled")
+            if index == 1 or index % 25 == 0 or index == total:
+                await _update_progress(
+                    job.id,
+                    "queue",
+                    index,
+                    total,
+                    message=f"Queueing deep scan {index}/{total}",
+                )
+            await media_job_manager.create_job(
+                db,
+                operation="subtitle_scan",
+                media_file_id=media_file.id,
+                trigger="scheduled",
+                status="queued",
+                idempotency_key=f"audio-subs-deep-scan:{job.id}:{media_file.id}",
+                commit=False,
+            )
+        await db.commit()
+        return {"queued_scans": total, "batch_limit": batch_limit}
 
 
 @register("radarr_upgrade")

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
@@ -160,6 +160,13 @@ class MovieSubtitlePreferencesUpdate(BaseModel):
     preferred_audio_languages: list[str] | None = None
     preferred_subtitle_languages: list[str] | None = None
     use_global: bool = False
+
+
+class LibraryScanRequest(BaseModel):
+    force: bool = False
+    scope: Literal["movies", "tv", "series"] = "movies"
+    series_id: int | None = None
+    season_number: int | None = None
 
 
 # Operations that rewrite the media container itself. A plan created while one
@@ -399,14 +406,16 @@ async def extract_subtitle_track(
 @router.post("/api/subtitles/scan-library", status_code=202)
 async def scan_library_subtitles(
     db: Annotated[AsyncSession, Depends(get_db)],
-    force: bool = False,
+    body: LibraryScanRequest,
 ):
     """Enqueue a job to scan subtitle coverage for all active media files in the library."""
     from marquee.core.jobs.manager import job_manager  # noqa: PLC0415
 
+    if body.scope == "series" and body.series_id is None:
+        raise HTTPException(status_code=422, detail="series_id is required when scope='series'")
     job = await job_manager.create(
         db,
         job_type="subtitle_scan_all",
-        payload={"force": force},
+        payload=body.model_dump(),
     )
     return {"job_id": job.id, "status": "queued"}

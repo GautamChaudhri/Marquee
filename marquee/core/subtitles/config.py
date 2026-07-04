@@ -58,6 +58,9 @@ class SubtitleSettings(BaseSettings):
     SUBTITLE_PREFERRED_AUDIO_LANGUAGES: list[str] | None = None
     SUBTITLE_PREFERRED_SUBTITLE_LANGUAGES: list[str] | None = None
     SUBTITLE_PREVIEW_MAX_CUES: int = 20
+    AUDIO_SUBS_DEEP_SCAN_ENABLED: bool = False
+    AUDIO_SUBS_DEEP_SCAN_HOUR: int = 3
+    AUDIO_SUBS_DEEP_SCAN_BATCH: int = 200
 
     # ── Generation (Subgen; external service, not bundled) ────────────
     SUBGEN_URL: str | None = Field(

@@ -121,6 +121,9 @@ async def get_settings():
             "protect_last_full_dialogue": subtitle_settings.SUBTITLE_PROTECT_LAST_FULL_DIALOGUE,
             "backup_mode": subtitle_settings.SUBTITLE_BACKUP_MODE,
             "external_delete_mode": subtitle_settings.SUBTITLE_EXTERNAL_DELETE_MODE,
+            "audio_subs_deep_scan_enabled": subtitle_settings.AUDIO_SUBS_DEEP_SCAN_ENABLED,
+            "audio_subs_deep_scan_hour": subtitle_settings.AUDIO_SUBS_DEEP_SCAN_HOUR,
+            "audio_subs_deep_scan_batch": subtitle_settings.AUDIO_SUBS_DEEP_SCAN_BATCH,
         },
         "poster_formats": {
             "movie": app_settings.MOVIE_POSTER_FORMAT,
@@ -144,6 +147,9 @@ class SubtitlesSettingsUpdate(BaseModel):
     protect_last_full_dialogue: bool | None = None
     backup_mode: str | None = None
     external_delete_mode: str | None = None
+    audio_subs_deep_scan_enabled: bool | None = None
+    audio_subs_deep_scan_hour: int | None = Field(default=None, ge=0, le=23)
+    audio_subs_deep_scan_batch: int | None = Field(default=None, ge=1, le=10000)
 
 
 class SubgenSettingsUpdate(BaseModel):

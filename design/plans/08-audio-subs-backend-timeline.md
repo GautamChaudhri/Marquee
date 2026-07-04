@@ -17,3 +17,9 @@
 - Next steps: build `marquee/core/audio_subs_rollups.py` mirroring `hdr_rollups.py`; add pure unit tests for status, tier precedence, specials exclusion, same-language matching, uniformity, and dub coverage; then wire preferred-language resolution for series/global settings.
 - Deviations: none from Plan 08 in phase 1.
 - Pending operator actions: none yet.
+
+- Completed: phase 2 pure rollup core in `8142e2b` (`add audio subs rollups`). Added `marquee/core/audio_subs_rollups.py` with tier-2-wins episode resolution, per-episode status classification, season/show rollups, specials exclusion, same-language matching, missing-language unions, dub coverage, and forced/SDH counters. Added pure unit coverage for the status matrix, tier precedence, uniformity modes, specials exclusion, and none-met/unknown show verdicts.
+- In progress: phase 3 deep scan scope expansion + nightly scheduling.
+- Next steps: extend subtitle scan-all to accept movie/TV scopes, resolve TV files through `EpisodeMediaFile` with `tv_queries`, add the nightly `audio_subs_deep_scan` scheduler path and settings, and add tests around scoped scan selection and stale-inventory picking.
+- Deviations: none from Plan 08 in phase 2.
+- Pending operator actions: none yet.
