@@ -171,7 +171,12 @@ async def _letterbox_stale_after_upgrade(radarr_id: int | None, tmdb_id: int | N
         if movie is None:
             return
         state = (
-            await db.execute(select(LetterboxState).where(LetterboxState.movie_id == movie.id))
+            await db.execute(
+                select(LetterboxState).where(
+                    LetterboxState.media_type == "movie",
+                    LetterboxState.movie_id == movie.id,
+                )
+            )
         ).scalar_one_or_none()
         if state is None:
             return
@@ -181,6 +186,7 @@ async def _letterbox_stale_after_upgrade(radarr_id: int | None, tmdb_id: int | N
         state.reviewed = False
         db.add(
             LetterboxEvent(
+                media_type="movie",
                 movie_id=movie.id,
                 action="detect",
                 source="webhook",

@@ -169,7 +169,10 @@ async def confirm_job(job_id: str, db: Annotated[AsyncSession, Depends(get_db)])
 
         movie_file = await db.get(MediaFile, job.media_file_id)
         if movie_file and movie_file.movie_id is not None:
-            stmt = select(LetterboxState).where(LetterboxState.movie_id == movie_file.movie_id)
+            stmt = select(LetterboxState).where(
+                LetterboxState.media_type == "movie",
+                LetterboxState.movie_id == movie_file.movie_id,
+            )
             state = (await db.execute(stmt)).scalar_one_or_none()
             if state and state.status == "candidate":
                 state.status = "tagged"

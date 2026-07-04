@@ -111,7 +111,12 @@ async def refresh_letterbox_prefilter_for_movie(
     a later sync provides a file.
     """
     state = (
-        await db.execute(select(LetterboxState).where(LetterboxState.movie_id == movie.id))
+        await db.execute(
+            select(LetterboxState).where(
+                LetterboxState.media_type == "movie",
+                LetterboxState.movie_id == movie.id,
+            )
+        )
     ).scalar_one_or_none()
 
     if not movie.movie_file_path:
@@ -120,7 +125,7 @@ async def refresh_letterbox_prefilter_for_movie(
         return None
 
     if state is None:
-        state = LetterboxState(movie_id=movie.id)
+        state = LetterboxState(media_type="movie", movie_id=movie.id)
         db.add(state)
 
     if state_has_detector_truth(state):

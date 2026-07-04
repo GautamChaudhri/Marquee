@@ -296,7 +296,10 @@ async def _load_movie_items(
     movie_rows = (
         await db.execute(
             select(Movie, LetterboxState, DoviState)
-            .outerjoin(LetterboxState, LetterboxState.movie_id == Movie.id)
+            .outerjoin(
+                LetterboxState,
+                (LetterboxState.movie_id == Movie.id) & (LetterboxState.media_type == "movie"),
+            )
             .outerjoin(DoviState, DoviState.movie_id == Movie.id)
             .where(Movie.movie_file_path.is_not(None), Movie.movie_file_path != "")
         )
