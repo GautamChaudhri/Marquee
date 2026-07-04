@@ -23,8 +23,10 @@ from marquee.api.library_serializers import (
 )
 from marquee.core.sort_title import title_sort_expr
 from marquee.core.subtitles import coverage as subtitle_coverage
+from marquee.core.tv_queries import season_downloaded, series_visible
 from marquee.database import get_db
 from marquee.models import (
+    ArtworkEvent,
     Episode,
     EpisodeMediaFile,
     LetterboxState,
@@ -73,6 +75,82 @@ async def _coverage_by_media_file(db: AsyncSession, media_file_ids: list[int]) -
             }
         result[mid] = summary
     return result
+
+
+def _poster_summary(entity) -> dict:
+    return {
+        "has_poster": entity.poster_path is not None,
+        "ai_selected": bool(entity.poster_ai_selected),
+        "user_approved": bool(entity.poster_user_approved),
+        "deployed_at": entity.poster_deployed_at.isoformat() if entity.poster_deployed_at else None,
+    }
+
+
+def _reset_poster_columns(entity) -> None:
+    entity.poster_path = None
+    entity.poster_source = None
+    entity.poster_source_url = None
+    entity.poster_ai_selected = False
+    entity.poster_embedding = None
+    entity.poster_sha256 = None
+    entity.poster_phash = None
+    entity.poster_user_approved = False
+    entity.poster_deployed_filename = None
+    entity.poster_deployed_at = None
+    entity.poster_local_backup_path = None
+
+
+def _season_poster_status(downloaded_seasons: int, seasons_with_poster: int) -> str:
+    if downloaded_seasons <= 0 or seasons_with_poster <= 0:
+        return "missing"
+    if seasons_with_poster >= downloaded_seasons:
+        return "complete"
+    return "partial"
+
+
+async def _delete_subject_poster(db: AsyncSession, subject, *, detail_prefix: str) -> dict:
+    from pathlib import Path  # noqa: PLC0415
+
+    from marquee.core.path_utils import safe_translate_and_validate  # noqa: PLC0415
+
+    entity = subject.entity
+    if not entity.poster_path:
+        return {"ok": True, "detail": f"{detail_prefix} does not have a deployed poster"}
+
+    stored_path = str(entity.poster_path)
+    deleted = False
+    error_msg = None
+
+    try:
+        poster_file = Path(entity.poster_path)
+        folder = safe_translate_and_validate(subject.folder_raw, source=subject.path_source)
+        if poster_file.parent.resolve() != folder.resolve():
+            raise RuntimeError(f"Poster parent {poster_file.parent} != folder {folder}")
+        poster_file.unlink(missing_ok=True)
+        deleted = True
+    except Exception:
+        try:
+            Path(entity.poster_path).unlink(missing_ok=True)
+            deleted = True
+        except Exception as raw_exc:
+            error_msg = str(raw_exc)
+
+    _reset_poster_columns(entity)
+
+    detail_json = {"deleted_path": stored_path}
+    if error_msg:
+        detail_json["error"] = error_msg
+
+    db.add(
+        ArtworkEvent(
+            **subject.event_fk_kwargs(),
+            action="deploy_reset",
+            source="maintenance",
+            detail=json.dumps(detail_json),
+        )
+    )
+    await db.commit()
+    return {"ok": True, "deleted": deleted, "error": error_msg}
 
 
 @router.get("/movies")
@@ -227,11 +305,12 @@ async def list_series(
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
 ):
-    total = (await db.execute(select(func.count()).select_from(Series))).scalar_one()
+    base = select(Series).where(series_visible())
+    total = (await db.execute(select(func.count()).select_from(base.subquery()))).scalar_one()
     rows = (
         (
             await db.execute(
-                select(Series)
+                base
                 .order_by(title_sort_expr(Series.title))
                 .limit(page_size)
                 .offset((page - 1) * page_size)
@@ -240,12 +319,42 @@ async def list_series(
         .scalars()
         .all()
     )
+    series_ids = [series.id for series in rows]
+    season_rows = (
+        (
+            await db.execute(
+                select(Season).where(Season.series_id.in_(series_ids), season_downloaded())
+            )
+        )
+        .scalars()
+        .all()
+        if series_ids
+        else []
+    )
+    downloaded_counts: dict[int, int] = dict.fromkeys(series_ids, 0)
+    poster_counts: dict[int, int] = dict.fromkeys(series_ids, 0)
+    for season in season_rows:
+        downloaded_counts[season.series_id] = downloaded_counts.get(season.series_id, 0) + 1
+        if season.poster_path is not None:
+            poster_counts[season.series_id] = poster_counts.get(season.series_id, 0) + 1
     return {
         "total": total,
         "page": page,
         "page_size": page_size,
         "items": [
-            {"id": s.id, "title": s.title, "year": s.year, "season_count": s.season_count}
+            {
+                "id": s.id,
+                "title": s.title,
+                "year": s.year,
+                "tmdb_id": s.tmdb_id,
+                "poster": _poster_summary(s),
+                "downloaded_seasons": downloaded_counts.get(s.id, 0),
+                "seasons_with_poster": poster_counts.get(s.id, 0),
+                "season_poster_status": _season_poster_status(
+                    downloaded_counts.get(s.id, 0), poster_counts.get(s.id, 0)
+                ),
+                "season_count": s.season_count,
+            }
             for s in rows
         ],
     }
@@ -253,24 +362,68 @@ async def list_series(
 
 @router.get("/series/{series_id}")
 async def get_series(series_id: int, db: Annotated[AsyncSession, Depends(get_db)]):
-    series = (await db.execute(select(Series).where(Series.id == series_id))).scalar_one_or_none()
+    series = (
+        await db.execute(select(Series).where(Series.id == series_id, series_visible()))
+    ).scalar_one_or_none()
     if series is None:
         raise HTTPException(status_code=404, detail=f"Series id={series_id} not found")
+    seasons = (
+        (
+            await db.execute(
+                select(Season)
+                .where(Season.series_id == series_id, season_downloaded())
+                .order_by(Season.season_number)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    downloaded_seasons = len(seasons)
+    seasons_with_poster = sum(1 for season in seasons if season.poster_path is not None)
     return {
         "id": series.id,
         "title": series.title,
         "year": series.year,
+        "tmdb_id": series.tmdb_id,
         "tvdb_id": series.tvdb_id,
+        "poster": _poster_summary(series),
+        "downloaded_seasons": downloaded_seasons,
+        "seasons_with_poster": seasons_with_poster,
+        "season_poster_status": _season_poster_status(downloaded_seasons, seasons_with_poster),
         "season_count": series.season_count,
+        "show_text_profile_id": series.show_text_profile_id,
+        "season_text_profile_id": series.season_text_profile_id,
+        "seasons": [
+            {
+                "id": season.id,
+                "season_number": season.season_number,
+                "episode_count": season.episode_count,
+                "episode_file_count": season.episode_file_count,
+                "poster": _poster_summary(season),
+            }
+            for season in seasons
+        ],
     }
 
 
 @router.get("/series/{series_id}/seasons")
-async def list_seasons(series_id: int, db: Annotated[AsyncSession, Depends(get_db)]):
+async def list_seasons(
+    series_id: int,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    downloaded_only: bool = True,
+):
+    series = (
+        await db.execute(select(Series).where(Series.id == series_id, series_visible()))
+    ).scalar_one_or_none()
+    if series is None:
+        raise HTTPException(status_code=404, detail=f"Series id={series_id} not found")
+    query = select(Season).where(Season.series_id == series_id)
+    if downloaded_only:
+        query = query.where(season_downloaded())
     rows = (
         (
             await db.execute(
-                select(Season).where(Season.series_id == series_id).order_by(Season.season_number)
+                query.order_by(Season.season_number)
             )
         )
         .scalars()
@@ -278,7 +431,16 @@ async def list_seasons(series_id: int, db: Annotated[AsyncSession, Depends(get_d
     )
     return {
         "series_id": series_id,
-        "seasons": [{"id": s.id, "season_number": s.season_number} for s in rows],
+        "seasons": [
+            {
+                "id": s.id,
+                "season_number": s.season_number,
+                "episode_count": s.episode_count,
+                "episode_file_count": s.episode_file_count,
+                "poster": _poster_summary(s),
+            }
+            for s in rows
+        ],
     }
 
 
@@ -314,65 +476,77 @@ async def delete_movie_poster(
 
     This is the single-movie equivalent of the global poster_deploy_reset job.
     """
-    from pathlib import Path  # noqa: PLC0415
-
-    from marquee.core.path_utils import safe_translate_and_validate  # noqa: PLC0415
     from marquee.core.poster_service import cache_paths  # noqa: PLC0415
-    from marquee.models import ArtworkEvent  # noqa: PLC0415
+    from marquee.core.poster_subjects import PosterSubject  # noqa: PLC0415
 
     movie = (await db.execute(select(Movie).where(Movie.id == movie_id))).scalar_one_or_none()
     if movie is None:
         raise HTTPException(status_code=404, detail=f"Movie id={movie_id} not found")
 
-    if not movie.poster_path:
-        return {"ok": True, "detail": "Movie does not have a deployed poster"}
-
-    stored_path = str(movie.poster_path)
-    deleted = False
-    error_msg = None
-
-    try:
-        poster_file = Path(movie.poster_path)
-        folder = safe_translate_and_validate(movie.folder_path, source="radarr")
-        if poster_file.parent.resolve() != folder.resolve():
-            raise RuntimeError(f"Poster parent {poster_file.parent} != folder {folder}")
-        poster_file.unlink(missing_ok=True)
-        deleted = True
-    except Exception:
-        # Fallback raw unlink if confinement check fails or raises
-        try:
-            Path(movie.poster_path).unlink(missing_ok=True)
-            deleted = True
-        except Exception as raw_exc:
-            error_msg = str(raw_exc)
-
-    # Always reset DB columns
-    movie.poster_path = None
-    movie.poster_source = None
-    movie.poster_source_url = None
-    movie.poster_ai_selected = False
-    movie.poster_embedding = None
-    movie.poster_sha256 = None
-    movie.poster_phash = None
-    movie.poster_user_approved = False
-    movie.poster_deployed_filename = None
-    movie.poster_deployed_at = None
-
-    detail_json = {
-        "deleted_path": stored_path,
-        "cache_kept": str(cache_paths(movie.tmdb_id)[0]) if movie.tmdb_id else None,
-    }
-    if error_msg:
-        detail_json["error"] = error_msg
-
-    db.add(
-        ArtworkEvent(
-            movie_id=movie.id,
-            action="deploy_reset",
-            source="maintenance",
-            detail=json.dumps(detail_json),
-        )
+    response = await _delete_subject_poster(
+        db, PosterSubject.from_movie(movie), detail_prefix="Movie"
     )
-    await db.commit()
+    if movie.tmdb_id:
+        response["cache_kept"] = str(cache_paths(movie.tmdb_id)[0])
+    return response
 
-    return {"ok": True, "deleted": deleted, "error": error_msg}
+
+@router.get("/series/{series_id}/poster")
+async def get_series_poster(series_id: int, db: Annotated[AsyncSession, Depends(get_db)]):
+    series = (
+        await db.execute(select(Series).where(Series.id == series_id, series_visible()))
+    ).scalar_one_or_none()
+    if series is None or not series.poster_path:
+        raise HTTPException(status_code=404, detail="No poster available")
+    import os
+
+    if not os.path.isfile(series.poster_path):
+        raise HTTPException(status_code=404, detail="Poster file not found on disk")
+    return FileResponse(series.poster_path, media_type="image/jpeg")
+
+
+@router.get("/seasons/{season_id}/poster")
+async def get_season_poster(season_id: int, db: Annotated[AsyncSession, Depends(get_db)]):
+    season = (
+        await db.execute(select(Season).where(Season.id == season_id, season_downloaded()))
+    ).scalar_one_or_none()
+    if season is None or not season.poster_path:
+        raise HTTPException(status_code=404, detail="No poster available")
+    import os
+
+    if not os.path.isfile(season.poster_path):
+        raise HTTPException(status_code=404, detail="Poster file not found on disk")
+    return FileResponse(season.poster_path, media_type="image/jpeg")
+
+
+@router.delete("/series/{series_id}/poster")
+async def delete_series_poster(
+    series_id: int,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    from marquee.core.poster_subjects import PosterSubject  # noqa: PLC0415
+
+    series = (
+        await db.execute(select(Series).where(Series.id == series_id, series_visible()))
+    ).scalar_one_or_none()
+    if series is None:
+        raise HTTPException(status_code=404, detail=f"Series id={series_id} not found")
+    return await _delete_subject_poster(db, PosterSubject.from_series(series), detail_prefix="Series")
+
+
+@router.delete("/seasons/{season_id}/poster")
+async def delete_season_poster(
+    season_id: int,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    from marquee.core.poster_subjects import PosterSubject  # noqa: PLC0415
+
+    season = (
+        await db.execute(select(Season).where(Season.id == season_id, season_downloaded()))
+    ).scalar_one_or_none()
+    if season is None:
+        raise HTTPException(status_code=404, detail=f"Season id={season_id} not found")
+    series = (await db.execute(select(Series).where(Series.id == season.series_id))).scalar_one()
+    return await _delete_subject_poster(
+        db, PosterSubject.from_season(season, series), detail_prefix="Season"
+    )
