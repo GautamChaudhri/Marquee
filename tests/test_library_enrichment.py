@@ -135,6 +135,70 @@ async def test_list_enrichment_fields(db: AsyncSession, client: AsyncClient):
 
 
 @pytest.mark.asyncio
+async def test_movie_library_item_snapshot_preserves_subtitle_shape(
+    db: AsyncSession, client: AsyncClient
+):
+    await _seed(db)
+
+    resp = await client.get("/api/library/movies?q=Alpha")
+    assert resp.status_code == 200
+    item = resp.json()["items"][0]
+    assert resp.json() == {
+        "items": [
+            {
+                "container": None,
+                "genres": ["Sci-Fi"],
+                "hdr": "dovi",
+                "hdr_tags": ["dovi"],
+                "id": item["id"],
+                "letterbox_status": "candidate",
+                "media_file_id": item["media_file_id"],
+                "poster_status": "approved",
+                "poster_url": f"/api/library/movies/{item['id']}/poster",
+                "preferred_languages": {
+                    "audio": ["en"],
+                    "override": False,
+                    "override_audio": None,
+                    "override_subtitles": None,
+                    "shared": ["en"],
+                    "subtitles": ["en"],
+                },
+                "resolution": "4K",
+                "subtitle_coverage": {
+                    "audio_languages": ["en"],
+                    "audio_channels_by_language": {},
+                    "audio_status": "ok",
+                    "full_dialogue_languages": [],
+                    "missing_preferred_audio_languages": [],
+                    "missing_preferred_languages": ["en"],
+                    "preferences": {
+                        "audio": ["en"],
+                        "override": False,
+                        "override_audio": None,
+                        "override_subtitles": None,
+                        "shared": ["en"],
+                        "subtitles": ["en"],
+                    },
+                    "preferred_audio_languages": ["en"],
+                    "preferred_subtitle_languages": ["en"],
+                    "status": "gap",
+                    "subtitle_status": "gap",
+                },
+                "subtitle_status": "gap",
+                "title": "Alpha",
+                "tmdb_id": None,
+                "video_height": 1600,
+                "video_width": 3840,
+                "year": 2020,
+            }
+        ],
+        "page": 1,
+        "page_size": 50,
+        "total": 1,
+    }
+
+
+@pytest.mark.asyncio
 async def test_list_filters_and_sort(db: AsyncSession, client: AsyncClient):
     await _seed(db)
 
