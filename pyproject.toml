@@ -121,8 +121,20 @@ subtitles = [
     # The deps are in the base install because subtitle routes import at app startup.
 ]
 
+subgen = [
+    "numpy",
+    "stable-ts-whisperless",
+    "fastapi>=0.115,<1.0",
+    "requests",
+    "faster-whisper",
+    "uvicorn[standard]>=0.32,<1.0",
+    "python-multipart>=0.0.12,<1.0",
+    "ffmpeg-python",
+    "watchdog",
+]
+
 all = [
-    "marquee[dev,ml,viz,subtitles]",
+    "marquee[dev,ml,viz,subtitles,subgen]",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -135,6 +147,9 @@ target-version = "py312"
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP", "B", "C4", "SIM"]
 ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+"marquee/vendor/subgen/*.py" = ["ALL"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

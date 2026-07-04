@@ -66,6 +66,7 @@ class SubtitleSettings(BaseSettings):
     SUBGEN_URL: str | None = Field(
         default=None, description="Base URL of the external Subgen service; unset = disabled."
     )
+    SUBGEN_DEPLOYMENT: str | None = None
     SUBGEN_PROFILE_NAME: str = "Subgen"
     SUBGEN_MODEL_LABEL: str = "unknown"
     # transcribe | translate
@@ -75,10 +76,37 @@ class SubtitleSettings(BaseSettings):
     SUBGEN_CALLBACK_TOKEN: str | None = None
     SUBGEN_TIMEOUT_MINUTES: int = 120
     SUBGEN_POLL_SECONDS: int = 30
+    SUBGEN_EMBEDDED_PORT: int = 9000
+    SUBGEN_WHISPER_MODEL: str = ""
+    SUBGEN_TRANSCRIBE_DEVICE: str = "auto"
+    SUBGEN_GPU_INDEX: int | None = None
+    SUBGEN_COMPUTE_TYPE: str = "auto"
+    SUBGEN_CONCURRENT_TRANSCRIPTIONS: int = 1
+    SUBGEN_WHISPER_THREADS: int = 0
+    SUBGEN_MODEL_PATH: str = "data/subgen/models"
+    SUBGEN_NAMING_TYPE: str = "ISO_639_2_B"
+    SUBGEN_NAME_INCLUDES_SUBGEN: bool = True
+    SUBGEN_NAME_INCLUDES_MODEL: bool = False
+
+    @property
+    def subgen_deployment(self) -> str:
+        if self.SUBGEN_DEPLOYMENT:
+            return self.SUBGEN_DEPLOYMENT
+        return "external" if self.SUBGEN_URL else "disabled"
+
+    @property
+    def subgen_url(self) -> str | None:
+        if self.subgen_deployment == "embedded":
+            return f"http://127.0.0.1:{self.SUBGEN_EMBEDDED_PORT}"
+        return self.SUBGEN_URL
 
     @property
     def generation_enabled(self) -> bool:
-        return bool(self.SUBGEN_URL)
+        if self.subgen_deployment == "embedded":
+            return True
+        if self.subgen_deployment == "external":
+            return bool(self.SUBGEN_URL)
+        return False
 
     @property
     def effective_preferred_audio_languages(self) -> list[str]:

@@ -1,17 +1,4 @@
-"""Supervise embedded worker/scheduler subprocesses from the API lifespan.
-
-Standalone dev runs the API with ``uvicorn``; rather than make the operator
-start ``python -m marquee.core.jobs.worker`` by hand, the API spawns the worker
-and scheduler as *child processes* in their own process groups.
-
-Why subprocesses (not asyncio tasks): heavy GPU/ffmpeg/inference work then never
-runs on the API event loop, so the UI never stalls.  Because each child leads
-its own session/process-group, shutdown signals the *whole group* — the worker
-and any ffmpeg/Paddle child it spawned die together, leaving nothing orphaned.
-
-Set ``JOB_EMBEDDED_WORKERS=false`` to disable (the Compose topology runs
-dedicated ``marquee-worker``/``marquee-scheduler`` services instead).
-"""
+"""Supervise embedded worker/scheduler/Subgen subprocesses from the API lifespan."""
 
 from __future__ import annotations
 
@@ -24,44 +11,56 @@ import sys
 import time
 
 from marquee.config import settings
+from marquee.core.subtitles.config import subtitle_settings
+from marquee.core.subtitles.embedded_subgen import EmbeddedSubgenStatus, build_spawn_spec
 
 logger = logging.getLogger(__name__)
 
-# If a child dies this many times in a row, each within 30s of starting, stop
-# respawning it — it's a persistent failure (broken migration, unreachable DB,
-# bad import), not a transient blip, and an endless respawn loop would just
-# burn CPU silently. Surfaced via WorkerSupervisor.status() / /api/system/status.
 MAX_CONSECUTIVE_FAST_FAILURES = 5
 FAST_FAILURE_WINDOW_SECONDS = 30
 
 
-def _set_pdeathsig() -> None:  # pragma: no cover - runs in the forked child
-    """Ask the kernel to SIGTERM this child if the parent (API) dies abruptly.
-
-    Defense in depth for ungraceful API death (e.g. a hard ``--reload`` kill or
-    ``SIGKILL``) where the lifespan shutdown never runs.  Linux-only; a no-op
-    elsewhere.
-    """
+def _set_pdeathsig() -> None:  # pragma: no cover
     if sys.platform != "linux":
         return
     try:
         import ctypes  # noqa: PLC0415
 
-        pr_set_pdeathsig = 1
-        ctypes.CDLL("libc.so.6", use_errno=True).prctl(pr_set_pdeathsig, signal.SIGTERM)
-    except Exception:  # noqa: BLE001 - best effort; group-kill is the primary path
+        ctypes.CDLL("libc.so.6", use_errno=True).prctl(1, signal.SIGTERM)
+    except Exception:  # noqa: BLE001
         pass
 
 
 class _Child:
-    __slots__ = ("name", "args", "proc", "fast_failures", "degraded")
+    __slots__ = (
+        "name",
+        "args",
+        "proc",
+        "fast_failures",
+        "degraded",
+        "env",
+        "capture_output",
+        "status",
+        "log_tasks",
+    )
 
-    def __init__(self, name: str, args: list[str]) -> None:
+    def __init__(
+        self,
+        name: str,
+        args: list[str],
+        *,
+        env: dict[str, str] | None = None,
+        capture_output: bool = False,
+    ) -> None:
         self.name = name
         self.args = args
         self.proc: asyncio.subprocess.Process | None = None
         self.fast_failures = 0
         self.degraded = False
+        self.env = env
+        self.capture_output = capture_output
+        self.status = EmbeddedSubgenStatus() if name == "subgen" else None
+        self.log_tasks: list[asyncio.Task] = []
 
 
 class WorkerSupervisor:
@@ -76,7 +75,15 @@ class WorkerSupervisor:
         children = [_Child("scheduler", ["-m", "marquee.core.jobs.scheduler"])]
         for index in range(max(1, settings.JOB_EMBEDDED_WORKER_COUNT)):
             children.append(_Child(f"worker-{index}", ["-m", "marquee.core.jobs.worker"]))
+        if subtitle_settings.subgen_deployment == "embedded":
+            spec = build_spawn_spec()
+            children.append(
+                _Child("subgen", spec["args"], env=spec["env"], capture_output=True)
+            )
         return children
+
+    def _child_named(self, name: str) -> _Child | None:
+        return next((child for child in self._children if child.name == name), None)
 
     async def start(self) -> None:
         self._shutting_down = False
@@ -89,46 +96,90 @@ class WorkerSupervisor:
         logger.info("Embedded job runtime started: %s", ", ".join(c.name for c in self._children))
 
     def status(self) -> dict:
-        """Per-child health snapshot for /api/system/status.
-
-        ``degraded`` (aggregate) is True if any child has given up respawning
-        — an operator needs to look at logs and restart the API process.
-        """
-        children = [
-            {
+        children = []
+        for child in self._children:
+            item = {
                 "name": child.name,
                 "running": child.proc is not None and child.proc.returncode is None,
                 "degraded": child.degraded,
                 "fast_failures": child.fast_failures,
             }
-            for child in self._children
-        ]
+            if child.name == "subgen" and child.status is not None:
+                item["queue_processing"] = child.status.queue_processing
+                item["queue_queued"] = child.status.queue_queued
+                item["last_activity_line"] = child.status.last_activity_line
+            children.append(item)
+        return {"degraded": any(c["degraded"] for c in children), "children": children}
+
+    def subgen_status(self) -> dict:
+        child = self._child_named("subgen")
+        if child is None or child.status is None:
+            return {"state": "disabled", "logs": [], "queue_processing": 0, "queue_queued": 0}
+        running = child.proc is not None and child.proc.returncode is None
         return {
-            "degraded": any(c["degraded"] for c in children),
-            "children": children,
+            "state": child.status.state if child.status.state != "disabled" else ("running" if running else "starting"),
+            "running": running,
+            "degraded": child.degraded,
+            "fast_failures": child.fast_failures,
+            "queue_processing": child.status.queue_processing,
+            "queue_queued": child.status.queue_queued,
+            "last_activity_line": child.status.last_activity_line,
+            "last_download_line": child.status.last_download_line,
+            "last_model_line": child.status.last_model_line,
         }
+
+    def subgen_logs(self, tail: int = 200) -> list[str]:
+        child = self._child_named("subgen")
+        if child is None or child.status is None:
+            return []
+        return list(child.status.logs)[-max(1, min(tail, 500)) :]
+
+    async def restart_subgen(self) -> dict:
+        child = self._child_named("subgen")
+        if child is None:
+            return {"restarted": False, "detail": "embedded subgen disabled"}
+        if child.proc is not None and child.proc.returncode is None:
+            self._signal_group(child.proc, signal.SIGTERM)
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(child.proc.wait(), timeout=10)
+        await self._spawn(child)
+        return {"restarted": True}
+
+    async def _tail_stream(self, child: _Child, stream: asyncio.StreamReader | None, label: str) -> None:
+        if child.status is None or stream is None:
+            return
+        while not stream.at_eof():
+            line = await stream.readline()
+            if not line:
+                break
+            text = f"[{label}] {line.decode(errors='ignore').rstrip()}"
+            child.status.state = "running"
+            child.status.record(text)
 
     async def _spawn(self, child: _Child) -> None:
         child.proc = await asyncio.create_subprocess_exec(
             sys.executable,
             *child.args,
-            # New session => child is its own process-group leader, so a single
-            # killpg() on shutdown reaps the worker plus any ffmpeg/Paddle
-            # subprocesses it started.
             start_new_session=True,
             preexec_fn=_set_pdeathsig,
+            env=child.env,
+            stdout=asyncio.subprocess.PIPE if child.capture_output else None,
+            stderr=asyncio.subprocess.PIPE if child.capture_output else None,
         )
+        for task in child.log_tasks:
+            task.cancel()
+        child.log_tasks.clear()
+        if child.capture_output and child.status is not None:
+            child.status.state = "starting"
+            child.log_tasks.append(
+                asyncio.create_task(self._tail_stream(child, child.proc.stdout, "stdout"))
+            )
+            child.log_tasks.append(
+                asyncio.create_task(self._tail_stream(child, child.proc.stderr, "stderr"))
+            )
         logger.info("Spawned %s (pid=%s)", child.name, child.proc.pid)
 
     async def _supervise(self, child: _Child) -> None:
-        """Respawn a child that dies unexpectedly, with capped backoff.
-
-        Gives up (sets ``degraded``) after MAX_CONSECUTIVE_FAST_FAILURES
-        in a row, each within FAST_FAILURE_WINDOW_SECONDS of starting — that
-        pattern means the child is broken (bad migration, unreachable DB,
-        broken import), not transiently flaky, so respawning forever would
-        just loop silently without ever recovering.
-        """
         backoff = 1.0
         while not self._shutting_down:
             proc = child.proc
@@ -138,28 +189,26 @@ class WorkerSupervisor:
             returncode = await proc.wait()
             if self._shutting_down:
                 return
+            if child.status is not None:
+                child.status.state = "crashed"
+                child.status.record(f"[supervisor] process exited rc={returncode}")
             ran_seconds = time.monotonic() - started
             if ran_seconds > FAST_FAILURE_WINDOW_SECONDS:
-                backoff = 1.0  # it ran a while; treat this as a fresh failure
+                backoff = 1.0
                 child.fast_failures = 0
             else:
                 child.fast_failures += 1
             if child.fast_failures >= MAX_CONSECUTIVE_FAST_FAILURES:
                 child.degraded = True
                 logger.critical(
-                    "%s has crashed %d times in a row within %ds of starting "
-                    "(rc=%s) — giving up on respawning it. Check logs for the "
-                    "underlying cause (DB connectivity, migrations, import "
-                    "errors) and restart the API process once fixed.",
+                    "%s has crashed %d times in a row within %ds of starting (rc=%s) — giving up.",
                     child.name,
                     child.fast_failures,
                     FAST_FAILURE_WINDOW_SECONDS,
                     returncode,
                 )
                 return
-            logger.warning(
-                "%s exited (rc=%s); respawning in %.0fs", child.name, returncode, backoff
-            )
+            logger.warning("%s exited (rc=%s); respawning in %.0fs", child.name, returncode, backoff)
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, 30.0)
             if self._shutting_down:
@@ -172,12 +221,6 @@ class WorkerSupervisor:
                 return
 
     def _signal_group(self, proc: asyncio.subprocess.Process, sig: int) -> None:
-        """Send signal to the worker's process group.
-
-        Kills the worker and all its children (ffmpeg, PaddleOCR) in one shot
-        when the worker exits cleanly. When the worker crashes (SIGKILL, OOM),
-        children are orphaned — `shutdown()` handles that separately.
-        """
         try:
             os.killpg(os.getpgid(proc.pid), sig)
         except ProcessLookupError:
@@ -187,15 +230,6 @@ class WorkerSupervisor:
                 proc.send_signal(sig)
 
     async def shutdown(self) -> None:
-        """Stop respawning and tear the whole worker tree down — no orphans.
-
-        The hard SIGKILL escalation lives in ``finally`` and uses only the
-        synchronous ``killpg`` syscall, so it still runs if the caller's overall
-        shutdown budget (``SHUTDOWN_TIMEOUT_SECONDS``) cancels us mid-drain.
-
-        Orphaned children (spawned by workers that crashed before shutdown)
-        are killed explicitly by PID — the database tracks them for this.
-        """
         self._shutting_down = True
         for task in self._tasks:
             task.cancel()
@@ -203,12 +237,9 @@ class WorkerSupervisor:
             if self._tasks:
                 await asyncio.gather(*self._tasks, return_exceptions=True)
         self._tasks.clear()
-
-        # Kill active workers first (via process group)
         alive = [c.proc for c in self._children if c.proc is not None and c.proc.returncode is None]
         for proc in alive:
             self._signal_group(proc, signal.SIGTERM)
-
         grace = settings.JOB_SHUTDOWN_GRACE_SECONDS
         try:
             with contextlib.suppress(TimeoutError):
@@ -217,24 +248,14 @@ class WorkerSupervisor:
                     timeout=grace,
                 )
         finally:
-            # Hard-kill workers that didn't stop
             for proc in alive:
                 if proc.returncode is None:
                     logger.warning("worker pid=%s did not stop — SIGKILL", proc.pid)
                     self._signal_group(proc, signal.SIGKILL)
-
-            # Kill orphaned children (ffmpeg/OCR from crashed workers)
             await self._kill_orphaned_children()
-
             logger.info("Embedded job runtime stopped.")
 
     async def _kill_orphaned_children(self) -> None:
-        """Kill child processes orphaned by crashed workers.
-
-        When a worker crashes (OOM, SIGKILL, kernel panic), its children
-        (ffmpeg, PaddleOCR workers) are reparented to PID 1 and keep running.
-        The database tracks these PIDs so we can clean them up.
-        """
         try:
             from sqlalchemy import select  # noqa: PLC0415
 
@@ -243,7 +264,6 @@ class WorkerSupervisor:
 
             factory = _get_session_factory()
             async with factory() as db:
-                # Find all running attempts with child PIDs
                 attempts = (
                     (
                         await db.execute(
@@ -256,28 +276,11 @@ class WorkerSupervisor:
                     .scalars()
                     .all()
                 )
-
-                killed = 0
                 for attempt in attempts:
                     if not attempt.child_pids:
                         continue
                     for pid in attempt.child_pids:
-                        try:
+                        with contextlib.suppress(ProcessLookupError):
                             os.kill(pid, signal.SIGKILL)
-                            killed += 1
-                            logger.info(
-                                "Killed orphaned child process pid=%d (attempt=%d)", pid, attempt.id
-                            )
-                        except ProcessLookupError:
-                            pass  # already dead
-                        except PermissionError:
-                            logger.warning(
-                                "No permission to kill pid=%d (attempt=%d)", pid, attempt.id
-                            )
-                        except OSError as exc:
-                            logger.warning("Failed to kill pid=%d: %s", pid, exc)
-
-                if killed:
-                    logger.info("Killed %d orphaned child process(es)", killed)
         except Exception:  # noqa: BLE001
             logger.exception("Failed to kill orphaned children — manual cleanup may be needed")

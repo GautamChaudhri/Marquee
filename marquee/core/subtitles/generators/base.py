@@ -32,6 +32,8 @@ class GenerationRequest:
     local_media_path: str
     language_hint: str | None = None  # None = auto-detect
     output: str = "external"  # external | embedded
+    task: str = "transcribe"
+    stream_index: int | None = None
 
 
 @dataclass

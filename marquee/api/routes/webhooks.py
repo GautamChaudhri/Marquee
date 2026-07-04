@@ -26,6 +26,7 @@ upgrades don't destroy posters).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 from pathlib import Path
@@ -237,7 +238,11 @@ async def radarr_webhook(
 
 
 @router.post("/subgen")
-async def subgen_callback(payload: dict, token: str | None = None):
+async def subgen_callback(
+    payload: dict,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    token: str | None = None,
+):
     """Subgen completion callback (design §24.4) — an optimization, not the SoT.
 
     The generation worker reconciles via the filesystem regardless; this just
@@ -245,12 +250,27 @@ async def subgen_callback(payload: dict, token: str | None = None):
     """
     from datetime import UTC, datetime  # noqa: PLC0415
 
+    from marquee.core.media_files import resolve_media_file  # noqa: PLC0415
     from marquee.core.subtitles.config import subtitle_settings  # noqa: PLC0415
+    from marquee.core.subtitles.generation import register_completion  # noqa: PLC0415
+    from marquee.core.subtitles.generators.subgen import translate_remote_to_local  # noqa: PLC0415
+    from marquee.core.subtitles.service import scan_inventory  # noqa: PLC0415
+    from marquee.models import MediaFile  # noqa: PLC0415
 
     if subtitle_settings.SUBGEN_CALLBACK_TOKEN and token != subtitle_settings.SUBGEN_CALLBACK_TOKEN:
         raise HTTPException(status_code=401, detail="Invalid Subgen callback token")
     webhook_state.update(last_received=datetime.now(UTC).isoformat(), last_event="subgen_callback")
     logger.info("WEBHOOK | subgen callback: %s", json.dumps(payload, default=str)[:300])
+    source = translate_remote_to_local(str(payload.get("file") or ""))
+    subtitle = translate_remote_to_local(str(payload.get("subtitle") or ""))
+    if source and subtitle:
+        register_completion(source, subtitle, payload)
+        media_file = (
+            await db.execute(select(MediaFile).where(MediaFile.path == source))
+        ).scalar_one_or_none()
+        if media_file is not None:
+            with contextlib.suppress(Exception):
+                await scan_inventory(db, await resolve_media_file(db, media_file.id))
     return {"ok": True}
 
 

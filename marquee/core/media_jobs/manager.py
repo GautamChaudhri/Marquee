@@ -19,6 +19,7 @@ from uuid import uuid4
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from marquee.core.subtitles.config import subtitle_settings
 from marquee.models import MediaJob, MediaJobEvent
 
 logger = logging.getLogger(__name__)
@@ -213,7 +214,10 @@ class MediaJobManager:
 
         resources = {f"media-file:{media_file_id}": 1} if media_file_id is not None else {}
         if operation == "subtitle_generate":
-            resources["gpu"] = 1
+            if subtitle_settings.subgen_deployment == "embedded":
+                resources["gpu"] = 1
+            else:
+                resources["network_external"] = 1
         elif operation in {
             "audio_remove",
             "subtitle_remove",
