@@ -26,3 +26,7 @@ class SonarrClient(ArrClient):
     async def get_custom_formats(self) -> list[dict]:
         """Fetch all custom format definitions."""
         return await self._get("/api/v3/customformat")
+
+    async def get_quality_profiles(self) -> list[dict]:
+        """Fetch all quality profile definitions."""
+        return await self._get("/api/v3/qualityprofile")
