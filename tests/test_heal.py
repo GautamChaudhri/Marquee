@@ -72,7 +72,16 @@ async def test_heal_scan_grace_window_and_counts(db, tmp_path, monkeypatch):
     result = await heal.heal_scan()
 
     assert sorted(restored_titles) == ["old", "undated"]
-    assert result == {"checked": 3, "restored": 2, "failed": 0}
+    assert result == {
+        "checked": 3,
+        "restored": 2,
+        "failed": 0,
+        "by_type": {
+            "movie": {"checked": 3, "restored": 2, "failed": 0},
+            "series": {"checked": 0, "restored": 0, "failed": 0},
+            "season": {"checked": 0, "restored": 0, "failed": 0},
+        },
+    }
 
 
 @pytest.mark.asyncio
@@ -94,7 +103,16 @@ async def test_heal_scan_counts_failures(db, tmp_path, monkeypatch):
     await db.commit()
 
     result = await heal.heal_scan()
-    assert result == {"checked": 1, "restored": 0, "failed": 1}
+    assert result == {
+        "checked": 1,
+        "restored": 0,
+        "failed": 1,
+        "by_type": {
+            "movie": {"checked": 1, "restored": 0, "failed": 1},
+            "series": {"checked": 0, "restored": 0, "failed": 0},
+            "season": {"checked": 0, "restored": 0, "failed": 0},
+        },
+    }
 
 
 @pytest.mark.asyncio

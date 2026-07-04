@@ -40,22 +40,34 @@ async def latest_heal_summary(db: AsyncSession) -> dict | None:
     )
     if job is None:
         return None
-    return {
+    res = {
         "last_run": job.finished_at.isoformat() if job.finished_at else None,
         "checked": (job.result or {}).get("checked", 0),
         "restored": (job.result or {}).get("restored", 0),
         "failed": (job.result or {}).get("failed", 0),
     }
+    if "by_type" in (job.result or {}):
+        res["by_type"] = job.result["by_type"]
+    return res
 
 
 async def heal_scan() -> dict:
     """Stat every deployed poster; restore the missing ones from cache/URL."""
     factory = _get_session_factory()
     checked = restored = failed = 0
+    by_type = {
+        "movie": {"checked": 0, "restored": 0, "failed": 0},
+        "series": {"checked": 0, "restored": 0, "failed": 0},
+        "season": {"checked": 0, "restored": 0, "failed": 0},
+    }
     # Freshly deployed posters get a grace window: the deploy may still be
     # mid-flight in the API process, and restoring over it would clobber it.
     grace_cutoff = datetime.now(UTC) - timedelta(minutes=settings.HEAL_RECENT_DEPLOY_GRACE_MINUTES)
+    from marquee.core.poster_subjects import PosterSubject
+    from marquee.models import Series, Season
+
     async with factory() as db:
+        # 1. Walk Movies
         movies = (
             (
                 await db.execute(
@@ -73,14 +85,81 @@ async def heal_scan() -> dict:
         )
         for movie in movies:
             checked += 1
+            by_type["movie"]["checked"] += 1
             if movie.poster_path and await asyncio.to_thread(Path(movie.poster_path).is_file):
                 continue
-            logger.info("HEAL | poster missing for %s — restoring", movie.title)
-            result = await poster_service.restore(db, movie, source="heal")
+            logger.info("HEAL | poster missing for movie %s — restoring", movie.title)
+            subject = PosterSubject.from_movie(movie)
+            result = await poster_service.restore(db, subject, source="heal")
             if result.restored:
                 restored += 1
+                by_type["movie"]["restored"] += 1
             else:
                 failed += 1
+                by_type["movie"]["failed"] += 1
+
+        # 2. Walk Series
+        series_list = (
+            (
+                await db.execute(
+                    select(Series).where(
+                        Series.poster_path.is_not(None),
+                        or_(
+                            Series.poster_deployed_at.is_(None),
+                            Series.poster_deployed_at < grace_cutoff,
+                        ),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for series in series_list:
+            checked += 1
+            by_type["series"]["checked"] += 1
+            if series.poster_path and await asyncio.to_thread(Path(series.poster_path).is_file):
+                continue
+            logger.info("HEAL | poster missing for series %s — restoring", series.title)
+            subject = PosterSubject.from_series(series)
+            result = await poster_service.restore(db, subject, source="heal")
+            if result.restored:
+                restored += 1
+                by_type["series"]["restored"] += 1
+            else:
+                failed += 1
+                by_type["series"]["failed"] += 1
+
+        # 3. Walk Seasons
+        seasons_info = (
+            (
+                await db.execute(
+                    select(Season, Series)
+                    .join(Series, Series.id == Season.series_id)
+                    .where(
+                        Season.poster_path.is_not(None),
+                        or_(
+                            Season.poster_deployed_at.is_(None),
+                            Season.poster_deployed_at < grace_cutoff,
+                        ),
+                    )
+                )
+            )
+            .all()
+        )
+        for season, series in seasons_info:
+            checked += 1
+            by_type["season"]["checked"] += 1
+            if season.poster_path and await asyncio.to_thread(Path(season.poster_path).is_file):
+                continue
+            logger.info("HEAL | poster missing for season %s S%02d — restoring", series.title, season.season_number)
+            subject = PosterSubject.from_season(season, series)
+            result = await poster_service.restore(db, subject, source="heal")
+            if result.restored:
+                restored += 1
+                by_type["season"]["restored"] += 1
+            else:
+                failed += 1
+                by_type["season"]["failed"] += 1
 
     logger.info(
         "HEAL | scan complete | checked=%d restored=%d failed=%d",
@@ -88,4 +167,9 @@ async def heal_scan() -> dict:
         restored,
         failed,
     )
-    return {"checked": checked, "restored": restored, "failed": failed}
+    return {
+        "checked": checked,
+        "restored": restored,
+        "failed": failed,
+        "by_type": by_type,
+    }

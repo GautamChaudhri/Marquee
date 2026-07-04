@@ -15,8 +15,9 @@ from sqlalchemy import exists, or_, select
 from marquee.config import settings
 from marquee.core.jobs import cancel_registry, job_manager
 from marquee.core.jobs.handlers import register
+from marquee.core.poster_subjects import PosterSubject
 from marquee.database import _get_session_factory
-from marquee.models import ArtworkEvent, Job, MediaFile, Movie, PipelineRun
+from marquee.models import ArtworkEvent, Job, MediaFile, Movie, PipelineRun, Season, Series
 
 logger = logging.getLogger(__name__)
 
@@ -540,75 +541,104 @@ async def pipeline_cache_clear(job: Job) -> dict[str, Any]:
 
 @register("poster_deploy_reset", instant=True)
 async def poster_deploy_reset(job: Job) -> dict[str, Any]:
-    """Delete every deployed poster and reset movies to missing.
+    """Delete every deployed poster and reset subjects to missing.
 
-    Walks every ``Movie`` with a non-NULL ``poster_path``, validates the
-    folder via ``safe_translate_and_validate``, deletes the poster file
-    (confinement check: the file must reside in the validated folder), and
-    resets deploy-selection ``poster_*`` columns to the missing state. Cache
-    copies under ``data/cache/posters/`` and local backup paths/files are KEPT
-    as fallback restore sources; poster maintenance owns backup garbage
-    collection.
-
-    Idempotent — a second run finds zero deploy rows and returns reset=0.
+    Walks every subject with a non-NULL ``poster_path``, validates the
+    folder, deletes the poster file, and resets deploy-selection ``poster_*`` columns.
     """
     import json as _json
 
     from marquee.core.path_utils import safe_translate_and_validate
-    from marquee.core.poster_service import cache_paths
 
     factory = _get_session_factory()
     async with factory() as db:
-        rows = (
-            (await db.execute(select(Movie).where(Movie.poster_path.is_not(None)))).scalars().all()
-        )
-        if not rows:
-            return {"reset": 0, "failed": 0, "errors": []}
+        subjects: list[PosterSubject] = []
+
+        movies = (await db.execute(select(Movie).where(Movie.poster_path.is_not(None)))).scalars().all()
+        for movie in movies:
+            subjects.append(PosterSubject.from_movie(movie))
+
+        series_list = (await db.execute(select(Series).where(Series.poster_path.is_not(None)))).scalars().all()
+        for series in series_list:
+            subjects.append(PosterSubject.from_series(series))
+
+        seasons_info = (
+            await db.execute(
+                select(Season, Series)
+                .join(Series, Series.id == Season.series_id)
+                .where(Season.poster_path.is_not(None))
+            )
+        ).all()
+        for season, series in seasons_info:
+            subjects.append(PosterSubject.from_season(season, series))
+
+        if not subjects:
+            return {
+                "reset": 0,
+                "failed": 0,
+                "errors": [],
+                "by_type": {
+                    "movie": {"reset": 0, "failed": 0},
+                    "series": {"reset": 0, "failed": 0},
+                    "season": {"reset": 0, "failed": 0},
+                },
+            }
 
         reset = 0
         failed = 0
         errors: list[dict] = []
-        for movie in rows:
+        by_type = {
+            "movie": {"reset": 0, "failed": 0},
+            "series": {"reset": 0, "failed": 0},
+            "season": {"reset": 0, "failed": 0},
+        }
+
+        for subject in subjects:
             deleted = False
-            stored_path = str(movie.poster_path)  # capture before clearing
+            entity = subject.entity
+            stored_path = str(entity.poster_path)  # capture before clearing
             try:
-                poster_file = Path(movie.poster_path)
-                folder = safe_translate_and_validate(movie.folder_path, source="radarr")
+                poster_file = Path(entity.poster_path)
+                folder = safe_translate_and_validate(subject.folder_raw, source=subject.path_source)
                 if poster_file.parent.resolve() != folder.resolve():
                     raise RuntimeError(f"Poster parent {poster_file.parent} != folder {folder}")
                 poster_file.unlink(missing_ok=True)
                 deleted = True
             except Exception as exc:
                 logger.warning(
-                    "DEPLOY RESET | file error for movie %d (%s): %s",
-                    movie.id,
-                    movie.title,
+                    "DEPLOY RESET | file error for %s subject %d (%s): %s",
+                    subject.media_type,
+                    entity.id,
+                    subject.title,
                     exc,
                 )
                 with contextlib.suppress(Exception):
-                    Path(movie.poster_path).unlink(missing_ok=True)
+                    Path(entity.poster_path).unlink(missing_ok=True)
 
             # Always reset DB columns — the file is gone or unreachable.
-            movie.poster_path = None
-            movie.poster_source = None
-            movie.poster_source_url = None
-            movie.poster_ai_selected = False
-            movie.poster_embedding = None
-            movie.poster_sha256 = None
-            movie.poster_phash = None
-            movie.poster_user_approved = False
-            movie.poster_deployed_filename = None
-            movie.poster_deployed_at = None
+            entity.poster_path = None
+            entity.poster_source = None
+            entity.poster_source_url = None
+            entity.poster_ai_selected = False
+            if hasattr(entity, "poster_embedding"):
+                entity.poster_embedding = None
+            entity.poster_sha256 = None
+            entity.poster_phash = None
+            entity.poster_user_approved = False
+            entity.poster_deployed_filename = None
+            entity.poster_deployed_at = None
 
+            cpaths = subject.cache_paths()
+            cache_file_str = str(cpaths[0]) if (subject.tmdb_id and cpaths) else None
             detail = _json.dumps(
                 {
                     "deleted_path": stored_path,
-                    "cache_kept": str(cache_paths(movie.tmdb_id)[0]) if movie.tmdb_id else None,
+                    "cache_kept": cache_file_str,
                 }
             )
             db.add(
                 ArtworkEvent(
-                    movie_id=movie.id,
+                    **subject.event_fk_kwargs(),
                     action="deploy_reset",
                     source="maintenance",
                     detail=detail,
@@ -616,12 +646,15 @@ async def poster_deploy_reset(job: Job) -> dict[str, Any]:
             )
             if deleted:
                 reset += 1
+                by_type[subject.media_type]["reset"] += 1
             else:
                 failed += 1
+                by_type[subject.media_type]["failed"] += 1
                 errors.append(
                     {
-                        "movie_id": movie.id,
-                        "title": movie.title,
+                        "media_type": subject.media_type,
+                        "subject_id": entity.id,
+                        "title": subject.title,
                         "error": "file unavailable — DB state cleared",
                     }
                 )
@@ -629,27 +662,48 @@ async def poster_deploy_reset(job: Job) -> dict[str, Any]:
         await db.commit()
 
     logger.info("DEPLOY RESET | reset=%d | failed=%d", reset, failed)
-    return {"reset": reset, "failed": failed, "errors": errors}
+    return {"reset": reset, "failed": failed, "errors": errors, "by_type": by_type}
 
 
 @register("poster_rescan")
 async def poster_rescan(job: Job) -> dict[str, Any]:
     """Re-stat expected poster files after filename/path settings change."""
     from marquee.core.path_utils import safe_translate_and_validate
-    from marquee.core.poster_service import render_filename
+    from marquee.core.tv_queries import season_downloaded, series_visible
 
     factory = _get_session_factory()
     async with factory() as db:
-        rows = (
-            (await db.execute(select(Movie).where(_downloaded_condition()).order_by(Movie.id)))
-            .scalars()
-            .all()
-        )
-        total = len(rows)
+        subjects: list[PosterSubject] = []
+
+        movies = (await db.execute(select(Movie).where(_downloaded_condition()).order_by(Movie.id))).scalars().all()
+        for movie in movies:
+            subjects.append(PosterSubject.from_movie(movie))
+
+        series_list = (await db.execute(select(Series).where(series_visible()).order_by(Series.id))).scalars().all()
+        for series in series_list:
+            subjects.append(PosterSubject.from_series(series))
+
+        seasons_info = (
+            await db.execute(
+                select(Season, Series)
+                .join(Series, Series.id == Season.series_id)
+                .where(season_downloaded())
+                .order_by(Season.id)
+            )
+        ).all()
+        for season, series in seasons_info:
+            subjects.append(PosterSubject.from_season(season, series))
+
+        total = len(subjects)
         updated = missing = unchanged = failed = 0
         errors: list[dict] = []
+        by_type = {
+            "movie": {"updated": 0, "missing": 0, "unchanged": 0, "failed": 0},
+            "series": {"updated": 0, "missing": 0, "unchanged": 0, "failed": 0},
+            "season": {"updated": 0, "missing": 0, "unchanged": 0, "failed": 0},
+        }
 
-        for index, movie in enumerate(rows, 1):
+        for index, subject in enumerate(subjects, 1):
             if index == 1 or index % 25 == 0 or index == total:
                 await _update_progress(job.id, "rescan", index, total)
                 current = await db.get(Job, job.id)
@@ -661,26 +715,40 @@ async def poster_rescan(job: Job) -> dict[str, Any]:
                         "failed": failed,
                         "cancelled": True,
                         "errors": errors,
+                        "by_type": by_type,
                     }
+            entity = subject.entity
             try:
-                folder = safe_translate_and_validate(movie.folder_path, source="radarr")
-                expected = folder / render_filename(movie)
+                folder = safe_translate_and_validate(subject.folder_raw, source=subject.path_source)
+                expected = folder / subject.render_filename()
                 exists_on_disk = await asyncio.to_thread(expected.is_file)
                 expected_str = str(expected)
                 if exists_on_disk:
-                    if movie.poster_path != expected_str:
-                        movie.poster_path = expected_str
+                    if entity.poster_path != expected_str:
+                        entity.poster_path = expected_str
                         updated += 1
+                        by_type[subject.media_type]["updated"] += 1
                     else:
                         unchanged += 1
-                elif movie.poster_path is not None:
-                    movie.poster_path = None
+                        by_type[subject.media_type]["unchanged"] += 1
+                elif entity.poster_path is not None:
+                    entity.poster_path = None
                     missing += 1
+                    by_type[subject.media_type]["missing"] += 1
                 else:
                     unchanged += 1
+                    by_type[subject.media_type]["unchanged"] += 1
             except Exception as exc:  # noqa: BLE001
                 failed += 1
-                errors.append({"movie_id": movie.id, "title": movie.title, "error": str(exc)})
+                by_type[subject.media_type]["failed"] += 1
+                errors.append(
+                    {
+                        "media_type": subject.media_type,
+                        "subject_id": entity.id,
+                        "title": subject.title,
+                        "error": str(exc),
+                    }
+                )
 
         await db.commit()
         return {
@@ -689,30 +757,47 @@ async def poster_rescan(job: Job) -> dict[str, Any]:
             "unchanged": unchanged,
             "failed": failed,
             "errors": errors,
+            "by_type": by_type,
         }
 
 
 @register("poster_backup_all")
 async def poster_backup_all(job: Job) -> dict[str, Any]:
     """Copy all deployed poster bytes into the local backup directory."""
-    from marquee.core.poster_service import _atomic_copy, _sha256, backup_path, cache_paths
+    from marquee.core.poster_service import _atomic_copy, _sha256
 
     factory = _get_session_factory()
     async with factory() as db:
-        rows = (
-            (
-                await db.execute(
-                    select(Movie).where(Movie.poster_path.is_not(None)).order_by(Movie.id)
-                )
+        subjects: list[PosterSubject] = []
+
+        movies = (await db.execute(select(Movie).where(Movie.poster_path.is_not(None)))).scalars().all()
+        for movie in movies:
+            subjects.append(PosterSubject.from_movie(movie))
+
+        series_list = (await db.execute(select(Series).where(Series.poster_path.is_not(None)))).scalars().all()
+        for series in series_list:
+            subjects.append(PosterSubject.from_series(series))
+
+        seasons_info = (
+            await db.execute(
+                select(Season, Series)
+                .join(Series, Series.id == Season.series_id)
+                .where(Season.poster_path.is_not(None))
             )
-            .scalars()
-            .all()
-        )
-        total = len(rows)
+        ).all()
+        for season, series in seasons_info:
+            subjects.append(PosterSubject.from_season(season, series))
+
+        total = len(subjects)
         copied = skipped = failed = 0
         errors: list[dict] = []
+        by_type = {
+            "movie": {"copied": 0, "skipped": 0, "failed": 0},
+            "series": {"copied": 0, "skipped": 0, "failed": 0},
+            "season": {"copied": 0, "skipped": 0, "failed": 0},
+        }
 
-        for index, movie in enumerate(rows, 1):
+        for index, subject in enumerate(subjects, 1):
             if index == 1 or index % 25 == 0 or index == total:
                 await _update_progress(job.id, "backup", index, total)
                 current = await db.get(Job, job.id)
@@ -724,45 +809,61 @@ async def poster_backup_all(job: Job) -> dict[str, Any]:
                         "failed": failed,
                         "cancelled": True,
                         "errors": errors,
+                        "by_type": by_type,
                     }
 
-            dest = backup_path(movie)
+            dest = subject.backup_file()
+            entity = subject.entity
             try:
                 if await asyncio.to_thread(dest.is_file):
-                    if movie.poster_sha256:
-                        if await asyncio.to_thread(_sha256, dest) == movie.poster_sha256:
+                    if entity.poster_sha256:
+                        if await asyncio.to_thread(_sha256, dest) == entity.poster_sha256:
                             skipped += 1
-                            movie.poster_local_backup_path = str(dest)
+                            by_type[subject.media_type]["skipped"] += 1
+                            entity.poster_local_backup_path = str(dest)
                             continue
-                    elif movie.poster_deployed_at:
+                    elif entity.poster_deployed_at:
                         mtime = datetime.fromtimestamp(dest.stat().st_mtime, UTC)
-                        if mtime >= movie.poster_deployed_at:
+                        if mtime >= entity.poster_deployed_at:
                             skipped += 1
-                            movie.poster_local_backup_path = str(dest)
+                            by_type[subject.media_type]["skipped"] += 1
+                            entity.poster_local_backup_path = str(dest)
                             continue
                     else:
                         skipped += 1
-                        movie.poster_local_backup_path = str(dest)
+                        by_type[subject.media_type]["skipped"] += 1
+                        entity.poster_local_backup_path = str(dest)
                         continue
 
                 source: Path | None = None
-                if movie.tmdb_id is not None:
-                    cache_file, _ = cache_paths(movie.tmdb_id)
-                    if await asyncio.to_thread(cache_file.is_file):
-                        source = cache_file
-                if source is None and movie.poster_path:
-                    poster_file = Path(movie.poster_path)
+                if subject.tmdb_id is not None:
+                    cpaths = subject.cache_paths()
+                    if cpaths:
+                        cache_file, _ = cpaths
+                        if await asyncio.to_thread(cache_file.is_file):
+                            source = cache_file
+                if source is None and entity.poster_path:
+                    poster_file = Path(entity.poster_path)
                     if await asyncio.to_thread(poster_file.is_file):
                         source = poster_file
                 if source is None:
                     raise FileNotFoundError("no deployed poster file or cache copy found")
 
                 await asyncio.to_thread(_atomic_copy, source, dest)
-                movie.poster_local_backup_path = str(dest)
+                entity.poster_local_backup_path = str(dest)
                 copied += 1
+                by_type[subject.media_type]["copied"] += 1
             except Exception as exc:  # noqa: BLE001
                 failed += 1
-                errors.append({"movie_id": movie.id, "title": movie.title, "error": str(exc)})
+                by_type[subject.media_type]["failed"] += 1
+                errors.append(
+                    {
+                        "media_type": subject.media_type,
+                        "subject_id": entity.id,
+                        "title": subject.title,
+                        "error": str(exc),
+                    }
+                )
 
         await db.commit()
         return {
@@ -771,6 +872,7 @@ async def poster_backup_all(job: Job) -> dict[str, Any]:
             "skipped": skipped,
             "failed": failed,
             "errors": errors,
+            "by_type": by_type,
         }
 
 
@@ -796,103 +898,262 @@ def _delete_path(path: Path) -> int:
 
 @register("poster_maintenance")
 async def poster_maintenance(job: Job) -> dict[str, Any]:
-    """Reconcile Radarr-deleted movies and prune orphaned poster caches/backups.
+    """Reconcile Radarr/Sonarr-deleted media and prune orphaned poster caches/backups.
 
-    Job result/events are the audit trail. ArtworkEvents cascade when Movie rows
-    are deleted; taste/feedback training data is intentionally left alone.
+    Job result/events are the audit trail. ArtworkEvents cascade when Movie/Series/Season
+    rows are deleted; taste/feedback training data is intentionally left alone.
     """
     from marquee.core.arr_clients.radarr_client import RadarrClient
-    from marquee.core.poster_service import backup_path, cache_paths
+    from marquee.core.arr_clients.sonarr_client import SonarrClient
 
     dry_run = bool(job.payload.get("dry_run", False))
     force = bool(job.payload.get("force", False))
-    if not settings.radarr_configured:
-        return {"skipped": "radarr not configured", "dry_run": dry_run}
 
-    radarr = RadarrClient(settings.RADARR_URL, settings.RADARR_API_KEY)
-    try:
-        await radarr.connect()
+    radarr_movies = None
+    if settings.radarr_configured:
+        radarr = RadarrClient(settings.RADARR_URL, settings.RADARR_API_KEY)
         try:
-            radarr_movies = await radarr.get_movies()
-        except Exception as exc:  # noqa: BLE001
-            return {"skipped": f"radarr fetch failed: {exc}", "dry_run": dry_run}
-    finally:
-        await radarr.disconnect()
+            await radarr.connect()
+            try:
+                radarr_movies = await radarr.get_movies()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("radarr fetch failed during maintenance: %s", exc)
+        finally:
+            await radarr.disconnect()
 
-    if not radarr_movies:
-        return {"skipped": "radarr returned no movies", "dry_run": dry_run}
+    sonarr_series = None
+    if settings.sonarr_configured:
+        sonarr = SonarrClient(settings.SONARR_URL, settings.SONARR_API_KEY)
+        try:
+            await sonarr.connect()
+            try:
+                sonarr_series = await sonarr.get_series()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("sonarr fetch failed during maintenance: %s", exc)
+        finally:
+            await sonarr.disconnect()
 
-    radarr_ids = {int(row["id"]) for row in radarr_movies if row.get("id") is not None}
+    if not settings.radarr_configured and not settings.sonarr_configured:
+        return {"skipped": "neither radarr nor sonarr configured", "dry_run": dry_run}
+
     factory = _get_session_factory()
     async with factory() as db:
+        deleted_manifest: list[dict] = []
+        file_paths: list[Path] = []
+        candidates_movies: list[Movie] = []
+        candidates_series: list[Series] = []
+
         current_movie_ids = set((await db.execute(select(Movie.id))).scalars().all())
         current_tmdb_ids = {
             tmdb_id
             for tmdb_id in (await db.execute(select(Movie.tmdb_id))).scalars().all()
             if tmdb_id is not None
         }
-        candidates = (
-            (
-                await db.execute(
-                    select(Movie)
-                    .where(Movie.radarr_id.is_not(None), Movie.radarr_id.not_in(radarr_ids))
-                    .order_by(Movie.id)
+
+        # 1. Reconcile movies (Radarr)
+        if radarr_movies is not None:
+            radarr_ids = {int(row["id"]) for row in radarr_movies if row.get("id") is not None}
+            candidates_movies = (
+                (
+                    await db.execute(
+                        select(Movie)
+                        .where(Movie.radarr_id.is_not(None), Movie.radarr_id.not_in(radarr_ids))
+                        .order_by(Movie.id)
+                    )
                 )
+                .scalars()
+                .all()
             )
-            .scalars()
-            .all()
-        )
-        threshold = max(5, int(0.1 * max(len(radarr_ids), 1)))
-        if len(candidates) > threshold and not force:
-            raise RuntimeError(
-                f"refusing to delete {len(candidates)} movies; exceeds threshold {threshold}"
+            threshold_movies = max(5, int(0.1 * max(len(radarr_ids), 1)))
+            if len(candidates_movies) > threshold_movies and not force:
+                raise RuntimeError(
+                    f"refusing to delete {len(candidates_movies)} movies; exceeds threshold {threshold_movies}"
+                )
+
+            for movie in candidates_movies:
+                deleted_manifest.append(
+                    {
+                        "media_type": "movie",
+                        "movie_id": movie.id,
+                        "title": movie.title,
+                        "tmdb_id": movie.tmdb_id,
+                        "radarr_id": movie.radarr_id,
+                    }
+                )
+                runs = (
+                    await db.execute(
+                        select(PipelineRun.archive_path, PipelineRun.output_dir).where(
+                            PipelineRun.movie_id == movie.id
+                        )
+                    )
+                ).all()
+                for archive_path, output_dir in runs:
+                    path = _confined_existing_path(archive_path, settings.runs_archive_path)
+                    if path is not None:
+                        file_paths.append(path)
+                    path = _confined_existing_path(output_dir, settings.runs_work_path)
+                    if path is not None:
+                        file_paths.append(path)
+                subject = PosterSubject.from_movie(movie)
+                cpaths = subject.cache_paths()
+                if cpaths:
+                    file_paths.extend(cpaths)
+                file_paths.append(subject.backup_file())
+
+        # 2. Reconcile series (Sonarr)
+        current_series_ids = set((await db.execute(select(Series.id))).scalars().all())
+        current_series_tmdb_ids = {
+            tmdb_id
+            for tmdb_id in (await db.execute(select(Series.tmdb_id))).scalars().all()
+            if tmdb_id is not None
+        }
+        current_season_ids = set((await db.execute(select(Season.id))).scalars().all())
+
+        if sonarr_series is not None:
+            sonarr_ids = {int(row["id"]) for row in sonarr_series if row.get("id") is not None}
+            candidates_series = (
+                (
+                    await db.execute(
+                        select(Series)
+                        .where(Series.sonarr_id.is_not(None), Series.sonarr_id.not_in(sonarr_ids))
+                        .order_by(Series.id)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            threshold_series = max(5, int(0.1 * max(len(sonarr_ids), 1)))
+            if len(candidates_series) > threshold_series and not force:
+                raise RuntimeError(
+                    f"refusing to delete {len(candidates_series)} series; exceeds threshold {threshold_series}"
+                )
+
+            for series in candidates_series:
+                deleted_manifest.append(
+                    {
+                        "media_type": "series",
+                        "series_id": series.id,
+                        "title": series.title,
+                        "tmdb_id": series.tmdb_id,
+                        "sonarr_id": series.sonarr_id,
+                    }
+                )
+                # Find all runs for series or its seasons
+                runs = (
+                    await db.execute(
+                        select(PipelineRun.archive_path, PipelineRun.output_dir).where(
+                            or_(
+                                PipelineRun.series_id == series.id,
+                                PipelineRun.season_id.in_(
+                                    select(Season.id).where(Season.series_id == series.id)
+                                ),
+                            )
+                        )
+                    )
+                ).all()
+                for archive_path, output_dir in runs:
+                    path = _confined_existing_path(archive_path, settings.runs_archive_path)
+                    if path is not None:
+                        file_paths.append(path)
+                    path = _confined_existing_path(output_dir, settings.runs_work_path)
+                    if path is not None:
+                        file_paths.append(path)
+
+                # Series cache + backup
+                subject_series = PosterSubject.from_series(series)
+                cpaths = subject_series.cache_paths()
+                if cpaths:
+                    file_paths.extend(cpaths)
+                file_paths.append(subject_series.backup_file())
+
+                # All seasons cache + backups
+                seasons = (
+                    (await db.execute(select(Season).where(Season.series_id == series.id)))
+                    .scalars()
+                    .all()
+                )
+                for season in seasons:
+                    subject_season = PosterSubject.from_season(season, series)
+                    cpaths = subject_season.cache_paths()
+                    if cpaths:
+                        file_paths.extend(cpaths)
+                    file_paths.append(subject_season.backup_file())
+
+        # 3. Prune orphaned backups & caches
+        backups_pruned = cache_pruned = files_deleted = 0
+        backup_dir = settings.poster_backup_path
+        movie_cache_dir = settings.poster_cache_path / "movies"
+        tv_cache_dir = settings.poster_cache_path / "tv"
+
+        orphan_backups = []
+        if backup_dir.is_dir():
+            # Movie backups (*.jpg, numeric stem)
+            orphan_backups.extend(
+                [
+                    entry
+                    for entry in backup_dir.glob("*.jpg")
+                    if entry.stem.isdigit() and int(entry.stem) not in current_movie_ids
+                ]
+            )
+            # Series backups (series-*.jpg)
+            orphan_backups.extend(
+                [
+                    entry
+                    for entry in backup_dir.glob("series-*.jpg")
+                    if entry.stem.removeprefix("series-").isdigit()
+                    and int(entry.stem.removeprefix("series-")) not in current_series_ids
+                ]
+            )
+            # Season backups (season-*.jpg)
+            orphan_backups.extend(
+                [
+                    entry
+                    for entry in backup_dir.glob("season-*.jpg")
+                    if entry.stem.removeprefix("season-").isdigit()
+                    and int(entry.stem.removeprefix("season-")) not in current_season_ids
+                ]
             )
 
-        deleted_manifest: list[dict] = []
-        file_paths: list[Path] = []
-        for movie in candidates:
-            deleted_manifest.append(
-                {
-                    "movie_id": movie.id,
-                    "title": movie.title,
-                    "tmdb_id": movie.tmdb_id,
-                    "radarr_id": movie.radarr_id,
-                }
+        orphan_cache = []
+        if movie_cache_dir.is_dir():
+            orphan_cache.extend(
+                [
+                    entry
+                    for entry in movie_cache_dir.glob("*")
+                    if entry.suffix in {".jpg", ".json"}
+                    and entry.stem.removesuffix(".meta").isdigit()
+                    and int(entry.stem.removesuffix(".meta")) not in current_tmdb_ids
+                ]
             )
-            runs = (
+
+        current_seasons_tv = {
+            (season_number, tmdb_id)
+            for season_number, tmdb_id in (
                 await db.execute(
-                    select(PipelineRun.archive_path, PipelineRun.output_dir).where(
-                        PipelineRun.movie_id == movie.id
+                    select(Season.season_number, Series.tmdb_id).join(
+                        Series, Series.id == Season.series_id
                     )
                 )
             ).all()
-            for archive_path, output_dir in runs:
-                path = _confined_existing_path(archive_path, settings.runs_archive_path)
-                if path is not None:
-                    file_paths.append(path)
-                path = _confined_existing_path(output_dir, settings.runs_work_path)
-                if path is not None:
-                    file_paths.append(path)
-            if movie.tmdb_id is not None:
-                cache_file, cache_meta = cache_paths(movie.tmdb_id)
-                file_paths.extend([cache_file, cache_meta])
-            file_paths.append(backup_path(movie))
+            if tmdb_id is not None
+        }
 
-        backups_pruned = cache_pruned = files_deleted = 0
-        backup_dir = settings.poster_backup_path
-        cache_dir = settings.poster_cache_path / "movies"
-        orphan_backups = [
-            entry
-            for entry in backup_dir.glob("*.jpg")
-            if entry.stem.isdigit() and int(entry.stem) not in current_movie_ids
-        ]
-        orphan_cache = [
-            entry
-            for entry in cache_dir.glob("*")
-            if entry.suffix in {".jpg", ".json"}
-            and entry.stem.removesuffix(".meta").isdigit()
-            and int(entry.stem.removesuffix(".meta")) not in current_tmdb_ids
-        ]
+        if tv_cache_dir.is_dir():
+            for entry in tv_cache_dir.glob("*"):
+                if entry.suffix in {".jpg", ".json"}:
+                    stem = entry.stem.removesuffix(".meta")
+                    if "-s" in stem:
+                        parts = stem.split("-s")
+                        if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+                            tmdb_id = int(parts[0])
+                            season_num = int(parts[1])
+                            if (season_num, tmdb_id) not in current_seasons_tv:
+                                orphan_cache.append(entry)
+                    else:
+                        if stem.isdigit():
+                            tmdb_id = int(stem)
+                            if tmdb_id not in current_series_tmdb_ids:
+                                orphan_cache.append(entry)
 
         if not dry_run:
             for path in file_paths:
@@ -904,12 +1165,17 @@ async def poster_maintenance(job: Job) -> dict[str, Any]:
                 backups_pruned += await asyncio.to_thread(_delete_path, path)
             for path in orphan_cache:
                 cache_pruned += await asyncio.to_thread(_delete_path, path)
-            for movie in candidates:
+
+            for movie in candidates_movies:
                 await db.delete(movie)
+            for series in candidates_series:
+                # cascade deletes seasons and episodes
+                await db.delete(series)
             await db.commit()
 
         return {
-            "movies_deleted": 0 if dry_run else len(candidates),
+            "movies_deleted": 0 if dry_run else len(candidates_movies),
+            "series_deleted": 0 if dry_run else len(candidates_series),
             "files_deleted": files_deleted,
             "backups_pruned": 0 if dry_run else backups_pruned,
             "cache_pruned": 0 if dry_run else cache_pruned,
