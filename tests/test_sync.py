@@ -783,8 +783,8 @@ async def test_sync_series_creates_new(db: AsyncSession):
 
 
 @pytest.mark.asyncio
-async def test_sync_series_skips_season_zero(db: AsyncSession):
-    """Season 0 (Specials) should be skipped."""
+async def test_sync_series_syncs_season_zero(db: AsyncSession):
+    """Season 0 (Specials) should be synced."""
     sonarr = AsyncMock()
     sonarr.get_series.return_value = [
         _sonarr_series(
@@ -804,8 +804,8 @@ async def test_sync_series_skips_season_zero(db: AsyncSession):
     seasons = (
         (await db.execute(select(Season).where(Season.series_id == series.id))).scalars().all()
     )
-    assert len(seasons) == 1
-    assert seasons[0].season_number == 1
+    assert len(seasons) == 2
+    assert {s.season_number for s in seasons} == {0, 1}
 
 
 @pytest.mark.asyncio

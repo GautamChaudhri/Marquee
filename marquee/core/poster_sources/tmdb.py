@@ -52,6 +52,15 @@ class MovieDetails:
     tagline: str | None = None
 
 
+@dataclass
+class TVDetails:
+    """TMDB TV show metadata used to classify poster text."""
+
+    director: str | None = None
+    production_companies: list[str] = field(default_factory=list)
+    tagline: str | None = None
+
+
 # ---------------------------------------------------------------------------
 # TMDBClient
 # ---------------------------------------------------------------------------
@@ -266,6 +275,39 @@ class TMDBClient:
         Returns a dict with keys like ``tvdb_id``, ``imdb_id``, ``freebase_mid``, etc.
         """
         return await self._get(f"/tv/{tmdb_id}/external_ids")
+
+    async def get_tv_details(self, tmdb_id: int) -> TVDetails:
+        """Fetch TV series metadata used by the OCR text gate.
+
+        Pulls the first creator's name as director from created_by,
+        production company and network names, and tagline.
+        """
+        data = await self._get(f"/tv/{tmdb_id}")
+        if not isinstance(data, dict):
+            return TVDetails()
+
+        director = None
+        created_by = data.get("created_by", [])
+        if isinstance(created_by, list) and created_by:
+            first_creator = created_by[0]
+            if isinstance(first_creator, dict):
+                director = str(first_creator.get("name") or "").strip() or None
+
+        companies: list[str] = []
+        for source_key in ("networks", "production_companies"):
+            for company in data.get(source_key, []):
+                if not isinstance(company, dict):
+                    continue
+                name = str(company.get("name") or "").strip()
+                if name and name not in companies:
+                    companies.append(name)
+
+        tagline = str(data.get("tagline") or "").strip() or None
+        return TVDetails(
+            director=director,
+            production_companies=companies,
+            tagline=tagline,
+        )
 
     # ── ID Resolution ────────────────────────────────────────────────
 

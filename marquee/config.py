@@ -649,13 +649,13 @@ class Settings(BaseSettings):
         "to derive from the media file (e.g. '{movie_basename}.jpg').",
     )
     SERIES_POSTER_FORMAT: str = Field(
-        default="poster.jpg",
+        default="show.jpg",
         description="Filename for TV series posters.",
     )
     SEASON_POSTER_FORMAT: str = Field(
-        default="season{season:02d}-poster.jpg",
+        default="season{season:02d}.jpg",
         description="Filename for season posters. {season} = season number. "
-        "Example: 'season{season:02d}-poster.jpg' → 'season01-poster.jpg'",
+        "Example: 'season{season:02d}.jpg' → 'season01.jpg'",
     )
 
     # ------------------------------------------------------------------
@@ -706,6 +706,8 @@ class Settings(BaseSettings):
 SETTINGS_OVERRIDE_KEYS = frozenset(
     {
         "MOVIE_POSTER_FORMAT",
+        "SERIES_POSTER_FORMAT",
+        "SEASON_POSTER_FORMAT",
         "HEAL_ENABLED",
         "HEAL_INTERVAL_MINUTES",
         "POSTER_RESTORE_METHOD",
