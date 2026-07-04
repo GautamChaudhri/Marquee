@@ -30,7 +30,13 @@ from marquee.core.path_utils import PathValidationError
 from marquee.main import app
 from marquee.media import binaries, letterbox_preview
 from marquee.media import letterbox_detect as ld
-from marquee.media.letterbox_manager import JobState, letterbox_manager
+from marquee.media.letterbox_manager import (
+    EpisodeBatchItem,
+    JobState,
+    group_episode_items_by_media_file,
+    letterbox_manager,
+    select_season_sample_episodes,
+)
 from marquee.media.probe import prefilter_bucket
 from marquee.models import (
     Episode,
@@ -347,7 +353,26 @@ def test_consensus_asymmetric_outliers_do_not_create_variable_ar():
 def test_sample_minutes_movie_and_tv():
     movie = ld.sample_minutes(7200, is_tv=False)
     assert movie[0] == 5 and movie[-1] == 60
-    assert ld.sample_minutes(1800, is_tv=True) == [5, 10, 15]
+    assert ld.sample_minutes(1800, is_tv=True) == [4, 15, 26]
+
+
+def test_sample_offsets_proportional_respects_runtime_span():
+    assert ld.sample_offsets_proportional(20 * 60, 3, 12, 12) == [144, 600, 1056]
+    assert ld.sample_offsets_proportional(40 * 60, 3, 12, 12) == [288, 1200, 2112]
+    assert ld.sample_offsets_proportional(65 * 60, 8, 12, 12) == [
+        468,
+        891,
+        1315,
+        1738,
+        2162,
+        2585,
+        3009,
+        3432,
+    ]
+
+
+def test_sample_offsets_proportional_short_clip_clamps_monotonic():
+    assert ld.sample_offsets_proportional(15, 8, 12, 12) == [2, 3, 5, 7, 8, 10, 12, 13]
 
 
 def test_sample_minutes_thorough_uses_denser_movie_schedule():
@@ -361,6 +386,180 @@ def test_sample_minutes_clamped_to_short_duration():
     # 12-minute file: only samples before minute 12 survive.
     minutes = ld.sample_minutes(12 * 60, is_tv=False)
     assert max(minutes) < 12
+
+
+def test_detect_tv_escalates_quick_pass_to_thorough(monkeypatch):
+    calls: list[int] = []
+
+    def fake_measure(_path, minute, _height, **_kwargs):
+        calls.append(minute)
+        bar = (20 if len(calls) == 2 else 0) if len(calls) <= 3 else 12
+        return ld.WindowMeasurement(
+            minute=minute,
+            ok=True,
+            top_bar=bar,
+            bottom_bar=bar,
+            width=1920,
+            height=1080 - (bar * 2),
+        )
+
+    monkeypatch.setattr(ld, "_nvdec_decoder_for", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(ld, "measure_window_cropdetect", fake_measure)
+
+    result = ld.detect("/episode.mkv", width=1920, height=1080, duration_s=1800, is_tv=True)
+
+    assert result.status == "candidate"
+    assert len(result.samples) == 8
+    assert len(calls) == 11
+
+
+def test_select_season_sample_episodes_uses_distinct_media_files():
+    picked = select_season_sample_episodes(
+        [
+            EpisodeBatchItem(episode_id=1, series_id=1, season_number=0, episode_number=1, media_file_id=91),
+            EpisodeBatchItem(
+                episode_id=2,
+                series_id=1,
+                season_number=1,
+                episode_number=1,
+                media_file_id=101,
+                episode_file_path="/tv/show/s01e01.mkv",
+            ),
+            EpisodeBatchItem(
+                episode_id=3,
+                series_id=1,
+                season_number=1,
+                episode_number=2,
+                media_file_id=101,
+                episode_file_path="/tv/show/s01e02.mkv",
+            ),
+            EpisodeBatchItem(
+                episode_id=4,
+                series_id=1,
+                season_number=1,
+                episode_number=3,
+                media_file_id=103,
+                episode_file_path="/tv/show/s01e03.mkv",
+            ),
+            EpisodeBatchItem(
+                episode_id=5,
+                series_id=1,
+                season_number=1,
+                episode_number=4,
+                media_file_id=104,
+                episode_file_path="/tv/show/s01e04.mkv",
+            ),
+        ],
+        count=3,
+    )
+
+    assert [episode.episode_id for episode in picked] == [2, 4, 5]
+
+
+def test_group_episode_items_by_media_file_dedupes_multi_episode_files():
+    groups = group_episode_items_by_media_file(
+        [
+            EpisodeBatchItem(episode_id=10, series_id=1, season_number=1, episode_number=1, media_file_id=200),
+            EpisodeBatchItem(episode_id=11, series_id=1, season_number=1, episode_number=2, media_file_id=200),
+            EpisodeBatchItem(episode_id=12, series_id=1, season_number=1, episode_number=3, media_file_id=201),
+        ]
+    )
+
+    assert [[episode.episode_id for episode in group] for group in groups] == [[10, 11], [12]]
+
+
+@pytest.mark.asyncio
+async def test_detect_episode_group_and_store_fans_out_one_file_result(db, monkeypatch, tmp_path):
+    series = Series(title="Show", year=2020, series_path="/tv/show", tvdb_id=1)
+    db.add(series)
+    await db.commit()
+    await db.refresh(series)
+
+    episode_a = Episode(
+        series_id=series.id,
+        season_number=1,
+        episode_number=1,
+        title="One",
+        episode_file_path="Show.S01E01-E02.mkv",
+        video_width=1920,
+        video_height=1080,
+    )
+    episode_b = Episode(
+        series_id=series.id,
+        season_number=1,
+        episode_number=2,
+        title="Two",
+        episode_file_path="Show.S01E01-E02.mkv",
+        video_width=1920,
+        video_height=1080,
+    )
+    db.add_all([episode_a, episode_b])
+    await db.commit()
+    await db.refresh(episode_a)
+    await db.refresh(episode_b)
+
+    media_path = tmp_path / "Show.S01E01-E02.mkv"
+    media_path.write_bytes(b"episode")
+
+    async def fake_resolve_media_file(_db, media_file_id):
+        assert media_file_id == 500
+        return type("Resolved", (), {"path": media_path})()
+
+    call_count = {"count": 0}
+
+    def fake_detect_episode_blocking(*_args, **_kwargs):
+        call_count["count"] += 1
+        return {
+            "status": "candidate",
+            "confidence": "high",
+            "eligible": True,
+            "ineligible_reason": None,
+            "source_width": 1920,
+            "source_height": 1080,
+            "recommended_crop_top": 140,
+            "recommended_crop_bottom": 140,
+            "aspect_label": "2.40:1",
+            "detect_method": "cropdetect",
+            "samples_json": "[]",
+            "error": None,
+            "variable_ar": False,
+            "variable_ar_note": None,
+            "_source_path": str(media_path),
+            "_container": "mkv",
+        }
+
+    monkeypatch.setattr("marquee.media.letterbox_manager.resolve_media_file", fake_resolve_media_file)
+    monkeypatch.setattr(letterbox_manager, "detect_episode_blocking", fake_detect_episode_blocking)
+
+    states = await letterbox_manager.detect_episode_group_and_store(
+        db,
+        [episode_a, episode_b],
+        media_file_id=500,
+    )
+
+    stored = (
+        await db.execute(
+            select(LetterboxState).where(
+                LetterboxState.media_type == "episode",
+                LetterboxState.episode_id.in_([episode_a.id, episode_b.id]),
+            )
+        )
+    ).scalars().all()
+    events = (
+        await db.execute(
+            select(LetterboxEvent).where(
+                LetterboxEvent.media_type == "episode",
+                LetterboxEvent.episode_id.in_([episode_a.id, episode_b.id]),
+            )
+        )
+    ).scalars().all()
+
+    assert call_count["count"] == 1
+    assert len(states) == 2
+    assert len(stored) == 2
+    assert {state.status for state in stored} == {"candidate"}
+    assert {state.recommended_crop_top for state in stored} == {140}
+    assert len(events) == 2
 
 
 def test_aspect_label():

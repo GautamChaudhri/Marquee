@@ -557,8 +557,20 @@ class Settings(BaseSettings):
     LETTERBOX_MOVIE_SAMPLE_STEP: int = Field(
         default=5, description="Minutes between movie samples."
     )
-    LETTERBOX_TV_SAMPLES: list[int] = Field(
-        default=[5, 10, 15], description="Sample timestamps for TV episodes (minutes)."
+    LETTERBOX_TV_QUICK_WINDOWS: int = Field(
+        default=3, description="Quick-pass sample window count for TV episodes."
+    )
+    LETTERBOX_TV_THOROUGH_WINDOWS: int = Field(
+        default=8, description="Thorough-pass sample window count for TV episodes."
+    )
+    LETTERBOX_TV_HEAD_SKIP_PCT: int = Field(
+        default=12, description="Percent of runtime to skip at the head for TV sampling."
+    )
+    LETTERBOX_TV_TAIL_SKIP_PCT: int = Field(
+        default=12, description="Percent of runtime to skip at the tail for TV sampling."
+    )
+    LETTERBOX_TV_SEASON_SAMPLE_EPISODES: int = Field(
+        default=3, description="Representative episodes sampled per season during TV triage."
     )
     LETTERBOX_WINDOW_SECONDS: int = Field(
         default=2, description="cropdetect accumulation window per sample (seconds)."
