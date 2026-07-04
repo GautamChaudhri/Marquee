@@ -41,6 +41,9 @@ from marquee.models import (
     RadarrQualityProfile,
     Season,
     Series,
+    SonarrCustomFormat,
+    SonarrProfileFormatItem,
+    SonarrQualityProfile,
 )
 
 logger = logging.getLogger(__name__)
@@ -336,8 +339,25 @@ class SyncService:
     async def _sync_series(self) -> SeriesSyncResult:
         """Sync all TV series from Sonarr into ``series``, ``seasons``, and ``episodes``."""
         result = SeriesSyncResult()
+        now = datetime.now(UTC)
 
         raw_series = await self.sonarr.get_series()
+
+        custom_formats = []
+        quality_profiles = []
+        try:
+            custom_formats = await self.sonarr.get_custom_formats()
+        except Exception:
+            logger.warning("Failed to sync Sonarr custom formats", exc_info=True)
+        try:
+            quality_profiles = await self.sonarr.get_quality_profiles()
+        except Exception:
+            logger.warning("Failed to sync Sonarr quality profiles", exc_info=True)
+        if not isinstance(custom_formats, list):
+            custom_formats = []
+        if not isinstance(quality_profiles, list):
+            quality_profiles = []
+        await _sync_sonarr_overlay_reference_data(self.db, custom_formats, quality_profiles, now)
 
         existing = {s.sonarr_id: s for s in (await self.db.execute(select(Series))).scalars()}
         enrich_candidates = []
@@ -556,8 +576,25 @@ class SyncService:
 
             # Resolve file path from episode file
             file_id = edata.get("episodeFileId")
-            if file_id and file_id in file_by_id:
-                episode.episode_file_path = file_by_id[file_id].get("path")
+            fdata = file_by_id.get(file_id) if file_id else None
+            if fdata is not None:
+                episode.episode_file_path = fdata.get("path")
+
+                # ── HDR / Dolby Vision + resolution (plan 06) ──────────
+                hdr_type_raw, has_hdr, has_dv = _extract_hdr(fdata)
+                episode.hdr_type_raw = hdr_type_raw
+                episode.has_hdr = has_hdr
+                episode.has_dv = has_dv
+                width, height, _ = _extract_media_info(fdata)
+                episode.video_width = width
+                episode.video_height = height
+            else:
+                # File was deleted — HDR/resolution truth is no longer known.
+                episode.hdr_type_raw = None
+                episode.has_hdr = None
+                episode.has_dv = None
+                episode.video_width = None
+                episode.video_height = None
 
         # ── Physical media-file rows + episode associations (§19.3) ──
         await self.db.flush()  # assign episode.id for new rows
@@ -888,6 +925,111 @@ async def _sync_radarr_overlay_reference_data(
             score_int = int(score)
             db.add(
                 RadarrProfileFormatItem(
+                    profile_id=profile_id,
+                    custom_format_id=cf_id,
+                    score=score_int,
+                )
+            )
+            profile_scores[cf_id] = score_int
+        profile_scores_by_profile[profile_id] = profile_scores
+
+    return custom_format_names, profile_scores_by_profile
+
+
+async def _sync_sonarr_overlay_reference_data(
+    db: AsyncSession,
+    custom_formats: list[dict],
+    quality_profiles: list[dict],
+    synced_at: datetime,
+) -> tuple[dict[int, str], dict[int, dict[int, int]]]:
+    """Upsert Sonarr custom-format and quality-profile metadata.
+
+    Mirrors ``_sync_radarr_overlay_reference_data``. No per-episode
+    custom-format score capture (H6) — the returned score maps are unused,
+    but kept for symmetry with the Radarr helper.
+    """
+    existing_custom_formats = {
+        row.id: row for row in (await db.execute(select(SonarrCustomFormat))).scalars()
+    }
+    existing_profiles = {
+        row.id: row for row in (await db.execute(select(SonarrQualityProfile))).scalars()
+    }
+
+    custom_format_names: dict[int, str] = {}
+    for payload in custom_formats:
+        cf_id = payload.get("id")
+        if cf_id is None:
+            continue
+        row = existing_custom_formats.get(cf_id)
+        if row is None:
+            row = SonarrCustomFormat(id=cf_id)
+            db.add(row)
+        row.name = payload.get("name") or f"Custom Format {cf_id}"
+        row.include_when_renaming = bool(payload.get("includeCustomFormatWhenRenaming"))
+        row.specifications_json = payload.get("specifications")
+        row.synced_at = synced_at
+        custom_format_names[cf_id] = row.name
+
+    for payload in quality_profiles:
+        profile_id = payload.get("id")
+        if profile_id is None:
+            continue
+        row = existing_profiles.get(profile_id)
+        if row is None:
+            row = SonarrQualityProfile(id=profile_id)
+            db.add(row)
+        row.name = payload.get("name") or f"Profile {profile_id}"
+        row.upgrade_allowed = payload.get("upgradeAllowed")
+        row.cutoff_format_score = payload.get("cutoffFormatScore")
+        row.min_format_score = payload.get("minFormatScore")
+        row.synced_at = synced_at
+
+        for item in payload.get("formatItems") or []:
+            cf_id = item.get("format")
+            if cf_id is None or cf_id in custom_format_names:
+                continue
+            placeholder = existing_custom_formats.get(cf_id)
+            if placeholder is None:
+                placeholder = SonarrCustomFormat(id=cf_id)
+                db.add(placeholder)
+                existing_custom_formats[cf_id] = placeholder
+            placeholder.name = item.get("name") or f"Custom Format {cf_id}"
+            placeholder.include_when_renaming = False
+            placeholder.specifications_json = None
+            placeholder.synced_at = synced_at
+            custom_format_names[cf_id] = placeholder.name
+
+    custom_format_ids = {
+        payload.get("id") for payload in custom_formats if payload.get("id") is not None
+    }
+    profile_ids = {
+        payload.get("id") for payload in quality_profiles if payload.get("id") is not None
+    }
+
+    if custom_format_ids:
+        await db.execute(
+            delete(SonarrCustomFormat).where(SonarrCustomFormat.id.not_in(custom_format_ids))
+        )
+    if profile_ids:
+        await db.execute(
+            delete(SonarrQualityProfile).where(SonarrQualityProfile.id.not_in(profile_ids))
+        )
+
+    await db.execute(delete(SonarrProfileFormatItem))
+    profile_scores_by_profile: dict[int, dict[int, int]] = {}
+    for payload in quality_profiles:
+        profile_id = payload.get("id")
+        if profile_id is None:
+            continue
+        profile_scores: dict[int, int] = {}
+        for item in payload.get("formatItems") or []:
+            cf_id = item.get("format")
+            score = item.get("score")
+            if cf_id is None or score is None:
+                continue
+            score_int = int(score)
+            db.add(
+                SonarrProfileFormatItem(
                     profile_id=profile_id,
                     custom_format_id=cf_id,
                     score=score_int,

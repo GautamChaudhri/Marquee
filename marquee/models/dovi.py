@@ -16,6 +16,7 @@ from datetime import datetime
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     DateTime,
     ForeignKey,
     Integer,
@@ -30,17 +31,33 @@ from marquee.models.base import TimestampMixin
 
 
 class DoviState(Base, TimestampMixin):
-    """Latest Dolby Vision analysis state for one movie."""
+    """Latest Dolby Vision analysis state for one movie or episode."""
 
     __tablename__ = "dovi_state"
+    __table_args__ = (
+        CheckConstraint(
+            "(media_type = 'movie' AND movie_id IS NOT NULL) OR "
+            "(media_type = 'episode' AND episode_id IS NOT NULL)",
+            name="ck_dovi_state_subject",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
 
-    movie_id: Mapped[int] = mapped_column(
+    movie_id: Mapped[int | None] = mapped_column(
         ForeignKey("movies.id", ondelete="CASCADE"),
         unique=True,
         index=True,
-        nullable=False,
+        nullable=True,
+    )
+    media_type: Mapped[str] = mapped_column(
+        String(10), nullable=False, server_default=text("'movie'"), index=True
+    )
+    episode_id: Mapped[int | None] = mapped_column(
+        ForeignKey("episodes.id", ondelete="CASCADE"),
+        unique=True,
+        index=True,
+        nullable=True,
     )
 
     # unknown | analyzing | analyzed | not_dovi | error
@@ -73,6 +90,7 @@ class DoviState(Base, TimestampMixin):
 
     def __repr__(self) -> str:
         return (
-            f"<DoviState(movie_id={self.movie_id}, status={self.status!r}, "
+            f"<DoviState(media_type={self.media_type!r}, movie_id={self.movie_id}, "
+            f"episode_id={self.episode_id}, status={self.status!r}, "
             f"profile={self.dovi_profile!r}, el_type={self.el_type!r})>"
         )

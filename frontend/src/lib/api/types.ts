@@ -268,6 +268,172 @@ export interface HdrMovieDetail {
 	conversion_job: import('./jobs').JobSnapshot | null;
 }
 
+// ── TV HDR (design/plans/06 §5–6, 07) ──────────────────────────────────────
+
+/** Sonarr preference-summary shape is byte-identical to the Radarr one. */
+export type SonarrOverlayProfilePreference = RadarrOverlayProfilePreference;
+
+export type ShowStatus =
+	| 'exceeds_target'
+	| 'meets_target'
+	| 'gaps'
+	| 'below_target'
+	| 'no_hdr_target'
+	| 'unknown';
+export type ShowUniformity = 'uniform' | 'uniform_by_season' | 'mixed';
+export type SeasonUniformity = 'uniform' | 'mixed';
+export type EpisodePreferenceStatus = RadarrOverlayStatus | 'unknown';
+
+export interface SeasonRollup {
+	uniformity: SeasonUniformity;
+	uniform_tags: HdrKind[] | null;
+	union_tags: HdrKind[];
+	distribution: Record<string, number>;
+	status_counts: Record<string, number>;
+	episodes_total: number;
+	episodes_known: number;
+	episodes_unknown: number;
+}
+
+export interface ShowRollup {
+	status: ShowStatus;
+	uniformity: ShowUniformity;
+	union_tags: HdrKind[];
+	uniform_tags: HdrKind[] | null;
+	distribution: Record<string, number>;
+	status_counts: Record<string, number>;
+	episodes_total: number;
+	episodes_known: number;
+	episodes_unknown: number;
+	meeting_fraction: { met: number; of: number };
+}
+
+export interface HdrTvListItem {
+	id: number;
+	title: string;
+	year: number | null;
+	poster_available: boolean;
+	profile_id: number | null;
+	profile_name: string | null;
+	profile_targets: HdrKind[];
+	meet_target: HdrPreferenceChoice | null;
+	exceed_target: HdrPreferenceChoice | null;
+	rollup: ShowRollup;
+	seasons_count: number;
+	episodes_total: number;
+}
+
+export interface HdrTvQuery {
+	page?: number;
+	page_size?: number;
+	hdr_tags?: string[];
+	preference_status?: ShowStatus;
+	uniformity?: ShowUniformity;
+	profile_id?: number;
+	dovi_no_fallback?: boolean;
+	sort_by?: 'title' | 'status' | 'coverage';
+	sort_dir?: 'asc' | 'desc';
+}
+
+export interface HdrTvListResponse extends Paginated<HdrTvListItem> {
+	distribution: Record<'hdr' | 'hdr10' | 'hdr10p' | 'dovi' | 'dovi_no_fallback' | 'sdr', number>;
+	distribution_order: string[];
+	profiles: RadarrOverlayProfile[];
+	profile_preferences: SonarrOverlayProfilePreference[];
+	applied_filters: Record<string, unknown>;
+}
+
+export interface EpisodeHdrItem {
+	id: number;
+	episode_number: number;
+	title: string | null;
+	hdr_type_raw: string | null;
+	hdr_tags: HdrKind[];
+	bucket: string;
+	resolution: string | null;
+	preference_status: EpisodePreferenceStatus;
+	dovi: DoviState | null;
+}
+
+export interface HdrTvSeason {
+	season_number: number;
+	is_specials: boolean;
+	rollup: SeasonRollup;
+	episodes: EpisodeHdrItem[];
+}
+
+export interface HdrTvDetail {
+	series: {
+		id: number;
+		title: string;
+		year: number | null;
+		tvdb_id: number | null;
+		tmdb_id: number | null;
+		quality_profile_id: number | null;
+	};
+	profile: {
+		id: number | null;
+		name: string | null;
+		targets: HdrKind[];
+		meet_target: HdrPreferenceChoice | null;
+		exceed_target: HdrPreferenceChoice | null;
+		excluded_targets: HdrPreferenceChoice[];
+	};
+	rollup: ShowRollup;
+	seasons: HdrTvSeason[];
+	analysis_jobs: import('./jobs').JobListItem[];
+	binaries: { ffprobe: boolean };
+}
+
+export interface HdrSummaryDistribution {
+	sdr: number;
+	hdr: number;
+	hdr10: number;
+	hdr10p: number;
+	dovi: number;
+	dovi_no_fallback: number;
+}
+
+export interface HdrWorstOffender {
+	series_id: number;
+	title: string;
+	year: number | null;
+	status: 'gaps' | 'below_target';
+	below_count: number;
+	unknown_count: number;
+	episodes_total: number;
+	meeting_fraction: { met: number; of: number };
+}
+
+export interface HdrSummary {
+	movies: {
+		total: number;
+		distribution: HdrSummaryDistribution;
+		status_counts: Record<RadarrOverlayStatus, number>;
+		dovi_analysis: { analyzed: number; total_dovi: number };
+	};
+	tv: {
+		shows_total: number;
+		episodes_total: number;
+		episodes_unknown: number;
+		episode_distribution: HdrSummaryDistribution;
+		show_status_counts: Record<ShowStatus, number>;
+		uniformity_counts: Record<ShowUniformity, number>;
+		dovi_analysis: { analyzed: number; total_dovi: number };
+	};
+	worst_offenders: HdrWorstOffender[];
+	insights: {
+		dovi_no_fallback: { movies: number; episodes: number; shows_affected: number };
+		unanalyzed_dovi: { movies: number; episodes: number };
+		no_hdr_target: { movies: number; shows: number };
+		four_k_sdr: { movies: number; shows_affected: number; episodes: number };
+	};
+	profile_preferences: {
+		radarr: RadarrOverlayProfilePreference[];
+		sonarr: SonarrOverlayProfilePreference[];
+	};
+}
+
 export interface PipelineRunRef {
 	run_id: string;
 	events_url: string;
