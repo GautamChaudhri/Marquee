@@ -1,11 +1,13 @@
 """Durable job handlers for Dolby Vision analysis and remediation.
 
-``dovi_analyze`` inspects one movie's file (ffprobe + dovi_tool) and upserts the
-result into ``DoviState``. Batches fan out one child per DoVi movie via
+``dovi_analyze`` inspects one movie's *or* episode's file (ffprobe + dovi_tool)
+and upserts the result into ``DoviState`` (H4 — episode conversion is out of
+scope, analysis only). Batches fan out one child per DoVi subject via
 ``job_manager.create_batch`` (parent type ``dovi_analyze_batch`` — like
 ``letterbox_detect_batch``, the parent needs no handler; child progress
 aggregates automatically). ``dovi_convert`` creates a non-destructive Profile
-8.1 candidate for supported Profile 5 / Profile 7 files.
+8.1 candidate for supported Profile 5 / Profile 7 movie files — movies only,
+untouched by plan 06.
 
 Registered by import side-effect; ``marquee.core.jobs.worker`` imports this
 module so the decorator runs before the worker resolves any job.
@@ -21,26 +23,34 @@ from sqlalchemy import select
 
 from marquee.core.jobs import job_manager
 from marquee.core.jobs.handlers import register
+from marquee.core.path_utils import PathValidationError, safe_translate_and_validate
 from marquee.database import _get_session_factory
-from marquee.models import DoviState, Job, Movie
+from marquee.models import DoviState, Episode, Job, Movie
 
 logger = logging.getLogger(__name__)
 
 
 async def _upsert_dovi_state(
     db,
-    movie_id: int,
     *,
+    movie_id: int | None = None,
+    episode_id: int | None = None,
     fields: dict[str, Any] | None = None,
     status: str | None = None,
     error_reason: str | None = None,
 ) -> DoviState:
-    """Create-or-update the single DoviState row for a movie."""
-    state = (
-        await db.execute(select(DoviState).where(DoviState.movie_id == movie_id))
-    ).scalar_one_or_none()
+    """Create-or-update the single DoviState row for a movie or episode."""
+    if episode_id is not None:
+        query = select(DoviState).where(DoviState.episode_id == episode_id)
+    else:
+        query = select(DoviState).where(DoviState.movie_id == movie_id)
+    state = (await db.execute(query)).scalar_one_or_none()
     if state is None:
-        state = DoviState(movie_id=movie_id)
+        state = DoviState(
+            movie_id=movie_id,
+            episode_id=episode_id,
+            media_type="episode" if episode_id is not None else "movie",
+        )
         db.add(state)
     if fields is not None:
         for key, value in fields.items():
@@ -55,8 +65,7 @@ async def _upsert_dovi_state(
     return state
 
 
-@register("dovi_analyze")
-async def dovi_analyze(job: Job) -> dict[str, Any]:
+async def _dovi_analyze_movie(job: Job, movie_id: int) -> dict[str, Any]:
     from marquee.core import dovi_analysis  # noqa: PLC0415
     from marquee.core.media_files import (  # noqa: PLC0415
         MediaFileNotFoundError,
@@ -67,7 +76,6 @@ async def dovi_analyze(job: Job) -> dict[str, Any]:
     from marquee.media.binaries import BinaryError  # noqa: PLC0415
 
     factory = _get_session_factory()
-    movie_id = int(job.payload["movie_id"])
 
     async with factory() as db:
         movie = await db.get(Movie, movie_id)
@@ -98,13 +106,13 @@ async def dovi_analyze(job: Job) -> dict[str, Any]:
 
         media_file = await ensure_media_file_for_movie(db, movie)
         if media_file is None:
-            await _upsert_dovi_state(db, movie_id, status="error", error_reason="no_media_file")
+            await _upsert_dovi_state(db, movie_id=movie_id, status="error", error_reason="no_media_file")
             return {"movie_id": movie_id, "status": "error", "skipped": True}
 
         try:
             resolved = await resolve_media_file(db, media_file.id)
         except (MediaFileNotFoundError, MediaFileUnavailableError) as exc:
-            await _upsert_dovi_state(db, movie_id, status="error", error_reason=str(exc))
+            await _upsert_dovi_state(db, movie_id=movie_id, status="error", error_reason=str(exc))
             return {"movie_id": movie_id, "status": "error", "skipped": True}
 
         try:
@@ -115,17 +123,93 @@ async def dovi_analyze(job: Job) -> dict[str, Any]:
                 logger.warning(
                     "dovi probe timeout for movie %d (%s) — marking errored", movie.id, movie.title
                 )
-                await _upsert_dovi_state(db, movie_id, status="error", error_reason="probe_timeout")
+                await _upsert_dovi_state(
+                    db, movie_id=movie_id, status="error", error_reason="probe_timeout"
+                )
                 return {"movie_id": movie_id, "status": "error", "skipped": True}
             raise
 
-        state = await _upsert_dovi_state(db, movie_id, fields=analysis.to_state_fields())
+        state = await _upsert_dovi_state(db, movie_id=movie_id, fields=analysis.to_state_fields())
         return {
             "movie_id": movie_id,
             "status": state.status,
             "profile": state.dovi_profile,
             "el_type": state.el_type,
         }
+
+
+async def _dovi_analyze_episode(job: Job, episode_id: int) -> dict[str, Any]:
+    from marquee.core import dovi_analysis  # noqa: PLC0415
+    from marquee.media.binaries import BinaryError  # noqa: PLC0415
+
+    factory = _get_session_factory()
+
+    async with factory() as db:
+        episode = await db.get(Episode, episode_id)
+        if episode is None:
+            raise RuntimeError("episode not found")
+
+        if job.parent_id:
+            parent = await db.get(Job, job.parent_id)
+            if parent:
+                try:
+                    await job_manager.emit(
+                        db,
+                        parent,
+                        state="child_progress",
+                        message=f"Analyzing S{episode.season_number:02d}E{episode.episode_number:02d}",
+                        detail={
+                            "episode_id": episode_id,
+                            "title": episode.title,
+                            "stage": "started",
+                            "progress": 0,
+                        },
+                    )
+                except Exception:  # noqa: BLE001 - progress must not fail analysis
+                    logger.exception(
+                        "could not emit dovi child-start progress for episode %d", episode.id
+                    )
+
+        if not episode.episode_file_path:
+            await _upsert_dovi_state(
+                db, episode_id=episode_id, status="error", error_reason="no_media_file"
+            )
+            return {"episode_id": episode_id, "status": "error", "skipped": True}
+
+        try:
+            path = safe_translate_and_validate(episode.episode_file_path, source="sonarr")
+        except PathValidationError as exc:
+            await _upsert_dovi_state(db, episode_id=episode_id, status="error", error_reason=str(exc))
+            return {"episode_id": episode_id, "status": "error", "skipped": True}
+
+        try:
+            analysis = await dovi_analysis.analyze_path(path)
+        except BinaryError as exc:
+            if "timed out" in str(exc).lower():
+                logger.warning(
+                    "dovi probe timeout for episode %d — marking errored", episode.id
+                )
+                await _upsert_dovi_state(
+                    db, episode_id=episode_id, status="error", error_reason="probe_timeout"
+                )
+                return {"episode_id": episode_id, "status": "error", "skipped": True}
+            raise
+
+        state = await _upsert_dovi_state(db, episode_id=episode_id, fields=analysis.to_state_fields())
+        return {
+            "episode_id": episode_id,
+            "status": state.status,
+            "profile": state.dovi_profile,
+            "el_type": state.el_type,
+        }
+
+
+@register("dovi_analyze")
+async def dovi_analyze(job: Job) -> dict[str, Any]:
+    episode_id = job.payload.get("episode_id")
+    if episode_id is not None:
+        return await _dovi_analyze_episode(job, int(episode_id))
+    return await _dovi_analyze_movie(job, int(job.payload["movie_id"]))
 
 
 @register("dovi_convert")

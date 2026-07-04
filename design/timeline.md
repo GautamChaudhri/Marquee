@@ -9,9 +9,9 @@ labels should be read as planning buckets rather than as a strict historical
 sequence.
 
 TV support is landing feature-by-feature: the TV library, TV poster pipeline,
-and TV taste engine have shipped (`design/plans/04`–`05`); HDR management for
-TV is planned in `design/plans/06`–`07`. Letterbox and subtitle workflows
-remain movie-only for now.
+TV taste engine, and TV HDR management backend have shipped (`design/plans/04`–`06`);
+the HDR management frontend is planned in `design/plans/07`. Letterbox and
+subtitle workflows remain movie-only for now.
 
 ## Phase 1 - Core Infrastructure
 
