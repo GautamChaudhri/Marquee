@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onDestroy } from 'svelte';
+	import { goto } from '$app/navigation';
 	import { analyzeDoviBatch, putRadarrOverlayPreferences } from '$lib/api/radarr-overlay';
 	import { analyzeTvDovi, getHdrSummary, putSonarrPreferences } from '$lib/api/hdr';
 	import { trackJob } from '$lib/jobs';
@@ -176,6 +177,19 @@
 {#if error || !summary}
 	<div class="error">{error ?? 'Failed to load HDR summary.'}</div>
 {:else}
+	<div class="section">
+		<div class="actions">
+			<button class="action" onclick={() => goto('/hdr/movies')}>
+				<span>Movie HDR list</span>
+				<b>{summary.movies.total}</b>
+			</button>
+			<button class="action" onclick={() => goto('/hdr/tv')}>
+				<span>TV HDR list</span>
+				<b>{summary.tv.shows_total}</b>
+			</button>
+		</div>
+	</div>
+
 	<div class="section">
 		<h2>Movies</h2>
 		<div class="stats">
@@ -394,6 +408,35 @@
 	}
 	.section {
 		margin-bottom: 22px;
+	}
+	.actions {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 12px;
+	}
+	.action {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 16px;
+		min-width: 220px;
+		padding: 14px 16px;
+		border: 1px solid var(--line);
+		border-radius: var(--radius);
+		background: var(--panel);
+		color: inherit;
+		cursor: pointer;
+		text-align: left;
+	}
+	.action span {
+		color: var(--muted);
+	}
+	.action b {
+		font-size: 14px;
+	}
+	.action:hover {
+		border-color: var(--gold);
+		background: color-mix(in srgb, var(--gold) 8%, var(--panel));
 	}
 	.stats {
 		display: grid;
