@@ -336,10 +336,7 @@ export interface HdrTvQuery {
 }
 
 export interface HdrTvListResponse extends Paginated<HdrTvListItem> {
-	distribution: Record<
-		'hdr' | 'hdr10' | 'hdr10p' | 'dovi' | 'dovi_no_fallback' | 'sdr',
-		number
-	>;
+	distribution: Record<'hdr' | 'hdr10' | 'hdr10p' | 'dovi' | 'dovi_no_fallback' | 'sdr', number>;
 	distribution_order: string[];
 	profiles: RadarrOverlayProfile[];
 	profile_preferences: SonarrOverlayProfilePreference[];
