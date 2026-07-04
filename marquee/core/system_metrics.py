@@ -156,13 +156,48 @@ def _ensure_nvml() -> bool:
     return bool(_nvml["init"])
 
 
+def gpu_inventory() -> list[dict[str, Any]]:
+    """Best-effort NVIDIA GPU inventory for operator-facing hardware decisions."""
+    if not _ensure_nvml():
+        return []
+    pynvml = _nvml["mod"]
+    try:
+        count = pynvml.nvmlDeviceGetCount()
+    except Exception as exc:  # noqa: BLE001 - degrade rather than 500
+        logger.debug("NVML device count failed: %s", exc)
+        return []
+    out: list[dict[str, Any]] = []
+    for index in range(count):
+        try:
+            handle = pynvml.nvmlDeviceGetHandleByIndex(index)
+            name = pynvml.nvmlDeviceGetName(handle)
+            if isinstance(name, bytes):
+                name = name.decode()
+            mem = pynvml.nvmlDeviceGetMemoryInfo(handle)
+            out.append(
+                {
+                    "index": index,
+                    "name": name,
+                    "vram_total": mem.total,
+                    "vram_free": mem.free,
+                }
+            )
+        except Exception as exc:  # noqa: BLE001 - one broken card shouldn't break all
+            logger.debug("NVML inventory query failed for GPU %s: %s", index, exc)
+    return out
+
+
 def gpu_metrics() -> dict[str, Any] | None:
-    """NVIDIA GPU 0 metrics, or None when no NVML/GPU is present."""
+    """Primary NVIDIA GPU metrics, or None when no NVML/GPU is present."""
     if not _ensure_nvml():
         return None
     pynvml = _nvml["mod"]
     try:
-        handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+        inventory = gpu_inventory()
+        if not inventory:
+            return None
+        primary = max(inventory, key=lambda item: item["vram_total"])
+        handle = pynvml.nvmlDeviceGetHandleByIndex(primary["index"])
         name = pynvml.nvmlDeviceGetName(handle)
         if isinstance(name, bytes):
             name = name.decode()
@@ -182,6 +217,7 @@ def gpu_metrics() -> dict[str, Any] | None:
         except Exception:  # noqa: BLE001 - decoder stats are optional
             dec = None
         return {
+            "index": primary["index"],
             "model": name,
             "util": util.gpu,
             "memUtil": util.memory,
@@ -202,6 +238,7 @@ def collect(disk_path: str | Path) -> dict[str, Any]:
     return {
         "cpu": cpu_metrics(),
         "gpu": gpu_metrics(),
+        "gpus": gpu_inventory(),
         "ram": ram_metrics(),
         "disk": {**disk_metrics(disk_path), **disk_io()},
         "net": net_io(),

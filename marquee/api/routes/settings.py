@@ -63,12 +63,24 @@ async def get_settings():
                 "configured": subtitle_settings.generation_enabled,
                 "url_configured": _configured(subtitle_settings.SUBGEN_URL),
                 "callback_token_configured": _configured(subtitle_settings.SUBGEN_CALLBACK_TOKEN),
-                "url": subtitle_settings.SUBGEN_URL,
+                "deployment": subtitle_settings.subgen_deployment,
+                "url": subtitle_settings.subgen_url,
                 "profile_name": subtitle_settings.SUBGEN_PROFILE_NAME,
                 "model_label": subtitle_settings.SUBGEN_MODEL_LABEL,
                 "mode": subtitle_settings.SUBGEN_MODE,
                 "local_path_prefix": subtitle_settings.SUBGEN_LOCAL_PATH_PREFIX,
                 "remote_path_prefix": subtitle_settings.SUBGEN_REMOTE_PATH_PREFIX,
+                "embedded_port": subtitle_settings.SUBGEN_EMBEDDED_PORT,
+                "whisper_model": subtitle_settings.SUBGEN_WHISPER_MODEL,
+                "transcribe_device": subtitle_settings.SUBGEN_TRANSCRIBE_DEVICE,
+                "gpu_index": subtitle_settings.SUBGEN_GPU_INDEX,
+                "compute_type": subtitle_settings.SUBGEN_COMPUTE_TYPE,
+                "concurrent_transcriptions": subtitle_settings.SUBGEN_CONCURRENT_TRANSCRIPTIONS,
+                "whisper_threads": subtitle_settings.SUBGEN_WHISPER_THREADS,
+                "model_path": subtitle_settings.SUBGEN_MODEL_PATH,
+                "naming_type": subtitle_settings.SUBGEN_NAMING_TYPE,
+                "name_includes_subgen": subtitle_settings.SUBGEN_NAME_INCLUDES_SUBGEN,
+                "name_includes_model": subtitle_settings.SUBGEN_NAME_INCLUDES_MODEL,
             },
         },
         "paths": {
@@ -153,6 +165,7 @@ class SubtitlesSettingsUpdate(BaseModel):
 
 
 class SubgenSettingsUpdate(BaseModel):
+    deployment: str | None = None
     url: str | None = None
     profile_name: str | None = None
     model_label: str | None = None
@@ -160,6 +173,17 @@ class SubgenSettingsUpdate(BaseModel):
     local_path_prefix: str | None = None
     remote_path_prefix: str | None = None
     callback_token: str | None = None
+    embedded_port: int | None = Field(default=None, ge=1, le=65535)
+    whisper_model: str | None = None
+    transcribe_device: str | None = None
+    gpu_index: int | None = Field(default=None, ge=0)
+    compute_type: str | None = None
+    concurrent_transcriptions: int | None = Field(default=None, ge=1, le=32)
+    whisper_threads: int | None = Field(default=None, ge=0, le=128)
+    model_path: str | None = None
+    naming_type: str | None = None
+    name_includes_subgen: bool | None = None
+    name_includes_model: bool | None = None
 
 
 class PostersSettingsUpdate(BaseModel):
