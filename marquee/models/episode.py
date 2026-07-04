@@ -47,6 +47,16 @@ class Episode(Base, TimestampMixin):
     has_dv: Mapped[bool | None] = mapped_column(
         Boolean, nullable=True, comment="NULL=not checked, True=has DV, False=missing DV"
     )
+    hdr_type_raw: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+        comment=(
+            "Raw Sonarr dynamic-range descriptor; prefers videoDynamicRangeType and "
+            "falls back to videoDynamicRange"
+        ),
+    )
+    video_width: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    video_height: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     def __repr__(self) -> str:
         return (

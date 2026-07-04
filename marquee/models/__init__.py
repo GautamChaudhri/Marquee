@@ -30,6 +30,12 @@ from marquee.models.radarr_overlay import (
 )
 from marquee.models.season import Season
 from marquee.models.series import Series
+from marquee.models.sonarr_overlay import (
+    SonarrCustomFormat,
+    SonarrOverlayProfilePreference,
+    SonarrProfileFormatItem,
+    SonarrQualityProfile,
+)
 from marquee.models.subtitle_inventory import SubtitleInventory, SubtitleTrack
 from marquee.models.subtitle_managed import (
     ManagedSubtitleAsset,
@@ -78,4 +84,8 @@ __all__ = [
     "Season",
     "Series",
     "Episode",
+    "SonarrCustomFormat",
+    "SonarrQualityProfile",
+    "SonarrProfileFormatItem",
+    "SonarrOverlayProfilePreference",
 ]
