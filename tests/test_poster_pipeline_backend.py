@@ -176,6 +176,125 @@ async def test_run_batch_finalizes_rows_when_exception_escapes(db, tmp_path: Pat
     assert run.status == "failed"
     assert run.completed_at is not None
     assert run.error == "download exploded"
+    assert run.media_type == "movie"
+
+    import json
+
+    archive = json.loads(Path(run.archive_path).read_text())
+    assert archive["media_type"] == "movie"
+    assert "subject" not in archive
+
+
+@pytest.mark.asyncio
+async def test_run_batch_assets_creates_tv_pipeline_runs_with_subject_fks(
+    db, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """One series asset + one season asset: distinct work dirs, PipelineRun
+    rows carry the right subject FKs (never movie_id), and the archive gains
+    the additive media_type/subject keys (design 04 §9.2/§9.6)."""
+    import json
+
+    from marquee.core.poster_subjects import PosterSubject
+    from marquee.ml.namespaces import get_namespace
+    from marquee.models import Season, Series
+
+    series_folder = tmp_path / "Breaking Bad"
+    series_folder.mkdir(parents=True)
+    series = Series(
+        title="Breaking Bad",
+        year=2008,
+        series_path=str(series_folder),
+        tmdb_id=1396,
+        sonarr_id=10,
+    )
+    db.add(series)
+    await db.flush()
+    season = Season(series_id=series.id, season_number=1, episode_count=7, episode_file_count=7)
+    db.add(season)
+    await db.commit()
+    await db.refresh(series)
+    await db.refresh(season)
+
+    class _FakeTMDB:
+        async def get_tv_images(self, _tmdb_id):
+            return []
+
+        async def get_tv_primary_poster(self, _tmdb_id):
+            return None
+
+        async def get_season_images(self, _tmdb_id, _season_number):
+            return []
+
+        async def get_season_primary_poster(self, _tmdb_id, _season_number):
+            return None
+
+    async def boom(_contexts, _progress):
+        raise RuntimeError("download exploded")
+
+    monkeypatch.setattr(br, "_download_phase", boom)
+
+    series_subject = PosterSubject.from_series(series)
+    season_subject = PosterSubject.from_season(season, series)
+    assets = [
+        br.AssetSpec(
+            media_type="series",
+            subject_id=series.id,
+            title=series_subject.title,
+            tmdb_id=series.tmdb_id,
+            series_id=series.id,
+            ocr_title=series.title,
+        ),
+        br.AssetSpec(
+            media_type="season",
+            subject_id=season.id,
+            title=season_subject.title,
+            tmdb_id=series.tmdb_id,
+            series_id=series.id,
+            season_id=season.id,
+            season_number=season.season_number,
+            ocr_title=series.title,
+        ),
+    ]
+
+    with pytest.raises(RuntimeError, match="download exploded"):
+        await br.run_batch_assets(
+            job_id="batch-tv",
+            assets=assets,
+            tmdb=_FakeTMDB(),
+            extractor=object(),
+            taste_namespace=get_namespace("tv"),
+            progress=None,
+            should_cancel=lambda: False,
+        )
+
+    series_run = (
+        await db.execute(select(PipelineRun).where(PipelineRun.series_id == series.id))
+    ).scalars().all()
+    season_run = (
+        await db.execute(select(PipelineRun).where(PipelineRun.season_id == season.id))
+    ).scalar_one()
+    show_run = next(r for r in series_run if r.season_id is None)
+    await db.refresh(show_run)
+    await db.refresh(season_run)
+
+    assert show_run.media_type == "series"
+    assert show_run.movie_id is None
+    assert show_run.series_id == series.id
+    assert season_run.media_type == "season"
+    assert season_run.movie_id is None
+    assert season_run.series_id == series.id
+    assert season_run.season_id == season.id
+
+    # Distinct work directories (season title carries the " - Season NN" suffix).
+    assert show_run.output_dir != season_run.output_dir
+
+    show_archive = json.loads(Path(show_run.archive_path).read_text())
+    season_archive = json.loads(Path(season_run.archive_path).read_text())
+    assert show_archive["media_type"] == "series"
+    assert show_archive["subject"]["series_id"] == series.id
+    assert season_archive["media_type"] == "season"
+    assert season_archive["subject"]["season_number"] == 1
+    assert season_archive["subject"]["series_id"] == series.id
 
 
 # ---------------------------------------------------------------------------

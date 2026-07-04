@@ -269,6 +269,28 @@ class TMDBClient:
         )
         return self._parse_posters(data)
 
+    async def get_tv_primary_poster(self, tmdb_id: int) -> str | None:
+        """Return the filename of the TV series' TMDB primary poster.
+
+        Same semantics as ``get_movie_primary_poster()`` but for TV shows.
+        """
+        data = await self._get(f"/tv/{tmdb_id}")
+        poster_path = data.get("poster_path") if isinstance(data, dict) else None
+        if not poster_path:
+            return None
+        return poster_path.lstrip("/").split("/")[-1]
+
+    async def get_season_primary_poster(self, tmdb_id: int, season_number: int) -> str | None:
+        """Return the filename of the season's TMDB primary poster.
+
+        Same semantics as ``get_movie_primary_poster()`` but for a TV season.
+        """
+        data = await self._get(f"/tv/{tmdb_id}/season/{season_number}")
+        poster_path = data.get("poster_path") if isinstance(data, dict) else None
+        if not poster_path:
+            return None
+        return poster_path.lstrip("/").split("/")[-1]
+
     async def get_tv_external_ids(self, tmdb_id: int) -> dict:
         """Fetch external IDs (tvdb_id, imdb_id) for a TV series.
 
