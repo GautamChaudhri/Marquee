@@ -13,7 +13,6 @@ import queue
 import time
 from collections import Counter
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -30,6 +29,7 @@ from marquee.core.pipeline_config import pipeline_settings
 from marquee.core.rate_limit import RateLimiter
 from marquee.database import get_db
 from marquee.ml import artifact_registry, feedback_store
+from marquee.ml.namespaces import TasteNamespace, get_namespace
 from marquee.models import Job, Movie
 
 logger = logging.getLogger(__name__)
@@ -76,10 +76,11 @@ def _artifact_error(exc: Exception) -> HTTPException:
     return HTTPException(status_code=400, detail=str(exc))
 
 
-def _exemplar_stats() -> dict:
+def _exemplar_stats(ns: TasteNamespace | None = None) -> dict:
     from marquee.ml.taste_store import NumpyTasteStore  # noqa: PLC0415
 
-    path = Path(pipeline_settings.TASTE_PROFILE_PATH)
+    ns = ns or get_namespace("movies")
+    path = ns.profile_path
     stats: dict = {
         "count": 0,
         "negatives": 0,
@@ -89,15 +90,21 @@ def _exemplar_stats() -> dict:
     if path.exists():
         stats["last_rebuild"] = datetime.fromtimestamp(path.stat().st_mtime, tz=UTC).isoformat()
         try:
-            store = NumpyTasteStore()
+            store = NumpyTasteStore(path)
             stats["count"] = store.size
             stats["negatives"] = store.negative_size
+            # For TV, add per-kind counts
+            if ns.library == "tv":
+                kind_counts: Counter[str] = Counter()
+                for meta in store.metadata:
+                    kind_counts[meta.get("asset_kind", "unknown")] += 1
+                stats["by_kind"] = dict(kind_counts)
         except Exception as exc:  # noqa: BLE001
             logger.warning("taste status: could not load profile (%s)", exc)
     return stats
 
 
-def _head_status() -> dict:
+def _head_status(ns: TasteNamespace | None = None) -> dict:
     """Activation progress for the learned head, in whichever training mode is
     active. Keeps a stable shape (``n_samples`` + ``activation.{movies,labels}``)
     so the UI is mode-agnostic; ``mode`` tells it whether the unit is pairs or
@@ -109,8 +116,9 @@ def _head_status() -> dict:
         build_training_data,
     )
 
-    rows = feedback_store.read_all()
-    active = Path(pipeline_settings.LEARNED_HEAD_PATH).exists()
+    ns = ns or get_namespace("movies")
+    rows = feedback_store.read_all(ns)
+    active = ns.head_path.exists()
 
     if pipeline_settings.HEAD_TRAIN_MODE == "pairwise":
         _d, _w, _names, n_movies, n_pairs = build_inversion_training_data(rows)
@@ -139,10 +147,23 @@ def _head_status() -> dict:
     }
 
 
+def _validate_library(library: str) -> TasteNamespace:
+    """Validate library param and return namespace; raises 400 on unknown value."""
+    try:
+        return get_namespace(library)
+    except ValueError as exc:
+        from fastapi import HTTPException  # noqa: PLC0415
+        raise HTTPException(status_code=400, detail=f"Unknown library {library!r}; must be 'movies' or 'tv'") from exc
+
+
 @router.get("/status")
-async def taste_status(db: Annotated[AsyncSession, Depends(get_db)]):
+async def taste_status(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    library: str = "movies",
+):
+    ns = _validate_library(library)
     registry_state = await artifact_registry.ensure_registry(db)
-    summary = feedback_store.summary()
+    summary = feedback_store.summary(ns)
 
     # Genre spread over labeled movies (v2 rows carry movie_id).
     movie_ids = [int(key) for key in summary["movie_keys"] if key.lstrip("-").isdigit()]
@@ -156,18 +177,19 @@ async def taste_status(db: Annotated[AsyncSession, Depends(get_db)]):
                 genres[genre] += 1
 
     active_profile = await artifact_registry.active_artifact_summary(
-        db, artifact_registry.KIND_TASTE_PROFILE
+        db, ns.artifact_kind_profile
     )
     active_head = await artifact_registry.active_artifact_summary(
-        db, artifact_registry.KIND_LEARNED_HEAD
+        db, ns.artifact_kind_head
     )
-    exemplars = _exemplar_stats()
+    exemplars = _exemplar_stats(ns)
     if active_profile is not None:
         profile_summary = active_profile.get("summary") or {}
         exemplars["unique_movies"] = profile_summary.get("unique_movies", 0)
         exemplars["duplicate_groups"] = profile_summary.get("duplicate_groups", 0)
 
     return {
+        "library": library,
         "labels": {
             "total": summary["total"],
             "movies": summary["movies"],
@@ -176,11 +198,11 @@ async def taste_status(db: Annotated[AsyncSession, Depends(get_db)]):
             "genres": dict(genres.most_common()),
         },
         "exemplars": exemplars,
-        "learned_head": _head_status(),
+        "learned_head": _head_status(ns),
         "active_profile": active_profile,
         "active_head": active_head,
         "artifact_registry": registry_state,
-        "gate_alerts": feedback_store.gate_override_alerts(),
+        "gate_alerts": feedback_store.gate_override_alerts(ns),
         "rebuild": _rebuild_state,
     }
 
@@ -361,6 +383,7 @@ async def _monitor_rebuild_process(process, progress_queue, started_monotonic: f
 class TasteRetrainRequest(BaseModel):
     # "training_dir" (curated folder, default) | "library" (deployed posters).
     source: str = "training_dir"
+    library: str = "movies"
 
 
 @router.post("/retrain", status_code=202)
@@ -371,13 +394,15 @@ async def retrain_taste(
 ):
     """Rebuild the taste profile in the background (job platform).
 
-    ``source="training_dir"`` (default) uses the curated
-    ``data/training/positive`` folder; ``source="library"`` rebuilds from every
-    movie's currently-deployed poster.
+    ``source="training_dir"`` (default) uses the curated positive folder;
+    ``source="library"`` rebuilds from every deployed poster.
+    ``library="movies"`` (default) | ``"tv"``.
     """
     source = (body.source if body else None) or "training_dir"
+    library = (body.library if body else None) or "movies"
     if source not in ("training_dir", "library"):
         raise HTTPException(status_code=400, detail=f"unknown source {source!r}")
+    _validate_library(library)  # raises 400 on bad value
     enforce_rate_limit(limiter, "taste_retrain", settings.RATE_TASTE_RETRAIN_SECONDS)
     limiter.record("taste_retrain")
     job = await job_manager.create(
@@ -386,9 +411,9 @@ async def retrain_taste(
         priority=90,
         resources={"gpu": 1},
         subject_type="taste_profile",
-        subject_id="default",
-        payload={"source": source},
-        idempotency_key=f"taste-rebuild:{source}:{int(time.time() // settings.RATE_TASTE_RETRAIN_SECONDS)}",
+        subject_id=library,
+        payload={"source": source, "library": library},
+        idempotency_key=f"taste-rebuild:{library}:{source}:{int(time.time() // settings.RATE_TASTE_RETRAIN_SECONDS)}",
         max_attempts=1,
     )
     return job_summary(job)
@@ -398,6 +423,7 @@ async def retrain_taste(
 async def retrain_learned_head(
     limiter: Annotated[RateLimiter, Depends(get_rate_limiter)],
     db: Annotated[AsyncSession, Depends(get_db)],
+    library: str = "movies",
 ):
     """Train the learned head (UI "Key Art Engine") from accumulated labels.
 
@@ -405,6 +431,7 @@ async def retrain_learned_head(
     trigger that (re)trains the head from them, through the job manager. Cheap
     numpy fit — no GPU reservation.
     """
+    _validate_library(library)
     enforce_rate_limit(limiter, "head_retrain", settings.RATE_TASTE_RETRAIN_SECONDS)
     limiter.record("head_retrain")
     job = await job_manager.create(
@@ -412,21 +439,27 @@ async def retrain_learned_head(
         job_type="learned_head_train",
         priority=70,
         subject_type="learned_head",
-        subject_id="default",
-        idempotency_key=f"head-train:{int(time.time() // settings.RATE_TASTE_RETRAIN_SECONDS)}",
+        subject_id=library,
+        payload={"library": library},
+        idempotency_key=f"head-train:{library}:{int(time.time() // settings.RATE_TASTE_RETRAIN_SECONDS)}",
         max_attempts=1,
     )
     return job_summary(job)
 
 
 @router.post("/retrain/cancel")
-async def cancel_retrain_taste(db: Annotated[AsyncSession, Depends(get_db)]):
+async def cancel_retrain_taste(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    library: str = "movies",
+):
     """Request cancellation through the durable job lifecycle."""
+    _validate_library(library)
     job = (
         await db.execute(
             select(Job)
             .where(
                 Job.type == "taste_rebuild",
+                Job.subject_id == library,
                 Job.status.in_(("queued", "waiting_resource", "claimed", "running")),
             )
             .order_by(Job.created_at.desc())
@@ -439,10 +472,15 @@ async def cancel_retrain_taste(db: Annotated[AsyncSession, Depends(get_db)]):
 
 
 @router.get("/profiles")
-async def list_taste_profiles(db: Annotated[AsyncSession, Depends(get_db)]):
+async def list_taste_profiles(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    library: str = "movies",
+):
+    ns = _validate_library(library)
     registry_state = await artifact_registry.registry_status(db)
-    rows = await artifact_registry.list_artifacts(db, artifact_registry.KIND_TASTE_PROFILE)
+    rows = await artifact_registry.list_artifacts(db, ns.artifact_kind_profile)
     return {
+        "library": library,
         "profiles": [artifact_registry.artifact_to_summary(row) for row in rows],
         "artifact_registry": registry_state,
     }
@@ -452,10 +490,12 @@ async def list_taste_profiles(db: Annotated[AsyncSession, Depends(get_db)]):
 async def get_taste_profile(
     artifact_id: str,
     db: Annotated[AsyncSession, Depends(get_db)],
+    library: str = "movies",
 ):
+    ns = _validate_library(library)
     try:
         return await artifact_registry.artifact_detail(
-            db, artifact_registry.KIND_TASTE_PROFILE, artifact_id
+            db, ns.artifact_kind_profile, artifact_id
         )
     except Exception as exc:  # noqa: BLE001
         raise _artifact_error(exc) from exc
@@ -465,14 +505,16 @@ async def get_taste_profile(
 async def activate_taste_profile(
     artifact_id: str,
     db: Annotated[AsyncSession, Depends(get_db)],
+    library: str = "movies",
 ):
     from marquee.ml.taste_map import build_map  # noqa: PLC0415
 
+    ns = _validate_library(library)
     try:
         row = await artifact_registry.activate_artifact(
-            db, artifact_registry.KIND_TASTE_PROFILE, artifact_id
+            db, ns.artifact_kind_profile, artifact_id
         )
-        await asyncio.to_thread(build_map)
+        await asyncio.to_thread(build_map, namespace=ns)
         return {"profile": artifact_registry.artifact_to_summary(row), "map_rebuilt": True}
     except Exception as exc:  # noqa: BLE001
         raise _artifact_error(exc) from exc
@@ -605,12 +647,13 @@ class CandidateOverlayRequest(BaseModel):
 
 
 @router.get("/map")
-async def get_taste_map(recompute: bool = False):
+async def get_taste_map(recompute: bool = False, library: str = "movies"):
     """3D/2D projection of the taste profile, with clusters + outliers."""
     from marquee.ml.taste_map import load_map  # noqa: PLC0415
 
+    ns = _validate_library(library)
     try:
-        return load_map(recompute)
+        return load_map(recompute, namespace=ns)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -619,8 +662,10 @@ async def get_taste_map(recompute: bool = False):
 async def rebuild_map(
     limiter: Annotated[RateLimiter, Depends(get_rate_limiter)],
     db: Annotated[AsyncSession, Depends(get_db)],
+    library: str = "movies",
 ):
     """Force a taste-map rebuild in the background."""
+    _validate_library(library)
     enforce_rate_limit(limiter, "taste_map_rebuild", settings.RATE_TASTE_MAP_REBUILD_SECONDS)
 
     limiter.record("taste_map_rebuild")
@@ -630,8 +675,9 @@ async def rebuild_map(
         priority=50,
         resources={"gpu": 1},
         subject_type="taste_profile",
-        subject_id="default",
-        idempotency_key=f"taste-map:{int(time.time() // settings.RATE_TASTE_MAP_REBUILD_SECONDS)}",
+        subject_id=library,
+        payload={"library": library},
+        idempotency_key=f"taste-map:{library}:{int(time.time() // settings.RATE_TASTE_MAP_REBUILD_SECONDS)}",
     )
     return job_summary(job)
 
@@ -711,27 +757,29 @@ def _safe_exemplar_name(name: str) -> str:
 
 
 @router.get("/exemplars/{name}/image")
-async def exemplar_image(name: str, size: str = "thumb"):
+async def exemplar_image(name: str, size: str = "thumb", library: str = "movies"):
     """Serve an exemplar's thumbnail (webp) or full-size training image."""
     from marquee.ml.taste_map import exemplar_source, thumbnail_path  # noqa: PLC0415
 
+    ns = _validate_library(library)
     name = _safe_exemplar_name(name)
-    path = thumbnail_path(name) if size == "thumb" else exemplar_source(name)
+    path = thumbnail_path(name, namespace=ns) if size == "thumb" else exemplar_source(name, namespace=ns)
     if path is None:
         # Fall back to full-size if the thumbnail hasn't been generated.
-        path = exemplar_source(name)
+        path = exemplar_source(name, namespace=ns)
     if path is None:
         raise HTTPException(status_code=404, detail=f"No image for exemplar {name!r}")
     return FileResponse(path)
 
 
 @router.get("/exemplars/{name}/neighbors")
-async def exemplar_neighbors(name: str):
+async def exemplar_neighbors(name: str, library: str = "movies"):
     """The k nearest exemplars to this one (click-to-explore)."""
     from marquee.ml.taste_map import neighbors_of  # noqa: PLC0415
 
+    ns = _validate_library(library)
     name = _safe_exemplar_name(name)
-    result = neighbors_of(name)
+    result = neighbors_of(name, namespace=ns)
     if result is None:
         raise HTTPException(status_code=404, detail=f"Exemplar {name!r} not in profile")
     return {"name": name, "neighbors": result}

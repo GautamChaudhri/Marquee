@@ -17,6 +17,7 @@ from marquee.core.jobs import cancel_registry, job_manager
 from marquee.core.jobs.handlers import register
 from marquee.core.poster_subjects import PosterSubject
 from marquee.database import _get_session_factory
+from marquee.ml.namespaces import TasteNamespace, get_namespace
 from marquee.models import ArtworkEvent, Job, MediaFile, Movie, PipelineRun, Season, Series
 
 logger = logging.getLogger(__name__)
@@ -203,8 +204,8 @@ async def taste_rebuild(job: Job) -> dict[str, Any]:
     """Rebuild the taste profile outside FastAPI; the worker owns the GPU lease.
 
     ``payload.source`` selects the exemplar set:
-      * ``"training_dir"`` (default) — the curated ``data/training/positive`` folder.
-      * ``"library"`` — every movie's currently-deployed poster.
+      * ``"training_dir"`` (default) — the curated positive folder(s).
+      * ``"library"`` — every currently-deployed poster.
     """
     from marquee.core.pipeline_config import pipeline_settings  # noqa: PLC0415
     from marquee.database import _get_session_factory  # noqa: PLC0415
@@ -216,13 +217,16 @@ async def taste_rebuild(job: Job) -> dict[str, Any]:
 
     cancel_event = cancel_registry.get(job.id)
     source = job.payload.get("source", "training_dir")
+    library_name = job.payload.get("library", "movies")
+    ns = get_namespace(library_name)
+
     training_dir: Path | None = None
     tmp = None
     gathered: int | None = None
     if source == "library":
         cancel_registry.raise_if_cancelled(cancel_event, "taste rebuild cancelled")
         await _emit_stage(job.id, "gather", "Gathering library posters as exemplars…")
-        training_dir, tmp, gathered = await _gather_library_posters()
+        training_dir, tmp, gathered = await _gather_library_posters(ns)
     try:
         # The trainer reports per-batch/per-exemplar progress from its worker
         # thread (clip → calibration substages → dino); the bridge marshals
@@ -233,24 +237,25 @@ async def taste_rebuild(job: Job) -> dict[str, Any]:
                 training_dir=training_dir,
                 progress_callback=bridge.callback,
                 cancel_event=cancel_event,
+                namespace=ns,
             )
         cancel_registry.raise_if_cancelled(cancel_event, "taste rebuild cancelled")
         if pipeline_settings.HEAD_AUTO_RETRAIN:
             await _emit_stage(job.id, "train_head", "Training learned ranking head…")
-            head = await asyncio.to_thread(train_from_labels, cancel_event=cancel_event)
+            head = await asyncio.to_thread(train_from_labels, cancel_event=cancel_event, namespace=ns)
         else:
             head = None
         async with _get_session_factory()() as db:
             if (await artifact_registry.registry_status(db))["available"]:
                 await artifact_registry.register_active_artifact(
                     db,
-                    artifact_registry.KIND_TASTE_PROFILE,
+                    ns.artifact_kind_profile,
                     source_mode=source,
                 )
                 if head and head[0] is not None:
                     await artifact_registry.register_active_artifact(
                         db,
-                        artifact_registry.KIND_LEARNED_HEAD,
+                        ns.artifact_kind_head,
                         info=head[1],
                     )
     finally:
@@ -261,6 +266,7 @@ async def taste_rebuild(job: Job) -> dict[str, Any]:
     return {
         "rebuild": "completed",
         "source": source,
+        "library": library_name,
         "exemplars_gathered": gathered,
         "head": head[1] if head else None,
     }
@@ -271,10 +277,13 @@ async def taste_map(job: Job) -> dict[str, Any]:
     from marquee.ml.taste_map import build_map  # noqa: PLC0415
     from marquee.pipeline.progress_bridge import JobProgressBridge  # noqa: PLC0415
 
+    library_name = job.payload.get("library", "movies")
+    ns = get_namespace(library_name)
+
     cancel_event = cancel_registry.get(job.id)
     async with JobProgressBridge(job.id) as bridge:
         return await asyncio.to_thread(
-            build_map, progress_callback=bridge.callback, cancel_event=cancel_event
+            build_map, progress_callback=bridge.callback, cancel_event=cancel_event, namespace=ns
         )
 
 
@@ -512,14 +521,17 @@ async def learned_head_train(_job: Job) -> dict[str, Any]:
     from marquee.ml import artifact_registry  # noqa: PLC0415
     from marquee.ml.head_trainer import train_from_labels  # noqa: PLC0415
 
+    library_name = _job.payload.get("library", "movies")
+    ns = get_namespace(library_name)
+
     cancel_event = cancel_registry.get(_job.id)
-    head, info = await asyncio.to_thread(train_from_labels, cancel_event=cancel_event)
+    head, info = await asyncio.to_thread(train_from_labels, cancel_event=cancel_event, namespace=ns)
     if head is not None:
         async with _get_session_factory()() as db:
             if (await artifact_registry.registry_status(db))["available"]:
                 await artifact_registry.register_active_artifact(
                     db,
-                    artifact_registry.KIND_LEARNED_HEAD,
+                    ns.artifact_kind_head,
                     info=info,
                 )
     return {"trained": head is not None, **info}
@@ -1187,8 +1199,8 @@ async def poster_maintenance(job: Job) -> dict[str, Any]:
         }
 
 
-async def _gather_library_posters() -> tuple[Path, Any, int]:
-    """Copy every movie's currently-deployed poster into a temp training dir.
+async def _gather_library_posters(ns: TasteNamespace | None = None) -> tuple[Path, Any, int]:
+    """Copy every movie's (or show/season's) currently-deployed poster into a temp training dir.
 
     Prefers the local deployed-poster cache (``data/cache/posters``) and falls
     back to the on-disk poster in the media folder. Returns
@@ -1196,15 +1208,45 @@ async def _gather_library_posters() -> tuple[Path, Any, int]:
     """
     import tempfile  # noqa: PLC0415
 
+    ns = ns or get_namespace("movies")
     factory = _get_session_factory()
-    async with factory() as db:
-        rows = (
-            (await db.execute(select(Movie).where(Movie.poster_path.is_not(None)))).scalars().all()
-        )
-        movies = [(m.title, m.year, m.tmdb_id, m.poster_path) for m in rows]
     tmp = tempfile.TemporaryDirectory(prefix="marquee-libtrain-")
     dest = Path(tmp.name)
-    count = await asyncio.to_thread(_copy_library_posters, movies, dest)
+    count = 0
+
+    async with factory() as db:
+        if ns.library == "movies":
+            rows = (
+                (await db.execute(select(Movie).where(Movie.poster_path.is_not(None)))).scalars().all()
+            )
+            movies = [(m.title, m.year, m.tmdb_id, m.poster_path) for m in rows]
+            count = await asyncio.to_thread(_copy_library_posters, movies, dest)
+        else:
+            # tv
+            from marquee.models import Season, Series  # noqa: PLC0415
+            shows_rows = (
+                (await db.execute(select(Series).where(Series.poster_path.is_not(None)))).scalars().all()
+            )
+            shows = [(s.title, s.year, s.tmdb_id, s.poster_path) for s in shows_rows]
+
+            seasons_rows = (
+                (await db.execute(select(Season).where(Season.poster_path.is_not(None)))).scalars().all()
+            )
+            seasons = []
+            for sn in seasons_rows:
+                parent = await db.get(Series, sn.series_id)
+                parent_title = parent.title if parent else "show"
+                seasons.append((parent_title, sn.season_number, None, sn.poster_path))
+
+            show_dest = dest / "show"
+            season_dest = dest / "season"
+            show_dest.mkdir(parents=True, exist_ok=True)
+            season_dest.mkdir(parents=True, exist_ok=True)
+
+            count_shows = await asyncio.to_thread(_copy_library_posters, shows, show_dest)
+            count_seasons = await asyncio.to_thread(_copy_library_season_posters, seasons, season_dest)
+            count = count_shows + count_seasons
+
     if count == 0:
         tmp.cleanup()
         raise RuntimeError("no deployed library posters found to train on")
@@ -1238,6 +1280,32 @@ def _copy_library_posters(movies: list[tuple], dest: Path) -> int:
             count += 1
         except OSError as exc:
             logger.warning("library-train: could not copy %s: %s", source, exc)
+    return count
+
+
+def _copy_library_season_posters(seasons: list[tuple], dest: Path) -> int:
+    import shutil  # noqa: PLC0415
+
+    from marquee.ml.profile_updater import exemplar_filename  # noqa: PLC0415
+
+    seen: set[str] = set()
+    count = 0
+    for parent_title, season_number, _, poster_path in seasons:
+        source: Path | None = None
+        if poster_path and Path(poster_path).is_file():
+            source = Path(poster_path)
+        if source is None:
+            continue
+        title = f"{parent_title} Season {season_number}"
+        name = exemplar_filename(title, None, ".jpg")
+        if name in seen:
+            continue
+        seen.add(name)
+        try:
+            shutil.copy2(source, dest / name)
+            count += 1
+        except OSError as exc:
+            logger.warning("library-train-season: could not copy %s: %s", source, exc)
     return count
 
 

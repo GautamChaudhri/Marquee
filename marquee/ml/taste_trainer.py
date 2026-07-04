@@ -57,6 +57,7 @@ from marquee.ml.calibration import (
 from marquee.ml.dino import DinoImageEncoder
 from marquee.ml.embedding import CLIPImageEncoder
 from marquee.ml.face import FaceDetector
+from marquee.ml.namespaces import TasteNamespace, get_namespace
 from marquee.ml.person import PersonDetector
 from marquee.ml.taste_store import DINO_SELF_KNN_KEY, weighted_topk_mean
 from marquee.ml.visual_features import (
@@ -434,6 +435,7 @@ def rebuild_profile(
     skip_dino: bool = False,
     progress_callback: ProgressCallback | None = None,
     cancel_event: threading.Event | None = None,
+    namespace: TasteNamespace | None = None,
 ) -> Path:
     """Build the taste profile from the training folders and save it.
 
@@ -442,33 +444,35 @@ def rebuild_profile(
     """
     from argparse import Namespace
 
+    ns = namespace or get_namespace("movies")
     args = Namespace(
-        training_dir=training_dir or _DEFAULT_TRAINING_DIR,
+        training_dir=training_dir,
         negative_dir=negative_dir,
         model=model or pipeline_settings.CLIP_MODEL_PATH,
-        output=output or pipeline_settings.TASTE_PROFILE_PATH,
+        output=output or ns.profile_path,
         skip_ocr=skip_ocr,
         skip_dino=skip_dino,
         progress_callback=progress_callback,
         cancel_event=cancel_event,
+        namespace=ns,
     )
     return _run_build(args)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--training-dir", type=Path, default=_DEFAULT_TRAINING_DIR)
+    parser.add_argument("--training-dir", type=Path, default=None)
     parser.add_argument(
         "--negative-dir",
         type=Path,
         default=None,
         help=(
-            "Directory of disliked posters. Defaults to the 'negative_data' "
-            "sibling of --training-dir when it exists."
+            "Directory of disliked posters. Defaults to the namespace's negative_dir "
+            "when it exists."
         ),
     )
     parser.add_argument("--model", type=Path, default=pipeline_settings.CLIP_MODEL_PATH)
-    parser.add_argument("--output", type=Path, default=pipeline_settings.TASTE_PROFILE_PATH)
+    parser.add_argument("--output", type=Path, default=None)
     parser.add_argument(
         "--skip-ocr",
         action="store_true",
@@ -480,14 +484,17 @@ def main() -> None:
         help="Skip DINOv2 embeddings even if the model file exists",
     )
     args = parser.parse_args()
+    args.namespace = get_namespace("movies")
+    if args.output is None:
+        args.output = args.namespace.profile_path
     _run_build(args)
 
 
 def _run_build(args) -> Path:
+    ns = getattr(args, "namespace", None) or get_namespace("movies")
     negative_dir = args.negative_dir
     if negative_dir is None:
-        candidate = args.training_dir.parent / "negative_data"
-        negative_dir = candidate if candidate.is_dir() else None
+        negative_dir = ns.negative_dir
 
     started = time.perf_counter()
     progress_callback = getattr(args, "progress_callback", None)
@@ -503,7 +510,33 @@ def _run_build(args) -> Path:
     logger.info("Taste profile rebuild starting")
     encoder = CLIPImageEncoder(args.model)
     raise_if_cancelled(cancel_event, "taste profile rebuild cancelled")
-    paths = scan_images(args.training_dir)
+
+    path_to_kind: dict[Path, str] = {}
+    paths = []
+    if args.training_dir is not None:
+        subdirs_found = False
+        for kind in ns.training_dirs:
+            subdir = args.training_dir / kind
+            if subdir.is_dir():
+                subdirs_found = True
+                kpaths = scan_images(subdir)
+                paths.extend(kpaths)
+                for p in kpaths:
+                    path_to_kind[p] = kind
+        if not subdirs_found:
+            paths = scan_images(args.training_dir)
+            for p in paths:
+                kind = next(iter(ns.training_dirs.keys())) if ns.training_dirs else "movie"
+                path_to_kind[p] = kind
+    else:
+        paths = []
+        for kind, tdir in ns.training_dirs.items():
+            if tdir.is_dir():
+                kpaths = scan_images(tdir)
+                paths.extend(kpaths)
+                for p in kpaths:
+                    path_to_kind[p] = kind
+
     embeddings, kept_paths = extract_embeddings(
         paths,
         encoder,
@@ -608,9 +641,11 @@ def _run_build(args) -> Path:
         total=len(kept_paths),
         message="Saving rebuilt taste profile.",
     )
+    asset_kinds = [path_to_kind.get(p, "movie") for p in kept_paths]
     payload: dict[str, np.ndarray] = {
         "embeddings": embeddings,
         "poster_names": unicode_array([p.name for p in kept_paths]),
+        "asset_kinds": unicode_array(asset_kinds),
         _HASH_ARRAY_KEY: unicode_array([_file_sha256(path) for path in kept_paths]),
         "centroid_emb": compute_centroid(embeddings),
         "model_name": unicode_scalar(pipeline_settings.AI_MODEL),

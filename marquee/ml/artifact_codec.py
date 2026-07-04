@@ -16,7 +16,11 @@ from typing import Literal
 
 import numpy as np
 
-ArtifactKind = Literal["taste_profile", "learned_head", "zeroshot_axes", "taste_map"]
+ArtifactKind = Literal[
+    "taste_profile", "taste_profile_tv",
+    "learned_head", "learned_head_tv",
+    "zeroshot_axes", "taste_map"
+]
 
 CALIB_NAMES_KEY = "calib_feature_names"
 GENRES_JSON_KEY = "genres_json"
@@ -34,29 +38,45 @@ class ArtifactMigrationResult:
 
 
 _STRING_LIST_KEYS: dict[ArtifactKind, set[str]] = {
-    "taste_profile": {"poster_names", "neg_poster_names", CALIB_NAMES_KEY},
+    "taste_profile": {"poster_names", "neg_poster_names", CALIB_NAMES_KEY, "asset_kinds"},
+    "taste_profile_tv": {"poster_names", "neg_poster_names", CALIB_NAMES_KEY, "asset_kinds"},
     "learned_head": {"feature_names"},
+    "learned_head_tv": {"feature_names"},
     "zeroshot_axes": {"axis_names"},
     "taste_map": {"poster_names", "cluster_names"},
 }
 
 _SCALAR_STRING_KEYS: dict[ArtifactKind, set[str]] = {
     "taste_profile": {"model_name", "dino_model_name"},
+    "taste_profile_tv": {"model_name", "dino_model_name"},
     "learned_head": {"model_name", "trained_at"},
+    "learned_head_tv": {"model_name", "trained_at"},
     "zeroshot_axes": {"model_name"},
     "taste_map": {"projection_method", "computed_at"},
 }
 
 _JSON_STRING_ARRAY_KEYS: dict[ArtifactKind, set[str]] = {
     "taste_profile": {"genres"},
+    "taste_profile_tv": {"genres"},
     "learned_head": set(),
+    "learned_head_tv": set(),
     "zeroshot_axes": set(),
     "taste_map": {"genres"},
 }
 
 _REQUIRED_KEYS: dict[ArtifactKind, set[str]] = {
     "taste_profile": {"embeddings", "poster_names", "centroid_emb", "model_name"},
+    "taste_profile_tv": {"embeddings", "poster_names", "centroid_emb", "model_name"},
     "learned_head": {
+        "feature_names",
+        "weights",
+        "bias",
+        "model_name",
+        "n_samples",
+        "train_accuracy",
+        "trained_at",
+    },
+    "learned_head_tv": {
         "feature_names",
         "weights",
         "bias",
@@ -71,7 +91,9 @@ _REQUIRED_KEYS: dict[ArtifactKind, set[str]] = {
 
 _REBUILD_HINTS: dict[ArtifactKind, str] = {
     "taste_profile": "Rebuild it with `python -m marquee.ml.taste_trainer`.",
+    "taste_profile_tv": "Rebuild it with `python -m marquee.ml.taste_trainer`.",
     "learned_head": "Retrain it with `python -m marquee.ml.head_trainer`.",
+    "learned_head_tv": "Retrain it with `python -m marquee.ml.head_trainer`.",
     "zeroshot_axes": "Rebuild it with `python -m marquee.ml.zeroshot`.",
     "taste_map": "Rebuild it by reloading the taste map endpoint or on the next app start.",
 }

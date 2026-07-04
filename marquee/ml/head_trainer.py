@@ -34,6 +34,7 @@ from marquee.core.jobs.cancel_registry import raise_if_cancelled
 from marquee.core.pipeline_config import pipeline_settings
 from marquee.ml import feedback_store
 from marquee.ml.learned_head import LogisticHead, fit_scale_bias
+from marquee.ml.namespaces import TasteNamespace, get_namespace
 
 _RUNS_DIR = settings.runs_work_path
 _LEGACY_RUNS_DIRS = (
@@ -304,6 +305,7 @@ def train_from_labels(
     l2: float = 1.0,
     save: bool = True,
     cancel_event: threading.Event | None = None,
+    namespace: TasteNamespace | None = None,
 ) -> tuple[LogisticHead | None, dict]:
     """Train + (optionally) save the head. Returns (head|None, info).
 
@@ -312,10 +314,11 @@ def train_from_labels(
     design/30); "pointwise" is the legacy logistic regression over v1/v2
     approve/override labels.
     """
+    ns = namespace or get_namespace("movies")
     mode = pipeline_settings.HEAD_TRAIN_MODE if mode is None else mode
     min_movies = pipeline_settings.HEAD_MIN_MOVIES if min_movies is None else min_movies
     raise_if_cancelled(cancel_event, "learned head training cancelled")
-    rows = feedback_store.read_all()
+    rows = feedback_store.read_all(ns)
     raise_if_cancelled(cancel_event, "learned head training cancelled")
 
     if mode == "pairwise":
@@ -358,7 +361,7 @@ def train_from_labels(
         info["features"] = names
         info["reason"] = "trained"
         if save:
-            head.save()
+            head.save(ns.head_path)
         return head, info
 
     # Legacy pointwise path (v1/v2 approve/override labels).
@@ -396,7 +399,7 @@ def train_from_labels(
     info["features"] = names
     info["reason"] = "trained"
     if save:
-        head.save()
+        head.save(ns.head_path)
     return head, info
 
 

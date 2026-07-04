@@ -27,12 +27,20 @@ from marquee.ml.artifact_codec import (
     ensure_safe_artifact,
     load_npz_safe,
 )
+from marquee.ml.namespaces import TasteNamespace, get_namespace
 from marquee.models import ArtifactSnapshot, ArtifactSnapshotMovie, Movie
 
 KIND_TASTE_PROFILE = "taste_profile"
+KIND_TASTE_PROFILE_TV = "taste_profile_tv"
 KIND_LEARNED_HEAD = "learned_head"
+KIND_LEARNED_HEAD_TV = "learned_head_tv"
 STATUS_ACTIVE = "active"
 STATUS_ARCHIVED = "archived"
+
+
+def _namespace_for_kind(kind: str) -> TasteNamespace:
+    library = "tv" if kind in (KIND_TASTE_PROFILE_TV, KIND_LEARNED_HEAD_TV) else "movies"
+    return get_namespace(library)
 
 _YEAR = re.compile(r"\((\d{4})\)")
 _YEAR_SUFFIX = re.compile(r"\s*\(\d{4}\)\s*$")
@@ -81,13 +89,26 @@ async def registry_status(db: AsyncSession) -> dict[str, Any]:
 def active_artifact_path(kind: str) -> Path:
     if kind == KIND_TASTE_PROFILE:
         return Path(pipeline_settings.TASTE_PROFILE_PATH)
+    if kind == KIND_TASTE_PROFILE_TV:
+        return Path(pipeline_settings.TASTE_PROFILE_TV_PATH)
     if kind == KIND_LEARNED_HEAD:
         return Path(pipeline_settings.LEARNED_HEAD_PATH)
+    if kind == KIND_LEARNED_HEAD_TV:
+        return Path(pipeline_settings.LEARNED_HEAD_TV_PATH)
     raise ValueError(f"unsupported artifact kind {kind!r}")
 
 
 def artifact_storage_dir(kind: str) -> Path:
-    stem = "taste_profiles" if kind == KIND_TASTE_PROFILE else "learned_heads"
+    if kind == KIND_TASTE_PROFILE:
+        stem = "taste_profiles"
+    elif kind == KIND_TASTE_PROFILE_TV:
+        stem = "taste_profiles_tv"
+    elif kind == KIND_LEARNED_HEAD:
+        stem = "learned_heads"
+    elif kind == KIND_LEARNED_HEAD_TV:
+        stem = "learned_heads_tv"
+    else:
+        raise ValueError(f"unsupported artifact kind {kind!r}")
     path = settings.data_dir_path / "ml" / "artifacts" / stem
     path.mkdir(parents=True, exist_ok=True)
     return path
@@ -336,10 +357,10 @@ async def _profile_summary(
     return summary, movies
 
 
-async def _head_movies(db: AsyncSession) -> list[dict[str, Any]]:
+async def _head_movies(db: AsyncSession, ns: TasteNamespace) -> list[dict[str, Any]]:
     from marquee.ml import feedback_store  # noqa: PLC0415
 
-    rows = feedback_store.read_all()
+    rows = feedback_store.read_all(ns)
     movie_ids = {
         int(movie_id)
         for row in rows
@@ -385,10 +406,10 @@ async def _head_movies(db: AsyncSession) -> list[dict[str, Any]]:
 
 
 async def _head_summary(
-    db: AsyncSession, path: Path, info: dict[str, Any] | None = None
+    db: AsyncSession, path: Path, info: dict[str, Any] | None = None, *, ns: TasteNamespace
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     payload = _head_payload(path)
-    movies = await _head_movies(db)
+    movies = await _head_movies(db, ns)
     summary = {
         "mode": (info or {}).get("mode") or ("pairwise" if "n_pairs" in (info or {}) else None),
         "sample_count": (
@@ -431,12 +452,12 @@ async def _build_summary(
     source_mode: str | None = None,
     info: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]], str, datetime | None]:
-    if kind == KIND_TASTE_PROFILE:
+    if kind in (KIND_TASTE_PROFILE, KIND_TASTE_PROFILE_TV):
         payload = _profile_payload(path)
         summary, movies = await _profile_summary(db, path, source_mode=source_mode)
         return summary, movies, payload["model_name"], None
     payload = _head_payload(path)
-    summary, movies = await _head_summary(db, path, info)
+    summary, movies = await _head_summary(db, path, info, ns=_namespace_for_kind(kind))
     trained_at = datetime.fromisoformat(payload["trained_at"])
     return summary, movies, payload["model_name"], trained_at
 

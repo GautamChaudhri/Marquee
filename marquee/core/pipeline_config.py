@@ -66,6 +66,7 @@ class PipelineSettings(BaseSettings):
     AESTHETIC_MODEL_PATH: Path = _MODELS_DIR / "sa_0_4_vit_b_32_linear.pth"
     FACE_MODEL_PATH: Path = _MODELS_DIR / "scrfd_500m_bnkps.onnx"
     TASTE_PROFILE_PATH: Path = _DATA_ML_DIR / "taste_profile.clip-vit-b-32.npz"
+    TASTE_PROFILE_TV_PATH: Path = _DATA_ML_DIR / "taste_profile.tv.clip-vit-b-32.npz"
     EMBEDDING_CACHE_DIR: Path = _PROJECT_ROOT / "data" / "cache" / "embeddings"
 
     # ── Extended features (recs 1-6) ─────────────────────────────────
@@ -95,6 +96,7 @@ class PipelineSettings(BaseSettings):
     # exists, otherwise the Phase-0 weighted scorer. "weighted"/"learned" force.
     SCORER: str = "auto"
     LEARNED_HEAD_PATH: Path = _DATA_ML_DIR / "learned_head.clip-vit-b-32.npz"
+    LEARNED_HEAD_TV_PATH: Path = _DATA_ML_DIR / "learned_head.tv.clip-vit-b-32.npz"
 
     # ── Feedback loop (design 09) ─────────────────────────────────────
     # JSONL of self-contained labels written by the feedback endpoint. The
@@ -103,9 +105,12 @@ class PipelineSettings(BaseSettings):
     # Directory of disliked exemplars (negative taste). Copied into here when
     # FEEDBACK_NEGATIVES_FROM_OVERRIDES is on.
     NEGATIVE_DATA_DIR: Path = _DATA_TRAINING_DIR / "negative"
+    NEGATIVE_DATA_TV_DIR: Path = _DATA_TRAINING_DIR / "negative_tv"
     # Source-of-truth folder for positive exemplars (the 430 hand-picked +
     # any approved/overridden posters appended by the feedback loop).
-    TRAINING_DATA_DIR: Path = _DATA_TRAINING_DIR / "positive"
+    TRAINING_DATA_DIR: Path = _DATA_DIR / "taste_seeding" / "movies"
+    TV_TRAINING_SHOW_DIR: Path = _DATA_DIR / "taste_seeding" / "shows"
+    TV_TRAINING_SEASON_DIR: Path = _DATA_DIR / "taste_seeding" / "seasons"
     # After this many overrides of the same gate (at the current threshold),
     # the taste status surfaces a tuning suggestion.
     FEEDBACK_GATE_ALERT_THRESHOLD: int = 5
@@ -397,25 +402,48 @@ class PipelineSettings(BaseSettings):
             self.CLIP_MODEL_PATH = _MODELS_DIR / f"{self.AI_MODEL}.onnx"
         if self.TASTE_PROFILE_PATH == _DATA_ML_DIR / "taste_profile.clip-vit-b-32.npz":
             self.TASTE_PROFILE_PATH = _DATA_ML_DIR / f"taste_profile.{self.AI_MODEL}.npz"
+        if self.TASTE_PROFILE_TV_PATH == _DATA_ML_DIR / "taste_profile.tv.clip-vit-b-32.npz":
+            self.TASTE_PROFILE_TV_PATH = _DATA_ML_DIR / f"taste_profile.tv.{self.AI_MODEL}.npz"
         if self.ZEROSHOT_AXES_PATH == _DATA_ML_DIR / "zeroshot_axes.clip-vit-b-32.npz":
             self.ZEROSHOT_AXES_PATH = _DATA_ML_DIR / f"zeroshot_axes.{self.AI_MODEL}.npz"
         if self.LEARNED_HEAD_PATH == _DATA_ML_DIR / "learned_head.clip-vit-b-32.npz":
             self.LEARNED_HEAD_PATH = _DATA_ML_DIR / f"learned_head.{self.AI_MODEL}.npz"
+        if self.LEARNED_HEAD_TV_PATH == _DATA_ML_DIR / "learned_head.tv.clip-vit-b-32.npz":
+            self.LEARNED_HEAD_TV_PATH = _DATA_ML_DIR / f"learned_head.tv.{self.AI_MODEL}.npz"
         for field_name in (
             "CLIP_MODEL_PATH",
             "AESTHETIC_MODEL_PATH",
             "FACE_MODEL_PATH",
             "TASTE_PROFILE_PATH",
+            "TASTE_PROFILE_TV_PATH",
             "ZEROSHOT_AXES_PATH",
             "LEARNED_HEAD_PATH",
+            "LEARNED_HEAD_TV_PATH",
             "FEEDBACK_LABELS_PATH",
             "NEGATIVE_DATA_DIR",
+            "NEGATIVE_DATA_TV_DIR",
             "TRAINING_DATA_DIR",
+            "TV_TRAINING_SHOW_DIR",
+            "TV_TRAINING_SEASON_DIR",
             "EMBEDDING_CACHE_DIR",
         ):
             path = getattr(self, field_name)
             if not path.is_absolute():
                 setattr(self, field_name, (_PROJECT_ROOT / path).resolve())
+
+        # Ensure training and negative directories exist, including writing .gitkeep
+        for dir_field in (
+            "TRAINING_DATA_DIR",
+            "TV_TRAINING_SHOW_DIR",
+            "TV_TRAINING_SEASON_DIR",
+            "NEGATIVE_DATA_DIR",
+            "NEGATIVE_DATA_TV_DIR",
+        ):
+            p = getattr(self, dir_field)
+            p.mkdir(parents=True, exist_ok=True)
+            gitkeep = p / ".gitkeep"
+            if not gitkeep.exists():
+                gitkeep.touch()
         if self.K_NEIGHBORS < 1:
             raise ValueError("K_NEIGHBORS must be at least 1")
         if self.KNN_WEIGHTING not in ("mean", "softmax"):
