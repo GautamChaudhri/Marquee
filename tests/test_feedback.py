@@ -16,7 +16,8 @@ from marquee.api.routes import feedback as feedback_route
 from marquee.core.pipeline_config import pipeline_settings
 from marquee.main import app
 from marquee.ml import feedback_store
-from marquee.models import Movie, PipelineRun
+from marquee.ml.namespaces import get_namespace
+from marquee.models import Movie, PipelineRun, Season, Series
 
 
 @pytest.fixture
@@ -33,7 +34,7 @@ def labels_to_tmp(tmp_path, monkeypatch):
     # Avoid all ML: stub the profile-add and head-retrain hooks.
     monkeypatch.setattr(feedback_route, "_add_to_profile", lambda *a, **k: "Die Hard (1988).jpg")
     monkeypatch.setattr(
-        feedback_route, "_maybe_retrain_head", lambda: {"retrained": False, "reason": "stub"}
+        feedback_route, "_maybe_retrain_head", lambda *a, **k: {"retrained": False, "reason": "stub"}
     )
     monkeypatch.setattr(feedback_route.run_manager, "reset_extractor", lambda: None)
     yield
@@ -111,6 +112,98 @@ async def _seed(db, tmp_path, run_id="r1") -> Movie:
     )
     await db.commit()
     return movie
+
+
+def _tv_archive(series_id: int, season_id: int | None = None, season_number: int | None = None) -> dict:
+    subject = {"series_id": series_id, "title": "Breaking Bad"}
+    if season_id is not None:
+        subject["season_id"] = season_id
+    if season_number is not None:
+        subject["season_number"] = season_number
+    return {
+        "media_type": "season" if season_id is not None else "series",
+        "subject": subject,
+        "title": "Breaking Bad" if season_id is None else f"Breaking Bad - Season {season_number:02d}",
+        "tmdb_id": 1396,
+        "candidates": [
+            {
+                "orig_filename": "auto.jpg",
+                "image_path": "/x/ranked/1__0.9__auto.jpg",
+                "rank": 1,
+                "final_score": 0.9,
+                "normalized_features": {"knn_sim": 0.9},
+                "raw_features": {"knn_sim": 0.8},
+                "extended_features": {},
+                "stage_reached": "ranked",
+                "rejection_reason": None,
+            },
+            {
+                "orig_filename": "alt.jpg",
+                "image_path": "/x/ranked/2__0.8__alt.jpg",
+                "rank": 2,
+                "final_score": 0.8,
+                "normalized_features": {"knn_sim": 0.8},
+                "raw_features": {"knn_sim": 0.7},
+                "extended_features": {},
+                "stage_reached": "ranked",
+                "rejection_reason": None,
+            },
+        ],
+    }
+
+
+async def _seed_tv_run(db, tmp_path, *, run_id="tv-r1", media_type="series"):
+    series = Series(
+        title="Breaking Bad",
+        year=2008,
+        series_path=str(tmp_path / "Breaking Bad"),
+        sonarr_id=101,
+        tvdb_id=81189,
+        tmdb_id=1396,
+    )
+    db.add(series)
+    await db.flush()
+
+    season = None
+    if media_type == "season":
+        season = Season(
+            series_id=series.id,
+            season_number=1,
+            episode_count=7,
+            episode_file_count=7,
+        )
+        db.add(season)
+        await db.flush()
+
+    archive_file = tmp_path / f"{run_id}.json"
+    archive_file.write_text(
+        json.dumps(
+            _tv_archive(
+                series.id,
+                season.id if season is not None else None,
+                season.season_number if season is not None else None,
+            )
+        )
+    )
+
+    db.add(
+        PipelineRun(
+            run_id=run_id,
+            media_type=media_type,
+            series_id=series.id,
+            season_id=season.id if season is not None else None,
+            status="completed",
+            scorer_name="weighted",
+            archive_path=str(archive_file),
+            output_dir=str(tmp_path),
+            auto_pick_filename="auto.jpg",
+        )
+    )
+    await db.commit()
+    await db.refresh(series)
+    if season is not None:
+        await db.refresh(season)
+    return series, season
 
 
 @pytest.mark.asyncio
@@ -209,11 +302,12 @@ async def test_run_marked_reviewed(client, db, tmp_path):
 async def test_bulk_auto_approve_reviews_entire_queue(client, db, tmp_path, monkeypatch):
     from sqlalchemy import func, select
 
-    async def fake_deploy(_db, movie, _pick, _run):
-        movie.poster_path = f"/deployed/{movie.id}.jpg"
-        movie.poster_user_approved = True
-        movie.poster_ai_selected = True
-        return movie.poster_path, None
+    async def fake_deploy(_db, subject, _pick, _run):
+        entity = subject.entity
+        entity.poster_path = f"/deployed/{entity.id}.jpg"
+        entity.poster_user_approved = True
+        entity.poster_ai_selected = True
+        return entity.poster_path, None
 
     monkeypatch.setattr(feedback_route, "_deploy_pick", fake_deploy)
 
@@ -308,7 +402,7 @@ async def test_undo_round_trip(client, db, tmp_path, monkeypatch):
     monkeypatch.setattr(
         feedback_route.profile_updater,
         "remove_exemplar",
-        lambda name: removed_calls.append(name) or True,
+        lambda name, namespace=None: removed_calls.append(name) or True,
     )
 
     resp = await client.post("/api/feedback", json={"run_id": "r1", "action": "approve"})
@@ -372,7 +466,7 @@ async def test_rank_mines_hard_negatives_by_rank(client, db, tmp_path, monkeypat
     monkeypatch.setattr(
         feedback_route,
         "_copy_negative",
-        lambda c: copied.append(c["orig_filename"]) or c["orig_filename"],
+        lambda c, namespace: copied.append(c["orig_filename"]) or c["orig_filename"],
     )
     monkeypatch.setattr(pipeline_settings, "FEEDBACK_HARD_NEGATIVE_RANK_MAX", 10)
     resp = await client.post(
@@ -395,16 +489,18 @@ async def test_rank_undo_removes_exemplars_and_negatives(client, db, tmp_path, m
     await _seed(db, tmp_path)
     removed_ex: list[str] = []
     removed_neg: list[str] = []
-    monkeypatch.setattr(feedback_route, "_copy_negative", lambda c: c["orig_filename"])
+    monkeypatch.setattr(
+        feedback_route, "_copy_negative", lambda c, namespace: c["orig_filename"]
+    )
     monkeypatch.setattr(
         feedback_route.profile_updater,
         "remove_exemplar",
-        lambda name: removed_ex.append(name) or True,
+        lambda name, namespace=None: removed_ex.append(name) or True,
     )
     monkeypatch.setattr(
         feedback_route,
         "_remove_negative",
-        lambda name: removed_neg.append(name) or True,
+        lambda name, namespace=None: removed_neg.append(name) or True,
     )
     resp = await client.post(
         "/api/feedback",
@@ -541,3 +637,69 @@ def test_gate_override_alert_respects_snapshot(tmp_path, monkeypatch):
     alerts = {a["gate"]: a for a in feedback_store.gate_override_alerts()}
     assert alerts["ocr_text_heavy"]["overrides"] == 5
     assert alerts["ocr_text_heavy"]["active"] is True
+
+
+@pytest.mark.asyncio
+async def test_tv_series_feedback_writes_to_tv_namespace(client, db, tmp_path):
+    await _seed_tv_run(db, tmp_path, run_id="tv-series", media_type="series")
+
+    resp = await client.post("/api/feedback", json={"run_id": "tv-series", "action": "approve"})
+    assert resp.status_code == 200
+
+    movie_rows = feedback_store.read_all()
+    tv_rows = feedback_store.read_all(get_namespace("tv"))
+    assert movie_rows == []
+    assert len(tv_rows) == 1
+    assert tv_rows[0]["library"] == "tv"
+    assert tv_rows[0]["media_type"] == "series"
+    assert tv_rows[0]["series_id"] is not None
+    assert tv_rows[0]["season_id"] is None
+    assert tv_rows[0]["title"] == "Breaking Bad"
+
+
+@pytest.mark.asyncio
+async def test_tv_season_feedback_uses_series_root_and_season_filename(
+    client, db, tmp_path, monkeypatch
+):
+    series, season = await _seed_tv_run(db, tmp_path, run_id="tv-season", media_type="season")
+    deploy_calls: list[tuple[str, str, str]] = []
+
+    async def fake_deploy(_db, subject, _pick, _run):
+        deploy_calls.append((subject.media_type, subject.folder_raw, subject.render_filename()))
+        return str(tmp_path / "deployed" / subject.render_filename()), None
+
+    monkeypatch.setattr(feedback_route, "_deploy_pick", fake_deploy)
+
+    resp = await client.post(
+        "/api/feedback",
+        json={"run_id": "tv-season", "action": "approve", "deploy": True},
+    )
+    assert resp.status_code == 200
+    assert deploy_calls == [("season", series.series_path, f"season{season.season_number:02d}.jpg")]
+
+    tv_rows = feedback_store.read_all(get_namespace("tv"))
+    assert len(tv_rows) == 1
+    assert tv_rows[0]["media_type"] == "season"
+    assert tv_rows[0]["series_id"] == series.id
+    assert tv_rows[0]["season_id"] == season.id
+    assert tv_rows[0]["title"] == "Breaking Bad - Season 01"
+
+
+@pytest.mark.asyncio
+async def test_tv_feedback_undo_uses_tv_namespace(client, db, tmp_path, monkeypatch):
+    await _seed_tv_run(db, tmp_path, run_id="tv-undo", media_type="season")
+    removed_calls = []
+    monkeypatch.setattr(
+        feedback_route.profile_updater,
+        "remove_exemplar",
+        lambda name, namespace=None: removed_calls.append((name, namespace.library)) or True,
+    )
+
+    resp = await client.post("/api/feedback", json={"run_id": "tv-undo", "action": "approve"})
+    event_id = resp.json()["event_id"]
+    assert len(feedback_store.read_all(get_namespace("tv"))) == 1
+
+    undo = await client.post("/api/feedback/undo", json={"event_id": event_id})
+    assert undo.status_code == 200
+    assert feedback_store.read_all(get_namespace("tv")) == []
+    assert removed_calls == [("Die Hard (1988).jpg", "tv")]

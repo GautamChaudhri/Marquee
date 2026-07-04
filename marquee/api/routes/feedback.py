@@ -28,9 +28,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.core.pipeline_config import pipeline_settings
+from marquee.core.poster_subjects import MEDIA_TYPE_MOVIE, MEDIA_TYPE_SEASON, PosterSubject
 from marquee.database import get_db
 from marquee.ml import feedback_store, profile_updater
-from marquee.models import Movie, PipelineRun
+from marquee.ml.namespaces import TasteNamespace, get_namespace
+from marquee.models import Movie, PipelineRun, Season, Series
 from marquee.pipeline.features import load_cached_embedding
 from marquee.pipeline.run_manager import run_manager
 from marquee.pipeline.types import find_auto_pick_candidate
@@ -60,6 +62,25 @@ class UndoRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+def _namespace_and_kind(media_type: str) -> tuple[TasteNamespace, str]:
+    """Taste namespace + asset_kind for a run's media_type (D4 — one combined
+    TV namespace shared by show and season posters, separate from movies)."""
+    if media_type == MEDIA_TYPE_MOVIE:
+        return get_namespace("movies"), "movie"
+    elif media_type == MEDIA_TYPE_SEASON:
+        return get_namespace("tv"), "season"
+    else:
+        return get_namespace("tv"), "show"
+
+
+def _subject_year(subject: PosterSubject | None) -> int | None:
+    if subject is None:
+        return None
+    if subject.media_type == MEDIA_TYPE_MOVIE:
+        return subject.movie.year
+    return subject.series.year
+
+
 def _label_record(
     *,
     candidate: dict,
@@ -69,7 +90,7 @@ def _label_record(
     event_id: str,
     ts: str,
     run: PipelineRun,
-    movie: Movie | None,
+    subject: PosterSubject | None,
     raw: dict | None,
     normalized: dict | None,
     extended: dict | None,
@@ -80,10 +101,14 @@ def _label_record(
         "event_id": event_id,
         "ts": ts,
         "run_id": run.run_id,
+        # These four keep their v1/v2 names and movie-only semantics — the
+        # head trainer parses them by name; do not rename. TV runs fill the
+        # analogous identity via the additive media_type/library/series_id/
+        # season_id fields below instead.
         "movie_id": run.movie_id,
-        "tmdb_id": movie.tmdb_id if movie else None,
-        "title": movie.title if movie else None,
-        "year": movie.year if movie else None,
+        "tmdb_id": subject.tmdb_id if subject else None,
+        "title": subject.title if subject else None,
+        "year": _subject_year(subject),
         "orig_filename": candidate["orig_filename"],
         "label": label,
         "action": action,
@@ -98,6 +123,10 @@ def _label_record(
         "normalized_features": normalized,
         "extended_features": extended,
         "exemplar_filename": exemplar_filename,
+        "media_type": run.media_type,
+        "library": "movies" if run.media_type == MEDIA_TYPE_MOVIE else "tv",
+        "series_id": run.series_id,
+        "season_id": run.season_id,
     }
 
 
@@ -114,7 +143,7 @@ def _ranking_record_v4(
     event_id: str,
     ts: str,
     run: PipelineRun,
-    movie: Movie | None,
+    subject: PosterSubject | None,
     order_entries: list[dict],
     hated_entries: list[dict],
     favorites_exemplars: list[str],
@@ -133,9 +162,9 @@ def _ranking_record_v4(
         "ts": ts,
         "run_id": run.run_id,
         "movie_id": run.movie_id,
-        "tmdb_id": movie.tmdb_id if movie else None,
-        "title": movie.title if movie else None,
-        "year": movie.year if movie else None,
+        "tmdb_id": subject.tmdb_id if subject else None,
+        "title": subject.title if subject else None,
+        "year": _subject_year(subject),
         "order": order_entries,
         "hated": hated_entries,
         "favorites_exemplars": favorites_exemplars,
@@ -143,6 +172,10 @@ def _ranking_record_v4(
         "scorer_name": run.scorer_name,
         "model_name": pipeline_settings.AI_MODEL,
         "gate_snapshot": feedback_store.gate_snapshot(),
+        "media_type": run.media_type,
+        "library": "movies" if run.media_type == MEDIA_TYPE_MOVIE else "tv",
+        "series_id": run.series_id,
+        "season_id": run.season_id,
     }
 
 
@@ -162,14 +195,14 @@ def _resolve_pick(by_name: dict, name: str) -> dict | None:
 
 
 async def _normalized_for(
-    request: Request, run: PipelineRun, candidate: dict, movie: Movie | None
+    request: Request, run: PipelineRun, candidate: dict, subject: PosterSubject | None
 ) -> dict | None:
     """Normalized features for a candidate, backfilled via retro features when
     it was rejected before the style stage (same as the override path)."""
     _, normalized, _ = _archive_features(candidate)
     if normalized is None:
         _, normalized, _ = await _retro_features(
-            request=request, run=run, candidate=candidate, movie=movie
+            request=request, run=run, candidate=candidate, subject=subject
         )
     return normalized
 
@@ -179,7 +212,7 @@ async def _retro_features(
     request: Request,
     run: PipelineRun,
     candidate: dict,
-    movie: Movie | None,
+    subject: PosterSubject | None,
 ) -> tuple[dict | None, dict | None, dict | None]:
     """Backfill features for a pick that was rejected before detail features."""
     orig = candidate["orig_filename"]
@@ -194,6 +227,7 @@ async def _retro_features(
         compute_full_features,
     )
 
+    movie = subject.movie if subject and subject.media_type == MEDIA_TYPE_MOVIE else None
     poster_candidate: PosterCandidate | None = None
     tmdb = getattr(request.app.state, "tmdb_client", None)
     if tmdb is not None and movie is not None and movie.tmdb_id is not None:
@@ -208,7 +242,14 @@ async def _retro_features(
     if poster_candidate is None:
         poster_candidate = candidate_from_image(originals)
 
-    title = movie.title if movie else ""
+    # OCR title tokens use the bare series title for TV (no season suffix),
+    # matching how the batch runner feeds title tokens for TV assets (§9.2).
+    if subject is None:
+        title = ""
+    elif subject.media_type == MEDIA_TYPE_MOVIE:
+        title = subject.movie.title
+    else:
+        title = subject.series.title
 
     def _compute():
         extractor = run_manager._ensure_extractor()
@@ -223,7 +264,13 @@ async def _retro_features(
     return features.raw_values(), features.normalized, features.extended
 
 
-def _add_to_profile(orig_filename: str, image_path: Path, movie: Movie | None) -> str | None:
+def _add_to_profile(
+    orig_filename: str,
+    image_path: Path,
+    subject: PosterSubject | None,
+    namespace: TasteNamespace,
+    asset_kind: str,
+) -> str | None:
     """Append the pick to the taste profile; returns the exemplar filename."""
     embedding = load_cached_embedding(orig_filename)
     if embedding is None:
@@ -237,23 +284,25 @@ def _add_to_profile(orig_filename: str, image_path: Path, movie: Movie | None) -
         return None
     return profile_updater.add_exemplar(
         source_image=source,
-        title=movie.title if movie else orig_filename,
-        year=movie.year if movie else None,
+        title=subject.title if subject else orig_filename,
+        year=_subject_year(subject),
         clip_embedding=embedding,
+        namespace=namespace,
+        asset_kind=asset_kind,
     )
 
 
-def _maybe_retrain_head() -> dict:
+def _maybe_retrain_head(namespace: TasteNamespace) -> dict:
     if not pipeline_settings.HEAD_AUTO_RETRAIN:
         return {"retrained": False, "reason": "auto-retrain disabled"}
     from marquee.ml.head_trainer import train_from_labels  # noqa: PLC0415
 
-    head, info = train_from_labels()
+    head, info = train_from_labels(namespace=namespace)
     return {"retrained": head is not None, "reason": info.get("reason"), **info}
 
 
 async def _deploy_pick(
-    db: AsyncSession, movie: Movie, pick: dict, run: PipelineRun
+    db: AsyncSession, subject: PosterSubject, pick: dict, run: PipelineRun
 ) -> tuple[str | None, str | None]:
     """Deploy the user's chosen poster to the media folder. Best-effort:
     a deploy failure must not lose the label/profile work already written."""
@@ -269,7 +318,7 @@ async def _deploy_pick(
     try:
         result = await poster_service.deploy(
             db,
-            movie,
+            subject,
             source,
             source="feedback",
             ai_selected=True,
@@ -278,13 +327,42 @@ async def _deploy_pick(
         )
         return result.deployed_path, None
     except Exception as exc:  # noqa: BLE001 — surfaced, not fatal to the feedback
-        logger.warning("DEPLOY | feedback deploy failed for %s: %s", movie.title, exc)
+        logger.warning("DEPLOY | feedback deploy failed for %s: %s", subject.title, exc)
         return None, str(exc)
+
+
+async def _load_feedback_subject(
+    db: AsyncSession,
+    run: PipelineRun,
+) -> PosterSubject:
+    if run.media_type == MEDIA_TYPE_MOVIE:
+        movie = (await db.execute(select(Movie).where(Movie.id == run.movie_id))).scalar_one_or_none()
+        if movie is None:
+            raise HTTPException(status_code=404, detail=f"Movie for run {run.run_id} not found")
+        return PosterSubject.from_movie(movie)
+
+    if run.media_type == MEDIA_TYPE_SEASON:
+        season = (
+            await db.execute(select(Season).where(Season.id == run.season_id))
+        ).scalar_one_or_none()
+        if season is None:
+            raise HTTPException(status_code=404, detail=f"Season for run {run.run_id} not found")
+        series = (
+            await db.execute(select(Series).where(Series.id == season.series_id))
+        ).scalar_one_or_none()
+        if series is None:
+            raise HTTPException(status_code=404, detail=f"Series for run {run.run_id} not found")
+        return PosterSubject.from_season(season, series)
+
+    series = (await db.execute(select(Series).where(Series.id == run.series_id))).scalar_one_or_none()
+    if series is None:
+        raise HTTPException(status_code=404, detail=f"Series for run {run.run_id} not found")
+    return PosterSubject.from_series(series)
 
 
 async def _load_feedback_run(
     db: AsyncSession, run_id: str
-) -> tuple[PipelineRun, dict, Movie | None, dict[str, dict], dict | None]:
+) -> tuple[PipelineRun, dict, PosterSubject, dict[str, dict], dict | None]:
     run = (
         await db.execute(select(PipelineRun).where(PipelineRun.run_id == run_id))
     ).scalar_one_or_none()
@@ -295,12 +373,12 @@ async def _load_feedback_run(
     if archive is None:
         raise HTTPException(status_code=404, detail="Run archive unavailable")
 
-    movie = (await db.execute(select(Movie).where(Movie.id == run.movie_id))).scalar_one_or_none()
+    subject = await _load_feedback_subject(db, run)
     by_name = {c["orig_filename"]: c for c in archive.get("candidates", [])}
     auto = by_name.get(run.auto_pick_filename) if run.auto_pick_filename else None
     if auto is None:
         auto = find_auto_pick_candidate(archive.get("candidates", []))
-    return run, archive, movie, by_name, auto
+    return run, archive, subject, by_name, auto
 
 
 async def apply_feedback_request(
@@ -308,7 +386,8 @@ async def apply_feedback_request(
     request: Request,
     db: AsyncSession,
 ) -> dict:
-    run, archive, movie, by_name, auto = await _load_feedback_run(db, body.run_id)
+    run, archive, subject, by_name, auto = await _load_feedback_run(db, body.run_id)
+    namespace, asset_kind = _namespace_and_kind(run.media_type)
 
     event_id = uuid4().hex
     ts = datetime.now(UTC).isoformat()
@@ -332,7 +411,7 @@ async def apply_feedback_request(
                 event_id=event_id,
                 ts=ts,
                 run=run,
-                movie=movie,
+                subject=subject,
                 raw=raw,
                 normalized=norm,
                 extended=ext,
@@ -377,7 +456,7 @@ async def apply_feedback_request(
                     event_id=event_id,
                     ts=ts,
                     run=run,
-                    movie=movie,
+                    subject=subject,
                     raw=raw,
                     normalized=norm,
                     extended=ext,
@@ -388,14 +467,19 @@ async def apply_feedback_request(
         raw, norm, ext = _archive_features(pick)
         if norm is None:
             raw, norm, ext = await _retro_features(
-                request=request, run=run, candidate=pick, movie=movie
+                request=request, run=run, candidate=pick, subject=subject
             )
 
         # Add to the taste profile (source = the recorded image, original-res
         # for ranked picks).
         image_path = Path(pick.get("image_path") or "")
         exemplar_added = await asyncio.to_thread(
-            _add_to_profile, pick["orig_filename"], image_path, movie
+            _add_to_profile,
+            pick["orig_filename"],
+            image_path,
+            subject,
+            namespace,
+            asset_kind,
         )
 
         records.append(
@@ -407,7 +491,7 @@ async def apply_feedback_request(
                 event_id=event_id,
                 ts=ts,
                 run=run,
-                movie=movie,
+                subject=subject,
                 raw=raw,
                 normalized=norm,
                 extended=ext,
@@ -421,7 +505,7 @@ async def apply_feedback_request(
             and pipeline_settings.FEEDBACK_NEGATIVES_FROM_OVERRIDES
             and auto is not None
         ):
-            await asyncio.to_thread(_copy_negative, auto)
+            await asyncio.to_thread(_copy_negative, auto, namespace)
 
     elif body.action == "rank":
         # Dedup while preserving order — the frontend's orderable/hate-pile
@@ -473,7 +557,7 @@ async def apply_feedback_request(
         # Embed each candidate with its (backfilled) normalized features and
         # baseline (pipeline) rank, for the trainer's inversion math.
         async def _entry(candidate: dict) -> dict | None:
-            normalized = await _normalized_for(request, run, candidate, movie)
+            normalized = await _normalized_for(request, run, candidate, subject)
             if not normalized:
                 return None  # nothing trainable — skip (still staged below)
             return {
@@ -502,7 +586,9 @@ async def apply_feedback_request(
                 _add_to_profile,
                 candidate["orig_filename"],
                 Path(candidate.get("image_path") or ""),
-                movie,
+                subject,
+                namespace,
+                asset_kind,
             )
             if added:
                 favorites_exemplars.append(added)
@@ -512,7 +598,7 @@ async def apply_feedback_request(
         for candidate in hated_cands:
             rank = candidate.get("rank")
             if rank is not None and rank <= rank_max:
-                added = await asyncio.to_thread(_copy_negative, candidate)
+                added = await asyncio.to_thread(_copy_negative, candidate, namespace)
                 if added:
                     negatives_added.append(added)
 
@@ -521,7 +607,7 @@ async def apply_feedback_request(
                 event_id=event_id,
                 ts=ts,
                 run=run,
-                movie=movie,
+                subject=subject,
                 order_entries=order_entries,
                 hated_entries=hated_entries,
                 favorites_exemplars=favorites_exemplars,
@@ -534,26 +620,26 @@ async def apply_feedback_request(
     else:
         raise HTTPException(status_code=400, detail=f"Unknown action {body.action!r}")
 
-    feedback_store.append_labels(records)
+    feedback_store.append_labels(records, namespace)
 
     # Profile changed → next pipeline run must reload the taste store.
     if exemplar_added is not None:
         run_manager.reset_extractor()
 
-    head_info = await asyncio.to_thread(_maybe_retrain_head)
+    head_info = await asyncio.to_thread(_maybe_retrain_head, namespace)
 
     # Deploy the chosen poster to the media folder (approve/override only).
     deployed_to = None
     deploy_error = None
     deploy = pipeline_settings.FEEDBACK_DEPLOY_DEFAULT if body.deploy is None else body.deploy
-    if deploy and pick is not None and movie is not None:
-        deployed_to, deploy_error = await _deploy_pick(db, movie, pick, run)
+    if deploy and pick is not None:
+        deployed_to, deploy_error = await _deploy_pick(db, subject, pick, run)
 
     # Mark the run reviewed.
     run.feedback_event_id = event_id
     await db.commit()
 
-    gate_override = _gate_override_for(pick) if pick is not None else None
+    gate_override = _gate_override_for(pick, namespace) if pick is not None else None
 
     return {
         "event_id": event_id,
@@ -588,7 +674,27 @@ async def undo_feedback(
     body: UndoRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    removed = feedback_store.remove_event(body.event_id)
+    runs = (
+        (
+            await db.execute(
+                select(PipelineRun).where(PipelineRun.feedback_event_id == body.event_id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    namespace = None
+    if runs:
+        namespace, _ = _namespace_and_kind(runs[0].media_type)
+        removed = feedback_store.remove_event(body.event_id, namespace)
+    else:
+        removed = []
+        for library in ("movies", "tv"):
+            probe_namespace = get_namespace(library)
+            removed = feedback_store.remove_event(body.event_id, probe_namespace)
+            if removed:
+                namespace = probe_namespace
+                break
     if not removed:
         raise HTTPException(status_code=404, detail=f"No labels for event {body.event_id}")
 
@@ -599,30 +705,27 @@ async def undo_feedback(
         # of added positive exemplars + hard-negative files.
         exemplar_names = [row.get("exemplar_filename"), *(row.get("favorites_exemplars") or [])]
         for exemplar in exemplar_names:
-            if exemplar and await asyncio.to_thread(profile_updater.remove_exemplar, exemplar):
+            if exemplar and await asyncio.to_thread(
+                profile_updater.remove_exemplar, exemplar, namespace
+            ):
                 removed_exemplars.append(exemplar)
         for negative in row.get("negatives_added") or []:
-            if await asyncio.to_thread(_remove_negative, negative):
+            if await asyncio.to_thread(_remove_negative, negative, namespace):
                 removed_negatives.append(negative)
 
     if removed_exemplars:
         run_manager.reset_extractor()
 
     # Clear the reviewed marker on any run that pointed at this event.
-    runs = (
-        (
-            await db.execute(
-                select(PipelineRun).where(PipelineRun.feedback_event_id == body.event_id)
-            )
-        )
-        .scalars()
-        .all()
-    )
     for run in runs:
         run.feedback_event_id = None
     await db.commit()
 
-    head_info = await asyncio.to_thread(_maybe_retrain_head)
+    head_info = (
+        await asyncio.to_thread(_maybe_retrain_head, namespace)
+        if namespace is not None
+        else {"retrained": False, "reason": "namespace not resolved"}
+    )
     return {
         "removed_labels": len(removed),
         "exemplars_removed": removed_exemplars,
@@ -631,11 +734,11 @@ async def undo_feedback(
     }
 
 
-def _gate_override_for(pick: dict) -> dict | None:
+def _gate_override_for(pick: dict, namespace: TasteNamespace) -> dict | None:
     reason = (pick.get("rejection_reason") or "").split(":", 1)[0]
     if reason not in feedback_store.GATE_REASON_KNOBS:
         return None
-    alerts = {a["gate"]: a for a in feedback_store.gate_override_alerts()}
+    alerts = {a["gate"]: a for a in feedback_store.gate_override_alerts(namespace)}
     alert = alerts.get(reason)
     return {
         "reason": reason,
@@ -643,7 +746,7 @@ def _gate_override_for(pick: dict) -> dict | None:
     }
 
 
-def _copy_negative(candidate: dict) -> str | None:
+def _copy_negative(candidate: dict, namespace: TasteNamespace) -> str | None:
     """Copy a disliked poster into NEGATIVE_DATA_DIR. Returns the filename
     added (for undo), or None if the source was missing or already present."""
     import shutil  # noqa: PLC0415
@@ -651,7 +754,7 @@ def _copy_negative(candidate: dict) -> str | None:
     source = Path(candidate.get("image_path") or "")
     if not source.is_file():
         return None
-    dest_dir = Path(pipeline_settings.NEGATIVE_DATA_DIR)
+    dest_dir = namespace.negative_dir
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / source.name
     if dest.exists():
@@ -661,9 +764,11 @@ def _copy_negative(candidate: dict) -> str | None:
     return dest.name
 
 
-def _remove_negative(filename: str) -> bool:
+def _remove_negative(filename: str, namespace: TasteNamespace | None) -> bool:
     """Remove a negative exemplar file added by a ranking event (undo)."""
-    target = Path(pipeline_settings.NEGATIVE_DATA_DIR) / filename
+    if namespace is None:
+        return False
+    target = namespace.negative_dir / filename
     if target.is_file():
         target.unlink()
         logger.info("NEGATIVE | removed %s", filename)
