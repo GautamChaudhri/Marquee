@@ -59,6 +59,13 @@ def _needs_tmdb_enrichment(movie: Movie) -> bool:
     )
 
 
+def _needs_tv_enrichment(series: Series) -> bool:
+    """Whether this TV series still needs the one-time TMDB OCR metadata backfill."""
+    return bool(series.tmdb_id) and (
+        series.director is None or series.production_companies_json is None
+    )
+
+
 # ---------------------------------------------------------------------------
 # Result types
 # ---------------------------------------------------------------------------
@@ -333,6 +340,7 @@ class SyncService:
         raw_series = await self.sonarr.get_series()
 
         existing = {s.sonarr_id: s for s in (await self.db.execute(select(Series))).scalars()}
+        enrich_candidates = []
 
         for data in raw_series:
             sonarr_id = data["id"]
@@ -352,14 +360,37 @@ class SyncService:
                     result.series.created += 1
                 else:
                     result.series.updated += 1
+                previous_tmdb_id = series.tmdb_id
 
                 # ── Identity ──────────────────────────────────────────
                 series.title = data["title"]
                 series.year = data.get("year", 0)
                 series.tvdb_id = data.get("tvdbId") or None
                 series.imdb_id = data.get("imdbId")
-                # tmdb_id left NULL — populated in Phase N when adding
-                # more poster sources that require it.
+                if data.get("tmdbId"):
+                    series.tmdb_id = data.get("tmdbId")
+                
+                # Resolve tmdb_id if missing
+                if series.tmdb_id is None and self.tmdb:
+                    try:
+                        resolved_tmdb_id = None
+                        if series.tvdb_id:
+                            find_res = await self.tmdb.find_by_external_id(str(series.tvdb_id), "tvdb_id")
+                            if find_res and find_res.get("tv_results"):
+                                resolved_tmdb_id = find_res["tv_results"][0]["id"]
+                        elif series.imdb_id:
+                            find_res = await self.tmdb.find_by_external_id(str(series.imdb_id), "imdb_id")
+                            if find_res and find_res.get("tv_results"):
+                                resolved_tmdb_id = find_res["tv_results"][0]["id"]
+                        if resolved_tmdb_id:
+                            series.tmdb_id = resolved_tmdb_id
+                    except Exception as e:
+                        logger.warning("Failed to resolve TMDB ID for series sonarr_id=%s: %s", sonarr_id, e)
+
+                if previous_tmdb_id != series.tmdb_id:
+                    series.director = None
+                    series.production_companies_json = None
+                    series.tagline = None
 
                 # ── Filesystem ────────────────────────────────────────
                 series.series_path = data.get("path") or ""
@@ -385,12 +416,60 @@ class SyncService:
                 result.episodes.updated += er.updated
                 result.episodes.errors += er.errors
 
+                # Fallback: recompute counts from Episode rows if statistics is missing/zero-file-count
+                seasons = (await self.db.execute(select(Season).where(Season.series_id == series.id))).scalars().all()
+                if any(s.episode_file_count == 0 for s in seasons):
+                    episodes = (await self.db.execute(select(Episode).where(Episode.series_id == series.id))).scalars().all()
+                    episodes_by_season = {}
+                    for ep in episodes:
+                        episodes_by_season.setdefault(ep.season_number, []).append(ep)
+                    for s in seasons:
+                        if s.episode_file_count == 0:
+                            eps = episodes_by_season.get(s.season_number, [])
+                            total_episodes = len(eps)
+                            file_episodes = sum(1 for ep in eps if ep.episode_file_path is not None)
+                            if file_episodes > 0:
+                                s.episode_count = total_episodes
+                                s.episode_file_count = file_episodes
+
+                if _needs_tv_enrichment(series):
+                    enrich_candidates.append(series)
+
             except Exception:
                 logger.error("Error syncing series sonarr_id=%s", sonarr_id, exc_info=True)
                 result.series.errors += 1
 
+        if self.tmdb and enrich_candidates:
+            await self._enrich_tv_from_tmdb(enrich_candidates)
+
         await self.db.commit()
         return result
+
+    async def _enrich_tv_from_tmdb(self, series_list: list[Series]) -> None:
+        """Backfill OCR TV metadata from TMDB without blocking the sync."""
+        semaphore = asyncio.Semaphore(5)
+
+        async def enrich(series: Series) -> None:
+            tmdb_id = series.tmdb_id
+            if tmdb_id is None or not _needs_tv_enrichment(series):
+                return
+            try:
+                async with semaphore:
+                    details = await self.tmdb.get_tv_details(tmdb_id)
+            except Exception:
+                logger.warning(
+                    "TMDB enrichment failed for series sonarr_id=%s tmdb_id=%s",
+                    series.sonarr_id,
+                    tmdb_id,
+                    exc_info=True,
+                )
+                return
+
+            series.director = details.director
+            series.production_companies_json = details.production_companies
+            series.tagline = details.tagline
+
+        await asyncio.gather(*(enrich(s) for s in series_list))
 
     # ── Seasons ──────────────────────────────────────────────────────
 
@@ -412,8 +491,8 @@ class SyncService:
 
         for sdata in sonarr_seasons:
             season_num = sdata.get("seasonNumber", 0)
-            # Skip "Specials" (season 0) and invalid numbers
-            if season_num < 1:
+            # Skip invalid numbers
+            if season_num < 0:
                 continue
 
             season = existing.get(season_num)
@@ -423,6 +502,10 @@ class SyncService:
                 result.created += 1
             else:
                 result.updated += 1
+
+            stats = sdata.get("statistics") or {}
+            season.episode_count = int(stats.get("episodeCount") or 0)
+            season.episode_file_count = int(stats.get("episodeFileCount") or 0)
 
             # tmdb_id for seasons is populated in Phase N
             await self._check_existing_poster(season, series=series)

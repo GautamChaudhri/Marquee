@@ -158,6 +158,8 @@ class SubgenSettingsUpdate(BaseModel):
 
 class PostersSettingsUpdate(BaseModel):
     movie_poster_format: str | None = None
+    series_poster_format: str | None = None
+    season_poster_format: str | None = None
     restore_method: Literal["download", "local"] | None = None
 
 
@@ -179,6 +181,41 @@ def _validate_movie_poster_format(value: str) -> str:
         sanitize_poster_filename(rendered)
     except (IndexError, KeyError, PathValidationError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=f"Invalid movie poster format: {exc}") from exc
+    return value
+
+
+def _validate_series_poster_format(value: str) -> str:
+    if "{" in value or "}" in value:
+        raise HTTPException(
+            status_code=400,
+            detail="TV series poster format must not contain template placeholders."
+        )
+    try:
+        sanitize_poster_filename(value)
+    except (PathValidationError, ValueError) as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid series poster format: {exc}"
+        ) from exc
+    return value
+
+
+def _validate_season_poster_format(value: str) -> str:
+    if "{season" not in value:
+        raise HTTPException(
+            status_code=400,
+            detail="Season poster format must contain a '{season' placeholder."
+        )
+    try:
+        r1 = value.format(season=1)
+        r0 = value.format(season=0)
+        sanitize_poster_filename(r1)
+        sanitize_poster_filename(r0)
+    except (IndexError, KeyError, PathValidationError, ValueError) as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid season poster format: {exc}"
+        ) from exc
     return value
 
 
@@ -242,6 +279,14 @@ async def put_settings(
         if "movie_poster_format" in poster_update:
             app_updates["MOVIE_POSTER_FORMAT"] = _validate_movie_poster_format(
                 poster_update["movie_poster_format"]
+            )
+        if "series_poster_format" in poster_update:
+            app_updates["SERIES_POSTER_FORMAT"] = _validate_series_poster_format(
+                poster_update["series_poster_format"]
+            )
+        if "season_poster_format" in poster_update:
+            app_updates["SEASON_POSTER_FORMAT"] = _validate_season_poster_format(
+                poster_update["season_poster_format"]
             )
         if "restore_method" in poster_update:
             app_updates["POSTER_RESTORE_METHOD"] = poster_update["restore_method"]
