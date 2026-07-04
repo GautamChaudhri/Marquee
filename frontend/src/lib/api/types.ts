@@ -1604,7 +1604,14 @@ export interface PolicyAuditResult {
 }
 
 // ── Audio & Subtitles TV & Subgen Types ──
-export type AudioSubStatus = 'ok' | 'audio_gap' | 'subtitle_gap' | 'both_gap' | 'unknown';
+export type AudioSubStatus =
+	| 'ok'
+	| 'gaps'
+	| 'none_met'
+	| 'audio_gap'
+	| 'subtitle_gap'
+	| 'both_gap'
+	| 'unknown';
 
 export interface AudioSubsSummary {
 	movies: {

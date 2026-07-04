@@ -1,404 +1,581 @@
 <!-- eslint-disable @typescript-eslint/no-explicit-any -->
 <script lang="ts">
-	import { browser } from '$app/environment';
 	import SectionHeader from '$lib/components/SectionHeader.svelte';
-	import TabBar from '$lib/components/TabBar.svelte';
-	import SubtitleMovieList from '$lib/components/subtitles/SubtitleMovieList.svelte';
-	import SubgenStatus from '$lib/components/subtitles/SubgenStatus.svelte';
-	import SubgenPanel from '$lib/components/subtitles/SubgenPanel.svelte';
-	import PolicyList from '$lib/components/subtitles/PolicyList.svelte';
-	import PolicyEditor from '$lib/components/subtitles/PolicyEditor.svelte';
-	import JobList from '$lib/components/subtitles/JobList.svelte';
-	import type { SubtitlePolicy } from '$lib/api/types';
-	import { scanLibrarySubtitles } from '$lib/api/subtitles';
-	import { listMovies } from '$lib/api/library';
-	import { putSettings } from '$lib/api/system';
+	import PreferredLanguagesEditor from '$lib/components/subtitles/PreferredLanguagesEditor.svelte';
+	import SubgenCard from '$lib/components/subtitles/SubgenCard.svelte';
+	import StatCard from '$lib/components/StatCard.svelte';
+	import ProgressBar from '$lib/components/ProgressBar.svelte';
+	import { getAudioSubsSummary, deepScan } from '$lib/api/subtitles';
+	import { trackJob } from '$lib/jobs';
 	import { toast } from '$lib/toast';
 
 	let { data } = $props();
 
-	let tabs = [
-		{ id: 'inventory', label: 'Inventory' },
-		{ id: 'generation', label: 'AI Generation' },
-		{ id: 'policies', label: 'Policies' },
-		{ id: 'jobs', label: 'Jobs Queue' }
-	];
+	let summary = $state(data.summary);
+	let error = $state(data.error);
 
-	let activeTab = $state('inventory');
+	let activeJobId = $state<string | null>(null);
+	let jobProgress = $state<{ stage: string; percent: number; message: string } | null>(null);
 
-	// Local reactive state for movies
-	// svelte-ignore state_referenced_locally
-	let movies = $state(data.movies?.items || []);
-	// svelte-ignore state_referenced_locally
-	let settings = $state(data.settings);
-	let scanningLibrary = $state(false);
-	let savingPreferences = $state(false);
-	let preferredShared = $state('en');
-	let preferredAudio = $state('en');
-	let preferredSubtitles = $state('en');
-	let separatePreferred = $state(false);
-	let preferencesInitialized = $state(false);
-
-	$effect(() => {
-		if (data.movies?.items) {
-			movies = data.movies.items;
-		}
-	});
-
-	$effect(() => {
-		if (settings && !preferencesInitialized) {
-			const sub = settings.subtitles || {};
-			preferredShared = (sub.preferred_languages || ['en']).join(', ');
-			preferredAudio = (
-				sub.preferred_audio_languages ||
-				sub.effective_preferred_audio_languages ||
-				sub.preferred_languages || ['en']
-			).join(', ');
-			preferredSubtitles = (
-				sub.preferred_subtitle_languages ||
-				sub.effective_preferred_subtitle_languages ||
-				sub.preferred_languages || ['en']
-			).join(', ');
-			separatePreferred = Boolean(
-				sub.preferred_audio_languages || sub.preferred_subtitle_languages
-			);
-			preferencesInitialized = true;
-		}
-	});
-
-	async function refreshMovies() {
+	async function refreshSummary() {
 		try {
-			const res = await listMovies(fetch, { page_size: 200 });
-			movies = res.items;
-		} catch (e) {
-			console.error(e);
+			summary = await getAudioSubsSummary(fetch);
+		} catch (e: any) {
+			error = e.message || 'Failed to refresh dashboard data';
 		}
 	}
 
-	function parseLanguages(value: string) {
-		return value
-			.split(',')
-			.map((s) => s.trim())
-			.filter(Boolean);
-	}
-
-	async function savePreferredLanguages() {
-		savingPreferences = true;
+	async function triggerScan(scope: 'movies' | 'tv' | 'all') {
 		try {
-			const payload = {
-				subtitles: {
-					preferred_languages: parseLanguages(preferredShared),
-					preferred_audio_languages: separatePreferred ? parseLanguages(preferredAudio) : null,
-					preferred_subtitle_languages: separatePreferred
-						? parseLanguages(preferredSubtitles)
-						: null
+			const res = await deepScan(fetch, scope);
+			activeJobId = res.job_id;
+			toast(`Scan enqueued: ${scope}`, 'good');
+
+			trackJob(fetch, res.job_id, {
+				onProgress: (p) => {
+					jobProgress = {
+						stage: p.detail.stage || 'Deep Scan',
+						percent: typeof p.detail.percent === 'number' ? p.detail.percent : 0,
+						message: p.detail.message || ''
+					};
+				},
+				onDone: () => {
+					activeJobId = null;
+					jobProgress = null;
+					toast('Subtitle deep scan finished', 'good');
+					refreshSummary();
+				},
+				onError: (msg) => {
+					activeJobId = null;
+					jobProgress = null;
+					toast(`Scan failed: ${msg}`, 'bad');
 				}
-			};
-			const response = await putSettings(fetch, payload);
-			settings = response.settings;
-			preferencesInitialized = false;
-			await refreshMovies();
-			toast('Preferred languages saved', 'good');
+			});
 		} catch (e: any) {
-			toast(e.message || 'Failed to save preferred languages', 'bad');
-		} finally {
-			savingPreferences = false;
+			toast(e.message || 'Failed to enqueue deep scan', 'bad');
 		}
-	}
-
-	async function triggerLibraryScan() {
-		scanningLibrary = true;
-		try {
-			await scanLibrarySubtitles(fetch, false);
-			toast('Library subtitle scan job enqueued', 'good');
-		} catch (e: any) {
-			toast(e.message || 'Failed to enqueue library scan job', 'bad');
-		} finally {
-			scanningLibrary = false;
-		}
-	}
-
-	// Persist active tab selection
-	$effect(() => {
-		if (browser) {
-			const cached = localStorage.getItem('marquee:active_subtitles_tab');
-			if (cached && tabs.some((t) => t.id === cached)) {
-				activeTab = cached;
-			}
-		}
-	});
-
-	function handleTabSelect(id: string) {
-		activeTab = id;
-		if (browser) {
-			localStorage.setItem('marquee:active_subtitles_tab', id);
-		}
-	}
-
-	// Policy editor navigation state
-	let activePolicy = $state<SubtitlePolicy | null>(null);
-	let editorOpen = $state(false);
-
-	function openPolicyEditor(policy: SubtitlePolicy) {
-		activePolicy = policy;
-		editorOpen = true;
-	}
-
-	function closePolicyEditor() {
-		activePolicy = null;
-		editorOpen = false;
 	}
 </script>
 
 <svelte:head>
-	<title>Audio & Subs – Marquee</title>
+	<title>Audio & Subtitles — Marquee</title>
 </svelte:head>
-
-{#snippet pageActions()}
-	<button class="btn-scan" onclick={triggerLibraryScan} disabled={scanningLibrary}>
-		🔍 {scanningLibrary ? 'Queued...' : 'Scan Library for Subtitles'}
-	</button>
-{/snippet}
 
 <div class="page-container">
 	<SectionHeader
-		title="Audio and Subtitle Management"
-		subtitle="Manage container embedded and external audio and subtitle tracks across your library."
-		action={pageActions}
+		title="Audio & Subtitles Dashboard"
+		subtitle="Overview of library localization coverage, languages preferences, and automatic speech recognition (ASR) generators."
 	/>
 
-	{#if data.error}
+	{#if error}
 		<div class="error-banner">
-			<p>Failed to load subtitles page: {data.error}</p>
+			<p>⚠ {error}</p>
 		</div>
 	{/if}
 
-	<div class="tabs-row">
-		<TabBar {tabs} active={activeTab} onSelect={handleTabSelect} />
-	</div>
+	{#if summary}
+		<!-- Quick Navigation Library Jump Buttons -->
+		<div class="jump-row">
+			<a href="/audio-subs/movies" class="jump-btn"> 🎥 Movie Library </a>
+			<a href="/audio-subs/tv" class="jump-btn"> 📺 Television Library </a>
+		</div>
 
-	<div class="tab-content-wrapper">
-		{#if activeTab === 'inventory'}
-			<div class="preferences-panel mq-rise">
-				<div class="preferences-head">
-					<div>
-						<h3>Preferred Languages</h3>
-						<p>Used for audio/subtitle gap status across the library.</p>
+		<!-- Metrics Section -->
+		<div class="metrics-section">
+			<div class="category-header">
+				<h4>Movies Localization Metrics</h4>
+				<span class="count">Total: {summary.movies.total}</span>
+			</div>
+			<div class="metrics-grid">
+				<a href="/audio-subs/movies?status=audio_ok" class="metric-card ok">
+					<span class="label">Audio OK</span>
+					<span class="value">{summary.movies.audio_ok}</span>
+				</a>
+				<a href="/audio-subs/movies?status=audio_gap" class="metric-card gap">
+					<span class="label">Audio Gaps</span>
+					<span class="value">{summary.movies.audio_gap}</span>
+				</a>
+				<a href="/audio-subs/movies?status=subtitle_ok" class="metric-card ok">
+					<span class="label">Subtitle OK</span>
+					<span class="value">{summary.movies.subtitle_ok}</span>
+				</a>
+				<a href="/audio-subs/movies?status=subtitle_gap" class="metric-card gap">
+					<span class="label">Subtitle Gaps</span>
+					<span class="value">{summary.movies.subtitle_gap}</span>
+				</a>
+				<a href="/audio-subs/movies?status=both_gap" class="metric-card both-gap">
+					<span class="label">Both Missing</span>
+					<span class="value">{summary.movies.both_gap}</span>
+				</a>
+				<a href="/audio-subs/movies?status=unknown" class="metric-card unknown">
+					<span class="label">Unscanned</span>
+					<span class="value">{summary.movies.unknown}</span>
+				</a>
+			</div>
+		</div>
+
+		<div class="metrics-section">
+			<div class="category-header">
+				<h4>Television Episode Localization Metrics</h4>
+			</div>
+			<div class="metrics-grid">
+				<a href="/audio-subs/tv?status=ok" class="metric-card ok">
+					<span class="label">Audio OK</span>
+					<span class="value">{summary.tv.audio_ok}</span>
+				</a>
+				<a href="/audio-subs/tv?status=audio_gap" class="metric-card gap">
+					<span class="label">Audio Gaps</span>
+					<span class="value">{summary.tv.audio_gap}</span>
+				</a>
+				<a href="/audio-subs/tv?status=subtitle_ok" class="metric-card ok">
+					<span class="label">Subtitle OK</span>
+					<span class="value">{summary.tv.subtitle_ok}</span>
+				</a>
+				<a href="/audio-subs/tv?status=subtitle_gap" class="metric-card gap">
+					<span class="label">Subtitle Gaps</span>
+					<span class="value">{summary.tv.subtitle_gap}</span>
+				</a>
+				<a href="/audio-subs/tv?status=both_gap" class="metric-card both-gap">
+					<span class="label">Both Missing</span>
+					<span class="value">{summary.tv.both_gap}</span>
+				</a>
+				<a href="/audio-subs/tv?status=unknown" class="metric-card unknown">
+					<span class="label">Unscanned</span>
+					<span class="value">{summary.tv.unknown}</span>
+				</a>
+			</div>
+		</div>
+
+		<!-- Mid Section: Preferences & Generator Configuration -->
+		<div class="dashboard-grid">
+			<div class="left-col">
+				<PreferredLanguagesEditor preferred={summary.preferred} onSave={refreshSummary} />
+				<SubgenCard
+					generator={summary.generator[0] || null}
+					settings={data.settings?.subtitles || {}}
+					onRefresh={refreshSummary}
+				/>
+			</div>
+
+			<div class="right-col">
+				<!-- Insights Card -->
+				<div class="insights-card mq-rise">
+					<h4>Localization Insights</h4>
+					<div class="insight-row">
+						<span class="label">Unlabeled Tracks</span>
+						<span class="value"
+							>{summary.movies.unknown_language_tracks} tracks with no language tag</span
+						>
 					</div>
-					<label class="toggle-row">
-						<input type="checkbox" bind:checked={separatePreferred} />
-						<span>Separate audio and subtitles</span>
-					</label>
+					<div class="insight-row">
+						<span class="label">AI Generated Subtitles</span>
+						<span class="value">{summary.movies.generated_tracks} active Whisper subtitles</span>
+					</div>
+					<div class="insight-row">
+						<span class="label">Forced Audio Tracks</span>
+						<span class="value">{summary.movies.forced_coverage} movies covered</span>
+					</div>
+					<div class="insight-row">
+						<span class="label">SDH Coverage</span>
+						<span class="value">{summary.movies.sdh_coverage} movies covered</span>
+					</div>
 				</div>
-				<div class="preferences-grid" class:split={separatePreferred}>
-					<label class="setting-field">
-						<span>{separatePreferred ? 'Shared fallback' : 'Audio & subtitles'}</span>
-						<input
-							type="text"
-							bind:value={preferredShared}
-							placeholder="en, es, fr"
-							autocomplete="off"
-						/>
-					</label>
-					{#if separatePreferred}
-						<label class="setting-field">
-							<span>Audio</span>
-							<input
-								type="text"
-								bind:value={preferredAudio}
-								placeholder="en, es"
-								autocomplete="off"
-							/>
-						</label>
-						<label class="setting-field">
-							<span>Subtitles</span>
-							<input
-								type="text"
-								bind:value={preferredSubtitles}
-								placeholder="en, fr"
-								autocomplete="off"
-							/>
-						</label>
+
+				<!-- Dub-Coverage Spotlight -->
+				{#if summary.tv.dub_coverage_highlights && summary.tv.dub_coverage_highlights.length > 0}
+					<div class="spotlight-card mq-rise">
+						<h4>Dubbing Coverage Spotlight</h4>
+						<p class="subtitle">Shows missing preferred audio languages</p>
+						<div class="spotlight-list">
+							{#each summary.tv.dub_coverage_highlights as show}
+								<a href={`/audio-subs/tv/${show.series_id}`} class="spotlight-item">
+									<div class="info">
+										<span class="title">{show.title}</span>
+										<span class="langs">Missing: {show.missing_audio_languages.join(', ')}</span>
+									</div>
+									<span class="pct"
+										>{Math.round((show.coverage.ok / (show.coverage.of || 1)) * 100)}%</span
+									>
+								</a>
+							{/each}
+						</div>
+					</div>
+				{/if}
+
+				<!-- Policy Strip -->
+				<div class="policy-card mq-rise">
+					<div class="header">
+						<div>
+							<h4>Cleanup Policies</h4>
+							<p>{summary.policies.active_count} active policies configured</p>
+						</div>
+						<a href="/audio-subs/policies" class="btn-manage">Manage Policies</a>
+					</div>
+				</div>
+
+				<!-- Deep Scan Panel -->
+				<div class="scan-card mq-rise">
+					<h4>Deep Subtitle Scan</h4>
+					<p class="desc">
+						Forces a raw media container inspect to sync audio channel layouts and subtitles codec
+						details.
+					</p>
+
+					<div class="scan-meta">
+						<div class="meta-item">
+							<span class="lbl">Pending files</span>
+							<span class="val">{summary.deep_scan.pending_file_count}</span>
+						</div>
+						{#if summary.deep_scan.last_run_at}
+							<div class="meta-item">
+								<span class="lbl">Last scan</span>
+								<span class="val">{new Date(summary.deep_scan.last_run_at).toLocaleString()}</span>
+							</div>
+						{/if}
+					</div>
+
+					{#if jobProgress}
+						<div class="progress-box">
+							<div class="prog-head">
+								<span>{jobProgress.stage}</span>
+								<span>{jobProgress.percent}%</span>
+							</div>
+							<ProgressBar value={jobProgress.percent} />
+							{#if jobProgress.message}
+								<small>{jobProgress.message}</small>
+							{/if}
+						</div>
 					{/if}
-					<button
-						class="btn-save-preferences"
-						onclick={savePreferredLanguages}
-						disabled={savingPreferences}
-					>
-						{savingPreferences ? 'Saving...' : 'Save'}
-					</button>
+
+					<div class="actions">
+						<button
+							class="btn secondary"
+							onclick={() => triggerScan('movies')}
+							disabled={!!activeJobId}
+						>
+							Scan Movies
+						</button>
+						<button
+							class="btn secondary"
+							onclick={() => triggerScan('tv')}
+							disabled={!!activeJobId}
+						>
+							Scan TV
+						</button>
+						<button class="btn primary" onclick={() => triggerScan('all')} disabled={!!activeJobId}>
+							Scan All
+						</button>
+					</div>
 				</div>
 			</div>
-			{#if movies}
-				<SubtitleMovieList {movies} />
-			{:else}
-				<div class="loading-state">Loading inventory...</div>
-			{/if}
-		{:else if activeTab === 'generation'}
-			<div class="generation-grid">
-				<SubgenStatus />
-				<SubgenPanel />
-			</div>
-		{:else if activeTab === 'policies'}
-			{#if editorOpen}
-				<PolicyEditor
-					policy={activePolicy || ({} as any)}
-					onSave={closePolicyEditor}
-					onCancel={closePolicyEditor}
-				/>
-			{:else}
-				<PolicyList
-					onEdit={openPolicyEditor}
-					onAudit={openPolicyEditor}
-					onApply={openPolicyEditor}
-				/>
-			{/if}
-		{:else if activeTab === 'jobs'}
-			<JobList />
-		{/if}
-	</div>
+		</div>
+	{:else}
+		<div class="loading">Loading dashboard...</div>
+	{/if}
 </div>
 
 <style>
 	.page-container {
 		display: flex;
 		flex-direction: column;
-		gap: 18px;
-		height: 100%;
-		padding-bottom: 24px;
+		gap: 20px;
+		padding-bottom: 32px;
 	}
-	.tabs-row {
-		border-bottom: 1px solid var(--line);
-		padding-bottom: 6px;
+	.jump-row {
+		display: flex;
+		gap: 12px;
 	}
-	.tab-content-wrapper {
+	.jump-btn {
 		flex: 1;
-		min-height: 0;
+		background: var(--panel);
+		border: 1px solid var(--line);
+		border-radius: var(--radius);
+		padding: 18px;
+		text-align: center;
+		color: var(--text);
+		text-decoration: none;
+		font-weight: 650;
+		font-size: 14px;
+		transition:
+			background-color 0.15s,
+			border-color 0.15s,
+			color 0.15s;
 	}
-	.preferences-panel {
+	.jump-btn:hover {
+		background: var(--line);
+		border-color: var(--gold);
+		color: var(--gold);
+	}
+	.metrics-section {
+		display: flex;
+		flex-direction: column;
+		gap: 10px;
+	}
+	.category-header {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+	}
+	.category-header h4 {
+		margin: 0;
+		font-size: 13.5px;
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+		color: var(--faint2);
+		font-weight: 700;
+	}
+	.category-header .count {
+		font-size: 12px;
+		color: var(--muted);
+	}
+	.metrics-grid {
+		display: grid;
+		grid-template-columns: repeat(6, 1fr);
+		gap: 12px;
+	}
+	@media (max-width: 900px) {
+		.metrics-grid {
+			grid-template-columns: repeat(3, 1fr);
+		}
+	}
+	@media (max-width: 600px) {
+		.metrics-grid {
+			grid-template-columns: repeat(2, 1fr);
+		}
+	}
+	.metric-card {
+		background: var(--panel);
+		border: 1px solid var(--line);
+		border-radius: var(--radius);
+		padding: 12px;
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+		text-decoration: none;
+		color: var(--text);
+		transition:
+			transform 0.1s,
+			border-color 0.15s;
+	}
+	.metric-card:hover {
+		transform: translateY(-2px);
+		border-color: var(--border-color, var(--line));
+	}
+	.metric-card .label {
+		font-size: 11px;
+		color: var(--muted);
+	}
+	.metric-card .value {
+		font-size: 22px;
+		font-weight: 700;
+	}
+	.metric-card.ok {
+		--border-color: var(--good);
+		color: var(--good);
+	}
+	.metric-card.gap {
+		--border-color: var(--warn);
+		color: var(--warn);
+	}
+	.metric-card.both-gap {
+		--border-color: var(--bad);
+		color: var(--bad);
+	}
+	.metric-card.unknown {
+		--border-color: var(--muted);
+		color: var(--muted);
+	}
+	.dashboard-grid {
+		display: grid;
+		grid-template-columns: 1.2fr 1fr;
+		gap: 20px;
+		align-items: flex-start;
+	}
+	@media (max-width: 960px) {
+		.dashboard-grid {
+			grid-template-columns: 1fr;
+		}
+	}
+	.left-col,
+	.right-col {
+		display: flex;
+		flex-direction: column;
+		gap: 20px;
+	}
+	.insights-card,
+	.spotlight-card,
+	.policy-card,
+	.scan-card {
 		background: var(--panel);
 		border: 1px solid var(--line);
 		border-radius: var(--radius);
 		padding: 16px;
-		margin-bottom: 16px;
 		display: flex;
 		flex-direction: column;
-		gap: 14px;
-	}
-	.preferences-head {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: 16px;
-	}
-	.preferences-head h3 {
-		margin: 0;
-		font-size: 15px;
-	}
-	.preferences-head p {
-		margin: 4px 0 0;
-		font-size: 12.5px;
-		color: var(--muted);
-	}
-	.toggle-row {
-		display: inline-flex;
-		align-items: center;
-		gap: 8px;
-		color: var(--muted);
-		font-size: 12.5px;
-		cursor: pointer;
-		white-space: nowrap;
-	}
-	.toggle-row input[type='checkbox'] {
-		appearance: none;
-		width: 16px;
-		height: 16px;
-		border-radius: 999px;
-		border: 1px solid var(--line2);
-		background: var(--ink2);
-		cursor: pointer;
-		box-shadow: inset 0 0 0 4px var(--ink2);
-		transition:
-			border-color 0.15s,
-			background-color 0.15s,
-			box-shadow 0.15s;
-	}
-	.toggle-row input[type='checkbox']:checked {
-		border-color: var(--gold);
-		background: var(--gold);
-		box-shadow:
-			0 0 0 3px var(--gold-soft),
-			0 0 14px rgba(255, 190, 73, 0.35);
-	}
-	.preferences-grid {
-		display: grid;
-		grid-template-columns: minmax(220px, 1fr) auto;
 		gap: 12px;
-		align-items: end;
 	}
-	.preferences-grid.split {
-		grid-template-columns: repeat(3, minmax(160px, 1fr)) auto;
+	.insights-card h4,
+	.spotlight-card h4,
+	.scan-card h4,
+	.policy-card h4 {
+		margin: 0;
+		font-size: 14px;
+		font-weight: 650;
 	}
-	.setting-field {
+	.insight-row {
+		display: flex;
+		justify-content: space-between;
+		font-size: 13px;
+		border-bottom: 1px solid var(--line2);
+		padding-bottom: 8px;
+	}
+	.insight-row:last-child {
+		border-bottom: none;
+		padding-bottom: 0;
+	}
+	.insight-row .label {
+		color: var(--muted);
+	}
+	.insight-row .value {
+		font-weight: 550;
+	}
+	.spotlight-card .subtitle {
+		margin: -8px 0 4px;
+		font-size: 12px;
+		color: var(--muted);
+	}
+	.spotlight-list {
 		display: flex;
 		flex-direction: column;
-		gap: 6px;
-		min-width: 0;
+		gap: 8px;
 	}
-	.setting-field span {
+	.spotlight-item {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		padding: 8px 12px;
+		background: var(--ink2);
+		border: 1px solid var(--line);
+		border-radius: var(--radius-sm);
+		text-decoration: none;
+		color: var(--text);
+		transition: border-color 0.15s;
+	}
+	.spotlight-item:hover {
+		border-color: var(--gold);
+	}
+	.spotlight-item .info {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+	}
+	.spotlight-item .title {
+		font-size: 13px;
+		font-weight: 600;
+	}
+	.spotlight-item .langs {
 		font-size: 11px;
-		text-transform: uppercase;
-		font-weight: 700;
-		color: var(--faint2);
+		color: var(--warn);
 	}
-	.setting-field input {
-		width: 100%;
-		padding: 9px 10px;
+	.spotlight-item .pct {
+		font-size: 14px;
+		font-weight: 700;
+		color: var(--muted);
+	}
+	.policy-card .header {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+	}
+	.policy-card p {
+		margin: 4px 0 0;
+		font-size: 12px;
+		color: var(--muted);
+	}
+	.btn-manage {
+		font-size: 12px;
+		font-weight: 650;
+		padding: 6px 12px;
 		background: var(--panel2);
 		border: 1px solid var(--line);
 		border-radius: var(--radius-sm);
 		color: var(--text);
-		font-size: 13px;
-		outline: none;
+		text-decoration: none;
 	}
-	.setting-field input:focus {
-		border-color: var(--gold);
-		box-shadow: 0 0 0 2px var(--gold-soft);
+	.btn-manage:hover {
+		background: var(--line);
 	}
-	.btn-save-preferences {
-		font-size: 13px;
-		font-weight: 650;
-		padding: 9px 16px;
+	.scan-card .desc {
+		margin: 0;
+		font-size: 12.5px;
+		color: var(--muted);
+		line-height: 1.4;
+	}
+	.scan-meta {
+		display: flex;
+		gap: 24px;
+		background: var(--ink2);
+		padding: 8px 12px;
 		border-radius: var(--radius-sm);
-		border: 1px solid color-mix(in srgb, var(--gold) 60%, transparent);
+		border: 1px solid var(--line);
+	}
+	.meta-item {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+	}
+	.meta-item .lbl {
+		font-size: 10px;
+		text-transform: uppercase;
+		font-weight: 700;
+		color: var(--faint2);
+	}
+	.meta-item .val {
+		font-size: 13px;
+		font-weight: 600;
+	}
+	.progress-box {
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+		background: var(--ink2);
+		padding: 10px;
+		border-radius: var(--radius-sm);
+		border: 1px solid var(--line);
+	}
+	.progress-box .prog-head {
+		display: flex;
+		justify-content: space-between;
+		font-size: 11.5px;
+		font-weight: 600;
+	}
+	.progress-box small {
+		font-size: 11px;
+		color: var(--muted);
+	}
+	.scan-card .actions {
+		display: flex;
+		gap: 8px;
+		justify-content: flex-end;
+	}
+	.scan-card .btn {
+		font-size: 12px;
+		font-weight: 600;
+		padding: 6px 12px;
+		border-radius: var(--radius-sm);
+		cursor: pointer;
+		border: none;
+	}
+	.scan-card .btn.primary {
 		background: var(--gold);
 		color: var(--ink);
-		cursor: pointer;
 	}
-	.btn-save-preferences:disabled {
-		opacity: 0.6;
-		cursor: not-allowed;
+	.scan-card .btn.secondary {
+		background: var(--panel2);
+		border: 1px solid var(--line);
+		color: var(--text);
 	}
-	.generation-grid {
-		display: grid;
-		grid-template-columns: 320px 1fr;
-		gap: 20px;
-		align-items: flex-start;
-	}
-	@media (max-width: 800px) {
-		.generation-grid {
-			grid-template-columns: 1fr;
-		}
-		.preferences-head {
-			align-items: flex-start;
-			flex-direction: column;
-		}
-		.preferences-grid,
-		.preferences-grid.split {
-			grid-template-columns: 1fr;
-		}
-	}
-	.loading-state {
+	.loading {
 		text-align: center;
 		padding: 48px;
 		color: var(--muted);
@@ -410,32 +587,5 @@
 		color: var(--bad);
 		border-radius: var(--radius-sm);
 		font-size: 13.5px;
-	}
-	.btn-scan {
-		font-size: 13px;
-		font-weight: 550;
-		padding: 8px 16px;
-		border-radius: var(--radius-sm);
-		cursor: pointer;
-		background: var(--panel2);
-		border: 1px solid var(--line);
-		color: var(--text);
-		transition:
-			background-color 0.15s,
-			border-color 0.15s,
-			color 0.15s;
-		display: inline-flex;
-		align-items: center;
-		gap: 6px;
-		outline: none;
-	}
-	.btn-scan:hover:not(:disabled) {
-		background: var(--panel);
-		border-color: var(--gold);
-		color: var(--gold);
-	}
-	.btn-scan:disabled {
-		opacity: 0.6;
-		cursor: not-allowed;
 	}
 </style>
