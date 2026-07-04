@@ -401,6 +401,110 @@ def test_ocr_batch_persists_diagnostics_to_records(
     assert rejected.ocr_trace == {"decision": {"accepted": False, "reason": "text_heavy"}}
 
 
+def test_ocr_batch_isolates_contexts_with_colliding_movie_id(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Regression: for TV assets movie_id is really series.id or season.id — two
+    independent PK sequences that can collide. _ocr_batch must group results by
+    context identity, not by the (possibly shared) movie_id, or one context's
+    OCR results leak into another's `records` dict lookup (KeyError, or worse,
+    silent cross-show contamination when filenames coincidentally match).
+    """
+    series_dir = tmp_path / "series"
+    season_dir = tmp_path / "season"
+    series_dir.mkdir()
+    season_dir.mkdir()
+    series_path = series_dir / "series_poster.jpg"
+    season_path = season_dir / "season_poster.jpg"
+    series_path.write_bytes(b"a")
+    season_path.write_bytes(b"b")
+
+    series_records = {
+        "series_poster.jpg": CandidateScore(
+            image_path=series_path, orig_filename="series_poster.jpg"
+        )
+    }
+    season_records = {
+        "season_poster.jpg": CandidateScore(
+            image_path=season_path, orig_filename="season_poster.jpg"
+        )
+    }
+
+    colliding_id = 42  # e.g. Series.id == Season.id for two unrelated shows
+    series_ctx = _BatchMovie(
+        run_id="run-series",
+        movie_id=colliding_id,
+        title="Some Show",
+        tmdb_id=None,
+        out_dir=series_dir,
+        originals_dir=series_dir,
+        started_at="2026-07-04T00:00:00Z",
+        start_perf=time.perf_counter(),
+        index=1,
+        total=2,
+        media_type="series",
+    )
+    series_ctx.fetch = FetchOutcome(
+        candidate_map={},
+        records=series_records,
+        resolution_by_name={},
+        all_files=[],
+        primary_name=None,
+        counts={},
+    )
+    series_ctx.style_survivors = [series_path]
+
+    season_ctx = _BatchMovie(
+        run_id="run-season",
+        movie_id=colliding_id,
+        title="Unrelated Show - Season 01",
+        tmdb_id=None,
+        out_dir=season_dir,
+        originals_dir=season_dir,
+        started_at="2026-07-04T00:00:00Z",
+        start_perf=time.perf_counter(),
+        index=2,
+        total=2,
+        media_type="season",
+    )
+    season_ctx.fetch = FetchOutcome(
+        candidate_map={},
+        records=season_records,
+        resolution_by_name={},
+        all_files=[],
+        primary_name=None,
+        counts={},
+    )
+    season_ctx.style_survivors = [season_path]
+
+    def _fake_run_ocr_batch(items, *, num_workers=None, progress=None):
+        return [
+            OCRCandidateResult(
+                image_path=item[0],
+                accepted=True,
+                detected_text="ok",
+                reason=None,
+                title_bbox=None,
+                residual_boxes=[],
+                diagnostics={},
+            )
+            for item in items
+        ]
+
+    monkeypatch.setattr(
+        batch_runner.PosterTextFilter,
+        "run_ocr_batch",
+        staticmethod(_fake_run_ocr_batch),
+    )
+
+    batch_runner._ocr_batch([series_ctx, season_ctx], progress=None)
+
+    assert series_ctx.counts["ocr_survivors"] == 1
+    assert season_ctx.counts["ocr_survivors"] == 1
+    assert [r.image_path.name for r in series_ctx.ocr_survivors] == ["series_poster.jpg"]
+    assert [r.image_path.name for r in season_ctx.ocr_survivors] == ["season_poster.jpg"]
+
+
 async def test_download_phase_finalizes_movies_that_failed_metadata_fetch(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
