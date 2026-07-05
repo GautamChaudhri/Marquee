@@ -1797,3 +1797,96 @@ export interface SubgenSettings {
 	name_includes_subgen?: boolean;
 	name_includes_model?: boolean;
 }
+
+// ── TV Letterbox Types ────────────────────────────────────────────────────────
+export interface LetterboxTvShowRollup {
+	bucket_counts: Record<string, number>;
+	dominant_aspect_label: string | null;
+	verdict: string;
+	uniformity: string;
+	episodes_total: number;
+	has_candidates: boolean;
+}
+
+export interface LetterboxTvListItem {
+	series_id: number;
+	title: string;
+	year: number | null;
+	episodes_total: number;
+	dominant_aspect_label: string | null;
+	rollup: LetterboxTvShowRollup;
+	active_job_ids: string[];
+}
+
+export interface LetterboxTvEpisode {
+	episode_id: number;
+	season_number: number;
+	episode_number: number;
+	code: string;
+	title: string | null;
+	bucket: string;
+	status: string | null;
+	confidence: string | null;
+	aspect_label: string | null;
+	recommended_crop_top: number | null;
+	recommended_crop_bottom: number | null;
+	applied_crop_top: number | null;
+	applied_crop_bottom: number | null;
+	resolution: string | null;
+	source_width: number | null;
+	source_height: number | null;
+	media_file_id: number | null;
+	eligible: boolean | null;
+	reviewed: boolean;
+}
+
+export interface LetterboxTvSeason {
+	season_number: number;
+	is_specials: boolean;
+	rollup: {
+		bucket_counts: Record<string, number>;
+		dominant_aspect_label: string | null;
+		verdict: string;
+		uniformity: string;
+		episodes_total: number;
+		has_candidates: boolean;
+	};
+	episodes: LetterboxTvEpisode[];
+}
+
+export interface LetterboxTvDetail {
+	series: {
+		id: number;
+		title: string;
+		year: number | null;
+	};
+	rollup: LetterboxTvShowRollup;
+	seasons: LetterboxTvSeason[];
+	active_job_ids: string[];
+}
+
+export interface LetterboxSummarySection {
+	workflow_funnel: Record<string, number>;
+	verdict_breakdown: Record<string, number>;
+	aspect_distribution: Record<string, number>;
+	coverage: {
+		analyzed: number;
+		total: number;
+		percent: number;
+	};
+	shows_total?: number;
+	episodes_total?: number;
+	show_verdict_counts?: Record<string, number>;
+	uniformity_counts?: Record<string, number>;
+	reencode?: {
+		count: number;
+		space_reclaimed_bytes: number;
+		awaiting_decision: number;
+		saved_originals_on_disk: number;
+	};
+}
+
+export interface LetterboxSummaryResponse {
+	movies: LetterboxSummarySection;
+	tv: LetterboxSummarySection;
+}

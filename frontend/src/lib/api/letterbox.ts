@@ -10,7 +10,10 @@ import type {
 	ReencodeArtifact,
 	ReencodeArtifactList,
 	ReencodeOptions,
-	ReencodePlan
+	ReencodePlan,
+	LetterboxTvListItem,
+	LetterboxTvDetail,
+	LetterboxSummaryResponse
 } from './types';
 import type { JobSnapshot } from './jobs';
 
@@ -193,6 +196,88 @@ export function restoreOriginal(
 
 export function deleteArtifact(fetchFn: Fetch, artifactId: number): Promise<unknown> {
 	return apiSend(fetchFn, 'DELETE', `/letterbox/reencode-artifacts/${artifactId}`);
+}
+
+// ── TV Letterbox Client functions ───────────────────────────────────────────
+
+export function getLetterboxSummary(fetchFn: Fetch): Promise<LetterboxSummaryResponse> {
+	return apiGet<LetterboxSummaryResponse>(fetchFn, '/letterbox/summary');
+}
+
+export interface TvQuery {
+	verdict?: string;
+	uniformity?: string;
+	has_candidates?: boolean;
+	q?: string;
+}
+
+export function getLetterboxTv(
+	fetchFn: Fetch,
+	q?: TvQuery
+): Promise<{ total: number; items: LetterboxTvListItem[] }> {
+	const params: Record<string, string | number | boolean> = {};
+	if (q) {
+		if (q.verdict) params.verdict = q.verdict;
+		if (q.uniformity) params.uniformity = q.uniformity;
+		if (q.has_candidates !== undefined) params.has_candidates = q.has_candidates;
+		if (q.q) params.q = q.q;
+	}
+	return apiGet(fetchFn, '/letterbox/tv', params);
+}
+
+export function getLetterboxTvDetail(fetchFn: Fetch, seriesId: number): Promise<LetterboxTvDetail> {
+	return apiGet<LetterboxTvDetail>(fetchFn, `/letterbox/tv/${seriesId}`);
+}
+
+export function detectLetterboxTv(
+	fetchFn: Fetch,
+	seriesId: number,
+	body: { season_number?: number; episode_id?: number; exhaustive?: boolean; force?: boolean } = {}
+): Promise<LetterboxJobRef> {
+	return apiSend<LetterboxJobRef>(fetchFn, 'POST', `/letterbox/tv/${seriesId}/detect`, body);
+}
+
+export function detectLetterboxTvLibrary(
+	fetchFn: Fetch,
+	body: { exhaustive?: boolean } = {}
+): Promise<LetterboxJobRef> {
+	return apiSend<LetterboxJobRef>(fetchFn, 'POST', '/letterbox/tv/detect', body);
+}
+
+export function applyLetterboxTv(
+	fetchFn: Fetch,
+	seriesId: number,
+	body: { season_number?: number; episode_id?: number } = {}
+): Promise<unknown> {
+	return apiSend(fetchFn, 'POST', `/letterbox/tv/${seriesId}/apply`, body);
+}
+
+export function removeLetterboxTvEpisode(
+	fetchFn: Fetch,
+	seriesId: number,
+	episodeId: number
+): Promise<unknown> {
+	return apiSend(fetchFn, 'POST', `/letterbox/tv/${seriesId}/episodes/${episodeId}/remove`);
+}
+
+export function ignoreLetterboxTvEpisode(
+	fetchFn: Fetch,
+	seriesId: number,
+	episodeId: number
+): Promise<unknown> {
+	return apiSend(fetchFn, 'POST', `/letterbox/tv/${seriesId}/episodes/${episodeId}/ignore`);
+}
+
+export function markNotLetterboxedTvEpisode(
+	fetchFn: Fetch,
+	seriesId: number,
+	episodeId: number
+): Promise<unknown> {
+	return apiSend(
+		fetchFn,
+		'POST',
+		`/letterbox/tv/${seriesId}/episodes/${episodeId}/mark-not-letterboxed`
+	);
 }
 
 export type { MediaJobSnapshot } from './types';
