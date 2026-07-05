@@ -107,9 +107,14 @@
 		const cfg = TABS.find((t) => t.key === key);
 		selectedId = cfg ? (cols[cfg.col].items[0]?.movie_id ?? null) : null;
 
+		// eslint-disable-next-line svelte/prefer-svelte-reactivity -- transient query builder, not reactive state
 		const sp = new URLSearchParams(page.url.searchParams);
 		sp.set('tab', key);
-		goto(`/letterbox/movies?${sp.toString()}`, { keepFocus: true, noScroll: true, replaceState: true });
+		goto(`/letterbox/movies?${sp.toString()}`, {
+			keepFocus: true,
+			noScroll: true,
+			replaceState: true
+		});
 	}
 
 	const activeNote = $derived.by(() => {
