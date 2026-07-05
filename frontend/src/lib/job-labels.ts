@@ -2,7 +2,9 @@ const JOB_LABELS: Record<string, string> = {
 	poster_pipeline_tv_batch: 'TV poster batch',
 	subtitle_scan_all: 'Subtitle Scan',
 	subtitle_generate_batch: 'Subtitle Generation (TV Batch)',
-	subtitle_generate: 'Subtitle Generation'
+	subtitle_generate: 'Subtitle Generation',
+	letterbox_detect_tv_batch: 'TV Letterbox Detection (Batch)',
+	letterbox_detect_tv_scope: 'TV Letterbox Detection'
 };
 
 export function humanizeJobType(type: string): string {

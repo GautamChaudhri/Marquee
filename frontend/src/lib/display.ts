@@ -11,7 +11,8 @@ export type Tone =
 	| 'dovi'
 	| 'muted'
 	| 'cpu'
-	| 'gpu';
+	| 'gpu'
+	| 'sampled_clear';
 
 /** Per-film deterministic gradient (handoff §1). hash(title) → palette index. */
 export const GRADS: [string, string, string][] = [
@@ -53,6 +54,7 @@ export function posterStatusFromSummary(summary: PosterSummary): PosterStatus {
 }
 
 export function toneVar(tone: Tone): string {
+	if (tone === 'sampled_clear') return 'color-mix(in srgb, var(--good) 40%, var(--ink3))';
 	return tone === 'muted' ? 'var(--faint)' : `var(--${tone})`;
 }
 
