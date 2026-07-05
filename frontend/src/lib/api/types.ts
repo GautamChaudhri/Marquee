@@ -1838,6 +1838,7 @@ export interface LetterboxTvEpisode {
 	media_file_id: number | null;
 	eligible: boolean | null;
 	reviewed: boolean;
+	resolved_by: string | null;
 }
 
 export interface LetterboxTvSeason {
