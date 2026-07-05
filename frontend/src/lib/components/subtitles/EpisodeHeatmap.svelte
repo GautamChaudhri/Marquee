@@ -1,11 +1,11 @@
 <script lang="ts">
-	import type { TvSeasonDetail, TvEpisodeCoverage } from '$lib/api/types';
-
 	let {
 		seasons,
+		mode = 'subtitles',
 		onCellClick
 	}: {
-		seasons: TvSeasonDetail[];
+		seasons: any[];
+		mode?: 'subtitles' | 'letterbox';
 		onCellClick?: (seasonNumber: number, episodeNumber: number) => void;
 	} = $props();
 
@@ -24,11 +24,11 @@
 		return `S${s}E${e}`;
 	}
 
-	function handleCellClick(seasonNum: number, episodeNum: number) {
+	function handleCellClick(seasonNum: number, episodeId: number) {
 		if (onCellClick) {
-			onCellClick(seasonNum, episodeNum);
+			onCellClick(seasonNum, episodeId);
 		} else {
-			const id = `episode-${seasonNum}-${episodeNum}`;
+			const id = `episode-${seasonNum}-${episodeId}`;
 			const el = document.getElementById(id);
 			if (el) {
 				el.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -40,26 +40,27 @@
 		}
 	}
 
-	const STATUS_META: Record<string, { label: string; bg: string; border: string }> = {
+	// Legend & Status mapping for Subtitles mode
+	const SUBTITLE_STATUS_META: Record<string, { label: string; bg: string; border: string }> = {
 		ok: {
 			label: 'Fully Covered',
 			bg: 'color-mix(in srgb, var(--good) 20%, var(--ink3))',
-			border: 'var(--good-soft)'
+			border: 'color-mix(in srgb, var(--good) 40%, var(--line))'
 		},
 		audio_gap: {
 			label: 'Audio Gap',
 			bg: 'color-mix(in srgb, var(--warn) 20%, var(--ink3))',
-			border: 'var(--warn-soft)'
+			border: 'color-mix(in srgb, var(--warn) 40%, var(--line))'
 		},
 		subtitle_gap: {
 			label: 'Subtitle Gap',
 			bg: 'color-mix(in srgb, var(--info) 20%, var(--ink3))',
-			border: 'var(--info-soft)'
+			border: 'color-mix(in srgb, var(--info) 40%, var(--line))'
 		},
 		both_gap: {
 			label: 'Both Gap',
 			bg: 'color-mix(in srgb, var(--bad) 20%, var(--ink3))',
-			border: 'var(--bad-soft)'
+			border: 'color-mix(in srgb, var(--bad) 40%, var(--line))'
 		},
 		unknown: {
 			label: 'Unknown / Unscanned',
@@ -67,18 +68,91 @@
 			border: 'var(--line)'
 		}
 	};
+
+	// Legend & Status mapping for Letterbox mode (C5)
+	const LETTERBOX_STATUS_META: Record<string, { label: string; bg: string; border: string }> = {
+		clear: {
+			label: 'Clear',
+			bg: 'color-mix(in srgb, var(--good) 20%, var(--ink3))',
+			border: 'color-mix(in srgb, var(--good) 40%, var(--line))'
+		},
+		sampled_clear: {
+			label: 'Sampled Clear (Triage)',
+			bg: 'color-mix(in srgb, var(--good) 8%, var(--ink3))', // desaturated/pale green
+			border: 'color-mix(in srgb, var(--good) 20%, var(--line))'
+		},
+		candidate: {
+			label: 'Letterboxed (Untreated)',
+			bg: 'color-mix(in srgb, var(--warn) 20%, var(--ink3))',
+			border: 'color-mix(in srgb, var(--warn) 40%, var(--line))'
+		},
+		tagged: {
+			label: 'Tagged',
+			bg: 'color-mix(in srgb, var(--info) 20%, var(--ink3))',
+			border: 'color-mix(in srgb, var(--info) 40%, var(--line))'
+		},
+		reencoded: {
+			label: 'Reencoded',
+			bg: 'color-mix(in srgb, var(--gold) 20%, var(--ink3))',
+			border: 'color-mix(in srgb, var(--gold) 40%, var(--line))'
+		},
+		variable: {
+			label: 'Variable AR',
+			bg: 'color-mix(in srgb, var(--dovi) 20%, var(--ink3))',
+			border: 'color-mix(in srgb, var(--dovi) 40%, var(--line))'
+		},
+		error: {
+			label: 'Error',
+			bg: 'color-mix(in srgb, var(--bad) 20%, var(--ink3))',
+			border: 'color-mix(in srgb, var(--bad) 40%, var(--line))'
+		},
+		ineligible: {
+			label: 'Ineligible',
+			bg: 'var(--ink2)',
+			border: 'var(--line)'
+		},
+		unanalyzed: {
+			label: 'Unanalyzed',
+			bg: 'var(--ink3)',
+			border: 'var(--line)'
+		}
+	};
+
+	const METAS = $derived(mode === 'subtitles' ? SUBTITLE_STATUS_META : LETTERBOX_STATUS_META);
+
+	function getEpisodeMeta(ep: any) {
+		const key = ep.bucket || ep.status || 'unknown';
+		return METAS[key] || METAS.unknown || METAS.unanalyzed;
+	}
+
+	function getTooltip(seasonNum: number, ep: any): string {
+		if (mode === 'letterbox') {
+			const epNum = ep.episode_number ?? ep.episode_id;
+			const code = formatEpisodeCode(seasonNum, epNum);
+			const titleStr = ep.title || 'Untitled';
+			const bucketStr = ep.bucket || ep.status || 'unanalyzed';
+			const arStr = ep.aspect_label || 'AR unknown';
+			const confStr = ep.confidence ? `confidence: ${ep.confidence}` : 'no confidence';
+			return `${code} · ${titleStr} · ${bucketStr} · ${arStr} · ${confStr}`;
+		} else {
+			const code = formatEpisodeCode(seasonNum, ep.episode_id);
+			const titleStr = ep.title || 'Untitled';
+			const meta = getEpisodeMeta(ep);
+			return `${code} · ${titleStr} · ${meta.label} · Tier: ${ep.tier}`;
+		}
+	}
 </script>
 
 <div class="heatmap-panel">
 	<!-- Legend Section -->
 	<div class="legend">
 		<div class="legend-group">
-			<span class="legend-group-title">Coverage</span>
-			{#each Object.entries(STATUS_META) as [key, meta]}
+			<span class="legend-group-title">Status</span>
+			{#each Object.entries(METAS) as [key, meta] (key)}
 				<div class="legend-item">
 					<span
 						class="legend-color"
-						class:hatched={key === 'unknown'}
+						class:hatched={key === 'unknown' || key === 'unanalyzed'}
 						style={`background: ${meta.bg}; border-color: ${meta.border}`}
 					></span>
 					<span class="legend-label">{meta.label}</span>
@@ -86,17 +160,28 @@
 			{/each}
 		</div>
 
-		<div class="legend-group">
-			<span class="legend-group-title">Accuracy Tier</span>
-			<div class="legend-item">
-				<span class="legend-color-dot"></span>
-				<span class="legend-label">Tier-2 Probed (Accurate)</span>
+		{#if mode === 'subtitles'}
+			<div class="legend-group">
+				<span class="legend-group-title">Accuracy Tier</span>
+				<div class="legend-item">
+					<span class="legend-color-dot"></span>
+					<span class="legend-label">Tier-2 Probed (Accurate)</span>
+				</div>
+				<div class="legend-item">
+					<span class="legend-color-no-dot"></span>
+					<span class="legend-label">Tier-1 Synced (Basic)</span>
+				</div>
 			</div>
-			<div class="legend-item">
-				<span class="legend-color-no-dot"></span>
-				<span class="legend-label">Tier-1 Synced (Basic)</span>
+		{:else}
+			<div class="legend-group">
+				<span class="legend-group-title">Legend Hint</span>
+				<div class="legend-item">
+					<span class="legend-label-hint">
+						* Sampled Clear: Season triage said clear, not individually scanned.
+					</span>
+				</div>
 			</div>
-		</div>
+		{/if}
 	</div>
 
 	<!-- Heatmap Rows -->
@@ -104,22 +189,30 @@
 		{#each sortedSeasons as season (season.season_number)}
 			<div class="season-row" class:specials={season.season_number === 0}>
 				<span class="season-label">
-					{season.season_number === 0 ? 'Specials' : `Season ${season.season_number}`}
+					{#if season.season_number === 0}
+						<span class="specials-label-text">Specials</span>
+						<span class="specials-hint">Excluded</span>
+					{:else}
+						Season {season.season_number}
+					{/if}
 				</span>
 
 				<div class="episodes-cells">
 					{#each season.episodes as ep (ep.episode_id)}
-						{@const meta = STATUS_META[ep.status] || STATUS_META.unknown}
+						{@const meta = getEpisodeMeta(ep)}
 						<button
 							type="button"
 							class="cell"
-							class:hatched={ep.status === 'unknown'}
+							class:hatched={ep.bucket === 'unanalyzed' ||
+								ep.status === 'unknown' ||
+								ep.status === 'unanalyzed' ||
+								(!ep.status && !ep.bucket)}
 							style={`background: ${meta.bg}; border-color: ${meta.border}`}
 							onclick={() => handleCellClick(season.season_number, ep.episode_id)}
-							title={`${formatEpisodeCode(season.season_number, ep.episode_id)} · ${ep.title} · ${meta.label} · Tier: ${ep.tier}`}
+							title={getTooltip(season.season_number, ep)}
 						>
-							<span class="ep-num">{ep.episode_id}</span>
-							{#if ep.tier === 'probed'}
+							<span class="ep-num">{ep.episode_number ?? ep.episode_id}</span>
+							{#if mode === 'subtitles' && ep.tier === 'probed'}
 								<span class="probed-dot"></span>
 							{/if}
 						</button>
@@ -142,8 +235,8 @@
 	}
 	.legend {
 		display: flex;
-		flex-wrap: wrap;
-		gap: 24px;
+		flex-direction: column;
+		gap: 12px;
 		padding-bottom: 14px;
 		border-bottom: 1px solid var(--line);
 	}
@@ -210,6 +303,11 @@
 		font-size: 11px;
 		color: var(--muted);
 	}
+	.legend-label-hint {
+		font-size: 11px;
+		color: var(--faint2);
+		font-style: italic;
+	}
 	.seasons-grid {
 		display: flex;
 		flex-direction: column;
@@ -233,6 +331,18 @@
 		color: var(--muted);
 		padding-top: 5px;
 		flex-shrink: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+	}
+	.specials-label-text {
+		font-weight: 700;
+	}
+	.specials-hint {
+		font-size: 9px;
+		color: var(--low);
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
 	}
 	.episodes-cells {
 		display: flex;
@@ -255,6 +365,7 @@
 		color: var(--text);
 		transition: all 0.12s ease;
 		position: relative;
+		background: transparent;
 	}
 	.cell:hover {
 		transform: scale(1.1);
