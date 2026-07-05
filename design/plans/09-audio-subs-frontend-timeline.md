@@ -2,12 +2,9 @@
 
 ## Progress Log
 
-- **Current State:** Committed route moves and API extensions.
-- **In Progress:** Step 3: Implement Landing Page (`/audio-subs` Svelte/TS and preferred languages / subgen card / deep-scan insights components).
-- **Next Steps:**
-  - Television library list page (`/audio-subs/tv`).
-  - Television show detail page (`/audio-subs/tv/[id]`).
-  - Generate subtitles modal + deep links + jobs integration.
+- **Current State:** Completed full implementation.
+- **In Progress:** None.
+- **Next Steps:** Finalize walkthrough and close task.
 - **Deviations:** None.
 - **Open Issues:** None.
 
@@ -16,5 +13,11 @@
 - **completed:** 4af57ee (move audio-subs routes and extend api clients)
   - **in progress:** Step 3 (landing page dashboard and components)
   - **next steps:** Step 4 (television library index page)
+  - **deviations:** None
+  - **open issues:** None
+
+- **completed:** 8ca7b4e (implement audio-subs dashboard and television localization views)
+  - **in progress:** None (All features implemented)
+  - **next steps:** Walkthrough documentation
   - **deviations:** None
   - **open issues:** None

@@ -84,7 +84,7 @@
 		}
 	];
 
-	let activeTab = $state<TabKey>('staging');
+	let activeTab = $state<TabKey>((page.url.searchParams.get('tab') as TabKey) || 'staging');
 	const activeTabCfg = $derived(TABS.find((t) => t.key === activeTab) ?? TABS[2]);
 	const activeItems = $derived(cols[activeTabCfg.col].items);
 	const activeTotal = $derived(cols[activeTabCfg.col].total);
@@ -106,6 +106,10 @@
 		activeTab = key;
 		const cfg = TABS.find((t) => t.key === key);
 		selectedId = cfg ? (cols[cfg.col].items[0]?.movie_id ?? null) : null;
+
+		const sp = new URLSearchParams(page.url.searchParams);
+		sp.set('tab', key);
+		goto(`/letterbox/movies?${sp.toString()}`, { keepFocus: true, noScroll: true, replaceState: true });
 	}
 
 	const activeNote = $derived.by(() => {
@@ -127,7 +131,7 @@
 		// eslint-disable-next-line svelte/prefer-svelte-reactivity -- transient query builder, not reactive state
 		const sp = new URLSearchParams(page.url.searchParams);
 		sp.set('dsort', data.detectedDesc ? 'asc' : 'desc');
-		goto(`/letterbox?${sp.toString()}`, { keepFocus: true, noScroll: true });
+		goto(`/letterbox/movies?${sp.toString()}`, { keepFocus: true, noScroll: true });
 	}
 
 	// ── Board actions ──────────────────────────────────────────────────────────
