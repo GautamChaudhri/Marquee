@@ -511,6 +511,7 @@ def _episode_letterbox_row(
         "source_width": episode.video_width,
         "source_height": episode.video_height,
         "media_file_id": media_file_id,
+        "resolved_by": state.resolved_by if state is not None else None,
         "eligible": item.eligible,
         "reviewed": item.reviewed,
     }
