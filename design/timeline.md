@@ -13,7 +13,11 @@ TV taste engine, and TV HDR management backend have shipped (`design/plans/04`�
 the HDR management frontend is planned in `design/plans/07`. The audio/subtitle
 and letterbox workflows are next: landing pages + TV support (coverage rollups,
 season × episode granularity, embedded Subgen) are planned in
-`design/plans/08`–`11`.
+`design/plans/08`–`11`, refined in `design/plans/12`. Letterbox TV phase 2 —
+open-matte/pillarbox classification, confidence-filtered batch operations, the
+TV re-encode flow, show-page job progress, and TV letterbox resets — is planned
+in `design/plans/13` (same-number backend + frontend docs with one shared
+timeline; backend first).
 
 ## Phase 1 - Core Infrastructure
 
@@ -135,9 +139,9 @@ Deferred with no active target phase:
   page, not the HDR pages)
 - Sonarr webhook-driven poster restoration (heal scan covers it meanwhile)
 - TV cold-start onboarding (rank test)
-- **TV letterbox re-encode execution** — schema ships TV-ready in
-  `design/plans/10`, but the episode re-encode planner/executor is deferred
-  until the movie re-encode path is validated on real files (see above)
+- ~~**TV letterbox re-encode execution**~~ — un-deferred: schema shipped
+  TV-ready in `design/plans/10`; the episode re-encode planner/executor and
+  its UI are now planned in `design/plans/13` (operator decision 2026-07-09)
 - a native faster-whisper generation engine inside Marquee (the
   `SubtitleGenerator` protocol keeps this open; embedded Subgen ships first
   via `design/plans/08`)
