@@ -49,20 +49,25 @@ def episode_subject_key(episode_id: int) -> str:
     return f"episode-{episode_id}"
 
 
-def preview_path(subject_key: str, mode: str, minute: int, *, exact: bool = False) -> Path:
+def _coerce_subject_key(subject_key: str | int) -> str:
+    return movie_subject_key(subject_key) if isinstance(subject_key, int) else subject_key
+
+
+def preview_path(subject_key: str | int, mode: str, minute: int, *, exact: bool = False) -> Path:
     # "exact" frames (the literal sample minute, no brightness substitution) and
     # "bright" frames (the brightness-substituted default view) must never share a
     # cache slot — that collision is what made clicking a sample minute silently
     # show whatever minute the brightness probe had substituted for it.
     policy = "exact" if exact else "bright"
+    normalized_subject_key = _coerce_subject_key(subject_key)
     return (
         settings.letterbox_preview_path
-        / f"{subject_key}_{mode}_{minute}_{policy}_{_CACHE_VERSION}.webp"
+        / f"{normalized_subject_key}_{mode}_{minute}_{policy}_{_CACHE_VERSION}.webp"
     )
 
 
-def _preview_glob(subject_key: str) -> str:
-    return f"{subject_key}_*.webp"
+def _preview_glob(subject_key: str | int) -> str:
+    return f"{_coerce_subject_key(subject_key)}_*.webp"
 
 
 def _timestamp(minute: int) -> str:
@@ -106,7 +111,12 @@ def _measure_luma(source: Path | str, minute: int) -> float | None:
 
 
 def _pick_bright_minute(
-    source: Path | str, minute: int, candidates: list[int] | None, *, subject_key: str
+    source: Path | str,
+    minute: int,
+    candidates: list[int] | None,
+    *,
+    subject_key: str | int | None = None,
+    movie_id: int | None = None,
 ) -> int:
     """Choose the brightest timestamp so the black bars stay visible.
 
@@ -117,7 +127,10 @@ def _pick_bright_minute(
     The decision is cached per ``(subject_key, minute)`` so the before/after pair
     (same minute) doesn't probe twice and repeat views are instant.
     """
-    cache_key = (subject_key, minute)
+    normalized_subject_key = _coerce_subject_key(
+        subject_key if subject_key is not None else movie_subject_key(movie_id or 0)
+    )
+    cache_key = (normalized_subject_key, minute)
     cached = _bright_minute_cache.get(cache_key)
     if cached is not None:
         return cached
@@ -142,12 +155,13 @@ def _pick_bright_minute(
     return best_minute
 
 
-def purge_previews(subject_key: str) -> int:
+def purge_previews(subject_key: str | int) -> int:
     """Delete all cached preview files for one subject (a movie or an episode)."""
+    normalized_subject_key = _coerce_subject_key(subject_key)
     # Drop any cached bright-minute decisions for this subject so a re-detect
     # (new crop / new samples) re-probes instead of reusing a stale pick. Done
     # before the directory check since the cache is independent of the files.
-    for key in [k for k in _bright_minute_cache if k[0] == subject_key]:
+    for key in [k for k in _bright_minute_cache if k[0] == normalized_subject_key]:
         del _bright_minute_cache[key]
 
     root = settings.letterbox_preview_path
@@ -155,19 +169,25 @@ def purge_previews(subject_key: str) -> int:
         return 0
 
     removed = 0
-    for path in root.glob(_preview_glob(subject_key)):
+    for path in root.glob(_preview_glob(normalized_subject_key)):
         try:
             path.unlink(missing_ok=True)
             removed += 1
         except OSError as exc:
-            logger.warning("preview purge failed for %s (%s): %s", subject_key, path.name, exc)
+            logger.warning(
+                "preview purge failed for %s (%s): %s",
+                normalized_subject_key,
+                path.name,
+                exc,
+            )
     return removed
 
 
 def generate_preview(
     source: Path | str,
     *,
-    subject_key: str,
+    subject_key: str | int | None = None,
+    movie_id: int | None = None,
     minute: int,
     mode: str,
     crop_top: int,
@@ -186,7 +206,10 @@ def generate_preview(
     """
     if binaries.resolve("ffmpeg") is None:
         return None
-    out = preview_path(subject_key, mode, minute, exact=exact)
+    normalized_subject_key = _coerce_subject_key(
+        subject_key if subject_key is not None else movie_subject_key(movie_id or 0)
+    )
+    out = preview_path(normalized_subject_key, mode, minute, exact=exact)
     if out.is_file() and not force:
         return out
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -194,7 +217,12 @@ def generate_preview(
     src_minute = (
         minute
         if exact
-        else _pick_bright_minute(source, minute, candidate_minutes, subject_key=subject_key)
+        else _pick_bright_minute(
+            source,
+            minute,
+            candidate_minutes,
+            subject_key=normalized_subject_key,
+        )
     )
 
     if mode == "after" and (crop_top or crop_bottom):
@@ -234,7 +262,9 @@ def generate_preview(
     )
     if not result.ok or not out.is_file():
         logger.warning(
-            "preview generation failed for %s: %s", subject_key, result.stderr.strip()[:200]
+            "preview generation failed for %s: %s",
+            normalized_subject_key,
+            result.stderr.strip()[:200],
         )
         return None
     return out
@@ -243,7 +273,7 @@ def generate_preview(
 def warm_previews(
     source: Path | str,
     *,
-    subject_key: str,
+    subject_key: str | int,
     samples: list[dict] | None,
     crop_top: int,
     crop_bottom: int,
@@ -253,7 +283,8 @@ def warm_previews(
     if binaries.resolve("ffmpeg") is None:
         return []
 
-    purge_previews(subject_key)
+    normalized_subject_key = _coerce_subject_key(subject_key)
+    purge_previews(normalized_subject_key)
 
     minutes: list[int] = []
     for sample in samples or []:
@@ -272,7 +303,72 @@ def warm_previews(
             for exact in (False, True):
                 out = generate_preview(
                     source,
-                    subject_key=subject_key,
+                    subject_key=normalized_subject_key,
+                    minute=minute,
+                    mode=mode,
+                    crop_top=crop_top,
+                    crop_bottom=crop_bottom,
+                    height=height,
+                    candidate_minutes=minutes,
+                    exact=exact,
+                    force=True,
+                )
+                if out is not None:
+                    generated.append(out)
+    return generated
+
+
+def purge_movie_previews(movie_id: int) -> int:
+    for key in [
+        cache_key
+        for cache_key in _bright_minute_cache
+        if cache_key[0] in {movie_id, movie_subject_key(movie_id)}
+    ]:
+        del _bright_minute_cache[key]
+    removed = purge_previews(movie_subject_key(movie_id))
+    root = settings.letterbox_preview_path
+    if root.exists():
+        for path in root.glob(f"{movie_id}_*.webp"):
+            try:
+                path.unlink(missing_ok=True)
+                removed += 1
+            except OSError as exc:
+                logger.warning("legacy preview purge failed for %s (%s): %s", movie_id, path.name, exc)
+    return removed
+
+
+def warm_movie_previews(
+    source: Path | str,
+    *,
+    movie_id: int,
+    samples: list[dict] | None,
+    crop_top: int,
+    crop_bottom: int,
+    height: int | None = None,
+) -> list[Path]:
+    if binaries.resolve("ffmpeg") is None:
+        return []
+
+    purge_movie_previews(movie_id)
+
+    minutes: list[int] = []
+    for sample in samples or []:
+        if not sample.get("ok"):
+            continue
+        minute = sample.get("minute")
+        if isinstance(minute, int) and minute not in minutes:
+            minutes.append(minute)
+
+    generated: list[Path] = []
+    if not minutes:
+        return generated
+
+    for minute in minutes:
+        for mode in ("before", "after"):
+            for exact in (False, True):
+                out = generate_preview(
+                    source,
+                    movie_id=movie_id,
                     minute=minute,
                     mode=mode,
                     crop_top=crop_top,
