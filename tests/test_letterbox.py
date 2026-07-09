@@ -938,6 +938,63 @@ async def test_detect_episode_batch_and_store_exhaustive_skips_real_verdict_rows
     assert stored[1].last_detected_at == baseline
 
 
+def test_detect_episode_blocking_stamps_source_aspect_label_for_clear(monkeypatch, tmp_path):
+    episode = Episode(
+        series_id=1,
+        season_number=1,
+        episode_number=1,
+        title="Pilot",
+        episode_file_path="pilot.mkv",
+        video_width=1920,
+        video_height=1080,
+    )
+    media_path = tmp_path / "pilot.mkv"
+    media_path.write_bytes(b"episode")
+
+    monkeypatch.setattr(
+        "marquee.media.letterbox_manager.probe.probe_video",
+        lambda _path: type(
+            "ProbeInfo",
+            (),
+            {
+                "width": 1920,
+                "height": 1080,
+                "duration_s": 1800,
+                "container": "mkv",
+                "color_transfer": None,
+                "codec": "h264",
+                "pix_fmt": "yuv420p",
+            },
+        )(),
+    )
+    monkeypatch.setattr(
+        "marquee.media.letterbox_manager.letterbox_detect.detect",
+        lambda *_args, **_kwargs: type(
+            "DetectResult",
+            (),
+            {
+                "status": "not_letterboxed",
+                "confidence": "none",
+                "source_width": 1920,
+                "source_height": 1080,
+                "recommended_crop_top": 0,
+                "recommended_crop_bottom": 0,
+                "aspect_label": None,
+                "method": "cropdetect",
+                "samples": [],
+                "error": None,
+                "variable_ar": False,
+                "variable_ar_note": None,
+            },
+        )(),
+    )
+
+    result = letterbox_manager.detect_episode_blocking(episode, path=str(media_path))
+
+    assert result["status"] == "not_letterboxed"
+    assert result["aspect_label"] == ld.aspect_label(1920, 1080)
+
+
 def test_aspect_label():
     assert ld.aspect_label(1920, 800) == "2.40:1"
     assert ld.aspect_label(1920, 0) is None
