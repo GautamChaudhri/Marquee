@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated
@@ -149,7 +150,18 @@ def _state_to_dict(state: LetterboxState, movie: Movie | None = None) -> dict:
     return data
 
 
-def _sample_preview_entries(movie_id: int, samples: list[dict]) -> list[dict]:
+# `reviewed=True` normally means "decision finalized, previews purged" (confirm/
+# ignore/mark-not-letterboxed all purge_previews() explicitly) — but these three
+# statuses are auto-marked reviewed the moment detection runs, with the file
+# untouched and nothing ever purged, so previews stay safe to render on demand.
+_PREVIEWABLE_WHEN_REVIEWED = {"not_letterboxed", "variable_unsafe", "sampled_clear"}
+
+
+def _preview_blocked(state: LetterboxState) -> bool:
+    return bool(state.reviewed) and state.status not in _PREVIEWABLE_WHEN_REVIEWED
+
+
+def _sample_preview_entries(samples: list[dict], *, url_for: Callable[[int], str]) -> list[dict]:
     entries: list[dict] = []
     for sample in samples:
         minute = sample.get("minute")
@@ -160,11 +172,7 @@ def _sample_preview_entries(movie_id: int, samples: list[dict]) -> list[dict]:
             {
                 "minute": minute,
                 "ok": ok,
-                "url": (
-                    f"/api/letterbox/movies/{movie_id}/preview?mode=before&minute={minute}"
-                    if ok
-                    else None
-                ),
+                "url": url_for(minute) if ok else None,
             }
         )
     return entries
@@ -966,6 +974,55 @@ async def tv_letterbox_detail(series_id: int, db: Annotated[AsyncSession, Depend
     }
 
 
+@router.get("/tv/{series_id}/episodes/{episode_id}")
+async def tv_episode_detail(
+    series_id: int, episode_id: int, db: Annotated[AsyncSession, Depends(get_db)]
+):
+    rows = await _tv_scope_rows(db, series_id, episode_id=episode_id)
+    if not rows:
+        raise HTTPException(status_code=404, detail=f"Episode id={episode_id} not found")
+    episode, series, state, _media_file_id = rows[0]
+    if state is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No letterbox detection for episode {episode_id} — run detect first.",
+        )
+    samples = json.loads(state.samples_json) if state.samples_json else []
+    # Preview at the first successfully-measured sample (or minute 5) — a
+    # season-sample-cleared episode never ran its own detection, so it has no
+    # samples at all and always falls back to minute 5.
+    preview_minute = next((s["minute"] for s in samples if s.get("ok")), 5)
+    detail = _state_to_dict(state)
+    detail.pop("movie_id", None)
+    detail["episode_id"] = episode.id
+    detail["series_id"] = series_id
+    detail["season_number"] = episode.season_number
+    detail["episode_number"] = episode.episode_number
+    detail["title"] = episode.title
+    detail["series_title"] = series.title
+    detail["samples"] = samples
+    detail["preview_minute"] = preview_minute
+    detail["sample_previews"] = _sample_preview_entries(
+        samples,
+        url_for=lambda minute: (
+            f"/api/letterbox/tv/{series_id}/episodes/{episode_id}/preview"
+            f"?mode=before&minute={minute}"
+        ),
+    )
+    if not _preview_blocked(state):
+        detail["preview_urls"] = {
+            "before": (
+                f"/api/letterbox/tv/{series_id}/episodes/{episode_id}/preview"
+                f"?mode=before&minute={preview_minute}"
+            ),
+            "after": (
+                f"/api/letterbox/tv/{series_id}/episodes/{episode_id}/preview"
+                f"?mode=after&minute={preview_minute}"
+            ),
+        }
+    return detail
+
+
 @router.get("/movies/{movie_id}")
 async def get_movie_detail(movie_id: int, db: Annotated[AsyncSession, Depends(get_db)]):
     movie = await _load_movie(db, movie_id)
@@ -985,8 +1042,11 @@ async def get_movie_detail(movie_id: int, db: Annotated[AsyncSession, Depends(ge
     if detect_job is not None:
         detail["detection_job"] = job_summary(detect_job)
     detail["preview_minute"] = preview_minute
-    detail["sample_previews"] = _sample_preview_entries(movie_id, samples)
-    if not state.reviewed:
+    detail["sample_previews"] = _sample_preview_entries(
+        samples,
+        url_for=lambda minute: f"/api/letterbox/movies/{movie_id}/preview?mode=before&minute={minute}",
+    )
+    if not _preview_blocked(state):
         detail["preview_urls"] = {
             "before": f"/api/letterbox/movies/{movie_id}/preview?mode=before&minute={preview_minute}",
             "after": f"/api/letterbox/movies/{movie_id}/preview?mode=after&minute={preview_minute}",
@@ -1298,7 +1358,7 @@ async def movie_preview(
 ):
     movie = await _load_movie(db, movie_id)
     state = await _load_state(db, movie_id)
-    if state.reviewed:
+    if _preview_blocked(state):
         raise HTTPException(status_code=404, detail="Preview unavailable after confirmation")
     _require_ffmpeg()
     # check_eligibility shells out to mkvmerge — offload off the event loop.
@@ -1315,7 +1375,7 @@ async def movie_preview(
     out = await gated(
         letterbox_preview.generate_preview,
         eligibility.path,
-        movie_id=movie_id,
+        subject_key=letterbox_preview.movie_subject_key(movie_id),
         minute=minute,
         mode=mode,
         crop_top=state.recommended_crop_top or 0,
@@ -1327,6 +1387,59 @@ async def movie_preview(
     if out is None:
         raise HTTPException(status_code=404, detail="Could not generate preview")
     # Confine served files to the preview cache tree.
+    resolved = Path(out).resolve()
+    if not str(resolved).startswith(str(settings.letterbox_preview_path.resolve())):
+        raise HTTPException(status_code=403, detail="Preview path outside cache tree")
+    return FileResponse(resolved, media_type="image/webp")
+
+
+@router.get("/tv/{series_id}/episodes/{episode_id}/preview")
+async def tv_episode_preview(
+    series_id: int,
+    episode_id: int,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    mode: str = "before",
+    minute: int = 5,
+    exact: bool = False,
+):
+    rows = await _tv_scope_rows(db, series_id, episode_id=episode_id)
+    if not rows:
+        raise HTTPException(status_code=404, detail=f"Episode id={episode_id} not found")
+    _episode, _series, state, media_file_id = rows[0]
+    if state is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No letterbox detection for episode {episode_id} — run detect first.",
+        )
+    if _preview_blocked(state):
+        raise HTTPException(status_code=404, detail="Preview unavailable after confirmation")
+    if media_file_id is None:
+        raise HTTPException(status_code=404, detail="Media file unavailable for preview")
+    _require_ffmpeg()
+    try:
+        resolved_media = await resolve_media_file(db, media_file_id)
+    except (MediaFileNotFoundError, MediaFileUnavailableError) as exc:
+        raise HTTPException(
+            status_code=404, detail="Media file unavailable for preview"
+        ) from exc
+
+    samples = json.loads(state.samples_json) if state.samples_json else []
+    candidate_minutes = [s["minute"] for s in samples if s.get("ok")]
+
+    out = await gated(
+        letterbox_preview.generate_preview,
+        resolved_media.path,
+        subject_key=letterbox_preview.episode_subject_key(episode_id),
+        minute=minute,
+        mode=mode,
+        crop_top=state.recommended_crop_top or 0,
+        crop_bottom=state.recommended_crop_bottom or 0,
+        height=state.source_height,
+        candidate_minutes=candidate_minutes,
+        exact=exact,
+    )
+    if out is None:
+        raise HTTPException(status_code=404, detail="Could not generate preview")
     resolved = Path(out).resolve()
     if not str(resolved).startswith(str(settings.letterbox_preview_path.resolve())):
         raise HTTPException(status_code=403, detail="Preview path outside cache tree")
@@ -1560,7 +1673,7 @@ async def confirm_one(movie_id: int, db: Annotated[AsyncSession, Depends(get_db)
         )
     )
     await db.commit()
-    letterbox_preview.purge_movie_previews(movie_id)
+    letterbox_preview.purge_previews(letterbox_preview.movie_subject_key(movie_id))
     return response
 
 
@@ -1912,7 +2025,7 @@ async def ignore_one(movie_id: int, db: Annotated[AsyncSession, Depends(get_db)]
         )
     )
     await db.commit()
-    letterbox_preview.purge_movie_previews(movie_id)
+    letterbox_preview.purge_previews(letterbox_preview.movie_subject_key(movie_id))
     return response
 
 
@@ -1977,7 +2090,7 @@ async def mark_not_letterboxed(movie_id: int, db: Annotated[AsyncSession, Depend
         )
     )
     await db.commit()
-    letterbox_preview.purge_movie_previews(movie_id)
+    letterbox_preview.purge_previews(letterbox_preview.movie_subject_key(movie_id))
     return response
 
 

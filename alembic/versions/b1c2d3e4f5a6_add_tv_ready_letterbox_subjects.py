@@ -134,7 +134,7 @@ def upgrade() -> None:
                                 - COALESCE(crop_bottom, 0)
                             ),
                             2
-                        )::text || ':1'
+                        )::text || '\\:1'
                         ELSE NULL
                     END
                 END AS aspect_label

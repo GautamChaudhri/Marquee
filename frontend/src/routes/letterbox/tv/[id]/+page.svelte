@@ -1,9 +1,11 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { SvelteMap } from 'svelte/reactivity';
 	import { page } from '$app/state';
 	import { toast } from '$lib/toast';
 	import {
 		getLetterboxTvDetail,
+		getLetterboxTvEpisodeDetail,
 		detectLetterboxTv,
 		applyLetterboxTv,
 		removeLetterboxTvEpisode,
@@ -15,7 +17,45 @@
 	import SectionHeader from '$lib/components/SectionHeader.svelte';
 	import EpisodeHeatmap from '$lib/components/subtitles/EpisodeHeatmap.svelte';
 	import UniformityChip from '$lib/components/UniformityChip.svelte';
-	import type { ShowUniformity, LetterboxTvEpisode, LetterboxTvSeason } from '$lib/api/types';
+	import LetterboxFrame from '$lib/components/LetterboxFrame.svelte';
+	import type {
+		ShowUniformity,
+		LetterboxTvEpisode,
+		LetterboxTvSeason,
+		LetterboxEpisodeDetail
+	} from '$lib/api/types';
+
+	// Buckets whose detail view shows an editable before/after crop pair — an
+	// undecided or applied-but-unconfirmed crop the user might still change.
+	// Everything else (clear/sampled_clear/variable/reencoded/etc.) is settled,
+	// so its detail view shows exactly one confirmation frame.
+	const PAIR_PREVIEW_BUCKETS = new Set(['candidate', 'tagged']);
+
+	let expandedEpisodeId = $state<number | null>(null);
+	const episodeDetails = new SvelteMap<number, LetterboxEpisodeDetail>();
+	const episodeDetailErrors = new SvelteMap<number, string>();
+	let loadingEpisodeId = $state<number | null>(null);
+
+	async function toggleEpisodeExpand(episodeId: number) {
+		if (expandedEpisodeId === episodeId) {
+			expandedEpisodeId = null;
+			return;
+		}
+		expandedEpisodeId = episodeId;
+		if (episodeDetails.has(episodeId)) return;
+		loadingEpisodeId = episodeId;
+		try {
+			const d = await getLetterboxTvEpisodeDetail(fetch, seriesId, episodeId);
+			episodeDetails.set(episodeId, d);
+		} catch (e) {
+			episodeDetailErrors.set(
+				episodeId,
+				e instanceof Error ? e.message : 'Failed to load episode preview'
+			);
+		} finally {
+			loadingEpisodeId = null;
+		}
+	}
 
 	let { data } = $props();
 
@@ -435,6 +475,7 @@
 						<table class="episodes-table">
 							<thead>
 								<tr>
+									<th class="expand-col"></th>
 									<th>Episode</th>
 									<th>Title</th>
 									<th>Verdict</th>
@@ -447,7 +488,18 @@
 							<tbody>
 								{#each paginatedEpisodes as ep (ep.episode_id)}
 									{@const verd = VERDICT_META[ep.bucket] || VERDICT_META.unanalyzed}
+									{@const expanded = expandedEpisodeId === ep.episode_id}
 									<tr id={`episode-${ep.season_number}-${ep.episode_id}`}>
+										<td class="expand-col">
+											<button
+												class="expand-toggle"
+												class:open={expanded}
+												title={expanded ? 'Hide frame preview' : 'Show frame preview'}
+												onclick={() => toggleEpisodeExpand(ep.episode_id)}
+											>
+												▶
+											</button>
+										</td>
 										<td class="font-mono">
 											S{String(ep.season_number).padStart(2, '0')}E{String(
 												ep.episode_number
@@ -528,6 +580,44 @@
 											</div>
 										</td>
 									</tr>
+									{#if expanded}
+										<tr class="expand-row">
+											<td colspan="8">
+												{#if loadingEpisodeId === ep.episode_id}
+													<div class="expand-note">Loading preview…</div>
+												{:else if episodeDetailErrors.has(ep.episode_id)}
+													<div class="expand-note">{episodeDetailErrors.get(ep.episode_id)}</div>
+												{:else}
+													{@const epDetail = episodeDetails.get(ep.episode_id)}
+													{#if !epDetail}
+														<div class="expand-note">No preview available.</div>
+													{:else if PAIR_PREVIEW_BUCKETS.has(ep.bucket)}
+														<div class="expand-frames pair">
+															<LetterboxFrame
+																src={epDetail.preview_urls?.before ?? null}
+																alt="before crop"
+																placeholder="No preview available"
+															/>
+															<LetterboxFrame
+																src={epDetail.preview_urls?.after ?? null}
+																alt="after crop"
+																tone="after"
+																placeholder="No preview available"
+															/>
+														</div>
+													{:else}
+														<div class="expand-frames single">
+															<LetterboxFrame
+																src={epDetail.preview_urls?.before ?? null}
+																alt="episode frame"
+																placeholder="No preview available"
+															/>
+														</div>
+													{/if}
+												{/if}
+											</td>
+										</tr>
+									{/if}
 								{/each}
 							</tbody>
 						</table>
@@ -807,6 +897,41 @@
 		display: flex;
 		gap: 6px;
 		justify-content: flex-end;
+	}
+
+	.expand-col {
+		width: 28px;
+	}
+	.expand-toggle {
+		background: transparent;
+		border: none;
+		color: var(--muted);
+		cursor: pointer;
+		font-size: 10px;
+		padding: 4px;
+		transition: transform 0.15s ease;
+	}
+	.expand-toggle.open {
+		transform: rotate(90deg);
+		color: var(--text);
+	}
+	.expand-row td {
+		background: var(--ink2);
+		padding: 16px;
+	}
+	.expand-note {
+		font-size: 12px;
+		color: var(--muted);
+	}
+	.expand-frames {
+		display: grid;
+		gap: 12px;
+	}
+	.expand-frames.pair {
+		grid-template-columns: 1fr 1fr;
+	}
+	.expand-frames.single {
+		max-width: 360px;
 	}
 
 	.verdict-chip {

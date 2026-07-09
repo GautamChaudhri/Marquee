@@ -739,7 +739,7 @@ class SyncService:
 
         # ── Physical media-file rows + episode associations (§19.3) ──
         await self.db.flush()  # assign episode.id for new rows
-        await _upsert_episode_media_files(self.db, raw_episodes, file_by_id)
+        await _upsert_episode_media_files(self.db, series.id, raw_episodes, file_by_id)
 
         return result
 
@@ -879,7 +879,7 @@ async def _upsert_movie_media_file(db: AsyncSession, movie: Movie, movie_file: d
 
 
 async def _upsert_episode_media_files(
-    db: AsyncSession, raw_episodes: list[dict], file_by_id: dict[int, dict]
+    db: AsyncSession, series_id: int, raw_episodes: list[dict], file_by_id: dict[int, dict]
 ) -> None:
     """Upsert one MediaFile per Sonarr episode-file and associate every Episode.
 
@@ -970,9 +970,16 @@ async def _upsert_episode_media_files(
                 )
 
     expected_source_keys = {f"sonarr:episode-file:{file_id}" for file_id in eps_by_file}
-    stale_query = select(MediaFile).where(
-        MediaFile.source == "sonarr",
-        MediaFile.is_active.is_(True),
+    stale_query = (
+        select(MediaFile)
+        .join(EpisodeMediaFile, EpisodeMediaFile.media_file_id == MediaFile.id)
+        .join(Episode, Episode.id == EpisodeMediaFile.episode_id)
+        .where(
+            MediaFile.source == "sonarr",
+            MediaFile.is_active.is_(True),
+            Episode.series_id == series_id,
+        )
+        .distinct()
     )
     if expected_source_keys:
         stale_query = stale_query.where(MediaFile.source_key.notin_(expected_source_keys))

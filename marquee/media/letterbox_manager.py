@@ -59,7 +59,8 @@ _warm_tasks: set[asyncio.Task] = set()
 
 
 def _schedule_preview_warm(source_path: str, **kwargs) -> None:
-    """Warm a movie's previews in the background, bounded by the ffmpeg gate.
+    """Warm a subject's (movie or episode) previews in the background, bounded
+    by the ffmpeg gate.
 
     Detection must return as soon as its state is committed — warming up to
     ~44 frames inline blocked the HTTP response for minutes and produced 502s.
@@ -67,10 +68,10 @@ def _schedule_preview_warm(source_path: str, **kwargs) -> None:
 
     async def _run() -> None:
         try:
-            await gated(letterbox_preview.warm_movie_previews, source_path, **kwargs)
+            await gated(letterbox_preview.warm_previews, source_path, **kwargs)
         except Exception:  # noqa: BLE001 — best-effort cache warm; never crash the loop
             logger.warning(
-                "preview warm failed for movie %s", kwargs.get("movie_id"), exc_info=True
+                "preview warm failed for %s", kwargs.get("subject_key"), exc_info=True
             )
 
     task = asyncio.create_task(_run())
@@ -539,7 +540,7 @@ class LetterboxManager:
             # for minutes (502s). On-demand /preview renders what the user opens.
             _schedule_preview_warm(
                 source_path,
-                movie_id=movie.id,
+                subject_key=letterbox_preview.movie_subject_key(movie.id),
                 samples=samples,
                 crop_top=state.recommended_crop_top or 0,
                 crop_bottom=state.recommended_crop_bottom or 0,
@@ -753,6 +754,22 @@ class LetterboxManager:
             )
             stored_states.append(state)
         await db.commit()
+        if source_path:
+            samples_json = updates.get("samples_json")
+            samples = json.loads(samples_json) if samples_json else []
+            for state in stored_states:
+                if state.status == "candidate":
+                    # Fire-and-forget, same reasoning as the movie path: warming
+                    # inline would block this response for however long the
+                    # episode's sampled minutes take to render.
+                    _schedule_preview_warm(
+                        source_path,
+                        subject_key=letterbox_preview.episode_subject_key(state.episode_id),
+                        samples=samples,
+                        crop_top=state.recommended_crop_top or 0,
+                        crop_bottom=state.recommended_crop_bottom or 0,
+                        height=state.source_height,
+                    )
         return stored_states
 
     async def mark_sampled_clear(
