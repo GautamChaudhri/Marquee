@@ -102,6 +102,7 @@ async def _seed_episode_with_state(
     recommended_crop: int | None = None,
     applied_crop: int | None = None,
     last_detected_at: datetime | None = None,
+    resolved_by: str | None = None,
 ) -> Episode:
     episode = Episode(
         series_id=series.id,
@@ -141,6 +142,7 @@ async def _seed_episode_with_state(
                 source_width=1920,
                 source_height=1080,
                 last_detected_at=last_detected_at,
+                resolved_by=resolved_by,
             )
         )
     return episode
@@ -225,6 +227,7 @@ async def tv_library(db: AsyncSession):
         aspect_label="2.40:1",
         recommended_crop=140,
         applied_crop=140,
+        resolved_by="reencode",
     )
     ep4 = await _seed_episode_with_state(
         db,
@@ -315,8 +318,14 @@ class TestTvDetail:
             for episode in body["seasons"][1]["episodes"]
             if episode["episode_number"] == 4
         )
+        ep3 = next(
+            episode
+            for episode in body["seasons"][1]["episodes"]
+            if episode["episode_number"] == 3
+        )
         assert ep4["bucket"] == "unanalyzed"
         assert ep4["media_file_id"] is not None
+        assert ep3["resolved_by"] == "reencode"
 
     async def test_detail_computes_legacy_clear_aspect_label(self, client: AsyncClient, tv_library):
         clean_show = tv_library["clean_show"]
