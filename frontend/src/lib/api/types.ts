@@ -1866,6 +1866,39 @@ export interface LetterboxTvDetail {
 	active_job_ids: string[];
 }
 
+/** Single-episode detail (GET /letterbox/tv/{seriesId}/episodes/{episodeId}) — the
+ *  TV analog of LetterboxDetail, without the movie-only reencode/DoVi fields. */
+export interface LetterboxEpisodeDetail {
+	episode_id: number;
+	series_id: number;
+	season_number: number;
+	episode_number: number;
+	title: string | null;
+	series_title: string;
+	status: string;
+	confidence: string | null;
+	eligible: boolean | null;
+	ineligible_reason: string | null;
+	source_width: number | null;
+	source_height: number | null;
+	recommended_crop_top: number | null;
+	recommended_crop_bottom: number | null;
+	aspect_label: string | null;
+	applied_crop_top: number | null;
+	applied_crop_bottom: number | null;
+	detect_method: string | null;
+	reviewed: boolean | null;
+	last_detected_at: string | null;
+	last_applied_at: string | null;
+	error: string | null;
+	variable_ar?: boolean;
+	variable_ar_note?: string | null;
+	samples?: LetterboxSample[];
+	sample_previews?: LetterboxSamplePreview[];
+	preview_minute?: number;
+	preview_urls?: { before: string; after: string };
+}
+
 export interface LetterboxSummarySection {
 	workflow_funnel: Record<string, number>;
 	verdict_breakdown: Record<string, number>;

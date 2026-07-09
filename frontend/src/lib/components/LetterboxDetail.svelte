@@ -41,6 +41,7 @@
 	import StatusDot from './StatusDot.svelte';
 	import ProgressBar from './ProgressBar.svelte';
 	import Icon from './Icon.svelte';
+	import LetterboxFrame from './LetterboxFrame.svelte';
 
 	function fmtBytes(n: number | null | undefined): string {
 		if (!n) return '—';
@@ -355,7 +356,6 @@
 	}
 
 	const id = $derived(movieId);
-	const samplePreviews = $derived(detail?.sample_previews ?? []);
 	const detectedAtLabel = $derived(
 		detail?.last_detected_at ? new Date(detail.last_detected_at).toLocaleString() : null
 	);
@@ -793,13 +793,9 @@
 			<!-- Row 1, Col 2: before image -->
 			<div class="frame-cell before">
 				{#if stage === 'processed'}
-					<div class="frame unanalyzed">
-						<span class="ph">Previews cleared after confirmation</span>
-					</div>
-				{:else if beforeUrl}
-					<img class="frame" src={beforeUrl} alt="before crop" loading="lazy" />
+					<LetterboxFrame src={null} alt="before crop" placeholder="Previews cleared after confirmation" />
 				{:else}
-					<div class="frame unanalyzed"><span class="ph">No preview</span></div>
+					<LetterboxFrame src={beforeUrl} alt="before crop" placeholder="No preview" />
 				{/if}
 			</div>
 
@@ -1231,13 +1227,9 @@
 			<!-- Row 2, Col 2: after image — defines the row's height -->
 			<div class="frame-cell after">
 				{#if stage === 'processed'}
-					<div class="frame unanalyzed">
-						<span class="ph">Previews cleared after confirmation</span>
-					</div>
-				{:else if afterUrl}
-					<img class="frame good" src={afterUrl} alt="after crop" loading="lazy" />
+					<LetterboxFrame src={null} alt="after crop" tone="after" placeholder="Previews cleared after confirmation" />
 				{:else}
-					<div class="frame unanalyzed"><span class="ph">No preview</span></div>
+					<LetterboxFrame src={afterUrl} alt="after crop" tone="after" placeholder="No preview" />
 				{/if}
 			</div>
 		</div>
@@ -1285,35 +1277,13 @@
 						Resolution scan flagged this file. Run frame analysis to confirm and measure exact crop
 						values before applying any fix.
 					</div>
-				{:else if stage === 'clean' && samplePreviews.length > 0}
-					<div class="ptitle">Cleared sample frames</div>
-					{#if beforeUrl}
-						<img class="frame" src={beforeUrl} alt="cleared sample frame" loading="lazy" />
-					{:else}
-						<div class="frame unanalyzed"><span class="ph">No preview available</span></div>
-					{/if}
-					<div class="strip" role="list" aria-label="Cleared sample frames">
-						{#each samplePreviews as sample (sample.minute)}
-							<button
-								class="thumb"
-								class:active={sample.minute === activeMinute}
-								class:bad={!sample.ok}
-								disabled={!sample.ok}
-								onclick={() => sample.ok && (previewMinute = sample.minute)}
-							>
-								{#if sample.ok && sample.url}
-									<img
-										src={sample.url}
-										alt={`Sample frame at ${sample.minute} minutes`}
-										loading="lazy"
-									/>
-								{:else}
-									<span class="thumb-miss">✕</span>
-								{/if}
-								<span class="thumb-label mono">{sample.minute}m</span>
-							</button>
-						{/each}
-					</div>
+				{:else if stage === 'clean'}
+					<LetterboxFrame
+						src={beforeUrl}
+						alt="cleared frame"
+						label="Cleared — sample frame"
+						placeholder="No preview available"
+					/>
 				{:else if detail.preview_urls}
 					<img class="frame" src={detail.preview_urls.before} alt="before crop" loading="lazy" />
 					<img class="frame good" src={detail.preview_urls.after} alt="after crop" loading="lazy" />
@@ -1631,50 +1601,6 @@
 		font-size: 12px;
 		color: var(--gold);
 	}
-	.strip {
-		display: grid;
-		grid-template-columns: repeat(auto-fill, minmax(76px, 1fr));
-		gap: 8px;
-	}
-	.thumb {
-		display: flex;
-		flex-direction: column;
-		gap: 6px;
-		padding: 6px;
-		border: 1px solid var(--line2);
-		border-radius: 10px;
-		background: var(--panel2);
-		color: inherit;
-	}
-	.thumb.active {
-		border-color: color-mix(in srgb, var(--gold) 50%, transparent);
-		background: color-mix(in srgb, var(--gold) 8%, var(--panel2));
-	}
-	.thumb.bad {
-		opacity: 0.55;
-	}
-	.thumb img,
-	.thumb-miss {
-		width: 100%;
-		aspect-ratio: 16 / 9;
-		border-radius: 7px;
-		border: 1px solid var(--line);
-		background: var(--ink2);
-		object-fit: cover;
-	}
-	.thumb-miss {
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		color: var(--bad);
-		font-size: 20px;
-	}
-	.thumb-label {
-		font-size: 11px;
-		color: var(--muted);
-		text-align: center;
-	}
-
 	/* actions */
 	.actions {
 		display: flex;

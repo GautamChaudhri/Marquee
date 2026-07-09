@@ -31,17 +31,25 @@ _MAX_BRIGHT_PROBES = 3
 _LUMA_PROBE_TIMEOUT = 10.0
 _YAVG_RE = re.compile(r"YAVG=([0-9.]+)")
 
-# Process-local cache of the bright-minute decision, keyed by (movie_id, minute).
+# Process-local cache of the bright-minute decision, keyed by (subject_key, minute).
 # The before/after pair render at the same minute, so this lets the second
 # request reuse the first's pick instead of re-probing, and makes repeat views
-# instant. Cleared per-movie by purge_movie_previews.
-_bright_minute_cache: dict[tuple[int, int], int] = {}
+# instant. Cleared per-subject by purge_previews.
+_bright_minute_cache: dict[tuple[str, int], int] = {}
 
 # Bump when the render recipe changes so stale cached frames are regenerated.
 _CACHE_VERSION = "v3"
 
 
-def preview_path(movie_id: int, mode: str, minute: int, *, exact: bool = False) -> Path:
+def movie_subject_key(movie_id: int) -> str:
+    return f"movie-{movie_id}"
+
+
+def episode_subject_key(episode_id: int) -> str:
+    return f"episode-{episode_id}"
+
+
+def preview_path(subject_key: str, mode: str, minute: int, *, exact: bool = False) -> Path:
     # "exact" frames (the literal sample minute, no brightness substitution) and
     # "bright" frames (the brightness-substituted default view) must never share a
     # cache slot — that collision is what made clicking a sample minute silently
@@ -49,12 +57,12 @@ def preview_path(movie_id: int, mode: str, minute: int, *, exact: bool = False) 
     policy = "exact" if exact else "bright"
     return (
         settings.letterbox_preview_path
-        / f"{movie_id}_{mode}_{minute}_{policy}_{_CACHE_VERSION}.webp"
+        / f"{subject_key}_{mode}_{minute}_{policy}_{_CACHE_VERSION}.webp"
     )
 
 
-def _movie_preview_glob(movie_id: int) -> str:
-    return f"{movie_id}_*.webp"
+def _preview_glob(subject_key: str) -> str:
+    return f"{subject_key}_*.webp"
 
 
 def _timestamp(minute: int) -> str:
@@ -98,7 +106,7 @@ def _measure_luma(source: Path | str, minute: int) -> float | None:
 
 
 def _pick_bright_minute(
-    source: Path | str, minute: int, candidates: list[int] | None, *, movie_id: int
+    source: Path | str, minute: int, candidates: list[int] | None, *, subject_key: str
 ) -> int:
     """Choose the brightest timestamp so the black bars stay visible.
 
@@ -106,10 +114,10 @@ def _pick_bright_minute(
     Otherwise probe the candidate minutes (capped) and return whichever frame
     has the highest average luma — falling back to the original minute.
 
-    The decision is cached per ``(movie_id, minute)`` so the before/after pair
+    The decision is cached per ``(subject_key, minute)`` so the before/after pair
     (same minute) doesn't probe twice and repeat views are instant.
     """
-    cache_key = (movie_id, minute)
+    cache_key = (subject_key, minute)
     cached = _bright_minute_cache.get(cache_key)
     if cached is not None:
         return cached
@@ -134,12 +142,12 @@ def _pick_bright_minute(
     return best_minute
 
 
-def purge_movie_previews(movie_id: int) -> int:
-    """Delete all cached preview files for one movie."""
-    # Drop any cached bright-minute decisions for this movie so a re-detect
+def purge_previews(subject_key: str) -> int:
+    """Delete all cached preview files for one subject (a movie or an episode)."""
+    # Drop any cached bright-minute decisions for this subject so a re-detect
     # (new crop / new samples) re-probes instead of reusing a stale pick. Done
     # before the directory check since the cache is independent of the files.
-    for key in [k for k in _bright_minute_cache if k[0] == movie_id]:
+    for key in [k for k in _bright_minute_cache if k[0] == subject_key]:
         del _bright_minute_cache[key]
 
     root = settings.letterbox_preview_path
@@ -147,19 +155,19 @@ def purge_movie_previews(movie_id: int) -> int:
         return 0
 
     removed = 0
-    for path in root.glob(_movie_preview_glob(movie_id)):
+    for path in root.glob(_preview_glob(subject_key)):
         try:
             path.unlink(missing_ok=True)
             removed += 1
         except OSError as exc:
-            logger.warning("preview purge failed for movie %s (%s): %s", movie_id, path.name, exc)
+            logger.warning("preview purge failed for %s (%s): %s", subject_key, path.name, exc)
     return removed
 
 
 def generate_preview(
     source: Path | str,
     *,
-    movie_id: int,
+    subject_key: str,
     minute: int,
     mode: str,
     crop_top: int,
@@ -178,7 +186,7 @@ def generate_preview(
     """
     if binaries.resolve("ffmpeg") is None:
         return None
-    out = preview_path(movie_id, mode, minute, exact=exact)
+    out = preview_path(subject_key, mode, minute, exact=exact)
     if out.is_file() and not force:
         return out
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -186,7 +194,7 @@ def generate_preview(
     src_minute = (
         minute
         if exact
-        else _pick_bright_minute(source, minute, candidate_minutes, movie_id=movie_id)
+        else _pick_bright_minute(source, minute, candidate_minutes, subject_key=subject_key)
     )
 
     if mode == "after" and (crop_top or crop_bottom):
@@ -226,26 +234,26 @@ def generate_preview(
     )
     if not result.ok or not out.is_file():
         logger.warning(
-            "preview generation failed for movie %s: %s", movie_id, result.stderr.strip()[:200]
+            "preview generation failed for %s: %s", subject_key, result.stderr.strip()[:200]
         )
         return None
     return out
 
 
-def warm_movie_previews(
+def warm_previews(
     source: Path | str,
     *,
-    movie_id: int,
+    subject_key: str,
     samples: list[dict] | None,
     crop_top: int,
     crop_bottom: int,
     height: int | None = None,
 ) -> list[Path]:
-    """Pre-render all preview frames for the sampled minutes of one movie."""
+    """Pre-render all preview frames for the sampled minutes of one subject."""
     if binaries.resolve("ffmpeg") is None:
         return []
 
-    purge_movie_previews(movie_id)
+    purge_previews(subject_key)
 
     minutes: list[int] = []
     for sample in samples or []:
@@ -264,7 +272,7 @@ def warm_movie_previews(
             for exact in (False, True):
                 out = generate_preview(
                     source,
-                    movie_id=movie_id,
+                    subject_key=subject_key,
                     minute=minute,
                     mode=mode,
                     crop_top=crop_top,

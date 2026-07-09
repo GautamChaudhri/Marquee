@@ -63,6 +63,7 @@ export function trackJob<T extends { status: string; progress?: unknown } = JobS
 	const pollMs = opts.pollMs ?? 1500;
 	const fetchJob = (opts.fetchJob ?? getJob) as (fetchFn: Fetch, jobId: string) => Promise<T>;
 	let finished = false;
+	let sseDone = false;
 	let timer: ReturnType<typeof setInterval> | null = null;
 	let unsub: (() => void) | null = null;
 
@@ -98,10 +99,15 @@ export function trackJob<T extends { status: string; progress?: unknown } = JobS
 	const onEvent = (type: string, raw: unknown) => {
 		if (finished) return;
 		if (type === 'done') {
+			sseDone = true;
 			void poll(); // fetch the final snapshot → onDone
 			return;
 		}
 		if (type === 'error') {
+			// The server closes the stream right after `done`; the browser's
+			// EventSource surfaces that graceful close as a native error event.
+			// Only a real drop before `done` is an actual interruption.
+			if (sseDone) return;
 			handlers.onError?.('event stream interrupted');
 			return;
 		}

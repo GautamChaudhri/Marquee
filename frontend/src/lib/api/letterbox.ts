@@ -13,6 +13,7 @@ import type {
 	ReencodePlan,
 	LetterboxTvListItem,
 	LetterboxTvDetail,
+	LetterboxEpisodeDetail,
 	LetterboxSummaryResponse
 } from './types';
 import type { JobSnapshot } from './jobs';
@@ -227,6 +228,17 @@ export function getLetterboxTv(
 
 export function getLetterboxTvDetail(fetchFn: Fetch, seriesId: number): Promise<LetterboxTvDetail> {
 	return apiGet<LetterboxTvDetail>(fetchFn, `/letterbox/tv/${seriesId}`);
+}
+
+export function getLetterboxTvEpisodeDetail(
+	fetchFn: Fetch,
+	seriesId: number,
+	episodeId: number
+): Promise<LetterboxEpisodeDetail> {
+	return apiGet<LetterboxEpisodeDetail>(
+		fetchFn,
+		`/letterbox/tv/${seriesId}/episodes/${episodeId}`
+	);
 }
 
 export function detectLetterboxTv(
