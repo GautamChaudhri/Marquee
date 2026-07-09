@@ -235,10 +235,7 @@ export function getLetterboxTvEpisodeDetail(
 	seriesId: number,
 	episodeId: number
 ): Promise<LetterboxEpisodeDetail> {
-	return apiGet<LetterboxEpisodeDetail>(
-		fetchFn,
-		`/letterbox/tv/${seriesId}/episodes/${episodeId}`
-	);
+	return apiGet<LetterboxEpisodeDetail>(fetchFn, `/letterbox/tv/${seriesId}/episodes/${episodeId}`);
 }
 
 export function detectLetterboxTv(
