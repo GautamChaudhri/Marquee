@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onDestroy } from 'svelte';
-	import { letterboxMeta, toneVar, aspectRatio } from '$lib/display';
+	import { aspectRatio, confidenceTone, letterboxMeta, toneVar } from '$lib/display';
 	import { toast } from '$lib/toast';
 	import type {
 		LetterboxDetail,
@@ -245,14 +245,6 @@
 			if (!seen.has(key)) seen.set(key, BAR_COLORS[seen.size % BAR_COLORS.length]);
 		}
 		return seen;
-	}
-
-	function confidenceTone(c: string | null | undefined): string {
-		if (!c || c === 'none') return 'var(--faint)';
-		if (c === 'high') return 'var(--good)';
-		if (c === 'variable') return 'var(--info)';
-		if (c === 'low') return 'var(--bad)';
-		return 'var(--warn)';
 	}
 
 	async function finishDetection(jobId: string) {
@@ -793,7 +785,11 @@
 			<!-- Row 1, Col 2: before image -->
 			<div class="frame-cell before">
 				{#if stage === 'processed'}
-					<LetterboxFrame src={null} alt="before crop" placeholder="Previews cleared after confirmation" />
+					<LetterboxFrame
+						src={null}
+						alt="before crop"
+						placeholder="Previews cleared after confirmation"
+					/>
 				{:else}
 					<LetterboxFrame src={beforeUrl} alt="before crop" placeholder="No preview" />
 				{/if}
@@ -1227,7 +1223,12 @@
 			<!-- Row 2, Col 2: after image — defines the row's height -->
 			<div class="frame-cell after">
 				{#if stage === 'processed'}
-					<LetterboxFrame src={null} alt="after crop" tone="after" placeholder="Previews cleared after confirmation" />
+					<LetterboxFrame
+						src={null}
+						alt="after crop"
+						tone="after"
+						placeholder="Previews cleared after confirmation"
+					/>
 				{:else}
 					<LetterboxFrame src={afterUrl} alt="after crop" tone="after" placeholder="No preview" />
 				{/if}

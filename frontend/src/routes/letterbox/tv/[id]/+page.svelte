@@ -2,6 +2,7 @@
 	import { onMount } from 'svelte';
 	import { SvelteMap } from 'svelte/reactivity';
 	import { page } from '$app/state';
+	import { aspectRatio, confidenceTone } from '$lib/display';
 	import { toast } from '$lib/toast';
 	import {
 		getLetterboxTvDetail,
@@ -34,6 +35,8 @@
 	let expandedEpisodeId = $state<number | null>(null);
 	const episodeDetails = new SvelteMap<number, LetterboxEpisodeDetail>();
 	const episodeDetailErrors = new SvelteMap<number, string>();
+	const episodePreviewMinutes = new SvelteMap<number, number>();
+	const expandedConfidenceEpisodes = new SvelteMap<number, boolean>();
 	let loadingEpisodeId = $state<number | null>(null);
 
 	async function toggleEpisodeExpand(episodeId: number) {
@@ -55,6 +58,26 @@
 		} finally {
 			loadingEpisodeId = null;
 		}
+	}
+
+	function toggleConfidenceExpand(episodeId: number) {
+		expandedConfidenceEpisodes.set(
+			episodeId,
+			!(expandedConfidenceEpisodes.get(episodeId) ?? false)
+		);
+	}
+
+	function setEpisodePreviewMinute(episodeId: number, minute: number) {
+		episodePreviewMinutes.set(episodeId, minute);
+	}
+
+	function episodePreviewUrl(
+		episodeId: number,
+		mode: 'before' | 'after',
+		minute: number,
+		exact = false
+	) {
+		return `/api/letterbox/tv/${seriesId}/episodes/${episodeId}/preview?mode=${mode}&minute=${minute}${exact ? '&exact=true' : ''}`;
 	}
 
 	let { data } = $props();
@@ -514,9 +537,14 @@
 											</span>
 										</td>
 										<td class="font-mono">{ep.aspect_label || '—'}</td>
-										<td class="font-mono">
-											{#if ep.confidence !== null && ep.confidence !== undefined}
-												{Math.round(parseFloat(ep.confidence) * 100)}%
+										<td>
+											{#if ep.confidence && ep.confidence !== 'none'}
+												<span
+													class="confidence-chip"
+													style={`--chip:${confidenceTone(ep.confidence)}`}
+												>
+													{ep.confidence}
+												</span>
 											{:else}
 												—
 											{/if}
@@ -591,27 +619,156 @@
 													{@const epDetail = episodeDetails.get(ep.episode_id)}
 													{#if !epDetail}
 														<div class="expand-note">No preview available.</div>
-													{:else if PAIR_PREVIEW_BUCKETS.has(ep.bucket)}
-														<div class="expand-frames pair">
-															<LetterboxFrame
-																src={epDetail.preview_urls?.before ?? null}
-																alt="before crop"
-																placeholder="No preview available"
-															/>
-															<LetterboxFrame
-																src={epDetail.preview_urls?.after ?? null}
-																alt="after crop"
-																tone="after"
-																placeholder="No preview available"
-															/>
-														</div>
 													{:else}
-														<div class="expand-frames single">
-															<LetterboxFrame
-																src={epDetail.preview_urls?.before ?? null}
-																alt="episode frame"
-																placeholder="No preview available"
-															/>
+														{@const previewMinute =
+															episodePreviewMinutes.get(ep.episode_id) ??
+															epDetail.preview_minute ??
+															5}
+														{@const exactPreview = episodePreviewMinutes.has(ep.episode_id)}
+														{@const cropTop =
+															epDetail.recommended_crop_top ?? epDetail.applied_crop_top ?? 0}
+														{@const cropBottom =
+															epDetail.recommended_crop_bottom ?? epDetail.applied_crop_bottom ?? 0}
+														{@const afterHeight =
+															epDetail.source_height != null
+																? Math.max(epDetail.source_height - cropTop - cropBottom, 0)
+																: null}
+														{@const beforeUrl = exactPreview
+															? episodePreviewUrl(ep.episode_id, 'before', previewMinute, true)
+															: (epDetail.preview_urls?.before ??
+																episodePreviewUrl(ep.episode_id, 'before', previewMinute))}
+														{@const afterUrl = exactPreview
+															? episodePreviewUrl(ep.episode_id, 'after', previewMinute, true)
+															: (epDetail.preview_urls?.after ??
+																episodePreviewUrl(ep.episode_id, 'after', previewMinute))}
+														{@const confidenceExpanded =
+															expandedConfidenceEpisodes.get(ep.episode_id) ?? false}
+														<div class="expand-content">
+															{#if PAIR_PREVIEW_BUCKETS.has(ep.bucket)}
+																<div class="expand-frames pair">
+																	<LetterboxFrame
+																		src={beforeUrl}
+																		alt="before crop"
+																		placeholder="No preview available"
+																	/>
+																	<LetterboxFrame
+																		src={afterUrl}
+																		alt="after crop"
+																		tone="after"
+																		placeholder="No preview available"
+																	/>
+																</div>
+															{:else}
+																<div class="expand-frames single">
+																	<LetterboxFrame
+																		src={beforeUrl}
+																		alt="episode frame"
+																		placeholder="No preview available"
+																	/>
+																</div>
+															{/if}
+
+															<div class="expand-meta">
+																<dl class="meta-grid">
+																	{#if epDetail.source_width && epDetail.source_height}
+																		<dt>Before dims</dt>
+																		<dd class="mono">
+																			{epDetail.source_width}×{epDetail.source_height}
+																		</dd>
+																		<dt>Before AR</dt>
+																		<dd class="mono">
+																			{aspectRatio(epDetail.source_width, epDetail.source_height)}
+																		</dd>
+																	{/if}
+																	{#if epDetail.source_width && afterHeight}
+																		<dt>After dims</dt>
+																		<dd class="mono">{epDetail.source_width}×{afterHeight}</dd>
+																		<dt>After AR</dt>
+																		<dd class="mono">
+																			{aspectRatio(epDetail.source_width, afterHeight)}
+																		</dd>
+																	{/if}
+																	<dt>Crop T / B</dt>
+																	<dd class="mono">{cropTop}px / {cropBottom}px</dd>
+																	<dt>Confidence</dt>
+																	<dd>
+																		{#if epDetail.confidence && epDetail.confidence !== 'none'}
+																			<button
+																				class="confidence-toggle"
+																				type="button"
+																				onclick={() => toggleConfidenceExpand(ep.episode_id)}
+																			>
+																				<span
+																					class="confidence-chip"
+																					style={`--chip:${confidenceTone(epDetail.confidence)}`}
+																				>
+																					{epDetail.confidence}
+																				</span>
+																				<span class="caret">
+																					{confidenceExpanded ? '▲' : '▼'}
+																				</span>
+																			</button>
+																		{:else}
+																			<span class="meta-muted">—</span>
+																		{/if}
+																	</dd>
+																</dl>
+
+																<div class="meta-inline">
+																	{#if epDetail.detect_method}
+																		<span class="method-tag mono">{epDetail.detect_method}</span>
+																	{/if}
+																	<span class="preview-chip mono">
+																		Preview {previewMinute}m{#if exactPreview}
+																			· exact{/if}
+																	</span>
+																</div>
+
+																{#if epDetail.variable_ar_note}
+																	<div class="detail-note">{epDetail.variable_ar_note}</div>
+																{/if}
+
+																{#if confidenceExpanded}
+																	<div class="sample-gallery">
+																		{#if epDetail.samples && epDetail.samples.length > 0}
+																			{#each epDetail.samples as sample (sample.minute)}
+																				{#if sample.ok}
+																					<button
+																						class="sample-row"
+																						class:active={previewMinute === sample.minute &&
+																							exactPreview}
+																						type="button"
+																						onclick={() =>
+																							setEpisodePreviewMinute(ep.episode_id, sample.minute)}
+																					>
+																						<span class="mono sample-minute">
+																							{sample.minute}m
+																						</span>
+																						<span class="mono sample-bars">
+																							{sample.top_bar ?? '?'} / {sample.bottom_bar ?? '?'} px
+																						</span>
+																						<span class="sample-meta">
+																							{sample.backend ?? 'cpu'} · {sample.elapsed_ms ??
+																								'?'}ms
+																						</span>
+																					</button>
+																				{:else}
+																					<div class="sample-row sample-row-error">
+																						<span class="mono sample-minute">
+																							{sample.minute}m
+																						</span>
+																						<span class="sample-error">
+																							{sample.error ?? 'sample failed'}
+																						</span>
+																					</div>
+																				{/if}
+																			{/each}
+																		{:else}
+																			<div class="expand-note">No sample data available.</div>
+																		{/if}
+																	</div>
+																{/if}
+															</div>
 														</div>
 													{/if}
 												{/if}
@@ -888,6 +1045,20 @@
 		color: var(--faint2);
 		border-style: dashed;
 	}
+	.confidence-chip {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		padding: 2px 8px;
+		border-radius: 999px;
+		border: 1px solid color-mix(in srgb, var(--chip) 35%, transparent);
+		background: color-mix(in srgb, var(--chip) 14%, transparent);
+		color: var(--chip);
+		font-size: 10px;
+		font-weight: 700;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+	}
 
 	.actions-col {
 		text-align: right;
@@ -923,6 +1094,12 @@
 		font-size: 12px;
 		color: var(--muted);
 	}
+	.expand-content {
+		display: grid;
+		grid-template-columns: minmax(0, 1.4fr) minmax(280px, 0.9fr);
+		gap: 16px;
+		align-items: start;
+	}
 	.expand-frames {
 		display: grid;
 		gap: 12px;
@@ -932,6 +1109,110 @@
 	}
 	.expand-frames.single {
 		max-width: 360px;
+	}
+	.expand-meta {
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
+	}
+	.meta-grid {
+		display: grid;
+		grid-template-columns: auto 1fr;
+		gap: 8px 12px;
+		margin: 0;
+	}
+	.meta-grid dt {
+		font-size: 11px;
+		font-weight: 700;
+		color: var(--muted);
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+	}
+	.meta-grid dd {
+		margin: 0;
+		color: var(--text);
+	}
+	.meta-muted {
+		color: var(--muted);
+	}
+	.confidence-toggle {
+		display: inline-flex;
+		align-items: center;
+		gap: 8px;
+		padding: 0;
+		border: none;
+		background: transparent;
+		cursor: pointer;
+	}
+	.caret {
+		color: var(--muted);
+		font-size: 11px;
+	}
+	.meta-inline {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 8px;
+	}
+	.method-tag,
+	.preview-chip {
+		display: inline-flex;
+		align-items: center;
+		padding: 4px 8px;
+		border-radius: 999px;
+		border: 1px solid var(--line);
+		background: var(--ink3);
+		font-size: 11px;
+		color: var(--muted);
+	}
+	.detail-note {
+		padding: 10px 12px;
+		border-radius: var(--radius-sm);
+		border: 1px solid color-mix(in srgb, var(--info) 25%, transparent);
+		background: color-mix(in srgb, var(--info) 10%, transparent);
+		color: var(--text);
+		font-size: 12px;
+	}
+	.sample-gallery {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+	}
+	.sample-row {
+		display: grid;
+		grid-template-columns: auto auto 1fr;
+		gap: 10px;
+		align-items: center;
+		padding: 9px 10px;
+		border-radius: var(--radius-sm);
+		border: 1px solid var(--line);
+		background: var(--ink3);
+		color: var(--text);
+		text-align: left;
+		cursor: pointer;
+	}
+	.sample-row:hover {
+		border-color: var(--line2);
+		background: color-mix(in srgb, var(--ink3) 86%, white);
+	}
+	.sample-row.active {
+		border-color: color-mix(in srgb, var(--gold) 55%, var(--line));
+		background: color-mix(in srgb, var(--gold) 12%, var(--ink3));
+	}
+	.sample-row-error {
+		cursor: default;
+		grid-template-columns: auto 1fr;
+	}
+	.sample-minute,
+	.sample-bars {
+		font-size: 11px;
+	}
+	.sample-meta {
+		color: var(--muted);
+		font-size: 11px;
+	}
+	.sample-error {
+		color: var(--bad);
+		font-size: 11px;
 	}
 
 	.verdict-chip {
@@ -1050,5 +1331,11 @@
 		padding: 32px;
 		text-align: center;
 		color: var(--muted);
+	}
+
+	@media (max-width: 980px) {
+		.expand-content {
+			grid-template-columns: 1fr;
+		}
 	}
 </style>

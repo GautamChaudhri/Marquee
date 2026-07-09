@@ -75,6 +75,14 @@ export function letterboxMeta(status: string): { label: string; tone: Tone } | n
 	return map[status] ?? { label: status, tone: 'info' };
 }
 
+export function confidenceTone(confidence: string | null | undefined): string {
+	if (!confidence || confidence === 'none') return 'var(--faint)';
+	if (confidence === 'high') return 'var(--good)';
+	if (confidence === 'variable') return 'var(--info)';
+	if (confidence === 'low') return 'var(--bad)';
+	return 'var(--warn)';
+}
+
 /** Aspect ratio from source dims, e.g. 1.85. */
 export function aspectRatio(w?: number | null, h?: number | null): string | null {
 	if (!w || !h) return null;
