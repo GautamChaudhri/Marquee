@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { SvelteMap } from 'svelte/reactivity';
+	import { SvelteMap, SvelteSet } from 'svelte/reactivity';
 	import { page } from '$app/state';
 	import { aspectRatio, confidenceTone } from '$lib/display';
 	import { toast } from '$lib/toast';
@@ -32,21 +32,23 @@
 	// so its detail view shows exactly one confirmation frame.
 	const PAIR_PREVIEW_BUCKETS = new Set(['candidate', 'tagged']);
 
-	let expandedEpisodeId = $state<number | null>(null);
+	const expandedEpisodeIds = new SvelteSet<number>();
 	const episodeDetails = new SvelteMap<number, LetterboxEpisodeDetail>();
 	const episodeDetailErrors = new SvelteMap<number, string>();
 	const episodePreviewMinutes = new SvelteMap<number, number>();
 	const expandedConfidenceEpisodes = new SvelteMap<number, boolean>();
-	let loadingEpisodeId = $state<number | null>(null);
+	const loadingEpisodeIds = new SvelteSet<number>();
+	const collapsedSeasons = new SvelteSet<number>();
+	let collapseStateInitialized = $state(false);
 
 	async function toggleEpisodeExpand(episodeId: number) {
-		if (expandedEpisodeId === episodeId) {
-			expandedEpisodeId = null;
+		if (expandedEpisodeIds.has(episodeId)) {
+			expandedEpisodeIds.delete(episodeId);
 			return;
 		}
-		expandedEpisodeId = episodeId;
+		expandedEpisodeIds.add(episodeId);
 		if (episodeDetails.has(episodeId)) return;
-		loadingEpisodeId = episodeId;
+		loadingEpisodeIds.add(episodeId);
 		try {
 			const d = await getLetterboxTvEpisodeDetail(fetch, seriesId, episodeId);
 			episodeDetails.set(episodeId, d);
@@ -56,7 +58,7 @@
 				e instanceof Error ? e.message : 'Failed to load episode preview'
 			);
 		} finally {
-			loadingEpisodeId = null;
+			loadingEpisodeIds.delete(episodeId);
 		}
 	}
 
@@ -71,6 +73,23 @@
 		episodePreviewMinutes.set(episodeId, minute);
 	}
 
+	let { data } = $props();
+
+	let detail = $state(data.detail);
+	let seriesId = $derived(Number(page.params.id));
+
+	$effect(() => {
+		if (!detail || collapseStateInitialized) return;
+		for (const season of detail.seasons) {
+			const actionable =
+				(season.rollup.bucket_counts.candidate ?? 0) + (season.rollup.bucket_counts.tagged ?? 0);
+			if (actionable === 0) {
+				collapsedSeasons.add(season.season_number);
+			}
+		}
+		collapseStateInitialized = true;
+	});
+
 	function episodePreviewUrl(
 		episodeId: number,
 		mode: 'before' | 'after',
@@ -80,10 +99,22 @@
 		return `/api/letterbox/tv/${seriesId}/episodes/${episodeId}/preview?mode=${mode}&minute=${minute}${exact ? '&exact=true' : ''}`;
 	}
 
-	let { data } = $props();
+	function toggleSeasonCollapse(seasonNumber: number) {
+		if (collapsedSeasons.has(seasonNumber)) {
+			collapsedSeasons.delete(seasonNumber);
+			return;
+		}
+		collapsedSeasons.add(seasonNumber);
+	}
 
-	let detail = $state(data.detail);
-	let seriesId = $derived(Number(page.params.id));
+	async function focusEpisodeFromHeatmap(seasonNumber: number, episodeId: number) {
+		collapsedSeasons.delete(seasonNumber);
+		await toggleEpisodeExpand(episodeId);
+		requestAnimationFrame(() => {
+			const row = document.getElementById(`episode-${seasonNumber}-${episodeId}`);
+			row?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+		});
+	}
 
 	// Background poll to refresh data when jobs are running
 	let pollInterval: ReturnType<typeof setInterval>;
@@ -161,58 +192,31 @@
 		activeRuns[jobId].stop = stop;
 	}
 
-	// All episodes flattened
-	const allEpisodes = $derived(
-		detail?.seasons?.flatMap((s: LetterboxTvSeason) =>
-			s.episodes.map((ep: LetterboxTvEpisode) => ({
-				...ep,
-				season_number: s.season_number // ensure season_number is set
-			}))
-		) || []
-	);
-
 	// Filters for Episode Table
-	let selectedSeason = $state<string>('all');
 	let selectedVerdict = $state<string>('all');
 	let searchQuery = $state<string>('');
-
-	// Pagination
-	let currentPage = $state(1);
-	let pageSize = $state(10);
-
-	// Filtering logic
-	const filteredEpisodes = $derived.by(() => {
-		return allEpisodes.filter((ep: LetterboxTvEpisode) => {
-			if (selectedSeason !== 'all' && ep.season_number !== Number(selectedSeason)) {
-				return false;
-			}
-			if (selectedVerdict !== 'all' && ep.bucket !== selectedVerdict) {
-				return false;
-			}
-			if (searchQuery) {
-				const query = searchQuery.toLowerCase();
-				const titleMatch = ep.title ? ep.title.toLowerCase().includes(query) : false;
-				const epCode = `s${String(ep.season_number).padStart(2, '0')}e${String(ep.episode_number).padStart(2, '0')}`;
-				if (!titleMatch && !epCode.includes(query)) {
+	const filtersActive = $derived(selectedVerdict !== 'all' || searchQuery.trim().length > 0);
+	const seasonViews = $derived.by(() => {
+		if (!detail) return [];
+		const query = searchQuery.trim().toLowerCase();
+		return detail.seasons.map((season: LetterboxTvSeason) => {
+			const filteredEpisodes = season.episodes.filter((ep: LetterboxTvEpisode) => {
+				if (selectedVerdict !== 'all' && ep.bucket !== selectedVerdict) {
 					return false;
 				}
-			}
-			return true;
+				if (!query) return true;
+				const titleMatch = ep.title ? ep.title.toLowerCase().includes(query) : false;
+				const epCode = `s${String(ep.season_number).padStart(2, '0')}e${String(ep.episode_number).padStart(2, '0')}`;
+				return titleMatch || epCode.includes(query);
+			});
+			const hasMatches = filteredEpisodes.length > 0;
+			return {
+				season,
+				filteredEpisodes,
+				hasMatches,
+				collapsed: filtersActive ? !hasMatches : collapsedSeasons.has(season.season_number)
+			};
 		});
-	});
-
-	const paginatedEpisodes = $derived.by(() => {
-		const start = (currentPage - 1) * pageSize;
-		return filteredEpisodes.slice(start, start + pageSize);
-	});
-
-	const totalPages = $derived(Math.ceil(filteredEpisodes.length / pageSize));
-
-	$effect(() => {
-		// Reset page when filters change
-		if (selectedSeason || selectedVerdict || searchQuery) {
-			currentPage = 1;
-		}
 	});
 
 	// Actions (Season level)
@@ -347,7 +351,7 @@
 	}
 
 	// Verdict metadata helpers
-	const VERDICT_META: Record<
+	const EPISODE_VERDICT_META: Record<
 		string,
 		{ label: string; tone: 'good' | 'info' | 'warn' | 'dovi' | 'muted' | 'bad' | 'gold' }
 	> = {
@@ -361,6 +365,27 @@
 		ineligible: { label: 'Ineligible', tone: 'muted' },
 		unanalyzed: { label: 'Unanalyzed', tone: 'muted' }
 	};
+	const SEASON_VERDICT_META: Record<
+		string,
+		{ label: string; tone: 'good' | 'info' | 'warn' | 'dovi' | 'muted' }
+	> = {
+		clean: { label: 'Clean', tone: 'good' },
+		treated: { label: 'Treated', tone: 'info' },
+		needs_action: { label: 'Needs action', tone: 'warn' },
+		mixed: { label: 'Mixed', tone: 'dovi' },
+		unanalyzed: { label: 'Unanalyzed', tone: 'muted' }
+	};
+	const SEASON_BUCKET_ORDER = [
+		'candidate',
+		'tagged',
+		'clear',
+		'sampled_clear',
+		'reencoded',
+		'variable',
+		'error',
+		'ineligible',
+		'unanalyzed'
+	];
 </script>
 
 <svelte:head>
@@ -385,75 +410,16 @@
 		<!-- Heatmap centerpiece -->
 		<div class="section-container">
 			<h3 class="section-title">Episode Compliance Heatmap</h3>
-			<EpisodeHeatmap seasons={detail.seasons} mode="letterbox" />
+			<EpisodeHeatmap
+				seasons={detail.seasons}
+				mode="letterbox"
+				onCellClick={focusEpisodeFromHeatmap}
+			/>
 		</div>
 
-		<!-- Season summary list -->
 		<div class="section-container">
-			<h3 class="section-title">Season Overview & Actions</h3>
-			<div class="seasons-list">
-				{#each detail.seasons as season (season.season_number)}
-					{@const verdict = VERDICT_META[season.rollup.verdict] || VERDICT_META.unanalyzed}
-					<div class="season-item glass-panel" class:specials={season.season_number === 0}>
-						<div class="season-meta">
-							<span class="season-number">
-								{#if season.season_number === 0}
-									Specials
-								{:else}
-									Season {season.season_number}
-								{/if}
-							</span>
-							<span class="verdict-chip" style={`--c: var(--${verdict.tone})`}>
-								{verdict.label}
-							</span>
-							<UniformityChip uniformity={season.rollup.uniformity as ShowUniformity} />
-							<span class="ep-count font-mono">{season.rollup.episodes_total} episodes</span>
-						</div>
-
-						<div class="season-actions">
-							<!-- Controls -->
-							<div class="scan-options">
-								<label class="checkbox-container">
-									<input type="checkbox" bind:checked={exhaustive[season.season_number]} />
-									<span class="checkmark"></span>
-									Exhaustive
-								</label>
-								<label class="checkbox-container">
-									<input type="checkbox" bind:checked={forceScan[season.season_number]} />
-									<span class="checkmark"></span>
-									Force
-								</label>
-							</div>
-
-							<button
-								class="btn btn-primary btn-sm"
-								onclick={() => runSeasonDetect(season.season_number)}
-							>
-								Detect
-							</button>
-							<button
-								class="btn btn-outline btn-sm"
-								onclick={() => runSeasonApply(season.season_number)}
-							>
-								Apply
-							</button>
-							<button
-								class="btn btn-outline btn-sm"
-								onclick={() => runSeasonRevert(season.season_number)}
-							>
-								Revert
-							</button>
-						</div>
-					</div>
-				{/each}
-			</div>
-		</div>
-
-		<!-- Episode list table -->
-		<div class="section-container">
-			<h3 class="section-title">Episodes Table</h3>
+			<h3 class="section-title">Episodes</h3>
 			<div class="episodes-table-card glass-panel">
-				<!-- Filters row -->
 				<div class="table-filters">
 					<input
 						type="search"
@@ -461,18 +427,6 @@
 						class="search-input"
 						bind:value={searchQuery}
 					/>
-
-					<div class="filter-group">
-						<label for="filter-season">Season</label>
-						<select id="filter-season" class="filter-select" bind:value={selectedSeason}>
-							<option value="all">All Seasons</option>
-							{#each detail.seasons as s (s.season_number)}
-								<option value={String(s.season_number)}>
-									{s.season_number === 0 ? 'Specials' : `Season ${s.season_number}`}
-								</option>
-							{/each}
-						</select>
-					</div>
 
 					<div class="filter-group">
 						<label for="filter-verdict">Verdict</label>
@@ -490,328 +444,430 @@
 					</div>
 				</div>
 
-				<!-- Table list -->
-				{#if filteredEpisodes.length === 0}
-					<div class="empty-state">No matching episodes found.</div>
+				{#if seasonViews.length === 0}
+					<div class="empty-state">No episodes found.</div>
 				{:else}
-					<div class="table-scroll">
-						<table class="episodes-table">
-							<thead>
-								<tr>
-									<th class="expand-col"></th>
-									<th>Episode</th>
-									<th>Title</th>
-									<th>Verdict</th>
-									<th>Aspect Ratio</th>
-									<th>Conf</th>
-									<th>Provenance</th>
-									<th class="actions-col">Actions</th>
-								</tr>
-							</thead>
-							<tbody>
-								{#each paginatedEpisodes as ep (ep.episode_id)}
-									{@const verd = VERDICT_META[ep.bucket] || VERDICT_META.unanalyzed}
-									{@const expanded = expandedEpisodeId === ep.episode_id}
-									<tr id={`episode-${ep.season_number}-${ep.episode_id}`}>
-										<td class="expand-col">
-											<button
-												class="expand-toggle"
-												class:open={expanded}
-												title={expanded ? 'Hide frame preview' : 'Show frame preview'}
-												onclick={() => toggleEpisodeExpand(ep.episode_id)}
-											>
-												▶
-											</button>
-										</td>
-										<td class="font-mono">
-											S{String(ep.season_number).padStart(2, '0')}E{String(
-												ep.episode_number
-											).padStart(2, '0')}
-										</td>
-										<td class="title-td font-semibold">
-											{ep.title || 'Untitled'}
-										</td>
-										<td>
-											<span class="verdict-chip" style={`--c: var(--${verd.tone})`}>
-												{verd.label}
-											</span>
-										</td>
-										<td class="font-mono">{ep.aspect_label || '—'}</td>
-										<td>
-											{#if ep.confidence && ep.confidence !== 'none'}
-												<span
-													class="confidence-chip"
-													style={`--chip:${confidenceTone(ep.confidence)}`}
-												>
-													{ep.confidence}
+					<div class="season-panels">
+						{#each seasonViews as seasonView (seasonView.season.season_number)}
+							{@const season = seasonView.season}
+							{@const verdict =
+								SEASON_VERDICT_META[season.rollup.verdict] || SEASON_VERDICT_META.unanalyzed}
+							<div class="season-panel glass-panel" class:specials={season.season_number === 0}>
+								<div class="season-header">
+									<div class="season-header-main">
+										<button
+											type="button"
+											class="season-collapse"
+											class:open={!seasonView.collapsed}
+											aria-expanded={!seasonView.collapsed}
+											title={seasonView.collapsed ? 'Expand season' : 'Collapse season'}
+											onclick={() => toggleSeasonCollapse(season.season_number)}
+										>
+											▶
+										</button>
+
+										<div class="season-title-block">
+											<div class="season-summary">
+												<span class="season-number">
+													{season.season_number === 0
+														? 'Specials'
+														: `Season ${season.season_number}`}
 												</span>
-											{:else}
-												—
-											{/if}
-										</td>
-										<td>
-											{#if ep.resolved_by}
-												<span class="prov-badge">{ep.resolved_by}</span>
-											{:else}
-												<span class="prov-badge unspec">None</span>
-											{/if}
-										</td>
-										<td class="actions-col">
-											<div class="action-buttons-group">
-												<button
-													class="btn btn-outline btn-xs"
-													title="Detect letterbox borders"
-													onclick={() => runEpisodeDetect(ep.episode_id)}
-												>
-													Detect
-												</button>
-
-												{#if ep.bucket === 'candidate'}
-													<button
-														class="btn btn-primary btn-xs"
-														title="Apply detected crop tag"
-														onclick={() => runEpisodeApply(ep.episode_id)}
-													>
-														Apply
-													</button>
-													<button
-														class="btn btn-outline btn-xs btn-good"
-														title="Approve / Clear crop"
-														onclick={() => runEpisodeClear(ep.episode_id)}
-													>
-														Clear
-													</button>
-													<button
-														class="btn btn-outline btn-xs btn-bad"
-														title="Ignore recommendation"
-														onclick={() => runEpisodeIgnore(ep.episode_id)}
-													>
-														Ignore
-													</button>
-												{:else if ep.bucket === 'tagged'}
-													<button
-														class="btn btn-outline btn-xs btn-bad"
-														title="Remove applied crop tag"
-														onclick={() => runEpisodeRevert(ep.episode_id)}
-													>
-														Revert
-													</button>
-												{/if}
-
-												<button
-													class="btn btn-outline btn-xs"
-													title="Re-encode permanently (Not supported)"
-													onclick={triggerEpisodeReencode}
-												>
-													Reencode
-												</button>
+												<span class="verdict-chip" style={`--c: var(--${verdict.tone})`}>
+													{verdict.label}
+												</span>
+												<UniformityChip uniformity={season.rollup.uniformity as ShowUniformity} />
+												<span class="ep-count font-mono">
+													{season.rollup.episodes_total} episodes
+												</span>
 											</div>
-										</td>
-									</tr>
-									{#if expanded}
-										<tr class="expand-row">
-											<td colspan="8">
-												{#if loadingEpisodeId === ep.episode_id}
-													<div class="expand-note">Loading preview…</div>
-												{:else if episodeDetailErrors.has(ep.episode_id)}
-													<div class="expand-note">{episodeDetailErrors.get(ep.episode_id)}</div>
-												{:else}
-													{@const epDetail = episodeDetails.get(ep.episode_id)}
-													{#if !epDetail}
-														<div class="expand-note">No preview available.</div>
-													{:else}
-														{@const previewMinute =
-															episodePreviewMinutes.get(ep.episode_id) ??
-															epDetail.preview_minute ??
-															5}
-														{@const exactPreview = episodePreviewMinutes.has(ep.episode_id)}
-														{@const cropTop =
-															epDetail.recommended_crop_top ?? epDetail.applied_crop_top ?? 0}
-														{@const cropBottom =
-															epDetail.recommended_crop_bottom ?? epDetail.applied_crop_bottom ?? 0}
-														{@const afterHeight =
-															epDetail.source_height != null
-																? Math.max(epDetail.source_height - cropTop - cropBottom, 0)
-																: null}
-														{@const beforeUrl = exactPreview
-															? episodePreviewUrl(ep.episode_id, 'before', previewMinute, true)
-															: (epDetail.preview_urls?.before ??
-																episodePreviewUrl(ep.episode_id, 'before', previewMinute))}
-														{@const afterUrl = exactPreview
-															? episodePreviewUrl(ep.episode_id, 'after', previewMinute, true)
-															: (epDetail.preview_urls?.after ??
-																episodePreviewUrl(ep.episode_id, 'after', previewMinute))}
-														{@const confidenceExpanded =
-															expandedConfidenceEpisodes.get(ep.episode_id) ?? false}
-														<div class="expand-content">
-															{#if PAIR_PREVIEW_BUCKETS.has(ep.bucket)}
-																<div class="expand-frames pair">
-																	<LetterboxFrame
-																		src={beforeUrl}
-																		alt="before crop"
-																		placeholder="No preview available"
-																	/>
-																	<LetterboxFrame
-																		src={afterUrl}
-																		alt="after crop"
-																		tone="after"
-																		placeholder="No preview available"
-																	/>
-																</div>
-															{:else}
-																<div class="expand-frames single">
-																	<LetterboxFrame
-																		src={beforeUrl}
-																		alt="episode frame"
-																		placeholder="No preview available"
-																	/>
-																</div>
-															{/if}
 
-															<div class="expand-meta">
-																<dl class="meta-grid">
-																	{#if epDetail.source_width && epDetail.source_height}
-																		<dt>Before dims</dt>
-																		<dd class="mono">
-																			{epDetail.source_width}×{epDetail.source_height}
-																		</dd>
-																		<dt>Before AR</dt>
-																		<dd class="mono">
-																			{aspectRatio(epDetail.source_width, epDetail.source_height)}
-																		</dd>
-																	{/if}
-																	{#if epDetail.source_width && afterHeight}
-																		<dt>After dims</dt>
-																		<dd class="mono">{epDetail.source_width}×{afterHeight}</dd>
-																		<dt>After AR</dt>
-																		<dd class="mono">
-																			{aspectRatio(epDetail.source_width, afterHeight)}
-																		</dd>
-																	{/if}
-																	<dt>Crop T / B</dt>
-																	<dd class="mono">{cropTop}px / {cropBottom}px</dd>
-																	<dt>Confidence</dt>
-																	<dd>
-																		{#if epDetail.confidence && epDetail.confidence !== 'none'}
-																			<button
-																				class="confidence-toggle"
-																				type="button"
-																				onclick={() => toggleConfidenceExpand(ep.episode_id)}
-																			>
-																				<span
-																					class="confidence-chip"
-																					style={`--chip:${confidenceTone(epDetail.confidence)}`}
-																				>
-																					{epDetail.confidence}
-																				</span>
-																				<span class="caret">
-																					{confidenceExpanded ? '▲' : '▼'}
-																				</span>
-																			</button>
-																		{:else}
-																			<span class="meta-muted">—</span>
-																		{/if}
-																	</dd>
-																</dl>
+											<div class="bucket-chip-row">
+												{#each SEASON_BUCKET_ORDER as bucket (bucket)}
+													{@const bucketCount = season.rollup.bucket_counts[bucket] ?? 0}
+													{#if bucketCount > 0}
+														{@const bucketMeta =
+															EPISODE_VERDICT_META[bucket] || EPISODE_VERDICT_META.unanalyzed}
+														<span class="bucket-chip" style={`--chip: var(--${bucketMeta.tone})`}>
+															<span class="bucket-chip-label">{bucketMeta.label}</span>
+															<span class="bucket-chip-count">{bucketCount}</span>
+														</span>
+													{/if}
+												{/each}
+											</div>
+										</div>
+									</div>
 
-																<div class="meta-inline">
-																	{#if epDetail.detect_method}
-																		<span class="method-tag mono">{epDetail.detect_method}</span>
-																	{/if}
-																	<span class="preview-chip mono">
-																		Preview {previewMinute}m{#if exactPreview}
-																			· exact{/if}
+									<div class="season-header-actions">
+										<div class="scan-options">
+											<label class="checkbox-container">
+												<input type="checkbox" bind:checked={exhaustive[season.season_number]} />
+												<span class="checkmark"></span>
+												Exhaustive
+											</label>
+											<label class="checkbox-container">
+												<input type="checkbox" bind:checked={forceScan[season.season_number]} />
+												<span class="checkmark"></span>
+												Force
+											</label>
+										</div>
+
+										<button
+											class="btn btn-primary btn-sm"
+											onclick={() => runSeasonDetect(season.season_number)}
+										>
+											Detect
+										</button>
+										<button
+											class="btn btn-outline btn-sm"
+											onclick={() => runSeasonApply(season.season_number)}
+										>
+											Apply
+										</button>
+										<button
+											class="btn btn-outline btn-sm"
+											onclick={() => runSeasonRevert(season.season_number)}
+										>
+											Revert
+										</button>
+									</div>
+								</div>
+
+								{#if filtersActive && !seasonView.hasMatches}
+									<div class="season-empty-note">No matches for the current filters.</div>
+								{:else if !seasonView.collapsed}
+									<div class="season-table-shell">
+										<div class="table-scroll">
+											<table class="episodes-table">
+												<thead>
+													<tr>
+														<th class="expand-col"></th>
+														<th>Episode</th>
+														<th>Title</th>
+														<th>Verdict</th>
+														<th>Aspect Ratio</th>
+														<th>Conf</th>
+														<th>Provenance</th>
+														<th class="actions-col">Actions</th>
+													</tr>
+												</thead>
+												<tbody>
+													{#each seasonView.filteredEpisodes as ep (ep.episode_id)}
+														{@const verd =
+															EPISODE_VERDICT_META[ep.bucket] || EPISODE_VERDICT_META.unanalyzed}
+														{@const expanded = expandedEpisodeIds.has(ep.episode_id)}
+														<tr id={`episode-${ep.season_number}-${ep.episode_id}`}>
+															<td class="expand-col">
+																<button
+																	class="expand-toggle"
+																	class:open={expanded}
+																	title={expanded ? 'Hide frame preview' : 'Show frame preview'}
+																	onclick={() => toggleEpisodeExpand(ep.episode_id)}
+																>
+																	▶
+																</button>
+															</td>
+															<td class="font-mono">
+																S{String(ep.season_number).padStart(2, '0')}E{String(
+																	ep.episode_number
+																).padStart(2, '0')}
+															</td>
+															<td class="title-td font-semibold">
+																{ep.title || 'Untitled'}
+															</td>
+															<td>
+																<span class="verdict-chip" style={`--c: var(--${verd.tone})`}>
+																	{verd.label}
+																</span>
+															</td>
+															<td class="font-mono">{ep.aspect_label || '—'}</td>
+															<td>
+																{#if ep.confidence && ep.confidence !== 'none'}
+																	<span
+																		class="confidence-chip"
+																		style={`--chip:${confidenceTone(ep.confidence)}`}
+																	>
+																		{ep.confidence}
 																	</span>
-																</div>
-
-																{#if epDetail.variable_ar_note}
-																	<div class="detail-note">{epDetail.variable_ar_note}</div>
+																{:else}
+																	—
 																{/if}
+															</td>
+															<td>
+																{#if ep.resolved_by}
+																	<span class="prov-badge">{ep.resolved_by}</span>
+																{:else}
+																	<span class="prov-badge unspec">None</span>
+																{/if}
+															</td>
+															<td class="actions-col">
+																<div class="action-buttons-group">
+																	<button
+																		class="btn btn-outline btn-xs"
+																		title="Detect letterbox borders"
+																		onclick={() => runEpisodeDetect(ep.episode_id)}
+																	>
+																		Detect
+																	</button>
 
-																{#if confidenceExpanded}
-																	<div class="sample-gallery">
-																		{#if epDetail.samples && epDetail.samples.length > 0}
-																			{#each epDetail.samples as sample (sample.minute)}
-																				{#if sample.ok}
-																					<button
-																						class="sample-row"
-																						class:active={previewMinute === sample.minute &&
-																							exactPreview}
-																						type="button"
-																						onclick={() =>
-																							setEpisodePreviewMinute(ep.episode_id, sample.minute)}
-																					>
-																						<span class="mono sample-minute">
-																							{sample.minute}m
-																						</span>
-																						<span class="mono sample-bars">
-																							{sample.top_bar ?? '?'} / {sample.bottom_bar ?? '?'} px
-																						</span>
-																						<span class="sample-meta">
-																							{sample.backend ?? 'cpu'} · {sample.elapsed_ms ??
-																								'?'}ms
-																						</span>
-																					</button>
+																	{#if ep.bucket === 'candidate'}
+																		<button
+																			class="btn btn-primary btn-xs"
+																			title="Apply detected crop tag"
+																			onclick={() => runEpisodeApply(ep.episode_id)}
+																		>
+																			Apply
+																		</button>
+																		<button
+																			class="btn btn-outline btn-xs btn-good"
+																			title="Approve / Clear crop"
+																			onclick={() => runEpisodeClear(ep.episode_id)}
+																		>
+																			Clear
+																		</button>
+																		<button
+																			class="btn btn-outline btn-xs btn-bad"
+																			title="Ignore recommendation"
+																			onclick={() => runEpisodeIgnore(ep.episode_id)}
+																		>
+																			Ignore
+																		</button>
+																	{:else if ep.bucket === 'tagged'}
+																		<button
+																			class="btn btn-outline btn-xs btn-bad"
+																			title="Remove applied crop tag"
+																			onclick={() => runEpisodeRevert(ep.episode_id)}
+																		>
+																			Revert
+																		</button>
+																	{/if}
+
+																	<button
+																		class="btn btn-outline btn-xs"
+																		title="Re-encode permanently (Not supported)"
+																		onclick={triggerEpisodeReencode}
+																	>
+																		Reencode
+																	</button>
+																</div>
+															</td>
+														</tr>
+														{#if expanded}
+															<tr class="expand-row">
+																<td colspan="8">
+																	{#if loadingEpisodeIds.has(ep.episode_id)}
+																		<div class="expand-note">Loading preview…</div>
+																	{:else if episodeDetailErrors.has(ep.episode_id)}
+																		<div class="expand-note">
+																			{episodeDetailErrors.get(ep.episode_id)}
+																		</div>
+																	{:else}
+																		{@const epDetail = episodeDetails.get(ep.episode_id)}
+																		{#if !epDetail}
+																			<div class="expand-note">No preview available.</div>
+																		{:else}
+																			{@const previewMinute =
+																				episodePreviewMinutes.get(ep.episode_id) ??
+																				epDetail.preview_minute ??
+																				5}
+																			{@const exactPreview = episodePreviewMinutes.has(
+																				ep.episode_id
+																			)}
+																			{@const cropTop =
+																				epDetail.recommended_crop_top ??
+																				epDetail.applied_crop_top ??
+																				0}
+																			{@const cropBottom =
+																				epDetail.recommended_crop_bottom ??
+																				epDetail.applied_crop_bottom ??
+																				0}
+																			{@const afterHeight =
+																				epDetail.source_height != null
+																					? Math.max(
+																							epDetail.source_height - cropTop - cropBottom,
+																							0
+																						)
+																					: null}
+																			{@const beforeUrl = exactPreview
+																				? episodePreviewUrl(
+																						ep.episode_id,
+																						'before',
+																						previewMinute,
+																						true
+																					)
+																				: (epDetail.preview_urls?.before ??
+																					episodePreviewUrl(
+																						ep.episode_id,
+																						'before',
+																						previewMinute
+																					))}
+																			{@const afterUrl = exactPreview
+																				? episodePreviewUrl(
+																						ep.episode_id,
+																						'after',
+																						previewMinute,
+																						true
+																					)
+																				: (epDetail.preview_urls?.after ??
+																					episodePreviewUrl(ep.episode_id, 'after', previewMinute))}
+																			{@const confidenceExpanded =
+																				expandedConfidenceEpisodes.get(ep.episode_id) ?? false}
+																			<div class="expand-content">
+																				{#if PAIR_PREVIEW_BUCKETS.has(ep.bucket)}
+																					<div class="expand-frames pair">
+																						<LetterboxFrame
+																							src={beforeUrl}
+																							alt="before crop"
+																							placeholder="No preview available"
+																						/>
+																						<LetterboxFrame
+																							src={afterUrl}
+																							alt="after crop"
+																							tone="after"
+																							placeholder="No preview available"
+																						/>
+																					</div>
 																				{:else}
-																					<div class="sample-row sample-row-error">
-																						<span class="mono sample-minute">
-																							{sample.minute}m
-																						</span>
-																						<span class="sample-error">
-																							{sample.error ?? 'sample failed'}
-																						</span>
+																					<div class="expand-frames single">
+																						<LetterboxFrame
+																							src={beforeUrl}
+																							alt="episode frame"
+																							placeholder="No preview available"
+																						/>
 																					</div>
 																				{/if}
-																			{/each}
-																		{:else}
-																			<div class="expand-note">No sample data available.</div>
+
+																				<div class="expand-meta">
+																					<dl class="meta-grid">
+																						{#if epDetail.source_width && epDetail.source_height}
+																							<dt>Before dims</dt>
+																							<dd class="mono">
+																								{epDetail.source_width}×{epDetail.source_height}
+																							</dd>
+																							<dt>Before AR</dt>
+																							<dd class="mono">
+																								{aspectRatio(
+																									epDetail.source_width,
+																									epDetail.source_height
+																								)}
+																							</dd>
+																						{/if}
+																						{#if epDetail.source_width && afterHeight}
+																							<dt>After dims</dt>
+																							<dd class="mono">
+																								{epDetail.source_width}×{afterHeight}
+																							</dd>
+																							<dt>After AR</dt>
+																							<dd class="mono">
+																								{aspectRatio(epDetail.source_width, afterHeight)}
+																							</dd>
+																						{/if}
+																						<dt>Crop T / B</dt>
+																						<dd class="mono">{cropTop}px / {cropBottom}px</dd>
+																						<dt>Confidence</dt>
+																						<dd>
+																							{#if epDetail.confidence && epDetail.confidence !== 'none'}
+																								<button
+																									class="confidence-toggle"
+																									type="button"
+																									onclick={() =>
+																										toggleConfidenceExpand(ep.episode_id)}
+																								>
+																									<span
+																										class="confidence-chip"
+																										style={`--chip:${confidenceTone(epDetail.confidence)}`}
+																									>
+																										{epDetail.confidence}
+																									</span>
+																									<span class="caret">
+																										{confidenceExpanded ? '▲' : '▼'}
+																									</span>
+																								</button>
+																							{:else}
+																								<span class="meta-muted">—</span>
+																							{/if}
+																						</dd>
+																					</dl>
+
+																					<div class="meta-inline">
+																						{#if epDetail.detect_method}
+																							<span class="method-tag mono"
+																								>{epDetail.detect_method}</span
+																							>
+																						{/if}
+																						<span class="preview-chip mono">
+																							Preview {previewMinute}m{#if exactPreview}
+																								· exact{/if}
+																						</span>
+																					</div>
+
+																					{#if epDetail.variable_ar_note}
+																						<div class="detail-note">
+																							{epDetail.variable_ar_note}
+																						</div>
+																					{/if}
+
+																					{#if confidenceExpanded}
+																						<div class="sample-gallery">
+																							{#if epDetail.samples && epDetail.samples.length > 0}
+																								{#each epDetail.samples as sample (sample.minute)}
+																									{#if sample.ok}
+																										<button
+																											class="sample-row"
+																											class:active={previewMinute ===
+																												sample.minute && exactPreview}
+																											type="button"
+																											onclick={() =>
+																												setEpisodePreviewMinute(
+																													ep.episode_id,
+																													sample.minute
+																												)}
+																										>
+																											<span class="mono sample-minute">
+																												{sample.minute}m
+																											</span>
+																											<span class="mono sample-bars">
+																												{sample.top_bar ?? '?'} / {sample.bottom_bar ??
+																													'?'} px
+																											</span>
+																											<span class="sample-meta">
+																												{sample.backend ?? 'cpu'} · {sample.elapsed_ms ??
+																													'?'}ms
+																											</span>
+																										</button>
+																									{:else}
+																										<div class="sample-row sample-row-error">
+																											<span class="mono sample-minute">
+																												{sample.minute}m
+																											</span>
+																											<span class="sample-error">
+																												{sample.error ?? 'sample failed'}
+																											</span>
+																										</div>
+																									{/if}
+																								{/each}
+																							{:else}
+																								<div class="expand-note">
+																									No sample data available.
+																								</div>
+																							{/if}
+																						</div>
+																					{/if}
+																				</div>
+																			</div>
 																		{/if}
-																	</div>
-																{/if}
-															</div>
-														</div>
-													{/if}
-												{/if}
-											</td>
-										</tr>
-									{/if}
-								{/each}
-							</tbody>
-						</table>
-					</div>
-
-					<!-- Pagination row -->
-					<div class="pagination-row">
-						<div class="page-size-selector">
-							<label for="page-size">Show</label>
-							<select id="page-size" class="filter-select select-sm" bind:value={pageSize}>
-								<option value={10}>10</option>
-								<option value={25}>25</option>
-								<option value={50}>50</option>
-							</select>
-							<span>episodes</span>
-						</div>
-
-						<div class="page-nav">
-							<button
-								class="btn btn-outline btn-sm"
-								disabled={currentPage === 1}
-								onclick={() => currentPage--}
-							>
-								Prev
-							</button>
-							<span class="page-info">
-								Page <strong>{currentPage}</strong> of <strong>{totalPages}</strong>
-								({filteredEpisodes.length} total)
-							</span>
-							<button
-								class="btn btn-outline btn-sm"
-								disabled={currentPage === totalPages}
-								onclick={() => currentPage++}
-							>
-								Next
-							</button>
-						</div>
+																	{/if}
+																</td>
+															</tr>
+														{/if}
+													{/each}
+												</tbody>
+											</table>
+										</div>
+									</div>
+								{/if}
+							</div>
+						{/each}
 					</div>
 				{/if}
 			</div>
@@ -874,27 +930,44 @@
 		box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
 	}
 
-	/* Seasons List */
-	.seasons-list {
+	.season-panels {
 		display: flex;
 		flex-direction: column;
-		gap: 8px;
-	}
-	.season-item {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
 		gap: 16px;
-		padding: 12px 18px;
 	}
-	.season-item.specials {
+	.season-panel {
+		padding: 0;
+		overflow: hidden;
+	}
+	.season-panel.specials {
 		opacity: 0.75;
 		border-left: 3px dashed var(--line);
 	}
-	.season-meta {
+	.season-header {
+		display: flex;
+		justify-content: space-between;
+		gap: 16px;
+		padding: 16px 18px;
+		border-bottom: 1px solid var(--line);
+	}
+	.season-header-main {
+		display: flex;
+		align-items: flex-start;
+		gap: 12px;
+		min-width: 0;
+		flex: 1;
+	}
+	.season-title-block {
+		display: flex;
+		flex-direction: column;
+		gap: 10px;
+		min-width: 0;
+	}
+	.season-summary {
 		display: flex;
 		align-items: center;
-		gap: 16px;
+		flex-wrap: wrap;
+		gap: 12px;
 	}
 	.season-number {
 		font-size: 14px;
@@ -905,11 +978,36 @@
 		color: var(--muted);
 		font-size: 12px;
 	}
-
-	.season-actions {
+	.bucket-chip-row {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 8px;
+	}
+	.bucket-chip {
+		--chip: var(--muted);
+		display: inline-flex;
+		align-items: center;
+		gap: 8px;
+		padding: 4px 10px;
+		border-radius: 999px;
+		border: 1px solid color-mix(in srgb, var(--chip) 28%, transparent);
+		background: color-mix(in srgb, var(--chip) 10%, transparent);
+		font-size: 11px;
+		color: var(--text);
+	}
+	.bucket-chip-label {
+		color: var(--muted);
+	}
+	.bucket-chip-count {
+		font-weight: 700;
+		color: var(--chip);
+	}
+	.season-header-actions {
 		display: flex;
 		align-items: center;
+		flex-wrap: wrap;
 		gap: 12px;
+		justify-content: flex-end;
 	}
 	.scan-options {
 		display: flex;
@@ -1002,6 +1100,14 @@
 		font-size: 12px;
 		color: var(--text);
 		cursor: pointer;
+	}
+	.season-table-shell {
+		padding: 0 18px 18px;
+	}
+	.season-empty-note {
+		padding: 0 18px 18px;
+		font-size: 12px;
+		color: var(--muted);
 	}
 
 	.table-scroll {
@@ -1214,6 +1320,20 @@
 		color: var(--bad);
 		font-size: 11px;
 	}
+	.season-collapse {
+		flex: 0 0 auto;
+		background: transparent;
+		border: none;
+		color: var(--muted);
+		cursor: pointer;
+		font-size: 12px;
+		padding: 4px;
+		transition: transform 0.15s ease;
+	}
+	.season-collapse.open {
+		transform: rotate(90deg);
+		color: var(--text);
+	}
 
 	.verdict-chip {
 		display: inline-flex;
@@ -1226,40 +1346,6 @@
 		background: color-mix(in srgb, var(--c) 12%, transparent);
 		border: 1px solid color-mix(in srgb, var(--c) 25%, transparent);
 		white-space: nowrap;
-	}
-
-	/* Pagination */
-	.pagination-row {
-		display: flex;
-		justify-content: space-between;
-		align-items: center;
-		border-top: 1px solid var(--line);
-		padding-top: 14px;
-		margin-top: 4px;
-	}
-	.page-size-selector {
-		display: flex;
-		align-items: center;
-		gap: 6px;
-		font-size: 12px;
-		color: var(--muted);
-	}
-	.page-nav {
-		display: flex;
-		align-items: center;
-		gap: 12px;
-	}
-	.page-info {
-		font-size: 12px;
-		color: var(--muted);
-	}
-	.page-info strong {
-		color: var(--text);
-	}
-
-	.select-sm {
-		padding: 3px 6px;
-		font-size: 11px;
 	}
 
 	/* Buttons */
@@ -1324,9 +1410,6 @@
 	.font-semibold {
 		font-weight: 600;
 	}
-	.capitalize {
-		text-transform: capitalize;
-	}
 	.empty-state {
 		padding: 32px;
 		text-align: center;
@@ -1334,6 +1417,13 @@
 	}
 
 	@media (max-width: 980px) {
+		.season-header {
+			flex-direction: column;
+			align-items: stretch;
+		}
+		.season-header-actions {
+			justify-content: flex-start;
+		}
 		.expand-content {
 			grid-template-columns: 1fr;
 		}
