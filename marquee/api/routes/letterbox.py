@@ -1073,6 +1073,7 @@ class TvDetectRequest(BaseModel):
 
 class TvLibraryDetectRequest(BaseModel):
     exhaustive: bool = False
+    force: bool = False
 
 
 async def _resolve_batch_movie_ids(body: BatchDetectRequest, db: AsyncSession) -> list[int]:
@@ -1249,13 +1250,17 @@ async def detect_tv_batch(
         raise HTTPException(status_code=400, detail="No downloaded TV series to analyze")
 
     children = [
-        _tv_scope_child(series_id=series.id, exhaustive=body.exhaustive, force=False)
+        _tv_scope_child(series_id=series.id, exhaustive=body.exhaustive, force=body.force)
         for series in series_rows
     ]
     batch, _children = await job_manager.create_batch(
         db,
         parent_type="letterbox_detect_tv_batch",
-        parent_payload={"series_ids": [series.id for series in series_rows], "exhaustive": body.exhaustive},
+        parent_payload={
+            "series_ids": [series.id for series in series_rows],
+            "exhaustive": body.exhaustive,
+            "force": body.force,
+        },
         parent_priority=60,
         parent_subject_type="letterbox_tv_batch",
         parent_subject_id=uuid4().hex,
@@ -1518,11 +1523,12 @@ async def apply_tv_scope(
     rows = await _tv_scope_rows(
         db,
         series_id,
-        season_number=body.season_number,
-        episode_id=body.episode_id,
+        season_number=body.season_number if body.episode_id is None else None,
     )
     if not rows:
         raise HTTPException(status_code=404, detail=f"Series id={series_id} not found")
+    if body.episode_id is not None:
+        rows = _scope_episode_group(rows, body.episode_id)
 
     groups: dict[int, tuple[list[tuple[Episode, Series, LetterboxState | None, int | None]], LetterboxState]] = {}
     for row in rows:

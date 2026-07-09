@@ -58,7 +58,13 @@ logger = logging.getLogger(__name__)
 _warm_tasks: set[asyncio.Task] = set()
 
 
-def _schedule_preview_warm(source_path: str, **kwargs) -> None:
+def _schedule_preview_warm(
+    source_path: str,
+    *,
+    warm_func=None,
+    log_subject: str | None = None,
+    **kwargs,
+) -> None:
     """Warm a subject's (movie or episode) previews in the background, bounded
     by the ffmpeg gate.
 
@@ -68,10 +74,12 @@ def _schedule_preview_warm(source_path: str, **kwargs) -> None:
 
     async def _run() -> None:
         try:
-            await gated(letterbox_preview.warm_previews, source_path, **kwargs)
+            await gated(warm_func or letterbox_preview.warm_previews, source_path, **kwargs)
         except Exception:  # noqa: BLE001 — best-effort cache warm; never crash the loop
             logger.warning(
-                "preview warm failed for %s", kwargs.get("subject_key"), exc_info=True
+                "preview warm failed for %s",
+                log_subject or kwargs.get("subject_key") or kwargs.get("movie_id"),
+                exc_info=True,
             )
 
     task = asyncio.create_task(_run())
@@ -540,7 +548,9 @@ class LetterboxManager:
             # for minutes (502s). On-demand /preview renders what the user opens.
             _schedule_preview_warm(
                 source_path,
-                subject_key=letterbox_preview.movie_subject_key(movie.id),
+                warm_func=letterbox_preview.warm_movie_previews,
+                log_subject=letterbox_preview.movie_subject_key(movie.id),
+                movie_id=movie.id,
                 samples=samples,
                 crop_top=state.recommended_crop_top or 0,
                 crop_bottom=state.recommended_crop_bottom or 0,
@@ -899,7 +909,13 @@ class LetterboxManager:
                 touched_states.append(state)
                 continue
 
-            if not force and episode_state_has_detector_truth(state):
+            # sampled_clear is detector truth, which is why exhaustive used to
+            # no-op after season triage unless the caller also forced a rescan.
+            if (
+                not force
+                and episode_state_has_detector_truth(state)
+                and not (exhaustive and state.status == "sampled_clear")
+            ):
                 continue
 
             category, _prefilter = prefilter_category_episode(episode)

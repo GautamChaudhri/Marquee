@@ -763,6 +763,181 @@ async def test_detect_episode_batch_and_store_force_scans_every_episode_group(
     assert {state.status for state in stored} == {"not_letterboxed"}
 
 
+@pytest.mark.asyncio
+async def test_detect_episode_batch_and_store_exhaustive_reruns_only_sampled_clear(
+    db, monkeypatch, tmp_path
+):
+    episodes, media_files = await _seed_tv_detect_scope(db, season_numbers=[1, 1, 1, 1])
+    paths_by_media_id = {}
+    for media_file in media_files:
+        path = tmp_path / Path(media_file.path).name
+        path.write_bytes(b"episode")
+        paths_by_media_id[media_file.id] = path
+
+    async def fake_resolve_media_file(_db, media_file_id):
+        return type("Resolved", (), {"path": paths_by_media_id[media_file_id]})()
+
+    initial_detect_calls: list[str] = []
+
+    def fake_initial_detect_episode_blocking(*_args, **kwargs):
+        path = Path(kwargs["path"])
+        initial_detect_calls.append(path.name)
+        return _episode_detect_result("not_letterboxed", path)
+
+    monkeypatch.setattr("marquee.media.letterbox_manager.resolve_media_file", fake_resolve_media_file)
+    monkeypatch.setattr(
+        letterbox_manager,
+        "detect_episode_blocking",
+        fake_initial_detect_episode_blocking,
+    )
+
+    await letterbox_manager.detect_episode_batch_and_store(db, episodes)
+
+    initial_states = (
+        await db.execute(
+            select(LetterboxState)
+            .where(
+                LetterboxState.media_type == "episode",
+                LetterboxState.episode_id.in_([episode.id for episode in episodes]),
+            )
+            .order_by(LetterboxState.episode_id)
+        )
+    ).scalars().all()
+    sampled_clear_episode_id = next(
+        state.episode_id for state in initial_states if state.status == "sampled_clear"
+    )
+    original_detected_at = {
+        state.episode_id: state.last_detected_at
+        for state in initial_states
+        if state.status == "not_letterboxed"
+    }
+
+    rerun_detect_calls: list[str] = []
+
+    def fake_rerun_detect_episode_blocking(*_args, **kwargs):
+        path = Path(kwargs["path"])
+        rerun_detect_calls.append(path.name)
+        return _episode_detect_result("candidate", path)
+
+    monkeypatch.setattr(letterbox_manager, "detect_episode_blocking", fake_rerun_detect_episode_blocking)
+
+    await letterbox_manager.detect_episode_batch_and_store(
+        db,
+        episodes,
+        exhaustive=True,
+        force=False,
+    )
+
+    rerun_states = (
+        await db.execute(
+            select(LetterboxState)
+            .where(
+                LetterboxState.media_type == "episode",
+                LetterboxState.episode_id.in_([episode.id for episode in episodes]),
+            )
+            .order_by(LetterboxState.episode_id)
+        )
+    ).scalars().all()
+    rerun_by_episode_id = {state.episode_id: state for state in rerun_states}
+
+    assert initial_detect_calls == ["s01e01.mkv", "s01e03.mkv", "s01e04.mkv"]
+    assert rerun_detect_calls == ["s01e02.mkv"]
+    assert rerun_by_episode_id[sampled_clear_episode_id].status == "candidate"
+    for episode_id, detected_at in original_detected_at.items():
+        assert rerun_by_episode_id[episode_id].last_detected_at == detected_at
+
+
+@pytest.mark.asyncio
+async def test_detect_episode_batch_and_store_exhaustive_skips_real_verdict_rows(
+    db, monkeypatch, tmp_path
+):
+    episodes, media_files = await _seed_tv_detect_scope(db, season_numbers=[1, 1, 1, 1])
+    paths_by_media_id = {}
+    for media_file in media_files:
+        path = tmp_path / Path(media_file.path).name
+        path.write_bytes(b"episode")
+        paths_by_media_id[media_file.id] = path
+
+    async def fake_resolve_media_file(_db, media_file_id):
+        return type("Resolved", (), {"path": paths_by_media_id[media_file_id]})()
+
+    baseline = datetime.now(UTC) - timedelta(days=1)
+    db.add_all(
+        [
+            LetterboxState(
+                media_type="episode",
+                episode_id=episodes[0].id,
+                status="candidate",
+                confidence="high",
+                recommended_crop_top=140,
+                recommended_crop_bottom=140,
+                aspect_label="2.40:1",
+                last_detected_at=baseline,
+            ),
+            LetterboxState(
+                media_type="episode",
+                episode_id=episodes[1].id,
+                status="tagged",
+                confidence="high",
+                recommended_crop_top=132,
+                recommended_crop_bottom=132,
+                applied_crop_top=132,
+                applied_crop_bottom=132,
+                aspect_label="2.35:1",
+                last_detected_at=baseline,
+            ),
+            LetterboxState(
+                media_type="episode",
+                episode_id=episodes[2].id,
+                status="sampled_clear",
+                confidence="none",
+                detect_method="season_sample",
+                last_detected_at=baseline,
+            ),
+        ]
+    )
+    await db.commit()
+
+    detect_calls: list[str] = []
+
+    def fake_detect_episode_blocking(*_args, **kwargs):
+        path = Path(kwargs["path"])
+        detect_calls.append(path.name)
+        status = "candidate" if path.name == "s01e03.mkv" else "not_letterboxed"
+        return _episode_detect_result(status, path)
+
+    monkeypatch.setattr("marquee.media.letterbox_manager.resolve_media_file", fake_resolve_media_file)
+    monkeypatch.setattr(letterbox_manager, "detect_episode_blocking", fake_detect_episode_blocking)
+
+    await letterbox_manager.detect_episode_batch_and_store(
+        db,
+        episodes,
+        exhaustive=True,
+        force=False,
+    )
+
+    stored = (
+        await db.execute(
+            select(LetterboxState)
+            .where(
+                LetterboxState.media_type == "episode",
+                LetterboxState.episode_id.in_([episode.id for episode in episodes]),
+            )
+            .order_by(LetterboxState.episode_id)
+        )
+    ).scalars().all()
+
+    assert detect_calls == ["s01e03.mkv", "s01e04.mkv"]
+    assert [state.status for state in stored] == [
+        "candidate",
+        "tagged",
+        "candidate",
+        "not_letterboxed",
+    ]
+    assert stored[0].last_detected_at == baseline
+    assert stored[1].last_detected_at == baseline
+
+
 def test_aspect_label():
     assert ld.aspect_label(1920, 800) == "2.40:1"
     assert ld.aspect_label(1920, 0) is None
@@ -1464,22 +1639,13 @@ async def test_status_snapshot_preserves_movie_payload_shape(client, db, monkeyp
             "mkvpropedit": False,
         },
         "honored_by": [
-            "plex-web",
-            "plex-htpc",
             "plex-desktop",
-            "jellyfin-web",
-            "jellyfin-media-player",
-            "mpv",
             "vlc",
-            "Kodi (with ffmpeg >= 6 / mpv backend)",
+            "mpv",
         ],
         "not_honored_by": [
-            "plex-android-tv",
-            "plex-google-tv",
-            "plex-apple-tv",
-            "plex-ios",
-            "plex-roku",
-            "most smart-tv DLNA clients",
+            "plex-web",
+            "plex-mobile",
         ],
         "last_scan": "2024-01-02T03:04:05+00:00",
         "batch_active": "lb-batch",

@@ -336,6 +336,25 @@ class TestTvDetect:
 
         parent = await db.get(Job, body["job_id"])
         assert parent.type == "letterbox_detect_tv_batch"
+        assert parent.payload["force"] is False
+        children = (await db.execute(select(Job).where(Job.parent_id == parent.id))).scalars().all()
+        assert len(children) == 2
+        assert all(child.payload["force"] is False for child in children)
+
+    async def test_library_detect_passes_force_to_child_payloads(
+        self, client: AsyncClient, tv_library, db
+    ):
+        resp = await client.post("/api/letterbox/tv/detect", json={"force": True})
+        assert resp.status_code == 202
+        body = resp.json()
+        assert body["total"] == 2
+
+        parent = await db.get(Job, body["job_id"])
+        assert parent.type == "letterbox_detect_tv_batch"
+        assert parent.payload["force"] is True
+        children = (await db.execute(select(Job).where(Job.parent_id == parent.id))).scalars().all()
+        assert len(children) == 2
+        assert all(child.payload["force"] is True for child in children)
 
 
 @pytest.mark.asyncio

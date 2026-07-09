@@ -251,7 +251,7 @@ export function detectLetterboxTv(
 
 export function detectLetterboxTvLibrary(
 	fetchFn: Fetch,
-	body: { exhaustive?: boolean } = {}
+	body: { exhaustive?: boolean; force?: boolean } = {}
 ): Promise<LetterboxJobRef> {
 	return apiSend<LetterboxJobRef>(fetchFn, 'POST', '/letterbox/tv/detect', body);
 }
