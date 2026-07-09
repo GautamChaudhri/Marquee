@@ -37,7 +37,12 @@ from marquee.core.letterbox_prefilter import (
     refresh_letterbox_prefilter_for_movie,
     state_has_detector_truth,
 )
-from marquee.core.letterbox_rollups import EpisodeLetterbox, season_rollup, show_rollup
+from marquee.core.letterbox_rollups import (
+    BAR_BEARING_BUCKETS,
+    EpisodeLetterbox,
+    season_rollup,
+    show_rollup,
+)
 from marquee.core.letterbox_service import letterbox_service
 from marquee.core.media_files import (
     MediaFileNotFoundError,
@@ -50,7 +55,7 @@ from marquee.core.rate_limit import RateLimiter
 from marquee.core.sort_title import title_sort_expr
 from marquee.core.tv_queries import series_visible
 from marquee.database import get_db
-from marquee.media import binaries, letterbox_preview
+from marquee.media import binaries, letterbox_detect, letterbox_preview
 from marquee.media.concurrency import gated
 from marquee.models import (
     Episode,
@@ -450,12 +455,28 @@ def _aggregate_verdict_breakdown(states: list[LetterboxState | None]) -> dict[st
     return counts
 
 
+def _episode_display_aspect_label(state: LetterboxState | None) -> str | None:
+    if state is None:
+        return None
+    if state.aspect_label:
+        return state.aspect_label
+    if (
+        state.status == "not_letterboxed"
+        and state.last_detected_at is not None
+        and state.source_width
+        and state.source_height
+    ):
+        return letterbox_detect.aspect_label(state.source_width, state.source_height)
+    return None
+
+
 def _episode_letterbox_row(
     episode: Episode,
     state: LetterboxState | None,
     media_file_id: int | None,
 ) -> tuple[EpisodeLetterbox, dict]:
     status = state.status if state is not None else None
+    aspect_label = _episode_display_aspect_label(state)
     item = EpisodeLetterbox(
         episode_id=episode.id,
         season_number=episode.season_number,
@@ -463,7 +484,7 @@ def _episode_letterbox_row(
         title=episode.title,
         status=status,
         confidence=state.confidence if state is not None else None,
-        aspect_label=state.aspect_label if state is not None else None,
+        aspect_label=aspect_label,
         recommended_crop_top=state.recommended_crop_top if state is not None else None,
         recommended_crop_bottom=state.recommended_crop_bottom if state is not None else None,
         applied_crop_top=state.applied_crop_top if state is not None else None,
@@ -481,7 +502,7 @@ def _episode_letterbox_row(
         "bucket": item.bucket,
         "status": item.status,
         "confidence": item.confidence,
-        "aspect_label": item.aspect_label,
+        "aspect_label": aspect_label,
         "recommended_crop_top": item.recommended_crop_top,
         "recommended_crop_bottom": item.recommended_crop_bottom,
         "applied_crop_top": item.applied_crop_top,
@@ -822,7 +843,7 @@ async def letterbox_summary(db: Annotated[AsyncSession, Depends(get_db)]):
 
     tv_aspects: dict[str, int] = {}
     for item in tv_items:
-        if item.aspect_label:
+        if item.bucket in BAR_BEARING_BUCKETS and item.aspect_label:
             tv_aspects[item.aspect_label] = tv_aspects.get(item.aspect_label, 0) + 1
 
     show_verdict_counts: dict[str, int] = {}
@@ -994,6 +1015,7 @@ async def tv_episode_detail(
     preview_minute = next((s["minute"] for s in samples if s.get("ok")), 5)
     detail = _state_to_dict(state)
     detail.pop("movie_id", None)
+    detail["aspect_label"] = _episode_display_aspect_label(state)
     detail["episode_id"] = episode.id
     detail["series_id"] = series_id
     detail["season_number"] = episode.season_number
@@ -2052,7 +2074,19 @@ async def mark_tv_episode_not_letterboxed(
             detail="Can only mark detected candidate episodes as not letterboxed.",
         )
     state.status = "not_letterboxed"
+    state.confidence = "none"
     state.reviewed = True
+    state.recommended_crop_top = 0
+    state.recommended_crop_bottom = 0
+    state.applied_crop_top = 0
+    state.applied_crop_bottom = 0
+    state.aspect_label = letterbox_detect.aspect_label(
+        state.source_width or episode.video_width,
+        state.source_height or episode.video_height,
+    )
+    state.variable_ar = False
+    state.variable_ar_note = None
+    state.error = None
     db.add(
         LetterboxEvent(
             media_type="episode",

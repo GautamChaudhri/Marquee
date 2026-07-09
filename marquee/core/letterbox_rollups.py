@@ -15,6 +15,7 @@ BUCKET_ORDER = (
     "error",
     "unanalyzed",
 )
+BAR_BEARING_BUCKETS = {"candidate", "tagged", "reencoded", "variable"}
 
 
 def episode_bucket(status: str | None) -> str:
@@ -69,7 +70,7 @@ def _bucket_counts(episodes: list[EpisodeLetterbox]) -> dict[str, int]:
 def _dominant_aspect_label(episodes: list[EpisodeLetterbox]) -> str | None:
     counts: dict[str, int] = {}
     for episode in episodes:
-        if episode.aspect_label:
+        if episode.bucket in BAR_BEARING_BUCKETS and episode.aspect_label:
             counts[episode.aspect_label] = counts.get(episode.aspect_label, 0) + 1
     if not counts:
         return None
@@ -80,7 +81,7 @@ def _season_uniformity(episodes: list[EpisodeLetterbox]) -> str:
     labels = {
         episode.aspect_label
         for episode in episodes
-        if episode.bucket in {"candidate", "tagged", "reencoded", "variable"} and episode.aspect_label
+        if episode.bucket in BAR_BEARING_BUCKETS and episode.aspect_label
     }
     return "uniform" if len(labels) <= 1 else "mixed"
 
@@ -130,28 +131,18 @@ def show_rollup(season_rollups: dict[int, dict]) -> dict:
     else:
         uniformity = "mixed"
 
+    dominant_counts: dict[str, int] = {}
+    for rollup in non_special.values():
+        label = rollup["dominant_aspect_label"]
+        if label is not None:
+            dominant_counts[label] = dominant_counts.get(label, 0) + 1
+
     return {
         "bucket_counts": counts,
-        "dominant_aspect_label": _dominant_aspect_label(
-            [
-                EpisodeLetterbox(
-                    episode_id=0,
-                    season_number=0,
-                    episode_number=0,
-                    title=None,
-                    status=None,
-                    confidence=None,
-                    aspect_label=rollup["dominant_aspect_label"],
-                    recommended_crop_top=None,
-                    recommended_crop_bottom=None,
-                    applied_crop_top=None,
-                    applied_crop_bottom=None,
-                    eligible=None,
-                    reviewed=False,
-                )
-                for rollup in non_special.values()
-                if rollup["dominant_aspect_label"] is not None
-            ]
+        "dominant_aspect_label": (
+            sorted(dominant_counts.items(), key=lambda item: (-item[1], item[0]))[0][0]
+            if dominant_counts
+            else None
         ),
         "verdict": _verdict_for_counts(counts),
         "uniformity": uniformity,

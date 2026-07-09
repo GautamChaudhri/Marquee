@@ -89,6 +89,38 @@ def test_show_rollup_reports_treated_when_only_treated_and_clear():
     assert rollup["uniformity"] == "uniform"
 
 
+def test_season_rollup_ignores_clear_labels_for_dominant_and_uniformity():
+    rollup = season_rollup(
+        [
+            _episode(1, 1, 1, status="candidate", aspect_label="2.35:1"),
+            _episode(2, 1, 2, status="not_letterboxed", aspect_label="1.78:1"),
+            _episode(3, 1, 3, status="not_letterboxed", aspect_label="1.78:1"),
+        ]
+    )
+
+    assert rollup["dominant_aspect_label"] == "2.35:1"
+    assert rollup["uniformity"] == "uniform"
+
+
+def test_show_rollup_dominant_ignores_clean_season_labels():
+    season_one = season_rollup(
+        [
+            _episode(1, 1, 1, status="candidate", aspect_label="2.35:1"),
+            _episode(2, 1, 2, status="not_letterboxed", aspect_label="1.78:1"),
+        ]
+    )
+    season_two = season_rollup(
+        [
+            _episode(3, 2, 1, status="not_letterboxed", aspect_label="1.78:1"),
+            _episode(4, 2, 2, status="not_letterboxed", aspect_label="1.78:1"),
+        ]
+    )
+
+    rollup = show_rollup({1: season_one, 2: season_two})
+
+    assert rollup["dominant_aspect_label"] == "2.35:1"
+
+
 def test_show_rollup_reports_unanalyzed_when_only_ineligible_and_prefilter_rows():
     season_one = season_rollup(
         [

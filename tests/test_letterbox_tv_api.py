@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -100,6 +101,7 @@ async def _seed_episode_with_state(
     aspect_label: str | None = None,
     recommended_crop: int | None = None,
     applied_crop: int | None = None,
+    last_detected_at: datetime | None = None,
 ) -> Episode:
     episode = Episode(
         series_id=series.id,
@@ -136,6 +138,9 @@ async def _seed_episode_with_state(
                 applied_crop_top=applied_crop,
                 applied_crop_bottom=applied_crop,
                 aspect_label=aspect_label,
+                source_width=1920,
+                source_height=1080,
+                last_detected_at=last_detected_at,
             )
         )
     return episode
@@ -158,21 +163,23 @@ async def tv_library(db: AsyncSession):
     )
     await db.flush()
 
-    await _seed_episode_with_state(
+    clean_ep1 = await _seed_episode_with_state(
         db,
         series=clean_show,
         season_number=1,
         episode_number=1,
         path="/tv/clean/s01e01.mkv",
         state_status="not_letterboxed",
+        last_detected_at=datetime(2024, 1, 2, 3, 4, 5, tzinfo=UTC),
     )
-    await _seed_episode_with_state(
+    clean_ep2 = await _seed_episode_with_state(
         db,
         series=clean_show,
         season_number=1,
         episode_number=2,
         path="/tv/clean/s01e02.mkv",
         state_status="sampled_clear",
+        last_detected_at=datetime(2024, 1, 2, 3, 4, 5, tzinfo=UTC),
     )
 
     special = await _seed_episode_with_state(
@@ -240,6 +247,8 @@ async def tv_library(db: AsyncSession):
     await db.commit()
     return {
         "clean_show": clean_show,
+        "clean_ep1": clean_ep1,
+        "clean_ep2": clean_ep2,
         "mixed_show": mixed_show,
         "special": special,
         "ep1": ep1,
@@ -266,6 +275,7 @@ class TestSummary:
         assert body["tv"]["episodes_total"] == 6  # specials excluded
         assert body["tv"]["show_verdict_counts"]["clean"] == 1
         assert body["tv"]["show_verdict_counts"]["mixed"] == 1
+        assert body["tv"]["aspect_distribution"] == {"2.40:1": 3}
 
 
 @pytest.mark.asyncio
@@ -307,6 +317,30 @@ class TestTvDetail:
         )
         assert ep4["bucket"] == "unanalyzed"
         assert ep4["media_file_id"] is not None
+
+    async def test_detail_computes_legacy_clear_aspect_label(self, client: AsyncClient, tv_library):
+        clean_show = tv_library["clean_show"]
+        clean_ep1 = tv_library["clean_ep1"]
+        clean_ep2 = tv_library["clean_ep2"]
+
+        series_body = (await client.get(f"/api/letterbox/tv/{clean_show.id}")).json()
+        season_one = next(season for season in series_body["seasons"] if season["season_number"] == 1)
+        detail_episode = next(
+            episode for episode in season_one["episodes"] if episode["episode_id"] == clean_ep1.id
+        )
+        sampled_clear_episode = next(
+            episode for episode in season_one["episodes"] if episode["episode_id"] == clean_ep2.id
+        )
+        assert detail_episode["aspect_label"] == "1.78:1"
+        assert sampled_clear_episode["aspect_label"] is None
+
+        episode_body = (await client.get(f"/api/letterbox/tv/{clean_show.id}/episodes/{clean_ep1.id}")).json()
+        assert episode_body["aspect_label"] == "1.78:1"
+
+        sampled_clear_body = (
+            await client.get(f"/api/letterbox/tv/{clean_show.id}/episodes/{clean_ep2.id}")
+        ).json()
+        assert sampled_clear_body["aspect_label"] is None
 
     async def test_detail_404_for_unknown_series(self, client: AsyncClient):
         resp = await client.get("/api/letterbox/tv/999999")
@@ -472,6 +506,12 @@ class TestTvActions:
         )
         assert marked.status_code == 200
         assert marked.json()["status"] == "not_letterboxed"
+        assert marked.json()["confidence"] == "none"
+        assert marked.json()["recommended_crop_top"] == 0
+        assert marked.json()["recommended_crop_bottom"] == 0
+        assert marked.json()["applied_crop_top"] == 0
+        assert marked.json()["applied_crop_bottom"] == 0
+        assert marked.json()["aspect_label"] == "1.78:1"
 
 
 @pytest.mark.asyncio

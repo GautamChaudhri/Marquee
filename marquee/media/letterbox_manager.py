@@ -611,7 +611,8 @@ class LetterboxManager:
             "source_height": result.source_height,
             "recommended_crop_top": result.recommended_crop_top,
             "recommended_crop_bottom": result.recommended_crop_bottom,
-            "aspect_label": result.aspect_label,
+            "aspect_label": result.aspect_label
+            or (letterbox_detect.aspect_label(width, height) if result.status == "not_letterboxed" else None),
             "detect_method": result.method,
             "samples_json": json.dumps(result.samples),
             "error": result.error,
