@@ -40,6 +40,7 @@
 	const loadingEpisodeIds = new SvelteSet<number>();
 	const collapsedSeasons = new SvelteSet<number>();
 	let collapseStateInitialized = $state(false);
+	let prefetchGeneration = 0;
 
 	async function toggleEpisodeExpand(episodeId: number) {
 		if (expandedEpisodeIds.has(episodeId)) {
@@ -71,6 +72,12 @@
 
 	function setEpisodePreviewMinute(episodeId: number, minute: number) {
 		episodePreviewMinutes.set(episodeId, minute);
+	}
+
+	function warmPreview(url?: string | null) {
+		if (!url || typeof Image === 'undefined') return;
+		const img = new Image();
+		img.src = url;
 	}
 
 	let { data } = $props();
@@ -133,7 +140,38 @@
 		}
 	}
 
+	async function runPrefetchPass() {
+		if (!detail) return;
+		const episodes = detail.seasons.flatMap((season: LetterboxTvSeason) =>
+			season.episodes.filter((ep: LetterboxTvEpisode) => PAIR_PREVIEW_BUCKETS.has(ep.bucket))
+		);
+		if (episodes.length === 0) return;
+
+		const runId = ++prefetchGeneration;
+		let nextIndex = 0;
+		const workerCount = Math.min(4, episodes.length);
+
+		const loadNext = async () => {
+			while (runId === prefetchGeneration && nextIndex < episodes.length) {
+				const episode = episodes[nextIndex++];
+				if (!episode || episodeDetails.has(episode.episode_id)) continue;
+				try {
+					const detailRow = await getLetterboxTvEpisodeDetail(fetch, seriesId, episode.episode_id);
+					if (runId !== prefetchGeneration) return;
+					episodeDetails.set(episode.episode_id, detailRow);
+					warmPreview(detailRow.preview_urls?.before);
+					warmPreview(detailRow.preview_urls?.after);
+				} catch {
+					if (runId !== prefetchGeneration) return;
+				}
+			}
+		};
+
+		await Promise.all(Array.from({ length: workerCount }, () => loadNext()));
+	}
+
 	onMount(() => {
+		void runPrefetchPass();
 		pollInterval = setInterval(() => {
 			// Check if we need to poll (if there are active runs or active_job_ids in detail)
 			const hasActiveJobs =
@@ -151,6 +189,7 @@
 		}
 
 		return () => {
+			prefetchGeneration += 1;
 			clearInterval(pollInterval);
 			for (const run of Object.values(activeRuns)) {
 				run.stop?.();
@@ -178,7 +217,13 @@
 				onDone: () => {
 					delete activeRuns[jobId];
 					toast('Scan job finished!', 'good');
-					void refreshDetail();
+					prefetchGeneration += 1;
+					episodeDetails.clear();
+					episodeDetailErrors.clear();
+					void (async () => {
+						await refreshDetail();
+						await runPrefetchPass();
+					})();
 				},
 				onError: () => {
 					delete activeRuns[jobId];
