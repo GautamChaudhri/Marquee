@@ -10,6 +10,7 @@
 	import SegmentedBar from '$lib/components/SegmentedBar.svelte';
 	import UniformityChip from '$lib/components/UniformityChip.svelte';
 	import type { LetterboxTvShowRollup, ShowUniformity } from '$lib/api/types';
+	import { LETTERBOX_TV_CONTENT_META, LETTERBOX_TV_VERDICT_META } from '$lib/letterbox/status-meta';
 
 	let { data } = $props();
 
@@ -82,17 +83,6 @@
 		goto('/letterbox/tv');
 	}
 
-	const VERDICT_META: Record<
-		string,
-		{ label: string; tone: 'good' | 'info' | 'warn' | 'dovi' | 'muted' }
-	> = {
-		clean: { label: 'Clean', tone: 'good' },
-		treated: { label: 'Treated', tone: 'info' },
-		needs_action: { label: 'Needs Action', tone: 'warn' },
-		mixed: { label: 'Mixed', tone: 'dovi' },
-		unanalyzed: { label: 'Unanalyzed', tone: 'muted' }
-	};
-
 	function segmentsForRollup(rollup: LetterboxTvShowRollup) {
 		const counts = rollup.bucket_counts || {};
 		return [
@@ -110,15 +100,21 @@
 			{ key: 'tagged', count: counts.tagged || 0, tone: 'info' as const },
 			{ key: 'reencoded', count: counts.reencoded || 0, tone: 'gold' as const },
 			{ key: 'variable', count: counts.variable || 0, tone: 'dovi' as const },
+			{ key: 'open_matte', count: counts.open_matte || 0, tone: 'teal' as const },
+			{ key: 'pillarbox', count: counts.pillarbox || 0, tone: 'magenta' as const },
 			{ key: 'error', count: counts.error || 0, tone: 'bad' as const },
-			{ key: 'ineligible', count: counts.ineligible || 0, tone: 'low' as const },
+			{ key: 'ineligible', count: counts.ineligible || 0, tone: 'muted' as const },
 			{ key: 'unanalyzed', count: counts.unanalyzed || 0, tone: 'muted' as const }
 		];
 	}
 
 	function getClearFraction(rollup: LetterboxTvShowRollup): string {
 		const counts = rollup.bucket_counts || {};
-		const content = (counts.widescreen || 0) + (counts.sampled_widescreen || 0);
+		const content =
+			(counts.widescreen || 0) +
+			(counts.sampled_widescreen || 0) +
+			(counts.open_matte || 0) +
+			(counts.pillarbox || 0);
 		return `${content}/${rollup.episodes_total}`;
 	}
 
@@ -257,18 +253,19 @@
 
 			<select class="filter-select" bind:value={filterVerdict} onchange={updateFilters}>
 				<option value="">All Verdicts</option>
-				<option value="clean">Clean</option>
-				<option value="treated">Treated</option>
 				<option value="needs_action">Needs Action</option>
-				<option value="mixed">Mixed</option>
+				<option value="treated">Treated</option>
 				<option value="unanalyzed">Unanalyzed</option>
+				<option value="widescreen">Widescreen</option>
+				<option value="open_matte">Open Matte</option>
+				<option value="pillarbox">Pillarbox</option>
 			</select>
 
 			<select class="filter-select" bind:value={filterUniformity} onchange={updateFilters}>
 				<option value="">All Uniformity</option>
 				<option value="uniform">Uniform</option>
-				<option value="uniform_by_season">Uniform by Season</option>
-				<option value="mixed">Mixed</option>
+				<option value="clean_mixed">Clean Mix</option>
+				<option value="dirty_mixed">Dirty Mix</option>
 			</select>
 
 			<select class="filter-select" bind:value={filterHasCandidates} onchange={updateFilters}>
@@ -330,7 +327,8 @@
 				</thead>
 				<tbody>
 					{#each items as item (item.series_id)}
-						{@const verdict = VERDICT_META[item.rollup.verdict] || VERDICT_META.unanalyzed}
+						{@const state =
+							item.rollup.verdict === 'ok' ? null : LETTERBOX_TV_VERDICT_META[item.rollup.verdict]}
 						<tr class:selected={selectedIds[item.series_id]}>
 							<td class="checkbox-col">
 								<input
@@ -349,9 +347,23 @@
 								</a>
 							</td>
 							<td class="verdict-col">
-								<span class="verdict-chip" style={`--c: var(--${verdict.tone})`}>
-									{verdict.label}
-								</span>
+								<div class="verdict-chips">
+									{#if state}
+										<span class="verdict-chip" style={`--c: var(--${state.tone})`}>
+											{state.label}
+										</span>
+									{/if}
+									{#each item.rollup.content_types as contentType (contentType.type)}
+										{@const content = LETTERBOX_TV_CONTENT_META[contentType.type]}
+										<span
+											class="verdict-chip"
+											style={`--c: var(--${content.tone})`}
+											title={`${content.label}: ${contentType.count}`}
+										>
+											{content.label}
+										</span>
+									{/each}
+								</div>
 							</td>
 							<td class="bar-col">
 								<SegmentedBar
@@ -597,6 +609,11 @@
 		background: color-mix(in srgb, var(--c) 12%, transparent);
 		border: 1px solid color-mix(in srgb, var(--c) 25%, transparent);
 		white-space: nowrap;
+	}
+	.verdict-chips {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 4px;
 	}
 
 	/* Spinner */

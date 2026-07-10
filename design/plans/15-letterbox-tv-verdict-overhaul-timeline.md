@@ -61,3 +61,16 @@ Shared timeline for backend plan 15 and its frontend sibling.
   metadata file is formatted and adds no lint finding.
 - Scope guard: no diff in movie letterbox pages, `LetterboxDetail.svelte`, HDR, subtitle, or
   heatmap files.
+
+## Frontend Step 2 — shows list
+
+- Completed: `c72a462 overhaul tv letterbox list`.
+- Changes: shows now render only non-OK state badges plus content-type badges with hover counts;
+  filters use the V5 verdict/content membership and uniformity values; all bucket segments use
+  the locked colors and OM/PB participate in the N/N counter. The landing page changes only its
+  TV breakdown to the V5 keys/labels and adds teal/magenta OM/PB dots.
+- Verification: `npm run check` passed with the baseline 16 warnings; `npm run build` passed
+  with baseline warnings; `npm run lint` remains blocked only by the unchanged Prettier drift in
+  `LetterboxDetail.svelte` and TV detail.
+- Scope guard: no diff in movie letterbox pages, `LetterboxDetail.svelte`, HDR, subtitle, or
+  heatmap files.
