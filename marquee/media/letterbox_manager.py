@@ -88,6 +88,22 @@ def _schedule_preview_warm(
     task.add_done_callback(_warm_tasks.discard)
 
 
+def _schedule_clear_preview_warm(
+    source_path: str,
+    *,
+    subject_key: str,
+    minute: int,
+    candidate_minutes: list[int],
+) -> None:
+    _schedule_preview_warm(
+        source_path,
+        warm_func=letterbox_preview.warm_clear_preview,
+        subject_key=subject_key,
+        minute=minute,
+        candidate_minutes=candidate_minutes,
+    )
+
+
 _SENTINEL = object()
 _V1_VERTICAL_CROP_RE = re.compile(r"Vertical crop amount \(per-file\):\s*(\d+)")
 _V1_NOT_LETTERBOXED_RE = re.compile(r"\bis not letterboxed\b", re.IGNORECASE)
@@ -769,6 +785,12 @@ class LetterboxManager:
         if source_path:
             samples_json = updates.get("samples_json")
             samples = json.loads(samples_json) if samples_json else []
+            candidate_minutes = [
+                sample["minute"]
+                for sample in samples
+                if sample.get("ok") and isinstance(sample.get("minute"), int)
+            ]
+            clear_minute = candidate_minutes[0] if candidate_minutes else 5
             for state in stored_states:
                 if state.status == "candidate":
                     # Fire-and-forget, same reasoning as the movie path: warming
@@ -781,6 +803,13 @@ class LetterboxManager:
                         crop_top=state.recommended_crop_top or 0,
                         crop_bottom=state.recommended_crop_bottom or 0,
                         height=state.source_height,
+                    )
+                elif state.status == "not_letterboxed":
+                    _schedule_clear_preview_warm(
+                        source_path,
+                        subject_key=letterbox_preview.episode_subject_key(state.episode_id),
+                        minute=clear_minute,
+                        candidate_minutes=candidate_minutes,
                     )
         return stored_states
 
