@@ -25,6 +25,8 @@
 		LetterboxTvSeason,
 		LetterboxEpisodeDetail
 	} from '$lib/api/types';
+	import { pairKey, pairColorMap, agreeCount } from '$lib/letterbox-samples';
+
 
 	// Buckets whose detail view shows an editable before/after crop pair — an
 	// undecided or applied-but-unconfirmed crop the user might still change.
@@ -836,31 +838,51 @@
 
 																				<div class="expand-meta">
 																					<dl class="meta-grid">
-																						{#if epDetail.source_width && epDetail.source_height}
-																							<dt>Before dims</dt>
-																							<dd class="mono">
-																								{epDetail.source_width}×{epDetail.source_height}
-																							</dd>
-																							<dt>Before AR</dt>
-																							<dd class="mono">
-																								{aspectRatio(
-																									epDetail.source_width,
-																									epDetail.source_height
-																								)}
-																							</dd>
+																						{#if PAIR_PREVIEW_BUCKETS.has(ep.bucket)}
+																							{#if epDetail.source_width && epDetail.source_height}
+																								<dt>Before dims</dt>
+																								<dd class="mono">
+																									{epDetail.source_width}×{epDetail.source_height}
+																								</dd>
+																								<dt>Before AR</dt>
+																								<dd class="mono">
+																									{aspectRatio(
+																										epDetail.source_width,
+																										epDetail.source_height
+																									)}
+																								</dd>
+																							{/if}
+																							{#if epDetail.source_width && afterHeight}
+																								<dt>After dims</dt>
+																								<dd class="mono">
+																									{epDetail.source_width}×{afterHeight}
+																								</dd>
+																								<dt>After AR</dt>
+																								<dd class="mono">
+																									{aspectRatio(epDetail.source_width, afterHeight)}
+																								</dd>
+																							{/if}
+																							<dt>Crop T / B</dt>
+																							<dd class="mono">{cropTop}px / {cropBottom}px</dd>
+																						{:else}
+																							{#if epDetail.source_width && epDetail.source_height}
+																								<dt>Dimensions</dt>
+																								<dd class="mono">
+																									{epDetail.source_width}×{epDetail.source_height}
+																								</dd>
+																								<dt>Aspect ratio</dt>
+																								<dd class="mono">
+																									{aspectRatio(
+																										epDetail.source_width,
+																										epDetail.source_height
+																									)}
+																								</dd>
+																							{/if}
+																							{#if cropTop !== 0 || cropBottom !== 0}
+																								<dt>Crop T / B</dt>
+																								<dd class="mono">{cropTop}px / {cropBottom}px</dd>
+																							{/if}
 																						{/if}
-																						{#if epDetail.source_width && afterHeight}
-																							<dt>After dims</dt>
-																							<dd class="mono">
-																								{epDetail.source_width}×{afterHeight}
-																							</dd>
-																							<dt>After AR</dt>
-																							<dd class="mono">
-																								{aspectRatio(epDetail.source_width, afterHeight)}
-																							</dd>
-																						{/if}
-																						<dt>Crop T / B</dt>
-																						<dd class="mono">{cropTop}px / {cropBottom}px</dd>
 																						<dt>Confidence</dt>
 																						<dd>
 																							{#if epDetail.confidence && epDetail.confidence !== 'none'}
@@ -897,17 +919,27 @@
 																								· exact{/if}
 																						</span>
 																					</div>
-
-																					{#if epDetail.variable_ar_note}
+																		{#if epDetail.variable_ar_note}
 																						<div class="detail-note">
 																							{epDetail.variable_ar_note}
 																						</div>
 																					{/if}
-
 																					{#if confidenceExpanded}
 																						<div class="sample-gallery">
 																							{#if epDetail.samples && epDetail.samples.length > 0}
+																								{@const colorMap = pairColorMap(epDetail.samples)}
+																								{@const { agreeCount: nAgree, totalOk } = agreeCount(epDetail.samples)}
+																								<div class="ce-summary">
+																									{#if nAgree === totalOk && totalOk > 0}
+																										All {totalOk} agree
+																									{:else}
+																										{nAgree}/{epDetail.samples.length} agree
+																									{/if}
+																									<span class="ce-hint">· click to preview that frame</span>
+																								</div>
 																								{#each epDetail.samples as sample (sample.minute)}
+																									{@const key = sample.ok ? pairKey(sample) : null}
+																									{@const dotColor = key != null ? (colorMap.get(key) ?? 'var(--faint)') : 'var(--bad)'}
 																									{#if sample.ok}
 																										<button
 																											class="sample-row"
@@ -931,6 +963,7 @@
 																												{sample.backend ?? 'cpu'} · {sample.elapsed_ms ??
 																													'?'}ms
 																											</span>
+																											<span class="ce-dot" style="color:{dotColor}">●</span>
 																										</button>
 																									{:else}
 																										<div class="sample-row sample-row-error">
@@ -940,6 +973,7 @@
 																											<span class="sample-error">
 																												{sample.error ?? 'sample failed'}
 																											</span>
+																											<span class="ce-dot" style="color:var(--bad)">✕</span>
 																										</div>
 																									{/if}
 																								{/each}
@@ -1422,6 +1456,24 @@
 		color: var(--bad);
 		font-size: 11px;
 	}
+	.ce-summary {
+		font-size: 11px;
+		color: var(--muted);
+		padding: 4px 2px;
+		display: flex;
+		align-items: center;
+		gap: 6px;
+	}
+	.ce-hint {
+		color: var(--faint2);
+		font-size: 11px;
+	}
+	.ce-dot {
+		font-size: 12px;
+		line-height: 1;
+		margin-left: auto;
+	}
+
 	.season-collapse {
 		flex: 0 0 auto;
 		background: transparent;
