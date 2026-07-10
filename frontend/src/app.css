@@ -31,6 +31,16 @@
 	--bad: #f87171;
 	--info: #5ca8fb;
 	--dovi: #b794f6;
+	--teal: #39d5c4;
+	--magenta: #ed8df5;
+	--on-good: #10151c;
+	--on-warn: #16120a;
+	--on-info: #10151c;
+	--on-gold: #241a04;
+	--on-dovi: #17101d;
+	--on-teal: #10191a;
+	--on-magenta: #1a101c;
+	--on-bad: #1a1010;
 
 	/* system */
 	--cpu: #4a8cf0;
@@ -71,6 +81,16 @@
 	--bad: #d4453f;
 	--info: #2a6fd4;
 	--dovi: #7c52e0;
+	--teal: #108f84;
+	--magenta: #b13bbb;
+	--on-good: #10151c;
+	--on-warn: #16120a;
+	--on-info: #ffffff;
+	--on-gold: #241a04;
+	--on-dovi: #ffffff;
+	--on-teal: #ffffff;
+	--on-magenta: #ffffff;
+	--on-bad: #ffffff;
 	--shadow: rgba(20, 28, 48, 0.18);
 	--cpu: #2f6fd6;
 	--gpu: #1f9d57;
