@@ -213,14 +213,11 @@
 		}
 	}
 
-	async function startBatchReencode(payload: {
-		movieIds: number[];
-		settings: BatchReencodeSettings;
-	}) {
+	async function startBatchReencode(payload: { ids: number[]; settings: BatchReencodeSettings }) {
 		if (batchReencodeBusy) return;
 		batchReencodeBusy = true;
 		try {
-			const result = await batchReencode(fetch, payload.movieIds, payload.settings);
+			const result = await batchReencode(fetch, payload.ids, payload.settings);
 			if (result.count > 0) {
 				toast(`Queued ${result.count} permanent re-encodes`, 'good');
 			} else {
@@ -972,6 +969,7 @@
 <BatchReencodeModal
 	open={batchReencodeOpen}
 	items={cols.detected.items}
+	getId={(item: LetterboxColumnItem) => item.movie_id}
 	busy={batchReencodeBusy}
 	onStart={startBatchReencode}
 	onClose={() => {
