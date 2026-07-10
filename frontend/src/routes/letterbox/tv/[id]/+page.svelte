@@ -267,15 +267,18 @@
 	// Actions (Season level)
 	let exhaustive = $state<Record<number, boolean>>({});
 	let forceScan = $state<Record<number, boolean>>({});
+	let includeOpenMatte = $state<Record<number, boolean>>({});
 
 	async function runSeasonDetect(seasonNumber: number) {
 		try {
 			const isExhaustive = Boolean(exhaustive[seasonNumber]);
 			const isForce = Boolean(forceScan[seasonNumber]);
+			const isIncludeOpenMatte = Boolean(includeOpenMatte[seasonNumber]);
 			const ref = await detectLetterboxTv(fetch, seriesId, {
 				season_number: seasonNumber,
 				exhaustive: isExhaustive,
-				force: isForce
+				force: isForce,
+				include_open_matte: isIncludeOpenMatte || undefined
 			});
 			toast(`Started season ${seasonNumber} detect job...`, 'good');
 			rehydrateJob(ref.job_id);
@@ -387,6 +390,22 @@
 		}
 	}
 
+	async function runScanAnyway(episodeId: number) {
+		try {
+			const ref = await detectLetterboxTv(fetch, seriesId, {
+				episode_id: episodeId,
+				exhaustive: true,
+				force: true,
+				include_open_matte: true
+			});
+			toast('Started scan (include OM/PB)...', 'good');
+			rehydrateJob(ref.job_id);
+			void refreshDetail();
+		} catch (e) {
+			toast(e instanceof Error ? e.message : 'Scan failed to start', 'bad');
+		}
+	}
+
 	function triggerEpisodeReencode() {
 		// TV permanent reencoding is not supported by the backend yet
 		toast(
@@ -406,6 +425,8 @@
 		tagged: { label: 'Tagged', tone: 'info' },
 		reencoded: { label: 'Reencoded', tone: 'gold' },
 		variable: { label: 'Variable', tone: 'dovi' },
+		open_matte: { label: 'Open Matte', tone: 'info' },
+		pillarbox: { label: 'Pillarbox', tone: 'dovi' },
 		error: { label: 'Error', tone: 'bad' },
 		ineligible: { label: 'Ineligible', tone: 'muted' },
 		unanalyzed: { label: 'Unanalyzed', tone: 'muted' }
@@ -427,10 +448,14 @@
 		'sampled_clear',
 		'reencoded',
 		'variable',
+		'open_matte',
+		'pillarbox',
 		'error',
 		'ineligible',
 		'unanalyzed'
 	];
+	// Buckets that show no expand chevron and no episode dropdown
+	const NO_EXPAND_BUCKETS = new Set(['open_matte', 'pillarbox', 'unanalyzed', 'ineligible']);
 </script>
 
 <svelte:head>
@@ -483,6 +508,8 @@
 							<option value="tagged">Tagged</option>
 							<option value="reencoded">Reencoded</option>
 							<option value="variable">Variable</option>
+							<option value="open_matte">Open Matte</option>
+							<option value="pillarbox">Pillarbox</option>
 							<option value="error">Error</option>
 							<option value="unanalyzed">Unanalyzed</option>
 						</select>
@@ -555,6 +582,16 @@
 												<span class="checkmark"></span>
 												Force
 											</label>
+											{#if (season.rollup.bucket_counts.open_matte ?? 0) + (season.rollup.bucket_counts.pillarbox ?? 0) > 0}
+												<label class="checkbox-container">
+													<input
+														type="checkbox"
+														bind:checked={includeOpenMatte[season.season_number]}
+													/>
+													<span class="checkmark"></span>
+													Include OM/PB
+												</label>
+											{/if}
 										</div>
 
 										<button
@@ -603,14 +640,16 @@
 														{@const expanded = expandedEpisodeIds.has(ep.episode_id)}
 														<tr id={`episode-${ep.season_number}-${ep.episode_id}`}>
 															<td class="expand-col">
-																<button
-																	class="expand-toggle"
-																	class:open={expanded}
-																	title={expanded ? 'Hide frame preview' : 'Show frame preview'}
-																	onclick={() => toggleEpisodeExpand(ep.episode_id)}
-																>
-																	▶
-																</button>
+																{#if !NO_EXPAND_BUCKETS.has(ep.bucket)}
+																	<button
+																		class="expand-toggle"
+																		class:open={expanded}
+																		title={expanded ? 'Hide frame preview' : 'Show frame preview'}
+																		onclick={() => toggleEpisodeExpand(ep.episode_id)}
+																	>
+																		▶
+																	</button>
+																{/if}
 															</td>
 															<td class="font-mono">
 																S{String(ep.season_number).padStart(2, '0')}E{String(
@@ -647,53 +686,66 @@
 															</td>
 															<td class="actions-col">
 																<div class="action-buttons-group">
-																	<button
-																		class="btn btn-outline btn-xs"
-																		title="Detect letterbox borders"
-																		onclick={() => runEpisodeDetect(ep.episode_id)}
-																	>
-																		Detect
-																	</button>
+																	{#if ep.bucket === 'open_matte' || ep.bucket === 'pillarbox'}
+																		<span class="aspect-label-inline font-mono"
+																			>{ep.aspect_label || '—'}</span
+																		>
+																		<button
+																			class="btn btn-outline btn-xs"
+																			title="Scan this episode anyway (force + include OM/PB)"
+																			onclick={() => runScanAnyway(ep.episode_id)}
+																		>
+																			Scan anyway
+																		</button>
+																	{:else}
+																		<button
+																			class="btn btn-outline btn-xs"
+																			title="Detect letterbox borders"
+																			onclick={() => runEpisodeDetect(ep.episode_id)}
+																		>
+																			Detect
+																		</button>
 
-																	{#if ep.bucket === 'candidate'}
+																		{#if ep.bucket === 'candidate'}
+																			<button
+																				class="btn btn-primary btn-xs"
+																				title="Apply detected crop tag"
+																				onclick={() => runEpisodeApply(ep.episode_id)}
+																			>
+																				Apply
+																			</button>
+																			<button
+																				class="btn btn-outline btn-xs btn-good"
+																				title="Approve / Clear crop"
+																				onclick={() => runEpisodeClear(ep.episode_id)}
+																			>
+																				Clear
+																			</button>
+																			<button
+																				class="btn btn-outline btn-xs btn-bad"
+																				title="Ignore recommendation"
+																				onclick={() => runEpisodeIgnore(ep.episode_id)}
+																			>
+																				Ignore
+																			</button>
+																		{:else if ep.bucket === 'tagged'}
+																			<button
+																				class="btn btn-outline btn-xs btn-bad"
+																				title="Remove applied crop tag"
+																				onclick={() => runEpisodeRevert(ep.episode_id)}
+																			>
+																				Revert
+																			</button>
+																		{/if}
+
 																		<button
-																			class="btn btn-primary btn-xs"
-																			title="Apply detected crop tag"
-																			onclick={() => runEpisodeApply(ep.episode_id)}
+																			class="btn btn-outline btn-xs"
+																			title="Re-encode permanently (Not supported)"
+																			onclick={triggerEpisodeReencode}
 																		>
-																			Apply
-																		</button>
-																		<button
-																			class="btn btn-outline btn-xs btn-good"
-																			title="Approve / Clear crop"
-																			onclick={() => runEpisodeClear(ep.episode_id)}
-																		>
-																			Clear
-																		</button>
-																		<button
-																			class="btn btn-outline btn-xs btn-bad"
-																			title="Ignore recommendation"
-																			onclick={() => runEpisodeIgnore(ep.episode_id)}
-																		>
-																			Ignore
-																		</button>
-																	{:else if ep.bucket === 'tagged'}
-																		<button
-																			class="btn btn-outline btn-xs btn-bad"
-																			title="Remove applied crop tag"
-																			onclick={() => runEpisodeRevert(ep.episode_id)}
-																		>
-																			Revert
+																			Reencode
 																		</button>
 																	{/if}
-
-																	<button
-																		class="btn btn-outline btn-xs"
-																		title="Re-encode permanently (Not supported)"
-																		onclick={triggerEpisodeReencode}
-																	>
-																		Reencode
-																	</button>
 																</div>
 															</td>
 														</tr>
@@ -1219,6 +1271,11 @@
 		display: flex;
 		gap: 6px;
 		justify-content: flex-end;
+	}
+	.aspect-label-inline {
+		font-size: 10px;
+		color: var(--muted);
+		align-self: center;
 	}
 
 	.expand-col {
