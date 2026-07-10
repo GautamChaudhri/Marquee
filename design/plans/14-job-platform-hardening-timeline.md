@@ -18,3 +18,18 @@ Shared timeline for backend plan 14 and its frontend sibling.
 - Deviations: none.
 - Pending operator actions: GPU-box stalled-encode/cancel smoke from plan §8 after the
   backend phases ship.
+
+## Phase 1 — subprocess safety (H1–H3)
+
+- Completed: `10821ce harden reencode subprocess cleanup`.
+- In progress: Phase 2 — transaction hygiene and engine safety nets (H4–H5).
+- Verification: focused re-encode tests passed (25 passed); full pytest was **801 passed,
+  36 failed**, the same 36-failure baseline; `ruff check marquee tests` passed.
+- Exact next steps: re-locate the media-event, bridge-dispatch, handler-registry, and engine
+  anchors; move re-encode progress/stage/cancel polling to short sessions; audit all media
+  handlers; add PostgreSQL-only engine settings and two-session regression coverage.
+- Deviations: the stderr tail is bounded to 200 lines / 64 KiB and the shutdown grace is 5s
+  before SIGKILL, exactly within the plan's stated bounds. `clear_child_pid` now logs and
+  tolerates a broken short session so cancellation cleanup cannot be stranded by its own
+  bookkeeping.
+- Pending operator actions: GPU-box stalled-encode/cancel smoke remains pending.
