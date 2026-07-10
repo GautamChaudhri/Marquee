@@ -153,6 +153,7 @@
 			{
 				progress: number;
 				status: string;
+				stage?: string;
 				type?: string;
 				label?: string | null;
 				stop?: () => void;
@@ -255,9 +256,15 @@
 					if (activeRuns[jobId]) {
 						activeRuns[jobId].status = p.status;
 						const progress = p.detail || {};
-						const done = Number(progress.done || progress.children_completed || 0);
-						const total = Number(progress.total || progress.children_total || 0);
-						activeRuns[jobId].progress = total > 0 ? (done / total) * 100 : 0;
+						if (typeof progress.percent === 'number' && Number.isFinite(progress.percent)) {
+							activeRuns[jobId].progress = Math.max(0, Math.min(100, progress.percent));
+							activeRuns[jobId].stage =
+								typeof progress.stage === 'string' ? progress.stage : undefined;
+						} else {
+							const done = Number(progress.done || progress.children_completed || 0);
+							const total = Number(progress.total || progress.children_total || 0);
+							activeRuns[jobId].progress = total > 0 ? (done / total) * 100 : 0;
+						}
 					}
 				},
 				onDone: (job) => {
@@ -868,7 +875,7 @@
 							<span class="active-run-label">
 								{displayJobLabel({ type: run.type ?? 'unknown', label: run.label })}
 							</span>
-							<span class="active-run-status mono">{run.status}</span>
+							<span class="active-run-status mono">{run.stage ?? run.status}</span>
 							<button
 								class="active-run-cancel"
 								type="button"

@@ -70,3 +70,15 @@ Shared timeline for backend plan 14 and its frontend sibling.
   best-effort cancel bridging; add seeded Postgres tests.
 - Deviations: none.
 - Pending operator actions: GPU-box stalled-encode/cancel smoke remains pending.
+
+## Frontend F1 — media bridge labels
+
+- Completed: `cc6cf18 label media bridge jobs`.
+- In progress: F2 — use direct media-bridge encode percent for single-episode re-encode bars.
+- Exact next steps: verify the persisted Job snapshot progress shape, re-locate the TV rehydration
+  anchors, add the percent fallback without changing batch behavior, and run the frontend gates.
+- Deviations: `npm run lint` is blocked by pre-existing Prettier violations in
+  `src/lib/components/LetterboxDetail.svelte` and `src/routes/letterbox/tv/[id]/+page.svelte`;
+  `npm run check` passed with 16 existing Svelte warnings and `npm run build` passed.
+- Pending operator actions: GPU-box/live-media F2–F3 smoke remains pending; no manual verification
+  has been performed.

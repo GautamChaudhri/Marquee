@@ -1,10 +1,12 @@
 import { apiGet, apiSend, type Fetch } from './client';
 
-/** Progress block written by the job manager for parent/batch jobs. */
+/** Progress block written by the job manager for parent, batch, and media bridge jobs. */
 export interface JobProgress {
 	children_total?: number;
 	children_completed?: number;
 	children_failed?: number;
+	percent?: number;
+	stage?: string;
 }
 
 export type JobContext = Record<string, unknown> | unknown[] | string | number | boolean | null;
