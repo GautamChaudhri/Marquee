@@ -42,6 +42,7 @@
 	import ProgressBar from './ProgressBar.svelte';
 	import Icon from './Icon.svelte';
 	import LetterboxFrame from './LetterboxFrame.svelte';
+	import { pairKey, pairColorMap, agreeCount } from '$lib/letterbox-samples';
 
 	function fmtBytes(n: number | null | undefined): string {
 		if (!n) return '—';
@@ -223,29 +224,6 @@
 			: null
 	);
 
-	// Assign a stable color per unique top/bottom pair so each group gets its own icon color.
-	const BAR_COLORS = [
-		'var(--gold)',
-		'var(--info)',
-		'var(--good)',
-		'var(--warn)',
-		'var(--bad)',
-		'var(--muted)'
-	];
-	function pairKey(s: NonNullable<LetterboxDetail['samples']>[number]): string {
-		return `${s.top_bar ?? '?'}:${s.bottom_bar ?? '?'}`;
-	}
-
-	function pairColorMap(samples: LetterboxDetail['samples']): Map<string, string> {
-		// eslint-disable-next-line svelte/prefer-svelte-reactivity -- transient lookup, recomputed per render
-		const seen = new Map<string, string>();
-		for (const s of samples ?? []) {
-			if (!s.ok) continue;
-			const key = pairKey(s);
-			if (!seen.has(key)) seen.set(key, BAR_COLORS[seen.size % BAR_COLORS.length]);
-		}
-		return seen;
-	}
 
 	async function finishDetection(jobId: string) {
 		if (detectJobId !== jobId) return;
@@ -1170,19 +1148,13 @@
 				{#if showConf}
 					<div class="conf-expand">
 						{#if detail.samples && detail.samples.length > 0}
-							{@const okSamples = detail.samples.filter((s) => s.ok)}
-							{@const pairCounts = okSamples.reduce(
-								(map, s) => map.set(pairKey(s), (map.get(pairKey(s)) ?? 0) + 1),
-								new Map<string, number>()
-							)}
-							{@const dominantPair = [...pairCounts.entries()].sort((a, b) => b[1] - a[1])[0]}
-							{@const agreeCount = dominantPair?.[1] ?? 0}
+							{@const { agreeCount: nAgree, totalOk } = agreeCount(detail.samples)}
 							{@const colorMap = pairColorMap(detail.samples)}
 							<div class="ce-summary">
-								{#if agreeCount === okSamples.length && okSamples.length > 0}
-									All {okSamples.length} agree
+								{#if nAgree === totalOk && totalOk > 0}
+									All {totalOk} agree
 								{:else}
-									{agreeCount}/{detail.samples.length} agree
+									{nAgree}/{detail.samples.length} agree
 								{/if}
 								<span class="ce-hint">· click to preview that frame</span>
 							</div>
