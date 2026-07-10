@@ -115,3 +115,27 @@ Shared timeline for backend plan 15 and its frontend sibling.
   and TV detail.
 - Scope guard: no diff in movie letterbox pages, `LetterboxDetail.svelte`, HDR, subtitle, or
   heatmap files.
+
+## Frontend Step 6 — terminology audit and operator handoff
+
+- Completed: `f71fa92 audit tv letterbox terminology`.
+- Literal sweep: `rg -n "clear|Clean|clean" frontend/src/routes/letterbox/tv frontend/src/lib`.
+  Remaining TV-route hits are all intentional: `clearInterval` and `Map.clear()` cleanup calls
+  in the show detail, `clearFilters` and its filter-reset button in the shows list, and the
+  required `clean_mixed` value / “Clean Mix” label. There are no stale TV bucket labels or
+  `clear`/`sampled_clear` bucket literals.
+- Remaining `$lib` hits are intentional non-TV code: timer/collection cleanup APIs; pipeline
+  cache/OCR clear routes and types; mock/pipeline copy; subtitle cleanup controls; and HDR or
+  movie-only `LetterboxDetail` vocabulary, which is explicitly preserved. UniformityChip’s
+  `clean_mixed` label is the required TV letterbox value.
+- Verification: final `npm run check` passed with the unchanged 16 Svelte warnings; final
+  `npm run build` passed with baseline warnings. `npm run lint` remains nonzero only because
+  existing Prettier drift is intentionally preserved in `LetterboxDetail.svelte` (movie scope)
+  and `letterbox/tv/[id]/+page.svelte`; no new file is reported by lint.
+- Scope guard: final diff contains no movie letterbox page, `LetterboxDetail.svelte`, HDR route,
+  HDR heatmap, subtitle route, or backend (`marquee/`) change. EpisodeHeatmap changes are limited
+  to its letterbox branch and retain the subtitle branch unchanged.
+- Manual smoke: not performed. Live library data and a browser are unavailable in this
+  environment. Operator must validate OM/PB badges, bars/counters, filters, uniformity states,
+  dark/light heatmap contrast, Apply `(0)`, and unchanged subtitle/HDR/movie workflows after
+  deployment.
