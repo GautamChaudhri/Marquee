@@ -222,6 +222,50 @@ async def _seed_dimension_class_show(db: AsyncSession) -> tuple[Series, Episode,
     return series, open_matte, truth
 
 
+async def _seed_rollup_show(
+    db: AsyncSession,
+    *,
+    title: str,
+    sonarr_id: int,
+    episodes: list[tuple[int, str | None, str | None, int, int]],
+) -> Series:
+    series = Series(title=title, year=2024, series_path=f"/tv/{sonarr_id}", sonarr_id=sonarr_id)
+    db.add(series)
+    await db.flush()
+
+    season_numbers = sorted({season_number for season_number, *_rest in episodes})
+    db.add_all(
+        [
+            Season(
+                series_id=series.id,
+                season_number=season_number,
+                episode_file_count=sum(1 for episode in episodes if episode[0] == season_number),
+            )
+            for season_number in season_numbers
+        ]
+    )
+    await db.flush()
+
+    episode_numbers: dict[int, int] = {}
+    for season_number, status, aspect_label, width, height in episodes:
+        episode_numbers[season_number] = episode_numbers.get(season_number, 0) + 1
+        episode_number = episode_numbers[season_number]
+        await _seed_episode_with_state(
+            db,
+            series=series,
+            season_number=season_number,
+            episode_number=episode_number,
+            path=f"/tv/{sonarr_id}/s{season_number:02d}e{episode_number:02d}.mkv",
+            state_status=status,
+            aspect_label=aspect_label,
+            recommended_crop=140 if status == "candidate" else None,
+            applied_crop=140 if status in {"tagged", "reencoded"} else None,
+            video_width=width,
+            video_height=height,
+        )
+    return series
+
+
 @pytest_asyncio.fixture
 async def tv_library(db: AsyncSession):
     await _seed_movie_summary_rows(db)
@@ -335,6 +379,54 @@ async def tv_library(db: AsyncSession):
     }
 
 
+@pytest_asyncio.fixture
+async def tv_filter_library(db: AsyncSession, tv_library):
+    await _seed_rollup_show(
+        db,
+        title="Treated Show",
+        sonarr_id=30,
+        episodes=[(1, "tagged", "2.39:1", 1920, 1080)],
+    )
+    await _seed_rollup_show(
+        db,
+        title="Unanalyzed Show",
+        sonarr_id=31,
+        episodes=[(1, "prefilter_candidate", None, 1920, 1080)],
+    )
+    await _seed_rollup_show(
+        db,
+        title="Open Matte Show",
+        sonarr_id=32,
+        episodes=[(1, None, None, 1920, 800)],
+    )
+    await _seed_rollup_show(
+        db,
+        title="Pillarbox Show",
+        sonarr_id=33,
+        episodes=[(1, None, None, 1800, 1080)],
+    )
+    await _seed_rollup_show(
+        db,
+        title="Clean Mix Show",
+        sonarr_id=34,
+        episodes=[
+            (1, "not_letterboxed", None, 1920, 1080),
+            (2, None, None, 1800, 1080),
+        ],
+    )
+    await _seed_rollup_show(
+        db,
+        title="Dirty Mix Show",
+        sonarr_id=35,
+        episodes=[
+            (1, "not_letterboxed", None, 1920, 1080),
+            (1, "candidate", "2.39:1", 1920, 1080),
+        ],
+    )
+    await db.commit()
+    return tv_library
+
+
 @pytest.mark.asyncio
 class TestSummary:
     async def test_summary_includes_movies_and_tv_sections(self, client: AsyncClient, tv_library):
@@ -352,6 +444,19 @@ class TestSummary:
         assert body["tv"]["episodes_total"] == 6  # specials excluded
         assert body["tv"]["show_verdict_counts"]["ok"] == 1
         assert body["tv"]["show_verdict_counts"]["needs_action"] == 1
+        assert body["tv"]["verdict_breakdown"] == {
+            "widescreen": 1,
+            "sampled_widescreen": 1,
+            "letterboxed_untreated": 1,
+            "tagged": 2,
+            "reencoded": 0,
+            "variable": 0,
+            "open_matte": 0,
+            "pillarbox": 0,
+            "ineligible": 0,
+            "error": 0,
+            "unanalyzed": 1,
+        }
         assert body["tv"]["aspect_distribution"] == {"2.40:1": 3}
 
     async def test_summary_excludes_open_matte_from_tv_aspect_distribution(
@@ -373,6 +478,9 @@ class TestTvList:
         assert body["total"] == 2
         by_title = {item["title"]: item for item in body["items"]}
         assert by_title["Clean Show"]["rollup"]["verdict"] == "ok"
+        assert by_title["Clean Show"]["rollup"]["content_types"] == [
+            {"type": "widescreen", "count": 2}
+        ]
         assert by_title["Mixed Show"]["rollup"]["verdict"] == "needs_action"
         assert by_title["Mixed Show"]["active_job_ids"] == ["tv-active-job"]
 
@@ -386,6 +494,42 @@ class TestTvList:
         assert body["total"] == 1
         assert body["items"][0]["title"] == "Clean Show"
 
+    async def test_list_filters_by_each_verdict(self, client: AsyncClient, tv_filter_library):
+        expected_titles = {
+            "needs_action": {"Dirty Mix Show", "Mixed Show"},
+            "treated": {"Treated Show"},
+            "ok": {"Clean Mix Show", "Clean Show", "Open Matte Show", "Pillarbox Show"},
+            "unanalyzed": {"Unanalyzed Show"},
+        }
+
+        for verdict, titles in expected_titles.items():
+            body = (await client.get("/api/letterbox/tv", params={"verdict": verdict})).json()
+            assert {item["title"] for item in body["items"]} == titles
+
+    async def test_list_filters_by_content_type_membership(
+        self, client: AsyncClient, tv_filter_library
+    ):
+        expected_titles = {
+            "widescreen": {"Clean Mix Show", "Clean Show", "Dirty Mix Show"},
+            "open_matte": {"Open Matte Show"},
+            "pillarbox": {"Clean Mix Show", "Pillarbox Show"},
+        }
+
+        for content_type, titles in expected_titles.items():
+            body = (await client.get("/api/letterbox/tv", params={"verdict": content_type})).json()
+            assert {item["title"] for item in body["items"]} == titles
+
+    async def test_list_filters_by_each_uniformity(self, client: AsyncClient, tv_filter_library):
+        expected_titles = {
+            "uniform": {"Clean Show", "Mixed Show", "Open Matte Show", "Pillarbox Show", "Treated Show"},
+            "clean_mixed": {"Clean Mix Show"},
+            "dirty_mixed": {"Dirty Mix Show"},
+        }
+
+        for uniformity, titles in expected_titles.items():
+            body = (await client.get("/api/letterbox/tv", params={"uniformity": uniformity})).json()
+            assert {item["title"] for item in body["items"]} == titles
+
 
 @pytest.mark.asyncio
 class TestTvDetail:
@@ -397,6 +541,7 @@ class TestTvDetail:
         assert [season["season_number"] for season in body["seasons"]] == [0, 1]
         assert body["seasons"][0]["is_specials"] is True
         assert body["rollup"]["episodes_total"] == 4  # specials excluded from show rollup
+        assert body["rollup"]["content_types"] == []
         ep4 = next(
             episode
             for episode in body["seasons"][1]["episodes"]
