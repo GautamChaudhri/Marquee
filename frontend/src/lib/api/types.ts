@@ -662,13 +662,17 @@ export interface ReencodeOptions {
 export interface ReencodeArtifact {
 	id: number;
 	job_id: string | null;
-	movie_id: number;
+	media_type?: 'movie' | 'episode';
+	movie_id: number | null;
+	episode_id?: number | null;
+	media_file_id?: number | null;
 	status: string;
 	original_path: string;
 	candidate_path: string | null;
 	saved_original_path: string | null;
 	original_size_bytes: number | null;
 	candidate_size_bytes: number | null;
+	saved_original_size_bytes?: number | null;
 	encoder: string | null;
 	encoder_family: string | null;
 	codec: string | null;
@@ -683,6 +687,10 @@ export interface ReencodeArtifact {
 	} | null;
 	created_at: string | null;
 	updated_at: string | null;
+	// TV-only, joined in by GET /reencode-artifacts when media_type === 'episode'
+	series_id?: number;
+	series_title?: string;
+	episode_code?: string;
 }
 
 export interface ReencodeArtifactList {

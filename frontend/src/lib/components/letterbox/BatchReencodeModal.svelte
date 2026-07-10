@@ -24,7 +24,11 @@
 		getId: (item: T) => number;
 		subtitle?: string;
 		busy?: boolean;
-		onStart: (payload: { ids: number[]; settings: BatchReencodeSettings }) => void;
+		onStart: (payload: {
+			ids: number[];
+			confidenceLevels: string[];
+			settings: BatchReencodeSettings;
+		}) => void;
 		onClose: () => void;
 	} = $props();
 
@@ -55,6 +59,18 @@
 	);
 	const selectedCount = $derived(selectedIds.length);
 	const canStart = $derived(selectedCount > 0 && !busy);
+	const selectedConfidenceLevels = $derived(
+		(
+			[
+				['high', includeHigh],
+				['medium', includeMedium],
+				['variable', includeVariable],
+				['low', includeLow]
+			] as const
+		)
+			.filter(([, included]) => included)
+			.map(([level]) => level)
+	);
 	const presetOptions = $derived(presetOptionsForEncoder(setEncoder));
 
 	function prettyEncoder(encoder: string): string {
@@ -98,6 +114,7 @@
 		const simple = simpleSettings(selectedProfile, setEncoder);
 		onStart({
 			ids: selectedIds,
+			confidenceLevels: selectedConfidenceLevels,
 			settings: {
 				quality_profile: selectedProfile,
 				encoder: setEncoder === 'auto' ? null : setEncoder,
