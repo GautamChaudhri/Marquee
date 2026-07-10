@@ -33,6 +33,9 @@
 	// Everything else (clear/sampled_clear/variable/reencoded/etc.) is settled,
 	// so its detail view shows exactly one confirmation frame.
 	const PAIR_PREVIEW_BUCKETS = new Set(['candidate', 'tagged']);
+	// Buckets whose preview frame(s) are worth warming ahead of expand — settled
+	// clear/sampled_clear buckets only need their single before frame.
+	const PREFETCH_BUCKETS = new Set(['candidate', 'tagged', 'clear', 'sampled_clear']);
 
 	const expandedEpisodeIds = new SvelteSet<number>();
 	const episodeDetails = new SvelteMap<number, LetterboxEpisodeDetail>();
@@ -145,7 +148,7 @@
 	async function runPrefetchPass() {
 		if (!detail) return;
 		const episodes = detail.seasons.flatMap((season: LetterboxTvSeason) =>
-			season.episodes.filter((ep: LetterboxTvEpisode) => PAIR_PREVIEW_BUCKETS.has(ep.bucket))
+			season.episodes.filter((ep: LetterboxTvEpisode) => PREFETCH_BUCKETS.has(ep.bucket))
 		);
 		if (episodes.length === 0) return;
 
@@ -162,7 +165,9 @@
 					if (runId !== prefetchGeneration) return;
 					episodeDetails.set(episode.episode_id, detailRow);
 					warmPreview(detailRow.preview_urls?.before);
-					warmPreview(detailRow.preview_urls?.after);
+					if (PAIR_PREVIEW_BUCKETS.has(episode.bucket)) {
+						warmPreview(detailRow.preview_urls?.after);
+					}
 				} catch {
 					if (runId !== prefetchGeneration) return;
 				}
