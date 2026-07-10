@@ -20,14 +20,17 @@
 		restoreOriginal,
 		deleteArtifact,
 		replaceReadyTvArtifacts,
-		getMediaJob
+		getMediaJob,
+		cancelJob
 	} from '$lib/api/letterbox';
-	import { type JobSnapshot } from '$lib/api/jobs';
+	import { getJob, type JobSnapshot } from '$lib/api/jobs';
 	import { trackJob } from '$lib/jobs';
+	import { displayJobLabel } from '$lib/job-labels';
 	import SectionHeader from '$lib/components/SectionHeader.svelte';
 	import EpisodeHeatmap from '$lib/components/subtitles/EpisodeHeatmap.svelte';
 	import UniformityChip from '$lib/components/UniformityChip.svelte';
 	import LetterboxFrame from '$lib/components/LetterboxFrame.svelte';
+	import ProgressBar from '$lib/components/ProgressBar.svelte';
 	import ConfidencePopover from '$lib/components/letterbox/ConfidencePopover.svelte';
 	import BatchReencodeModal from '$lib/components/letterbox/BatchReencodeModal.svelte';
 	import ReencodePlanModal from '$lib/components/letterbox/ReencodePlanModal.svelte';
@@ -145,7 +148,18 @@
 
 	// Background poll to refresh data when jobs are running
 	let pollInterval: ReturnType<typeof setInterval>;
-	let activeRuns = $state<Record<string, { progress: number; status: string; stop?: () => void }>>(
+	let activeRuns = $state<
+		Record<
+			string,
+			{
+				progress: number;
+				status: string;
+				type?: string;
+				label?: string | null;
+				stop?: () => void;
+			}
+		>
+	>(
 		{}
 	);
 
@@ -224,6 +238,16 @@
 		if (activeRuns[jobId]) return;
 
 		activeRuns[jobId] = { progress: 0, status: 'running' };
+		getJob(fetch, jobId)
+			.then((job) => {
+				if (activeRuns[jobId]) {
+					activeRuns[jobId].type = job.type;
+					activeRuns[jobId].label = job.label;
+				}
+			})
+			.catch(() => {
+				// non-fatal — the progress bar just falls back to a humanized job type
+			});
 		const stop = trackJob<JobSnapshot>(
 			fetch,
 			jobId,
@@ -237,15 +261,16 @@
 						activeRuns[jobId].progress = total > 0 ? (done / total) * 100 : 0;
 					}
 				},
-				onDone: () => {
+				onDone: (job) => {
 					delete activeRuns[jobId];
-					toast('Scan job finished!', 'good');
+					toast(`${displayJobLabel(job)} finished!`, 'good');
 					prefetchGeneration += 1;
 					episodeDetails.clear();
 					episodeDetailErrors.clear();
 					void (async () => {
 						await refreshDetail();
 						await runPrefetchPass();
+						await loadReencodeArtifacts();
 					})();
 				},
 				onError: () => {
@@ -258,6 +283,14 @@
 			}
 		);
 		activeRuns[jobId].stop = stop;
+	}
+
+	function cancelActiveRun(jobId: string) {
+		activeRuns[jobId]?.stop?.();
+		delete activeRuns[jobId];
+		void cancelJob(fetch, jobId).catch(() => {
+			// best effort — the run is already removed from the UI
+		});
 	}
 
 	// Filters for Episode Table
@@ -827,6 +860,30 @@
 				</div>
 			{/snippet}
 		</SectionHeader>
+
+		{#if Object.keys(activeRuns).length > 0}
+			<div class="active-runs">
+				{#each Object.entries(activeRuns) as [jobId, run] (jobId)}
+					<div class="active-run">
+						<div class="active-run-head">
+							<span class="active-run-label">
+								{displayJobLabel({ type: run.type ?? 'unknown', label: run.label })}
+							</span>
+							<span class="active-run-status mono">{run.status}</span>
+							<button
+								class="active-run-cancel"
+								type="button"
+								title="Cancel job"
+								onclick={() => cancelActiveRun(jobId)}
+							>
+								✕
+							</button>
+						</div>
+						<ProgressBar value={run.progress} tone="gold" height={5} />
+					</div>
+				{/each}
+			</div>
+		{/if}
 
 		<!-- Heatmap centerpiece -->
 		<div class="section-container">
@@ -1567,6 +1624,49 @@
 		display: flex;
 		flex-direction: column;
 		gap: 12px;
+	}
+	.active-runs {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+		margin-bottom: 4px;
+	}
+	.active-run {
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+		padding: 10px 12px;
+		border: 1px solid var(--line);
+		border-radius: 10px;
+		background: var(--ink3);
+	}
+	.active-run-head {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		font-size: 12px;
+	}
+	.active-run-label {
+		font-weight: 600;
+		color: var(--text);
+	}
+	.active-run-status {
+		color: var(--muted);
+		text-transform: capitalize;
+	}
+	.active-run-cancel {
+		margin-left: auto;
+		border: none;
+		background: transparent;
+		color: var(--muted);
+		cursor: pointer;
+		font-size: 12px;
+		padding: 2px 6px;
+		border-radius: 6px;
+	}
+	.active-run-cancel:hover {
+		background: var(--ink2);
+		color: var(--bad);
 	}
 	.section-title {
 		margin: 0;
