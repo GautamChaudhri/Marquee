@@ -47,3 +47,27 @@
 - exact next steps: add `POST /api/letterbox/tv/dev/reset-all`, purge episode previews, extend route-order protection, add phase 6 tests, run full gates, and commit
 - deviations from the plan and why: none
 - pending operator actions: none
+
+## Backend complete — frontend agent begins
+
+- completed: backend plan 13 in full, including phase 6 (`74d98afc835222854ac3e872663dd56d723957de`). All 9 §8 routes re-verified present in `marquee/api/routes/letterbox.py` at the start of the frontend agent's session (GET /tv, POST /tv/dev/reset-all, POST /tv/detect, GET /tv/{id}, GET .../episodes/{id}, POST /tv/{id}/detect, GET .../preview, POST /tv/{id}/apply, POST /tv/{id}/revert, POST .../episodes/{id}/reencode-plan, POST /tv/{id}/reencode, GET /reencode-artifacts, POST /tv/{id}/reencode-artifacts/replace-ready)
+- in progress: frontend build order step 1 (API clients/types)
+- exact next steps: `letterbox.ts`/`types.ts` additions per plan §2 step 1, then step 2 (buckets/badges/heatmap/filters)
+- deviations from the plan and why: none
+- pending operator actions: none
+
+## After frontend steps 1–2
+
+- completed: step 1 — API clients/types (`0e966fbfa771123257a5cf117836a7e1e98ec9a1`, "add tv api clients and types for plan 13"); step 2 — C1/C2/C3 buckets/badges/heatmap/season escape hatch (`2da71f67a9973f678f127424509f02c15f8a3483`, "add open_matte/pillarbox buckets badges heatmap and season escape hatch")
+- in progress: step 3 — C4 dropdown parity + C6 single-frame meta + C2 suppression
+- exact next steps: split the shared sample-helper extraction from the TV gallery wiring into two commits per plan §2 step 3, then C6 single-frame meta
+- deviations from the plan and why: **these two commits landed without a timeline append**, breaking the "append after every commit" protocol. Caught and corrected retroactively by the next agent turn (this entry backfills both). No code deviation — route paths/payloads and UX decisions all verified to match the locked plan.
+- pending operator actions: none
+
+## After frontend step 3
+
+- completed: step 3, split into two commits per plan §2 — `af759d1` "extract letterbox sample helpers" (moved `pairKey`/`pairColorMap`/`agreeCount`/`BAR_COLORS` out of `LetterboxDetail.svelte` into `frontend/src/lib/letterbox-samples.ts`; refactored `LetterboxDetail.svelte`'s inline agree-count computation to call the shared `agreeCount()` helper — verified byte-identical rendering, movie page unaffected); `c41fc2c` "add tv confidence dropdown parity and single-frame meta" (TV episode gallery gains the "All N agree"/"X/Y agree" header + colored pair dots matching the movie page, and the confidence-expand meta grid now shows a single Dimensions/Aspect-ratio pair with the Crop row suppressed at 0/0 for `clear`/`sampled_clear`, vs. the existing Before/After grid for `candidate`/`tagged`)
+- in progress: step 4 — C5 prefetch extension
+- exact next steps: add `PREFETCH_BUCKETS` (`candidate`, `tagged`, `clear`, `sampled_clear`), extend `runPrefetchPass` to warm `before`-only previews for `clear`/`sampled_clear` and `before`+`after` for pair buckets
+- deviations from the plan and why: none this step
+- pending operator actions: none
