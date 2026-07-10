@@ -27,6 +27,7 @@ from marquee.core.media_files import (
     compute_signature,
     resolve_media_file,
 )
+from marquee.database import _get_session_factory
 from marquee.media import binaries, letterbox_detect
 from marquee.media.concurrency import gated
 from marquee.models import (
@@ -938,6 +939,14 @@ async def _cancelled_encode_cleanup(
     await clear_child_pid(proc.pid)
 
 
+async def _media_job_cancel_requested(job_id: str) -> bool:
+    """Read cancellation through a fresh, short-lived session."""
+    factory = _get_session_factory()
+    async with factory() as db:
+        job = await db.get(MediaJob, job_id)
+        return bool(job and job.cancel_requested)
+
+
 async def _run_encode_attempt(
     db: AsyncSession,
     job: MediaJob,
@@ -993,16 +1002,9 @@ async def _run_encode_attempt(
                 await emit(db, job.job_id, "encode", "running", progress=progress, persist=False)
                 continue
             last_persist = now
-            percent = progress.get("percent")
-            if percent is not None:
-                job.progress_done = int(percent)
-                job.progress_total = 100
-            job.stage = "encode"
             await emit(db, job.job_id, "encode", "running", progress=progress, persist=True)
-            await db.refresh(job, ["cancel_requested"])
-            if job.cancel_requested:
-                proc.terminate()
-                await proc.wait()
+            if await _media_job_cancel_requested(job.job_id):
+                await _terminate_process(proc)
                 output.unlink(missing_ok=True)
                 raise ReencodePlanError("cancelled", "letterbox re-encode cancelled")
         await proc.wait()
@@ -1105,9 +1107,6 @@ async def execute_job(db: AsyncSession, job: MediaJob, emit) -> dict:
             "reason": fallback_reason,
         }
         execution_acceleration = fallback_plan["acceleration"]
-        job.progress_done = 0
-        job.progress_total = 100
-        job.stage = "encode"
         await emit(
             db,
             job.job_id,
@@ -1233,13 +1232,9 @@ async def _run_checked(
                 if timeout is not None and (loop.time() - started) > timeout:
                     await _terminate_process(proc)
                     raise RuntimeError(f"{binary_name} timed out") from None
-                if db is not None and job is not None:
-                    await db.refresh(job, ["cancel_requested"])
-                    if job.cancel_requested:
-                        await _terminate_process(proc)
-                        raise ReencodePlanError(
-                            "cancelled", "letterbox re-encode cancelled"
-                        ) from None
+                if db is not None and job is not None and await _media_job_cancel_requested(job.job_id):
+                    await _terminate_process(proc)
+                    raise ReencodePlanError("cancelled", "letterbox re-encode cancelled") from None
         stderr = await _finish_stderr_drain(stderr_task)
     except asyncio.CancelledError:
         cancellation_cleanup_started = True

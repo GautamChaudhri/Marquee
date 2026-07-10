@@ -44,6 +44,18 @@ _engine = None
 _session_factory: async_sessionmaker | None = None
 
 
+def _engine_connect_args(db_url: str) -> dict:
+    """Return asyncpg safety settings without applying them to SQLite tests."""
+    if not db_url.startswith("postgresql+asyncpg://"):
+        return {}
+    server_settings = {}
+    if settings.DB_LOCK_TIMEOUT_MS:
+        server_settings["lock_timeout"] = str(settings.DB_LOCK_TIMEOUT_MS)
+    if settings.DB_IDLE_TXN_TIMEOUT_MS:
+        server_settings["idle_in_transaction_session_timeout"] = str(settings.DB_IDLE_TXN_TIMEOUT_MS)
+    return {"server_settings": server_settings} if server_settings else {}
+
+
 def _get_engine():
     """Create or return the async SQLAlchemy engine.
 
@@ -65,6 +77,7 @@ def _get_engine():
             pool_size=20,
             max_overflow=10,
             pool_recycle=3600,
+            connect_args=_engine_connect_args(settings.db_url_resolved),
         )
     return _engine
 

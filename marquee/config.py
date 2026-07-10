@@ -73,6 +73,16 @@ class Settings(BaseSettings):
     # Database
     # ------------------------------------------------------------------
     DB_URL: str = "postgresql+asyncpg://marquee:marquee@postgres:5432/marquee"
+    DB_LOCK_TIMEOUT_MS: int = Field(
+        default=10_000,
+        ge=0,
+        description="PostgreSQL lock wait timeout in milliseconds; 0 disables it.",
+    )
+    DB_IDLE_TXN_TIMEOUT_MS: int = Field(
+        default=300_000,
+        ge=0,
+        description="PostgreSQL idle-in-transaction timeout in milliseconds; 0 disables it.",
+    )
     DATA_DIR: str = "data"
     # Standalone dev: the API auto-spawns the worker + scheduler as child
     # processes so nothing has to be started by hand.  The Compose topology runs
