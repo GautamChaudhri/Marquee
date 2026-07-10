@@ -71,3 +71,11 @@
 - exact next steps: add `PREFETCH_BUCKETS` (`candidate`, `tagged`, `clear`, `sampled_clear`), extend `runPrefetchPass` to warm `before`-only previews for `clear`/`sampled_clear` and `before`+`after` for pair buckets
 - deviations from the plan and why: none this step
 - pending operator actions: none
+
+## After frontend step 4
+
+- completed: step 4 — C5 prefetch extension (`017a253` "extend prefetch to clear and sampled_clear buckets"). `PREFETCH_BUCKETS = {candidate, tagged, clear, sampled_clear}` now drives `runPrefetchPass`'s episode selection (previously `PAIR_PREVIEW_BUCKETS`); `.before` is warmed for all four buckets, `.after` only for `PAIR_PREVIEW_BUCKETS` members. Worker pool + generation guard untouched.
+- in progress: step 5 — C9 apply/revert jobs + confidence popover + show-level buttons
+- exact next steps: migrate `runSeasonApply`/`runSeasonRevert` to the job-summary-returning endpoints (`applyLetterboxTv`/`revertLetterboxTv`), add the confidence popover, add show-level Apply/Revert/Reencode buttons, register `letterbox_apply_tv_scope`/`letterbox_revert_tv_scope` in `job-labels.ts`
+- deviations from the plan and why: none this step
+- pending operator actions: none
