@@ -4,7 +4,9 @@ const JOB_LABELS: Record<string, string> = {
 	subtitle_generate_batch: 'Subtitle Generation (TV Batch)',
 	subtitle_generate: 'Subtitle Generation',
 	letterbox_detect_tv_batch: 'TV Letterbox Detection (Batch)',
-	letterbox_detect_tv_scope: 'TV Letterbox Detection'
+	letterbox_detect_tv_scope: 'TV Letterbox Detection',
+	letterbox_apply_tv_scope: 'TV Letterbox Apply',
+	letterbox_revert_tv_scope: 'TV Letterbox Revert'
 };
 
 export function humanizeJobType(type: string): string {

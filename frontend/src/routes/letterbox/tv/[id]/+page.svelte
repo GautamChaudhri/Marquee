@@ -9,6 +9,7 @@
 		getLetterboxTvEpisodeDetail,
 		detectLetterboxTv,
 		applyLetterboxTv,
+		revertLetterboxTv,
 		removeLetterboxTvEpisode,
 		ignoreLetterboxTvEpisode,
 		markNotLetterboxedTvEpisode
@@ -19,11 +20,13 @@
 	import EpisodeHeatmap from '$lib/components/subtitles/EpisodeHeatmap.svelte';
 	import UniformityChip from '$lib/components/UniformityChip.svelte';
 	import LetterboxFrame from '$lib/components/LetterboxFrame.svelte';
+	import ConfidencePopover from '$lib/components/letterbox/ConfidencePopover.svelte';
 	import type {
 		ShowUniformity,
 		LetterboxTvEpisode,
 		LetterboxTvSeason,
-		LetterboxEpisodeDetail
+		LetterboxEpisodeDetail,
+		JobSummary
 	} from '$lib/api/types';
 	import { pairKey, pairColorMap, agreeCount } from '$lib/letterbox-samples';
 
@@ -295,46 +298,109 @@
 		}
 	}
 
-	async function runSeasonApply(seasonNumber: number) {
+	// Confidence-filtered scope apply/revert — seasonNumber is null for show-wide scope.
+	let scopeConfidence = $state<Record<string, string[]>>({});
+
+	function scopeKey(seasonNumber: number | null): string {
+		return seasonNumber == null ? 'show' : `season-${seasonNumber}`;
+	}
+
+	function confidenceFor(seasonNumber: number | null): string[] {
+		return scopeConfidence[scopeKey(seasonNumber)] ?? ['high'];
+	}
+
+	function toggleConfidenceLevel(seasonNumber: number | null, level: string) {
+		const key = scopeKey(seasonNumber);
+		// eslint-disable-next-line svelte/prefer-svelte-reactivity -- transient lookup, discarded immediately
+		const current = new Set(confidenceFor(seasonNumber).filter((l) => l !== 'all'));
+		if (current.has(level)) current.delete(level);
+		else current.add(level);
+		scopeConfidence[key] = [...current];
+	}
+
+	function toggleConfidenceAll(seasonNumber: number | null) {
+		const key = scopeKey(seasonNumber);
+		scopeConfidence[key] = confidenceFor(seasonNumber).includes('all') ? ['high'] : ['all'];
+	}
+
+	function scopeEpisodes(seasonNumber: number | null): LetterboxTvEpisode[] {
+		if (!detail) return [];
+		return seasonNumber == null
+			? detail.seasons.flatMap((s: LetterboxTvSeason) => s.episodes)
+			: (detail.seasons.find((s: LetterboxTvSeason) => s.season_number === seasonNumber)
+					?.episodes ?? []);
+	}
+
+	function candidateCount(seasonNumber: number | null): number {
+		const levels = confidenceFor(seasonNumber);
+		const matchesLevel = (ep: LetterboxTvEpisode) =>
+			levels.includes('all') || (ep.confidence != null && levels.includes(ep.confidence));
+		return scopeEpisodes(seasonNumber).filter(
+			(ep: LetterboxTvEpisode) => ep.bucket === 'candidate' && matchesLevel(ep)
+		).length;
+	}
+
+	async function runScopeApply(seasonNumber: number | null) {
 		try {
-			await applyLetterboxTv(fetch, seriesId, { season_number: seasonNumber });
-			toast(`Applied crop tags to season ${seasonNumber}!`, 'good');
+			const levels = confidenceFor(seasonNumber);
+			const res = await applyLetterboxTv(fetch, seriesId, {
+				season_number: seasonNumber ?? undefined,
+				confidence_levels: levels
+			});
+			const job = res as JobSummary;
+			if (job?.job_id) {
+				toast(
+					seasonNumber == null
+						? 'Started show-wide apply job...'
+						: `Started season ${seasonNumber} apply job...`,
+					'good'
+				);
+				rehydrateJob(job.job_id);
+			} else {
+				toast('Applied crop tags!', 'good');
+			}
 			void refreshDetail();
 		} catch (e) {
-			toast(e instanceof Error ? e.message : 'Failed to apply season crop', 'bad');
+			toast(e instanceof Error ? e.message : 'Failed to apply crop', 'bad');
 		}
 	}
 
-	async function runSeasonRevert(seasonNumber: number) {
-		const seasonEpisodes =
-			detail?.seasons?.find((s: LetterboxTvSeason) => s.season_number === seasonNumber)?.episodes ||
-			[];
-		const targets = seasonEpisodes.filter(
+	async function runScopeRevert(seasonNumber: number | null) {
+		const targets = scopeEpisodes(seasonNumber).filter(
 			(ep: LetterboxTvEpisode) =>
 				ep.bucket !== 'unanalyzed' && ep.bucket !== 'clear' && ep.bucket !== 'sampled_clear'
 		);
 
 		if (targets.length === 0) {
-			toast('No letterboxed episodes in this season to revert.', 'info');
+			toast('No letterboxed episodes in this scope to revert.', 'info');
 			return;
 		}
 
+		const scopeLabel = seasonNumber == null ? 'the entire show' : `Season ${seasonNumber}`;
 		if (
 			!confirm(
-				`Are you sure you want to revert crop tags for all ${targets.length} episodes in Season ${seasonNumber}?`
+				`Are you sure you want to revert crop tags for all ${targets.length} episodes in ${scopeLabel}?`
 			)
 		) {
 			return;
 		}
 
 		try {
-			toast(`Reverting ${targets.length} episodes...`, 'info');
-			await Promise.all(
-				targets.map((ep: LetterboxTvEpisode) =>
-					removeLetterboxTvEpisode(fetch, seriesId, ep.episode_id)
-				)
-			);
-			toast(`Reverted season ${seasonNumber} crops successfully.`, 'good');
+			const res = await revertLetterboxTv(fetch, seriesId, {
+				season_number: seasonNumber ?? undefined
+			});
+			const job = res as JobSummary;
+			if (job?.job_id) {
+				toast(
+					seasonNumber == null
+						? 'Started show-wide revert job...'
+						: `Started season ${seasonNumber} revert job...`,
+					'good'
+				);
+				rehydrateJob(job.job_id);
+			} else {
+				toast('Reverted crops successfully.', 'good');
+			}
 			void refreshDetail();
 		} catch (e) {
 			toast(e instanceof Error ? e.message : 'Revert failed', 'bad');
@@ -482,7 +548,23 @@
 		<SectionHeader
 			title={detail.series.title}
 			subtitle={detail.series.year ? `Released in ${detail.series.year}` : 'Television Series'}
-		/>
+		>
+			{#snippet action()}
+				<div class="show-header-actions">
+					<ConfidencePopover
+						label="Apply"
+						levels={confidenceFor(null)}
+						count={candidateCount(null)}
+						onToggleLevel={(level) => toggleConfidenceLevel(null, level)}
+						onToggleAll={() => toggleConfidenceAll(null)}
+						onConfirm={() => runScopeApply(null)}
+					/>
+					<button class="btn btn-outline btn-sm" onclick={() => runScopeRevert(null)}>
+						Revert
+					</button>
+				</div>
+			{/snippet}
+		</SectionHeader>
 
 		<!-- Heatmap centerpiece -->
 		<div class="section-container">
@@ -607,15 +689,18 @@
 										>
 											Detect
 										</button>
+										<ConfidencePopover
+											label="Apply"
+											levels={confidenceFor(season.season_number)}
+											count={candidateCount(season.season_number)}
+											onToggleLevel={(level) =>
+												toggleConfidenceLevel(season.season_number, level)}
+											onToggleAll={() => toggleConfidenceAll(season.season_number)}
+											onConfirm={() => runScopeApply(season.season_number)}
+										/>
 										<button
 											class="btn btn-outline btn-sm"
-											onclick={() => runSeasonApply(season.season_number)}
-										>
-											Apply
-										</button>
-										<button
-											class="btn btn-outline btn-sm"
-											onclick={() => runSeasonRevert(season.season_number)}
+											onclick={() => runScopeRevert(season.season_number)}
 										>
 											Revert
 										</button>
@@ -1144,6 +1229,11 @@
 		flex-wrap: wrap;
 		gap: 12px;
 		justify-content: flex-end;
+	}
+	.show-header-actions {
+		display: flex;
+		align-items: center;
+		gap: 8px;
 	}
 	.scan-options {
 		display: flex;
