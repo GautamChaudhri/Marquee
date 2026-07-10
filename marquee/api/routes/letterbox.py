@@ -18,7 +18,7 @@ from typing import Annotated
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel
 from sqlalchemy import case, exists, func, select
 from sqlalchemy.exc import OperationalError
@@ -45,6 +45,7 @@ from marquee.core.letterbox_rollups import (
     show_rollup,
 )
 from marquee.core.letterbox_service import letterbox_service
+from marquee.core.letterbox_tv_scope import normalize_confidence_levels
 from marquee.core.media_files import (
     MediaFileNotFoundError,
     MediaFileUnavailableError,
@@ -1506,6 +1507,12 @@ class ApplyRequest(BaseModel):
 class TvApplyRequest(BaseModel):
     season_number: int | None = None
     episode_id: int | None = None
+    confidence_levels: list[str] | None = None
+
+
+class TvRevertRequest(BaseModel):
+    season_number: int | None = None
+    episode_id: int | None = None
 
 
 class BatchApplyRequest(BaseModel):
@@ -1556,12 +1563,21 @@ def _scope_episode_group(
     return [row for row in rows if row[3] == media_file_id]
 
 
+def _validate_confidence_levels(levels: list[str] | None) -> list[str] | None:
+    try:
+        normalize_confidence_levels(levels)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return ["high"] if levels is None else levels
+
+
 @router.post("/tv/{series_id}/apply")
 async def apply_tv_scope(
     series_id: int,
     body: TvApplyRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
+    confidence_levels = _validate_confidence_levels(body.confidence_levels)
     rows = await _tv_scope_rows(
         db,
         series_id,
@@ -1571,6 +1587,22 @@ async def apply_tv_scope(
         raise HTTPException(status_code=404, detail=f"Series id={series_id} not found")
     if body.episode_id is not None:
         rows = _scope_episode_group(rows, body.episode_id)
+    else:
+        job = await job_manager.create(
+            db,
+            job_type="letterbox_apply_tv_scope",
+            payload={
+                "series_id": series_id,
+                "season_number": body.season_number,
+                "confidence_levels": confidence_levels,
+            },
+            priority=70,
+            resources={"media_write": 1},
+            subject_type="series",
+            subject_id=series_id,
+            max_attempts=1,
+        )
+        return JSONResponse(job_summary(job), status_code=202)
 
     groups: dict[int, tuple[list[tuple[Episode, Series, LetterboxState | None, int | None]], LetterboxState]] = {}
     for row in rows:
@@ -1606,6 +1638,45 @@ async def apply_tv_scope(
         "applied_episodes": sum(len(item["episode_ids"]) for item in results),
         "items": results,
     }
+
+
+@router.post("/tv/{series_id}/revert")
+async def revert_tv_scope(
+    series_id: int,
+    body: TvRevertRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    rows = await _tv_scope_rows(
+        db,
+        series_id,
+        season_number=body.season_number if body.episode_id is None else None,
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail=f"Series id={series_id} not found")
+    if body.episode_id is not None:
+        group_rows = _scope_episode_group(rows, body.episode_id)
+        result = await letterbox_service.remove_episode_group(
+            db,
+            [episode for episode, *_rest in group_rows],
+            source="api",
+        )
+        return {
+            "removed": result.removed,
+            "path": result.path,
+            "episode_ids": [episode.id for episode, *_rest in group_rows],
+        }
+
+    job = await job_manager.create(
+        db,
+        job_type="letterbox_revert_tv_scope",
+        payload={"series_id": series_id, "season_number": body.season_number},
+        priority=70,
+        resources={"media_write": 1},
+        subject_type="series",
+        subject_id=series_id,
+        max_attempts=1,
+    )
+    return JSONResponse(job_summary(job), status_code=202)
 
 
 @router.post("/movies/{movie_id}/apply")

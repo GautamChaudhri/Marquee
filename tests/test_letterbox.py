@@ -15,6 +15,7 @@ import shutil
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -22,6 +23,7 @@ from sqlalchemy import select
 
 from marquee.config import settings
 from marquee.core import letterbox_reencode
+from marquee.core.jobs import builtin_handlers, job_manager
 from marquee.core.letterbox_reencode import ReencodePlanError, _mkdir_with_retry
 from marquee.core.letterbox_service import _resolve_media_file, letterbox_service
 from marquee.core.media_files import ensure_media_file_for_movie, resolve_row
@@ -1005,6 +1007,114 @@ async def test_detect_episode_batch_and_store_scans_sd_episode(db, monkeypatch, 
     await letterbox_manager.detect_episode_batch_and_store(db, episodes)
 
     assert detect_calls == ["s01e01.mkv"]
+
+
+@pytest.mark.asyncio
+async def test_letterbox_apply_tv_scope_handler_filters_confidence_levels(db, monkeypatch):
+    episodes, _media_files = await _seed_tv_detect_scope(db, season_numbers=[1, 1])
+    db.add_all(
+        [
+            LetterboxState(
+                media_type="episode",
+                episode_id=episodes[0].id,
+                status="candidate",
+                confidence="high",
+                recommended_crop_top=140,
+                recommended_crop_bottom=140,
+            ),
+            LetterboxState(
+                media_type="episode",
+                episode_id=episodes[1].id,
+                status="candidate",
+                confidence="medium",
+                recommended_crop_top=132,
+                recommended_crop_bottom=132,
+            ),
+        ]
+    )
+    await db.commit()
+
+    calls: list[list[int]] = []
+
+    async def fake_apply_episode_group(_db, grouped_episodes, *, top, bottom, source="api"):
+        calls.append([episode.id for episode in grouped_episodes])
+        return SimpleNamespace(applied=True, top=top, bottom=bottom, path="/tv/file.mkv", verified=True)
+
+    monkeypatch.setattr(
+        "marquee.core.letterbox_tv_scope.letterbox_service.apply_episode_group",
+        fake_apply_episode_group,
+    )
+
+    high_job = await job_manager.create(
+        db,
+        job_type="letterbox_apply_tv_scope",
+        payload={"series_id": episodes[0].series_id, "confidence_levels": ["high"]},
+    )
+    high_result = await builtin_handlers.letterbox_apply_tv_scope(high_job)
+
+    assert high_result["applied_episodes"] == 1
+    assert calls == [[episodes[0].id]]
+
+    all_job = await job_manager.create(
+        db,
+        job_type="letterbox_apply_tv_scope",
+        payload={"series_id": episodes[0].series_id, "confidence_levels": ["all"]},
+    )
+    all_result = await builtin_handlers.letterbox_apply_tv_scope(all_job)
+
+    assert all_result["applied_episodes"] == 2
+    assert calls[-2:] == [[episodes[0].id], [episodes[1].id]]
+
+
+@pytest.mark.asyncio
+async def test_letterbox_revert_tv_scope_handler_fans_out_shared_file(db, monkeypatch):
+    episodes, media_files = await _seed_tv_detect_scope(db, season_numbers=[1, 1])
+    media_files[1].is_active = False
+    db.add(EpisodeMediaFile(episode_id=episodes[1].id, media_file_id=media_files[0].id))
+    db.add_all(
+        [
+            LetterboxState(
+                media_type="episode",
+                episode_id=episodes[0].id,
+                status="tagged",
+                recommended_crop_top=140,
+                recommended_crop_bottom=140,
+                applied_crop_top=140,
+                applied_crop_bottom=140,
+            ),
+            LetterboxState(
+                media_type="episode",
+                episode_id=episodes[1].id,
+                status="tagged",
+                recommended_crop_top=140,
+                recommended_crop_bottom=140,
+                applied_crop_top=140,
+                applied_crop_bottom=140,
+            ),
+        ]
+    )
+    await db.commit()
+
+    calls: list[list[int]] = []
+
+    async def fake_remove_episode_group(_db, grouped_episodes, *, source="api"):
+        calls.append([episode.id for episode in grouped_episodes])
+        return SimpleNamespace(removed=True, path="/tv/shared.mkv")
+
+    monkeypatch.setattr(
+        "marquee.core.letterbox_tv_scope.letterbox_service.remove_episode_group",
+        fake_remove_episode_group,
+    )
+
+    job = await job_manager.create(
+        db,
+        job_type="letterbox_revert_tv_scope",
+        payload={"series_id": episodes[0].series_id},
+    )
+    result = await builtin_handlers.letterbox_revert_tv_scope(job)
+
+    assert result["removed_episodes"] == 2
+    assert calls == [[episodes[0].id, episodes[1].id]]
 
 
 @pytest.mark.asyncio

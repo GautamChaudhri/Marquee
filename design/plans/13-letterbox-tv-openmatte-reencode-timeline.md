@@ -23,3 +23,11 @@
 - exact next steps: add a clear-preview warm helper, schedule one before-frame for `not_letterboxed` TV detects, and add phase 3 tests
 - deviations from the plan and why: none
 - pending operator actions: none
+
+## After phase 3
+
+- completed: phase 3 — scanned-clear preview warm (`0425996785053cb95a7de008f2a7e496fd6c72b4`)
+- in progress: phase 4 — scoped apply/revert jobs + confidence filter
+- exact next steps: add TV apply confidence validation/filtering, extract scoped apply/revert helpers, register durable scope handlers, route scoped apply/revert to jobs, and add phase 4 tests
+- deviations from the plan and why: none
+- pending operator actions: none
