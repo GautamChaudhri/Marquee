@@ -31,3 +31,11 @@
 - exact next steps: add TV apply confidence validation/filtering, extract scoped apply/revert helpers, register durable scope handlers, route scoped apply/revert to jobs, and add phase 4 tests
 - deviations from the plan and why: none
 - pending operator actions: none
+
+## After phase 4
+
+- completed: phase 4 — scoped apply/revert jobs + confidence filter (`003e8d014f9df8477c7aed75097439b1e48f3d11`)
+- in progress: phase 5 — TV reencode
+- exact next steps: add single-episode TV reencode planning, confirm fan-out, artifact stamping/fan-out, TV batch reencode parent jobs, artifact filters/labels, bulk replace-ready, and phase 5 tests
+- deviations from the plan and why: none
+- pending operator actions: none

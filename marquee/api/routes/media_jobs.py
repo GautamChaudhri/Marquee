@@ -164,7 +164,7 @@ async def confirm_job(job_id: str, db: Annotated[AsyncSession, Depends(get_db)])
     if job.operation == "letterbox_reencode" and job.media_file_id is not None:
         from sqlalchemy import select
 
-        from marquee.models import MediaFile
+        from marquee.models import EpisodeMediaFile, MediaFile
         from marquee.models.letterbox import LetterboxState
 
         movie_file = await db.get(MediaFile, job.media_file_id)
@@ -177,6 +177,31 @@ async def confirm_job(job_id: str, db: Annotated[AsyncSession, Depends(get_db)])
             if state and state.status == "candidate":
                 state.status = "tagged"
                 state.reviewed = False
+        elif movie_file:
+            episode_ids = set(
+                (
+                    await db.execute(
+                        select(EpisodeMediaFile.episode_id).where(
+                            EpisodeMediaFile.media_file_id == job.media_file_id
+                        )
+                    )
+                ).scalars()
+            )
+            if job.request_json:
+                request = json.loads(job.request_json)
+                episode_ids.update(request.get("episode_ids") or [])
+            states = (
+                await db.execute(
+                    select(LetterboxState).where(
+                        LetterboxState.media_type == "episode",
+                        LetterboxState.episode_id.in_(episode_ids),
+                    )
+                )
+            ).scalars().all()
+            for state in states:
+                if state.status == "candidate":
+                    state.status = "tagged"
+                    state.reviewed = False
 
     await db.commit()
     return {"job_id": job_id, "status": "queued"}
