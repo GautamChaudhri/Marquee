@@ -895,8 +895,10 @@ async def letterbox_summary(db: Annotated[AsyncSession, Depends(get_db)]):
                 [(item.status, item.reviewed) for item in tv_items]
             ),
             "verdict_breakdown": {
-                "clear": sum(1 for item in tv_items if item.bucket == "clear"),
-                "sampled_clear": sum(1 for item in tv_items if item.bucket == "sampled_clear"),
+                "widescreen": sum(1 for item in tv_items if item.bucket == "widescreen"),
+                "sampled_widescreen": sum(
+                    1 for item in tv_items if item.bucket == "sampled_widescreen"
+                ),
                 "letterboxed_untreated": sum(1 for item in tv_items if item.bucket == "candidate"),
                 "tagged": sum(1 for item in tv_items if item.bucket == "tagged"),
                 "reencoded": sum(1 for item in tv_items if item.bucket == "reencoded"),
@@ -959,7 +961,8 @@ async def list_tv_letterbox(
             "rollup": rollup,
             "active_job_ids": await _active_tv_job_ids(db, series.id),
         }
-        if verdict and rollup["verdict"] != verdict:
+        content_types = {content_type["type"] for content_type in rollup["content_types"]}
+        if verdict and rollup["verdict"] != verdict and verdict not in content_types:
             continue
         if uniformity and rollup["uniformity"] != uniformity:
             continue
