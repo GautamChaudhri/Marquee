@@ -110,6 +110,11 @@ class Settings(BaseSettings):
         ge=30,
         description="Maximum seconds FFmpeg may go without emitting encode progress.",
     )
+    JOB_CANCEL_FORCE_SECONDS: int = Field(
+        default=30,
+        ge=1,
+        description="Seconds before recovery force-finalizes a requested cancellation.",
+    )
     JOB_MAX_RUNTIME_SECONDS: int = Field(
         default=3600,
         ge=60,
