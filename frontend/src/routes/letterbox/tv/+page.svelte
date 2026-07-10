@@ -97,9 +97,14 @@
 		const counts = rollup.bucket_counts || {};
 		return [
 			{
-				key: 'clear',
-				count: (counts.clear || 0) + (counts.sampled_clear || 0),
+				key: 'widescreen',
+				count: counts.widescreen || 0,
 				tone: 'good' as const
+			},
+			{
+				key: 'sampled_widescreen',
+				count: counts.sampled_widescreen || 0,
+				tone: 'sampled_widescreen' as const
 			},
 			{ key: 'candidate', count: counts.candidate || 0, tone: 'warn' as const },
 			{ key: 'tagged', count: counts.tagged || 0, tone: 'info' as const },
@@ -113,8 +118,8 @@
 
 	function getClearFraction(rollup: LetterboxTvShowRollup): string {
 		const counts = rollup.bucket_counts || {};
-		const clear = (counts.clear || 0) + (counts.sampled_clear || 0);
-		return `${clear}/${rollup.episodes_total}`;
+		const content = (counts.widescreen || 0) + (counts.sampled_widescreen || 0);
+		return `${content}/${rollup.episodes_total}`;
 	}
 
 	async function runBatch() {

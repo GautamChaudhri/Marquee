@@ -1807,11 +1807,34 @@ export interface SubgenSettings {
 }
 
 // ── TV Letterbox Types ────────────────────────────────────────────────────────
+export type LetterboxTvBucket =
+	| 'widescreen'
+	| 'sampled_widescreen'
+	| 'candidate'
+	| 'tagged'
+	| 'reencoded'
+	| 'variable'
+	| 'open_matte'
+	| 'pillarbox'
+	| 'ineligible'
+	| 'error'
+	| 'unanalyzed';
+
+export type LetterboxTvVerdict = 'needs_action' | 'treated' | 'ok' | 'unanalyzed';
+export type LetterboxTvContentType = 'widescreen' | 'open_matte' | 'pillarbox';
+export type LetterboxTvUniformity = 'uniform' | 'clean_mixed' | 'dirty_mixed' | null;
+
+export interface LetterboxTvContentCount {
+	type: LetterboxTvContentType;
+	count: number;
+}
+
 export interface LetterboxTvShowRollup {
-	bucket_counts: Record<string, number>;
+	bucket_counts: Record<LetterboxTvBucket, number>;
+	content_types: LetterboxTvContentCount[];
 	dominant_aspect_label: string | null;
-	verdict: string;
-	uniformity: string;
+	verdict: LetterboxTvVerdict;
+	uniformity: LetterboxTvUniformity;
 	episodes_total: number;
 	has_candidates: boolean;
 }
@@ -1832,7 +1855,7 @@ export interface LetterboxTvEpisode {
 	episode_number: number;
 	code: string;
 	title: string | null;
-	bucket: string;
+	bucket: LetterboxTvBucket;
 	status: string | null;
 	confidence: string | null;
 	aspect_label: string | null;
@@ -1853,10 +1876,11 @@ export interface LetterboxTvSeason {
 	season_number: number;
 	is_specials: boolean;
 	rollup: {
-		bucket_counts: Record<string, number>;
+		bucket_counts: Record<LetterboxTvBucket, number>;
+		content_types: LetterboxTvContentCount[];
 		dominant_aspect_label: string | null;
-		verdict: string;
-		uniformity: string;
+		verdict: LetterboxTvVerdict;
+		uniformity: LetterboxTvUniformity;
 		episodes_total: number;
 		has_candidates: boolean;
 	};

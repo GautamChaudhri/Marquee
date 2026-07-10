@@ -35,6 +35,7 @@
 	import ReencodePlanModal from '$lib/components/letterbox/ReencodePlanModal.svelte';
 	import type {
 		ShowUniformity,
+		LetterboxTvBucket,
 		LetterboxTvEpisode,
 		LetterboxTvSeason,
 		LetterboxEpisodeDetail,
@@ -47,12 +48,17 @@
 
 	// Buckets whose detail view shows an editable before/after crop pair — an
 	// undecided or applied-but-unconfirmed crop the user might still change.
-	// Everything else (clear/sampled_clear/variable/reencoded/etc.) is settled,
+	// Everything else (widescreen/sampled_widescreen/variable/reencoded/etc.) is settled,
 	// so its detail view shows exactly one confirmation frame.
 	const PAIR_PREVIEW_BUCKETS = new Set(['candidate', 'tagged']);
 	// Buckets whose preview frame(s) are worth warming ahead of expand — settled
-	// clear/sampled_clear buckets only need their single before frame.
-	const PREFETCH_BUCKETS = new Set(['candidate', 'tagged', 'clear', 'sampled_clear']);
+	// Widescreen buckets only need their single before frame.
+	const PREFETCH_BUCKETS = new Set([
+		'candidate',
+		'tagged',
+		'widescreen',
+		'sampled_widescreen'
+	]);
 
 	const expandedEpisodeIds = new SvelteSet<number>();
 	const episodeDetails = new SvelteMap<number, LetterboxEpisodeDetail>();
@@ -428,7 +434,9 @@
 	async function runScopeRevert(seasonNumber: number | null) {
 		const targets = scopeEpisodes(seasonNumber).filter(
 			(ep: LetterboxTvEpisode) =>
-				ep.bucket !== 'unanalyzed' && ep.bucket !== 'clear' && ep.bucket !== 'sampled_clear'
+				ep.bucket !== 'unanalyzed' &&
+				ep.bucket !== 'widescreen' &&
+				ep.bucket !== 'sampled_widescreen'
 		);
 
 		if (targets.length === 0) {
@@ -789,8 +797,8 @@
 		string,
 		{ label: string; tone: 'good' | 'info' | 'warn' | 'dovi' | 'muted' | 'bad' | 'gold' }
 	> = {
-		clear: { label: 'Clear', tone: 'good' },
-		sampled_clear: { label: 'Sampled Clear', tone: 'good' },
+		widescreen: { label: 'Widescreen', tone: 'good' },
+		sampled_widescreen: { label: 'Sampled Widescreen', tone: 'good' },
 		candidate: { label: 'Candidate', tone: 'warn' },
 		tagged: { label: 'Tagged', tone: 'info' },
 		reencoded: { label: 'Reencoded', tone: 'gold' },
@@ -811,11 +819,11 @@
 		mixed: { label: 'Mixed', tone: 'dovi' },
 		unanalyzed: { label: 'Unanalyzed', tone: 'muted' }
 	};
-	const SEASON_BUCKET_ORDER = [
+	const SEASON_BUCKET_ORDER: LetterboxTvBucket[] = [
 		'candidate',
 		'tagged',
-		'clear',
-		'sampled_clear',
+		'widescreen',
+		'sampled_widescreen',
 		'reencoded',
 		'variable',
 		'open_matte',
@@ -927,8 +935,8 @@
 						<label for="filter-verdict">Verdict</label>
 						<select id="filter-verdict" class="filter-select" bind:value={selectedVerdict}>
 							<option value="all">All Verdicts</option>
-							<option value="clear">Clear</option>
-							<option value="sampled_clear">Sampled Clear</option>
+							<option value="widescreen">Widescreen</option>
+							<option value="sampled_widescreen">Sampled Widescreen</option>
 							<option value="candidate">Candidate</option>
 							<option value="tagged">Tagged</option>
 							<option value="reencoded">Reencoded</option>

@@ -45,3 +45,19 @@ Shared timeline for backend plan 15 and its frontend sibling.
 - Pending operator actions: commit the remaining changes, deploy backend and frontend
   together, and re-select any saved legacy TV filter URLs. No manual verification beyond the
   automated suite was performed.
+
+## Frontend Step 1 — types and tokens
+
+- Completed: `5a2709d update tv letterbox types`.
+- Timeline reconciliation: the Backend Phase 2 “commit pending” entry is stale; Git history
+  confirms `f237d9d plan 15 fully done` committed the route payload contract before frontend
+  work began.
+- Changes: added typed TV letterbox buckets, verdicts, content types, nullable uniformity, a
+  shared TV bucket metadata map, teal/magenta and accessible foreground tokens, and renamed
+  stale TV bucket literals exposed by the stricter unions. HDR uniformity types remain separate.
+- Verification: `npm run check` passed with the baseline 16 Svelte warnings; `npm run build`
+  passed with baseline warnings. `npm run lint` still exits only for the pre-existing Prettier
+  drift in prohibited `LetterboxDetail.svelte` and the pre-existing TV detail file; the new
+  metadata file is formatted and adds no lint finding.
+- Scope guard: no diff in movie letterbox pages, `LetterboxDetail.svelte`, HDR, subtitle, or
+  heatmap files.

@@ -12,7 +12,9 @@ export type Tone =
 	| 'muted'
 	| 'cpu'
 	| 'gpu'
-	| 'sampled_clear';
+	| 'sampled_widescreen'
+	| 'teal'
+	| 'magenta';
 
 /** Per-film deterministic gradient (handoff §1). hash(title) → palette index. */
 export const GRADS: [string, string, string][] = [
@@ -54,7 +56,9 @@ export function posterStatusFromSummary(summary: PosterSummary): PosterStatus {
 }
 
 export function toneVar(tone: Tone): string {
-	if (tone === 'sampled_clear') return 'color-mix(in srgb, var(--good) 40%, var(--ink3))';
+	if (tone === 'sampled_widescreen') {
+		return 'color-mix(in srgb, var(--good) 62%, var(--panel))';
+	}
 	return tone === 'muted' ? 'var(--faint)' : `var(--${tone})`;
 }
 
