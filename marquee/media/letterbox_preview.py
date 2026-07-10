@@ -318,6 +318,33 @@ def warm_previews(
     return generated
 
 
+def warm_clear_preview(
+    source: Path | str,
+    *,
+    subject_key: str | int,
+    minute: int,
+    candidate_minutes: list[int] | None,
+) -> list[Path]:
+    """Render one bright before-frame for a scanned-clear episode."""
+    if binaries.resolve("ffmpeg") is None:
+        return []
+
+    normalized_subject_key = _coerce_subject_key(subject_key)
+    purge_previews(normalized_subject_key)
+    out = generate_preview(
+        source,
+        subject_key=normalized_subject_key,
+        minute=minute,
+        mode="before",
+        crop_top=0,
+        crop_bottom=0,
+        candidate_minutes=candidate_minutes,
+        exact=False,
+        force=True,
+    )
+    return [out] if out is not None else []
+
+
 def purge_movie_previews(movie_id: int) -> int:
     for key in [
         cache_key

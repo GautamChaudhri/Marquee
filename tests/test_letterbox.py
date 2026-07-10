@@ -70,6 +70,10 @@ def neutralize_media_roots(monkeypatch):
     monkeypatch.setattr(settings, "SONARR_MEDIA_PATH", None)
     monkeypatch.setattr(settings, "RADARR_PATH_PREFIX", None)
     monkeypatch.setattr(settings, "MEDIA_ROOTS", [])
+    monkeypatch.setattr(
+        "marquee.media.letterbox_manager._schedule_clear_preview_warm",
+        lambda *a, **k: None,
+    )
     yield
 
 
@@ -626,6 +630,106 @@ async def test_detect_episode_group_and_store_fans_out_one_file_result(db, monke
     assert {state.status for state in stored} == {"candidate"}
     assert {state.recommended_crop_top for state in stored} == {140}
     assert len(events) == 2
+
+
+@pytest.mark.asyncio
+async def test_detect_episode_group_and_store_schedules_clear_warm_for_each_episode(
+    db, monkeypatch, tmp_path
+):
+    series = Series(title="Show", year=2020, series_path="/tv/show", tvdb_id=1)
+    db.add(series)
+    await db.commit()
+    await db.refresh(series)
+
+    episode_a = Episode(
+        series_id=series.id,
+        season_number=1,
+        episode_number=1,
+        title="One",
+        episode_file_path="Show.S01E01-E02.mkv",
+        video_width=1920,
+        video_height=1080,
+    )
+    episode_b = Episode(
+        series_id=series.id,
+        season_number=1,
+        episode_number=2,
+        title="Two",
+        episode_file_path="Show.S01E01-E02.mkv",
+        video_width=1920,
+        video_height=1080,
+    )
+    db.add_all([episode_a, episode_b])
+    await db.commit()
+    await db.refresh(episode_a)
+    await db.refresh(episode_b)
+
+    media_path = tmp_path / "Show.S01E01-E02.mkv"
+    media_path.write_bytes(b"episode")
+
+    async def fake_resolve_media_file(_db, media_file_id):
+        assert media_file_id == 500
+        return type("Resolved", (), {"path": media_path})()
+
+    def fake_detect_episode_blocking(*_args, **_kwargs):
+        return {
+            "status": "not_letterboxed",
+            "confidence": "none",
+            "eligible": True,
+            "ineligible_reason": None,
+            "source_width": 1920,
+            "source_height": 1080,
+            "recommended_crop_top": 0,
+            "recommended_crop_bottom": 0,
+            "aspect_label": "1.78:1",
+            "detect_method": "cropdetect",
+            "samples_json": json.dumps(
+                [
+                    {"minute": 10, "ok": False},
+                    {"minute": 15, "ok": True},
+                    {"minute": 20, "ok": True},
+                ]
+            ),
+            "error": None,
+            "variable_ar": False,
+            "variable_ar_note": None,
+            "_source_path": str(media_path),
+            "_container": "mkv",
+        }
+
+    warm_calls: list[dict] = []
+
+    def fake_schedule_clear_preview_warm(source_path, **kwargs):
+        warm_calls.append({"source_path": source_path, **kwargs})
+
+    monkeypatch.setattr("marquee.media.letterbox_manager.resolve_media_file", fake_resolve_media_file)
+    monkeypatch.setattr(letterbox_manager, "detect_episode_blocking", fake_detect_episode_blocking)
+    monkeypatch.setattr(
+        "marquee.media.letterbox_manager._schedule_clear_preview_warm",
+        fake_schedule_clear_preview_warm,
+    )
+
+    states = await letterbox_manager.detect_episode_group_and_store(
+        db,
+        [episode_a, episode_b],
+        media_file_id=500,
+    )
+
+    assert {state.status for state in states} == {"not_letterboxed"}
+    assert warm_calls == [
+        {
+            "source_path": str(media_path),
+            "subject_key": letterbox_preview.episode_subject_key(episode_a.id),
+            "minute": 15,
+            "candidate_minutes": [15, 20],
+        },
+        {
+            "source_path": str(media_path),
+            "subject_key": letterbox_preview.episode_subject_key(episode_b.id),
+            "minute": 15,
+            "candidate_minutes": [15, 20],
+        },
+    ]
 
 
 @pytest.mark.asyncio
@@ -1607,6 +1711,73 @@ def test_warm_movie_previews_renders_every_ok_sample(tmp_path, monkeypatch):
     assert all(call["force"] is True for call in calls)
     assert len(outputs) == 8
     assert all(path.exists() for path in outputs)
+
+
+def test_warm_clear_preview_renders_one_bright_before_frame(tmp_path, monkeypatch):
+    preview_root = _preview_root(tmp_path, monkeypatch)
+    stale = preview_root / "episode-7_before_99_legacy.webp"
+    stale.parent.mkdir(parents=True, exist_ok=True)
+    stale.write_bytes(b"stale")
+
+    monkeypatch.setattr(binaries, "resolve", lambda name: "/usr/bin/ffmpeg")
+    calls = []
+
+    def fake_generate_preview(
+        source,
+        *,
+        subject_key,
+        minute,
+        mode,
+        crop_top,
+        crop_bottom,
+        candidate_minutes=None,
+        exact=False,
+        force=False,
+        **_kwargs,
+    ):
+        calls.append(
+            {
+                "source": source,
+                "subject_key": subject_key,
+                "minute": minute,
+                "mode": mode,
+                "crop_top": crop_top,
+                "crop_bottom": crop_bottom,
+                "candidate_minutes": list(candidate_minutes or []),
+                "exact": exact,
+                "force": force,
+            }
+        )
+        out = letterbox_preview.preview_path(subject_key, mode, minute, exact=exact)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_bytes(b"preview")
+        return out
+
+    monkeypatch.setattr(letterbox_preview, "generate_preview", fake_generate_preview)
+
+    outputs = letterbox_preview.warm_clear_preview(
+        "/episode.mkv",
+        subject_key=letterbox_preview.episode_subject_key(7),
+        minute=15,
+        candidate_minutes=[15, 20],
+    )
+
+    assert stale.exists() is False
+    assert calls == [
+        {
+            "source": "/episode.mkv",
+            "subject_key": "episode-7",
+            "minute": 15,
+            "mode": "before",
+            "crop_top": 0,
+            "crop_bottom": 0,
+            "candidate_minutes": [15, 20],
+            "exact": False,
+            "force": True,
+        }
+    ]
+    assert len(outputs) == 1
+    assert outputs[0].exists()
 
 
 def test_preview_cache_key_separates_exact_and_bright(tmp_path, monkeypatch):
