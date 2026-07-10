@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import os
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -206,6 +209,141 @@ def test_parse_progress_exposes_speed_and_fps():
         "fps": 59.94,
         "speed": 2.5,
     }
+
+
+def _encode_source_info() -> lr.SourceVideo:
+    return lr.SourceVideo(
+        codec="hevc",
+        width=1920,
+        height=1080,
+        pix_fmt="yuv420p",
+        color_transfer=None,
+        color_primaries=None,
+        color_space=None,
+        duration_s=60,
+        has_hdr=False,
+        has_dovi=False,
+        dovi_profile=None,
+        dovi_level=None,
+        dovi_el_present=None,
+        dovi_bl_signal_compatibility_id=None,
+        video_streams=1,
+        audio_streams=0,
+        subtitle_streams=0,
+        attachment_streams=0,
+    )
+
+
+async def _encode_job(db, job_id: str) -> MediaJob:
+    job = MediaJob(job_id=job_id, operation="letterbox_reencode", status="running")
+    db.add(job)
+    await db.commit()
+    return job
+
+
+@pytest.mark.asyncio
+async def test_encode_attempt_drains_flooded_stderr_and_returns_tail(db, tmp_path, monkeypatch):
+    job = await _encode_job(db, "stderr-flood")
+    script = (
+        "import sys; "
+        "sys.stderr.write('diagnostic-tail\\n' * 20000); sys.stderr.flush(); "
+        "print('out_time_ms=1000000'); print('progress=continue'); sys.stdout.flush(); "
+        "raise SystemExit(1)"
+    )
+    monkeypatch.setattr(lr.binaries, "resolve", lambda _name: sys.executable)
+    monkeypatch.setattr(lr, "build_ffmpeg_args", lambda *_args: ["-c", script])
+
+    async def emit(*_args, **_kwargs):
+        return None
+
+    succeeded, diagnostic = await asyncio.wait_for(
+        lr._run_encode_attempt(
+            db,
+            job,
+            emit,
+            tmp_path / "source.mkv",
+            tmp_path / "output.mkv",
+            {},
+            _encode_source_info(),
+        ),
+        timeout=5,
+    )
+
+    assert succeeded is False
+    assert "diagnostic-tail" in diagnostic
+
+
+@pytest.mark.asyncio
+async def test_encode_attempt_stall_terminates_output_and_emits_reason(db, tmp_path, monkeypatch):
+    job = await _encode_job(db, "encode-stall")
+    output = tmp_path / "partial.mkv"
+    output.write_bytes(b"partial")
+    script = (
+        "import sys, time; "
+        "sys.stderr.write('stalled-diagnostic\\n'); sys.stderr.flush(); "
+        "print('out_time_ms=1000000'); print('progress=continue'); sys.stdout.flush(); "
+        "time.sleep(60)"
+    )
+    events: list[dict] = []
+    monkeypatch.setattr(lr.settings, "JOB_ENCODE_STALL_SECONDS", 0.05)
+    monkeypatch.setattr(lr.binaries, "resolve", lambda _name: sys.executable)
+    monkeypatch.setattr(lr, "build_ffmpeg_args", lambda *_args: ["-c", script])
+
+    async def emit(_db, _job_id, stage, state, **kwargs):
+        events.append({"stage": stage, "state": state, **kwargs})
+
+    with pytest.raises(lr.ReencodePlanError, match="stalled-diagnostic") as exc:
+        await lr._run_encode_attempt(
+            db, job, emit, tmp_path / "source.mkv", output, {}, _encode_source_info()
+        )
+
+    assert exc.value.code == "encode_stalled"
+    assert not output.exists()
+    assert any(event["state"] == "stalled" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_encode_attempt_cancellation_reaps_child_process(db, tmp_path, monkeypatch):
+    job = await _encode_job(db, "encode-cancel")
+    script = "import sys, time; print('out_time_ms=1000000'); print('progress=continue'); sys.stdout.flush(); time.sleep(60)"
+    pids: list[int] = []
+    monkeypatch.setattr(lr.binaries, "resolve", lambda _name: sys.executable)
+    monkeypatch.setattr(lr, "build_ffmpeg_args", lambda *_args: ["-c", script])
+
+    async def record(pid: int):
+        pids.append(pid)
+
+    async def clear(_pid: int):
+        return None
+
+    async def emit(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(lr, "record_child_pid", record)
+    monkeypatch.setattr(lr, "clear_child_pid", clear)
+    task = asyncio.create_task(
+        lr._run_encode_attempt(
+            db,
+            job,
+            emit,
+            tmp_path / "source.mkv",
+            tmp_path / "output.mkv",
+            {},
+            _encode_source_info(),
+        )
+    )
+    await asyncio.wait_for(_wait_for_pid(pids), timeout=1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    with pytest.raises(ProcessLookupError):
+        os.kill(pids[0], 0)
+
+
+async def _wait_for_pid(pids: list[int]) -> None:
+    while not pids:
+        await asyncio.sleep(0.001)
 
 
 @pytest.mark.asyncio

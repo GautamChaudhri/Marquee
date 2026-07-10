@@ -95,6 +95,11 @@ class Settings(BaseSettings):
     JOB_HEARTBEAT_SECONDS: int = Field(default=10, ge=1, le=300)
     JOB_LEASE_SECONDS: int = Field(default=60, ge=10, le=3600)
     JOB_SHUTDOWN_GRACE_SECONDS: int = Field(default=30, ge=1, le=600)
+    JOB_ENCODE_STALL_SECONDS: int = Field(
+        default=120,
+        ge=30,
+        description="Maximum seconds FFmpeg may go without emitting encode progress.",
+    )
     JOB_MAX_RUNTIME_SECONDS: int = Field(
         default=3600,
         ge=60,

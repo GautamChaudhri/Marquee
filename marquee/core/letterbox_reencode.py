@@ -9,6 +9,7 @@ import logging
 import os
 import shutil
 import time
+from collections import deque
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -37,6 +38,10 @@ from marquee.models import (
 )
 
 logger = logging.getLogger(__name__)
+
+_STDERR_TAIL_MAX_LINES = 200
+_STDERR_TAIL_MAX_BYTES = 64 * 1024
+_PROCESS_TERMINATE_GRACE_SECONDS = 5.0
 
 
 class ReencodePlanError(Exception):
@@ -865,6 +870,74 @@ def _parse_progress(line: str, duration_s: float | None, values: dict[str, str])
     return progress
 
 
+async def _drain_stderr(stream: asyncio.StreamReader) -> str:
+    """Continuously drain stderr while retaining a bounded diagnostic tail."""
+    tail: deque[str] = deque()
+    tail_bytes = 0
+    pending = ""
+
+    def append(chunk: str) -> None:
+        nonlocal tail_bytes
+        tail.append(chunk)
+        tail_bytes += len(chunk.encode(errors="replace"))
+        while len(tail) > _STDERR_TAIL_MAX_LINES or tail_bytes > _STDERR_TAIL_MAX_BYTES:
+            tail_bytes -= len(tail.popleft().encode(errors="replace"))
+
+    while chunk := await stream.read(4096):
+        pending += chunk.decode(errors="replace")
+        lines = pending.splitlines(keepends=True)
+        pending = lines.pop() if lines and not lines[-1].endswith(("\n", "\r")) else ""
+        for line in lines:
+            append(line)
+    if pending:
+        append(pending)
+    return "".join(tail)
+
+
+async def _terminate_process(
+    proc: asyncio.subprocess.Process,
+    *,
+    grace_seconds: float = _PROCESS_TERMINATE_GRACE_SECONDS,
+) -> None:
+    """Terminate a child process without allowing cleanup to wait forever."""
+    if proc.returncode is not None:
+        return
+    with contextlib.suppress(ProcessLookupError):
+        proc.terminate()
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=grace_seconds)
+        return
+    except TimeoutError:
+        logger.warning("child process %s ignored SIGTERM; sending SIGKILL", proc.pid)
+    with contextlib.suppress(ProcessLookupError):
+        proc.kill()
+    with contextlib.suppress(TimeoutError):
+        await asyncio.wait_for(proc.wait(), timeout=grace_seconds)
+
+
+async def _finish_stderr_drain(stderr_task: asyncio.Task[str]) -> str:
+    try:
+        return await stderr_task
+    except asyncio.CancelledError:
+        raise
+    except Exception:  # noqa: BLE001 - diagnostics must not mask the encode result
+        logger.warning("failed to drain re-encode stderr", exc_info=True)
+        return ""
+
+
+async def _cancelled_encode_cleanup(
+    proc: asyncio.subprocess.Process,
+    output: Path | None,
+    stderr_task: asyncio.Task[str],
+) -> None:
+    """Complete critical child cleanup after the encode task is cancelled."""
+    await _terminate_process(proc)
+    if output is not None:
+        output.unlink(missing_ok=True)
+    await _finish_stderr_drain(stderr_task)
+    await clear_child_pid(proc.pid)
+
+
 async def _run_encode_attempt(
     db: AsyncSession,
     job: MediaJob,
@@ -882,14 +955,31 @@ async def _run_encode_attempt(
         stderr=asyncio.subprocess.PIPE,
     )
     await record_child_pid(proc.pid)
+    assert proc.stderr is not None
+    stderr_task = asyncio.create_task(_drain_stderr(proc.stderr))
+    cancellation_cleanup_started = False
     try:
         assert proc.stdout is not None
         # ffmpeg emits a progress packet several times per second. Publish every
         # packet live, but only persist it (and poll cancellation) about once/sec.
         last_persist = 0.0
+        last_progress = time.monotonic()
         progress_values: dict[str, str] = {}
         while True:
-            line = await proc.stdout.readline()
+            try:
+                line = await asyncio.wait_for(
+                    proc.stdout.readline(),
+                    timeout=max(0.0, settings.JOB_ENCODE_STALL_SECONDS - (time.monotonic() - last_progress)),
+                )
+            except TimeoutError:
+                await _terminate_process(proc)
+                output.unlink(missing_ok=True)
+                diagnostic = await _finish_stderr_drain(stderr_task)
+                message = "FFmpeg stopped emitting progress"
+                if diagnostic:
+                    message = f"{message}: {diagnostic[-1000:]}"
+                await emit(db, job.job_id, "encode", "stalled", message=message)
+                raise ReencodePlanError("encode_stalled", diagnostic or message) from None
             if not line:
                 break
             progress = _parse_progress(
@@ -898,6 +988,7 @@ async def _run_encode_attempt(
             if progress is None:
                 continue
             now = time.monotonic()
+            last_progress = now
             if now - last_persist < 1.0:
                 await emit(db, job.job_id, "encode", "running", progress=progress, persist=False)
                 continue
@@ -914,18 +1005,28 @@ async def _run_encode_attempt(
                 await proc.wait()
                 output.unlink(missing_ok=True)
                 raise ReencodePlanError("cancelled", "letterbox re-encode cancelled")
-        stderr = await proc.stderr.read() if proc.stderr is not None else b""
         await proc.wait()
-        diagnostic = stderr.decode(errors="replace")
+        diagnostic = await _finish_stderr_drain(stderr_task)
         if proc.returncode != 0:
             output.unlink(missing_ok=True)
             return False, diagnostic
         return True, diagnostic
     except asyncio.CancelledError:
-        output.unlink(missing_ok=True)
+        cancellation_cleanup_started = True
+        with contextlib.suppress(asyncio.CancelledError, TimeoutError):
+            await asyncio.shield(
+                asyncio.wait_for(
+                    _cancelled_encode_cleanup(proc, output, stderr_task),
+                    timeout=2 * _PROCESS_TERMINATE_GRACE_SECONDS + 2,
+                )
+            )
         raise
     finally:
-        await clear_child_pid(proc.pid)
+        if not cancellation_cleanup_started:
+            if proc.returncode is None:
+                await _terminate_process(proc)
+            await _finish_stderr_drain(stderr_task)
+            await clear_child_pid(proc.pid)
 
 
 async def execute_job(db: AsyncSession, job: MediaJob, emit) -> dict:
@@ -1119,6 +1220,9 @@ async def _run_checked(
         stderr=asyncio.subprocess.PIPE,
     )
     await record_child_pid(proc.pid)
+    assert proc.stderr is not None
+    stderr_task = asyncio.create_task(_drain_stderr(proc.stderr))
+    cancellation_cleanup_started = False
     try:
         loop = asyncio.get_running_loop()
         started = loop.time()
@@ -1127,22 +1231,34 @@ async def _run_checked(
                 await asyncio.wait_for(proc.wait(), timeout=1.0)
             except TimeoutError:
                 if timeout is not None and (loop.time() - started) > timeout:
-                    proc.terminate()
-                    await proc.wait()
+                    await _terminate_process(proc)
                     raise RuntimeError(f"{binary_name} timed out") from None
                 if db is not None and job is not None:
                     await db.refresh(job, ["cancel_requested"])
                     if job.cancel_requested:
-                        proc.terminate()
-                        await proc.wait()
+                        await _terminate_process(proc)
                         raise ReencodePlanError(
                             "cancelled", "letterbox re-encode cancelled"
                         ) from None
-        stderr = await proc.stderr.read() if proc.stderr is not None else b""
+        stderr = await _finish_stderr_drain(stderr_task)
+    except asyncio.CancelledError:
+        cancellation_cleanup_started = True
+        with contextlib.suppress(asyncio.CancelledError, TimeoutError):
+            await asyncio.shield(
+                asyncio.wait_for(
+                    _cancelled_encode_cleanup(proc, None, stderr_task),
+                    timeout=2 * _PROCESS_TERMINATE_GRACE_SECONDS + 2,
+                )
+            )
+        raise
     finally:
-        await clear_child_pid(proc.pid)
+        if not cancellation_cleanup_started:
+            if proc.returncode is None:
+                await _terminate_process(proc)
+            await _finish_stderr_drain(stderr_task)
+            await clear_child_pid(proc.pid)
     if proc.returncode != 0:
-        message = (stderr or b"").decode(errors="replace")[:500]
+        message = stderr[:500]
         raise RuntimeError(message or f"{binary_name} exited {proc.returncode}")
 
 
