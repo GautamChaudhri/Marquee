@@ -20,7 +20,7 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel
-from sqlalchemy import case, exists, func, select
+from sqlalchemy import case, delete, exists, func, select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
@@ -960,6 +960,100 @@ async def list_tv_letterbox(
     return {"total": len(items), "items": items}
 
 
+@router.post("/tv/dev/reset-all")
+async def dev_reset_all_tv(db: Annotated[AsyncSession, Depends(get_db)]):
+    """Dev: delete all TV letterbox workflow rows and cached episode previews."""
+    event_result = await db.execute(
+        delete(LetterboxEvent).where(LetterboxEvent.media_type == "episode")
+    )
+    state_result = await db.execute(
+        delete(LetterboxState).where(LetterboxState.media_type == "episode")
+    )
+    await db.commit()
+    previews_purged = letterbox_preview.purge_all_episode_previews()
+    return {
+        "states_deleted": state_result.rowcount or 0,
+        "events_deleted": event_result.rowcount or 0,
+        "previews_purged": previews_purged,
+    }
+
+
+class TvLibraryDetectRequest(BaseModel):
+    exhaustive: bool = False
+    force: bool = False
+
+
+def _tv_scope_child(
+    *,
+    series_id: int,
+    exhaustive: bool,
+    force: bool,
+    include_open_matte: bool = False,
+    season_number: int | None = None,
+    episode_id: int | None = None,
+) -> dict:
+    return {
+        "job_type": "letterbox_detect_tv_scope",
+        "payload": {
+            "series_id": series_id,
+            "season_number": season_number,
+            "episode_id": episode_id,
+            "exhaustive": exhaustive,
+            "force": force,
+            "include_open_matte": include_open_matte,
+        },
+        "priority": 60,
+        "resources": {"media_read": 1},
+        "subject_type": "series",
+        "subject_id": series_id,
+    }
+
+
+@router.post("/tv/detect", status_code=202)
+async def detect_tv_batch(
+    body: TvLibraryDetectRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    limiter: Annotated[RateLimiter, Depends(get_rate_limiter)],
+):
+    _require_ffmpeg()
+    enforce_rate_limit(limiter, "lb_detect_batch_tv", settings.RATE_LETTERBOX_BATCH_SECONDS)
+    series_rows = sorted(
+        {series.id: series for _episode, series, _state, _media_file_id in await _load_tv_episode_rows(db)}.values(),
+        key=lambda series: ((series.title or "").lower(), series.id),
+    )
+    if not series_rows:
+        raise HTTPException(status_code=400, detail="No downloaded TV series to analyze")
+
+    children = [
+        _tv_scope_child(
+            series_id=series.id,
+            exhaustive=body.exhaustive,
+            force=body.force,
+            include_open_matte=False,
+        )
+        for series in series_rows
+    ]
+    batch, _children = await job_manager.create_batch(
+        db,
+        parent_type="letterbox_detect_tv_batch",
+        parent_payload={
+            "series_ids": [series.id for series in series_rows],
+            "exhaustive": body.exhaustive,
+            "force": body.force,
+        },
+        parent_priority=60,
+        parent_subject_type="letterbox_tv_batch",
+        parent_subject_id=uuid4().hex,
+        children=children,
+    )
+    limiter.record("lb_detect_batch_tv")
+    return {
+        "job_id": batch.id,
+        "total": len(children),
+        "events_url": f"/api/jobs/{batch.id}/events",
+    }
+
+
 @router.get("/tv/{series_id}")
 async def tv_letterbox_detail(series_id: int, db: Annotated[AsyncSession, Depends(get_db)]):
     rows = await _load_tv_episode_rows(db, series_id=series_id)
@@ -1104,11 +1198,6 @@ class TvDetectRequest(BaseModel):
     include_open_matte: bool = False
 
 
-class TvLibraryDetectRequest(BaseModel):
-    exhaustive: bool = False
-    force: bool = False
-
-
 async def _resolve_batch_movie_ids(body: BatchDetectRequest, db: AsyncSession) -> list[int]:
     if body.movie_ids:
         return body.movie_ids
@@ -1202,32 +1291,6 @@ async def _tv_scope_rows(
     return rows
 
 
-def _tv_scope_child(
-    *,
-    series_id: int,
-    exhaustive: bool,
-    force: bool,
-    include_open_matte: bool = False,
-    season_number: int | None = None,
-    episode_id: int | None = None,
-) -> dict:
-    return {
-        "job_type": "letterbox_detect_tv_scope",
-        "payload": {
-            "series_id": series_id,
-            "season_number": season_number,
-            "episode_id": episode_id,
-            "exhaustive": exhaustive,
-            "force": force,
-            "include_open_matte": include_open_matte,
-        },
-        "priority": 60,
-        "resources": {"media_read": 1},
-        "subject_type": "series",
-        "subject_id": series_id,
-    }
-
-
 @router.post("/movies/{movie_id}/detect")
 async def detect_one(
     movie_id: int,
@@ -1267,51 +1330,6 @@ async def detect_batch(
     result = await _start_detect_job(body, db, detector="v2")
     limiter.record("lb_detect_batch")
     return result
-
-
-@router.post("/tv/detect", status_code=202)
-async def detect_tv_batch(
-    body: TvLibraryDetectRequest,
-    db: Annotated[AsyncSession, Depends(get_db)],
-    limiter: Annotated[RateLimiter, Depends(get_rate_limiter)],
-):
-    _require_ffmpeg()
-    enforce_rate_limit(limiter, "lb_detect_batch_tv", settings.RATE_LETTERBOX_BATCH_SECONDS)
-    series_rows = sorted(
-        {series.id: series for _episode, series, _state, _media_file_id in await _load_tv_episode_rows(db)}.values(),
-        key=lambda series: ((series.title or "").lower(), series.id),
-    )
-    if not series_rows:
-        raise HTTPException(status_code=400, detail="No downloaded TV series to analyze")
-
-    children = [
-        _tv_scope_child(
-            series_id=series.id,
-            exhaustive=body.exhaustive,
-            force=body.force,
-            include_open_matte=False,
-        )
-        for series in series_rows
-    ]
-    batch, _children = await job_manager.create_batch(
-        db,
-        parent_type="letterbox_detect_tv_batch",
-        parent_payload={
-            "series_ids": [series.id for series in series_rows],
-            "exhaustive": body.exhaustive,
-            "force": body.force,
-        },
-        parent_priority=60,
-        parent_subject_type="letterbox_tv_batch",
-        parent_subject_id=uuid4().hex,
-        children=children,
-    )
-    limiter.record("lb_detect_batch_tv")
-    return {
-        "job_id": batch.id,
-        "total": len(children),
-        "events_url": f"/api/jobs/{batch.id}/events",
-    }
 
 
 @router.post("/tv/{series_id}/detect", status_code=202)

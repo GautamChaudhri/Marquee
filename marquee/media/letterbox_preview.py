@@ -364,6 +364,29 @@ def purge_movie_previews(movie_id: int) -> int:
     return removed
 
 
+def purge_all_episode_previews() -> int:
+    """Delete all cached episode preview files and bright-minute decisions."""
+    for key in [
+        cache_key
+        for cache_key in _bright_minute_cache
+        if isinstance(cache_key[0], str) and cache_key[0].startswith("episode-")
+    ]:
+        del _bright_minute_cache[key]
+
+    root = settings.letterbox_preview_path
+    if not root.exists():
+        return 0
+
+    removed = 0
+    for path in root.glob("episode-*_*.webp"):
+        try:
+            path.unlink(missing_ok=True)
+            removed += 1
+        except OSError as exc:
+            logger.warning("episode preview purge failed for %s: %s", path.name, exc)
+    return removed
+
+
 def warm_movie_previews(
     source: Path | str,
     *,
