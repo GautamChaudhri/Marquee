@@ -101,6 +101,16 @@
 			bg: 'color-mix(in srgb, var(--dovi) 20%, var(--ink3))',
 			border: 'color-mix(in srgb, var(--dovi) 40%, var(--line))'
 		},
+		open_matte: {
+			label: 'Open Matte',
+			bg: 'color-mix(in srgb, var(--info) 9%, var(--ink3))',
+			border: 'color-mix(in srgb, var(--info) 22%, var(--line))'
+		},
+		pillarbox: {
+			label: 'Pillarbox',
+			bg: 'color-mix(in srgb, var(--dovi) 9%, var(--ink3))',
+			border: 'color-mix(in srgb, var(--dovi) 22%, var(--line))'
+		},
 		error: {
 			label: 'Error',
 			bg: 'color-mix(in srgb, var(--bad) 20%, var(--ink3))',
