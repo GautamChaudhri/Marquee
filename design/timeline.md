@@ -17,7 +17,14 @@ season × episode granularity, embedded Subgen) are planned in
 open-matte/pillarbox classification, confidence-filtered batch operations, the
 TV re-encode flow, show-page job progress, and TV letterbox resets — is planned
 in `design/plans/13` (same-number backend + frontend docs with one shared
-timeline; backend first).
+timeline; backend first). Phase 3 follows a verified production incident
+(2026-07-09: a stalled NVENC re-encode plus abandoned DB locks wedged the job
+platform and the cancel endpoint): `design/plans/14` hardens the job platform
+(stderr drain, stall watchdog, transaction hygiene, lock timeouts, automatic
+force-cancel, persistent re-encode bars) and `design/plans/15` replaces the
+Clear/Clean/Mixed vocabulary with content-descriptive TV verdicts (Widescreen /
+Open Matte / Pillarbox), the Uniform / Clean Mix / Dirty Mix uniformity model,
+and unique filled colors across the TV letterbox surfaces.
 
 ## Phase 1 - Core Infrastructure
 
