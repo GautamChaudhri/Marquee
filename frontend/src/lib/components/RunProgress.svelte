@@ -6,12 +6,14 @@
 		detail = {},
 		status = 'running',
 		title = 'Pipeline running',
-		onCancel
+		onCancel,
+		cancelDisabled = false
 	}: {
 		detail?: JobProgressDetail;
 		status?: string;
 		title?: string;
 		onCancel?: () => void;
+		cancelDisabled?: boolean;
 	} = $props();
 
 	const STAGE_LABELS: Record<string, string> = {
@@ -84,8 +86,10 @@
 		<span class="dot mq-pulse" style="--c:var(--{tone})"></span>
 		<span class="rp-title">{displayTitle}</span>
 		{#if pct != null}<span class="rp-pct mono">{pct}%</span>{/if}
-		{#if onCancel && !isCancelling}
-			<button class="rp-cancel" onclick={onCancel}>Cancel</button>
+		{#if onCancel}
+			<button class="rp-cancel" disabled={cancelDisabled || isCancelling} onclick={onCancel}>
+				{isCancelling ? 'Cancelling…' : 'Cancel'}
+			</button>
 		{/if}
 	</div>
 

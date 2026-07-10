@@ -154,6 +154,7 @@
 				progress: number;
 				status: string;
 				stage?: string;
+				cancelling?: boolean;
 				type?: string;
 				label?: string | null;
 				stop?: () => void;
@@ -291,12 +292,19 @@
 		activeRuns[jobId].stop = stop;
 	}
 
-	function cancelActiveRun(jobId: string) {
-		activeRuns[jobId]?.stop?.();
-		delete activeRuns[jobId];
-		void cancelJob(fetch, jobId).catch(() => {
-			// best effort — the run is already removed from the UI
-		});
+	async function cancelActiveRun(jobId: string) {
+		const run = activeRuns[jobId];
+		if (!run || run.cancelling) return;
+		try {
+			await cancelJob(fetch, jobId);
+			const current = activeRuns[jobId];
+			if (current) {
+				current.cancelling = true;
+				current.status = 'cancelling';
+			}
+		} catch {
+			toast('Could not cancel job', 'bad');
+		}
 	}
 
 	// Filters for Episode Table
@@ -875,11 +883,14 @@
 							<span class="active-run-label">
 								{displayJobLabel({ type: run.type ?? 'unknown', label: run.label })}
 							</span>
-							<span class="active-run-status mono">{run.stage ?? run.status}</span>
+							<span class="active-run-status mono"
+								>{run.cancelling ? 'cancelling' : (run.stage ?? run.status)}</span
+							>
 							<button
 								class="active-run-cancel"
 								type="button"
-								title="Cancel job"
+								disabled={run.cancelling}
+								title={run.cancelling ? 'Cancellation requested' : 'Cancel job'}
 								onclick={() => cancelActiveRun(jobId)}
 							>
 								✕

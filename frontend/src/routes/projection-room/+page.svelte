@@ -24,6 +24,7 @@
 	import { getMetrics, getMetricsHistory } from '$lib/api/system';
 	import type { SystemMetrics, SystemMetricsHistory } from '$lib/api/types';
 	import { jitterMs, trackJob, type JobProgressDetail } from '$lib/jobs';
+	import { toast } from '$lib/toast';
 	import type { PageData } from './$types';
 
 	let { data }: { data: PageData } = $props();
@@ -103,7 +104,13 @@
 			{
 				onProgress: ({ status, detail }) => {
 					const entry = trackedJobs.get(jobId);
-					if (entry) trackedJobs.set(jobId, { ...entry, status, detail });
+					if (entry) {
+						trackedJobs.set(jobId, {
+							...entry,
+							status: entry.status === 'cancelling' && status === 'running' ? 'cancelling' : status,
+							detail
+						});
+					}
 				},
 				onDone: () => {
 					stops.get(jobId)?.();
@@ -118,10 +125,14 @@
 		stops.set(jobId, stop);
 	}
 
-	function cancelTracked(jobId: string) {
-		const entry = trackedJobs.get(jobId);
-		if (entry) trackedJobs.set(jobId, { ...entry, status: 'cancelling' });
-		void cancelJob(fetch, jobId);
+	async function cancelTracked(jobId: string) {
+		try {
+			await cancelJob(fetch, jobId);
+			const entry = trackedJobs.get(jobId);
+			if (entry) trackedJobs.set(jobId, { ...entry, status: 'cancelling' });
+		} catch {
+			toast('Could not cancel job', 'bad');
+		}
 	}
 
 	// ── Live: queued jobs + resource/worker health (plain periodic refresh —
