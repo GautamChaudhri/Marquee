@@ -431,6 +431,46 @@ class TestTvDetect:
         children = (await db.execute(select(Job).where(Job.parent_id == parent.id))).scalars().all()
         assert {child.type for child in children} == {"letterbox_detect_tv_scope"}
         assert len(children) == 2
+        assert all(child.payload["include_open_matte"] is False for child in children)
+
+    async def test_series_detect_scope_forwards_include_open_matte_only_to_scoped_children(
+        self, client: AsyncClient, tv_library, db
+    ):
+        mixed_show = tv_library["mixed_show"]
+        ep1 = tv_library["ep1"]
+
+        show_resp = await client.post(
+            f"/api/letterbox/tv/{mixed_show.id}/detect",
+            json={"include_open_matte": True},
+        )
+        assert show_resp.status_code == 202
+        show_parent = await db.get(Job, show_resp.json()["job_id"])
+        show_children = (
+            await db.execute(select(Job).where(Job.parent_id == show_parent.id))
+        ).scalars().all()
+        assert all(child.payload["include_open_matte"] is False for child in show_children)
+
+        season_resp = await client.post(
+            f"/api/letterbox/tv/{mixed_show.id}/detect",
+            json={"season_number": 1, "include_open_matte": True},
+        )
+        assert season_resp.status_code == 202
+        season_parent = await db.get(Job, season_resp.json()["job_id"])
+        season_child = (
+            await db.execute(select(Job).where(Job.parent_id == season_parent.id))
+        ).scalar_one()
+        assert season_child.payload["include_open_matte"] is True
+
+        episode_resp = await client.post(
+            f"/api/letterbox/tv/{mixed_show.id}/detect",
+            json={"episode_id": ep1.id, "include_open_matte": True},
+        )
+        assert episode_resp.status_code == 202
+        episode_parent = await db.get(Job, episode_resp.json()["job_id"])
+        episode_child = (
+            await db.execute(select(Job).where(Job.parent_id == episode_parent.id))
+        ).scalar_one()
+        assert episode_child.payload["include_open_matte"] is True
 
     async def test_library_detect_builds_one_child_per_show(self, client: AsyncClient, tv_library, db):
         resp = await client.post("/api/letterbox/tv/detect", json={})
@@ -444,6 +484,7 @@ class TestTvDetect:
         children = (await db.execute(select(Job).where(Job.parent_id == parent.id))).scalars().all()
         assert len(children) == 2
         assert all(child.payload["force"] is False for child in children)
+        assert all(child.payload["include_open_matte"] is False for child in children)
 
     async def test_library_detect_passes_force_to_child_payloads(
         self, client: AsyncClient, tv_library, db

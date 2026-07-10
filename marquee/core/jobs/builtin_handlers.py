@@ -345,6 +345,7 @@ async def letterbox_detect_tv_scope(job: Job) -> dict[str, Any]:
     episode_id = job.payload.get("episode_id")
     exhaustive = bool(job.payload.get("exhaustive", False))
     force = bool(job.payload.get("force", False))
+    include_open_matte = bool(job.payload.get("include_open_matte", False))
 
     async with factory() as db:
         series = await db.get(Series, series_id)
@@ -398,6 +399,7 @@ async def letterbox_detect_tv_scope(job: Job) -> dict[str, Any]:
             episodes,
             exhaustive=exhaustive,
             force=force,
+            include_open_matte=include_open_matte,
             use_season_triage=episode_id is None,
             parent_job_id=job.parent_id,
         )

@@ -36,6 +36,7 @@ from marquee.core.letterbox_prefilter import (
     episode_state_has_detector_truth,
     prefilter_category_episode,
     refresh_letterbox_prefilter_for_episode,
+    tv_dimension_class,
 )
 from marquee.core.letterbox_service import letterbox_service
 from marquee.core.media_files import MediaFileUnavailableError, resolve_media_file
@@ -842,6 +843,7 @@ class LetterboxManager:
         *,
         exhaustive: bool = False,
         force: bool = False,
+        include_open_matte: bool = False,
         use_season_triage: bool = True,
         parent_job_id: str | None = None,
     ) -> list[LetterboxState]:
@@ -873,6 +875,11 @@ class LetterboxManager:
         touched_states: list[LetterboxState] = []
         pending_items: list[EpisodeBatchItem] = []
         episodes_by_id = {episode.id: episode for episode in ordered_episodes if episode.id is not None}
+        seasons_with_dimension_class: set[int] = set()
+
+        for episode in ordered_episodes:
+            if tv_dimension_class(episode.video_width, episode.video_height):
+                seasons_with_dimension_class.add(episode.season_number)
 
         for episode in ordered_episodes:
             state = await refresh_letterbox_prefilter_for_episode(db, episode, now=now)
@@ -908,6 +915,11 @@ class LetterboxManager:
                     },
                 )
                 touched_states.append(state)
+                continue
+
+            # Source AR proves these are not letterbox candidates; skip them
+            # even when force is set unless the explicit escape hatch is on.
+            if tv_dimension_class(episode.video_width, episode.video_height) and not include_open_matte:
                 continue
 
             # sampled_clear is detector truth, which is why exhaustive used to
@@ -971,6 +983,9 @@ class LetterboxManager:
         for season_number in sorted(seasons):
             season_items = seasons[season_number]
             season_groups = group_episode_items_by_media_file(season_items)
+            if season_number in seasons_with_dimension_class:
+                touched_states.extend(await scan_groups(season_groups))
+                continue
             sample_items = select_season_sample_episodes(
                 season_items,
                 count=settings.LETTERBOX_TV_SEASON_SAMPLE_EPISODES,
