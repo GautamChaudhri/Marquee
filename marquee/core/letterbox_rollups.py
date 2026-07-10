@@ -5,8 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 BUCKET_ORDER = (
-    "clear",
-    "sampled_clear",
+    "widescreen",
+    "sampled_widescreen",
     "candidate",
     "tagged",
     "reencoded",
@@ -18,13 +18,14 @@ BUCKET_ORDER = (
     "unanalyzed",
 )
 BAR_BEARING_BUCKETS = {"candidate", "tagged", "reencoded", "variable"}
+CONTENT_TYPE_ORDER = ("widescreen", "open_matte", "pillarbox")
 
 
 def episode_bucket(status: str | None) -> str:
     if status == "not_letterboxed":
-        return "clear"
+        return "widescreen"
     if status == "sampled_clear":
-        return "sampled_clear"
+        return "sampled_widescreen"
     if status in {"candidate", "skipped"}:
         return "candidate"
     if status == "tagged":
@@ -80,35 +81,60 @@ def _dominant_aspect_label(episodes: list[EpisodeLetterbox]) -> str | None:
     return sorted(counts.items(), key=lambda item: (-item[1], item[0]))[0][0]
 
 
-def _season_uniformity(episodes: list[EpisodeLetterbox]) -> str:
-    labels = {
-        episode.aspect_label
-        for episode in episodes
-        if episode.bucket in BAR_BEARING_BUCKETS and episode.aspect_label
-    }
-    return "uniform" if len(labels) <= 1 else "mixed"
+def _presentation_label(episode: EpisodeLetterbox) -> str | None:
+    if episode.bucket in {"widescreen", "sampled_widescreen"}:
+        return "widescreen"
+    if episode.bucket in {"open_matte", "pillarbox"}:
+        return episode.bucket
+    if episode.bucket in {"candidate", "tagged", "reencoded"}:
+        return episode.aspect_label
+    return None
+
+
+def _season_uniformity(episodes: list[EpisodeLetterbox]) -> str | None:
+    if any(episode.bucket == "variable" for episode in episodes):
+        return "dirty_mixed"
+
+    labels = {_presentation_label(episode) for episode in episodes}
+    labels.discard(None)
+    if not labels:
+        return None
+    return "uniform" if len(labels) == 1 else "dirty_mixed"
 
 
 def _verdict_for_counts(counts: dict[str, int]) -> str:
-    present = {bucket for bucket, count in counts.items() if count > 0}
-    om_pb = {"open_matte", "pillarbox"}
-    if present and present <= {*om_pb, "ineligible"}:
-        return "clean"
-    if not present or present <= {"unanalyzed", "ineligible", *om_pb}:
-        return "unanalyzed"
-    if present <= {"clear", "sampled_clear", *om_pb}:
-        return "clean"
-    if present <= {"clear", "sampled_clear", "tagged", "reencoded", *om_pb}:
-        return "treated"
-    if present <= {"clear", "sampled_clear", "candidate", *om_pb}:
+    if counts["candidate"] or counts["error"]:
         return "needs_action"
-    return "mixed"
+    if counts["tagged"] or counts["reencoded"]:
+        return "treated"
+    if any(
+        counts[bucket]
+        for bucket in ("widescreen", "sampled_widescreen", "open_matte", "pillarbox", "variable")
+    ):
+        return "ok"
+    return "unanalyzed"
+
+
+def _content_types(counts: dict[str, int]) -> list[dict[str, int | str]]:
+    content_counts = {
+        "widescreen": counts["widescreen"] + counts["sampled_widescreen"],
+        "open_matte": counts["open_matte"],
+        "pillarbox": counts["pillarbox"],
+    }
+    return [
+        {"type": content_type, "count": count}
+        for content_type, count in sorted(
+            content_counts.items(), key=lambda item: (-item[1], CONTENT_TYPE_ORDER.index(item[0]))
+        )
+        if count
+    ]
 
 
 def season_rollup(episodes: list[EpisodeLetterbox]) -> dict:
     counts = _bucket_counts(episodes)
     return {
         "bucket_counts": counts,
+        "content_types": _content_types(counts),
         "dominant_aspect_label": _dominant_aspect_label(episodes),
         "verdict": _verdict_for_counts(counts),
         "uniformity": _season_uniformity(episodes),
@@ -124,18 +150,18 @@ def show_rollup(season_rollups: dict[int, dict]) -> dict:
         for bucket, value in rollup["bucket_counts"].items():
             counts[bucket] += value
 
-    contributing = [
-        rollup
-        for rollup in non_special.values()
-        if any(rollup["bucket_counts"][bucket] > 0 for bucket in ("candidate", "tagged", "reencoded", "variable"))
-    ]
-    if not contributing:
-        uniformity = "uniform"
-    elif all(rollup["uniformity"] == "uniform" for rollup in contributing):
-        labels = {rollup["dominant_aspect_label"] for rollup in contributing}
-        uniformity = "uniform" if len(labels) <= 1 else "uniform_by_season"
+    voting_seasons = [rollup for rollup in non_special.values() if rollup["uniformity"] is not None]
+    if not voting_seasons:
+        uniformity = None
+    elif any(rollup["uniformity"] != "uniform" for rollup in voting_seasons):
+        uniformity = "dirty_mixed"
     else:
-        uniformity = "mixed"
+        label_sets = {
+            tuple(content_type["type"] for content_type in rollup["content_types"])
+            or (rollup["dominant_aspect_label"],)
+            for rollup in voting_seasons
+        }
+        uniformity = "uniform" if len(label_sets) == 1 else "clean_mixed"
 
     dominant_counts: dict[str, int] = {}
     for rollup in non_special.values():
@@ -145,6 +171,7 @@ def show_rollup(season_rollups: dict[int, dict]) -> dict:
 
     return {
         "bucket_counts": counts,
+        "content_types": _content_types(counts),
         "dominant_aspect_label": (
             sorted(dominant_counts.items(), key=lambda item: (-item[1], item[0]))[0][0]
             if dominant_counts

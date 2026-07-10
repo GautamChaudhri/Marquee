@@ -350,8 +350,8 @@ class TestSummary:
         }
         assert body["tv"]["shows_total"] == 2
         assert body["tv"]["episodes_total"] == 6  # specials excluded
-        assert body["tv"]["show_verdict_counts"]["clean"] == 1
-        assert body["tv"]["show_verdict_counts"]["mixed"] == 1
+        assert body["tv"]["show_verdict_counts"]["ok"] == 1
+        assert body["tv"]["show_verdict_counts"]["needs_action"] == 1
         assert body["tv"]["aspect_distribution"] == {"2.40:1": 3}
 
     async def test_summary_excludes_open_matte_from_tv_aspect_distribution(
@@ -372,8 +372,8 @@ class TestTvList:
 
         assert body["total"] == 2
         by_title = {item["title"]: item for item in body["items"]}
-        assert by_title["Clean Show"]["rollup"]["verdict"] == "clean"
-        assert by_title["Mixed Show"]["rollup"]["verdict"] == "mixed"
+        assert by_title["Clean Show"]["rollup"]["verdict"] == "ok"
+        assert by_title["Mixed Show"]["rollup"]["verdict"] == "needs_action"
         assert by_title["Mixed Show"]["active_job_ids"] == ["tv-active-job"]
 
     async def test_list_filters_by_has_candidates(self, client: AsyncClient, tv_library):

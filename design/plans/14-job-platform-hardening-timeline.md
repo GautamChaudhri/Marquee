@@ -93,3 +93,16 @@ Shared timeline for backend plan 14 and its frontend sibling.
   bridge snapshot shape (`progress.percent` and `progress.stage`); the live bar/reload smoke remains pending.
   `npm run lint` remains blocked by the same two pre-existing Prettier violations; check and build pass.
 - Pending operator actions: perform the plan §3 GPU-box/live-media smoke, including reload and cancellation.
+
+## Frontend F3 — honest cancellation feedback
+
+- Completed: `6c0f4e2 report job cancellation failures`.
+- In progress: frontend plan complete; operator GPU-box/live-media smoke remains pending.
+- Exact next steps: on the GPU box, run the plan §3 single-episode re-encode smoke through show-page
+  rehydration and both cancellation surfaces; confirm ffmpeg exits and reservations release.
+- Deviations: no manual live-media verification was performed. `npm run check` passed with 16 existing
+  Svelte warnings and `npm run build` passed. `npm run lint` remains blocked only by the pre-existing
+  Prettier violations in `src/lib/components/LetterboxDetail.svelte` and
+  `src/routes/letterbox/tv/[id]/+page.svelte`.
+- Pending operator actions: perform the plan §3 GPU-box/live-media smoke, including a rejected cancel
+  against a finished job; no manual verification beyond automated frontend gates was performed.

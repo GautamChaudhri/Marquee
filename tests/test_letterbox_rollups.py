@@ -45,8 +45,8 @@ def _episode_dims(width: int | None, height: int | None):
 
 
 def test_episode_bucket_maps_statuses():
-    assert episode_bucket("not_letterboxed") == "clear"
-    assert episode_bucket("sampled_clear") == "sampled_clear"
+    assert episode_bucket("not_letterboxed") == "widescreen"
+    assert episode_bucket("sampled_clear") == "sampled_widescreen"
     assert episode_bucket("candidate") == "candidate"
     assert episode_bucket("tagged") == "tagged"
     assert episode_bucket("reencoded") == "reencoded"
@@ -81,135 +81,125 @@ def test_tv_dimension_class_boundaries_and_prefilter_categories():
     assert missing_prefilter["bucket"] == "skip"
 
 
-def test_season_rollup_marks_clean_sampled_and_uniform():
+def test_verdict_precedence_and_known_content():
+    cases = [
+        (["candidate", "tagged"], "needs_action"),
+        (["errored"], "needs_action"),
+        (["tagged", "reencoded"], "treated"),
+        (["not_letterboxed", "sampled_clear", "variable_unsafe"], "ok"),
+        (["ineligible", "prefilter_candidate"], "unanalyzed"),
+    ]
+
+    for statuses, expected in cases:
+        rollup = season_rollup(
+            [_episode(index, 1, index, status=status) for index, status in enumerate(statuses, 1)]
+        )
+        assert rollup["verdict"] == expected
+
+
+def test_content_types_fold_sampled_widescreen_and_order_by_count_then_type():
     rollup = season_rollup(
         [
             _episode(1, 1, 1, status="not_letterboxed"),
+            _episode(2, 1, 2, status="not_letterboxed"),
+            _episode(3, 1, 3, status="sampled_clear"),
+            _episode(4, 1, 4, status=None, bucket_override="open_matte"),
+            _episode(5, 1, 5, status=None, bucket_override="pillarbox"),
+        ]
+    )
+
+    assert rollup["content_types"] == [
+        {"type": "widescreen", "count": 3},
+        {"type": "open_matte", "count": 1},
+        {"type": "pillarbox", "count": 1},
+    ]
+
+
+def test_season_uniformity_has_no_vote_for_unknown_error_and_ineligible():
+    rollup = season_rollup(
+        [
+            _episode(1, 1, 1, status="prefilter_candidate"),
+            _episode(2, 1, 2, status="errored"),
+            _episode(3, 1, 3, status="ineligible"),
+        ]
+    )
+
+    assert rollup["uniformity"] is None
+
+
+def test_season_uniformity_is_uniform_for_one_presentation_label():
+    rollup = season_rollup(
+        [
+            _episode(1, 1, 1, status="not_letterboxed", aspect_label="1.78:1"),
             _episode(2, 1, 2, status="sampled_clear"),
-            _episode(3, 1, 3, status="not_letterboxed"),
         ]
     )
 
-    assert rollup["verdict"] == "clean"
     assert rollup["uniformity"] == "uniform"
-    assert rollup["bucket_counts"]["clear"] == 2
-    assert rollup["bucket_counts"]["sampled_clear"] == 1
-
-
-def test_season_rollup_handles_open_matte_and_pillarbox_verdicts():
-    assert season_rollup([_episode(1, 1, 1, status=None, bucket_override="open_matte")])[
-        "verdict"
-    ] == "clean"
-    assert season_rollup(
-        [
-            _episode(1, 1, 1, status=None, bucket_override="open_matte"),
-            _episode(2, 1, 2, status=None, bucket_override="pillarbox"),
-        ]
-    )["verdict"] == "clean"
-    assert season_rollup(
-        [
-            _episode(1, 1, 1, status=None, bucket_override="open_matte"),
-            _episode(2, 1, 2, status="prefilter_candidate"),
-        ]
-    )["verdict"] == "unanalyzed"
-    assert season_rollup(
-        [
-            _episode(1, 1, 1, status=None, bucket_override="open_matte"),
-            _episode(2, 1, 2, status="not_letterboxed"),
-        ]
-    )["verdict"] == "clean"
-    assert season_rollup(
-        [
-            _episode(1, 1, 1, status=None, bucket_override="open_matte"),
-            _episode(2, 1, 2, status="candidate"),
-        ]
-    )["verdict"] == "needs_action"
-
-
-def test_open_matte_and_pillarbox_do_not_affect_aspect_rollups():
-    rollup = season_rollup(
-        [
-            _episode(1, 1, 1, status=None, aspect_label="2.40:1", bucket_override="open_matte"),
-            _episode(2, 1, 2, status=None, aspect_label="1.33:1", bucket_override="pillarbox"),
-        ]
-    )
-
     assert rollup["dominant_aspect_label"] is None
-    assert rollup["uniformity"] == "uniform"
 
 
-def test_show_rollup_excludes_specials_and_reports_uniform_by_season():
-    specials = season_rollup([_episode(1, 0, 1, status="candidate", aspect_label="2.40:1")])
-    season_one = season_rollup([_episode(2, 1, 1, status="candidate", aspect_label="2.40:1")])
-    season_two = season_rollup([_episode(3, 2, 1, status="candidate", aspect_label="1.85:1")])
-
-    rollup = show_rollup({0: specials, 1: season_one, 2: season_two})
-
-    assert rollup["verdict"] == "needs_action"
-    assert rollup["uniformity"] == "uniform_by_season"
-    assert rollup["episodes_total"] == 2
-    assert rollup["bucket_counts"]["candidate"] == 2
-
-
-def test_show_rollup_reports_treated_when_only_treated_and_clear():
-    season_one = season_rollup(
+def test_season_uniformity_variable_episode_forces_dirty_mixed():
+    rollup = season_rollup(
         [
-            _episode(1, 1, 1, status="reencoded", aspect_label="2.40:1"),
+            _episode(1, 1, 1, status="candidate", aspect_label="2.39:1"),
+            _episode(2, 1, 2, status="variable_unsafe"),
+        ]
+    )
+
+    assert rollup["uniformity"] == "dirty_mixed"
+
+
+def test_season_uniformity_mixed_presentation_labels_are_dirty_mixed():
+    rollup = season_rollup(
+        [
+            _episode(1, 1, 1, status="candidate", aspect_label="2.39:1"),
             _episode(2, 1, 2, status="not_letterboxed"),
         ]
     )
 
-    rollup = show_rollup({1: season_one})
+    assert rollup["uniformity"] == "dirty_mixed"
+    assert rollup["dominant_aspect_label"] == "2.39:1"
 
-    assert rollup["verdict"] == "treated"
+
+def test_show_uniformity_is_clean_mixed_for_different_uniform_content_types():
+    pillarbox = season_rollup(
+        [_episode(1, 1, 1, status=None, bucket_override="pillarbox")]
+    )
+    widescreen = season_rollup([_episode(2, 2, 1, status="not_letterboxed")])
+
+    rollup = show_rollup({1: pillarbox, 2: widescreen})
+
+    assert rollup["uniformity"] == "clean_mixed"
+    assert rollup["content_types"] == [
+        {"type": "widescreen", "count": 1},
+        {"type": "pillarbox", "count": 1},
+    ]
+
+
+def test_show_uniformity_is_clean_mixed_for_letterboxed_and_widescreen_seasons():
+    letterboxed = season_rollup([_episode(1, 1, 1, status="tagged", aspect_label="2.39:1")])
+    widescreen = season_rollup([_episode(2, 2, 1, status="not_letterboxed")])
+
+    assert show_rollup({1: letterboxed, 2: widescreen})["uniformity"] == "clean_mixed"
+
+
+def test_show_rollup_excludes_specials():
+    specials = season_rollup([_episode(1, 0, 1, status="candidate", aspect_label="2.39:1")])
+    widescreen = season_rollup([_episode(2, 1, 1, status="not_letterboxed")])
+
+    rollup = show_rollup({0: specials, 1: widescreen})
+
+    assert rollup["episodes_total"] == 1
+    assert rollup["bucket_counts"]["candidate"] == 0
     assert rollup["uniformity"] == "uniform"
 
 
-def test_season_rollup_ignores_clear_labels_for_dominant_and_uniformity():
-    rollup = season_rollup(
-        [
-            _episode(1, 1, 1, status="candidate", aspect_label="2.35:1"),
-            _episode(2, 1, 2, status="not_letterboxed", aspect_label="1.78:1"),
-            _episode(3, 1, 3, status="not_letterboxed", aspect_label="1.78:1"),
-        ]
-    )
+def test_show_uniformity_is_null_without_voting_seasons():
+    unknown = season_rollup([_episode(1, 1, 1, status="prefilter_candidate")])
+    error = season_rollup([_episode(2, 2, 1, status="errored")])
 
-    assert rollup["dominant_aspect_label"] == "2.35:1"
-    assert rollup["uniformity"] == "uniform"
-
-
-def test_show_rollup_dominant_ignores_clean_season_labels():
-    season_one = season_rollup(
-        [
-            _episode(1, 1, 1, status="candidate", aspect_label="2.35:1"),
-            _episode(2, 1, 2, status="not_letterboxed", aspect_label="1.78:1"),
-        ]
-    )
-    season_two = season_rollup(
-        [
-            _episode(3, 2, 1, status="not_letterboxed", aspect_label="1.78:1"),
-            _episode(4, 2, 2, status="not_letterboxed", aspect_label="1.78:1"),
-        ]
-    )
-
-    rollup = show_rollup({1: season_one, 2: season_two})
-
-    assert rollup["dominant_aspect_label"] == "2.35:1"
-
-
-def test_show_rollup_reports_unanalyzed_when_only_ineligible_and_prefilter_rows():
-    season_one = season_rollup(
-        [
-            _episode(1, 1, 1, status="ineligible"),
-            _episode(2, 1, 2, status="prefilter_candidate"),
-        ]
-    )
-
-    rollup = show_rollup({1: season_one})
-
-    assert rollup["verdict"] == "unanalyzed"
-    assert rollup["bucket_counts"]["ineligible"] == 1
-    assert rollup["bucket_counts"]["unanalyzed"] == 1
+    assert show_rollup({1: unknown, 2: error})["uniformity"] is None
 
 
 def test_workflow_funnel_ignores_missing_states_but_counts_prefilter_rows():
