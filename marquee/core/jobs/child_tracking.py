@@ -18,6 +18,7 @@ import os
 import signal
 
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.database import _get_session_factory
@@ -57,17 +58,20 @@ async def clear_child_pid(pid: int) -> None:
     if attempt_id is None:
         return
     factory = _get_session_factory()
-    async with factory() as db:
-        attempt = (
-            await db.execute(
-                select(JobAttempt).where(JobAttempt.id == attempt_id).with_for_update()
-            )
-        ).scalar_one_or_none()
-        if attempt is None or not attempt.child_pids:
-            return
-        pids = [p for p in attempt.child_pids if p != pid]
-        attempt.child_pids = pids
-        await db.commit()
+    try:
+        async with factory() as db:
+            attempt = (
+                await db.execute(
+                    select(JobAttempt).where(JobAttempt.id == attempt_id).with_for_update()
+                )
+            ).scalar_one_or_none()
+            if attempt is None or not attempt.child_pids:
+                return
+            pids = [p for p in attempt.child_pids if p != pid]
+            attempt.child_pids = pids
+            await db.commit()
+    except SQLAlchemyError:
+        logger.warning("could not clear tracked child pid=%d", pid, exc_info=True)
 
 
 def _pid_alive(pid: int) -> bool:
