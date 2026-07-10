@@ -9,7 +9,7 @@
 	import SectionHeader from '$lib/components/SectionHeader.svelte';
 	import SegmentedBar from '$lib/components/SegmentedBar.svelte';
 	import UniformityChip from '$lib/components/UniformityChip.svelte';
-	import type { LetterboxTvShowRollup, ShowUniformity } from '$lib/api/types';
+	import type { LetterboxTvShowRollup } from '$lib/api/types';
 	import { LETTERBOX_TV_CONTENT_META, LETTERBOX_TV_VERDICT_META } from '$lib/letterbox/status-meta';
 
 	let { data } = $props();
@@ -376,7 +376,7 @@
 								{item.dominant_aspect_label || '—'}
 							</td>
 							<td class="uniformity-col">
-								<UniformityChip uniformity={item.rollup.uniformity as ShowUniformity} />
+								<UniformityChip uniformity={item.rollup.uniformity} />
 							</td>
 						</tr>
 					{/each}
