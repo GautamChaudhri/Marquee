@@ -15,22 +15,28 @@
 		job: JobListItem;
 		detail: JobProgressDetail;
 		status: string;
-		onCancel: () => void;
+		onCancel: () => Promise<void>;
 	} = $props();
 
 	const title = $derived(job.subject?.title ?? displayJobLabel(job));
 	const resourceKeys = $derived(Object.keys(job.resource_request ?? {}));
 	// svelte-ignore state_referenced_locally
 	let localStatus = $state(status);
+	let cancelPending = $state(false);
 
 	$effect(() => {
 		if (localStatus === 'cancelling' && status === 'running') return;
 		localStatus = status;
 	});
 
-	function handleCancel() {
-		localStatus = 'cancelling';
-		onCancel();
+	async function handleCancel() {
+		if (cancelPending || localStatus === 'cancelling') return;
+		cancelPending = true;
+		try {
+			await onCancel();
+		} finally {
+			cancelPending = false;
+		}
 	}
 
 	// Tick once a second purely so the elapsed-time chip stays live between
@@ -55,7 +61,13 @@
 </script>
 
 <div class="card">
-	<RunProgress {detail} status={localStatus} {title} onCancel={handleCancel} />
+	<RunProgress
+		{detail}
+		status={localStatus}
+		{title}
+		onCancel={handleCancel}
+		cancelDisabled={cancelPending}
+	/>
 	<div class="meta">
 		<span class="chip type">{displayJobLabel(job)}</span>
 		{#each resourceKeys as key (key)}

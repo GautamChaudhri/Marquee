@@ -21,6 +21,7 @@
 	let liveDetail = $state<JobProgressDetail>({});
 	// svelte-ignore state_referenced_locally
 	let liveStatus = $state(data.job?.status ?? '');
+	let cancelling = $state(false);
 	let stop: (() => void) | null = null;
 
 	function statusTone(status: string): 'good' | 'bad' | 'warn' | 'info' | 'muted' {
@@ -66,12 +67,17 @@
 	}
 
 	async function handleCancel() {
-		if (!job) return;
-		liveStatus = 'cancelling';
-		job = { ...job, cancel_requested: true, status: 'cancelling' };
-		await cancelJob(fetch, job.job_id);
-		toast('Cancellation requested', 'info');
-		void refetch();
+		if (!job || cancelling || job.cancel_requested) return;
+		try {
+			await cancelJob(fetch, job.job_id);
+			cancelling = true;
+			liveStatus = 'cancelling';
+			job = { ...job, cancel_requested: true, status: 'cancelling' };
+			toast('Cancellation requested', 'info');
+			void refetch();
+		} catch {
+			toast('Could not cancel job', 'bad');
+		}
 	}
 
 	onMount(() => {
@@ -107,8 +113,10 @@
 			<StatusDot tone={statusTone(liveStatus)} size={10} />
 			<span class="status-label">{humanizeJobType(liveStatus)}</span>
 		</div>
-		{#if !isTerminal(liveStatus) && !job.cancel_requested}
-			<button class="cancel" onclick={handleCancel}>Cancel</button>
+		{#if !isTerminal(liveStatus)}
+			<button class="cancel" disabled={cancelling || job.cancel_requested} onclick={handleCancel}>
+				{cancelling || job.cancel_requested ? 'Cancelling…' : 'Cancel'}
+			</button>
 		{/if}
 	</div>
 

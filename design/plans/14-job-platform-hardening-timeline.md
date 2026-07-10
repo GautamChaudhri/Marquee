@@ -82,3 +82,14 @@ Shared timeline for backend plan 14 and its frontend sibling.
   `npm run check` passed with 16 existing Svelte warnings and `npm run build` passed.
 - Pending operator actions: GPU-box/live-media F2–F3 smoke remains pending; no manual verification
   has been performed.
+
+## Frontend F2 — single-episode re-encode progress
+
+- Completed: `95660c8 show reencode progress`.
+- In progress: F3 — make cancellation feedback honest on the TV show page and Projection Room.
+- Exact next steps: re-locate every existing cancellation action, switch only the specified surfaces
+  to post-202 state changes with error toasts and disabled buttons, then run the frontend gates.
+- Deviations: no GPU box or live media is available here. The fallback was verified against the persisted
+  bridge snapshot shape (`progress.percent` and `progress.stage`); the live bar/reload smoke remains pending.
+  `npm run lint` remains blocked by the same two pre-existing Prettier violations; check and build pass.
+- Pending operator actions: perform the plan §3 GPU-box/live-media smoke, including reload and cancellation.
