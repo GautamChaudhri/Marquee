@@ -2,8 +2,9 @@
 	import { onMount } from 'svelte';
 	import { SvelteMap, SvelteSet } from 'svelte/reactivity';
 	import { page } from '$app/state';
-	import { aspectRatio, confidenceTone } from '$lib/display';
+	import { aspectRatio, bytesH, confidenceTone } from '$lib/display';
 	import { toast } from '$lib/toast';
+	import { subscribe } from '$lib/sse';
 	import {
 		getLetterboxTvDetail,
 		getLetterboxTvEpisodeDetail,
@@ -12,7 +13,14 @@
 		revertLetterboxTv,
 		removeLetterboxTvEpisode,
 		ignoreLetterboxTvEpisode,
-		markNotLetterboxedTvEpisode
+		markNotLetterboxedTvEpisode,
+		batchReencodeTv,
+		listReencodeArtifacts,
+		replaceOriginal,
+		restoreOriginal,
+		deleteArtifact,
+		replaceReadyTvArtifacts,
+		getMediaJob
 	} from '$lib/api/letterbox';
 	import { type JobSnapshot } from '$lib/api/jobs';
 	import { trackJob } from '$lib/jobs';
@@ -21,12 +29,16 @@
 	import UniformityChip from '$lib/components/UniformityChip.svelte';
 	import LetterboxFrame from '$lib/components/LetterboxFrame.svelte';
 	import ConfidencePopover from '$lib/components/letterbox/ConfidencePopover.svelte';
+	import BatchReencodeModal from '$lib/components/letterbox/BatchReencodeModal.svelte';
+	import ReencodePlanModal from '$lib/components/letterbox/ReencodePlanModal.svelte';
 	import type {
 		ShowUniformity,
 		LetterboxTvEpisode,
 		LetterboxTvSeason,
 		LetterboxEpisodeDetail,
-		JobSummary
+		JobSummary,
+		ReencodeArtifact,
+		BatchReencodeSettings
 	} from '$lib/api/types';
 	import { pairKey, pairColorMap, agreeCount } from '$lib/letterbox-samples';
 
@@ -182,6 +194,7 @@
 
 	onMount(() => {
 		void runPrefetchPass();
+		void loadReencodeArtifacts();
 		pollInterval = setInterval(() => {
 			// Check if we need to poll (if there are active runs or active_job_ids in detail)
 			const hasActiveJobs =
@@ -479,12 +492,249 @@
 		}
 	}
 
-	function triggerEpisodeReencode() {
-		// TV permanent reencoding is not supported by the backend yet
-		toast(
-			'Episode permanent re-encoding is currently not supported by the backend (only available for Movies).',
-			'info'
+	// Single-episode reencode: plan modal → confirm → track the media job.
+	let reencodePlanEpisodeId = $state<number | null>(null);
+	let reencodeTracking = $state<
+		Record<number, { progress: number; stage: string | null; status: string }>
+	>({});
+	const reencodeUnsubs: Record<number, () => void> = {};
+	const reencodePollTimers: Record<number, ReturnType<typeof setInterval>> = {};
+
+	function openReencodePlan(episodeId: number) {
+		reencodePlanEpisodeId = episodeId;
+	}
+
+	function closeReencodePlan() {
+		reencodePlanEpisodeId = null;
+	}
+
+	function stopReencodeTracking(episodeId: number) {
+		reencodeUnsubs[episodeId]?.();
+		delete reencodeUnsubs[episodeId];
+		if (reencodePollTimers[episodeId]) {
+			clearInterval(reencodePollTimers[episodeId]);
+			delete reencodePollTimers[episodeId];
+		}
+	}
+
+	async function finishEpisodeReencode(episodeId: number, jobId: string) {
+		stopReencodeTracking(episodeId);
+		delete reencodeTracking[episodeId];
+		try {
+			const job = await getMediaJob(fetch, jobId);
+			if (job.error) {
+				toast(job.error.error ?? 'Re-encode failed (check job log)', 'bad');
+			} else {
+				toast('Re-encode complete — review the candidate below', 'good');
+			}
+		} catch {
+			toast('Re-encode finished — refresh to see the result', 'info');
+		}
+		void loadReencodeArtifacts();
+		void refreshDetail();
+	}
+
+	function startEpisodeReencodeTracking(episodeId: number, jobId: string) {
+		if (reencodeTracking[episodeId]) return;
+		reencodeTracking[episodeId] = { progress: 0, stage: null, status: 'queued' };
+
+		async function pollOnce() {
+			try {
+				const job = await getMediaJob(fetch, jobId);
+				if (!reencodeTracking[episodeId]) return;
+				reencodeTracking[episodeId].status = job.status;
+				if (job.stage) reencodeTracking[episodeId].stage = job.stage;
+				if (job.progress_total > 0) {
+					const pct = (job.progress_done / job.progress_total) * 100;
+					if (pct > reencodeTracking[episodeId].progress) {
+						reencodeTracking[episodeId].progress = pct;
+					}
+				}
+				if (job.status !== 'queued' && job.status !== 'running') {
+					await finishEpisodeReencode(episodeId, jobId);
+				}
+			} catch {
+				// transient — keep polling
+			}
+		}
+
+		reencodeUnsubs[episodeId] = subscribe(
+			`/api/media-jobs/${jobId}/events`,
+			['message', 'done'],
+			(type, data) => {
+				if (type === 'done') {
+					void finishEpisodeReencode(episodeId, jobId);
+					return;
+				}
+				if (type === 'error') return;
+				if (!reencodeTracking[episodeId]) return;
+				const ev = data as { stage?: string; progress?: { percent?: number } | null };
+				if (ev.stage) reencodeTracking[episodeId].stage = ev.stage;
+				if (ev.progress?.percent != null) reencodeTracking[episodeId].progress = ev.progress.percent;
+			}
 		);
+		void pollOnce();
+		reencodePollTimers[episodeId] = setInterval(() => void pollOnce(), 2000);
+	}
+
+	function handleReencodeConfirmed(episodeId: number, jobId: string) {
+		closeReencodePlan();
+		toast('Re-encode started...', 'good');
+		startEpisodeReencodeTracking(episodeId, jobId);
+	}
+
+	// Season/show batch reencode (BatchReencodeModal, generalized in C7).
+	let reencodeModalOpen = $state(false);
+	let reencodeModalSeason = $state<number | null>(null);
+	let reencodeModalBusy = $state(false);
+
+	function openReencodeModal(seasonNumber: number | null) {
+		reencodeModalSeason = seasonNumber;
+		reencodeModalOpen = true;
+	}
+
+	async function startTvBatchReencode(payload: {
+		confidenceLevels: string[];
+		settings: BatchReencodeSettings;
+	}) {
+		if (reencodeModalBusy) return;
+		reencodeModalBusy = true;
+		try {
+			const result = await batchReencodeTv(fetch, seriesId, {
+				season_number: reencodeModalSeason ?? undefined,
+				confidence_levels: payload.confidenceLevels,
+				settings: payload.settings
+			});
+			if (result.count > 0) {
+				toast(`Queued ${result.count} episode re-encodes`, 'good');
+			} else {
+				toast('No eligible episodes matched the selected confidence filter', 'info');
+			}
+			if (result.skipped.length > 0) {
+				toast(
+					`Skipped ${result.skipped.length} episode${result.skipped.length === 1 ? '' : 's'}`,
+					'info'
+				);
+			}
+			rehydrateJob(result.parent_job_id);
+			reencodeModalOpen = false;
+		} catch (e) {
+			toast(e instanceof Error ? e.message : 'Could not queue re-encodes', 'bad');
+		} finally {
+			reencodeModalBusy = false;
+		}
+	}
+
+	// Reencode artifacts (review + replace/restore/delete + bulk replace-ready).
+	let reencodeArtifacts = $state<ReencodeArtifact[]>([]);
+	let reencodeArtifactsLoading = $state(false);
+	let reencodeArtifactBusy = $state<Record<number, boolean>>({});
+	let replaceAllReadyBusy = $state<Record<string, boolean>>({});
+
+	function artifactForEpisode(episodeId: number): ReencodeArtifact | undefined {
+		return reencodeArtifacts.find((a) => a.episode_id === episodeId);
+	}
+
+	async function loadReencodeArtifacts() {
+		reencodeArtifactsLoading = true;
+		try {
+			const res = await listReencodeArtifacts(fetch, { series_id: seriesId });
+			reencodeArtifacts = res.items;
+		} catch {
+			// keep the stale list — this is a non-fatal background refresh
+		} finally {
+			reencodeArtifactsLoading = false;
+		}
+	}
+
+	async function doReplaceArtifact(artifact: ReencodeArtifact) {
+		if (reencodeArtifactBusy[artifact.id]) return;
+		reencodeArtifactBusy[artifact.id] = true;
+		try {
+			await replaceOriginal(fetch, artifact.id);
+			toast('Original replaced — re-encode applied', 'good');
+			await loadReencodeArtifacts();
+			void refreshDetail();
+		} catch (e) {
+			toast(e instanceof Error ? e.message : 'Replace failed', 'bad');
+		} finally {
+			delete reencodeArtifactBusy[artifact.id];
+		}
+	}
+
+	async function doRestoreArtifact(artifact: ReencodeArtifact) {
+		if (reencodeArtifactBusy[artifact.id]) return;
+		reencodeArtifactBusy[artifact.id] = true;
+		try {
+			await restoreOriginal(fetch, artifact.id);
+			toast('Original restored', 'good');
+			await loadReencodeArtifacts();
+			void refreshDetail();
+		} catch (e) {
+			toast(e instanceof Error ? e.message : 'Restore failed', 'bad');
+		} finally {
+			delete reencodeArtifactBusy[artifact.id];
+		}
+	}
+
+	async function doDeleteArtifact(artifact: ReencodeArtifact) {
+		if (reencodeArtifactBusy[artifact.id]) return;
+		if (!confirm('Discard this re-encode candidate?')) return;
+		reencodeArtifactBusy[artifact.id] = true;
+		try {
+			await deleteArtifact(fetch, artifact.id);
+			toast('Candidate discarded', 'good');
+			await loadReencodeArtifacts();
+		} catch (e) {
+			toast(e instanceof Error ? e.message : 'Discard failed', 'bad');
+		} finally {
+			delete reencodeArtifactBusy[artifact.id];
+		}
+	}
+
+	function readyArtifactCount(seasonNumber: number | null): number {
+		const scopedEpisodeIds = new Set(
+			scopeEpisodes(seasonNumber).map((ep: LetterboxTvEpisode) => ep.episode_id)
+		);
+		return reencodeArtifacts.filter(
+			(a) =>
+				a.status === 'candidate_ready' &&
+				a.episode_id != null &&
+				scopedEpisodeIds.has(a.episode_id)
+		).length;
+	}
+
+	async function doReplaceAllReady(seasonNumber: number | null) {
+		const key = scopeKey(seasonNumber);
+		if (replaceAllReadyBusy[key]) return;
+		const readyCount = readyArtifactCount(seasonNumber);
+		if (readyCount === 0) {
+			toast('No ready candidates in this scope.', 'info');
+			return;
+		}
+		if (
+			!confirm(
+				`Replace ${readyCount} original file${readyCount === 1 ? '' : 's'} with their re-encoded candidates?`
+			)
+		) {
+			return;
+		}
+		replaceAllReadyBusy[key] = true;
+		try {
+			const res = await replaceReadyTvArtifacts(fetch, seriesId, {
+				season_number: seasonNumber ?? undefined
+			});
+			toast(`Replaced ${res.replaced} original file${res.replaced === 1 ? '' : 's'}`, 'good');
+			if (res.failed.length > 0) {
+				toast(`${res.failed.length} replace${res.failed.length === 1 ? '' : 's'} failed`, 'bad');
+			}
+			await loadReencodeArtifacts();
+			void refreshDetail();
+		} catch (e) {
+			toast(e instanceof Error ? e.message : 'Replace failed', 'bad');
+		} finally {
+			delete replaceAllReadyBusy[key];
+		}
 	}
 
 	// Verdict metadata helpers
@@ -562,6 +812,18 @@
 					<button class="btn btn-outline btn-sm" onclick={() => runScopeRevert(null)}>
 						Revert
 					</button>
+					<button class="btn btn-outline btn-sm" onclick={() => openReencodeModal(null)}>
+						Reencode
+					</button>
+					{#if readyArtifactCount(null) > 0}
+						<button
+							class="btn btn-outline btn-sm"
+							disabled={replaceAllReadyBusy['show']}
+							onclick={() => doReplaceAllReady(null)}
+						>
+							Replace all ready ({readyArtifactCount(null)})
+						</button>
+					{/if}
 				</div>
 			{/snippet}
 		</SectionHeader>
@@ -704,6 +966,21 @@
 										>
 											Revert
 										</button>
+										<button
+											class="btn btn-outline btn-sm"
+											onclick={() => openReencodeModal(season.season_number)}
+										>
+											Reencode
+										</button>
+										{#if readyArtifactCount(season.season_number) > 0}
+											<button
+												class="btn btn-outline btn-sm"
+												disabled={replaceAllReadyBusy[scopeKey(season.season_number)]}
+												onclick={() => doReplaceAllReady(season.season_number)}
+											>
+												Replace all ready ({readyArtifactCount(season.season_number)})
+											</button>
+										{/if}
 									</div>
 								</div>
 
@@ -830,13 +1107,19 @@
 																			</button>
 																		{/if}
 
-																		<button
-																			class="btn btn-outline btn-xs"
-																			title="Re-encode permanently (Not supported)"
-																			onclick={triggerEpisodeReencode}
-																		>
-																			Reencode
-																		</button>
+																		{#if reencodeTracking[ep.episode_id]}
+																			<span class="btn btn-outline btn-xs reencode-progress" title="Re-encoding…">
+																				Encoding {Math.round(reencodeTracking[ep.episode_id].progress)}%
+																			</span>
+																		{:else}
+																			<button
+																				class="btn btn-outline btn-xs"
+																				title="Plan a permanent re-encode"
+																				onclick={() => openReencodePlan(ep.episode_id)}
+																			>
+																				Reencode
+																			</button>
+																		{/if}
 																	{/if}
 																</div>
 															</td>
@@ -901,6 +1184,7 @@
 																					episodePreviewUrl(ep.episode_id, 'after', previewMinute))}
 																			{@const confidenceExpanded =
 																				expandedConfidenceEpisodes.get(ep.episode_id) ?? false}
+																			{@const epArtifact = artifactForEpisode(ep.episode_id)}
 																			<div class="expand-content">
 																				{#if PAIR_PREVIEW_BUCKETS.has(ep.bucket)}
 																					<div class="expand-frames pair">
@@ -1009,6 +1293,54 @@
 																								· exact{/if}
 																						</span>
 																					</div>
+																		{#if epArtifact}
+																			<div class="artifact-panel">
+																				<div class="artifact-head">
+																					<span
+																						class="artifact-status"
+																						style={`--c: var(--${epArtifact.status === 'replaced' ? 'good' : epArtifact.status === 'candidate_ready' || epArtifact.status === 'kept' ? 'info' : 'muted'})`}
+																					>
+																						{epArtifact.status}
+																					</span>
+																					<span class="mono artifact-sizes">
+																						{bytesH(epArtifact.candidate_size_bytes)}
+																						{#if epArtifact.original_size_bytes && epArtifact.candidate_size_bytes}
+																							<span class="artifact-saved">
+																								(was {bytesH(epArtifact.original_size_bytes)} ·
+																								{Math.round((1 - epArtifact.candidate_size_bytes / epArtifact.original_size_bytes) * 100)}%
+																								smaller)
+																							</span>
+																						{/if}
+																					</span>
+																				</div>
+																				<div class="artifact-actions">
+																					{#if epArtifact.status === 'candidate_ready' || epArtifact.status === 'kept'}
+																						<button
+																							class="btn btn-outline btn-xs"
+																							disabled={reencodeArtifactBusy[epArtifact.id]}
+																							onclick={() => doReplaceArtifact(epArtifact)}
+																						>
+																							Replace original
+																						</button>
+																						<button
+																							class="btn btn-outline btn-xs btn-bad"
+																							disabled={reencodeArtifactBusy[epArtifact.id]}
+																							onclick={() => doDeleteArtifact(epArtifact)}
+																						>
+																							Delete
+																						</button>
+																					{:else if epArtifact.status === 'replaced'}
+																						<button
+																							class="btn btn-outline btn-xs"
+																							disabled={reencodeArtifactBusy[epArtifact.id]}
+																							onclick={() => doRestoreArtifact(epArtifact)}
+																						>
+																							Restore original
+																						</button>
+																					{/if}
+																				</div>
+																			</div>
+																		{/if}
 																		{#if epDetail.variable_ar_note}
 																						<div class="detail-note">
 																							{epDetail.variable_ar_note}
@@ -1092,9 +1424,111 @@
 					</div>
 				{/if}
 			</div>
+
+		</div>
+
+		<div class="section-container">
+			<h3 class="section-title">Reencode Artifacts</h3>
+			<div class="episodes-table-card glass-panel">
+				{#if reencodeArtifactsLoading && reencodeArtifacts.length === 0}
+					<div class="empty-state">Loading artifacts…</div>
+				{:else if reencodeArtifacts.length === 0}
+					<div class="empty-state">No re-encode candidates yet.</div>
+				{:else}
+					<div class="table-scroll">
+						<table class="episodes-table">
+							<thead>
+								<tr>
+									<th>Episode</th>
+									<th>Status</th>
+									<th>Original</th>
+									<th>Candidate</th>
+									<th>Saved</th>
+									<th class="actions-col">Actions</th>
+								</tr>
+							</thead>
+							<tbody>
+								{#each reencodeArtifacts as a (a.id)}
+									<tr>
+										<td class="font-mono">{a.episode_code ?? `#${a.episode_id}`}</td>
+										<td>
+											<span
+												class="artifact-status"
+												style={`--c: var(--${a.status === 'replaced' ? 'good' : a.status === 'candidate_ready' || a.status === 'kept' ? 'info' : 'muted'})`}
+											>
+												{a.status}
+											</span>
+										</td>
+										<td class="font-mono">{bytesH(a.original_size_bytes)}</td>
+										<td class="font-mono">{bytesH(a.candidate_size_bytes)}</td>
+										<td class="font-mono">
+											{#if a.original_size_bytes && a.candidate_size_bytes}
+												{Math.round((1 - a.candidate_size_bytes / a.original_size_bytes) * 100)}%
+											{:else}
+												—
+											{/if}
+										</td>
+										<td class="actions-col">
+											<div class="action-buttons-group">
+												{#if a.status === 'candidate_ready' || a.status === 'kept'}
+													<button
+														class="btn btn-outline btn-xs"
+														disabled={reencodeArtifactBusy[a.id]}
+														onclick={() => doReplaceArtifact(a)}
+													>
+														Replace original
+													</button>
+													<button
+														class="btn btn-outline btn-xs btn-bad"
+														disabled={reencodeArtifactBusy[a.id]}
+														onclick={() => doDeleteArtifact(a)}
+													>
+														Delete
+													</button>
+												{:else if a.status === 'replaced'}
+													<button
+														class="btn btn-outline btn-xs"
+														disabled={reencodeArtifactBusy[a.id]}
+														onclick={() => doRestoreArtifact(a)}
+													>
+														Restore original
+													</button>
+												{/if}
+											</div>
+										</td>
+									</tr>
+								{/each}
+							</tbody>
+						</table>
+					</div>
+				{/if}
+			</div>
 		</div>
 	{/if}
 </section>
+
+	<BatchReencodeModal
+		open={reencodeModalOpen}
+		items={scopeEpisodes(reencodeModalSeason).filter((ep) => ep.bucket === 'candidate')}
+		getId={(ep: LetterboxTvEpisode) => ep.episode_id}
+		subtitle={reencodeModalSeason == null
+			? 'Queue a durable re-encode for the entire show.'
+			: `Queue a durable re-encode for Season ${reencodeModalSeason}.`}
+		busy={reencodeModalBusy}
+		onStart={startTvBatchReencode}
+		onClose={() => {
+			if (!reencodeModalBusy) reencodeModalOpen = false;
+		}}
+	/>
+
+	{#if reencodePlanEpisodeId != null}
+		<ReencodePlanModal
+			seriesId={seriesId}
+			episodeId={reencodePlanEpisodeId}
+			onClose={closeReencodePlan}
+			onConfirmed={(jobId) => handleReencodeConfirmed(reencodePlanEpisodeId as number, jobId)}
+		/>
+	{/if}
 
 <style>
 	.letterbox-tv-detail {
@@ -1489,6 +1923,44 @@
 		display: flex;
 		flex-wrap: wrap;
 		gap: 8px;
+	}
+	.artifact-panel {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+		padding: 10px 12px;
+		border: 1px solid var(--line);
+		border-radius: 10px;
+		background: var(--ink3);
+	}
+	.artifact-head {
+		display: flex;
+		align-items: center;
+		flex-wrap: wrap;
+		gap: 10px;
+		font-size: 12px;
+	}
+	.artifact-status {
+		font-weight: 700;
+		text-transform: uppercase;
+		font-size: 10px;
+		letter-spacing: 0.05em;
+		color: var(--c);
+	}
+	.artifact-sizes {
+		color: var(--text);
+	}
+	.artifact-saved {
+		color: var(--muted);
+		margin-left: 4px;
+	}
+	.artifact-actions {
+		display: flex;
+		gap: 8px;
+	}
+	.reencode-progress {
+		cursor: default;
+		color: var(--muted);
 	}
 	.method-tag,
 	.preview-chip {

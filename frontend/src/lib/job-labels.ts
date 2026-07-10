@@ -6,7 +6,8 @@ const JOB_LABELS: Record<string, string> = {
 	letterbox_detect_tv_batch: 'TV Letterbox Detection (Batch)',
 	letterbox_detect_tv_scope: 'TV Letterbox Detection',
 	letterbox_apply_tv_scope: 'TV Letterbox Apply',
-	letterbox_revert_tv_scope: 'TV Letterbox Revert'
+	letterbox_revert_tv_scope: 'TV Letterbox Revert',
+	letterbox_reencode_tv_batch: 'TV Letterbox Re-encode (Batch)'
 };
 
 export function humanizeJobType(type: string): string {
