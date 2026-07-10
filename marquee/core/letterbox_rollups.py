@@ -11,6 +11,8 @@ BUCKET_ORDER = (
     "tagged",
     "reencoded",
     "variable",
+    "open_matte",
+    "pillarbox",
     "ineligible",
     "error",
     "unanalyzed",
@@ -54,10 +56,11 @@ class EpisodeLetterbox:
     eligible: bool | None
     reviewed: bool
     media_file_id: int | None = None
+    bucket_override: str | None = None
     bucket: str = field(init=False)
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "bucket", episode_bucket(self.status))
+        object.__setattr__(self, "bucket", self.bucket_override or episode_bucket(self.status))
 
 
 def _bucket_counts(episodes: list[EpisodeLetterbox]) -> dict[str, int]:
@@ -88,13 +91,16 @@ def _season_uniformity(episodes: list[EpisodeLetterbox]) -> str:
 
 def _verdict_for_counts(counts: dict[str, int]) -> str:
     present = {bucket for bucket, count in counts.items() if count > 0}
-    if not present or present <= {"unanalyzed", "ineligible"}:
-        return "unanalyzed"
-    if present <= {"clear", "sampled_clear"}:
+    om_pb = {"open_matte", "pillarbox"}
+    if present and present <= {*om_pb, "ineligible"}:
         return "clean"
-    if present <= {"clear", "sampled_clear", "tagged", "reencoded"}:
+    if not present or present <= {"unanalyzed", "ineligible", *om_pb}:
+        return "unanalyzed"
+    if present <= {"clear", "sampled_clear", *om_pb}:
+        return "clean"
+    if present <= {"clear", "sampled_clear", "tagged", "reencoded", *om_pb}:
         return "treated"
-    if present <= {"clear", "sampled_clear", "candidate"}:
+    if present <= {"clear", "sampled_clear", "candidate", *om_pb}:
         return "needs_action"
     return "mixed"
 

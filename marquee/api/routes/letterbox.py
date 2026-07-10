@@ -36,6 +36,7 @@ from marquee.core.letterbox_prefilter import (
     prefilter_category,
     refresh_letterbox_prefilter_for_movie,
     state_has_detector_truth,
+    tv_dimension_class,
 )
 from marquee.core.letterbox_rollups import (
     BAR_BEARING_BUCKETS,
@@ -477,6 +478,10 @@ def _episode_letterbox_row(
 ) -> tuple[EpisodeLetterbox, dict]:
     status = state.status if state is not None else None
     aspect_label = _episode_display_aspect_label(state)
+    dimension_class = tv_dimension_class(episode.video_width, episode.video_height)
+    bucket_override = dimension_class if dimension_class and not _state_has_detector_truth(state) else None
+    if bucket_override:
+        aspect_label = letterbox_detect.aspect_label(episode.video_width, episode.video_height)
     item = EpisodeLetterbox(
         episode_id=episode.id,
         season_number=episode.season_number,
@@ -492,6 +497,7 @@ def _episode_letterbox_row(
         eligible=state.eligible if state is not None else None,
         reviewed=bool(state.reviewed) if state is not None else False,
         media_file_id=media_file_id,
+        bucket_override=bucket_override,
     )
     matrix_row = {
         "episode_id": episode.id,
@@ -881,6 +887,8 @@ async def letterbox_summary(db: Annotated[AsyncSession, Depends(get_db)]):
                 "tagged": sum(1 for item in tv_items if item.bucket == "tagged"),
                 "reencoded": sum(1 for item in tv_items if item.bucket == "reencoded"),
                 "variable": sum(1 for item in tv_items if item.bucket == "variable"),
+                "open_matte": sum(1 for item in tv_items if item.bucket == "open_matte"),
+                "pillarbox": sum(1 for item in tv_items if item.bucket == "pillarbox"),
                 "ineligible": sum(1 for item in tv_items if item.bucket == "ineligible"),
                 "error": sum(1 for item in tv_items if item.bucket == "error"),
                 "unanalyzed": sum(1 for item in tv_items if item.bucket == "unanalyzed"),

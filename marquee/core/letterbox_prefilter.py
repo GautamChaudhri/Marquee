@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from marquee.media.probe import prefilter_bucket
+from marquee.media.probe import NATIVE_WIDE_AR, PILLARBOX_AR, PrefilterResult, prefilter_bucket
 from marquee.models import Episode, LetterboxState, Movie
 
 PREFILTER_STATUSES = {
@@ -35,6 +35,10 @@ def prefilter_category(movie: Movie) -> tuple[str, dict]:
 def prefilter_category_for_dimensions(width: int | None, height: int | None) -> tuple[str, dict]:
     """Return the prefilter category and serializable explanation for dimensions."""
     result = prefilter_bucket(width, height)
+    return _prefilter_category_from_result(result)
+
+
+def _prefilter_category_from_result(result: PrefilterResult) -> tuple[str, dict]:
     category = "unknown_resolution" if result.reason == "unknown_resolution" else result.bucket
     aspect_ratio = round(result.aspect_ratio, 4) if result.aspect_ratio is not None else None
     return category, {
@@ -45,9 +49,41 @@ def prefilter_category_for_dimensions(width: int | None, height: int | None) -> 
     }
 
 
+def tv_dimension_class(width: int | None, height: int | None) -> str | None:
+    """Classify HD TV dimensions that cannot contain encoded letterbox bars."""
+    if not width or not height or width <= 0 or height <= 0:
+        return None
+    if height < 720:
+        return None
+    aspect_ratio = width / height
+    if aspect_ratio >= NATIVE_WIDE_AR:
+        return "open_matte"
+    if aspect_ratio < PILLARBOX_AR:
+        return "pillarbox"
+    return None
+
+
 def prefilter_category_episode(episode: Episode) -> tuple[str, dict]:
     """Return the prefilter category and serializable explanation for an episode."""
-    return prefilter_category_for_dimensions(episode.video_width, episode.video_height)
+    width = episode.video_width
+    height = episode.video_height
+    if not width or not height or width <= 0 or height <= 0:
+        return _prefilter_category_from_result(PrefilterResult("skip", "unknown_resolution", None))
+
+    aspect_ratio = width / height
+    if height < 720:
+        return _prefilter_category_from_result(
+            PrefilterResult("candidate", "sd_assumed_candidate", aspect_ratio)
+        )
+    if aspect_ratio >= NATIVE_WIDE_AR:
+        return _prefilter_category_from_result(PrefilterResult("skip", "native_wide", aspect_ratio))
+    if aspect_ratio < PILLARBOX_AR:
+        return _prefilter_category_from_result(
+            PrefilterResult("skip", "pillarbox_or_4_3", aspect_ratio)
+        )
+    return _prefilter_category_from_result(
+        PrefilterResult("candidate", "sixteen_nine_container", aspect_ratio)
+    )
 
 
 def episode_has_file(episode: Episode) -> bool:
