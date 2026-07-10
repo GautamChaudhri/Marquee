@@ -20,10 +20,9 @@
 		restoreOriginal,
 		deleteArtifact,
 		replaceReadyTvArtifacts,
-		getMediaJob,
-		cancelJob
+		getMediaJob
 	} from '$lib/api/letterbox';
-	import { getJob, type JobSnapshot } from '$lib/api/jobs';
+	import { cancelJob, getJob, type JobSnapshot } from '$lib/api/jobs';
 	import { trackJob } from '$lib/jobs';
 	import { displayJobLabel } from '$lib/job-labels';
 	import SectionHeader from '$lib/components/SectionHeader.svelte';
