@@ -34,6 +34,16 @@ Shared timeline for backend plan 14 and its frontend sibling.
   bookkeeping.
 - Pending operator actions: GPU-box stalled-encode/cancel smoke remains pending.
 
+## Phase 4 — TV active-job discovery (H9)
+
+- Completed: `f7fb153 surface active tv reencode jobs`.
+- In progress: backend plan complete; operator GPU-box smoke remains pending.
+- Verification: active-job regression passed; full pytest was **807 passed, 33 failed** (no
+  baseline growth); `ruff check marquee tests` passed.
+- Deviations: none.
+- Pending operator actions: run the plan §8 GPU-box stalled-encode/cancel smoke. No manual
+  verification beyond the automated suite was performed.
+
 ## Phase 3 — worker finalization, recovery, and cancellation (H6–H8)
 
 - Completed: `c45bc8a harden job cancellation recovery`.
