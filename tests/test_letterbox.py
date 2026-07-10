@@ -764,6 +764,146 @@ async def test_detect_episode_batch_and_store_force_scans_every_episode_group(
 
 
 @pytest.mark.asyncio
+async def test_detect_episode_batch_and_store_mixed_open_matte_season_skips_triage(
+    db, monkeypatch, tmp_path
+):
+    episodes, media_files = await _seed_tv_detect_scope(db, season_numbers=[1, 1, 1, 1])
+    episodes[0].video_width = 1920
+    episodes[0].video_height = 800
+    await db.commit()
+    paths_by_media_id = {}
+    for media_file in media_files:
+        path = tmp_path / Path(media_file.path).name
+        path.write_bytes(b"episode")
+        paths_by_media_id[media_file.id] = path
+
+    async def fake_resolve_media_file(_db, media_file_id):
+        return type("Resolved", (), {"path": paths_by_media_id[media_file_id]})()
+
+    detect_calls: list[str] = []
+
+    def fake_detect_episode_blocking(*_args, **kwargs):
+        path = Path(kwargs["path"])
+        detect_calls.append(path.name)
+        return _episode_detect_result("not_letterboxed", path)
+
+    monkeypatch.setattr("marquee.media.letterbox_manager.resolve_media_file", fake_resolve_media_file)
+    monkeypatch.setattr(letterbox_manager, "detect_episode_blocking", fake_detect_episode_blocking)
+
+    await letterbox_manager.detect_episode_batch_and_store(db, episodes)
+
+    stored = (
+        await db.execute(
+            select(LetterboxState)
+            .where(
+                LetterboxState.media_type == "episode",
+                LetterboxState.episode_id.in_([episode.id for episode in episodes]),
+            )
+            .order_by(LetterboxState.episode_id)
+        )
+    ).scalars().all()
+
+    assert detect_calls == ["s01e02.mkv", "s01e03.mkv", "s01e04.mkv"]
+    assert "sampled_clear" not in {state.status for state in stored}
+
+
+@pytest.mark.asyncio
+async def test_detect_episode_batch_and_store_skips_open_matte_even_with_force(
+    db, monkeypatch, tmp_path
+):
+    episodes, media_files = await _seed_tv_detect_scope(db, season_numbers=[1])
+    episodes[0].video_width = 1920
+    episodes[0].video_height = 800
+    await db.commit()
+    media_path = tmp_path / Path(media_files[0].path).name
+    media_path.write_bytes(b"episode")
+
+    async def fake_resolve_media_file(_db, _media_file_id):
+        return type("Resolved", (), {"path": media_path})()
+
+    detect_calls: list[str] = []
+
+    def fake_detect_episode_blocking(*_args, **kwargs):
+        path = Path(kwargs["path"])
+        detect_calls.append(path.name)
+        return _episode_detect_result("not_letterboxed", path)
+
+    monkeypatch.setattr("marquee.media.letterbox_manager.resolve_media_file", fake_resolve_media_file)
+    monkeypatch.setattr(letterbox_manager, "detect_episode_blocking", fake_detect_episode_blocking)
+
+    await letterbox_manager.detect_episode_batch_and_store(
+        db,
+        episodes,
+        exhaustive=True,
+        force=True,
+    )
+
+    assert detect_calls == []
+
+
+@pytest.mark.asyncio
+async def test_detect_episode_batch_and_store_include_open_matte_scans_escape_hatch(
+    db, monkeypatch, tmp_path
+):
+    episodes, media_files = await _seed_tv_detect_scope(db, season_numbers=[1])
+    episodes[0].video_width = 1920
+    episodes[0].video_height = 800
+    await db.commit()
+    media_path = tmp_path / Path(media_files[0].path).name
+    media_path.write_bytes(b"episode")
+
+    async def fake_resolve_media_file(_db, _media_file_id):
+        return type("Resolved", (), {"path": media_path})()
+
+    detect_calls: list[str] = []
+
+    def fake_detect_episode_blocking(*_args, **kwargs):
+        path = Path(kwargs["path"])
+        detect_calls.append(path.name)
+        return _episode_detect_result("not_letterboxed", path)
+
+    monkeypatch.setattr("marquee.media.letterbox_manager.resolve_media_file", fake_resolve_media_file)
+    monkeypatch.setattr(letterbox_manager, "detect_episode_blocking", fake_detect_episode_blocking)
+
+    await letterbox_manager.detect_episode_batch_and_store(
+        db,
+        episodes,
+        exhaustive=True,
+        force=True,
+        include_open_matte=True,
+    )
+
+    assert detect_calls == ["s01e01.mkv"]
+
+
+@pytest.mark.asyncio
+async def test_detect_episode_batch_and_store_scans_sd_episode(db, monkeypatch, tmp_path):
+    episodes, media_files = await _seed_tv_detect_scope(db, season_numbers=[1])
+    episodes[0].video_width = 720
+    episodes[0].video_height = 480
+    await db.commit()
+    media_path = tmp_path / Path(media_files[0].path).name
+    media_path.write_bytes(b"episode")
+
+    async def fake_resolve_media_file(_db, _media_file_id):
+        return type("Resolved", (), {"path": media_path})()
+
+    detect_calls: list[str] = []
+
+    def fake_detect_episode_blocking(*_args, **kwargs):
+        path = Path(kwargs["path"])
+        detect_calls.append(path.name)
+        return _episode_detect_result("not_letterboxed", path)
+
+    monkeypatch.setattr("marquee.media.letterbox_manager.resolve_media_file", fake_resolve_media_file)
+    monkeypatch.setattr(letterbox_manager, "detect_episode_blocking", fake_detect_episode_blocking)
+
+    await letterbox_manager.detect_episode_batch_and_store(db, episodes)
+
+    assert detect_calls == ["s01e01.mkv"]
+
+
+@pytest.mark.asyncio
 async def test_detect_episode_batch_and_store_exhaustive_reruns_only_sampled_clear(
     db, monkeypatch, tmp_path
 ):

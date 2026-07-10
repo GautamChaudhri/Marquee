@@ -1100,6 +1100,7 @@ class TvDetectRequest(BaseModel):
     episode_id: int | None = None
     exhaustive: bool = False
     force: bool = False
+    include_open_matte: bool = False
 
 
 class TvLibraryDetectRequest(BaseModel):
@@ -1205,6 +1206,7 @@ def _tv_scope_child(
     series_id: int,
     exhaustive: bool,
     force: bool,
+    include_open_matte: bool = False,
     season_number: int | None = None,
     episode_id: int | None = None,
 ) -> dict:
@@ -1216,6 +1218,7 @@ def _tv_scope_child(
             "episode_id": episode_id,
             "exhaustive": exhaustive,
             "force": force,
+            "include_open_matte": include_open_matte,
         },
         "priority": 60,
         "resources": {"media_read": 1},
@@ -1281,7 +1284,12 @@ async def detect_tv_batch(
         raise HTTPException(status_code=400, detail="No downloaded TV series to analyze")
 
     children = [
-        _tv_scope_child(series_id=series.id, exhaustive=body.exhaustive, force=body.force)
+        _tv_scope_child(
+            series_id=series.id,
+            exhaustive=body.exhaustive,
+            force=body.force,
+            include_open_matte=False,
+        )
         for series in series_rows
     ]
     batch, _children = await job_manager.create_batch(
@@ -1327,6 +1335,7 @@ async def detect_tv_series(
                 series_id=series_id,
                 exhaustive=True,
                 force=body.force,
+                include_open_matte=body.include_open_matte,
                 episode_id=body.episode_id,
             )
         ]
@@ -1336,6 +1345,7 @@ async def detect_tv_series(
                 series_id=series_id,
                 exhaustive=body.exhaustive,
                 force=body.force,
+                include_open_matte=body.include_open_matte,
                 season_number=body.season_number,
             )
         ]
@@ -1346,6 +1356,7 @@ async def detect_tv_series(
                 series_id=series_id,
                 exhaustive=body.exhaustive,
                 force=body.force,
+                include_open_matte=False,
                 season_number=season_number,
             )
             for season_number in season_numbers
