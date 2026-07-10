@@ -1994,6 +1994,30 @@ def test_purge_clears_bright_minute_cache(tmp_path, monkeypatch):
     assert (4, 5) in letterbox_preview._bright_minute_cache  # other movie untouched
 
 
+def test_purge_all_episode_previews_only_removes_episode_cache(tmp_path, monkeypatch):
+    preview_root = _preview_root(tmp_path, monkeypatch)
+    preview_root.mkdir(parents=True, exist_ok=True)
+    episode_preview = preview_root / "episode-7_before_5_bright_v3.webp"
+    movie_preview = preview_root / "movie-7_before_5_bright_v3.webp"
+    legacy_movie_preview = preview_root / "7_before_5_bright_v3.webp"
+    episode_preview.write_bytes(b"episode")
+    movie_preview.write_bytes(b"movie")
+    legacy_movie_preview.write_bytes(b"legacy")
+    letterbox_preview._bright_minute_cache.clear()
+    letterbox_preview._bright_minute_cache[("episode-7", 5)] = 5
+    letterbox_preview._bright_minute_cache[("movie-7", 5)] = 5
+    letterbox_preview._bright_minute_cache[(7, 5)] = 5
+
+    assert letterbox_preview.purge_all_episode_previews() == 1
+
+    assert not episode_preview.exists()
+    assert movie_preview.exists()
+    assert legacy_movie_preview.exists()
+    assert ("episode-7", 5) not in letterbox_preview._bright_minute_cache
+    assert ("movie-7", 5) in letterbox_preview._bright_minute_cache
+    assert (7, 5) in letterbox_preview._bright_minute_cache
+
+
 @pytest.mark.asyncio
 async def test_ffmpeg_gate_serializes_to_limit(monkeypatch):
     """The shared gate caps concurrent request-path ffmpeg work at the

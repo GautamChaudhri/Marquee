@@ -39,3 +39,11 @@
 - exact next steps: add single-episode TV reencode planning, confirm fan-out, artifact stamping/fan-out, TV batch reencode parent jobs, artifact filters/labels, bulk replace-ready, and phase 5 tests
 - deviations from the plan and why: none
 - pending operator actions: none
+
+## After phase 5
+
+- completed: phase 5 — TV reencode (`0800321a4845806e3a3b8c511ff27362c38ca9a9`)
+- in progress: phase 6 — TV letterbox dev reset
+- exact next steps: add `POST /api/letterbox/tv/dev/reset-all`, purge episode previews, extend route-order protection, add phase 6 tests, run full gates, and commit
+- deviations from the plan and why: none
+- pending operator actions: none

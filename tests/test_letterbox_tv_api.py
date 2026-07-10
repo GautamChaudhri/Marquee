@@ -12,12 +12,14 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from marquee.config import settings
 from marquee.main import app
-from marquee.media import binaries
+from marquee.media import binaries, letterbox_preview
 from marquee.models import (
     Episode,
     EpisodeMediaFile,
     Job,
+    LetterboxEvent,
     LetterboxReencodeArtifact,
     LetterboxState,
     MediaFile,
@@ -922,10 +924,104 @@ class TestTvReencode:
 
 
 @pytest.mark.asyncio
+async def test_tv_dev_reset_all_deletes_episode_rows_and_previews_only(
+    client: AsyncClient, tv_library, db: AsyncSession, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(settings, "DATA_DIR", str(tmp_path / "data"))
+    settings.letterbox_preview_path.mkdir(parents=True, exist_ok=True)
+    episode = tv_library["ep1"]
+    movie = Movie(
+        title="Movie Kept",
+        year=2024,
+        folder_path="/movies/kept",
+        movie_file_path="/movies/kept/movie.mkv",
+        tmdb_id=44001,
+    )
+    db.add(movie)
+    await db.flush()
+    db.add_all(
+        [
+            LetterboxState(
+                media_type="movie",
+                movie_id=movie.id,
+                status="candidate",
+                confidence="high",
+            ),
+            LetterboxEvent(
+                media_type="movie",
+                movie_id=movie.id,
+                action="detect",
+                source="api",
+            ),
+            LetterboxEvent(
+                media_type="episode",
+                episode_id=episode.id,
+                action="detect",
+                source="api",
+            ),
+        ]
+    )
+    await db.commit()
+
+    episode_preview = letterbox_preview.preview_path(
+        letterbox_preview.episode_subject_key(episode.id), "before", 5
+    )
+    movie_preview = letterbox_preview.preview_path(
+        letterbox_preview.movie_subject_key(movie.id), "before", 5
+    )
+    episode_preview.write_bytes(b"episode")
+    movie_preview.write_bytes(b"movie")
+    letterbox_preview._bright_minute_cache.clear()
+    letterbox_preview._bright_minute_cache[(letterbox_preview.episode_subject_key(episode.id), 5)] = 5
+    letterbox_preview._bright_minute_cache[(letterbox_preview.movie_subject_key(movie.id), 5)] = 5
+
+    episode_states = (
+        await db.execute(select(LetterboxState).where(LetterboxState.media_type == "episode"))
+    ).scalars().all()
+    episode_events = (
+        await db.execute(select(LetterboxEvent).where(LetterboxEvent.media_type == "episode"))
+    ).scalars().all()
+
+    resp = await client.post("/api/letterbox/tv/dev/reset-all")
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "states_deleted": len(episode_states),
+        "events_deleted": len(episode_events),
+        "previews_purged": 1,
+    }
+    assert (
+        await db.execute(select(LetterboxState).where(LetterboxState.media_type == "episode"))
+    ).scalars().all() == []
+    assert (
+        await db.execute(select(LetterboxEvent).where(LetterboxEvent.media_type == "episode"))
+    ).scalars().all() == []
+    assert (
+        await db.execute(select(LetterboxState).where(LetterboxState.media_type == "movie"))
+    ).scalar_one().movie_id == movie.id
+    assert (
+        await db.execute(select(LetterboxEvent).where(LetterboxEvent.media_type == "movie"))
+    ).scalar_one().movie_id == movie.id
+    assert not episode_preview.exists()
+    assert movie_preview.exists()
+    assert (letterbox_preview.episode_subject_key(episode.id), 5) not in (
+        letterbox_preview._bright_minute_cache
+    )
+    assert (letterbox_preview.movie_subject_key(movie.id), 5) in letterbox_preview._bright_minute_cache
+
+
+@pytest.mark.asyncio
 class TestRouteOrdering:
     async def test_summary_and_tv_not_captured_by_movie_routes(self, client: AsyncClient):
         assert (await client.get("/api/letterbox/summary")).status_code == 200
         assert (await client.get("/api/letterbox/tv")).status_code == 200
+
+    async def test_tv_literal_routes_register_before_series_parameter(self):
+        paths = [getattr(route, "path", "") for route in app.routes]
+        series_index = paths.index("/api/letterbox/tv/{series_id}")
+
+        assert paths.index("/api/letterbox/tv/dev/reset-all") < series_index
+        assert paths.index("/api/letterbox/tv/detect") < series_index
 
     async def test_tv_detect_literal_route_not_captured_by_series_route(
         self, client: AsyncClient, tv_library
