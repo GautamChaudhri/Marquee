@@ -74,3 +74,17 @@ Shared timeline for backend plan 15 and its frontend sibling.
   `LetterboxDetail.svelte` and TV detail.
 - Scope guard: no diff in movie letterbox pages, `LetterboxDetail.svelte`, HDR, subtitle, or
   heatmap files.
+
+## Frontend Step 3 — show detail
+
+- Completed: `c2fb277 update tv letterbox detail`.
+- Changes: detail bucket/filter labels and literals now use the V5 vocabulary; season headers
+  follow the state-plus-content-badge model; season bucket chips use the shared metadata map;
+  UniformityChip renders Uniform, Clean Mix, Dirty Mix, and no chip for null letterbox values.
+- Compatibility: UniformityChip retains its existing HDR/subtitle uniformity labels and styling
+  for their distinct unions; no HDR or subtitle route/heatmap source changed.
+- Verification: `npm run check` and `npm run build` passed with baseline warnings. `npm run
+  lint` remains limited to the unchanged existing Prettier drift in `LetterboxDetail.svelte`
+  and TV detail.
+- Scope guard: no diff in movie letterbox pages, `LetterboxDetail.svelte`, HDR, subtitle, or
+  heatmap files.

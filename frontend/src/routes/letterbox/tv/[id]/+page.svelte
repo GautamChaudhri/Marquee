@@ -33,8 +33,12 @@
 	import ConfidencePopover from '$lib/components/letterbox/ConfidencePopover.svelte';
 	import BatchReencodeModal from '$lib/components/letterbox/BatchReencodeModal.svelte';
 	import ReencodePlanModal from '$lib/components/letterbox/ReencodePlanModal.svelte';
+	import {
+		LETTERBOX_TV_BUCKET_META,
+		LETTERBOX_TV_CONTENT_META,
+		LETTERBOX_TV_VERDICT_META
+	} from '$lib/letterbox/status-meta';
 	import type {
-		ShowUniformity,
 		LetterboxTvBucket,
 		LetterboxTvEpisode,
 		LetterboxTvSeason,
@@ -792,33 +796,6 @@
 		}
 	}
 
-	// Verdict metadata helpers
-	const EPISODE_VERDICT_META: Record<
-		string,
-		{ label: string; tone: 'good' | 'info' | 'warn' | 'dovi' | 'muted' | 'bad' | 'gold' }
-	> = {
-		widescreen: { label: 'Widescreen', tone: 'good' },
-		sampled_widescreen: { label: 'Sampled Widescreen', tone: 'good' },
-		candidate: { label: 'Candidate', tone: 'warn' },
-		tagged: { label: 'Tagged', tone: 'info' },
-		reencoded: { label: 'Reencoded', tone: 'gold' },
-		variable: { label: 'Variable', tone: 'dovi' },
-		open_matte: { label: 'Open Matte', tone: 'info' },
-		pillarbox: { label: 'Pillarbox', tone: 'dovi' },
-		error: { label: 'Error', tone: 'bad' },
-		ineligible: { label: 'Ineligible', tone: 'muted' },
-		unanalyzed: { label: 'Unanalyzed', tone: 'muted' }
-	};
-	const SEASON_VERDICT_META: Record<
-		string,
-		{ label: string; tone: 'good' | 'info' | 'warn' | 'dovi' | 'muted' }
-	> = {
-		clean: { label: 'Clean', tone: 'good' },
-		treated: { label: 'Treated', tone: 'info' },
-		needs_action: { label: 'Needs action', tone: 'warn' },
-		mixed: { label: 'Mixed', tone: 'dovi' },
-		unanalyzed: { label: 'Unanalyzed', tone: 'muted' }
-	};
 	const SEASON_BUCKET_ORDER: LetterboxTvBucket[] = [
 		'candidate',
 		'tagged',
@@ -937,7 +914,7 @@
 							<option value="all">All Verdicts</option>
 							<option value="widescreen">Widescreen</option>
 							<option value="sampled_widescreen">Sampled Widescreen</option>
-							<option value="candidate">Candidate</option>
+							<option value="candidate">Letterboxed</option>
 							<option value="tagged">Tagged</option>
 							<option value="reencoded">Reencoded</option>
 							<option value="variable">Variable</option>
@@ -955,8 +932,10 @@
 					<div class="season-panels">
 						{#each seasonViews as seasonView (seasonView.season.season_number)}
 							{@const season = seasonView.season}
-							{@const verdict =
-								SEASON_VERDICT_META[season.rollup.verdict] || SEASON_VERDICT_META.unanalyzed}
+							{@const state =
+								season.rollup.verdict === 'ok'
+									? null
+									: LETTERBOX_TV_VERDICT_META[season.rollup.verdict]}
 							<div class="season-panel glass-panel" class:specials={season.season_number === 0}>
 								<div class="season-header">
 									<div class="season-header-main">
@@ -978,10 +957,22 @@
 														? 'Specials'
 														: `Season ${season.season_number}`}
 												</span>
-												<span class="verdict-chip" style={`--c: var(--${verdict.tone})`}>
-													{verdict.label}
-												</span>
-												<UniformityChip uniformity={season.rollup.uniformity as ShowUniformity} />
+												{#if state}
+													<span class="verdict-chip" style={`--c: var(--${state.tone})`}>
+														{state.label}
+													</span>
+												{/if}
+												{#each season.rollup.content_types as contentType (contentType.type)}
+													{@const content = LETTERBOX_TV_CONTENT_META[contentType.type]}
+													<span
+														class="verdict-chip"
+														style={`--c: var(--${content.tone})`}
+														title={`${content.label}: ${contentType.count}`}
+													>
+														{content.label}
+													</span>
+												{/each}
+												<UniformityChip uniformity={season.rollup.uniformity} />
 												<span class="ep-count font-mono">
 													{season.rollup.episodes_total} episodes
 												</span>
@@ -992,7 +983,7 @@
 													{@const bucketCount = season.rollup.bucket_counts[bucket] ?? 0}
 													{#if bucketCount > 0}
 														{@const bucketMeta =
-															EPISODE_VERDICT_META[bucket] || EPISODE_VERDICT_META.unanalyzed}
+															LETTERBOX_TV_BUCKET_META[bucket]}
 														<span class="bucket-chip" style={`--chip: var(--${bucketMeta.tone})`}>
 															<span class="bucket-chip-label">{bucketMeta.label}</span>
 															<span class="bucket-chip-count">{bucketCount}</span>
@@ -1087,7 +1078,7 @@
 												<tbody>
 													{#each seasonView.filteredEpisodes as ep (ep.episode_id)}
 														{@const verd =
-															EPISODE_VERDICT_META[ep.bucket] || EPISODE_VERDICT_META.unanalyzed}
+															LETTERBOX_TV_BUCKET_META[ep.bucket]}
 														{@const expanded = expandedEpisodeIds.has(ep.episode_id)}
 														<tr id={`episode-${ep.season_number}-${ep.episode_id}`}>
 															<td class="expand-col">

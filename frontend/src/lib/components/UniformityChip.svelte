@@ -1,18 +1,24 @@
 <script lang="ts">
-	import type { ShowUniformity, SeasonUniformity } from '$lib/api/types';
+	import type { LetterboxTvUniformity, SeasonUniformity, ShowUniformity } from '$lib/api/types';
 
-	let { uniformity }: { uniformity: ShowUniformity | SeasonUniformity } = $props();
+	type Uniformity = LetterboxTvUniformity | ShowUniformity | SeasonUniformity;
 
-	const META: Record<ShowUniformity | SeasonUniformity, { label: string; tone: string }> = {
+	let { uniformity }: { uniformity: Uniformity } = $props();
+
+	const META: Record<Exclude<Uniformity, null>, { label: string; tone: string }> = {
 		uniform: { label: 'Uniform', tone: 'var(--good)' },
+		clean_mixed: { label: 'Clean Mix', tone: 'var(--info)' },
+		dirty_mixed: { label: 'Dirty Mix', tone: 'var(--warn)' },
 		uniform_by_season: { label: 'By season', tone: 'var(--info)' },
 		mixed: { label: 'Mixed', tone: 'var(--warn)' }
 	};
 </script>
 
-<span class="uniformity-chip" style={`--c:${META[uniformity].tone}`}>
-	{META[uniformity].label}
-</span>
+{#if uniformity}
+	<span class="uniformity-chip" style={`--c:${META[uniformity].tone}`}>
+		{META[uniformity].label}
+	</span>
+{/if}
 
 <style>
 	.uniformity-chip {
