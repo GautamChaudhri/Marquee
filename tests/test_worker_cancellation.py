@@ -56,8 +56,11 @@ async def test_worker_cancel_watcher_sets_event_kills_children_and_marks_cancell
 
     await asyncio.wait_for(task, timeout=2)
 
-    row = await db.get(Job, job.id)
-    attempt_row = await db.get(JobAttempt, attempt.id)
+    job_id = job.id
+    attempt_id = attempt.id
+    db.expire_all()
+    row = await db.get(Job, job_id)
+    attempt_row = await db.get(JobAttempt, attempt_id)
     assert row is not None and row.status == "cancelled"
     assert attempt_row is not None and attempt_row.status == "cancelled"
     assert attempt_row.child_pids == []
@@ -100,8 +103,11 @@ async def test_worker_timeout_sets_event_terminates_children_and_fails_job(db, m
     await asyncio.wait_for(handler_started.wait(), timeout=1)
     await asyncio.wait_for(task, timeout=2)
 
-    row = await db.get(Job, job.id)
-    attempt_row = await db.get(JobAttempt, attempt.id)
+    job_id = job.id
+    attempt_id = attempt.id
+    db.expire_all()
+    row = await db.get(Job, job_id)
+    attempt_row = await db.get(JobAttempt, attempt_id)
     assert row is not None and row.status == "failed"
     assert attempt_row is not None
     assert attempt_row.status == "failed"

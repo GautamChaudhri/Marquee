@@ -33,3 +33,19 @@ Shared timeline for backend plan 14 and its frontend sibling.
   tolerates a broken short session so cancellation cleanup cannot be stranded by its own
   bookkeeping.
 - Pending operator actions: GPU-box stalled-encode/cancel smoke remains pending.
+
+## Phase 2 — transaction hygiene and engine safety nets (H4–H5)
+
+- Completed: `9b11d5f isolate media job transactions`.
+- In progress: Phase 3 — fresh-session worker finalization, force-cancel recovery, and
+  non-blocking cancellation (H6–H8).
+- Verification: focused hardening/re-encode tests passed (27 passed); full pytest was **803
+  passed, 36 failed**, with no baseline growth; `ruff check marquee tests` passed.
+- Audit: the media-event short session already updates MediaJob stage/progress. The remaining
+  registered handlers do not hold a flushed-dirty dispatch session across a subprocess wait;
+  no additional handler changes were needed.
+- Exact next steps: re-locate worker finalization and cancellation/recovery event anchors;
+  implement fresh-session terminal paths, timeout fallback, force-cancel recovery, and
+  best-effort cancel bridging; add seeded Postgres tests.
+- Deviations: none.
+- Pending operator actions: GPU-box stalled-encode/cancel smoke remains pending.

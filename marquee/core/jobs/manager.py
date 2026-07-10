@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from marquee.config import settings
 from marquee.core.jobs.cancel_registry import JobCancelledError
 from marquee.core.jobs.handlers import is_instant, resolve
+from marquee.database import _get_session_factory
 from marquee.models import Job, JobAttempt, JobEvent, JobResource, JobResourceReservation, JobWorker
 
 logger = logging.getLogger(__name__)
@@ -545,7 +546,6 @@ class JobManager:
         error_type = "Cancelled" if isinstance(exc, JobCancelledError) else type(exc).__name__
         error = {"type": error_type, "message": str(exc)}
         await self._release(db, attempt.id)
-        attempt.status = "failed"
         attempt.finished_at = now
         attempt.error = error
         # Cancellation can be requested from another session while this handler
@@ -553,14 +553,17 @@ class JobManager:
         # retry or terminalize the job.
         await db.refresh(job, ["cancel_requested"])
         if job.cancel_requested or isinstance(exc, JobCancelledError):
+            attempt.status = "cancelled"
             job.status = "cancelled"
             job.finished_at = now
         elif allow_retry and job.type in RETRYABLE and job.attempt_count < job.max_attempts:
+            attempt.status = "failed"
             job.status = "retry_scheduled"
             job.scheduled_at = now + timedelta(
                 seconds=min(600, 30 * (2 ** (job.attempt_count - 1)))
             )
         else:
+            attempt.status = "failed"
             job.status = "dead_letter" if job.attempt_count >= job.max_attempts else "failed"
             job.finished_at = now
         job.error = error
@@ -675,6 +678,7 @@ class JobManager:
 
     async def request_cancel(self, db: AsyncSession, job: Job) -> Job:
         now = utcnow()
+        bridge_ids: list[str] = []
         job.cancel_requested = True
         children = (
             (
@@ -702,7 +706,7 @@ class JobManager:
                     )
                 else:
                     child.cancel_requested = True
-                    await self._bridge_media_cancel(db, child)
+                    bridge_ids.append(child.id)
                     await self.emit(db, child, state=child.status, message="cancellation requested")
             await self._update_parent(db, job.id)
         else:
@@ -713,10 +717,22 @@ class JobManager:
             else:
                 if job.status in ACTIVE:
                     job.status = "cancelling"
-                await self._bridge_media_cancel(db, job)
+                bridge_ids.append(job.id)
                 await self.emit(db, job, state=job.status, message="cancellation requested")
             await self._update_parent(db, job.parent_id, child=job)
         await db.commit()
+        # Media bridging can contend with an in-flight handler. The durable job flag
+        # is already committed; workers and recovery will bridge later if this loses.
+        factory = _get_session_factory()
+        for bridge_id in bridge_ids:
+            try:
+                async with factory() as bridge_db:
+                    bridge_job = await bridge_db.get(Job, bridge_id)
+                    if bridge_job is not None:
+                        await self._bridge_media_cancel(bridge_db, bridge_job)
+                        await bridge_db.commit()
+            except Exception:  # noqa: BLE001 - cancellation request must stay prompt
+                logger.warning("deferred media cancellation bridge for job %s", bridge_id, exc_info=True)
         return job
 
     async def set_paused(self, db: AsyncSession, job: Job, paused: bool) -> Job:
@@ -756,6 +772,7 @@ class JobManager:
 
     async def recover(self, db: AsyncSession) -> int:
         cutoff = utcnow() - timedelta(seconds=settings.JOB_LEASE_SECONDS)
+        force_cancel_cutoff = utcnow() - timedelta(seconds=settings.JOB_CANCEL_FORCE_SECONDS)
         attempts = (
             await db.execute(
                 select(JobAttempt, Job)
@@ -795,6 +812,40 @@ class JobManager:
             )
             # Keep batch parents progressing even if a child died outside finish/fail.
             await self._update_parent(db, job.parent_id, child=job)
+        force_cancel_attempts = (
+            await db.execute(
+                select(JobAttempt, Job)
+                .join(Job, Job.id == JobAttempt.job_id)
+                .join(JobEvent, JobEvent.job_id == Job.id)
+                .where(
+                    Job.cancel_requested.is_(True),
+                    Job.status.in_(tuple(ACTIVE)),
+                    JobAttempt.status.in_(("claimed", "running")),
+                    JobEvent.message == "cancellation requested",
+                    JobEvent.created_at < force_cancel_cutoff,
+                )
+                .with_for_update(skip_locked=True)
+            )
+        ).all()
+        for attempt, job in force_cancel_attempts:
+            now = utcnow()
+            await self._release(db, attempt.id)
+            attempt.status = "interrupted"
+            attempt.finished_at = now
+            attempt.error = {"type": "Cancelled", "message": "force-cancelled by recovery"}
+            job.status = "cancelled"
+            job.finished_at = now
+            job.error = attempt.error
+            await self._sync_media_job_status(db, job)
+            await self.emit(
+                db,
+                job,
+                state="cancelled",
+                message="force-cancelled by recovery",
+                detail=attempt.error,
+                attempt_id=attempt.id,
+            )
+            await self._update_parent(db, job.parent_id, child=job)
         await self._reconcile_active_parents(db)
         # Reap worker rows whose heartbeat went stale (crashed/killed without a
         # clean shutdown) so /metrics doesn't keep reporting ghosts as running.
@@ -804,7 +855,7 @@ class JobManager:
             .values(status="dead")
         )
         await db.commit()
-        return len(attempts)
+        return len(attempts) + len(force_cancel_attempts)
 
     def subscribe(self, job_id: str) -> asyncio.Queue:
         queue: asyncio.Queue = asyncio.Queue(maxsize=100)

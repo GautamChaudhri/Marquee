@@ -9,6 +9,8 @@ import socket
 from datetime import UTC, datetime
 from uuid import uuid4
 
+from sqlalchemy import update
+
 from marquee.config import settings
 from marquee.core.jobs import (
     builtin_handlers,  # noqa: F401 - registers handlers
@@ -92,15 +94,29 @@ class DurableWorker:
             cancel_event = cancel_registry.register(current.id)
 
             async def terminate_tracked_children(*, grace_seconds: float = 2.0) -> None:
-                await db.refresh(current_attempt, ["child_pids"])
-                pids = await terminate_child_pids(db, current_attempt, grace_seconds=grace_seconds)
-                if pids:
-                    logger.warning(
-                        "terminated child process(es) for job %s attempt %s: %s",
-                        current.id,
-                        current_attempt.id,
-                        pids,
+                async with factory() as child_db:
+                    child_attempt = await child_db.get(JobAttempt, attempt.id)
+                    if child_attempt is None:
+                        return
+                    pids = await terminate_child_pids(
+                        child_db, child_attempt, grace_seconds=grace_seconds
                     )
+                    await child_db.commit()
+                    if pids:
+                        logger.warning(
+                            "terminated child process(es) for job %s attempt %s: %s",
+                            current.id,
+                            child_attempt.id,
+                            pids,
+                        )
+
+            async def finalize(method, *args, **kwargs) -> None:
+                async with factory() as final_db:
+                    final_job = await final_db.get(Job, job.id)
+                    final_attempt = await final_db.get(JobAttempt, attempt.id)
+                    if final_job is None or final_attempt is None:
+                        return
+                    await method(final_db, final_job, final_attempt, *args, **kwargs)
 
             async def watch_cancel() -> None:
                 while True:
@@ -157,34 +173,71 @@ class DurableWorker:
                     current.id,
                     timeout,
                 )
-                await job_manager.fail(
-                    db,
-                    current,
-                    current_attempt,
-                    TimeoutError(f"Job exceeded max runtime ({timeout}s)"),
-                )
+                try:
+                    async with factory() as final_db:
+                        final_job = await final_db.get(Job, job.id)
+                        final_attempt = await final_db.get(JobAttempt, attempt.id)
+                        if final_job is None or final_attempt is None:
+                            return
+                        await job_manager.emit(
+                            final_db,
+                            final_job,
+                            state="timeout",
+                            message="job exceeded maximum runtime",
+                            attempt_id=final_attempt.id,
+                        )
+                        await job_manager.fail(
+                            final_db,
+                            final_job,
+                            final_attempt,
+                            TimeoutError(f"Job exceeded max runtime ({timeout}s)"),
+                        )
+                except Exception:  # noqa: BLE001 - timeout must terminalize the job
+                    logger.exception("fresh timeout finalization failed for job %s", job.id)
+                    async with factory() as fallback_db:
+                        await fallback_db.execute(
+                            update(Job)
+                            .where(Job.id == job.id)
+                            .values(
+                                status="failed",
+                                finished_at=datetime.now(UTC),
+                                error={"type": "TimeoutError"},
+                            )
+                        )
+                        fallback_attempt = await fallback_db.get(JobAttempt, attempt.id)
+                        if fallback_attempt is not None:
+                            await job_manager._release(fallback_db, fallback_attempt.id)
+                            fallback_attempt.status = "failed"
+                            fallback_attempt.finished_at = datetime.now(UTC)
+                            fallback_attempt.error = {"type": "TimeoutError"}
+                        await fallback_db.commit()
             except asyncio.CancelledError:
                 cancel_event.set()
                 await terminate_tracked_children()
                 if handler_task is not None and not handler_task.done():
                     handler_task.cancel("worker shutdown")
                     await asyncio.gather(handler_task, return_exceptions=True)
-                await job_manager.interrupt(db, current, current_attempt, reason="worker shutdown")
+                await finalize(job_manager.interrupt, reason="worker shutdown")
                 raise
             except Exception as exc:  # noqa: BLE001
                 logger.exception("job %s failed", current.id)
-                await job_manager.fail(db, current, current_attempt, exc)
+                await finalize(job_manager.fail, exc)
             else:
-                await db.refresh(current, ["cancel_requested"])
-                if current.cancel_requested or cancel_event.is_set():
-                    await job_manager.fail(
-                        db,
-                        current,
-                        current_attempt,
-                        JobCancelledError("job cancelled"),
-                    )
-                else:
-                    await job_manager.finish(db, current, current_attempt, result=result or {})
+                async with factory() as final_db:
+                    final_job = await final_db.get(Job, job.id)
+                    final_attempt = await final_db.get(JobAttempt, attempt.id)
+                    if final_job is not None and final_attempt is not None:
+                        if final_job.cancel_requested or cancel_event.is_set():
+                            await job_manager.fail(
+                                final_db,
+                                final_job,
+                                final_attempt,
+                                JobCancelledError("job cancelled"),
+                            )
+                        else:
+                            await job_manager.finish(
+                                final_db, final_job, final_attempt, result=result or {}
+                            )
             finally:
                 current_attempt_id.reset(attempt_token)
                 cancel_registry.discard(current.id)
