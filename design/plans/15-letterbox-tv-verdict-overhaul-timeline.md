@@ -103,3 +103,15 @@ Shared timeline for backend plan 15 and its frontend sibling.
   data, so before/after letterbox and subtitles screenshots remain a pending operator action.
 - Scope guard: no diff in movie letterbox pages, `LetterboxDetail.svelte`, HDR routes/components,
   or subtitle routes; only the letterbox mode branch in the shared heatmap changed.
+
+## Frontend Step 5 — confidence popover
+
+- Completed: `0739220 style confidence popover`.
+- Changes: ConfidencePopover now owns the same scoped button, outline, small-button, hover, and
+  disabled treatment used on the TV detail page. The disabled Apply `(0)` state retains its
+  outline and readable label.
+- Verification: `npm run check` and `npm run build` passed with baseline warnings. `npm run
+  lint` remains limited to the unchanged existing Prettier drift in `LetterboxDetail.svelte`
+  and TV detail.
+- Scope guard: no diff in movie letterbox pages, `LetterboxDetail.svelte`, HDR, subtitle, or
+  heatmap files.
