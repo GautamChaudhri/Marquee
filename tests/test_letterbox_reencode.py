@@ -10,7 +10,16 @@ from sqlalchemy import select
 
 from marquee.core import letterbox_reencode as lr
 from marquee.core.media_files import ResolvedMediaFile, compute_signature
-from marquee.models import LetterboxReencodeArtifact, LetterboxState, MediaFile, MediaJob, Movie
+from marquee.models import (
+    Episode,
+    EpisodeMediaFile,
+    LetterboxReencodeArtifact,
+    LetterboxState,
+    MediaFile,
+    MediaJob,
+    Movie,
+    Series,
+)
 
 
 def test_choose_encoder_prefers_nvidia(monkeypatch):
@@ -522,3 +531,111 @@ async def test_replace_and_restore_artifact(db, tmp_path, monkeypatch):
     assert state.resolved_by is None
     assert state.original_crop_top is None
     assert state.original_aspect_label is None
+
+
+@pytest.mark.asyncio
+async def test_replace_and_restore_episode_artifact_fans_out_states(db, tmp_path, monkeypatch):
+    monkeypatch.setattr(lr.settings, "MEDIA_ROOTS", [str(tmp_path)])
+    series = Series(title="Show", year=2024, series_path=str(tmp_path / "Show"), sonarr_id=1)
+    db.add(series)
+    await db.flush()
+    episode_a = Episode(
+        series_id=series.id,
+        season_number=1,
+        episode_number=1,
+        title="One",
+        episode_file_path="shared.mkv",
+    )
+    episode_b = Episode(
+        series_id=series.id,
+        season_number=1,
+        episode_number=2,
+        title="Two",
+        episode_file_path="shared.mkv",
+    )
+    db.add_all([episode_a, episode_b])
+    await db.flush()
+    original = tmp_path / "Show" / "shared.mkv"
+    candidate = tmp_path / ".marquee" / "letterbox" / "candidates" / "episode" / "job-tv" / "shared.mkv"
+    original.parent.mkdir(parents=True)
+    candidate.parent.mkdir(parents=True)
+    original.write_bytes(b"original")
+    candidate.write_bytes(b"candidate")
+    media_file = MediaFile(
+        source="sonarr",
+        source_key="sonarr:episode-file:1",
+        path=str(original),
+        relative_path="shared.mkv",
+        container="mkv",
+        is_active=True,
+    )
+    db.add(media_file)
+    await db.flush()
+    db.add_all(
+        [
+            EpisodeMediaFile(episode_id=episode_a.id, media_file_id=media_file.id),
+            EpisodeMediaFile(episode_id=episode_b.id, media_file_id=media_file.id),
+            LetterboxState(
+                media_type="episode",
+                episode_id=episode_a.id,
+                status="candidate",
+                recommended_crop_top=10,
+                recommended_crop_bottom=10,
+                aspect_label="2.40:1",
+            ),
+            LetterboxState(
+                media_type="episode",
+                episode_id=episode_b.id,
+                status="candidate",
+                recommended_crop_top=10,
+                recommended_crop_bottom=10,
+                aspect_label="2.40:1",
+            ),
+        ]
+    )
+    db.add(
+        MediaJob(
+            job_id="job-tv",
+            operation="letterbox_reencode",
+            media_file_id=media_file.id,
+            status="succeeded",
+        )
+    )
+    await db.flush()
+    artifact = LetterboxReencodeArtifact(
+        job_id="job-tv",
+        media_type="episode",
+        episode_id=episode_a.id,
+        media_file_id=media_file.id,
+        original_path=str(original),
+        candidate_path=str(candidate),
+        original_size_bytes=8,
+        candidate_size_bytes=9,
+        original_signature="old",
+        candidate_signature="new",
+        encoder="libx265",
+        encoder_family="cpu",
+        codec="hevc",
+        crop_top=10,
+        crop_bottom=10,
+        status="candidate_ready",
+    )
+    db.add(artifact)
+    await db.commit()
+
+    await lr.replace_original(db, artifact)
+    states = (
+        await db.execute(
+            select(LetterboxState)
+            .where(LetterboxState.media_type == "episode")
+            .order_by(LetterboxState.episode_id)
+        )
+    ).scalars().all()
+    assert [state.status for state in states] == ["reencoded", "reencoded"]
+    assert [state.resolved_by for state in states] == ["reencode", "reencode"]
+
+    await lr.restore_original(db, artifact, keep_candidate=False)
+    await db.refresh(states[0])
+    await db.refresh(states[1])
+    assert [state.status for state in states] == ["candidate", "candidate"]
+    assert [state.resolved_by for state in states] == [None, None]

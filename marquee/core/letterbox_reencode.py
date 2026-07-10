@@ -29,6 +29,7 @@ from marquee.core.media_files import (
 from marquee.media import binaries, letterbox_detect
 from marquee.media.concurrency import gated
 from marquee.models import (
+    EpisodeMediaFile,
     LetterboxReencodeArtifact,
     LetterboxState,
     MediaFile,
@@ -45,6 +46,49 @@ class ReencodePlanError(Exception):
         self.code = code
         self.warnings = warnings or []
         super().__init__(message)
+
+
+async def _episode_ids_for_media_file(db: AsyncSession, media_file_id: int | None) -> list[int]:
+    if media_file_id is None:
+        return []
+    return list(
+        (
+            await db.execute(
+                select(EpisodeMediaFile.episode_id)
+                .where(EpisodeMediaFile.media_file_id == media_file_id)
+                .order_by(EpisodeMediaFile.episode_id)
+            )
+        ).scalars()
+    )
+
+
+async def _states_for_artifact(
+    db: AsyncSession, artifact: LetterboxReencodeArtifact
+) -> list[LetterboxState]:
+    if artifact.media_type == "episode":
+        return list(
+            (
+                await db.execute(
+                    select(LetterboxState)
+                    .join(EpisodeMediaFile, EpisodeMediaFile.episode_id == LetterboxState.episode_id)
+                    .where(
+                        LetterboxState.media_type == "episode",
+                        EpisodeMediaFile.media_file_id == artifact.media_file_id,
+                    )
+                    .order_by(LetterboxState.episode_id)
+                )
+            ).scalars()
+        )
+    state = (
+        await db.execute(
+            select(LetterboxState).where(
+                LetterboxState.media_type == artifact.media_type,
+                LetterboxState.movie_id == artifact.movie_id,
+                LetterboxState.episode_id == artifact.episode_id,
+            )
+        )
+    ).scalar_one_or_none()
+    return [state] if state is not None else []
 
 
 async def _raise_if_cancel_requested(
@@ -1013,9 +1057,15 @@ async def execute_job(db: AsyncSession, job: MediaJob, emit) -> dict:
     await _raise_if_cancel_requested(db, job, cleanup_paths=[out])
 
     candidate_stat = out.stat()
+    episode_ids = await _episode_ids_for_media_file(db, resolved.media_file_id)
+    artifact_subject = (
+        {"media_type": "episode", "episode_id": min(episode_ids), "movie_id": None}
+        if resolved.movie_id is None and episode_ids
+        else {"media_type": "movie", "movie_id": resolved.movie_id or int(request.get("movie_id") or 0)}
+    )
     artifact = LetterboxReencodeArtifact(
         job_id=job.job_id,
-        movie_id=resolved.movie_id or int(request.get("movie_id") or 0),
+        **artifact_subject,
         media_file_id=resolved.media_file_id,
         original_path=str(resolved.path),
         candidate_path=str(out),
@@ -1418,16 +1468,8 @@ async def replace_original(db: AsyncSession, artifact: LetterboxReencodeArtifact
     artifact.updated_at = resolved_at
     if media_row is not None:
         media_row.size_bytes = original.stat().st_size
-    state = (
-        await db.execute(
-            select(LetterboxState).where(
-                LetterboxState.media_type == artifact.media_type,
-                LetterboxState.movie_id == artifact.movie_id,
-                LetterboxState.episode_id == artifact.episode_id,
-            )
-        )
-    ).scalar_one_or_none()
-    if state is not None:
+    states = await _states_for_artifact(db, artifact)
+    for state in states:
         aspect_label = state.aspect_label
         if aspect_label is None and artifact.detail_json:
             try:
@@ -1485,16 +1527,8 @@ async def restore_original(
     media_row = await db.get(MediaFile, artifact.media_file_id) if artifact.media_file_id else None
     if media_row is not None:
         media_row.size_bytes = original.stat().st_size
-    state = (
-        await db.execute(
-            select(LetterboxState).where(
-                LetterboxState.media_type == artifact.media_type,
-                LetterboxState.movie_id == artifact.movie_id,
-                LetterboxState.episode_id == artifact.episode_id,
-            )
-        )
-    ).scalar_one_or_none()
-    if state is not None:
+    states = await _states_for_artifact(db, artifact)
+    for state in states:
         state.status = "candidate"
         state.applied_crop_top = None
         state.applied_crop_bottom = None

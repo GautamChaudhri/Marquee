@@ -18,8 +18,10 @@ from marquee.models import (
     Episode,
     EpisodeMediaFile,
     Job,
+    LetterboxReencodeArtifact,
     LetterboxState,
     MediaFile,
+    MediaJob,
     Movie,
     Season,
     Series,
@@ -678,6 +680,245 @@ class TestTvActions:
         assert marked.json()["applied_crop_top"] == 0
         assert marked.json()["applied_crop_bottom"] == 0
         assert marked.json()["aspect_label"] == "1.78:1"
+
+
+@pytest.mark.asyncio
+class TestTvReencode:
+    async def test_episode_reencode_plan_and_confirm_fan_out_shared_file(
+        self, client: AsyncClient, tv_library, db, monkeypatch, tmp_path
+    ):
+        mixed_show = tv_library["mixed_show"]
+        first = tv_library["ep1"]
+        second = tv_library["ep2"]
+        media_path = tmp_path / "mixed-shared.mkv"
+        media_path.write_bytes(b"video")
+
+        first_media_file = (
+            await db.execute(
+                select(MediaFile)
+                .join(EpisodeMediaFile, EpisodeMediaFile.media_file_id == MediaFile.id)
+                .where(EpisodeMediaFile.episode_id == first.id)
+            )
+        ).scalar_one()
+        second_media_file = (
+            await db.execute(
+                select(MediaFile)
+                .join(EpisodeMediaFile, EpisodeMediaFile.media_file_id == MediaFile.id)
+                .where(EpisodeMediaFile.episode_id == second.id)
+            )
+        ).scalar_one()
+        first_media_file.path = str(media_path)
+        second_media_file.is_active = False
+        first.episode_file_path = str(media_path)
+        second.episode_file_path = str(media_path)
+        db.add(EpisodeMediaFile(episode_id=second.id, media_file_id=first_media_file.id))
+        second_state = (
+            await db.execute(
+                select(LetterboxState).where(
+                    LetterboxState.media_type == "episode",
+                    LetterboxState.episode_id == second.id,
+                )
+            )
+        ).scalar_one()
+        second_state.status = "candidate"
+        second_state.recommended_crop_top = 140
+        second_state.recommended_crop_bottom = 140
+        second_state.applied_crop_top = None
+        second_state.applied_crop_bottom = None
+        await db.commit()
+
+        async def fake_build_plan(*_args, **_kwargs):
+            return {
+                "capabilities": {"can_execute": True},
+                "encoder": {"encoder": "libx265", "family": "cpu", "codec": "hevc"},
+                "crop": {"top": 140, "bottom": 140, "output_height": 800},
+                "source": {"width": 1920, "height": 1080, "has_hdr": False},
+                "warnings": [],
+            }
+
+        monkeypatch.setattr("marquee.api.routes.letterbox.letterbox_reencode.build_plan", fake_build_plan)
+
+        resp = await client.post(
+            f"/api/letterbox/tv/{mixed_show.id}/episodes/{first.id}/reencode-plan",
+            json={},
+        )
+        assert resp.status_code == 201
+        body = resp.json()
+        media_job = await db.get(MediaJob, body["job_id"])
+        request = json.loads(media_job.request_json)
+        assert request["series_id"] == mixed_show.id
+        assert request["episode_id"] == first.id
+        assert request["episode_ids"] == [first.id, second.id]
+
+        confirmed = await client.post(f"/api/media-jobs/{body['job_id']}/confirm")
+        assert confirmed.status_code == 200
+
+        states = (
+            await db.execute(
+                select(LetterboxState)
+                .where(
+                    LetterboxState.media_type == "episode",
+                    LetterboxState.episode_id.in_([first.id, second.id]),
+                )
+                .order_by(LetterboxState.episode_id)
+                .execution_options(populate_existing=True)
+            )
+        ).scalars().all()
+        assert [state.status for state in states] == ["tagged", "tagged"]
+
+    async def test_tv_batch_reencode_dedupes_filters_and_parents_bridge_jobs(
+        self, client: AsyncClient, tv_library, db, monkeypatch, tmp_path
+    ):
+        mixed_show = tv_library["mixed_show"]
+        first = tv_library["ep1"]
+        second = tv_library["ep2"]
+        third = tv_library["ep3"]
+        media_path = tmp_path / "mixed-shared.mkv"
+        media_path.write_bytes(b"video")
+
+        first_media_file = (
+            await db.execute(
+                select(MediaFile)
+                .join(EpisodeMediaFile, EpisodeMediaFile.media_file_id == MediaFile.id)
+                .where(EpisodeMediaFile.episode_id == first.id)
+            )
+        ).scalar_one()
+        second_media_file = (
+            await db.execute(
+                select(MediaFile)
+                .join(EpisodeMediaFile, EpisodeMediaFile.media_file_id == MediaFile.id)
+                .where(EpisodeMediaFile.episode_id == second.id)
+            )
+        ).scalar_one()
+        first_media_file.path = str(media_path)
+        second_media_file.is_active = False
+        first.episode_file_path = str(media_path)
+        second.episode_file_path = str(media_path)
+        db.add(EpisodeMediaFile(episode_id=second.id, media_file_id=first_media_file.id))
+        second_state = (
+            await db.execute(
+                select(LetterboxState).where(
+                    LetterboxState.media_type == "episode",
+                    LetterboxState.episode_id == second.id,
+                )
+            )
+        ).scalar_one()
+        second_state.status = "candidate"
+        second_state.confidence = "medium"
+        second_state.recommended_crop_top = 140
+        second_state.recommended_crop_bottom = 140
+        second_state.applied_crop_top = None
+        second_state.applied_crop_bottom = None
+        third_state = (
+            await db.execute(
+                select(LetterboxState).where(
+                    LetterboxState.media_type == "episode",
+                    LetterboxState.episode_id == third.id,
+                )
+            )
+        ).scalar_one()
+        third_state.status = "candidate"
+        third_state.confidence = "low"
+        third_state.applied_crop_top = None
+        third_state.applied_crop_bottom = None
+        await db.commit()
+
+        async def fake_build_plan(*_args, **_kwargs):
+            return {
+                "capabilities": {"can_execute": True},
+                "encoder": {"encoder": "libx265", "family": "cpu", "codec": "hevc"},
+                "crop": {"top": 140, "bottom": 140, "output_height": 800},
+                "source": {"width": 1920, "height": 1080, "has_hdr": False},
+                "warnings": [],
+            }
+
+        monkeypatch.setattr("marquee.api.routes.letterbox.letterbox_reencode.build_plan", fake_build_plan)
+
+        resp = await client.post(
+            f"/api/letterbox/tv/{mixed_show.id}/reencode",
+            json={"season_number": 1, "confidence_levels": ["high"], "settings": {}},
+        )
+        assert resp.status_code == 202
+        body = resp.json()
+        assert body["count"] == 1
+        assert len(body["job_ids"]) == 1
+        assert {item["code"] for item in body["skipped"]} >= {"confidence_filtered"}
+
+        parent = await db.get(Job, body["parent_job_id"])
+        assert parent.type == "letterbox_reencode_tv_batch"
+        assert parent.progress["children_total"] == 1
+        bridge = (
+            await db.execute(
+                select(Job).where(Job.parent_id == parent.id, Job.type == "letterbox_reencode")
+            )
+        ).scalar_one()
+        assert bridge.payload["media_job_id"] == body["job_ids"][0]
+
+    async def test_reencode_artifact_list_filters_labels_and_replace_ready(
+        self, client: AsyncClient, tv_library, db, monkeypatch, tmp_path
+    ):
+        mixed_show = tv_library["mixed_show"]
+        ep1 = tv_library["ep1"]
+        media_path = tmp_path / "original.mkv"
+        candidate_path = tmp_path / "candidate.mkv"
+        media_path.write_bytes(b"original")
+        candidate_path.write_bytes(b"candidate")
+        media_file = (
+            await db.execute(
+                select(MediaFile)
+                .join(EpisodeMediaFile, EpisodeMediaFile.media_file_id == MediaFile.id)
+                .where(EpisodeMediaFile.episode_id == ep1.id)
+            )
+        ).scalar_one()
+        media_file.path = str(media_path)
+        db.add(
+            LetterboxReencodeArtifact(
+                job_id=None,
+                media_type="episode",
+                episode_id=ep1.id,
+                media_file_id=media_file.id,
+                original_path=str(media_path),
+                candidate_path=str(candidate_path),
+                original_size_bytes=8,
+                candidate_size_bytes=9,
+                original_signature="old",
+                candidate_signature="new",
+                encoder="libx265",
+                encoder_family="cpu",
+                codec="hevc",
+                crop_top=140,
+                crop_bottom=140,
+                status="candidate_ready",
+            )
+        )
+        await db.commit()
+
+        listed = await client.get(
+            "/api/letterbox/reencode-artifacts",
+            params={"series_id": mixed_show.id, "season_number": 1},
+        )
+        assert listed.status_code == 200
+        item = listed.json()["items"][0]
+        assert item["series_id"] == mixed_show.id
+        assert item["series_title"] == mixed_show.title
+        assert item["episode_code"] == "S01E01"
+
+        async def fake_replace_original(_db, artifact):
+            artifact.status = "replaced"
+            await _db.commit()
+            return {"id": artifact.id, "status": "replaced"}
+
+        monkeypatch.setattr(
+            "marquee.api.routes.letterbox.letterbox_reencode.replace_original",
+            fake_replace_original,
+        )
+
+        replaced = await client.post(
+            f"/api/letterbox/tv/{mixed_show.id}/reencode-artifacts/replace-ready",
+            json={"season_number": 1},
+        )
+        assert replaced.status_code == 200
+        assert replaced.json() == {"replaced": 1, "failed": []}
 
 
 @pytest.mark.asyncio

@@ -1546,6 +1546,16 @@ class BatchReencodeRequest(BaseModel):
     settings: BatchReencodeSettings
 
 
+class TvBatchReencodeRequest(BaseModel):
+    season_number: int | None = None
+    confidence_levels: list[str] | None = None
+    settings: BatchReencodeSettings
+
+
+class TvReplaceReadyRequest(BaseModel):
+    season_number: int | None = None
+
+
 class RestoreReencodeRequest(BaseModel):
     keep_candidate: bool = False
 
@@ -1885,6 +1895,98 @@ async def _create_reencode_plan_job(
     return job, plan, expires_at
 
 
+async def _create_tv_reencode_plan_job(
+    db: AsyncSession,
+    series_id: int,
+    episode_id: int,
+    body: ReencodePlanRequest,
+) -> tuple[MediaJob, dict, datetime]:
+    rows = await _tv_scope_rows(db, series_id)
+    group_rows = _scope_episode_group(rows, episode_id)
+    if not group_rows:
+        raise HTTPException(status_code=404, detail=f"Episode id={episode_id} not found")
+    target_row = next(row for row in group_rows if row[0].id == episode_id)
+    episode, _series, state, media_file_id = target_row
+    if state is None:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "missing_state", "message": "Run detect before re-encoding."},
+        )
+    if state.status == "variable_unsafe":
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "variable_unsafe",
+                "message": "Variable aspect ratio is unsafe to crop permanently.",
+            },
+        )
+    if state.status != "candidate":
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "invalid_status", "message": "Episode is not a crop candidate."},
+        )
+    top = body.top if body.top is not None else state.recommended_crop_top
+    bottom = body.bottom if body.bottom is not None else state.recommended_crop_bottom
+    if not top and not bottom:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "missing_crop", "message": "No crop to apply (recommendation is 0)."},
+        )
+    if media_file_id is None:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "missing_media_file", "message": "Episode has no media file path."},
+        )
+    try:
+        resolved = await resolve_media_file(db, media_file_id)
+        plan = await letterbox_reencode.build_plan(
+            db,
+            resolved,
+            top=top or 0,
+            bottom=bottom or 0,
+            allow_cpu_fallback=body.allow_cpu_fallback,
+            encoder=body.encoder,
+            quality=body.quality,
+            preset=body.preset,
+            codec=body.codec,
+        )
+    except (MediaFileNotFoundError, MediaFileUnavailableError) as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "file_unavailable", "message": str(exc)},
+        ) from exc
+    except letterbox_reencode.ReencodePlanError as exc:
+        raise _map_reencode_error(exc) from exc
+
+    await media_job_manager.supersede_planned_media_jobs(
+        db,
+        media_file_id=media_file_id,
+        operation="letterbox_reencode",
+    )
+
+    expires_at = datetime.now(UTC) + timedelta(hours=2)
+    episode_ids = [episode.id for episode, *_rest in group_rows]
+    job = await media_job_manager.create_job(
+        db,
+        operation="letterbox_reencode",
+        media_file_id=media_file_id,
+        trigger="manual",
+        request={
+            "series_id": series_id,
+            "episode_id": episode_id,
+            "episode_ids": episode_ids,
+            "top": top or 0,
+            "bottom": bottom or 0,
+            "allow_cpu_fallback": body.allow_cpu_fallback,
+        },
+        plan=plan,
+        status="planned",
+        input_signature=resolved.signature,
+        plan_expires_at=expires_at,
+    )
+    return job, plan, expires_at
+
+
 async def _confirm_media_job_plan(db: AsyncSession, job: MediaJob) -> None:
     if job.status != "planned":
         raise HTTPException(status_code=409, detail={"code": "not_planned", "status": job.status})
@@ -1944,6 +2046,31 @@ async def _confirm_media_job_plan(db: AsyncSession, job: MediaJob) -> None:
             if state and state.status == "candidate":
                 state.status = "tagged"
                 state.reviewed = False
+        elif movie_file:
+            episode_ids = set(
+                (
+                    await db.execute(
+                        select(EpisodeMediaFile.episode_id).where(
+                            EpisodeMediaFile.media_file_id == job.media_file_id
+                        )
+                    )
+                ).scalars()
+            )
+            if job.request_json:
+                request = json.loads(job.request_json)
+                episode_ids.update(request.get("episode_ids") or [])
+            states = (
+                await db.execute(
+                    select(LetterboxState).where(
+                        LetterboxState.media_type == "episode",
+                        LetterboxState.episode_id.in_(episode_ids),
+                    )
+                )
+            ).scalars().all()
+            for state in states:
+                if state.status == "candidate":
+                    state.status = "tagged"
+                    state.reviewed = False
 
     await db.commit()
 
@@ -1957,6 +2084,23 @@ async def create_reencode_plan(
     """Plan a permanent cropped re-encode. No media file is written here."""
     _require_ffmpeg()
     job, plan, expires_at = await _create_reencode_plan_job(db, movie_id, body)
+    return {
+        **plan,
+        "job_id": job.job_id,
+        "status": "planned",
+        "expires_at": expires_at.isoformat(),
+    }
+
+
+@router.post("/tv/{series_id}/episodes/{episode_id}/reencode-plan", status_code=201)
+async def create_tv_reencode_plan(
+    series_id: int,
+    episode_id: int,
+    body: ReencodePlanRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    _require_ffmpeg()
+    job, plan, expires_at = await _create_tv_reencode_plan_job(db, series_id, episode_id, body)
     return {
         **plan,
         "job_id": job.job_id,
@@ -2002,11 +2146,136 @@ async def batch_reencode(
     return {"job_ids": job_ids, "count": len(job_ids), "skipped": skipped}
 
 
+@router.post("/tv/{series_id}/reencode", status_code=202)
+async def tv_batch_reencode(
+    series_id: int,
+    body: TvBatchReencodeRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    _require_ffmpeg()
+    confidence_levels = _validate_confidence_levels(body.confidence_levels)
+    normalized_levels = normalize_confidence_levels(confidence_levels)
+    rows = await _tv_scope_rows(db, series_id, season_number=body.season_number)
+    if not rows:
+        raise HTTPException(status_code=404, detail=f"Series id={series_id} not found")
+
+    parent = await job_manager.create(
+        db,
+        job_type="letterbox_reencode_tv_batch",
+        payload={
+            "series_id": series_id,
+            "season_number": body.season_number,
+            "confidence_levels": confidence_levels,
+        },
+        priority=70,
+        subject_type="series",
+        subject_id=series_id,
+        status="waiting_external",
+    )
+
+    plan_body = ReencodePlanRequest(
+        top=body.settings.crop_top_override,
+        bottom=body.settings.crop_bottom_override,
+        allow_cpu_fallback=body.settings.allow_cpu,
+        encoder=body.settings.encoder,
+        quality=body.settings.quality,
+        preset=body.settings.preset,
+        codec=body.settings.codec,
+    )
+    groups: dict[int, tuple[Episode, LetterboxState]] = {}
+    skipped: list[dict] = []
+    for episode, _series, state, media_file_id in rows:
+        if state is None:
+            skipped.append(
+                {
+                    "episode_id": episode.id,
+                    "code": "missing_state",
+                    "reason": "Run detect before re-encoding.",
+                    "sXXeYY": f"S{episode.season_number:02d}E{episode.episode_number:02d}",
+                }
+            )
+            continue
+        if state.status != "candidate":
+            continue
+        if not (state.recommended_crop_top or state.recommended_crop_bottom):
+            skipped.append(
+                {
+                    "episode_id": episode.id,
+                    "code": "missing_crop",
+                    "reason": "No crop to apply (recommendation is 0).",
+                    "sXXeYY": f"S{episode.season_number:02d}E{episode.episode_number:02d}",
+                }
+            )
+            continue
+        if normalized_levels is not None and state.confidence not in normalized_levels:
+            skipped.append(
+                {
+                    "episode_id": episode.id,
+                    "code": "confidence_filtered",
+                    "reason": "Candidate confidence is outside the requested levels.",
+                    "sXXeYY": f"S{episode.season_number:02d}E{episode.episode_number:02d}",
+                }
+            )
+            continue
+        if media_file_id is None:
+            skipped.append(
+                {
+                    "episode_id": episode.id,
+                    "code": "missing_media_file",
+                    "reason": "Episode has no media file path.",
+                    "sXXeYY": f"S{episode.season_number:02d}E{episode.episode_number:02d}",
+                }
+            )
+            continue
+        groups.setdefault(media_file_id, (episode, state))
+
+    job_ids: list[str] = []
+    for episode, _state in groups.values():
+        try:
+            job, _plan, _expires = await _create_tv_reencode_plan_job(
+                db, series_id, episode.id, plan_body
+            )
+            await _confirm_media_job_plan(db, job)
+            generic = await _generic_media_job_bridge(db, job)
+            if generic is not None:
+                generic.parent_id = parent.id
+                generic.root_id = parent.root_id
+                generic.correlation_id = parent.correlation_id
+            job_ids.append(job.job_id)
+        except HTTPException as exc:
+            detail = exc.detail if isinstance(exc.detail, dict) else {"message": str(exc.detail)}
+            skipped.append(
+                {
+                    "episode_id": episode.id,
+                    "code": detail.get("code"),
+                    "reason": detail.get("message") or str(exc.detail),
+                    "sXXeYY": f"S{episode.season_number:02d}E{episode.episode_number:02d}",
+                }
+            )
+    parent.progress = {
+        "children_total": len(job_ids),
+        "children_completed": 0,
+        "children_failed": 0,
+    }
+    if not job_ids:
+        parent.status = "succeeded"
+        parent.finished_at = datetime.now(UTC)
+    await db.commit()
+    return {
+        "job_ids": job_ids,
+        "count": len(job_ids),
+        "skipped": skipped,
+        "parent_job_id": parent.id,
+    }
+
+
 @router.get("/reencode-artifacts")
 async def list_reencode_artifacts(
     db: Annotated[AsyncSession, Depends(get_db)],
     status: str | None = None,
     movie_id: int | None = None,
+    series_id: int | None = None,
+    season_number: int | None = None,
     limit: int = Query(100, ge=1, le=500),
 ):
     query = (
@@ -2018,11 +2287,78 @@ async def list_reencode_artifacts(
         query = query.where(LetterboxReencodeArtifact.status == status)
     if movie_id:
         query = query.where(LetterboxReencodeArtifact.movie_id == movie_id)
+    if series_id is not None or season_number is not None:
+        query = (
+            query.join(
+                EpisodeMediaFile,
+                EpisodeMediaFile.media_file_id == LetterboxReencodeArtifact.media_file_id,
+            )
+            .join(Episode, Episode.id == EpisodeMediaFile.episode_id)
+            .where(LetterboxReencodeArtifact.media_type == "episode")
+            .distinct()
+        )
+        if series_id is not None:
+            query = query.where(Episode.series_id == series_id)
+        if season_number is not None:
+            query = query.where(Episode.season_number == season_number)
     rows = (await db.execute(query)).scalars().all()
+    items = []
+    for row in rows:
+        item = letterbox_reencode.artifact_to_dict(row)
+        if row.media_type == "episode" and row.episode_id is not None:
+            tv_row = (
+                await db.execute(
+                    select(Episode, Series)
+                    .join(Series, Series.id == Episode.series_id)
+                    .where(Episode.id == row.episode_id)
+                )
+            ).one_or_none()
+            if tv_row is not None:
+                episode, series = tv_row
+                item.update(
+                    {
+                        "series_id": series.id,
+                        "series_title": series.title,
+                        "episode_code": f"S{episode.season_number:02d}E{episode.episode_number:02d}",
+                    }
+                )
+        items.append(item)
     return {
         "summary": await letterbox_reencode.artifact_summary(db),
-        "items": [letterbox_reencode.artifact_to_dict(row) for row in rows],
+        "items": items,
     }
+
+
+@router.post("/tv/{series_id}/reencode-artifacts/replace-ready")
+async def replace_ready_tv_reencode_artifacts(
+    series_id: int,
+    body: TvReplaceReadyRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    query = (
+        select(LetterboxReencodeArtifact)
+        .join(EpisodeMediaFile, EpisodeMediaFile.media_file_id == LetterboxReencodeArtifact.media_file_id)
+        .join(Episode, Episode.id == EpisodeMediaFile.episode_id)
+        .where(
+            LetterboxReencodeArtifact.media_type == "episode",
+            LetterboxReencodeArtifact.status == "candidate_ready",
+            Episode.series_id == series_id,
+        )
+        .distinct()
+        .order_by(LetterboxReencodeArtifact.id)
+    )
+    if body.season_number is not None:
+        query = query.where(Episode.season_number == body.season_number)
+    artifacts = (await db.execute(query)).scalars().all()
+    replaced = 0
+    failed: list[dict] = []
+    for artifact in artifacts:
+        try:
+            await letterbox_reencode.replace_original(db, artifact)
+            replaced += 1
+        except letterbox_reencode.ReencodePlanError as exc:
+            failed.append({"artifact_id": artifact.id, "code": exc.code, "reason": str(exc)})
+    return {"replaced": replaced, "failed": failed}
 
 
 @router.post("/reencode-artifacts/{artifact_id}/replace-original")
