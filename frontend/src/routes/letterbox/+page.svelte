@@ -345,13 +345,13 @@
 							<div class="breakdown-list">
 								<div class="breakdown-row">
 									<span class="color-dot good"></span>
-									<span class="label">Clear</span>
-									<span class="val">{summary.tv.verdict_breakdown.clear}</span>
+									<span class="label">Widescreen</span>
+									<span class="val">{summary.tv.verdict_breakdown.widescreen}</span>
 								</div>
 								<div class="breakdown-row">
 									<span class="color-dot good desaturated"></span>
-									<span class="label">Sampled Clear</span>
-									<span class="val">{summary.tv.verdict_breakdown.sampled_clear}</span>
+									<span class="label">Sampled Widescreen</span>
+									<span class="val">{summary.tv.verdict_breakdown.sampled_widescreen}</span>
 								</div>
 								<div class="breakdown-row">
 									<span class="color-dot warn"></span>
@@ -372,6 +372,16 @@
 									<span class="color-dot purple"></span>
 									<span class="label">Variable AR (Needs Review)</span>
 									<span class="val">{summary.tv.verdict_breakdown.variable}</span>
+								</div>
+								<div class="breakdown-row">
+									<span class="color-dot teal"></span>
+									<span class="label">Open Matte</span>
+									<span class="val">{summary.tv.verdict_breakdown.open_matte}</span>
+								</div>
+								<div class="breakdown-row">
+									<span class="color-dot magenta"></span>
+									<span class="label">Pillarbox</span>
+									<span class="val">{summary.tv.verdict_breakdown.pillarbox}</span>
 								</div>
 								<div class="breakdown-row">
 									<span class="color-dot low"></span>
@@ -835,6 +845,12 @@
 	}
 	.color-dot.purple {
 		background: var(--dovi);
+	}
+	.color-dot.teal {
+		background: var(--teal);
+	}
+	.color-dot.magenta {
+		background: var(--magenta);
 	}
 	.color-dot.low {
 		background: var(--low);
