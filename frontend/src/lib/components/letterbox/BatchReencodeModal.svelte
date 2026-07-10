@@ -1,5 +1,5 @@
-<script lang="ts">
-	import type { BatchReencodeSettings, LetterboxColumnItem } from '$lib/api/types';
+<script lang="ts" generics="T extends { confidence: string | null }">
+	import type { BatchReencodeSettings } from '$lib/api/types';
 	import {
 		ENCODER_LABELS,
 		KNOWN_ENCODERS,
@@ -13,14 +13,18 @@
 	let {
 		open,
 		items,
+		getId,
+		subtitle = 'Queue a durable re-encode for the selected staging films.',
 		busy = false,
 		onStart,
 		onClose
 	}: {
 		open: boolean;
-		items: LetterboxColumnItem[];
+		items: T[];
+		getId: (item: T) => number;
+		subtitle?: string;
 		busy?: boolean;
-		onStart: (payload: { movieIds: number[]; settings: BatchReencodeSettings }) => void;
+		onStart: (payload: { ids: number[]; settings: BatchReencodeSettings }) => void;
 		onClose: () => void;
 	} = $props();
 
@@ -47,7 +51,7 @@
 				if (item.confidence === 'low') return includeLow;
 				return false;
 			})
-			.map((item) => item.movie_id)
+			.map(getId)
 	);
 	const selectedCount = $derived(selectedIds.length);
 	const canStart = $derived(selectedCount > 0 && !busy);
@@ -93,7 +97,7 @@
 		if (!canStart) return;
 		const simple = simpleSettings(selectedProfile, setEncoder);
 		onStart({
-			movieIds: selectedIds,
+			ids: selectedIds,
 			settings: {
 				quality_profile: selectedProfile,
 				encoder: setEncoder === 'auto' ? null : setEncoder,
@@ -122,7 +126,7 @@
 			<div class="modal-head">
 				<div>
 					<h3>Batch permanent re-encode</h3>
-					<p>Queue a durable re-encode for the selected staging films.</p>
+					<p>{subtitle}</p>
 				</div>
 				<button class="close" disabled={busy} onclick={onClose}>✕</button>
 			</div>
