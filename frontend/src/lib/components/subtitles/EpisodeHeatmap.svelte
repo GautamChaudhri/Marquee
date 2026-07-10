@@ -1,4 +1,6 @@
 <script lang="ts">
+	import { LETTERBOX_TV_BUCKET_META } from '$lib/letterbox/status-meta';
+
 	let {
 		seasons,
 		mode = 'subtitles',
@@ -41,7 +43,9 @@
 	}
 
 	// Legend & Status mapping for Subtitles mode
-	const SUBTITLE_STATUS_META: Record<string, { label: string; bg: string; border: string }> = {
+	type StatusMeta = { label: string; bg: string; border: string; text?: string };
+
+	const SUBTITLE_STATUS_META: Record<string, StatusMeta> = {
 		ok: {
 			label: 'Fully Covered',
 			bg: 'color-mix(in srgb, var(--good) 20%, var(--ink3))',
@@ -69,64 +73,17 @@
 		}
 	};
 
-	// Legend & Status mapping for Letterbox mode (C5)
-	const LETTERBOX_STATUS_META: Record<string, { label: string; bg: string; border: string }> = {
-		clear: {
-			label: 'Clear',
-			bg: 'color-mix(in srgb, var(--good) 20%, var(--ink3))',
-			border: 'color-mix(in srgb, var(--good) 40%, var(--line))'
-		},
-		sampled_clear: {
-			label: 'Sampled Clear (Triage)',
-			bg: 'color-mix(in srgb, var(--good) 8%, var(--ink3))', // desaturated/pale green
-			border: 'color-mix(in srgb, var(--good) 20%, var(--line))'
-		},
-		candidate: {
-			label: 'Letterboxed (Untreated)',
-			bg: 'color-mix(in srgb, var(--warn) 20%, var(--ink3))',
-			border: 'color-mix(in srgb, var(--warn) 40%, var(--line))'
-		},
-		tagged: {
-			label: 'Tagged',
-			bg: 'color-mix(in srgb, var(--info) 20%, var(--ink3))',
-			border: 'color-mix(in srgb, var(--info) 40%, var(--line))'
-		},
-		reencoded: {
-			label: 'Reencoded',
-			bg: 'color-mix(in srgb, var(--gold) 20%, var(--ink3))',
-			border: 'color-mix(in srgb, var(--gold) 40%, var(--line))'
-		},
-		variable: {
-			label: 'Variable AR',
-			bg: 'color-mix(in srgb, var(--dovi) 20%, var(--ink3))',
-			border: 'color-mix(in srgb, var(--dovi) 40%, var(--line))'
-		},
-		open_matte: {
-			label: 'Open Matte',
-			bg: 'color-mix(in srgb, var(--info) 9%, var(--ink3))',
-			border: 'color-mix(in srgb, var(--info) 22%, var(--line))'
-		},
-		pillarbox: {
-			label: 'Pillarbox',
-			bg: 'color-mix(in srgb, var(--dovi) 9%, var(--ink3))',
-			border: 'color-mix(in srgb, var(--dovi) 22%, var(--line))'
-		},
-		error: {
-			label: 'Error',
-			bg: 'color-mix(in srgb, var(--bad) 20%, var(--ink3))',
-			border: 'color-mix(in srgb, var(--bad) 40%, var(--line))'
-		},
-		ineligible: {
-			label: 'Ineligible',
-			bg: 'var(--ink2)',
-			border: 'var(--line)'
-		},
-		unanalyzed: {
-			label: 'Unanalyzed',
-			bg: 'var(--ink3)',
-			border: 'var(--line)'
-		}
-	};
+	const LETTERBOX_STATUS_META: Record<string, StatusMeta> = Object.fromEntries(
+		Object.entries(LETTERBOX_TV_BUCKET_META).map(([bucket, meta]) => [
+			bucket,
+			{
+				label: meta.label,
+				bg: meta.fill,
+				border: meta.border,
+				text: meta.foreground
+			}
+		])
+	);
 
 	const METAS = $derived(mode === 'subtitles' ? SUBTITLE_STATUS_META : LETTERBOX_STATUS_META);
 
@@ -162,7 +119,7 @@
 				<div class="legend-item">
 					<span
 						class="legend-color"
-						class:hatched={key === 'unknown' || key === 'unanalyzed'}
+						class:hatched={mode === 'subtitles' && key === 'unknown'}
 						style={`background: ${meta.bg}; border-color: ${meta.border}`}
 					></span>
 					<span class="legend-label">{meta.label}</span>
@@ -187,7 +144,7 @@
 				<span class="legend-group-title">Legend Hint</span>
 				<div class="legend-item">
 					<span class="legend-label-hint">
-						* Sampled Clear: Season triage said clear, not individually scanned.
+						* Sampled Widescreen: Season triage found no letterboxing, not individually scanned.
 					</span>
 				</div>
 			</div>
@@ -213,11 +170,12 @@
 						<button
 							type="button"
 							class="cell"
-							class:hatched={ep.bucket === 'unanalyzed' ||
-								ep.status === 'unknown' ||
-								ep.status === 'unanalyzed' ||
-								(!ep.status && !ep.bucket)}
-							style={`background: ${meta.bg}; border-color: ${meta.border}`}
+							class:hatched={mode === 'subtitles' &&
+								(ep.bucket === 'unanalyzed' ||
+									ep.status === 'unknown' ||
+									ep.status === 'unanalyzed' ||
+									(!ep.status && !ep.bucket))}
+							style={`background: ${meta.bg}; border-color: ${meta.border};${mode === 'letterbox' ? `color: ${meta.text}` : ''}`}
 							onclick={() => handleCellClick(season.season_number, ep.episode_id)}
 							title={getTooltip(season.season_number, ep)}
 						>
