@@ -12,6 +12,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from marquee.api.routes import letterbox as letterbox_routes
 from marquee.config import settings
 from marquee.main import app
 from marquee.media import binaries, letterbox_preview
@@ -28,6 +29,41 @@ from marquee.models import (
     Season,
     Series,
 )
+
+
+@pytest.mark.asyncio
+async def test_active_tv_jobs_include_active_episode_media_file_jobs(db, tv_library):
+    episode = tv_library["ep1"]
+    other_episode = tv_library["clean_ep1"]
+    media_file = (
+        await db.execute(
+            select(MediaFile)
+            .join(EpisodeMediaFile)
+            .where(EpisodeMediaFile.episode_id == episode.id, MediaFile.is_active.is_(True))
+        )
+    ).scalar_one()
+    other_media_file = (
+        await db.execute(
+            select(MediaFile)
+            .join(EpisodeMediaFile)
+            .where(EpisodeMediaFile.episode_id == other_episode.id, MediaFile.is_active.is_(True))
+        )
+    ).scalar_one()
+    db.add_all(
+        [
+            Job(id="series-active", type="letterbox_detect", subject_type="series", subject_id=str(episode.series_id)),
+            Job(id="file-active", type="letterbox_reencode", subject_type="media_file", subject_id=str(media_file.id)),
+            Job(id="other-file", type="letterbox_reencode", subject_type="media_file", subject_id=str(other_media_file.id)),
+            Job(id="file-finished", type="letterbox_reencode", status="succeeded", subject_type="media_file", subject_id=str(media_file.id)),
+        ]
+    )
+    await db.commit()
+
+    active_ids = await letterbox_routes._active_tv_job_ids(db, episode.series_id)
+    assert "series-active" in active_ids
+    assert "file-active" in active_ids
+    assert "other-file" not in active_ids
+    assert "file-finished" not in active_ids
 
 
 @pytest_asyncio.fixture
