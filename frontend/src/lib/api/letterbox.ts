@@ -14,7 +14,10 @@ import type {
 	LetterboxTvListItem,
 	LetterboxTvDetail,
 	LetterboxEpisodeDetail,
-	LetterboxSummaryResponse
+	LetterboxSummaryResponse,
+	JobSummary,
+	TvBatchReencodeResponse,
+	TvReplaceReadyResponse
 } from './types';
 import type { JobSnapshot } from './jobs';
 
@@ -165,11 +168,13 @@ export function cancelJob(
 
 export function listReencodeArtifacts(
 	fetchFn: Fetch,
-	q: { movie_id?: number; status?: string } = {}
+	q: { movie_id?: number; status?: string; series_id?: number; season_number?: number } = {}
 ): Promise<ReencodeArtifactList> {
 	return apiGet<ReencodeArtifactList>(fetchFn, '/letterbox/reencode-artifacts', {
 		movie_id: q.movie_id,
-		status: q.status
+		status: q.status,
+		series_id: q.series_id,
+		season_number: q.season_number
 	});
 }
 
@@ -241,7 +246,13 @@ export function getLetterboxTvEpisodeDetail(
 export function detectLetterboxTv(
 	fetchFn: Fetch,
 	seriesId: number,
-	body: { season_number?: number; episode_id?: number; exhaustive?: boolean; force?: boolean } = {}
+	body: {
+		season_number?: number;
+		episode_id?: number;
+		exhaustive?: boolean;
+		force?: boolean;
+		include_open_matte?: boolean;
+	} = {}
 ): Promise<LetterboxJobRef> {
 	return apiSend<LetterboxJobRef>(fetchFn, 'POST', `/letterbox/tv/${seriesId}/detect`, body);
 }
@@ -256,9 +267,63 @@ export function detectLetterboxTvLibrary(
 export function applyLetterboxTv(
 	fetchFn: Fetch,
 	seriesId: number,
-	body: { season_number?: number; episode_id?: number } = {}
-): Promise<unknown> {
+	body: { season_number?: number; episode_id?: number; confidence_levels?: string[] } = {}
+): Promise<unknown | JobSummary> {
 	return apiSend(fetchFn, 'POST', `/letterbox/tv/${seriesId}/apply`, body);
+}
+
+export function revertLetterboxTv(
+	fetchFn: Fetch,
+	seriesId: number,
+	body: { season_number?: number; episode_id?: number } = {}
+): Promise<unknown | JobSummary> {
+	return apiSend(fetchFn, 'POST', `/letterbox/tv/${seriesId}/revert`, body);
+}
+
+export function createTvReencodePlan(
+	fetchFn: Fetch,
+	seriesId: number,
+	episodeId: number,
+	opts: ReencodeOptions = {}
+): Promise<ReencodePlan> {
+	return apiSend<ReencodePlan>(
+		fetchFn,
+		'POST',
+		`/letterbox/tv/${seriesId}/episodes/${episodeId}/reencode-plan`,
+		opts
+	);
+}
+
+export function batchReencodeTv(
+	fetchFn: Fetch,
+	seriesId: number,
+	body: { season_number?: number; confidence_levels?: string[]; settings: BatchReencodeSettings }
+): Promise<TvBatchReencodeResponse> {
+	return apiSend<TvBatchReencodeResponse>(
+		fetchFn,
+		'POST',
+		`/letterbox/tv/${seriesId}/reencode`,
+		body
+	);
+}
+
+export function replaceReadyTvArtifacts(
+	fetchFn: Fetch,
+	seriesId: number,
+	body: { season_number?: number } = {}
+): Promise<TvReplaceReadyResponse> {
+	return apiSend<TvReplaceReadyResponse>(
+		fetchFn,
+		'POST',
+		`/letterbox/tv/${seriesId}/reencode-artifacts/replace-ready`,
+		body
+	);
+}
+
+export function resetTvLetterbox(
+	fetchFn: Fetch
+): Promise<{ states_deleted: number; events_deleted: number; previews_purged: number }> {
+	return apiSend(fetchFn, 'POST', '/letterbox/tv/dev/reset-all', {});
 }
 
 export function removeLetterboxTvEpisode(
