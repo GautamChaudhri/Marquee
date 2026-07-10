@@ -34,6 +34,17 @@ Shared timeline for backend plan 14 and its frontend sibling.
   bookkeeping.
 - Pending operator actions: GPU-box stalled-encode/cancel smoke remains pending.
 
+## Phase 3 — worker finalization, recovery, and cancellation (H6–H8)
+
+- Completed: `c45bc8a harden job cancellation recovery`.
+- In progress: Phase 4 — TV active-job discovery (H9).
+- Verification: worker-cancellation tests passed (3 passed); full pytest improved to **806
+  passed, 33 failed**; `ruff check marquee tests` passed.
+- Exact next steps: add direct active-media-file job coverage, run the full baseline comparison
+  and lint gate, commit Phase 4, and leave the GPU-box smoke pending for the operator.
+- Deviations: none.
+- Pending operator actions: GPU-box stalled-encode/cancel smoke remains pending.
+
 ## Phase 2 — transaction hygiene and engine safety nets (H4–H5)
 
 - Completed: `9b11d5f isolate media job transactions`.

@@ -20,7 +20,7 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel
-from sqlalchemy import case, delete, exists, func, select
+from sqlalchemy import String, case, cast, delete, exists, func, select, union
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
@@ -561,14 +561,27 @@ async def _load_tv_episode_rows(
 
 
 async def _active_tv_job_ids(db: AsyncSession, series_id: int) -> list[str]:
+    series_jobs = select(Job.id).where(
+        Job.subject_type == "series",
+        Job.subject_id == str(series_id),
+        Job.status.notin_(tuple(TERMINAL)),
+    )
+    media_file_jobs = (
+        select(Job.id)
+        .join(MediaFile, Job.subject_id == cast(MediaFile.id, String))
+        .join(EpisodeMediaFile, EpisodeMediaFile.media_file_id == MediaFile.id)
+        .join(Episode, Episode.id == EpisodeMediaFile.episode_id)
+        .where(
+            Job.subject_type == "media_file",
+            Job.status.notin_(tuple(TERMINAL)),
+            MediaFile.is_active.is_(True),
+            Episode.series_id == series_id,
+        )
+    )
     rows = (
         await db.execute(
             select(Job.id)
-            .where(
-                Job.subject_type == "series",
-                Job.subject_id == str(series_id),
-                Job.status.notin_(tuple(TERMINAL)),
-            )
+            .where(Job.id.in_(union(series_jobs, media_file_jobs)))
             .order_by(Job.created_at.desc(), Job.id.desc())
         )
     ).scalars().all()
