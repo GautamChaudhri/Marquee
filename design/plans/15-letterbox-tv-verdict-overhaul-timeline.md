@@ -88,3 +88,18 @@ Shared timeline for backend plan 15 and its frontend sibling.
   and TV detail.
 - Scope guard: no diff in movie letterbox pages, `LetterboxDetail.svelte`, HDR, subtitle, or
   heatmap files.
+
+## Frontend Step 4 — heatmap solid fills
+
+- Completed: `4149b06 solidify letterbox heatmap`.
+- Changes: letterbox mode now derives every cell and legend swatch from the shared bucket map,
+  using solid fills, same-hue borders, per-bucket accessible text colors, V5 labels, and no
+  letterbox hatching. Subtitle metadata and its mode-specific hatching remain unchanged; HDR
+  uses a separate component and has no diff.
+- Verification: `npm run check` and `npm run build` passed with baseline warnings. `npm run
+  lint` remains limited to the unchanged existing Prettier drift in `LetterboxDetail.svelte`
+  and TV detail. Static diff check confirms only the letterbox branch of EpisodeHeatmap changed.
+- Screenshots: not captured. This environment has no Chromium/Chrome binary and no live library
+  data, so before/after letterbox and subtitles screenshots remain a pending operator action.
+- Scope guard: no diff in movie letterbox pages, `LetterboxDetail.svelte`, HDR routes/components,
+  or subtitle routes; only the letterbox mode branch in the shared heatmap changed.
