@@ -80,6 +80,39 @@
 </div>
 
 <style>
+	.btn {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		padding: 6px 12px;
+		border: 1px solid transparent;
+		border-radius: var(--radius-sm);
+		background: var(--ink3);
+		color: var(--text);
+		font-size: 12px;
+		font-weight: 600;
+		cursor: pointer;
+		transition: all 0.15s ease;
+	}
+	.btn:hover:not(:disabled) {
+		filter: brightness(1.1);
+	}
+	.btn:disabled {
+		color: var(--text);
+		opacity: 0.55;
+		cursor: not-allowed;
+	}
+	.btn-outline {
+		background: transparent;
+		border-color: var(--line2);
+	}
+	.btn-outline:hover:not(:disabled) {
+		background: var(--ink2);
+	}
+	.btn-sm {
+		padding: 4px 8px;
+		font-size: 11px;
+	}
 	.confidence-popover {
 		position: relative;
 		display: inline-flex;
