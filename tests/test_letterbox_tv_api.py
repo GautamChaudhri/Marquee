@@ -103,6 +103,8 @@ async def _seed_episode_with_state(
     applied_crop: int | None = None,
     last_detected_at: datetime | None = None,
     resolved_by: str | None = None,
+    video_width: int = 1920,
+    video_height: int = 1080,
 ) -> Episode:
     episode = Episode(
         series_id=series.id,
@@ -110,8 +112,8 @@ async def _seed_episode_with_state(
         episode_number=episode_number,
         title=f"S{season_number:02d}E{episode_number:02d}",
         episode_file_path=path,
-        video_width=1920,
-        video_height=1080,
+        video_width=video_width,
+        video_height=video_height,
     )
     db.add(episode)
     await db.flush()
@@ -139,13 +141,45 @@ async def _seed_episode_with_state(
                 applied_crop_top=applied_crop,
                 applied_crop_bottom=applied_crop,
                 aspect_label=aspect_label,
-                source_width=1920,
-                source_height=1080,
+                source_width=video_width,
+                source_height=video_height,
                 last_detected_at=last_detected_at,
                 resolved_by=resolved_by,
             )
         )
     return episode
+
+
+async def _seed_dimension_class_show(db: AsyncSession) -> tuple[Series, Episode, Episode]:
+    series = Series(title="Wide Show", year=2024, series_path="/tv/wide", sonarr_id=20)
+    db.add(series)
+    await db.flush()
+    db.add(Season(series_id=series.id, season_number=1, episode_file_count=2))
+    await db.flush()
+    open_matte = await _seed_episode_with_state(
+        db,
+        series=series,
+        season_number=1,
+        episode_number=1,
+        path="/tv/wide/s01e01.mkv",
+        state_status=None,
+        video_width=1920,
+        video_height=800,
+    )
+    truth = await _seed_episode_with_state(
+        db,
+        series=series,
+        season_number=1,
+        episode_number=2,
+        path="/tv/wide/s01e02.mkv",
+        state_status="candidate",
+        aspect_label="2.40:1",
+        recommended_crop=140,
+        video_width=1920,
+        video_height=800,
+    )
+    await db.commit()
+    return series, open_matte, truth
 
 
 @pytest_asyncio.fixture
@@ -280,6 +314,16 @@ class TestSummary:
         assert body["tv"]["show_verdict_counts"]["mixed"] == 1
         assert body["tv"]["aspect_distribution"] == {"2.40:1": 3}
 
+    async def test_summary_excludes_open_matte_from_tv_aspect_distribution(
+        self, client: AsyncClient, db
+    ):
+        await _seed_dimension_class_show(db)
+
+        body = (await client.get("/api/letterbox/summary")).json()
+
+        assert body["tv"]["verdict_breakdown"]["open_matte"] == 1
+        assert body["tv"]["aspect_distribution"] == {"2.40:1": 1}
+
 
 @pytest.mark.asyncio
 class TestTvList:
@@ -354,6 +398,23 @@ class TestTvDetail:
     async def test_detail_404_for_unknown_series(self, client: AsyncClient):
         resp = await client.get("/api/letterbox/tv/999999")
         assert resp.status_code == 404
+
+    async def test_detail_overrides_unscanned_open_matte_until_detector_truth(
+        self, client: AsyncClient, db
+    ):
+        series, open_matte, truth = await _seed_dimension_class_show(db)
+
+        body = (await client.get(f"/api/letterbox/tv/{series.id}")).json()
+        episodes = {
+            episode["episode_id"]: episode
+            for season in body["seasons"]
+            for episode in season["episodes"]
+        }
+
+        assert episodes[open_matte.id]["bucket"] == "open_matte"
+        assert episodes[open_matte.id]["aspect_label"] == "2.40:1"
+        assert episodes[truth.id]["bucket"] == "candidate"
+        assert episodes[truth.id]["aspect_label"] == "2.40:1"
 
 
 @pytest.mark.asyncio

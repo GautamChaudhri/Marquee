@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from marquee.api.routes.letterbox import _workflow_funnel_from_states
+from marquee.core.letterbox_prefilter import prefilter_category_episode, tv_dimension_class
 from marquee.core.letterbox_rollups import (
     EpisodeLetterbox,
     episode_bucket,
@@ -17,6 +20,7 @@ def _episode(
     *,
     status: str | None,
     aspect_label: str | None = None,
+    bucket_override: str | None = None,
 ) -> EpisodeLetterbox:
     return EpisodeLetterbox(
         episode_id=episode_id,
@@ -32,7 +36,12 @@ def _episode(
         applied_crop_bottom=140 if status in {"tagged", "reencoded"} else None,
         eligible=True,
         reviewed=status == "tagged",
+        bucket_override=bucket_override,
     )
+
+
+def _episode_dims(width: int | None, height: int | None):
+    return SimpleNamespace(video_width=width, video_height=height)
 
 
 def test_episode_bucket_maps_statuses():
@@ -45,6 +54,31 @@ def test_episode_bucket_maps_statuses():
     assert episode_bucket("ineligible") == "ineligible"
     assert episode_bucket("errored") == "error"
     assert episode_bucket("prefilter_candidate") == "unanalyzed"
+
+
+def test_tv_dimension_class_boundaries_and_prefilter_categories():
+    assert tv_dimension_class(1835, 1080) == "pillarbox"
+    assert tv_dimension_class(1836, 1080) is None
+    assert tv_dimension_class(1933, 1080) is None
+    assert tv_dimension_class(1944, 1080) == "open_matte"
+    assert tv_dimension_class(1296, 720) == "open_matte"
+    assert tv_dimension_class(1296, 719) is None
+    assert tv_dimension_class(720, 480) is None
+    assert tv_dimension_class(720, 576) is None
+    assert tv_dimension_class(None, 1080) is None
+
+    sd_category, sd_prefilter = prefilter_category_episode(_episode_dims(720, 480))
+    assert sd_category == "candidate"
+    assert sd_prefilter["bucket"] == "candidate"
+    assert sd_prefilter["reason"] == "sd_assumed_candidate"
+
+    pal_category, pal_prefilter = prefilter_category_episode(_episode_dims(720, 576))
+    assert pal_category == "candidate"
+    assert pal_prefilter["reason"] == "sd_assumed_candidate"
+
+    missing_category, missing_prefilter = prefilter_category_episode(_episode_dims(None, 1080))
+    assert missing_category == "unknown_resolution"
+    assert missing_prefilter["bucket"] == "skip"
 
 
 def test_season_rollup_marks_clean_sampled_and_uniform():
@@ -60,6 +94,48 @@ def test_season_rollup_marks_clean_sampled_and_uniform():
     assert rollup["uniformity"] == "uniform"
     assert rollup["bucket_counts"]["clear"] == 2
     assert rollup["bucket_counts"]["sampled_clear"] == 1
+
+
+def test_season_rollup_handles_open_matte_and_pillarbox_verdicts():
+    assert season_rollup([_episode(1, 1, 1, status=None, bucket_override="open_matte")])[
+        "verdict"
+    ] == "clean"
+    assert season_rollup(
+        [
+            _episode(1, 1, 1, status=None, bucket_override="open_matte"),
+            _episode(2, 1, 2, status=None, bucket_override="pillarbox"),
+        ]
+    )["verdict"] == "clean"
+    assert season_rollup(
+        [
+            _episode(1, 1, 1, status=None, bucket_override="open_matte"),
+            _episode(2, 1, 2, status="prefilter_candidate"),
+        ]
+    )["verdict"] == "unanalyzed"
+    assert season_rollup(
+        [
+            _episode(1, 1, 1, status=None, bucket_override="open_matte"),
+            _episode(2, 1, 2, status="not_letterboxed"),
+        ]
+    )["verdict"] == "clean"
+    assert season_rollup(
+        [
+            _episode(1, 1, 1, status=None, bucket_override="open_matte"),
+            _episode(2, 1, 2, status="candidate"),
+        ]
+    )["verdict"] == "needs_action"
+
+
+def test_open_matte_and_pillarbox_do_not_affect_aspect_rollups():
+    rollup = season_rollup(
+        [
+            _episode(1, 1, 1, status=None, aspect_label="2.40:1", bucket_override="open_matte"),
+            _episode(2, 1, 2, status=None, aspect_label="1.33:1", bucket_override="pillarbox"),
+        ]
+    )
+
+    assert rollup["dominant_aspect_label"] is None
+    assert rollup["uniformity"] == "uniform"
 
 
 def test_show_rollup_excludes_specials_and_reports_uniform_by_season():
