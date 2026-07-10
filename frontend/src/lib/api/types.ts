@@ -1924,3 +1924,27 @@ export interface LetterboxSummaryResponse {
 	movies: LetterboxSummarySection;
 	tv: LetterboxSummarySection;
 }
+
+// ── TV Reencode / Apply / Revert payload types (Plan 13) ─────────────────────
+
+/** Skipped item in a TV batch reencode response. */
+export interface TvBatchReencodeSkipped {
+	episode_id: number;
+	code: string | null;
+	reason: string;
+	sXXeYY?: string;
+}
+
+/** Response from POST /tv/{series_id}/reencode */
+export interface TvBatchReencodeResponse {
+	job_ids: string[];
+	count: number;
+	skipped: TvBatchReencodeSkipped[];
+	parent_job_id: string;
+}
+
+/** Response from POST /tv/{series_id}/reencode-artifacts/replace-ready */
+export interface TvReplaceReadyResponse {
+	replaced: number;
+	failed: Array<{ artifact_id: number; code: string; reason: string }>;
+}
