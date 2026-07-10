@@ -447,6 +447,48 @@ async def letterbox_remove(job: Job) -> dict[str, Any]:
         return {"removed": result.removed, "path": result.path}
 
 
+@register("letterbox_apply_tv_scope")
+async def letterbox_apply_tv_scope(job: Job) -> dict[str, Any]:
+    from marquee.core.letterbox_tv_scope import apply_tv_scope  # noqa: PLC0415
+
+    factory = _get_session_factory()
+    series_id = int(job.payload["series_id"])
+    season_number = job.payload.get("season_number")
+    confidence_levels = job.payload.get("confidence_levels")
+
+    async def progress(done: int, total: int) -> None:
+        await _update_progress(job.id, "apply", done, total)
+
+    async with factory() as db:
+        return await apply_tv_scope(
+            db,
+            series_id,
+            season_number=int(season_number) if season_number is not None else None,
+            confidence_levels=confidence_levels,
+            progress=progress,
+        )
+
+
+@register("letterbox_revert_tv_scope")
+async def letterbox_revert_tv_scope(job: Job) -> dict[str, Any]:
+    from marquee.core.letterbox_tv_scope import revert_tv_scope  # noqa: PLC0415
+
+    factory = _get_session_factory()
+    series_id = int(job.payload["series_id"])
+    season_number = job.payload.get("season_number")
+
+    async def progress(done: int, total: int) -> None:
+        await _update_progress(job.id, "revert", done, total)
+
+    async with factory() as db:
+        return await revert_tv_scope(
+            db,
+            series_id,
+            season_number=int(season_number) if season_number is not None else None,
+            progress=progress,
+        )
+
+
 @register("backup_create", instant=True)
 async def backup_create(_job: Job) -> dict[str, Any]:
     from marquee.core.backup import backup_service  # noqa: PLC0415

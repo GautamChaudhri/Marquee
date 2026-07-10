@@ -519,6 +519,15 @@ class TestTvActions:
         ).scalar_one()
         media_file.path = str(media_path)
         target.episode_file_path = str(media_path)
+        state = (
+            await db.execute(
+                select(LetterboxState).where(
+                    LetterboxState.media_type == "episode",
+                    LetterboxState.episode_id == target.id,
+                )
+            )
+        ).scalar_one()
+        state.confidence = "low"
         await db.commit()
 
         mkv_json = json.dumps(
@@ -545,6 +554,13 @@ class TestTvActions:
         )
         assert removed.status_code == 200
         assert removed.json()["removed"] is True
+
+        reverted = await client.post(
+            f"/api/letterbox/tv/{mixed_show.id}/revert",
+            json={"episode_id": target.id},
+        )
+        assert reverted.status_code == 200
+        assert reverted.json()["episode_ids"] == [target.id]
 
     async def test_apply_episode_scope_fans_out_shared_media_group(
         self,
@@ -600,6 +616,45 @@ class TestTvActions:
         assert applied.status_code == 200
         assert applied.json()["applied_episodes"] == 2
         assert applied.json()["items"][0]["episode_ids"] == [first.id, second.id]
+
+    async def test_scoped_apply_and_revert_return_jobs_with_payloads(
+        self, client: AsyncClient, tv_library, db
+    ):
+        mixed_show = tv_library["mixed_show"]
+
+        default_apply = await client.post(
+            f"/api/letterbox/tv/{mixed_show.id}/apply",
+            json={"season_number": 1},
+        )
+        assert default_apply.status_code == 202
+        apply_job = await db.get(Job, default_apply.json()["job_id"])
+        assert apply_job.type == "letterbox_apply_tv_scope"
+        assert apply_job.payload["series_id"] == mixed_show.id
+        assert apply_job.payload["season_number"] == 1
+        assert apply_job.payload["confidence_levels"] == ["high"]
+
+        all_apply = await client.post(
+            f"/api/letterbox/tv/{mixed_show.id}/apply",
+            json={"season_number": 1, "confidence_levels": ["all"]},
+        )
+        assert all_apply.status_code == 202
+        all_job = await db.get(Job, all_apply.json()["job_id"])
+        assert all_job.payload["confidence_levels"] == ["all"]
+
+        invalid = await client.post(
+            f"/api/letterbox/tv/{mixed_show.id}/apply",
+            json={"season_number": 1, "confidence_levels": ["bogus"]},
+        )
+        assert invalid.status_code == 422
+
+        revert = await client.post(
+            f"/api/letterbox/tv/{mixed_show.id}/revert",
+            json={"season_number": 1},
+        )
+        assert revert.status_code == 202
+        revert_job = await db.get(Job, revert.json()["job_id"])
+        assert revert_job.type == "letterbox_revert_tv_scope"
+        assert revert_job.payload == {"series_id": mixed_show.id, "season_number": 1}
 
     async def test_ignore_and_mark_not_letterboxed(self, client: AsyncClient, tv_library, db):
         mixed_show = tv_library["mixed_show"]
