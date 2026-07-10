@@ -79,3 +79,11 @@
 - exact next steps: migrate `runSeasonApply`/`runSeasonRevert` to the job-summary-returning endpoints (`applyLetterboxTv`/`revertLetterboxTv`), add the confidence popover, add show-level Apply/Revert/Reencode buttons, register `letterbox_apply_tv_scope`/`letterbox_revert_tv_scope` in `job-labels.ts`
 - deviations from the plan and why: none this step
 - pending operator actions: none
+
+## After frontend step 5
+
+- completed: step 5 — C9 apply/revert jobs + confidence popover + show-level buttons (`6327dcb` "wire tv apply/revert jobs and confidence popover"). `runSeasonApply`/`runSeasonRevert` replaced by scope-generic `runScopeApply`/`runScopeRevert` (`seasonNumber: number | null`, `null` = show-wide) that call `applyLetterboxTv`/`revertLetterboxTv` and rehydrate the returned `JobSummary.job_id` via the existing `rehydrateJob`; the old client-side `Promise.all` revert loop over `removeLetterboxTvEpisode` is gone for season/show scope (single-episode revert is untouched, per the plan's "unfiltered" rule). Added a new shared `ConfidencePopover.svelte` (`frontend/src/lib/components/letterbox/`) — self-contained checkbox dropdown (High/Medium/Low/Variable + All, outside-click-to-close via a bound container ref, no a11y warnings) driving `confidence_levels` on Apply and showing a live "Apply (N)" count computed client-side from the loaded `detail` (candidate-bucket episodes matching the selected levels). Wired for both season headers and a new show-level action row in `SectionHeader`'s `action` snippet (Apply popover + Revert button). Registered `letterbox_apply_tv_scope`/`letterbox_revert_tv_scope` in `job-labels.ts`. The component is written to be reused by the step-6 Reencode button (same confidence-filter UX) rather than forked.
+- in progress: step 6 — C7 reencode UX + C8 artifact surfaces
+- exact next steps: generalize `BatchReencodeModal.svelte` first as its own commit (verify movie page unchanged), then TV season/show reencode button + flow, single-episode plan/confirm modal, artifacts section + bulk replace + dropdown artifact panel, register `letterbox_reencode_tv_batch`
+- deviations from the plan and why: none this step
+- pending operator actions: none
