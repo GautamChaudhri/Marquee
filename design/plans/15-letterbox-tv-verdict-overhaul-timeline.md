@@ -118,7 +118,9 @@ Shared timeline for backend plan 15 and its frontend sibling.
 
 ## Frontend Step 6 — terminology audit and operator handoff
 
-- Completed: `f71fa92 audit tv letterbox terminology`.
+- Completed: `f71fa92 audit tv letterbox terminology`; the reachable timeline append is
+  `4974df1 audit tv letterbox terminology`. The former is an empty duplicate commit and is
+  retained only as an unreachable historical object.
 - Literal sweep: `rg -n "clear|Clean|clean" frontend/src/routes/letterbox/tv frontend/src/lib`.
   Remaining TV-route hits are all intentional: `clearInterval` and `Map.clear()` cleanup calls
   in the show detail, `clearFilters` and its filter-reset button in the shows list, and the
