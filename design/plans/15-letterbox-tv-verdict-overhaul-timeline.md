@@ -141,3 +141,20 @@ Shared timeline for backend plan 15 and its frontend sibling.
   environment. Operator must validate OM/PB badges, bars/counters, filters, uniformity states,
   dark/light heatmap contrast, Apply `(0)`, and unchanged subtitle/HDR/movie workflows after
   deployment.
+
+## Live HTTP smoke — 2026-07-11
+
+- Completed against `http://192.168.4.199:3166`: `/dashboard`, `/letterbox`, and the TV list/detail
+  routes returned HTTP 200 with live library data.
+- Verified live TV payloads include the renamed bucket keys, `content_types`, verdicts, and
+  uniformity values. The library contained Open Matte and Pillarbox examples, plus Needs Action,
+  Uniform, and Dirty Mix examples.
+- Verified API filters returned results: Needs Action 9, Open Matte membership 8, Pillarbox
+  membership 1, Uniform 36, Dirty Mix 8, and title search for Murderbot 1.
+- Verified Murderbot (all Open Matte) and Berserk (all Pillarbox) detail payloads include seasons,
+  episodes, bucket counts, content types, verdict, and uniformity. Server-rendered detail markup
+  contains the new vocabulary and readable `Apply (0)` controls. The landing page retains the
+  movie-side `Clear` vocabulary while exposing the TV labels.
+- Limitation: this was an HTTP/SSR smoke only. No browser executable is available in this session,
+  so interactive clicks, actual dark/light rendering, filled heatmap contrast, and unchanged
+  subtitle/HDR/movie workflows remain pending operator verification.
