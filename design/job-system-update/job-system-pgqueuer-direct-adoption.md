@@ -9,6 +9,7 @@
 [migration program](job-system-pgqueuer-migration.md)
 **Progress contract:** [job progress and loading experience](job-progress-and-loading-experience.md)
 **Reset-window companion work:** [miscellaneous fixes](job-system-miscellaneous-reset-window-fixes.md)
+**First implementation plan:** [JMC1 PgQueuer foundation](jmc1-pgqueuer-foundation.md)
 
 ## Decision
 
@@ -222,9 +223,9 @@ path must preserve it.
 2. Validate the `JobDefinition` payload and idempotency scope.
 3. Insert the canonical `Job`, optional domain detail, parent/child links, subject snapshot,
    and initial event.
-4. Increment the canonical dispatch generation and execute PgQueuer 1.1.1's installed
-   `fn_pgqueuer_enqueue` function through that same
-   SQLAlchemy connection with:
+4. Increment the canonical dispatch generation, obtain SQLAlchemy's documented raw driver
+   connection from that same transaction, and invoke PgQueuer 1.1.1's public
+   `Queries.from_asyncpg_connection(...).enqueue()` API with:
    - the selected execution-class entrypoint;
    - a payload containing only `job_id`, `payload_version`, and `dispatch_generation`;
    - priority;
@@ -236,9 +237,12 @@ path must preserve it.
 If any step fails, neither product job nor transport ticket becomes visible. No outbox or
 second producer connection is used.
 
-The gateway is pinned to the public function contract in 1.1.1 and covered by a schema
-contract test. A future PgQueuer upgrade is blocked until fresh-install, rollback, enqueue,
-and queued/picked-job upgrade tests pass.
+The gateway is pinned to the public `Queries` contract in 1.1.1 and covered by a transaction
+ownership contract test. The public method issues its insert on the supplied asyncpg
+connection and does not commit or close that SQLAlchemy-owned connection. Marquee does not
+copy PgQueuer's enqueue SQL, create a replacement database function, or add an outbox. A
+future PgQueuer upgrade is blocked until fresh-install, rollback, enqueue, and
+queued/picked-job upgrade tests pass.
 
 ### Planned jobs
 
@@ -524,7 +528,7 @@ safe values for the deployed worker count.
 | Risk | Control |
 |---|---|
 | PgQueuer 1.x schema/API change | Exact pin, public gateway only, dry-run inspection, queued/picked upgrade rehearsal |
-| SQLAlchemy/PgQueuer transaction mismatch | Invoke installed enqueue function on the same session connection; rollback contract test |
+| SQLAlchemy/PgQueuer transaction mismatch | Invoke public `Queries.enqueue()` through the same session's documented raw asyncpg connection; prove commit/rollback ownership and connection lifetime |
 | Product/transport state drifts after handler crash | Terminal-before-return ordering, idempotent redelivery, public-API consistency monitor |
 | PgQueuer cancellation is only transport-level | Marquee owns cooperative token, process-group escalation, and death confirmation |
 | Coarse classes underutilize hardware | Start safe; measure queue waits before adding another class or permit |
