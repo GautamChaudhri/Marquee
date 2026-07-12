@@ -1,12 +1,13 @@
 # Marquee Job System — Direct PgQueuer Adoption
 
-**Decided:** 2026-07-12  
-**Status:** Target architecture; PgQueuer 1.1.1 is selected  
+**Decided:** 2026-07-12
+**Status:** Target architecture; PgQueuer 1.1.1 is selected
 **Supersedes:** The runtime bake-off and replaceable-runtime recommendation in
-[the earlier redesign](job-system-redesign.md)  
+[the earlier redesign](job-system-redesign.md)
 **Companion documents:** [current-state review](job-system-current-state-review.md),
 [Projection Room redesign](projection-room-job-experience-redesign.md), and
 [migration program](job-system-pgqueuer-migration.md)
+**Progress contract:** [job progress and loading experience](job-progress-and-loading-experience.md)
 
 ## Decision
 
@@ -83,7 +84,8 @@ Marquee remains authoritative for product and media semantics:
 - planned/confirmed state for destructive operations;
 - user intent (`run`, `pause`, or `cancel`), product phase, and terminal outcome;
 - typed retry classification and maximum-attempt policy;
-- semantic stages, progress, events, result, and user-facing error;
+- semantic stages, typed progress policies/snapshots, native-tool progress adapters, parent
+  aggregation, events, result, and user-facing error;
 - a lightweight delivery-attempt audit linked to PgQueuer's ID and attempt number;
 - current fencing token and compare-and-set writes;
 - process/cgroup identity, child-process tracking, cooperative cancellation, TERM/KILL, and
@@ -155,12 +157,11 @@ handler in the API process.
 
 ### Canonical `jobs`
 
-Evolve the current table rather than introduce another product job table. The target row
-contains:
+Create one canonical `jobs` table in the fresh Marquee baseline. The target row contains:
 
 - `id`: existing canonical string identifier;
-- `pgq_job_id`: unique nullable numeric transport ID during migration, non-null for new
-  queued work after cutover;
+- `pgq_job_id`: unique nullable numeric transport ID; null is valid before a planned job is
+  dispatched, but queued work has an active ticket;
 - `dispatch_generation`: monotonically increasing generation used to reject a cancelled,
   paused, or otherwise superseded ticket;
 - `type` and `payload_version`;
@@ -172,9 +173,9 @@ contains:
 - priority, scheduled/available time, idempotency key, and retry-policy snapshot;
 - parent/root/correlation and subject identifiers;
 - immutable `subject_snapshot` containing the display identity needed after library changes;
-- compact progress, current stage, and lifecycle timestamps;
-- `retry_of_job_id` for operator-created successor jobs;
-- `runtime_backend` only during migration, with values `custom` or `pgqueuer`.
+- compact versioned `JobProgress`, current semantic stage/subject, progress sequence and
+  freshness, and lifecycle timestamps;
+- `retry_of_job_id` for operator-created successor jobs.
 
 Do not expose `pgq_job_id` as the job's public identifier.
 
@@ -196,7 +197,7 @@ Keep the table as a Marquee execution audit, not a second transport lease:
 - exit code/signal and typed failure classification;
 - log/artifact references and bounded execution metrics.
 
-Remove authority for claim selection, heartbeat expiry, and queue recovery after cutover.
+The table has no authority for claim selection, heartbeat expiry, or queue recovery.
 PgQueuer's picked heartbeat decides redelivery. A new delivery increments the Marquee fence,
 so an old attempt cannot write current state or publish output.
 
@@ -269,6 +270,8 @@ Every built-in job type registers exactly one `JobDefinition` containing:
 - safety-lock requirements;
 - subject snapshot builder;
 - presentation family/presenter;
+- progress policy, stage vocabulary, units/denominator source, aggregation strategy,
+  persistence cadence, native-tool adapter, and ETA capability;
 - handler and result/error schemas;
 - whether side effects are read-only, staged/idempotent, or unsafe to replay.
 
@@ -319,7 +322,7 @@ attempt-scoped staging output and never publish the destination themselves.
 
 1. PgQueuer delivers `{job_id, payload_version, dispatch_generation}`.
 2. The Marquee wrapper reloads the canonical job.
-3. Terminal, cancelled, stale-version/generation, wrong-backend, or duplicate deliveries
+3. Terminal, cancelled, stale-version/generation, or duplicate deliveries
    record the dispatch disposition and return without running.
 4. A paused delivery race records the ticket consumed/cancelled and leaves the canonical job
    paused with no active ticket; resume will enqueue a new generation.
@@ -331,7 +334,9 @@ attempt-scoped staging output and never publish the destination themselves.
 7. Launch the isolated attempt runner and attach logging/artifact context.
 
 All progress, events, checkpoints, result, and error writes use a compare-and-set predicate
-for current attempt and fence.
+for current attempt and fence. Progress also uses a monotonic sequence. Redelivery creates a
+new fenced progress scope; late writers from the previous attempt cannot regress or finish
+the canonical snapshot.
 
 ### Success
 
@@ -437,7 +442,8 @@ callback invokes an “instant” handler.
 Fixed batches insert the parent, all children, and all PgQueuer tickets in one transaction.
 Dynamic workflows keep an explicit open/sealed child set; a parent cannot terminalize until
 sealed. Parent state is a Marquee projection over canonical children, not a PgQueuer
-workflow.
+workflow. That projection owns stable overall completion and bounded current-subject state;
+PgQueuer ticket state is never used as a substitute for semantic batch progress.
 
 ## Observability and Projection Room boundary
 
@@ -453,11 +459,13 @@ notification hint, reads each event once, and fans it out to clients. PgQueuer n
 remain private to its queue manager.
 
 The complete job-specific UI, log, artifact, and raw-data contract is defined in
-[the Projection Room redesign](projection-room-job-experience-redesign.md).
+[the Projection Room redesign](projection-room-job-experience-redesign.md). Measurement,
+nested overall/current scopes, persistence, and refresh recovery are defined in
+[job progress and loading experience](job-progress-and-loading-experience.md).
 
 ## What Marquee no longer maintains
 
-After the migration contract phase, delete:
+The fresh target baseline and final source tree omit:
 
 - custom claim/poll/lookahead SQL;
 - custom queue heartbeat and stale-attempt recovery;
@@ -483,8 +491,10 @@ Direct adoption still requires product-specific engineering:
 6. Process/cgroup supervision and staged media publication.
 7. Warm ML services and capability/readiness reporting.
 8. Logs, artifact storage, retention, and redaction.
-9. Presentation registry, bounded APIs, broadcaster, Projection Room, and Operations view.
-10. Transport consistency monitoring and PgQueuer upgrade tests.
+9. Typed progress service, tool adapters, parent projections, and durable active-job
+   discovery/reconciliation.
+10. Presentation registry, bounded APIs, broadcaster, Projection Room, and Operations view.
+11. Transport consistency monitoring and PgQueuer upgrade tests.
 
 This is materially smaller than owning a durable queue runtime. It is also the portion a
 generic queue cannot safely provide for Marquee.
@@ -521,6 +531,7 @@ safe values for the deployed worker count.
 | Advisory lock releases while an orphan child runs | Attempt staging, fenced coordinator publish, cgroup/process sweep, quarantine on uncertainty |
 | Failed tickets and completion logs grow | PgQueuer table monitoring/autovacuum plus aligned 30-day retention |
 | Library metadata changes erase historical meaning | Immutable subject and request/plan snapshots on canonical job |
+| Progress resets, lies, or disappears after reconnect | Typed overall/current scopes, server-computed units, fenced sequences, durable discovery, and snapshot repair |
 | Intermediate code accidentally starts the old executor | Clean target schema has no legacy runtime authority; old startup hooks stay disabled and static/runtime gates prove one executor per definition |
 
 ## Acceptance criteria
@@ -530,13 +541,17 @@ The architecture is implemented only when:
 - new jobs and PgQueuer tickets commit or roll back together;
 - no new job type uses the custom dequeue path;
 - every built-in type has a typed definition, retry policy, safety declaration, and
-  presenter;
+  presenter plus an explicit progress policy;
+- overall progress is monotonic, current progress resets only with a new scope, and opaque
+  work remains honestly indeterminate;
+- feature pages and Projection Room rediscover/render the same server-backed active state
+  after refresh or connection interruption;
 - PgQueuer alone performs dequeue heartbeat, stale redelivery, retry timing, and schedules;
 - a stale delivery cannot write canonical state or publish a destination;
 - cancellation confirms process death before normal release;
 - fixed batches cannot be observed partially;
 - Projection Room needs no raw PgQueuer table access;
-- custom queue/resource/schedule and legacy media lifecycle tables are removed after the
-  compatibility window;
+- the fresh target schema contains no custom queue/resource/schedule or legacy media
+  lifecycle tables;
 - the final fault/media/UI certification in
   [the migration program](job-system-pgqueuer-migration.md) passes.

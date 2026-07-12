@@ -1,9 +1,10 @@
 # Projection Room Activity Experience — Comparative Research
 
-**Reviewed:** 2026-07-12  
-**Status:** Primary-source product comparison and Marquee decisions  
-**Resulting design:** [Projection Room redesign](projection-room-job-experience-redesign.md)  
+**Reviewed:** 2026-07-12
+**Status:** Primary-source product comparison and Marquee decisions
+**Resulting design:** [Projection Room redesign](projection-room-job-experience-redesign.md)
 **Delivery:** [clean-slate PgQueuer program](job-system-pgqueuer-migration.md)
+**Progress design:** [job progress and loading experience](job-progress-and-loading-experience.md)
 
 ## Purpose and method
 
@@ -23,9 +24,15 @@ The review used current official documentation and upstream source as of the rev
   [hold behavior](https://docs.tdarr.io/docs/library-setup/source-options/);
 - [FileFlows Dashboard](https://fileflows.com/docs/webconsole/dashboard),
   [Files](https://fileflows.com/docs/webconsole/files/),
+  [version history](https://fileflows.com/docs/versions),
   [Processing Summary](https://fileflows.com/docs/webconsole/reporting/processing-summary),
   and [Optimized Files](https://fileflows.com/docs/webconsole/reporting/optimized-files);
-- [Unmanic completed tasks](https://docs.unmanic.app/docs/dashboard/completed_tasks/).
+- [Unmanic completed tasks](https://docs.unmanic.app/docs/dashboard/completed_tasks/) and
+  [worker progress/logs](https://docs.unmanic.app/docs/dashboard/workers/);
+- [FFmpeg progress output](https://www.ffmpeg.org/ffmpeg.html),
+  [MKVToolNix GUI progress guidance](https://help.mkvtoolnix.download/t/mkvmerge-events/656),
+  and the closed [Tdarr inaccurate progress/ETA report](https://github.com/HaveAGitGat/tdarr/issues/1236)
+  as implementation evidence and a negative case.
 
 Descriptions under **Observed** report what those products expose. Decisions under
 **Marquee use** are recommendations for Marquee; they are not claims about the other apps.
@@ -40,6 +47,33 @@ Screenshots are useful context but are not treated as a stable API contract.
 | Tdarr | Separate staging and status groupings for transcode/health-check work, including success/not-required and error/cancelled outcomes | Worker/node association, hold behavior, active and historical job reports, task report history, last tool output by default, optional full FFmpeg/HandBrake output | **Adapt:** first-class `not_required`, held/waiting reasons, report access everywhere, attempt history, worker evidence. **Reject:** seven status tables |
 | FileFlows | Dashboard summarizes upcoming, recent, failed, nodes, and savings; Files separates unprocessed, processing, processed, and failed | Live/completed logs, failure reason, move to top, cancel, reprocess, node, encoder, file sizes, storage saved, timing, resolution, VMAF/evaluation data, optional failed temp retention | **Adapt:** attention strip, class-local reprioritization, reprocessing, direct logs, retained failure evidence, media-impact metrics. **Reject:** generic flow graph as the primary explanation |
 | Unmanic | Completed tasks are successful/failed, ordered by completion, expandable, requeueable, and removable | Full commands run by workers and diagnostics for failures | **Adapt:** terminal attempt reports and operator retry as a new job. Do not hide command evidence behind container logs |
+
+## Progress and loading-bar findings
+
+The comparison supports a subject-first activity surface, but reliable progress requires a
+stronger contract than copying another product's bar:
+
+- Sonarr/Radarr pair a subject with status and explanatory attention text. Marquee adopts
+  the subject/status hierarchy, while rejecting download-client progress semantics that do
+  not describe analysis, remux, ML, validation, or staged publication.
+- FileFlows has added humanized processing steps and can show FPS, ETA, decoder, encoder,
+  and bitrate for the active operation. Marquee adapts those metrics only when a definition
+  has a validated source; they are not universal columns.
+- Unmanic explicitly distinguishes processing with a known percentage from indeterminate
+  processing and exposes a live command log from the worker. Marquee adopts both modes and
+  direct log access.
+- Tdarr's job reports remain valuable evidence, but its closed inaccurate-progress issue is
+  a caution: deriving completion from assumed frame rate/frame count can leave a successful
+  encode below 40%. Marquee therefore uses native processed timestamps against validated
+  duration and degrades to indeterminate when those units are unreliable.
+- FFmpeg supplies machine-readable progress packets and cadence control; MKVToolNix supplies
+  GUI-mode progress. Native tool formats should feed typed backend adapters rather than
+  page-specific log parsing.
+
+No reviewed product removes the need for Marquee-specific nested progress. Its batches can
+contain shows, seasons, episodes, files, tracks, candidates, and tool stages. The correct
+adaptation is a stable overall request scope plus a separate current-subject/current-step
+scope—not one percentage reused at every level.
 
 ## What the Arr model gets right
 
@@ -103,6 +137,12 @@ FileFlows demonstrate additional requirements:
 | Infrastructure charts in Activity | Present in current UI, moved in plan | **Reject** | Keep infrastructure in lazy Operations |
 | Download-client blocklist | Not planned | **Reject** | Failed jobs remain filterable History; no separate blocklist |
 | Generic flow graph | Not planned | **Reject** | Use domain presenters and an optional friendly step summary |
+| Typed semantic progress | Missing | **Adopt** | Add server-owned versioned overall/current scopes, stages, subject context, sequence, and freshness |
+| Determinate versus indeterminate work | Partially covered | **Adopt** | Require every definition to declare honest measurement semantics; never render a fake 100% activity bar |
+| Nested batch/current-subject progress | Missing | **Adopt** | Keep overall scope monotonic and reset current progress only under a new `scope_id` |
+| Refresh/reconnect recovery | Partially covered | **Adopt** | Rediscover active jobs from Queue APIs and reconcile SSE with snapshots; local storage is only a hint |
+| Native media-tool progress | Missing | **Adapt** | Parse FFmpeg `-progress` and `mkvmerge --gui-mode`; use indeterminate stages for opaque tools |
+| Guessed percentage/ETA | Implicit risk | **Reject** | Do not use nominal frame rate, arbitrary milestones, or client-inferred JSON denominators |
 
 ## Marquee Activity decision
 
@@ -125,6 +165,9 @@ Every row answers the same minimum questions:
 - which feature area and trigger created it;
 - current state/outcome, stage, and attention severity;
 - progress, elapsed time, and running ETA/throughput when credible;
+- separate monotonic overall progress and current-subject/current-step progress, or an
+  explicit indeterminate state when no denominator exists;
+- progress freshness/reconnect state without treating a network interruption as job failure;
 - eligible/retry/hold/safety-gate reason when waiting;
 - terminal effect, no-change reason, or failure/remediation summary;
 - timestamps and duration;
@@ -191,12 +234,15 @@ to unlabelled JSON merely because they sit outside the four primary filters.
 
 **Adopt:** Activity with Queue/History, subject-first rows, attention severity, deterministic
 ordering, rich filters, configurable tables, `not_required`, direct reports, retry lineage,
-failure remediation, and media-impact facts.
+failure remediation, media-impact facts, determinate/indeterminate distinction, and durable
+active-job recovery.
 
 **Adapt:** bulk actions to Marquee's safe command capabilities; move-to-top to class-scoped
 priority; processor metrics to presenter-specific impact; retained temp output to bounded
-artifacts; status tables to two views plus filters.
+artifacts; status tables to two views plus filters; native tool progress to typed overall and
+current scopes shared by feature pages and Activity.
 
 **Reject:** blocklists, download-client vocabulary, global rank/ETA promises, generic flow
 graphs as the main explanation, many lifecycle tabs, and infrastructure data in the primary
-Activity surface.
+Activity surface. Also reject page-local stage maps, fabricated milestones, guessed
+frame-count percentages, and disappearance of active work on refresh or SSE interruption.
