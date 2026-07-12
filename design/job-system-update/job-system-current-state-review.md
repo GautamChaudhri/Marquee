@@ -2,8 +2,9 @@
 
 **Reviewed:** 2026-07-11  
 **Status:** Source-verified architecture review; no implementation changes proposed in this document  
-**Companion documents:** [runtime comparison](job-system-runtime-comparison.md) and
-[recommended redesign](job-system-redesign.md)
+**Companion documents:** [runtime comparison](job-system-runtime-comparison.md),
+[selected direct-PgQueuer architecture](job-system-pgqueuer-direct-adoption.md), and
+[historical redesign](job-system-redesign.md)
 
 ## Executive finding
 

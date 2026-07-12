@@ -1,10 +1,24 @@
 # Marquee Job System — Recommended Redesign
 
 **Reviewed:** 2026-07-11  
-**Status:** Architecture recommendation; implementation should use an
-expand/migrate/contract program  
+**Status:** Historical recommendation; runtime-selection decision superseded 2026-07-12  
 **Companion documents:** [current-state review](job-system-current-state-review.md) and
 [runtime comparison](job-system-runtime-comparison.md)
+
+## Supersession notice
+
+Marquee has selected PgQueuer 1.1.1 directly and will not retain a custom-runtime fallback,
+Procrastinate fallback, multi-runtime adapter, or bake-off. The current target is defined by:
+
+- [direct PgQueuer adoption](job-system-pgqueuer-direct-adoption.md);
+- [Projection Room job-specific redesign](projection-room-job-experience-redesign.md);
+- [Projection Room activity comparison](projection-room-activity-comparison.md);
+- [six-chunk clean-slate migration program](job-system-pgqueuer-migration.md).
+
+The analysis below is retained as historical rationale. Its canonical product model,
+fencing/process-safety, bounded observability, and expand/migrate/contract principles remain
+useful unless the newer documents explicitly replace them. Its runtime bake-off, outbox,
+replaceable adapter, and permanent custom/Procrastinate fallback are no longer current.
 
 ## Executive decision
 
