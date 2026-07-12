@@ -8,6 +8,7 @@
 [Projection Room redesign](projection-room-job-experience-redesign.md), and
 [migration program](job-system-pgqueuer-migration.md)
 **Progress contract:** [job progress and loading experience](job-progress-and-loading-experience.md)
+**Reset-window companion work:** [miscellaneous fixes](job-system-miscellaneous-reset-window-fixes.md)
 
 ## Decision
 

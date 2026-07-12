@@ -11,7 +11,6 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from marquee.api.routes.test_pipeline import _RUNS_WORK_DATA, _clear_generated_outputs
 from marquee.core.pipeline_config import PipelineSettings
 from marquee.core.poster_sources.tmdb import PosterCandidate
 from marquee.ml.artifact_codec import unicode_array, unicode_scalar
@@ -24,6 +23,7 @@ from marquee.pipeline.deduper import PosterDeduper
 from marquee.pipeline.features import calculate_text_residual
 from marquee.pipeline.gate import PosterGate
 from marquee.pipeline.output import place_ranked
+from marquee.pipeline.runner import _RUNS_WORK_DATA, _clear_generated_outputs
 from marquee.pipeline.scorer import WeightedScorer
 from marquee.pipeline.types import CandidateScore, FeatureVector, OCRCandidateResult
 

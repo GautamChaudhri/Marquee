@@ -299,7 +299,6 @@ from marquee.api.routes.subtitles import router as subtitles_router  # noqa: E40
 from marquee.api.routes.sync import router as sync_router  # noqa: E402
 from marquee.api.routes.system import router as system_router  # noqa: E402
 from marquee.api.routes.taste import router as taste_router  # noqa: E402
-from marquee.api.routes.test_pipeline import router as test_pipeline_router  # noqa: E402
 from marquee.api.routes.text_profiles import router as text_profiles_router  # noqa: E402
 from marquee.api.routes.webhooks import router as webhooks_router  # noqa: E402
 
@@ -327,7 +326,6 @@ app.include_router(audio_subs_router)
 app.include_router(media_jobs_router)
 app.include_router(subtitle_policies_router)
 app.include_router(subtitle_generators_router)
-app.include_router(test_pipeline_router)
 app.include_router(webhooks_router)
 if settings.DEBUG:
     from marquee.api.routes.dev_ocr_labels import router as dev_ocr_labels_router  # noqa: E402
