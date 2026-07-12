@@ -1,10 +1,11 @@
 # Projection Room — Job-Specific Experience, Logs, and Diagnostics
 
-**Decided:** 2026-07-12  
-**Status:** Target product and API design  
-**Runtime context:** [direct PgQueuer adoption](job-system-pgqueuer-direct-adoption.md)  
-**Delivery sequence:** [clean-slate migration program](job-system-pgqueuer-migration.md)  
+**Decided:** 2026-07-12
+**Status:** Target product and API design
+**Runtime context:** [direct PgQueuer adoption](job-system-pgqueuer-direct-adoption.md)
+**Delivery sequence:** [clean-slate migration program](job-system-pgqueuer-migration.md)
 **Product research:** [activity comparison](projection-room-activity-comparison.md)
+**Progress contract:** [job progress and loading experience](job-progress-and-loading-experience.md)
 
 ## Product decision
 
@@ -60,6 +61,12 @@ The current detail route and page are generic in the wrong places:
 - Projection Room refreshes job, queue, worker, resource, current-host, and historical-host
   queries even when the relevant tab is not visible;
 - SSE and full-detail polling run at the same time for every active job.
+- progress is untyped JSON assembled by incompatible producers, while pages infer a
+  percentage from whichever optional keys they recognize;
+- one frontend bar often represents both batch completion and the current child/stage, so
+  letterbox and poster work can reset or regress when the subject changes;
+- active-job rediscovery and EventSource error handling differ by feature page, causing
+  otherwise durable work to disappear after refresh or a routine reconnect.
 
 The redesign keeps raw evidence but changes its place: **human explanation first, technical
 diagnostics second, raw source last**.
@@ -182,6 +189,7 @@ JobDefinition
   subject_snapshot_builder
   presentation_family
   presenter
+  progress_policy
   action_policy
 ```
 
@@ -242,6 +250,13 @@ JobPresentation
 attempt, elapsed time, cancellation state, eligible/retry time, optional class-local rank,
 and running ETA/throughput when meaningful.
 
+`status.progress` uses the versioned `JobProgress` contract defined in
+[job progress and loading experience](job-progress-and-loading-experience.md). It contains
+separate overall and current scopes, durable current-subject context, a monotonic sequence,
+attempt/fence identity, measurement mode, freshness, and only supported metrics. List rows
+receive a compact projection of the same contract; detail and feature pages do not reinterpret
+handler dictionaries.
+
 `outcome` is terminal meaning: headline, tone, explanation, counts/metrics, whether the
 requested effect was actually applied, whether user attention is needed, validation and
 atomicity, and a first-class no-change/not-required reason where applicable.
@@ -273,6 +288,36 @@ The backend returns a limited component vocabulary rather than HTML or arbitrary
 Values carry a type (`text`, `integer`, `duration`, `bytes`, `percent`, `language`, `codec`,
 `path`, `timestamp`, `boolean`, or `link`) so the frontend formats consistently. Presenter
 output never includes markup.
+
+## Semantic progress and loading behavior
+
+Marquee, not PgQueuer or an individual Svelte page, owns semantic progress. Every built-in
+definition declares whether its work is determinate, indeterminate, hybrid, or immediate;
+its units and denominator source; its stage vocabulary; its native-tool adapter; its
+aggregation behavior; persistence cadence; and whether ETA is credible.
+
+The product renders two independent scopes:
+
+- **overall** is monotonic within an attempt and represents the complete sealed request or
+  batch;
+- **current** represents one subject/stage identified by `scope_id` and may reset only when
+  that scope changes.
+
+This prevents a show, episode, movie, or pipeline-stage transition from resetting the
+overall bar. A TV letterbox parent can remain “12 of 44 shows” while the current row says
+“The Expanse · Season 3 · S03E07 — analyzing sample 4 of 12.” Concurrent batches show a
+primary subject plus a bounded “N more running” expansion.
+
+Server presenters translate stable stage keys into plain language. Raw values such as
+`waiting_external`, `batch_created`, or handler function names never appear as the primary
+status. Opaque probes, provider calls, model loading, and tool phases without a defensible
+denominator use named indeterminate activity and elapsed time. They do not render a pulsing
+100% bar, guessed percentage, or ETA.
+
+FFmpeg transformations use machine-readable `-progress` data against validated media
+duration; MKV remuxes use `mkvmerge --gui-mode`. If timestamps, duration, or units are not
+reliable, the current scope degrades to indeterminate. The complete measurement matrix and
+write invariants live in the progress contract.
 
 ## Durable subject identity
 
@@ -539,7 +584,8 @@ Each row returns only:
 - feature area and trigger summary;
 - subject summary/artwork;
 - action and outcome summary;
-- status/stage/progress;
+- friendly status/stage and compact typed progress, including current subject, overall and
+  current measurement modes, freshness, and credible running metrics;
 - parent/batch indicator;
 - attention, wait reason, eligibility/retry time, optional class-local queue rank, and
   allowed actions;
@@ -567,9 +613,15 @@ claims a global position or bypasses eligibility/safety gates.
 
 ### Compact snapshot
 
-`GET /api/jobs/{id}/snapshot` returns current phase/outcome/desired state, progress, stage,
-current attempt, retry availability/time, and event cursor. This is the only endpoint used
-for periodic active-job reconciliation.
+`GET /api/jobs/{id}/snapshot` returns current phase/outcome/desired state, typed progress,
+stage, current attempt, retry availability/time, progress sequence/freshness, and event
+cursor. This is the only endpoint used for periodic active-job reconciliation. It never
+returns a page-specific progress shape.
+
+Feature pages rediscover work through `GET /api/jobs?view=queue` using bounded feature-area,
+job-type, subject, root/correlation, and parent filters. Every command that creates work
+returns its canonical job ID plus snapshot, Activity, and detail links. Local storage is an
+optional lookup hint, not an active-job registry.
 
 ### Presentation
 
@@ -618,7 +670,9 @@ job. Deltas update list/snapshot state. A slow periodic snapshot reconciliation 
 against client bugs and missed delivery without fetching full detail.
 
 The event vocabulary separates lifecycle from progress. `state` cannot contain action words
-such as `progress` or `start` that the frontend might mistake for job status.
+such as `progress` or `start` that the frontend might mistake for job status. Typed
+`progress.updated` events carry both the durable event cursor and progress sequence. Clients
+discard duplicate/late sequences and use the compact snapshot to repair gaps.
 
 ## Per-attempt log design
 
@@ -811,6 +865,10 @@ Implement reusable presentation primitives rather than one giant conditional pag
 - configurable Queue/History table-card shell;
 - URL filter/search/sort controls and bulk-action toolbar;
 - expandable batch parent row;
+- shared `JobProgressStore` plus compact/expanded `JobProgressCard` used by Activity and
+  every initiating feature page;
+- separate overall and current-work progress surfaces, determinate/indeterminate variants,
+  freshness/reconnect state, and bounded concurrent-subject expansion;
 - subject header/artwork;
 - action and outcome hero;
 - typed fact grid;
@@ -829,6 +887,13 @@ Implement reusable presentation primitives rather than one giant conditional pag
 The backend section vocabulary selects/composes these components. Family-specific
 components may enhance track, poster, or letterbox presentation, but they consume typed
 contracts rather than original handler dictionaries.
+
+The shared store reconciles initial server discovery, one multiplexed SSE connection, and
+low-rate compact snapshots. EventSource interruption changes connection state to
+`reconnecting`; it never marks the job failed, clears its card, or invokes a page-specific
+failure handler. Snapshot intervals have an in-flight guard, cancellation, bounded backoff,
+and hidden-tab cadence reduction. A terminal server snapshot—not a network error—moves a
+job from Queue to History.
 
 Accessibility requirements:
 
@@ -916,6 +981,19 @@ row and the full detail presentation. Supporting job families also require typed
 - snapshot query count is independent of history size;
 - each diagnostic endpoint enforces limits/cursors;
 - SSE reconnect/replay and slow-client behavior;
+- refresh with empty local storage rediscovers all applicable active jobs;
+- network interruption retains the last good card with reconnecting/stale freshness and
+  later reconciles without progress regression;
+- overall progress is monotonic, current progress resets only with a new `scope_id`, and
+  late/wrong-fence updates are ignored;
+- determinate, indeterminate, hybrid, and immediate policies render without invented
+  percentages or ETA;
+- movie, series, season, episode, file, track, poster, model, aggregate-parent, and concurrent
+  child current-subject fixtures;
+- letterbox TV, poster batch, and Dolby Vision analysis regressions prove stable overall
+  progress and correct current context;
+- FFmpeg and mkvmerge fixtures verify native progress parsing, coalescing, and safe
+  indeterminate fallback;
 - hidden-tab/in-flight guards;
 - mobile/narrow layout and keyboard/screen-reader tests;
 - long logs/events/children stay responsive through virtualization;
@@ -940,5 +1018,13 @@ Projection Room is complete when:
 - complete bounded logs and raw evidence are accessible but visually secondary;
 - technical infrastructure data lives in the lazy Operations tab;
 - no active-job page combines per-job DB-polling SSE with unbounded detail polling;
+- feature pages and Activity render the same durable typed progress through one shared
+  store/component family;
+- every long-running definition declares honest measurement semantics and no client infers
+  percentage from arbitrary job JSON;
+- refresh, navigation, SSE interruption, and temporary API/database failure do not hide or
+  falsely fail active work;
+- batch overall progress never resets when its current show, season, episode, movie, or stage
+  changes;
 - built-in jobs never rely on the generic JSON fallback;
 - query, event, log, and history costs remain bounded as job history grows.

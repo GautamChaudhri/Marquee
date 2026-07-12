@@ -1,10 +1,11 @@
 # Marquee Job System — Clean-Slate PgQueuer Implementation Program
 
-**Decided:** 2026-07-12  
-**Status:** Six-chunk implementation and verification program  
-**Target architecture:** [direct PgQueuer adoption](job-system-pgqueuer-direct-adoption.md)  
-**Product surface:** [Projection Room Activity redesign](projection-room-job-experience-redesign.md)  
+**Decided:** 2026-07-12
+**Status:** Six-chunk implementation and verification program
+**Target architecture:** [direct PgQueuer adoption](job-system-pgqueuer-direct-adoption.md)
+**Product surface:** [Projection Room Activity redesign](projection-room-job-experience-redesign.md)
 **Product research:** [activity comparison](projection-room-activity-comparison.md)
+**Progress contract:** [job progress and loading experience](job-progress-and-loading-experience.md)
 
 ## Program decision
 
@@ -213,6 +214,8 @@ Register every built-in handler, operation, and parent type in `JobDefinition`, 
 - retry/timeout policy;
 - subject snapshot builder and presenter;
 - trigger provenance and allowed-action policy.
+- mandatory progress policy: honest strategy, stages, subject context, units/denominator,
+  nested aggregation, native-tool adapter, persistence cadence, and ETA capability.
 
 Expose only the target bounded API/presentation contracts. Unmigrated command endpoints
 remain disabled rather than writing legacy rows.
@@ -223,6 +226,10 @@ remain disabled rather than writing legacy rows.
 - target uniqueness, foreign keys, hierarchy, dispatch generation, and 1:1 detail integrity;
 - no legacy table/column/view exists;
 - every registered handler/operation/parent has exactly one definition and presenter;
+- every long-running definition has a typed progress policy; immediate definitions
+  explicitly declare `none` and cannot emit fabricated percentages;
+- invalid progress units/sequences/fences are rejected and subject snapshots cover movie,
+  series, season, episode, file, track, poster, model, and batch contexts;
 - payload/result versions and supported upcasters are enforced;
 - clients cannot choose execution/safety policy;
 - unsafe mutation definitions default to one attempt unless explicitly justified;
@@ -260,6 +267,10 @@ attempt before broad migration. Canary only no-op and selected read-only definit
    expose cursor tail/stream/download.
 9. Register confined physical and virtual artifacts, including bounded failure diagnostics.
 10. Add one durable semantic event cursor and multiplexed SSE broadcaster with replay.
+11. Add the fenced semantic-progress writer, server-side percentage validation, separate
+    overall/current scopes, high-frequency coalescing, and maximum snapshot staleness.
+12. Add native FFmpeg and mkvmerge progress adapters plus named indeterminate adapters for
+    opaque probes, providers, model loading, and validation.
 
 ### Automated gate
 
@@ -267,6 +278,9 @@ attempt before broad migration. Canary only no-op and selected read-only definit
 
 - simultaneous/serial duplicate delivery admits at most one effect;
 - stale fence cannot progress, finalize, or publish;
+- stale/out-of-order progress sequence cannot replace the current snapshot;
+- overall progress cannot regress and current progress can reset only under a new
+  `scope_id`;
 - redelivery after committed success no-ops;
 - pause/cancel race before admission creates no execution attempt;
 - transport retries do not incorrectly consume domain-attempt budget.
@@ -299,6 +313,8 @@ attempt before broad migration. Canary only no-op and selected read-only definit
 - metadata/file retention is idempotent;
 - SSE `Last-Event-ID` replay, missed-notify repair, bounded slow clients, and authorization;
 - active snapshot reconciliation stays bounded.
+- progress-write failure preserves media safety and leaves an observable last-good
+  snapshot; high-frequency tool output stays within write/event budgets.
 
 ### Manual smoke and exit
 
@@ -336,6 +352,10 @@ For every definition:
 - typed payload/result and presenter golden;
 - immutable subject snapshot and trigger provenance;
 - correct execution class, retry policy, attention, and allowed actions;
+- declared progress strategy, plain-language stages, durable current-subject hierarchy,
+  and correct determinate/indeterminate behavior;
+- stable batch overall scope while the current child/stage changes, including series,
+  season, episode, movie, file, and model subjects as applicable;
 - logs/artifacts/events linked to the right attempt;
 - no legacy writer or executor is invoked.
 
@@ -344,6 +364,8 @@ For every definition:
 - schedule overlap, multi-replica uniqueness, misfire, disable/re-enable, and clock handling;
 - fixed-batch atomicity and dynamic sealing;
 - parent counts/progress/outcome under retry, skip, failure, and cancellation;
+- sealed parent totals, monotonic overall progress, bounded concurrent-subject projection,
+  and no reset when a child or analysis stage changes;
 - failed-child and paginated-child queries remain bounded;
 - cancellation cascades without cancelling unrelated correlation work;
 - CPU, GPU-analysis, media-read, network, and maintenance queue fairness;
@@ -376,6 +398,12 @@ Each mutating result records requested targets, before/expected/actual snapshots
 per-target outcome/stage/reason, validation, atomicity, backup, publish result, and bounded
 failure evidence. A post-operation rescan supplies actual state.
 
+Each migration group also implements its definition's progress policy: native FFmpeg
+processed-time progress for reliable-duration transforms, `mkvmerge --gui-mode` for MKV
+remuxes, item/track/sample counts where the scope is sealed, and named indeterminate stages
+where tools expose no defensible denominator. No handler leaves percentage interpretation
+to a feature page.
+
 After the final handler passes its gate:
 
 - remove custom worker, scheduler, bridge, claim/recovery/resource code and startup hooks;
@@ -399,6 +427,9 @@ Use small representative MKV/MP4 fixtures covering:
 - letterbox tag/re-encode/revert with dimension/crop validation;
 - Dolby Vision profile/RPU/HDR/color metadata preservation;
 - CPU/GPU selection and supported fallback behavior.
+- monotonic overall versus resettable current scope across multi-file mutations;
+- FFmpeg/mkvmerge native progress, safe fallback for invalid duration/tool output, and
+  correct post-tool rescan/validation stages;
 
 ### Crash and cancellation matrix
 
@@ -452,6 +483,12 @@ Build the final Queue/History Activity experience and certify the complete targe
 - direct active/terminal report access and bounded retained failure evidence;
 - separate lazy Operations view;
 - complete typed presenters for posters, HDR, audio/subtitles, letterbox, and supporting work.
+- replace every page-specific job tracker/stage map/loading bar with one shared
+  `JobProgressStore` and `JobProgressCard` family used inline and in Activity;
+- rediscover active jobs from bounded Queue filters on load, reconcile multiplexed SSE with
+  compact snapshots, and retain last-good cards through reconnect/stale periods;
+- render distinct overall/current scopes, determinate/indeterminate modes, complete current
+  subject hierarchy, credible metrics, and bounded concurrent children.
 
 ### Presenter and Activity gate
 
@@ -471,6 +508,18 @@ Build the final Queue/History Activity experience and certify the complete targe
 - movie/episode/show/batch and missing/deleted subject labels;
 - accessibility, keyboard/screen-reader behavior, mobile/narrow layouts;
 - large logs, malformed raw documents, reconnects, hidden tabs, and virtualization.
+- refresh with local storage empty and navigation between feature pages/Activity restores
+  the same active progress snapshot;
+- EventSource interruption never clears or falsely fails a job; duplicate/late events,
+  snapshot repair, API restart, PostgreSQL restart, and hidden-tab throttling reconcile;
+- overall progress is monotonic, current progress resets only with a new scope, and failed or
+  cancelled work preserves its last measured value;
+- determinate, indeterminate, hybrid, and immediate jobs render without invented
+  percentages/ETAs or raw stage/status codes;
+- letterbox TV, poster batch, and Dolby Vision batch regressions verify stable parent
+  progress plus movie/show/season/episode/current-stage context;
+- all four primary feature families and supporting work have compact/expanded progress
+  golden fixtures.
 
 ### API and performance gate
 
@@ -480,6 +529,8 @@ Build the final Queue/History Activity experience and certify the complete targe
 - list query count is bounded and independent of attempt/event/child history;
 - presenter query count is bounded by definition, not target count;
 - multiplexed SSE replay and slow-client behavior;
+- active discovery/snapshot queries remain bounded under many inline feature-page and
+  Activity consumers; progress coalescing stays within database/event budgets;
 - hidden Operations/raw/log panels stop polling and abort superseded requests;
 - API p95, event lag, database connections, and log/storage rates stay in target budgets
   under saturated workers and multiple Activity clients.
@@ -518,6 +569,8 @@ GPU loss, and slow/disconnected clients.
 - no conflicting mutation of one media file;
 - no leaked owned process after bounded cleanup;
 - stale attempt cannot progress/finalize/publish;
+- progress survives refresh/reconnect, remains monotonic at the overall scope, identifies the
+  correct current subject/stage, and never reports an unsupported percentage or ETA;
 - every terminal job has coherent outcome, attempts, events, logs, and artifacts;
 - requested-versus-actual track/crop/HDR/poster results are accurate;
 - cancellation does not finish before process death;
@@ -534,6 +587,8 @@ GPU loss, and slow/disconnected clients.
 - multi-track audio/subtitle mutation with per-target rescan outcomes;
 - poster select/deploy/reset with backup and visual artifact;
 - cancellation during a long-running tool, reload Activity, and confirm process death;
+- reload the initiating feature page during every long-running live-media smoke and confirm
+  the same server-backed card, subject, overall/current progress, and logs reappear;
 - restart services/PostgreSQL and confirm final Queue/History/log/artifact reconciliation.
 
 ## Explicitly removed migration work
@@ -575,6 +630,8 @@ The program is complete when:
 - all six chunk gates and final workload/saturation/fault/live-media matrices pass;
 - Projection Room provides bounded Queue/History Activity and job-specific evidence for all
   four primary feature areas plus supporting work;
+- every long-running job has an honest typed progress policy, and feature pages/Activity
+  share durable discovery, reconciliation, and presentation;
 - backup/restore and PgQueuer upgrade rehearsals pass;
 - source, tests, design documents, and ByteRover context consistently describe the
   clean-slate PgQueuer-only system.
