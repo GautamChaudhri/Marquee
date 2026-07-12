@@ -1,5 +1,16 @@
 # Timeline
 
+## JMC1 — PgQueuer foundation (planned)
+
+The clean-slate job-manager migration begins with one resumable infrastructure plan:
+[`jmc1-pgqueuer-foundation.md`](job-system-update/jmc1-pgqueuer-foundation.md). It replaces
+the unreleased Alembic history, installs PgQueuer 1.1.1 in durable mode outside Alembic,
+proves same-transaction enqueue through PgQueuer's public `Queries` API, establishes isolated
+worker/scheduler roles, and certifies liveness/readiness plus `system_noop`. The first
+implementing agent creates the shared
+`design/job-system-update/jmc1-pgqueuer-foundation-timeline.md`; the architect intentionally
+does not pre-create it. All non-noop job families remain disabled until later chunks.
+
 ## Overview
 
 This timeline preserves the existing phase structure from `design/todos.md`

@@ -7,6 +7,7 @@
 **Product research:** [activity comparison](projection-room-activity-comparison.md)
 **Progress contract:** [job progress and loading experience](job-progress-and-loading-experience.md)
 **Reset-window companion work:** [miscellaneous fixes](job-system-miscellaneous-reset-window-fixes.md)
+**Chunk 1 implementation plan:** [JMC1 PgQueuer foundation](jmc1-pgqueuer-foundation.md)
 
 ## Program decision
 
@@ -135,8 +136,11 @@ canonical no-op job and its transport ticket commit or roll back together.
 4. Extend the migration service to apply Alembic, install/upgrade PgQueuer, and verify its
    expected durable version/indexes before reporting healthy.
 5. Apply PgQueuer's documented autovacuum/index guidance.
-6. Add the narrow `PgQueuerGateway` for same-transaction enqueue through the installed
-   function, official cancellation, bounded diagnostic lookup, and health/metrics.
+6. Add the narrow `PgQueuerGateway` for same-transaction enqueue through public
+   `Queries.from_asyncpg_connection(...).enqueue()` on the SQLAlchemy transaction's
+   documented raw asyncpg connection, plus official cancellation, bounded diagnostic
+   lookup, and health/metrics. It must not copy queue SQL, create a replacement enqueue
+   function, or add an outbox.
 7. Queue only `{job_id, payload_version, dispatch_generation}`.
 8. Register `system_noop` and start dedicated PgQueuer worker and scheduler processes.
 9. Budget listener, producer, worker, scheduler, metrics, and migration connections.
