@@ -6,6 +6,7 @@
 **Product surface:** [Projection Room Activity redesign](projection-room-job-experience-redesign.md)
 **Product research:** [activity comparison](projection-room-activity-comparison.md)
 **Progress contract:** [job progress and loading experience](job-progress-and-loading-experience.md)
+**Reset-window companion work:** [miscellaneous fixes](job-system-miscellaneous-reset-window-fixes.md)
 
 ## Program decision
 
@@ -32,6 +33,11 @@ test burden.
 Intermediate branch states support only the handlers explicitly enabled at that chunk. They
 are engineering checkpoints, not mixed-runtime production releases. A job is never visible
 to two executors, and the API never executes a handler inline.
+
+The companion miscellaneous-fixes program is part of these gates, not an optional follow-up.
+Browser authentication/authorization, replacement of the existing database-reset endpoint,
+Docker least-privilege hardening, and webhooks remain explicitly deferred. Deferred surfaces
+are not certified or represented as completed job families by this program.
 
 ## Destructive reset boundary
 
@@ -135,6 +141,11 @@ canonical no-op job and its transport ticket commit or roll back together.
 8. Register `system_noop` and start dedicated PgQueuer worker and scheduler processes.
 9. Budget listener, producer, worker, scheduler, metrics, and migration connections.
 10. Add transport health and consistency diagnostics without exposing raw tables publicly.
+11. Split process liveness from dependency readiness. Readiness returns 503 unless
+    PostgreSQL, the exact Marquee baseline, PgQueuer durable schema/version, event
+    infrastructure, and mandatory configuration are compatible.
+12. Fail API, worker, scheduler, and migration startup closed on incompatible schema instead
+    of allowing ordinary requests to discover drift through 500 responses.
 
 ### Automated gate
 
@@ -179,6 +190,10 @@ canonical no-op job and its transport ticket commit or roll back together.
 - connection counts remain inside budget;
 - depth, age, completion, failure, and listener metrics are bounded/scrapeable;
 - database roles have only required permissions.
+- liveness remains available during a database outage while readiness returns 503;
+- empty/wrong Marquee schemas, PgQueuer version mismatch, migration-in-progress state, and
+  invalid mandatory configuration all fail readiness and service admission;
+- readiness recovers without presenting a false healthy interval after dependencies recover.
 
 ### Manual smoke and exit
 
@@ -213,9 +228,21 @@ Register every built-in handler, operation, and parent type in `JobDefinition`, 
 - primary execution class and safety requirements;
 - retry/timeout policy;
 - subject snapshot builder and presenter;
-- trigger provenance and allowed-action policy.
+- trigger provenance and allowed-action policy;
 - mandatory progress policy: honest strategy, stages, subject context, units/denominator,
   nested aggregation, native-tool adapter, persistence cadence, and ETA capability.
+
+Add the shared product contracts that the new process topology requires:
+
+- versioned, transactional non-secret runtime configuration with optimistic concurrency and
+  cross-process invalidation for API, workers, and scheduler;
+- bounded execution-relevant configuration snapshots on canonical jobs, with explicit
+  live/next-job/restart-scoped setting semantics;
+- durable-history foreign-key rules so retiring a live Movie, Series, Season, Episode, or
+  MediaFile projection cannot cascade-delete canonical jobs, attempts, outcomes, logs,
+  artifacts, retry lineage, or subject snapshots;
+- deterministic OpenAPI generation and generated/derived frontend wire types for command,
+  job, progress, presentation, and media-target contracts.
 
 Expose only the target bounded API/presentation contracts. Unmigrated command endpoints
 remain disabled rather than writing legacy rows.
@@ -237,7 +264,14 @@ remain disabled rather than writing legacy rows.
 - corrupt optional data becomes a presentation warning, not a 500;
 - idempotency and parent/child sealing are deterministic;
 - fresh canonical list/snapshot/presentation/diagnostic API contracts pass;
-- presentation/log/raw fixtures contain no secret.
+- presentation/log/raw fixtures contain no secret;
+- concurrent configuration updates conflict rather than overwrite; every process observes
+  the same validated version and every job exposes the bounded version/snapshot it used;
+- corrupt configuration leaves the last valid version active and raises an Operations alert;
+- deleting or retiring each live subject kind preserves readable History, presentations,
+  retry lineage, logs, and artifacts;
+- generated OpenAPI/client types are deterministic and contract tests cover every frontend
+  API function, default/omitted request body, and error envelope.
 
 ### Manual smoke and exit
 
@@ -271,6 +305,17 @@ attempt before broad migration. Canary only no-op and selected read-only definit
     overall/current scopes, high-frequency coalescing, and maximum snapshot staleness.
 12. Add native FFmpeg and mkvmerge progress adapters plus named indeterminate adapters for
     opaque probes, providers, model loading, and validation.
+13. Add one filesystem-boundary service for media, application data, artifacts, cache,
+    staging, backup, and temporary roots. All path classification uses resolved
+    `Path.is_relative_to` checks; public contracts store confined keys, not arbitrary paths.
+14. Remove raw-path deletion fallbacks and route-level filesystem mutation. Revalidate paths
+    immediately before destructive use and fail closed when required roots are unresolved.
+15. Make database plus `DATA_DIR` backup a coordinated maintenance operation with sealed
+    writers/checkpoints, an exclusive consistency barrier, checksummed manifest, and a
+    tested offline restore contract.
+16. Enforce request-size limits by streaming byte accounting at public ingress and the
+    FastAPI receive boundary instead of trusting `Content-Length` or buffering an unbounded
+    body in the frontend proxy.
 
 ### Automated gate
 
@@ -310,11 +355,18 @@ attempt before broad migration. Canary only no-op and selected read-only definit
 - 100 MB cap writes one visible truncation record;
 - active tail and terminal compressed download work after restart;
 - arbitrary paths/traversal are rejected;
+- sibling-prefix escapes, symlinks, poisoned stored paths, archive traversal, path swaps,
+  missing roots, arbitrary serving, and raw fallback deletion are rejected;
 - metadata/file retention is idempotent;
 - SSE `Last-Event-ID` replay, missed-notify repair, bounded slow clients, and authorization;
 - active snapshot reconciliation stays bounded.
 - progress-write failure preserves media safety and leaves an observable last-good
-  snapshot; high-frequency tool output stays within write/event budgets.
+  snapshot; high-frequency tool output stays within write/event budgets;
+- backup manifests bind the database snapshot, file set, checksums, schema revisions,
+  PgQueuer mode/version, and configuration version; restore into a fresh target preserves
+  history/log/artifact/model linkage;
+- omitted, chunked, mismatched, slow, and over-limit request bodies stop at the configured
+  boundary and cleanly return 413 without exhausting frontend or backend memory.
 
 ### Manual smoke and exit
 
@@ -357,6 +409,8 @@ For every definition:
 - stable batch overall scope while the current child/stage changes, including series,
   season, episode, movie, file, and model subjects as applicable;
 - logs/artifacts/events linked to the right attempt;
+- all filesystem access passes through the confined boundary and execution observes the
+  canonical job's configuration snapshot;
 - no legacy writer or executor is invoked.
 
 ### Schedule, batch, and load gate
@@ -403,6 +457,10 @@ processed-time progress for reliable-duration transforms, `mkvmerge --gui-mode` 
 remuxes, item/track/sample counts where the scope is sealed, and named indeterminate stages
 where tools expose no defensible denominator. No handler leaves percentage interpretation
 to a feature page.
+
+Every destructive handler also uses the centralized filesystem boundary and its job's
+configuration snapshot. No route or handler directly serves, copies, replaces, archives,
+extracts, or deletes an unclassified path.
 
 After the final handler passes its gate:
 
@@ -454,6 +512,8 @@ artifacts, or target results.
 - no custom worker/scheduler/bridge process or startup hook exists;
 - every command path maps to exactly one `JobDefinition` and PgQueuer entrypoint;
 - source/static searches find no legacy enqueue/claim/recovery writer;
+- OpenAPI/source searches find no `/api/test/pipeline` route, route module, inline pipeline
+  executor, or production dependency on test-only helpers;
 - unmigrated/unknown job types fail closed;
 - clean build, reset, startup, and full backend test suite pass without compatibility code.
 
@@ -489,6 +549,16 @@ Build the final Queue/History Activity experience and certify the complete targe
   compact snapshots, and retain last-good cards through reconnect/stale periods;
 - render distinct overall/current scopes, determinate/indeterminate modes, complete current
   subject hierarchy, credible metrics, and bounded concurrent children.
+- replace handwritten critical wire contracts with the generated OpenAPI client/types and
+  add runtime validation at destructive or success-reporting boundaries;
+- correct stale page-state ownership so navigation/subject changes cannot retain the prior
+  movie, show, job, or filter, and finish with zero `svelte-check` warnings;
+- triage the recorded legacy suite only after the target architecture lands: fix product
+  defects, replace still-required behavior with canonical/PgQueuer tests, remove obsolete
+  custom-runtime expectations, and record a removed/replaced/fixed disposition for every
+  former failure;
+- exclude deferred webhook route tests from the target baseline. Webhooks remain unsupported
+  by this program; their production implementation is neither migrated nor certified.
 
 ### Presenter and Activity gate
 
@@ -519,7 +589,14 @@ Build the final Queue/History Activity experience and certify the complete targe
 - letterbox TV, poster batch, and Dolby Vision batch regressions verify stable parent
   progress plus movie/show/season/episode/current-stage context;
 - all four primary feature families and supporting work have compact/expanded progress
-  golden fixtures.
+  golden fixtures;
+- every retained backend, PgQueuer integration, media, frontend, and contract test passes
+  with zero failures; no blanket `xfail`, quarantine, ignored job, or warning suppression is
+  accepted as the green baseline;
+- generated client use fixes known request drift such as the subtitle library scan body, and
+  subject/navigation fixtures prove stale page state is not reused;
+- `ruff`, frontend formatting/lint/tests/build, and `svelte-check` all pass, with
+  `svelte-check` reporting zero warnings.
 
 ### API and performance gate
 
@@ -591,6 +668,29 @@ GPU loss, and slow/disconnected clients.
   the same server-backed card, subject, overall/current progress, and logs reappear;
 - restart services/PostgreSQL and confirm final Queue/History/log/artifact reconciliation.
 
+## Post-green GitHub Actions modernization
+
+Rewrite `.github/workflows/ci.yml` only after the complete local target suite is green. This
+sequencing prevents the workflow from encoding obsolete custom-runtime assumptions while the
+architecture is still moving. The replacement workflow must reproduce, not redefine, the
+local completion baseline:
+
+- provision a health-checked PostgreSQL service with isolated credentials;
+- install the fresh Marquee baseline and pinned PgQueuer durable schema;
+- run schema-equivalence and reset/upgrade rehearsals;
+- run backend lint and the complete retained backend/integration suite on the project's
+  supported Python versions;
+- use `npm ci` and run frontend formatting/lint, `svelte-check`, tests, and production build
+  on the pinned Node version;
+- regenerate OpenAPI and frontend client/types and fail on an uncommitted diff;
+- run bounded path/secret/security checks and avoid certifying deferred routes;
+- retain least-required workflow permissions, PR/branch concurrency cancellation, and useful
+  failure reports that contain no secrets or media.
+
+Docker image/runtime hardening remains deferred to the separate Docker phase. Program
+completion requires both the local green baseline and the modernized workflow passing on the
+merge target.
+
 ## Explicitly removed migration work
 
 The following is intentionally absent, not deferred:
@@ -609,6 +709,19 @@ The following is intentionally absent, not deferred:
 
 References to these items in historical comparison/redesign documents describe superseded
 analysis and are not implementation requirements.
+
+## Explicitly deferred companion work
+
+These are known follow-up surfaces, not part of the six-chunk completion claim:
+
+- browser authentication, authorization, sessions, and CSRF;
+- replacement/removal of `POST /api/system/reset-db` and its complete destructive reset
+  workflow;
+- Docker least-privilege/runtime hardening;
+- Radarr, Sonarr, and Subgen webhooks and their route-level tests.
+
+The [miscellaneous fixes document](job-system-miscellaneous-reset-window-fixes.md) records the
+boundary and first-release implications in detail.
 
 ## Retained operational defaults
 
@@ -633,5 +746,10 @@ The program is complete when:
 - every long-running job has an honest typed progress policy, and feature pages/Activity
   share durable discovery, reconciliation, and presentation;
 - backup/restore and PgQueuer upgrade rehearsals pass;
+- the accepted reset-window filesystem, configuration, history, backup, readiness, request
+  limit, API-contract, and frontend-state gates pass;
+- the retained backend, PgQueuer integration, media, frontend, and contract suites are green
+  locally with zero failures, and each former failing test has a disposition;
+- GitHub Actions is modernized only after that local baseline and reproduces it successfully;
 - source, tests, design documents, and ByteRover context consistently describe the
   clean-slate PgQueuer-only system.
