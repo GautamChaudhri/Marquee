@@ -2,8 +2,9 @@
 
 **Reviewed:** 2026-07-11  
 **Status:** Primary-source architecture comparison  
-**Companion documents:** [current-state review](job-system-current-state-review.md) and
-[recommended redesign](job-system-redesign.md)
+**Companion documents:** [current-state review](job-system-current-state-review.md),
+[selected direct-PgQueuer architecture](job-system-pgqueuer-direct-adoption.md), and
+[historical redesign](job-system-redesign.md)
 
 ## Bottom line
 
