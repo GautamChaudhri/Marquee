@@ -8,6 +8,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from marquee.config import settings
 from marquee.main import app
 from marquee.models import ArtworkEvent, Season, Series
 
@@ -167,8 +168,9 @@ async def test_get_series_and_list_seasons_include_downloaded_specials_and_overr
 
 @pytest.mark.asyncio
 async def test_series_and_season_poster_file_and_delete_endpoints(
-    db: AsyncSession, client: AsyncClient, tmp_path: Path
+    db: AsyncSession, client: AsyncClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
+    monkeypatch.setattr(settings, "MEDIA_ROOTS", [str(tmp_path)])
     series, seasons = await _seed_series(
         db,
         tmp_path,
@@ -212,3 +214,32 @@ async def test_series_and_season_poster_file_and_delete_endpoints(
         )
     ).scalar_one()
     assert season_event.action == "deploy_reset"
+
+
+@pytest.mark.asyncio
+async def test_series_poster_delete_rejects_poisoned_stored_path(
+    db: AsyncSession, client: AsyncClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    media_root = tmp_path / "media"
+    outside = tmp_path / "outside.jpg"
+    outside.write_bytes(b"keep")
+    series, _ = await _seed_series(
+        db,
+        media_root,
+        title="Poisoned Poster Show",
+        tmdb_id=6,
+        sonarr_id=31,
+        show_poster=True,
+        seasons=[{"number": 1, "episode_file_count": 1}],
+    )
+    monkeypatch.setattr(settings, "MEDIA_ROOTS", [str(media_root)])
+    series.poster_path = str(outside)
+    await db.commit()
+
+    response = await client.delete(f"/api/library/series/{series.id}/poster")
+
+    assert response.status_code == 200
+    assert response.json()["ok"] is False
+    assert outside.read_bytes() == b"keep"
+    await db.refresh(series)
+    assert series.poster_path == str(outside)

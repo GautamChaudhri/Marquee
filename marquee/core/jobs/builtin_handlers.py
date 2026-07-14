@@ -1011,6 +1011,7 @@ async def poster_deploy_reset(job: Job) -> dict[str, Any]:
     """
     import json as _json
 
+    from marquee.core.filesystem import boundary_for_roots
     from marquee.core.path_utils import safe_translate_and_validate
 
     factory = _get_session_factory()
@@ -1061,11 +1062,12 @@ async def poster_deploy_reset(job: Job) -> dict[str, Any]:
             entity = subject.entity
             stored_path = str(entity.poster_path)  # capture before clearing
             try:
-                poster_file = Path(entity.poster_path)
                 folder = safe_translate_and_validate(subject.folder_raw, source=subject.path_source)
-                if poster_file.parent.resolve() != folder.resolve():
-                    raise RuntimeError(f"Poster parent {poster_file.parent} != folder {folder}")
-                poster_file.unlink(missing_ok=True)
+                boundary = boundary_for_roots(
+                    {"subject": folder}, access="read_write", purpose="poster-delete"
+                )
+                poster_file = boundary.classify(stored_path, require_exists=False, write=True)
+                boundary.delete_file(poster_file, missing_ok=True)
                 deleted = True
             except Exception as exc:
                 logger.warning(
@@ -1075,10 +1077,19 @@ async def poster_deploy_reset(job: Job) -> dict[str, Any]:
                     subject.title,
                     exc,
                 )
-                with contextlib.suppress(Exception):
-                    Path(entity.poster_path).unlink(missing_ok=True)
+            if not deleted:
+                failed += 1
+                by_type[subject.media_type]["failed"] += 1
+                errors.append(
+                    {
+                        "media_type": subject.media_type,
+                        "subject_id": entity.id,
+                        "title": subject.title,
+                        "error": "filesystem confinement rejected deletion",
+                    }
+                )
+                continue
 
-            # Always reset DB columns — the file is gone or unreachable.
             entity.poster_path = None
             entity.poster_source = None
             entity.poster_source_url = None
@@ -1110,17 +1121,6 @@ async def poster_deploy_reset(job: Job) -> dict[str, Any]:
             if deleted:
                 reset += 1
                 by_type[subject.media_type]["reset"] += 1
-            else:
-                failed += 1
-                by_type[subject.media_type]["failed"] += 1
-                errors.append(
-                    {
-                        "media_type": subject.media_type,
-                        "subject_id": entity.id,
-                        "title": subject.title,
-                        "error": "file unavailable — DB state cleared",
-                    }
-                )
 
         await db.commit()
 
@@ -1344,7 +1344,7 @@ def _confined_existing_path(path: str | None, root: Path) -> Path | None:
         return None
     resolved = Path(path).resolve()
     root_resolved = root.resolve()
-    if not str(resolved).startswith(str(root_resolved)):
+    if not resolved.is_relative_to(root_resolved):
         raise RuntimeError(f"path {resolved} is outside {root_resolved}")
     return resolved
 

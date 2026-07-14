@@ -15,6 +15,9 @@ from pgqueuer.models import Job as PgQueuerJob
 from marquee.config import settings
 from marquee.core.configuration_cache import configuration_provider
 from marquee.core.jobs.delivery import deliver_control_job
+from marquee.core.jobs.orphan_reconciliation import reconcile_startup_orphans
+from marquee.core.jobs.worker_nodes import record_worker_node
+from marquee.core.jobs.workspaces import reconcile_stale_workspaces
 from marquee.db_migration import asyncpg_dsn, verify_runtime_schema
 
 logger = logging.getLogger(__name__)
@@ -51,9 +54,26 @@ async def run() -> None:
         asyncpg_dsn(),
         server_settings={"application_name": "marquee:worker:pgqueuer"},
     )
+    registered = False
     try:
         await verify_runtime_schema(connection)
         await configuration_provider.start(role="worker")
+        await record_worker_node(settings.JOB_WORKER_NODE_ID, readiness="starting")
+        registered = True
+        reconciliation = await reconcile_startup_orphans(
+            worker_node=settings.JOB_WORKER_NODE_ID,
+            cooperative_seconds=settings.JOB_PROCESS_COOPERATIVE_SECONDS,
+            term_seconds=settings.JOB_PROCESS_TERM_SECONDS,
+        )
+        if reconciliation["unsafe"]:
+            logger.error("startup orphan reconciliation quarantined %s attempts", reconciliation["unsafe"])
+        workspaces = await reconcile_stale_workspaces(settings.DATA_DIR)
+        if workspaces["quarantined"]:
+            logger.error(
+                "startup workspace reconciliation quarantined %s workspaces",
+                workspaces["quarantined"],
+            )
+        await record_worker_node(settings.JOB_WORKER_NODE_ID, readiness="ready")
         app = create_worker(connection)
         _install_shutdown_handlers(app)
         batch_size = settings.JOB_PGQUEUER_BATCH_SIZE
@@ -70,6 +90,8 @@ async def run() -> None:
             ),
         )
     finally:
+        if registered:
+            await record_worker_node(settings.JOB_WORKER_NODE_ID, readiness="stopped")
         await configuration_provider.stop()
         await connection.close()
 

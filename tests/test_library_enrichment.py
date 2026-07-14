@@ -9,6 +9,7 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from marquee.config import settings
 from marquee.core.subtitles.config import subtitle_settings
 from marquee.main import app
 from marquee.models import LetterboxState, MediaFile, Movie, SubtitleInventory
@@ -271,7 +272,9 @@ async def test_detail_has_derived_fields(db: AsyncSession, client: AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_delete_movie_poster(db: AsyncSession, client: AsyncClient, tmp_path):
+async def test_delete_movie_poster(
+    db: AsyncSession, client: AsyncClient, tmp_path, monkeypatch: pytest.MonkeyPatch
+):
     from sqlalchemy import select  # noqa: PLC0415
 
     from marquee.models import ArtworkEvent  # noqa: PLC0415
@@ -279,6 +282,7 @@ async def test_delete_movie_poster(db: AsyncSession, client: AsyncClient, tmp_pa
     # 1. Create a dummy movie with a valid folder_path and poster_path
     movie_folder = tmp_path / "Dune (2021)"
     movie_folder.mkdir()
+    monkeypatch.setattr(settings, "MEDIA_ROOTS", [str(tmp_path)])
     poster_file = movie_folder / "poster.jpg"
     poster_file.write_bytes(b"dummy image data")
 

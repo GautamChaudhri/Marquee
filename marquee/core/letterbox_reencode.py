@@ -475,9 +475,10 @@ def _source_key(db_row: MediaFile | None, resolved: ResolvedMediaFile) -> str:
 
 
 def _managed_root(source: Path) -> Path:
-    resolved = str(source.resolve())
+    resolved = source.resolve()
     for candidate in settings.effective_media_roots:
-        if resolved.startswith(str(candidate)):
+        candidate = Path(candidate).resolve()
+        if resolved.is_relative_to(candidate):
             return candidate / ".marquee"
     return source.parent.parent / ".marquee"
 

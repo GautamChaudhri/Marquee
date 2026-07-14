@@ -140,16 +140,17 @@ def test_role_connection_budget_is_enforced():
     report = readiness.connection_budget_report()
     assert report == {
         "api": 15,
-        "worker_each": 4,
+        "worker_each": 8,
         "worker_processes": 1,
+        "safety_gate_sessions_each": 4,
         "scheduler": 3,
         "migration": 1,
-        "configured": 23,
+        "configured": 27,
         "maximum": 32,
         "within_budget": True,
     }
     with pytest.raises(ValidationError, match="configured role connection budget"):
-        Settings(_env_file=None, DEBUG=True, DB_DEPLOYMENT_MAX_CONNECTIONS=22)
+        Settings(_env_file=None, DEBUG=True, DB_DEPLOYMENT_MAX_CONNECTIONS=26)
 
 
 def test_role_pool_budgets_are_explicit(monkeypatch):
