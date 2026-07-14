@@ -10,7 +10,7 @@ import contextlib
 from pathlib import Path
 from typing import Literal
 
-from pydantic import AliasChoices, Field
+from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # ---------------------------------------------------------------------------
@@ -26,6 +26,8 @@ class Settings(BaseSettings):
     # Application
     # ------------------------------------------------------------------
     APP_NAME: str = "Marquee"
+    MARQUEE_ENVIRONMENT: Literal["development", "test", "production"] = "production"
+    MARQUEE_PROCESS_ROLE: Literal["api", "worker", "scheduler", "migration", "test"] = "api"
     HOST: str = "0.0.0.0"
     PORT: int = 3165
     DEBUG: bool = False
@@ -83,6 +85,17 @@ class Settings(BaseSettings):
         ge=0,
         description="PostgreSQL idle-in-transaction timeout in milliseconds; 0 disables it.",
     )
+    DB_API_POOL_SIZE: int = Field(default=10, ge=1, le=64)
+    DB_API_MAX_OVERFLOW: int = Field(default=5, ge=0, le=32)
+    DB_WORKER_POOL_SIZE: int = Field(default=2, ge=1, le=16)
+    DB_WORKER_MAX_OVERFLOW: int = Field(default=1, ge=0, le=16)
+    DB_SCHEDULER_POOL_SIZE: int = Field(default=1, ge=1, le=8)
+    DB_SCHEDULER_MAX_OVERFLOW: int = Field(default=1, ge=0, le=8)
+    DB_MIGRATION_CONNECTIONS: int = Field(default=1, ge=1, le=4)
+    DB_DEPLOYMENT_MAX_CONNECTIONS: int = Field(default=32, ge=1, le=256)
+    HEALTH_READY_TIMEOUT_SECONDS: float = Field(default=2.0, ge=0.1, le=30.0)
+    HEALTH_STARTUP_ATTEMPTS: int = Field(default=3, ge=1, le=30)
+    HEALTH_STARTUP_RETRY_SECONDS: float = Field(default=1.0, ge=0.0, le=30.0)
     DATA_DIR: str = "data"
     # Standalone dev: the API auto-spawns the worker + scheduler as child
     # processes so nothing has to be started by hand.  The Compose topology runs
@@ -101,6 +114,10 @@ class Settings(BaseSettings):
         "already serialize GPU/write work, so one is usually enough.",
     )
     JOB_WORKER_CONCURRENCY: int = Field(default=4, ge=1, le=32)
+    JOB_CONTROL_CONCURRENCY: int = Field(default=4, ge=1, le=32)
+    JOB_PGQUEUER_BATCH_SIZE: int = Field(default=2, ge=1, le=16)
+    JOB_PGQUEUER_HEARTBEAT_SECONDS: float = Field(default=60.0, ge=1.0, le=3600.0)
+    JOB_PGQUEUER_DEQUEUE_SECONDS: float = Field(default=10.0, ge=0.05, le=300.0)
     JOB_POLL_SECONDS: float = Field(default=0.5, ge=0.05, le=30.0)
     JOB_HEARTBEAT_SECONDS: int = Field(default=10, ge=1, le=300)
     JOB_LEASE_SECONDS: int = Field(default=60, ge=10, le=3600)
@@ -169,6 +186,36 @@ class Settings(BaseSettings):
     def db_url_resolved(self) -> str:
         """PostgreSQL connection URL used by every Marquee runtime role."""
         return self.DB_URL
+
+    @property
+    def db_pool_budget(self) -> tuple[int, int]:
+        """Return the SQLAlchemy base/overflow budget for this process role."""
+        if self.MARQUEE_PROCESS_ROLE == "worker":
+            return self.DB_WORKER_POOL_SIZE, self.DB_WORKER_MAX_OVERFLOW
+        if self.MARQUEE_PROCESS_ROLE == "scheduler":
+            return self.DB_SCHEDULER_POOL_SIZE, self.DB_SCHEDULER_MAX_OVERFLOW
+        return self.DB_API_POOL_SIZE, self.DB_API_MAX_OVERFLOW
+
+    @property
+    def deployment_connection_budget(self) -> int:
+        """Maximum connections for one API, configured workers, scheduler, and migration."""
+        api = self.DB_API_POOL_SIZE + self.DB_API_MAX_OVERFLOW
+        worker = self.DB_WORKER_POOL_SIZE + self.DB_WORKER_MAX_OVERFLOW + 1
+        scheduler = self.DB_SCHEDULER_POOL_SIZE + self.DB_SCHEDULER_MAX_OVERFLOW + 1
+        return (
+            api
+            + self.JOB_EMBEDDED_WORKER_COUNT * worker
+            + scheduler
+            + self.DB_MIGRATION_CONNECTIONS
+        )
+
+    @model_validator(mode="after")
+    def validate_connection_budget(self) -> Settings:
+        if self.deployment_connection_budget > self.DB_DEPLOYMENT_MAX_CONNECTIONS:
+            raise ValueError(
+                "configured role connection budget exceeds DB_DEPLOYMENT_MAX_CONNECTIONS"
+            )
+        return self
 
     @property
     def data_dir_path(self) -> Path:

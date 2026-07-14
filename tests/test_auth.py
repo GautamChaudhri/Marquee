@@ -34,7 +34,7 @@ def enforce(monkeypatch):
 @pytest.mark.asyncio
 async def test_health_open_without_key(enforce):
     async with _client() as c:
-        resp = await c.get("/health")
+        resp = await c.get("/health/live")
     assert resp.status_code == 200
 
 

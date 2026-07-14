@@ -13,7 +13,6 @@ from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
-from sqlalchemy import text
 
 from marquee import __version__
 from marquee.api.auth import require_api_key
@@ -21,12 +20,11 @@ from marquee.config import settings
 from marquee.core.jobs import (
     builtin_handlers,  # noqa: F401 - registers handlers for create_and_run
     dovi_handlers,  # noqa: F401 - registers dovi analysis handler
-    job_manager,
     legacy_media,  # noqa: F401 - registers bridge handlers
 )
 from marquee.core.pipeline_config import migrate_legacy_runtime_state
 from marquee.core.rate_limit import RateLimiter
-from marquee.database import _get_engine, _get_session_factory, close_db, init_db
+from marquee.database import close_db, init_db
 from marquee.logging import setup_logging
 from marquee.ml.migrate_artifacts import migrate_live_artifacts
 
@@ -121,9 +119,10 @@ async def lifespan(app: FastAPI):
     # Database
     logger.info("Initialising database ...")
     await init_db()
+    from marquee.core.jobs.readiness import require_startup_readiness
+
+    await require_startup_readiness()
     logger.info("Database ready.")
-    async with _get_session_factory()() as db:
-        await job_manager.bootstrap_resources(db)
 
     # Rate limiters — shared across requests
     app.state.op_rate_limiter = _op_rate_limiter
@@ -351,27 +350,33 @@ async def _unhandled_exception_handler(request: Request, exc: Exception) -> JSON
 # ---------------------------------------------------------------------------
 
 
-@app.get("/health")
-async def health_check():
-    """Health check — probes the database connection.
-
-    Returns 200 when healthy, 503 when the database is unreachable.
-    Docker health checks and load balancers depend on this endpoint.
-    """
-    db_ok = False
-    try:
-        engine = _get_engine()
-        async with engine.connect() as conn:
-            await conn.execute(text("SELECT 1"))
-            db_ok = True
-    except Exception:
-        logger.warning("Health check: database probe failed", exc_info=True)
-
-    status = "ok" if db_ok else "degraded"
-
+@app.get("/health/live")
+async def liveness_check():
+    """Process-only liveness; deliberately performs no dependency access."""
     return {
-        "status": status,
+        "status": "live",
         "project": settings.APP_NAME,
         "version": __version__,
-        "database": "connected" if db_ok else "unreachable",
     }
+
+
+async def _readiness_response():
+    from marquee.core.jobs.readiness import check_readiness
+
+    report = await check_readiness()
+    return JSONResponse(
+        status_code=200 if report["status"] == "ready" else 503,
+        content=report,
+    )
+
+
+@app.get("/health/ready")
+async def readiness_check():
+    """Bounded dependency readiness with sanitized component states."""
+    return await _readiness_response()
+
+
+@app.get("/health")
+async def health_check():
+    """Temporary compatibility alias for dependency readiness."""
+    return await _readiness_response()

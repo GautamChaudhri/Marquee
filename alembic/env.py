@@ -13,17 +13,24 @@ from alembic import context
 # Import all models so Alembic can detect schema changes
 from marquee import models  # noqa: F401
 from marquee.config import settings
-from marquee.database import Base
+from marquee.models.deployment import get_deployment_metadata
 
 # Alembic Config object
 config = context.config
 
 # Set up Python logging from alembic.ini
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 # MetaData for autogenerate
-target_metadata = Base.metadata
+target_metadata = get_deployment_metadata()
+
+
+def _include_name(name: str | None, type_: str, parent_names: dict) -> bool:
+    """Keep PgQueuer-owned objects outside Alembic autogeneration."""
+    if type_ == "table" and name is not None and name.startswith("pgqueuer"):
+        return False
+    return True
 
 
 def run_migrations_offline() -> None:
@@ -32,6 +39,7 @@ def run_migrations_offline() -> None:
     context.configure(
         url=url,
         target_metadata=target_metadata,
+        include_name=_include_name,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
     )
@@ -41,7 +49,11 @@ def run_migrations_offline() -> None:
 
 def do_run_migrations(connection):
     """Execute migrations inside a transaction."""
-    context.configure(connection=connection, target_metadata=target_metadata)
+    context.configure(
+        connection=connection,
+        target_metadata=target_metadata,
+        include_name=_include_name,
+    )
     with context.begin_transaction():
         context.run_migrations()
 

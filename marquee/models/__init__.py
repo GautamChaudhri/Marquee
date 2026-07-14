@@ -8,11 +8,13 @@ from marquee.models.episode import Episode
 from marquee.models.job import (
     Job,
     JobAttempt,
+    JobDispatch,
     JobEvent,
     JobResource,
     JobResourceReservation,
     JobSchedule,
     JobWorker,
+    SchemaContract,
 )
 from marquee.models.letterbox import LetterboxEvent, LetterboxState
 from marquee.models.letterbox_reencode import LetterboxReencodeArtifact
@@ -56,11 +58,13 @@ __all__ = [
     "LetterboxReencodeArtifact",
     "Job",
     "JobAttempt",
+    "JobDispatch",
     "JobEvent",
     "JobResource",
     "JobResourceReservation",
     "JobSchedule",
     "JobWorker",
+    "SchemaContract",
     "EpisodeMediaFile",
     "MediaFile",
     "MediaBatch",

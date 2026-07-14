@@ -11,7 +11,9 @@ from datetime import datetime
 
 from sqlalchemy import (
     JSON,
+    BigInteger,
     Boolean,
+    CheckConstraint,
     DateTime,
     ForeignKey,
     Index,
@@ -27,8 +29,30 @@ from marquee.database import Base
 
 
 class Job(Base):
+    """Canonical Marquee job state.
+
+    Phase/outcome/desired-state and PgQueuer linkage are the JMC1 authority.
+    Legacy status and resource/attempt columns remain temporarily so
+    unmigrated modules import and fail closed when their excluded runtime
+    tables are absent. They are not transport, retry, or scheduling authority.
+    """
+
     __tablename__ = "jobs"
     __table_args__ = (
+        CheckConstraint(
+            "phase IN ('planned', 'queued', 'running', 'stopping', 'terminal')",
+            name="ck_jobs_phase",
+        ),
+        CheckConstraint(
+            "outcome IS NULL OR outcome IN "
+            "('succeeded', 'failed', 'cancelled', 'dead_letter')",
+            name="ck_jobs_outcome",
+        ),
+        CheckConstraint(
+            "desired_state IN ('run', 'pause', 'cancel')",
+            name="ck_jobs_desired_state",
+        ),
+        Index("ix_jobs_phase_eligible", "phase", "eligible_at", "priority", "created_at"),
         Index("ix_jobs_claim", "status", "scheduled_at", "priority", "created_at"),
         Index("ix_jobs_parent_status", "parent_id", "status"),
         Index("ix_jobs_purge", "status", "finished_at"),
@@ -38,8 +62,38 @@ class Job(Base):
     type: Mapped[str] = mapped_column(String(80), index=True)
     payload_version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     payload: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
-    status: Mapped[str] = mapped_column(String(32), default="queued", index=True, nullable=False)
+
+    phase: Mapped[str] = mapped_column(
+        String(16), default="queued", server_default="queued", index=True, nullable=False
+    )
+    outcome: Mapped[str | None] = mapped_column(String(16), index=True)
+    desired_state: Mapped[str] = mapped_column(
+        String(12), default="run", server_default="run", nullable=False
+    )
+    pgq_job_id: Mapped[int | None] = mapped_column(BigInteger, unique=True)
+    dispatch_generation: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
     priority: Mapped[int] = mapped_column(Integer, default=50, nullable=False)
+    eligible_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    idempotency_key: Mapped[str | None] = mapped_column(String(200), unique=True)
+    queued_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    stopping_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    terminal_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    result: Mapped[dict | None] = mapped_column(JSON)
+    error: Mapped[dict | None] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    # Transitional legacy columns. See class docstring.
+    status: Mapped[str] = mapped_column(String(32), default="queued", index=True, nullable=False)
     parent_id: Mapped[str | None] = mapped_column(
         ForeignKey("jobs.id", ondelete="SET NULL"), index=True
     )
@@ -47,12 +101,9 @@ class Job(Base):
     correlation_id: Mapped[str | None] = mapped_column(String(64), index=True)
     subject_type: Mapped[str | None] = mapped_column(String(40), index=True)
     subject_id: Mapped[str | None] = mapped_column(String(64), index=True)
-    idempotency_key: Mapped[str | None] = mapped_column(String(200), unique=True)
     current_stage: Mapped[str | None] = mapped_column(String(80))
     checkpoint: Mapped[dict | None] = mapped_column(JSON)
     progress: Mapped[dict | None] = mapped_column(JSON)
-    result: Mapped[dict | None] = mapped_column(JSON)
-    error: Mapped[dict | None] = mapped_column(JSON)
     resource_request: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
     max_attempts: Mapped[int] = mapped_column(Integer, default=3, nullable=False)
     attempt_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
@@ -64,12 +115,51 @@ class Job(Base):
     claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class JobDispatch(Base):
+    """Immutable link between a canonical generation and one PgQueuer ticket."""
+
+    __tablename__ = "job_dispatches"
+    __table_args__ = (
+        UniqueConstraint("job_id", "generation", name="uq_job_dispatch_generation"),
+        CheckConstraint(
+            "disposition IN "
+            "('active', 'succeeded', 'failed', 'cancelled', 'stale', 'superseded')",
+            name="ck_job_dispatches_disposition",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    job_id: Mapped[str] = mapped_column(
+        ForeignKey("jobs.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    generation: Mapped[int] = mapped_column(Integer, nullable=False)
+    pgq_job_id: Mapped[int | None] = mapped_column(BigInteger, unique=True)
+    entrypoint: Mapped[str] = mapped_column(String(80), nullable=False)
+    dedupe_key: Mapped[str] = mapped_column(String(200), unique=True, nullable=False)
+    priority: Mapped[int] = mapped_column(Integer, nullable=False)
+    eligible_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    disposition: Mapped[str] = mapped_column(
+        String(16), default="active", server_default="active", nullable=False
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
-    updated_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
-    )
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class SchemaContract(Base):
+    """Verified runtime schema marker written only by the migration service."""
+
+    __tablename__ = "schema_contracts"
+
+    component: Mapped[str] = mapped_column(String(32), primary_key=True)
+    expected_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    durability: Mapped[str | None] = mapped_column(String(16))
+    catalog_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    verified_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    verifier_build: Mapped[str] = mapped_column(String(64), nullable=False)
 
 
 class JobAttempt(Base):

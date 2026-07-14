@@ -1,5 +1,12 @@
 # PostgreSQL is the sole source of truth.  API, workers, and scheduler are
 # deliberately separate so a slow encode or model run never occupies Uvicorn.
+x-marquee-environment: &marquee-environment
+  DB_URL: postgresql+asyncpg://marquee:${POSTGRES_PASSWORD:-marquee-dev-change-me}@postgres:5432/marquee
+  MARQUEE_ENVIRONMENT: ${MARQUEE_ENVIRONMENT:-production}
+  MARQUEE_PROCESS_ROLE: api
+  EXECUTION_PROVIDER: ${EXECUTION_PROVIDER:-auto}
+  JOB_EMBEDDED_WORKERS: "false"
+
 x-marquee: &marquee
   build:
     context: ..
@@ -10,8 +17,7 @@ x-marquee: &marquee
   env_file:
     - ../.env
   environment:
-    DB_URL: postgresql+asyncpg://marquee:${POSTGRES_PASSWORD:-marquee-dev-change-me}@postgres:5432/marquee
-    EXECUTION_PROVIDER: ${EXECUTION_PROVIDER:-auto}
+    <<: *marquee-environment
     # Dedicated marquee-worker / marquee-scheduler services run the job runtime,
     # so the API must NOT spawn its own embedded workers.  (Only the API process
     # reads this flag; worker/scheduler/migrate ignore it.)
@@ -49,7 +55,10 @@ services:
 
   migrate:
     <<: *marquee
-    command: ["alembic", "upgrade", "head"]
+    command: ["python", "-m", "marquee.db_migration"]
+    environment:
+      <<: *marquee-environment
+      MARQUEE_PROCESS_ROLE: migration
     depends_on:
       postgres:
         condition: service_healthy
@@ -69,13 +78,19 @@ services:
 
   marquee-worker:
     <<: *marquee
-    command: ["python", "-m", "marquee.core.jobs.worker"]
+    command: ["python", "-m", "marquee.core.jobs.pgqueuer_worker"]
+    environment:
+      <<: *marquee-environment
+      MARQUEE_PROCESS_ROLE: worker
     # For NVIDIA deployments add the compose GPU reservation here.  Keeping it
     # off API/scheduler is intentional: only workers own accelerator work.
 
   marquee-scheduler:
     <<: *marquee
-    command: ["python", "-m", "marquee.core.jobs.scheduler"]
+    command: ["python", "-m", "marquee.core.jobs.pgqueuer_scheduler"]
+    environment:
+      <<: *marquee-environment
+      MARQUEE_PROCESS_ROLE: scheduler
 
 volumes:
   marquee-data:
