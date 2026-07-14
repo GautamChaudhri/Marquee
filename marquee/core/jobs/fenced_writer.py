@@ -12,10 +12,12 @@ from typing import Any
 from sqlalchemy import select, update
 
 from marquee.core.jobs.definitions import JobDefinition
+from marquee.core.jobs.event_service import job_event_writer
 from marquee.core.jobs.process_identity import ProcessIdentity
 from marquee.core.jobs.process_launcher import ExecutionSummary
+from marquee.core.jobs.progress_service import progress_writer
 from marquee.database import _get_session_factory
-from marquee.models.job import Job, JobAttempt, JobDispatch, JobEvent
+from marquee.models.job import Job, JobAttempt, JobDispatch
 
 
 class WriteDisposition(StrEnum):
@@ -104,15 +106,15 @@ class FencedWriter:
             )
             if attempt_result.rowcount != 1:
                 raise RuntimeError("fenced attempt changed during retry transaction")
-            session.add(
-                JobEvent(
-                    job_id=owner.job_id,
-                    attempt_id=owner.attempt_id,
-                    event_key="job.retry_requested",
-                    state="retrying",
-                    message=f"{self.definition.job_type} retry requested",
-                    detail=error,
-                )
+            await job_event_writer.append(
+                session,
+                job_id=owner.job_id,
+                attempt_id=owner.attempt_id,
+                event_key="job.retry_requested",
+                state="retrying",
+                message=f"{self.definition.job_type} retry requested",
+                detail=error,
+                canonical_version=owner.fence_token,
             )
         return WriteDisposition.APPLIED
 
@@ -279,15 +281,15 @@ class FencedWriter:
             )
             if attempt_result.rowcount != 1:
                 raise RuntimeError("fenced attempt changed during orphan reconciliation")
-            session.add(
-                JobEvent(
-                    job_id=owner.job_id,
-                    attempt_id=owner.attempt_id,
-                    event_key="attempt.interrupted",
-                    state="queued",
-                    message=f"{self.definition.job_type} interrupted after worker loss",
-                    detail=error,
-                )
+            await job_event_writer.append(
+                session,
+                job_id=owner.job_id,
+                attempt_id=owner.attempt_id,
+                event_key="attempt.interrupted",
+                state="queued",
+                message=f"{self.definition.job_type} interrupted after worker loss",
+                detail=error,
+                canonical_version=owner.fence_token,
             )
         return WriteDisposition.APPLIED
 
@@ -387,6 +389,14 @@ class FencedWriter:
             )
             if disposition != WriteDisposition.APPLIED:
                 return disposition
+            job = await session.scalar(
+                select(Job).where(Job.id == owner.job_id).with_for_update()
+            )
+            if job is None:
+                raise RuntimeError("fenced terminal job disappeared")
+            await progress_writer.terminalize(
+                session, job, outcome=outcome, occurred_at=now
+            )
             attempt_result = await session.execute(
                 update(JobAttempt)
                 .where(
@@ -413,15 +423,15 @@ class FencedWriter:
             )
             if attempt_result.rowcount != 1 or dispatch_result.rowcount != 1:
                 raise RuntimeError("fenced audit changed during terminal transaction")
-            session.add(
-                JobEvent(
-                    job_id=owner.job_id,
-                    attempt_id=owner.attempt_id,
-                    event_key=f"job.{outcome}",
-                    state=outcome,
-                    message=f"{self.definition.job_type} {outcome}",
-                    detail={"result": result} if result is not None else error,
-                )
+            await job_event_writer.append(
+                session,
+                job_id=owner.job_id,
+                attempt_id=owner.attempt_id,
+                event_key=f"job.{outcome}",
+                state=outcome,
+                message=f"{self.definition.job_type} {outcome}",
+                detail={"result": result} if result is not None else error,
+                canonical_version=owner.fence_token,
             )
         return WriteDisposition.APPLIED
 

@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
+import logging
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any
+from typing import Any, Literal
 
 from pgqueuer import RetryRequested
 from pgqueuer.models import Context
@@ -17,15 +19,20 @@ from pgqueuer.models import Job as PgQueuerJob
 from sqlalchemy import func, select, update
 
 from marquee.config import settings
+from marquee.core.jobs.artifact_service import register_virtual_artifact
 from marquee.core.jobs.definitions import JobDefinition
+from marquee.core.jobs.event_service import job_event_writer
 from marquee.core.jobs.fenced_writer import (
     AttemptOwnership,
     FencedWriter,
     WriteDisposition,
 )
+from marquee.core.jobs.log_capture import AttemptLogSink
 from marquee.core.jobs.manifest import JOB_DEFINITION_REGISTRY
 from marquee.core.jobs.process_identity import read_boot_id
 from marquee.core.jobs.process_launcher import ProcessLauncher
+from marquee.core.jobs.progress import MeasurementMode, ProgressMeasurementUpdate
+from marquee.core.jobs.progress_service import ProgressObservation, progress_writer
 from marquee.core.jobs.safety_gates import (
     SafetyGateCancelledError,
     SafetyGateHandle,
@@ -35,9 +42,10 @@ from marquee.core.jobs.safety_gates import (
 )
 from marquee.core.jobs.workspaces import AttemptWorkspace, AttemptWorkspaceManager
 from marquee.database import _get_session_factory
-from marquee.models.job import Job, JobAttempt, JobDispatch, JobEvent
+from marquee.models.job import Job, JobAttempt, JobDispatch
 
 TRANSPORT_KEYS = frozenset({"dispatch_generation", "job_id", "payload_version"})
+logger = logging.getLogger(__name__)
 
 
 class DeliveryRejectedError(RuntimeError):
@@ -98,6 +106,7 @@ class ExecutionContext:
     safety_gates: SafetyGateHandle
     workspace: AttemptWorkspace
     process_launcher: ProcessLauncher
+    log_sink: AttemptLogSink | None
     writer: FencedWriter
 
 
@@ -274,13 +283,12 @@ async def _apply_pre_admission_intent(payload: TransportPayload) -> None:
             job.attention = None
             dispatch.disposition = "cancelled"
             dispatch.ended_at = now
-            session.add(
-                JobEvent(
-                    job_id=job.id,
-                    event_key="job.cancelled",
-                    state="cancelled",
-                    message="cancelled before admission",
-                )
+            await job_event_writer.append(
+                session,
+                job_id=job.id,
+                event_key="job.cancelled",
+                state="cancelled",
+                message="cancelled before admission",
             )
         elif job.desired_state == "pause":
             job.pgq_job_id = None
@@ -318,15 +326,14 @@ async def _start_attempt(
     job.current_attempt_id = attempt.id
     job.started_at = job.started_at or now
     job.attention = None
-    session.add(
-        JobEvent(
-            job_id=job.id,
-            attempt_id=attempt.id,
-            event_key="attempt.started",
-            state="running",
-            message=f"{preflight.definition.job_type} started",
-            detail={"dispatch_generation": preflight.delivery.dispatch_generation},
-        )
+    await job_event_writer.append(
+        session,
+        job_id=job.id,
+        attempt_id=attempt.id,
+        event_key="attempt.started",
+        state="running",
+        message=f"{preflight.definition.job_type} started",
+        detail={"dispatch_generation": preflight.delivery.dispatch_generation},
     )
     return AdmittedDelivery(
         delivery=preflight.delivery,
@@ -414,6 +421,21 @@ async def execute_system_noop(context: ExecutionContext) -> dict[str, Any]:
     """The only production handler; it has no ORM, transport row, or path authority."""
     if context.cancellation.cancel_called:
         raise asyncio.CancelledError
+    await progress_writer.safe_write(
+        job_id=context.delivery.canonical_job_id,
+        attempt_id=context.attempt.attempt_id,
+        fence_token=context.attempt.fence_token,
+        observation=ProgressObservation(
+            stage_key="execute",
+            overall=ProgressMeasurementUpdate(
+                scope_id="system-noop:overall", mode=MeasurementMode.NONE
+            ),
+            current=ProgressMeasurementUpdate(
+                scope_id="system-noop:current", mode=MeasurementMode.NONE
+            ),
+            producer_ordinal=1,
+        ),
+    )
     return {
         "outcome": "succeeded",
         "summary": {"echo": context.request.get("echo")},
@@ -424,6 +446,52 @@ EXECUTION_HANDLERS: Mapping[str, KernelHandler] = MappingProxyType(
     {"system_noop": execute_system_noop}
 )
 _SAFETY_GATES = SafetyGateService()
+
+
+async def _execute_delivery(
+    execution: ExecutionContext,
+    transport_context: Context,
+    executor: LegacyNoopExecutor | None,
+) -> dict[str, Any]:
+    if executor is None:
+        handler = EXECUTION_HANDLERS.get(execution.definition.job_type)
+        if handler is None:
+            raise DeliveryRejectedError("enabled definition has no execution handler")
+        return await handler(execution)
+    legacy = await executor(dict(execution.request), transport_context)
+    return (
+        legacy
+        if set(legacy) >= {"outcome", "summary"}
+        else {"outcome": "succeeded", "summary": {"echo": legacy}}
+    )
+
+
+async def _seal_attempt_log(log_sink: AttemptLogSink | None, *, outcome: str) -> None:
+    if log_sink is None:
+        return
+    with contextlib.suppress(Exception):
+        await log_sink.write(
+            source="system",
+            message="Attempt execution ended; sealing captured evidence.",
+            fields={"outcome": outcome},
+        )
+        await log_sink.seal()
+
+
+async def _register_terminal_artifact(
+    ownership: AttemptOwnership, *, source: Literal["result", "error"]
+) -> None:
+    try:
+        await register_virtual_artifact(
+            job_id=ownership.job_id,
+            attempt_id=ownership.attempt_id,
+            fence_token=ownership.fence_token,
+            source=source,
+            name=f"Canonical {source}",
+            retention_class="standard",
+        )
+    except Exception:
+        logger.error("Canonical %s artifact registration failed", source, exc_info=True)
 
 
 async def deliver_control_job(
@@ -477,12 +545,29 @@ async def deliver_control_job(
         except Exception as exc:
             await writer.fail(exc)
             raise
+        try:
+            log_sink = await AttemptLogSink.create(
+                job_id=ownership.job_id,
+                attempt_id=ownership.attempt_id,
+                fence_token=ownership.fence_token,
+                data_dir=Path(settings.DATA_DIR),
+            )
+            await log_sink.write(
+                source="system",
+                message="Attempt admitted and log capture started.",
+                fields={"attempt_id": ownership.attempt_id},
+            )
+        except Exception:
+            log_sink = None
+            logger.error("Attempt log capture could not be initialized", exc_info=True)
         process_launcher = ProcessLauncher(
             worker_node=admitted.attempt.worker_node,
             boundary=workspace.boundary,
             working_directory=workspace.directory,
             record_identity=writer.record_process_identity,
             record_exit=writer.record_process_exit,
+            pipe_sink=log_sink.feed_pipe if log_sink is not None else None,
+            capture_limit=0 if log_sink is not None else 64 * 1024,
         )
         execution = ExecutionContext(
             delivery=admitted.delivery,
@@ -495,21 +580,15 @@ async def deliver_control_job(
             safety_gates=gates,
             workspace=workspace,
             process_launcher=process_launcher,
+            log_sink=log_sink,
             writer=writer,
         )
         try:
-            if executor is None:
-                handler = EXECUTION_HANDLERS.get(admitted.definition.job_type)
-                if handler is None:
-                    raise DeliveryRejectedError("enabled definition has no execution handler")
-                result = await handler(execution)
+            if log_sink is None:
+                result = await _execute_delivery(execution, context, executor)
             else:
-                legacy = await executor(dict(admitted.request), context)
-                result = (
-                    legacy
-                    if set(legacy) >= {"outcome", "summary"}
-                    else {"outcome": "succeeded", "summary": {"echo": legacy}}
-                )
+                async with log_sink.capture_python_logs():
+                    result = await _execute_delivery(execution, context, executor)
         except RetryRequested as exc:
             await asyncio.shield(
                 process_launcher.shutdown(
@@ -517,6 +596,7 @@ async def deliver_control_job(
                     term_seconds=settings.JOB_PROCESS_TERM_SECONDS,
                 )
             )
+            await _seal_attempt_log(log_sink, outcome="retrying")
             workspace.cleanup()
             await writer.retry(
                 reason=exc.reason or "retry requested",
@@ -531,8 +611,10 @@ async def deliver_control_job(
                     term_seconds=settings.JOB_PROCESS_TERM_SECONDS,
                 )
             )
+            await asyncio.shield(_seal_attempt_log(log_sink, outcome="cancelled"))
             workspace.quarantine(code="cancelled", summary="attempt cancelled before publication")
             await asyncio.shield(writer.fail(exc, cancelled=True))
+            await asyncio.shield(_register_terminal_artifact(ownership, source="error"))
             raise
         except Exception as exc:
             await asyncio.shield(
@@ -541,19 +623,23 @@ async def deliver_control_job(
                     term_seconds=settings.JOB_PROCESS_TERM_SECONDS,
                 )
             )
+            await asyncio.shield(_seal_attempt_log(log_sink, outcome="failed"))
             workspace.quarantine(code="failed", summary="attempt failed before safe cleanup")
             await writer.fail(exc)
+            await _register_terminal_artifact(ownership, source="error")
             raise
         await process_launcher.shutdown(
             cooperative_seconds=settings.JOB_PROCESS_COOPERATIVE_SECONDS,
             term_seconds=settings.JOB_PROCESS_TERM_SECONDS,
         )
+        await _seal_attempt_log(log_sink, outcome="succeeded")
         disposition = await writer.succeed(result)
         if disposition != WriteDisposition.APPLIED:
             workspace.quarantine(code="stale_fence", summary="completion ownership changed")
             if disposition == WriteDisposition.CONFLICT:
                 raise DeliveryRejectedError("canonical completion conflicted with current state")
             return
+        await _register_terminal_artifact(ownership, source="result")
         workspace.cleanup()
     finally:
         await asyncio.shield(gates.release())

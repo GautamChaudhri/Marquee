@@ -106,6 +106,8 @@ class PresenterContext:
     warnings: list[WarningItem] = field(default_factory=list)
     live: Mapping[str, Any] = field(default_factory=dict)
     live_subject_missing: bool = False
+    logs_available: bool = False
+    artifacts_available: bool = False
 
     def warn(self, code: str, message: str) -> None:
         self.warnings.append(WarningItem(code=code, message=message))
@@ -147,6 +149,8 @@ def load_context(
     *,
     live: Mapping[str, Any] | None = None,
     live_subject_missing: bool = False,
+    logs_available: bool = False,
+    artifacts_available: bool = False,
 ) -> PresenterContext:
     """Validate stored documents into a presenter context.
 
@@ -222,6 +226,8 @@ def load_context(
         progress=progress,
         live=dict(live or {}),
         live_subject_missing=live_subject_missing,
+        logs_available=logs_available,
+        artifacts_available=artifacts_available,
     )
     context.warnings.extend(warnings)
     return context
@@ -360,15 +366,21 @@ def present_attention(ctx: PresenterContext) -> PresentationAttention:
     return PresentationAttention()
 
 
-def present_actions(job: Job, definition: JobDefinition) -> tuple[JobAction, ...]:
+def present_actions(
+    job: Job,
+    definition: JobDefinition,
+    *,
+    logs_available: bool = False,
+    artifacts_available: bool = False,
+) -> tuple[JobAction, ...]:
     context = ActionContext(
         phase=job.phase,
         desired_state=job.desired_state,
         outcome=job.outcome,
         active_attempt=job.current_attempt_id is not None,
         retryable=definition.enabled,
-        logs_available=False,
-        artifacts_available=False,
+        logs_available=logs_available,
+        artifacts_available=artifacts_available,
     )
     return tuple(sorted(allowed_actions(definition.action_policy, context)))
 
@@ -506,7 +518,12 @@ class JobPresenter:
     def present(self, ctx: PresenterContext) -> JobPresentation:
         job = ctx.job
         definition = ctx.definition
-        actions = present_actions(job, definition)
+        actions = present_actions(
+            job,
+            definition,
+            logs_available=ctx.logs_available,
+            artifacts_available=ctx.artifacts_available,
+        )
         sections = list(self.sections(ctx))
         if job.retry_of_job_id:
             sections.append(
@@ -573,14 +590,22 @@ class JobPresenter:
             warnings=tuple(ctx.warnings[:100]),
             failures=failures,
             suggested_actions=present_suggested_actions(ctx, actions),
-            evidence=EvidenceAvailability(logs_available=False, artifacts_available=False),
+            evidence=EvidenceAvailability(
+                logs_available=ctx.logs_available,
+                artifacts_available=ctx.artifacts_available,
+            ),
             links=present_links(job, definition),
         )
 
     def present_row(self, ctx: PresenterContext) -> JobRow:
         job = ctx.job
         definition = ctx.definition
-        actions = present_actions(job, definition)
+        actions = present_actions(
+            job,
+            definition,
+            logs_available=ctx.logs_available,
+            artifacts_available=ctx.artifacts_available,
+        )
         duration = None
         if job.started_at and job.terminal_at:
             seconds = (job.terminal_at - job.started_at).total_seconds()

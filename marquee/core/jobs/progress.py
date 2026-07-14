@@ -277,6 +277,22 @@ def validate_progress_transition(
         raise WrongProgressFenceError("progress attempt/fence identity changed")
     if current.sequence <= previous.sequence:
         raise StaleProgressSequenceError("progress sequence is stale or duplicate")
+    for name in ("overall", "current"):
+        before = getattr(previous, name)
+        after = getattr(current, name)
+        if before.scope_id == after.scope_id:
+            if before.mode != after.mode or before.unit != after.unit:
+                raise ProgressInvariantError(
+                    f"{name} measurement mode/unit change requires a new scope_id"
+                )
+            if (
+                before.total is not None
+                and after.total is not None
+                and after.total < before.total
+            ):
+                raise ProgressInvariantError(
+                    f"{name} total cannot shrink without a new scope_id"
+                )
     if (
         previous.overall.percent is not None
         and current.overall.percent is not None

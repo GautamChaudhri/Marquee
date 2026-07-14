@@ -9,21 +9,32 @@ PgQueuer identifiers and rows remain private diagnostics.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import json
 import logging
 from datetime import UTC, datetime
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import Select, and_, case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from marquee.config import settings
+from marquee.core.filesystem import FilesystemBoundaryError
 from marquee.core.jobs.api_errors import (
     ERROR_INVALID_CURSOR,
     ERROR_INVALID_FILTER,
     ERROR_JOB_NOT_FOUND,
     JobApiErrorDetail,
+)
+from marquee.core.jobs.artifact_service import (
+    ArtifactError,
+    ArtifactMissingError,
+    materialize_virtual_artifact,
+    verify_physical_artifact,
 )
 from marquee.core.jobs.contracts import (
     AttentionLevel,
@@ -48,7 +59,15 @@ from marquee.core.jobs.control import (
     set_paused as control_set_paused,
 )
 from marquee.core.jobs.definitions import JobDefinition
+from marquee.core.jobs.event_stream import EventClient, JobEventFrame, job_event_tailer
 from marquee.core.jobs.labels import humanize_job_type
+from marquee.core.jobs.log_capture import (
+    LOG_LEVELS,
+    LOG_SOURCES,
+    AttemptLogError,
+    AttemptLogFiles,
+    AttemptLogLine,
+)
 from marquee.core.jobs.manifest import JOB_DEFINITION_REGISTRY
 from marquee.core.jobs.pagination import (
     InvalidCursorError,
@@ -73,13 +92,14 @@ from marquee.core.jobs.presenters.base import (
     present_status,
 )
 from marquee.core.jobs.presenters.parents import PARENT_JOB_TYPES
-from marquee.database import get_db
+from marquee.database import _get_session_factory, get_db
 from marquee.models import (
     Episode,
     Job,
     JobArtifact,
     JobAttempt,
     JobEvent,
+    JobLog,
     MediaFile,
     Movie,
     Season,
@@ -244,6 +264,83 @@ def _parse_cursor_datetime(value: Any, field: str) -> datetime:
         return datetime.fromisoformat(value)
     except ValueError as exc:
         raise InvalidCursorError(f"cursor field {field} is malformed") from exc
+
+
+def _event_cursor(value: str | None) -> tuple[int | None, bool]:
+    if value is None:
+        return None, False
+    try:
+        parsed = int(value, 10)
+    except ValueError:
+        return None, True
+    return (parsed, False) if parsed >= 0 else (None, True)
+
+
+def _sse_frame(client: EventClient, frame: JobEventFrame) -> str:
+    del client
+    event_id = f"id: {frame.cursor}\n" if frame.cursor > 0 else ""
+    return f"{event_id}event: {frame.event_key}\ndata: {frame.model_dump_json()}\n\n"
+
+
+@router.get(
+    "/events/stream",
+    response_model=JobEventFrame,
+    response_class=StreamingResponse,
+    responses={
+        200: {
+            "content": {
+                "text/event-stream": {
+                    "schema": {"$ref": "#/components/schemas/JobEventFrame"}
+                }
+            }
+        }
+    },
+)
+async def stream_job_events(
+    request: Request,
+    after: Annotated[str | None, Query(max_length=20)] = None,
+    last_event_id: Annotated[str | None, Header(alias="Last-Event-ID")] = None,
+):
+    """Replay the global durable cursor, then follow the API-instance tailer."""
+    header_cursor, header_invalid = _event_cursor(last_event_id)
+    query_cursor, query_invalid = _event_cursor(after)
+    if (
+        last_event_id is not None
+        and after is not None
+        and not header_invalid
+        and not query_invalid
+        and header_cursor != query_cursor
+    ):
+        raise HTTPException(status_code=400, detail="Last-Event-ID and after disagree")
+    requested = header_cursor if last_event_id is not None else query_cursor
+    invalid = header_invalid if last_event_id is not None else query_invalid
+    if job_event_tailer.health()["status"] != "ok":
+        raise HTTPException(status_code=503, detail="Job event stream is unavailable")
+    client = await job_event_tailer.subscribe(requested, invalid_cursor=invalid)
+
+    async def frames():
+        try:
+            while True:
+                try:
+                    frame = await asyncio.wait_for(
+                        client.queue.get(), timeout=settings.JOB_EVENT_KEEPALIVE_SECONDS
+                    )
+                except TimeoutError:
+                    if client.closed or await request.is_disconnected():
+                        return
+                    yield ": keepalive\n\n"
+                    continue
+                yield _sse_frame(client, frame)
+                if frame.event_key == "stream.reset_required":
+                    return
+        finally:
+            await job_event_tailer.unsubscribe(client)
+
+    return StreamingResponse(
+        frames(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.get("", response_model=JobListResponse)
@@ -569,7 +666,28 @@ async def _live_subject_missing(db: AsyncSession, job: Job) -> bool:
 
 @router.get("/{job_id}/presentation", response_model=JobPresentation)
 async def get_job_presentation(job_id: str, db: Annotated[AsyncSession, Depends(get_db)]):
-    job = await _load_job(db, job_id)
+    evidence = (
+        await db.execute(
+            select(
+                Job,
+                select(JobLog.id)
+                .where(JobLog.job_id == job_id, JobLog.seal_status != "expired")
+                .exists()
+                .label("logs_available"),
+                select(JobArtifact.id)
+                .where(
+                    JobArtifact.job_id == job_id,
+                    JobArtifact.status == "available",
+                    or_(JobArtifact.expires_at.is_(None), JobArtifact.expires_at > func.now()),
+                )
+                .exists()
+                .label("artifacts_available"),
+            ).where(Job.id == job_id)
+        )
+    ).one_or_none()
+    if evidence is None:
+        raise _error(404, ERROR_JOB_NOT_FOUND, "Job was not found.", job_id=job_id)
+    job, logs_available, artifacts_available = evidence
     definition = _definition_for(job.type)
     presenter = _presenter_for(definition)
     live: dict[str, Any] = {}
@@ -580,7 +698,14 @@ async def get_job_presentation(job_id: str, db: Annotated[AsyncSession, Depends(
         }
     missing = await _live_subject_missing(db, job)
     try:
-        ctx = load_context(job, definition, live=live, live_subject_missing=missing)
+        ctx = load_context(
+            job,
+            definition,
+            live=live,
+            live_subject_missing=missing,
+            logs_available=logs_available,
+            artifacts_available=artifacts_available,
+        )
     except PresentationIntegrityError as exc:
         logger.error("presentation integrity failure for job %s: %s", job_id, exc)
         raise HTTPException(500, "The stored canonical job evidence is invalid.") from exc
@@ -667,10 +792,220 @@ async def list_job_attempts(
     return AttemptListResponse(items=items, next_cursor=next_cursor, limit=limit)
 
 
+class AttemptLogPage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[AttemptLogLine]
+    next_cursor: int | None
+    limit: int
+    freshness: Literal["active", "sealed", "degraded", "expired"]
+    sealed: bool
+    truncated: bool
+    compression: Literal["none", "gzip", "zstd"]
+    byte_count: int = Field(ge=0)
+    stored_byte_count: int = Field(ge=0)
+    last_cursor: int = Field(ge=0)
+    opened_at: datetime
+    closed_at: datetime | None
+    expires_at: datetime | None
+
+
+async def _attempt_log(
+    db: AsyncSession, *, job_id: str, attempt_id: int
+) -> tuple[JobAttempt, JobLog]:
+    await _load_job(db, job_id)
+    attempt = await db.scalar(
+        select(JobAttempt).where(JobAttempt.id == attempt_id, JobAttempt.job_id == job_id)
+    )
+    if attempt is None:
+        raise HTTPException(status_code=404, detail="Attempt not found")
+    row = await db.scalar(
+        select(JobLog)
+        .where(JobLog.job_id == job_id, JobLog.attempt_id == attempt_id)
+        .order_by(JobLog.segment.desc())
+        .limit(1)
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Attempt log not found")
+    return attempt, row
+
+
+def _log_freshness(row: JobLog) -> Literal["active", "sealed", "degraded", "expired"]:
+    if row.seal_status == "expired":
+        return "expired"
+    if row.seal_status == "sealed":
+        return "sealed"
+    if row.seal_status in {"failed", "recovering"}:
+        return "degraded"
+    return "active"
+
+
+@router.get(
+    "/{job_id}/attempts/{attempt_id}/logs",
+    response_model=AttemptLogPage,
+)
+async def list_attempt_logs(
+    job_id: str,
+    attempt_id: int,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    after: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=500),
+    source: Literal["python", "stdout", "stderr", "system"] | None = None,
+    level: Literal["debug", "info", "warning", "error"] | None = None,
+):
+    _, row = await _attempt_log(db, job_id=job_id, attempt_id=attempt_id)
+    if source is not None and source not in LOG_SOURCES:
+        raise HTTPException(status_code=422, detail="Log source is not allowlisted")
+    if level is not None and level not in LOG_LEVELS:
+        raise HTTPException(status_code=422, detail="Log level is not allowlisted")
+    files = AttemptLogFiles.for_data_dir(settings.DATA_DIR)
+    try:
+        items, next_cursor, physical_gzip = await asyncio.to_thread(
+            files.read_lines,
+            row,
+            after=after,
+            limit=limit,
+            source=source,
+            level=level,
+        )
+    except (AttemptLogError, FilesystemBoundaryError, OSError) as exc:
+        raise HTTPException(status_code=409, detail="Attempt log storage is unavailable") from exc
+    compression = "gzip" if physical_gzip else row.compression
+    return AttemptLogPage(
+        items=items,
+        next_cursor=next_cursor,
+        limit=limit,
+        freshness=_log_freshness(row),
+        sealed=row.seal_status == "sealed",
+        truncated=row.truncated,
+        compression=compression,
+        byte_count=row.byte_count,
+        stored_byte_count=row.stored_byte_count,
+        last_cursor=row.last_cursor,
+        opened_at=row.opened_at,
+        closed_at=row.closed_at,
+        expires_at=row.expires_at,
+    )
+
+
+@router.get(
+    "/{job_id}/attempts/{attempt_id}/logs/stream",
+    response_model=AttemptLogLine,
+    response_class=StreamingResponse,
+    responses={200: {"content": {"text/event-stream": {}}}},
+)
+async def stream_attempt_logs(
+    request: Request,
+    job_id: str,
+    attempt_id: int,
+    after: int = Query(0, ge=0),
+):
+    factory = _get_session_factory()
+    async with factory() as db:
+        _, row = await _attempt_log(db, job_id=job_id, attempt_id=attempt_id)
+    files = AttemptLogFiles.for_data_dir(settings.DATA_DIR)
+    queue: asyncio.Queue[tuple[str, int, str]] = asyncio.Queue(
+        maxsize=settings.JOB_LOG_STREAM_QUEUE_SIZE
+    )
+
+    async def produce() -> None:
+        cursor = after
+        while True:
+            try:
+                lines, _, compressed = await asyncio.to_thread(
+                    files.read_lines, row, after=cursor, limit=64
+                )
+            except (AttemptLogError, FilesystemBoundaryError, OSError):
+                await queue.put(
+                    (
+                        "log.unavailable",
+                        cursor,
+                        json.dumps({"cursor": cursor, "reconcile": "attempt_logs"}),
+                    )
+                )
+                return
+            for line in lines:
+                if queue.full():
+                    while not queue.empty():
+                        queue.get_nowait()
+                    await queue.put(
+                        (
+                            "log.reset_required",
+                            cursor,
+                            json.dumps({"cursor": cursor, "reconcile": "attempt_logs"}),
+                        )
+                    )
+                    return
+                cursor = line.cursor
+                queue.put_nowait(("log.line", cursor, line.model_dump_json()))
+            if compressed:
+                await queue.put(
+                    ("log.sealed", cursor, json.dumps({"cursor": cursor, "sealed": True}))
+                )
+                return
+            await asyncio.sleep(settings.JOB_LOG_STREAM_POLL_SECONDS)
+
+    producer = asyncio.create_task(produce(), name=f"attempt-log-stream-{attempt_id}")
+
+    async def frames():
+        try:
+            while True:
+                try:
+                    event, cursor, data = await asyncio.wait_for(
+                        queue.get(), timeout=settings.JOB_EVENT_KEEPALIVE_SECONDS
+                    )
+                except TimeoutError:
+                    if await request.is_disconnected():
+                        return
+                    yield ": keepalive\n\n"
+                    continue
+                event_id = f"id: {cursor}\n" if cursor > 0 else ""
+                yield f"{event_id}event: {event}\ndata: {data}\n\n"
+                if event != "log.line":
+                    return
+        finally:
+            producer.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await producer
+
+    return StreamingResponse(
+        frames(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@router.get("/{job_id}/attempts/{attempt_id}/logs/download")
+async def download_attempt_log(
+    job_id: str,
+    attempt_id: int,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    _, row = await _attempt_log(db, job_id=job_id, attempt_id=attempt_id)
+    now = datetime.now(UTC)
+    if row.seal_status == "expired" or (row.expires_at is not None and row.expires_at <= now):
+        raise HTTPException(status_code=410, detail="Attempt log has expired")
+    if row.seal_status == "open":
+        raise HTTPException(status_code=409, detail="Attempt log is still active")
+    if row.seal_status != "sealed" or row.checksum is None:
+        raise HTTPException(status_code=503, detail="Attempt log is unavailable")
+    files = AttemptLogFiles.for_data_dir(settings.DATA_DIR)
+    try:
+        checksum, stored_bytes, compressed = await asyncio.to_thread(files.checksum, row)
+    except (AttemptLogError, FilesystemBoundaryError, OSError) as exc:
+        raise HTTPException(status_code=404, detail="Attempt log storage is missing") from exc
+    if checksum != row.checksum or stored_bytes != row.stored_byte_count:
+        raise HTTPException(status_code=409, detail="Attempt log storage is corrupt")
+    if row.compression == "gzip" and not compressed:
+        raise HTTPException(status_code=409, detail="Attempt log compression is corrupt")
+    return files.download_response(row)
+
+
 class EventItem(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     id: int
+    canonical_version: int = Field(ge=0)
     event_key: str
     state: str
     stage: str | None
@@ -709,11 +1044,17 @@ async def list_job_events(
     items = [
         EventItem(
             id=event.id,
+            canonical_version=(event.detail or {}).get("_canonical_version", 0),
             event_key=event.event_key,
             state=event.state,
             stage=event.stage,
             message=event.message,
-            detail=event.detail,
+            detail={
+                key: value
+                for key, value in (event.detail or {}).items()
+                if not key.startswith("_")
+            }
+            or None,
             created_at=event.created_at,
         )
         for event in rows
@@ -728,6 +1069,7 @@ class ArtifactItemResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     id: int
+    attempt_id: int | None
     kind: str
     name: str
     status: str
@@ -738,6 +1080,8 @@ class ArtifactItemResponse(BaseModel):
     expires_at: datetime | None
     created_at: datetime | None
     available: bool
+    virtual: bool
+    download_url: str | None
 
 
 class ArtifactListResponse(BaseModel):
@@ -772,6 +1116,7 @@ async def list_job_artifacts(
     items = [
         ArtifactItemResponse(
             id=artifact.id,
+            attempt_id=artifact.attempt_id,
             kind=artifact.kind,
             name=artifact.name,
             status=artifact.status,
@@ -781,9 +1126,14 @@ async def list_job_artifacts(
             retention_class=artifact.retention_class,
             expires_at=artifact.expires_at,
             created_at=artifact.created_at,
-            # Physical storage/streaming arrive in Chunk 3; availability stays
-            # metadata-only until then.
-            available=False,
+            available=artifact.status == "available"
+            and (artifact.expires_at is None or artifact.expires_at > datetime.now(UTC)),
+            virtual=artifact.virtual_source is not None,
+            download_url=(
+                f"/api/jobs/{job_id}/artifacts/{artifact.id}/download"
+                if artifact.status == "available"
+                else None
+            ),
         )
         for artifact in rows
     ]
@@ -791,6 +1141,52 @@ async def list_job_artifacts(
         encode_cursor(contract=contract, key=(rows[-1].id,)) if has_more and rows else None
     )
     return ArtifactListResponse(items=items, next_cursor=next_cursor, limit=limit)
+
+
+@router.get("/{job_id}/artifacts/{artifact_id}/download")
+async def download_job_artifact(
+    job_id: str,
+    artifact_id: int,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    artifact = await db.scalar(
+        select(JobArtifact).where(JobArtifact.id == artifact_id, JobArtifact.job_id == job_id)
+    )
+    if artifact is None:
+        raise HTTPException(404, "Job artifact was not found")
+    now = datetime.now(UTC)
+    if artifact.status == "expired" or (
+        artifact.expires_at is not None and artifact.expires_at <= now
+    ):
+        raise HTTPException(410, "Job artifact has expired")
+    if artifact.status != "available":
+        raise HTTPException(503, "Job artifact is unavailable")
+    if artifact.virtual_source is not None:
+        try:
+            encoded = await materialize_virtual_artifact(artifact)
+        except ArtifactError as exc:
+            raise HTTPException(409, "Virtual artifact integrity check failed") from exc
+        return Response(
+            encoded,
+            media_type="application/json",
+            headers={
+                "Content-Disposition": f'attachment; filename="artifact-{artifact.id}.json"',
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
+    try:
+        boundary, classified = await verify_physical_artifact(artifact)
+    except ArtifactMissingError as exc:
+        raise HTTPException(404, "Job artifact storage is missing") from exc
+    except (ArtifactError, FilesystemBoundaryError, OSError) as exc:
+        raise HTTPException(409, "Job artifact storage is corrupt") from exc
+    response = boundary.response(
+        classified,
+        media_type=artifact.content_type,
+        filename=artifact.name,
+    )
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    return response
 
 
 class ChildListResponse(BaseModel):

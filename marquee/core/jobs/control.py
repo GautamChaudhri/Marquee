@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.core.configuration_cache import configuration_provider
 from marquee.core.jobs.contracts import JobAction
+from marquee.core.jobs.event_service import job_event_writer
 from marquee.core.jobs.manifest import JOB_DEFINITION_REGISTRY
 from marquee.core.jobs.pgqueuer_gateway import (
     ENTRYPOINT_CONTROL,
@@ -22,7 +23,7 @@ from marquee.core.jobs.pgqueuer_gateway import (
     pgqueuer_gateway,
 )
 from marquee.core.jobs.policies import ActionContext, allowed_actions
-from marquee.models.job import Job, JobDispatch, JobEvent
+from marquee.models.job import Job, JobDispatch
 
 
 @dataclass(frozen=True)
@@ -122,11 +123,11 @@ async def cancel(
                 "This job has no canonical transport ticket to cancel.",
             )
         definition = JOB_DEFINITION_REGISTRY.get(job.type)
+        job.fence_token += 1
         try:
             await pgqueuer_gateway.cancel_known_ticket(session, job_id=job.id)
         except PgQueuerGatewayError as exc:
             raise _conflict(job, "action_not_allowed", str(exc), action="cancel") from exc
-        job.fence_token += 1
     await session.refresh(job)
     return JobControlResult(JobAction.CANCEL, job, definition.execution_class.value)
 
@@ -146,13 +147,12 @@ async def set_paused(
         definition = JOB_DEFINITION_REGISTRY.get(job.type)
         job.desired_state = "pause" if paused else "run"
         job.fence_token += 1
-        session.add(
-            JobEvent(
-                job_id=job.id,
-                event_key=f"job.{action.value}d",
-                state=job.phase,
-                message=f"Job {action.value} requested",
-            )
+        await job_event_writer.append(
+            session,
+            job_id=job.id,
+            event_key=f"job.{action.value}d",
+            state=job.phase,
+            message=f"Job {action.value} requested",
         )
     await session.refresh(job)
     return JobControlResult(action, job, definition.execution_class.value)
@@ -177,6 +177,7 @@ async def change_priority(
                 action=JobAction.CHANGE_PRIORITY.value,
             )
         definition = JOB_DEFINITION_REGISTRY.get(job.type)
+        job.fence_token += 1
         try:
             await pgqueuer_gateway.reprioritize_known_ticket(
                 session, job_id=job.id, priority=priority
@@ -190,19 +191,17 @@ async def change_priority(
                 execution_class=definition.execution_class.value,
             ) from exc
         if job.pgq_job_id is None:
-            session.add(
-                JobEvent(
-                    job_id=job.id,
-                    event_key="job.priority_changed",
-                    state=job.phase,
-                    message="Job priority changed within its execution class",
-                    detail={
-                        "priority": priority,
-                        "execution_class": definition.execution_class.value,
-                    },
-                )
+            await job_event_writer.append(
+                session,
+                job_id=job.id,
+                event_key="job.priority_changed",
+                state=job.phase,
+                message="Job priority changed within its execution class",
+                detail={
+                    "priority": priority,
+                    "execution_class": definition.execution_class.value,
+                },
             )
-        job.fence_token += 1
     await session.refresh(job)
     return JobControlResult(JobAction.CHANGE_PRIORITY, job, definition.execution_class.value)
 
@@ -267,14 +266,15 @@ async def retry(
             eligible_at=now,
             disposition="active",
         )
-        event = JobEvent(
+        session.add_all([replacement, dispatch])
+        await job_event_writer.append(
+            session,
             job_id=replacement_id,
             event_key="job.retried",
             state="queued",
             message="Retry successor queued",
             detail={"original_job_id": original.id},
         )
-        session.add_all([replacement, dispatch, event])
         await pgqueuer_gateway.enqueue(
             session,
             job_id=replacement_id,
