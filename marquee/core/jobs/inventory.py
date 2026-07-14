@@ -105,5 +105,7 @@ ROUTE_CONSTRUCTED_TYPES = frozenset(
 )
 
 HEALING_TYPES = frozenset({"letterbox_heal", "poster_heal"})
-SCHEDULE_PRODUCED_TYPES = frozenset({"audio_subs_deep_scan", "poster_heal"})
+SCHEDULE_PRODUCED_TYPES = frozenset(
+    {"audio_subs_deep_scan", "library_sync", "poster_heal"}
+)
 WEBHOOK_RESERVED_TYPES = frozenset({"radarr_upgrade"})

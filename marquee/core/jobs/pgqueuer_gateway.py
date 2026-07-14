@@ -6,6 +6,7 @@ import json
 import threading
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 import asyncpg
@@ -25,6 +26,20 @@ MIN_PRIORITY = 0
 MAX_PRIORITY = 100
 MAX_DEFER = timedelta(days=365)
 MAX_STATUS_IDS = 100
+MAX_BULK_ENQUEUE = 500
+
+
+@dataclass(frozen=True, slots=True)
+class EnqueueIntent:
+    """One already-persisted canonical dispatch awaiting a transport ticket."""
+
+    job_id: str
+    entrypoint: str
+    payload_version: int
+    dispatch_generation: int
+    priority: int
+    execute_after: timedelta | None
+    dedupe_key: str
 
 
 class PgQueuerGatewayError(RuntimeError):
@@ -210,6 +225,128 @@ class PgQueuerGateway:
         await session.flush()
         return ticket_id
 
+    async def enqueue_many(
+        self,
+        session: AsyncSession,
+        *,
+        intents: Sequence[EnqueueIntent],
+    ) -> tuple[int, ...]:
+        """Insert and link one bounded ordered ticket set in the caller transaction."""
+        ordered = tuple(intents)
+        if not 1 <= len(ordered) <= MAX_BULK_ENQUEUE:
+            raise PgQueuerGatewayError(
+                f"bulk enqueue requires 1..{MAX_BULK_ENQUEUE} canonical dispatches"
+            )
+        job_ids = [intent.job_id for intent in ordered]
+        dedupe_keys = [intent.dedupe_key for intent in ordered]
+        if len(set(job_ids)) != len(job_ids):
+            raise PgQueuerGatewayError("bulk enqueue contains duplicate canonical job IDs")
+        if len(set(dedupe_keys)) != len(dedupe_keys):
+            raise PgQueuerGatewayError("bulk enqueue contains duplicate transport dedupe keys")
+        for intent in ordered:
+            self._validate_common(
+                job_id=intent.job_id,
+                entrypoint=intent.entrypoint,
+                payload_version=intent.payload_version,
+                dispatch_generation=intent.dispatch_generation,
+                priority=intent.priority,
+                execute_after=intent.execute_after,
+                dedupe_key=intent.dedupe_key,
+            )
+        if not session.in_transaction():
+            raise PgQueuerGatewayError("caller must own an active SQLAlchemy transaction")
+
+        await session.flush()
+        jobs = {
+            job.id: job
+            for job in (
+                await session.scalars(select(Job).where(Job.id.in_(job_ids)))
+            ).all()
+        }
+        dispatches = {
+            (dispatch.job_id, dispatch.generation): dispatch
+            for dispatch in (
+                await session.scalars(
+                    select(JobDispatch).where(JobDispatch.job_id.in_(job_ids))
+                )
+            ).all()
+        }
+        event_counts = dict(
+            (
+                await session.execute(
+                    select(JobEvent.job_id, func.count(JobEvent.id))
+                    .where(JobEvent.job_id.in_(job_ids), JobEvent.state == "queued")
+                    .group_by(JobEvent.job_id)
+                )
+            ).all()
+        )
+        for intent in ordered:
+            job = jobs.get(intent.job_id)
+            dispatch = dispatches.get((intent.job_id, intent.dispatch_generation))
+            if job is None or dispatch is None:
+                raise PgQueuerInvariantError(
+                    "every canonical job and dispatch must exist before bulk enqueue"
+                )
+            try:
+                JOB_DEFINITION_REGISTRY.for_dispatch(job.type, entrypoint=intent.entrypoint)
+            except JobDefinitionError as exc:
+                raise PgQueuerGatewayError(str(exc)) from exc
+            if job.phase != "queued" or job.dispatch_generation != intent.dispatch_generation:
+                raise PgQueuerInvariantError(
+                    "canonical bulk job phase/generation does not match dispatch"
+                )
+            if job.pgq_job_id is not None or dispatch.pgq_job_id is not None:
+                raise PgQueuerInvariantError("bulk dispatch is already linked to a ticket")
+            if (
+                dispatch.entrypoint != intent.entrypoint
+                or dispatch.dedupe_key != intent.dedupe_key
+                or dispatch.priority != intent.priority
+            ):
+                raise PgQueuerInvariantError("bulk dispatch audit does not match enqueue intent")
+            if not event_counts.get(intent.job_id):
+                raise PgQueuerInvariantError(
+                    "every bulk job requires an initial queued event before enqueue"
+                )
+
+        payloads = [
+            self._transport_payload(
+                job_id=intent.job_id,
+                payload_version=intent.payload_version,
+                dispatch_generation=intent.dispatch_generation,
+            )
+            for intent in ordered
+        ]
+        try:
+            async with self._queries(session) as queries:
+                ids = await queries.enqueue(
+                    [intent.entrypoint for intent in ordered],
+                    payloads,
+                    priority=[intent.priority for intent in ordered],
+                    execute_after=[intent.execute_after or timedelta(0) for intent in ordered],
+                    dedupe_key=dedupe_keys,
+                )
+        except DuplicateJobError as exc:
+            raise PgQueuerInvariantError(
+                "PgQueuer dedupe conflict for a canonical bulk dispatch"
+            ) from exc
+        if (
+            len(ids) != len(ordered)
+            or any(not isinstance(ticket_id, int) for ticket_id in ids)
+            or len(set(ids)) != len(ids)
+        ):
+            raise PgQueuerInvariantError(
+                "PgQueuer bulk enqueue must return ordered one-for-one unique numeric IDs"
+            )
+
+        ticket_ids = tuple(int(ticket_id) for ticket_id in ids)
+        for intent, ticket_id in zip(ordered, ticket_ids, strict=True):
+            job = jobs[intent.job_id]
+            dispatch = dispatches[(intent.job_id, intent.dispatch_generation)]
+            job.pgq_job_id = ticket_id
+            dispatch.pgq_job_id = ticket_id
+        await session.flush()
+        return ticket_ids
+
     async def cancel_known_ticket(self, session: AsyncSession, *, job_id: str) -> None:
         """Atomically request canonical cancellation through the known current ticket."""
         job = await session.scalar(select(Job).where(Job.id == job_id).with_for_update())
@@ -250,6 +387,9 @@ class PgQueuerGateway:
                 state="cancelled",
                 message="system_noop cancelled while queued",
             )
+            from marquee.core.jobs.batches import project_terminal_child
+
+            await project_terminal_child(session, job)
         elif transport_status == "picked":
             job.phase = "stopping"
             job.stopping_at = now

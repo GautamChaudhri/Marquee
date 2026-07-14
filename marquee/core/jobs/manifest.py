@@ -241,7 +241,17 @@ def _definition(spec: _DefinitionSpec) -> JobDefinition:
         entrypoint=spec.execution.value,
         timeout=TimeoutPolicy(seconds=30 if enabled else 24 * 60 * 60),
         effect_safety=spec.safety,
-        configuration_keys=frozenset(),
+        configuration_keys=(
+            frozenset(
+                {
+                    "AUDIO_SUBS_DEEP_SCAN_ENABLED",
+                    "AUDIO_SUBS_DEEP_SCAN_HOUR",
+                    "AUDIO_SUBS_DEEP_SCAN_BATCH",
+                }
+            )
+            if spec.job_type == "audio_subs_deep_scan"
+            else frozenset()
+        ),
         subject_builder=_subject_builder(spec.job_type, spec.subject_kinds),
         progress_policy=_progress(spec),
         retry_policy=retry,
@@ -264,4 +274,3 @@ def build_job_definition_registry() -> JobDefinitionRegistry:
 
 
 JOB_DEFINITION_REGISTRY = build_job_definition_registry()
-

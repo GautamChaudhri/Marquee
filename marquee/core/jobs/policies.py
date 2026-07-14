@@ -109,6 +109,12 @@ def allowed_actions(policy: ActionPolicy, context: ActionContext) -> frozenset[J
 class ParentAggregationPolicy:
     fixed_children: bool
     require_sealed: bool = True
+    retry_children: str = "failed"
+    pause_children: bool = False
+
+    def __post_init__(self) -> None:
+        if self.retry_children not in {"all", "failed"}:
+            raise ValueError("parent retry scope must be all or failed")
 
 
 @dataclass(frozen=True)
@@ -160,4 +166,3 @@ def aggregate_parent(
         total=total,
         **counts,
     )
-

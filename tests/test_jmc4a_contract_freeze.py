@@ -1,0 +1,121 @@
+"""Machine-checkable A0 inventory for the exact JMC4A plan base."""
+
+from __future__ import annotations
+
+import ast
+import json
+from collections import Counter
+from pathlib import Path
+from typing import Any
+
+from marquee.api.routes import jobs as job_routes
+from marquee.core.jobs.delivery import EXECUTION_HANDLERS
+from marquee.core.jobs.manifest import JOB_DEFINITION_REGISTRY
+from marquee.core.jobs.pgqueuer_gateway import PgQueuerGateway
+from marquee.core.jobs.pgqueuer_worker import entrypoint_concurrency_limits
+from marquee.models import Job, JobAttempt, JobDispatch, JobEvent
+
+ROOT = Path(__file__).parents[1]
+FREEZE_PATH = ROOT / "tests/fixtures/jmc4a/a0_contract_freeze.json"
+
+
+def _freeze() -> dict[str, Any]:
+    return json.loads(FREEZE_PATH.read_text())
+
+
+def _top_level_functions(relative_path: str) -> list[str]:
+    tree = ast.parse((ROOT / relative_path).read_text())
+    return sorted(
+        node.name for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    )
+
+
+def _decorated_nested_functions(relative_path: str, decorator_name: str) -> list[str]:
+    tree = ast.parse((ROOT / relative_path).read_text())
+    found = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for decorator in node.decorator_list:
+            call = decorator if isinstance(decorator, ast.Call) else None
+            target = call.func if call is not None else decorator
+            if isinstance(target, ast.Attribute) and target.attr == decorator_name:
+                found.append(node.name)
+    return sorted(found)
+
+
+def _legacy_producer_calls() -> dict[str, int]:
+    calls: Counter[str] = Counter()
+    for path in sorted((ROOT / "marquee").rglob("*.py")):
+        tree = ast.parse(path.read_text())
+        parents: dict[ast.AST, ast.AST] = {}
+        for parent in ast.walk(tree):
+            for child in ast.iter_child_nodes(parent):
+                parents[child] = parent
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+                continue
+            owner = node.func.value
+            if not isinstance(owner, ast.Name) or owner.id not in {
+                "job_manager",
+                "media_job_manager",
+            }:
+                continue
+            enclosing = parents.get(node)
+            while enclosing is not None and not isinstance(
+                enclosing, (ast.FunctionDef, ast.AsyncFunctionDef)
+            ):
+                enclosing = parents.get(enclosing)
+            function = enclosing.name if enclosing is not None else "<module>"
+            relative = path.relative_to(ROOT).as_posix()
+            calls[f"{relative}:{function}:{owner.id}.{node.func.attr}"] += 1
+    return dict(sorted(calls.items()))
+
+
+def test_canonical_schema_registry_and_execution_inventory_is_frozen() -> None:
+    frozen = _freeze()
+    models = (Job, JobDispatch, JobAttempt, JobEvent)
+
+    assert {model.__tablename__: list(model.__table__.columns.keys()) for model in models} == frozen[
+        "models"
+    ]
+    assert len(JOB_DEFINITION_REGISTRY) == frozen["registry"]["definition_count"]
+    assert sorted(JOB_DEFINITION_REGISTRY.enabled_types) == frozen["registry"]["enabled_types"]
+    assert sorted(EXECUTION_HANDLERS) == frozen["execution_handlers"]
+
+
+def test_gateway_commands_parent_worker_scheduler_and_routes_are_frozen() -> None:
+    frozen = _freeze()
+    gateway_methods = sorted(
+        name
+        for name, value in PgQueuerGateway.__dict__.items()
+        if callable(value) and not name.startswith("_")
+    )
+    routes = sorted(
+        f"{','.join(sorted(route.methods or set()))} {route.path} {route.name}"
+        for route in job_routes.router.routes
+    )
+
+    assert gateway_methods == frozen["gateway_methods"]
+    assert _top_level_functions("marquee/core/jobs/commands.py") == frozen["command_functions"]
+    assert _top_level_functions("marquee/core/jobs/parent_progress.py") == frozen[
+        "parent_progress_functions"
+    ]
+    assert frozen["worker_entrypoints"] == ["control"]
+    assert _decorated_nested_functions("marquee/core/jobs/pgqueuer_worker.py", "entrypoint") == []
+    assert sorted(entrypoint_concurrency_limits()) == [
+        "control",
+        "cpu",
+        "gpu",
+        "maintenance",
+        "media_read",
+        "network",
+    ]
+    assert _decorated_nested_functions(
+        "marquee/core/jobs/pgqueuer_scheduler.py", "schedule"
+    ) == frozen["scheduler_callbacks"]
+    assert routes == sorted(frozen["job_routes"])
+
+
+def test_every_legacy_producer_call_is_frozen() -> None:
+    assert _legacy_producer_calls() == _freeze()["legacy_producer_calls"]

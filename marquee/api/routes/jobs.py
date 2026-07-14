@@ -98,6 +98,7 @@ from marquee.models import (
     Job,
     JobArtifact,
     JobAttempt,
+    JobBatch,
     JobEvent,
     JobLog,
     MediaFile,
@@ -1195,6 +1196,57 @@ class ChildListResponse(BaseModel):
     items: list[JobRow]
     next_cursor: str | None
     limit: int
+
+
+class BatchSummaryResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    job_id: str
+    mode: Literal["fixed", "dynamic"]
+    sealed: bool
+    sealed_at: datetime | None
+    sealed_child_total: int | None
+    created_total: int
+    terminal_total: int
+    outcomes: dict[str, int]
+    failure_summary: dict | None
+    attention_summary: dict | None
+    projection_sequence: int
+    updated_at: datetime
+
+
+@router.get("/{job_id}/batch", response_model=BatchSummaryResponse)
+async def get_job_batch(
+    job_id: str,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    await _load_job(db, job_id)
+    batch = await db.get(JobBatch, job_id)
+    if batch is None:
+        raise HTTPException(404, "Job is not a canonical batch parent")
+    return BatchSummaryResponse(
+        job_id=batch.parent_job_id,
+        mode=batch.mode,
+        sealed=batch.sealed,
+        sealed_at=batch.sealed_at,
+        sealed_child_total=batch.sealed_child_total,
+        created_total=batch.created_total,
+        terminal_total=batch.terminal_total,
+        outcomes={
+            "succeeded": batch.succeeded_total,
+            "partially_succeeded": batch.partially_succeeded_total,
+            "no_change": batch.no_change_total,
+            "failed": batch.failed_total,
+            "cancelled": batch.cancelled_total,
+            "superseded": batch.superseded_total,
+            "dead_letter": batch.dead_letter_total,
+            "unsafe": batch.unsafe_total,
+        },
+        failure_summary=batch.failure_summary,
+        attention_summary=batch.attention_summary,
+        projection_sequence=batch.projection_sequence,
+        updated_at=batch.updated_at,
+    )
 
 
 @router.get("/{job_id}/children", response_model=ChildListResponse)

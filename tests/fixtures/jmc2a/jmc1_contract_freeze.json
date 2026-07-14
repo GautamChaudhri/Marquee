@@ -10,6 +10,7 @@
     "episodes",
     "job_artifacts",
     "job_attempts",
+    "job_batches",
     "job_dispatches",
     "job_events",
     "job_logs",

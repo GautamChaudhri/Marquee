@@ -23,7 +23,7 @@ from marquee.core.jobs.pgqueuer_gateway import (
     pgqueuer_gateway,
 )
 from marquee.core.jobs.policies import ActionContext, allowed_actions
-from marquee.models.job import Job, JobDispatch
+from marquee.models.job import Job, JobBatch, JobDispatch
 
 
 @dataclass(frozen=True)
@@ -92,11 +92,14 @@ def _available_actions(job: Job) -> frozenset[JobAction]:
         desired_state=job.desired_state,
         outcome=job.outcome,
         active_attempt=job.current_attempt_id is not None,
-        retryable=definition.enabled,
+        retryable=definition.enabled or definition.parent_policy is not None,
         logs_available=False,
         artifacts_available=False,
     )
-    return allowed_actions(definition.action_policy, context)
+    actions = allowed_actions(definition.action_policy, context)
+    if definition.parent_policy is not None and not definition.parent_policy.pause_children:
+        actions = actions.difference({JobAction.PAUSE, JobAction.RESUME})
+    return frozenset(actions)
 
 
 def _require_action(job: Job, action: JobAction) -> None:
@@ -116,18 +119,40 @@ async def cancel(
         job = await _lock_job(session, job_id)
         _check_expected(job, expected_fence_token)
         _require_action(job, JobAction.CANCEL)
-        if job.pgq_job_id is None:
+        batch = await session.get(JobBatch, job.id)
+        definition = JOB_DEFINITION_REGISTRY.get(job.type)
+        if batch is not None:
+            from marquee.core.jobs.batches import cancel_batch_descendants
+
+            job.fence_token += 1
+            try:
+                await cancel_batch_descendants(session, parent=job)
+            except (ValueError, RuntimeError) as exc:
+                raise _conflict(
+                    job, "action_not_allowed", str(exc), action="cancel"
+                ) from exc
+            await job_event_writer.append(
+                session,
+                job_id=job.id,
+                event_key=(
+                    "job.cancelled" if job.phase == "terminal" else "job.stopping"
+                ),
+                state=job.outcome or job.phase,
+                message="Batch parent cancellation requested",
+            )
+            await session.flush()
+        elif job.pgq_job_id is None:
             raise _conflict(
                 job,
                 "unmigrated_job_command",
                 "This job has no canonical transport ticket to cancel.",
             )
-        definition = JOB_DEFINITION_REGISTRY.get(job.type)
-        job.fence_token += 1
-        try:
-            await pgqueuer_gateway.cancel_known_ticket(session, job_id=job.id)
-        except PgQueuerGatewayError as exc:
-            raise _conflict(job, "action_not_allowed", str(exc), action="cancel") from exc
+        else:
+            job.fence_token += 1
+            try:
+                await pgqueuer_gateway.cancel_known_ticket(session, job_id=job.id)
+            except PgQueuerGatewayError as exc:
+                raise _conflict(job, "action_not_allowed", str(exc), action="cancel") from exc
     await session.refresh(job)
     return JobControlResult(JobAction.CANCEL, job, definition.execution_class.value)
 
@@ -178,19 +203,36 @@ async def change_priority(
             )
         definition = JOB_DEFINITION_REGISTRY.get(job.type)
         job.fence_token += 1
-        try:
-            await pgqueuer_gateway.reprioritize_known_ticket(
-                session, job_id=job.id, priority=priority
-            )
-        except PgQueuerGatewayError as exc:
-            raise _conflict(
-                job,
-                "action_not_allowed",
-                str(exc),
-                action=JobAction.CHANGE_PRIORITY.value,
-                execution_class=definition.execution_class.value,
-            ) from exc
-        if job.pgq_job_id is None:
+        batch = await session.get(JobBatch, job.id)
+        if batch is not None:
+            from marquee.core.jobs.batches import reprioritize_batch_descendants
+
+            try:
+                await reprioritize_batch_descendants(
+                    session, parent=job, priority=priority
+                )
+            except (ValueError, RuntimeError, PgQueuerGatewayError) as exc:
+                raise _conflict(
+                    job,
+                    "action_not_allowed",
+                    str(exc),
+                    action=JobAction.CHANGE_PRIORITY.value,
+                    execution_class=definition.execution_class.value,
+                ) from exc
+        else:
+            try:
+                await pgqueuer_gateway.reprioritize_known_ticket(
+                    session, job_id=job.id, priority=priority
+                )
+            except PgQueuerGatewayError as exc:
+                raise _conflict(
+                    job,
+                    "action_not_allowed",
+                    str(exc),
+                    action=JobAction.CHANGE_PRIORITY.value,
+                    execution_class=definition.execution_class.value,
+                ) from exc
+        if job.pgq_job_id is None and batch is None:
             await job_event_writer.append(
                 session,
                 job_id=job.id,
@@ -209,84 +251,118 @@ async def change_priority(
 async def retry(
     session: AsyncSession, *, job_id: str, expected_fence_token: int
 ) -> JobControlResult:
+    batch_result: JobControlResult | None = None
     async with session.begin():
         original = await _lock_job(session, job_id)
         _check_expected(original, expected_fence_token)
         _require_action(original, JobAction.RETRY)
         definition = JOB_DEFINITION_REGISTRY.get(original.type)
-        if original.type != "system_noop":
+        batch = await session.get(JobBatch, original.id)
+        if batch is not None:
+            from marquee.core.jobs.batches import retry_batch
+
+            try:
+                successor = await retry_batch(
+                    session,
+                    original=original,
+                    expected_fence_token=expected_fence_token,
+                )
+            except (ValueError, RuntimeError) as exc:
+                raise _conflict(
+                    original, "action_not_allowed", str(exc), action="retry"
+                ) from exc
+            replacement = await session.get(Job, successor.job_id)
+            if replacement is None:
+                raise _conflict(
+                    original,
+                    "action_not_allowed",
+                    "Batch retry successor disappeared.",
+                    action="retry",
+                )
+            original.fence_token += 1
+            await session.flush()
+            batch_result = JobControlResult(
+                JobAction.RETRY,
+                replacement,
+                definition.execution_class.value,
+                original_job_id=original.id,
+                replacement_job_id=replacement.id,
+            )
+        elif original.type != "system_noop":
             raise _conflict(
                 original,
                 "unmigrated_job_command",
                 "Retry dispatch is not enabled for this job definition.",
             )
-
-        request = definition.request.validate(
-            original.request, version=original.payload_version
-        ).model_dump(mode="json", exclude_none=True)
-        now = datetime.now(UTC)
-        replacement_id = uuid4().hex
-        generation = 1
-        priority = original.priority
-        dedupe_key = f"marquee:{replacement_id}:{generation}"
-        configuration = configuration_provider.snapshot_for(definition.configuration_keys)
-        replacement = Job(
-            id=replacement_id,
-            type=original.type,
-            payload_version=PAYLOAD_VERSION,
-            request=request,
-            phase="queued",
-            desired_state="run",
-            dispatch_generation=generation,
-            priority=priority,
-            eligible_at=now,
-            idempotency_key=f"system_noop:retry-{original.id}-{expected_fence_token}",
-            configuration_version=configuration.version,
-            configuration_snapshot=configuration.values,
-            parent_id=original.parent_id,
-            root_id=original.root_id,
-            correlation_id=original.correlation_id,
-            retry_of_job_id=original.id,
-            trigger_kind=original.trigger_kind,
-            initiator=original.initiator,
-            feature_area=original.feature_area,
-            presentation_family=original.presentation_family,
-            subject_kind=original.subject_kind,
-            subject_reference=original.subject_reference,
-            subject_snapshot=original.subject_snapshot,
-            queued_at=now,
-        )
-        dispatch = JobDispatch(
-            job_id=replacement_id,
-            generation=generation,
-            pgq_job_id=None,
-            entrypoint=ENTRYPOINT_CONTROL,
-            dedupe_key=dedupe_key,
-            priority=priority,
-            eligible_at=now,
-            disposition="active",
-        )
-        session.add_all([replacement, dispatch])
-        await job_event_writer.append(
-            session,
-            job_id=replacement_id,
-            event_key="job.retried",
-            state="queued",
-            message="Retry successor queued",
-            detail={"original_job_id": original.id},
-        )
-        await pgqueuer_gateway.enqueue(
-            session,
-            job_id=replacement_id,
-            entrypoint=ENTRYPOINT_CONTROL,
-            payload_version=PAYLOAD_VERSION,
-            dispatch_generation=generation,
-            priority=priority,
-            execute_after=None,
-            dedupe_key=dedupe_key,
-        )
-        original.fence_token += 1
+        else:
+            request = definition.request.validate(
+                original.request, version=original.payload_version
+            ).model_dump(mode="json", exclude_none=True)
+            now = datetime.now(UTC)
+            replacement_id = uuid4().hex
+            generation = 1
+            priority = original.priority
+            dedupe_key = f"marquee:{replacement_id}:{generation}"
+            configuration = configuration_provider.snapshot_for(definition.configuration_keys)
+            replacement = Job(
+                id=replacement_id,
+                type=original.type,
+                payload_version=PAYLOAD_VERSION,
+                request=request,
+                phase="queued",
+                desired_state="run",
+                dispatch_generation=generation,
+                priority=priority,
+                eligible_at=now,
+                idempotency_key=f"system_noop:retry-{original.id}-{expected_fence_token}",
+                configuration_version=configuration.version,
+                configuration_snapshot=configuration.values,
+                parent_id=original.parent_id,
+                root_id=original.root_id,
+                correlation_id=original.correlation_id,
+                retry_of_job_id=original.id,
+                trigger_kind=original.trigger_kind,
+                initiator=original.initiator,
+                feature_area=original.feature_area,
+                presentation_family=original.presentation_family,
+                subject_kind=original.subject_kind,
+                subject_reference=original.subject_reference,
+                subject_snapshot=original.subject_snapshot,
+                queued_at=now,
+            )
+            dispatch = JobDispatch(
+                job_id=replacement_id,
+                generation=generation,
+                pgq_job_id=None,
+                entrypoint=ENTRYPOINT_CONTROL,
+                dedupe_key=dedupe_key,
+                priority=priority,
+                eligible_at=now,
+                disposition="active",
+            )
+            session.add_all([replacement, dispatch])
+            await job_event_writer.append(
+                session,
+                job_id=replacement_id,
+                event_key="job.retried",
+                state="queued",
+                message="Retry successor queued",
+                detail={"original_job_id": original.id},
+            )
+            await pgqueuer_gateway.enqueue(
+                session,
+                job_id=replacement_id,
+                entrypoint=ENTRYPOINT_CONTROL,
+                payload_version=PAYLOAD_VERSION,
+                dispatch_generation=generation,
+                priority=priority,
+                execute_after=None,
+                dedupe_key=dedupe_key,
+            )
+            original.fence_token += 1
     await session.refresh(replacement)
+    if batch_result is not None:
+        return batch_result
     return JobControlResult(
         JobAction.RETRY,
         replacement,

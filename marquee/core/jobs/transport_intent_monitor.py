@@ -89,6 +89,9 @@ class TransportIntentMonitor:
                             state="cancelled",
                             message="Committed cancellation reconciled with transport",
                         )
+                        from marquee.core.jobs.batches import project_terminal_child
+
+                        await project_terminal_child(session, job)
                         counts["cancelled"] += 1
                     else:
                         job.attention = {

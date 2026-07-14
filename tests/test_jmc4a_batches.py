@@ -1,0 +1,320 @@
+"""A2 fixed canonical batch projection, atomicity, and bounded API contracts."""
+
+from __future__ import annotations
+
+import json
+from dataclasses import replace
+
+import pytest
+import pytest_asyncio
+from httpx import ASGITransport, AsyncClient
+from pgqueuer import Queries
+from sqlalchemy import func, inspect, select, text
+
+import marquee.core.jobs.batches as batch_module
+import marquee.core.jobs.pgqueuer_gateway as gateway_module
+import marquee.core.jobs.submission as submission_module
+from marquee.core.jobs.batches import BatchScope, create_fixed_batch
+from marquee.core.jobs.contracts import TriggerKind
+from marquee.core.jobs.definitions import JobDefinitionRegistry
+from marquee.core.jobs.manifest import JOB_DEFINITION_REGISTRY
+from marquee.core.jobs.submission import (
+    SubjectLocator,
+    SubmissionIntent,
+    SubmissionValidationError,
+)
+from marquee.database import _get_engine
+from marquee.main import app
+from marquee.models import Job, JobAttempt, JobBatch, JobDispatch, JobEvent
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def installed_pgqueuer(db) -> Queries:
+    async with _get_engine().connect() as connection:
+        raw = await connection.get_raw_connection()
+        queries = Queries.from_asyncpg_connection(raw.driver_connection)
+        await queries.install()
+        try:
+            yield queries
+        finally:
+            await db.rollback()
+            await queries.uninstall()
+
+
+@pytest_asyncio.fixture
+async def client():
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as value:
+        yield value
+
+
+def _batch_registry() -> JobDefinitionRegistry:
+    child = replace(
+        JOB_DEFINITION_REGISTRY.get("system_noop"),
+        trigger_kinds=frozenset({TriggerKind.BATCH}),
+    )
+    parent = replace(
+        JOB_DEFINITION_REGISTRY.get("subtitle_generate_batch"),
+        child_job_types=frozenset({"system_noop"}),
+    )
+    return JobDefinitionRegistry((child, parent))
+
+
+@pytest.fixture
+def batch_registry(monkeypatch) -> JobDefinitionRegistry:
+    registry = _batch_registry()
+    monkeypatch.setattr(batch_module, "JOB_DEFINITION_REGISTRY", registry)
+    monkeypatch.setattr(submission_module, "JOB_DEFINITION_REGISTRY", registry)
+    monkeypatch.setattr(gateway_module, "JOB_DEFINITION_REGISTRY", registry)
+    return registry
+
+
+def _children(prefix: str, count: int = 3) -> tuple[SubmissionIntent, ...]:
+    return tuple(
+        SubmissionIntent(
+            job_type="system_noop",
+            request={"echo": {"ordinal": index}},
+            subject=SubjectLocator(kind="system_work", reference="system_noop"),
+            trigger=TriggerKind.BATCH,
+            initiator=None,
+            idempotency_key=f"system_noop:{prefix}-{index}",
+            priority=40 + index,
+        )
+        for index in range(count)
+    )
+
+
+async def _create(db, key: str, children: tuple[SubmissionIntent, ...]):
+    return await create_fixed_batch(
+        db,
+        parent_job_type="subtitle_generate_batch",
+        parent_request={"scope": "test"},
+        scope=BatchScope(
+            reference=f"scope:{key.rsplit(':', 1)[-1]}",
+            display_name="A2 fixed batch",
+            summary="Three deterministic no-op children",
+        ),
+        trigger=TriggerKind.BATCH,
+        initiator=None,
+        idempotency_key=key,
+        children=children,
+    )
+
+
+@pytest.mark.asyncio
+async def test_fixed_batch_is_atomic_ticketless_parent_with_ordered_children(
+    db, client, batch_registry
+) -> None:
+    observer = await _get_engine().connect()
+    try:
+        transaction = await db.begin()
+        result = await _create(
+            db,
+            "subtitle_generate_batch:fixed-success",
+            _children("fixed-success"),
+        )
+        parent = await db.get(Job, result.parent.job_id)
+        projection = await db.get(JobBatch, result.parent.job_id)
+        children = [await db.get(Job, child.job_id) for child in result.children]
+
+        assert result.parent.disposition == "created"
+        assert result.sealed_child_total == 3
+        assert parent is not None and parent.phase == "queued"
+        assert parent.pgq_job_id is None and parent.dispatch_generation == 0
+        assert parent.current_attempt_id is None
+        assert projection is not None
+        assert (projection.mode, projection.sealed, projection.sealed_child_total) == (
+            "fixed",
+            True,
+            3,
+        )
+        assert projection.created_total == 3
+        assert projection.terminal_total == 0
+        assert all(child is not None and child.pgq_job_id is not None for child in children)
+        assert [child.request["echo"]["ordinal"] for child in children] == [0, 1, 2]
+        assert all(
+            child.parent_id == parent.id
+            and child.root_id == parent.id
+            and child.correlation_id == parent.id
+            for child in children
+        )
+        assert await db.scalar(
+            select(func.count(JobDispatch.id)).where(JobDispatch.job_id == parent.id)
+        ) == 0
+        assert await db.scalar(
+            select(func.count(JobAttempt.id)).where(JobAttempt.job_id == parent.id)
+        ) == 0
+        assert await observer.scalar(
+            text("SELECT count(*) FROM jobs WHERE id = :parent"), {"parent": parent.id}
+        ) == 0
+        await transaction.commit()
+
+        batch_response = await client.get(f"/api/jobs/{parent.id}/batch")
+        assert batch_response.status_code == 200
+        assert batch_response.json() == {
+            "job_id": parent.id,
+            "mode": "fixed",
+            "sealed": True,
+            "sealed_at": projection.sealed_at.isoformat().replace("+00:00", "Z"),
+            "sealed_child_total": 3,
+            "created_total": 3,
+            "terminal_total": 0,
+            "outcomes": {
+                "succeeded": 0,
+                "partially_succeeded": 0,
+                "no_change": 0,
+                "failed": 0,
+                "cancelled": 0,
+                "superseded": 0,
+                "dead_letter": 0,
+                "unsafe": 0,
+            },
+            "failure_summary": None,
+            "attention_summary": None,
+            "projection_sequence": 1,
+            "updated_at": projection.updated_at.isoformat().replace("+00:00", "Z"),
+        }
+        first_page = await client.get(f"/api/jobs/{parent.id}/children?limit=2")
+        assert first_page.status_code == 200
+        assert len(first_page.json()["items"]) == 2
+        assert first_page.json()["next_cursor"] is not None
+        assert all("pgq_job_id" not in item for item in first_page.json()["items"])
+    finally:
+        await observer.close()
+
+
+@pytest.mark.asyncio
+async def test_empty_fixed_batch_is_terminal_no_change_and_transport_free(
+    db, client, batch_registry
+) -> None:
+    async with db.begin():
+        created = await _create(db, "subtitle_generate_batch:empty", ())
+    parent = await db.get(Job, created.parent.job_id)
+    projection = await db.get(JobBatch, created.parent.job_id)
+
+    assert parent is not None
+    assert (parent.phase, parent.outcome, parent.pgq_job_id) == (
+        "terminal",
+        "no_change",
+        None,
+    )
+    assert parent.terminal_at is not None
+    assert parent.attention["message"] == "No matching work was found."
+    assert projection is not None and projection.sealed_child_total == 0
+    assert await db.scalar(text("SELECT count(*) FROM pgqueuer")) == 0
+    assert await db.scalar(select(func.count(JobDispatch.id))) == 0
+    assert await db.scalar(select(func.count(JobAttempt.id))) == 0
+
+    response = await client.get(f"/api/jobs/{parent.id}/batch")
+    assert response.status_code == 200
+    assert response.json()["sealed_child_total"] == 0
+
+
+@pytest.mark.asyncio
+async def test_fixed_batch_exact_retry_reuses_and_semantic_change_conflicts(
+    db, batch_registry
+) -> None:
+    children = _children("fixed-reuse", 2)
+    async with db.begin():
+        created = await _create(db, "subtitle_generate_batch:reuse", children)
+    async with db.begin():
+        reused = await _create(db, "subtitle_generate_batch:reuse", children)
+    assert reused.parent.job_id == created.parent.job_id
+    assert reused.parent.disposition == "reused"
+    assert {child.job_id for child in reused.children} == {
+        child.job_id for child in created.children
+    }
+    assert await db.scalar(select(func.count(JobBatch.parent_job_id))) == 1
+    assert await db.scalar(text("SELECT count(*) FROM pgqueuer")) == 2
+    await db.rollback()
+
+    changed = list(children)
+    changed[0] = replace(changed[0], request={"echo": "different"})
+    with pytest.raises(SubmissionValidationError, match="different child intent"):
+        async with db.begin():
+            await _create(
+                db,
+                "subtitle_generate_batch:reuse",
+                tuple(changed),
+            )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_point", ["parent_event", "after_bulk"])
+async def test_fixed_batch_failure_rolls_back_parent_projection_children_and_tickets(
+    db, batch_registry, monkeypatch, failure_point
+) -> None:
+    if failure_point == "parent_event":
+        original = batch_module.job_event_writer.append
+
+        async def fail_parent_event(*args, **kwargs):
+            await original(*args, **kwargs)
+            raise RuntimeError("parent event failure")
+
+        monkeypatch.setattr(batch_module.job_event_writer, "append", fail_parent_event)
+    else:
+        original = batch_module.submit_jobs
+
+        async def fail_after_bulk(*args, **kwargs):
+            await original(*args, **kwargs)
+            raise RuntimeError("after bulk failure")
+
+        monkeypatch.setattr(batch_module, "submit_jobs", fail_after_bulk)
+
+    with pytest.raises(RuntimeError, match="failure"):
+        async with db.begin():
+            await _create(
+                db,
+                f"subtitle_generate_batch:rollback-{failure_point}",
+                _children(f"rollback-{failure_point}", 2),
+            )
+    assert await db.scalar(select(func.count(Job.id))) == 0
+    assert await db.scalar(select(func.count(JobBatch.parent_job_id))) == 0
+    assert await db.scalar(select(func.count(JobDispatch.id))) == 0
+    assert await db.scalar(select(func.count(JobEvent.id))) == 0
+    assert await db.scalar(text("SELECT count(*) FROM pgqueuer")) == 0
+    assert await db.scalar(text("SELECT count(*) FROM pgqueuer_log")) == 0
+
+
+@pytest.mark.asyncio
+async def test_job_batch_schema_is_strict_and_contains_no_transport_authority(db) -> None:
+    connection = await db.connection()
+
+    def inspect_table(sync_connection):
+        inspector = inspect(sync_connection)
+        return (
+            inspector.get_columns("job_batches"),
+            inspector.get_check_constraints("job_batches"),
+            inspector.get_foreign_keys("job_batches"),
+            inspector.get_pk_constraint("job_batches"),
+        )
+
+    columns, checks, foreign_keys, primary_key = await connection.run_sync(inspect_table)
+    names = [column["name"] for column in columns]
+    assert names == list(JobBatch.__table__.columns.keys())
+    assert not {
+        "pgq_job_id",
+        "claim",
+        "lease",
+        "heartbeat",
+        "retry_at",
+        "schedule_id",
+        "worker_id",
+    } & set(names)
+    assert {check["name"] for check in checks} == {
+        constraint.name
+        for constraint in JobBatch.__table__.constraints
+        if constraint.__class__.__name__ == "CheckConstraint"
+    }
+    assert primary_key["constrained_columns"] == ["parent_job_id"]
+    assert foreign_keys[0]["referred_table"] == "jobs"
+    assert foreign_keys[0]["options"]["ondelete"] == "CASCADE"
+
+
+def test_batch_projection_model_has_bounded_json_and_counter_surface() -> None:
+    columns = JobBatch.__table__.columns
+    assert columns.failure_summary.type.python_type is dict
+    assert columns.attention_summary.type.python_type is dict
+    assert json.loads('{"projection":"semantic-only"}') == {
+        "projection": "semantic-only"
+    }

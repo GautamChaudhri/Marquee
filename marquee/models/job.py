@@ -14,6 +14,7 @@ from datetime import datetime
 from sqlalchemy import (
     JSON,
     BigInteger,
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -61,6 +62,7 @@ DISPATCH_DISPOSITIONS = (
 )
 ATTEMPT_PHASES = ("admitted", "running", "stopping", "finished")
 ATTEMPT_OUTCOMES = ("succeeded", "failed", "cancelled", "interrupted", "retrying")
+BATCH_MODES = ("fixed", "dynamic")
 
 
 def _in_clause(column: str, values: tuple[str, ...]) -> str:
@@ -232,6 +234,77 @@ class JobDispatch(Base):
     # Set only when Marquee legitimately observes the delivery being picked.
     picked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class JobBatch(Base):
+    """Transport-free coordination projection for one canonical parent job."""
+
+    __tablename__ = "job_batches"
+    __table_args__ = (
+        CheckConstraint(_in_clause("mode", BATCH_MODES), name="ck_job_batches_mode"),
+        CheckConstraint("generation >= 1", name="ck_job_batches_generation"),
+        CheckConstraint(
+            "created_total >= 0 AND terminal_total >= 0 "
+            "AND terminal_total <= created_total",
+            name="ck_job_batches_totals",
+        ),
+        CheckConstraint(
+            "succeeded_total >= 0 AND partially_succeeded_total >= 0 "
+            "AND no_change_total >= 0 AND failed_total >= 0 "
+            "AND cancelled_total >= 0 AND superseded_total >= 0 "
+            "AND dead_letter_total >= 0 AND unsafe_total >= 0",
+            name="ck_job_batches_outcomes_nonnegative",
+        ),
+        CheckConstraint(
+            "terminal_total = succeeded_total + partially_succeeded_total "
+            "+ no_change_total + failed_total + cancelled_total "
+            "+ superseded_total + dead_letter_total + unsafe_total",
+            name="ck_job_batches_terminal_outcome_sum",
+        ),
+        CheckConstraint(
+            "(sealed AND sealed_at IS NOT NULL AND sealed_child_total IS NOT NULL) "
+            "OR (NOT sealed AND sealed_at IS NULL AND sealed_child_total IS NULL)",
+            name="ck_job_batches_seal_consistency",
+        ),
+        CheckConstraint(
+            "sealed_child_total IS NULL OR sealed_child_total = created_total",
+            name="ck_job_batches_sealed_total",
+        ),
+        CheckConstraint("mode <> 'fixed' OR sealed", name="ck_job_batches_fixed_sealed"),
+        CheckConstraint("projection_sequence >= 0", name="ck_job_batches_projection_sequence"),
+    )
+
+    parent_job_id: Mapped[str] = mapped_column(
+        ForeignKey("jobs.id", ondelete="CASCADE"), primary_key=True
+    )
+    mode: Mapped[str] = mapped_column(String(12), nullable=False)
+    generation: Mapped[int] = mapped_column(BigInteger, default=1, server_default="1", nullable=False)
+    sealed: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", nullable=False)
+    sealed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    sealed_child_total: Mapped[int | None] = mapped_column(Integer)
+    created_total: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    terminal_total: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    succeeded_total: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    partially_succeeded_total: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
+    no_change_total: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    failed_total: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    cancelled_total: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    superseded_total: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    dead_letter_total: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    unsafe_total: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    projection_sequence: Mapped[int] = mapped_column(
+        BigInteger, default=0, server_default="0", nullable=False
+    )
+    failure_summary: Mapped[dict | None] = mapped_column(JSON)
+    attention_summary: Mapped[dict | None] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
 
 
 class SchemaContract(Base):
