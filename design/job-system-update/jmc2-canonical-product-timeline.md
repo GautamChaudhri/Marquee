@@ -340,3 +340,166 @@ Shared implementer log for JMC2A → JMC2B → JMC2C. Append after every phase c
 - Live database: the operator applies `0002_jmc2a` (or performs the sanctioned
   development reset) manually once JMC2A completes; no live migration is run by the
   implementer.
+
+## JMC2B Phase B0 — in progress (2026-07-13)
+
+- Branch/HEAD: `job-manager` at `2d6f678` (`finish versioned configuration`). Configured
+  Git author remains Gautam Chaudhri `<gautam.chaudhri@gmail.com>`.
+- Tracked working tree was clean when B0 resumed. Three unrelated untracked JMC3 plan files
+  are preserved and excluded from JMC2B commits.
+- Verified JMC2A commits: `10cb470`, `3659626`, `6cc38dc`, `f2662b6`, `e49bd07`, and
+  `2d6f678`. Sole Alembic head is `0002_jmc2a`; offline upgrade SQL remains 1,337 lines.
+- Recreated an owned disposable PostgreSQL 18.3 cluster under `/tmp` and ran the guarded
+  reset. Contract fingerprints exactly match JMC2A: Marquee
+  `651ba3f0efe8fffb6a262b95962d9a99b9568609b2bd52936cf34bfac04aba89`; PgQueuer
+  `19377622f52c906a7a5cb6e68b4db6d30e7cc9534aac933c156c33666f4eb21a`
+  (`1.1.1`, durable). The temporary server was stopped after verification.
+- Baseline: full pytest reproduced **808 passed, 23 retained failures, 2 warnings**; no new
+  failure or error. `ruff check marquee tests` passed. Frontend check reported 0 errors and
+  the same 16 warnings in 8 files; lint and build passed.
+- Static/runtime inspection confirms the canonical schema has no legacy lifecycle table,
+  custom claim/lease/heartbeat authority, or executable legacy writer. PgQueuer worker and
+  scheduler roles remain separate. Only `control/system_noop` is dispatch-enabled.
+- Serena regenerated 30 decorated handlers, 12 media operations, route construction sites,
+  schedule/healing producers, retry linkage, and six parent-only types. The inventory has no
+  type drift from JMC2B section 6. ByteRover confirms B0 is the next authorized phase.
+- Current phase: B0 inventory/interface contract freeze in progress. Exact next steps:
+  commit machine-checkable inventories and stable taxonomy/registry interface tests, run
+  focused/full/Ruff gates, then begin B1 strict document envelopes and registry core.
+- Deviation: the `brv` CLI is absent, but the required ByteRover MCP query/curate interface
+  is available and used. Serena MCP is available and used.
+
+## JMC2B Phase B0 result
+
+- Added stable serialized execution-class, feature-area, trigger, effect-safety, progress,
+  attention, action, and migration-state taxonomies plus the bounded duplicate-safe
+  `JobDefinitionRegistry` interface.
+- Added a source-derived inventory freeze covering **30 handlers**, **12 media operations**,
+  **29 route-constructed types**, **6 parent-only types**, healing/schedule producers, and
+  the reserved disabled webhook type. The complete built-in union is **48 types** and has no
+  difference from JMC2B section 6.
+- Focused inventory/interface suite: **3 passed**. Full suite: **811 passed, 23 retained
+  failures, 2 warnings** in 47.72s. The exact JMC2A retained failure set is unchanged; B0
+  added no failure, error, skip, or xfail. Ruff passed.
+- Schema/frontend gates are unchanged from the verified B0 baseline; B0 changes no schema or
+  frontend contract. Only `system_noop` remains dispatch-enabled.
+- Phase B0 commit: `32eb5a8` (`freeze job definition inventory`).
+- Current phase: B0 complete; B1 is next. Exact next steps: implement strict current-version
+  request/result/error models and typed unsupported-version errors, then expand the registry
+  to immutable complete definitions with startup validation while retaining fail-closed
+  dispatch.
+- Pending operator work remains unchanged from JMC2A/JMC1.
+
+## JMC2B Phase B1 result
+
+- Added strict frozen request/result/error model foundations with `extra=forbid`, typed
+  permanent unsupported-version errors, immutable version/model maps, and an explicit
+  upcaster chain. The only upcaster fixture performs a real `name` to `display_name`
+  conversion; no identity chain exists.
+- Added bounded safe error summaries/remediation/diagnostics. Secret-like keys, unconfined
+  absolute paths, extra fields, oversized content, and unsupported future versions fail
+  validation.
+- Expanded `JobDefinition` and `JobDefinitionRegistry` into immutable policy containers with
+  bounded lookup/iteration, duplicate/type/presenter/config validation, exact coverage
+  checks, and fail-closed dispatch lookup. Registry validation prohibits dispatch for every
+  type except `control/system_noop`.
+- Removed the decorator's independent instant/runtime policy maps and their arguments.
+  Decorators now retain handler inventory only; policy authority belongs to definitions.
+- Focused B1 contract suite: **8 passed**. Full suite: **815 passed, 23 retained failures,
+  2 warnings** in 48.63s. The exact retained failure set is unchanged; B1 added no failure,
+  error, skip, or xfail. Ruff passed. No schema or frontend change applies.
+- Phase B1 commit: `ac60f8d` (`build job definition registry`).
+- Current phase: B1 complete; B2 is next. Exact next steps: implement every discriminated
+  subject snapshot variant and transaction-friendly builders, connect bounded definition
+  configuration keys to JMC2A `snapshot_for`, and prove snapshots render after live subject
+  deletion.
+- Inventory reconciliation: unchanged at 48 built-ins (30 handlers, 12 media operations,
+  6 parents). Only `system_noop` remains dispatch-enabled.
+- Pending operator work remains unchanged from JMC2A/JMC1.
+
+## JMC2B Phase B2 result
+
+- Added the strict version-1 discriminated `SubjectSnapshot` union covering movie, series,
+  season, episode, media file, audio/subtitle track, poster candidate set,
+  model/profile/training, aggregate batch, maintenance scope, and system work.
+- Media snapshots preserve stable IDs, complete useful title/year/season/episode hierarchy,
+  display filename, media kind, artwork key, integration IDs, track language/codec/channels,
+  flags, stream/tool identity, and embedded/external state where applicable. Builders strip
+  directory paths and never include secrets or unbounded child lists.
+- Added transaction-friendly Movie/Series/Season/Episode builders with explicit not-found
+  failures and pure builders for already-loaded media/track/non-media subjects. Serialized
+  movie and complete TV-tree snapshots validated after the live rows were physically
+  deleted.
+- Added the definition-owned configuration snapshot helper. JMC2A remains the validation
+  authority: only declared database-owned, public, execution-scoped keys enter the snapshot;
+  secret/restart keys fail closed.
+- Focused B2 suite: **8 passed**. Full suite: **823 passed, 23 retained failures, 2 warnings**
+  in 49.43s. The retained failure set is unchanged; B2 added no failure, error, skip, or
+  xfail. Ruff passed. No schema or frontend change applies.
+- Phase B2 commit: `7f900a4` (`add durable job subjects`).
+- Current phase: B2 complete; B3 is next. Exact next steps: implement pure `JobProgress`
+  validation/transitions, progress policies, retry/safety/action policies, and fixed/sealed
+  parent aggregation with terminal outcome precedence.
+- Inventory and dispatch reconciliation are unchanged: 48 definitions required; only
+  `control/system_noop` may be enabled.
+- Pending operator work remains unchanged from JMC2A/JMC1.
+
+## JMC2B Phase B3 result
+
+- Added a strict immutable `JobProgress` contract with server-owned percentages,
+  determinate/indeterminate/none measurements, finite bounded metrics, wait reasons,
+  bounded concurrent-subject summaries, and attempt/fence/sequence identity.
+- Added definition-owned progress policies with stable stages, optional native adapter
+  identifiers, persistence cadence, and ETA credibility rules. Transition validation rejects
+  stale writers and sequence regressions, preserves monotonic overall progress, and permits
+  current-scope resets only when the scope identity changes.
+- Added bounded retry classifiers and decisions, unsafe-mutation proof requirements,
+  state-aware action computation, and fixed-membership sealed parent aggregation. Terminal
+  failure/cancellation retains the last measurement; successful completion alone closes the
+  remaining measurement.
+- Focused B3 suite: **10 passed**. Full suite: **833 passed, 23 retained failures,
+  2 warnings** in 52.07s. The exact retained failure set is unchanged; B3 added no failure,
+  error, skip, or xfail. Ruff passed. No schema or frontend change applies.
+- Phase B3 commit: `86daa96` (`define job execution policies`).
+- Current phase: B3 complete; B4 is next. Exact next steps: build the complete immutable
+  48-definition manifest, certify document/subject/progress/retry/safety/action/configuration
+  coverage, keep every type except `control/system_noop` disabled, and remove remaining
+  duplicate policy authority.
+- Inventory and dispatch reconciliation are unchanged: 48 definitions required; only
+  `control/system_noop` may be enabled.
+- Pending operator work remains unchanged from JMC2A/JMC1.
+
+## JMC2B Phase B4 result and completion handoff
+
+- Added the authoritative immutable built-in manifest and startup certification. It has
+  exactly **48** definitions: the reconciled **30** decorated handlers, **12** media
+  operations, and **6** parent-only types frozen in B0. Route, schedule, healing, reserved
+  webhook, and parent inventories are all subsets with no missing, duplicate, unexpected,
+  unclassified, or generic-fallback type.
+- Every definition now owns strict current-version request/result/error adapters, explicit
+  trigger provenance, execution class/entrypoint, bounded timeout and configuration-key
+  selection, accepted subject kinds and builder, honest progress/stages, retry/effect safety,
+  state-aware actions, and a unique non-generic presenter key. Parent definitions additionally
+  own fixed/sealed child eligibility and aggregation policy.
+- Dispatch state is certified as **1 enabled** (`system_noop`), **41 defined-disabled**, and
+  **6 parent-only**. `radarr_upgrade` is defined only with the reserved webhook trigger and
+  remains disabled. The command, gateway, API readiness, and worker import path now consult
+  the manifest; no non-noop handler migration or execution was introduced.
+- Safety reconciliation is **28 unsafe mutations** and **20 read-only definitions**. Every
+  unsafe mutation has exactly one transport attempt. There are **no retry/safety exceptions**
+  and therefore no unproven staged/fenced retry claim. Native adapter declarations are
+  limited to 2 verified FFmpeg-capable definitions and 9 MKVToolNix-capable definitions;
+  parsing and persistence remain deferred to Chunk 3.
+- Focused B4 manifest/integration suite: **38 passed**. Full suite: **841 passed,
+  23 retained failures, 2 warnings** in 49.70s. The exact retained failure set is unchanged
+  from the B0 baseline; B4 added no failure, error, skip, or xfail. Ruff passed. Alembic head
+  remains `0002_jmc2a`, and `alembic check` reports no new upgrade operations. No frontend
+  change applies.
+- Phase B4 commit: this commit (`certify job definition registry`). JMC2B's focused commits
+  are `32eb5a8`, `ac60f8d`, `7f900a4`, `86daa96`, and this final commit.
+- JMC2B is complete. JMC2C must start by implementing the presenter registry for every
+  definition's unique `presenter_key`, then replace public job list/detail/action contracts
+  from the immutable definition, subject, progress, and action-policy data without enabling
+  any additional definition.
+- Pending operator work remains unchanged from JMC2A/JMC1. No new JMC2B operator action is
+  required.
