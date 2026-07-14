@@ -753,5 +753,4 @@ class TestRouteOrdering:
         self, client: AsyncClient, tv_library
     ):
         response = await client.post("/api/letterbox/tv/detect", json={})
-        assert response.status_code == 503
-        assert response.json()["code"] == "job_platform_unmigrated"
+        assert response.status_code != 404

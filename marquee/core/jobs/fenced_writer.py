@@ -39,6 +39,31 @@ class FencedWriter:
         self.ownership = ownership
         self.definition = definition
 
+    async def owns_current_attempt(self, session) -> bool:
+        """Return whether this context still owns a running canonical attempt.
+
+        Domain handlers use this read-only check inside their short projection
+        transaction.  It prevents an obsolete delivery from publishing derived
+        state after a newer fence has been admitted, without granting handlers
+        any canonical job lifecycle mutation authority.
+        """
+        owner = self.ownership
+        return (
+            await session.scalar(
+                select(Job.id)
+                .join(JobAttempt, JobAttempt.job_id == Job.id)
+                .where(
+                    Job.id == owner.job_id,
+                    Job.fence_token == owner.fence_token,
+                    Job.phase.in_(("running", "stopping")),
+                    JobAttempt.id == owner.attempt_id,
+                    JobAttempt.fence_token == owner.fence_token,
+                    JobAttempt.phase.in_(("running", "stopping")),
+                )
+                .limit(1)
+            )
+        ) is not None
+
     async def succeed(self, result: dict[str, Any]) -> WriteDisposition:
         validated = self.definition.result.validate(
             result, version=self.definition.result.current_version

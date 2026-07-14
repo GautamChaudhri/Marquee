@@ -25,11 +25,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
 from marquee.api.deps import enforce_rate_limit, get_rate_limiter
+from marquee.api.job_submission import JobSubmissionResponse, submission_response
 from marquee.api.routes.jobs import job_summary
 from marquee.config import settings
 from marquee.core import letterbox_reencode
 from marquee.core.jobs import job_manager
+from marquee.core.jobs.batches import BatchScope, create_fixed_batch
+from marquee.core.jobs.contracts import TriggerKind
 from marquee.core.jobs.manager import UnmigratedJobPlatformError
+from marquee.core.jobs.submission import (
+    Initiator,
+    SubjectLocator,
+    SubmissionError,
+    SubmissionIntent,
+    submit_job,
+)
 from marquee.core.letterbox_prefilter import (
     prefilter_category,
     refresh_letterbox_prefilter_for_movie,
@@ -71,6 +81,34 @@ from marquee.models import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/letterbox", tags=["letterbox"])
+
+
+def _letterbox_detection_config_snapshot() -> dict[str, object]:
+    """Freeze all detector controls that affect a queued observation result."""
+    return {
+        "method": settings.LETTERBOX_DETECT_METHOD,
+        "trim_fuzz": list(settings.LETTERBOX_TRIM_FUZZ),
+        "movie_samples_min": settings.LETTERBOX_MOVIE_SAMPLES_MIN,
+        "movie_samples_max": settings.LETTERBOX_MOVIE_SAMPLES_MAX,
+        "movie_sample_step": settings.LETTERBOX_MOVIE_SAMPLE_STEP,
+        "tv_quick_windows": settings.LETTERBOX_TV_QUICK_WINDOWS,
+        "tv_thorough_windows": settings.LETTERBOX_TV_THOROUGH_WINDOWS,
+        "tv_head_skip_pct": settings.LETTERBOX_TV_HEAD_SKIP_PCT,
+        "tv_tail_skip_pct": settings.LETTERBOX_TV_TAIL_SKIP_PCT,
+        "window_seconds": settings.LETTERBOX_WINDOW_SECONDS,
+        "cropdetect_limit": settings.LETTERBOX_CROPDETECT_LIMIT,
+        "cropdetect_hdr_limit": settings.LETTERBOX_CROPDETECT_HDR_LIMIT,
+        "cropdetect_round": settings.LETTERBOX_CROPDETECT_ROUND,
+        "noise_px": settings.LETTERBOX_NOISE_PX,
+        "min_bar_px": settings.LETTERBOX_MIN_BAR_PX,
+        "agree_px": settings.LETTERBOX_AGREE_PX,
+        "medium_spread_px": settings.LETTERBOX_MEDIUM_SPREAD_PX,
+        "variable_gap_px": settings.LETTERBOX_VARIABLE_GAP_PX,
+        "variable_min_fraction": settings.LETTERBOX_VARIABLE_MIN_FRACTION,
+        "asym_px": settings.LETTERBOX_ASYM_PX,
+        "asymmetric": settings.LETTERBOX_ASYMMETRIC,
+        "early_stop_windows": settings.LETTERBOX_EARLY_STOP_WINDOWS,
+    }
 
 
 async def _file_lock(db: AsyncSession, movie: Movie) -> dict[str, int]:
@@ -954,30 +992,7 @@ class TvLibraryDetectRequest(BaseModel):
     force: bool = False
 
 
-def _tv_scope_child(
-    *,
-    series_id: int,
-    exhaustive: bool,
-    force: bool,
-    include_open_matte: bool = False,
-    season_number: int | None = None,
-    episode_id: int | None = None,
-) -> dict:
-    return {
-        "job_type": "letterbox_detect_tv_scope",
-        "payload": {
-            "series_id": series_id,
-            "season_number": season_number,
-            "episode_id": episode_id,
-            "exhaustive": exhaustive,
-            "force": force,
-            "include_open_matte": include_open_matte,
-        },
-        "priority": 60,
-        "resources": {"media_read": 1},
-        "subject_type": "series",
-        "subject_id": series_id,
-    }
+
 
 
 @router.post("/tv/detect", status_code=202)
@@ -985,44 +1000,56 @@ async def detect_tv_batch(
     body: TvLibraryDetectRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
     limiter: Annotated[RateLimiter, Depends(get_rate_limiter)],
-):
-    _require_ffmpeg()
+) -> JobSubmissionResponse:
     enforce_rate_limit(limiter, "lb_detect_batch_tv", settings.RATE_LETTERBOX_BATCH_SECONDS)
-    series_rows = sorted(
-        {series.id: series for _episode, series, _state, _media_file_id in await _load_tv_episode_rows(db)}.values(),
-        key=lambda series: ((series.title or "").lower(), series.id),
-    )
-    if not series_rows:
-        raise HTTPException(status_code=400, detail="No downloaded TV series to analyze")
-
-    children = [
-        _tv_scope_child(
-            series_id=series.id,
-            exhaustive=body.exhaustive,
-            force=body.force,
-            include_open_matte=False,
-        )
-        for series in series_rows
-    ]
-    batch, _children = await job_manager.create_batch(
-        db,
-        parent_type="letterbox_detect_tv_batch",
-        parent_payload={
-            "series_ids": [series.id for series in series_rows],
-            "exhaustive": body.exhaustive,
-            "force": body.force,
-        },
-        parent_priority=60,
-        parent_subject_type="letterbox_tv_batch",
-        parent_subject_id=uuid4().hex,
-        children=children,
-    )
+    try:
+        async with db.begin():
+            series_rows = sorted(
+                {
+                    series.id: series
+                    for _episode, series, _state, _media_file_id in await _load_tv_episode_rows(db)
+                }.values(),
+                key=lambda series: ((series.title or "").lower(), series.id),
+            )
+            if not series_rows:
+                raise HTTPException(status_code=400, detail="No downloaded TV series to analyze")
+            nonce = uuid4().hex
+            initiator = Initiator(kind="system", identifier="letterbox-api")
+            children = [
+                SubmissionIntent(
+                job_type="letterbox_detect_tv_scope",
+                request={
+                    "series_id": series.id,
+                    "exhaustive": body.exhaustive,
+                    "force": body.force,
+                    "detection_config": _letterbox_detection_config_snapshot(),
+                },
+                    subject=SubjectLocator(kind="series", reference=str(series.id)),
+                    trigger=TriggerKind.BATCH,
+                    initiator=initiator,
+                    idempotency_key=f"letterbox_detect_tv_scope:batch-{nonce}-{series.id}",
+                )
+                for series in series_rows
+            ]
+            result = await create_fixed_batch(
+                db,
+                parent_job_type="letterbox_detect_tv_batch",
+                parent_request={
+                    "series_ids": [series.id for series in series_rows],
+                    "exhaustive": body.exhaustive,
+                    "force": body.force,
+                    "detection_config": _letterbox_detection_config_snapshot(),
+                },
+                scope=BatchScope(reference=nonce, display_name="Letterbox detection · TV library"),
+                trigger=TriggerKind.BATCH,
+                initiator=initiator,
+                idempotency_key=f"letterbox_detect_tv_batch:manual-{nonce}",
+                children=children,
+            )
+    except SubmissionError as exc:
+        raise HTTPException(status_code=422, detail=exc.code) from exc
     limiter.record("lb_detect_batch_tv")
-    return {
-        "job_id": batch.id,
-        "total": len(children),
-        "status_url": f"/api/jobs/{batch.id}/snapshot",
-    }
+    return submission_response(result.parent)
 
 
 @router.get("/tv/{series_id}")
@@ -1194,51 +1221,65 @@ async def _start_detect_job(
     body: BatchDetectRequest,
     db: AsyncSession,
     *,
-    detector: str,
-) -> dict:
+    initiator: Initiator,
+):
     movie_ids = await _resolve_batch_movie_ids(body, db)
     if not movie_ids:
         raise HTTPException(status_code=400, detail="No matching candidate movies")
 
-    children: list[dict] = []
+    nonce = uuid4().hex
+    children: list[SubmissionIntent] = []
     for movie_id in movie_ids:
         movie = await db.get(Movie, movie_id)
-        file_lock = await _file_lock(db, movie) if movie is not None else {}
-        children.append(
-            {
-                "job_type": "letterbox_detect",
-                "payload": {"movie_id": movie_id, "detector": detector},
-                "priority": 60,
-                "resources": {"media_read": 1, **file_lock},
-                "subject_type": "movie",
-                "subject_id": movie_id,
-            }
+        if movie is None:
+            continue
+        media_file = await db.scalar(
+            select(MediaFile).where(MediaFile.movie_id == movie.id, MediaFile.is_active.is_(True))
         )
-    batch, _children = await job_manager.create_batch(
+        if media_file is None:
+            continue
+        children.append(
+            SubmissionIntent(
+                job_type="letterbox_detect",
+                request={
+                    "movie_id": movie.id,
+                    "media_file_id": media_file.id,
+                    "detection_config": _letterbox_detection_config_snapshot(),
+                },
+                subject=SubjectLocator(kind="media_file", reference=str(media_file.id)),
+                trigger=TriggerKind.BATCH,
+                initiator=initiator,
+                idempotency_key=f"letterbox_detect:batch-{nonce}-{media_file.id}",
+            )
+        )
+    return await create_fixed_batch(
         db,
-        parent_type="letterbox_detect_batch",
-        parent_payload={"detector": detector, "movie_ids": movie_ids},
-        parent_priority=60,
-        parent_subject_type="letterbox_batch",
-        parent_subject_id=uuid4().hex,
+        parent_job_type="letterbox_detect_batch",
+        parent_request={
+            "movie_ids": movie_ids,
+            "detection_config": _letterbox_detection_config_snapshot(),
+        },
+        scope=BatchScope(reference=nonce, display_name="Letterbox detection · movies"),
+        trigger=TriggerKind.BATCH,
+        initiator=initiator,
+        idempotency_key=f"letterbox_detect_batch:manual-{nonce}",
         children=children,
     )
-    return {
-        "job_id": batch.id,
-        "detector": detector,
-        "total": len(movie_ids),
-        "status_url": f"/api/jobs/{batch.id}/snapshot",
-    }
 
 
 async def _active_detect_job(db: AsyncSession, movie_id: int) -> Job | None:
+    """Find the active canonical media-file observation for this movie."""
     return (
         await db.execute(
             select(Job)
+            .join(
+                MediaFile,
+                (Job.subject_kind == "media_file")
+                & (Job.subject_reference == cast(MediaFile.id, String)),
+            )
             .where(
                 Job.type == "letterbox_detect",
-                Job.subject_kind == "movie",
-                Job.subject_reference == str(movie_id),
+                MediaFile.movie_id == movie_id,
                 Job.phase != "terminal",
             )
             .order_by(Job.created_at.desc(), Job.id.desc())
@@ -1262,31 +1303,44 @@ async def _tv_scope_rows(
     return rows
 
 
-@router.post("/movies/{movie_id}/detect")
+@router.post("/movies/{movie_id}/detect", status_code=202)
 async def detect_one(
     movie_id: int,
     db: Annotated[AsyncSession, Depends(get_db)],
     limiter: Annotated[RateLimiter, Depends(get_rate_limiter)],
     thorough: bool = Query(False),
-):
-    """Enqueue a durable single-movie detect job; returns its job summary."""
-    _require_ffmpeg()
-    movie = await _load_movie(db, movie_id)
-    active = await _active_detect_job(db, movie.id)
-    if active is not None:
-        return job_summary(active)
+) -> JobSubmissionResponse:
+    """Submit one read-only movie/file observation through the canonical runtime."""
     enforce_rate_limit(limiter, f"lb_detect:{movie_id}", settings.RATE_LETTERBOX_DETECT_SECONDS)
+    movie = await _load_movie(db, movie_id)
+    media_file = await ensure_media_file_for_movie(db, movie)
+    if media_file is None:
+        raise HTTPException(status_code=409, detail="movie has no active media file")
+    # The legacy projection helper commits when it creates a missing MediaFile and leaves
+    # read-only lookups in an autobegun transaction.  Close that tiny projection scope
+    # before opening the canonical submission transaction that owns PgQueuer enqueueing.
+    if db.in_transaction():
+        await db.commit()
+    try:
+        async with db.begin():
+            result = await submit_job(
+                db,
+                job_type="letterbox_detect",
+                request={
+                    "movie_id": movie.id,
+                    "media_file_id": media_file.id,
+                    "thorough": thorough,
+                    "detection_config": _letterbox_detection_config_snapshot(),
+                },
+                subject=SubjectLocator(kind="media_file", reference=str(media_file.id)),
+                trigger=TriggerKind.MANUAL,
+                initiator=Initiator(kind="system", identifier="letterbox-api"),
+                idempotency_key=f"letterbox_detect:manual-{uuid4().hex}",
+            )
+    except SubmissionError as exc:
+        raise HTTPException(status_code=422, detail=exc.code) from exc
     limiter.record(f"lb_detect:{movie_id}")
-    job = await job_manager.create(
-        db,
-        job_type="letterbox_detect",
-        payload={"movie_id": movie.id, "detector": "v2", "thorough": thorough},
-        priority=80,
-        resources={"media_read": 1, **(await _file_lock(db, movie))},
-        subject_type="movie",
-        subject_id=movie.id,
-    )
-    return job_summary(job)
+    return submission_response(result)
 
 
 @router.post("/detect", status_code=202)
@@ -1294,13 +1348,18 @@ async def detect_batch(
     body: BatchDetectRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
     limiter: Annotated[RateLimiter, Depends(get_rate_limiter)],
-):
-    """Start a background batch detect (SSE progress). 202 + job_id, or 409."""
-    _require_ffmpeg()
+) -> JobSubmissionResponse:
+    """Submit a sealed batch of read-only movie/file observations."""
     enforce_rate_limit(limiter, "lb_detect_batch", settings.RATE_LETTERBOX_BATCH_SECONDS)
-    result = await _start_detect_job(body, db, detector="v2")
+    try:
+        async with db.begin():
+            result = await _start_detect_job(
+                body, db, initiator=Initiator(kind="system", identifier="letterbox-api")
+            )
+    except SubmissionError as exc:
+        raise HTTPException(status_code=422, detail=exc.code) from exc
     limiter.record("lb_detect_batch")
-    return result
+    return submission_response(result.parent)
 
 
 @router.post("/tv/{series_id}/detect", status_code=202)
@@ -1308,70 +1367,68 @@ async def detect_tv_series(
     series_id: int,
     body: TvDetectRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
-):
-    _require_ffmpeg()
-    rows = await _tv_scope_rows(
-        db,
-        series_id,
-        season_number=body.season_number,
-        episode_id=body.episode_id,
-    )
-    if not rows:
-        raise HTTPException(status_code=404, detail=f"Series id={series_id} not found")
-
-    if body.episode_id is not None:
-        children = [
-            _tv_scope_child(
-                series_id=series_id,
-                exhaustive=True,
-                force=body.force,
-                include_open_matte=body.include_open_matte,
+) -> JobSubmissionResponse:
+    try:
+        async with db.begin():
+            rows = await _tv_scope_rows(
+                db,
+                series_id,
+                season_number=body.season_number,
                 episode_id=body.episode_id,
             )
-        ]
-    elif body.season_number is not None:
-        children = [
-            _tv_scope_child(
-                series_id=series_id,
-                exhaustive=body.exhaustive,
-                force=body.force,
-                include_open_matte=body.include_open_matte,
-                season_number=body.season_number,
+            if not rows:
+                raise HTTPException(status_code=404, detail=f"Series id={series_id} not found")
+            nonce = uuid4().hex
+            scopes = (
+                [(body.season_number, body.episode_id)]
+                if body.season_number is not None or body.episode_id is not None
+                else [
+                    (season_number, None)
+                    for season_number in sorted({row[0].season_number for row in rows})
+                ]
             )
-        ]
-    else:
-        season_numbers = sorted({episode.season_number for episode, *_rest in rows})
-        children = [
-            _tv_scope_child(
-                series_id=series_id,
-                exhaustive=body.exhaustive,
-                force=body.force,
-                include_open_matte=False,
-                season_number=season_number,
+            initiator = Initiator(kind="system", identifier="letterbox-api")
+            children = [
+                SubmissionIntent(
+                    job_type="letterbox_detect_tv_scope",
+                    request={
+                        "series_id": series_id,
+                        "season_number": season_number,
+                        "episode_id": episode_id,
+                        "exhaustive": body.exhaustive,
+                        "force": body.force,
+                        "include_open_matte": body.include_open_matte,
+                        "detection_config": _letterbox_detection_config_snapshot(),
+                    },
+                    subject=SubjectLocator(kind="series", reference=str(series_id)),
+                    trigger=TriggerKind.BATCH,
+                    initiator=initiator,
+                    idempotency_key=(
+                        f"letterbox_detect_tv_scope:batch-{nonce}-{season_number}-{episode_id}"
+                    ),
+                )
+                for season_number, episode_id in scopes
+            ]
+            result = await create_fixed_batch(
+                db,
+                parent_job_type="letterbox_detect_tv_batch",
+                parent_request={
+                    "series_id": series_id,
+                    "season_number": body.season_number,
+                    "episode_id": body.episode_id,
+                    "exhaustive": body.exhaustive,
+                    "force": body.force,
+                    "detection_config": _letterbox_detection_config_snapshot(),
+                },
+                scope=BatchScope(reference=nonce, display_name="Letterbox detection · TV"),
+                trigger=TriggerKind.BATCH,
+                initiator=initiator,
+                idempotency_key=f"letterbox_detect_tv_batch:manual-{nonce}",
+                children=children,
             )
-            for season_number in season_numbers
-        ]
-
-    batch, _children = await job_manager.create_batch(
-        db,
-        parent_type="letterbox_detect_tv_batch",
-        parent_payload={
-            "series_id": series_id,
-            "season_number": body.season_number,
-            "episode_id": body.episode_id,
-            "exhaustive": body.exhaustive,
-            "force": body.force,
-        },
-        parent_priority=60,
-        parent_subject_type="letterbox_tv_batch",
-        parent_subject_id=str(series_id),
-        children=children,
-    )
-    return {
-        "job_id": batch.id,
-        "total": len(children),
-        "status_url": f"/api/jobs/{batch.id}/snapshot",
-    }
+    except SubmissionError as exc:
+        raise HTTPException(status_code=422, detail=exc.code) from exc
+    return submission_response(result.parent)
 
 
 

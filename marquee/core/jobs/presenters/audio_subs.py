@@ -45,6 +45,7 @@ AUDIO_SUBS_JOB_TYPES = (
     "audio_reorder",
     "subtitle_extract",
     "subtitle_generate",
+    "subtitle_policy_audit",
     "subtitle_policy",
     "subtitle_restore",
 )
@@ -61,6 +62,7 @@ _HEADLINES = {
     "audio_reorder": "Reorder audio streams",
     "subtitle_extract": "Extract subtitles to a sidecar file",
     "subtitle_generate": "Generate subtitles from audio",
+    "subtitle_policy_audit": "Audit subtitle policy",
     "subtitle_policy": "Apply the subtitle policy",
     "subtitle_restore": "Restore tracks from backup",
 }

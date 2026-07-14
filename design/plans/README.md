@@ -28,7 +28,48 @@ Two tiers of model, two jobs:
    prompt per doc**.
 2. **Implementer sessions** (small/mid model — Sonnet-class has the best
    track record here). One session per plan doc, driven by the kickoff
-   prompt. Frontends only start after their backend plan is complete.
+   prompt. Frontends only start after their backend plan is complete. An
+   implementer executes its assigned plan continuously through all internal
+   phases; a phase boundary is a verification/checkpoint boundary, not a
+   reason to yield or ask whether it should continue.
+
+### Implementer continuity and stop conditions
+
+Once an implementer starts a plan, it must continue autonomously until the
+**entire assigned plan** is complete. At the end of each internal phase it
+runs the phase gates, commits, updates the shared timeline, and immediately
+begins the next phase in the same session. Routine phase completion, a large
+diff, elapsed time, context compaction, a successful commit, or a desire for
+confirmation are not valid reasons to stop.
+
+An implementer stops early only when at least one of these conditions is
+true:
+
+- a plan-defined stop gate is reached;
+- a required test, safety, schema, contract, ancestry, or verification gate
+  fails and cannot be safely resolved within the plan;
+- required infrastructure, credentials, permissions, tooling, or an owned
+  disposable test environment is unavailable after the documented recovery
+  path is exhausted;
+- the code or an installed dependency materially contradicts a locked plan
+  decision, so continuing would require redesign;
+- unrelated/concurrent work makes the next edit, commit, or history rewrite
+  unsafe;
+- a required user decision or additional authority would materially change
+  scope or behavior;
+- the whole assigned plan is complete, including its final certification and
+  any mandatory final-only history procedure.
+
+When stopping early, the agent records the exact evidence, commands/results,
+current tree and commit state, unfinished phase, and precise unblock condition
+in the shared timeline, then reports it. It must not manufacture a blocker,
+weaken a gate, skip verification, or treat pending manual/operator work that
+the plan explicitly allows as a reason to abandon otherwise executable work.
+
+For multi-doc programs, this continuity rule applies within one assigned plan
+doc. A deliberate external plan boundary (for example backend → frontend or
+JMC4A → JMC4B) remains a handoff when the plans or kickoff prompts assign them
+to separate sessions.
 
 ### Bootstrap prompt for a new architect session
 
@@ -80,11 +121,16 @@ Every kickoff prompt must include:
 4. **Git authorship**: commit as the repository's configured git user ONLY —
    never add yourself as an author or co-author (no `Co-Authored-By:
    Claude …` trailers, no "Generated with Claude Code" footers).
-5. Phase-by-phase commits, short lowercase imperative messages.
-6. Gates: backend = full pytest baseline first (report baseline vs new) +
+5. **Continuous execution**: internal phase boundaries are checkpoints, not
+   stopping points. After a successful phase gate, commit and update the
+   timeline, then continue immediately into the next phase. Stop only for a
+   condition listed under **Implementer continuity and stop conditions** or
+   after the full assigned plan is complete.
+6. Phase-by-phase commits, short lowercase imperative messages.
+7. Gates: backend = full pytest baseline first (report baseline vs new) +
    `ruff check marquee tests`; frontend = `npm run check` / `lint` / `build`
    green per commit.
-7. Finish with operator notes and an honest statement of whether the manual
+8. Finish with operator notes and an honest statement of whether the manual
    smoke test was performed.
 
 ## Environment notes for implementer sessions

@@ -81,7 +81,7 @@ def _subjects():
 
 
 def test_manifest_has_exactly_one_definition_for_every_inventory_source() -> None:
-    assert len(JOB_DEFINITION_REGISTRY) == 48
+    assert len(JOB_DEFINITION_REGISTRY) == 49
     assert JOB_DEFINITION_REGISTRY.types == BUILTIN_JOB_TYPES
     for inventory in (
         REGISTERED_HANDLER_TYPES,
@@ -96,7 +96,16 @@ def test_manifest_has_exactly_one_definition_for_every_inventory_source() -> Non
 
 
 def test_only_noop_is_enabled_and_webhook_stays_reserved_disabled() -> None:
-    assert JOB_DEFINITION_REGISTRY.enabled_types == {"system_noop"}
+    assert JOB_DEFINITION_REGISTRY.enabled_types == {
+        "system_noop",
+        "library_sync",
+        "letterbox_detect",
+        "letterbox_detect_episode",
+        "letterbox_detect_tv_scope",
+        "subtitle_scan",
+        "subtitle_policy_audit",
+        "dovi_analyze",
+    }
     webhook = JOB_DEFINITION_REGISTRY.get("radarr_upgrade")
     assert webhook.trigger_kinds == {TriggerKind.WEBHOOK}
     assert not webhook.enabled
@@ -111,12 +120,28 @@ def test_all_documents_are_strict_current_v1_and_policy_is_not_client_input() ->
         "progress_policy",
         "actions",
     }
+    valid_requests = {
+        "subtitle_policy_audit": {
+            "policy_id": 1,
+            "policy_revision": 1,
+            "policy_snapshot": {},
+            "scope": "all",
+        },
+        "letterbox_detect": {"movie_id": 1, "media_file_id": 1},
+        "letterbox_detect_episode": {"media_file_id": 1, "episode_ids": [1]},
+            "letterbox_detect_tv_scope": {"series_id": 1},
+            "dovi_analyze": {
+                "media_file_id": 1,
+                "movie_id": 1,
+                "source_signature": "a" * 40,
+            },
+    }
     for definition in JOB_DEFINITION_REGISTRY:
         assert definition.request.current_version == 1
         assert definition.result.current_version == 1
         assert definition.error.current_version == 1
         assert not forbidden & definition.request.models[1].model_fields.keys()
-        definition.request.validate({}, version=1)
+        definition.request.validate(valid_requests.get(definition.job_type, {}), version=1)
         definition.result.validate({}, version=1)
         definition.error.validate(
             {"code": "test_failure", "summary": "Safe summary"}, version=1
@@ -146,8 +171,12 @@ def test_progress_policies_are_complete_and_native_adapters_are_truthful() -> No
     assert native == {
         "audio_remove": "mkvmerge_gui",
         "audio_reorder": "mkvmerge_gui",
-        "dovi_convert": "ffmpeg_progress",
+            "dovi_convert": "ffmpeg_progress",
+            "dovi_analyze": "ffprobe_dovi_tool",
         "letterbox_reencode": "ffmpeg_progress",
+        "letterbox_detect": "ffprobe_ffmpeg_cropdetect",
+        "letterbox_detect_episode": "ffprobe_ffmpeg_cropdetect",
+        "letterbox_detect_tv_scope": "ffprobe_ffmpeg_cropdetect",
         "subtitle_embed": "mkvmerge_gui",
         "subtitle_extract": "mkvmerge_gui",
         "subtitle_metadata": "mkvmerge_gui",
@@ -193,4 +222,3 @@ def test_configuration_dependencies_and_action_policies_are_bounded() -> None:
         assert len(definition.configuration_keys) <= 128
         assert definition.action_policy.detail
         assert not definition.action_policy.pause
-

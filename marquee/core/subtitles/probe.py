@@ -144,9 +144,18 @@ def _ffprobe_json(path: Path | str) -> dict | None:
         return None
 
 
-def probe_container(path: Path | str) -> ProbeResult | None:
-    """Probe *path* for subtitle/audio/container facts. None if ffprobe fails."""
-    data = _ffprobe_json(path)
+def probe_container(
+    path: Path | str,
+    *,
+    probe_json: dict | None = None,
+    mkvmerge_json: dict | None = None,
+) -> ProbeResult | None:
+    """Probe *path* for subtitle/audio/container facts. None if ffprobe fails.
+
+    ``probe_json``/``mkvmerge_json`` may be supplied by a caller that already ran the tools
+    through the tracked launcher; when omitted the tools are invoked inline (non-job callers).
+    """
+    data = probe_json if probe_json is not None else _ffprobe_json(path)
     if data is None:
         return None
 
@@ -210,7 +219,7 @@ def probe_container(path: Path | str) -> ProbeResult | None:
             subs.append(_embedded_sub(stream))
 
     if path and str(path).lower().endswith(".mkv"):
-        _align_mkv_track_ids(path, subs, audio)
+        _align_mkv_track_ids(path, subs, audio, mkvmerge_json=mkvmerge_json)
 
     return ProbeResult(
         container=fmt.get("format_name"),
@@ -246,22 +255,32 @@ def _embedded_sub(stream: dict) -> EmbeddedSub:
     )
 
 
-def _align_mkv_track_ids(path: Path | str, subs: list[EmbeddedSub], audio: list[dict]) -> None:
+def _align_mkv_track_ids(
+    path: Path | str,
+    subs: list[EmbeddedSub],
+    audio: list[dict],
+    *,
+    mkvmerge_json: dict | None = None,
+) -> None:
     """Fill ``tool_track_id`` for MKV subs and audio by aligning mkvmerge tracks.
 
     ffprobe lists tracks in the same relative order mkvmerge does, so
     we zip the two sequences. Best-effort — leaves None if mkvmerge is
-    unavailable or the shapes disagree.
+    unavailable or the shapes disagree.  ``mkvmerge_json`` may be supplied by a
+    caller that already ran mkvmerge through the tracked launcher; otherwise
+    mkvmerge is invoked inline (used by non-job callers only).
     """
-    if binaries.resolve("mkvmerge") is None:
-        return
-    result = binaries.run("mkvmerge", ["-J", binaries.safe_media_path(path)], timeout=30.0)
-    if not result.ok:
-        return
-    try:
-        data = json.loads(result.stdout)
-    except json.JSONDecodeError:
-        return
+    data = mkvmerge_json
+    if data is None:
+        if binaries.resolve("mkvmerge") is None:
+            return
+        result = binaries.run("mkvmerge", ["-J", binaries.safe_media_path(path)], timeout=30.0)
+        if not result.ok:
+            return
+        try:
+            data = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            return
 
     tracks_data = data.get("tracks", [])
 

@@ -259,11 +259,29 @@ async def test_restore_backup_validates_only_and_never_mutates_targets(
 
 
 def test_only_system_noop_is_dispatch_enabled_and_executable() -> None:
-    assert JOB_DEFINITION_REGISTRY.enabled_types == {"system_noop"}
-    assert set(EXECUTION_HANDLERS) == {"system_noop"}
+    assert JOB_DEFINITION_REGISTRY.enabled_types == {
+        "system_noop",
+        "library_sync",
+        "letterbox_detect",
+        "letterbox_detect_episode",
+        "letterbox_detect_tv_scope",
+        "subtitle_scan",
+        "subtitle_policy_audit",
+        "dovi_analyze",
+    }
+    assert set(EXECUTION_HANDLERS) == {
+        "system_noop",
+        "library_sync",
+        "letterbox_detect",
+        "letterbox_detect_episode",
+        "letterbox_detect_tv_scope",
+        "subtitle_scan",
+        "subtitle_policy_audit",
+        "dovi_analyze",
+    }
 
     for definition in JOB_DEFINITION_REGISTRY:
-        if definition.job_type != "system_noop":
+        if not definition.enabled:
             with pytest.raises(DisabledJobDefinitionError, match="dispatch-disabled"):
                 JOB_DEFINITION_REGISTRY.for_dispatch(
                     definition.job_type, entrypoint=definition.entrypoint

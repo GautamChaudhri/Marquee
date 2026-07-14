@@ -1,8 +1,17 @@
 {
   "version": 1,
   "registry": {
-    "definition_count": 48,
-    "enabled_types": ["system_noop"],
+    "definition_count": 49,
+    "enabled_types": [
+      "dovi_analyze",
+      "letterbox_detect",
+      "letterbox_detect_episode",
+      "letterbox_detect_tv_scope",
+      "library_sync",
+      "subtitle_policy_audit",
+      "subtitle_scan",
+      "system_noop"
+    ],
     "entrypoint": "control"
   },
   "transport_envelope_keys": [

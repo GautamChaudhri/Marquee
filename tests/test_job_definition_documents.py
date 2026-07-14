@@ -135,9 +135,33 @@ def test_registry_validates_dispatch_and_disabled_contracts() -> None:
     )
     with pytest.raises(DisabledJobDefinitionError, match="dispatch-disabled"):
         disabled.for_dispatch("poster_pipeline", entrypoint="gpu")
-    with pytest.raises(InvalidJobDefinitionError, match="only system_noop"):
+    # A read-only, non-media-write, ENABLED definition may be dispatch-enabled (chunk 4).
+    read_only_enabled = JobDefinitionRegistry(
+        [_definition(job_type="library_sync", enabled=True)]
+    )
+    assert read_only_enabled.for_dispatch("library_sync", entrypoint="control").enabled
+    # Mutating effects can never be dispatch-enabled before chunk 5.
+    with pytest.raises(InvalidJobDefinitionError, match="read-only"):
         JobDefinitionRegistry(
-            [_definition(job_type="poster_pipeline", enabled=True)]
+            [
+                _definition(
+                    job_type="poster_pipeline",
+                    enabled=True,
+                    effect_safety=EffectSafety.UNSAFE_MUTATION,
+                )
+            ]
+        )
+    # media_write is never dispatch-enabled in chunk 4.
+    with pytest.raises(InvalidJobDefinitionError, match="media_write"):
+        JobDefinitionRegistry(
+            [
+                _definition(
+                    job_type="track_remove",
+                    enabled=True,
+                    execution_class=ExecutionClass.MEDIA_WRITE,
+                    entrypoint="media_write",
+                )
+            ]
         )
     with pytest.raises(InvalidJobDefinitionError, match="disabled definitions require"):
         JobDefinitionRegistry(

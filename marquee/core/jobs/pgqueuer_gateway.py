@@ -21,6 +21,11 @@ from marquee.core.jobs.manifest import JOB_DEFINITION_REGISTRY
 from marquee.models.job import Job, JobDispatch, JobEvent
 
 ENTRYPOINT_CONTROL = "control"
+# Registered worker execution entrypoints that may receive a ticket. `media_write` is never
+# enqueued before chunk 5; parent-only jobs never receive a ticket at all.
+ENQUEUEABLE_ENTRYPOINTS = frozenset(
+    {"control", "network", "cpu", "media_read", "gpu", "maintenance"}
+)
 PAYLOAD_VERSION = 1
 MIN_PRIORITY = 0
 MAX_PRIORITY = 100
@@ -70,8 +75,10 @@ class PgQueuerGateway:
     ) -> None:
         if not job_id or len(job_id) > 32:
             raise PgQueuerGatewayError("job_id must be a non-empty canonical string")
-        if entrypoint != ENTRYPOINT_CONTROL:
-            raise PgQueuerGatewayError("only the control entrypoint is enabled in JMC1")
+        if entrypoint not in ENQUEUEABLE_ENTRYPOINTS:
+            raise PgQueuerGatewayError(
+                f"entrypoint {entrypoint!r} is not an enqueueable execution class"
+            )
         if payload_version != PAYLOAD_VERSION:
             raise PgQueuerGatewayError("unsupported JMC1 payload version")
         if dispatch_generation < 1:

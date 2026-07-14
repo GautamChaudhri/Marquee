@@ -190,7 +190,7 @@ def test_readiness_is_sanitized_and_reports_locked_jmc4a_boundaries() -> None:
     assert worker["registered"] == sorted(
         item.value for item in ExecutionClass if item != ExecutionClass.MEDIA_WRITE
     )
-    assert worker["enabled"] == ["control"]
+    assert worker["enabled"] == ["control", "cpu", "media_read", "network"]
     assert worker["later_media_write_limit"] == 1
     assert worker["media_write_product_available"] is False
     assert schedule == {
@@ -200,6 +200,7 @@ def test_readiness_is_sanitized_and_reports_locked_jmc4a_boundaries() -> None:
         "entrypoints": ["schedule_audio_subs_deep_scan", "schedule_library_sync"],
         "occurrence_policies": ["hourly_window", "interval_bucket"],
         "production_occurrences_enabled": False,
+        "activated_keys": ["audio-subs-deep-scan", "library-sync"],
         "diagnostic_limit": 100,
     }
     assert batch["status"] == "ok"
@@ -215,11 +216,29 @@ def test_readiness_is_sanitized_and_reports_locked_jmc4a_boundaries() -> None:
 
 
 def test_final_manifest_keeps_only_system_noop_enabled() -> None:
-    assert len(JOB_DEFINITION_REGISTRY) == 48
-    assert JOB_DEFINITION_REGISTRY.enabled_types == {"system_noop"}
+    assert len(JOB_DEFINITION_REGISTRY) == 49
+    assert JOB_DEFINITION_REGISTRY.enabled_types == {
+        "system_noop",
+        "library_sync",
+        "letterbox_detect",
+        "letterbox_detect_episode",
+        "letterbox_detect_tv_scope",
+        "subtitle_scan",
+        "subtitle_policy_audit",
+        "dovi_analyze",
+    }
     enabled = [definition for definition in JOB_DEFINITION_REGISTRY if definition.enabled]
-    assert [(definition.job_type, definition.entrypoint) for definition in enabled] == [
-        ("system_noop", "control")
+    assert sorted(
+        (definition.job_type, definition.entrypoint) for definition in enabled
+    ) == [
+        ("dovi_analyze", "media_read"),
+        ("letterbox_detect", "media_read"),
+        ("letterbox_detect_episode", "media_read"),
+        ("letterbox_detect_tv_scope", "media_read"),
+        ("library_sync", "network"),
+        ("subtitle_policy_audit", "cpu"),
+        ("subtitle_scan", "media_read"),
+        ("system_noop", "control"),
     ]
     assert all(
         not definition.enabled

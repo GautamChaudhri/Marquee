@@ -17,7 +17,6 @@ from marquee.core.jobs import cancel_registry, job_manager
 from marquee.core.jobs.handlers import register
 from marquee.core.media_files import MediaFileUnavailableError, resolve_media_file
 from marquee.core.poster_subjects import PosterSubject
-from marquee.core.subtitles.config import subtitle_settings
 from marquee.core.tv_queries import season_downloaded, series_visible
 from marquee.database import _get_session_factory
 from marquee.ml.namespaces import TasteNamespace, get_namespace
@@ -202,118 +201,10 @@ async def letterbox_heal(_job: Job) -> dict[str, Any]:
     return await letterbox_heal_scan()
 
 
-@register("letterbox_detect")
-async def letterbox_detect(job: Job) -> dict[str, Any]:
-    from marquee.media.binaries import BinaryError  # noqa: PLC0415
-    from marquee.media.letterbox_manager import letterbox_manager  # noqa: PLC0415
-
-    factory = _get_session_factory()
-    movie_id = int(job.request["movie_id"])
-
-    async with factory() as db:
-        movie = await db.get(Movie, movie_id)
-        if movie is None:
-            raise RuntimeError("movie not found")
-
-        # Emit child_started event if this is part of a batch
-        if job.parent_id:
-            parent = await db.get(Job, job.parent_id)
-            if parent:
-                try:
-                    await job_manager.emit(
-                        db,
-                        parent,
-                        state="child_progress",
-                        message=f"Analyzing {movie.title}",
-                        detail={
-                            "movie_id": movie_id,
-                            "title": movie.title,
-                            "stage": "started",
-                            "progress": 0,
-                        },
-                    )
-                except Exception:  # noqa: BLE001 - progress must not fail detection
-                    logger.exception(
-                        "could not emit letterbox child-start progress for movie %d", movie.id
-                    )
-
-        try:
-            # Pass job context for progress emission
-            state = await letterbox_manager.detect_and_store(
-                db,
-                movie,
-                detector=job.request.get("detector", "v2"),
-                thorough=bool(job.request.get("thorough", False)),
-                parent_job_id=job.parent_id,
-            )
-            return {"movie_id": movie.id, "status": state.status, "confidence": state.confidence}
-        except BinaryError as exc:
-            # Soft-fail on ffprobe timeouts to prevent cascading batch failure
-            # The movie is marked as errored but the batch continues
-            if "timed out" in str(exc).lower():
-                logger.warning(
-                    "ffprobe timeout for movie %d (%s) - marking as errored", movie.id, movie.title
-                )
-                return {
-                    "movie_id": movie.id,
-                    "status": "errored",
-                    "error": "Media probe timed out after multiple retries - possible network storage issue",
-                    "skipped": True,
-                }
-            # Re-raise other binary errors (missing ffprobe, etc.)
-            raise
 
 
-@register("letterbox_detect_episode")
-async def letterbox_detect_episode(job: Job) -> dict[str, Any]:
-    from marquee.media.letterbox_manager import letterbox_manager  # noqa: PLC0415
 
-    factory = _get_session_factory()
-    episode_ids = [int(episode_id) for episode_id in job.request.get("episode_ids", [])]
-    media_file_id = job.request.get("media_file_id")
-    if not episode_ids or media_file_id is None:
-        raise RuntimeError("episode_ids and media_file_id are required")
 
-    async with factory() as db:
-        episodes = (
-            await db.execute(select(Episode).where(Episode.id.in_(episode_ids)).order_by(Episode.id))
-        ).scalars().all()
-        if not episodes:
-            raise RuntimeError("episodes not found")
-
-        parent = await db.get(Job, job.parent_id) if job.parent_id else None
-        if parent is not None:
-            for episode in episodes:
-                try:
-                    await job_manager.emit(
-                        db,
-                        parent,
-                        state="child_progress",
-                        message=f"Analyzing episode {episode.id}",
-                        detail={
-                            "episode_id": episode.id,
-                            "stage": "started",
-                            "progress": 0,
-                        },
-                    )
-                except Exception:  # noqa: BLE001
-                    logger.exception(
-                        "could not emit letterbox child-start progress for episode %d", episode.id
-                    )
-
-        states = await letterbox_manager.detect_episode_group_and_store(
-            db,
-            episodes,
-            media_file_id=int(media_file_id),
-            thorough=bool(job.request.get("thorough", False)),
-            parent_job_id=job.parent_id,
-        )
-        first = states[0] if states else None
-        return {
-            "episode_ids": episode_ids,
-            "status": first.status if first is not None else "errored",
-            "confidence": first.confidence if first is not None else "none",
-        }
 
 
 def _summarize_tv_letterbox_states(states: list[Any]) -> tuple[str, dict[str, int]]:
@@ -335,83 +226,7 @@ def _summarize_tv_letterbox_states(states: list[Any]) -> tuple[str, dict[str, in
     return "prefilter_candidate", counts
 
 
-@register("letterbox_detect_tv_scope")
-async def letterbox_detect_tv_scope(job: Job) -> dict[str, Any]:
-    from marquee.media.letterbox_manager import letterbox_manager  # noqa: PLC0415
 
-    factory = _get_session_factory()
-    series_id = int(job.request["series_id"])
-    season_number = job.request.get("season_number")
-    episode_id = job.request.get("episode_id")
-    exhaustive = bool(job.request.get("exhaustive", False))
-    force = bool(job.request.get("force", False))
-    include_open_matte = bool(job.request.get("include_open_matte", False))
-
-    async with factory() as db:
-        series = await db.get(Series, series_id)
-        if series is None:
-            raise RuntimeError("series not found")
-
-        episode_query = select(Episode).where(
-            Episode.series_id == series_id,
-            Episode.episode_file_path.is_not(None),
-            Episode.episode_file_path != "",
-        )
-        if episode_id is not None:
-            episode_query = episode_query.where(Episode.id == int(episode_id))
-        elif season_number is not None:
-            episode_query = episode_query.where(Episode.season_number == int(season_number))
-        episodes = (
-            await db.execute(
-                episode_query.order_by(
-                    Episode.season_number,
-                    Episode.episode_number,
-                    Episode.id,
-                )
-            )
-        ).scalars().all()
-        if not episodes:
-            raise RuntimeError("episodes not found")
-
-        parent = await db.get(Job, job.parent_id) if job.parent_id else None
-        if parent is not None:
-            for episode in episodes:
-                try:
-                    await job_manager.emit(
-                        db,
-                        parent,
-                        state="child_progress",
-                        message=f"Analyzing S{episode.season_number:02d}E{episode.episode_number:02d}",
-                        detail={
-                            "episode_id": episode.id,
-                            "stage": "started",
-                            "progress": 0,
-                            "title": episode.title,
-                        },
-                    )
-                except Exception:  # noqa: BLE001
-                    logger.exception(
-                        "could not emit letterbox child-start progress for episode %d", episode.id
-                    )
-
-        states = await letterbox_manager.detect_episode_batch_and_store(
-            db,
-            episodes,
-            exhaustive=exhaustive,
-            force=force,
-            include_open_matte=include_open_matte,
-            use_season_triage=episode_id is None,
-            parent_job_id=job.parent_id,
-        )
-        summary_status, counts = _summarize_tv_letterbox_states(states)
-        return {
-            "series_id": series_id,
-            "season_number": int(season_number) if season_number is not None else None,
-            "episode_id": int(episode_id) if episode_id is not None else None,
-            "status": summary_status,
-            "counts": counts,
-            "episodes": len(states),
-        }
 
 
 @register("letterbox_apply")
@@ -634,94 +449,6 @@ async def library_sync(job: Job) -> dict[str, Any]:
         for client in (radarr, sonarr, tmdb):
             if client is not None:
                 await client.disconnect()
-
-
-@register("subtitle_scan_all")
-async def subtitle_scan_all(job: Job) -> dict[str, Any]:
-    """Scan subtitle coverage for all active media files in the library."""
-    from marquee.core.media_jobs import media_job_manager  # noqa: PLC0415
-
-    cancel_event = cancel_registry.get(job.id)
-    force = job.request.get("force", False)
-    scope = job.request.get("scope", "movies")
-    series_id = job.request.get("series_id")
-    season_number = job.request.get("season_number")
-    factory = _get_session_factory()
-    async with factory() as db:
-        media_files = await _stale_or_missing_subtitle_scan_candidates(
-            db,
-            scope=scope,
-            force=force,
-            series_id=series_id,
-            season_number=season_number,
-        )
-
-        count = 0
-        total = len(media_files)
-        for index, mf in enumerate(media_files, 1):
-            cancel_registry.raise_if_cancelled(cancel_event, "subtitle scan-all cancelled")
-            if index == 1 or index % 25 == 0 or index == total:
-                await _update_progress(
-                    job.id, "queue", index, total, message=f"Queueing scan {index}/{total}"
-                )
-            key = f"manual:subtitle-scan:{mf.id}:{job.id}"
-            await media_job_manager.create_job(
-                db,
-                operation="subtitle_scan",
-                media_file_id=mf.id,
-                trigger="manual",
-                status="queued",
-                idempotency_key=key,
-                commit=False,
-            )
-            count += 1
-
-        await db.commit()
-        return {
-            "queued_scans": count,
-            "scope": scope,
-            "series_id": series_id,
-            "season_number": season_number,
-        }
-
-
-@register("audio_subs_deep_scan")
-async def audio_subs_deep_scan(job: Job) -> dict[str, Any]:
-    """Queue stale or missing subtitle inventory scans for movies + TV."""
-    from marquee.core.media_jobs import media_job_manager  # noqa: PLC0415
-
-    cancel_event = cancel_registry.get(job.id)
-    batch_limit = subtitle_settings.AUDIO_SUBS_DEEP_SCAN_BATCH
-    factory = _get_session_factory()
-    async with factory() as db:
-        media_files = await _stale_or_missing_subtitle_scan_candidates(
-            db,
-            scope="all",
-            force=False,
-            limit=batch_limit,
-        )
-        total = len(media_files)
-        for index, media_file in enumerate(media_files, 1):
-            cancel_registry.raise_if_cancelled(cancel_event, "audio/subs deep scan cancelled")
-            if index == 1 or index % 25 == 0 or index == total:
-                await _update_progress(
-                    job.id,
-                    "queue",
-                    index,
-                    total,
-                    message=f"Queueing deep scan {index}/{total}",
-                )
-            await media_job_manager.create_job(
-                db,
-                operation="subtitle_scan",
-                media_file_id=media_file.id,
-                trigger="scheduled",
-                status="queued",
-                idempotency_key=f"audio-subs-deep-scan:{job.id}:{media_file.id}",
-                commit=False,
-            )
-        await db.commit()
-        return {"queued_scans": total, "batch_limit": batch_limit}
 
 
 @register("radarr_upgrade")

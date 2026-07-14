@@ -18,8 +18,10 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from marquee.api.job_submission import submission_response
 from marquee.api.library_serializers import effective_movie_preferences
 from marquee.core.jobs.manager import UnmigratedJobPlatformError
+from marquee.core.jobs.submission import Initiator, SubmissionError
 from marquee.core.media_files import (
     MediaFileNotFoundError,
     MediaFileUnavailableError,
@@ -28,6 +30,7 @@ from marquee.core.media_files import (
 )
 from marquee.core.subtitles import coverage, service
 from marquee.core.subtitles.config import subtitle_settings
+from marquee.core.subtitles.scan_batch import create_subtitle_scan_batch
 from marquee.database import get_db
 from marquee.media import binaries
 from marquee.models import Movie
@@ -279,5 +282,18 @@ async def scan_library_subtitles(
     db: Annotated[AsyncSession, Depends(get_db)],
     body: LibraryScanRequest,
 ):
-    """Fail closed until library subtitle scans have a canonical definition."""
-    raise UnmigratedJobPlatformError(f"subtitle_scan_all:{body.scope}")
+    """Submit a fixed batch of read-only subtitle scans for the requested scope (202)."""
+    try:
+        async with db.begin():
+            result = await create_subtitle_scan_batch(
+                db,
+                parent_job_type="subtitle_scan_all",
+                scope=body.scope,
+                force=body.force,
+                series_id=body.series_id,
+                season_number=body.season_number,
+                initiator=Initiator(kind="system", identifier="subtitle-scan-api"),
+            )
+    except SubmissionError as exc:
+        raise HTTPException(status_code=422, detail=exc.code) from exc
+    return submission_response(result.parent)

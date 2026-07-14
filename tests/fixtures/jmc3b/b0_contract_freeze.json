@@ -1,7 +1,16 @@
 {
   "version": 1,
   "registry": {
-    "enabled_types": ["system_noop"]
+    "enabled_types": [
+      "dovi_analyze",
+      "letterbox_detect",
+      "letterbox_detect_episode",
+      "letterbox_detect_tv_scope",
+      "library_sync",
+      "subtitle_policy_audit",
+      "subtitle_scan",
+      "system_noop"
+    ]
   },
   "frozen_contract_tests": [
     "tests/test_job_presentation_contract.py",
@@ -90,8 +99,15 @@
       "encoder",
       "decoder"
     ],
-    "ProgressWait": ["kind", "label_key", "eligible_at"],
-    "ConcurrentSubject": ["subject", "stage_key"],
+    "ProgressWait": [
+      "kind",
+      "label_key",
+      "eligible_at"
+    ],
+    "ConcurrentSubject": [
+      "subject",
+      "stage_key"
+    ],
     "JobProgress": [
       "version",
       "sequence",
@@ -126,11 +142,13 @@
       "workspace",
       "process_launcher",
       "log_sink",
-      "writer"
+      "writer",
+      "session_factory"
     ],
     "fenced_writer_methods": [
       "fail",
       "interrupt",
+      "owns_current_attempt",
       "publish_atomic",
       "record_process_exit",
       "record_process_identity",
@@ -140,7 +158,11 @@
       "succeed",
       "unsafe"
     ],
-    "process_launcher_methods": ["launch_canary", "shutdown"]
+    "process_launcher_methods": [
+      "launch",
+      "launch_canary",
+      "shutdown"
+    ]
   },
   "direct_event_writers": {
     "marquee/core/jobs/commands.py": 1,
@@ -217,17 +239,23 @@
     "text_cases": [
       {
         "name": "exact_configured_value",
-        "chunks": ["prefix s3cr3t-token suffix"],
+        "chunks": [
+          "prefix s3cr3t-token suffix"
+        ],
         "expected": "prefix [REDACTED] suffix"
       },
       {
         "name": "authorization_bearer",
-        "chunks": ["Authorization: Bearer s3cr3t-token"],
+        "chunks": [
+          "Authorization: Bearer s3cr3t-token"
+        ],
         "expected": "Authorization: Bearer [REDACTED]"
       },
       {
         "name": "api_key_header",
-        "chunks": ["X-Api-Key: s3cr3t-token"],
+        "chunks": [
+          "X-Api-Key: s3cr3t-token"
+        ],
         "expected": "X-Api-Key: [REDACTED]"
       },
       {
@@ -239,30 +267,61 @@
       },
       {
         "name": "cross_chunk_secret",
-        "chunks": ["callback_token=callback-", "secret done"],
+        "chunks": [
+          "callback_token=callback-",
+          "secret done"
+        ],
         "expected": "callback_token=[REDACTED] done"
       },
       {
         "name": "safe_text",
-        "chunks": ["encoding frame 42 at 24 fps"],
+        "chunks": [
+          "encoding frame 42 at 24 fps"
+        ],
         "expected": "encoding frame 42 at 24 fps"
       }
     ],
     "argument_cases": [
       {
         "name": "split_password_argument",
-        "arguments": ["tool", "--password", "hunter2", "input.mkv"],
-        "expected": ["tool", "--password", "[REDACTED]", "input.mkv"]
+        "arguments": [
+          "tool",
+          "--password",
+          "hunter2",
+          "input.mkv"
+        ],
+        "expected": [
+          "tool",
+          "--password",
+          "[REDACTED]",
+          "input.mkv"
+        ]
       },
       {
         "name": "joined_token_argument",
-        "arguments": ["tool", "--token=s3cr3t-token", "input.mkv"],
-        "expected": ["tool", "--token=[REDACTED]", "input.mkv"]
+        "arguments": [
+          "tool",
+          "--token=s3cr3t-token",
+          "input.mkv"
+        ],
+        "expected": [
+          "tool",
+          "--token=[REDACTED]",
+          "input.mkv"
+        ]
       },
       {
         "name": "database_url_argument",
-        "arguments": ["tool", "--database-url", "postgresql://dbuser:db-pass@db/marquee"],
-        "expected": ["tool", "--database-url", "[REDACTED]"]
+        "arguments": [
+          "tool",
+          "--database-url",
+          "postgresql://dbuser:db-pass@db/marquee"
+        ],
+        "expected": [
+          "tool",
+          "--database-url",
+          "[REDACTED]"
+        ]
       }
     ]
   }

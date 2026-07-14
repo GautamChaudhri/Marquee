@@ -297,6 +297,12 @@ def test_dovi_analyze_detail_golden():
         subject_kind="media_file",
         subject_reference="314",
         subject_snapshot=MEDIA_FILE_SNAPSHOT,
+        request={
+            "media_file_id": 314,
+            "movie_id": 12,
+            "source_signature": "a" * 40,
+            "analysis_depth": "standard",
+        },
         result={
             "outcome": "succeeded",
             "message": "Profile 7 with enhancement layer.",
@@ -467,7 +473,7 @@ def test_letterbox_detect_episode_running_progress():
         phase="running",
         outcome=None,
         terminal_at=None,
-        request={"thorough": True, "episode_id": 77},
+        request={"thorough": True, "media_file_id": 77, "episode_ids": [77]},
         progress=progress,
         progress_sequence=9,
         progress_updated_at=datetime(2026, 7, 13, 10, 10, 0, tzinfo=UTC),

@@ -2,24 +2,39 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from collections import defaultdict
 from datetime import UTC, datetime
-from typing import Annotated, Any, NamedTuple
+from typing import Annotated, Any, Literal, NamedTuple
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import String, cast, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from marquee.api.job_submission import JobSubmissionResponse, submission_response
 from marquee.api.library_serializers import enrich_movie, resolution_label
 from marquee.api.routes.jobs import job_summary
 from marquee.api.routes.library import _coverage_by_media_file
 from marquee.core.dovi_analysis import conversion_eligibility
 from marquee.core.hdr_rollups import EpisodeHdr, episode_status, season_rollup, show_rollup
 from marquee.core.jobs import job_manager
-from marquee.core.media_files import ensure_media_file_for_movie
+from marquee.core.jobs.batches import BatchScope, create_fixed_batch
+from marquee.core.jobs.contracts import TriggerKind
+from marquee.core.jobs.submission import (
+    Initiator,
+    SubjectLocator,
+    SubmissionError,
+    SubmissionIntent,
+    submit_job,
+)
+from marquee.core.media_files import (
+    MediaFileUnavailableError,
+    ensure_media_file_for_movie,
+    resolve_media_file,
+)
 from marquee.core.radarr_overlay import (
     PREFERENCE_STATUS_ORDER,
     classify_custom_format_tags,
@@ -1177,10 +1192,12 @@ async def put_tv_profile_preferences(
 
 class TvAnalyzeShowRequest(BaseModel):
     season_number: int | None = None
+    analysis_depth: Literal["standard", "deep"] = "standard"
 
 
 class TvAnalyzeLibraryRequest(BaseModel):
     series_ids: list[int] | None = None
+    analysis_depth: Literal["standard", "deep"] = "standard"
 
 
 @router.post("/tv/{series_id}/analyze", status_code=202)
@@ -1188,13 +1205,8 @@ async def analyze_tv_show_dovi(
     series_id: int,
     body: TvAnalyzeShowRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
-):
-    """Enqueue a DoVi analysis batch for one show (or one season of it)."""
-    if binaries.resolve("ffprobe") is None:
-        raise HTTPException(
-            status_code=503,
-            detail="ffprobe not found on PATH — install it to analyze Dolby Vision.",
-        )
+) -> JobSubmissionResponse:
+    """Submit a sealed canonical DoVi analysis batch for one TV scope."""
     series = (await db.execute(select(Series).where(Series.id == series_id))).scalar_one_or_none()
     if series is None:
         raise HTTPException(status_code=404, detail=f"Series id={series_id} not found")
@@ -1212,63 +1224,46 @@ async def analyze_tv_show_dovi(
             status_code=400, detail="No Dolby Vision episodes with a media file to analyze"
         )
 
-    children = await _dovi_episode_batch_children(db, episodes)
-    batch, _children = await job_manager.create_batch(
-        db,
-        parent_type="dovi_analyze_batch",
-        parent_payload={"series_id": series_id, "episode_ids": [episode.id for episode in episodes]},
-        parent_priority=60,
-        parent_subject_type="dovi_tv_batch",
-        parent_subject_id=str(series_id),
-        children=children,
+    nonce = uuid4().hex
+    initiator = Initiator(kind="system", identifier="hdr-api")
+    children = await _dovi_episode_submission_intents(
+        db, episodes, analysis_depth=body.analysis_depth, nonce=nonce, initiator=initiator
     )
-    return {
-        "job_id": batch.id,
-        "total": len(children),
-        "status_url": f"/api/jobs/{batch.id}/snapshot",
-    }
-
-
-async def _dovi_episode_batch_children(
-    db: AsyncSession, episodes: list[Episode]
-) -> list[dict[str, Any]]:
-    """Build ``dovi_analyze`` batch children for episodes, mirroring the movie batch shape.
-
-    Unlike the movie path, a missing MediaFile row does not skip the episode
-    (H4/§6.6) — it just proceeds without the file-lock resource.
-    """
-    children: list[dict[str, Any]] = []
-    for episode in episodes:
-        media_file_id = await _episode_media_file_id(db, episode.id)
-        if media_file_id is None:
-            logger.info(
-                "no MediaFile row for episode id=%s — proceeding without file lock", episode.id
+    if not children:
+        raise HTTPException(status_code=400, detail="No Dolby Vision episodes with a media file to analyze")
+    if db.in_transaction():
+        await db.commit()
+    try:
+        async with db.begin():
+            result = await create_fixed_batch(
+                db,
+                parent_job_type="dovi_analyze_batch",
+                parent_request={
+                    "series_id": series_id,
+                    "episode_ids": [episode.id for episode in episodes],
+                    "analysis_depth": body.analysis_depth,
+                },
+                scope=BatchScope(
+                    reference=nonce,
+                    display_name="Dolby Vision analysis · TV",
+                    summary=f"{series.title} · {len(children)} episode files",
+                ),
+                trigger=TriggerKind.BATCH,
+                initiator=initiator,
+                idempotency_key=f"dovi_analyze_batch:tv-{nonce}",
+                children=children,
             )
-        file_lock = {f"media-file:{media_file_id}": 1} if media_file_id is not None else {}
-        children.append(
-            {
-                "job_type": "dovi_analyze",
-                "payload": {"episode_id": episode.id},
-                "priority": 60,
-                "resources": {"media_read": 1, **file_lock},
-                "subject_type": "episode",
-                "subject_id": episode.id,
-            }
-        )
-    return children
+    except SubmissionError as exc:
+        raise HTTPException(status_code=422, detail=exc.code) from exc
+    return submission_response(result.parent)
 
 
 @router.post("/tv/analyze", status_code=202)
 async def analyze_tv_dovi_batch(
     body: TvAnalyzeLibraryRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
-):
-    """Analyze every Dolby Vision TV episode across visible shows (optionally a subset)."""
-    if binaries.resolve("ffprobe") is None:
-        raise HTTPException(
-            status_code=503,
-            detail="ffprobe not found on PATH — install it to analyze Dolby Vision.",
-        )
+) -> JobSubmissionResponse:
+    """Submit every selected DoVi TV episode through the canonical batch producer."""
     visible_series_ids = (await db.execute(select(Series.id).where(series_visible()))).scalars().all()
     if body.series_ids:
         wanted = set(body.series_ids)
@@ -1294,21 +1289,34 @@ async def analyze_tv_dovi_batch(
             status_code=400, detail="No Dolby Vision episodes with a media file to analyze"
         )
 
-    children = await _dovi_episode_batch_children(db, episodes)
-    batch, _children = await job_manager.create_batch(
-        db,
-        parent_type="dovi_analyze_batch",
-        parent_payload={"series_ids": list(visible_series_ids), "episode_ids": [episode.id for episode in episodes]},
-        parent_priority=60,
-        parent_subject_type="dovi_tv_batch",
-        parent_subject_id=uuid4().hex,
-        children=children,
+    nonce = uuid4().hex
+    initiator = Initiator(kind="system", identifier="hdr-api")
+    children = await _dovi_episode_submission_intents(
+        db, episodes, analysis_depth=body.analysis_depth, nonce=nonce, initiator=initiator
     )
-    return {
-        "job_id": batch.id,
-        "total": len(children),
-        "status_url": f"/api/jobs/{batch.id}/snapshot",
-    }
+    if not children:
+        raise HTTPException(status_code=400, detail="No Dolby Vision episodes with a media file to analyze")
+    if db.in_transaction():
+        await db.commit()
+    try:
+        async with db.begin():
+            result = await create_fixed_batch(
+                db,
+                parent_job_type="dovi_analyze_batch",
+                parent_request={
+                    "series_ids": list(visible_series_ids),
+                    "episode_ids": [episode.id for episode in episodes],
+                    "analysis_depth": body.analysis_depth,
+                },
+                scope=BatchScope(reference=nonce, display_name="Dolby Vision analysis · TV"),
+                trigger=TriggerKind.BATCH,
+                initiator=initiator,
+                idempotency_key=f"dovi_analyze_batch:tv-{nonce}",
+                children=children,
+            )
+    except SubmissionError as exc:
+        raise HTTPException(status_code=422, detail=exc.code) from exc
+    return submission_response(result.parent)
 
 
 # ---------------------------------------------------------------------------
@@ -1318,10 +1326,72 @@ async def analyze_tv_dovi_batch(
 
 class DoviAnalyzeBatchRequest(BaseModel):
     movie_ids: list[int] | None = None
+    analysis_depth: Literal["standard", "deep"] = "standard"
 
 
 class DoviConvertRequest(BaseModel):
     kind: str | None = None
+
+
+async def _dovi_request_snapshot(
+    db: AsyncSession,
+    media_file: MediaFile,
+    *,
+    movie: Movie | None = None,
+    episode: Episode | None = None,
+    analysis_depth: Literal["standard", "deep"],
+) -> dict[str, object]:
+    """Freeze source identity and signature before canonical submission."""
+    try:
+        resolved = await resolve_media_file(db, media_file.id)
+    except MediaFileUnavailableError as exc:
+        raise HTTPException(status_code=409, detail="media file is unavailable for analysis") from exc
+    if not media_file.is_active or not media_file.is_present:
+        raise HTTPException(status_code=409, detail="media file has been retired")
+    return {
+        "media_file_id": media_file.id,
+        "movie_id": movie.id if movie is not None else None,
+        "episode_id": episode.id if episode is not None else None,
+        "source_signature": resolved.signature,
+        "source_codec": None,
+        "source_hdr_type": (
+            movie.hdr_type_raw if movie is not None else episode.hdr_type_raw if episode else None
+        ),
+        "analysis_depth": analysis_depth,
+    }
+
+
+async def _dovi_episode_submission_intents(
+    db: AsyncSession,
+    episodes: list[Episode],
+    *,
+    analysis_depth: Literal["standard", "deep"],
+    nonce: str,
+    initiator: Initiator,
+) -> list[SubmissionIntent]:
+    """Build media-file subjects with frozen file signatures for one sealed TV batch."""
+    children: list[SubmissionIntent] = []
+    for episode in episodes:
+        media_file_id = await _episode_media_file_id(db, episode.id)
+        if media_file_id is None:
+            continue
+        media_file = await db.get(MediaFile, media_file_id)
+        if media_file is None or not media_file.is_active or not media_file.is_present:
+            continue
+        request = await _dovi_request_snapshot(
+            db, media_file, episode=episode, analysis_depth=analysis_depth
+        )
+        children.append(
+            SubmissionIntent(
+                job_type="dovi_analyze",
+                request=request,
+                subject=SubjectLocator(kind="media_file", reference=str(media_file.id)),
+                trigger=TriggerKind.BATCH,
+                initiator=initiator,
+                idempotency_key=f"dovi_analyze:batch-{nonce}-{episode.id}-{media_file.id}",
+            )
+        )
+    return children
 
 
 async def _load_movie(db: AsyncSession, movie_id: int) -> Movie:
@@ -1332,13 +1402,18 @@ async def _load_movie(db: AsyncSession, movie_id: int) -> Movie:
 
 
 async def _active_dovi_job(db: AsyncSession, movie_id: int) -> Job | None:
+    """Find the active canonical media-file analysis for this movie."""
     return (
         await db.execute(
             select(Job)
+            .join(
+                MediaFile,
+                (Job.subject_kind == "media_file")
+                & (Job.subject_reference == cast(MediaFile.id, String)),
+            )
             .where(
                 Job.type == "dovi_analyze",
-                Job.subject_kind == "movie",
-                Job.subject_reference == str(movie_id),
+                MediaFile.movie_id == movie_id,
                 Job.phase != "terminal",
             )
             .order_by(Job.created_at.desc(), Job.id.desc())
@@ -1398,6 +1473,17 @@ def _dovi_state_to_dict(state: DoviState | None) -> dict[str, Any] | None:
         "el_type": state.el_type,
         "bl_signal_compatibility_id": state.bl_signal_compatibility_id,
         "source_codec": state.source_codec,
+        "source_hdr_base": state.source_hdr_base,
+        "source_bit_depth": state.source_bit_depth,
+        "color_primaries": state.color_primaries,
+        "color_transfer": state.color_transfer,
+        "color_space": state.color_space,
+        "rpu_present": state.rpu_present,
+        "bl_present": state.bl_present,
+        "analysis_depth": state.analysis_depth,
+        "analysis_supported": state.analysis_supported,
+        "warnings": json.loads(state.warnings_json) if state.warnings_json else [],
+        "validation": json.loads(state.validation_json) if state.validation_json else {},
         "rpu_summary": state.rpu_summary_json,
         "error_reason": state.error_reason,
         "conversion": conversion_eligibility(state.dovi_profile, state.el_type),
@@ -1462,33 +1548,44 @@ async def hdr_movie_detail(
     }
 
 
-@router.post("/{movie_id}/analyze")
+@router.post("/{movie_id}/analyze", status_code=202)
 async def analyze_movie_dovi(
     movie_id: int,
     db: Annotated[AsyncSession, Depends(get_db)],
-):
-    """Enqueue a single-movie DoVi analysis job; returns its job summary."""
-    if binaries.resolve("ffprobe") is None:
-        raise HTTPException(
-            status_code=503,
-            detail="ffprobe not found on PATH — install it to analyze Dolby Vision.",
-        )
+) -> JobSubmissionResponse:
+    """Submit one read-only, signature-frozen DoVi observation."""
     movie = await _load_movie(db, movie_id)
     active = await _active_dovi_job(db, movie.id)
     if active is not None:
-        return job_summary(active)
+        return JobSubmissionResponse(
+            job_id=active.id,
+            disposition="reused",
+            phase=active.phase,
+            snapshot_url=f"/api/jobs/{active.id}/snapshot",
+            detail_url=f"/projection-room/jobs/{active.id}",
+        )
     media_file = await ensure_media_file_for_movie(db, movie)
-    file_lock = {f"media-file:{media_file.id}": 1} if media_file is not None else {}
-    job = await job_manager.create(
-        db,
-        job_type="dovi_analyze",
-        payload={"movie_id": movie.id},
-        priority=70,
-        resources={"media_read": 1, **file_lock},
-        subject_type="movie",
-        subject_id=movie.id,
+    if media_file is None:
+        raise HTTPException(status_code=409, detail="movie has no active media file")
+    request = await _dovi_request_snapshot(
+        db, media_file, movie=movie, analysis_depth="standard"
     )
-    return job_summary(job)
+    if db.in_transaction():
+        await db.commit()
+    try:
+        async with db.begin():
+            result = await submit_job(
+                db,
+                job_type="dovi_analyze",
+                request=request,
+                subject=SubjectLocator(kind="media_file", reference=str(media_file.id)),
+                trigger=TriggerKind.MANUAL,
+                initiator=Initiator(kind="system", identifier="hdr-api"),
+                idempotency_key=f"dovi_analyze:manual-{uuid4().hex}",
+            )
+    except SubmissionError as exc:
+        raise HTTPException(status_code=422, detail=exc.code) from exc
+    return submission_response(result)
 
 
 @router.post("/{movie_id}/convert")
@@ -1547,17 +1644,12 @@ async def convert_movie_dovi(
 async def analyze_dovi_batch(
     body: DoviAnalyzeBatchRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
-):
-    """Analyze every Radarr-known Dolby Vision movie (optionally a subset).
+) -> JobSubmissionResponse:
+    """Submit a sealed read-only batch for Radarr-known Dolby Vision movies.
 
     Only movies Radarr flagged as DoVi (``has_dv``) with a media file are
     enqueued — there's no point probing files we already know are SDR/HDR10.
     """
-    if binaries.resolve("ffprobe") is None:
-        raise HTTPException(
-            status_code=503,
-            detail="ffprobe not found on PATH — install it to analyze Dolby Vision.",
-        )
     rows = (
         (
             await db.execute(
@@ -1579,37 +1671,48 @@ async def analyze_dovi_batch(
             status_code=400, detail="No Dolby Vision movies with a media file to analyze"
         )
 
-    children: list[dict[str, Any]] = []
+    nonce = uuid4().hex
+    initiator = Initiator(kind="system", identifier="hdr-api")
+    children: list[SubmissionIntent] = []
     for movie in rows:
         media_file = await ensure_media_file_for_movie(db, movie)
         if media_file is None:
             continue
+        request = await _dovi_request_snapshot(
+            db, media_file, movie=movie, analysis_depth=body.analysis_depth
+        )
         children.append(
-            {
-                "job_type": "dovi_analyze",
-                "payload": {"movie_id": movie.id},
-                "priority": 60,
-                "resources": {"media_read": 1, f"media-file:{media_file.id}": 1},
-                "subject_type": "movie",
-                "subject_id": movie.id,
-            }
+            SubmissionIntent(
+                job_type="dovi_analyze",
+                request=request,
+                subject=SubjectLocator(kind="media_file", reference=str(media_file.id)),
+                trigger=TriggerKind.BATCH,
+                initiator=initiator,
+                idempotency_key=f"dovi_analyze:batch-{nonce}-{movie.id}-{media_file.id}",
+            )
         )
     if not children:
         raise HTTPException(
             status_code=400, detail="No Dolby Vision movies with a resolvable media file"
         )
 
-    batch, _children = await job_manager.create_batch(
-        db,
-        parent_type="dovi_analyze_batch",
-        parent_payload={"movie_ids": [movie.id for movie in rows]},
-        parent_priority=60,
-        parent_subject_type="dovi_batch",
-        parent_subject_id=uuid4().hex,
-        children=children,
-    )
-    return {
-        "job_id": batch.id,
-        "total": len(children),
-        "status_url": f"/api/jobs/{batch.id}/snapshot",
-    }
+    if db.in_transaction():
+        await db.commit()
+    try:
+        async with db.begin():
+            result = await create_fixed_batch(
+                db,
+                parent_job_type="dovi_analyze_batch",
+                parent_request={
+                    "movie_ids": [movie.id for movie in rows],
+                    "analysis_depth": body.analysis_depth,
+                },
+                scope=BatchScope(reference=nonce, display_name="Dolby Vision analysis · movies"),
+                trigger=TriggerKind.BATCH,
+                initiator=initiator,
+                idempotency_key=f"dovi_analyze_batch:manual-{nonce}",
+                children=children,
+            )
+    except SubmissionError as exc:
+        raise HTTPException(status_code=422, detail=exc.code) from exc
+    return submission_response(result.parent)

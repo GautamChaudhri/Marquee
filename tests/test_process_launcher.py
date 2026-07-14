@@ -22,6 +22,7 @@ from marquee.core.jobs.process_launcher import (
     TerminationStage,
     UnsafeProcessIdentityError,
 )
+from marquee.media import binaries
 
 
 def _launcher(tmp_path: Path, **kwargs: object) -> ProcessLauncher:
@@ -162,3 +163,18 @@ async def test_launcher_rejects_non_enum_and_unconfined_cwd(tmp_path: Path) -> N
     (tmp_path / "work").rmdir()
     with pytest.raises(ProcessLaunchError):
         await launcher.launch_canary(CanaryBehavior.CLEAN_EXIT)
+
+
+@pytest.mark.skipif(binaries.resolve("ffprobe") is None, reason="ffprobe is not available")
+@pytest.mark.asyncio
+async def test_launch_runs_catalog_tool_and_captures_stdout(tmp_path: Path) -> None:
+    process = await _launcher(tmp_path).launch("ffprobe", ["-version"])
+    summary = await process.wait()
+    assert summary.exit_code == 0
+    assert b"ffprobe" in summary.stdout.captured
+
+
+@pytest.mark.asyncio
+async def test_launch_rejects_uncatalogued_tool(tmp_path: Path) -> None:
+    with pytest.raises(ProcessLaunchError, match="catalog"):
+        await _launcher(tmp_path).launch("rm", ["-rf", "/tmp/nope"])

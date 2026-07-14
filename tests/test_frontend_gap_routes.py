@@ -549,10 +549,14 @@ async def test_extract_subtitle_track_endpoint(client: AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_scan_library_subtitles_endpoint(client: AsyncClient):
+async def test_scan_library_subtitles_endpoint(db: AsyncSession, client: AsyncClient):
+    # With no media files the fixed batch seals empty and terminalizes no_change (202).
     response = await client.post("/api/subtitles/scan-library", json={})
-    assert response.status_code == 503
-    assert response.json()["code"] == "job_platform_unmigrated"
+    assert response.status_code == 202
+    body = response.json()
+    assert body["disposition"] == "created"
+    assert body["phase"] == "terminal"
+    assert body["snapshot_url"] == f"/api/jobs/{body['job_id']}/snapshot"
 
 
 

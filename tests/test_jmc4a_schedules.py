@@ -85,21 +85,22 @@ async def test_production_catalog_is_registered_but_occurrences_are_code_disable
         "library-sync",
         "audio-subs-deep-scan",
     ]
-    assert all(
-        not definition.enabled_predicate(_configuration(enabled=True, production=False))
-        for definition in PRODUCTION_SCHEDULE_CATALOG
-    )
-    assert not definitions["library-sync"].enabled_predicate(
-        _configuration(production=True, interval=0)
+    # library-sync is activated per-schedule in JMC4B B2, independent of the global test flag.
+    assert definitions["library-sync"].enabled_predicate(
+        _configuration(production=False, interval=15)
     )
     assert definitions["library-sync"].enabled_predicate(
         _configuration(production=True, interval=15)
     )
+    assert not definitions["library-sync"].enabled_predicate(
+        _configuration(production=True, interval=0)
+    )
+    # audio-subs-deep-scan is activated in B3 but still respects its enabled config flag.
     assert not definitions["audio-subs-deep-scan"].enabled_predicate(
         _configuration(enabled=False, production=True)
     )
     assert definitions["audio-subs-deep-scan"].enabled_predicate(
-        _configuration(enabled=True, production=True)
+        _configuration(enabled=True, production=False)
     )
     async with _get_engine().connect() as connection:
         raw = await connection.get_raw_connection()

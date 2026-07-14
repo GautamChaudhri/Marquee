@@ -115,10 +115,22 @@ class JobDefinitionRegistry:
         if definition.presenter_key in {"generic", "default", "unknown"}:
             raise InvalidJobDefinitionError("built-ins require a non-generic presenter key")
         if definition.enabled:
-            if definition.job_type != "system_noop":
-                raise InvalidJobDefinitionError("only system_noop may be dispatch-enabled")
-            if definition.execution_class != ExecutionClass.CONTROL:
-                raise InvalidJobDefinitionError("system_noop must use the control execution class")
+            # Chunk 4 enables only non-mutating families. The certified-enabled set is
+            # governed by the manifest allowlist; this guard enforces the safety envelope:
+            # an enabled definition must be read-only, never media-write, and in the ENABLED
+            # migration state. Mutating and parent-only definitions stay dispatch-disabled.
+            if definition.migration_state != MigrationState.ENABLED:
+                raise InvalidJobDefinitionError(
+                    "dispatch-enabled definitions require the ENABLED migration state"
+                )
+            if definition.effect_safety != EffectSafety.READ_ONLY:
+                raise InvalidJobDefinitionError(
+                    "only read-only definitions may be dispatch-enabled before chunk 5"
+                )
+            if definition.execution_class == ExecutionClass.MEDIA_WRITE:
+                raise InvalidJobDefinitionError(
+                    "media_write definitions cannot be dispatch-enabled"
+                )
         elif not definition.disabled_reason:
             raise InvalidJobDefinitionError("disabled definitions require a reason")
         if definition.migration_state == MigrationState.PARENT_ONLY and definition.enabled:
