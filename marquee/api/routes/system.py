@@ -9,7 +9,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Request
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.api.routes.jobs import _QUEUED_ISH, _resolve_subject_titles, job_summary
@@ -20,12 +20,14 @@ from marquee.core.heal import latest_heal_summary
 from marquee.core.jobs import job_manager
 from marquee.core.jobs.labels import humanize_job_type
 from marquee.core.jobs.manager import ACTIVE
+from marquee.core.jobs.pgqueuer_gateway import pgqueuer_gateway
+from marquee.core.jobs.readiness import connection_budget_report
 from marquee.core.letterbox_heal import letterbox_heal_state
 from marquee.core.pipeline_config import pipeline_settings
 from marquee.database import get_db, pool_stats, reset_database
 from marquee.media import binaries
 from marquee.ml.hardware import effective_ocr_workers
-from marquee.models import Job, MediaJob, SystemMetricsSample
+from marquee.models import Job, MediaJob, SchemaContract, SystemMetricsSample
 from marquee.pipeline.ocr_filter import active_worker_status, paddle_cuda_available
 
 logger = logging.getLogger(__name__)
@@ -267,6 +269,77 @@ async def system_metrics_endpoint(db: Annotated[AsyncSession, Depends(get_db)]):
     data["workers"] = await _worker_counts(db)
     data["db_pool"] = pool_stats()
     return data
+
+
+@router.get("/job-transport")
+async def job_transport_diagnostics(
+    request: Request,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    """Return bounded aggregate transport diagnostics without rows or payloads."""
+    now = datetime.now(UTC)
+    oldest = await db.scalar(
+        select(func.min(Job.eligible_at)).where(
+            Job.phase == "queued",
+            Job.eligible_at <= now,
+        )
+    )
+    queue = await pgqueuer_gateway.queue_statistics(db)
+    held_failed = sum(item["count"] for item in queue if item["status"] == "failed")
+    picked = sum(item["count"] for item in queue if item["status"] == "picked")
+    contracts = list(await db.scalars(select(SchemaContract).order_by(SchemaContract.component)))
+    connection_rows = await db.execute(
+        text(
+            """
+            SELECT application_name, count(*)::int AS count
+            FROM pg_stat_activity
+            WHERE datname = current_database() AND application_name LIKE 'marquee:%'
+            GROUP BY application_name
+            ORDER BY application_name
+            """
+        )
+    )
+    role_connections = {
+        row.application_name: row.count for row in connection_rows if row.application_name
+    }
+
+    supervisor = getattr(request.app.state, "worker_supervisor", None)
+    supervisor_status = supervisor.status() if supervisor is not None else None
+    workers = [] if supervisor_status is None else [
+        child
+        for child in supervisor_status["children"]
+        if child["name"] == "scheduler" or child["name"].startswith("worker-")
+    ]
+    listener_healthy = bool(workers) and all(
+        child["running"] and not child["degraded"] for child in workers
+    )
+    return {
+        "queue": queue,
+        "oldest_eligible_age_seconds": (
+            max(0.0, (now - oldest).total_seconds()) if oldest is not None else None
+        ),
+        "picked": picked,
+        "held_failed": held_failed,
+        "listener": {
+            "healthy": listener_healthy,
+            "last_observed_event_at": None,
+            "source": "embedded_supervisor" if supervisor is not None else "external",
+        },
+        "contracts": [
+            {
+                "component": contract.component,
+                "expected_version": contract.expected_version,
+                "durability": contract.durability,
+                "catalog_fingerprint": contract.catalog_fingerprint,
+            }
+            for contract in contracts
+        ],
+        "connections": {
+            "roles": role_connections,
+            "observed": sum(role_connections.values()),
+            "budget": connection_budget_report(),
+        },
+    }
 
 
 @router.get("/status/generators")

@@ -45,37 +45,30 @@ _session_factory: async_sessionmaker | None = None
 
 
 def _engine_connect_args(db_url: str) -> dict:
-    """Return asyncpg safety settings without applying them to SQLite tests."""
+    """Return role-tagged asyncpg safety settings for PostgreSQL."""
     if not db_url.startswith("postgresql+asyncpg://"):
         return {}
-    server_settings = {}
+    server_settings = {"application_name": f"marquee:{settings.MARQUEE_PROCESS_ROLE}"}
     if settings.DB_LOCK_TIMEOUT_MS:
         server_settings["lock_timeout"] = str(settings.DB_LOCK_TIMEOUT_MS)
     if settings.DB_IDLE_TXN_TIMEOUT_MS:
-        server_settings["idle_in_transaction_session_timeout"] = str(settings.DB_IDLE_TXN_TIMEOUT_MS)
-    return {"server_settings": server_settings} if server_settings else {}
+        server_settings["idle_in_transaction_session_timeout"] = str(
+            settings.DB_IDLE_TXN_TIMEOUT_MS
+        )
+    return {"server_settings": server_settings}
 
 
 def _get_engine():
-    """Create or return the async SQLAlchemy engine.
-
-    Pool sizing rationale (default: 20 + overflow 10 = 30 max):
-      - API requests: ~5-10 concurrent during normal use
-      - Workers: 1-4 workers × 4 concurrency = 4-16 sessions
-      - SSE streams: 2-5 long-lived connections
-      - Overhead: migrations, admin tools
-
-    Connection recycling (3600s = 1 hour) prevents stale connections
-    after PostgreSQL restarts or network interruptions.
-    """
+    """Create or return the role-budgeted async SQLAlchemy engine."""
     global _engine
     if _engine is None:
+        pool_size, max_overflow = settings.db_pool_budget
         _engine = create_async_engine(
             settings.db_url_resolved,
             echo=False,
             pool_pre_ping=True,
-            pool_size=20,
-            max_overflow=10,
+            pool_size=pool_size,
+            max_overflow=max_overflow,
             pool_recycle=3600,
             connect_args=_engine_connect_args(settings.db_url_resolved),
         )
@@ -95,15 +88,17 @@ def _get_session_factory() -> async_sessionmaker:
 
 
 def pool_stats() -> dict[str, int | None]:
-    """Point-in-time connection-pool telemetry for /api/system/metrics.
-
-    ``checked_out + checked_in == size + overflow`` at steady state; sustained
-    ``checked_out`` near ``size + max_overflow`` (30) means pool exhaustion.
-    Pool implementations without counters (test SQLite ``StaticPool``/
-    ``NullPool``) report ``None`` for the metrics they lack.
-    """
+    """Point-in-time telemetry for the current role-budgeted SQLAlchemy pool."""
+    pool_size, max_overflow = settings.db_pool_budget
     if _engine is None:
-        return {"size": None, "checked_in": None, "checked_out": None, "overflow": None}
+        return {
+            "size": None,
+            "checked_in": None,
+            "checked_out": None,
+            "overflow": None,
+            "configured_size": pool_size,
+            "configured_max_overflow": max_overflow,
+        }
     pool = _engine.pool
     stats: dict[str, int | None] = {}
     for key, attr in (
@@ -117,6 +112,8 @@ def pool_stats() -> dict[str, int | None]:
             stats[key] = method() if callable(method) else None
         except (NotImplementedError, AttributeError):
             stats[key] = None
+    stats["configured_size"] = pool_size
+    stats["configured_max_overflow"] = max_overflow
     return stats
 
 

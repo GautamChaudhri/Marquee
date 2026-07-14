@@ -98,3 +98,21 @@ def test_status_reports_aggregate_degraded():
     assert names["scheduler"]["degraded"] is False
     assert names["worker-0"]["degraded"] is True
     assert names["worker-0"]["fast_failures"] == MAX_CONSECUTIVE_FAST_FAILURES
+
+
+def test_plan_uses_separate_pgqueuer_process_roles():
+    children = WorkerSupervisor()._plan()
+    scheduler = next(child for child in children if child.name == "scheduler")
+    workers = [child for child in children if child.name.startswith("worker-")]
+
+    assert scheduler.args == ["-m", "marquee.core.jobs.pgqueuer_scheduler"]
+    assert scheduler.env is not None
+    assert scheduler.env["MARQUEE_PROCESS_ROLE"] == "scheduler"
+    assert workers
+    assert all(
+        child.args == ["-m", "marquee.core.jobs.pgqueuer_worker"] for child in workers
+    )
+    assert all(
+        child.env is not None and child.env["MARQUEE_PROCESS_ROLE"] == "worker"
+        for child in workers
+    )

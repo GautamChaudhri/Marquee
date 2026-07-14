@@ -72,9 +72,23 @@ class WorkerSupervisor:
         self._shutting_down = False
 
     def _plan(self) -> list[_Child]:
-        children = [_Child("scheduler", ["-m", "marquee.core.jobs.scheduler"])]
+        scheduler_env = {**os.environ, "MARQUEE_PROCESS_ROLE": "scheduler"}
+        children = [
+            _Child(
+                "scheduler",
+                ["-m", "marquee.core.jobs.pgqueuer_scheduler"],
+                env=scheduler_env,
+            )
+        ]
         for index in range(max(1, settings.JOB_EMBEDDED_WORKER_COUNT)):
-            children.append(_Child(f"worker-{index}", ["-m", "marquee.core.jobs.worker"]))
+            worker_env = {**os.environ, "MARQUEE_PROCESS_ROLE": "worker"}
+            children.append(
+                _Child(
+                    f"worker-{index}",
+                    ["-m", "marquee.core.jobs.pgqueuer_worker"],
+                    env=worker_env,
+                )
+            )
         if subtitle_settings.subgen_deployment == "embedded":
             spec = build_spawn_spec()
             children.append(

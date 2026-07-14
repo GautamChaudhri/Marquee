@@ -36,7 +36,9 @@ from marquee.config import settings
 #   /health              — probes / load balancers can't send a key.
 #   /api/webhooks/subgen — authenticated by its own SUBGEN_CALLBACK_TOKEN instead
 #                          (audit-only, off by default; set that token when enabling Subgen).
-_EXEMPT_PATHS = frozenset({"/health", "/api/webhooks/subgen"})
+_EXEMPT_PATHS = frozenset(
+    {"/health", "/health/live", "/health/ready", "/api/webhooks/subgen"}
+)
 
 # Hosts treated as same-machine for the AUTH_ALLOW_LOCAL bypass. Tailscale
 # (100.64.0.0/10) and LAN addresses are deliberately NOT here.
