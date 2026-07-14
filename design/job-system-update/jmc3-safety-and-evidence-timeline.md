@@ -667,3 +667,341 @@ Shared implementer log for JMC3A → JMC3B → JMC3C. Append after every phase c
   `542df2e`, `138c866`, `c0959dc`, and `be65864`. ByteRover context query, swarm query, and
   final curate were each retried through RTK and failed with exit 127 because the local `brv`
   executable is absent; no context-tree change was claimed or made.
+
+## JMC3C Phase C0 — prerequisite and reachability audit in progress (2026-07-13)
+
+- Starting branch/HEAD: `job-manager` at `43ed380` (`complete jmc3b b5 timeline`), clean
+  worktree, configured author `Gautam Chaudhri <gautam.chaudhri@gmail.com>`. No other agent
+  owns overlapping files.
+- Verified JMC3A/B completion against the shared timeline and Git: implementation commits
+  `400f724`, `e6a451e`, `542df2e`, `138c866`, `c0959dc`, and `be65864` are present; sole
+  Alembic head recorded by B5 is `0003_jmc3b`; B5 retained baseline is 983 passed, 21 inherited
+  failures, and 2 warnings with `DEBUG=true`; generated contracts are at 198 paths.
+- Corrected reachability audit: `JobManager.__getattr__` is a fail-closed compatibility facade.
+  Legacy `create_and_run` callers, including `POST /api/system/backup`, raise
+  `UnmigratedJobPlatformError` and the global handler returns the stable 503
+  `job_platform_unmigrated` envelope. `tests/test_backup.py` already proves the backup POST is
+  503. This is not production dispatch. The registry validates that only `system_noop` may be
+  enabled; delivery resolves through `JOB_DEFINITION_REGISTRY.for_dispatch`; and
+  `EXECUTION_HANDLERS` contains only `system_noop`.
+- `BackupService.restore_backup()` verifies only and returns all restored fields false; no
+  production caller starts `BackupService.scheduler_loop()`. The remaining live public backup
+  mutation is `DELETE /api/system/backups/{backup_id}`, assigned to C1 for removal or fail-closed
+  treatment. The dormant legacy `pg_dump` URL argv is likewise a C1 replacement target, not a
+  current API/worker/scheduler bypass.
+- Baselines in progress: PostgreSQL tools are 18.3, Node is 22.22.2, npm is 10.9.7. Disposable
+  PostgreSQL ownership, `DATA_DIR`, and backup roots will be proven through the test harness
+  before C1; no operator database, data directory, or backup root has been touched.
+- ByteRover query was retried through RTK and its daemon again lost connection before completing;
+  curation is unavailable and will not be claimed. Serena and RTK remain available.
+- Current phase: **C0 in progress**. Exact next steps: add reachability/static regression tests,
+  freeze backup/route/registry/delivery/ingress contracts, run focused and full retained gates,
+  record schema/PgQueuer/disposable-root evidence, commit C0, then begin C1.
+- Pending operator actions: existing JMC3B deployment-host restart, LISTEN/NOTIFY, cgroup,
+  mount/permission, long-output, retention-capacity, and real-storage backup/restore smokes
+  remain pending. No operator action has been performed in C0.
+- Blocked before C0 commit/C1: the configured PostgreSQL target `127.0.0.1:5432` and the
+  previously recorded disposable target `127.0.0.1:55442` both returned `pg_isready: no
+  response`. The test harness therefore cannot create its owned `test_<uuid>` schema and
+  `alembic check` cannot connect. Offline `alembic upgrade head --sql` rendered through
+  `0003_jmc3b`; no migration was applied. RTK's `pytest` proxy incorrectly reports no tests
+  collected, while the RTK-proxied `.venv/bin/python -m pytest --collect-only` found the 11
+  focused backup tests. Do not count either focused or full suite as run until an owned
+  disposable PostgreSQL server is available. Ruff, `git diff --check`, OpenAPI drift check,
+  frontend check (16 inherited warnings/0 errors), lint, and build passed. Existing C0 tests
+  are uncommitted and await the required database gate.
+
+### C0 resumed verification — owned PostgreSQL 18.3 target (2026-07-13)
+
+- The supplied disposable cluster was verified through the approved unsandboxed path only:
+  `marquee_test|marquee|/tmp/marquee-jmc3c-pg.hJ72cU/data|18.3` at
+  `127.0.0.1:55443`. Its root and data directory are
+  `/tmp/marquee-jmc3c-pg.hJ72cU` and `/tmp/marquee-jmc3c-pg.hJ72cU/data`; the supplied role,
+  database, and data-directory setting prove the target is the JMC3C-owned cluster. The initial
+  empty cluster was migrated and then reset only with
+  `DEBUG=true DB_URL=postgresql+asyncpg://marquee@127.0.0.1:55443/marquee_test`; no ordinary
+  database, configured operator `DATA_DIR`, or operator backup root was accessed.
+- The execution sandbox denies PostgreSQL TCP and Unix sockets, so sandboxed readiness results
+  are not evidence of server state. All PostgreSQL readiness, migration, reset, schema, and test
+  commands below used the approved unsandboxed execution path. `pg_isready` reported ready there.
+- Schema/PgQueuer checks passed on this target: `alembic check` reported no new upgrade
+  operations and the idempotent migration/runtime-schema verification passed. The durable
+  fingerprints are Alembic `0003_jmc3b`, schema marker
+  `marquee:0003_jmc3b:none:16adc26f7e28158bbc77dd1f8fa9ce283b429b07968f62db757d918aa403db61`,
+  and PgQueuer
+  `pgqueuer:1.1.1:durable:19377622f52c906a7a5cb6e68b4db6d30e7cc9534aac933c156c33666f4eb21a`.
+- The focused C0 reachability/backup/definition suite actually executed with the proven pytest
+  form and passed: `19 passed in 0.93s` for `tests/test_backup.py`,
+  `tests/test_job_definition_documents.py`, and `tests/test_jmc3a_contract_freeze.py`.
+  This includes the frozen evidence that only `system_noop` is enabled/executable, legacy
+  create-and-run routes return the stable 503 envelope, backup POST cannot reach
+  `BackupService`, no scheduler starts, restore is validation-only, and DELETE is the remaining
+  C1-assigned inline backup mutation.
+- The initial complete retained run produced `986 passed, 22 failed, 2 warnings in 56.75s`.
+  Its only extra failure was environmental: `tests/test_batch_runner.py::_ctx()` hard-coded
+  `/tmp/unused` for output roots, and `_rank()` calls `place_gated()` which creates
+  `/tmp/unused/gated` even with no gated posters. That shared owner-managed directory is mode
+  `0700`, so the result varied by the OS identity running pytest. The repair changes only that
+  test helper to require an explicit root and gives the two scorer-isolation contexts independent
+  `tmp_path / movie-<id>` roots. Assertions and scorer-failure behavior are unchanged;
+  `/tmp/unused` was not chmodded, reused, deleted, or otherwise modified.
+- Post-repair tests actually executed on the owned cluster: the individual scorer-isolation test
+  passed (`1 passed in 0.35s`), `tests/test_batch_runner.py` passed (`14 passed in 0.36s`), and
+  the C0 focused reachability/backup/definition suite passed again (`19 passed in 0.96s`). The
+  complete retained suite then passed the required comparison exactly:
+  `987 passed, 21 failed, 2 warnings in 55.61s`. The 21 failures are the retained JMC3B baseline;
+  the four C0 reachability tests account for the expected pass-count increase from 983 to 987.
+- Non-database gates passed: `ruff check marquee tests`; OpenAPI drift check (198 paths);
+  frontend check (16 inherited warnings, 0 errors), lint, and build; and `git diff --check`.
+  The short RTK pytest proxy's previous zero-test response remains excluded from all results;
+  only `.venv/bin/python -m pytest` executions are counted above.
+- ByteRover was retried once through its configured RTK interface and again lost its daemon
+  connection. The outage remains recorded; no ByteRover query or curation is claimed. Serena,
+  current source, Git, the shared timeline, and RTK supplied the audit evidence.
+- Current phase: **C0 verification complete; commit pending**. No C0 operator action remains.
+  The owned JMC3C PostgreSQL cluster remains running for later phases. Exact next steps: commit
+  C0 with the configured Git author, append its hash and verification record here, then begin C1
+  with the locked maintenance-barrier and backup-unit contracts.
+
+### C0 completed (2026-07-13)
+
+- Completed work: froze the corrected fail-closed reachability contract in tests; proved only
+  `system_noop` is dispatch-enabled/executable; proved legacy create routes return the stable 503,
+  backup POST cannot reach `BackupService`, no backup scheduler starts, and restore validates only;
+  and made the unrelated batch-runner scorer-isolation fixture use per-test `tmp_path` roots.
+  C0 implementation commit: `a1c3859` (`complete jmc3c c0`), using the configured repository
+  author only.
+- Focused/full verification: scorer-isolation `1 passed`; batch-runner module `14 passed`; C0
+  reachability/backup suite `19 passed`; retained suite `987 passed, 21 retained failures,
+  2 warnings`; Ruff, OpenAPI (198 paths), frontend check (16 inherited warnings/0 errors), lint,
+  build, schema/PgQueuer checks, and `git diff --check` passed. PostgreSQL-dependent commands
+  ran only through the approved unsandboxed path against the supplied disposable cluster.
+- Current phase: **C1 in progress**. Exact next steps: implement the C1 exclusive maintenance
+  consistency barrier, writer-quiescence/evidence sealing, credential-safe PostgreSQL maintenance
+  CLI, confined archive construction, atomic publication, incomplete-backup handling, and remove
+  or fail-close the remaining inline backup mutations before enabling any definition.
+- Deviations: none from JMC3C. The `tmp_path` fixture repair removes external identity-dependent
+  test state without changing application behavior; `/tmp/unused` was untouched.
+- Performed operator actions: none. Pending operator actions remain the pre-existing deployment
+  restart/LISTEN-NOTIFY/cgroup/mount-permission/long-output/retention-capacity and real-storage
+  backup/restore smokes; the owned disposable PostgreSQL cluster remains running for C1.
+
+### C1 verification complete; commit pending (2026-07-13)
+
+- Completed work: backup creation now holds JMC3A exclusive maintenance through live identity
+  capture, dump, DATA_DIR archive, manifest fsync, atomic publication, and rotation. The archive
+  is streamed with deterministic member order and metadata; it rejects symlinked/out-of-root
+  sources and captures member/component checksums. The manifest carries format, safe hashed
+  database identity, PostgreSQL version, Marquee/PgQueuer schema-contract markers, and immutable
+  configuration revision identity. Incomplete/tampered/unsafe/unmanifested archives are not
+  listed or verified. `pg_dump` receives discrete host/port/user/database argv and a mode-0600,
+  finally-deleted `PGPASSFILE`; the password never appears in argv or manifest.
+- Product boundary: removed public restore and DELETE backup routes; create remains routed only
+  through the fail-closed legacy facade. Added the operator-only maintenance entrypoint for backup
+  and read-only verification. OpenAPI and TypeScript contracts now expose 196 paths.
+- Focused verification: backup suite `15 passed`; backup/barrier/delivery focus `50 passed`.
+  Full retained suite: `991 passed, 21 retained failures, 2 warnings in 57.27s`; the four added
+  passes are C1 safety tests, and the failures match the retained baseline. Ruff, Alembic check,
+  OpenAPI drift, frontend check (16 inherited warnings/0 errors), lint, build, and diff check
+  passed. PostgreSQL access used only the approved unsandboxed disposable cluster.
+- Current phase: **C1 verification complete; commit pending**. Exact next steps: commit C1 and
+  append its hash, then implement C2's guarded offline fresh-target restore. ByteRover was again
+  unavailable (daemon connection loss); no ByteRover curation is claimed.
+
+### C1 completed (2026-07-13)
+
+- C1 implementation commit: `cbe0ec5` (`complete jmc3c c1`), using the configured repository
+  author only. The recorded verification is the focused 15/50-pass suites, retained
+  `991 passed, 21 failed, 2 warnings`, schema/contract/frontend gates, and the unchanged
+  production registry where only `system_noop` remains enabled.
+- Current phase: **C2 in progress**. Exact next steps: add the offline-only restore command,
+  prove exact confirmed fresh database and empty owned data target before mutation, verify the
+  complete pair before target creation, and certify restoration/linkage only on disposable roots.
+- Deviations: none. No operator database, normal `DATA_DIR`, backup root, or `/tmp/unused` path
+  was modified. Pending operator smokes remain unchanged; the owned PostgreSQL cluster remains
+  running for C2.
+
+### C2 verification complete; commit pending (2026-07-13)
+
+- Completed work: added `restore-backup` to the operator-only maintenance CLI and implemented
+  pre-verification, exact database-name confirmation, acknowledgement, safe identifier checks,
+  explicit approved restore-root confinement, source-target inequality, and absent/empty target
+  guards. Restore creates only a fresh `template0` database, uses credential-safe `pg_restore`
+  argv with fail-fast/single-transaction flags, certifies the restored Marquee/PgQueuer schema,
+  extracts only manifest-verified members into the fresh data target, and cleans only the owned
+  new targets on failure.
+- Certification: the disposable end-to-end test created and dropped a unique
+  `jmc3c_restore_<random>` database on `127.0.0.1:55443`, restored a real custom-format dump,
+  certified the schema contracts, and restored an owned DATA_DIR subtree. It never touched an
+  operator database or normal DATA_DIR. Backup suite `17 passed`; retained suite
+  `993 passed, 21 retained failures, 2 warnings in 54.95s`; Ruff passed.
+- Current phase: **C2 verification complete; commit pending**. Exact next steps: commit C2 and
+  append its hash, then implement C3's pure-ASGI received-byte enforcement and SvelteKit proxy
+  streaming limits. ByteRover remains unavailable (daemon connection loss); no curation claimed.
+
+### C2 completed (2026-07-13)
+
+- C2 implementation commit: `e2830f0` (`complete jmc3c c2`), using the configured repository
+  author only. The unique disposable database and fresh target data directory were removed by the
+  test cleanup; the supplied PostgreSQL cluster remains available for the remaining phases.
+- Current phase: **C3 in progress**. Exact next steps: inventory the actual ASGI/proxy body path,
+  add the shared limit catalog and streaming receive wrapper, remove proxy buffering, regenerate
+  contracts if errors change, and certify malformed/chunked/slow/over-limit cases.
+- Deviations: none. Pending operator smokes remain unchanged.
+
+### C3 completed (2026-07-13)
+
+- C3 implementation commit: `d2b8397` (`enforce streaming request-body limits at both ingress
+  layers`), using the configured repository author only. Resumed from the in-progress working tree
+  left after C2 (`marquee/api/request_limits.py`, `tests/test_request_limits.py`, `marquee/main.py`,
+  and the SvelteKit `[...path]` proxy); the draft was hardened rather than reused as-is.
+- Backend (C12/C14/C15): `RequestBodyLimitMiddleware` is a pure-ASGI `receive` wrapper — no
+  `BaseHTTPMiddleware`, no `request.body()`, no full-body buffer. `Content-Length` is only an early
+  hint: absent → allowed, malformed/negative/non-decimal/conflicting → canonical 400
+  (`invalid_content_length`), declared-over-limit → canonical 413 (`request_body_too_large`). Actual
+  `http.request` bytes are counted across chunks and are authoritative; on over-limit the wrapper
+  sends one canonical 413 and returns `http.disconnect` to the inner app so the route commits no
+  work, then swallows the disconnect-driven unwind. Response streaming is untouched (the wrapper only
+  observes `http.response.start`). Limits come from a code-owned catalog keyed by normalized
+  method+path: bodyless methods (GET/HEAD/OPTIONS/TRACE) → 0; an empty per-endpoint override table
+  (no multipart/upload route exists in the product API); unmatched → the global
+  `settings.MAX_REQUEST_BODY_BYTES` default (1 MiB), never a larger fallback. The header-only
+  `@app.middleware("http") limit_body_size` was removed and replaced with
+  `app.add_middleware(RequestBodyLimitMiddleware)`; the now-unused `Response` import was dropped.
+- Frontend (C13): the first public SvelteKit proxy no longer calls `request.arrayBuffer()`. It
+  validates the declared length against the same 1 MiB cap, streams `request.body` through a counting
+  `TransformStream`, and aborts upstream at the cap. A dedicated `tooLarge` flag — not the caught
+  error identity — drives the 413 because aborting can surface as `AbortError`. `content-length` is
+  stripped before forwarding and `duplex: 'half'` is set on the streamed request (verified required:
+  Node 22.22.2 / undici throws otherwise; the type is present in `undici-types` and cast explicitly).
+  The 400/413 envelope now mirrors the backend `{detail, code}`. Existing SSE exemption and non-SSE
+  timeout behavior are preserved (`AbortSignal.any` combines the size-abort and timeout signals).
+- Product-route boundary: no route/error contract changed, so OpenAPI stays current at **196 paths**
+  and the generated TypeScript regenerates with no diff. The 400/413 responses are emitted by
+  middleware and are intentionally not documented endpoints.
+- Focused verification (owned disposable cluster `127.0.0.1:55443`, approved unsandboxed path):
+  `tests/test_request_limits.py` **18 passed** — catalog, bodyless-zero, declared oversize, conflicting/
+  negative/non-decimal length, identical-duplicate accept, exactly-at-limit pass, one-byte-over,
+  chunked/omitted-length, lying-small-length, non-http passthrough, and real-FastAPI integration for
+  at-limit reaching the handler, over-limit invoking no handler (with the outer BaseHTTPMiddleware
+  header still applied), streaming request over-limit, untouched response streaming, and bounded
+  concurrent uploads.
+- Full retained suite: **1011 passed, 21 retained failures, 2 warnings in 56.49s** — the 18 new C3
+  tests are the only pass-count delta from the C2 baseline (993); the 21 failures are the exact
+  retained JMC3B/JMC2C set and no failure, error, skip, or xfail was added. `ruff check marquee
+  tests`, `git diff --check`, OpenAPI drift (196 paths), generated-TypeScript drift, frontend check
+  (16 inherited warnings/0 errors), lint, and production build all passed.
+- Current phase: **C3 complete; C4 next**. Exact next steps: run the complete combined
+  fence/process/lock/path/staging/progress/log/artifact/event/backup/restore/ingress matrix under
+  saturation and injected failure; rerun all backend/frontend/generated/schema gates and compare
+  retained failures; record or clearly defer the operator-only cgroup, PostgreSQL restart, worker
+  SIGKILL, proxy, and restore smokes; and record the exact JMC4 starting point with only
+  `system_noop` production-enabled.
+- Deviations: none from the C3 contracts. The commit summary is the descriptive imperative form
+  rather than `complete jmc3c c3`; the phase mapping is recorded here by hash.
+- Performed operator actions: none. Pending operator smokes are unchanged (deployment restart,
+  LISTEN/NOTIFY disruption, cgroup, mount/permission, long-output/retention-capacity, and real-storage
+  backup/restore); the disposable PostgreSQL cluster remains running for C4. ByteRover remains
+  unavailable (daemon connection loss); no curation is claimed.
+
+### C4 completed — JMC3 certified (2026-07-13)
+
+- C4 implementation commit: `61745c2` (`certify jmc3 ingress and product boundary on the real app`),
+  using the configured repository author only. C4 adds one consolidated certification module,
+  `tests/test_jmc3_certification.py`, and no production source: the ingress limiter and product
+  boundary were already implemented in C1–C3. The module drives the real `marquee.main:app` (not a
+  minimal test app) and proves the streaming limiter is actually wired into production (over-limit →
+  canonical 413), that the C1-removed inline restore/delete backup routes stay gone (404/405), and
+  that exactly `system_noop` remains production-enabled.
+- Combined matrix run (owned disposable cluster `127.0.0.1:55443`, approved unsandboxed path). Full
+  retained suite: **1014 passed, 21 retained failures, 2 warnings in 58.16s** — the three new C4
+  tests are the only pass-count delta from C3 (1011); the 21 failures are the exact retained
+  JMC3B/JMC2C set and no failure, error, skip, or xfail was added. Focused combined JMC3 selection
+  (`test_jmc3a_contract_freeze`, `test_jmc3b_events`, `test_backup`, `test_request_limits`,
+  `test_jmc3_certification`, `test_job_definition_documents`): **59 passed**. The complete
+  fence/process/lock/path/staging/progress/log/artifact/event matrix (JMC3A/B integrated canary and
+  subsystem suites), the backup/restore certification (C1/C2), and the ingress certification (C3/C4)
+  all execute inside that full retained suite, which is the combined saturation/fault matrix compared
+  here against the baseline.
+- Static/schema/generated gates: `ruff check marquee tests` passed; `git diff --check` clean;
+  owned-cluster `alembic check` reports **no new upgrade operations**; sole Alembic head **`0003_jmc3b`**;
+  OpenAPI current at **196 paths**; generated TypeScript regenerated with no diff (confirmed at C3).
+  Frontend is unaffected by C4 (test-only) and was green at C3 (svelte-check 0 errors/16 inherited
+  warnings, lint clean, production build exit 0).
+- Current phase: **JMC3 complete and certified.** JMC4 may begin from the JMC3C implementation
+  commits below. No real feature handler was enabled; production dispatch remains exactly
+  `control/system_noop`.
+- Deviations: none from the C4 contracts. As in C3, the commit summary is the descriptive imperative
+  form rather than `complete jmc3c c4`; the phase mapping is recorded here by hash. No new automated
+  process-kill/cgroup/restart saturation beyond the existing JMC3A/B canary and the C3 bounded
+  concurrent-upload proof was added, because those remain operator-host smokes (below); request-upload
+  saturation is covered by the per-request byte-counting design and the bounded concurrency test.
+
+## Final JMC3 operator handoff (§12)
+
+- **All JMC3 implementation hashes.** JMC3A: A0 `b312cc5`, A1 `24675b8`, A2 `ee4127f`, A3 `515ee36`,
+  A4 `b9460d5`, A5 `2e1197f`. JMC3B: B0 `400f724`, B1 `e6a451e`, B2 `542df2e`, B3 `138c866`,
+  B4 `c0959dc`, B5 `be65864`. JMC3C: C0 `a1c3859`, C1 `cbe0ec5`, C2 `e2830f0`, C3 `d2b8397`,
+  C4 `61745c2`. Each phase has an adjacent `record jmc3c/jmc3b … timeline` commit.
+- **Retained failures.** Exactly 21 inherited JMC3B/JMC2C application failures plus, on the ordinary
+  operator role only, 11 `CREATEDB`-privilege migration errors that pass on a role allowed to create
+  databases. No JMC3 phase added a failure, skip, or `xfail`. Final full retained pass count on the
+  owned cluster: **1014**.
+- **Schema / contract versions.** Sole Alembic head `0003_jmc3b`; schema marker
+  `marquee:0003_jmc3b:none:16adc26f7e28158bbc77dd1f8fa9ce283b429b07968f62db757d918aa403db61`;
+  PgQueuer `pgqueuer:1.1.1:durable:19377622f52c906a7a5cb6e68b4db6d30e7cc9534aac933c156c33666f4eb21a`.
+  OpenAPI at 196 paths; generated TypeScript deterministic and drift-free.
+- **Budgets.** Connections API pool 15 + API event listener 1 + worker 8 (incl. four safety-gate
+  sessions) + scheduler 3 + migration 1 = **28 configured / 32 maximum**. Host soft FD limit 524,288.
+- **Evidence/retention settings.** Semantic state in `jobs`, `job_attempts`, `job_events`, `job_logs`,
+  `job_artifacts`; physical evidence confined below `DATA_DIR/jmc3/evidence/{logs,artifacts}`. Logs:
+  sanitized UTF-8 JSONL capped at exactly 100 MiB/attempt with one reserved truncation record, 30-day
+  terminal retention, atomic gzip seal, stored size + SHA-256. Virtual artifacts capped at 1 MiB,
+  event documents at 1,000 rows. Events: `job_events.id` global cursor, `marquee_job_events_v1`
+  wakeup, ≤256-row tail ranges, 128-frame client queues, 128-row replay.
+- **Backup format and CLI.** One logical pair — PostgreSQL custom-format `marquee.dump`, confined
+  `DATA_DIR` `state.tar.gz`, and a checksummed deterministic `manifest.json` — published temp →
+  fsync → atomic rename inside the backup root; incomplete/tampered/unmanifested archives are never
+  listed or restorable. Operator CLI: `python -m marquee.maintenance` with `backup`,
+  `verify-backup --backup-id`, and `restore-backup --backup-id --target-database
+  --confirm-database-name --target-data-dir --allow-data-loss-or-create-target`. `pg_dump`/`pg_restore`
+  use discrete host/port/user/database argv plus a mode-0600, finally-deleted `PGPASSFILE`; the
+  password never appears in argv, manifest, logs, or errors. Include roots: canonical logs, artifacts,
+  ml/profile state, feedback/training, run archives, poster/embedding/taste caches. Excludes: staging,
+  incomplete backups, credential files, sockets, and rebuildable ephemeral data (declared in the
+  manifest). Restore is offline-only into a fresh confirmed `template0` database and a fresh empty
+  target data dir, verified (schema/PgQueuer/config/evidence/linkage) before publication.
+- **Disposable restore result.** The C2 end-to-end test created and dropped a unique
+  `jmc3c_restore_<random>` database on `127.0.0.1:55443`, restored a real custom-format dump, certified
+  the Marquee/PgQueuer schema contracts, and restored an owned DATA_DIR subtree; no operator database
+  or normal DATA_DIR was ever touched.
+- **Ingress limits.** Both public ingress layers enforce a code-owned catalog: global default
+  `MAX_REQUEST_BODY_BYTES` = **1 MiB**, bodyless methods (GET/HEAD/OPTIONS/TRACE) → 0, no per-endpoint
+  override entries (no multipart/upload route exists), unmatched → default (never larger). Backend is a
+  pure-ASGI `receive` wrapper (Content-Length is an early hint only; actual bytes authoritative;
+  over-limit → 413 + `http.disconnect`, no handler commit, no buffering). The SvelteKit `[...path]`
+  proxy streams and counts the body (no `arrayBuffer`/clone), aborts upstream at the cap, sets
+  `duplex: 'half'`, and returns the same `{detail, code}` envelope: 400 `invalid_content_length`,
+  413 `request_body_too_large`.
+- **Performed real smokes (automated, disposable roots).** PostgreSQL advisory-lock contention/release;
+  real POSIX session/group cancellation escalation and death confirmation; dual 1 MiB pipe drain;
+  confined traversal/symlink/descriptor-swap/archive/`EXDEV` fixtures; same-filesystem fsync/atomic
+  replace; durable-events commit/rollback notify + listener tail/replay/overflow; bounded log
+  seal/recovery/retention; artifact expiration/reconciliation; end-to-end backup create/verify and a
+  real fresh-target restore with schema/linkage certification; real-app streaming 413 and chunked/slow/
+  concurrent ingress rejection.
+- **Pending operator smokes (host-only, not automatable here).** Delegated cgroup-v2
+  `cgroup.kill`/`populated=0`; real API/worker/listener SIGKILL and restart while a ticket is picked;
+  startup orphan/workspace reconciliation across restart; PostgreSQL restart and LISTEN/NOTIFY
+  disruption; multiprocess gate contention and connection loss; concurrent symlink/path-swap and
+  cross-device mount behavior on the deployment filesystem; long-running 100-MiB/high-output log
+  capacity and 30-day retention/cleanup; real-storage backup rotation and an operator `restore-backup`
+  into a maintenance environment; and the SvelteKit proxy streaming/abort smoke under a real Node
+  adapter. Also inherited: apply `0002_jmc2a`→`0003_jmc3b` (live DB reports obsolete `b1c2d3e4f5a6`) or
+  the sanctioned development reset; rerun the 11 `CREATEDB` migration tests with a privileged role;
+  evaluate the four low-severity npm advisories. ByteRover curation of the completed JMC3 architecture
+  remains outstanding because its local `brv` executable/daemon has been unavailable throughout.
+- **Exact JMC4 starting condition.** Branch `job-manager`; the working tree is clean at C4. Production
+  dispatch is exactly `control/system_noop`; `backup_create` and all other definitions remain defined
+  but dispatch-disabled. JMC4/Chunk 5 migrates the canonical read-only and destructive-maintenance
+  handlers (including `backup_create`) onto the runtime; no such handler may be enabled before then.

@@ -14242,47 +14242,6 @@
         ]
       }
     },
-    "/api/system/backups/{backup_id}": {
-      "delete": {
-        "description": "Delete a single local rollback backup directory.",
-        "operationId": "delete_backup_api_system_backups__backup_id__delete",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "backup_id",
-            "required": true,
-            "schema": {
-              "title": "Backup Id",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Delete Backup",
-        "tags": [
-          "system"
-        ]
-      }
-    },
     "/api/system/heal": {
       "post": {
         "description": "Run the self-heal poster existence scan on demand.",
@@ -14429,47 +14388,6 @@
           }
         },
         "summary": "Reset Database Endpoint",
-        "tags": [
-          "system"
-        ]
-      }
-    },
-    "/api/system/restore": {
-      "post": {
-        "description": "Restore a backup and signal that a process restart is required.",
-        "operationId": "restore_backup_api_system_restore_post",
-        "parameters": [
-          {
-            "in": "query",
-            "name": "backup_id",
-            "required": true,
-            "schema": {
-              "title": "Backup Id",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "202": {
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Restore Backup",
         "tags": [
           "system"
         ]

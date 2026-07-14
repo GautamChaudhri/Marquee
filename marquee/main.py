@@ -12,10 +12,11 @@ from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse
 
 from marquee import __version__
 from marquee.api.auth import require_api_key
+from marquee.api.request_limits import RequestBodyLimitMiddleware
 from marquee.config import settings
 from marquee.core.jobs.manager import UnmigratedJobPlatformError
 from marquee.core.pipeline_config import migrate_legacy_runtime_state
@@ -245,18 +246,7 @@ if settings.DEBUG:
         allow_credentials=False,
     )
 
-
-# Reject oversized bodies before they reach any handler.
-@app.middleware("http")
-async def limit_body_size(request: Request, call_next):
-    cl = request.headers.get("content-length")
-    if cl and int(cl) > settings.MAX_REQUEST_BODY_BYTES:
-        return Response(
-            status_code=413,
-            content='{"detail":"Request body too large"}',
-            media_type="application/json",
-        )
-    return await call_next(request)
+app.add_middleware(RequestBodyLimitMiddleware)
 
 
 # Baseline security headers (full CSP arrives with the web UI).
