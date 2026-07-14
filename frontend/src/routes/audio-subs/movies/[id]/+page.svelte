@@ -415,7 +415,7 @@
 					onSettled?.(job);
 				}
 			},
-			{ eventsUrl: `/api/media-jobs/${jobId}/events`, fetchJob: getMediaJob }
+			{ eventsUrl: `/api/jobs/${jobId}/snapshot`, fetchJob: getMediaJob }
 		);
 	}
 

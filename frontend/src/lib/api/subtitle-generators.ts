@@ -23,7 +23,7 @@ export function submitGeneration(
 	if (useMocks()) {
 		return Promise.resolve({
 			job_id: `job-mock-gen-${Date.now()}`,
-			events_url: `/api/media-jobs/job-mock-gen-${Date.now()}/events`
+			events_url: `/api/jobs/job-mock-gen-${Date.now()}/snapshot`
 		});
 	}
 	return apiSend<{ job_id: string; events_url: string }>(
@@ -42,7 +42,7 @@ export function submitMovieGeneration(
 	if (useMocks()) {
 		return Promise.resolve({
 			job_id: `job-mock-gen-${Date.now()}`,
-			events_url: `/api/media-jobs/job-mock-gen-${Date.now()}/events`
+			events_url: `/api/jobs/job-mock-gen-${Date.now()}/snapshot`
 		});
 	}
 	return apiSend<{ job_id: string; events_url: string }>(

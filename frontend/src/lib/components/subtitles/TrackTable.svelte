@@ -157,7 +157,7 @@
 	function monitorJob(jobId: string, onDone: () => Promise<void> | void): Promise<void> {
 		return new Promise((resolve, reject) => {
 			const unsub = subscribe(
-				`/api/media-jobs/${jobId}/events`,
+				`/api/jobs/${jobId}/snapshot`,
 				['message', 'done'],
 				(type, data: any) => {
 					if (type === 'message') {
@@ -188,12 +188,12 @@
 					}
 				}
 			);
-			// If the EventSource connection itself fails, reject so the UI
+			// If the subscription itself fails, reject so the UI
 			// doesn't hang forever.
 			setTimeout(() => {
 				if (progressPercent < 100 && progressPercent > 0) {
 					// The job may have finished while we were disconnected — poll once.
-					fetch(`/api/media-jobs/${jobId}`)
+					fetch(`/api/jobs/${jobId}/snapshot`)
 						.then((r) => r.json())
 						.then((j) => {
 							if (j.status === 'succeeded' || j.status === 'completed') {

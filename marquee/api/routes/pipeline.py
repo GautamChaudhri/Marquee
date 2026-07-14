@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy import exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -200,10 +200,7 @@ async def run_pipeline(
     return response
 
 
-@router.get("/runs/{run_id}/events")
-async def stream_events(run_id: str):
-    """Compatibility redirect to the worker-independent durable event stream."""
-    return RedirectResponse(url=f"/api/jobs/{run_id}/events", status_code=307)
+
 
 
 async def _load_run(db: AsyncSession, run_id: str) -> PipelineRun:
@@ -226,7 +223,7 @@ async def get_run_results(
         return {
             "run_id": run_id,
             "status": "running",
-            "events_url": f"/api/pipeline/runs/{run_id}/events",
+            "status_url": f"/api/jobs/{run_id}/snapshot",
         }
 
     archive = run_manager.load_archive(run_id, run.archive_path)

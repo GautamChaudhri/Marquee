@@ -2,7 +2,24 @@
  *  or component, and always hits the same-origin proxy at `/api/*`
  *  (src/routes/api/[...path]/+server.ts), which injects the API key. */
 
+import type { paths } from './generated/openapi';
+
 export type Fetch = typeof globalThis.fetch;
+
+type BackendPath = keyof paths & string;
+type ClientPath<P extends string> = P extends `/api${infer Rest}` ? Rest : never;
+type RuntimePath<P extends string> = P extends `${infer Head}{${string}}${infer Tail}`
+	? `${Head}${string}${RuntimePath<Tail>}`
+	: P;
+type PathsWithMethod<M extends string> = {
+	[P in BackendPath]: M extends keyof paths[P] ? P : never;
+}[BackendPath];
+
+type WithQuery<P extends string> = P | `${P}?${string}`;
+
+export type ApiPathFor<M extends string> = WithQuery<RuntimePath<ClientPath<PathsWithMethod<M>>>>;
+export type ApiGetPath = ApiPathFor<'get'>;
+export type ApiMutationPath = ApiPathFor<'post' | 'put' | 'patch' | 'delete'>;
 
 export class ApiError extends Error {
 	constructor(
@@ -70,7 +87,7 @@ async function parse(res: Response): Promise<unknown> {
 
 export async function apiGet<T>(
 	fetch: Fetch,
-	path: string,
+	path: ApiGetPath,
 	params?: Record<string, unknown>
 ): Promise<T> {
 	const path_ = `${path}${buildQuery(params)}`;
@@ -85,12 +102,10 @@ export async function apiGet<T>(
 	return (await res.json()) as T;
 }
 
-export async function apiSend<T>(
-	fetch: Fetch,
-	method: 'POST' | 'PUT' | 'PATCH' | 'DELETE',
-	path: string,
-	body?: unknown
-): Promise<T> {
+export async function apiSend<
+	T,
+	M extends 'POST' | 'PUT' | 'PATCH' | 'DELETE' = 'POST' | 'PUT' | 'PATCH' | 'DELETE'
+>(fetch: Fetch, method: M, path: ApiPathFor<Lowercase<M>>, body?: unknown): Promise<T> {
 	const res = await fetchWithTimeout(
 		fetch,
 		`/api${path}`,

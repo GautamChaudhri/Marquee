@@ -1,0 +1,130 @@
+{
+  "action": {
+    "explanation": null,
+    "headline": "Generate English subtitles from audio stream 3"
+  },
+  "allowed_actions": [
+    "open_detail"
+  ],
+  "attention": {
+    "level": "normal",
+    "message": null,
+    "reason": "none",
+    "remediation": null
+  },
+  "evidence": {
+    "artifacts_available": false,
+    "logs_available": false
+  },
+  "failures": [],
+  "feature_area": "audio_subtitles",
+  "impact": {
+    "duration_seconds": 900.0,
+    "input_bytes": null,
+    "items_processed": null,
+    "label": null,
+    "output_bytes": null,
+    "storage_delta_bytes": null
+  },
+  "job_id": "job0000000000000000000000000001",
+  "job_type": "subtitle_generate",
+  "label": "Subtitle Generation",
+  "label_key": "jobs.subtitle_generate.label",
+  "links": {
+    "artifacts": "/api/jobs/job0000000000000000000000000001/artifacts",
+    "attempts": "/api/jobs/job0000000000000000000000000001/attempts",
+    "children": null,
+    "detail": "/projection-room/jobs/job0000000000000000000000000001",
+    "events": "/api/jobs/job0000000000000000000000000001/events",
+    "presentation": "/api/jobs/job0000000000000000000000000001/presentation",
+    "raw_error": null,
+    "raw_plan": null,
+    "raw_request": "/api/jobs/job0000000000000000000000000001/raw/request",
+    "raw_result": "/api/jobs/job0000000000000000000000000001/raw/result",
+    "snapshot": "/api/jobs/job0000000000000000000000000001/snapshot"
+  },
+  "presentation_family": "audio_subtitles",
+  "presenter_key": "jobs.subtitle_generate",
+  "presenter_version": 1,
+  "progress": null,
+  "sections": [
+    {
+      "facts": [
+        {
+          "label": "Provider",
+          "label_key": null,
+          "value": {
+            "text": "Embedded Subgen",
+            "type": "text"
+          }
+        },
+        {
+          "label": "Model",
+          "label_key": null,
+          "value": {
+            "text": "whisper-turbo",
+            "type": "text"
+          }
+        },
+        {
+          "label": "Output file",
+          "label_key": null,
+          "value": {
+            "text": "The.Expanse.S03E07.en.srt",
+            "type": "text"
+          }
+        }
+      ],
+      "kind": "facts",
+      "title": "Operation"
+    },
+    {
+      "kind": "before_after",
+      "rows": [
+        {
+          "after": {
+            "type": "number",
+            "unit": null,
+            "value": 1.0
+          },
+          "before": {
+            "type": "number",
+            "unit": null,
+            "value": 0.0
+          },
+          "changed": true,
+          "label": "External subtitles"
+        }
+      ],
+      "title": "Track inventory"
+    }
+  ],
+  "status": {
+    "label": "Succeeded",
+    "label_key": "jobs.status.succeeded",
+    "outcome": "succeeded",
+    "phase": "terminal",
+    "tone": "positive"
+  },
+  "subject": {
+    "artwork_key": null,
+    "context": [
+      "The Expanse",
+      "S03E07",
+      "MKV"
+    ],
+    "display_id": "media_file:314",
+    "display_name": "The.Expanse.S03E07.mkv",
+    "kind": "media_file",
+    "missing_live_subject": false,
+    "snapshot_at": "2026-07-13T09:59:00Z"
+  },
+  "suggested_actions": [],
+  "trigger": {
+    "initiator": "Library page",
+    "kind": "manual",
+    "label": "Started manually"
+  },
+  "version": 1,
+  "warnings": []
+}

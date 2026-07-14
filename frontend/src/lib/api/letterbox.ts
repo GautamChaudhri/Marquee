@@ -20,6 +20,11 @@ import type {
 	TvReplaceReadyResponse
 } from './types';
 import type { JobSnapshot } from './jobs';
+import { cancelJob as cancelCanonicalJob } from './jobs';
+import {
+	confirmJob as confirmCanonicalMediaJob,
+	getMediaJob as getCanonicalMediaJob
+} from './media-jobs';
 
 // ── Single-movie state + actions (also used by the film detail hub) ──────────
 
@@ -150,20 +155,45 @@ export function confirmJob(
 	fetchFn: Fetch,
 	jobId: string
 ): Promise<{ job_id: string; status: string }> {
-	return apiSend(fetchFn, 'POST', `/media-jobs/${jobId}/confirm`, {});
+	return confirmCanonicalMediaJob(fetchFn, jobId);
 }
 
 /** Fetch a media job's current snapshot, including its recorded error (if failed). */
-export function getMediaJob(fetchFn: Fetch, jobId: string): Promise<MediaJobSnapshot> {
-	return apiGet<MediaJobSnapshot>(fetchFn, `/media-jobs/${jobId}`);
+export async function getMediaJob(fetchFn: Fetch, jobId: string): Promise<MediaJobSnapshot> {
+	const job = await getCanonicalMediaJob(fetchFn, jobId);
+	return {
+		job_id: job.job_id,
+		operation: job.operation,
+		status: job.status,
+		stage: job.progress?.stage ?? null,
+		trigger: 'user',
+		media_file_id: job.media_file_id == null ? null : Number(job.media_file_id),
+		batch_id: null,
+		progress_done: job.progress?.percent ?? 0,
+		progress_total: 100,
+		plan: null,
+		result: job.result,
+		error:
+			job.error && typeof job.error === 'object'
+				? { error: String(job.error.error ?? 'Job failed') }
+				: typeof job.error === 'string'
+					? { error: job.error }
+					: null,
+		input_signature: null,
+		plan_expires_at: null,
+		confirmed_at: null,
+		created_at: job.created_at,
+		updated_at: job.updated_at
+	};
 }
 
 /** Cancel a media job. A planned/queued job is dropped; a running one is asked to stop. */
-export function cancelJob(
+export async function cancelJob(
 	fetchFn: Fetch,
 	jobId: string
 ): Promise<{ job_id: string; cancel_requested: boolean }> {
-	return apiSend(fetchFn, 'POST', `/media-jobs/${jobId}/cancel`, {});
+	const snapshot = await cancelCanonicalJob(fetchFn, jobId);
+	return { job_id: snapshot.job_id, cancel_requested: snapshot.cancel_requested };
 }
 
 export function listReencodeArtifacts(

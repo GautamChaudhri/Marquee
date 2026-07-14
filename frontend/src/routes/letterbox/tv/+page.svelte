@@ -189,7 +189,7 @@
 				}
 			},
 			{
-				eventsUrl: `/api/jobs/${jobId}/events`
+				eventsUrl: `/api/jobs/${jobId}/snapshot`
 			}
 		);
 	}

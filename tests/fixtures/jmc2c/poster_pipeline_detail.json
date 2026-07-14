@@ -1,0 +1,195 @@
+{
+  "action": {
+    "explanation": "Fetches candidates, filters junk, and ranks the survivors with the taste profile.",
+    "headline": "Select a poster from 47 candidates"
+  },
+  "allowed_actions": [
+    "open_detail"
+  ],
+  "attention": {
+    "level": "normal",
+    "message": null,
+    "reason": "none",
+    "remediation": null
+  },
+  "evidence": {
+    "artifacts_available": false,
+    "logs_available": false
+  },
+  "failures": [],
+  "feature_area": "ai_posters",
+  "impact": {
+    "duration_seconds": 900.0,
+    "input_bytes": null,
+    "items_processed": null,
+    "label": null,
+    "output_bytes": null,
+    "storage_delta_bytes": null
+  },
+  "job_id": "job0000000000000000000000000001",
+  "job_type": "poster_pipeline",
+  "label": "Poster Pipeline",
+  "label_key": "jobs.poster_pipeline.label",
+  "links": {
+    "artifacts": "/api/jobs/job0000000000000000000000000001/artifacts",
+    "attempts": "/api/jobs/job0000000000000000000000000001/attempts",
+    "children": null,
+    "detail": "/projection-room/jobs/job0000000000000000000000000001",
+    "events": "/api/jobs/job0000000000000000000000000001/events",
+    "presentation": "/api/jobs/job0000000000000000000000000001/presentation",
+    "raw_error": null,
+    "raw_plan": null,
+    "raw_request": "/api/jobs/job0000000000000000000000000001/raw/request",
+    "raw_result": "/api/jobs/job0000000000000000000000000001/raw/result",
+    "snapshot": "/api/jobs/job0000000000000000000000000001/snapshot"
+  },
+  "presentation_family": "ai_posters",
+  "presenter_key": "jobs.poster_pipeline",
+  "presenter_version": 1,
+  "progress": null,
+  "sections": [
+    {
+      "facts": [
+        {
+          "label": "Candidates",
+          "label_key": null,
+          "value": {
+            "type": "number",
+            "unit": null,
+            "value": 47.0
+          }
+        },
+        {
+          "label": "Sources",
+          "label_key": null,
+          "value": {
+            "type": "number",
+            "unit": null,
+            "value": 3.0
+          }
+        },
+        {
+          "label": "Rejected by gates",
+          "label_key": null,
+          "value": {
+            "type": "number",
+            "unit": null,
+            "value": 31.0
+          }
+        },
+        {
+          "label": "Ranked",
+          "label_key": null,
+          "value": {
+            "type": "number",
+            "unit": null,
+            "value": 16.0
+          }
+        },
+        {
+          "label": "Selected source",
+          "label_key": null,
+          "value": {
+            "text": "TMDB",
+            "type": "text"
+          }
+        },
+        {
+          "label": "Model",
+          "label_key": null,
+          "value": {
+            "text": "clip-vit-b-32",
+            "type": "text"
+          }
+        },
+        {
+          "label": "Taste profile",
+          "label_key": null,
+          "value": {
+            "text": "taste-v3",
+            "type": "text"
+          }
+        },
+        {
+          "label": "Deployed",
+          "label_key": null,
+          "value": {
+            "text": "Deployed",
+            "tone": "positive",
+            "type": "badge"
+          }
+        }
+      ],
+      "kind": "facts",
+      "title": "Selection"
+    },
+    {
+      "cards": [
+        {
+          "interpretation": "Strong match for the taste profile",
+          "label": "Score",
+          "value": {
+            "type": "number",
+            "unit": null,
+            "value": 0.87
+          }
+        },
+        {
+          "interpretation": null,
+          "label": "Confidence",
+          "value": {
+            "type": "number",
+            "unit": "%",
+            "value": 92.0
+          }
+        }
+      ],
+      "kind": "metric_cards",
+      "title": "Ranking"
+    },
+    {
+      "kind": "before_after",
+      "rows": [
+        {
+          "after": {
+            "text": "poster_v2.jpg",
+            "type": "text"
+          },
+          "before": {
+            "text": "poster_v1.jpg",
+            "type": "text"
+          },
+          "changed": true,
+          "label": "Deployed poster"
+        }
+      ],
+      "title": "Poster"
+    }
+  ],
+  "status": {
+    "label": "Succeeded",
+    "label_key": "jobs.status.succeeded",
+    "outcome": "succeeded",
+    "phase": "terminal",
+    "tone": "positive"
+  },
+  "subject": {
+    "artwork_key": "movie:11",
+    "context": [
+      "1982"
+    ],
+    "display_id": "movie:11",
+    "display_name": "Blade Runner",
+    "kind": "movie",
+    "missing_live_subject": false,
+    "snapshot_at": "2026-07-13T09:59:00Z"
+  },
+  "suggested_actions": [],
+  "trigger": {
+    "initiator": "Library page",
+    "kind": "manual",
+    "label": "Started manually"
+  },
+  "version": 1,
+  "warnings": []
+}

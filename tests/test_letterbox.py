@@ -2987,14 +2987,9 @@ async def test_preview_route_does_not_regenerate_for_reviewed_movie(client, db, 
 
 
 @pytest.mark.asyncio
-async def test_job_events_404_unknown(client):
+async def test_legacy_job_events_route_is_removed(client):
     resp = await client.get("/api/letterbox/jobs/nope/events", follow_redirects=False)
-    assert resp.status_code == 307
-    assert resp.headers["location"] == "/api/jobs/nope/events"
-
-
-
-
+    assert resp.status_code == 404
 
 @pytest.mark.asyncio
 async def test_apply_success_with_mocked_binaries(client, db, tmp_path, monkeypatch):

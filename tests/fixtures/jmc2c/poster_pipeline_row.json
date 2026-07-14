@@ -1,0 +1,71 @@
+{
+  "action_headline": "Select a poster from 47 candidates",
+  "allowed_actions": [
+    "open_detail"
+  ],
+  "attention": {
+    "level": "normal",
+    "message": null,
+    "reason": "none",
+    "remediation": null
+  },
+  "created_at": "2026-07-13T10:00:00Z",
+  "duration_seconds": 900.0,
+  "eligible_at": "2026-07-13T10:00:00Z",
+  "evidence": {
+    "artifacts_available": false,
+    "logs_available": false
+  },
+  "feature_area": "ai_posters",
+  "impact": {
+    "duration_seconds": 900.0,
+    "input_bytes": null,
+    "items_processed": null,
+    "label": null,
+    "output_bytes": null,
+    "storage_delta_bytes": null
+  },
+  "is_parent": false,
+  "job_id": "job0000000000000000000000000001",
+  "job_type": "poster_pipeline",
+  "label": "Poster Pipeline",
+  "label_key": "jobs.poster_pipeline.label",
+  "links": {
+    "detail": "/projection-room/jobs/job0000000000000000000000000001",
+    "presentation": "/api/jobs/job0000000000000000000000000001/presentation",
+    "snapshot": "/api/jobs/job0000000000000000000000000001/snapshot"
+  },
+  "parent_id": null,
+  "presentation_family": "ai_posters",
+  "priority": 50,
+  "progress": null,
+  "queue_rank": null,
+  "retry_of_job_id": null,
+  "root_id": "job0000000000000000000000000001",
+  "started_at": "2026-07-13T10:05:00Z",
+  "status": {
+    "label": "Succeeded",
+    "label_key": "jobs.status.succeeded",
+    "outcome": "succeeded",
+    "phase": "terminal",
+    "tone": "positive"
+  },
+  "subject": {
+    "artwork_key": "movie:11",
+    "context": [
+      "1982"
+    ],
+    "display_id": "movie:11",
+    "display_name": "Blade Runner",
+    "kind": "movie",
+    "missing_live_subject": false,
+    "snapshot_at": "2026-07-13T09:59:00Z"
+  },
+  "terminal_at": "2026-07-13T10:20:00Z",
+  "trigger": {
+    "initiator": "Library page",
+    "kind": "manual",
+    "label": "Started manually"
+  },
+  "version": 1
+}
