@@ -11,6 +11,9 @@
 **Durable writer and delivery:** [JMC3B progress, logs, artifacts, and events](jmc3b-progress-logs-artifacts-and-events.md)
 **First real-handler bindings:** [JMC4B library, scans, and media analysis](jmc4b-library-scans-and-media-analysis.md)
 and [JMC4C poster, ML, and certification](jmc4c-poster-ml-and-certification.md)
+**Destructive-handler bindings:** [JMC5A mutation, artwork, and maintenance](jmc5a-mutation-contracts-artwork-and-maintenance.md),
+[JMC5B audio and subtitle mutations](jmc5b-audio-subtitle-mutations.md), and
+[JMC5C letterbox, HDR, and runtime retirement](jmc5c-letterbox-hdr-and-runtime-retirement.md)
 
 ## Decision
 

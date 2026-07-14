@@ -74,6 +74,30 @@ its own unpushed range to one tree-identical completion commit/tag. No JMC4 impl
 pushes. Recommended implementation tiers are God for JMC4A, Mid for JMC4B, and God for
 JMC4C.
 
+## JMC5 — Destructive media jobs and runtime retirement (planned)
+
+Chunk 5 is one ordered mutation/removal program split into three independently gated plans:
+
+1. [`jmc5a-mutation-contracts-artwork-and-maintenance.md`](job-system-update/jmc5a-mutation-contracts-artwork-and-maintenance.md)
+   establishes the shared typed mutation/outcome/publication contract and migrates poster
+   deployment, restore/reset/healing, backup creation, and bounded destructive maintenance.
+2. [`jmc5b-audio-subtitle-mutations.md`](job-system-update/jmc5b-audio-subtitle-mutations.md)
+   implements planned/confirmed canonical mutations, per-track outcomes, remux/generation/
+   restore workflows, native progress, actual rescans, and removes duplicate media-backup
+   authority.
+3. [`jmc5c-letterbox-hdr-and-runtime-retirement.md`](job-system-update/jmc5c-letterbox-hdr-and-runtime-retirement.md)
+   migrates letterbox metadata/re-encode and Dolby Vision/HDR conversion/publication, then
+   removes the legacy managers, cancellation bridge, handler registry, inline writers, and
+   obsolete schema objects.
+
+They execute strictly JMC5A → JMC5B → JMC5C and share
+`design/job-system-update/jmc5-destructive-media-timeline.md`. JMC5A creates that timeline;
+the architect intentionally does not pre-create it. Each plan runs continuously through its
+internal phases, retains phase commits until every gate passes, then creates verified external
+recovery material and compacts only its own unpushed range to one tree-identical completion
+commit/tag. No JMC5 implementer pushes. All three plans require the God model tier because each
+crosses irreversible side effects, replay/crash safety, or final runtime/schema deletion gates.
+
 ## Overview
 
 This timeline preserves the existing phase structure from `design/todos.md`

@@ -19,6 +19,9 @@
 **Non-mutating job plans:** [JMC4A producers/batches/schedules](jmc4a-producers-batches-and-schedules.md),
 [JMC4B library/scans/media analysis](jmc4b-library-scans-and-media-analysis.md), and
 [JMC4C poster/ML/certification](jmc4c-poster-ml-and-certification.md)
+**Destructive job plans:** [JMC5A mutation/artwork/maintenance](jmc5a-mutation-contracts-artwork-and-maintenance.md),
+[JMC5B audio/subtitle mutations](jmc5b-audio-subtitle-mutations.md), and
+[JMC5C letterbox/HDR/runtime retirement](jmc5c-letterbox-hdr-and-runtime-retirement.md)
 
 ## Decision
 

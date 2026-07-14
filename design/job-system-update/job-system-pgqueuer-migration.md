@@ -17,6 +17,9 @@ and [JMC3C backup, ingress, and certification](jmc3c-backup-ingress-and-certific
 **Chunk 4 implementation plans:** [JMC4A producers, batches, and schedules](jmc4a-producers-batches-and-schedules.md),
 [JMC4B library, scans, and media analysis](jmc4b-library-scans-and-media-analysis.md),
 and [JMC4C poster, ML, and certification](jmc4c-poster-ml-and-certification.md)
+**Chunk 5 implementation plans:** [JMC5A mutation contracts, artwork, and maintenance](jmc5a-mutation-contracts-artwork-and-maintenance.md),
+[JMC5B audio and subtitle mutations](jmc5b-audio-subtitle-mutations.md), and
+[JMC5C letterbox, HDR, and runtime retirement](jmc5c-letterbox-hdr-and-runtime-retirement.md)
 
 ## Program decision
 
@@ -471,6 +474,15 @@ All enabled non-mutating endpoints create PgQueuer-backed canonical jobs only. S
 batches use the final model, and saturation does not starve control/API paths.
 
 ## Chunk 5 — Destructive media jobs and custom-runtime removal
+
+**Implementation sequence:**
+[JMC5A mutation contracts, artwork, and maintenance](jmc5a-mutation-contracts-artwork-and-maintenance.md)
+→ [JMC5B audio and subtitle mutations](jmc5b-audio-subtitle-mutations.md)
+→ [JMC5C letterbox, HDR, and runtime retirement](jmc5c-letterbox-hdr-and-runtime-retirement.md).
+They share `jmc5-destructive-media-timeline.md`, which the JMC5A implementer creates. Each
+plan retains reviewable phase commits until all gates pass, then creates verified external
+recovery material and compacts only its own certified, unpushed range to one tree-identical
+completion commit/tag. All three plans require the God implementation tier.
 
 ### Objective
 
