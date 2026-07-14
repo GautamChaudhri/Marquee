@@ -1,6 +1,6 @@
 <!-- eslint-disable @typescript-eslint/no-explicit-any svelte/require-each-key -->
 <script lang="ts">
-	import { listMediaJobs, cancelJob, restoreJob, deleteBackup } from '$lib/api/media-jobs';
+	import { listMediaJobs, cancelJob } from '$lib/api/media-jobs';
 	import { jitterMs } from '$lib/jobs';
 	import type { MediaJob } from '$lib/api/types';
 	import { displayMediaJobLabel } from '$lib/job-labels';
@@ -37,38 +37,6 @@
 			loadJobs();
 		} catch (e: any) {
 			toast(`Cancel failed: ${e.message}`, 'bad');
-		}
-	}
-
-	async function handleRestore(id: string) {
-		if (
-			!confirm(
-				'Are you sure you want to restore the pre-mutation backup for this file? This will undo the changes.'
-			)
-		)
-			return;
-		try {
-			await restoreJob(fetch, id);
-			toast('Backup restored successfully', 'good');
-			loadJobs();
-		} catch (e: any) {
-			toast(`Restore failed: ${e.message}`, 'bad');
-		}
-	}
-
-	async function handleDeleteBackup(id: string) {
-		if (
-			!confirm(
-				'Are you sure you want to permanently delete the backup file? This cannot be undone.'
-			)
-		)
-			return;
-		try {
-			await deleteBackup(fetch, id);
-			toast('Backup deleted successfully', 'good');
-			loadJobs();
-		} catch (e: any) {
-			toast(`Delete failed: ${e.message}`, 'bad');
 		}
 	}
 
@@ -205,18 +173,7 @@
 										Cancel
 									</button>
 								{/if}
-								{#if job.backup_id}
-									<button class="action-btn restore" onclick={() => handleRestore(job.job_id)}>
-										Restore
-									</button>
-									<button
-										class="action-btn delete-bk"
-										onclick={() => handleDeleteBackup(job.job_id)}
-									>
-										Delete Backup
-									</button>
-								{/if}
-								{#if !job.backup_id && job.status !== 'running' && job.status !== 'queued'}
+								{#if job.status !== 'running' && job.status !== 'queued'}
 									<span class="muted">—</span>
 								{/if}
 							</td>
@@ -412,18 +369,6 @@
 	}
 	.action-btn.cancel:hover {
 		background: rgba(239, 83, 80, 0.15);
-		border-color: var(--bad);
-		color: var(--bad);
-	}
-	.action-btn.restore {
-		border-color: var(--gold-deep);
-		color: var(--gold);
-	}
-	.action-btn.restore:hover {
-		background: rgba(255, 194, 75, 0.1);
-	}
-	.action-btn.delete-bk:hover {
-		background: rgba(239, 83, 80, 0.1);
 		border-color: var(--bad);
 		color: var(--bad);
 	}

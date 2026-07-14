@@ -81,7 +81,7 @@
 				},
 				onError: () => toast('Analysis progress stream interrupted', 'bad')
 			},
-			{ eventsUrl: `/api/jobs/${jobId}/events` }
+			{ eventsUrl: `/api/jobs/${jobId}/snapshot` }
 		);
 	}
 
@@ -113,7 +113,7 @@
 				},
 				onError: () => toast('Conversion progress stream interrupted', 'bad')
 			},
-			{ eventsUrl: `/api/jobs/${jobId}/events`, pollMs: 2000 }
+			{ eventsUrl: `/api/jobs/${jobId}/snapshot`, pollMs: 2000 }
 		);
 	}
 

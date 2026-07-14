@@ -36,11 +36,8 @@ export function retrainTaste(
 
 /** Train the learned head (UI "Key Art Engine") from accumulated labels. */
 export function retrainHead(fetchFn: Fetch, library: TasteLibrary = 'movies'): Promise<JobSummary> {
-	return apiSend<JobSummary>(
-		fetchFn,
-		'POST',
-		`/taste/head/retrain${library === 'movies' ? '' : `?library=${library}`}`
-	);
+	if (library === 'movies') return apiSend<JobSummary>(fetchFn, 'POST', '/taste/head/retrain');
+	return apiSend<JobSummary>(fetchFn, 'POST', `/taste/head/retrain?library=${library}`);
 }
 
 /** Request cancellation of a running taste-profile rebuild. */

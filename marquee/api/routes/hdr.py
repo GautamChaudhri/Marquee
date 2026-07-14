@@ -1225,7 +1225,7 @@ async def analyze_tv_show_dovi(
     return {
         "job_id": batch.id,
         "total": len(children),
-        "events_url": f"/api/jobs/{batch.id}/events",
+        "status_url": f"/api/jobs/{batch.id}/snapshot",
     }
 
 
@@ -1307,7 +1307,7 @@ async def analyze_tv_dovi_batch(
     return {
         "job_id": batch.id,
         "total": len(children),
-        "events_url": f"/api/jobs/{batch.id}/events",
+        "status_url": f"/api/jobs/{batch.id}/snapshot",
     }
 
 
@@ -1611,5 +1611,5 @@ async def analyze_dovi_batch(
     return {
         "job_id": batch.id,
         "total": len(children),
-        "events_url": f"/api/jobs/{batch.id}/events",
+        "status_url": f"/api/jobs/{batch.id}/snapshot",
     }

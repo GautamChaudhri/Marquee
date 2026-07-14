@@ -114,7 +114,7 @@
 			// Subscribe to SSE events
 			let unsub: () => void;
 			unsub = subscribe(
-				`/api/media-jobs/${res.job_id}/events`,
+				`/api/jobs/${res.job_id}/snapshot`,
 				['message', 'done'],
 				async (type, data: any) => {
 					if (type === 'message') {
@@ -146,7 +146,7 @@
 							if (onComplete) onComplete();
 						}
 					} else if (type === 'error') {
-						// Transient connection drop: EventSource auto-reconnects and the
+						// Transient connection drop: the subscription reconnects and the
 						// backend replays history, so just wait it out rather than breaking.
 						return;
 					}

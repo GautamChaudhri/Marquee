@@ -1,0 +1,169 @@
+{
+  "action": {
+    "explanation": "Permanently removes the black bars by re-encoding the video stream.",
+    "headline": "Re-encode to crop 132 px from the top and 132 px from the bottom"
+  },
+  "allowed_actions": [
+    "open_detail"
+  ],
+  "attention": {
+    "level": "normal",
+    "message": null,
+    "reason": "none",
+    "remediation": null
+  },
+  "evidence": {
+    "artifacts_available": false,
+    "logs_available": false
+  },
+  "failures": [],
+  "feature_area": "letterbox",
+  "impact": {
+    "duration_seconds": 900.0,
+    "input_bytes": 3800000000,
+    "items_processed": null,
+    "label": null,
+    "output_bytes": 3300000000,
+    "storage_delta_bytes": -500000000
+  },
+  "job_id": "job0000000000000000000000000001",
+  "job_type": "letterbox_reencode",
+  "label": "Letterbox Re-encode",
+  "label_key": "jobs.letterbox_reencode.label",
+  "links": {
+    "artifacts": "/api/jobs/job0000000000000000000000000001/artifacts",
+    "attempts": "/api/jobs/job0000000000000000000000000001/attempts",
+    "children": null,
+    "detail": "/projection-room/jobs/job0000000000000000000000000001",
+    "events": "/api/jobs/job0000000000000000000000000001/events",
+    "presentation": "/api/jobs/job0000000000000000000000000001/presentation",
+    "raw_error": null,
+    "raw_plan": null,
+    "raw_request": "/api/jobs/job0000000000000000000000000001/raw/request",
+    "raw_result": "/api/jobs/job0000000000000000000000000001/raw/result",
+    "snapshot": "/api/jobs/job0000000000000000000000000001/snapshot"
+  },
+  "presentation_family": "letterbox",
+  "presenter_key": "jobs.letterbox_reencode",
+  "presenter_version": 1,
+  "progress": null,
+  "sections": [
+    {
+      "facts": [
+        {
+          "label": "Source dimensions",
+          "label_key": null,
+          "value": {
+            "text": "1920\u00d71080",
+            "type": "text"
+          }
+        },
+        {
+          "label": "Detected crop",
+          "label_key": null,
+          "value": {
+            "text": "132 px from the top and 132 px from the bottom",
+            "type": "text"
+          }
+        },
+        {
+          "label": "Output dimensions",
+          "label_key": null,
+          "value": {
+            "text": "1920\u00d7816",
+            "type": "text"
+          }
+        },
+        {
+          "label": "Encoder",
+          "label_key": null,
+          "value": {
+            "text": "hevc_nvenc",
+            "type": "text"
+          }
+        },
+        {
+          "label": "Validation",
+          "label_key": null,
+          "value": {
+            "text": "OK",
+            "tone": "positive",
+            "type": "badge"
+          }
+        },
+        {
+          "label": "HDR preservation",
+          "label_key": null,
+          "value": {
+            "text": "OK",
+            "tone": "positive",
+            "type": "badge"
+          }
+        }
+      ],
+      "kind": "facts",
+      "title": "Letterbox"
+    },
+    {
+      "cards": [
+        {
+          "interpretation": null,
+          "label": "Confidence",
+          "value": {
+            "type": "number",
+            "unit": "%",
+            "value": 98.0
+          }
+        }
+      ],
+      "kind": "metric_cards",
+      "title": "Detection"
+    },
+    {
+      "kind": "before_after",
+      "rows": [
+        {
+          "after": {
+            "bytes": 3300000000,
+            "type": "bytes"
+          },
+          "before": {
+            "bytes": 3800000000,
+            "type": "bytes"
+          },
+          "changed": true,
+          "label": "Size"
+        }
+      ],
+      "title": "File size"
+    }
+  ],
+  "status": {
+    "label": "Succeeded",
+    "label_key": "jobs.status.succeeded",
+    "outcome": "succeeded",
+    "phase": "terminal",
+    "tone": "positive"
+  },
+  "subject": {
+    "artwork_key": null,
+    "context": [
+      "The Expanse",
+      "S03E07",
+      "MKV"
+    ],
+    "display_id": "media_file:314",
+    "display_name": "The.Expanse.S03E07.mkv",
+    "kind": "media_file",
+    "missing_live_subject": false,
+    "snapshot_at": "2026-07-13T09:59:00Z"
+  },
+  "suggested_actions": [],
+  "trigger": {
+    "initiator": "Library page",
+    "kind": "manual",
+    "label": "Started manually"
+  },
+  "version": 1,
+  "warnings": []
+}

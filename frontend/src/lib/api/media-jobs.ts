@@ -1,5 +1,7 @@
 import { env } from '$env/dynamic/public';
-import { apiGet, apiSend, type Fetch } from './client';
+import { ApiError, apiGet, type Fetch } from './client';
+import { cancelJob as cancelCanonicalJob } from './jobs';
+import type { components } from './generated/openapi';
 import type { MediaJob } from './types';
 
 const useMocks = () => env.PUBLIC_USE_MOCKS === 'true';
@@ -23,12 +25,37 @@ export function getMediaJob(fetch: Fetch, jobId: string): Promise<MediaJob> {
 				percent: 45,
 				message: 'Remuxing container to remove track'
 			},
-			events_url: `/media-jobs/${jobId}/events`,
+			events_url: `/jobs/${jobId}/snapshot`,
 			backup_id: 'backup-1',
 			plan: null
 		});
 	}
-	return apiGet<MediaJob>(fetch, `/media-jobs/${jobId}`);
+	return apiGet<components['schemas']['JobSnapshotResponse']>(
+		fetch,
+		`/jobs/${jobId}/snapshot`
+	).then((snapshot) => ({
+		job_id: snapshot.job_id,
+		status: snapshot.outcome ?? snapshot.phase,
+		operation: snapshot.type,
+		label: snapshot.label,
+		media_file_id: null,
+		created_at: snapshot.created_at ?? '',
+		updated_at: snapshot.updated_at ?? snapshot.created_at ?? '',
+		started_at: snapshot.started_at,
+		completed_at: snapshot.terminal_at,
+		result: null,
+		error: null,
+		progress: snapshot.progress
+			? {
+					stage: snapshot.progress.stage_key ?? '',
+					percent: snapshot.progress.overall?.percent ?? 0,
+					message: snapshot.progress.headline ?? snapshot.progress.stage_label ?? ''
+				}
+			: null,
+		events_url: snapshot.links.snapshot,
+		backup_id: null,
+		plan: null
+	}));
 }
 
 export function listMediaJobs(
@@ -51,46 +78,67 @@ export function listMediaJobs(
 					result: { message: 'Successfully removed 1 track' },
 					error: null,
 					progress: { stage: 'done.complete', percent: 100, message: 'Done' },
-					events_url: '/media-jobs/job-1/events',
+					events_url: '/jobs/job-1/snapshot',
 					backup_id: 'backup-1',
 					plan: null
 				}
 			]
 		});
 	}
-	return apiGet<{ jobs: MediaJob[] }>(fetch, '/media-jobs', params);
+	const queueStatuses = new Set(['planned', 'queued', 'running', 'stopping']);
+	const view = params.status && !queueStatuses.has(params.status) ? 'history' : 'queue';
+	return apiGet<components['schemas']['JobListResponse']>(fetch, '/jobs', {
+		view,
+		type: params.operation,
+		phase: params.status && queueStatuses.has(params.status) ? params.status : undefined,
+		limit: 200
+	}).then((response) => ({
+		jobs: response.items.map((row) => ({
+			job_id: row.job_id,
+			status: row.status.outcome ?? row.status.phase,
+			operation: row.job_type,
+			label: row.label,
+			media_file_id: row.subject.display_id,
+			created_at: row.created_at ?? '',
+			updated_at: row.terminal_at ?? row.started_at ?? row.created_at ?? '',
+			started_at: row.started_at ?? null,
+			completed_at: row.terminal_at ?? null,
+			result: null,
+			error: null,
+			progress: row.progress
+				? {
+						stage: row.progress.stage_key ?? '',
+						percent: row.progress.overall?.percent ?? 0,
+						message: row.progress.headline ?? row.progress.stage_label ?? ''
+					}
+				: null,
+			events_url: row.links.snapshot,
+			backup_id: null,
+			plan: null
+		}))
+	}));
 }
 
-export function confirmJob(
+export async function confirmJob(
 	fetch: Fetch,
 	jobId: string
 ): Promise<{ job_id: string; status: 'queued' }> {
 	if (useMocks()) return Promise.resolve({ job_id: jobId, status: 'queued' });
-	return apiSend<{ job_id: string; status: 'queued' }>(
+	const snapshot = await apiGet<components['schemas']['JobSnapshotResponse']>(
 		fetch,
-		'POST',
-		`/media-jobs/${jobId}/confirm`
+		`/jobs/${jobId}/snapshot`
 	);
+	if (snapshot.phase === 'queued' || snapshot.phase === 'running') {
+		return { job_id: jobId, status: 'queued' };
+	}
+	throw new ApiError(409, 'This planned operation is not available on the canonical job API.');
 }
 
-export function cancelJob(
+export async function cancelJob(
 	fetch: Fetch,
 	jobId: string
 ): Promise<{ job_id: string; cancel_requested: boolean }> {
 	if (useMocks()) return Promise.resolve({ job_id: jobId, cancel_requested: true });
-	return apiSend<{ job_id: string; cancel_requested: boolean }>(
-		fetch,
-		'POST',
-		`/media-jobs/${jobId}/cancel`
-	);
-}
-
-export function restoreJob(fetch: Fetch, jobId: string): Promise<Record<string, unknown>> {
-	if (useMocks()) return Promise.resolve({ success: true, message: 'Restored from backup' });
-	return apiSend<Record<string, unknown>>(fetch, 'POST', `/media-jobs/${jobId}/restore`);
-}
-
-export function deleteBackup(fetch: Fetch, jobId: string): Promise<Record<string, unknown>> {
-	if (useMocks()) return Promise.resolve({ success: true, message: 'Deleted backup file' });
-	return apiSend<Record<string, unknown>>(fetch, 'DELETE', `/media-jobs/${jobId}/backup`);
+	const snapshot = await cancelCanonicalJob(fetch, jobId);
+	return { job_id: snapshot.job_id, cancel_requested: snapshot.cancel_requested };
 }

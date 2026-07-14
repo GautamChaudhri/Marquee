@@ -97,7 +97,7 @@
 					},
 					onError: () => toast('Analysis progress stream interrupted', 'bad')
 				},
-				{ eventsUrl: `/api/jobs/${job_id}/events` }
+				{ eventsUrl: `/api/jobs/${job_id}/snapshot` }
 			);
 		} catch (e) {
 			analyzingMovies = false;
@@ -131,7 +131,7 @@
 					},
 					onError: () => toast('Analysis progress stream interrupted', 'bad')
 				},
-				{ eventsUrl: `/api/jobs/${job_id}/events` }
+				{ eventsUrl: `/api/jobs/${job_id}/snapshot` }
 			);
 		} catch (e) {
 			analyzingTv = false;

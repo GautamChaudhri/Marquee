@@ -266,6 +266,91 @@ class PgQueuerGateway:
                 f"transport status {transport_status!r} cannot accept cancellation"
             )
 
+    async def reprioritize_known_ticket(
+        self,
+        session: AsyncSession,
+        *,
+        job_id: str,
+        priority: int,
+    ) -> None:
+        """Replace one queued ticket so canonical and transport priority stay aligned."""
+        if not MIN_PRIORITY <= priority <= MAX_PRIORITY:
+            raise PgQueuerGatewayError(
+                f"priority must be between {MIN_PRIORITY} and {MAX_PRIORITY}"
+            )
+        job = await session.scalar(select(Job).where(Job.id == job_id).with_for_update())
+        if job is None:
+            raise PgQueuerGatewayError("canonical job does not exist")
+        if job.phase not in {"planned", "queued"}:
+            raise PgQueuerGatewayError("only planned or queued jobs can change priority")
+        if job.pgq_job_id is None:
+            job.priority = priority
+            return
+
+        dispatch = await session.scalar(
+            select(JobDispatch)
+            .where(
+                JobDispatch.job_id == job.id,
+                JobDispatch.generation == job.dispatch_generation,
+            )
+            .with_for_update()
+        )
+        if dispatch is None or dispatch.pgq_job_id != job.pgq_job_id:
+            raise PgQueuerInvariantError("canonical current dispatch is missing or mismatched")
+
+        async with self._queries(session) as queries:
+            rows = await queries.job_status([job.pgq_job_id])
+            if len(rows) != 1 or int(rows[0][0]) != job.pgq_job_id:
+                raise PgQueuerInvariantError("known PgQueuer ticket status is unavailable")
+            if rows[0][1] != "queued":
+                raise PgQueuerGatewayError("only queued transport work can change priority")
+            await queries.mark_job_as_cancelled([job.pgq_job_id])
+
+        now = datetime.now(UTC)
+        dispatch.disposition = "superseded"
+        dispatch.ended_at = now
+        generation = job.dispatch_generation + 1
+        dedupe_key = f"marquee:{job.id}:{generation}"
+        replacement = JobDispatch(
+            job_id=job.id,
+            generation=generation,
+            pgq_job_id=None,
+            entrypoint=dispatch.entrypoint,
+            dedupe_key=dedupe_key,
+            priority=priority,
+            eligible_at=job.eligible_at,
+            disposition="active",
+        )
+        job.priority = priority
+        job.dispatch_generation = generation
+        job.pgq_job_id = None
+        session.add_all(
+            [
+                replacement,
+                JobEvent(
+                    job_id=job.id,
+                    event_key="job.priority_changed",
+                    state=job.phase,
+                    message="Job priority changed within its execution class",
+                    detail={
+                        "dispatch_generation": generation,
+                        "priority": priority,
+                    },
+                ),
+            ]
+        )
+        await session.flush()
+        await self.enqueue(
+            session,
+            job_id=job.id,
+            entrypoint=dispatch.entrypoint,
+            payload_version=job.payload_version,
+            dispatch_generation=generation,
+            priority=priority,
+            execute_after=max(job.eligible_at - now, timedelta(0)),
+            dedupe_key=dedupe_key,
+        )
+
     async def known_ticket_statuses(
         self,
         session: AsyncSession,

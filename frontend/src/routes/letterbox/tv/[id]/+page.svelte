@@ -288,7 +288,7 @@
 				}
 			},
 			{
-				eventsUrl: `/api/jobs/${jobId}/events`
+				eventsUrl: `/api/jobs/${jobId}/snapshot`
 			}
 		);
 		activeRuns[jobId].stop = stop;
@@ -610,7 +610,7 @@
 		}
 
 		reencodeUnsubs[episodeId] = subscribe(
-			`/api/media-jobs/${jobId}/events`,
+			`/api/jobs/${jobId}/snapshot`,
 			['message', 'done'],
 			(type, data) => {
 				if (type === 'done') {

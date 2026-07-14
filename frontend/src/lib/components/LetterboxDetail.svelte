@@ -93,7 +93,7 @@
 
 	// This component is reused as movieId changes (not remounted), so the
 	// movieId effect tears down the prior stream — but also close it on actual
-	// unmount so an EventSource never dangles and wedges a browser connection
+	// unmount so a live subscription never dangles and wedges a browser connection
 	// slot (onbeforeunload only covers full-page navigation, not SPA unmount).
 	onDestroy(() => {
 		stopEncodeStream();
@@ -360,7 +360,7 @@
 	let artifact = $state<ReencodeArtifact | null>(null);
 	let unsub: (() => void) | null = null;
 	// Poll fallback for the encode bar + a once-only completion guard. The first
-	// EventSource opened right after confirm sometimes doesn't stream live, so we
+	// A subscription opened right after confirm sometimes doesn't stream live, so we
 	// drive progress from the job snapshot too (mirrors the board's tray poll).
 	let encodePoll: ReturnType<typeof setInterval> | null = null;
 	let encodeDone = false;
@@ -387,32 +387,28 @@
 
 	function subscribeToEncode(jobId: string) {
 		stopEncodeStream();
-		unsub = subscribe(
-			`/api/media-jobs/${jobId}/events`,
-			['message', 'done'],
-			async (type, data) => {
-				if (type === 'done') {
-					stopEncodeStream();
-					await finishEncode(jobId);
-					return;
-				}
-				// Transient connection drop: EventSource auto-reconnects and the
-				// backend replays history, so just wait it out rather than breaking.
-				if (type === 'error') return;
-				const ev = data as {
-					stage?: string;
-					state?: string;
-					message?: string;
-					progress?: { percent?: number; fps?: number; speed?: number } | null;
-				};
-				if (ev.stage) encodeStage = ev.stage;
-				if (ev.progress?.percent != null) encodeProgress = ev.progress.percent;
-				if (ev.progress?.fps != null) encodeFps = ev.progress.fps;
-				if (ev.progress?.speed != null) encodeSpeed = ev.progress.speed;
-				if (ev.message) encodeMessage = ev.message;
-				if (onEncodeState) onEncodeState(encoding, encodeProgress, encodeStage);
+		unsub = subscribe(`/api/jobs/${jobId}/snapshot`, ['message', 'done'], async (type, data) => {
+			if (type === 'done') {
+				stopEncodeStream();
+				await finishEncode(jobId);
+				return;
 			}
-		);
+			// Transient connection drop: the subscription reconnects and the
+			// backend replays history, so just wait it out rather than breaking.
+			if (type === 'error') return;
+			const ev = data as {
+				stage?: string;
+				state?: string;
+				message?: string;
+				progress?: { percent?: number; fps?: number; speed?: number } | null;
+			};
+			if (ev.stage) encodeStage = ev.stage;
+			if (ev.progress?.percent != null) encodeProgress = ev.progress.percent;
+			if (ev.progress?.fps != null) encodeFps = ev.progress.fps;
+			if (ev.progress?.speed != null) encodeSpeed = ev.progress.speed;
+			if (ev.message) encodeMessage = ev.message;
+			if (onEncodeState) onEncodeState(encoding, encodeProgress, encodeStage);
+		});
 	}
 
 	/** Read the media-job snapshot once and advance the encode bar from it. */

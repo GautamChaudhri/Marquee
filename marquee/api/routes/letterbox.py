@@ -18,7 +18,7 @@ from typing import Annotated
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 from sqlalchemy import String, case, cast, delete, exists, func, select, union
 from sqlalchemy.exc import OperationalError
@@ -1022,7 +1022,7 @@ async def detect_tv_batch(
     return {
         "job_id": batch.id,
         "total": len(children),
-        "events_url": f"/api/jobs/{batch.id}/events",
+        "status_url": f"/api/jobs/{batch.id}/snapshot",
     }
 
 
@@ -1228,7 +1228,7 @@ async def _start_detect_job(
         "job_id": batch.id,
         "detector": detector,
         "total": len(movie_ids),
-        "events_url": f"/api/jobs/{batch.id}/events",
+        "status_url": f"/api/jobs/{batch.id}/snapshot",
     }
 
 
@@ -1371,14 +1371,11 @@ async def detect_tv_series(
     return {
         "job_id": batch.id,
         "total": len(children),
-        "events_url": f"/api/jobs/{batch.id}/events",
+        "status_url": f"/api/jobs/{batch.id}/snapshot",
     }
 
 
-@router.get("/jobs/{job_id}/events")
-async def job_events(job_id: str):
-    """Compatibility redirect to the durable generic job event stream."""
-    return RedirectResponse(url=f"/api/jobs/{job_id}/events", status_code=307)
+
 
 
 # ---------------------------------------------------------------------------

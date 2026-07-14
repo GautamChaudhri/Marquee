@@ -285,7 +285,6 @@ from marquee.api.routes.hdr import router as hdr_router  # noqa: E402
 from marquee.api.routes.jobs import router as jobs_router  # noqa: E402
 from marquee.api.routes.letterbox import router as letterbox_router  # noqa: E402
 from marquee.api.routes.library import router as library_router  # noqa: E402
-from marquee.api.routes.media_jobs import router as media_jobs_router  # noqa: E402
 from marquee.api.routes.onboarding import router as onboarding_router  # noqa: E402
 from marquee.api.routes.pipeline import movies_router  # noqa: E402
 from marquee.api.routes.pipeline import router as pipeline_router  # noqa: E402
@@ -325,7 +324,6 @@ app.include_router(jobs_router)
 app.include_router(subtitles_router)
 app.include_router(subtitle_movies_router)
 app.include_router(audio_subs_router)
-app.include_router(media_jobs_router)
 app.include_router(subtitle_policies_router)
 app.include_router(subtitle_generators_router)
 app.include_router(webhooks_router)

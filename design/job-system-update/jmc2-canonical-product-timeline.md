@@ -503,3 +503,285 @@ Shared implementer log for JMC2A → JMC2B → JMC2C. Append after every phase c
   any additional definition.
 - Pending operator work remains unchanged from JMC2A/JMC1. No new JMC2B operator action is
   required.
+
+## JMC2C Phase C0 — in progress (2026-07-13)
+
+- Branch/HEAD: `job-manager` at `c0bca7c` (`certify job definition registry`). Tracked
+  working tree clean; the pre-existing untracked `.agents/` and JMC3 plan files remain
+  preserved and excluded. Configured Git author remains Gautam Chaudhri
+  `<gautam.chaudhri@gmail.com>`.
+- JMC2A/B verification: all recorded commits present in `git log`
+  (`10cb470`, `3659626`, `6cc38dc`, `f2662b6`, `e49bd07`, `2d6f678`, `32eb5a8`, `ac60f8d`,
+  `7f900a4`, `86daa96`, `c0bca7c`). The manifest (`marquee/core/jobs/manifest.py`) holds
+  exactly 48 immutable definitions; every definition has a unique non-generic
+  `presenter_key` (`jobs.{job_type}`); only `control/system_noop` is enabled
+  (41 defined-disabled, 6 parent-only); `radarr_upgrade` remains webhook-reserved and
+  disabled. No generic fallback exists for any built-in.
+- Baseline (owned disposable PostgreSQL 18.3 cluster `/tmp/marquee-jmc2c-pg.Jzijld`, port
+  55440, trust auth, database `marquee_test`): `DEBUG=true pytest -q` reproduced
+  **841 passed, 23 failed, 2 warnings** in 45.13s — exactly the JMC2B retained failure set,
+  test-for-test. `ruff check marquee tests` passed (ruff 0.15.17). Frontend:
+  `npm run check` 0 errors / 16 warnings / 8 files; `npm run lint` clean;
+  `npm run build` exit 0.
+- Route inventory to replace/remove in C3/C4:
+  - `/api/jobs` (jobs.py): `GET ""` (offset-window list, `next_before`), `GET /metrics`,
+    `GET /metrics/by-type`, `GET /{id}` (unbounded detail: all attempts + all events + all
+    children), `GET /{id}/children` (unbounded), `GET /{id}/events` (per-job polling SSE,
+    0.5 s DB loop), `POST /{id}/cancel` (noop-only), `POST /{id}/pause|resume` +
+    `PATCH /{id}/priority` + `POST /{id}/retry` (all fail-closed 503).
+  - `/api/media-jobs` (media_jobs.py): 7 fail-closed routes (confirm/get/events/cancel/
+    list/restore/delete-backup).
+  - `GET /api/pipeline/runs/{run_id}/events`: 307 redirect onto the per-job SSE.
+  - `GET /api/activity`: separate feed endpoint (unchanged scope for C3 unless its job
+    branch breaks; verify then).
+  - `events_url` producers pointing at per-job SSE: `jobs.job_summary`, letterbox.py (3),
+    hdr.py (3), audio_subs.py, pipeline.py; subtitle_generators.py (2) point at the
+    fail-closed media-jobs SSE.
+- Frontend call-site inventory: 18 API modules under `frontend/src/lib/api/` (~180 exported
+  functions; jobs.ts 13, media-jobs.ts 6 plus letterbox 38, taste 20, pipeline 17,
+  subtitles 16, etc.). Job/SSE consumers: `lib/jobs.ts` (`trackJob` poll+SSE engine),
+  `lib/sse.ts`, and 38 files importing jobs/media-jobs/trackJob/sse (Projection Room pages,
+  pipeline/letterbox/hdr/audio-subs/taste/television/films pages and components).
+- OpenAPI state: `scripts/export_openapi.py` writes `design/api-schema.json` from
+  `marquee.main.app` with `DEBUG=true`; the artifact is **not** currently committed and no
+  drift check exists. CI (`.github/workflows/ci.yml`) references it only historically.
+- `openapi-typescript` verification (npm registry metadata, 2026-07-13): dist-tag
+  `latest` = **7.13.0** (next = 7.0.0-rc.1 is older-line RC; swagger-v2 = 5.4.2). C5 will
+  pin exactly `7.13.0` in `frontend/package.json` + lockfile.
+- Current phase: C0 — freeze presentation/section schemas, the pagination envelope/opaque
+  cursor contract, and the command error model with contract tests, then commit and record
+  the result.
+
+## JMC2C Phase C0 result
+
+- Froze the presentation contract in `marquee/core/jobs/presentation.py`: the nine typed
+  value kinds (text, number/unit, duration, bytes, timestamp, boolean, badge, subject
+  reference, safe relative link), the exact eleven-section discriminated vocabulary from the
+  plan, and the versioned `JobPresentation` envelope (subject/action/trigger/attention/
+  status/compact progress/impact/sections/warnings/failures/suggested actions/evidence/
+  bounded diagnostic links). All models are `extra=forbid`, bounded, and reject external or
+  scheme-bearing URLs.
+- Froze opaque cursor pagination in `marquee/core/jobs/pagination.py`: base64url JSON
+  envelope binding each cursor to a deterministic sha256 fingerprint of the exact
+  view/filter/sort contract; malformed, oversized, non-scalar, and cross-query cursors fail
+  closed with `InvalidCursorError`.
+- Froze the typed command/read error detail (`marquee/core/jobs/api_errors.py`) following
+  the established `{"detail": {code, ...}}` envelope, with bounded secret-free context and
+  the frozen code set (`job_not_found`, `stale_job_version`, `action_not_allowed`,
+  `invalid_cursor`, `invalid_filter`, `unmigrated_job_command`).
+- Focused C0 contract suite: **11 passed** (`tests/test_job_presentation_contract.py`).
+  Full suite: **852 passed, 23 retained failures, 2 warnings** in 48.71s — failure set
+  compared test-for-test with the C0 baseline: identical. Ruff passed. No schema or
+  frontend change applies.
+- Phase C0 commit: this commit (`freeze job presentation contracts`).
+- Current phase: C0 complete; C1 next. Exact next steps: implement presenter resolution
+  keyed by the manifest's `presenter_key`, snapshot-first presentation helpers, and the
+  complete AI poster, HDR/Dolby Vision, audio/subtitle, and letterbox presenter families
+  with compact/detail goldens and malformed-optional-evidence warning tests.
+- Pending operator work remains unchanged from JMC2A/JMC1.
+
+## JMC2C Phase C1 result
+
+- Implemented the presentation engine (`marquee/core/jobs/presenters/base.py`):
+  snapshot-first `load_context` validates the subject snapshot (invalid required snapshot →
+  `PresentationIntegrityError`), the request/result/error documents through each
+  definition's adapters, and the stored `JobProgress`; malformed optional evidence becomes
+  a `malformed_evidence` warning that omits only the affected content. Shared assembly owns
+  friendly status/outcome labels and tones, trigger labels with sanitized initiator,
+  attention derivation, state-aware allowed actions (retry only for dispatch-enabled
+  definitions; logs/artifacts stay unavailable until Chunk 3), compact typed progress,
+  impact, relative-only diagnostic links, target-attributed failures, and suggested
+  actions. Raw stage keys, `waiting_external`-style codes, and transport labels never
+  become primary text.
+- Added the compact `JobRow` + `RowLinks` contract to `marquee/core/jobs/presentation.py`
+  as the only list-row shape for C3, and completed `JOB_LABELS` coverage for all 48 types.
+- Implemented dedicated presenters for the four primary families
+  (`presenters/{posters,hdr,audio_subs,letterbox}.py`, 32 job types): poster
+  candidate/gate/score/deploy/review evidence, HDR/DoVi profile/RPU/encoder/validation and
+  stage-attributed failures, audio/subtitle selector/before-after/track-table/change-list
+  with all-or-nothing `not_applied` semantics, and letterbox scope/crop/confidence/
+  encoder/size evidence with distinct no-bars no-change. Registry resolution is strict:
+  a built-in key without a presenter raises `UnregisteredPresenterError`; the labelled
+  generic presenter is not registered for any built-in.
+- Golden fixtures under `tests/fixtures/jmc2c/` cover poster detail + compact row, DoVi
+  analyze detail, subtitle generation detail, and letterbox re-encode detail; behavior
+  tests cover no-candidate/no-bars no-change notices, remux failure with every target
+  `not_applied`, running nested progress, malformed-evidence warnings, missing live
+  subject notices, determinism, and machine-label absence.
+- Focused C1 suite: **19 passed** (30 with the C0 contract suite). Full suite:
+  **871 passed, 23 retained failures, 2 warnings** in 49.90s — failure set identical to
+  the C0 baseline. Ruff passed. No schema or frontend change applies.
+- Phase C1 commit: this commit (`present primary job families`).
+- Current phase: C1 complete; C2 next. Exact next steps: implement supporting presenters
+  (library sync/radarr upgrade, taste/ML, maintenance/backup/retention/cache, system noop)
+  and the six parent-batch presenters with children aggregation, prove complete 48/48
+  presenter coverage without fallback, and add retry-lineage/batch-grouping/no-change/
+  partial-success fixtures.
+- Pending operator work remains unchanged from JMC2A/JMC1.
+
+## JMC2C Phase C2 result
+
+- Implemented the supporting presenter family (`presenters/supporting.py`, 10 types:
+  library sync, Radarr upgrade, taste rebuild/map, learned-head training, backup,
+  pipeline-cache clear, job-retention purge, metrics purge, system noop) with
+  service/count facts for integrations, model/profile/device/exemplar facts for ML work,
+  and scope/dry-run/retention facts plus records/files/bytes metric cards for maintenance.
+- Implemented the parent-batch presenter family (`presenters/parents.py`, 6 parent-only
+  types). Parents render a bounded `children` section from live child counts when the
+  caller provides them, fall back to stored terminal summary evidence, warn on malformed
+  child summaries, and always link to the server-paginated child list; no child graph is
+  ever embedded. Retry lineage now renders as a Lineage facts section with a link to the
+  original job, alongside the row-level `retry_of_job_id`.
+- Presenter coverage is complete and executable: all **48** definitions resolve to a
+  dedicated presenter (`len(JOB_PRESENTER_REGISTRY) == 48`), every definition renders a
+  minimal presentation and row for its first subject kind, and the labelled generic
+  presenter is registered for no built-in — the fallback path is unreachable for
+  registered built-ins.
+- Added the `library_sync_detail` golden plus partial-success, no-change, malformed-child,
+  retry-lineage, and system-noop fixtures.
+- Focused C2 suite: **10 passed** (29 with the C1 suite). Full suite: **881 passed,
+  23 retained failures, 2 warnings** in 48.64s — failure set identical to the C0 baseline.
+  Ruff passed. No schema or frontend change applies.
+- Phase C2 commit: this commit (`present supporting job families`).
+- Current phase: C2 complete; C3 next. Exact next steps: implement the bounded canonical
+  read APIs (`GET /api/jobs?view=queue|history` with opaque contract-bound cursors and
+  allowlisted filters/sorts, `/snapshot`, `/presentation`, paginated
+  `/attempts|/events|/artifacts|/children`, bounded `/raw/{doc}`), remove the superseded
+  unbounded job/media-job reads and the per-job polling SSE contract, and migrate every
+  internal call site/test in the same phase.
+- Pending operator work remains unchanged from JMC2A/JMC1.
+
+## JMC2C Phase C3 result
+
+- Replaced the product job read surface with bounded canonical contracts in
+  `marquee/api/routes/jobs.py`: lifecycle-partitioned queue/history lists, opaque
+  filter/view/sort-bound keyset cursors, allowlisted filters and sorts, compact snapshots,
+  curated presentations, separately paginated attempts/events/artifacts/children, and
+  bounded validated raw request/plan/result/error documents with safe download headers.
+  Unknown stored job definitions fail with a typed integrity conflict; no presenter or
+  serializer fallback was added.
+- Removed the superseded `/api/media-jobs` router and the pipeline/letterbox redirects onto
+  per-job polling SSE. Backend producers now return canonical snapshot URLs. Active frontend
+  consumers reconcile through `/api/jobs/{id}/snapshot`; no public per-job event stream,
+  PgQueuer numeric ID/row, unbounded history response, or legacy media-job read remains.
+- Established executable query budgets at the maximum 200-row page size: queue/history list
+  is one SQL statement, presentation is one, and bounded children is two (parent existence
+  plus the keyset page). Cursor tests prove cross-view reuse fails closed. Raw-document tests
+  prove internal transport fields are absent.
+- Migrated the cooperative-cancellation fixture away from the retired manager and updated
+  the obsolete letterbox SSE redirect assertion. Focused C3 suite: **8 passed**. Full suite
+  in the provided PostgreSQL environment: **876 passed, 21 retained failures, 2 warnings,
+  11 environment errors** in 61.02s. The retained application failure set shrank from 23 to
+  21 with no new failure; the 11 JMC1 migration cases could not create their isolated
+  databases because the supplied PostgreSQL role lacks `CREATEDB`. Ruff passed.
+- Frontend certification: `npm run check` passed with the same 0 errors/16 warnings,
+  `npm run lint` passed, and `npm run build` passed.
+- Phase C3 commit: this commit (`bound canonical job reads`).
+- Current phase: C3 complete; C4 next. Exact next steps: implement optimistic,
+  capability-checked cancel/pause/resume/priority/retry commands plus bounded deduplicated
+  bulk actions, then prove stale conflicts, partial bulk failure, class-scoped priority and
+  retry successor lineage.
+- Pending operator work remains unchanged from JMC2A/JMC1.
+
+## JMC2C Phase C4 result
+
+- Added the canonical command service in `marquee/core/jobs/control.py`. Every mutation
+  row-locks the canonical job, requires the expected `fence_token`, evaluates the
+  definition's action policy against current lifecycle state, increments the fence on
+  success, and returns the new canonical snapshot. Stale and disallowed commands use the
+  frozen typed conflict envelope; pause/resume correctly remain unavailable because no
+  current definition advertises pause capability.
+- Implemented single cancel, pause, resume, class-scoped priority, and retry routes plus the
+  bounded `POST /api/jobs/actions` contract (maximum 100 items). Bulk execution deduplicates
+  identical commands while preserving every caller `request_id`; each distinct item commits
+  independently and reports its own success or typed failure.
+- Priority changes never drift canonical and transport state: a queued PgQueuer ticket is
+  cancelled, its immutable dispatch audit is marked `superseded`, and exactly one new
+  dispatch generation is enqueued at the requested priority within the definition's
+  execution class. Planned jobs without a ticket update canonically without inventing
+  transport authority.
+- Retry never reopens terminal history. The sole dispatch-enabled `system_noop` definition
+  creates a new canonical successor and transport ticket with `retry_of_job_id`, stable
+  `root_id`, correlation, initiator and subject snapshot lineage; the original remains
+  terminal and its fence advances.
+- Focused C4 suite: **22 passed** across command APIs, bounded reads and PgQueuer gateway
+  integration. Full suite: **881 passed, 21 retained failures, 2 warnings, 11 environment
+  errors** in 61.89s. The failure set is unchanged from C3; the 11 JMC1 migration cases are
+  still blocked only by the supplied PostgreSQL role lacking `CREATEDB`. Ruff passed.
+- Phase C4 commit: this commit (`add canonical job commands`).
+- Current phase: C4 complete; C5 next. Exact next steps: pin `openapi-typescript`, export and
+  drift-check one deterministic OpenAPI artifact, generate committed static `paths` types,
+  and migrate the existing fetch runtime and every frontend API function to real generated
+  route contracts without adding a generated runtime SDK.
+- Pending operator work remains unchanged from JMC2A/JMC1.
+
+## JMC2C Phase C5 result
+
+- Exported and committed one deterministic OpenAPI 3.1 artifact at
+  `design/api-schema.json` (193 paths). `scripts/export_openapi.py --check` now fails on
+  byte drift, and export uses sorted, stable JSON independent of the invoking environment.
+- Pinned `openapi-typescript` **7.13.0** and its compatible TypeScript **5.9.3** exactly in
+  the frontend manifest and lockfile. Generation writes the committed static
+  `frontend/src/lib/api/generated/openapi.ts` and formats it deterministically; no generated
+  runtime client or `openapi-fetch` dependency was added.
+- Typed the existing fetch runtime from generated `paths`. Route/method-aware path types now
+  cover every `apiGet`/`apiSend` call and caused all removed `/jobs/{id}`, `/jobs/metrics*`,
+  and `/media-jobs*` calls to fail compilation until migrated. Existing product consumers
+  now use canonical lists, snapshots, bounded detail resources, and optimistic command
+  bodies containing the current `fence_token`. Legacy media-job presentation adapters are
+  fed only from canonical job contracts; unsupported backup actions were removed rather
+  than retained against nonexistent routes.
+- Reproducibility was verified across consecutive generation runs. SHA-256:
+  `af9afb7e640c73ac68daea7f95d8531bc82e9bf0324a867a99a229c9b77713e4` for the OpenAPI
+  artifact and `c4e4ec2d9860e0219a902383cf001d3605da0b747a249e094d2b0bcb806746f0` for the
+  formatted TypeScript output.
+- Frontend verification: `npm run check` passed with **0 errors / 16 retained warnings**,
+  `npm run lint` passed, and `npm run build` passed. OpenAPI export and generation drift
+  checks passed; Ruff passed. Full suite: **881 passed, 21 retained failures, 2 warnings,
+  11 environment errors** in 60.71s, identical to C4. The 11 JMC1 migration cases remain
+  blocked only because the supplied PostgreSQL role lacks `CREATEDB`.
+- Phase C5 commit: this commit (`generate typed api contracts`).
+- Current phase: C5 complete; C6 next. Exact next steps: run the consolidated JMC2
+  presentation/API/query/security/generation certification, re-prove byte reproducibility,
+  inspect subject-family fixtures, record route removals and deferred Chunk 3/6 boundaries,
+  and publish the final certification result here.
+- Pending operator work remains unchanged from JMC2A/JMC1; npm reports four low-severity
+  dependency advisories, and no broad dependency mutation was made during this phase.
+
+## JMC2C Phase C6 certification
+
+- **JMC2C certification result: PASS.** The consolidated presentation, registry, document,
+  subject/progress, bounded read/query, optimistic command, PgQueuer gateway, hardening and
+  auth suite passed **114/114**. All 48 built-ins still resolve dedicated presenters and
+  only `system_noop` remains dispatch-enabled.
+- Canonical surface audit passed: neither backend nor frontend contains product calls to the
+  retired `/api/media-jobs*`, legacy `/api/jobs/{id}`, `/api/jobs/metrics*`, or per-job
+  streaming contracts. The product surface is the bounded Queue/History, snapshot,
+  presentation, attempts, events, artifacts, children, raw-document and command API; no
+  PgQueuer row or numeric transport identifier is exposed.
+- Query/security certification passed: maximum-page list, presentation and children budgets
+  remain executable; opaque cursors are query-bound; raw documents are bounded and strip
+  transport internals; diagnostic links remain relative; optimistic commands require the
+  current fence and capability; bulk actions remain bounded and independently committed.
+- Generation certification passed: OpenAPI export drift, static TypeScript generation drift,
+  and consecutive byte reproducibility checks all passed with the C5 SHA-256 values. The
+  generated `paths`-typed fetch runtime compiles every existing API helper against a real
+  route/method. Frontend check passed with **0 errors / 16 retained warnings**, lint and
+  production build passed, and Ruff passed.
+- Fixture/manual inspection covered movie, series, season, episode, media-file, track,
+  poster-candidate-set, model-profile-training, aggregate-batch, maintenance and system-work
+  subjects. Compact/detail goldens and malformed/missing optional evidence behavior remain
+  deterministic and safe.
+- Final full suite: **881 passed, 21 retained failures, 2 warnings, 11 environment errors**
+  in 62.53s. The exact application failure set is unchanged from C3-C5 and contains no JMC2
+  regression. All 11 errors are the known JMC1 isolated-database cases blocked because the
+  supplied PostgreSQL role lacks `CREATEDB`.
+- Deferred boundaries are unchanged: Chunk 3 owns multiplexed live events plus log/artifact
+  storage; later handler migration owns currently unavailable planned media-job execution;
+  Chunk 6 owns the Projection Room visual rebuild, shared progress/card state, loading-bar
+  redesign and live-log UI. No compatibility endpoint or generated runtime SDK was added.
+- Manual/operator follow-up: rerun the 11 JMC1 migration tests with a PostgreSQL test role
+  allowed to create isolated databases; evaluate the four low-severity npm advisories in a
+  separate dependency update. No deployment, model download or browser smoke test was
+  required for this contract-only phase.
+- Phase C6 commit: this commit (`certify jmc2c contracts`). JMC2C C0-C6 is complete.

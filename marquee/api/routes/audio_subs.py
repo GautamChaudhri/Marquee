@@ -517,4 +517,8 @@ async def generate_tv(
         parent_payload={"series_id": series_id, **body.model_dump()},
         media_file_ids=media_file_ids,
     )
-    return {"job_id": batch.id, "total": len(media_file_ids), "events_url": f"/api/jobs/{batch.id}/events"}
+    return {
+        "job_id": batch.id,
+        "total": len(media_file_ids),
+        "status_url": f"/api/jobs/{batch.id}/snapshot",
+    }

@@ -321,15 +321,7 @@ export function getAudioSubsTv(
 		});
 	}
 
-	const searchParams = new URLSearchParams();
-	if (params.status) searchParams.set('status', params.status);
-	if (params.uniformity) searchParams.set('uniformity', params.uniformity);
-	if (params.missing_language) searchParams.set('missing_language', params.missing_language);
-	if (params.q) searchParams.set('q', params.q);
-	if (params.sort_by) searchParams.set('sort_by', params.sort_by);
-
-	const query = searchParams.toString();
-	return apiGet<AudioSubsTvIndex>(fetch, `/audio-subs/tv${query ? '?' + query : ''}`);
+	return apiGet<AudioSubsTvIndex>(fetch, '/audio-subs/tv', params);
 }
 
 export function getAudioSubsTvDetail(fetch: Fetch, seriesId: number): Promise<AudioSubsTvDetail> {
@@ -486,7 +478,7 @@ export function generateTv(
 		return Promise.resolve({
 			job_id: `job-mock-gen-tv-${Date.now()}`,
 			total: 5,
-			events_url: `/api/jobs/job-mock-gen-tv-${Date.now()}/events`
+			events_url: `/api/jobs/job-mock-gen-tv-${Date.now()}/snapshot`
 		});
 	}
 	return apiSend<{ job_id: string; total: number; events_url: string }>(

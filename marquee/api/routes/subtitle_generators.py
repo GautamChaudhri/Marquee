@@ -206,7 +206,7 @@ async def generate_for_media_file(
         request=body.model_dump(),
         status="queued",
     )
-    return {"job_id": job.job_id, "events_url": f"/api/media-jobs/{job.job_id}/events"}
+    return {"job_id": job.job_id, "status_url": f"/api/jobs/{job.job_id}/snapshot"}
 
 
 @router.post("/api/movies/{movie_id}/subtitle-generations", status_code=202)
@@ -232,4 +232,4 @@ async def generate_for_movie(
         request=body.model_dump(),
         status="queued",
     )
-    return {"job_id": job.job_id, "events_url": f"/api/media-jobs/{job.job_id}/events"}
+    return {"job_id": job.job_id, "status_url": f"/api/jobs/{job.job_id}/snapshot"}

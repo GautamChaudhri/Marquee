@@ -411,3 +411,51 @@ async def test_gateway_companion_operations_are_bounded_to_known_tickets(
     async with db.begin():
         with pytest.raises(PgQueuerGatewayError, match="1..100"):
             await pgqueuer_gateway.known_ticket_statuses(db, job_ids=[])
+
+
+@pytest.mark.asyncio
+async def test_reprioritize_replaces_only_the_known_queued_ticket(
+    db,
+    installed_pgqueuer: Queries,
+) -> None:
+    job = await create_system_noop(
+        db,
+        payload={"echo": "reprioritize"},
+        idempotency_key="system_noop:reprioritize",
+        priority=25,
+    )
+    original_ticket = job.pgq_job_id
+    assert original_ticket is not None
+
+    async with db.begin():
+        await pgqueuer_gateway.reprioritize_known_ticket(
+            db,
+            job_id=job.id,
+            priority=75,
+        )
+
+    replacement_ticket = job.pgq_job_id
+    assert replacement_ticket is not None
+    assert replacement_ticket != original_ticket
+    assert await installed_pgqueuer.job_status([original_ticket]) == [
+        (original_ticket, "canceled")
+    ]
+    assert await installed_pgqueuer.job_status([replacement_ticket]) == [
+        (replacement_ticket, "queued")
+    ]
+    assert job.priority == 75
+    assert job.dispatch_generation == 2
+
+    dispatches = list(
+        (
+            await db.scalars(
+                select(JobDispatch)
+                .where(JobDispatch.job_id == job.id)
+                .order_by(JobDispatch.generation)
+            )
+        ).all()
+    )
+    assert [(row.generation, row.priority, row.disposition) for row in dispatches] == [
+        (1, 25, "superseded"),
+        (2, 75, "active"),
+    ]

@@ -176,7 +176,7 @@ export function runHealScan(fetch: Fetch): Promise<HealScanResponse> {
 			message: 'Mock heal finished',
 			subject: { type: 'maintenance', id: 'poster-heal' },
 			cancel_requested: false,
-			events_url: '/api/jobs/mock-heal/events',
+			events_url: '/api/jobs/mock-heal/snapshot',
 			status_url: '/api/jobs/mock-heal',
 			created_at: now,
 			updated_at: now,
