@@ -13,6 +13,9 @@
 **Canonical product plans:** [JMC2A model/configuration](jmc2a-canonical-model-and-configuration.md),
 [JMC2B definitions/policies](jmc2b-definition-registry-and-policies.md), and
 [JMC2C presentation/APIs](jmc2c-presentation-and-api-contracts.md)
+**Safety/evidence plans:** [JMC3A execution/filesystem safety](jmc3a-execution-kernel-and-filesystem-safety.md),
+[JMC3B progress/logs/artifacts/events](jmc3b-progress-logs-artifacts-and-events.md), and
+[JMC3C backup/ingress/certification](jmc3c-backup-ingress-and-certification.md)
 
 ## Decision
 

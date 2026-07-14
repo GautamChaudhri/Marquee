@@ -30,6 +30,27 @@ They execute strictly JMC2A → JMC2B → JMC2C and share
 that timeline; the architect intentionally does not pre-create it. The three implementation
 plans begin only after JMC1 Phase 5 and its recorded gates are complete.
 
+## JMC3 — Execution safety and evidence (planned)
+
+Chunk 3 is one ordered safety/evidence program split into three independently gated plans:
+
+1. [`jmc3a-execution-kernel-and-filesystem-safety.md`](job-system-update/jmc3a-execution-kernel-and-filesystem-safety.md)
+   generalizes delivery through the typed registry, enforces fenced writes and ordered
+   advisory gates, contains/cancels child processes, centralizes path confinement, and proves
+   coordinator-only staged publication.
+2. [`jmc3b-progress-logs-artifacts-and-events.md`](job-system-update/jmc3b-progress-logs-artifacts-and-events.md)
+   implements durable semantic progress, native tool adapters, redacted capped attempt logs,
+   confined physical/virtual artifacts, and one multiplexed replayable event stream.
+3. [`jmc3c-backup-ingress-and-certification.md`](job-system-update/jmc3c-backup-ingress-and-certification.md)
+   coordinates PostgreSQL plus `DATA_DIR` backup/restore, replaces buffered/header-only body
+   limits with streaming enforcement, and certifies the complete Chunk 3 failure matrix.
+
+They execute strictly JMC3A → JMC3B → JMC3C and share
+`design/job-system-update/jmc3-safety-and-evidence-timeline.md`. The JMC3A implementer creates
+that timeline; the architect intentionally does not pre-create it. JMC3 begins only after
+JMC2C certification. Only `system_noop` remains production-enabled; fixed development/test
+canaries exercise the new infrastructure, and real read-only jobs wait for Chunk 4.
+
 ## Overview
 
 This timeline preserves the existing phase structure from `design/todos.md`
