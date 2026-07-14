@@ -10,6 +10,9 @@
 **Progress contract:** [job progress and loading experience](job-progress-and-loading-experience.md)
 **Reset-window companion work:** [miscellaneous fixes](job-system-miscellaneous-reset-window-fixes.md)
 **First implementation plan:** [JMC1 PgQueuer foundation](jmc1-pgqueuer-foundation.md)
+**Canonical product plans:** [JMC2A model/configuration](jmc2a-canonical-model-and-configuration.md),
+[JMC2B definitions/policies](jmc2b-definition-registry-and-policies.md), and
+[JMC2C presentation/APIs](jmc2c-presentation-and-api-contracts.md)
 
 ## Decision
 

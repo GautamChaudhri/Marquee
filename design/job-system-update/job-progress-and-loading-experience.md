@@ -6,6 +6,8 @@
 **Product surface:** [Projection Room redesign](projection-room-job-experience-redesign.md)
 **Delivery sequence:** [clean-slate migration program](job-system-pgqueuer-migration.md)
 **Product research:** [Activity comparison](projection-room-activity-comparison.md)
+**Typed contract implementation:** [JMC2B definitions and policies](jmc2b-definition-registry-and-policies.md)
+**Presentation/API implementation:** [JMC2C presentation and API contracts](jmc2c-presentation-and-api-contracts.md)
 
 ## Decision
 

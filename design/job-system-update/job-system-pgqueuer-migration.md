@@ -8,6 +8,9 @@
 **Progress contract:** [job progress and loading experience](job-progress-and-loading-experience.md)
 **Reset-window companion work:** [miscellaneous fixes](job-system-miscellaneous-reset-window-fixes.md)
 **Chunk 1 implementation plan:** [JMC1 PgQueuer foundation](jmc1-pgqueuer-foundation.md)
+**Chunk 2 implementation plans:** [JMC2A canonical model and configuration](jmc2a-canonical-model-and-configuration.md),
+[JMC2B definition registry and policies](jmc2b-definition-registry-and-policies.md), and
+[JMC2C presentation and API contracts](jmc2c-presentation-and-api-contracts.md)
 
 ## Program decision
 
@@ -206,6 +209,13 @@ service and PostgreSQL; verify canonical/transport identities and timing. Exit w
 is deterministic, same-transaction enqueue is proven, and no non-noop endpoint is enabled.
 
 ## Chunk 2 — Canonical product model and definition registry
+
+Implementation is split into three sequential plans sharing one implementer timeline:
+[JMC2A](jmc2a-canonical-model-and-configuration.md) →
+[JMC2B](jmc2b-definition-registry-and-policies.md) →
+[JMC2C](jmc2c-presentation-and-api-contracts.md). This split does not add a compatibility
+stage or enable additional handlers; `system_noop` remains the only dispatch-enabled
+definition throughout Chunk 2.
 
 ### Objective
 

@@ -11,6 +11,25 @@ implementing agent creates the shared
 `design/job-system-update/jmc1-pgqueuer-foundation-timeline.md`; the architect intentionally
 does not pre-create it. All non-noop job families remain disabled until later chunks.
 
+## JMC2 — Canonical product model (planned)
+
+Chunk 2 is one ordered program split into three independently gated plans:
+
+1. [`jmc2a-canonical-model-and-configuration.md`](job-system-update/jmc2a-canonical-model-and-configuration.md)
+   creates the final clean-slate job/evidence schema, durable subject history, library
+   retirement semantics, and versioned cross-process configuration authority.
+2. [`jmc2b-definition-registry-and-policies.md`](job-system-update/jmc2b-definition-registry-and-policies.md)
+   inventories every built-in and establishes the sole typed definition, snapshot, progress,
+   retry, safety, action, and execution-policy registry while keeping non-noop dispatch off.
+3. [`jmc2c-presentation-and-api-contracts.md`](job-system-update/jmc2c-presentation-and-api-contracts.md)
+   completes backend presenters, bounded canonical job APIs, deterministic OpenAPI export,
+   and static TypeScript types for the existing frontend fetch runtime.
+
+They execute strictly JMC2A → JMC2B → JMC2C and share
+`design/job-system-update/jmc2-canonical-product-timeline.md`. The JMC2A implementer creates
+that timeline; the architect intentionally does not pre-create it. The three implementation
+plans begin only after JMC1 Phase 5 and its recorded gates are complete.
+
 ## Overview
 
 This timeline preserves the existing phase structure from `design/todos.md`
