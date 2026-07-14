@@ -14,6 +14,7 @@ from marquee.config import settings
 from marquee.core.configuration_cache import configuration_provider
 from marquee.core.jobs.inventory import BUILTIN_JOB_TYPES
 from marquee.core.jobs.manifest import JOB_DEFINITION_REGISTRY
+from marquee.core.jobs.process_identity import containment_capabilities
 from marquee.database import _get_engine
 from marquee.db_migration import (
     MIGRATION_ADVISORY_LOCK_ID,
@@ -26,7 +27,12 @@ from marquee.db_migration import (
 def connection_budget_report() -> dict[str, Any]:
     """Return documented role arithmetic without DSNs or connection identities."""
     api = settings.DB_API_POOL_SIZE + settings.DB_API_MAX_OVERFLOW
-    worker_each = settings.DB_WORKER_POOL_SIZE + settings.DB_WORKER_MAX_OVERFLOW + 1
+    worker_each = (
+        settings.DB_WORKER_POOL_SIZE
+        + settings.DB_WORKER_MAX_OVERFLOW
+        + 1
+        + settings.JOB_SAFETY_GATE_CONNECTIONS
+    )
     scheduler = settings.DB_SCHEDULER_POOL_SIZE + settings.DB_SCHEDULER_MAX_OVERFLOW + 1
     configured = settings.deployment_connection_budget
     maximum = settings.DB_DEPLOYMENT_MAX_CONNECTIONS
@@ -34,6 +40,7 @@ def connection_budget_report() -> dict[str, Any]:
         "api": api,
         "worker_each": worker_each,
         "worker_processes": settings.JOB_EMBEDDED_WORKER_COUNT,
+        "safety_gate_sessions_each": settings.JOB_SAFETY_GATE_CONNECTIONS,
         "scheduler": scheduler,
         "migration": settings.DB_MIGRATION_CONNECTIONS,
         "configured": configured,
@@ -83,7 +90,8 @@ async def _raw_pool_connection() -> tuple[Any, asyncpg.Connection]:
 
 async def check_readiness() -> dict[str, Any]:
     """Check every mandatory JMC1 dependency within one global timeout."""
-    components: dict[str, dict[str, str]] = {
+    containment = containment_capabilities()
+    components: dict[str, dict[str, Any]] = {
         "configuration": {
             "status": "ok" if configuration_compatible() else "incompatible"
         },
@@ -96,6 +104,11 @@ async def check_readiness() -> dict[str, Any]:
         "database": {"status": "unavailable"},
         "migration_lock": {"status": "unavailable"},
         "schema": {"status": "unavailable"},
+        "safety_gates": {"status": "unavailable"},
+        "process_containment": {
+            "status": "ok",
+            **containment.public(),
+        },
         "versioned_configuration": {
             "status": "ok"
             if configuration_provider.health()["status"] == "valid"
@@ -109,6 +122,7 @@ async def check_readiness() -> dict[str, Any]:
         async with asyncio.timeout(settings.HEALTH_READY_TIMEOUT_SECONDS):
             sqlalchemy_connection, connection = await _raw_pool_connection()
             components["database"]["status"] = "ok"
+            components["safety_gates"]["status"] = "ok"
             acquired_lock = bool(
                 await connection.fetchval(
                     "SELECT pg_try_advisory_lock($1)",

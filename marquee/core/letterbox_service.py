@@ -81,7 +81,7 @@ def _resolve_media_file(movie: Movie) -> Path:
     candidate = (folder / movie.movie_file_path).resolve()
     # Re-confirm containment after the join (defends against ``..`` in the
     # relative path the API gave us).
-    if not str(candidate).startswith(str(folder)):
+    if not candidate.is_relative_to(folder):
         raise PathValidationError(f"Media file escapes its folder: {candidate}")
     return candidate
 

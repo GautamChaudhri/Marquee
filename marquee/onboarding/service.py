@@ -251,7 +251,7 @@ def taste_test_image_path(file: str) -> Path | None:
     """Resolve a bundled poster file to its on-disk path, confined to the bundle."""
     base = (_taste_test_dir() / "images").resolve()
     candidate = (base / file).resolve()
-    if not str(candidate).startswith(str(base)) or not candidate.is_file():
+    if not candidate.is_relative_to(base) or not candidate.is_file():
         return None
     return candidate
 

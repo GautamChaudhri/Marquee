@@ -105,10 +105,11 @@ def _backup_dir(source: Path, source_key: str) -> Path:
 
     root = _real_branch_root(source)
     if root is None:
-        resolved = str(source)
+        resolved = source.resolve()
         for candidate in settings.effective_media_roots:
-            if resolved.startswith(str(candidate)):
-                root = Path(candidate)
+            candidate = Path(candidate).resolve()
+            if resolved.is_relative_to(candidate):
+                root = candidate
                 break
         if root is None:
             root = source.parent.parent
@@ -996,27 +997,7 @@ async def execute_job(db: AsyncSession, job, emit) -> dict:
 
         await emit(db, job.job_id, "replace", "start")
         await _raise_if_cancel_requested(db, job, cleanup_paths=[out])
-        try:
-            os.replace(out, resolved.path)
-        except OSError as e:
-            import errno  # noqa: PLC0415
-
-            if e.errno == errno.EXDEV:
-                dest_temp = resolved.path.with_name(
-                    f".{resolved.path.name}.marquee-replace-{job.job_id}.tmp"
-                )
-                try:
-                    import shutil  # noqa: PLC0415
-
-                    await asyncio.to_thread(shutil.copy2, out, dest_temp)
-                    os.replace(dest_temp, resolved.path)
-                except Exception:
-                    dest_temp.unlink(missing_ok=True)
-                    raise
-                finally:
-                    out.unlink(missing_ok=True)
-            else:
-                raise
+        os.replace(out, resolved.path)
 
     external_result = []
     if external_removals:

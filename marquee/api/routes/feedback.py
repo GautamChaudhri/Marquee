@@ -749,17 +749,32 @@ def _gate_override_for(pick: dict, namespace: TasteNamespace) -> dict | None:
 def _copy_negative(candidate: dict, namespace: TasteNamespace) -> str | None:
     """Copy a disliked poster into NEGATIVE_DATA_DIR. Returns the filename
     added (for undo), or None if the source was missing or already present."""
-    import shutil  # noqa: PLC0415
+    from marquee.config import settings  # noqa: PLC0415
+    from marquee.core.filesystem import (  # noqa: PLC0415
+        FilesystemBoundary,
+        FilesystemBoundaryError,
+        RootSpec,
+    )
 
     source = Path(candidate.get("image_path") or "")
-    if not source.is_file():
-        return None
     dest_dir = namespace.negative_dir
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / source.name
     if dest.exists():
         return None
-    shutil.copy2(source, dest)
+    roots = {
+        "runs": RootSpec("runs", settings.runs_work_path, "pipeline-run"),
+        "negative": RootSpec("negative", dest_dir, "negative-exemplar", access="read_write"),
+    }
+    boundary = FilesystemBoundary(roots)
+    try:
+        source_file = boundary.classify(source, roots=("runs",), require_file=True)
+        destination = boundary.classify(
+            dest, roots=("negative",), require_exists=False, write=True
+        )
+        boundary.copy_file(source_file, destination)
+    except FilesystemBoundaryError:
+        return None
     logger.info("NEGATIVE | added %s to negative exemplars", source.name)
     return dest.name
 
@@ -768,9 +783,16 @@ def _remove_negative(filename: str, namespace: TasteNamespace | None) -> bool:
     """Remove a negative exemplar file added by a ranking event (undo)."""
     if namespace is None:
         return False
+    from marquee.core.filesystem import FilesystemBoundaryError, boundary_for_roots  # noqa: PLC0415
+
+    boundary = boundary_for_roots(
+        {"negative": namespace.negative_dir}, access="read_write", purpose="negative-exemplar"
+    )
     target = namespace.negative_dir / filename
-    if target.is_file():
-        target.unlink()
+    try:
+        classified = boundary.classify(target, require_file=True, write=True)
+        boundary.delete_file(classified, missing_ok=False)
         logger.info("NEGATIVE | removed %s", filename)
         return True
-    return False
+    except (FilesystemBoundaryError, FileNotFoundError):
+        return False

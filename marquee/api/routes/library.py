@@ -12,7 +12,6 @@ import json
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import FileResponse
 from sqlalchemy import exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -108,9 +107,27 @@ def _season_poster_status(downloaded_seasons: int, seasons_with_poster: int) -> 
     return "partial"
 
 
-async def _delete_subject_poster(db: AsyncSession, subject, *, detail_prefix: str) -> dict:
-    from pathlib import Path  # noqa: PLC0415
+def _serve_subject_poster(subject, *, media_type: str):
+    from marquee.core.filesystem import (  # noqa: PLC0415
+        FilesystemBoundaryError,
+        boundary_for_roots,
+    )
+    from marquee.core.path_utils import safe_translate_and_validate  # noqa: PLC0415
 
+    try:
+        folder = safe_translate_and_validate(subject.folder_raw, source=subject.path_source)
+        boundary = boundary_for_roots({"subject": folder}, purpose="poster-serve")
+        classified = boundary.classify(subject.entity.poster_path, require_file=True)
+        return boundary.response(classified, media_type=media_type)
+    except (FilesystemBoundaryError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail="Poster file not found on disk") from exc
+
+
+async def _delete_subject_poster(db: AsyncSession, subject, *, detail_prefix: str) -> dict:
+    from marquee.core.filesystem import (  # noqa: PLC0415
+        FilesystemBoundaryError,
+        boundary_for_roots,
+    )
     from marquee.core.path_utils import safe_translate_and_validate  # noqa: PLC0415
 
     entity = subject.entity
@@ -118,39 +135,38 @@ async def _delete_subject_poster(db: AsyncSession, subject, *, detail_prefix: st
         return {"ok": True, "detail": f"{detail_prefix} does not have a deployed poster"}
 
     stored_path = str(entity.poster_path)
-    deleted = False
-    error_msg = None
-
     try:
-        poster_file = Path(entity.poster_path)
         folder = safe_translate_and_validate(subject.folder_raw, source=subject.path_source)
-        if poster_file.parent.resolve() != folder.resolve():
-            raise RuntimeError(f"Poster parent {poster_file.parent} != folder {folder}")
-        poster_file.unlink(missing_ok=True)
-        deleted = True
-    except Exception:
-        try:
-            Path(entity.poster_path).unlink(missing_ok=True)
-            deleted = True
-        except Exception as raw_exc:
-            error_msg = str(raw_exc)
+        boundary = boundary_for_roots(
+            {"subject": folder}, access="read_write", purpose="poster-delete"
+        )
+        classified = boundary.classify(stored_path, require_exists=False, write=True)
+        boundary.delete_file(classified, missing_ok=True)
+    except (FilesystemBoundaryError, OSError, ValueError) as exc:
+        error_msg = str(exc)
+        db.add(
+            ArtworkEvent(
+                **subject.event_fk_kwargs(),
+                action="deploy_reset_error",
+                source="maintenance",
+                detail=json.dumps({"deleted_path": stored_path, "error": error_msg}),
+            )
+        )
+        await db.commit()
+        return {"ok": False, "deleted": False, "error": error_msg}
 
     _reset_poster_columns(entity)
-
-    detail_json = {"deleted_path": stored_path}
-    if error_msg:
-        detail_json["error"] = error_msg
 
     db.add(
         ArtworkEvent(
             **subject.event_fk_kwargs(),
             action="deploy_reset",
             source="maintenance",
-            detail=json.dumps(detail_json),
+            detail=json.dumps({"deleted_path": stored_path}),
         )
     )
     await db.commit()
-    return {"ok": True, "deleted": deleted, "error": error_msg}
+    return {"ok": True, "deleted": True, "error": None}
 
 
 @router.get("/movies")
@@ -270,6 +286,8 @@ async def list_movies(
 
 @router.get("/movies/{movie_id}/poster")
 async def get_movie_poster(movie_id: int, db: Annotated[AsyncSession, Depends(get_db)]):
+    from marquee.core.poster_subjects import PosterSubject  # noqa: PLC0415
+
     movie = (
         await db.execute(
             select(Movie).where(Movie.id == movie_id, Movie.is_present.is_(True))
@@ -277,11 +295,7 @@ async def get_movie_poster(movie_id: int, db: Annotated[AsyncSession, Depends(ge
     ).scalar_one_or_none()
     if movie is None or not movie.poster_path:
         raise HTTPException(status_code=404, detail="No poster available")
-    import os
-
-    if not os.path.isfile(movie.poster_path):
-        raise HTTPException(status_code=404, detail="Poster file not found on disk")
-    return FileResponse(movie.poster_path, media_type="image/jpeg")
+    return _serve_subject_poster(PosterSubject.from_movie(movie), media_type="image/jpeg")
 
 
 @router.get("/movies/{movie_id}")
@@ -517,30 +531,32 @@ async def delete_movie_poster(
 
 @router.get("/series/{series_id}/poster")
 async def get_series_poster(series_id: int, db: Annotated[AsyncSession, Depends(get_db)]):
+    from marquee.core.poster_subjects import PosterSubject  # noqa: PLC0415
+
     series = (
         await db.execute(select(Series).where(Series.id == series_id, series_visible()))
     ).scalar_one_or_none()
     if series is None or not series.poster_path:
         raise HTTPException(status_code=404, detail="No poster available")
-    import os
-
-    if not os.path.isfile(series.poster_path):
-        raise HTTPException(status_code=404, detail="Poster file not found on disk")
-    return FileResponse(series.poster_path, media_type="image/jpeg")
+    return _serve_subject_poster(PosterSubject.from_series(series), media_type="image/jpeg")
 
 
 @router.get("/seasons/{season_id}/poster")
 async def get_season_poster(season_id: int, db: Annotated[AsyncSession, Depends(get_db)]):
-    season = (
-        await db.execute(select(Season).where(Season.id == season_id, season_downloaded()))
-    ).scalar_one_or_none()
-    if season is None or not season.poster_path:
-        raise HTTPException(status_code=404, detail="No poster available")
-    import os
+    from marquee.core.poster_subjects import PosterSubject  # noqa: PLC0415
 
-    if not os.path.isfile(season.poster_path):
-        raise HTTPException(status_code=404, detail="Poster file not found on disk")
-    return FileResponse(season.poster_path, media_type="image/jpeg")
+    row = (
+        await db.execute(
+            select(Season, Series)
+            .join(Series, Series.id == Season.series_id)
+            .where(Season.id == season_id, season_downloaded())
+        )
+    ).one_or_none()
+    if row is None or not row.Season.poster_path:
+        raise HTTPException(status_code=404, detail="No poster available")
+    return _serve_subject_poster(
+        PosterSubject.from_season(row.Season, row.Series), media_type="image/jpeg"
+    )
 
 
 @router.delete("/series/{series_id}/poster")

@@ -16,6 +16,7 @@ from marquee.core.jobs.contracts import (
     TriggerKind,
 )
 from marquee.core.jobs.documents import DocumentAdapter
+from marquee.core.jobs.safety_gates import SafetyPolicy
 
 _JOB_TYPE = re.compile(r"^[a-z][a-z0-9_]{0,79}$")
 _POLICY_KEY = re.compile(r"^[a-z][a-z0-9_.-]{0,99}$")
@@ -67,6 +68,7 @@ class JobDefinition:
     entrypoint: str
     timeout: TimeoutPolicy
     effect_safety: EffectSafety
+    safety_policy: SafetyPolicy = field(default_factory=SafetyPolicy)
     configuration_keys: frozenset[str] = field(default_factory=frozenset)
     subject_builder: Callable[..., Any] | None = None
     progress_policy: Any = None

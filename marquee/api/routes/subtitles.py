@@ -14,7 +14,6 @@ from pathlib import Path
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -134,10 +133,20 @@ async def download_track(
         resolved = await resolve_media_file(db, media_file_id)
     except (MediaFileNotFoundError, MediaFileUnavailableError) as exc:
         raise _map_resolve_error(exc) from exc
-    path = Path(track.external_path).resolve()
-    if path.parent != resolved.path.parent or not path.is_file():
-        raise HTTPException(status_code=404, detail="Subtitle file not found on disk")
-    return FileResponse(path, filename=path.name)
+    from marquee.core.filesystem import (  # noqa: PLC0415
+        FilesystemBoundaryError,
+        boundary_for_roots,
+    )
+
+    path = Path(track.external_path)
+    try:
+        boundary = boundary_for_roots(
+            {"media_directory": resolved.path.parent}, purpose="subtitle-download"
+        )
+        classified = boundary.classify(path, require_file=True)
+    except FilesystemBoundaryError as exc:
+        raise HTTPException(status_code=404, detail="Subtitle file not found on disk") from exc
+    return boundary.response(classified, filename=path.name)
 
 
 # ---------------------------------------------------------------------------

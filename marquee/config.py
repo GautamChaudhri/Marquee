@@ -7,6 +7,7 @@ Pydantic-settings handles type coercion, validation, and defaults.
 from __future__ import annotations
 
 import contextlib
+import socket
 from pathlib import Path
 from typing import Literal
 
@@ -114,11 +115,23 @@ class Settings(BaseSettings):
         "already serialize GPU/write work, so one is usually enough.",
     )
     JOB_WORKER_CONCURRENCY: int = Field(default=4, ge=1, le=32)
+    JOB_WORKER_NODE_ID: str = Field(default_factory=socket.gethostname, min_length=1, max_length=100)
     JOB_CONTROL_CONCURRENCY: int = Field(default=4, ge=1, le=32)
+    JOB_SAFETY_GATE_CONNECTIONS: int = Field(
+        default=4,
+        ge=1,
+        le=32,
+        description="Dedicated advisory-lock sessions budgeted per worker process.",
+    )
     JOB_PGQUEUER_BATCH_SIZE: int = Field(default=2, ge=1, le=16)
     JOB_PGQUEUER_HEARTBEAT_SECONDS: float = Field(default=60.0, ge=1.0, le=3600.0)
     JOB_PGQUEUER_DEQUEUE_SECONDS: float = Field(default=10.0, ge=0.05, le=300.0)
     JOB_POLL_SECONDS: float = Field(default=0.5, ge=0.05, le=30.0)
+    JOB_ADMISSION_TIMEOUT_SECONDS: float = Field(default=30.0, ge=0.1, le=3600.0)
+    JOB_PROCESS_COOPERATIVE_SECONDS: float = Field(default=2.0, ge=0.05, le=300.0)
+    JOB_PROCESS_TERM_SECONDS: float = Field(default=5.0, ge=0.05, le=300.0)
+    JOB_INTENT_MONITOR_SECONDS: float = Field(default=30.0, ge=1.0, le=3600.0)
+    JOB_INTENT_MONITOR_BATCH_SIZE: int = Field(default=25, ge=1, le=100)
     JOB_HEARTBEAT_SECONDS: int = Field(default=10, ge=1, le=300)
     JOB_LEASE_SECONDS: int = Field(default=60, ge=10, le=3600)
     JOB_SHUTDOWN_GRACE_SECONDS: int = Field(default=30, ge=1, le=600)
@@ -200,7 +213,12 @@ class Settings(BaseSettings):
     def deployment_connection_budget(self) -> int:
         """Maximum connections for one API, configured workers, scheduler, and migration."""
         api = self.DB_API_POOL_SIZE + self.DB_API_MAX_OVERFLOW
-        worker = self.DB_WORKER_POOL_SIZE + self.DB_WORKER_MAX_OVERFLOW + 1
+        worker = (
+            self.DB_WORKER_POOL_SIZE
+            + self.DB_WORKER_MAX_OVERFLOW
+            + 1
+            + self.JOB_SAFETY_GATE_CONNECTIONS
+        )
         scheduler = self.DB_SCHEDULER_POOL_SIZE + self.DB_SCHEDULER_MAX_OVERFLOW + 1
         return (
             api

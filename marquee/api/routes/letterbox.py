@@ -13,12 +13,11 @@ import json
 import logging
 from collections.abc import Callable
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Annotated
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy import String, case, cast, delete, exists, func, select, union
 from sqlalchemy.exc import OperationalError
@@ -1421,11 +1420,19 @@ async def movie_preview(
     )
     if out is None:
         raise HTTPException(status_code=404, detail="Could not generate preview")
-    # Confine served files to the preview cache tree.
-    resolved = Path(out).resolve()
-    if not str(resolved).startswith(str(settings.letterbox_preview_path.resolve())):
-        raise HTTPException(status_code=403, detail="Preview path outside cache tree")
-    return FileResponse(resolved, media_type="image/webp")
+    from marquee.core.filesystem import (  # noqa: PLC0415
+        FilesystemBoundaryError,
+        boundary_for_roots,
+    )
+
+    try:
+        boundary = boundary_for_roots(
+            {"preview": settings.letterbox_preview_path}, purpose="letterbox-preview"
+        )
+        classified = boundary.classify(out, require_file=True)
+        return boundary.response(classified, media_type="image/webp")
+    except FilesystemBoundaryError as exc:
+        raise HTTPException(status_code=403, detail="Preview path outside cache tree") from exc
 
 
 @router.get("/tv/{series_id}/episodes/{episode_id}/preview")
@@ -1475,10 +1482,19 @@ async def tv_episode_preview(
     )
     if out is None:
         raise HTTPException(status_code=404, detail="Could not generate preview")
-    resolved = Path(out).resolve()
-    if not str(resolved).startswith(str(settings.letterbox_preview_path.resolve())):
-        raise HTTPException(status_code=403, detail="Preview path outside cache tree")
-    return FileResponse(resolved, media_type="image/webp")
+    from marquee.core.filesystem import (  # noqa: PLC0415
+        FilesystemBoundaryError,
+        boundary_for_roots,
+    )
+
+    try:
+        boundary = boundary_for_roots(
+            {"preview": settings.letterbox_preview_path}, purpose="letterbox-preview"
+        )
+        classified = boundary.classify(out, require_file=True)
+        return boundary.response(classified, media_type="image/webp")
+    except FilesystemBoundaryError as exc:
+        raise HTTPException(status_code=403, detail="Preview path outside cache tree") from exc
 
 
 # ---------------------------------------------------------------------------

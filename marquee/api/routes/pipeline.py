@@ -12,7 +12,6 @@ from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy import exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -258,20 +257,27 @@ async def get_run_poster(
             status_code=404, detail=f"No candidate {orig_filename!r} in run {run_id}"
         )
 
-    image_path = Path(candidate["image_path"]).resolve()
+    from marquee.core.filesystem import (  # noqa: PLC0415
+        FilesystemBoundaryError,
+        boundary_for_roots,
+    )
+
+    image_path = Path(candidate["image_path"])
     # Confine served files to the live run tree or the legacy experiments
     # trees — never accept the filename as a path; always resolve from the
     # recorded record.
-    legacy_roots = [
-        settings.runs_work_path,
-        Path(__file__).resolve().parents[2] / "experiments" / "runs",
-        Path(__file__).resolve().parents[1] / "experiments" / "runs",
-    ]
-    if not any(str(image_path).startswith(str(root.resolve())) for root in legacy_roots):
-        raise HTTPException(status_code=403, detail="Poster path outside run tree")
-    if not image_path.is_file():
-        raise HTTPException(status_code=404, detail="Poster file no longer on disk")
-    return FileResponse(image_path)
+    legacy_roots = {
+        "runs": settings.runs_work_path,
+        "legacy_runs": Path(__file__).resolve().parents[2] / "experiments" / "runs",
+        "legacy_api_runs": Path(__file__).resolve().parents[1] / "experiments" / "runs",
+    }
+    available_roots = {name: root for name, root in legacy_roots.items() if root.is_dir()}
+    try:
+        boundary = boundary_for_roots(available_roots, purpose="pipeline-run")
+        classified = boundary.classify(image_path, require_file=True)
+        return boundary.response(classified)
+    except FilesystemBoundaryError as exc:
+        raise HTTPException(status_code=403, detail="Poster path outside run tree") from exc
 
 
 class RescoreRequest(BaseModel):

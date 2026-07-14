@@ -13,7 +13,6 @@ import time
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -137,10 +136,13 @@ async def taste_test_movies():
 
 @router.get("/taste-test/posters/{file}")
 async def taste_test_poster(file: str):
+    from marquee.core.filesystem import boundary_for_roots  # noqa: PLC0415
+
     path = service.taste_test_image_path(file)
     if path is None:
         raise HTTPException(status_code=404, detail="taste-test poster not found")
-    return FileResponse(path)
+    boundary = boundary_for_roots({"taste_test": path.parent}, purpose="taste-test")
+    return boundary.response(boundary.classify(path, require_file=True))
 
 
 @router.post("/taste-test/rank")

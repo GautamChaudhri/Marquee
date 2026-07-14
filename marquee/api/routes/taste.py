@@ -16,7 +16,6 @@ from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -769,7 +768,10 @@ async def exemplar_image(name: str, size: str = "thumb", library: str = "movies"
         path = exemplar_source(name, namespace=ns)
     if path is None:
         raise HTTPException(status_code=404, detail=f"No image for exemplar {name!r}")
-    return FileResponse(path)
+    from marquee.core.filesystem import boundary_for_roots  # noqa: PLC0415
+
+    boundary = boundary_for_roots({"exemplar": path.parent}, purpose="taste-exemplar")
+    return boundary.response(boundary.classify(path, require_file=True))
 
 
 @router.get("/exemplars/{name}/neighbors")

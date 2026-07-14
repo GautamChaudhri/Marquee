@@ -20,9 +20,16 @@ from marquee.core.jobs.delivery import (
     deliver_control_job,
     parse_transport_payload,
 )
+from marquee.core.jobs.fenced_writer import (
+    AttemptOwnership,
+    FencedWriter,
+    WriteDisposition,
+)
+from marquee.core.jobs.manifest import JOB_DEFINITION_REGISTRY
 from marquee.core.jobs.pgqueuer_gateway import pgqueuer_gateway
 from marquee.core.jobs.pgqueuer_scheduler import create_scheduler
 from marquee.core.jobs.pgqueuer_worker import create_worker
+from marquee.core.jobs.safety_gates import SafetyGateService, SafetyRequirements
 from marquee.database import _get_engine
 from marquee.main import app
 from marquee.models.job import Job, JobAttempt, JobDispatch
@@ -107,6 +114,7 @@ async def test_delivery_commits_canonical_success_before_return(db):
     await deliver_control_job(_transport_job(job_id, ticket_id), _context())
 
     await db.rollback()
+    db.expire_all()
     job = await db.get(Job, job_id)
     attempts = list(
         await db.scalars(select(JobAttempt).where(JobAttempt.job_id == job_id))
@@ -115,7 +123,7 @@ async def test_delivery_commits_canonical_success_before_return(db):
     assert (job.phase, job.outcome, job.result) == (
         "terminal",
         "succeeded",
-        {"echo": {"echo": "jmc1"}},
+        {"outcome": "succeeded", "message": None, "summary": {"echo": "jmc1"}},
     )
     assert len(attempts) == 1
     assert (attempts[0].phase, attempts[0].outcome) == ("finished", "succeeded")
@@ -149,7 +157,129 @@ async def test_duplicate_delivery_performs_effect_once(db):
     assert calls == 1
 
 
-async def test_new_queue_manager_recovers_abandoned_running_attempt(db):
+async def test_safety_wait_cancellation_creates_no_attempt(db):
+    job_id, ticket_id = await _canonical_ticket(db)
+    blocker = await SafetyGateService().acquire(
+        SafetyRequirements.exclusive_maintenance(),
+        cancelled=lambda: False,
+        deadline_seconds=1,
+    )
+    context = _context()
+    task = asyncio.create_task(
+        deliver_control_job(_transport_job(job_id, ticket_id), context)
+    )
+    try:
+        for _ in range(100):
+            await db.rollback()
+            job = await db.get(Job, job_id)
+            if job is not None and (job.attention or {}).get("code") == "safety_wait":
+                break
+            await asyncio.sleep(0.01)
+        context.cancellation.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    finally:
+        await blocker.release()
+
+    await db.rollback()
+    attempts = list(
+        await db.scalars(select(JobAttempt).where(JobAttempt.job_id == job_id))
+    )
+    assert attempts == []
+
+
+async def test_fenced_writer_rejects_stale_attempt_ownership(db):
+    job_id, ticket_id = await _canonical_ticket(db)
+    admitted = asyncio.Event()
+    release = asyncio.Event()
+
+    async def executor(payload, context):
+        admitted.set()
+        await release.wait()
+        return payload
+
+    task = asyncio.create_task(
+        deliver_control_job(
+            _transport_job(job_id, ticket_id), _context(), executor=executor
+        )
+    )
+    await admitted.wait()
+    await db.rollback()
+    job = await db.get(Job, job_id)
+    assert job is not None and job.current_attempt_id is not None
+    ownership = AttemptOwnership(
+        job_id=job.id,
+        attempt_id=job.current_attempt_id,
+        fence_token=job.fence_token,
+        dispatch_generation=job.dispatch_generation,
+    )
+    job.fence_token += 1
+    await db.commit()
+
+    writer = FencedWriter(ownership, JOB_DEFINITION_REGISTRY.get("system_noop"))
+    disposition = await writer.succeed(
+        {"outcome": "succeeded", "summary": {"echo": "stale"}}
+    )
+    assert disposition == WriteDisposition.STALE
+
+    release.set()
+    await task
+    await db.rollback()
+    job = await db.get(Job, job_id)
+    assert job is not None and (job.phase, job.outcome) == ("running", None)
+
+
+async def test_pause_before_admission_consumes_no_attempt(db):
+    job_id, ticket_id = await _canonical_ticket(db)
+    job = await db.get(Job, job_id)
+    assert job is not None
+    job.desired_state = "pause"
+    await db.commit()
+
+    await deliver_control_job(_transport_job(job_id, ticket_id), _context())
+
+    await db.rollback()
+    db.expire_all()
+    job = await db.get(Job, job_id)
+    attempts = list(
+        await db.scalars(select(JobAttempt).where(JobAttempt.job_id == job_id))
+    )
+    assert job is not None
+    assert (job.phase, job.desired_state, job.pgq_job_id) == ("queued", "pause", None)
+    assert attempts == []
+
+
+async def test_serial_redelivery_after_terminal_commit_is_noop(db):
+    job_id, ticket_id = await _canonical_ticket(db)
+    delivery = _transport_job(job_id, ticket_id)
+    await deliver_control_job(delivery, _context())
+    await deliver_control_job(delivery, _context())
+
+    await db.rollback()
+    attempts = list(
+        await db.scalars(select(JobAttempt).where(JobAttempt.job_id == job_id))
+    )
+    assert len(attempts) == 1
+
+
+async def test_dispatch_disabled_registry_definition_is_held(db):
+    job_id, ticket_id = await _canonical_ticket(db)
+    job = await db.get(Job, job_id)
+    assert job is not None
+    job.type = "poster_heal"
+    await db.commit()
+
+    with pytest.raises(DeliveryRejectedError, match="definition or request"):
+        await deliver_control_job(_transport_job(job_id, ticket_id), _context())
+
+    await db.rollback()
+    attempts = list(
+        await db.scalars(select(JobAttempt).where(JobAttempt.job_id == job_id))
+    )
+    assert attempts == []
+
+
+async def test_duplicate_delivery_never_guesses_running_attempt_is_abandoned(db):
     job_id, ticket_id = await _canonical_ticket(db)
     admitted = asyncio.Event()
     release = asyncio.Event()
@@ -186,7 +316,6 @@ async def test_new_queue_manager_recovers_abandoned_running_attempt(db):
     assert job is not None
     assert (job.phase, job.outcome) == ("terminal", "succeeded")
     assert [(attempt.phase, attempt.outcome) for attempt in attempts] == [
-        ("finished", "interrupted"),
         ("finished", "succeeded"),
     ]
 
@@ -262,7 +391,7 @@ async def test_real_queue_manager_owns_retry_delay_and_second_attempt(db, instal
         ("finished", "retrying"),
         ("finished", "succeeded"),
     ]
-    assert attempts[0].error["delay_seconds"] == 0.05
+    assert attempts[0].error["diagnostics"]["delay_seconds"] == 0.05
     assert await installed_pgqueuer.job_status([ticket_id]) == [(ticket_id, "successful")]
 
 
@@ -281,10 +410,10 @@ async def test_failure_is_terminalized_before_exception_is_rethrown(db):
     await db.rollback()
     job = await db.get(Job, job_id)
     assert job is not None
-    assert (job.phase, job.outcome, job.error["type"]) == (
+    assert (job.phase, job.outcome, job.error["code"]) == (
         "terminal",
         "failed",
-        "RuntimeError",
+        "runtime_error",
     )
 
 

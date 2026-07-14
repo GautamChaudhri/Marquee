@@ -1,46 +1,108 @@
-"""Strict JMC1 PgQueuer delivery wrapper for the sole ``control`` entrypoint."""
+"""Registry-driven, pre-admission-gated, fenced PgQueuer delivery kernel."""
 
 from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 from pgqueuer import RetryRequested
 from pgqueuer.models import Context
 from pgqueuer.models import Job as PgQueuerJob
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 
+from marquee.config import settings
+from marquee.core.jobs.definitions import JobDefinition
+from marquee.core.jobs.fenced_writer import (
+    AttemptOwnership,
+    FencedWriter,
+    WriteDisposition,
+)
+from marquee.core.jobs.manifest import JOB_DEFINITION_REGISTRY
+from marquee.core.jobs.process_identity import read_boot_id
+from marquee.core.jobs.process_launcher import ProcessLauncher
+from marquee.core.jobs.safety_gates import (
+    SafetyGateCancelledError,
+    SafetyGateHandle,
+    SafetyGateService,
+    SafetyRequirements,
+    requirements_for_policy,
+)
+from marquee.core.jobs.workspaces import AttemptWorkspace, AttemptWorkspaceManager
 from marquee.database import _get_session_factory
 from marquee.models.job import Job, JobAttempt, JobDispatch, JobEvent
 
 TRANSPORT_KEYS = frozenset({"dispatch_generation", "job_id", "payload_version"})
-MAX_ERROR_MESSAGE = 1000
 
 
 class DeliveryRejectedError(RuntimeError):
     """Raise to make PgQueuer hold malformed or unsafe work."""
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class TransportPayload:
     job_id: str
     payload_version: int
     dispatch_generation: int
 
 
-@dataclass(frozen=True)
-class AdmittedDelivery:
-    job_id: str
+@dataclass(frozen=True, slots=True)
+class DeliveryIdentity:
+    canonical_job_id: str
     dispatch_generation: int
+    pgqueuer_job_id: int
+    pgqueuer_attempt: int
+    definition_key: str
+    definition_version: int
+
+
+@dataclass(frozen=True, slots=True)
+class AttemptIdentity:
     attempt_id: int
-    payload: dict[str, Any]
+    number: int
+    fence_token: int
+    worker_node: str
+    host_boot_id: str
 
 
-NoopExecutor = Callable[[dict[str, Any], Context], Awaitable[dict[str, Any]]]
+@dataclass(frozen=True, slots=True)
+class PreflightDelivery:
+    delivery: DeliveryIdentity
+    definition: JobDefinition
+    request: Mapping[str, Any]
+    requirements: SafetyRequirements
+
+
+@dataclass(frozen=True, slots=True)
+class AdmittedDelivery:
+    delivery: DeliveryIdentity
+    attempt: AttemptIdentity
+    definition: JobDefinition
+    request: Mapping[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionContext:
+    delivery: DeliveryIdentity
+    attempt: AttemptIdentity
+    request: Mapping[str, Any]
+    configuration: Mapping[str, Any]
+    subject: Mapping[str, Any]
+    definition: JobDefinition
+    cancellation: Any
+    safety_gates: SafetyGateHandle
+    workspace: AttemptWorkspace
+    process_launcher: ProcessLauncher
+    writer: FencedWriter
+
+
+KernelHandler = Callable[[ExecutionContext], Awaitable[dict[str, Any]]]
+LegacyNoopExecutor = Callable[[dict[str, Any], Context], Awaitable[dict[str, Any]]]
 
 
 def _strict_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -81,38 +143,171 @@ def parse_transport_payload(payload: bytes | None) -> TransportPayload:
         raise DeliveryRejectedError("control payload_version is unsupported")
     if type(generation) is not int or generation < 1:
         raise DeliveryRejectedError("control dispatch_generation is invalid")
-    return TransportPayload(
-        job_id=job_id,
-        payload_version=payload_version,
-        dispatch_generation=generation,
+    return TransportPayload(job_id, payload_version, generation)
+
+
+def _immutable(value: Any) -> Any:
+    if isinstance(value, dict):
+        return MappingProxyType({key: _immutable(item) for key, item in value.items()})
+    if isinstance(value, list | tuple):
+        return tuple(_immutable(item) for item in value)
+    return value
+
+
+async def _preflight(
+    transport_job: PgQueuerJob, payload: TransportPayload
+) -> PreflightDelivery | None:
+    factory = _get_session_factory()
+    async with factory() as session:
+        job = await session.get(Job, payload.job_id)
+        if job is None:
+            raise DeliveryRejectedError("canonical job does not exist")
+        dispatch = await session.scalar(
+            select(JobDispatch).where(
+                JobDispatch.job_id == payload.job_id,
+                JobDispatch.generation == payload.dispatch_generation,
+            )
+        )
+        if dispatch is None:
+            raise DeliveryRejectedError("canonical dispatch does not exist")
+        if (
+            job.phase == "terminal"
+            or job.outcome is not None
+            or dispatch.disposition != "active"
+        ):
+            return None
+        if (
+            payload.dispatch_generation != job.dispatch_generation
+            or int(transport_job.id) != job.pgq_job_id
+            or int(transport_job.id) != dispatch.pgq_job_id
+        ):
+            return None
+        try:
+            definition = JOB_DEFINITION_REGISTRY.for_dispatch(
+                job.type, entrypoint=str(transport_job.entrypoint)
+            )
+            request = definition.request.validate(
+                job.request, version=job.payload_version
+            ).model_dump(mode="json")
+        except (TypeError, ValueError, RuntimeError) as exc:
+            raise DeliveryRejectedError("canonical definition or request is invalid") from exc
+        delivery = DeliveryIdentity(
+            canonical_job_id=job.id,
+            dispatch_generation=payload.dispatch_generation,
+            pgqueuer_job_id=int(transport_job.id),
+            pgqueuer_attempt=transport_job.attempts,
+            definition_key=definition.job_type,
+            definition_version=job.payload_version,
+        )
+        requirements = requirements_for_policy(
+            definition.safety_policy,
+            allocation_identity=f"{job.id}:{payload.dispatch_generation}:{transport_job.attempts}",
+        )
+        return PreflightDelivery(
+            delivery=delivery,
+            definition=definition,
+            request=_immutable(request),
+            requirements=requirements,
+        )
+
+
+async def _publish_wait(job_id: str, generation: int, reason: str) -> None:
+    factory = _get_session_factory()
+    async with factory() as session, session.begin():
+        await session.execute(
+            update(Job)
+            .where(
+                Job.id == job_id,
+                Job.dispatch_generation == generation,
+                Job.phase == "queued",
+                Job.outcome.is_(None),
+            )
+            .values(attention={"code": "safety_wait", "summary": reason})
+        )
+
+
+async def _admission_cancelled(
+    payload: TransportPayload, context: Context
+) -> bool:
+    if context.cancellation.cancel_called:
+        return True
+    factory = _get_session_factory()
+    async with factory() as session:
+        row = (
+            await session.execute(
+                select(Job.desired_state, Job.phase, Job.dispatch_generation).where(
+                    Job.id == payload.job_id
+                )
+            )
+        ).one_or_none()
+    return bool(
+        row is None
+        or row.dispatch_generation != payload.dispatch_generation
+        or row.phase == "terminal"
+        or row.desired_state != "run"
     )
 
 
-def _bounded_error(exc: BaseException) -> dict[str, str]:
-    return {
-        "type": type(exc).__name__,
-        "message": str(exc)[:MAX_ERROR_MESSAGE],
-    }
+async def _apply_pre_admission_intent(payload: TransportPayload) -> None:
+    factory = _get_session_factory()
+    async with factory() as session, session.begin():
+        job = await session.scalar(
+            select(Job).where(Job.id == payload.job_id).with_for_update()
+        )
+        dispatch = await session.scalar(
+            select(JobDispatch)
+            .where(
+                JobDispatch.job_id == payload.job_id,
+                JobDispatch.generation == payload.dispatch_generation,
+            )
+            .with_for_update()
+        )
+        if job is None or dispatch is None or job.phase == "terminal":
+            return
+        if job.dispatch_generation != payload.dispatch_generation:
+            return
+        now = datetime.now(UTC)
+        if job.desired_state == "cancel":
+            job.phase = "terminal"
+            job.outcome = "cancelled"
+            job.terminal_at = now
+            job.attention = None
+            dispatch.disposition = "cancelled"
+            dispatch.ended_at = now
+            session.add(
+                JobEvent(
+                    job_id=job.id,
+                    event_key="job.cancelled",
+                    state="cancelled",
+                    message="cancelled before admission",
+                )
+            )
+        elif job.desired_state == "pause":
+            job.pgq_job_id = None
+            job.attention = None
+            dispatch.disposition = "cancelled"
+            dispatch.ended_at = now
 
 
 async def _start_attempt(
     session: Any,
     job: Job,
     transport_job: PgQueuerJob,
-    payload: TransportPayload,
+    preflight: PreflightDelivery,
 ) -> AdmittedDelivery:
     now = datetime.now(UTC)
     last_attempt = await session.scalar(
         select(func.max(JobAttempt.number)).where(JobAttempt.job_id == job.id)
     )
-    job.fence_token = job.fence_token + 1
+    job.fence_token += 1
     attempt = JobAttempt(
         job_id=job.id,
         number=(last_attempt or 0) + 1,
         fence_token=job.fence_token,
         pgq_job_id=int(transport_job.id),
         transport_attempt=transport_job.attempts,
-        worker_node_id=f"pgqueuer:{transport_job.queue_manager_id}",
+        worker_node_id=settings.JOB_WORKER_NODE_ID,
+        host_boot_id=read_boot_id(),
         phase="running",
         admitted_at=now,
         started_at=now,
@@ -122,27 +317,35 @@ async def _start_attempt(
     job.phase = "running"
     job.current_attempt_id = attempt.id
     job.started_at = job.started_at or now
+    job.attention = None
     session.add(
         JobEvent(
             job_id=job.id,
             attempt_id=attempt.id,
             event_key="attempt.started",
             state="running",
-            message="system_noop started",
-            detail={"dispatch_generation": payload.dispatch_generation},
+            message=f"{preflight.definition.job_type} started",
+            detail={"dispatch_generation": preflight.delivery.dispatch_generation},
         )
     )
     return AdmittedDelivery(
-        job_id=job.id,
-        dispatch_generation=payload.dispatch_generation,
-        attempt_id=attempt.id,
-        payload=dict(job.request),
+        delivery=preflight.delivery,
+        attempt=AttemptIdentity(
+            attempt_id=attempt.id,
+            number=attempt.number,
+            fence_token=attempt.fence_token,
+            worker_node=str(attempt.worker_node_id),
+            host_boot_id=str(attempt.host_boot_id),
+        ),
+        definition=preflight.definition,
+        request=preflight.request,
     )
 
 
 async def _admit_delivery(
     transport_job: PgQueuerJob,
     payload: TransportPayload,
+    preflight: PreflightDelivery,
 ) -> AdmittedDelivery | None:
     factory = _get_session_factory()
     rejection: DeliveryRejectedError | None = None
@@ -151,278 +354,206 @@ async def _admit_delivery(
         job = await session.scalar(
             select(Job).where(Job.id == payload.job_id).with_for_update()
         )
-        if job is None:
-            rejection = DeliveryRejectedError("canonical job does not exist")
-        else:
-            dispatch = await session.scalar(
-                select(JobDispatch)
+        dispatch = await session.scalar(
+            select(JobDispatch)
+            .where(
+                JobDispatch.job_id == payload.job_id,
+                JobDispatch.generation == payload.dispatch_generation,
+            )
+            .with_for_update()
+        )
+        if job is None or dispatch is None:
+            rejection = DeliveryRejectedError("canonical admission rows disappeared")
+        elif (
+            job.phase == "terminal"
+            or job.outcome is not None
+            or dispatch.disposition != "active"
+        ):
+            pass
+        elif (
+            job.dispatch_generation != preflight.delivery.dispatch_generation
+            or job.pgq_job_id != preflight.delivery.pgqueuer_job_id
+            or dispatch.pgq_job_id != preflight.delivery.pgqueuer_job_id
+        ):
+            dispatch.disposition = "stale"
+            dispatch.ended_at = datetime.now(UTC)
+        elif job.desired_state != "run":
+            pass
+        elif (
+            job.type != preflight.definition.job_type
+            or job.payload_version != preflight.delivery.definition_version
+        ):
+            rejection = DeliveryRejectedError("canonical definition changed before admission")
+        elif job.phase == "running":
+            active_attempt = await session.scalar(
+                select(JobAttempt)
                 .where(
-                    JobDispatch.job_id == payload.job_id,
-                    JobDispatch.generation == payload.dispatch_generation,
+                    JobAttempt.job_id == job.id,
+                    JobAttempt.phase.in_(("running", "stopping")),
                 )
+                .order_by(JobAttempt.number.desc())
+                .limit(1)
                 .with_for_update()
             )
-            if dispatch is None:
-                rejection = DeliveryRejectedError("canonical dispatch does not exist")
-            elif (
-                payload.dispatch_generation != job.dispatch_generation
-                or int(transport_job.id) != job.pgq_job_id
-                or int(transport_job.id) != dispatch.pgq_job_id
-            ):
-                if dispatch.disposition == "active":
-                    dispatch.disposition = "stale"
-                    dispatch.ended_at = datetime.now(UTC)
-            elif job.type != "system_noop" or payload.payload_version != job.payload_version:
-                error = {
-                    "type": "UnmigratedDefinition",
-                    "message": "only system_noop payload version 1 is enabled",
-                }
-                now = datetime.now(UTC)
-                job.phase = "terminal"
-                job.outcome = "failed"
-                job.error = error
-                job.terminal_at = now
-                dispatch.disposition = "failed"
-                dispatch.ended_at = now
-                session.add(
-                    JobEvent(
-                        job_id=job.id,
-                        event_key="job.failed",
-                        state="failed",
-                        message="unmigrated job definition held",
-                        detail=error,
-                    )
-                )
-                rejection = DeliveryRejectedError(error["message"])
-            elif job.phase == "terminal" or job.outcome is not None:
-                pass
-            elif job.desired_state == "cancel":
-                now = datetime.now(UTC)
-                job.phase = "terminal"
-                job.outcome = "cancelled"
-                job.terminal_at = now
-                dispatch.disposition = "cancelled"
-                dispatch.ended_at = now
-                session.add(
-                    JobEvent(
-                        job_id=job.id,
-                        event_key="job.cancelled",
-                        state="cancelled",
-                        message="cancelled before execution",
-                    )
-                )
-            elif job.desired_state == "pause":
-                job.pgq_job_id = None
-                dispatch.disposition = "cancelled"
-                dispatch.ended_at = datetime.now(UTC)
-            elif job.phase == "running":
-                active_attempt = await session.scalar(
-                    select(JobAttempt)
-                    .where(
-                        JobAttempt.job_id == job.id,
-                        JobAttempt.phase == "running",
-                    )
-                    .order_by(JobAttempt.number.desc())
-                    .limit(1)
-                    .with_for_update()
-                )
-                manager_identity = f"pgqueuer:{transport_job.queue_manager_id}"
-                if active_attempt is not None and active_attempt.worker_node_id == manager_identity:
-                    # PgQueuer does not dispatch one picked ticket twice from the
-                    # same manager. This is an in-flight duplicate, not recovery.
-                    pass
-                else:
-                    now = datetime.now(UTC)
-                    if active_attempt is not None:
-                        error = {
-                            "type": "WorkerLost",
-                            "message": "delivery recovered after stale transport heartbeat",
-                        }
-                        active_attempt.phase = "finished"
-                        active_attempt.outcome = "interrupted"
-                        active_attempt.failure_class = "worker_lost"
-                        active_attempt.finished_at = now
-                        active_attempt.error = error
-                        session.add(
-                            JobEvent(
-                                job_id=job.id,
-                                attempt_id=active_attempt.id,
-                                event_key="attempt.interrupted",
-                                state="interrupted",
-                                message="stale system_noop attempt recovered",
-                                detail=error,
-                            )
-                        )
-                    admitted = await _start_attempt(session, job, transport_job, payload)
-            elif job.phase != "queued":
-                rejection = DeliveryRejectedError(
-                    f"canonical job phase {job.phase!r} cannot be delivered"
-                )
-            else:
-                admitted = await _start_attempt(session, job, transport_job, payload)
+            # A running audit is reconciled at worker startup using durable process
+            # identity. Delivery never guesses that another worker/process is dead.
+            if active_attempt is None:
+                rejection = DeliveryRejectedError("running job has no current attempt")
+        elif job.phase == "queued":
+            admitted = await _start_attempt(session, job, transport_job, preflight)
+        else:
+            rejection = DeliveryRejectedError(
+                f"canonical job phase {job.phase!r} cannot be delivered"
+            )
     if rejection is not None:
         raise rejection
     return admitted
 
 
-async def _record_success(admitted: AdmittedDelivery, result: dict[str, Any]) -> None:
-    factory = _get_session_factory()
-    async with factory() as session, session.begin():
-        job = await session.scalar(
-            select(Job).where(Job.id == admitted.job_id).with_for_update()
-        )
-        if job is None or job.phase == "terminal":
-            return
-        if job.dispatch_generation != admitted.dispatch_generation or job.phase != "running":
-            return
-        dispatch = await session.scalar(
-            select(JobDispatch)
-            .where(
-                JobDispatch.job_id == admitted.job_id,
-                JobDispatch.generation == admitted.dispatch_generation,
-            )
-            .with_for_update()
-        )
-        attempt = await session.get(JobAttempt, admitted.attempt_id)
-        now = datetime.now(UTC)
-        job.phase = "terminal"
-        job.outcome = "succeeded"
-        job.result = result
-        job.error = None
-        job.terminal_at = now
-        if dispatch is not None:
-            dispatch.disposition = "succeeded"
-            dispatch.ended_at = now
-        if attempt is not None:
-            attempt.phase = "finished"
-            attempt.outcome = "succeeded"
-            attempt.finished_at = now
-        session.add(
-            JobEvent(
-                job_id=job.id,
-                attempt_id=admitted.attempt_id,
-                event_key="job.succeeded",
-                state="succeeded",
-                message="system_noop completed",
-                detail={"result": result},
-            )
-        )
-
-
-async def _record_retry(admitted: AdmittedDelivery, exc: RetryRequested) -> None:
-    factory = _get_session_factory()
-    async with factory() as session, session.begin():
-        job = await session.scalar(
-            select(Job).where(Job.id == admitted.job_id).with_for_update()
-        )
-        if job is None or job.phase == "terminal":
-            return
-        attempt = await session.get(JobAttempt, admitted.attempt_id)
-        now = datetime.now(UTC)
-        error = {
-            "type": "RetryRequested",
-            "message": (exc.reason or "retry requested")[:MAX_ERROR_MESSAGE],
-            "delay_seconds": exc.delay.total_seconds(),
-        }
-        job.phase = "queued"
-        job.error = error
-        if attempt is not None:
-            attempt.phase = "finished"
-            attempt.outcome = "retrying"
-            attempt.failure_class = "transient"
-            attempt.finished_at = now
-            attempt.error = error
-        session.add(
-            JobEvent(
-                job_id=job.id,
-                attempt_id=admitted.attempt_id,
-                event_key="job.retry_requested",
-                state="retrying",
-                message="system_noop retry requested",
-                detail=error,
-            )
-        )
-
-
-async def _record_terminal_error(
-    admitted: AdmittedDelivery,
-    exc: BaseException,
-    *,
-    cancelled: bool,
-) -> None:
-    factory = _get_session_factory()
-    async with factory() as session, session.begin():
-        job = await session.scalar(
-            select(Job).where(Job.id == admitted.job_id).with_for_update()
-        )
-        if job is None or job.phase == "terminal":
-            return
-        dispatch = await session.scalar(
-            select(JobDispatch)
-            .where(
-                JobDispatch.job_id == admitted.job_id,
-                JobDispatch.generation == admitted.dispatch_generation,
-            )
-            .with_for_update()
-        )
-        attempt = await session.get(JobAttempt, admitted.attempt_id)
-        now = datetime.now(UTC)
-        outcome = "cancelled" if cancelled else "failed"
-        error = _bounded_error(exc)
-        job.phase = "terminal"
-        job.outcome = outcome
-        job.error = error
-        job.terminal_at = now
-        if dispatch is not None:
-            dispatch.disposition = "cancelled" if cancelled else "failed"
-            dispatch.ended_at = now
-        if attempt is not None:
-            attempt.phase = "finished"
-            attempt.outcome = outcome
-            attempt.finished_at = now
-            attempt.error = error
-        session.add(
-            JobEvent(
-                job_id=job.id,
-                attempt_id=admitted.attempt_id,
-                event_key=f"job.{outcome}",
-                state=outcome,
-                message=f"system_noop {outcome}",
-                detail=error,
-            )
-        )
-
-
-async def execute_system_noop(
-    payload: dict[str, Any],
-    context: Context,
-) -> dict[str, Any]:
-    """The only shipped JMC1 effect: echo canonical payload data."""
+async def execute_system_noop(context: ExecutionContext) -> dict[str, Any]:
+    """The only production handler; it has no ORM, transport row, or path authority."""
     if context.cancellation.cancel_called:
         raise asyncio.CancelledError
-    return {"echo": payload}
+    return {
+        "outcome": "succeeded",
+        "summary": {"echo": context.request.get("echo")},
+    }
+
+
+EXECUTION_HANDLERS: Mapping[str, KernelHandler] = MappingProxyType(
+    {"system_noop": execute_system_noop}
+)
+_SAFETY_GATES = SafetyGateService()
 
 
 async def deliver_control_job(
     transport_job: PgQueuerJob,
     context: Context,
     *,
-    executor: NoopExecutor = execute_system_noop,
+    executor: LegacyNoopExecutor | None = None,
 ) -> None:
-    """Admit, execute, terminalize, then return so PgQueuer may acknowledge."""
+    """Gate, admit, execute, seal canonically, then allow PgQueuer acknowledgement."""
     payload = parse_transport_payload(transport_job.payload)
-    admitted = await _admit_delivery(transport_job, payload)
-    if admitted is None:
+    preflight = await _preflight(transport_job, payload)
+    if preflight is None:
         return
     try:
-        result = await executor(admitted.payload, context)
-    except RetryRequested as exc:
-        await _record_retry(admitted, exc)
-        raise
-    except asyncio.CancelledError as exc:
-        await asyncio.shield(_record_terminal_error(admitted, exc, cancelled=True))
-        raise
-    except Exception as exc:
-        await _record_terminal_error(admitted, exc, cancelled=False)
-        raise
-    await _record_success(admitted, result)
+        gates = await _SAFETY_GATES.acquire(
+            preflight.requirements,
+            cancelled=lambda: _admission_cancelled(payload, context),
+            deadline_seconds=min(
+                settings.JOB_ADMISSION_TIMEOUT_SECONDS,
+                preflight.definition.timeout.seconds,
+            ),
+            publish_wait=lambda reason: _publish_wait(
+                payload.job_id, payload.dispatch_generation, reason
+            ),
+        )
+    except SafetyGateCancelledError:
+        await _apply_pre_admission_intent(payload)
+        if context.cancellation.cancel_called:
+            raise asyncio.CancelledError from None
+        return
+
+    admitted: AdmittedDelivery | None = None
+    try:
+        admitted = await _admit_delivery(transport_job, payload, preflight)
+        if admitted is None:
+            await _apply_pre_admission_intent(payload)
+            return
+        ownership = AttemptOwnership(
+            job_id=admitted.delivery.canonical_job_id,
+            attempt_id=admitted.attempt.attempt_id,
+            fence_token=admitted.attempt.fence_token,
+            dispatch_generation=admitted.delivery.dispatch_generation,
+        )
+        writer = FencedWriter(ownership, admitted.definition)
+        try:
+            workspace = AttemptWorkspaceManager.for_data_dir(Path(settings.DATA_DIR)).create(
+                job_id=ownership.job_id,
+                attempt_id=ownership.attempt_id,
+                fence_token=ownership.fence_token,
+            )
+        except Exception as exc:
+            await writer.fail(exc)
+            raise
+        process_launcher = ProcessLauncher(
+            worker_node=admitted.attempt.worker_node,
+            boundary=workspace.boundary,
+            working_directory=workspace.directory,
+            record_identity=writer.record_process_identity,
+            record_exit=writer.record_process_exit,
+        )
+        execution = ExecutionContext(
+            delivery=admitted.delivery,
+            attempt=admitted.attempt,
+            request=admitted.request,
+            configuration=MappingProxyType({}),
+            subject=MappingProxyType({}),
+            definition=admitted.definition,
+            cancellation=context.cancellation,
+            safety_gates=gates,
+            workspace=workspace,
+            process_launcher=process_launcher,
+            writer=writer,
+        )
+        try:
+            if executor is None:
+                handler = EXECUTION_HANDLERS.get(admitted.definition.job_type)
+                if handler is None:
+                    raise DeliveryRejectedError("enabled definition has no execution handler")
+                result = await handler(execution)
+            else:
+                legacy = await executor(dict(admitted.request), context)
+                result = (
+                    legacy
+                    if set(legacy) >= {"outcome", "summary"}
+                    else {"outcome": "succeeded", "summary": {"echo": legacy}}
+                )
+        except RetryRequested as exc:
+            await asyncio.shield(
+                process_launcher.shutdown(
+                    cooperative_seconds=settings.JOB_PROCESS_COOPERATIVE_SECONDS,
+                    term_seconds=settings.JOB_PROCESS_TERM_SECONDS,
+                )
+            )
+            workspace.cleanup()
+            await writer.retry(
+                reason=exc.reason or "retry requested",
+                delay_seconds=exc.delay.total_seconds(),
+            )
+            raise
+        except asyncio.CancelledError as exc:
+            await asyncio.shield(writer.stopping())
+            await asyncio.shield(
+                process_launcher.shutdown(
+                    cooperative_seconds=settings.JOB_PROCESS_COOPERATIVE_SECONDS,
+                    term_seconds=settings.JOB_PROCESS_TERM_SECONDS,
+                )
+            )
+            workspace.quarantine(code="cancelled", summary="attempt cancelled before publication")
+            await asyncio.shield(writer.fail(exc, cancelled=True))
+            raise
+        except Exception as exc:
+            await asyncio.shield(
+                process_launcher.shutdown(
+                    cooperative_seconds=settings.JOB_PROCESS_COOPERATIVE_SECONDS,
+                    term_seconds=settings.JOB_PROCESS_TERM_SECONDS,
+                )
+            )
+            workspace.quarantine(code="failed", summary="attempt failed before safe cleanup")
+            await writer.fail(exc)
+            raise
+        await process_launcher.shutdown(
+            cooperative_seconds=settings.JOB_PROCESS_COOPERATIVE_SECONDS,
+            term_seconds=settings.JOB_PROCESS_TERM_SECONDS,
+        )
+        disposition = await writer.succeed(result)
+        if disposition != WriteDisposition.APPLIED:
+            workspace.quarantine(code="stale_fence", summary="completion ownership changed")
+            if disposition == WriteDisposition.CONFLICT:
+                raise DeliveryRejectedError("canonical completion conflicted with current state")
+            return
+        workspace.cleanup()
+    finally:
+        await asyncio.shield(gates.release())

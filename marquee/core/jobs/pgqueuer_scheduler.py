@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import signal
 
@@ -11,6 +12,7 @@ from pgqueuer import PgQueuer
 
 from marquee.config import settings
 from marquee.core.configuration_cache import configuration_provider
+from marquee.core.jobs.transport_intent_monitor import monitor_until_shutdown
 from marquee.db_migration import asyncpg_dsn, verify_runtime_schema
 
 logger = logging.getLogger(__name__)
@@ -41,7 +43,18 @@ async def run() -> None:
         await configuration_provider.start(role="scheduler")
         app = create_scheduler(connection)
         _install_shutdown_handlers(app)
-        await app.sm.run()
+        monitor = asyncio.create_task(
+            monitor_until_shutdown(
+                app.shutdown,
+                interval_seconds=settings.JOB_INTENT_MONITOR_SECONDS,
+            )
+        )
+        try:
+            await app.sm.run()
+        finally:
+            monitor.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await monitor
     finally:
         await configuration_provider.stop()
         await connection.close()
