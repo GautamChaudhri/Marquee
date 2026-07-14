@@ -4,6 +4,8 @@
 **Status:** Required companion work to the clean-slate PgQueuer program
 **Delivery program:** [clean-slate migration](job-system-pgqueuer-migration.md)
 **Related architecture:** [direct PgQueuer adoption](job-system-pgqueuer-direct-adoption.md)
+**Chunk 3 filesystem work:** [JMC3A execution kernel and filesystem safety](jmc3a-execution-kernel-and-filesystem-safety.md)
+**Chunk 3 backup/ingress work:** [JMC3C backup, ingress, and certification](jmc3c-backup-ingress-and-certification.md)
 
 ## Purpose
 

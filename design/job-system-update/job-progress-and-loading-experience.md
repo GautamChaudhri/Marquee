@@ -8,6 +8,7 @@
 **Product research:** [Activity comparison](projection-room-activity-comparison.md)
 **Typed contract implementation:** [JMC2B definitions and policies](jmc2b-definition-registry-and-policies.md)
 **Presentation/API implementation:** [JMC2C presentation and API contracts](jmc2c-presentation-and-api-contracts.md)
+**Durable writer and delivery:** [JMC3B progress, logs, artifacts, and events](jmc3b-progress-logs-artifacts-and-events.md)
 
 ## Decision
 

@@ -11,6 +11,9 @@
 **Chunk 2 implementation plans:** [JMC2A canonical model and configuration](jmc2a-canonical-model-and-configuration.md),
 [JMC2B definition registry and policies](jmc2b-definition-registry-and-policies.md), and
 [JMC2C presentation and API contracts](jmc2c-presentation-and-api-contracts.md)
+**Chunk 3 implementation plans:** [JMC3A execution kernel and filesystem safety](jmc3a-execution-kernel-and-filesystem-safety.md),
+[JMC3B progress, logs, artifacts, and events](jmc3b-progress-logs-artifacts-and-events.md),
+and [JMC3C backup, ingress, and certification](jmc3c-backup-ingress-and-certification.md)
 
 ## Program decision
 
@@ -294,6 +297,12 @@ poster, HDR, letterbox, ML, sync, and maintenance fixtures. Exit when the regist
 built-in work and the final product schema needs no identity bridge.
 
 ## Chunk 3 — Execution safety, logs, artifacts, and events
+
+**Implementation sequence:** [JMC3A execution kernel and filesystem safety](jmc3a-execution-kernel-and-filesystem-safety.md)
+→ [JMC3B progress, logs, artifacts, and events](jmc3b-progress-logs-artifacts-and-events.md)
+→ [JMC3C backup, ingress, and certification](jmc3c-backup-ingress-and-certification.md).
+The JMC3A implementer creates the one shared `jmc3-safety-and-evidence-timeline.md`; the
+architect does not pre-create it.
 
 ### Objective
 
