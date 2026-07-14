@@ -16,6 +16,9 @@
 **Safety/evidence plans:** [JMC3A execution/filesystem safety](jmc3a-execution-kernel-and-filesystem-safety.md),
 [JMC3B progress/logs/artifacts/events](jmc3b-progress-logs-artifacts-and-events.md), and
 [JMC3C backup/ingress/certification](jmc3c-backup-ingress-and-certification.md)
+**Non-mutating job plans:** [JMC4A producers/batches/schedules](jmc4a-producers-batches-and-schedules.md),
+[JMC4B library/scans/media analysis](jmc4b-library-scans-and-media-analysis.md), and
+[JMC4C poster/ML/certification](jmc4c-poster-ml-and-certification.md)
 
 ## Decision
 

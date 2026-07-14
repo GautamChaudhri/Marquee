@@ -51,6 +51,29 @@ that timeline; the architect intentionally does not pre-create it. JMC3 begins o
 JMC2C certification. Only `system_noop` remains production-enabled; fixed development/test
 canaries exercise the new infrastructure, and real read-only jobs wait for Chunk 4.
 
+## JMC4 — Non-mutating jobs (planned)
+
+Chunk 4 is one ordered migration/certification program split into three independently gated
+plans:
+
+1. [`jmc4a-producers-batches-and-schedules.md`](job-system-update/jmc4a-producers-batches-and-schedules.md)
+   establishes typed canonical production, atomic fixed/dynamic batches, PgQueuer schedule
+   callbacks, and all non-mutating execution classes while leaving real handlers disabled.
+2. [`jmc4b-library-scans-and-media-analysis.md`](job-system-update/jmc4b-library-scans-and-media-analysis.md)
+   migrates library synchronization, audio/subtitle inventory and policy audits, letterbox
+   detection, and Dolby Vision analysis without source-media mutation.
+3. [`jmc4c-poster-ml-and-certification.md`](job-system-update/jmc4c-poster-ml-and-certification.md)
+   migrates non-deploying poster analysis, immutable taste/model work, poster rescans, and
+   certifies the complete Chunk 4 schedule/batch/fairness/saturation matrix.
+
+They execute strictly JMC4A → JMC4B → JMC4C and share
+`design/job-system-update/jmc4-nonmutating-jobs-timeline.md`. JMC4A creates that timeline;
+the architect intentionally does not pre-create it. Each plan retains phase commits until
+all gates pass, then makes verified repository-external recovery material and compacts only
+its own unpushed range to one tree-identical completion commit/tag. No JMC4 implementer
+pushes. Recommended implementation tiers are God for JMC4A, Mid for JMC4B, and God for
+JMC4C.
+
 ## Overview
 
 This timeline preserves the existing phase structure from `design/todos.md`

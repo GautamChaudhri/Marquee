@@ -4,6 +4,7 @@
 **Filesystem foundation:** [JMC3A execution kernel and filesystem safety](jmc3a-execution-kernel-and-filesystem-safety.md)  
 **Companion findings:** [reset-window miscellaneous fixes](job-system-miscellaneous-reset-window-fixes.md)  
 **Program:** [clean-slate PgQueuer migration](job-system-pgqueuer-migration.md)
+**Next plan:** [JMC4A producers, batches, and schedules](jmc4a-producers-batches-and-schedules.md)
 
 > **For the implementing agent:** Read `AGENTS.md`, `CLAUDE.md` when present,
 > `design/plans/README.md`, `design/plans/04-television-backend.md` §0, the complete JMC1,
