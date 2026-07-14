@@ -14,6 +14,9 @@
 **Chunk 3 implementation plans:** [JMC3A execution kernel and filesystem safety](jmc3a-execution-kernel-and-filesystem-safety.md),
 [JMC3B progress, logs, artifacts, and events](jmc3b-progress-logs-artifacts-and-events.md),
 and [JMC3C backup, ingress, and certification](jmc3c-backup-ingress-and-certification.md)
+**Chunk 4 implementation plans:** [JMC4A producers, batches, and schedules](jmc4a-producers-batches-and-schedules.md),
+[JMC4B library, scans, and media analysis](jmc4b-library-scans-and-media-analysis.md),
+and [JMC4C poster, ML, and certification](jmc4c-poster-ml-and-certification.md)
 
 ## Program decision
 
@@ -399,6 +402,15 @@ locks, staging, logs, artifacts, and events are proven.
 
 ## Chunk 4 — Non-mutating jobs, schedules, and batches
 
+**Implementation sequence:**
+[JMC4A canonical producers, batches, and schedules](jmc4a-producers-batches-and-schedules.md)
+→ [JMC4B library, scans, and media analysis](jmc4b-library-scans-and-media-analysis.md)
+→ [JMC4C poster, ML, and certification](jmc4c-poster-ml-and-certification.md).
+They share `jmc4-nonmutating-jobs-timeline.md`, which the JMC4A implementer creates. Each
+plan uses phase commits for review and recovery, then compacts only its own fully certified,
+unpushed range to one tree-identical completion commit and local completion tag. The
+architect intentionally does not pre-create the timeline.
+
 ### Objective
 
 Move all read-only and non-destructive work to PgQueuer and prove normal scheduling,
@@ -414,6 +426,10 @@ fairness, batching, and saturation before media mutation.
 - metrics, cache inspection, retention dry-runs, health, and other non-destructive
   maintenance;
 - fixed and dynamic aggregate parents.
+
+The detailed JMC4 plans are authoritative about which concrete definitions become enabled.
+Read-only maintenance ideas without a registered, tested JMC4 definition remain disabled
+rather than being inferred from this broad migration-group inventory.
 
 PgQueuer schedule callbacks enqueue ordinary canonical jobs. Fixed batches create parent,
 children, and tickets atomically. Dynamic child sets seal before terminal aggregation.
