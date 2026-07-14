@@ -427,10 +427,10 @@ def test_new_job_handlers_registered():
     from marquee.core.jobs.handlers import registered_types
 
     assert {
-        "poster_pipeline_batch",
-        "learned_head_train",
         "pipeline_cache_clear",
         "poster_backup_all",
         "poster_maintenance",
-        "poster_rescan",
     } <= registered_types()
+    from marquee.core.jobs.delivery import EXECUTION_HANDLERS
+
+    assert {"learned_head_train", "poster_rescan"} <= set(EXECUTION_HANDLERS)

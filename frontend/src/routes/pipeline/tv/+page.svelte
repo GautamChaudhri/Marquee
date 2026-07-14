@@ -121,25 +121,20 @@
 		try {
 			const job = await runTvBatch(fetch, { scope, series_ids: seriesIds });
 			batchRunning = true;
-			batchStatus = job.status;
+			batchStatus = job.phase;
 			storeBatchId(job.job_id);
-			trackJob(
-				fetch,
-				job.job_id,
-				{
-					onProgress: ({ status, detail }) => {
-						batchStatus = status;
-						batchDetail = detail;
-					},
-					onDone: async (snapshot) => {
-						batchRunning = false;
-						storeBatchId(null);
-						toast(`TV batch ${snapshot.status}`, snapshot.status === 'succeeded' ? 'good' : 'bad');
-						await refresh();
-					}
+			trackJob(fetch, job.job_id, {
+				onProgress: ({ status, detail }) => {
+					batchStatus = status;
+					batchDetail = detail;
 				},
-				{ eventsUrl: job.events_url }
-			);
+				onDone: async (snapshot) => {
+					batchRunning = false;
+					storeBatchId(null);
+					toast(`TV batch ${snapshot.status}`, snapshot.status === 'succeeded' ? 'good' : 'bad');
+					await refresh();
+				}
+			});
 		} catch (e) {
 			toast(e instanceof Error ? e.message : 'Failed to start TV batch', 'bad');
 		}
@@ -148,20 +143,12 @@
 	async function startOne(seriesId: number) {
 		try {
 			const job = await runSeries(fetch, seriesId, { include: 'all_missing' });
-			trackJob(
-				fetch,
-				job.job_id,
-				{
-					onDone: async (snapshot) => {
-						toast(
-							`Series run ${snapshot.status}`,
-							snapshot.status === 'succeeded' ? 'good' : 'bad'
-						);
-						await refresh();
-					}
-				},
-				{ eventsUrl: job.events_url }
-			);
+			trackJob(fetch, job.job_id, {
+				onDone: async (snapshot) => {
+					toast(`Series run ${snapshot.status}`, snapshot.status === 'succeeded' ? 'good' : 'bad');
+					await refresh();
+				}
+			});
 		} catch (e) {
 			toast(e instanceof Error ? e.message : 'Failed to run series', 'bad');
 		}

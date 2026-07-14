@@ -1,6 +1,6 @@
 import { apiGet, apiSend, type Fetch } from './client';
+import type { components } from './generated/openapi';
 import type {
-	JobSummary,
 	ManagedHeadsResponse,
 	ManagedArtifactSummary,
 	ManagedExemplarRow,
@@ -13,6 +13,8 @@ import type {
 	TasteSource,
 	TasteStatus
 } from './types';
+
+type JobSubmissionResponse = components['schemas']['JobSubmissionResponse'];
 
 export type TasteLibrary = 'movies' | 'tv';
 
@@ -30,14 +32,18 @@ export function retrainTaste(
 	fetchFn: Fetch,
 	source: TasteSource = 'training_dir',
 	library: TasteLibrary = 'movies'
-): Promise<JobSummary> {
-	return apiSend<JobSummary>(fetchFn, 'POST', '/taste/retrain', { source, library });
+): Promise<JobSubmissionResponse> {
+	return apiSend<JobSubmissionResponse>(fetchFn, 'POST', '/taste/retrain', { source, library });
 }
 
 /** Train the learned head (UI "Key Art Engine") from accumulated labels. */
-export function retrainHead(fetchFn: Fetch, library: TasteLibrary = 'movies'): Promise<JobSummary> {
-	if (library === 'movies') return apiSend<JobSummary>(fetchFn, 'POST', '/taste/head/retrain');
-	return apiSend<JobSummary>(fetchFn, 'POST', `/taste/head/retrain?library=${library}`);
+export function retrainHead(
+	fetchFn: Fetch,
+	library: TasteLibrary = 'movies'
+): Promise<JobSubmissionResponse> {
+	if (library === 'movies')
+		return apiSend<JobSubmissionResponse>(fetchFn, 'POST', '/taste/head/retrain');
+	return apiSend<JobSubmissionResponse>(fetchFn, 'POST', `/taste/head/retrain?library=${library}`);
 }
 
 /** Request cancellation of a running taste-profile rebuild. */

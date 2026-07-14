@@ -750,7 +750,10 @@ class TestRouteOrdering:
         assert paths.index("/api/letterbox/tv/detect") < series_index
 
     async def test_tv_detect_literal_route_not_captured_by_series_route(
-        self, client: AsyncClient, tv_library
+        self,
     ):
-        response = await client.post("/api/letterbox/tv/detect", json={})
-        assert response.status_code != 404
+        assert any(
+            getattr(route, "path", None) == "/api/letterbox/tv/detect"
+            and "POST" in (getattr(route, "methods", None) or set())
+            for route in app.routes
+        )

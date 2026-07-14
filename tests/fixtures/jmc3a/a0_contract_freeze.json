@@ -4,13 +4,18 @@
     "definition_count": 49,
     "enabled_types": [
       "dovi_analyze",
+      "learned_head_train",
       "letterbox_detect",
       "letterbox_detect_episode",
       "letterbox_detect_tv_scope",
       "library_sync",
+      "poster_pipeline",
+      "poster_rescan",
       "subtitle_policy_audit",
       "subtitle_scan",
-      "system_noop"
+      "system_noop",
+      "taste_map",
+      "taste_rebuild"
     ],
     "entrypoint": "control"
   },

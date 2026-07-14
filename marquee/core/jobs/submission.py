@@ -30,6 +30,8 @@ from marquee.core.jobs.pgqueuer_gateway import (
 )
 from marquee.core.jobs.subjects import (
     MaintenanceScopeSnapshot,
+    ModelProfileTrainingSnapshot,
+    PosterCandidateSetSnapshot,
     SubjectNotFoundError,
     SubjectSnapshot,
     SystemWorkSnapshot,
@@ -275,6 +277,36 @@ async def _resolve_subject(
                 display_id=display_id,
                 display_name=display_name,
                 scope=scope,
+            )
+        if locator.kind == "model_profile_training":
+            family, library = locator.reference.split(":", 1)
+            if family not in {"taste_profile", "taste_map", "learned_head"}:
+                raise ValueError
+            if library not in {"movies", "tv"}:
+                raise ValueError
+            labels = {
+                "taste_profile": "Taste profile",
+                "taste_map": "Taste map",
+                "learned_head": "Learned ranking head",
+            }
+            return ModelProfileTrainingSnapshot(
+                display_id=f"ml:{family}:{library}",
+                display_name=f"{labels[family]} ({library})",
+                subject_type="training",
+                name=labels[family],
+                model_name=family,
+                profile_scope=library,
+                dataset_label=f"{library} library snapshot",
+            )
+        if locator.kind == "poster_candidate_set" and locator.reference == "all":
+            return PosterCandidateSetSnapshot(
+                display_id="posters:all",
+                display_name="All poster subjects",
+                media_kind="movie",
+                subject_id=0,
+                title="All poster subjects",
+                source_names=("filesystem",),
+                artwork_key="all",
             )
         identifier = int(locator.reference)
         if identifier < 1:

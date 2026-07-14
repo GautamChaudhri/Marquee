@@ -1,0 +1,147 @@
+"""Machine-checkable JMC4C C0 inventory for poster/ML migration.
+
+The target jobs deliberately start disabled.  Each C phase changes this freeze in
+the same commit as its migration so a new executor, route, activation path, or
+legacy lifecycle bridge cannot quietly appear.
+"""
+
+from __future__ import annotations
+
+import ast
+import json
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from marquee.core.jobs.definitions import DisabledJobDefinitionError
+from marquee.core.jobs.delivery import EXECUTION_HANDLERS
+from marquee.core.jobs.manifest import JOB_DEFINITION_REGISTRY
+
+ROOT = Path(__file__).parents[1]
+FREEZE_PATH = ROOT / "tests/fixtures/jmc4c/c0_contract_freeze.json"
+
+TARGET_TYPES = (
+    "poster_pipeline",
+    "poster_pipeline_batch",
+    "poster_pipeline_tv_batch",
+    "taste_rebuild",
+    "taste_map",
+    "learned_head_train",
+    "poster_rescan",
+)
+
+DEFERRED_MUTATING_TYPES = (
+    "poster_heal",
+    "poster_deploy_reset",
+    "poster_backup_all",
+    "poster_maintenance",
+    "pipeline_cache_clear",
+    "radarr_upgrade",
+    "backup_create",
+    "dovi_convert",
+    "letterbox_apply",
+    "letterbox_remove",
+    "letterbox_apply_tv_scope",
+    "letterbox_revert_tv_scope",
+    "letterbox_reencode",
+    "audio_remove",
+    "track_remove",
+    "subtitle_remove",
+    "subtitle_embed",
+    "subtitle_metadata",
+    "audio_reorder",
+    "subtitle_extract",
+    "subtitle_generate",
+    "subtitle_policy",
+    "subtitle_restore",
+)
+
+
+def _freeze() -> dict[str, Any]:
+    return json.loads(FREEZE_PATH.read_text())
+
+
+def _state(job_type: str) -> dict[str, Any]:
+    definition = JOB_DEFINITION_REGISTRY.find(job_type)
+    if definition is None:
+        return {"present": False}
+    return {
+        "present": True,
+        "enabled": definition.enabled,
+        "migration_state": definition.migration_state.value,
+        "execution_class": definition.execution_class.value,
+        "parent_only": definition.parent_policy is not None,
+        "effect_safety": definition.effect_safety.value,
+    }
+
+
+def _call_inventory() -> dict[str, list[str]]:
+    """Capture lifecycle and publication calls only in the C-family call graph."""
+    inventory: dict[str, list[str]] = {}
+    targets = {
+        "marquee/api/routes/pipeline.py": {
+            "run_pipeline",
+            "run_pipeline_batch",
+            "rescan_posters",
+        },
+        "marquee/api/routes/pipeline_tv.py": {"run_series_pipeline", "run_tv_pipeline_batch"},
+        "marquee/api/routes/taste.py": {
+            "retrain_taste",
+            "retrain_learned_head",
+            "rebuild_map",
+            "cancel_retrain_taste",
+            "activate_taste_profile",
+            "activate_learned_head",
+        },
+        "marquee/core/jobs/builtin_handlers.py": set(TARGET_TYPES),
+    }
+    owners = {
+        "job_manager",
+        "media_job_manager",
+        "cancel_registry",
+        "artifact_registry",
+        "run_manager",
+    }
+    for relative, functions in targets.items():
+        tree = ast.parse((ROOT / relative).read_text())
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) or node.name not in functions:
+                continue
+            calls: list[str] = []
+            for child in ast.walk(node):
+                if not isinstance(child, ast.Call) or not isinstance(child.func, ast.Attribute):
+                    continue
+                owner = child.func.value
+                if isinstance(owner, ast.Name) and owner.id in owners:
+                    calls.append(f"{owner.id}.{child.func.attr}")
+            inventory[f"{relative}:{node.name}"] = sorted(calls)
+    return dict(sorted(inventory.items()))
+
+
+def test_registry_and_handlers_match_c0_freeze() -> None:
+    frozen = _freeze()
+    assert sorted(JOB_DEFINITION_REGISTRY.enabled_types) == frozen["registry"]["enabled_types"]
+    assert sorted(EXECUTION_HANDLERS) == frozen["execution_handlers"]
+
+
+def test_target_states_match_c0_freeze() -> None:
+    frozen = _freeze()["target_types"]
+    assert sorted(frozen) == sorted(TARGET_TYPES)
+    assert {job_type: _state(job_type) for job_type in TARGET_TYPES} == frozen
+
+
+def test_deferred_mutation_never_dispatches() -> None:
+    frozen = _freeze()["deferred_mutating_types"]
+    assert sorted(frozen) == sorted(DEFERRED_MUTATING_TYPES)
+    assert {job_type: _state(job_type) for job_type in DEFERRED_MUTATING_TYPES} == frozen
+    for job_type in DEFERRED_MUTATING_TYPES:
+        definition = JOB_DEFINITION_REGISTRY.get(job_type)
+        assert definition.execution_class.value != "media_write" or definition.enabled is False
+        with pytest.raises(DisabledJobDefinitionError):
+            JOB_DEFINITION_REGISTRY.for_dispatch(job_type, entrypoint=definition.entrypoint)
+
+
+def test_c_family_lifecycle_and_activation_inventory_matches_freeze() -> None:
+    assert _call_inventory() == _freeze()["call_inventory"]
+

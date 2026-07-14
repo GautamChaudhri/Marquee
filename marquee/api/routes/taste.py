@@ -21,15 +21,24 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.api.deps import enforce_rate_limit, get_rate_limiter
+from marquee.api.job_submission import JobSubmissionResponse, submission_response
 from marquee.api.routes.jobs import job_summary
 from marquee.config import settings
-from marquee.core.jobs import job_manager
+from marquee.core.jobs import control as job_control
+from marquee.core.jobs.contracts import TriggerKind
+from marquee.core.jobs.submission import (
+    IdempotencyConflictError,
+    Initiator,
+    SubjectLocator,
+    SubmissionError,
+    submit_job,
+)
 from marquee.core.pipeline_config import pipeline_settings
 from marquee.core.rate_limit import RateLimiter
 from marquee.database import get_db
 from marquee.ml import artifact_registry, feedback_store
 from marquee.ml.namespaces import TasteNamespace, get_namespace
-from marquee.models import Job, Movie
+from marquee.models import Job, MlActivePublication, Movie
 
 logger = logging.getLogger(__name__)
 
@@ -385,37 +394,74 @@ class TasteRetrainRequest(BaseModel):
     library: str = "movies"
 
 
+async def _submit_ml_publication(
+    db: AsyncSession,
+    *,
+    job_type: str,
+    family: str,
+    library: str,
+    request: dict[str, object],
+    idempotency_key: str,
+    priority: int,
+) -> JobSubmissionResponse:
+    """Snapshot the active generation and submit one canonical publication job."""
+    generation = await db.scalar(
+        select(MlActivePublication.generation).where(
+            MlActivePublication.family == f"{family}:{library}"
+        )
+    )
+    request["expected_generation"] = int(generation or 0)
+    request["seed"] = 0
+    if db.in_transaction():
+        await db.commit()
+    try:
+        async with db.begin():
+            result = await submit_job(
+                db,
+                job_type=job_type,
+                request=request,
+                subject=SubjectLocator(
+                    kind="model_profile_training",
+                    reference=f"{family}:{library}",
+                ),
+                trigger=TriggerKind.MANUAL,
+                initiator=Initiator(kind="system", identifier="taste-api"),
+                idempotency_key=idempotency_key,
+                priority=priority,
+            )
+    except IdempotencyConflictError as exc:
+        raise HTTPException(status_code=409, detail=exc.code) from exc
+    except SubmissionError as exc:
+        raise HTTPException(status_code=422, detail=exc.code) from exc
+    return submission_response(result)
+
+
 @router.post("/retrain", status_code=202)
 async def retrain_taste(
     limiter: Annotated[RateLimiter, Depends(get_rate_limiter)],
     db: Annotated[AsyncSession, Depends(get_db)],
     body: TasteRetrainRequest | None = None,
-):
-    """Rebuild the taste profile in the background (job platform).
-
-    ``source="training_dir"`` (default) uses the curated positive folder;
-    ``source="library"`` rebuilds from every deployed poster.
-    ``library="movies"`` (default) | ``"tv"``.
-    """
+) -> JobSubmissionResponse:
+    """Submit an immutable taste-profile publication job."""
     source = (body.source if body else None) or "training_dir"
     library = (body.library if body else None) or "movies"
     if source not in ("training_dir", "library"):
         raise HTTPException(status_code=400, detail=f"unknown source {source!r}")
-    _validate_library(library)  # raises 400 on bad value
+    _validate_library(library)
     enforce_rate_limit(limiter, "taste_retrain", settings.RATE_TASTE_RETRAIN_SECONDS)
     limiter.record("taste_retrain")
-    job = await job_manager.create(
-        db=db,
+    return await _submit_ml_publication(
+        db,
         job_type="taste_rebuild",
+        family="taste_profile",
+        library=library,
+        request={"source": source, "library": library},
+        idempotency_key=(
+            f"taste_rebuild:{library}:{source}:"
+            f"{int(time.time() // settings.RATE_TASTE_RETRAIN_SECONDS)}"
+        ),
         priority=90,
-        resources={"gpu": 1},
-        subject_type="taste_profile",
-        subject_id=library,
-        payload={"source": source, "library": library},
-        idempotency_key=f"taste-rebuild:{library}:{source}:{int(time.time() // settings.RATE_TASTE_RETRAIN_SECONDS)}",
-        max_attempts=1,
     )
-    return job_summary(job)
 
 
 @router.post("/head/retrain", status_code=202)
@@ -423,27 +469,23 @@ async def retrain_learned_head(
     limiter: Annotated[RateLimiter, Depends(get_rate_limiter)],
     db: Annotated[AsyncSession, Depends(get_db)],
     library: str = "movies",
-):
-    """Train the learned head (UI "Key Art Engine") from accumulated labels.
-
-    Picks accumulate labels + exemplars into storage; this is the manual
-    trigger that (re)trains the head from them, through the job manager. Cheap
-    numpy fit — no GPU reservation.
-    """
+) -> JobSubmissionResponse:
+    """Submit an immutable learned-head publication job."""
     _validate_library(library)
     enforce_rate_limit(limiter, "head_retrain", settings.RATE_TASTE_RETRAIN_SECONDS)
     limiter.record("head_retrain")
-    job = await job_manager.create(
-        db=db,
+    return await _submit_ml_publication(
+        db,
         job_type="learned_head_train",
+        family="learned_head",
+        library=library,
+        request={"library": library},
+        idempotency_key=(
+            f"learned_head_train:{library}:"
+            f"{int(time.time() // settings.RATE_TASTE_RETRAIN_SECONDS)}"
+        ),
         priority=70,
-        subject_type="learned_head",
-        subject_id=library,
-        payload={"library": library},
-        idempotency_key=f"head-train:{library}:{int(time.time() // settings.RATE_TASTE_RETRAIN_SECONDS)}",
-        max_attempts=1,
     )
-    return job_summary(job)
 
 
 @router.post("/retrain/cancel")
@@ -451,14 +493,14 @@ async def cancel_retrain_taste(
     db: Annotated[AsyncSession, Depends(get_db)],
     library: str = "movies",
 ):
-    """Request cancellation through the durable job lifecycle."""
+    """Request cancellation through the canonical durable lifecycle."""
     _validate_library(library)
     job = (
         await db.execute(
             select(Job)
             .where(
                 Job.type == "taste_rebuild",
-                Job.subject_reference == library,
+                Job.subject_reference == f"taste_profile:{library}",
                 Job.phase.in_(("planned", "queued", "running", "stopping")),
             )
             .order_by(Job.created_at.desc())
@@ -467,7 +509,15 @@ async def cancel_retrain_taste(
     ).scalar_one_or_none()
     if job is None:
         return {"status": "not_running"}
-    return job_summary(await job_manager.request_cancel(db, job))
+    expected_fence_token = job.fence_token
+    if db.in_transaction():
+        await db.commit()
+    result = await job_control.cancel(
+        db,
+        job_id=job.id,
+        expected_fence_token=expected_fence_token,
+    )
+    return job_summary(result.job)
 
 
 @router.get("/profiles")
@@ -506,17 +556,9 @@ async def activate_taste_profile(
     db: Annotated[AsyncSession, Depends(get_db)],
     library: str = "movies",
 ):
-    from marquee.ml.taste_map import build_map  # noqa: PLC0415
-
-    ns = _validate_library(library)
-    try:
-        row = await artifact_registry.activate_artifact(
-            db, ns.artifact_kind_profile, artifact_id
-        )
-        await asyncio.to_thread(build_map, namespace=ns)
-        return {"profile": artifact_registry.artifact_to_summary(row), "map_rebuilt": True}
-    except Exception as exc:  # noqa: BLE001
-        raise _artifact_error(exc) from exc
+    """Reject manual pointer mutation; publication belongs to the owning job."""
+    del artifact_id, db, library
+    raise HTTPException(status_code=409, detail="activation_is_job_owned")
 
 
 @router.post("/profiles/{artifact_id}/archive")
@@ -601,13 +643,9 @@ async def activate_learned_head(
     artifact_id: str,
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    try:
-        row = await artifact_registry.activate_artifact(
-            db, artifact_registry.KIND_LEARNED_HEAD, artifact_id
-        )
-        return {"head": artifact_registry.artifact_to_summary(row)}
-    except Exception as exc:  # noqa: BLE001
-        raise _artifact_error(exc) from exc
+    """Reject manual pointer mutation; publication belongs to the owning job."""
+    del artifact_id, db
+    raise HTTPException(status_code=409, detail="activation_is_job_owned")
 
 
 @router.post("/heads/{artifact_id}/archive")
@@ -662,23 +700,23 @@ async def rebuild_map(
     limiter: Annotated[RateLimiter, Depends(get_rate_limiter)],
     db: Annotated[AsyncSession, Depends(get_db)],
     library: str = "movies",
-):
-    """Force a taste-map rebuild in the background."""
+) -> JobSubmissionResponse:
+    """Submit an immutable taste-map publication job."""
     _validate_library(library)
     enforce_rate_limit(limiter, "taste_map_rebuild", settings.RATE_TASTE_MAP_REBUILD_SECONDS)
-
     limiter.record("taste_map_rebuild")
-    job = await job_manager.create(
+    return await _submit_ml_publication(
         db,
         job_type="taste_map",
+        family="taste_map",
+        library=library,
+        request={"library": library},
+        idempotency_key=(
+            f"taste_map:{library}:"
+            f"{int(time.time() // settings.RATE_TASTE_MAP_REBUILD_SECONDS)}"
+        ),
         priority=50,
-        resources={"gpu": 1},
-        subject_type="taste_profile",
-        subject_id=library,
-        payload={"library": library},
-        idempotency_key=f"taste-map:{library}:{int(time.time() // settings.RATE_TASTE_MAP_REBUILD_SECONDS)}",
     )
-    return job_summary(job)
 
 
 @router.post("/map/candidates")

@@ -99,12 +99,17 @@ def test_only_noop_is_enabled_and_webhook_stays_reserved_disabled() -> None:
     assert JOB_DEFINITION_REGISTRY.enabled_types == {
         "system_noop",
         "library_sync",
+        "poster_pipeline",
         "letterbox_detect",
         "letterbox_detect_episode",
         "letterbox_detect_tv_scope",
         "subtitle_scan",
         "subtitle_policy_audit",
         "dovi_analyze",
+        "learned_head_train",
+        "poster_rescan",
+        "taste_map",
+        "taste_rebuild",
     }
     webhook = JOB_DEFINITION_REGISTRY.get("radarr_upgrade")
     assert webhook.trigger_kinds == {TriggerKind.WEBHOOK}
@@ -130,11 +135,45 @@ def test_all_documents_are_strict_current_v1_and_policy_is_not_client_input() ->
         "letterbox_detect": {"movie_id": 1, "media_file_id": 1},
         "letterbox_detect_episode": {"media_file_id": 1, "episode_ids": [1]},
             "letterbox_detect_tv_scope": {"series_id": 1},
-            "dovi_analyze": {
+        "dovi_analyze": {
                 "media_file_id": 1,
                 "movie_id": 1,
                 "source_signature": "a" * 40,
-            },
+        },
+        "poster_pipeline": {"movie_id": 1, "title": "Example"},
+        "poster_pipeline_batch": {"scope": "selected", "selection_count": 1},
+        "poster_pipeline_tv_batch": {"scope": "series", "selection_count": 1},
+        "taste_rebuild": {},
+        "taste_map": {},
+        "learned_head_train": {},
+        "poster_rescan": {},
+    }
+    valid_results = {
+        "taste_rebuild": {
+            "family": "taste_profile",
+            "version": "v1-test",
+            "checksum": "a" * 64,
+            "expected_generation": 0,
+            "active_generation": 1,
+            "activated": True,
+        },
+        "taste_map": {
+            "family": "taste_map",
+            "version": "v1-test",
+            "checksum": "a" * 64,
+            "expected_generation": 0,
+            "active_generation": 1,
+            "activated": True,
+        },
+        "learned_head_train": {
+            "family": "learned_head",
+            "version": "v1-test",
+            "checksum": "a" * 64,
+            "expected_generation": 0,
+            "active_generation": 1,
+            "activated": True,
+        },
+        "poster_rescan": {"observed": 0, "changed": 0, "missing": 0},
     }
     for definition in JOB_DEFINITION_REGISTRY:
         assert definition.request.current_version == 1
@@ -142,7 +181,7 @@ def test_all_documents_are_strict_current_v1_and_policy_is_not_client_input() ->
         assert definition.error.current_version == 1
         assert not forbidden & definition.request.models[1].model_fields.keys()
         definition.request.validate(valid_requests.get(definition.job_type, {}), version=1)
-        definition.result.validate({}, version=1)
+        definition.result.validate(valid_results.get(definition.job_type, {}), version=1)
         definition.error.validate(
             {"code": "test_failure", "summary": "Safe summary"}, version=1
         )
@@ -177,6 +216,8 @@ def test_progress_policies_are_complete_and_native_adapters_are_truthful() -> No
         "letterbox_detect": "ffprobe_ffmpeg_cropdetect",
         "letterbox_detect_episode": "ffprobe_ffmpeg_cropdetect",
         "letterbox_detect_tv_scope": "ffprobe_ffmpeg_cropdetect",
+        "poster_pipeline": "poster_analysis_adapter",
+        "poster_rescan": "bounded_filesystem_observation",
         "subtitle_embed": "mkvmerge_gui",
         "subtitle_extract": "mkvmerge_gui",
         "subtitle_metadata": "mkvmerge_gui",
@@ -184,6 +225,9 @@ def test_progress_policies_are_complete_and_native_adapters_are_truthful() -> No
         "subtitle_remove": "mkvmerge_gui",
         "subtitle_restore": "mkvmerge_gui",
         "track_remove": "mkvmerge_gui",
+        "taste_rebuild": "immutable_ml_publication",
+        "taste_map": "immutable_ml_publication",
+        "learned_head_train": "immutable_ml_publication",
     }
     for definition in JOB_DEFINITION_REGISTRY:
         policy = definition.progress_policy

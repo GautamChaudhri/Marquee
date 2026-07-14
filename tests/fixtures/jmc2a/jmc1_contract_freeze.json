@@ -23,6 +23,7 @@
     "media_backups",
     "media_files",
     "media_operation_details",
+    "ml_active_publications",
     "movie_custom_format_scores",
     "movies",
     "pipeline_runs",

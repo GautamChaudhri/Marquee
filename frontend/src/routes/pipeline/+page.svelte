@@ -20,7 +20,6 @@
 	import { trackJob, type JobProgressDetail } from '$lib/jobs';
 	import { toast } from '$lib/toast';
 	import type {
-		JobSummary,
 		PipelineSummary,
 		RuntimeSettings,
 		SummaryRunningJob,
@@ -195,7 +194,11 @@
 		}
 	}
 
-	function trackAction(job: JobSummary, label: string, onDone?: (job: JobSnapshot) => void) {
+	function trackAction(
+		job: { job_id: string; events_url?: string },
+		label: string,
+		onDone?: (job: JobSnapshot) => void
+	) {
 		const stop = trackJob(
 			fetch,
 			job.job_id,
@@ -230,7 +233,7 @@
 			const job = await rescanPosters(fetch);
 			trackAction(job, 'Poster rescan', (done) => {
 				const result = (done.result ?? {}) as Record<string, unknown>;
-				const updated = Number(result.updated ?? 0);
+				const updated = Number(result.changed ?? 0);
 				const missing = Number(result.missing ?? 0);
 				toast(`${updated} updated, ${missing} missing`, missing ? 'info' : 'good');
 			});

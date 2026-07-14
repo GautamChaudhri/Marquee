@@ -84,24 +84,19 @@
 		pipeStatus = 'running';
 		try {
 			const ref = await triggerRun(fetch, movie.id);
-			pipeRunId = ref.run_id;
+			pipeRunId = ref.job_id;
 			stopPipe?.();
-			stopPipe = trackJob(
-				fetch,
-				ref.run_id,
-				{
-					onProgress: ({ status, detail }) => {
-						pipeStatus = status;
-						pipeDetail = detail;
-					},
-					onDone: (j) => {
-						pipeRunning = false;
-						pipeStatus = j.status;
-						void loadRuns();
-					}
+			stopPipe = trackJob(fetch, ref.job_id, {
+				onProgress: ({ status, detail }) => {
+					pipeStatus = status;
+					pipeDetail = detail;
 				},
-				{ eventsUrl: ref.events_url }
-			);
+				onDone: (j) => {
+					pipeRunning = false;
+					pipeStatus = j.status;
+					void loadRuns();
+				}
+			});
 		} catch (e) {
 			if (e instanceof ApiError && e.status === 409) {
 				const detail = (e.body as { detail?: { message?: string; active_run_id?: string } })

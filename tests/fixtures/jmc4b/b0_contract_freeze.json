@@ -4,24 +4,34 @@
     "definition_count": 49,
     "enabled_types": [
       "dovi_analyze",
+      "learned_head_train",
       "letterbox_detect",
       "letterbox_detect_episode",
       "letterbox_detect_tv_scope",
       "library_sync",
+      "poster_pipeline",
+      "poster_rescan",
       "subtitle_policy_audit",
       "subtitle_scan",
-      "system_noop"
+      "system_noop",
+      "taste_map",
+      "taste_rebuild"
     ]
   },
   "execution_handlers": [
     "dovi_analyze",
+    "learned_head_train",
     "letterbox_detect",
     "letterbox_detect_episode",
     "letterbox_detect_tv_scope",
     "library_sync",
+    "poster_pipeline",
+    "poster_rescan",
     "subtitle_policy_audit",
     "subtitle_scan",
-    "system_noop"
+    "system_noop",
+    "taste_map",
+    "taste_rebuild"
   ],
   "target_types": {
     "library_sync": {
@@ -257,39 +267,25 @@
       "execution_class": "network",
       "parent_only": false
     },
-    "poster_pipeline": {
-      "present": true,
-      "enabled": false,
-      "migration_state": "defined_disabled",
-      "execution_class": "gpu",
-      "parent_only": false
-    },
     "poster_pipeline_batch": {
       "present": true,
       "enabled": false,
-      "migration_state": "defined_disabled",
-      "execution_class": "gpu",
-      "parent_only": false
+      "migration_state": "parent_only",
+      "execution_class": "control",
+      "parent_only": true
     },
     "poster_pipeline_tv_batch": {
       "present": true,
       "enabled": false,
-      "migration_state": "defined_disabled",
-      "execution_class": "gpu",
-      "parent_only": false
+      "migration_state": "parent_only",
+      "execution_class": "control",
+      "parent_only": true
     },
     "poster_heal": {
       "present": true,
       "enabled": false,
       "migration_state": "defined_disabled",
       "execution_class": "network",
-      "parent_only": false
-    },
-    "poster_rescan": {
-      "present": true,
-      "enabled": false,
-      "migration_state": "defined_disabled",
-      "execution_class": "cpu",
       "parent_only": false
     },
     "poster_backup_all": {
@@ -311,27 +307,6 @@
       "enabled": false,
       "migration_state": "defined_disabled",
       "execution_class": "network",
-      "parent_only": false
-    },
-    "taste_rebuild": {
-      "present": true,
-      "enabled": false,
-      "migration_state": "defined_disabled",
-      "execution_class": "gpu",
-      "parent_only": false
-    },
-    "taste_map": {
-      "present": true,
-      "enabled": false,
-      "migration_state": "defined_disabled",
-      "execution_class": "cpu",
-      "parent_only": false
-    },
-    "learned_head_train": {
-      "present": true,
-      "enabled": false,
-      "migration_state": "defined_disabled",
-      "execution_class": "gpu",
       "parent_only": false
     },
     "pipeline_cache_clear": {
@@ -379,32 +354,16 @@
     "marquee/api/routes/pipeline.py:backup_all_posters:job_manager.create": 1,
     "marquee/api/routes/pipeline.py:clear_pipeline_cache:job_manager.create_and_run": 1,
     "marquee/api/routes/pipeline.py:poster_maintenance:job_manager.create": 1,
-    "marquee/api/routes/pipeline.py:rescan_posters:job_manager.create": 1,
     "marquee/api/routes/pipeline.py:reset_deployed_posters:job_manager.create_and_run": 1,
-    "marquee/api/routes/pipeline.py:run_pipeline:job_manager.create": 1,
-    "marquee/api/routes/pipeline.py:run_pipeline_batch:job_manager.create": 1,
-    "marquee/api/routes/pipeline_tv.py:run_series_pipeline:job_manager.create": 1,
-    "marquee/api/routes/pipeline_tv.py:run_tv_pipeline_batch:job_manager.create": 1,
     "marquee/api/routes/subtitle_generators.py:generate_for_media_file:media_job_manager.create_job": 1,
     "marquee/api/routes/subtitle_generators.py:generate_for_movie:media_job_manager.create_job": 1,
     "marquee/api/routes/system.py:trigger_heal:job_manager.create_and_run": 1,
-    "marquee/api/routes/taste.py:cancel_retrain_taste:job_manager.request_cancel": 1,
-    "marquee/api/routes/taste.py:rebuild_map:job_manager.create": 1,
-    "marquee/api/routes/taste.py:retrain_learned_head:job_manager.create": 1,
-    "marquee/api/routes/taste.py:retrain_taste:job_manager.create": 1,
     "marquee/api/routes/webhooks.py:radarr_webhook:job_manager.create": 1,
     "marquee/core/dovi_conversion.py:_emit:job_manager.emit": 1,
     "marquee/core/jobs/builtin_handlers.py:_emit_stage:job_manager.emit": 1,
     "marquee/core/jobs/builtin_handlers.py:_phase_progress:cancel_registry.raise_if_cancelled": 1,
     "marquee/core/jobs/builtin_handlers.py:_update_progress:job_manager.emit": 1,
-    "marquee/core/jobs/builtin_handlers.py:learned_head_train:cancel_registry.get": 1,
     "marquee/core/jobs/builtin_handlers.py:library_sync:cancel_registry.get": 1,
-    "marquee/core/jobs/builtin_handlers.py:poster_pipeline:cancel_registry.get": 1,
-    "marquee/core/jobs/builtin_handlers.py:poster_pipeline_batch:cancel_registry.get": 1,
-    "marquee/core/jobs/builtin_handlers.py:poster_pipeline_tv_batch:cancel_registry.get": 1,
-    "marquee/core/jobs/builtin_handlers.py:taste_map:cancel_registry.get": 1,
-    "marquee/core/jobs/builtin_handlers.py:taste_rebuild:cancel_registry.get": 1,
-    "marquee/core/jobs/builtin_handlers.py:taste_rebuild:cancel_registry.raise_if_cancelled": 2,
     "marquee/core/letterbox_reencode.py:_raise_if_cancel_requested:cancel_registry.get": 1,
     "marquee/core/subtitles/generation.py:run_generation_job:cancel_registry.get": 1,
     "marquee/core/subtitles/mutation.py:_raise_if_cancel_requested:cancel_registry.get": 1,

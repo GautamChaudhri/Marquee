@@ -62,25 +62,17 @@
 				include,
 				season_ids: seasonIds?.length ? seasonIds : undefined
 			});
-			trackJob(
-				fetch,
-				job.job_id,
-				{
-					onProgress: ({ status, detail }) => {
-						runStatus = status;
-						runDetail = detail;
-					},
-					onDone: async (snapshot) => {
-						running = false;
-						toast(
-							`Series run ${snapshot.status}`,
-							snapshot.status === 'succeeded' ? 'good' : 'bad'
-						);
-						await invalidateAll();
-					}
+			trackJob(fetch, job.job_id, {
+				onProgress: ({ status, detail }) => {
+					runStatus = status;
+					runDetail = detail;
 				},
-				{ eventsUrl: job.events_url }
-			);
+				onDone: async (snapshot) => {
+					running = false;
+					toast(`Series run ${snapshot.status}`, snapshot.status === 'succeeded' ? 'good' : 'bad');
+					await invalidateAll();
+				}
+			});
 		} catch (e) {
 			running = false;
 			toast(e instanceof Error ? e.message : 'Failed to start run', 'bad');

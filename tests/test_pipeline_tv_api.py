@@ -8,11 +8,14 @@ from types import SimpleNamespace
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from pgqueuer import Queries
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.api.routes import feedback as feedback_route
+from marquee.database import _get_engine
 from marquee.main import app
-from marquee.models import Movie, PipelineRun, Season, Series
+from marquee.models import Job, JobBatch, Movie, PipelineRun, Season, Series
 
 
 @pytest_asyncio.fixture
@@ -22,32 +25,17 @@ async def client():
         yield ac
 
 
-def _fake_job(job_id: str, payload: dict) -> SimpleNamespace:
-    now = datetime.now(UTC)
-    return SimpleNamespace(
-        id=job_id,
-        type="poster_pipeline_tv_batch",
-        status="queued",
-        priority=80,
-        parent_id=None,
-        root_id=None,
-        correlation_id=None,
-        subject_type="pipeline_tv_batch",
-        subject_id=payload.get("scope"),
-        current_stage=None,
-        progress=None,
-        resource_request={"gpu": 1, "network_external": 1},
-        attempt_count=0,
-        max_attempts=1,
-        cancel_requested=False,
-        pause_requested=False,
-        scheduled_at=None,
-        claimed_at=None,
-        started_at=None,
-        finished_at=None,
-        created_at=now,
-        payload=payload,
-    )
+@pytest_asyncio.fixture
+async def installed_pgqueuer(db: AsyncSession) -> Queries:
+    async with _get_engine().connect() as connection:
+        raw = await connection.get_raw_connection()
+        queries = Queries.from_asyncpg_connection(raw.driver_connection)
+        await queries.install()
+        try:
+            yield queries
+        finally:
+            await db.rollback()
+            await queries.uninstall()
 
 
 async def _seed_series(
@@ -173,7 +161,7 @@ async def _seed_run(
 
 @pytest.mark.asyncio
 async def test_tv_summary_run_queue_and_batch_scopes(
-    db: AsyncSession, client: AsyncClient, tmp_path: Path
+    db: AsyncSession, client: AsyncClient, tmp_path: Path, installed_pgqueuer: Queries
 ):
     _alpha, alpha_seasons = await _seed_series(
         db,
@@ -227,15 +215,30 @@ async def test_tv_summary_run_queue_and_batch_scopes(
         {"media_type": "season", "season_id": alpha_seasons[1].id, "number": 1},
     ]
 
-    for payload in ({"scope": "missing"}, {"scope": "all"}):
+    for payload, expected_count in (({"scope": "missing"}, 2), ({"scope": "all"}, 5)):
         response = await client.post("/api/pipeline/tv/batch", json=payload)
-        assert response.status_code == 503
-        assert response.json()["code"] == "job_platform_unmigrated"
+        assert response.status_code == 202, response.text
+        parent = await db.get(Job, response.json()["job_id"])
+        assert parent is not None
+        assert parent.type == "poster_pipeline_tv_batch"
+        assert parent.plan["parent_only"] is True
+        assert parent.plan["effect_safety"] == "read_only"
+        projection = await db.get(JobBatch, parent.id)
+        assert projection is not None
+        assert projection.sealed_child_total == expected_count
+        children = list(
+            (await db.execute(select(Job).where(Job.parent_id == parent.id).order_by(Job.id)))
+            .scalars()
+            .all()
+        )
+        assert len(children) == expected_count
+        assert {child.type for child in children} == {"poster_pipeline"}
+        assert {child.subject_kind for child in children} <= {"series", "season"}
 
 
 @pytest.mark.asyncio
-async def test_series_run_all_missing_only_fails_closed(
-    db: AsyncSession, client: AsyncClient, tmp_path: Path
+async def test_series_run_all_missing_creates_canonical_season_child(
+    db: AsyncSession, client: AsyncClient, tmp_path: Path, installed_pgqueuer: Queries
 ):
     series, _seasons = await _seed_series(
         db,
@@ -251,8 +254,13 @@ async def test_series_run_all_missing_only_fails_closed(
     )
 
     response = await client.post(f"/api/pipeline/tv/series/{series.id}/run", json={})
-    assert response.status_code == 503
-    assert response.json()["code"] == "job_platform_unmigrated"
+    assert response.status_code == 202, response.text
+    parent = await db.get(Job, response.json()["job_id"])
+    assert parent is not None
+    child = await db.scalar(select(Job).where(Job.parent_id == parent.id))
+    assert child is not None
+    assert child.subject_kind == "season"
+    assert child.request["title"] == "Missing Only · Season 1"
 
 
 @pytest.mark.asyncio

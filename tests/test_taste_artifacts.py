@@ -180,7 +180,7 @@ async def test_artifact_lists_return_empty_when_registry_schema_missing(
 
 
 @pytest.mark.asyncio
-async def test_artifact_mutations_return_503_when_registry_schema_missing(
+async def test_manual_artifact_activation_is_owned_by_the_publication_job(
     client, db, managed_profile, monkeypatch
 ):
     async def unavailable(_db):
@@ -188,8 +188,8 @@ async def test_artifact_mutations_return_503_when_registry_schema_missing(
 
     monkeypatch.setattr(artifact_registry, "registry_status", unavailable)
     resp = await client.post("/api/taste/profiles/missing/activate")
-    assert resp.status_code == 503
-    assert resp.json()["detail"] == artifact_registry.registry_unavailable_message()
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == "activation_is_job_owned"
 
 
 @pytest.mark.asyncio

@@ -24,15 +24,24 @@ from marquee.core.jobs.documents import (
     BuiltInResultV1,
     DocumentKind,
     DoviAnalyzeRequestV1,
+    LearnedHeadTrainRequestV1,
     LetterboxDetectEpisodeRequestV1,
     LetterboxDetectRequestV1,
     LetterboxDetectTvScopeRequestV1,
     LibrarySyncRequestV1,
+    MlPublicationResultV1,
+    PosterBatchRequestV1,
+    PosterPipelineRequestV1,
+    PosterPipelineResultV1,
+    PosterRescanRequestV1,
+    PosterRescanResultV1,
     SafeJobErrorV1,
     StrictDocument,
     SubtitlePolicyAuditRequestV1,
     SubtitleScanRequestV1,
     SystemNoopRequestV1,
+    TasteMapRequestV1,
+    TasteRebuildRequestV1,
     current_adapter,
 )
 from marquee.core.jobs.inventory import (
@@ -99,13 +108,13 @@ _SPECS = (
     _spec("subtitle_scan_all", FeatureArea.AUDIO_SUBTITLES, ExecutionClass.CONTROL, _R, "aggregate_batch", progress=ProgressStrategy.DETERMINATE, children=("subtitle_scan",)),
     _spec("audio_subs_deep_scan", FeatureArea.AUDIO_SUBTITLES, ExecutionClass.CONTROL, _R, "aggregate_batch", progress=ProgressStrategy.DETERMINATE, children=("subtitle_scan",)),
     _spec("radarr_upgrade", FeatureArea.LIBRARY_INTEGRATIONS, ExecutionClass.NETWORK, _R, "movie"),
-    _spec("poster_pipeline", FeatureArea.AI_POSTERS, ExecutionClass.GPU, _U, "movie", "poster_candidate_set"),
-    _spec("poster_pipeline_batch", FeatureArea.AI_POSTERS, ExecutionClass.GPU, _U, "aggregate_batch"),
-    _spec("poster_pipeline_tv_batch", FeatureArea.AI_POSTERS, ExecutionClass.GPU, _U, "aggregate_batch"),
-    _spec("learned_head_train", FeatureArea.ML_TASTE, ExecutionClass.GPU, _R, "model_profile_training"),
+    _spec("poster_pipeline", FeatureArea.AI_POSTERS, ExecutionClass.GPU, _R, "movie", "series", "season", "episode"),
+    _spec("poster_pipeline_batch", FeatureArea.AI_POSTERS, ExecutionClass.CONTROL, _R, "aggregate_batch", progress=ProgressStrategy.DETERMINATE, children=("poster_pipeline",)),
+    _spec("poster_pipeline_tv_batch", FeatureArea.AI_POSTERS, ExecutionClass.CONTROL, _R, "aggregate_batch", progress=ProgressStrategy.DETERMINATE, children=("poster_pipeline",)),
+    _spec("learned_head_train", FeatureArea.ML_TASTE, ExecutionClass.CPU, _R, "model_profile_training"),
     _spec("pipeline_cache_clear", FeatureArea.MAINTENANCE, ExecutionClass.MAINTENANCE, _U, "maintenance_scope"),
     _spec("poster_deploy_reset", FeatureArea.AI_POSTERS, ExecutionClass.NETWORK, _U, "maintenance_scope"),
-    _spec("poster_rescan", FeatureArea.AI_POSTERS, ExecutionClass.CPU, _R, "poster_candidate_set"),
+    _spec("poster_rescan", FeatureArea.AI_POSTERS, ExecutionClass.MEDIA_READ, _R, "poster_candidate_set"),
     _spec("poster_backup_all", FeatureArea.AI_POSTERS, ExecutionClass.MAINTENANCE, _U, "maintenance_scope"),
     _spec("poster_maintenance", FeatureArea.AI_POSTERS, ExecutionClass.MAINTENANCE, _U, "maintenance_scope"),
     _spec("job_retention_purge", FeatureArea.MAINTENANCE, ExecutionClass.MAINTENANCE, _U, "maintenance_scope"),
@@ -133,6 +142,10 @@ _SPECS = (
     _spec("letterbox_reencode_tv_batch", FeatureArea.LETTERBOX, ExecutionClass.CONTROL, _R, "aggregate_batch", progress=ProgressStrategy.DETERMINATE, children=("letterbox_reencode",)),
 )
 
+_BATCH_CHILD_TYPES = frozenset(
+    child_job_type for spec in _SPECS for child_job_type in spec.child_job_types
+)
+
 # Certified dispatch-enabled allowlist. Grows one non-mutating family per JMC4B phase; every
 # entry must be read-only and never media_write (enforced by JobDefinitionRegistry). Mutating
 # and parent-only definitions are never listed here.
@@ -146,6 +159,11 @@ ENABLED_JOB_TYPES: frozenset[str] = frozenset(
         "letterbox_detect_episode",
         "letterbox_detect_tv_scope",
         "dovi_analyze",
+        "poster_pipeline",
+        "poster_rescan",
+        "taste_rebuild",
+        "taste_map",
+        "learned_head_train",
     }
 )
 
@@ -159,6 +177,21 @@ _REQUEST_MODELS: dict[str, type[StrictDocument]] = {
     "letterbox_detect_episode": LetterboxDetectEpisodeRequestV1,
     "letterbox_detect_tv_scope": LetterboxDetectTvScopeRequestV1,
     "dovi_analyze": DoviAnalyzeRequestV1,
+    "poster_pipeline": PosterPipelineRequestV1,
+    "poster_pipeline_batch": PosterBatchRequestV1,
+    "poster_pipeline_tv_batch": PosterBatchRequestV1,
+    "taste_rebuild": TasteRebuildRequestV1,
+    "taste_map": TasteMapRequestV1,
+    "learned_head_train": LearnedHeadTrainRequestV1,
+    "poster_rescan": PosterRescanRequestV1,
+}
+
+_RESULT_MODELS: dict[str, type[StrictDocument]] = {
+    "poster_pipeline": PosterPipelineResultV1,
+    "poster_rescan": PosterRescanResultV1,
+    "taste_rebuild": MlPublicationResultV1,
+    "taste_map": MlPublicationResultV1,
+    "learned_head_train": MlPublicationResultV1,
 }
 
 # Library synchronization has no reliable upstream item/page total, so it narrates honest
@@ -254,6 +287,67 @@ _DOVI_ANALYZE_PROGRESS = ProgressPolicy(
     eta_capability=False,
 )
 
+_POSTER_PIPELINE_PROGRESS = ProgressPolicy(
+    strategy=ProgressStrategy.HYBRID,
+    overall_unit="stages",
+    denominator_source="declared_candidate_sources",
+    current_unit="candidates",
+    aggregation_strategy="current_scope",
+    stages=(
+        ("resolving", "jobs.poster_pipeline.progress.resolving"),
+        ("enumerating", "jobs.poster_pipeline.progress.enumerating"),
+        ("downloading", "jobs.poster_pipeline.progress.downloading"),
+        ("validating", "jobs.poster_pipeline.progress.validating"),
+        ("deduplicating", "jobs.poster_pipeline.progress.deduplicating"),
+        ("extracting", "jobs.poster_pipeline.progress.extracting"),
+        ("scoring", "jobs.poster_pipeline.progress.scoring"),
+        ("rendering", "jobs.poster_pipeline.progress.rendering"),
+        ("finalizing", "jobs.poster_pipeline.progress.finalizing"),
+    ),
+    tool_adapter="poster_analysis_adapter",
+    persistence_cadence_seconds=2,
+    meaningful_delta_percent=1,
+    max_snapshot_staleness_seconds=10,
+    eta_capability=False,
+)
+
+_ML_PUBLICATION_PROGRESS = ProgressPolicy(
+    strategy=ProgressStrategy.HYBRID,
+    overall_unit="stages",
+    denominator_source="registered_stages",
+    current_unit="stage",
+    aggregation_strategy="current_scope",
+    stages=(
+        ("loading", "jobs.ml.progress.loading"),
+        ("collecting", "jobs.ml.progress.collecting"),
+        ("features", "jobs.ml.progress.features"),
+        ("training", "jobs.ml.progress.training"),
+        ("evaluating", "jobs.ml.progress.evaluating"),
+        ("validating", "jobs.ml.progress.validating"),
+        ("registering", "jobs.ml.progress.registering"),
+        ("publishing", "jobs.ml.progress.publishing"),
+    ),
+    tool_adapter="immutable_ml_publication",
+    persistence_cadence_seconds=2,
+    meaningful_delta_percent=1,
+    max_snapshot_staleness_seconds=10,
+    eta_capability=False,
+)
+
+_POSTER_RESCAN_PROGRESS = ProgressPolicy(
+    strategy=ProgressStrategy.DETERMINATE,
+    overall_unit="subjects",
+    denominator_source="resolved_subject_snapshot",
+    current_unit="subjects",
+    aggregation_strategy="current_scope",
+    stages=(("reconciling", "jobs.poster_rescan.progress.reconciling"),),
+    tool_adapter="bounded_filesystem_observation",
+    persistence_cadence_seconds=2,
+    meaningful_delta_percent=1,
+    max_snapshot_staleness_seconds=10,
+    eta_capability=True,
+)
+
 # Per-type progress policy overrides. Types absent here use the generic `_progress(spec)`.
 _PROGRESS_POLICIES: dict[str, ProgressPolicy] = {
     "library_sync": _LIBRARY_SYNC_PROGRESS,
@@ -263,6 +357,11 @@ _PROGRESS_POLICIES: dict[str, ProgressPolicy] = {
     "letterbox_detect_episode": _LETTERBOX_DETECT_PROGRESS,
     "letterbox_detect_tv_scope": _LETTERBOX_DETECT_PROGRESS,
     "dovi_analyze": _DOVI_ANALYZE_PROGRESS,
+    "poster_pipeline": _POSTER_PIPELINE_PROGRESS,
+    "poster_rescan": _POSTER_RESCAN_PROGRESS,
+    "taste_rebuild": _ML_PUBLICATION_PROGRESS,
+    "taste_map": _ML_PUBLICATION_PROGRESS,
+    "learned_head_train": _ML_PUBLICATION_PROGRESS,
 }
 
 _NATIVE_FFMPEG = frozenset({"dovi_convert", "letterbox_reencode"})
@@ -286,6 +385,8 @@ def _triggers(job_type: str) -> frozenset[TriggerKind]:
         return frozenset({TriggerKind.WEBHOOK})
     values = {TriggerKind.PARENT if job_type in PARENT_ONLY_TYPES else TriggerKind.MANUAL}
     if job_type in PARENT_ONLY_TYPES:
+        values.add(TriggerKind.BATCH)
+    if job_type in _BATCH_CHILD_TYPES:
         values.add(TriggerKind.BATCH)
     if job_type in HEALING_TYPES:
         values.add(TriggerKind.HEALING)
@@ -379,7 +480,7 @@ def _definition(spec: _DefinitionSpec) -> JobDefinition:
         ),
         disabled_reason=None if enabled else "execution migration is deferred beyond JMC2B",
         request=current_adapter(DocumentKind.REQUEST, request_model),
-        result=current_adapter(DocumentKind.RESULT, BuiltInResultV1),
+        result=current_adapter(DocumentKind.RESULT, _RESULT_MODELS.get(spec.job_type, BuiltInResultV1)),
         error=current_adapter(DocumentKind.ERROR, SafeJobErrorV1),
         execution_class=spec.execution,
         entrypoint=spec.execution.value,

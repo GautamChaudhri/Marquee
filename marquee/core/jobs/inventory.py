@@ -10,7 +10,6 @@ REGISTERED_HANDLER_TYPES = frozenset(
         "backup_create",
         "dovi_convert",
         "job_retention_purge",
-        "learned_head_train",
         "letterbox_apply",
         "letterbox_apply_tv_scope",
         "letterbox_heal",
@@ -22,15 +21,9 @@ REGISTERED_HANDLER_TYPES = frozenset(
         "poster_deploy_reset",
         "poster_heal",
         "poster_maintenance",
-        "poster_pipeline",
-        "poster_pipeline_batch",
-        "poster_pipeline_tv_batch",
-        "poster_rescan",
         "radarr_upgrade",
         "system_metrics_purge",
         "system_noop",
-        "taste_map",
-        "taste_rebuild",
     }
 )
 
@@ -59,6 +52,8 @@ PARENT_ONLY_TYPES = frozenset(
         "letterbox_detect_batch",
         "letterbox_detect_tv_batch",
         "letterbox_reencode_tv_batch",
+        "poster_pipeline_batch",
+        "poster_pipeline_tv_batch",
         "subtitle_generate_batch",
         "subtitle_scan_all",
     }
@@ -72,7 +67,12 @@ CANONICAL_READ_ONLY_TYPES = frozenset(
         "letterbox_detect_episode",
         "letterbox_detect_tv_scope",
         "dovi_analyze",
+        "learned_head_train",
+        "poster_pipeline",
+        "poster_rescan",
         "subtitle_policy_audit",
+        "taste_map",
+        "taste_rebuild",
     }
 )
 

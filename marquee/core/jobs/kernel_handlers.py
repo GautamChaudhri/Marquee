@@ -13,5 +13,8 @@ from marquee.core.jobs import (
     handlers_dovi,  # noqa: F401  (registration side effect)
     handlers_letterbox,  # noqa: F401  (registration side effect)
     handlers_library,  # noqa: F401  (registration side effect)
+    handlers_ml,  # noqa: F401  (registration side effect)
+    handlers_posters,  # noqa: F401  (registration side effect)
+    handlers_rescan,  # noqa: F401  (registration side effect)
     handlers_subtitles,  # noqa: F401  (registration side effect)
 )
