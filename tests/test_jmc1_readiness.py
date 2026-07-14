@@ -33,6 +33,8 @@ class _FakePgConnection:
 
 
 async def _install_fake_connection(monkeypatch, *, lock_available=True):
+    from marquee.core.jobs.event_stream import job_event_tailer
+
     sqlalchemy_connection = _FakeSqlAlchemyConnection()
     pg_connection = _FakePgConnection(lock_available=lock_available)
 
@@ -44,6 +46,7 @@ async def _install_fake_connection(monkeypatch, *, lock_available=True):
 
     monkeypatch.setattr(readiness, "_raw_pool_connection", connect)
     monkeypatch.setattr(readiness, "verify_runtime_schema", compatible_schema)
+    monkeypatch.setattr(job_event_tailer, "health", lambda: {"status": "ok"})
     return sqlalchemy_connection, pg_connection
 
 
@@ -82,6 +85,8 @@ async def test_readiness_reports_schema_incompatibility_without_details(monkeypa
 
 
 async def test_readiness_reports_unreachable_database_and_recovers(monkeypatch):
+    from marquee.core.jobs.event_stream import job_event_tailer
+
     calls = 0
     sqlalchemy_connection = _FakeSqlAlchemyConnection()
     pg_connection = _FakePgConnection()
@@ -98,6 +103,7 @@ async def test_readiness_reports_unreachable_database_and_recovers(monkeypatch):
 
     monkeypatch.setattr(readiness, "_raw_pool_connection", connect)
     monkeypatch.setattr(readiness, "verify_runtime_schema", compatible_schema)
+    monkeypatch.setattr(job_event_tailer, "health", lambda: {"status": "ok"})
     first = await readiness.check_readiness()
     second = await readiness.check_readiness()
 
@@ -140,12 +146,13 @@ def test_role_connection_budget_is_enforced():
     report = readiness.connection_budget_report()
     assert report == {
         "api": 15,
+        "api_event_listener": 1,
         "worker_each": 8,
         "worker_processes": 1,
         "safety_gate_sessions_each": 4,
         "scheduler": 3,
         "migration": 1,
-        "configured": 27,
+        "configured": 28,
         "maximum": 32,
         "within_budget": True,
     }

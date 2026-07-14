@@ -132,6 +132,34 @@ class Settings(BaseSettings):
     JOB_PROCESS_TERM_SECONDS: float = Field(default=5.0, ge=0.05, le=300.0)
     JOB_INTENT_MONITOR_SECONDS: float = Field(default=30.0, ge=1.0, le=3600.0)
     JOB_INTENT_MONITOR_BATCH_SIZE: int = Field(default=25, ge=1, le=100)
+    JOB_EVENT_LISTENER_CONNECTIONS: int = Field(
+        default=1,
+        ge=1,
+        le=1,
+        description="Exactly one dedicated event-listener connection per API instance.",
+    )
+    JOB_EVENT_CLIENT_QUEUE_SIZE: int = Field(default=128, ge=8, le=4096)
+    JOB_EVENT_TAIL_BATCH_SIZE: int = Field(default=256, ge=1, le=2000)
+    JOB_EVENT_REPLAY_LIMIT: int = Field(default=128, ge=1, le=4096)
+    JOB_EVENT_REPAIR_SECONDS: float = Field(default=1.0, ge=0.1, le=30.0)
+    JOB_EVENT_RECONNECT_SECONDS: float = Field(default=1.0, ge=0.1, le=30.0)
+    JOB_EVENT_KEEPALIVE_SECONDS: float = Field(default=15.0, ge=1.0, le=120.0)
+    JOB_LOG_CAP_BYTES: int = Field(
+        default=100 * 1024 * 1024,
+        ge=100 * 1024 * 1024,
+        le=100 * 1024 * 1024,
+    )
+    JOB_LOG_RETENTION_DAYS: int = Field(default=30, ge=30, le=30)
+    JOB_LOG_QUEUE_SIZE: int = Field(default=1024, ge=64, le=8192)
+    JOB_LOG_MESSAGE_CHARS: int = Field(default=4096, ge=256, le=16_384)
+    JOB_LOG_METADATA_LINES: int = Field(default=256, ge=16, le=4096)
+    JOB_LOG_STREAM_POLL_SECONDS: float = Field(default=0.25, ge=0.05, le=5.0)
+    JOB_LOG_STREAM_QUEUE_SIZE: int = Field(default=64, ge=8, le=1024)
+    JOB_ARTIFACT_VIRTUAL_MAX_BYTES: int = Field(
+        default=1024 * 1024, ge=64 * 1024, le=1024 * 1024
+    )
+    JOB_ARTIFACT_STRING_CHARS: int = Field(default=16_384, ge=256, le=16_384)
+    JOB_ARTIFACT_EVENT_LIMIT: int = Field(default=1000, ge=1, le=1000)
     JOB_HEARTBEAT_SECONDS: int = Field(default=10, ge=1, le=300)
     JOB_LEASE_SECONDS: int = Field(default=60, ge=10, le=3600)
     JOB_SHUTDOWN_GRACE_SECONDS: int = Field(default=30, ge=1, le=600)
@@ -212,7 +240,11 @@ class Settings(BaseSettings):
     @property
     def deployment_connection_budget(self) -> int:
         """Maximum connections for one API, configured workers, scheduler, and migration."""
-        api = self.DB_API_POOL_SIZE + self.DB_API_MAX_OVERFLOW
+        api = (
+            self.DB_API_POOL_SIZE
+            + self.DB_API_MAX_OVERFLOW
+            + self.JOB_EVENT_LISTENER_CONNECTIONS
+        )
         worker = (
             self.DB_WORKER_POOL_SIZE
             + self.DB_WORKER_MAX_OVERFLOW
@@ -233,6 +265,8 @@ class Settings(BaseSettings):
             raise ValueError(
                 "configured role connection budget exceeds DB_DEPLOYMENT_MAX_CONNECTIONS"
             )
+        if self.JOB_EVENT_REPLAY_LIMIT > self.JOB_EVENT_CLIENT_QUEUE_SIZE:
+            raise ValueError("JOB_EVENT_REPLAY_LIMIT cannot exceed the client queue size")
         return self
 
     @property
@@ -241,6 +275,20 @@ class Settings(BaseSettings):
         path = self._project_root / self.DATA_DIR
         path.mkdir(parents=True, exist_ok=True)
         return path
+
+    @property
+    def job_log_redaction_secrets(self) -> tuple[str, ...]:
+        """Return bounded configured credential values without logging their sources."""
+        values = (
+            self.API_KEY,
+            self.DB_URL,
+            self.TMDB_READ_ACCESS_TOKEN,
+            self.FANART_API_KEY,
+            self.TVDB_API_KEY,
+            self.RADARR_API_KEY,
+            self.SONARR_API_KEY,
+        )
+        return tuple(sorted({value for value in values if value}, key=len, reverse=True))
 
     @property
     def metrics_disk_path(self) -> Path:

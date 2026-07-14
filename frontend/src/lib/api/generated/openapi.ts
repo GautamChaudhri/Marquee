@@ -557,6 +557,26 @@ export interface paths {
 		patch?: never;
 		trace?: never;
 	};
+	'/api/jobs/events/stream': {
+		parameters: {
+			query?: never;
+			header?: never;
+			path?: never;
+			cookie?: never;
+		};
+		/**
+		 * Stream Job Events
+		 * @description Replay the global durable cursor, then follow the API-instance tailer.
+		 */
+		get: operations['stream_job_events_api_jobs_events_stream_get'];
+		put?: never;
+		post?: never;
+		delete?: never;
+		options?: never;
+		head?: never;
+		patch?: never;
+		trace?: never;
+	};
 	'/api/jobs/{job_id}/artifacts': {
 		parameters: {
 			query?: never;
@@ -574,6 +594,23 @@ export interface paths {
 		patch?: never;
 		trace?: never;
 	};
+	'/api/jobs/{job_id}/artifacts/{artifact_id}/download': {
+		parameters: {
+			query?: never;
+			header?: never;
+			path?: never;
+			cookie?: never;
+		};
+		/** Download Job Artifact */
+		get: operations['download_job_artifact_api_jobs__job_id__artifacts__artifact_id__download_get'];
+		put?: never;
+		post?: never;
+		delete?: never;
+		options?: never;
+		head?: never;
+		patch?: never;
+		trace?: never;
+	};
 	'/api/jobs/{job_id}/attempts': {
 		parameters: {
 			query?: never;
@@ -583,6 +620,57 @@ export interface paths {
 		};
 		/** List Job Attempts */
 		get: operations['list_job_attempts_api_jobs__job_id__attempts_get'];
+		put?: never;
+		post?: never;
+		delete?: never;
+		options?: never;
+		head?: never;
+		patch?: never;
+		trace?: never;
+	};
+	'/api/jobs/{job_id}/attempts/{attempt_id}/logs': {
+		parameters: {
+			query?: never;
+			header?: never;
+			path?: never;
+			cookie?: never;
+		};
+		/** List Attempt Logs */
+		get: operations['list_attempt_logs_api_jobs__job_id__attempts__attempt_id__logs_get'];
+		put?: never;
+		post?: never;
+		delete?: never;
+		options?: never;
+		head?: never;
+		patch?: never;
+		trace?: never;
+	};
+	'/api/jobs/{job_id}/attempts/{attempt_id}/logs/download': {
+		parameters: {
+			query?: never;
+			header?: never;
+			path?: never;
+			cookie?: never;
+		};
+		/** Download Attempt Log */
+		get: operations['download_attempt_log_api_jobs__job_id__attempts__attempt_id__logs_download_get'];
+		put?: never;
+		post?: never;
+		delete?: never;
+		options?: never;
+		head?: never;
+		patch?: never;
+		trace?: never;
+	};
+	'/api/jobs/{job_id}/attempts/{attempt_id}/logs/stream': {
+		parameters: {
+			query?: never;
+			header?: never;
+			path?: never;
+			cookie?: never;
+		};
+		/** Stream Attempt Logs */
+		get: operations['stream_attempt_logs_api_jobs__job_id__attempts__attempt_id__logs_stream_get'];
 		put?: never;
 		post?: never;
 		delete?: never;
@@ -3655,6 +3743,8 @@ export interface components {
 		};
 		/** ArtifactItemResponse */
 		ArtifactItemResponse: {
+			/** Attempt Id */
+			attempt_id: number | null;
 			/** Available */
 			available: boolean;
 			/** Checksum */
@@ -3663,6 +3753,8 @@ export interface components {
 			content_type: string | null;
 			/** Created At */
 			created_at: string | null;
+			/** Download Url */
+			download_url: string | null;
 			/** Expires At */
 			expires_at: string | null;
 			/** Id */
@@ -3677,6 +3769,8 @@ export interface components {
 			size_bytes: number | null;
 			/** Status */
 			status: string;
+			/** Virtual */
+			virtual: boolean;
 		};
 		/** ArtifactListResponse */
 		ArtifactListResponse: {
@@ -3740,6 +3834,78 @@ export interface components {
 			limit: number;
 			/** Next Cursor */
 			next_cursor: string | null;
+		};
+		/** AttemptLogLine */
+		AttemptLogLine: {
+			/** Cursor */
+			cursor: number;
+			/** Fields */
+			fields?: {
+				[key: string]: string | number | boolean | null;
+			};
+			/**
+			 * Level
+			 * @enum {string}
+			 */
+			level: 'debug' | 'info' | 'warning' | 'error';
+			/** Message */
+			message: string;
+			/**
+			 * Source
+			 * @enum {string}
+			 */
+			source: 'python' | 'stdout' | 'stderr' | 'system';
+			/** Stage */
+			stage?: string | null;
+			/**
+			 * Timestamp
+			 * Format: date-time
+			 */
+			timestamp: string;
+			/**
+			 * Version
+			 * @default 1
+			 * @constant
+			 */
+			version: 1;
+		};
+		/** AttemptLogPage */
+		AttemptLogPage: {
+			/** Byte Count */
+			byte_count: number;
+			/** Closed At */
+			closed_at: string | null;
+			/**
+			 * Compression
+			 * @enum {string}
+			 */
+			compression: 'none' | 'gzip' | 'zstd';
+			/** Expires At */
+			expires_at: string | null;
+			/**
+			 * Freshness
+			 * @enum {string}
+			 */
+			freshness: 'active' | 'sealed' | 'degraded' | 'expired';
+			/** Items */
+			items: components['schemas']['AttemptLogLine'][];
+			/** Last Cursor */
+			last_cursor: number;
+			/** Limit */
+			limit: number;
+			/** Next Cursor */
+			next_cursor: number | null;
+			/**
+			 * Opened At
+			 * Format: date-time
+			 */
+			opened_at: string;
+			/** Sealed */
+			sealed: boolean;
+			/** Stored Byte Count */
+			stored_byte_count: number;
+			/** Truncated */
+			truncated: boolean;
 		};
 		/**
 		 * AttentionLevel
@@ -4136,6 +4302,8 @@ export interface components {
 		};
 		/** EventItem */
 		EventItem: {
+			/** Canonical Version */
+			canonical_version: number;
 			/** Created At */
 			created_at: string | null;
 			/** Detail */
@@ -4161,6 +4329,13 @@ export interface components {
 			limit: number;
 			/** Next Cursor */
 			next_cursor: string | null;
+		};
+		/** EventReconciliation */
+		EventReconciliation: {
+			/** Presentation Url */
+			presentation_url: string;
+			/** Snapshot Url */
+			snapshot_url: string;
 		};
 		/** EvidenceAvailability */
 		EvidenceAvailability: {
@@ -4325,6 +4500,42 @@ export interface components {
 			job_id?: string | null;
 			/** Message */
 			message: string;
+		};
+		/** JobEventDelta */
+		JobEventDelta: {
+			/** Detail */
+			detail?: {
+				[key: string]: unknown;
+			};
+			/** Message */
+			message?: string | null;
+			/** Stage */
+			stage?: string | null;
+			/** State */
+			state: string;
+		};
+		/** JobEventFrame */
+		JobEventFrame: {
+			/** Attempt Id */
+			attempt_id?: number | null;
+			/** Canonical Version */
+			canonical_version: number;
+			/** Cursor */
+			cursor: number;
+			delta: components['schemas']['JobEventDelta'];
+			/** Event Key */
+			event_key: string;
+			/** Job Id */
+			job_id: string | null;
+			/** Occurred At */
+			occurred_at?: string | null;
+			reconciliation: components['schemas']['EventReconciliation'] | null;
+			/**
+			 * Version
+			 * @default 1
+			 * @constant
+			 */
+			version: 1;
 		};
 		/** JobListResponse */
 		JobListResponse: {
@@ -6526,6 +6737,39 @@ export interface operations {
 			};
 		};
 	};
+	stream_job_events_api_jobs_events_stream_get: {
+		parameters: {
+			query?: {
+				after?: string | null;
+			};
+			header?: {
+				'Last-Event-ID'?: string | null;
+			};
+			path?: never;
+			cookie?: never;
+		};
+		requestBody?: never;
+		responses: {
+			/** @description Successful Response */
+			200: {
+				headers: {
+					[name: string]: unknown;
+				};
+				content: {
+					'text/event-stream': components['schemas']['JobEventFrame'];
+				};
+			};
+			/** @description Validation Error */
+			422: {
+				headers: {
+					[name: string]: unknown;
+				};
+				content: {
+					'application/json': components['schemas']['HTTPValidationError'];
+				};
+			};
+		};
+	};
 	list_job_artifacts_api_jobs__job_id__artifacts_get: {
 		parameters: {
 			query?: {
@@ -6560,6 +6804,38 @@ export interface operations {
 			};
 		};
 	};
+	download_job_artifact_api_jobs__job_id__artifacts__artifact_id__download_get: {
+		parameters: {
+			query?: never;
+			header?: never;
+			path: {
+				job_id: string;
+				artifact_id: number;
+			};
+			cookie?: never;
+		};
+		requestBody?: never;
+		responses: {
+			/** @description Successful Response */
+			200: {
+				headers: {
+					[name: string]: unknown;
+				};
+				content: {
+					'application/json': unknown;
+				};
+			};
+			/** @description Validation Error */
+			422: {
+				headers: {
+					[name: string]: unknown;
+				};
+				content: {
+					'application/json': components['schemas']['HTTPValidationError'];
+				};
+			};
+		};
+	};
 	list_job_attempts_api_jobs__job_id__attempts_get: {
 		parameters: {
 			query?: {
@@ -6581,6 +6857,109 @@ export interface operations {
 				};
 				content: {
 					'application/json': components['schemas']['AttemptListResponse'];
+				};
+			};
+			/** @description Validation Error */
+			422: {
+				headers: {
+					[name: string]: unknown;
+				};
+				content: {
+					'application/json': components['schemas']['HTTPValidationError'];
+				};
+			};
+		};
+	};
+	list_attempt_logs_api_jobs__job_id__attempts__attempt_id__logs_get: {
+		parameters: {
+			query?: {
+				after?: number;
+				limit?: number;
+				source?: ('python' | 'stdout' | 'stderr' | 'system') | null;
+				level?: ('debug' | 'info' | 'warning' | 'error') | null;
+			};
+			header?: never;
+			path: {
+				job_id: string;
+				attempt_id: number;
+			};
+			cookie?: never;
+		};
+		requestBody?: never;
+		responses: {
+			/** @description Successful Response */
+			200: {
+				headers: {
+					[name: string]: unknown;
+				};
+				content: {
+					'application/json': components['schemas']['AttemptLogPage'];
+				};
+			};
+			/** @description Validation Error */
+			422: {
+				headers: {
+					[name: string]: unknown;
+				};
+				content: {
+					'application/json': components['schemas']['HTTPValidationError'];
+				};
+			};
+		};
+	};
+	download_attempt_log_api_jobs__job_id__attempts__attempt_id__logs_download_get: {
+		parameters: {
+			query?: never;
+			header?: never;
+			path: {
+				job_id: string;
+				attempt_id: number;
+			};
+			cookie?: never;
+		};
+		requestBody?: never;
+		responses: {
+			/** @description Successful Response */
+			200: {
+				headers: {
+					[name: string]: unknown;
+				};
+				content: {
+					'application/json': unknown;
+				};
+			};
+			/** @description Validation Error */
+			422: {
+				headers: {
+					[name: string]: unknown;
+				};
+				content: {
+					'application/json': components['schemas']['HTTPValidationError'];
+				};
+			};
+		};
+	};
+	stream_attempt_logs_api_jobs__job_id__attempts__attempt_id__logs_stream_get: {
+		parameters: {
+			query?: {
+				after?: number;
+			};
+			header?: never;
+			path: {
+				job_id: string;
+				attempt_id: number;
+			};
+			cookie?: never;
+		};
+		requestBody?: never;
+		responses: {
+			/** @description Successful Response */
+			200: {
+				headers: {
+					[name: string]: unknown;
+				};
+				content: {
+					'text/event-stream': unknown;
 				};
 			};
 			/** @description Validation Error */

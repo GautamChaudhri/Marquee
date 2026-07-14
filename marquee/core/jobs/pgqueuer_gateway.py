@@ -15,6 +15,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.core.jobs.definitions import JobDefinitionError
+from marquee.core.jobs.event_service import job_event_writer
 from marquee.core.jobs.manifest import JOB_DEFINITION_REGISTRY
 from marquee.models.job import Job, JobDispatch, JobEvent
 
@@ -242,24 +243,22 @@ class PgQueuerGateway:
             job.terminal_at = now
             dispatch.disposition = "cancelled"
             dispatch.ended_at = now
-            session.add(
-                JobEvent(
-                    job_id=job.id,
-                    event_key="job.cancelled",
-                    state="cancelled",
-                    message="system_noop cancelled while queued",
-                )
+            await job_event_writer.append(
+                session,
+                job_id=job.id,
+                event_key="job.cancelled",
+                state="cancelled",
+                message="system_noop cancelled while queued",
             )
         elif transport_status == "picked":
             job.phase = "stopping"
             job.stopping_at = now
-            session.add(
-                JobEvent(
-                    job_id=job.id,
-                    event_key="job.stopping",
-                    state="stopping",
-                    message="system_noop cancellation requested",
-                )
+            await job_event_writer.append(
+                session,
+                job_id=job.id,
+                event_key="job.stopping",
+                state="stopping",
+                message="system_noop cancellation requested",
             )
         else:
             raise PgQueuerInvariantError(
@@ -324,20 +323,17 @@ class PgQueuerGateway:
         job.priority = priority
         job.dispatch_generation = generation
         job.pgq_job_id = None
-        session.add_all(
-            [
-                replacement,
-                JobEvent(
-                    job_id=job.id,
-                    event_key="job.priority_changed",
-                    state=job.phase,
-                    message="Job priority changed within its execution class",
-                    detail={
-                        "dispatch_generation": generation,
-                        "priority": priority,
-                    },
-                ),
-            ]
+        session.add(replacement)
+        await job_event_writer.append(
+            session,
+            job_id=job.id,
+            event_key="job.priority_changed",
+            state=job.phase,
+            message="Job priority changed within its execution class",
+            detail={
+                "dispatch_generation": generation,
+                "priority": priority,
+            },
         )
         await session.flush()
         await self.enqueue(

@@ -114,6 +114,17 @@
       "ArtifactItemResponse": {
         "additionalProperties": false,
         "properties": {
+          "attempt_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Attempt Id"
+          },
           "available": {
             "title": "Available",
             "type": "boolean"
@@ -151,6 +162,17 @@
               }
             ],
             "title": "Created At"
+          },
+          "download_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Download Url"
           },
           "expires_at": {
             "anyOf": [
@@ -194,10 +216,15 @@
           "status": {
             "title": "Status",
             "type": "string"
+          },
+          "virtual": {
+            "title": "Virtual",
+            "type": "boolean"
           }
         },
         "required": [
           "id",
+          "attempt_id",
           "kind",
           "name",
           "status",
@@ -207,7 +234,9 @@
           "retention_class",
           "expires_at",
           "created_at",
-          "available"
+          "available",
+          "virtual",
+          "download_url"
         ],
         "title": "ArtifactItemResponse",
         "type": "object"
@@ -472,6 +501,210 @@
           "limit"
         ],
         "title": "AttemptListResponse",
+        "type": "object"
+      },
+      "AttemptLogLine": {
+        "additionalProperties": false,
+        "properties": {
+          "cursor": {
+            "minimum": 1.0,
+            "title": "Cursor",
+            "type": "integer"
+          },
+          "fields": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "title": "Fields",
+            "type": "object"
+          },
+          "level": {
+            "enum": [
+              "debug",
+              "info",
+              "warning",
+              "error"
+            ],
+            "title": "Level",
+            "type": "string"
+          },
+          "message": {
+            "maxLength": 16384,
+            "title": "Message",
+            "type": "string"
+          },
+          "source": {
+            "enum": [
+              "python",
+              "stdout",
+              "stderr",
+              "system"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "stage": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stage"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "title": "Timestamp",
+            "type": "string"
+          },
+          "version": {
+            "const": 1,
+            "default": 1,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "cursor",
+          "timestamp",
+          "level",
+          "source",
+          "message"
+        ],
+        "title": "AttemptLogLine",
+        "type": "object"
+      },
+      "AttemptLogPage": {
+        "additionalProperties": false,
+        "properties": {
+          "byte_count": {
+            "minimum": 0.0,
+            "title": "Byte Count",
+            "type": "integer"
+          },
+          "closed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Closed At"
+          },
+          "compression": {
+            "enum": [
+              "none",
+              "gzip",
+              "zstd"
+            ],
+            "title": "Compression",
+            "type": "string"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
+          "freshness": {
+            "enum": [
+              "active",
+              "sealed",
+              "degraded",
+              "expired"
+            ],
+            "title": "Freshness",
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/AttemptLogLine"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "last_cursor": {
+            "minimum": 0.0,
+            "title": "Last Cursor",
+            "type": "integer"
+          },
+          "limit": {
+            "title": "Limit",
+            "type": "integer"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
+          "opened_at": {
+            "format": "date-time",
+            "title": "Opened At",
+            "type": "string"
+          },
+          "sealed": {
+            "title": "Sealed",
+            "type": "boolean"
+          },
+          "stored_byte_count": {
+            "minimum": 0.0,
+            "title": "Stored Byte Count",
+            "type": "integer"
+          },
+          "truncated": {
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor",
+          "limit",
+          "freshness",
+          "sealed",
+          "truncated",
+          "compression",
+          "byte_count",
+          "stored_byte_count",
+          "last_cursor",
+          "opened_at",
+          "closed_at",
+          "expires_at"
+        ],
+        "title": "AttemptLogPage",
         "type": "object"
       },
       "AttentionLevel": {
@@ -1664,6 +1897,11 @@
       "EventItem": {
         "additionalProperties": false,
         "properties": {
+          "canonical_version": {
+            "minimum": 0.0,
+            "title": "Canonical Version",
+            "type": "integer"
+          },
           "created_at": {
             "anyOf": [
               {
@@ -1725,6 +1963,7 @@
         },
         "required": [
           "id",
+          "canonical_version",
           "event_key",
           "state",
           "stage",
@@ -1767,6 +2006,25 @@
           "limit"
         ],
         "title": "EventListResponse",
+        "type": "object"
+      },
+      "EventReconciliation": {
+        "additionalProperties": false,
+        "properties": {
+          "presentation_url": {
+            "title": "Presentation Url",
+            "type": "string"
+          },
+          "snapshot_url": {
+            "title": "Snapshot Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "snapshot_url",
+          "presentation_url"
+        ],
+        "title": "EventReconciliation",
         "type": "object"
       },
       "EvidenceAvailability": {
@@ -2307,6 +2565,129 @@
           "message"
         ],
         "title": "JobApiErrorDetail",
+        "type": "object"
+      },
+      "JobEventDelta": {
+        "additionalProperties": false,
+        "properties": {
+          "detail": {
+            "additionalProperties": true,
+            "title": "Detail",
+            "type": "object"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "stage": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stage"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "state"
+        ],
+        "title": "JobEventDelta",
+        "type": "object"
+      },
+      "JobEventFrame": {
+        "additionalProperties": false,
+        "properties": {
+          "attempt_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Attempt Id"
+          },
+          "canonical_version": {
+            "minimum": 0.0,
+            "title": "Canonical Version",
+            "type": "integer"
+          },
+          "cursor": {
+            "minimum": 0.0,
+            "title": "Cursor",
+            "type": "integer"
+          },
+          "delta": {
+            "$ref": "#/components/schemas/JobEventDelta"
+          },
+          "event_key": {
+            "title": "Event Key",
+            "type": "string"
+          },
+          "job_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Job Id"
+          },
+          "occurred_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Occurred At"
+          },
+          "reconciliation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EventReconciliation"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "version": {
+            "const": 1,
+            "default": 1,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "cursor",
+          "event_key",
+          "job_id",
+          "canonical_version",
+          "delta",
+          "reconciliation"
+        ],
+        "title": "JobEventFrame",
         "type": "object"
       },
       "JobListResponse": {
@@ -7988,6 +8369,73 @@
         ]
       }
     },
+    "/api/jobs/events/stream": {
+      "get": {
+        "description": "Replay the global durable cursor, then follow the API-instance tailer.",
+        "operationId": "stream_job_events_api_jobs_events_stream_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 20,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "After"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Last-Event-ID",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Last-Event-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobEventFrame"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Stream Job Events",
+        "tags": [
+          "jobs"
+        ]
+      }
+    },
     "/api/jobs/{job_id}/artifacts": {
       "get": {
         "operationId": "list_job_artifacts_api_jobs__job_id__artifacts_get",
@@ -8058,6 +8506,55 @@
         ]
       }
     },
+    "/api/jobs/{job_id}/artifacts/{artifact_id}/download": {
+      "get": {
+        "operationId": "download_job_artifact_api_jobs__job_id__artifacts__artifact_id__download_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "artifact_id",
+            "required": true,
+            "schema": {
+              "title": "Artifact Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Download Job Artifact",
+        "tags": [
+          "jobs"
+        ]
+      }
+    },
     "/api/jobs/{job_id}/attempts": {
       "get": {
         "operationId": "list_job_attempts_api_jobs__job_id__attempts_get",
@@ -8123,6 +8620,231 @@
           }
         },
         "summary": "List Job Attempts",
+        "tags": [
+          "jobs"
+        ]
+      }
+    },
+    "/api/jobs/{job_id}/attempts/{attempt_id}/logs": {
+      "get": {
+        "operationId": "list_attempt_logs_api_jobs__job_id__attempts__attempt_id__logs_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "attempt_id",
+            "required": true,
+            "schema": {
+              "title": "Attempt Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "After",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 500,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "source",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "python",
+                    "stdout",
+                    "stderr",
+                    "system"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Source"
+            }
+          },
+          {
+            "in": "query",
+            "name": "level",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "debug",
+                    "info",
+                    "warning",
+                    "error"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Level"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AttemptLogPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Attempt Logs",
+        "tags": [
+          "jobs"
+        ]
+      }
+    },
+    "/api/jobs/{job_id}/attempts/{attempt_id}/logs/download": {
+      "get": {
+        "operationId": "download_attempt_log_api_jobs__job_id__attempts__attempt_id__logs_download_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "attempt_id",
+            "required": true,
+            "schema": {
+              "title": "Attempt Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Download Attempt Log",
+        "tags": [
+          "jobs"
+        ]
+      }
+    },
+    "/api/jobs/{job_id}/attempts/{attempt_id}/logs/stream": {
+      "get": {
+        "operationId": "stream_attempt_logs_api_jobs__job_id__attempts__attempt_id__logs_stream_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "attempt_id",
+            "required": true,
+            "schema": {
+              "title": "Attempt Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "After",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/event-stream": {}
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Stream Attempt Logs",
         "tags": [
           "jobs"
         ]

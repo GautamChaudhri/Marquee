@@ -73,6 +73,18 @@ async def run() -> None:
                 "startup workspace reconciliation quarantined %s workspaces",
                 workspaces["quarantined"],
             )
+        from marquee.core.jobs.artifact_service import reconcile_artifacts
+        from marquee.core.jobs.log_capture import recover_abandoned_attempt_logs
+
+        logs = await recover_abandoned_attempt_logs(
+            worker_node=settings.JOB_WORKER_NODE_ID,
+            data_dir=settings.DATA_DIR,
+        )
+        if logs["failed"] or logs["deferred"]:
+            logger.error("startup attempt-log reconciliation: %s", logs)
+        artifacts = await reconcile_artifacts(data_dir=settings.DATA_DIR)
+        if artifacts["missing"] or artifacts["untracked"]:
+            logger.error("startup artifact reconciliation: %s", artifacts)
         await record_worker_node(settings.JOB_WORKER_NODE_ID, readiness="ready")
         app = create_worker(connection)
         _install_shutdown_handlers(app)

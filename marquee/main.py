@@ -116,11 +116,18 @@ async def lifespan(app: FastAPI):
     logger.info("Initialising database ...")
     await init_db()
     from marquee.core.configuration_cache import configuration_provider
+    from marquee.core.jobs.event_stream import job_event_tailer
 
     await configuration_provider.start(role="api")
+    await job_event_tailer.start()
+    app.state.job_event_tailer = job_event_tailer
     from marquee.core.jobs.readiness import require_startup_readiness
 
-    await require_startup_readiness()
+    try:
+        await require_startup_readiness()
+    except BaseException:
+        await job_event_tailer.stop()
+        raise
     logger.info("Database ready.")
 
     # Rate limiters — shared across requests
@@ -168,6 +175,12 @@ async def lifespan(app: FastAPI):
                 await sampler.stop()
             except Exception:
                 logger.warning("Error stopping system metrics sampler", exc_info=True)
+        event_tailer = getattr(app.state, "job_event_tailer", None)
+        if event_tailer is not None:
+            try:
+                await event_tailer.stop()
+            except Exception:
+                logger.warning("Error stopping job event tailer", exc_info=True)
         try:
             await configuration_provider.stop()
         except Exception:

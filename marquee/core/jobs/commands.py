@@ -13,6 +13,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.core.configuration_cache import configuration_provider
+from marquee.core.jobs.event_service import job_event_writer
 from marquee.core.jobs.manifest import JOB_DEFINITION_REGISTRY
 from marquee.core.jobs.pgqueuer_gateway import (
     ENTRYPOINT_CONTROL,
@@ -21,7 +22,7 @@ from marquee.core.jobs.pgqueuer_gateway import (
     pgqueuer_gateway,
 )
 from marquee.core.jobs.subjects import SystemWorkSnapshot
-from marquee.models.job import Job, JobDispatch, JobEvent
+from marquee.models.job import Job, JobDispatch
 
 MAX_NOOP_PAYLOAD_BYTES = 4096
 IDEMPOTENCY_PATTERN = re.compile(r"^system_noop:[A-Za-z0-9._-]{1,160}$")
@@ -163,14 +164,15 @@ async def create_system_noop(
                 eligible_at=eligible_at,
                 disposition="active",
             )
-            event = JobEvent(
+            session.add_all([job, dispatch])
+            await job_event_writer.append(
+                session,
                 job_id=job_id,
                 event_key="job.queued",
                 state="queued",
                 message="system_noop queued",
                 detail={"dispatch_generation": generation},
             )
-            session.add_all([job, dispatch, event])
             await pgqueuer_gateway.enqueue(
                 session,
                 job_id=job_id,

@@ -29,6 +29,7 @@ from marquee.core.jobs.process_identity import (
 
 IdentityRecorder = Callable[[ProcessIdentity], Awaitable[object]]
 ExitRecorder = Callable[["ExecutionSummary"], Awaitable[object]]
+PipeSink = Callable[[str, bytes, bool], Awaitable[None]]
 
 
 class ProcessLaunchError(RuntimeError):
@@ -68,14 +69,29 @@ async def _drain(
     reader: asyncio.StreamReader,
     *,
     capture_limit: int,
+    source: str,
+    sink: PipeSink | None = None,
 ) -> StreamSummary:
     captured = bytearray()
     total = 0
-    while chunk := await reader.read(64 * 1024):
-        total += len(chunk)
-        remaining = capture_limit - len(captured)
-        if remaining > 0:
-            captured.extend(chunk[:remaining])
+    sink_active = sink is not None
+    try:
+        while chunk := await reader.read(64 * 1024):
+            total += len(chunk)
+            remaining = capture_limit - len(captured)
+            if remaining > 0:
+                captured.extend(chunk[:remaining])
+            if sink_active:
+                try:
+                    assert sink is not None
+                    await sink(source, chunk, False)
+                except Exception:
+                    sink_active = False
+    finally:
+        if sink_active:
+            with contextlib.suppress(Exception):
+                assert sink is not None
+                await sink(source, b"", True)
     return StreamSummary(
         captured=bytes(captured),
         total_bytes=total,
@@ -223,6 +239,7 @@ class ProcessLauncher:
         working_directory: ClassifiedPath,
         record_identity: IdentityRecorder | None = None,
         record_exit: ExitRecorder | None = None,
+        pipe_sink: PipeSink | None = None,
         capture_limit: int = 64 * 1024,
         cgroup_root: Path = Path("/sys/fs/cgroup"),
     ) -> None:
@@ -235,6 +252,7 @@ class ProcessLauncher:
         self._working_directory = working_directory
         self._record_identity = record_identity
         self._record_exit = record_exit
+        self._pipe_sink = pipe_sink
         self._capture_limit = capture_limit
         self._cgroup_root = cgroup_root
         self._active: set[TrackedProcess] = set()
@@ -294,11 +312,24 @@ class ProcessLauncher:
             ready = await asyncio.wait_for(process.stdout.readline(), timeout=5.0)
             if ready != b"MARQUEE_CANARY_READY\n":
                 raise ProcessLaunchError("fixed canary start barrier failed")
+            if self._pipe_sink is not None:
+                with contextlib.suppress(Exception):
+                    await self._pipe_sink("stdout", ready, False)
             stdout_task = asyncio.create_task(
-                _drain(process.stdout, capture_limit=self._capture_limit)
+                _drain(
+                    process.stdout,
+                    capture_limit=self._capture_limit,
+                    source="stdout",
+                    sink=self._pipe_sink,
+                )
             )
             stderr_task = asyncio.create_task(
-                _drain(process.stderr, capture_limit=self._capture_limit)
+                _drain(
+                    process.stderr,
+                    capture_limit=self._capture_limit,
+                    source="stderr",
+                    sink=self._pipe_sink,
+                )
             )
             process.stdin.write(b"1")
             await process.stdin.drain()

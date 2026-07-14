@@ -10,9 +10,10 @@ from datetime import UTC, datetime
 from sqlalchemy import or_, select
 
 from marquee.config import settings
+from marquee.core.jobs.event_service import job_event_writer
 from marquee.core.jobs.pgqueuer_gateway import PgQueuerGateway, pgqueuer_gateway
 from marquee.database import _get_session_factory
-from marquee.models.job import Job, JobDispatch, JobEvent
+from marquee.models.job import Job, JobDispatch
 
 logger = logging.getLogger(__name__)
 
@@ -81,13 +82,12 @@ class TransportIntentMonitor:
                         assert dispatch is not None
                         dispatch.disposition = "cancelled"
                         dispatch.ended_at = now
-                        session.add(
-                            JobEvent(
-                                job_id=job.id,
-                                event_key="job.cancelled",
-                                state="cancelled",
-                                message="Committed cancellation reconciled with transport",
-                            )
+                        await job_event_writer.append(
+                            session,
+                            job_id=job.id,
+                            event_key="job.cancelled",
+                            state="cancelled",
+                            message="Committed cancellation reconciled with transport",
                         )
                         counts["cancelled"] += 1
                     else:

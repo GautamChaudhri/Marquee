@@ -84,11 +84,11 @@ def test_clean_baseline_is_one_root_and_excludes_other_schema_owners() -> None:
     scripts = ScriptDirectory.from_config(Config(str(root / "alembic.ini")))
     assert scripts.get_heads() == [ALEMBIC_HEAD]
     head = scripts.get_revision(ALEMBIC_HEAD)
-    assert head is not None and head.down_revision == "0001_jmc1"
-    baseline = scripts.get_revision(head.down_revision)
+    assert head is not None and head.down_revision == "0002_jmc2a"
+    baseline = scripts.get_revision("0001_jmc1")
     assert baseline is not None and baseline.down_revision is None
 
-    for revision in (baseline, head):
+    for revision in scripts.walk_revisions():
         source = Path(revision.path).read_text(encoding="utf-8")
         for table in PGQUEUER_TABLES | EXCLUDED_DEPLOYMENT_TABLES:
             assert f"create_table('{table}'" not in source

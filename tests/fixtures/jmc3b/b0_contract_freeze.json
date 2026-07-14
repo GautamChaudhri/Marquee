@@ -1,0 +1,268 @@
+{
+  "version": 1,
+  "registry": {
+    "enabled_types": ["system_noop"]
+  },
+  "frozen_contract_tests": [
+    "tests/test_job_presentation_contract.py",
+    "tests/test_job_progress_contract.py",
+    "tests/test_job_read_api.py"
+  ],
+  "evidence_tables": {
+    "JobEvent": [
+      "id",
+      "job_id",
+      "attempt_id",
+      "event_key",
+      "state",
+      "stage",
+      "message",
+      "detail",
+      "created_at"
+    ],
+    "JobLog": [
+      "id",
+      "job_id",
+      "attempt_id",
+      "segment",
+      "storage_key",
+      "format",
+      "encoding",
+      "compression",
+      "byte_count",
+      "line_count",
+      "last_cursor",
+      "stored_byte_count",
+      "redacted",
+      "truncated",
+      "seal_status",
+      "checksum",
+      "failure_code",
+      "opened_at",
+      "closed_at",
+      "retention_class",
+      "expires_at"
+    ],
+    "JobArtifact": [
+      "id",
+      "job_id",
+      "attempt_id",
+      "kind",
+      "name",
+      "status",
+      "storage_key",
+      "virtual_source",
+      "content_type",
+      "size_bytes",
+      "checksum",
+      "metadata",
+      "retention_class",
+      "expires_at",
+      "created_at"
+    ]
+  },
+  "progress_models": {
+    "ProgressMeasurement": [
+      "scope_id",
+      "mode",
+      "unit",
+      "completed",
+      "total",
+      "percent",
+      "label"
+    ],
+    "ProgressMeasurementUpdate": [
+      "scope_id",
+      "mode",
+      "unit",
+      "completed",
+      "total",
+      "label"
+    ],
+    "ProgressMetrics": [
+      "elapsed_seconds",
+      "eta_seconds",
+      "speed",
+      "fps",
+      "bytes_processed",
+      "bytes_total",
+      "throughput",
+      "encoder",
+      "decoder"
+    ],
+    "ProgressWait": ["kind", "label_key", "eligible_at"],
+    "ConcurrentSubject": ["subject", "stage_key"],
+    "JobProgress": [
+      "version",
+      "sequence",
+      "job_id",
+      "attempt_id",
+      "attempt_number",
+      "fence_token",
+      "updated_at",
+      "headline",
+      "stage",
+      "freshness",
+      "current_subject",
+      "overall",
+      "current",
+      "metrics",
+      "wait",
+      "concurrent_subjects",
+      "warning_count",
+      "failure_count"
+    ]
+  },
+  "jmc3a_extension_points": {
+    "execution_context_fields": [
+      "delivery",
+      "attempt",
+      "request",
+      "configuration",
+      "subject",
+      "definition",
+      "cancellation",
+      "safety_gates",
+      "workspace",
+      "process_launcher",
+      "log_sink",
+      "writer"
+    ],
+    "fenced_writer_methods": [
+      "fail",
+      "interrupt",
+      "publish_atomic",
+      "record_process_exit",
+      "record_process_identity",
+      "record_publish_intent",
+      "retry",
+      "stopping",
+      "succeed",
+      "unsafe"
+    ],
+    "process_launcher_methods": ["launch_canary", "shutdown"]
+  },
+  "direct_event_writers": {
+    "marquee/core/jobs/commands.py": 1,
+    "marquee/core/jobs/control.py": 3,
+    "marquee/core/jobs/delivery.py": 2,
+    "marquee/core/jobs/fenced_writer.py": 3,
+    "marquee/core/jobs/pgqueuer_gateway.py": 3,
+    "marquee/core/jobs/transport_intent_monitor.py": 1
+  },
+  "existing_jobs_get_routes": [
+    "",
+    "/events/stream",
+    "/{job_id}/artifacts",
+    "/{job_id}/artifacts/{artifact_id}/download",
+    "/{job_id}/attempts",
+    "/{job_id}/attempts/{attempt_id}/logs",
+    "/{job_id}/attempts/{attempt_id}/logs/download",
+    "/{job_id}/attempts/{attempt_id}/logs/stream",
+    "/{job_id}/children",
+    "/{job_id}/events",
+    "/{job_id}/presentation",
+    "/{job_id}/raw/{kind}",
+    "/{job_id}/snapshot"
+  ],
+  "target_evidence_routes": [
+    "/api/jobs/events/stream",
+    "/api/jobs/{id}/artifacts/{artifact_id}/download",
+    "/api/jobs/{id}/attempts/{attempt_id}/logs",
+    "/api/jobs/{id}/attempts/{attempt_id}/logs/download",
+    "/api/jobs/{id}/attempts/{attempt_id}/logs/stream"
+  ],
+  "obsolete_helper_plan": [
+    {
+      "path": "marquee/core/jobs/fenced_writer.py",
+      "contract": "direct JobEvent construction",
+      "disposition": "route through the sole durable event writer in B1"
+    },
+    {
+      "path": "marquee/media/letterbox_manager.py",
+      "contract": "process-local unbounded subscriber queues",
+      "disposition": "remove after confirming there are no public route consumers"
+    },
+    {
+      "path": "marquee/pipeline/progress_bridge.py",
+      "contract": "process-local unbounded progress queue and direct persistence",
+      "disposition": "replace with the fenced progress writer in B4"
+    },
+    {
+      "path": "marquee/pipeline/run_manager.py",
+      "contract": "process-local unbounded subscriber queues",
+      "disposition": "remove after confirming there are no public route consumers"
+    }
+  ],
+  "logging_surfaces": [
+    "marquee/core/jobs/pgqueuer_scheduler.py",
+    "marquee/core/jobs/pgqueuer_worker.py",
+    "marquee/core/jobs/process_launcher.py",
+    "marquee/pipeline/runner.py"
+  ],
+  "artifact_surfaces": [
+    "marquee/core/filesystem.py",
+    "marquee/ml/artifact_registry.py",
+    "marquee/models/job_evidence.py"
+  ],
+  "redaction": {
+    "marker": "[REDACTED]",
+    "configured_secrets": [
+      "callback-secret",
+      "db-pass",
+      "hunter2",
+      "s3cr3t-token"
+    ],
+    "text_cases": [
+      {
+        "name": "exact_configured_value",
+        "chunks": ["prefix s3cr3t-token suffix"],
+        "expected": "prefix [REDACTED] suffix"
+      },
+      {
+        "name": "authorization_bearer",
+        "chunks": ["Authorization: Bearer s3cr3t-token"],
+        "expected": "Authorization: Bearer [REDACTED]"
+      },
+      {
+        "name": "api_key_header",
+        "chunks": ["X-Api-Key: s3cr3t-token"],
+        "expected": "X-Api-Key: [REDACTED]"
+      },
+      {
+        "name": "url_userinfo_and_query",
+        "chunks": [
+          "https://dbuser:db-pass@example.test/path?api_key=s3cr3t-token&safe=ok"
+        ],
+        "expected": "https://[REDACTED]@example.test/path?api_key=[REDACTED]&safe=ok"
+      },
+      {
+        "name": "cross_chunk_secret",
+        "chunks": ["callback_token=callback-", "secret done"],
+        "expected": "callback_token=[REDACTED] done"
+      },
+      {
+        "name": "safe_text",
+        "chunks": ["encoding frame 42 at 24 fps"],
+        "expected": "encoding frame 42 at 24 fps"
+      }
+    ],
+    "argument_cases": [
+      {
+        "name": "split_password_argument",
+        "arguments": ["tool", "--password", "hunter2", "input.mkv"],
+        "expected": ["tool", "--password", "[REDACTED]", "input.mkv"]
+      },
+      {
+        "name": "joined_token_argument",
+        "arguments": ["tool", "--token=s3cr3t-token", "input.mkv"],
+        "expected": ["tool", "--token=[REDACTED]", "input.mkv"]
+      },
+      {
+        "name": "database_url_argument",
+        "arguments": ["tool", "--database-url", "postgresql://dbuser:db-pass@db/marquee"],
+        "expected": ["tool", "--database-url", "[REDACTED]"]
+      }
+    ]
+  }
+}

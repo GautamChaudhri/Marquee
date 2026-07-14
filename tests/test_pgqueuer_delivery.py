@@ -29,10 +29,11 @@ from marquee.core.jobs.manifest import JOB_DEFINITION_REGISTRY
 from marquee.core.jobs.pgqueuer_gateway import pgqueuer_gateway
 from marquee.core.jobs.pgqueuer_scheduler import create_scheduler
 from marquee.core.jobs.pgqueuer_worker import create_worker
+from marquee.core.jobs.progress_service import progress_writer
 from marquee.core.jobs.safety_gates import SafetyGateService, SafetyRequirements
 from marquee.database import _get_engine
 from marquee.main import app
-from marquee.models.job import Job, JobAttempt, JobDispatch
+from marquee.models.job import Job, JobAttempt, JobDispatch, JobEvent
 
 
 @pytest_asyncio.fixture(autouse=True)
@@ -119,6 +120,13 @@ async def test_delivery_commits_canonical_success_before_return(db):
     attempts = list(
         await db.scalars(select(JobAttempt).where(JobAttempt.job_id == job_id))
     )
+    progress_events = list(
+        await db.scalars(
+            select(JobEvent)
+            .where(JobEvent.job_id == job_id, JobEvent.event_key == "progress.updated")
+            .order_by(JobEvent.id)
+        )
+    )
     assert job is not None
     assert (job.phase, job.outcome, job.result) == (
         "terminal",
@@ -127,6 +135,26 @@ async def test_delivery_commits_canonical_success_before_return(db):
     )
     assert len(attempts) == 1
     assert (attempts[0].phase, attempts[0].outcome) == ("finished", "succeeded")
+    assert job.progress_sequence == 2
+    assert job.progress["freshness"] == "terminal"
+    assert [event.detail["progress_sequence"] for event in progress_events] == [1, 2]
+
+
+async def test_progress_failure_does_not_change_successful_media_effect(db, monkeypatch):
+    job_id, ticket_id = await _canonical_ticket(db)
+
+    async def broken_progress_write(**_kwargs):
+        raise RuntimeError("synthetic progress database failure")
+
+    monkeypatch.setattr(progress_writer, "write", broken_progress_write)
+    await deliver_control_job(_transport_job(job_id, ticket_id), _context())
+
+    await db.rollback()
+    db.expire_all()
+    job = await db.get(Job, job_id)
+    assert job is not None
+    assert (job.phase, job.outcome) == ("terminal", "succeeded")
+    assert job.progress is None
 
 
 async def test_duplicate_delivery_performs_effect_once(db):

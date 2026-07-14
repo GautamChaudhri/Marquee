@@ -31,6 +31,8 @@ class JobLog(Base):
         CheckConstraint("segment >= 0", name="ck_job_logs_segment"),
         CheckConstraint("byte_count >= 0", name="ck_job_logs_byte_count"),
         CheckConstraint("line_count >= 0", name="ck_job_logs_line_count"),
+        CheckConstraint("last_cursor >= 0", name="ck_job_logs_last_cursor"),
+        CheckConstraint("stored_byte_count >= 0", name="ck_job_logs_stored_byte_count"),
         CheckConstraint(
             "storage_key NOT LIKE '/%' AND storage_key NOT LIKE '%..%'",
             name="ck_job_logs_confined_storage_key",
@@ -42,6 +44,10 @@ class JobLog(Base):
         CheckConstraint(
             "compression IN ('none', 'gzip', 'zstd')",
             name="ck_job_logs_compression",
+        ),
+        CheckConstraint(
+            "seal_status IN ('open', 'recovering', 'sealed', 'failed', 'expired')",
+            name="ck_job_logs_seal_status",
         ),
     )
 
@@ -59,8 +65,17 @@ class JobLog(Base):
     compression: Mapped[str] = mapped_column(String(12), nullable=False, server_default="none")
     byte_count: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default="0")
     line_count: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default="0")
+    last_cursor: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default="0")
+    stored_byte_count: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default="0"
+    )
     redacted: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="true")
     truncated: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
+    seal_status: Mapped[str] = mapped_column(
+        String(12), nullable=False, server_default="open"
+    )
+    checksum: Mapped[str | None] = mapped_column(String(64))
+    failure_code: Mapped[str | None] = mapped_column(String(40))
     opened_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

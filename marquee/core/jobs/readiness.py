@@ -26,7 +26,7 @@ from marquee.db_migration import (
 
 def connection_budget_report() -> dict[str, Any]:
     """Return documented role arithmetic without DSNs or connection identities."""
-    api = settings.DB_API_POOL_SIZE + settings.DB_API_MAX_OVERFLOW
+    api_pool = settings.DB_API_POOL_SIZE + settings.DB_API_MAX_OVERFLOW
     worker_each = (
         settings.DB_WORKER_POOL_SIZE
         + settings.DB_WORKER_MAX_OVERFLOW
@@ -37,7 +37,8 @@ def connection_budget_report() -> dict[str, Any]:
     configured = settings.deployment_connection_budget
     maximum = settings.DB_DEPLOYMENT_MAX_CONNECTIONS
     return {
-        "api": api,
+        "api": api_pool,
+        "api_event_listener": settings.JOB_EVENT_LISTENER_CONNECTIONS,
         "worker_each": worker_each,
         "worker_processes": settings.JOB_EMBEDDED_WORKER_COUNT,
         "safety_gate_sessions_each": settings.JOB_SAFETY_GATE_CONNECTIONS,
@@ -90,7 +91,22 @@ async def _raw_pool_connection() -> tuple[Any, asyncpg.Connection]:
 
 async def check_readiness() -> dict[str, Any]:
     """Check every mandatory JMC1 dependency within one global timeout."""
+    from marquee.core.jobs.artifact_service import ensure_artifact_root
+    from marquee.core.jobs.event_stream import job_event_tailer
+    from marquee.core.jobs.log_capture import AttemptLogFiles
+
     containment = containment_capabilities()
+    event_stream = job_event_tailer.health()
+    try:
+        writable = AttemptLogFiles.for_data_dir(settings.DATA_DIR).ensure_writable()
+        log_storage_status = "ok" if writable else "unavailable"
+    except (OSError, RuntimeError, ValueError):
+        log_storage_status = "unavailable"
+    try:
+        ensure_artifact_root(settings.DATA_DIR)
+        artifact_storage_status = "ok"
+    except (OSError, RuntimeError, ValueError):
+        artifact_storage_status = "unavailable"
     components: dict[str, dict[str, Any]] = {
         "configuration": {
             "status": "ok" if configuration_compatible() else "incompatible"
@@ -105,6 +121,9 @@ async def check_readiness() -> dict[str, Any]:
         "migration_lock": {"status": "unavailable"},
         "schema": {"status": "unavailable"},
         "safety_gates": {"status": "unavailable"},
+        "event_stream": event_stream,
+        "attempt_logs": {"status": log_storage_status},
+        "job_artifacts": {"status": artifact_storage_status},
         "process_containment": {
             "status": "ok",
             **containment.public(),
