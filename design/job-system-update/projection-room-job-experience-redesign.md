@@ -6,6 +6,9 @@
 **Delivery sequence:** [clean-slate migration program](job-system-pgqueuer-migration.md)
 **Product research:** [activity comparison](projection-room-activity-comparison.md)
 **Progress contract:** [job progress and loading experience](job-progress-and-loading-experience.md)
+**Destructive-job presentation bindings:** [JMC5A mutation, artwork, and maintenance](jmc5a-mutation-contracts-artwork-and-maintenance.md),
+[JMC5B audio and subtitle mutations](jmc5b-audio-subtitle-mutations.md), and
+[JMC5C letterbox, HDR, and runtime retirement](jmc5c-letterbox-hdr-and-runtime-retirement.md)
 
 ## Product decision
 
