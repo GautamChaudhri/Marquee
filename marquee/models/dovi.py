@@ -79,6 +79,19 @@ class DoviState(Base, TimestampMixin):
     bl_signal_compatibility_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     source_codec: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    source_signature: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    source_fence_token: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    source_hdr_base: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    source_bit_depth: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    color_primaries: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    color_transfer: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    color_space: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    rpu_present: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    bl_present: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    analysis_depth: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    analysis_supported: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    warnings_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    validation_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Raw ``dovi_tool info --summary`` text, kept for the inspection UI / debugging.
     rpu_summary_json: Mapped[str | None] = mapped_column(Text, nullable=True)

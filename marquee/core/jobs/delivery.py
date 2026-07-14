@@ -93,6 +93,8 @@ class AdmittedDelivery:
     attempt: AttemptIdentity
     definition: JobDefinition
     request: Mapping[str, Any]
+    configuration: Mapping[str, Any]
+    subject: Mapping[str, Any]
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,6 +111,10 @@ class ExecutionContext:
     process_launcher: ProcessLauncher
     log_sink: AttemptLogSink | None
     writer: FencedWriter
+    # Domain-projection session factory. Handlers open short, idempotent transactions to
+    # write derived projections only; they never hold one across a launcher or network wait,
+    # and never touch canonical job lifecycle (the fenced writer owns that).
+    session_factory: Callable[[], Any]
 
 
 KernelHandler = Callable[[ExecutionContext], Awaitable[dict[str, Any]]]
@@ -351,6 +357,8 @@ async def _start_attempt(
         ),
         definition=preflight.definition,
         request=preflight.request,
+        configuration=_immutable(job.configuration_snapshot or {}),
+        subject=_immutable(job.subject_snapshot or {}),
     )
 
 
@@ -447,9 +455,22 @@ async def execute_system_noop(context: ExecutionContext) -> dict[str, Any]:
     }
 
 
-EXECUTION_HANDLERS: Mapping[str, KernelHandler] = MappingProxyType(
-    {"system_noop": execute_system_noop}
-)
+_EXECUTION_HANDLERS: dict[str, KernelHandler] = {"system_noop": execute_system_noop}
+# Live read-only view; migrated families register through ``register_execution_handler``.
+EXECUTION_HANDLERS: Mapping[str, KernelHandler] = MappingProxyType(_EXECUTION_HANDLERS)
+
+
+def register_execution_handler(job_type: str, handler: KernelHandler) -> None:
+    """Bind a migrated read-only handler to its canonical job type.
+
+    The definition registry still governs which types are dispatch-enabled; this only wires
+    the in-process kernel handler resolved by ``_execute_delivery``.
+    """
+    if job_type in _EXECUTION_HANDLERS:
+        raise RuntimeError(f"duplicate execution handler: {job_type}")
+    _EXECUTION_HANDLERS[job_type] = handler
+
+
 _SAFETY_GATES = SafetyGateService()
 
 
@@ -581,8 +602,8 @@ async def deliver_job(
             delivery=admitted.delivery,
             attempt=admitted.attempt,
             request=admitted.request,
-            configuration=MappingProxyType({}),
-            subject=MappingProxyType({}),
+            configuration=admitted.configuration,
+            subject=admitted.subject,
             definition=admitted.definition,
             cancellation=context.cancellation,
             safety_gates=gates,
@@ -590,6 +611,7 @@ async def deliver_job(
             process_launcher=process_launcher,
             log_sink=log_sink,
             writer=writer,
+            session_factory=_get_session_factory(),
         )
         try:
             if log_sink is None:
@@ -666,3 +688,8 @@ async def deliver_control_job(
         expected_entrypoint="control",
         executor=executor,
     )
+
+
+# Register migrated read-only family handlers. Placed at module end so ExecutionContext and
+# register_execution_handler are defined before the import side effect runs.
+from marquee.core.jobs import kernel_handlers as _kernel_handlers  # noqa: E402,F401

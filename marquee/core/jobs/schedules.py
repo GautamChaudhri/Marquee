@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import re
 from collections import deque
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -28,7 +28,14 @@ from marquee.database import _get_session_factory
 logger = logging.getLogger(__name__)
 
 MAX_SCHEDULE_DIAGNOSTICS = 100
+# Global default for the fixed test schedule only; production schedules are activated
+# individually through ACTIVATED_SCHEDULE_KEYS as each handler family is certified.
 PRODUCTION_SCHEDULE_OCCURRENCES_ENABLED = False
+# Production schedule keys that are certified to produce real occurrences. Grows one entry
+# per JMC4B family: `library-sync` activated in B2; `audio-subs-deep-scan` follows in B3.
+ACTIVATED_SCHEDULE_KEYS: frozenset[str] = frozenset(
+    {"library-sync", "audio-subs-deep-scan"}
+)
 _KEY = re.compile(r"^[a-z][a-z0-9-]{0,62}[a-z0-9]$")
 
 
@@ -57,6 +64,11 @@ class ScheduleConfiguration:
 EnabledPredicate = Callable[[ScheduleConfiguration], bool]
 RequestBuilder = Callable[[ScheduleConfiguration, datetime], Mapping[str, object]]
 SubjectBuilder = Callable[[ScheduleConfiguration, datetime], SubjectLocator]
+# A batch producer creates a canonical fixed-batch parent in the caller transaction and returns
+# its parent SubmissionResult. Used by schedules whose produced type is a parent-only batch.
+BatchProducer = Callable[
+    [AsyncSession, ScheduleConfiguration, datetime], "Awaitable[SubmissionResult]"
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,6 +83,7 @@ class ScheduleDefinition:
     occurrence_policy: OccurrencePolicy
     request_builder: RequestBuilder
     subject_builder: SubjectBuilder
+    batch_producer: BatchProducer | None = None
 
     def __post_init__(self) -> None:
         if not _KEY.fullmatch(self.key):
@@ -229,15 +242,18 @@ async def submit_schedule_occurrence(
         return None
     factory = session_factory or _get_session_factory()
     async with factory() as session, session.begin():
-        result = await submit_job(
-            session,
-            job_type=definition.produced_job_type,
-            request=definition.request_builder(configuration, due),
-            subject=definition.subject_builder(configuration, due),
-            trigger=definition.trigger,
-            initiator=definition.initiator,
-            idempotency_key=occurrence_key(definition, due),
-        )
+        if definition.batch_producer is not None:
+            result = await definition.batch_producer(session, configuration, due)
+        else:
+            result = await submit_job(
+                session,
+                job_type=definition.produced_job_type,
+                request=definition.request_builder(configuration, due),
+                subject=definition.subject_builder(configuration, due),
+                trigger=definition.trigger,
+                initiator=definition.initiator,
+                idempotency_key=occurrence_key(definition, due),
+            )
     diagnostics.record(
         definition,
         due=due,
@@ -278,6 +294,29 @@ _SCHEDULER_INITIATOR = Initiator(
 )
 
 
+async def _audio_subs_deep_scan_batch(
+    session: AsyncSession,
+    configuration: ScheduleConfiguration,
+    due: datetime,
+) -> SubmissionResult:
+    """Create the scheduled deep-scan as a fixed batch of read-only subtitle scans."""
+    from marquee.core.subtitles.scan_batch import (  # noqa: PLC0415 - avoid import cycle
+        create_subtitle_scan_batch,
+    )
+
+    result = await create_subtitle_scan_batch(
+        session,
+        parent_job_type="audio_subs_deep_scan",
+        scope="all",
+        force=False,
+        limit=configuration.audio_subs_deep_scan_batch,
+        initiator=_SCHEDULER_INITIATOR,
+        trigger=TriggerKind.SCHEDULE,
+        idempotency_key=f"audio_subs_deep_scan:schedule-{_format_utc(due)}",
+    )
+    return result.parent
+
+
 PRODUCTION_SCHEDULE_CATALOG = ScheduleCatalog(
     (
         ScheduleDefinition(
@@ -288,7 +327,7 @@ PRODUCTION_SCHEDULE_CATALOG = ScheduleCatalog(
             trigger=TriggerKind.SCHEDULE,
             initiator=_SCHEDULER_INITIATOR,
             enabled_predicate=lambda config: (
-                config.production_occurrences_enabled and config.sync_interval_minutes > 0
+                "library-sync" in ACTIVATED_SCHEDULE_KEYS and config.sync_interval_minutes > 0
             ),
             occurrence_policy=OccurrencePolicy.INTERVAL_BUCKET,
             request_builder=lambda _config, _due: {"source": "schedule"},
@@ -304,7 +343,7 @@ PRODUCTION_SCHEDULE_CATALOG = ScheduleCatalog(
             trigger=TriggerKind.SCHEDULE,
             initiator=_SCHEDULER_INITIATOR,
             enabled_predicate=lambda config: (
-                config.production_occurrences_enabled
+                "audio-subs-deep-scan" in ACTIVATED_SCHEDULE_KEYS
                 and config.audio_subs_deep_scan_enabled
             ),
             occurrence_policy=OccurrencePolicy.HOURLY_WINDOW,
@@ -312,6 +351,7 @@ PRODUCTION_SCHEDULE_CATALOG = ScheduleCatalog(
             subject_builder=lambda _config, _due: SubjectLocator(
                 kind="maintenance_scope", reference="audio-subs-deep-scan"
             ),
+            batch_producer=_audio_subs_deep_scan_batch,
         ),
     )
 )

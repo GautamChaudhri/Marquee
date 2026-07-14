@@ -10,19 +10,26 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Annotated
+from typing import Annotated, Literal
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from marquee.api.job_submission import JobSubmissionResponse, submission_response
+from marquee.core.jobs.contracts import TriggerKind
 from marquee.core.jobs.manager import UnmigratedJobPlatformError
-from marquee.core.media_files import ensure_media_file_for_movie
-from marquee.core.subtitles import service
-from marquee.core.subtitles.policy import evaluate_policy
+from marquee.core.jobs.submission import (
+    IdempotencyConflictError,
+    Initiator,
+    SubjectLocator,
+    SubmissionError,
+    submit_job,
+)
 from marquee.database import get_db
-from marquee.models import Movie, SubtitlePolicy
+from marquee.models import SubtitlePolicy
 
 logger = logging.getLogger(__name__)
 
@@ -153,43 +160,40 @@ class SelectionBody(BaseModel):
     movie_ids: list[int] = []
 
 
-@router.post("/{policy_id}/audit")
+class PolicyAuditBody(BaseModel):
+    scope: Literal["all", "movies", "tv"] = "all"
+
+
+@router.post("/{policy_id}/audit", status_code=202)
 async def audit_policy(
-    policy_id: int, body: SelectionBody, db: Annotated[AsyncSession, Depends(get_db)]
-):
-    """Dry-run the policy across a movie selection (read-only)."""
-    policy = await _load_policy(db, policy_id)
-    snapshot = _policy_snapshot(policy)
-    items = []
-    total_removals = 0
-    for movie_id in body.movie_ids:
-        movie = (await db.execute(select(Movie).where(Movie.id == movie_id))).scalar_one_or_none()
-        if movie is None:
-            continue
-        media_file = await ensure_media_file_for_movie(db, movie)
-        if media_file is None:
-            items.append({"movie_id": movie_id, "skipped": "no_media_file"})
-            continue
+    policy_id: int, body: PolicyAuditBody, db: Annotated[AsyncSession, Depends(get_db)]
+) -> JobSubmissionResponse:
+    """Submit a read-only policy audit with its policy content frozen at enqueue."""
+    async with db.begin():
+        policy = await _load_policy(db, policy_id)
         try:
-            inventory = await service.get_inventory_dict(db, media_file.id)
-        except Exception as exc:  # noqa: BLE001
-            items.append({"movie_id": movie_id, "skipped": f"unavailable: {exc}"})
-            continue
-        ev = evaluate_policy(inventory["tracks"], inventory.get("audio_streams", []), snapshot)
-        total_removals += len(ev.removals)
-        items.append(
-            {
-                "movie_id": movie_id,
-                "media_file_id": media_file.id,
-                "removals": ev.removals,
-                "protected": len(ev.protected),
-                "review_required": ev.review_required,
-                "warnings": ev.warnings,
-                "coverage_before": ev.coverage_before,
-                "coverage_after": ev.coverage_after,
-            }
-        )
-    return {"policy_id": policy_id, "total_removals": total_removals, "items": items}
+            result = await submit_job(
+                db,
+                job_type="subtitle_policy_audit",
+                request={
+                    "policy_id": policy.id,
+                    "policy_revision": policy.revision,
+                    "policy_snapshot": _policy_snapshot(policy),
+                    "scope": body.scope,
+                },
+                subject=SubjectLocator(
+                    kind="maintenance_scope",
+                    reference="subtitle-policy-audit",
+                ),
+                trigger=TriggerKind.MANUAL,
+                initiator=Initiator(kind="system", identifier="subtitle-policy-audit-api"),
+                idempotency_key=f"subtitle_policy_audit:manual-{uuid4().hex}",
+            )
+        except IdempotencyConflictError as exc:
+            raise HTTPException(status_code=409, detail=exc.code) from exc
+        except SubmissionError as exc:
+            raise HTTPException(status_code=422, detail=exc.code) from exc
+    return submission_response(result)
 
 
 @router.post("/{policy_id}/apply", status_code=202)

@@ -6,9 +6,9 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from types import MappingProxyType
-from typing import Any, TypeVar
+from typing import Any, Literal, TypeVar
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
 
 
 class DocumentKind(StrEnum):
@@ -49,6 +49,120 @@ class SystemNoopRequestV1(StrictDocument):
     echo: JsonValue | None = None
 
 
+class LibrarySyncRequestV1(StrictDocument):
+    """Radarr/Sonarr/TMDB library synchronization intent; credentials come from env."""
+
+    source: Literal["manual", "schedule"] = "manual"
+
+
+class SubtitleScanRequestV1(StrictDocument):
+    """Read-only audio/subtitle inventory intent for one media file (subject-scoped)."""
+
+    force: bool = False
+
+
+class SubtitlePolicyAuditRequestV1(StrictDocument):
+    """Read-only subtitle-policy dry-run over existing inventory.
+
+    The policy snapshot and revision freeze policy content at enqueue so later edits
+    cannot alter this audit. No mutation plan is created and no change is applied.
+    """
+
+    policy_id: int = Field(ge=1)
+    policy_revision: int = Field(ge=1)
+    policy_snapshot: dict[str, JsonValue] = Field(default_factory=dict)
+    scope: Literal["all", "movies", "tv"] = "all"
+
+    @field_validator("policy_snapshot")
+    @classmethod
+    def bound_snapshot(cls, value: dict[str, JsonValue]) -> dict[str, JsonValue]:
+        if len(value) > 64:
+            raise ValueError("policy snapshot is bounded to 64 keys")
+        return value
+
+
+class LetterboxDetectionConfigV1(StrictDocument):
+    """Bounded detection settings frozen with a read-only letterbox intent."""
+
+    method: Literal["cropdetect", "trim"] = "cropdetect"
+    trim_fuzz: tuple[int, ...] = Field(default=(5, 15, 25), min_length=1, max_length=8)
+    movie_samples_min: int = Field(default=5, ge=0, le=240)
+    movie_samples_max: int = Field(default=60, ge=1, le=480)
+    movie_sample_step: int = Field(default=5, ge=1, le=60)
+    tv_quick_windows: int = Field(default=3, ge=1, le=32)
+    tv_thorough_windows: int = Field(default=8, ge=1, le=64)
+    tv_head_skip_pct: int = Field(default=12, ge=0, le=95)
+    tv_tail_skip_pct: int = Field(default=12, ge=0, le=95)
+    window_seconds: int = Field(default=2, ge=1, le=30)
+    cropdetect_limit: int = Field(default=24, ge=0, le=255)
+    cropdetect_hdr_limit: int = Field(default=80, ge=0, le=255)
+    cropdetect_round: int = Field(default=2, ge=1, le=64)
+    noise_px: int = Field(default=4, ge=0, le=256)
+    min_bar_px: int = Field(default=8, ge=0, le=512)
+    agree_px: int = Field(default=2, ge=0, le=128)
+    medium_spread_px: int = Field(default=20, ge=0, le=512)
+    variable_gap_px: int = Field(default=40, ge=0, le=1024)
+    variable_min_fraction: float = Field(default=0.2, ge=0.0, le=1.0)
+    asym_px: int = Field(default=2, ge=0, le=256)
+    asymmetric: bool = False
+    early_stop_windows: int = Field(default=3, ge=1, le=32)
+
+    @field_validator("trim_fuzz")
+    @classmethod
+    def bound_trim_fuzz(cls, value: tuple[int, ...]) -> tuple[int, ...]:
+        if any(fuzz < 0 or fuzz > 100 for fuzz in value):
+            raise ValueError("trim fuzz percentages must be between 0 and 100")
+        return value
+
+
+class LetterboxDetectRequestV1(StrictDocument):
+    """Read-only movie/file letterbox observation; crop application is not part of this intent."""
+
+    movie_id: int = Field(ge=1)
+    media_file_id: int = Field(ge=1)
+    thorough: bool = False
+    detection_config: LetterboxDetectionConfigV1 = Field(default_factory=LetterboxDetectionConfigV1)
+
+
+class LetterboxDetectEpisodeRequestV1(StrictDocument):
+    """Read-only observation of one physical episode file and its linked episodes."""
+
+    media_file_id: int = Field(ge=1)
+    episode_ids: tuple[int, ...] = Field(min_length=1, max_length=500)
+    thorough: bool = False
+    detection_config: LetterboxDetectionConfigV1 = Field(default_factory=LetterboxDetectionConfigV1)
+
+
+class LetterboxDetectTvScopeRequestV1(StrictDocument):
+    """Read-only series/season/episode scope; no automatic crop path is represented."""
+
+    series_id: int = Field(ge=1)
+    season_number: int | None = Field(default=None, ge=0)
+    episode_id: int | None = Field(default=None, ge=1)
+    exhaustive: bool = False
+    force: bool = False
+    include_open_matte: bool = False
+    detection_config: LetterboxDetectionConfigV1 = Field(default_factory=LetterboxDetectionConfigV1)
+
+
+class DoviAnalyzeRequestV1(StrictDocument):
+    """Immutable read-only Dolby Vision probe intent for one physical file."""
+
+    media_file_id: int = Field(ge=1)
+    movie_id: int | None = Field(default=None, ge=1)
+    episode_id: int | None = Field(default=None, ge=1)
+    source_signature: str = Field(min_length=40, max_length=128, pattern=r"^[0-9a-f]+$")
+    source_codec: str | None = Field(default=None, max_length=32)
+    source_hdr_type: str | None = Field(default=None, max_length=80)
+    analysis_depth: Literal["standard", "deep"] = "standard"
+
+    @model_validator(mode="after")
+    def require_one_domain_subject(self) -> DoviAnalyzeRequestV1:
+        if (self.movie_id is None) == (self.episode_id is None):
+            raise ValueError("Dolby Vision analysis requires exactly one movie or episode")
+        return self
+
+
 class BuiltInIntentV1(StrictDocument):
     """Strict union of current legacy intent fields; server policy is never accepted."""
 
@@ -70,13 +184,16 @@ class BuiltInIntentV1(StrictDocument):
     tmdb_id: int | None = None
     folder: str | None = Field(default=None, max_length=500)
     movie_ids: tuple[int, ...] = ()
+    series_ids: tuple[int, ...] = ()
+    analysis_depth: Literal["standard", "deep"] | None = None
+    detection_config: LetterboxDetectionConfigV1 | None = None
     assets: tuple[str, ...] = ()
     include_embeddings: bool | None = None
     include_archives: bool | None = None
     dry_run: bool | None = None
     kind: str | None = Field(default=None, max_length=80)
 
-    @field_validator("episode_ids", "movie_ids", "confidence_levels", "assets")
+    @field_validator("episode_ids", "movie_ids", "series_ids", "confidence_levels", "assets")
     @classmethod
     def bound_collections(cls, value: tuple[Any, ...]) -> tuple[Any, ...]:
         if len(value) > 10_000:

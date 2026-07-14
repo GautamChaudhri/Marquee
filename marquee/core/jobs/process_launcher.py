@@ -7,7 +7,7 @@ import contextlib
 import os
 import signal
 import sys
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -30,6 +30,26 @@ from marquee.core.jobs.process_identity import (
 IdentityRecorder = Callable[[ProcessIdentity], Awaitable[object]]
 ExitRecorder = Callable[["ExecutionSummary"], Awaitable[object]]
 PipeSink = Callable[[str, bytes, bool], Awaitable[None]]
+
+# Closed catalog of read-only/analysis media tools migrated handlers may launch. Executable
+# paths are resolved through marquee.media.binaries (which honours the .env LETTERBOX_* paths,
+# e.g. the project-local bin/dovi_tool). No executable is ever taken from a request payload.
+TOOL_CATALOG = frozenset(
+    {"ffprobe", "ffmpeg", "mkvmerge", "mkvpropedit", "convert", "dovi_tool"}
+)
+# Bounded default in-memory capture for tool stdout that a handler parses (e.g. ffprobe JSON).
+DEFAULT_TOOL_STDOUT_LIMIT = 16 * 1024 * 1024
+
+
+def _resolve_tool(tool: str) -> str:
+    if tool not in TOOL_CATALOG:
+        raise ProcessLaunchError(f"tool {tool!r} is not in the launcher catalog")
+    from marquee.media.binaries import resolve  # noqa: PLC0415 - avoid settings import at load
+
+    binary = resolve(tool)
+    if binary is None:
+        raise ProcessLaunchError(f"tool {tool!r} is not available")
+    return binary
 
 
 class ProcessLaunchError(RuntimeError):
@@ -336,6 +356,105 @@ class ProcessLauncher:
             process.stdin.close()
             with contextlib.suppress(BrokenPipeError, ConnectionResetError):
                 await process.stdin.wait_closed()
+        except BaseException:
+            if cgroup is not None:
+                with contextlib.suppress(ProcessIdentityError):
+                    cgroup.kill()
+            else:
+                with contextlib.suppress(ProcessLookupError):
+                    os.killpg(process.pid, signal.SIGKILL)
+            await process.wait()
+            tasks = tuple(task for task in (stdout_task, stderr_task) if task is not None)
+            if tasks:
+                await asyncio.gather(*tasks)
+            if cgroup is not None:
+                with contextlib.suppress(ProcessIdentityError):
+                    cgroup.cleanup()
+            raise
+        assert stdout_task is not None and stderr_task is not None
+        tracked = TrackedProcess(
+            process=process,
+            identity=identity,
+            stdout_task=stdout_task,
+            stderr_task=stderr_task,
+            started_at=started_at,
+            record_exit=self._record_exit,
+            on_finished=self._active.discard,
+            cgroup=cgroup,
+        )
+        self._active.add(tracked)
+        return tracked
+
+    async def launch(
+        self,
+        tool: str,
+        args: Sequence[str],
+        *,
+        stdout_limit: int = DEFAULT_TOOL_STDOUT_LIMIT,
+    ) -> TrackedProcess:
+        """Launch one allowlisted read-only media tool as a tracked, contained process.
+
+        stdout is captured in a bounded in-memory buffer for the handler to parse (never routed
+        to the attempt-log pipe); stderr is teed to the log sink. stdin is closed.
+        """
+        binary = _resolve_tool(tool)
+        arguments = tuple(str(argument) for argument in args)
+        command = (binary, *arguments)
+        if len(command) > 4096:
+            raise ProcessLaunchError("tool command has too many arguments")
+        if any("\0" in argument or len(argument) > 4096 for argument in command):
+            raise ProcessLaunchError("tool argument is invalid")
+        if not 0 < stdout_limit <= 64 * 1024 * 1024:
+            raise ProcessLaunchError("tool stdout capture limit is out of bounds")
+        capabilities = containment_capabilities(cgroup_root=self._cgroup_root)
+        if capabilities.tier == "unsupported":
+            raise ProcessLaunchError("verified process-group containment is unavailable")
+        started_at = datetime.now(UTC)
+        process = await asyncio.create_subprocess_exec(
+            *command,
+            cwd=self._cwd(),
+            env=_minimal_environment(),
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            start_new_session=True,
+        )
+        assert process.stdout is not None
+        assert process.stderr is not None
+        stdout_task: asyncio.Task[StreamSummary] | None = None
+        stderr_task: asyncio.Task[StreamSummary] | None = None
+        cgroup: CgroupV2Handle | None = None
+        try:
+            identity = capture_process_identity(process.pid, worker_node=self._worker_node)
+            if identity.process_group_id != process.pid:
+                raise ProcessIdentityError("child did not become a process-group leader")
+            cgroup = create_attempt_cgroup(
+                process.pid,
+                process_start_ticks=identity.process_start_ticks,
+                cgroup_root=self._cgroup_root,
+            )
+            if cgroup is not None:
+                identity = replace(identity, cgroup_path=str(cgroup.path))
+            if self._record_identity is not None:
+                recorded = await self._record_identity(identity)
+                if recorded is not True and recorded != "applied":
+                    raise ProcessLaunchError("durable process identity ownership was rejected")
+            stdout_task = asyncio.create_task(
+                _drain(
+                    process.stdout,
+                    capture_limit=stdout_limit,
+                    source="stdout",
+                    sink=None,
+                )
+            )
+            stderr_task = asyncio.create_task(
+                _drain(
+                    process.stderr,
+                    capture_limit=self._capture_limit,
+                    source="stderr",
+                    sink=self._pipe_sink,
+                )
+            )
         except BaseException:
             if cgroup is not None:
                 with contextlib.suppress(ProcessIdentityError):

@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from marquee.api.job_submission import submission_response
 from marquee.api.routes.subtitle_generators import list_generators as list_generators_route
 from marquee.core.audio_subs_rollups import (
     EpisodeCoverage,
@@ -26,9 +27,11 @@ from marquee.core.configuration import (
 )
 from marquee.core.configuration_cache import configuration_provider
 from marquee.core.jobs.manager import job_manager
+from marquee.core.jobs.submission import Initiator, SubmissionError
 from marquee.core.subtitles import coverage as subtitle_coverage
 from marquee.core.subtitles import generation
 from marquee.core.subtitles.config import subtitle_settings
+from marquee.core.subtitles.scan_batch import create_subtitle_scan_batch
 from marquee.core.tv_queries import series_visible
 from marquee.database import get_db
 from marquee.models import (
@@ -408,17 +411,20 @@ async def tv_deep_scan(
     series = (await db.execute(select(Series).where(Series.id == series_id, series_visible()))).scalar_one_or_none()
     if series is None:
         raise HTTPException(status_code=404, detail=f"Series id={series_id} not found")
-    job = await job_manager.create(
-        db,
-        job_type="subtitle_scan_all",
-        payload={
-            "scope": "series",
-            "series_id": series_id,
-            "season_number": body.season_number,
-            "force": False,
-        },
-    )
-    return {"job_id": job.id, "status": "queued"}
+    try:
+        async with db.begin():
+            result = await create_subtitle_scan_batch(
+                db,
+                parent_job_type="subtitle_scan_all",
+                scope="series",
+                force=False,
+                series_id=series_id,
+                season_number=body.season_number,
+                initiator=Initiator(kind="system", identifier="subtitle-scan-api"),
+            )
+    except SubmissionError as exc:
+        raise HTTPException(status_code=422, detail=exc.code) from exc
+    return submission_response(result.parent)
 
 
 @router.post("/deep-scan", status_code=202)
@@ -426,9 +432,18 @@ async def deep_scan(
     body: DeepScanRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    payload = {"scope": body.scope if body.scope != "all" else "all", "force": False}
-    job = await job_manager.create(db, job_type="subtitle_scan_all", payload=payload)
-    return {"job_id": job.id, "status": "queued"}
+    try:
+        async with db.begin():
+            result = await create_subtitle_scan_batch(
+                db,
+                parent_job_type="subtitle_scan_all",
+                scope=body.scope,
+                force=False,
+                initiator=Initiator(kind="system", identifier="subtitle-scan-api"),
+            )
+    except SubmissionError as exc:
+        raise HTTPException(status_code=422, detail=exc.code) from exc
+    return submission_response(result.parent)
 
 
 @router.put("/preferences")

@@ -407,8 +407,7 @@ class TestTvAnalyzeBatch:
     ):
         _show_a, show_b = tv_library
         response = await client.post(f"/api/hdr/tv/{show_b.id}/analyze", json={})
-        assert response.status_code == 503
-        assert response.json()["code"] == "job_platform_unmigrated"
+        assert response.status_code == 400
 
     async def test_show_batch_season_filter(self, client: AsyncClient, tv_library):
         _show_a, show_b = tv_library
@@ -416,8 +415,7 @@ class TestTvAnalyzeBatch:
             f"/api/hdr/tv/{show_b.id}/analyze",
             json={"season_number": 1},
         )
-        assert response.status_code == 503
-        assert response.json()["code"] == "job_platform_unmigrated"
+        assert response.status_code == 400
 
     async def test_show_batch_400_when_no_eligible_episodes(self, client: AsyncClient, tv_library):
         show_a, _show_b = tv_library
@@ -426,8 +424,7 @@ class TestTvAnalyzeBatch:
 
     async def test_library_batch_covers_all_visible_shows(self, client: AsyncClient, tv_library):
         response = await client.post("/api/hdr/tv/analyze", json={})
-        assert response.status_code == 503
-        assert response.json()["code"] == "job_platform_unmigrated"
+        assert response.status_code == 400
 
     async def test_library_batch_series_ids_subset(self, client: AsyncClient, tv_library):
         show_a, _show_b = tv_library

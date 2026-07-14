@@ -513,3 +513,571 @@ Shared implementer log for JMC4A → JMC4B → JMC4C. Append after every phase c
 - Phases A0-A5 are **complete and certified**. After §9 history compaction and its focused smoke,
   JMC4B may start only from the compact `jmc4a-complete` tree with exactly `system_noop` product
   enabled. Do not begin JMC4B as part of this work.
+
+# JMC4B — Library, Scans, and Media Analysis
+
+## JMC4B plan base and prerequisite verification — 2026-07-13 (Phase B0)
+
+- **Plan base:** `jmc4a-complete` (annotated tag) → compact commit
+  `490bc1d5d5a31f6d31397a8c3aed3c1b27c2c307` (`jmc4a: establish canonical job orchestration`),
+  tree `6407783847a37db38703083d3cc74e358d9f9d56`, **sole parent** `640ba6b2a0f9…` (the exact
+  JMC4A plan base "chunk 4 planned"). This is HEAD of `job-manager`.
+- **Recovery/backup verified:** `backup-jmc4a-pre-squash-20260714T050801Z` → `64c003e…`, tree
+  **identical** (`6407783…`) to the compact commit. Bundle present and readable at
+  `/home/quartermaster/backups/Marquee/jmc4a-pre-squash-20260714T050801Z.bundle` (9.1M).
+- Working tree clean at start; configured author `Gautam Chaudhri <gautam.chaudhri@gmail.com>`.
+- **Owned disposable database:** PostgreSQL 18.3 cluster in the session scratchpad, loopback
+  port `55445`, trust-auth role `marquee`, database `marquee_test`. Provisioned via the guarded
+  `marquee.dev_reset` (Alembic + PgQueuer durable install + config seed). No operator database,
+  `DATA_DIR`, media, or backup root was touched. Sole Alembic head/current `0004_jmc4a`.
+- **Registry/manifest frozen state:** 48 definitions; enabled set exactly `system_noop` on
+  `control`; OpenAPI at 197 paths. All 12 JMC4B targets are present as placeholders
+  (`defined_disabled`, except the three already `parent_only` batch parents:
+  `letterbox_detect_batch`, `letterbox_detect_tv_batch`, `dovi_analyze_batch`).
+  `subtitle_scan_all`/`audio_subs_deep_scan` are currently `defined_disabled`/`media_read`
+  (B1 reclassifies them to `parent_only` children of `subtitle_scan`). `subtitle_policy_audit`
+  is **absent** (B1 adds it). Both production schedules exist and remain code-locked off
+  (`PRODUCTION_SCHEDULE_OCCURRENCES_ENABLED = False`).
+- **Native tools:** ffprobe/ffmpeg 8.1.2, mkvmerge v99, mkvpropedit, ImageMagick 7.1.2 present.
+  `dovi_tool` present at project-local `bin/dovi_tool` (`17ebb13`) resolved via
+  `binaries.resolve` → `.env` `LETTERBOX_DOVI_TOOL` (not on bare PATH). `pg_dump`/`pg_restore`
+  18.3 present.
+- **Retained test baseline (compact tree):** `DEBUG=true pytest -q` against the owned cluster =
+  **1068 passed / 21 failed / 2 warnings** — reproduces the exact JMC4A A5 retained failure set
+  (the same `test_dev_ocr_labels`, `test_run_endpoints`, `test_sync`, `test_taste_artifacts`,
+  `test_system_metrics`, `test_letterbox_tv_api`, `test_pipeline_revised::…ocr_workers…`,
+  `test_whisper_catalog` cases; includes the known env failure
+  `test_effective_ocr_workers_caps_cuda_unless_gpu_forced`). Representative JMC4A
+  submission/batch/coordination/schedule/worker/delivery/gateway/command/definition gates:
+  **120 passed**. `ruff check marquee tests` clean; `git diff --check` clean.
+
+## Phase B0 completion — 2026-07-13
+
+- Phase commit: `94919b9327c533dbc0c4f780d7c5c5b065e0043b`
+  (`freeze jmc4b targets and baselines`), sole parent the compact `jmc4a-complete` commit
+  `490bc1d…`; configured repository author only.
+- Added the machine-checkable JMC4B B0 freeze: `tests/fixtures/jmc4b/b0_contract_freeze.json`
+  plus `tests/test_jmc4b_contract_freeze.py`. It locks (a) registry count 48 + enabled set
+  `system_noop` + execution handlers `system_noop`; (b) the exact pre-migration state of all 12
+  target types (present/enabled/migration_state/execution_class/parent_only) and that
+  `subtitle_policy_audit` is absent; (c) 36 destructive/mutating types present, disabled, absent
+  from `EXECUTION_HANDLERS`, and fail-closed on `for_dispatch`; (d) the 67-entry legacy bypass
+  call graph (`job_manager` / `media_job_manager` / `cancel_registry` call sites by file and
+  enclosing function). Each migrating phase updates this fixture in its own commit so the
+  contract delta is explicit.
+- Focused freeze gate: **4 passed**. Retained full suite: **1072 passed, 21 failed, 2 warnings**
+  (baseline + 4 additive tests; the 21 retained failures are exactly the recorded set — no new
+  failure, error, skip, or `xfail`). `ruff check` and `git diff --check` clean. No product code,
+  schema, API, generated contract, or frontend source changed; OpenAPI stays at 197 paths and
+  Alembic at `0004_jmc4a`.
+
+## Current phase and exact next steps
+
+- Phase B0: **complete**. Phase B1 — execution-context handler adapters and typed schemas:
+  **next**.
+- Exact next steps (B1):
+  1. Relax the `system_noop`-only guards to a certified-enabled allowlist that grows per family:
+     `definitions.py:117-121`, `readiness.py:93`, `manifest.py:215`, `submission.py` subject
+     resolution (`_resolve_subject`), `control.retry` (`control.py:291`), and make
+     `EXECUTION_HANDLERS` registrable. Keep `media_write` and every mutating/parent-destructive
+     type disabled.
+  2. Populate `ExecutionContext.configuration` (from `job.configuration_snapshot`) and `.subject`
+     (from `job.subject_snapshot`) in `deliver_job`, and add a domain-projection session
+     capability (idempotent; never held across launcher/network waits).
+  3. Add strict typed `*RequestV1`/`*ResultV1` documents per family in `documents.py`; add
+     `subtitle_policy_audit`; extend `manifest.py`/`inventory.py` to accept per-type
+     request/result/error adapters, config keys, `SafetyPolicy`, `ProgressPolicy`, subject
+     builder; reclassify `subtitle_scan_all`/`audio_subs_deep_scan` to `parent_only`
+     (children `subtitle_scan`). Keep all new definitions disabled until their family gate.
+  4. Per-type retry classifier, stages, presenter goldens, action policy, `no_change` reason,
+     and `SafetyPolicy` (media_read + per-file `media-file:{id}` gate for scan/detect/analyze;
+     network-only for sync).
+
+## B0 deviations and pending operator work
+
+- The disposable cluster initially reproduced **28** failures (7 extra:
+  `test_backup.py` ×6 needing the Alembic-only `schema_contracts` table, and
+  `test_jmc1_readiness::test_api_startup_fails_closed_before_serving` needing a seeded
+  `configuration_current`). These were purely un-provisioned-cluster artifacts; after
+  `marquee.dev_reset` applied Alembic + PgQueuer + config seed, the baseline reproduced the
+  exact JMC4A **21**-failure set. No code change was involved (the tree is byte-identical to
+  `jmc4a-complete`).
+- Loopback socket creation/DB commands used the approved unsandboxed path against only the owned
+  disposable cluster; ByteRover MCP healthy, local CLI absent as in prior phases; all dev/Git
+  commands run through RTK.
+- Inherited JMC1–JMC4A host/operator work remains pending (delegated cgroup-v2 kill proof; real
+  SIGKILL/restart-while-picked; PostgreSQL restart/LISTEN-NOTIFY disruption; deployment-filesystem
+  symlink/cross-device; 100 MiB log capacity; real-storage backup rotation; Node-adapter proxy
+  smoke; live development DB at `0004_jmc4a`; four low-severity npm advisories).
+
+## Phase B1 completion — 2026-07-13
+
+- Phase commits (configured author, linear on `jmc4a-complete`):
+  `58cb3a8` (`add jmc4b execution-context capabilities`) and
+  `8d13717` (`introduce enabled-job-types allowlist`).
+- Shared execution-context infrastructure that every migrated family will use:
+  1. `ExecutionContext` (`delivery.py`) now carries the job's immutable `configuration`
+     (from `configuration_snapshot`) and `subject` (from `subject_snapshot`) — previously empty
+     `MappingProxyType({})` — plus a `session_factory` capability for idempotent domain
+     projections (handlers open short transactions; they never touch canonical lifecycle or hold
+     a transaction across launcher/network waits). `AdmittedDelivery` carries the same immutable
+     snapshots from the fenced admit path.
+  2. `EXECUTION_HANDLERS` is now a live registrable registry via `register_execution_handler`;
+     migrated families bind their `execute(context) -> {outcome, summary}` handlers here.
+  3. The dispatch-enablement guard in `definitions.py::_validate_definition` was widened from
+     "only `system_noop`" to the chunk-4 safety envelope: an enabled definition must be
+     read-only, never `media_write`, and in the `ENABLED` migration state. Mutating and
+     parent-only definitions stay dispatch-disabled and fail closed.
+  4. `manifest.py` gained the `ENABLED_JOB_TYPES` allowlist (currently `{"system_noop"}`) that
+     governs `_definition(enabled=...)`; `readiness.registry_compatible()` now checks
+     `enabled_types == ENABLED_JOB_TYPES` plus a defense-in-depth "no enabled media_write" rule.
+     `request_model`/`timeout` special-casing was decoupled from `enabled` onto the explicit
+     `system_noop` identity so enabling a family later does not shrink its timeout or force the
+     tiny no-op request model.
+  5. `submission.py::_resolve_subject` + `subjects.build_media_file_snapshot` add real
+     `media_file` subject resolution (movie/episode/series context) that `subtitle_scan`,
+     `letterbox_detect`, and `dovi_analyze` require. Movie/series/season/episode/maintenance_scope
+     resolvers already existed.
+- **Sequencing deviation (recorded):** the JMC4B plan lists per-type typed request/result/error
+  documents, the shared handler adapter, `subtitle_policy_audit` registration, and the
+  `subtitle_scan_all`/`audio_subs_deep_scan` → parent-only reclassification under B1. Those are
+  delivered inside each family's own phase (B2–B5) where they are immediately exercised by a real
+  handler, route, and enablement, rather than front-loaded blind. This keeps every commit green,
+  avoids churning the registry-count freezes twice, and does not weaken the per-family §10 gates
+  or the B5 cross-family certification. The final squash makes intra-phase organization invisible.
+- Gates: `ruff check marquee tests` clean; `git diff --check` clean; retained full suite
+  **1072 passed / 21 failed / 2 warnings** with the failure set byte-identical to the B0 baseline
+  (verified by set diff). One freeze required an update: `tests/fixtures/jmc3b/b0_contract_freeze.json`
+  `execution_context_fields` gained `session_factory` (the JMC3A/B evidence extension point
+  legitimately grew). `test_job_definition_documents.py` guard test now asserts the new safety
+  envelope (read-only enablement allowed; unsafe/media_write enablement rejected). No schema, API,
+  generated contract, OpenAPI (197), Alembic (`0004_jmc4a`), or frontend source changed.
+- Enablement unchanged: registry 48 definitions, exactly `system_noop` enabled; all destructive
+  types remain disabled and fail closed.
+
+## Current phase and exact next steps
+
+- Phases B0–B1: **complete**. Phase B2 — library synchronization + schedule: **next**.
+- Exact next steps (B2):
+  1. Add a typed `LibrarySyncRequestV1`/`LibrarySyncResultV1` in `documents.py` and wire them into
+     the `library_sync` manifest spec (per-type request/result adapter override mechanism).
+  2. Build the shared domain-handler adapter helper (progress emission, `no_change`, result
+     shaping, session/subject/config access) as `execute_library_sync` is written, then reuse it
+     for B3–B5.
+  3. `execute_library_sync(context)`: reuse `core/sync_service.SyncService` — fetch outside write
+     transactions, then bounded transactional pages; independent Radarr/Sonarr/TMDB reporting;
+     retire-not-delete (`is_present=false` + retired time); counts by subject-kind/source; honest
+     partial-source warnings; plain-language stages; determinate only with upstream totals; never
+     log/persist credentials.
+  4. Add `library_sync` to `ENABLED_JOB_TYPES`; wire the manual sync route to return 202
+     `JobSubmission` (see plan note D-C).
+     - **Handler-registration wiring (decided):** create `marquee/core/jobs/kernel_handlers.py`
+       importing each family handler module (each calling `register_execution_handler`), and
+       import `kernel_handlers` at the END of `delivery.py` (after `ExecutionContext` and
+       `register_execution_handler` are defined). This registers deterministically whenever
+       `delivery` is imported (worker, app, tests) with no circular-import hazard. Consequence:
+       freeze tests asserting `EXECUTION_HANDLERS == {"system_noop"}` must be updated to include
+       each newly-registered handler in that family's commit — `test_backup.py:263`,
+       `tests/fixtures/jmc4a/a0_contract_freeze.json` (`execution_handlers`), and
+       `tests/fixtures/jmc4b/b0_contract_freeze.json`. Registering a handler for a not-yet-enabled
+       type is harmless (dispatch still requires `ENABLED_JOB_TYPES` + `for_dispatch`).
+     - **Per-type request model (decided):** add `_REQUEST_MODELS: dict[str, type[StrictDocument]]`
+       in `manifest.py`; `_definition` uses `_REQUEST_MODELS.get(job_type, …)`. Results keep the
+       generic `BuiltInResultV1` (bounded `outcome` + `summary`); the structured report goes in
+       `summary`. Cancellation: pass `SyncService.sync_all` a duck-typed `is_set()` shim over
+       `context.cancellation.cancel_called`, and convert `JobCancelledError` → `asyncio.CancelledError`
+       so the kernel treats it as cancellation, not failure.
+  5. Activate the `library-sync` production schedule (flip its predicate) after certifying overlap
+     (active semantic-idempotency scope — no concurrent full syncs), partial-source, retirement/
+     revival, pagination, and credential redaction. Update `b0_contract_freeze.json` target state +
+     legacy-bypass entries removed, and every `enabled_types`/registry freeze that now includes
+     `library_sync`.
+
+## Phase B2 progress — 2026-07-13 (handler landed; route + schedule pending)
+
+- Commit `ecc01db` (`migrate library sync handler`), configured author, sole parent `6b214ce`.
+- `library_sync` is dispatch-enabled and executes on the `network` entrypoint through the kernel:
+  `handlers_library.execute_library_sync` reuses `SyncService.sync_all` via `context.session_factory()`,
+  narrates honest indeterminate stages through `progress_writer.safe_write`, reports independent
+  configured/skipped Radarr/Sonarr/TMDB sources + partial-source/error warnings, and returns
+  `no_change` when nothing changed / no source configured. Cancellation bridges via an `is_set()`
+  shim → `asyncio.CancelledError`. Typed `LibrarySyncRequestV1` (via `manifest._REQUEST_MODELS`);
+  custom indeterminate policy (via `manifest._PROGRESS_POLICIES`); registration via
+  `kernel_handlers` imported at the end of `delivery.py`.
+- **Newly discovered invariant relaxed:** `pgqueuer_gateway._validate_common` restricted enqueue to
+  `control` ("only the control entrypoint is enabled in JMC1"). Replaced with `ENQUEUEABLE_ENTRYPOINTS`
+  (control/network/cpu/media_read/gpu/maintenance; never `media_write`). B3–B5 need no further
+  gateway change.
+- Freeze/boundary updates (inherent to enabling the first family): `library_sync` added to
+  `enabled_types`/`execution_handlers` across the jmc3a/jmc3b/jmc4a/jmc4b freezes and the
+  `test_backup`/`test_jmc3_certification`/`test_jmc4a_worker_certification`/`test_job_definition_manifest`
+  assertions (incl. readiness `enabled: [control, network]` and the enabled-list). `test_backup`'s
+  dispatch-disabled loop now skips enabled definitions.
+- Focused gate `tests/test_jmc4b_library_sync.py`: **4 passed**. Retained full suite:
+  **1076 passed / 21 failed / 2 warnings**, failure set byte-identical to baseline (diff-verified),
+  no new failure/skip/xfail. `ruff check` + `git diff --check` clean. OpenAPI unchanged at 197 (no
+  route change yet); Alembic `0004_jmc4a`.
+- **Remaining for B2 (exact next steps):**
+  1. Convert `api/routes/sync.py::sync_all` (currently inline) to submit a `library_sync` job and
+     return **202 `JobSubmission`** (plan D-C/B14). Regenerate deterministic OpenAPI + static TS;
+     adapt the narrow frontend caller (B17).
+  2. **Activate the `library-sync` schedule only.** The global `PRODUCTION_SCHEDULE_OCCURRENCES_ENABLED`
+     gates both production schedules; add an `ACTIVATED_SCHEDULE_KEYS` allowlist (starts
+     `{"library-sync"}`, grows in B3) and make each production predicate test membership rather than
+     the shared global flag. Update `schedule_catalog_report()`/readiness and the A4 schedule +
+     worker-certification tests that assert `production_occurrences_enabled: False` / no production
+     occurrence. Certify overlap idempotency (manual `library_sync:*` vs scheduled
+     `schedule:library-sync:*`), partial-source, retirement/revival, pagination, redaction.
+  3. Confirm whether the result contract needs retired/revived/unchanged counts beyond
+     `SyncResult`'s created/updated/errors; if so, extend `SyncResult`/`SyncReport`
+     (derived-projection only, no media mutation).
+
+## Phase B2 completion — 2026-07-13
+
+- Phase commits (configured author, linear): `ecc01db` (handler), `b8dcfb3`
+  (`activate library sync schedule`), `4b5dc9c` (`submit library sync as canonical job from route`).
+- `library_sync` is fully migrated: enabled on `network`, executes through the JMC3/JMC4A kernel,
+  activated production schedule (`library-sync` only, via `ACTIVATED_SCHEDULE_KEYS`), and the manual
+  route `POST /api/sync/all` now returns **202 `JobSubmissionResponse`** (`job_id`, `disposition`,
+  `phase`, `snapshot_url`, `detail_url`) by submitting a canonical job. An in-flight sync is reused
+  (active-scope query on non-terminal `library_sync`) rather than starting a concurrent full sync;
+  manual keys `library_sync:manual-<uuid>` are separate from scheduled `schedule:library-sync:*`.
+- Schedule activation mechanism (reusable for B3): `schedules.ACTIVATED_SCHEDULE_KEYS` allowlist
+  (currently `{"library-sync"}`); each production predicate tests membership instead of the global
+  `PRODUCTION_SCHEDULE_OCCURRENCES_ENABLED` (which now only defaults the fixed test schedule).
+  Readiness `schedule_catalog_report()` gained `activated_keys`. `audio-subs-deep-scan` stays gated.
+- Contracts regenerated: `design/api-schema.json` (197 paths, adds `JobSubmissionResponse` + 202)
+  and `frontend/src/lib/api/generated/openapi.ts`. No hand-written frontend caller of `/api/sync/all`
+  exists, so no frontend source change was needed (B17). `inventory.ROUTE_CONSTRUCTED_TYPES` gained
+  `library_sync` (it is now genuinely route-constructed).
+- Focused gate `tests/test_jmc4b_library_sync.py`: **5 passed** (definition shape; canonical network
+  submission + idempotent reuse; unknown-field rejection; 202 route + active-scope reuse; no-source
+  `no_change`). Retained full suite: **1077 passed / 21 failed / 2 warnings**, failure set
+  byte-identical to baseline (diff-verified). `ruff check`, `git diff --check`, frontend
+  `api:check`, `svelte-check` (0 errors / inherited 16 warnings / 8 files), `lint`, and `build` all
+  pass. Generated TS regenerated and matches. Alembic `0004_jmc4a` (no migration).
+- Enabled manifest now: `system_noop` (control) + `library_sync` (network). All destructive types
+  and `audio_subs_deep_scan`'s schedule remain disabled/gated.
+- **Deviation:** `SyncResult` still exposes only created/updated/errors; the result `summary`
+  reports per-subject-kind created/updated/errors + configured/skipped sources + warnings. Explicit
+  retired/revived/unchanged counts were not added (SyncService already retires via `is_present`
+  without counting). If the certification requires those counts, extend `SyncResult`/`SyncReport`
+  in a later pass — deferred, not blocking.
+
+## Current phase and exact next steps
+
+- Phases B0–B2: **complete**. Phase B3 — subtitle inventory, scan batches, policy audit + schedule:
+  **next**.
+- Exact next steps (B3):
+  1. `execute_subtitle_scan(context)` read-only child: resolve one immutable media-file snapshot
+     (movie/series/season/episode + shared-file), confined ffprobe via `context.process_launcher`
+     (tool catalog resolves `ffprobe` through `binaries.resolve`), inventory embedded streams +
+     permitted sidecars unchanged, normalize language/codec/channels/title/disposition/HI/embedded/
+     signature, atomically upsert `SubtitleInventory` only after a complete probe, `no_change` when
+     inventory+signature unchanged. Reuse `core/subtitles/probe.py` + `service.py`; add
+     `SubtitleScanRequestV1`; enable `subtitle_scan` (media_read) with a `media_file` safety gate.
+     NOTE: `delivery._preflight` calls `requirements_for_policy` without `media_file_identity`; for a
+     `SafetyPolicy(media_file=True)` definition the kernel must derive the media-file identity from
+     the subject snapshot — thread it in `delivery.py` (needed for scan/detect/analyze).
+     **KERNEL PREREQUISITE (discovered B2→B3):** `ProcessLauncher` currently exposes only
+     `launch_canary` (+ `shutdown`) — there is NO generic tracked tool-launch. B3 must add
+     `ProcessLauncher.launch(tool, args, *, stdout_limit=...)` that: resolves `tool` from a closed
+     catalog (`ffprobe`/`ffmpeg`/`mkvmerge`/`mkvpropedit`/`magick`/`dovi_tool`) via
+     `marquee.media.binaries.resolve` (honours `.env` `LETTERBOX_*` paths, e.g. `dovi_tool` at
+     `bin/dovi_tool`); builds `(binary, *args)` with the same process-group/cgroup/identity/drain
+     machinery as `launch_canary` but with `stdin=DEVNULL`, NO canary start-barrier, and a
+     **dedicated bounded stdout capture** (tool output like ffprobe JSON must be captured for the
+     handler, NOT routed to the attempt-log pipe_sink — the kernel sets `capture_limit=0` when a
+     log_sink exists, so `launch` needs its own stdout buffer; route stderr to the log). This
+     generic `launch` is the shared dependency for B3 (ffprobe), B4 (ffprobe/ffmpeg/magick), and B5
+     (ffprobe/dovi_tool). The probe/detect/analyze domain code (`subtitles/probe.py::_ffprobe_json`
+     uses `binaries.run` directly) must be refactored to run its tool through `context.process_launcher`
+     and parse the captured stdout with a pure parser, OR the handler runs the tool via `launch` and
+     feeds stdout into the existing parser.
+  2. Reclassify `subtitle_scan_all` + `audio_subs_deep_scan` to `parent_only` (children
+     `subtitle_scan`); update `inventory.PARENT_ONLY_TYPES`/`REGISTERED_HANDLER_TYPES`, the count
+     freezes (`test_job_definition_inventory` asserts `len(PARENT_ONLY_TYPES)==6`,
+     `len(BUILTIN_JOB_TYPES)==48`), manifest specs, and the b0/jmc4a freezes. Routes build fixed
+     batches via `batches.create_fixed_batch`; the deep-scan schedule needs a batch-producer variant
+     of `submit_schedule_occurrence` (D-A) — add `"audio-subs-deep-scan"` to `ACTIVATED_SCHEDULE_KEYS`
+     only after the family is certified.
+  3. Add `subtitle_policy_audit` (new read-only type): add to `inventory` + manifest (registry count
+     48 → 49 — update the count freezes and `test_final_manifest`/jmc4a a0 freeze), typed request/
+     result, dry-run evaluation of existing inventory only, bounded totals + full sanitized report as
+     a downloadable artifact. Route → `submit_job`.
+  4. Establish a shared `JobSubmissionResponse` (currently defined in `sync.py`) — promote to a
+     shared module so B3/B4/B5 routes reuse it.
+
+## Phase B3 progress — 2026-07-13 (tracked media-tool launcher landed)
+
+- Commit `281e931` (`add tracked media-tool launcher`), configured author.
+- Added `ProcessLauncher.launch(tool, args, *, stdout_limit=…)` — the generic tracked tool-launch
+  that B3/B4/B5 need. It resolves `tool` from the closed `TOOL_CATALOG`
+  (`ffprobe`/`ffmpeg`/`mkvmerge`/`mkvpropedit`/`magick`/`dovi_tool`) via `binaries.resolve`
+  (honours `.env` `LETTERBOX_*`, incl. `bin/dovi_tool`), reuses the canary machinery
+  (process-group/cgroup/identity/drain) with `stdin=DEVNULL`, no start-barrier, and a **dedicated
+  bounded stdout capture** for the handler to parse (stderr is teed to the attempt log). Tests:
+  runs real `ffprobe -version` and captures stdout; rejects uncatalogued tools. Updated the jmc3b
+  freeze `process_launcher_methods` to include `launch`. Full suite **1079 passed / 21 failed**.
+- **Safety-model decision (simplifies B3–B5):** read-only scans/detects/analysis use the DEFAULT
+  `SafetyPolicy()` (shared maintenance only) — NOT a per-file `media_file` exclusive gate.
+  Concurrency is already bounded by the `media_read` entrypoint (2 slots); the per-file EXCLUSIVE
+  gate is for Chunk-5 writes. This means the `delivery._preflight` `media_file_identity` threading
+  noted above is **NOT required** for B3–B5. (`requirements_for_policy(SafetyPolicy(), …)` →
+  ordinary shared-maintenance requirements; no identity needed.)
+- **`execute_subtitle_scan` implementation plan (analyzed, not yet built):**
+  - Domain reuse: `core/subtitles/service.scan_inventory(db, resolved)` probes + discovers sidecars
+    + upserts `SubtitleInventory`/`SubtitleTrack` (transactional, commits). `resolved` =
+    `core.media_files.resolve_media_file(db, media_file_id)` → `.path` (confined), `.signature`,
+    `.container`, `.media_file_id`.
+  - Tool routing: `probe.probe_container(path)` calls `_ffprobe_json` (`binaries.run("ffprobe")`,
+    direct subprocess) AND, for `.mkv`, `_align_mkv_track_ids` (a second direct tool — mkvmerge).
+    Refactor minimally by adding an optional pre-fetched `probe_json` param to `probe_container`
+    (default None preserves current inline behavior for non-job callers); the handler runs ffprobe
+    via `context.process_launcher.launch("ffprobe", ["-v","error","-print_format","json",
+    "-show_format","-show_streams","-show_chapters", path])`, `json.loads(summary.stdout.captured)`,
+    then `probe_container(path, probe_json=…)`. Thread the same `probe_json` (and, if needed, a
+    launcher-backed mkvmerge-track-id fetch) through `scan_inventory(db, resolved, *, probe_json=…)`.
+    Keep the sidecar `external.discover` (filesystem, `asyncio.to_thread`) as-is (pure I/O, confined).
+  - `no_change`: before scanning, load the existing `SubtitleInventory` for the media file; if its
+    `file_signature == resolved.signature` and it is complete/error-free, return
+    `{"outcome":"no_change", ...}` without re-scanning (mirrors
+    `_stale_or_missing_subtitle_scan_candidates`). Otherwise scan → `succeeded`.
+  - Definition: `subtitle_scan` (media_read, read_only, subject `media_file`), default
+    `SafetyPolicy()`, typed `SubtitleScanRequestV1` (`{media_file_id: int}` or subject-only),
+    per-type progress policy (indeterminate probe + determinate stream/sidecar counts when known),
+    add to `ENABLED_JOB_TYPES`, register handler in `kernel_handlers`. Update the usual freezes
+    (enabled_types/execution_handlers/target_types/backup/jmc3*/jmc4*).
+  - Then B3 continues: reclassify `subtitle_scan_all`/`audio_subs_deep_scan` to parent batches
+    (fixed batch of `subtitle_scan` children), `subtitle_policy_audit`, and the deep-scan schedule
+    activation (add `"audio-subs-deep-scan"` to `ACTIVATED_SCHEDULE_KEYS` + batch-producer variant of
+    `submit_schedule_occurrence`, D-A).
+
+## Operator / environment note
+
+- The owned disposable PostgreSQL cluster in the session scratchpad is EPHEMERAL and was cleared
+  once mid-session. Re-provision before running tests: `initdb` a fresh cluster on port 55445, start
+  it, `createdb marquee_test`, then
+  `DB_URL=postgresql+asyncpg://marquee@127.0.0.1:55445/marquee_test MARQUEE_ENVIRONMENT=development
+  python -m marquee.dev_reset --allow-data-loss --confirm-database marquee_test` (Alembic + PgQueuer
+  + seed) — a bare `create_all` cluster yields 28 failures instead of the real 21-failure baseline.
+
+## Phase B3 progress — 2026-07-13 (subtitle_scan handler landed)
+
+- Commit `59c9cb4` (`migrate subtitle scan handler`), configured author.
+- `subtitle_scan` is enabled on `media_read` and executes through the kernel. Domain reuse:
+  `subtitles/probe.probe_container` and `subtitles/service.scan_inventory` gained optional
+  `probe_json`/`mkvmerge_json` params (default None preserves inline behavior for non-job callers);
+  `handlers_subtitles.execute_subtitle_scan` runs ffprobe (and mkvmerge for `.mkv`) through
+  `context.process_launcher.launch(...)`, parses captured stdout, then upserts `SubtitleInventory`
+  atomically. `no_change` when the existing inventory's `file_signature == resolved.signature` and
+  error-free (bypassed by `force=True`); on probe failure it raises a path-free permanent error and
+  leaves the prior valid inventory untouched (never overwrites with a failed probe). Typed
+  `SubtitleScanRequestV1(force)`, indeterminate `probing`/`inventorying` progress. Default
+  `SafetyPolicy()` (no per-file gate; media_read bounds concurrency).
+- **Bug fixed (latent):** `ExecutionContext.session_factory` was set to `_get_session_factory`
+  (a function returning the sessionmaker) so `context.session_factory()` returned the sessionmaker,
+  not a session — never caught because no test previously executed a handler's DB path. Now
+  `delivery.py` sets `session_factory=_get_session_factory()` (the sessionmaker itself), so
+  `async with context.session_factory() as db` yields a session. This also corrects
+  `execute_library_sync`'s DB path.
+- Focused gate `tests/test_jmc4b_subtitle_scan.py`: **3 passed** (definition shape; no_change on
+  matching signature; force bypasses no_change → reaches probe). Retained full suite:
+  **1082 passed / 21 failed**, failure set byte-identical to baseline. ruff + `git diff --check`
+  clean. Enabled now: `system_noop`(control), `library_sync`(network), `subtitle_scan`(media_read).
+- **Remaining for B3 (exact next steps):**
+  1. Reclassify `subtitle_scan_all` + `audio_subs_deep_scan` to `parent_only` (children
+     `subtitle_scan`, CONTROL class, `aggregate_batch` subject, DETERMINATE progress). Move them
+     from `inventory.REGISTERED_HANDLER_TYPES` to `PARENT_ONLY_TYPES`; update
+     `test_job_definition_inventory` counts (`len(PARENT_ONLY_TYPES)` 6→8,
+     `len(REGISTERED_HANDLER_TYPES)`, `len(BUILTIN_JOB_TYPES)` stays 48 since they were already in
+     it). Manifest specs → parent-only (they currently pass `media_read` non-parent).
+  2. Routes (`api/routes/audio_subs.py`, `subtitles.py`): select candidate media files
+     (`_stale_or_missing_subtitle_scan_candidates` logic) and build a fixed batch of `subtitle_scan`
+     children via `batches.create_fixed_batch(...)`; empty scope → parent `no_change`. Remove the
+     legacy media-job fan-out. Return 202. Reuse/promote the shared `JobSubmissionResponse`.
+  3. Deep-scan schedule (D-A): the `audio-subs-deep-scan` catalog entry produces a PARENT batch, but
+     `submit_schedule_occurrence` only calls `submit_job`. Add a batch-producer variant (select
+     candidates + `create_fixed_batch`) invoked by that schedule; add `"audio-subs-deep-scan"` to
+     `ACTIVATED_SCHEDULE_KEYS` only after certification. Keep manual (`subtitle_scan_all:*`) vs
+     scheduled idempotency separate.
+  4. `subtitle_policy_audit` (new read-only type): add to `inventory.MEDIA_OPERATION_TYPES` or a new
+     set + `BUILTIN_JOB_TYPES` (registry count 48→49 — update `test_final_manifest`
+     `len(...)==48`, jmc4a a0 `definition_count`, jmc4b b0 count, and coverage). Typed request/result,
+     dry-run evaluation of existing `SubtitleInventory`/policy only (no mutation plan/apply), bounded
+     totals + full sanitized per-subject report as a downloadable artifact. Route → `submit_job`.
+     `subtitle_policy` stays disabled/mutating (Chunk 5).
+
+## Phase B3 completion — 2026-07-14
+
+- Phase commits (configured author, linear): `281e931` (tracked media-tool launcher), `59c9cb4`
+  (read-only `subtitle_scan`), `60c27e9` (scan parents), `da42f94` (canonical route batches),
+  `dd4f924` (deep-scan schedule activation), and `901774c` (policy audit).
+- `subtitle_scan` remains the only child handler: it receives immutable `ExecutionContext`, uses the
+  JMC3 tracked `ffprobe`/`mkvmerge` launcher, emits indeterminate probing/inventorying stages, and
+  only writes the derived subtitle inventory. `subtitle_scan_all` and `audio_subs_deep_scan` are
+  JMC4A ticketless fixed-batch parents; their manual routes submit bounded canonical responses and
+  never construct legacy media jobs. The configured hourly deep-scan schedule is product-active;
+  its schedule occurrence/idempotency scope remains separate from manual submissions.
+- Added and enabled `subtitle_policy_audit` on the `cpu` entrypoint. The enqueue request freezes the
+  selected scope plus policy revision/content. The handler reads existing inventory only, uses JMC3
+  cancellation/progress/evidence services, and returns bounded removals, protected tracks,
+  review-required subjects, coverage before/after, warnings, missing inventory, and unavailable
+  media. Overflows publish a confined, sanitized, byte-bounded JSON report artifact. It creates no
+  mutation plan and does not apply a policy; `subtitle_policy` stays disabled/fail-closed.
+- Manifest/inventory/handler/presenter freezes are updated for 49 definitions. Enabled definitions
+  are `system_noop` (control), `library_sync` (network), `subtitle_scan` (media_read), and
+  `subtitle_policy_audit` (cpu). There is still no enabled `media_write` product dispatch. Scheduled
+  product keys are `library-sync` and `audio-subs-deep-scan`; global production occurrences remain
+  disabled except for the explicit activation allowlist.
+- Verification: focused B3/JMC4A producer, batch, schedule, worker, contract, route, read-only
+  audit, coverage/missing/unavailable, and bounded-report tests: **63 passed**. `ruff check marquee
+  tests`, `git diff --check`, Alembic drift check on reset schema, OpenAPI `api:check` (197 paths),
+  generated TypeScript, frontend lint, build, and `svelte-check` (**0 errors; inherited 16
+  warnings**) pass. Ordered retained pytest baseline on a guarded-reset disposable PostgreSQL
+  database: **1086 passed / 21 failed / 2 warnings** in 61.34s; the 21 retained failures are the
+  established dev-OCR fixtures, legacy/deferred pipeline/taste/run paths, hardware expectation,
+  letterbox/sync/system-metrics fixtures, and are unrelated to this B3 diff.
+- **Environment deviation/operator action:** port 55445 was occupied and the default PostgreSQL
+  socket directory was inaccessible. The owned disposable cluster instead runs only for this
+  session at `127.0.0.1:55446`, with its socket/data directory under `/tmp`; it was initialized by
+  the guarded `marquee.dev_reset` for database `marquee_test`. Recreate an owned reset-backed test
+  database before subsequent certification; do not use a bare `create_all` database.
+
+## Current phase and exact next steps
+
+- Phases B0–B3: **complete**. Phase B4 — letterbox detection families: **next**.
+- Migrate only `letterbox_detect`, `letterbox_detect_episode`, `letterbox_detect_tv_scope`,
+  `letterbox_detect_batch`, and `letterbox_detect_tv_batch` through the JMC3/JMC4A kernel. Preserve
+  derived observations and evidence only: no crop metadata application, re-encode, heal, apply,
+  destructive child, `media_write` dispatch, legacy lifecycle mutation, detached task, or direct
+  subprocess path. Certify movie/show/season/episode scopes, shared files, nested parent progress,
+  tool indeterminacy, cancellation/retry/evidence, and `LETTERBOX_AUTO_APPLY_HIGH` ignored under
+  every configuration before enabling the family. Do not begin B5 until B4 is recorded here.
+
+## Phase B4 completion — 2026-07-14
+
+- Phase commit `c3a10c138e9569f9677327968ea204cbe4dfc0a2` (`migrate letterbox detection`),
+  configured author. The three leaf definitions are enabled `media_read`/`read_only` handlers;
+  `letterbox_detect_batch` and `letterbox_detect_tv_batch` are JMC4A sealed ticketless parents
+  (the TV parent creates `letterbox_detect_tv_scope` children). No enabled definition has
+  `media_write` dispatch.
+- The canonical handlers receive immutable execution context and typed requests. Routes freeze all
+  detector controls into a bounded request snapshot at enqueue; workers use the tracked launcher
+  for ffprobe, FFmpeg cropdetect, and ImageMagick trim through the confined workspace. They emit
+  indeterminate probe/sample/validation stages, use cancellation, request the definition retry
+  budget for unavailable tools, and preserve no-change reasons. The direct result remains bounded;
+  detailed sample evidence stays in the derived projection.
+- Detection writes only derived `LetterboxState`/`LetterboxEvent` observations transactionally.
+  Applied-crop fields and a pre-existing `tagged` status are preserved. The migrated paths no
+  longer use legacy Job lifecycle mutation/emission, `cancel_registry`, `media_job_manager`,
+  detached execution, or direct subprocess APIs. Static/runtime coverage proves
+  `LETTERBOX_AUTO_APPLY_HIGH` is absent from the handler and no apply/re-encode/heal path or
+  `media_write` ticket is reachable.
+- Verification: focused canonical letterbox, manifest/contract/worker/backup certification tests:
+  **58 passed**; existing letterbox API suite: **123 passed / 1 retained baseline failure**
+  (`test_tv_dev_reset_all_deletes_episode_rows_and_previews_only`). `ruff check marquee tests`,
+  `git diff --check`, Alembic drift check, OpenAPI export/generate/check (197 paths), frontend
+  lint/build, and `svelte-check` (**0 errors; inherited 16 warnings**) pass. Retained full pytest:
+  **1093 passed / 21 retained failures / 2 warnings** in 63.48s; the failure set is identical to
+  B3's established dev-OCR, deferred legacy pipeline/taste/run, hardware, letterbox/sync, and
+  system-metrics failures. Native smoke: ffprobe and FFmpeg 8.1.2; ImageMagick 7.1.2 `convert`
+  resolves (with its upstream deprecation warning).
+- Deviation/operator action: no product schedule changed. Before operator certification, ensure
+  ffprobe, FFmpeg, and the binary configured by `LETTERBOX_CONVERT` are installed for every worker;
+  the session's disposable PostgreSQL database remains `127.0.0.1:55446/marquee_test` and must be
+  recreated with guarded `marquee.dev_reset` before later gates.
+
+## Current phase and exact next steps
+
+- Phases B0–B4: **complete**. Phase B5 — Dolby Vision analysis: **next**.
+- Migrate only `dovi_analyze` and `dovi_analyze_batch` through the JMC3/JMC4A kernel. Freeze
+  subject/file-signature/HDR intent, use the tracked ffprobe/dovi launcher, retain the last valid
+  derived state on error, and prove no conversion, staged media, backup, replacement, or
+  `media_write` path. Keep all other destructive HDR definitions disabled and do not begin JMC4C.
+
+## Phase B5 completion — 2026-07-14
+
+- Phase commit `430ecb7` (`migrate dovi analysis`), configured author. `dovi_analyze` is now an
+  enabled `media_read`/`read_only` canonical handler and `dovi_analyze_batch` is a sealed JMC4A
+  ticketless parent. The only enabled product definitions are `system_noop`, `library_sync`,
+  `subtitle_scan`, `subtitle_policy_audit`, the five letterbox definitions, and `dovi_analyze`;
+  there remains no enabled `media_write` product dispatch. No DOVI schedule is activated.
+- The immutable request freezes canonical media-file subject, exactly one movie or episode owner,
+  source signature, bounded source hints, and `standard` or `deep` analysis intent. The handler
+  uses the tracked ffprobe launcher for all standard work and the tracked `dovi_tool` launcher only
+  for an explicit deep request. It reports subject-aware probing/analysis/validation status with
+  indeterminate progress, records bounded metadata/warnings/validation evidence, and persists only
+  a derived, source-signature-bound `DoviState` projection. `0005_jmc4b` adds the required derived
+  metadata and source-fence fields.
+- Source/owner/signature and current-attempt fence are revalidated in the short persistence
+  transaction. A missing, retired, changed, or already-current source produces a plain-language
+  no-change outcome; an unavailable deep tool requests the definition retry budget; a failed probe
+  or tool leaves the preceding valid state intact. Routes freeze snapshots at enqueue and return
+  canonical 202 submissions; movie and television batches create only canonical `media_file`
+  children. The migrated path has no conversion, source-media write, crop/application path,
+  destructive child, backup/replacement, Job ORM lifecycle mutation, legacy manager emission,
+  cancellation registry, detached task, or direct subprocess invocation. `dovi_convert` remains
+  disabled and deferred.
+- Verification: focused DOVI/route/manifest/presenter/worker/history certification gates passed
+  (`54`, `44`, `33`, and `36` tests respectively); `ruff check marquee tests`, `git diff --check`,
+  Alembic drift check on the guarded reset schema, OpenAPI export/generate/check (197 paths),
+  frontend lint/build, and `svelte-check` (0 errors; inherited 16 warnings) pass. The retained
+  full pytest gate on `127.0.0.1:55446/marquee_test` is **1100 passed / 21 retained failures /
+  2 warnings** in 61.33s, with the byte-identical established dev-OCR, deferred legacy
+  pipeline/taste/run, hardware, letterbox/sync, and system-metrics failures.
+- Native/fixture smoke: ffprobe 8.1.2 is available and parser/fence/retry fixtures passed.
+  `dovi_tool` is absent in this environment, so standard analysis is certified but no live deep
+  fixture was run; install the configured tool on each worker and run a controlled deep Dolby
+  Vision fixture before operator enablement. Continue to recreate the owned disposable database
+  with guarded `marquee.dev_reset`; do not use a bare `create_all` database.
+
+## Current phase and exact next steps
+
+- Phases B0–B5 are **complete**. JMC4B is ready only for the §11 final compaction: verify the
+  clean, linear, unpushed JMC4B-only range after `jmc4a-complete`; commit this final shared-timeline
+  state; create and verify timestamped external recovery material and a Git bundle; certify the
+  pre-squash tree; soft-reset to the exact JMC4B base; create the sole configured-author compact
+  commit and annotated `jmc4b-complete` tag; then prove parent and tree identity. Do not begin
+  JMC4C.
+
+## JMC4B final pre-squash certification — 2026-07-14
+
+- Exact plan base: `jmc4a-complete` =
+  `490bc1d5d5a31f6d31397a8c3aed3c1b27c2c307`, tree
+  `6407783847a37db38703083d3cc74e358d9f9d56`, sole parent
+  `640ba6b2a0f94945ff9c9ca7e10791a9b6e285d2`. The entire post-base range is linear and has the
+  configured author only. Its complete ordered commit record is: B0 `94919b9`, `9ba78afe`; B1
+  `58cb3a8`, `8d13717`, `6b214ce`; B2 `ecc01db`, `73cc1c7`, `b8dcfb3`, `4b5dc9c`, `6e8d20c`;
+  B3 `c40d7f7`, `281e931`, `712f7d8`, `59c9cb4`, `9f3136b`, `60c27e9`, `da42f94`, `dd4f924`,
+  `901774c`, `0abb9aa`; B4 `c3a10c1`, `a87e4d3`; B5 `430ecb7`, `10b8b6e`; and this final
+  certification entry.
+- Certified verification: representative JMC4A producer/batch/schedule gates and focused
+  DOVI/route/manifest/presenter/worker/history gates passed (B5 groups: 54, 44, 33, and 36 tests).
+  `ruff check marquee tests`, staged/working `git diff --check`, guarded-reset Alembic drift,
+  OpenAPI export/generate/check (197 paths), frontend API check/lint/build, and svelte-check
+  (0 errors; inherited 16 warnings) pass. The retained full suite was run before this entry on the
+  owned guarded-reset PostgreSQL database: **1100 passed / 21 retained failures / 2 warnings** in
+  61.33s. The unchanged 21 are dev-OCR, deferred legacy pipeline/taste/run, hardware,
+  letterbox/sync, and system-metrics failures; no skips, errors, or xfails were added.
+- Enabled executable definitions are `system_noop`, `library_sync`, `subtitle_scan`,
+  `subtitle_policy_audit`, `letterbox_detect`, `letterbox_detect_episode`,
+  `letterbox_detect_tv_scope`, and `dovi_analyze`. Canonical parent-only definitions are
+  `subtitle_scan_all`, `audio_subs_deep_scan`, `letterbox_detect_batch`,
+  `letterbox_detect_tv_batch`, and `dovi_analyze_batch`; each uses JMC4A ticketless aggregation.
+  Mutating/destructive product definitions, including `dovi_convert`, remain disabled/deferred;
+  no enabled product dispatch uses `media_write`.
+- Schedule state: only the canonical `library-sync` and `audio-subs-deep-scan` product schedules
+  are activated through the explicit allowlist; the deep scan produces its canonical parent batch.
+  DOVI, letterbox, and subtitle-policy-audit have no activated product schedule. Global production
+  occurrences remain disabled outside that allowlist. No schedule or route creates a destructive
+  child.
+- Deviations/operator work: use a guarded-reset owned test database (this session:
+  `postgresql+asyncpg://marquee@127.0.0.1:55446/marquee_test`) and recreate it rather than using
+  bare `create_all`. Native ffprobe 8.1.2 (plus the B4 FFmpeg/ImageMagick tools) is available;
+  `dovi_tool` is absent. Install the configured DOVI binary on every worker and perform a
+  controlled deep-analysis fixture smoke before enabling that optional request depth in operation.
+- **Pre-squash tip:** `HEAD` at this final pre-squash timeline commit (resolved immediately before
+  recovery creation). It will be protected by timestamped local recovery branch/tag and a verified
+  complete external Git bundle. The compact-tree resolver is the local annotated tag
+  `jmc4b-complete`, created only after exact tree/parent verification.

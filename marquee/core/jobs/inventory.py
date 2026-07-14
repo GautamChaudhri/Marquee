@@ -7,17 +7,12 @@ and parent constructors so drift fails loudly.
 
 REGISTERED_HANDLER_TYPES = frozenset(
     {
-        "audio_subs_deep_scan",
         "backup_create",
-        "dovi_analyze",
         "dovi_convert",
         "job_retention_purge",
         "learned_head_train",
         "letterbox_apply",
         "letterbox_apply_tv_scope",
-        "letterbox_detect",
-        "letterbox_detect_episode",
-        "letterbox_detect_tv_scope",
         "letterbox_heal",
         "letterbox_remove",
         "letterbox_revert_tv_scope",
@@ -32,7 +27,6 @@ REGISTERED_HANDLER_TYPES = frozenset(
         "poster_pipeline_tv_batch",
         "poster_rescan",
         "radarr_upgrade",
-        "subtitle_scan_all",
         "system_metrics_purge",
         "system_noop",
         "taste_map",
@@ -59,16 +53,35 @@ MEDIA_OPERATION_TYPES = frozenset(
 
 PARENT_ONLY_TYPES = frozenset(
     {
+        "audio_subs_deep_scan",
         "dovi_analyze_batch",
         "letterbox_apply_batch",
         "letterbox_detect_batch",
         "letterbox_detect_tv_batch",
         "letterbox_reencode_tv_batch",
         "subtitle_generate_batch",
+        "subtitle_scan_all",
     }
 )
 
-BUILTIN_JOB_TYPES = REGISTERED_HANDLER_TYPES | MEDIA_OPERATION_TYPES | PARENT_ONLY_TYPES
+# Canonical read-only job types introduced by JMC4B that have no legacy ``@register`` handler
+# (so they are not REGISTERED_HANDLER_TYPES) and are not per-track media operations.
+CANONICAL_READ_ONLY_TYPES = frozenset(
+    {
+        "letterbox_detect",
+        "letterbox_detect_episode",
+        "letterbox_detect_tv_scope",
+        "dovi_analyze",
+        "subtitle_policy_audit",
+    }
+)
+
+BUILTIN_JOB_TYPES = (
+    REGISTERED_HANDLER_TYPES
+    | MEDIA_OPERATION_TYPES
+    | PARENT_ONLY_TYPES
+    | CANONICAL_READ_ONLY_TYPES
+)
 
 ROUTE_CONSTRUCTED_TYPES = frozenset(
     {
@@ -82,11 +95,13 @@ ROUTE_CONSTRUCTED_TYPES = frozenset(
         "letterbox_apply_tv_scope",
         "letterbox_detect",
         "letterbox_detect_batch",
+        "letterbox_detect_tv_scope",
         "letterbox_detect_tv_batch",
         "letterbox_heal",
         "letterbox_reencode_tv_batch",
         "letterbox_remove",
         "letterbox_revert_tv_scope",
+        "library_sync",
         "pipeline_cache_clear",
         "poster_backup_all",
         "poster_deploy_reset",
@@ -98,6 +113,7 @@ ROUTE_CONSTRUCTED_TYPES = frozenset(
         "poster_rescan",
         "radarr_upgrade",
         "subtitle_generate_batch",
+        "subtitle_policy_audit",
         "subtitle_scan_all",
         "taste_map",
         "taste_rebuild",

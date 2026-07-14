@@ -34,6 +34,7 @@ from marquee.core.jobs.subjects import (
     SubjectSnapshot,
     SystemWorkSnapshot,
     build_episode_snapshot,
+    build_media_file_snapshot,
     build_movie_snapshot,
     build_season_snapshot,
     build_series_snapshot,
@@ -263,6 +264,11 @@ async def _resolve_subject(
                     "Audio and subtitle deep scan",
                     "all media files",
                 ),
+                "subtitle-policy-audit": (
+                    "maintenance:subtitle-policy-audit",
+                    "Subtitle policy audit",
+                    "existing subtitle inventory",
+                ),
             }
             display_id, display_name, scope = scopes[locator.reference]
             return MaintenanceScopeSnapshot(
@@ -281,6 +287,8 @@ async def _resolve_subject(
             return await build_season_snapshot(session, identifier)
         if locator.kind == "episode":
             return await build_episode_snapshot(session, identifier)
+        if locator.kind == "media_file":
+            return await build_media_file_snapshot(session, identifier)
     except (KeyError, TypeError, ValueError, SubjectNotFoundError) as exc:
         raise SubmissionValidationError("job subject could not be resolved") from exc
     raise SubmissionValidationError("job subject kind is not available for submission")

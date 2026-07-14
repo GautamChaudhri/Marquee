@@ -33,7 +33,16 @@ def test_jmc3b_starts_from_the_certified_production_registry() -> None:
     registry = _contract()["registry"]
     assert isinstance(registry, dict)
     assert JOB_DEFINITION_REGISTRY.enabled_types == set(registry["enabled_types"])
-    assert JOB_DEFINITION_REGISTRY.enabled_types == {"system_noop"}
+    assert JOB_DEFINITION_REGISTRY.enabled_types == {
+        "system_noop",
+        "library_sync",
+        "letterbox_detect",
+        "letterbox_detect_episode",
+        "letterbox_detect_tv_scope",
+        "subtitle_scan",
+        "subtitle_policy_audit",
+        "dovi_analyze",
+    }
 
 
 def test_jmc2_contract_tests_are_explicit_inputs_to_jmc3b() -> None:

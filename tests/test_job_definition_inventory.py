@@ -62,12 +62,13 @@ def _decorated_handler_types() -> set[str]:
 def test_source_inventory_matches_freeze() -> None:
     assert _decorated_handler_types() == set(REGISTERED_HANDLER_TYPES)
     route_types = _literal_keywords(
-        list((ROOT / "marquee/api/routes").glob("*.py")), {"job_type", "parent_type"}
+        list((ROOT / "marquee/api/routes").glob("*.py")),
+        {"job_type", "parent_type", "parent_job_type"},
     )
     assert route_types == set(ROUTE_CONSTRUCTED_TYPES)
     assert len(MEDIA_OPERATION_TYPES) == 12
-    assert len(PARENT_ONLY_TYPES) == 6
-    assert len(BUILTIN_JOB_TYPES) == 48
+    assert len(PARENT_ONLY_TYPES) == 8
+    assert len(BUILTIN_JOB_TYPES) == 49
 
 
 def test_stable_taxonomy_values() -> None:

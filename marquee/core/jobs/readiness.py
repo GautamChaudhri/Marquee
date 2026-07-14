@@ -17,11 +17,13 @@ from marquee.core.jobs.batches import (
     MAX_DYNAMIC_CHILDREN,
     MAX_FIXED_CHILDREN,
 )
+from marquee.core.jobs.contracts import ExecutionClass
 from marquee.core.jobs.inventory import BUILTIN_JOB_TYPES
-from marquee.core.jobs.manifest import JOB_DEFINITION_REGISTRY
+from marquee.core.jobs.manifest import ENABLED_JOB_TYPES, JOB_DEFINITION_REGISTRY
 from marquee.core.jobs.pgqueuer_worker import entrypoint_concurrency_limits
 from marquee.core.jobs.process_identity import containment_capabilities
 from marquee.core.jobs.schedules import (
+    ACTIVATED_SCHEDULE_KEYS,
     MAX_SCHEDULE_DIAGNOSTICS,
     PRODUCTION_SCHEDULE_CATALOG,
     PRODUCTION_SCHEDULE_OCCURRENCES_ENABLED,
@@ -90,10 +92,13 @@ def registry_compatible() -> bool:
         return False
     registered_entrypoints = frozenset(entrypoint_concurrency_limits())
     return (
-        JOB_DEFINITION_REGISTRY.enabled_types == {"system_noop"}
+        JOB_DEFINITION_REGISTRY.enabled_types == ENABLED_JOB_TYPES
         and all(
-            definition.entrypoint in registered_entrypoints
-            or (definition.entrypoint == "media_write" and not definition.enabled)
+            (
+                definition.entrypoint in registered_entrypoints
+                or (definition.entrypoint == "media_write" and not definition.enabled)
+            )
+            and not (definition.enabled and definition.execution_class == ExecutionClass.MEDIA_WRITE)
             for definition in JOB_DEFINITION_REGISTRY
         )
     )
@@ -140,6 +145,11 @@ def schedule_catalog_report() -> dict[str, Any]:
             {definition.occurrence_policy.value for definition in definitions}
         ),
         "production_occurrences_enabled": PRODUCTION_SCHEDULE_OCCURRENCES_ENABLED,
+        "activated_keys": sorted(
+            definition.key
+            for definition in definitions
+            if definition.key in ACTIVATED_SCHEDULE_KEYS
+        ),
         "diagnostic_limit": MAX_SCHEDULE_DIAGNOSTICS,
     }
 

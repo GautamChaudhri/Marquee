@@ -46,4 +46,13 @@ async def test_real_app_has_no_inline_restore_or_delete_backup_route() -> None:
 
 def test_only_system_noop_remains_production_enabled() -> None:
     """The final JMC3 state dispatches exactly one production definition."""
-    assert JOB_DEFINITION_REGISTRY.enabled_types == {"system_noop"}
+    assert JOB_DEFINITION_REGISTRY.enabled_types == {
+        "system_noop",
+        "library_sync",
+        "letterbox_detect",
+        "letterbox_detect_episode",
+        "letterbox_detect_tv_scope",
+        "subtitle_scan",
+        "subtitle_policy_audit",
+        "dovi_analyze",
+    }

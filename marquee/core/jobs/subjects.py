@@ -7,10 +7,19 @@ from pathlib import PurePosixPath
 from typing import Annotated, Literal
 
 from pydantic import ConfigDict, Field, TypeAdapter
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.core.jobs.documents import StrictDocument
-from marquee.models import Episode, MediaFile, Movie, Season, Series, SubtitleTrack
+from marquee.models import (
+    Episode,
+    EpisodeMediaFile,
+    MediaFile,
+    Movie,
+    Season,
+    Series,
+    SubtitleTrack,
+)
 
 
 def _display_file(path: str | None) -> str | None:
@@ -339,4 +348,30 @@ async def build_episode_snapshot(session: AsyncSession, episode_id: int) -> Epis
     if series is None:
         raise SubjectNotFoundError(f"series {episode.series_id} does not exist")
     return episode_snapshot(episode, series)
+
+
+async def build_media_file_snapshot(
+    session: AsyncSession, media_file_id: int
+) -> MediaFileSnapshot:
+    """Resolve one media file with its movie or episode/series context for the subject."""
+    media_file = await session.get(MediaFile, media_file_id)
+    if media_file is None:
+        raise SubjectNotFoundError(f"media file {media_file_id} does not exist")
+    movie: Movie | None = None
+    series: Series | None = None
+    episode: Episode | None = None
+    if media_file.movie_id is not None:
+        movie = await session.get(Movie, media_file.movie_id)
+    else:
+        link = await session.scalar(
+            select(EpisodeMediaFile)
+            .where(EpisodeMediaFile.media_file_id == media_file_id)
+            .order_by(EpisodeMediaFile.episode_id)
+            .limit(1)
+        )
+        if link is not None:
+            episode = await session.get(Episode, link.episode_id)
+            if episode is not None:
+                series = await session.get(Series, episode.series_id)
+    return media_file_snapshot(media_file, movie=movie, series=series, episode=episode)
 

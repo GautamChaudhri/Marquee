@@ -1,85 +1,70 @@
-"""Sync routes — trigger *arr → database sync."""
+"""Sync routes — trigger a canonical *arr → database library-sync job."""
 
 from __future__ import annotations
 
 import logging
 from typing import Annotated
+from uuid import uuid4
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from marquee.api.deps import get_radarr, get_sonarr, get_tmdb
-from marquee.config import settings
-from marquee.core.arr_clients.radarr_client import RadarrClient
-from marquee.core.arr_clients.sonarr_client import SonarrClient
-from marquee.core.poster_sources.tmdb import TMDBClient
-from marquee.core.sync_service import SyncService
+from marquee.api.job_submission import JobSubmissionResponse, submission_response
+from marquee.core.jobs.contracts import TriggerKind
+from marquee.core.jobs.submission import (
+    IdempotencyConflictError,
+    Initiator,
+    SubjectLocator,
+    SubmissionError,
+    submit_job,
+)
 from marquee.database import get_db
+from marquee.models import Job
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/sync", tags=["sync"])
 
 
-@router.post("/all")
+@router.post("/all", status_code=status.HTTP_202_ACCEPTED)
 async def sync_all(
     db: Annotated[AsyncSession, Depends(get_db)],
-    radarr: Annotated[RadarrClient, Depends(get_radarr)],
-    sonarr: Annotated[SonarrClient, Depends(get_sonarr)],
-    tmdb: Annotated[TMDBClient, Depends(get_tmdb)],
-):
-    """Sync all movies and TV shows from Radarr/Sonarr into the database.
+) -> JobSubmissionResponse:
+    """Submit a library synchronization job and return its canonical handle (202).
 
-    Runs inline: it is network + DB only (no GPU, no real CPU load), so it does
-    not go through the job manager — the caller gets the full sync report back.
+    Library sync is a canonical ``network`` job (Radarr/Sonarr/TMDB + database only).  An
+    in-flight sync is reused rather than starting a concurrent full-library sync.
     """
-    logger.info(
-        "Sync started — source=radarr=%s sonarr=%s tmdb=%s",
-        settings.RADARR_URL or "unconfigured",
-        settings.SONARR_URL or "unconfigured",
-        "configured" if settings.tmdb_configured else "unconfigured",
-    )
+    async with db.begin():
+        active = await db.scalar(
+            select(Job)
+            .where(Job.type == "library_sync", Job.outcome.is_(None))
+            .order_by(Job.queued_at.desc())
+            .limit(1)
+        )
+        if active is not None:
+            return JobSubmissionResponse(
+                job_id=active.id,
+                disposition="reused",
+                phase=active.phase,
+                snapshot_url=f"/api/jobs/{active.id}/snapshot",
+                detail_url=f"/projection-room/jobs/{active.id}",
+            )
+        try:
+            result = await submit_job(
+                db,
+                job_type="library_sync",
+                request={"source": "manual"},
+                subject=SubjectLocator(kind="maintenance_scope", reference="library-sync"),
+                trigger=TriggerKind.MANUAL,
+                initiator=Initiator(kind="system", identifier="sync-api"),
+                idempotency_key=f"library_sync:manual-{uuid4().hex}",
+            )
+        except IdempotencyConflictError as exc:
+            raise HTTPException(status_code=409, detail=exc.code) from exc
+        except SubmissionError as exc:
+            raise HTTPException(status_code=422, detail=exc.code) from exc
 
-    svc = SyncService(db, radarr=radarr, sonarr=sonarr, tmdb=tmdb)
-    report = await svc.sync_all()
-
-    logger.info(
-        "Sync complete — %.1fs | movies +%d/~%d | series +%d/~%d | "
-        "seasons +%d/~%d | episodes +%d/~%d | errors %d",
-        report.duration_seconds,
-        report.movies.created,
-        report.movies.updated,
-        report.series.created,
-        report.series.updated,
-        report.seasons.created,
-        report.seasons.updated,
-        report.episodes.created,
-        report.episodes.updated,
-        report.movies.errors
-        + report.series.errors
-        + report.seasons.errors
-        + report.episodes.errors,
-    )
-
-    return {
-        "status": "ok",
-        "duration_seconds": report.duration_seconds,
-        "movies": {
-            "created": report.movies.created,
-            "updated": report.movies.updated,
-            "errors": report.movies.errors,
-        },
-        "series": {
-            "created": report.series.created,
-            "updated": report.series.updated,
-            "errors": report.series.errors,
-        },
-        "seasons": {
-            "created": report.seasons.created,
-            "updated": report.seasons.updated,
-        },
-        "episodes": {
-            "created": report.episodes.created,
-            "updated": report.episodes.updated,
-        },
-    }
+    logger.info("library sync job %s submitted (%s)", result.job_id, result.disposition)
+    return submission_response(result)

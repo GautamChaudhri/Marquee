@@ -23,7 +23,15 @@ from marquee.core.jobs.documents import (
     BuiltInIntentV1,
     BuiltInResultV1,
     DocumentKind,
+    DoviAnalyzeRequestV1,
+    LetterboxDetectEpisodeRequestV1,
+    LetterboxDetectRequestV1,
+    LetterboxDetectTvScopeRequestV1,
+    LibrarySyncRequestV1,
     SafeJobErrorV1,
+    StrictDocument,
+    SubtitlePolicyAuditRequestV1,
+    SubtitleScanRequestV1,
     SystemNoopRequestV1,
     current_adapter,
 )
@@ -88,8 +96,8 @@ _SPECS = (
     _spec("taste_rebuild", FeatureArea.ML_TASTE, ExecutionClass.GPU, _R, "model_profile_training"),
     _spec("taste_map", FeatureArea.ML_TASTE, ExecutionClass.CPU, _R, "model_profile_training"),
     _spec("library_sync", FeatureArea.LIBRARY_INTEGRATIONS, ExecutionClass.NETWORK, _R, "maintenance_scope"),
-    _spec("subtitle_scan_all", FeatureArea.AUDIO_SUBTITLES, ExecutionClass.MEDIA_READ, _R, "maintenance_scope"),
-    _spec("audio_subs_deep_scan", FeatureArea.AUDIO_SUBTITLES, ExecutionClass.MEDIA_READ, _R, "maintenance_scope"),
+    _spec("subtitle_scan_all", FeatureArea.AUDIO_SUBTITLES, ExecutionClass.CONTROL, _R, "aggregate_batch", progress=ProgressStrategy.DETERMINATE, children=("subtitle_scan",)),
+    _spec("audio_subs_deep_scan", FeatureArea.AUDIO_SUBTITLES, ExecutionClass.CONTROL, _R, "aggregate_batch", progress=ProgressStrategy.DETERMINATE, children=("subtitle_scan",)),
     _spec("radarr_upgrade", FeatureArea.LIBRARY_INTEGRATIONS, ExecutionClass.NETWORK, _R, "movie"),
     _spec("poster_pipeline", FeatureArea.AI_POSTERS, ExecutionClass.GPU, _U, "movie", "poster_candidate_set"),
     _spec("poster_pipeline_batch", FeatureArea.AI_POSTERS, ExecutionClass.GPU, _U, "aggregate_batch"),
@@ -105,6 +113,7 @@ _SPECS = (
     _spec("dovi_analyze", FeatureArea.HDR, ExecutionClass.MEDIA_READ, _R, "media_file", "movie", "episode"),
     _spec("dovi_convert", FeatureArea.HDR, ExecutionClass.MEDIA_WRITE, _U, "media_file", "movie", "episode"),
     _spec("subtitle_scan", FeatureArea.AUDIO_SUBTITLES, ExecutionClass.MEDIA_READ, _R, "media_file"),
+    _spec("subtitle_policy_audit", FeatureArea.AUDIO_SUBTITLES, ExecutionClass.CPU, _R, "maintenance_scope"),
     _spec("audio_remove", FeatureArea.AUDIO_SUBTITLES, ExecutionClass.MEDIA_WRITE, _U, "track"),
     _spec("track_remove", FeatureArea.AUDIO_SUBTITLES, ExecutionClass.MEDIA_WRITE, _U, "track"),
     _spec("subtitle_remove", FeatureArea.AUDIO_SUBTITLES, ExecutionClass.MEDIA_WRITE, _U, "track"),
@@ -118,11 +127,143 @@ _SPECS = (
     _spec("letterbox_reencode", FeatureArea.LETTERBOX, ExecutionClass.MEDIA_WRITE, _U, "media_file", "movie", "episode"),
     _spec("subtitle_generate_batch", FeatureArea.AUDIO_SUBTITLES, ExecutionClass.CONTROL, _R, "aggregate_batch", progress=ProgressStrategy.DETERMINATE, children=("subtitle_generate",)),
     _spec("dovi_analyze_batch", FeatureArea.HDR, ExecutionClass.CONTROL, _R, "aggregate_batch", progress=ProgressStrategy.DETERMINATE, children=("dovi_analyze",)),
-    _spec("letterbox_detect_tv_batch", FeatureArea.LETTERBOX, ExecutionClass.CONTROL, _R, "aggregate_batch", progress=ProgressStrategy.DETERMINATE, children=("letterbox_detect_episode",)),
+    _spec("letterbox_detect_tv_batch", FeatureArea.LETTERBOX, ExecutionClass.CONTROL, _R, "aggregate_batch", progress=ProgressStrategy.DETERMINATE, children=("letterbox_detect_tv_scope",)),
     _spec("letterbox_detect_batch", FeatureArea.LETTERBOX, ExecutionClass.CONTROL, _R, "aggregate_batch", progress=ProgressStrategy.DETERMINATE, children=("letterbox_detect",)),
     _spec("letterbox_apply_batch", FeatureArea.LETTERBOX, ExecutionClass.CONTROL, _R, "aggregate_batch", progress=ProgressStrategy.DETERMINATE, children=("letterbox_apply",)),
     _spec("letterbox_reencode_tv_batch", FeatureArea.LETTERBOX, ExecutionClass.CONTROL, _R, "aggregate_batch", progress=ProgressStrategy.DETERMINATE, children=("letterbox_reencode",)),
 )
+
+# Certified dispatch-enabled allowlist. Grows one non-mutating family per JMC4B phase; every
+# entry must be read-only and never media_write (enforced by JobDefinitionRegistry). Mutating
+# and parent-only definitions are never listed here.
+ENABLED_JOB_TYPES: frozenset[str] = frozenset(
+    {
+        "system_noop",
+        "library_sync",
+        "subtitle_scan",
+        "subtitle_policy_audit",
+        "letterbox_detect",
+        "letterbox_detect_episode",
+        "letterbox_detect_tv_scope",
+        "dovi_analyze",
+    }
+)
+
+# Per-type request document models. Types absent here fall back to the generic BuiltInIntentV1
+# (or the tiny SystemNoopRequestV1 for system_noop). Results stay generic BuiltInResultV1.
+_REQUEST_MODELS: dict[str, type[StrictDocument]] = {
+    "library_sync": LibrarySyncRequestV1,
+    "subtitle_scan": SubtitleScanRequestV1,
+    "subtitle_policy_audit": SubtitlePolicyAuditRequestV1,
+    "letterbox_detect": LetterboxDetectRequestV1,
+    "letterbox_detect_episode": LetterboxDetectEpisodeRequestV1,
+    "letterbox_detect_tv_scope": LetterboxDetectTvScopeRequestV1,
+    "dovi_analyze": DoviAnalyzeRequestV1,
+}
+
+# Library synchronization has no reliable upstream item/page total, so it narrates honest
+# indeterminate phase stages (plan §4/B11) rather than a fabricated percentage.
+_LIBRARY_SYNC_PROGRESS = ProgressPolicy(
+    strategy=ProgressStrategy.INDETERMINATE,
+    overall_unit="phases",
+    denominator_source="none",
+    current_unit="phase",
+    aggregation_strategy="none",
+    stages=(
+        ("connecting", "jobs.library_sync.progress.connecting"),
+        ("sync_movies", "jobs.library_sync.progress.sync_movies"),
+        ("sync_series", "jobs.library_sync.progress.sync_series"),
+        ("finalizing", "jobs.library_sync.progress.finalizing"),
+    ),
+    tool_adapter=None,
+    persistence_cadence_seconds=2,
+    meaningful_delta_percent=None,
+    max_snapshot_staleness_seconds=15,
+    eta_capability=False,
+)
+
+# A single media-file probe has no reliable up-front total, so it narrates honest indeterminate
+# probe/inventory stages rather than a fabricated percentage.
+_SUBTITLE_SCAN_PROGRESS = ProgressPolicy(
+    strategy=ProgressStrategy.INDETERMINATE,
+    overall_unit="steps",
+    denominator_source="none",
+    current_unit="step",
+    aggregation_strategy="none",
+    stages=(
+        ("probing", "jobs.subtitle_scan.progress.probing"),
+        ("inventorying", "jobs.subtitle_scan.progress.inventorying"),
+    ),
+    tool_adapter=None,
+    persistence_cadence_seconds=2,
+    meaningful_delta_percent=None,
+    max_snapshot_staleness_seconds=15,
+    eta_capability=False,
+)
+
+_SUBTITLE_POLICY_AUDIT_PROGRESS = ProgressPolicy(
+    strategy=ProgressStrategy.INDETERMINATE,
+    overall_unit="subjects",
+    denominator_source="none",
+    current_unit="subject",
+    aggregation_strategy="none",
+    stages=(
+        ("selecting", "jobs.subtitle_policy_audit.progress.selecting"),
+        ("evaluating", "jobs.subtitle_policy_audit.progress.evaluating"),
+    ),
+    tool_adapter=None,
+    persistence_cadence_seconds=2,
+    meaningful_delta_percent=None,
+    max_snapshot_staleness_seconds=15,
+    eta_capability=False,
+)
+
+_LETTERBOX_DETECT_PROGRESS = ProgressPolicy(
+    strategy=ProgressStrategy.INDETERMINATE,
+    overall_unit="samples",
+    denominator_source="none",
+    current_unit="sample",
+    aggregation_strategy="none",
+    stages=(
+        ("probing", "jobs.letterbox_detect.progress.probing"),
+        ("sampling", "jobs.letterbox_detect.progress.sampling"),
+        ("validating", "jobs.letterbox_detect.progress.validating"),
+    ),
+    tool_adapter="ffprobe_ffmpeg_cropdetect",
+    persistence_cadence_seconds=2,
+    meaningful_delta_percent=None,
+    max_snapshot_staleness_seconds=15,
+    eta_capability=False,
+)
+
+_DOVI_ANALYZE_PROGRESS = ProgressPolicy(
+    strategy=ProgressStrategy.INDETERMINATE,
+    overall_unit="probe phases",
+    denominator_source="none",
+    current_unit="phase",
+    aggregation_strategy="none",
+    stages=(
+        ("probing", "jobs.dovi_analyze.progress.probing"),
+        ("analyzing", "jobs.dovi_analyze.progress.analyzing"),
+        ("validating", "jobs.dovi_analyze.progress.validating"),
+    ),
+    tool_adapter="ffprobe_dovi_tool",
+    persistence_cadence_seconds=2,
+    meaningful_delta_percent=None,
+    max_snapshot_staleness_seconds=15,
+    eta_capability=False,
+)
+
+# Per-type progress policy overrides. Types absent here use the generic `_progress(spec)`.
+_PROGRESS_POLICIES: dict[str, ProgressPolicy] = {
+    "library_sync": _LIBRARY_SYNC_PROGRESS,
+    "subtitle_scan": _SUBTITLE_SCAN_PROGRESS,
+    "subtitle_policy_audit": _SUBTITLE_POLICY_AUDIT_PROGRESS,
+    "letterbox_detect": _LETTERBOX_DETECT_PROGRESS,
+    "letterbox_detect_episode": _LETTERBOX_DETECT_PROGRESS,
+    "letterbox_detect_tv_scope": _LETTERBOX_DETECT_PROGRESS,
+    "dovi_analyze": _DOVI_ANALYZE_PROGRESS,
+}
 
 _NATIVE_FFMPEG = frozenset({"dovi_convert", "letterbox_reencode"})
 _NATIVE_MKVMERGE = frozenset(
@@ -212,9 +353,12 @@ def _progress(spec: _DefinitionSpec) -> ProgressPolicy:
 
 
 def _definition(spec: _DefinitionSpec) -> JobDefinition:
-    enabled = spec.job_type == "system_noop"
+    enabled = spec.job_type in ENABLED_JOB_TYPES
+    is_noop = spec.job_type == "system_noop"
     parent_only = spec.job_type in PARENT_ONLY_TYPES
-    request_model = SystemNoopRequestV1 if enabled else BuiltInIntentV1
+    request_model = _REQUEST_MODELS.get(spec.job_type) or (
+        SystemNoopRequestV1 if is_noop else BuiltInIntentV1
+    )
     retry = RetryPolicy(
         max_attempts=1 if spec.safety == EffectSafety.UNSAFE_MUTATION else 3,
         transient_delays_seconds=() if spec.safety == EffectSafety.UNSAFE_MUTATION else (5, 30),
@@ -239,7 +383,7 @@ def _definition(spec: _DefinitionSpec) -> JobDefinition:
         error=current_adapter(DocumentKind.ERROR, SafeJobErrorV1),
         execution_class=spec.execution,
         entrypoint=spec.execution.value,
-        timeout=TimeoutPolicy(seconds=30 if enabled else 24 * 60 * 60),
+        timeout=TimeoutPolicy(seconds=30 if is_noop else 24 * 60 * 60),
         effect_safety=spec.safety,
         configuration_keys=(
             frozenset(
@@ -253,7 +397,7 @@ def _definition(spec: _DefinitionSpec) -> JobDefinition:
             else frozenset()
         ),
         subject_builder=_subject_builder(spec.job_type, spec.subject_kinds),
-        progress_policy=_progress(spec),
+        progress_policy=_PROGRESS_POLICIES.get(spec.job_type) or _progress(spec),
         retry_policy=retry,
         action_policy=ActionPolicy(
             pause=False,

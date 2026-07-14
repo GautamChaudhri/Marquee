@@ -120,9 +120,24 @@ def build_track_dicts(probe_result: probe.ProbeResult | None, externals: list) -
     return tracks
 
 
-async def scan_inventory(db: AsyncSession, resolved: ResolvedMediaFile) -> SubtitleInventory:
-    """Probe + discover + persist the current inventory for a media file."""
-    probe_result = await asyncio.to_thread(probe.probe_container, resolved.path)
+async def scan_inventory(
+    db: AsyncSession,
+    resolved: ResolvedMediaFile,
+    *,
+    probe_json: dict | None = None,
+    mkvmerge_json: dict | None = None,
+) -> SubtitleInventory:
+    """Probe + discover + persist the current inventory for a media file.
+
+    ``probe_json``/``mkvmerge_json`` may be supplied by a caller (the canonical job handler)
+    that already ran the tools through the tracked launcher; when omitted the tools run inline.
+    """
+    probe_result = await asyncio.to_thread(
+        probe.probe_container,
+        resolved.path,
+        probe_json=probe_json,
+        mkvmerge_json=mkvmerge_json,
+    )
     externals = await asyncio.to_thread(external.discover, resolved.path)
     tracks = build_track_dicts(probe_result, externals)
 

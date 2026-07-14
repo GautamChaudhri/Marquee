@@ -311,7 +311,7 @@ export interface paths {
 		put?: never;
 		/**
 		 * Analyze Dovi Batch
-		 * @description Analyze every Radarr-known Dolby Vision movie (optionally a subset).
+		 * @description Submit a sealed read-only batch for Radarr-known Dolby Vision movies.
 		 *
 		 *     Only movies Radarr flagged as DoVi (``has_dv``) with a media file are
 		 *     enqueued — there's no point probing files we already know are SDR/HDR10.
@@ -394,7 +394,7 @@ export interface paths {
 		put?: never;
 		/**
 		 * Analyze Tv Dovi Batch
-		 * @description Analyze every Dolby Vision TV episode across visible shows (optionally a subset).
+		 * @description Submit every selected DoVi TV episode through the canonical batch producer.
 		 */
 		post: operations['analyze_tv_dovi_batch_api_hdr_tv_analyze_post'];
 		delete?: never;
@@ -454,7 +454,7 @@ export interface paths {
 		put?: never;
 		/**
 		 * Analyze Tv Show Dovi
-		 * @description Enqueue a DoVi analysis batch for one show (or one season of it).
+		 * @description Submit a sealed canonical DoVi analysis batch for one TV scope.
 		 */
 		post: operations['analyze_tv_show_dovi_api_hdr_tv__series_id__analyze_post'];
 		delete?: never;
@@ -494,7 +494,7 @@ export interface paths {
 		put?: never;
 		/**
 		 * Analyze Movie Dovi
-		 * @description Enqueue a single-movie DoVi analysis job; returns its job summary.
+		 * @description Submit one read-only, signature-frozen DoVi observation.
 		 */
 		post: operations['analyze_movie_dovi_api_hdr__movie_id__analyze_post'];
 		delete?: never;
@@ -934,7 +934,7 @@ export interface paths {
 		put?: never;
 		/**
 		 * Detect Batch
-		 * @description Start a background batch detect (SSE progress). 202 + job_id, or 409.
+		 * @description Submit a sealed batch of read-only movie/file observations.
 		 */
 		post: operations['detect_batch_api_letterbox_detect_post'];
 		delete?: never;
@@ -1108,7 +1108,7 @@ export interface paths {
 		put?: never;
 		/**
 		 * Detect One
-		 * @description Enqueue a durable single-movie detect job; returns its job summary.
+		 * @description Submit one read-only movie/file observation through the canonical runtime.
 		 */
 		post: operations['detect_one_api_letterbox_movies__movie_id__detect_post'];
 		delete?: never;
@@ -2830,7 +2830,7 @@ export interface paths {
 		put?: never;
 		/**
 		 * Audit Policy
-		 * @description Dry-run the policy across a movie selection (read-only).
+		 * @description Submit a read-only policy audit with its policy content frozen at enqueue.
 		 */
 		post: operations['audit_policy_api_subtitle_policies__policy_id__audit_post'];
 		delete?: never;
@@ -2850,7 +2850,7 @@ export interface paths {
 		put?: never;
 		/**
 		 * Scan Library Subtitles
-		 * @description Fail closed until library subtitle scans have a canonical definition.
+		 * @description Submit a fixed batch of read-only subtitle scans for the requested scope (202).
 		 */
 		post: operations['scan_library_subtitles_api_subtitles_scan_library_post'];
 		delete?: never;
@@ -2870,10 +2870,10 @@ export interface paths {
 		put?: never;
 		/**
 		 * Sync All
-		 * @description Sync all movies and TV shows from Radarr/Sonarr into the database.
+		 * @description Submit a library synchronization job and return its canonical handle (202).
 		 *
-		 *     Runs inline: it is network + DB only (no GPU, no real CPU load), so it does
-		 *     not go through the job manager — the caller gets the full sync report back.
+		 *     Library sync is a canonical ``network`` job (Radarr/Sonarr/TMDB + database only).  An
+		 *     in-flight sync is reused rather than starting a concurrent full-library sync.
 		 */
 		post: operations['sync_all_api_sync_all_post'];
 		delete?: never;
@@ -4298,6 +4298,12 @@ export interface components {
 		};
 		/** DoviAnalyzeBatchRequest */
 		DoviAnalyzeBatchRequest: {
+			/**
+			 * Analysis Depth
+			 * @default standard
+			 * @enum {string}
+			 */
+			analysis_depth: 'standard' | 'deep';
 			/** Movie Ids */
 			movie_ids?: number[] | null;
 		};
@@ -4753,6 +4759,25 @@ export interface components {
 			 */
 			version: 1;
 		};
+		/**
+		 * JobSubmissionResponse
+		 * @description Bounded canonical submission handle (never a legacy or numeric transport id).
+		 */
+		JobSubmissionResponse: {
+			/** Detail Url */
+			detail_url: string;
+			/**
+			 * Disposition
+			 * @enum {string}
+			 */
+			disposition: 'created' | 'reused';
+			/** Job Id */
+			job_id: string;
+			/** Phase */
+			phase: string;
+			/** Snapshot Url */
+			snapshot_url: string;
+		};
 		/** LibraryScanRequest */
 		LibraryScanRequest: {
 			/**
@@ -4919,6 +4944,15 @@ export interface components {
 			 * @default []
 			 */
 			track_ids: string[];
+		};
+		/** PolicyAuditBody */
+		PolicyAuditBody: {
+			/**
+			 * Scope
+			 * @default all
+			 * @enum {string}
+			 */
+			scope: 'all' | 'movies' | 'tv';
 		};
 		/** PolicyBody */
 		PolicyBody: {
@@ -5589,11 +5623,23 @@ export interface components {
 			| 'webhook';
 		/** TvAnalyzeLibraryRequest */
 		TvAnalyzeLibraryRequest: {
+			/**
+			 * Analysis Depth
+			 * @default standard
+			 * @enum {string}
+			 */
+			analysis_depth: 'standard' | 'deep';
 			/** Series Ids */
 			series_ids?: number[] | null;
 		};
 		/** TvAnalyzeShowRequest */
 		TvAnalyzeShowRequest: {
+			/**
+			 * Analysis Depth
+			 * @default standard
+			 * @enum {string}
+			 */
+			analysis_depth: 'standard' | 'deep';
 			/** Season Number */
 			season_number?: number | null;
 		};
@@ -6332,7 +6378,7 @@ export interface operations {
 					[name: string]: unknown;
 				};
 				content: {
-					'application/json': unknown;
+					'application/json': components['schemas']['JobSubmissionResponse'];
 				};
 			};
 			/** @description Validation Error */
@@ -6462,7 +6508,7 @@ export interface operations {
 					[name: string]: unknown;
 				};
 				content: {
-					'application/json': unknown;
+					'application/json': components['schemas']['JobSubmissionResponse'];
 				};
 			};
 			/** @description Validation Error */
@@ -6561,7 +6607,7 @@ export interface operations {
 					[name: string]: unknown;
 				};
 				content: {
-					'application/json': unknown;
+					'application/json': components['schemas']['JobSubmissionResponse'];
 				};
 			};
 			/** @description Validation Error */
@@ -6618,12 +6664,12 @@ export interface operations {
 		requestBody?: never;
 		responses: {
 			/** @description Successful Response */
-			200: {
+			202: {
 				headers: {
 					[name: string]: unknown;
 				};
 				content: {
-					'application/json': unknown;
+					'application/json': components['schemas']['JobSubmissionResponse'];
 				};
 			};
 			/** @description Validation Error */
@@ -7483,7 +7529,7 @@ export interface operations {
 					[name: string]: unknown;
 				};
 				content: {
-					'application/json': unknown;
+					'application/json': components['schemas']['JobSubmissionResponse'];
 				};
 			};
 			/** @description Validation Error */
@@ -7722,12 +7768,12 @@ export interface operations {
 		requestBody?: never;
 		responses: {
 			/** @description Successful Response */
-			200: {
+			202: {
 				headers: {
 					[name: string]: unknown;
 				};
 				content: {
-					'application/json': unknown;
+					'application/json': components['schemas']['JobSubmissionResponse'];
 				};
 			};
 			/** @description Validation Error */
@@ -8160,7 +8206,7 @@ export interface operations {
 					[name: string]: unknown;
 				};
 				content: {
-					'application/json': unknown;
+					'application/json': components['schemas']['JobSubmissionResponse'];
 				};
 			};
 			/** @description Validation Error */
@@ -8281,7 +8327,7 @@ export interface operations {
 					[name: string]: unknown;
 				};
 				content: {
-					'application/json': unknown;
+					'application/json': components['schemas']['JobSubmissionResponse'];
 				};
 			};
 			/** @description Validation Error */
@@ -10694,17 +10740,17 @@ export interface operations {
 		};
 		requestBody: {
 			content: {
-				'application/json': components['schemas']['SelectionBody'];
+				'application/json': components['schemas']['PolicyAuditBody'];
 			};
 		};
 		responses: {
 			/** @description Successful Response */
-			200: {
+			202: {
 				headers: {
 					[name: string]: unknown;
 				};
 				content: {
-					'application/json': unknown;
+					'application/json': components['schemas']['JobSubmissionResponse'];
 				};
 			};
 			/** @description Validation Error */
@@ -10761,12 +10807,12 @@ export interface operations {
 		requestBody?: never;
 		responses: {
 			/** @description Successful Response */
-			200: {
+			202: {
 				headers: {
 					[name: string]: unknown;
 				};
 				content: {
-					'application/json': unknown;
+					'application/json': components['schemas']['JobSubmissionResponse'];
 				};
 			};
 		};

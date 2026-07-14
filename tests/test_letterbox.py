@@ -2789,14 +2789,15 @@ async def test_movie_detail_includes_finished_reencode_artifact(client, db, tmp_
 
 
 @pytest.mark.asyncio
-async def test_detect_returns_503_without_ffmpeg(client, db, monkeypatch):
+async def test_detect_defers_tool_availability_to_the_canonical_worker(client, db, monkeypatch):
     monkeypatch.setattr(binaries, "resolve", lambda name: None)
     movie = Movie(title="X", year=2000, folder_path="/m/x", tmdb_id=8)
     db.add(movie)
     await db.commit()
     await db.refresh(movie)
     resp = await client.post(f"/api/letterbox/movies/{movie.id}/detect")
-    assert resp.status_code == 503
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == "movie has no active media file"
 
 
 

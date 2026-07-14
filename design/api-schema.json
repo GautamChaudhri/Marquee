@@ -1946,6 +1946,15 @@
       },
       "DoviAnalyzeBatchRequest": {
         "properties": {
+          "analysis_depth": {
+            "default": "standard",
+            "enum": [
+              "standard",
+              "deep"
+            ],
+            "title": "Analysis Depth",
+            "type": "string"
+          },
           "movie_ids": {
             "anyOf": [
               {
@@ -3503,6 +3512,44 @@
         "title": "JobSnapshotResponse",
         "type": "object"
       },
+      "JobSubmissionResponse": {
+        "description": "Bounded canonical submission handle (never a legacy or numeric transport id).",
+        "properties": {
+          "detail_url": {
+            "title": "Detail Url",
+            "type": "string"
+          },
+          "disposition": {
+            "enum": [
+              "created",
+              "reused"
+            ],
+            "title": "Disposition",
+            "type": "string"
+          },
+          "job_id": {
+            "title": "Job Id",
+            "type": "string"
+          },
+          "phase": {
+            "title": "Phase",
+            "type": "string"
+          },
+          "snapshot_url": {
+            "title": "Snapshot Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "job_id",
+          "disposition",
+          "phase",
+          "snapshot_url",
+          "detail_url"
+        ],
+        "title": "JobSubmissionResponse",
+        "type": "object"
+      },
       "LibraryScanRequest": {
         "properties": {
           "force": {
@@ -3904,6 +3951,22 @@
           "operation"
         ],
         "title": "PlanRequest",
+        "type": "object"
+      },
+      "PolicyAuditBody": {
+        "properties": {
+          "scope": {
+            "default": "all",
+            "enum": [
+              "all",
+              "movies",
+              "tv"
+            ],
+            "title": "Scope",
+            "type": "string"
+          }
+        },
+        "title": "PolicyAuditBody",
         "type": "object"
       },
       "PolicyBody": {
@@ -6169,6 +6232,15 @@
       },
       "TvAnalyzeLibraryRequest": {
         "properties": {
+          "analysis_depth": {
+            "default": "standard",
+            "enum": [
+              "standard",
+              "deep"
+            ],
+            "title": "Analysis Depth",
+            "type": "string"
+          },
           "series_ids": {
             "anyOf": [
               {
@@ -6189,6 +6261,15 @@
       },
       "TvAnalyzeShowRequest": {
         "properties": {
+          "analysis_depth": {
+            "default": "standard",
+            "enum": [
+              "standard",
+              "deep"
+            ],
+            "title": "Analysis Depth",
+            "type": "string"
+          },
           "season_number": {
             "anyOf": [
               {
@@ -7550,7 +7631,7 @@
     },
     "/api/hdr/analyze": {
       "post": {
-        "description": "Analyze every Radarr-known Dolby Vision movie (optionally a subset).\n\nOnly movies Radarr flagged as DoVi (``has_dv``) with a media file are\nenqueued — there's no point probing files we already know are SDR/HDR10.",
+        "description": "Submit a sealed read-only batch for Radarr-known Dolby Vision movies.\n\nOnly movies Radarr flagged as DoVi (``has_dv``) with a media file are\nenqueued — there's no point probing files we already know are SDR/HDR10.",
         "operationId": "analyze_dovi_batch_api_hdr_analyze_post",
         "requestBody": {
           "content": {
@@ -7566,7 +7647,9 @@
           "202": {
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/JobSubmissionResponse"
+                }
               }
             },
             "description": "Successful Response"
@@ -7819,7 +7902,7 @@
     },
     "/api/hdr/tv/analyze": {
       "post": {
-        "description": "Analyze every Dolby Vision TV episode across visible shows (optionally a subset).",
+        "description": "Submit every selected DoVi TV episode through the canonical batch producer.",
         "operationId": "analyze_tv_dovi_batch_api_hdr_tv_analyze_post",
         "requestBody": {
           "content": {
@@ -7835,7 +7918,9 @@
           "202": {
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/JobSubmissionResponse"
+                }
               }
             },
             "description": "Successful Response"
@@ -7940,7 +8025,7 @@
     },
     "/api/hdr/tv/{series_id}/analyze": {
       "post": {
-        "description": "Enqueue a DoVi analysis batch for one show (or one season of it).",
+        "description": "Submit a sealed canonical DoVi analysis batch for one TV scope.",
         "operationId": "analyze_tv_show_dovi_api_hdr_tv__series_id__analyze_post",
         "parameters": [
           {
@@ -7967,7 +8052,9 @@
           "202": {
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/JobSubmissionResponse"
+                }
               }
             },
             "description": "Successful Response"
@@ -8032,7 +8119,7 @@
     },
     "/api/hdr/{movie_id}/analyze": {
       "post": {
-        "description": "Enqueue a single-movie DoVi analysis job; returns its job summary.",
+        "description": "Submit one read-only, signature-frozen DoVi observation.",
         "operationId": "analyze_movie_dovi_api_hdr__movie_id__analyze_post",
         "parameters": [
           {
@@ -8046,10 +8133,12 @@
           }
         ],
         "responses": {
-          "200": {
+          "202": {
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/JobSubmissionResponse"
+                }
               }
             },
             "description": "Successful Response"
@@ -9771,7 +9860,7 @@
     },
     "/api/letterbox/detect": {
       "post": {
-        "description": "Start a background batch detect (SSE progress). 202 + job_id, or 409.",
+        "description": "Submit a sealed batch of read-only movie/file observations.",
         "operationId": "detect_batch_api_letterbox_detect_post",
         "requestBody": {
           "content": {
@@ -9787,7 +9876,9 @@
           "202": {
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/JobSubmissionResponse"
+                }
               }
             },
             "description": "Successful Response"
@@ -10078,7 +10169,7 @@
     },
     "/api/letterbox/movies/{movie_id}/detect": {
       "post": {
-        "description": "Enqueue a durable single-movie detect job; returns its job summary.",
+        "description": "Submit one read-only movie/file observation through the canonical runtime.",
         "operationId": "detect_one_api_letterbox_movies__movie_id__detect_post",
         "parameters": [
           {
@@ -10102,10 +10193,12 @@
           }
         ],
         "responses": {
-          "200": {
+          "202": {
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/JobSubmissionResponse"
+                }
               }
             },
             "description": "Successful Response"
@@ -10798,7 +10891,9 @@
           "202": {
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/JobSubmissionResponse"
+                }
               }
             },
             "description": "Successful Response"
@@ -10958,7 +11053,9 @@
           "202": {
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/JobSubmissionResponse"
+                }
               }
             },
             "description": "Successful Response"
@@ -14243,7 +14340,7 @@
     },
     "/api/subtitle-policies/{policy_id}/audit": {
       "post": {
-        "description": "Dry-run the policy across a movie selection (read-only).",
+        "description": "Submit a read-only policy audit with its policy content frozen at enqueue.",
         "operationId": "audit_policy_api_subtitle_policies__policy_id__audit_post",
         "parameters": [
           {
@@ -14260,17 +14357,19 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/SelectionBody"
+                "$ref": "#/components/schemas/PolicyAuditBody"
               }
             }
           },
           "required": true
         },
         "responses": {
-          "200": {
+          "202": {
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/JobSubmissionResponse"
+                }
               }
             },
             "description": "Successful Response"
@@ -14294,7 +14393,7 @@
     },
     "/api/subtitles/scan-library": {
       "post": {
-        "description": "Fail closed until library subtitle scans have a canonical definition.",
+        "description": "Submit a fixed batch of read-only subtitle scans for the requested scope (202).",
         "operationId": "scan_library_subtitles_api_subtitles_scan_library_post",
         "requestBody": {
           "content": {
@@ -14334,13 +14433,15 @@
     },
     "/api/sync/all": {
       "post": {
-        "description": "Sync all movies and TV shows from Radarr/Sonarr into the database.\n\nRuns inline: it is network + DB only (no GPU, no real CPU load), so it does\nnot go through the job manager — the caller gets the full sync report back.",
+        "description": "Submit a library synchronization job and return its canonical handle (202).\n\nLibrary sync is a canonical ``network`` job (Radarr/Sonarr/TMDB + database only).  An\nin-flight sync is reused rather than starting a concurrent full-library sync.",
         "operationId": "sync_all_api_sync_all_post",
         "responses": {
-          "200": {
+          "202": {
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/JobSubmissionResponse"
+                }
               }
             },
             "description": "Successful Response"
