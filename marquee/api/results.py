@@ -40,7 +40,6 @@ class BackupResult:
 class BackupInfo:
     backup_id: str
     created_at: str
-    backup_dir: str
     db_size: int
     state_size: int
 

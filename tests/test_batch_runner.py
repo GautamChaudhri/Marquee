@@ -27,14 +27,15 @@ from marquee.pipeline.types import (
 )
 
 
-def _ctx(movie_id: int, title: str) -> _BatchMovie:
+def _ctx(movie_id: int, title: str, root: Path) -> _BatchMovie:
+    output = root / f"movie-{movie_id}"
     return _BatchMovie(
         run_id=f"run-{movie_id}",
         movie_id=movie_id,
         title=title,
         tmdb_id=None,
-        out_dir=Path("/tmp/unused"),
-        originals_dir=Path("/tmp/unused"),
+        out_dir=output,
+        originals_dir=output / "originals",
         started_at="2026-06-27T00:00:00Z",
         start_perf=time.perf_counter(),
         index=movie_id,
@@ -59,9 +60,9 @@ class _StubScorer:
         return passed
 
 
-def test_rank_failure_is_isolated_to_one_movie() -> None:
-    good_ctx = _ctx(1, "good_movie")
-    bad_ctx = _ctx(2, "bad_movie")
+def test_rank_failure_is_isolated_to_one_movie(tmp_path: Path) -> None:
+    good_ctx = _ctx(1, "good_movie", tmp_path)
+    bad_ctx = _ctx(2, "bad_movie", tmp_path)
     scorer = _StubScorer(fails_for="bad_movie")
 
     _rank(good_ctx, scorer, progress=None)

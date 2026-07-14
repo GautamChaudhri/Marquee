@@ -2905,26 +2905,6 @@ export interface paths {
 		patch?: never;
 		trace?: never;
 	};
-	'/api/system/backups/{backup_id}': {
-		parameters: {
-			query?: never;
-			header?: never;
-			path?: never;
-			cookie?: never;
-		};
-		get?: never;
-		put?: never;
-		post?: never;
-		/**
-		 * Delete Backup
-		 * @description Delete a single local rollback backup directory.
-		 */
-		delete: operations['delete_backup_api_system_backups__backup_id__delete'];
-		options?: never;
-		head?: never;
-		patch?: never;
-		trace?: never;
-	};
 	'/api/system/heal': {
 		parameters: {
 			query?: never;
@@ -3039,26 +3019,6 @@ export interface paths {
 		 * @description Delete all application data while keeping the current schema in place.
 		 */
 		post: operations['reset_database_endpoint_api_system_reset_db_post'];
-		delete?: never;
-		options?: never;
-		head?: never;
-		patch?: never;
-		trace?: never;
-	};
-	'/api/system/restore': {
-		parameters: {
-			query?: never;
-			header?: never;
-			path?: never;
-			cookie?: never;
-		};
-		get?: never;
-		put?: never;
-		/**
-		 * Restore Backup
-		 * @description Restore a backup and signal that a process restart is required.
-		 */
-		post: operations['restore_backup_api_system_restore_post'];
 		delete?: never;
 		options?: never;
 		head?: never;
@@ -10764,37 +10724,6 @@ export interface operations {
 			};
 		};
 	};
-	delete_backup_api_system_backups__backup_id__delete: {
-		parameters: {
-			query?: never;
-			header?: never;
-			path: {
-				backup_id: string;
-			};
-			cookie?: never;
-		};
-		requestBody?: never;
-		responses: {
-			/** @description Successful Response */
-			200: {
-				headers: {
-					[name: string]: unknown;
-				};
-				content: {
-					'application/json': unknown;
-				};
-			};
-			/** @description Validation Error */
-			422: {
-				headers: {
-					[name: string]: unknown;
-				};
-				content: {
-					'application/json': components['schemas']['HTTPValidationError'];
-				};
-			};
-		};
-	};
 	trigger_heal_api_system_heal_post: {
 		parameters: {
 			query?: never;
@@ -10923,37 +10852,6 @@ export interface operations {
 				};
 				content: {
 					'application/json': unknown;
-				};
-			};
-		};
-	};
-	restore_backup_api_system_restore_post: {
-		parameters: {
-			query: {
-				backup_id: string;
-			};
-			header?: never;
-			path?: never;
-			cookie?: never;
-		};
-		requestBody?: never;
-		responses: {
-			/** @description Successful Response */
-			202: {
-				headers: {
-					[name: string]: unknown;
-				};
-				content: {
-					'application/json': unknown;
-				};
-			};
-			/** @description Validation Error */
-			422: {
-				headers: {
-					[name: string]: unknown;
-				};
-				content: {
-					'application/json': components['schemas']['HTTPValidationError'];
 				};
 			};
 		};
