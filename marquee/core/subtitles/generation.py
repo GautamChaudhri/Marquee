@@ -8,6 +8,7 @@ import logging
 import shutil
 import time
 from pathlib import Path
+from typing import Any
 
 from fastapi import HTTPException
 from sqlalchemy import select
@@ -27,7 +28,7 @@ from marquee.core.subtitles.generators.subgen import (
     temp_audio_wav_path,
 )
 from marquee.core.subtitles.languages import same_language
-from marquee.models import MediaFile, MediaJob
+from marquee.models import MediaFile
 
 logger = logging.getLogger(__name__)
 
@@ -197,7 +198,7 @@ async def _select_stream_index(
     return None
 
 
-async def run_generation_job(db: AsyncSession, job: MediaJob, emit) -> dict:
+async def run_generation_job(db: AsyncSession, job: Any, emit) -> dict:
     cancel_event = cancel_registry.get(job.job_id)
     produced: str | None = None
     temp_audio: Path | None = None

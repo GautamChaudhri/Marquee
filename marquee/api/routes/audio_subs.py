@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 from collections import defaultdict
 from typing import Annotated, Any, Literal
-from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
@@ -20,18 +19,22 @@ from marquee.core.audio_subs_rollups import (
     season_rollup,
     show_rollup,
 )
+from marquee.core.configuration import (
+    ConfigurationError,
+    ConfigurationVersionConflictError,
+    update_configuration,
+)
+from marquee.core.configuration_cache import configuration_provider
 from marquee.core.jobs.manager import job_manager
 from marquee.core.subtitles import coverage as subtitle_coverage
 from marquee.core.subtitles import generation
-from marquee.core.subtitles.config import load_overrides, save_overrides, subtitle_settings
+from marquee.core.subtitles.config import subtitle_settings
 from marquee.core.tv_queries import series_visible
 from marquee.database import get_db
 from marquee.models import (
     Episode,
     EpisodeMediaFile,
-    JobSchedule,
     MediaFile,
-    MediaJob,
     Movie,
     Series,
     SubtitleInventory,
@@ -52,6 +55,7 @@ class TvDeepScanRequest(BaseModel):
 
 
 class PreferencesRequest(BaseModel):
+    expected_version: int
     preferred_languages: list[str] | None = None
     preferred_audio_languages: list[str] | None = None
     preferred_subtitle_languages: list[str] | None = None
@@ -94,19 +98,9 @@ def _effective_series_languages(series: Series) -> tuple[list[str], list[str]]:
 
 
 async def _active_media_jobs(db: AsyncSession) -> dict[int, dict[str, list[str]]]:
-    rows = (
-        await db.execute(
-            select(MediaJob).where(
-                MediaJob.media_file_id.is_not(None),
-                MediaJob.status.in_(tuple(_ACTIVE_MEDIA_STATUSES)),
-            )
-        )
-    ).scalars()
-    by_file: dict[int, dict[str, list[str]]] = defaultdict(lambda: {"scan": [], "generate": []})
-    for job in rows:
-        bucket = "generate" if job.operation == "subtitle_generate" else "scan"
-        by_file[job.media_file_id][bucket].append(job.job_id)
-    return by_file
+    # The legacy MediaJob lifecycle was removed with the canonical schema; no
+    # subtitle scan/generate work can be active until the family is remigrated.
+    return {}
 
 
 async def _load_tv_rows(db: AsyncSession, *, series_id: int | None = None):
@@ -264,7 +258,8 @@ async def summary(db: Annotated[AsyncSession, Depends(get_db)], request: Request
                     "coverage": rollup["dub_coverage"],
                 }
             )
-    schedule = await db.get(JobSchedule, "audio-subs-deep-scan")
+    # Deep-scan scheduling returns with the canonical PgQueuer scheduler.
+    schedule = None
     pending_file_count = (
         await db.execute(select(SubtitleInventory).where(SubtitleInventory.file_signature.is_(None)))
     ).scalars().all()
@@ -437,19 +432,48 @@ async def deep_scan(
 
 
 @router.put("/preferences")
-async def update_preferences(body: PreferencesRequest):
+async def update_preferences(
+    body: PreferencesRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
     updates = {
-        "SUBTITLE_PREFERRED_LANGUAGES": body.preferred_languages,
-        "SUBTITLE_PREFERRED_AUDIO_LANGUAGES": body.preferred_audio_languages,
-        "SUBTITLE_PREFERRED_SUBTITLE_LANGUAGES": body.preferred_subtitle_languages,
+        key: value
+        for key, value in {
+            "SUBTITLE_PREFERRED_LANGUAGES": body.preferred_languages,
+            "SUBTITLE_PREFERRED_AUDIO_LANGUAGES": body.preferred_audio_languages,
+            "SUBTITLE_PREFERRED_SUBTITLE_LANGUAGES": body.preferred_subtitle_languages,
+        }.items()
+        if value is not None
     }
-    overrides = load_overrides()
-    for key, value in updates.items():
-        if value is not None:
-            setattr(subtitle_settings, key, value)
-            overrides[key] = value
-    save_overrides(overrides)
-    return {"ok": True}
+    try:
+        state, changed = await update_configuration(
+            db,
+            expected_version=body.expected_version,
+            updates=updates,
+            actor={"kind": "api", "id": "audio-subs"},
+            trigger="audio_subs_preferences_api",
+        )
+    except ConfigurationVersionConflictError as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "configuration_version_conflict",
+                "current_version": exc.current.version,
+                "etag": exc.current.etag,
+            },
+        ) from exc
+    except ConfigurationError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    await db.commit()
+    await configuration_provider.refresh_from_session(db)
+    return {
+        "ok": True,
+        "configuration_version": state.version,
+        "etag": state.etag,
+        "changed": changed,
+    }
 
 
 @router.put("/tv/{series_id}/preferences")
@@ -487,42 +511,10 @@ async def generate_tv(
     if not media_file_ids:
         raise HTTPException(status_code=400, detail="No episode media files found for generation")
     generation.validate_generation_request(body.task, generation.current_subgen_model())
-    actual_children = []
-    for media_file_id in media_file_ids:
-        media_job = MediaJob(
-            job_id=uuid4().hex,
-            operation="subtitle_generate",
-            media_file_id=media_file_id,
-            trigger="batch",
-            status="queued",
-            request_json=json.dumps(body.model_dump()),
-        )
-        db.add(media_job)
-        await db.flush()
-        actual_children.append(
-            {
-                "job_type": "subtitle_generate",
-                "payload": {"media_job_id": media_job.job_id},
-                "priority": 60,
-                "resources": {
-                    f"media-file:{media_file_id}": 1,
-                    **(
-                        {"gpu": 1}
-                        if subtitle_settings.subgen_deployment == "embedded"
-                        else {"network_external": 1}
-                    ),
-                },
-                "subject_type": "media_file",
-                "subject_id": media_file_id,
-            }
-        )
     batch, _children = await job_manager.create_batch(
         db,
         parent_type="subtitle_generate_batch",
         parent_payload={"series_id": series_id, **body.model_dump()},
-        parent_priority=60,
-        parent_subject_type="audio_subs_tv_batch",
-        parent_subject_id=str(series_id),
-        children=actual_children,
+        media_file_ids=media_file_ids,
     )
-    return {"job_id": batch.id, "total": len(actual_children), "events_url": f"/api/jobs/{batch.id}/events"}
+    return {"job_id": batch.id, "total": len(media_file_ids), "events_url": f"/api/jobs/{batch.id}/events"}

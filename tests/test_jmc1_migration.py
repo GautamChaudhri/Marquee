@@ -83,12 +83,15 @@ def test_clean_baseline_is_one_root_and_excludes_other_schema_owners() -> None:
     root = Path(__file__).resolve().parent.parent
     scripts = ScriptDirectory.from_config(Config(str(root / "alembic.ini")))
     assert scripts.get_heads() == [ALEMBIC_HEAD]
-    revision = scripts.get_revision(ALEMBIC_HEAD)
-    assert revision is not None and revision.down_revision is None
+    head = scripts.get_revision(ALEMBIC_HEAD)
+    assert head is not None and head.down_revision == "0001_jmc1"
+    baseline = scripts.get_revision(head.down_revision)
+    assert baseline is not None and baseline.down_revision is None
 
-    source = Path(revision.path).read_text(encoding="utf-8")
-    for table in PGQUEUER_TABLES | EXCLUDED_DEPLOYMENT_TABLES:
-        assert f"create_table('{table}'" not in source
+    for revision in (baseline, head):
+        source = Path(revision.path).read_text(encoding="utf-8")
+        for table in PGQUEUER_TABLES | EXCLUDED_DEPLOYMENT_TABLES:
+            assert f"create_table('{table}'" not in source
 
 
 def test_pgqueuer_cli_keeps_password_out_of_process_arguments(monkeypatch) -> None:

@@ -1,12 +1,16 @@
 <script lang="ts">
 	import { putAudioSubsPreferences } from '$lib/api/subtitles';
+	import { getSettings } from '$lib/api/system';
+	import { CONFIGURATION_CONFLICT_MESSAGE, isConfigurationConflict } from '$lib/api/client';
 	import { toast } from '$lib/toast';
 
 	let {
 		preferred,
+		configurationVersion,
 		onSave
 	}: {
 		preferred: { audio: string[]; subtitles: string[]; shared: string[] };
+		configurationVersion: number;
 		onSave: () => void;
 	} = $props();
 
@@ -15,6 +19,7 @@
 	let preferredAudio = $state('');
 	let preferredSubtitles = $state('');
 	let saving = $state(false);
+	let observedVersion = $derived(configurationVersion);
 
 	$effect(() => {
 		preferredShared = (preferred.shared || []).join(', ');
@@ -39,10 +44,16 @@
 				preferred_audio_languages: separatePreferred ? parseLanguages(preferredAudio) : [],
 				preferred_subtitle_languages: separatePreferred ? parseLanguages(preferredSubtitles) : []
 			};
-			await putAudioSubsPreferences(fetch, prefs);
+			const result = await putAudioSubsPreferences(fetch, prefs, observedVersion);
+			observedVersion = result.configuration_version;
 			toast('Subtitle preferences saved successfully', 'good');
 			onSave();
 		} catch (e: any) {
+			if (isConfigurationConflict(e)) {
+				observedVersion = (await getSettings(fetch)).configuration_version;
+				toast(CONFIGURATION_CONFLICT_MESSAGE, 'info');
+				return;
+			}
 			toast(e.message || 'Failed to save preferred languages', 'bad');
 		} finally {
 			saving = false;

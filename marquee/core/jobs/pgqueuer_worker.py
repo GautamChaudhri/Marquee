@@ -13,6 +13,7 @@ from pgqueuer.models import Context
 from pgqueuer.models import Job as PgQueuerJob
 
 from marquee.config import settings
+from marquee.core.configuration_cache import configuration_provider
 from marquee.core.jobs.delivery import deliver_control_job
 from marquee.db_migration import asyncpg_dsn, verify_runtime_schema
 
@@ -52,6 +53,7 @@ async def run() -> None:
     )
     try:
         await verify_runtime_schema(connection)
+        await configuration_provider.start(role="worker")
         app = create_worker(connection)
         _install_shutdown_handlers(app)
         batch_size = settings.JOB_PGQUEUER_BATCH_SIZE
@@ -68,6 +70,7 @@ async def run() -> None:
             ),
         )
     finally:
+        await configuration_provider.stop()
         await connection.close()
 
 

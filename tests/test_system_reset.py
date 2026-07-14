@@ -22,7 +22,15 @@ async def client():
 @pytest.mark.asyncio
 async def test_reset_db_endpoint_clears_application_tables(db, client: AsyncClient):
     movie = Movie(title="Reset Me", year=2024, folder_path="/movies/reset", tmdb_id=424242)
-    job = Job(id="reset-job", type="maintenance", status="queued")
+    job = Job(
+        id="reset-job",
+        type="maintenance",
+        payload_version=1,
+        request={},
+        phase="queued",
+        root_id="reset-job",
+        subject_snapshot={"version": 1, "kind": "system", "label": "Reset test"},
+    )
     db.add_all([movie, job])
     await db.commit()
 

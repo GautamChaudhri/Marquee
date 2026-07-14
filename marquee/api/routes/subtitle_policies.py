@@ -11,22 +11,18 @@ from __future__ import annotations
 import json
 import logging
 from typing import Annotated
-from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from marquee.core.media_files import (
-    ensure_media_file_for_movie,
-    resolve_media_file,
-)
-from marquee.core.media_jobs import media_job_manager
+from marquee.core.jobs.manager import UnmigratedJobPlatformError
+from marquee.core.media_files import ensure_media_file_for_movie
 from marquee.core.subtitles import service
 from marquee.core.subtitles.policy import evaluate_policy
 from marquee.database import get_db
-from marquee.models import MediaBatch, Movie, SubtitlePolicy
+from marquee.models import Movie, SubtitlePolicy
 
 logger = logging.getLogger(__name__)
 
@@ -200,57 +196,5 @@ async def audit_policy(
 async def apply_policy(
     policy_id: int, body: SelectionBody, db: Annotated[AsyncSession, Depends(get_db)]
 ):
-    """Create a batch of confirmed remove jobs from a (re-evaluated) selection."""
-    policy = await _load_policy(db, policy_id)
-    snapshot = _policy_snapshot(policy)
-
-    batch = MediaBatch(batch_id=uuid4().hex, operation="subtitle_policy", status="running")
-    db.add(batch)
-    await db.commit()
-
-    created = 0
-    skipped: list[dict] = []
-    for movie_id in body.movie_ids:
-        movie = (await db.execute(select(Movie).where(Movie.id == movie_id))).scalar_one_or_none()
-        if movie is None:
-            continue
-        media_file = await ensure_media_file_for_movie(db, movie)
-        if media_file is None:
-            skipped.append({"movie_id": movie_id, "reason": "no_media_file"})
-            continue
-        try:
-            resolved = await resolve_media_file(db, media_file.id)
-            inventory = await service.get_inventory_dict(db, media_file.id)
-        except Exception as exc:  # noqa: BLE001
-            skipped.append({"movie_id": movie_id, "reason": f"unavailable: {exc}"})
-            continue
-        ev = evaluate_policy(inventory["tracks"], inventory.get("audio_streams", []), snapshot)
-        if ev.has_review:
-            skipped.append({"movie_id": movie_id, "reason": "review_required"})
-            continue
-        if not ev.removals:
-            continue
-        if resolved.is_hardlinked and policy.hardlink_action != "allow_break":
-            skipped.append({"movie_id": movie_id, "reason": "hardlink_protected"})
-            continue
-        await media_job_manager.create_job(
-            db,
-            operation="subtitle_remove",
-            media_file_id=media_file.id,
-            trigger="policy",
-            request={
-                "inventory_id": inventory["inventory_id"],
-                "track_ids": ev.removals,
-                "allow_break": policy.hardlink_action == "allow_break",
-                "backup": policy.backup_mode == "keep_original",
-            },
-            status="queued",
-            input_signature=resolved.signature,
-            batch_id=batch.batch_id,
-            commit=False,
-        )
-        created += 1
-
-    batch.requested_count = created
-    await db.commit()
-    return {"batch_id": batch.batch_id, "queued": created, "skipped": skipped}
+    """Fail closed until subtitle-policy mutations have a canonical definition."""
+    raise UnmigratedJobPlatformError(f"subtitle_policy.apply:{policy_id}")

@@ -87,6 +87,10 @@ async def db():
     factory = _get_session_factory()
     async with factory() as session:
         await reset_database(session)
+        from marquee.core.configuration_cache import configuration_provider
+
+        await configuration_provider.refresh_from_session(session, initial=True)
+        await session.rollback()
         yield session
         await session.rollback()
         await session.close()

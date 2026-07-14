@@ -12,7 +12,7 @@ import asyncio
 import json
 import logging
 from collections.abc import Callable
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
 from uuid import uuid4
@@ -30,8 +30,7 @@ from marquee.api.routes.jobs import job_summary
 from marquee.config import settings
 from marquee.core import letterbox_reencode
 from marquee.core.jobs import job_manager
-from marquee.core.jobs.labels import humanize_job_type
-from marquee.core.jobs.manager import ACTIVE, TERMINAL
+from marquee.core.jobs.manager import UnmigratedJobPlatformError
 from marquee.core.letterbox_prefilter import (
     prefilter_category,
     refresh_letterbox_prefilter_for_movie,
@@ -52,7 +51,6 @@ from marquee.core.media_files import (
     ensure_media_file_for_movie,
     resolve_media_file,
 )
-from marquee.core.media_jobs import media_job_manager
 from marquee.core.rate_limit import RateLimiter
 from marquee.core.sort_title import title_sort_expr
 from marquee.core.tv_queries import series_visible
@@ -67,7 +65,6 @@ from marquee.models import (
     LetterboxReencodeArtifact,
     LetterboxState,
     MediaFile,
-    MediaJob,
     Movie,
     Series,
 )
@@ -195,9 +192,8 @@ def _as_utc(value: datetime | None) -> datetime | None:
     return value.replace(tzinfo=UTC)
 
 
-async def _generic_media_job_bridge(db: AsyncSession, media_job: MediaJob) -> Job | None:
-    rows = (await db.execute(select(Job).where(Job.type == media_job.operation))).scalars().all()
-    return next((row for row in rows if row.payload.get("media_job_id") == media_job.job_id), None)
+async def _generic_media_job_bridge(db: AsyncSession, media_job: object) -> Job | None:
+    raise UnmigratedJobPlatformError("letterbox.media_job_bridge")
 
 
 def _resolution_label(width: int | None, height: int | None) -> str | None:
@@ -285,60 +281,20 @@ def _dolby_vision_summary(movie: Movie) -> dict:
     }
 
 
-def _media_job_summary(job: MediaJob) -> dict:
-    return {
-        "job_id": job.job_id,
-        "operation": job.operation,
-        "label": humanize_job_type(job.operation),
-        "status": job.status,
-        "stage": job.stage,
-        "trigger": job.trigger,
-        "media_file_id": job.media_file_id,
-        "batch_id": job.batch_id,
-        "progress_done": job.progress_done,
-        "progress_total": job.progress_total,
-        "plan": json.loads(job.plan_json) if job.plan_json else None,
-        "result": json.loads(job.result_json) if job.result_json else None,
-        "error": json.loads(job.error_json) if job.error_json else None,
-        "input_signature": job.input_signature,
-        "plan_expires_at": _iso_or_none(job.plan_expires_at),
-        "confirmed_at": _iso_or_none(job.confirmed_at),
-        "created_at": _iso_or_none(job.created_at),
-        "updated_at": _iso_or_none(job.updated_at),
-    }
+def _media_job_summary(job: object) -> dict:
+    raise UnmigratedJobPlatformError("letterbox.media_job_summary")
 
 
 async def _latest_reencode_snapshot(db: AsyncSession, movie: Movie) -> dict | None:
-    media_file = await ensure_media_file_for_movie(db, movie)
-    if media_file is None:
-        return None
-
-    # Take the single most-recent job for this file, then surface it only if its
-    # status is one we show. Filtering by status *before* ordering would let
-    # discarding the latest interrupted run resurface an older interrupted one.
-    job_result = await db.execute(
-        select(MediaJob)
-        .where(
-            MediaJob.operation == "letterbox_reencode",
-            MediaJob.media_file_id == media_file.id,
-        )
-        .order_by(MediaJob.created_at.desc(), MediaJob.job_id.desc())
-        .limit(1)
-    )
-    latest = job_result.scalars().first()
-    job = latest if latest is not None and latest.status in _SURFACED_REENCODE_STATUSES else None
-    artifact_result = await db.execute(
+    artifact = await db.scalar(
         select(LetterboxReencodeArtifact)
         .where(LetterboxReencodeArtifact.movie_id == movie.id)
         .order_by(LetterboxReencodeArtifact.created_at.desc(), LetterboxReencodeArtifact.id.desc())
+        .limit(1)
     )
-    artifact = artifact_result.scalars().first()
-    if job is None and artifact is None:
+    if artifact is None:
         return None
-    return {
-        "job": _media_job_summary(job) if job is not None else None,
-        "artifact": letterbox_reencode.artifact_to_dict(artifact) if artifact is not None else None,
-    }
+    return {"job": None, "artifact": letterbox_reencode.artifact_to_dict(artifact)}
 
 
 def _prefilter_movie_to_dict(movie: Movie, state: LetterboxState | None) -> dict:
@@ -562,18 +518,18 @@ async def _load_tv_episode_rows(
 
 async def _active_tv_job_ids(db: AsyncSession, series_id: int) -> list[str]:
     series_jobs = select(Job.id).where(
-        Job.subject_type == "series",
-        Job.subject_id == str(series_id),
-        Job.status.notin_(tuple(TERMINAL)),
+        Job.subject_kind == "series",
+        Job.subject_reference == str(series_id),
+        Job.phase != "terminal",
     )
     media_file_jobs = (
         select(Job.id)
-        .join(MediaFile, Job.subject_id == cast(MediaFile.id, String))
+        .join(MediaFile, Job.subject_reference == cast(MediaFile.id, String))
         .join(EpisodeMediaFile, EpisodeMediaFile.media_file_id == MediaFile.id)
         .join(Episode, Episode.id == EpisodeMediaFile.episode_id)
         .where(
-            Job.subject_type == "media_file",
-            Job.status.notin_(tuple(TERMINAL)),
+            Job.subject_kind == "media_file",
+            Job.phase != "terminal",
             MediaFile.is_active.is_(True),
             Episode.series_id == series_id,
         )
@@ -635,11 +591,11 @@ async def letterbox_status(db: Annotated[AsyncSession, Depends(get_db)]):
             select(Job.id)
             .where(
                 Job.type == "letterbox_detect_batch",
-                Job.status.in_(tuple(ACTIVE)),
+                Job.phase.in_(("queued", "running", "stopping")),
                 exists(
                     select(1).where(
                         child_job.parent_id == Job.id,
-                        child_job.status.notin_(tuple(TERMINAL)),
+                        child_job.phase != "terminal",
                     )
                 ),
             )
@@ -1282,9 +1238,9 @@ async def _active_detect_job(db: AsyncSession, movie_id: int) -> Job | None:
             select(Job)
             .where(
                 Job.type == "letterbox_detect",
-                Job.subject_type == "movie",
-                Job.subject_id == str(movie_id),
-                Job.status.notin_(tuple(TERMINAL)),
+                Job.subject_kind == "movie",
+                Job.subject_reference == str(movie_id),
+                Job.phase != "terminal",
             )
             .order_by(Job.created_at.desc(), Job.id.desc())
             .limit(1)
@@ -1858,75 +1814,8 @@ async def _create_reencode_plan_job(
     db: AsyncSession,
     movie_id: int,
     body: ReencodePlanRequest,
-) -> tuple[MediaJob, dict, datetime]:
-    movie = await _load_movie(db, movie_id)
-    state = await _load_state(db, movie_id)
-    if state.status == "variable_unsafe":
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "code": "variable_unsafe",
-                "message": "Variable aspect ratio is unsafe to crop permanently.",
-            },
-        )
-    top = body.top if body.top is not None else state.recommended_crop_top
-    bottom = body.bottom if body.bottom is not None else state.recommended_crop_bottom
-    if not top and not bottom:
-        raise HTTPException(
-            status_code=422,
-            detail={"code": "missing_crop", "message": "No crop to apply (recommendation is 0)."},
-        )
-    media_file = await ensure_media_file_for_movie(db, movie)
-    if media_file is None:
-        raise HTTPException(
-            status_code=422,
-            detail={"code": "missing_media_file", "message": "Movie has no media file path."},
-        )
-    try:
-        resolved = await resolve_media_file(db, media_file.id)
-        plan = await letterbox_reencode.build_plan(
-            db,
-            resolved,
-            top=top or 0,
-            bottom=bottom or 0,
-            allow_cpu_fallback=body.allow_cpu_fallback,
-            encoder=body.encoder,
-            quality=body.quality,
-            preset=body.preset,
-            codec=body.codec,
-        )
-    except (MediaFileNotFoundError, MediaFileUnavailableError) as exc:
-        raise HTTPException(
-            status_code=422,
-            detail={"code": "file_unavailable", "message": str(exc)},
-        ) from exc
-    except letterbox_reencode.ReencodePlanError as exc:
-        raise _map_reencode_error(exc) from exc
-
-    await media_job_manager.supersede_planned_media_jobs(
-        db,
-        media_file_id=media_file.id,
-        operation="letterbox_reencode",
-    )
-
-    expires_at = datetime.now(UTC) + timedelta(hours=2)
-    job = await media_job_manager.create_job(
-        db,
-        operation="letterbox_reencode",
-        media_file_id=media_file.id,
-        trigger="manual",
-        request={
-            "movie_id": movie_id,
-            "top": top or 0,
-            "bottom": bottom or 0,
-            "allow_cpu_fallback": body.allow_cpu_fallback,
-        },
-        plan=plan,
-        status="planned",
-        input_signature=resolved.signature,
-        plan_expires_at=expires_at,
-    )
-    return job, plan, expires_at
+) -> tuple[object, dict, datetime]:
+    raise UnmigratedJobPlatformError(f"letterbox_reencode.plan.movie:{movie_id}")
 
 
 async def _create_tv_reencode_plan_job(
@@ -1934,179 +1823,14 @@ async def _create_tv_reencode_plan_job(
     series_id: int,
     episode_id: int,
     body: ReencodePlanRequest,
-) -> tuple[MediaJob, dict, datetime]:
-    rows = await _tv_scope_rows(db, series_id)
-    group_rows = _scope_episode_group(rows, episode_id)
-    if not group_rows:
-        raise HTTPException(status_code=404, detail=f"Episode id={episode_id} not found")
-    target_row = next(row for row in group_rows if row[0].id == episode_id)
-    episode, _series, state, media_file_id = target_row
-    if state is None:
-        raise HTTPException(
-            status_code=422,
-            detail={"code": "missing_state", "message": "Run detect before re-encoding."},
-        )
-    if state.status == "variable_unsafe":
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "code": "variable_unsafe",
-                "message": "Variable aspect ratio is unsafe to crop permanently.",
-            },
-        )
-    if state.status != "candidate":
-        raise HTTPException(
-            status_code=422,
-            detail={"code": "invalid_status", "message": "Episode is not a crop candidate."},
-        )
-    top = body.top if body.top is not None else state.recommended_crop_top
-    bottom = body.bottom if body.bottom is not None else state.recommended_crop_bottom
-    if not top and not bottom:
-        raise HTTPException(
-            status_code=422,
-            detail={"code": "missing_crop", "message": "No crop to apply (recommendation is 0)."},
-        )
-    if media_file_id is None:
-        raise HTTPException(
-            status_code=422,
-            detail={"code": "missing_media_file", "message": "Episode has no media file path."},
-        )
-    try:
-        resolved = await resolve_media_file(db, media_file_id)
-        plan = await letterbox_reencode.build_plan(
-            db,
-            resolved,
-            top=top or 0,
-            bottom=bottom or 0,
-            allow_cpu_fallback=body.allow_cpu_fallback,
-            encoder=body.encoder,
-            quality=body.quality,
-            preset=body.preset,
-            codec=body.codec,
-        )
-    except (MediaFileNotFoundError, MediaFileUnavailableError) as exc:
-        raise HTTPException(
-            status_code=422,
-            detail={"code": "file_unavailable", "message": str(exc)},
-        ) from exc
-    except letterbox_reencode.ReencodePlanError as exc:
-        raise _map_reencode_error(exc) from exc
-
-    await media_job_manager.supersede_planned_media_jobs(
-        db,
-        media_file_id=media_file_id,
-        operation="letterbox_reencode",
+) -> tuple[object, dict, datetime]:
+    raise UnmigratedJobPlatformError(
+        f"letterbox_reencode.plan.episode:{series_id}:{episode_id}"
     )
 
-    expires_at = datetime.now(UTC) + timedelta(hours=2)
-    episode_ids = [episode.id for episode, *_rest in group_rows]
-    job = await media_job_manager.create_job(
-        db,
-        operation="letterbox_reencode",
-        media_file_id=media_file_id,
-        trigger="manual",
-        request={
-            "series_id": series_id,
-            "episode_id": episode_id,
-            "episode_ids": episode_ids,
-            "top": top or 0,
-            "bottom": bottom or 0,
-            "allow_cpu_fallback": body.allow_cpu_fallback,
-        },
-        plan=plan,
-        status="planned",
-        input_signature=resolved.signature,
-        plan_expires_at=expires_at,
-    )
-    return job, plan, expires_at
 
-
-async def _confirm_media_job_plan(db: AsyncSession, job: MediaJob) -> None:
-    if job.status != "planned":
-        raise HTTPException(status_code=409, detail={"code": "not_planned", "status": job.status})
-    plan_expires_at = _as_utc(job.plan_expires_at)
-    if plan_expires_at and plan_expires_at < datetime.now(UTC):
-        job.status = "failed"
-        job.error_json = json.dumps({"code": "plan_stale", "error": "plan expired"})
-        await db.commit()
-        raise HTTPException(
-            status_code=409, detail={"code": "plan_stale", "message": "plan expired"}
-        )
-
-    if job.plan_json:
-        plan = json.loads(job.plan_json)
-        if not plan.get("capabilities", {}).get("can_execute", True):
-            blocking = [
-                w["code"]
-                for w in plan.get("warnings", [])
-                if w.get("code") in ("container_not_writable", "mkv_track_ids_unavailable")
-            ]
-            raise HTTPException(
-                status_code=422,
-                detail={
-                    "code": "plan_not_executable",
-                    "message": "plan cannot be executed",
-                    "blocking_warnings": blocking,
-                },
-            )
-
-    try:
-        resolved = await resolve_media_file(db, job.media_file_id)
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(
-            status_code=422, detail={"code": "file_unavailable", "message": str(exc)}
-        ) from exc
-    if job.input_signature and resolved.signature != job.input_signature:
-        raise HTTPException(
-            status_code=409,
-            detail={"code": "plan_stale", "message": "file changed since plan was created"},
-        )
-
-    job.status = "queued"
-    job.confirmed_at = datetime.now(UTC)
-    generic = await _generic_media_job_bridge(db, job)
-    if generic is not None:
-        generic.status = "queued"
-        generic.scheduled_at = datetime.now(UTC)
-
-    if job.operation == "letterbox_reencode" and job.media_file_id is not None:
-        movie_file = await db.get(MediaFile, job.media_file_id)
-        if movie_file and movie_file.movie_id is not None:
-            stmt = select(LetterboxState).where(
-                LetterboxState.media_type == "movie",
-                LetterboxState.movie_id == movie_file.movie_id,
-            )
-            state = (await db.execute(stmt)).scalar_one_or_none()
-            if state and state.status == "candidate":
-                state.status = "tagged"
-                state.reviewed = False
-        elif movie_file:
-            episode_ids = set(
-                (
-                    await db.execute(
-                        select(EpisodeMediaFile.episode_id).where(
-                            EpisodeMediaFile.media_file_id == job.media_file_id
-                        )
-                    )
-                ).scalars()
-            )
-            if job.request_json:
-                request = json.loads(job.request_json)
-                episode_ids.update(request.get("episode_ids") or [])
-            states = (
-                await db.execute(
-                    select(LetterboxState).where(
-                        LetterboxState.media_type == "episode",
-                        LetterboxState.episode_id.in_(episode_ids),
-                    )
-                )
-            ).scalars().all()
-            for state in states:
-                if state.status == "candidate":
-                    state.status = "tagged"
-                    state.reviewed = False
-
-    await db.commit()
+async def _confirm_media_job_plan(db: AsyncSession, job: object) -> None:
+    raise UnmigratedJobPlatformError("letterbox_reencode.confirm")
 
 
 @router.post("/movies/{movie_id}/reencode-plan", status_code=201)

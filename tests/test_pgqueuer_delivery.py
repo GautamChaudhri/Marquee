@@ -118,7 +118,7 @@ async def test_delivery_commits_canonical_success_before_return(db):
         {"echo": {"echo": "jmc1"}},
     )
     assert len(attempts) == 1
-    assert attempts[0].status == "succeeded"
+    assert (attempts[0].phase, attempts[0].outcome) == ("finished", "succeeded")
 
 
 async def test_duplicate_delivery_performs_effect_once(db):
@@ -185,7 +185,10 @@ async def test_new_queue_manager_recovers_abandoned_running_attempt(db):
     )
     assert job is not None
     assert (job.phase, job.outcome) == ("terminal", "succeeded")
-    assert [attempt.status for attempt in attempts] == ["interrupted", "succeeded"]
+    assert [(attempt.phase, attempt.outcome) for attempt in attempts] == [
+        ("finished", "interrupted"),
+        ("finished", "succeeded"),
+    ]
 
 
 async def test_retry_is_persisted_before_pgqueuer_signal_is_rethrown(db):
@@ -204,9 +207,10 @@ async def test_retry_is_persisted_before_pgqueuer_signal_is_rethrown(db):
     job = await db.get(Job, job_id)
     attempt = await db.scalar(select(JobAttempt).where(JobAttempt.job_id == job_id))
     assert job is not None and attempt is not None
-    assert (job.phase, job.status, attempt.status) == (
+    assert (job.phase, job.outcome, attempt.phase, attempt.outcome) == (
         "queued",
-        "retry_scheduled",
+        None,
+        "finished",
         "retrying",
     )
 
@@ -254,7 +258,10 @@ async def test_real_queue_manager_owns_retry_delay_and_second_attempt(db, instal
     )
     assert calls == 2
     assert job is not None and (job.phase, job.outcome) == ("terminal", "succeeded")
-    assert [attempt.status for attempt in attempts] == ["retrying", "succeeded"]
+    assert [(attempt.phase, attempt.outcome) for attempt in attempts] == [
+        ("finished", "retrying"),
+        ("finished", "succeeded"),
+    ]
     assert attempts[0].error["delay_seconds"] == 0.05
     assert await installed_pgqueuer.job_status([ticket_id]) == [(ticket_id, "successful")]
 

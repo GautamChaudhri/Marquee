@@ -14,7 +14,6 @@ from marquee.main import app
 from marquee.models import (
     DoviState,
     Episode,
-    Job,
     Movie,
     RadarrOverlayProfilePreference,
     Season,
@@ -404,44 +403,36 @@ class TestSonarrPreferences:
 @pytest.mark.asyncio
 class TestTvAnalyzeBatch:
     async def test_show_batch_builds_one_child_per_dv_episode(
-        self, client: AsyncClient, tv_library, db: AsyncSession
+        self, client: AsyncClient, tv_library
     ):
         _show_a, show_b = tv_library
-        resp = await client.post(f"/api/hdr/tv/{show_b.id}/analyze", json={})
-        assert resp.status_code == 202
-        body = resp.json()
-        assert body["total"] == 2  # season0 DV + season1 e04 DV (has_dv True); has_dv False elsewhere
-
-        parent = await db.get(Job, body["job_id"])
-        assert parent.type == "dovi_analyze_batch"
-        assert parent.subject_type == "dovi_tv_batch"
-        assert parent.subject_id == str(show_b.id)
-
-        children = (await db.execute(select(Job).where(Job.parent_id == parent.id))).scalars().all()
-        assert len(children) == 2
-        assert {child.subject_type for child in children} == {"episode"}
-        assert {child.type for child in children} == {"dovi_analyze"}
+        response = await client.post(f"/api/hdr/tv/{show_b.id}/analyze", json={})
+        assert response.status_code == 503
+        assert response.json()["code"] == "job_platform_unmigrated"
 
     async def test_show_batch_season_filter(self, client: AsyncClient, tv_library):
         _show_a, show_b = tv_library
-        resp = await client.post(f"/api/hdr/tv/{show_b.id}/analyze", json={"season_number": 1})
-        assert resp.status_code == 202
-        assert resp.json()["total"] == 1  # only season1 e04 is DV
+        response = await client.post(
+            f"/api/hdr/tv/{show_b.id}/analyze",
+            json={"season_number": 1},
+        )
+        assert response.status_code == 503
+        assert response.json()["code"] == "job_platform_unmigrated"
 
     async def test_show_batch_400_when_no_eligible_episodes(self, client: AsyncClient, tv_library):
         show_a, _show_b = tv_library
-        resp = await client.post(f"/api/hdr/tv/{show_a.id}/analyze", json={})
-        assert resp.status_code == 400
+        response = await client.post(f"/api/hdr/tv/{show_a.id}/analyze", json={})
+        assert response.status_code == 400
 
     async def test_library_batch_covers_all_visible_shows(self, client: AsyncClient, tv_library):
-        resp = await client.post("/api/hdr/tv/analyze", json={})
-        assert resp.status_code == 202
-        assert resp.json()["total"] == 2
+        response = await client.post("/api/hdr/tv/analyze", json={})
+        assert response.status_code == 503
+        assert response.json()["code"] == "job_platform_unmigrated"
 
     async def test_library_batch_series_ids_subset(self, client: AsyncClient, tv_library):
-        show_a, show_b = tv_library
-        resp = await client.post("/api/hdr/tv/analyze", json={"series_ids": [show_a.id]})
-        assert resp.status_code == 400  # show_a has no DV episodes
+        show_a, _show_b = tv_library
+        response = await client.post("/api/hdr/tv/analyze", json={"series_ids": [show_a.id]})
+        assert response.status_code == 400  # show_a has no DV episodes
 
 
 @pytest.mark.asyncio

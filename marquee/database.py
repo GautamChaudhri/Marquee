@@ -202,6 +202,23 @@ async def reset_database(db: AsyncSession) -> dict[str, str | int]:
     formatted_tables = ", ".join(preparer.format_table(table) for table in tables)
     await db.execute(text(f"TRUNCATE TABLE {formatted_tables} RESTART IDENTITY CASCADE"))
 
+    table_names = {table.name for table in tables}
+    if {"configuration_revisions", "configuration_current"} <= table_names:
+        await db.execute(
+            text(
+                "INSERT INTO configuration_revisions "
+                "(version, values, checksum, schema_version, actor, trigger) VALUES "
+                "(1, '{}'::json, "
+                "'44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a', "
+                "1, '{\"kind\":\"system\",\"id\":\"reset\"}'::json, 'reset_seed')"
+            )
+        )
+        await db.execute(
+            text(
+                "INSERT INTO configuration_current (singleton_id, current_version) VALUES (1, 1)"
+            )
+        )
+
     await db.commit()
     return {"status": "reset", "dialect": dialect, "tables_cleared": len(tables)}
 

@@ -11,14 +11,12 @@ from marquee.api.results import BackupInfo, RestoreResult
 from marquee.config import settings
 from marquee.core import pipeline_config as pipeline_config_module
 from marquee.core.backup import backup_service
-from marquee.core.jobs import job_manager
 from marquee.core.pipeline_config import (
     PipelineSettings,
     migrate_legacy_runtime_state,
     pipeline_settings,
 )
 from marquee.main import app
-from marquee.models import Job
 
 
 @pytest.fixture
@@ -79,7 +77,6 @@ def _seed_managed_state(data_dir: Path) -> None:
     archive_dir.mkdir(parents=True, exist_ok=True)
     (archive_dir / "run.json").write_text("{}", encoding="utf-8")
 
-    (data_dir / "pipeline_overrides.json").write_text('{"OCR_WORKERS": 2}', encoding="utf-8")
 
     (data_dir / "staging").mkdir(parents=True, exist_ok=True)
     (data_dir / "staging" / "scratch.bin").write_bytes(b"scratch")
@@ -188,7 +185,6 @@ async def test_create_backup_creates_directory_and_excludes_transient_files(
     assert "cache/embeddings/clip-vit-b-32/candidate.npz" in members
     assert "cache/taste_map.clip-vit-b-32.npz" in members
     assert "runs/archive/run.json" in members
-    assert "pipeline_overrides.json" in members
     assert "staging/scratch.bin" not in members
     assert not any(name.startswith("backups/") for name in members)
 
@@ -234,22 +230,6 @@ def test_rotate_backups_keeps_latest_per_day_for_retention_window(backup_paths: 
 
 @pytest.mark.asyncio
 async def test_backup_api_endpoints(client, monkeypatch: pytest.MonkeyPatch):
-    async def fake_create_job(db, **kwargs):
-        return Job(
-            id="backup-job",
-            type=kwargs["job_type"],
-            status="succeeded",
-            priority=kwargs["priority"],
-            payload={},
-            resource_request=kwargs.get("resources") or {},
-            max_attempts=1,
-            attempt_count=1,
-            cancel_requested=False,
-            pause_requested=False,
-            subject_type=kwargs["subject_type"],
-            subject_id=kwargs["subject_id"],
-        )
-
     async def fake_list():
         return [
             BackupInfo(
@@ -274,15 +254,13 @@ async def test_backup_api_endpoints(client, monkeypatch: pytest.MonkeyPatch):
     async def fake_delete(backup_id: str):
         return backup_id == "20260617-120000"
 
-    monkeypatch.setattr(job_manager, "create_and_run", fake_create_job)
     monkeypatch.setattr(backup_service, "list_backups", fake_list)
     monkeypatch.setattr(backup_service, "restore_backup", fake_restore)
     monkeypatch.setattr(backup_service, "delete_backup", fake_delete)
 
     create_response = await client.post("/api/system/backup")
-    assert create_response.status_code == 200
-    assert create_response.json()["job_id"] == "backup-job"
-    assert create_response.json()["type"] == "backup_create"
+    assert create_response.status_code == 503
+    assert create_response.json()["code"] == "job_platform_unmigrated"
 
     list_response = await client.get("/api/system/backups")
     assert list_response.status_code == 200

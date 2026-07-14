@@ -281,39 +281,12 @@ async def subgen_callback(
 
 
 async def _schedule_subtitle_scan(radarr_id: int | None, tmdb_id: int | None) -> None:
-    """Durable subtitle scan job for an imported/upgraded movie (§26.1)."""
-    from marquee.core.media_files import ensure_media_file_for_movie  # noqa: PLC0415
-    from marquee.core.media_jobs import media_job_manager  # noqa: PLC0415
-    from marquee.core.subtitles.config import subtitle_settings  # noqa: PLC0415
-    from marquee.models import MediaJob  # noqa: PLC0415
-
-    if not subtitle_settings.SUBTITLE_ENABLED:
-        return
-    factory = _get_session_factory()
-    async with factory() as db:
-        stmt = select(Movie).where(
-            Movie.radarr_id == radarr_id if radarr_id is not None else Movie.tmdb_id == tmdb_id
-        )
-        movie = (await db.execute(stmt)).scalar_one_or_none()
-        if movie is None:
-            return
-        media_file = await ensure_media_file_for_movie(db, movie)
-        if media_file is None:
-            return
-        key = f"radarr:{movie.id}:subtitle-scan:{media_file.path}"
-        existing = (
-            await db.execute(select(MediaJob).where(MediaJob.idempotency_key == key))
-        ).scalar_one_or_none()
-        if existing is not None:
-            return  # collapse duplicate import webhooks
-        await media_job_manager.create_job(
-            db,
-            operation="subtitle_scan",
-            media_file_id=media_file.id,
-            trigger="webhook",
-            status="queued",
-            idempotency_key=key,
-        )
+    """Ignore deferred webhook work until subtitle scans are remigrated."""
+    logger.warning(
+        "Subtitle scan webhook ignored while job family is unmigrated: radarr_id=%s tmdb_id=%s",
+        radarr_id,
+        tmdb_id,
+    )
 
 
 @router.post("/sonarr")

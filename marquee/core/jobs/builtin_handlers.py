@@ -208,7 +208,7 @@ async def letterbox_detect(job: Job) -> dict[str, Any]:
     from marquee.media.letterbox_manager import letterbox_manager  # noqa: PLC0415
 
     factory = _get_session_factory()
-    movie_id = int(job.payload["movie_id"])
+    movie_id = int(job.request["movie_id"])
 
     async with factory() as db:
         movie = await db.get(Movie, movie_id)
@@ -242,8 +242,8 @@ async def letterbox_detect(job: Job) -> dict[str, Any]:
             state = await letterbox_manager.detect_and_store(
                 db,
                 movie,
-                detector=job.payload.get("detector", "v2"),
-                thorough=bool(job.payload.get("thorough", False)),
+                detector=job.request.get("detector", "v2"),
+                thorough=bool(job.request.get("thorough", False)),
                 parent_job_id=job.parent_id,
             )
             return {"movie_id": movie.id, "status": state.status, "confidence": state.confidence}
@@ -269,8 +269,8 @@ async def letterbox_detect_episode(job: Job) -> dict[str, Any]:
     from marquee.media.letterbox_manager import letterbox_manager  # noqa: PLC0415
 
     factory = _get_session_factory()
-    episode_ids = [int(episode_id) for episode_id in job.payload.get("episode_ids", [])]
-    media_file_id = job.payload.get("media_file_id")
+    episode_ids = [int(episode_id) for episode_id in job.request.get("episode_ids", [])]
+    media_file_id = job.request.get("media_file_id")
     if not episode_ids or media_file_id is None:
         raise RuntimeError("episode_ids and media_file_id are required")
 
@@ -305,7 +305,7 @@ async def letterbox_detect_episode(job: Job) -> dict[str, Any]:
             db,
             episodes,
             media_file_id=int(media_file_id),
-            thorough=bool(job.payload.get("thorough", False)),
+            thorough=bool(job.request.get("thorough", False)),
             parent_job_id=job.parent_id,
         )
         first = states[0] if states else None
@@ -340,12 +340,12 @@ async def letterbox_detect_tv_scope(job: Job) -> dict[str, Any]:
     from marquee.media.letterbox_manager import letterbox_manager  # noqa: PLC0415
 
     factory = _get_session_factory()
-    series_id = int(job.payload["series_id"])
-    season_number = job.payload.get("season_number")
-    episode_id = job.payload.get("episode_id")
-    exhaustive = bool(job.payload.get("exhaustive", False))
-    force = bool(job.payload.get("force", False))
-    include_open_matte = bool(job.payload.get("include_open_matte", False))
+    series_id = int(job.request["series_id"])
+    season_number = job.request.get("season_number")
+    episode_id = job.request.get("episode_id")
+    exhaustive = bool(job.request.get("exhaustive", False))
+    force = bool(job.request.get("force", False))
+    include_open_matte = bool(job.request.get("include_open_matte", False))
 
     async with factory() as db:
         series = await db.get(Series, series_id)
@@ -420,11 +420,11 @@ async def letterbox_apply(job: Job) -> dict[str, Any]:
 
     factory = _get_session_factory()
     async with factory() as db:
-        movie = await db.get(Movie, int(job.payload["movie_id"]))
+        movie = await db.get(Movie, int(job.request["movie_id"]))
         if movie is None:
             raise RuntimeError("movie not found")
         result = await letterbox_service.apply(
-            db, movie, top=int(job.payload["top"]), bottom=int(job.payload["bottom"]), source="job"
+            db, movie, top=int(job.request["top"]), bottom=int(job.request["bottom"]), source="job"
         )
         return {
             "applied": result.applied,
@@ -440,7 +440,7 @@ async def letterbox_remove(job: Job) -> dict[str, Any]:
 
     factory = _get_session_factory()
     async with factory() as db:
-        movie = await db.get(Movie, int(job.payload["movie_id"]))
+        movie = await db.get(Movie, int(job.request["movie_id"]))
         if movie is None:
             raise RuntimeError("movie not found")
         result = await letterbox_service.remove(db, movie, source="job")
@@ -452,9 +452,9 @@ async def letterbox_apply_tv_scope(job: Job) -> dict[str, Any]:
     from marquee.core.letterbox_tv_scope import apply_tv_scope  # noqa: PLC0415
 
     factory = _get_session_factory()
-    series_id = int(job.payload["series_id"])
-    season_number = job.payload.get("season_number")
-    confidence_levels = job.payload.get("confidence_levels")
+    series_id = int(job.request["series_id"])
+    season_number = job.request.get("season_number")
+    confidence_levels = job.request.get("confidence_levels")
 
     async def progress(done: int, total: int) -> None:
         await _update_progress(job.id, "apply", done, total)
@@ -474,8 +474,8 @@ async def letterbox_revert_tv_scope(job: Job) -> dict[str, Any]:
     from marquee.core.letterbox_tv_scope import revert_tv_scope  # noqa: PLC0415
 
     factory = _get_session_factory()
-    series_id = int(job.payload["series_id"])
-    season_number = job.payload.get("season_number")
+    series_id = int(job.request["series_id"])
+    season_number = job.request.get("season_number")
 
     async def progress(done: int, total: int) -> None:
         await _update_progress(job.id, "revert", done, total)
@@ -513,8 +513,8 @@ async def taste_rebuild(job: Job) -> dict[str, Any]:
     from marquee.pipeline.run_manager import run_manager  # noqa: PLC0415
 
     cancel_event = cancel_registry.get(job.id)
-    source = job.payload.get("source", "training_dir")
-    library_name = job.payload.get("library", "movies")
+    source = job.request.get("source", "training_dir")
+    library_name = job.request.get("library", "movies")
     ns = get_namespace(library_name)
 
     training_dir: Path | None = None
@@ -574,7 +574,7 @@ async def taste_map(job: Job) -> dict[str, Any]:
     from marquee.ml.taste_map import build_map  # noqa: PLC0415
     from marquee.pipeline.progress_bridge import JobProgressBridge  # noqa: PLC0415
 
-    library_name = job.payload.get("library", "movies")
+    library_name = job.request.get("library", "movies")
     ns = get_namespace(library_name)
 
     cancel_event = cancel_registry.get(job.id)
@@ -642,10 +642,10 @@ async def subtitle_scan_all(job: Job) -> dict[str, Any]:
     from marquee.core.media_jobs import media_job_manager  # noqa: PLC0415
 
     cancel_event = cancel_registry.get(job.id)
-    force = job.payload.get("force", False)
-    scope = job.payload.get("scope", "movies")
-    series_id = job.payload.get("series_id")
-    season_number = job.payload.get("season_number")
+    force = job.request.get("force", False)
+    scope = job.request.get("scope", "movies")
+    series_id = job.request.get("series_id")
+    season_number = job.request.get("season_number")
     factory = _get_session_factory()
     async with factory() as db:
         media_files = await _stale_or_missing_subtitle_scan_candidates(
@@ -733,9 +733,9 @@ async def radarr_upgrade(job: Job) -> dict[str, Any]:
         _schedule_subtitle_scan,
     )
 
-    radarr_id = job.payload.get("radarr_id")
-    tmdb_id = job.payload.get("tmdb_id")
-    folder = job.payload.get("folder")
+    radarr_id = job.request.get("radarr_id")
+    tmdb_id = job.request.get("tmdb_id")
+    folder = job.request.get("folder")
     await _restore_after_upgrade(radarr_id, tmdb_id, folder)
     await _letterbox_stale_after_upgrade(radarr_id, tmdb_id)
     await _schedule_subtitle_scan(radarr_id, tmdb_id)
@@ -749,7 +749,7 @@ async def poster_pipeline(job: Job) -> dict[str, Any]:
     from marquee.core.text_profiles import OcrGateContext  # noqa: PLC0415
     from marquee.pipeline.run_manager import RunState, run_manager  # noqa: PLC0415
 
-    movie_id = int(job.payload["movie_id"])
+    movie_id = int(job.request["movie_id"])
     factory = _get_session_factory()
     async with factory() as db:
         movie = (await db.execute(select(Movie).where(Movie.id == movie_id))).scalar_one()
@@ -807,7 +807,7 @@ async def poster_pipeline_batch(job: Job) -> dict[str, Any]:
     from marquee.pipeline.progress_bridge import JobProgressBridge  # noqa: PLC0415
     from marquee.pipeline.run_manager import run_manager  # noqa: PLC0415
 
-    movie_ids = [int(m) for m in job.payload.get("movie_ids", [])]
+    movie_ids = [int(m) for m in job.request.get("movie_ids", [])]
     factory = _get_session_factory()
     async with factory() as db:
         rows = (
@@ -865,7 +865,7 @@ async def poster_pipeline_tv_batch(job: Job) -> dict[str, Any]:
     from marquee.pipeline.progress_bridge import JobProgressBridge  # noqa: PLC0415
     from marquee.pipeline.run_manager import run_manager  # noqa: PLC0415
 
-    requested = job.payload.get("assets", [])
+    requested = job.request.get("assets", [])
     series_ids = {int(a["series_id"]) for a in requested if a.get("series_id") is not None}
     season_ids = {
         int(a["season_id"]) for a in requested if a.get("media_type") == "season" and a.get("season_id") is not None
@@ -972,7 +972,7 @@ async def learned_head_train(_job: Job) -> dict[str, Any]:
     from marquee.ml import artifact_registry  # noqa: PLC0415
     from marquee.ml.head_trainer import train_from_labels  # noqa: PLC0415
 
-    library_name = _job.payload.get("library", "movies")
+    library_name = _job.request.get("library", "movies")
     ns = get_namespace(library_name)
 
     cancel_event = cancel_registry.get(_job.id)
@@ -993,8 +993,8 @@ async def pipeline_cache_clear(job: Job) -> dict[str, Any]:
     """Clear the downloaded-poster pipeline cache (never learned-head/taste data)."""
     from marquee.core.pipeline_cache import clear_pipeline_cache  # noqa: PLC0415
 
-    include_embeddings = bool(job.payload.get("include_embeddings", True))
-    include_archives = bool(job.payload.get("include_archives", False))
+    include_embeddings = bool(job.request.get("include_embeddings", True))
+    include_archives = bool(job.request.get("include_archives", False))
     return await asyncio.to_thread(
         clear_pipeline_cache,
         include_embeddings=include_embeddings,
@@ -1369,8 +1369,8 @@ async def poster_maintenance(job: Job) -> dict[str, Any]:
     from marquee.core.arr_clients.radarr_client import RadarrClient
     from marquee.core.arr_clients.sonarr_client import SonarrClient
 
-    dry_run = bool(job.payload.get("dry_run", False))
-    force = bool(job.payload.get("force", False))
+    dry_run = bool(job.request.get("dry_run", False))
+    force = bool(job.request.get("force", False))
 
     radarr_movies = None
     if settings.radarr_configured:
@@ -1762,86 +1762,7 @@ def _copy_library_season_posters(seasons: list[tuple], dest: Path) -> int:
 
 @register("job_retention_purge", instant=True)
 async def job_retention_purge(_job: Job) -> dict[str, Any]:
-    """Delete expired terminal jobs and stale resource / worker rows."""
-    from datetime import UTC, datetime, timedelta
-
-    from marquee.models import JobResource, JobResourceReservation, JobWorker, MediaJob
-
-    cutoff = datetime.now(UTC) - timedelta(days=settings.JOB_RETENTION_DAYS)
-    stopped_dead_cutoff = datetime.now(UTC) - timedelta(days=7)
-    stale_live_cutoff = datetime.now(UTC) - timedelta(hours=24)
-    factory = _get_session_factory()
-    async with factory() as db:
-        rows = (
-            await db.execute(
-                select(Job.id, Job.payload).where(
-                    Job.status.in_(
-                        ("succeeded", "failed", "cancelled", "interrupted", "dead_letter")
-                    ),
-                    Job.finished_at.is_not(None),
-                    Job.finished_at < cutoff,
-                )
-            )
-        ).all()
-
-        job_ids = [row.id for row in rows]
-        media_job_ids = [
-            row.payload.get("media_job_id")
-            for row in rows
-            if isinstance(row.payload, dict) and row.payload.get("media_job_id")
-        ]
-
-        media_jobs_deleted = 0
-        if media_job_ids:
-            result = await db.execute(
-                MediaJob.__table__.delete().where(MediaJob.job_id.in_(media_job_ids))
-            )
-            media_jobs_deleted = result.rowcount or 0
-
-        jobs_deleted = 0
-        if job_ids:
-            result = await db.execute(Job.__table__.delete().where(Job.id.in_(job_ids)))
-            jobs_deleted = result.rowcount or 0
-
-        active_resource_keys = select(JobResourceReservation.resource_key).where(
-            JobResourceReservation.released_at.is_(None)
-        )
-        resource_result = await db.execute(
-            JobResource.__table__.delete().where(
-                JobResource.key.like("media-file:%"),
-                JobResource.key.not_in(active_resource_keys),
-            )
-        )
-        resources_deleted = resource_result.rowcount or 0
-
-        stopped_dead_result = await db.execute(
-            JobWorker.__table__.delete().where(
-                JobWorker.status.in_(("stopped", "dead")),
-                JobWorker.heartbeat_at < stopped_dead_cutoff,
-            )
-        )
-        stale_live_result = await db.execute(
-            JobWorker.__table__.delete().where(
-                JobWorker.status.in_(("starting", "running", "draining")),
-                JobWorker.heartbeat_at < stale_live_cutoff,
-            )
-        )
-        workers_deleted = (stopped_dead_result.rowcount or 0) + (stale_live_result.rowcount or 0)
-        await db.commit()
-
-    logger.info(
-        "job_retention_purge: deleted %d job(s), %d bridged media job(s), %d media-file resource row(s), and %d worker row(s)",
-        jobs_deleted,
-        media_jobs_deleted,
-        resources_deleted,
-        workers_deleted,
-    )
-    return {
-        "jobs_deleted": jobs_deleted,
-        "media_jobs_deleted": media_jobs_deleted,
-        "resources_deleted": resources_deleted,
-        "workers_deleted": workers_deleted,
-    }
+    raise RuntimeError("job_retention_purge is not migrated to the canonical runtime")
 
 
 @register("system_metrics_purge", instant=True)

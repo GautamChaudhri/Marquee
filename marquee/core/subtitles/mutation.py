@@ -55,11 +55,11 @@ async def _raise_if_cancel_requested(
     await db.refresh(job, ["cancel_requested"])
     cancel_event = cancel_registry.get(job.job_id)
     registry_cancelled = cancel_event is not None and cancel_event.is_set()
-    if not job.cancel_requested and not registry_cancelled:
+    if job.desired_state != "cancel" and not registry_cancelled:
         return
     for path in cleanup_paths or []:
         path.unlink(missing_ok=True)
-    if registry_cancelled and not job.cancel_requested:
+    if registry_cancelled and job.desired_state != "cancel":
         raise JobCancelledError("subtitle mutation interrupted")
     raise PreflightError("cancelled", "subtitle mutation cancelled")
 

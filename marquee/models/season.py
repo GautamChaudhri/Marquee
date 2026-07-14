@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from sqlalchemy import ForeignKey, Index, Integer, UniqueConstraint, text
+from datetime import datetime
+
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, UniqueConstraint, func, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from marquee.database import Base
@@ -31,6 +33,14 @@ class Season(Base, TimestampMixin, ArtworkMixin):
     season_number: Mapped[int] = mapped_column(Integer, nullable=False)
     tmdb_id: Mapped[int | None] = mapped_column(
         Integer, nullable=True, comment="TMDB season ID for artwork lookup"
+    )
+
+    is_present: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=text("true"), index=True
+    )
+    retired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
     )
 
     # ── Statistics ───────────────────────────────────────────────────

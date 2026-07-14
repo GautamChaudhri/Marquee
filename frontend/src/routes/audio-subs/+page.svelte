@@ -8,11 +8,18 @@
 	import { getAudioSubsSummary, deepScan } from '$lib/api/subtitles';
 	import { trackJob } from '$lib/jobs';
 	import { toast } from '$lib/toast';
+	import type { RuntimeSettings } from '$lib/api/types';
 
 	let { data } = $props();
 
 	let summary = $state(data.summary);
+	// svelte-ignore state_referenced_locally
+	let runtimeSettings = $state<RuntimeSettings | null>(data.settings);
 	let error = $state(data.error);
+
+	function acceptSettings(settings: RuntimeSettings) {
+		runtimeSettings = settings;
+	}
 
 	let activeJobId = $state<string | null>(null);
 	let jobProgress = $state<{ stage: string; percent: number; message: string } | null>(null);
@@ -149,10 +156,16 @@
 		<!-- Mid Section: Preferences & Generator Configuration -->
 		<div class="dashboard-grid">
 			<div class="left-col">
-				<PreferredLanguagesEditor preferred={summary.preferred} onSave={refreshSummary} />
+				<PreferredLanguagesEditor
+					preferred={summary.preferred}
+					configurationVersion={runtimeSettings?.configuration_version ?? 0}
+					onSave={refreshSummary}
+				/>
 				<SubgenCard
 					generator={summary.generator[0] || null}
-					settings={data.settings?.subtitles || {}}
+					settings={runtimeSettings?.integrations?.subgen || {}}
+					configurationVersion={runtimeSettings?.configuration_version ?? 0}
+					onSettingsReload={acceptSettings}
 					onRefresh={refreshSummary}
 				/>
 			</div>

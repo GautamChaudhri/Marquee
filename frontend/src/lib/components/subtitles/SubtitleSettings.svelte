@@ -1,11 +1,12 @@
 <!-- eslint-disable @typescript-eslint/no-explicit-any @typescript-eslint/no-unused-vars -->
 <script lang="ts">
 	import { getGenerators } from '$lib/api/subtitle-generators';
-	import type { SubtitleGenerator } from '$lib/api/types';
-	import { putSettings } from '$lib/api/system';
+	import type { RuntimeSettings, SubtitleGenerator } from '$lib/api/types';
+	import { getSettings, putSettings } from '$lib/api/system';
+	import { CONFIGURATION_CONFLICT_MESSAGE, isConfigurationConflict } from '$lib/api/client';
 	import { toast } from '$lib/toast';
 
-	let { settings = $bindable() }: { settings: any } = $props();
+	let { settings = $bindable() }: { settings: RuntimeSettings | null } = $props();
 
 	// local state for editing
 	let enabled = $state(false);
@@ -25,7 +26,6 @@
 	let subgenMode = $state('transcribe');
 	let subgenLocalPathPrefix = $state('');
 	let subgenRemotePathPrefix = $state('');
-	let subgenCallbackToken = $state('');
 
 	let initialized = $state(false);
 
@@ -51,8 +51,6 @@
 			subgenMode = subgen.mode ?? 'transcribe';
 			subgenLocalPathPrefix = subgen.local_path_prefix ?? '';
 			subgenRemotePathPrefix = subgen.remote_path_prefix ?? '';
-			subgenCallbackToken = ''; // Omit token value for security
-
 			initialized = true;
 		}
 	});
@@ -119,16 +117,20 @@
 					model_label: subgenModelLabel,
 					mode: subgenMode,
 					local_path_prefix: subgenLocalPathPrefix || null,
-					remote_path_prefix: subgenRemotePathPrefix || null,
-					callback_token: subgenCallbackToken || null
+					remote_path_prefix: subgenRemotePathPrefix || null
 				}
 			};
 
-			const response = await putSettings(fetch, payload);
+			const response = await putSettings(fetch, payload, settings!.configuration_version);
 			toast('Subtitle settings saved successfully!', 'good');
 			settings = response.settings;
 			initialized = false; // trigger re-initialization of local states
 		} catch (e: any) {
+			if (isConfigurationConflict(e)) {
+				settings = await getSettings(fetch);
+				toast(CONFIGURATION_CONFLICT_MESSAGE, 'info');
+				return;
+			}
 			toast(e.message || 'Failed to save settings', 'bad');
 		} finally {
 			saving = false;
@@ -167,11 +169,10 @@
 	<div class="env-notice">
 		<span class="icon">⚙️</span>
 		<div class="content">
-			<strong>Subtitles Configuration Overrides</strong>
+			<strong>Versioned subtitles configuration</strong>
 			<p>
-				Settings below override the defaults in your <code>.env</code> file. Changes are applied
-				immediately to the active pipeline. Saved settings are persisted to
-				<code>data/subtitle_overrides.json</code>.
+				Changes create an immutable database revision and apply to new work. Secrets and
+				restart-owned process settings remain environment-controlled.
 			</p>
 		</div>
 	</div>
@@ -214,16 +215,12 @@
 					</select>
 				</div>
 				<div class="setting-row">
-					<label for="callback-token" class="lbl">Callback Token:</label>
-					<input
-						type="password"
-						id="callback-token"
-						class="str-input"
-						bind:value={subgenCallbackToken}
-						placeholder={settings?.integrations?.subgen?.callback_token_configured
-							? '••••••••'
-							: 'Not set'}
-					/>
+					<span class="lbl">Callback Token:</span>
+					<span class="readonly-value">
+						{settings.integrations?.subgen?.callback_token_configured
+							? 'Configured by environment'
+							: 'Not configured (environment only)'}
+					</span>
 				</div>
 
 				<div class="test-conn-area">
@@ -476,6 +473,12 @@
 	}
 	.setting-row .lbl {
 		color: var(--muted);
+	}
+	.readonly-value {
+		max-width: 220px;
+		color: var(--faint);
+		font-size: 12px;
+		text-align: right;
 	}
 	.test-conn-area {
 		margin-top: 8px;

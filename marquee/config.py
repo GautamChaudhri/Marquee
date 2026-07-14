@@ -773,64 +773,6 @@ class Settings(BaseSettings):
     )
 
 
-# ---------------------------------------------------------------------------
-# UI-persisted overrides for a small allowlist of Settings keys.
-#
-# Same pattern (and precedence) as subtitle/pipeline overrides: values saved
-# from the UI land in data/settings_overrides.json and are layered on top of
-# env/.env at startup — an overridden key therefore beats the environment.
-# The file is read by every runtime role (API, worker, scheduler), so child
-# processes pick the overrides up on their next start.
-# ---------------------------------------------------------------------------
-SETTINGS_OVERRIDE_KEYS = frozenset(
-    {
-        "MOVIE_POSTER_FORMAT",
-        "SERIES_POSTER_FORMAT",
-        "SEASON_POSTER_FORMAT",
-        "HEAL_ENABLED",
-        "HEAL_INTERVAL_MINUTES",
-        "POSTER_RESTORE_METHOD",
-        "POSTER_BACKUP_DIR",
-    }
-)
-
-
-def _overrides_path() -> Path:
-    # Hardcoded relative to the project root (not DATA_DIR — that is itself a
-    # Settings field, and the overrides must load before Settings exists).
-    return Path(__file__).parent.parent / "data" / "settings_overrides.json"
-
-
-def load_overrides() -> dict:
-    """Persisted UI overrides for allowlisted Settings keys."""
-    import json  # noqa: PLC0415
-
-    path = _overrides_path()
-    if not path.exists():
-        return {}
-    try:
-        data = json.loads(path.read_text())
-    except (OSError, json.JSONDecodeError):
-        return {}
-    if not isinstance(data, dict):
-        return {}
-    return {key: value for key, value in data.items() if key in SETTINGS_OVERRIDE_KEYS}
-
-
-def save_overrides(overrides: dict) -> None:
-    """Atomically persist the current UI overrides for Settings keys."""
-    import json  # noqa: PLC0415
-    import os  # noqa: PLC0415
-
-    path = _overrides_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(overrides, indent=2, default=str), encoding="utf-8")
-    os.replace(tmp, path)
-
-
-# Singleton — import from here everywhere
-try:
-    settings = Settings(**load_overrides())
-except Exception:  # noqa: BLE001 — a bad overrides file must not block startup
-    settings = Settings()
+# Environment/restart-owned singleton. Database-owned values are resolved by
+# the versioned configuration provider and never applied by mutating this object.
+settings = Settings()

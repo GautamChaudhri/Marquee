@@ -22,12 +22,12 @@ from marquee.config import settings
 from marquee.core.jobs import cancel_registry
 from marquee.core.jobs.cancel_registry import JobCancelledError
 from marquee.core.jobs.child_tracking import clear_child_pid, record_child_pid
+from marquee.core.jobs.manager import UnmigratedJobPlatformError
 from marquee.core.media_files import (
     ResolvedMediaFile,
     compute_signature,
     resolve_media_file,
 )
-from marquee.database import _get_session_factory
 from marquee.media import binaries, letterbox_detect
 from marquee.media.concurrency import gated
 from marquee.models import (
@@ -35,7 +35,6 @@ from marquee.models import (
     LetterboxReencodeArtifact,
     LetterboxState,
     MediaFile,
-    MediaJob,
 )
 
 logger = logging.getLogger(__name__)
@@ -99,7 +98,7 @@ async def _states_for_artifact(
 
 async def _raise_if_cancel_requested(
     db: AsyncSession,
-    job: MediaJob,
+    job: object,
     *,
     rpu_task: asyncio.Task | None = None,
     cleanup_paths: list[Path] | None = None,
@@ -107,7 +106,7 @@ async def _raise_if_cancel_requested(
     await db.refresh(job, ["cancel_requested"])
     cancel_event = cancel_registry.get(job.job_id)
     registry_cancelled = cancel_event is not None and cancel_event.is_set()
-    if not job.cancel_requested and not registry_cancelled:
+    if job.desired_state != "cancel" and not registry_cancelled:
         return
     if rpu_task is not None and not rpu_task.done():
         rpu_task.cancel()
@@ -115,7 +114,7 @@ async def _raise_if_cancel_requested(
             await rpu_task
     for path in cleanup_paths or []:
         path.unlink(missing_ok=True)
-    if registry_cancelled and not job.cancel_requested:
+    if registry_cancelled and job.desired_state != "cancel":
         raise JobCancelledError("letterbox re-encode interrupted")
     raise ReencodePlanError("cancelled", "letterbox re-encode cancelled")
 
@@ -940,16 +939,13 @@ async def _cancelled_encode_cleanup(
 
 
 async def _media_job_cancel_requested(job_id: str) -> bool:
-    """Read cancellation through a fresh, short-lived session."""
-    factory = _get_session_factory()
-    async with factory() as db:
-        job = await db.get(MediaJob, job_id)
-        return bool(job and job.cancel_requested)
+    """Legacy media execution is unavailable until its canonical definition ships."""
+    raise UnmigratedJobPlatformError(f"media_job.cancel:{job_id}")
 
 
 async def _run_encode_attempt(
     db: AsyncSession,
-    job: MediaJob,
+    job: object,
     emit,
     source: Path,
     output: Path,
@@ -1031,7 +1027,7 @@ async def _run_encode_attempt(
             await clear_child_pid(proc.pid)
 
 
-async def execute_job(db: AsyncSession, job: MediaJob, emit) -> dict:
+async def execute_job(db: AsyncSession, job: object, emit) -> dict:
     request = json.loads(job.request_json) if job.request_json else {}
     plan = json.loads(job.plan_json) if job.plan_json else {}
     resolved = await resolve_media_file(db, job.media_file_id)
@@ -1209,7 +1205,7 @@ async def _run_checked(
     args: list[str],
     *,
     db: AsyncSession | None = None,
-    job: MediaJob | None = None,
+    job: object | None = None,
     timeout: float | None = 3600,
 ) -> None:
     proc = await asyncio.create_subprocess_exec(
@@ -1393,7 +1389,7 @@ async def _preserve_dovi(
     job_id: str,
     emit,
     db: AsyncSession,
-    job: MediaJob,
+    job: object,
     rpu_task: asyncio.Task | None = None,
 ) -> None:
     """Dolby Vision RPU preservation with piped architecture.

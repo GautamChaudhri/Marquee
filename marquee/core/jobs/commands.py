@@ -12,6 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from marquee.core.configuration_cache import configuration_provider
 from marquee.core.jobs.pgqueuer_gateway import (
     ENTRYPOINT_CONTROL,
     PAYLOAD_VERSION,
@@ -78,7 +79,7 @@ def _validate_existing(existing: Job, payload: dict[str, Any]) -> None:
     if (
         existing.type != "system_noop"
         or existing.payload_version != PAYLOAD_VERSION
-        or existing.payload != payload
+        or existing.request != payload
     ):
         raise JobCommandError("idempotency key already belongs to a different command")
     if existing.dispatch_generation < 1 or existing.pgq_job_id is None:
@@ -113,6 +114,7 @@ async def create_system_noop(
                 return existing
 
             now = datetime.now(UTC)
+            configuration = configuration_provider.snapshot_for(())
             delay = execute_after or timedelta(0)
             eligible_at = now + delay
             job_id = uuid4().hex
@@ -122,17 +124,22 @@ async def create_system_noop(
                 id=job_id,
                 type="system_noop",
                 payload_version=PAYLOAD_VERSION,
-                payload=normalized_payload,
+                request=normalized_payload,
                 phase="queued",
                 desired_state="run",
                 dispatch_generation=generation,
                 priority=priority,
                 eligible_at=eligible_at,
                 idempotency_key=canonical_key,
+                configuration_version=configuration.version,
+                configuration_snapshot=configuration.values,
+                root_id=job_id,
+                trigger_kind="system",
+                feature_area="system",
+                subject_kind="system",
+                subject_reference="system_noop",
+                subject_snapshot={"version": 1, "kind": "system", "label": "System no-op"},
                 queued_at=now,
-                # Transitional legacy fields remain non-authoritative.
-                status="queued",
-                scheduled_at=eligible_at,
             )
             dispatch = JobDispatch(
                 job_id=job_id,
@@ -146,6 +153,7 @@ async def create_system_noop(
             )
             event = JobEvent(
                 job_id=job_id,
+                event_key="job.queued",
                 state="queued",
                 message="system_noop queued",
                 detail={"dispatch_generation": generation},

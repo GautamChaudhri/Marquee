@@ -26,29 +26,29 @@ logger = logging.getLogger(__name__)
 
 
 async def latest_heal_summary(db: AsyncSession) -> dict | None:
-    """Last completed heal scan, from the durable job row.
-
-    The scan runs as a ``poster_heal`` job in the scheduler child process, so
-    an in-memory dict would never be visible here — the Job table is the only
-    truthful cross-process record.
-    """
+    """Return the latest successful canonical heal record."""
     job = await db.scalar(
         select(Job)
-        .where(Job.type == "poster_heal", Job.status == "succeeded")
-        .order_by(Job.finished_at.desc())
+        .where(
+            Job.type == "poster_heal",
+            Job.phase == "terminal",
+            Job.outcome == "succeeded",
+        )
+        .order_by(Job.terminal_at.desc())
         .limit(1)
     )
     if job is None:
         return None
-    res = {
-        "last_run": job.finished_at.isoformat() if job.finished_at else None,
-        "checked": (job.result or {}).get("checked", 0),
-        "restored": (job.result or {}).get("restored", 0),
-        "failed": (job.result or {}).get("failed", 0),
+    result = job.result or {}
+    summary = {
+        "last_run": job.terminal_at.isoformat() if job.terminal_at else None,
+        "checked": result.get("checked", 0),
+        "restored": result.get("restored", 0),
+        "failed": result.get("failed", 0),
     }
-    if "by_type" in (job.result or {}):
-        res["by_type"] = job.result["by_type"]
-    return res
+    if "by_type" in result:
+        summary["by_type"] = result["by_type"]
+    return summary
 
 
 async def heal_scan() -> dict:

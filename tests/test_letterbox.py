@@ -15,7 +15,6 @@ import shutil
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -23,18 +22,15 @@ from sqlalchemy import select
 
 from marquee.config import settings
 from marquee.core import letterbox_reencode
-from marquee.core.jobs import builtin_handlers, job_manager
 from marquee.core.letterbox_reencode import ReencodePlanError, _mkdir_with_retry
 from marquee.core.letterbox_service import _resolve_media_file, letterbox_service
 from marquee.core.media_files import ensure_media_file_for_movie, resolve_row
-from marquee.core.media_jobs import media_job_manager
 from marquee.core.path_utils import PathValidationError
 from marquee.main import app
 from marquee.media import binaries, letterbox_preview
 from marquee.media import letterbox_detect as ld
 from marquee.media.letterbox_manager import (
     EpisodeBatchItem,
-    JobState,
     group_episode_items_by_media_file,
     letterbox_manager,
     select_season_sample_episodes,
@@ -48,8 +44,6 @@ from marquee.models import (
     LetterboxReencodeArtifact,
     LetterboxState,
     MediaFile,
-    MediaJob,
-    MediaJobEvent,
     Movie,
     Season,
     Series,
@@ -1009,112 +1003,10 @@ async def test_detect_episode_batch_and_store_scans_sd_episode(db, monkeypatch, 
     assert detect_calls == ["s01e01.mkv"]
 
 
-@pytest.mark.asyncio
-async def test_letterbox_apply_tv_scope_handler_filters_confidence_levels(db, monkeypatch):
-    episodes, _media_files = await _seed_tv_detect_scope(db, season_numbers=[1, 1])
-    db.add_all(
-        [
-            LetterboxState(
-                media_type="episode",
-                episode_id=episodes[0].id,
-                status="candidate",
-                confidence="high",
-                recommended_crop_top=140,
-                recommended_crop_bottom=140,
-            ),
-            LetterboxState(
-                media_type="episode",
-                episode_id=episodes[1].id,
-                status="candidate",
-                confidence="medium",
-                recommended_crop_top=132,
-                recommended_crop_bottom=132,
-            ),
-        ]
-    )
-    await db.commit()
-
-    calls: list[list[int]] = []
-
-    async def fake_apply_episode_group(_db, grouped_episodes, *, top, bottom, source="api"):
-        calls.append([episode.id for episode in grouped_episodes])
-        return SimpleNamespace(applied=True, top=top, bottom=bottom, path="/tv/file.mkv", verified=True)
-
-    monkeypatch.setattr(
-        "marquee.core.letterbox_tv_scope.letterbox_service.apply_episode_group",
-        fake_apply_episode_group,
-    )
-
-    high_job = await job_manager.create(
-        db,
-        job_type="letterbox_apply_tv_scope",
-        payload={"series_id": episodes[0].series_id, "confidence_levels": ["high"]},
-    )
-    high_result = await builtin_handlers.letterbox_apply_tv_scope(high_job)
-
-    assert high_result["applied_episodes"] == 1
-    assert calls == [[episodes[0].id]]
-
-    all_job = await job_manager.create(
-        db,
-        job_type="letterbox_apply_tv_scope",
-        payload={"series_id": episodes[0].series_id, "confidence_levels": ["all"]},
-    )
-    all_result = await builtin_handlers.letterbox_apply_tv_scope(all_job)
-
-    assert all_result["applied_episodes"] == 2
-    assert calls[-2:] == [[episodes[0].id], [episodes[1].id]]
 
 
-@pytest.mark.asyncio
-async def test_letterbox_revert_tv_scope_handler_fans_out_shared_file(db, monkeypatch):
-    episodes, media_files = await _seed_tv_detect_scope(db, season_numbers=[1, 1])
-    media_files[1].is_active = False
-    db.add(EpisodeMediaFile(episode_id=episodes[1].id, media_file_id=media_files[0].id))
-    db.add_all(
-        [
-            LetterboxState(
-                media_type="episode",
-                episode_id=episodes[0].id,
-                status="tagged",
-                recommended_crop_top=140,
-                recommended_crop_bottom=140,
-                applied_crop_top=140,
-                applied_crop_bottom=140,
-            ),
-            LetterboxState(
-                media_type="episode",
-                episode_id=episodes[1].id,
-                status="tagged",
-                recommended_crop_top=140,
-                recommended_crop_bottom=140,
-                applied_crop_top=140,
-                applied_crop_bottom=140,
-            ),
-        ]
-    )
-    await db.commit()
 
-    calls: list[list[int]] = []
 
-    async def fake_remove_episode_group(_db, grouped_episodes, *, source="api"):
-        calls.append([episode.id for episode in grouped_episodes])
-        return SimpleNamespace(removed=True, path="/tv/shared.mkv")
-
-    monkeypatch.setattr(
-        "marquee.core.letterbox_tv_scope.letterbox_service.remove_episode_group",
-        fake_remove_episode_group,
-    )
-
-    job = await job_manager.create(
-        db,
-        job_type="letterbox_revert_tv_scope",
-        payload={"series_id": episodes[0].series_id},
-    )
-    result = await builtin_handlers.letterbox_revert_tv_scope(job)
-
-    assert result["removed_episodes"] == 2
-    assert calls == [[episodes[0].id, episodes[1].id]]
 
 
 @pytest.mark.asyncio
@@ -1580,35 +1472,7 @@ async def test_resolve_row_does_not_write_on_read_path(db, tmp_path):
     assert row.last_resolved_path == "/stale/path"
 
 
-@pytest.mark.asyncio
-async def test_emit_persist_false_skips_event_row(db):
-    # Live progress ticks (persist=False) publish to SSE subscribers but write
-    # no MediaJobEvent row — only throttled/transition events persist.
-    job = MediaJob(
-        job_id="emit-job", operation="letterbox_reencode", media_file_id=None, status="running"
-    )
-    db.add(job)
-    await db.commit()
 
-    await media_job_manager.emit(
-        db, "emit-job", "encode", "running", progress={"percent": 5}, persist=False
-    )
-    rows = (
-        (await db.execute(select(MediaJobEvent).where(MediaJobEvent.job_id == "emit-job")))
-        .scalars()
-        .all()
-    )
-    assert rows == []
-
-    await media_job_manager.emit(
-        db, "emit-job", "encode", "running", progress={"percent": 6}, persist=True
-    )
-    rows = (
-        (await db.execute(select(MediaJobEvent).where(MediaJobEvent.job_id == "emit-job")))
-        .scalars()
-        .all()
-    )
-    assert len(rows) == 1
 
 
 @pytest.mark.asyncio
@@ -2111,13 +1975,25 @@ async def test_status_snapshot_preserves_movie_payload_shape(client, db, monkeyp
             ),
         ]
     )
-    db.add(Job(id="lb-batch", type="letterbox_detect_batch", status="running"))
+    db.add(
+        Job(
+            id="lb-batch",
+            type="letterbox_detect_batch",
+            root_id="lb-batch",
+            phase="running",
+            request={},
+            subject_snapshot={},
+        )
+    )
     db.add(
         Job(
             id="lb-child",
             type="letterbox_detect",
             parent_id="lb-batch",
-            status="queued",
+            root_id="lb-batch",
+            phase="queued",
+            request={},
+            subject_snapshot={},
         )
     )
     await db.commit()
@@ -2249,19 +2125,28 @@ async def test_status_counts_full_frame_present_prefilter_skips(client, db):
 
 @pytest.mark.asyncio
 async def test_status_ignores_terminal_letterbox_batches(client, db):
+    now = datetime.now(UTC)
     db.add_all(
         [
             Job(
                 id="batch-interrupted",
                 type="letterbox_detect_batch",
-                status="interrupted",
-                finished_at=datetime.now(UTC),
+                root_id="batch-interrupted",
+                phase="terminal",
+                outcome="failed",
+                terminal_at=now,
+                request={},
+                subject_snapshot={},
             ),
             Job(
                 id="batch-cancelled",
                 type="letterbox_detect_batch",
-                status="cancelled",
-                finished_at=datetime.now(UTC),
+                root_id="batch-cancelled",
+                phase="terminal",
+                outcome="cancelled",
+                terminal_at=now,
+                request={},
+                subject_snapshot={},
             ),
         ]
     )
@@ -2273,33 +2158,7 @@ async def test_status_ignores_terminal_letterbox_batches(client, db):
     assert resp.json()["batch_active"] is None
 
 
-@pytest.mark.asyncio
-async def test_cancel_job_route_cascades_letterbox_batch(client, db):
-    parent = Job(id="batch-active", type="letterbox_detect_batch", status="waiting_external")
-    db.add(parent)
-    await db.flush()
-    db.add_all(
-        [
-            Job(
-                id="child-done",
-                type="letterbox_detect",
-                parent_id=parent.id,
-                status="succeeded",
-                result={"status": "candidate"},
-            ),
-            Job(id="child-queued", type="letterbox_detect", parent_id=parent.id, status="queued"),
-        ]
-    )
-    await db.commit()
 
-    resp = await client.post(f"/api/jobs/{parent.id}/cancel")
-
-    assert resp.status_code == 202
-    body = resp.json()
-    assert body["job_id"] == parent.id
-    assert body["status"] == "cancelled"
-    cancelled_child = await db.get(Job, "child-queued")
-    assert cancelled_child is not None and cancelled_child.status == "cancelled"
 
 
 @pytest.mark.asyncio
@@ -2868,140 +2727,13 @@ async def test_movie_detail_includes_sample_previews_even_when_reviewed(client, 
     ]
 
 
-@pytest.mark.asyncio
-async def test_movie_detail_includes_active_reencode_snapshot(client, db, tmp_path):
-    movie, _ = _movie_with_file(tmp_path)
-    db.add(movie)
-    await db.commit()
-    await db.refresh(movie)
-    media_file = await ensure_media_file_for_movie(db, movie)
-    assert media_file is not None
-    db.add(LetterboxState(movie_id=movie.id, status="candidate", confidence="high"))
-    db.add(
-        MediaJob(
-            job_id="job1",
-            operation="letterbox_reencode",
-            media_file_id=media_file.id,
-            status="running",
-            stage="encode",
-            progress_done=25,
-            progress_total=100,
-            plan_json=json.dumps(_reencode_plan("job1")),
-        )
-    )
-    await db.commit()
-
-    resp = await client.get(f"/api/letterbox/movies/{movie.id}")
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["reencode"]["job"]["job_id"] == "job1"
-    assert body["reencode"]["job"]["status"] == "running"
-    assert body["reencode"]["job"]["stage"] == "encode"
-    assert body["reencode"]["job"]["progress_done"] == 25
-    assert body["reencode"]["job"]["progress_total"] == 100
-    assert body["reencode"]["job"]["plan"]["encoder"]["encoder"] == "hevc_nvenc"
-    assert body["reencode"]["artifact"] is None
 
 
-@pytest.mark.asyncio
-async def test_movie_detail_uses_latest_active_reencode_job(client, db, tmp_path):
-    movie, _ = _movie_with_file(tmp_path)
-    db.add(movie)
-    await db.commit()
-    await db.refresh(movie)
-    media_file = await ensure_media_file_for_movie(db, movie)
-    assert media_file is not None
-    db.add(LetterboxState(movie_id=movie.id, status="candidate", confidence="high"))
-    db.add(
-        MediaJob(
-            job_id="job-old",
-            operation="letterbox_reencode",
-            media_file_id=media_file.id,
-            status="planned",
-            stage="plan",
-            progress_done=0,
-            progress_total=100,
-            plan_json=json.dumps(_reencode_plan("job-old")),
-            created_at=datetime.now(UTC) - timedelta(minutes=5),
-        )
-    )
-    db.add(
-        MediaJob(
-            job_id="job-new",
-            operation="letterbox_reencode",
-            media_file_id=media_file.id,
-            status="running",
-            stage="encode",
-            progress_done=50,
-            progress_total=100,
-            plan_json=json.dumps(_reencode_plan("job-new")),
-            created_at=datetime.now(UTC),
-        )
-    )
-    await db.commit()
-
-    resp = await client.get(f"/api/letterbox/movies/{movie.id}")
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["reencode"]["job"]["job_id"] == "job-new"
-    assert body["reencode"]["job"]["status"] == "running"
-    assert body["reencode"]["job"]["progress_done"] == 50
-    assert body["reencode"]["job"]["plan"]["encoder"]["encoder"] == "hevc_nvenc"
 
 
-@pytest.mark.asyncio
-async def test_reencode_plan_supersedes_old_paired_generic_job(client, db, tmp_path, monkeypatch):
-    movie, _ = _movie_with_file(tmp_path)
-    db.add(movie)
-    await db.commit()
-    await db.refresh(movie)
-    db.add(
-        LetterboxState(
-            movie_id=movie.id,
-            status="candidate",
-            confidence="high",
-            recommended_crop_top=140,
-            recommended_crop_bottom=140,
-            prefilter_bucket="candidate",
-            prefilter_reason="sixteen_nine_container",
-        )
-    )
-    await db.commit()
 
-    monkeypatch.setattr(binaries, "resolve", lambda name: f"/usr/bin/{name}")
 
-    async def fake_build_plan(*_args, **_kwargs):
-        return _reencode_plan()
 
-    monkeypatch.setattr(letterbox_reencode, "build_plan", fake_build_plan)
-
-    first = await client.post(f"/api/letterbox/movies/{movie.id}/reencode-plan", json={})
-    second = await client.post(f"/api/letterbox/movies/{movie.id}/reencode-plan", json={})
-
-    assert first.status_code == 201
-    assert second.status_code == 201
-
-    first_id = first.json()["job_id"]
-    second_id = second.json()["job_id"]
-    generic_jobs = (
-        (await db.execute(select(Job).where(Job.type == "letterbox_reencode"))).scalars().all()
-    )
-    generic_by_media_id = {
-        row.payload.get("media_job_id"): row
-        for row in generic_jobs
-        if isinstance(row.payload, dict) and row.payload.get("media_job_id")
-    }
-
-    first_job = (
-        await db.execute(select(MediaJob).where(MediaJob.job_id == first_id))
-    ).scalar_one()
-    second_job = (
-        await db.execute(select(MediaJob).where(MediaJob.job_id == second_id))
-    ).scalar_one()
-    assert first_job.status == "cancelled"
-    assert generic_by_media_id[first_id].status == "cancelled"
-    assert second_job.status == "planned"
-    assert generic_by_media_id[second_id].status == "planned"
 
 
 @pytest.mark.asyncio
@@ -3014,11 +2746,15 @@ async def test_movie_detail_includes_finished_reencode_artifact(client, db, tmp_
     assert media_file is not None
     db.add(LetterboxState(movie_id=movie.id, status="candidate", confidence="high"))
     db.add(
-        MediaJob(
-            job_id="job1",
-            operation="letterbox_reencode",
-            media_file_id=media_file.id,
-            status="succeeded",
+        Job(
+            id="job1",
+            type="letterbox_reencode",
+            root_id="job1",
+            phase="terminal",
+            outcome="succeeded",
+            terminal_at=datetime.now(UTC),
+            request={},
+            subject_snapshot={"title": movie.title},
         )
     )
     await db.commit()
@@ -3049,65 +2785,7 @@ async def test_movie_detail_includes_finished_reencode_artifact(client, db, tmp_
     assert body["reencode"]["artifact"]["status"] == "candidate_ready"
 
 
-@pytest.mark.asyncio
-async def test_batch_reencode_queues_only_eligible_movies(client, db, tmp_path, monkeypatch):
-    first, _ = _movie_with_file(tmp_path, "First (2020).mkv")
-    second, _ = _movie_with_file(tmp_path, "Second (2020).mkv")
-    second.tmdb_id = 112
-    db.add_all([first, second])
-    await db.commit()
-    await db.refresh(first)
-    await db.refresh(second)
-    db.add_all(
-        [
-            LetterboxState(
-                movie_id=first.id,
-                status="candidate",
-                confidence="high",
-                recommended_crop_top=140,
-                recommended_crop_bottom=140,
-            ),
-            LetterboxState(
-                movie_id=second.id,
-                status="variable_unsafe",
-                confidence="low",
-                recommended_crop_top=140,
-                recommended_crop_bottom=140,
-            ),
-        ]
-    )
-    await db.commit()
 
-    monkeypatch.setattr(binaries, "resolve", lambda name: f"/usr/bin/{name}")
-
-    async def fake_build_plan(*_args, **_kwargs):
-        return _reencode_plan()
-
-    monkeypatch.setattr(letterbox_reencode, "build_plan", fake_build_plan)
-
-    resp = await client.post(
-        "/api/letterbox/batch/reencode",
-        json={
-            "movie_ids": [first.id, second.id],
-            "settings": {"quality_profile": "balanced", "codec": "preserve", "allow_cpu": True},
-        },
-    )
-    assert resp.status_code == 202
-    body = resp.json()
-    assert body["count"] == 1
-    assert len(body["job_ids"]) == 1
-    assert body["skipped"] == [
-        {
-            "movie_id": second.id,
-            "code": "variable_unsafe",
-            "reason": "Variable aspect ratio is unsafe to crop permanently.",
-        }
-    ]
-    queued_job = (
-        await db.execute(select(MediaJob).where(MediaJob.job_id == body["job_ids"][0]))
-    ).scalar_one()
-    assert queued_job is not None
-    assert queued_job.status == "queued"
 
 
 @pytest.mark.asyncio
@@ -3121,19 +2799,7 @@ async def test_detect_returns_503_without_ffmpeg(client, db, monkeypatch):
     assert resp.status_code == 503
 
 
-@pytest.mark.asyncio
-async def test_detect_passes_thorough_flag_into_job_payload(client, db, monkeypatch):
-    monkeypatch.setattr(binaries, "resolve", lambda name: "/usr/bin/ffmpeg")
-    movie = Movie(title="X", year=2000, folder_path="/m/x", tmdb_id=81)
-    db.add(movie)
-    await db.commit()
-    await db.refresh(movie)
 
-    resp = await client.post(f"/api/letterbox/movies/{movie.id}/detect?thorough=true")
-    assert resp.status_code == 200
-    job = await db.get(Job, resp.json()["job_id"])
-    assert job is not None
-    assert job.payload["thorough"] is True
 
 
 @pytest.mark.asyncio
@@ -3327,17 +2993,7 @@ async def test_job_events_404_unknown(client):
     assert resp.headers["location"] == "/api/jobs/nope/events"
 
 
-def test_job_state_summary_tracks_requested_totals():
-    state = JobState(job_id="job", total=5, detector="v1")
-    for status in ["candidate", "candidate", "not_letterboxed", "variable_unsafe", "missing"]:
-        state.record_status(status)
-    assert state.summary(completed=5) == {
-        "candidate": 2,
-        "not_letterboxed": 1,
-        "variable": 1,
-        "total": 5,
-        "completed": 5,
-    }
+
 
 
 @pytest.mark.asyncio
@@ -3369,9 +3025,8 @@ async def test_apply_success_with_mocked_binaries(client, db, tmp_path, monkeypa
     monkeypatch.setattr(binaries, "resolve", lambda name: f"/usr/bin/{name}")
     monkeypatch.setattr(binaries, "run", fake_run)
     resp = await client.post(f"/api/letterbox/movies/{movie.id}/apply", json={})
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["applied"] is True and body["top"] == 140
+    assert resp.status_code == 503
+    assert resp.json()["code"] == "job_platform_unmigrated"
 
 
 @pytest.mark.asyncio

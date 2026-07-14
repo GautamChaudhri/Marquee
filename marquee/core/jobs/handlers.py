@@ -50,4 +50,4 @@ def max_runtime_seconds(job_type: str) -> int | None:
 @register("system_noop", instant=True)
 async def system_noop(job: Job) -> dict[str, Any]:
     """Small diagnostic handler used to validate deployment and job plumbing."""
-    return {"echo": job.payload}
+    return {"echo": job.request}

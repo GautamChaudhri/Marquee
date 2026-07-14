@@ -19,7 +19,6 @@ from sqlalchemy import select
 
 from marquee.config import settings
 from marquee.core import system_metrics
-from marquee.core.jobs.manager import ACTIVE
 from marquee.database import _get_session_factory
 from marquee.models import Job, SystemMetricsSample
 
@@ -37,7 +36,9 @@ class SystemMetricsSampler:
         factory = _get_session_factory()
         async with factory() as db:
             active = (
-                await db.execute(select(Job.id, Job.type).where(Job.status.in_(ACTIVE)))
+                await db.execute(
+                    select(Job.id, Job.type).where(Job.phase.in_(("running", "stopping")))
+                )
             ).all()
             db.add(
                 SystemMetricsSample(

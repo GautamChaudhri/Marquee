@@ -11,6 +11,7 @@ import asyncpg
 from sqlalchemy.exc import SQLAlchemyError
 
 from marquee.config import settings
+from marquee.core.configuration_cache import configuration_provider
 from marquee.database import _get_engine
 from marquee.db_migration import (
     MIGRATION_ADVISORY_LOCK_ID,
@@ -82,6 +83,11 @@ async def check_readiness() -> dict[str, Any]:
         "database": {"status": "unavailable"},
         "migration_lock": {"status": "unavailable"},
         "schema": {"status": "unavailable"},
+        "versioned_configuration": {
+            "status": "ok"
+            if configuration_provider.health()["status"] == "valid"
+            else str(configuration_provider.health()["status"])
+        },
     }
     sqlalchemy_connection = None
     connection: asyncpg.Connection | None = None

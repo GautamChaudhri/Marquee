@@ -12,14 +12,14 @@ from fastapi import APIRouter, Depends, Request
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from marquee.api.routes.jobs import _QUEUED_ISH, _resolve_subject_titles, job_summary
+from marquee.api.routes.jobs import job_summary
 from marquee.api.routes.webhooks import webhook_state
 from marquee.config import settings
 from marquee.core import system_metrics
+from marquee.core.configuration_cache import configuration_provider
 from marquee.core.heal import latest_heal_summary
 from marquee.core.jobs import job_manager
 from marquee.core.jobs.labels import humanize_job_type
-from marquee.core.jobs.manager import ACTIVE
 from marquee.core.jobs.pgqueuer_gateway import pgqueuer_gateway
 from marquee.core.jobs.readiness import connection_budget_report
 from marquee.core.letterbox_heal import letterbox_heal_state
@@ -27,7 +27,7 @@ from marquee.core.pipeline_config import pipeline_settings
 from marquee.database import get_db, pool_stats, reset_database
 from marquee.media import binaries
 from marquee.ml.hardware import effective_ocr_workers
-from marquee.models import Job, MediaJob, SchemaContract, SystemMetricsSample
+from marquee.models import Job, SchemaContract, SystemMetricsSample
 from marquee.pipeline.ocr_filter import active_worker_status, paddle_cuda_available
 
 logger = logging.getLogger(__name__)
@@ -59,18 +59,16 @@ def _ocr_status() -> dict:
 
 @router.get("/status")
 async def system_status(request: Request, db: Annotated[AsyncSession, Depends(get_db)]):
-    queue_rows = (
-        await db.execute(select(MediaJob.status, func.count()).group_by(MediaJob.status))
-    ).all()
-    job_rows = (await db.execute(select(Job.status, func.count()).group_by(Job.status))).all()
+    job_rows = (await db.execute(select(Job.phase, func.count()).group_by(Job.phase))).all()
     supervisor = getattr(request.app.state, "worker_supervisor", None)
     return {
         "cache": _cache_stats(),
+        "configuration": configuration_provider.health(),
         "heal": await latest_heal_summary(db),
         "letterbox_heal": letterbox_heal_state,
         "webhook": webhook_state,
         "tools": binaries.availability(),
-        "media_jobs": dict(queue_rows),
+        "media_jobs": {},
         "jobs": dict(job_rows),
         "ocr": _ocr_status(),
         "worker_supervisor": supervisor.status() if supervisor is not None else None,
@@ -78,20 +76,12 @@ async def system_status(request: Request, db: Annotated[AsyncSession, Depends(ge
 
 
 async def _worker_counts(db: AsyncSession) -> dict[str, int]:
-    """Active/queued job counts for the dashboard cards.
-
-    Bug fix: this used to define its own ``_ACTIVE_JOB_STATUSES``/
-    ``_QUEUED_JOB_STATUSES`` sets containing statuses the job manager never
-    actually sets (``"in_progress"``, ``"processing"``, ``"pending"``), so
-    these counts were silently wrong since the endpoint shipped. Reuses
-    ``manager.ACTIVE`` and ``jobs._QUEUED_ISH`` — the real status vocabulary
-    — instead of a second, drifted copy.
-    """
-    rows = (await db.execute(select(Job.status, func.count()).group_by(Job.status))).all()
-    counts = {str(status): n for status, n in rows}
+    """Return counts from the final canonical phase vocabulary."""
+    rows = (await db.execute(select(Job.phase, func.count()).group_by(Job.phase))).all()
+    counts = {str(phase): count for phase, count in rows}
     return {
-        "active": sum(n for s, n in counts.items() if s in ACTIVE),
-        "queued": sum(n for s, n in counts.items() if s in _QUEUED_ISH),
+        "active": sum(counts.get(phase, 0) for phase in ("running", "stopping")),
+        "queued": counts.get("queued", 0),
     }
 
 
@@ -147,7 +137,9 @@ def _downsample_history(points: list[dict], target_points: int) -> list[dict]:
     return downsampled
 
 
-async def _history_jobs(db: AsyncSession, *, start_at: datetime, end_at: datetime) -> list[dict]:
+async def _history_jobs(
+    db: AsyncSession, *, start_at: datetime, end_at: datetime
+) -> list[dict]:
     rows = (
         (
             await db.execute(
@@ -155,7 +147,7 @@ async def _history_jobs(db: AsyncSession, *, start_at: datetime, end_at: datetim
                 .where(
                     Job.started_at.is_not(None),
                     Job.started_at <= end_at,
-                    func.coalesce(Job.finished_at, end_at) >= start_at,
+                    func.coalesce(Job.terminal_at, end_at) >= start_at,
                 )
                 .order_by(Job.started_at.asc(), Job.id.asc())
             )
@@ -163,19 +155,27 @@ async def _history_jobs(db: AsyncSession, *, start_at: datetime, end_at: datetim
         .scalars()
         .all()
     )
-    titles = await _resolve_subject_titles(db, rows)
-    return [
-        {
-            "job_id": job.id,
-            "type": job.type,
-            "label": humanize_job_type(job.type),
-            "status": job.status,
-            "subject": titles.get((job.subject_type, job.subject_id)),
-            "started_at": job.started_at.isoformat() if job.started_at else None,
-            "finished_at": job.finished_at.isoformat() if job.finished_at else None,
-        }
-        for job in rows
-    ]
+    history: list[dict] = []
+    for job in rows:
+        snapshot = job.subject_snapshot if isinstance(job.subject_snapshot, dict) else {}
+        subject = (
+            snapshot.get("display_name")
+            or snapshot.get("title")
+            or snapshot.get("name")
+            or job.subject_reference
+        )
+        history.append(
+            {
+                "job_id": job.id,
+                "type": job.type,
+                "label": humanize_job_type(job.type),
+                "status": job.outcome if job.phase == "terminal" else job.phase,
+                "subject": subject,
+                "started_at": job.started_at.isoformat() if job.started_at else None,
+                "finished_at": job.terminal_at.isoformat() if job.terminal_at else None,
+            }
+        )
+    return history
 
 
 @router.get("/metrics/history")

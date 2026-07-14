@@ -182,20 +182,34 @@ export function getSubgenHardware(fetch: Fetch): Promise<SubgenHardwareResponse>
 
 export function putSubgenSettings(
 	fetch: Fetch,
-	settings: SubgenSettings
-): Promise<{ applied: string[]; settings: Record<string, unknown> }> {
+	settings: SubgenSettings,
+	expectedVersion: number
+): Promise<{
+	configuration_version: number;
+	etag: string;
+	changed: boolean;
+	applied: string[];
+	settings: Record<string, unknown>;
+}> {
 	if (useMocks()) {
 		return Promise.resolve({
+			configuration_version: expectedVersion + 1,
+			etag: `"configuration-${expectedVersion + 1}"`,
+			changed: true,
 			applied: Object.keys(settings),
 			settings: settings as Record<string, unknown>
 		});
 	}
-	return apiSend<{ applied: string[]; settings: Record<string, unknown> }>(
-		fetch,
-		'PUT',
-		'/subtitle-generators/subgen/settings',
-		settings
-	);
+	return apiSend<{
+		configuration_version: number;
+		etag: string;
+		changed: boolean;
+		applied: string[];
+		settings: Record<string, unknown>;
+	}>(fetch, 'PUT', '/subtitle-generators/subgen/settings', {
+		...settings,
+		expected_version: expectedVersion
+	});
 }
 
 export function restartSubgen(fetch: Fetch): Promise<{ ok: boolean }> {

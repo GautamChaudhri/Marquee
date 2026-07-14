@@ -186,12 +186,13 @@ async def list_movies(
         (LetterboxState.movie_id == Movie.id) & (LetterboxState.media_type == "movie"),
     )
 
-    conditions = []
+    conditions = [Movie.is_present.is_(True)]
     if not include_unavailable:
         has_active_media = exists(
             select(MediaFile.id).where(
                 MediaFile.movie_id == Movie.id,
                 MediaFile.is_active.is_(True),
+                MediaFile.is_present.is_(True),
             )
         )
         conditions.append(or_(Movie.movie_file_path.is_not(None), has_active_media))
@@ -238,7 +239,9 @@ async def list_movies(
         (
             await db.execute(
                 select(MediaFile).where(
-                    MediaFile.movie_id.in_(movie_ids), MediaFile.is_active.is_(True)
+                    MediaFile.movie_id.in_(movie_ids),
+                    MediaFile.is_active.is_(True),
+                    MediaFile.is_present.is_(True),
                 )
             )
         )
@@ -267,7 +270,11 @@ async def list_movies(
 
 @router.get("/movies/{movie_id}/poster")
 async def get_movie_poster(movie_id: int, db: Annotated[AsyncSession, Depends(get_db)]):
-    movie = (await db.execute(select(Movie).where(Movie.id == movie_id))).scalar_one_or_none()
+    movie = (
+        await db.execute(
+            select(Movie).where(Movie.id == movie_id, Movie.is_present.is_(True))
+        )
+    ).scalar_one_or_none()
     if movie is None or not movie.poster_path:
         raise HTTPException(status_code=404, detail="No poster available")
     import os
@@ -286,7 +293,7 @@ async def get_movie(movie_id: int, db: Annotated[AsyncSession, Depends(get_db)])
                 LetterboxState,
                 (LetterboxState.movie_id == Movie.id) & (LetterboxState.media_type == "movie"),
             )
-            .where(Movie.id == movie_id)
+            .where(Movie.id == movie_id, Movie.is_present.is_(True))
         )
     ).first()
     if row is None:
@@ -294,7 +301,11 @@ async def get_movie(movie_id: int, db: Annotated[AsyncSession, Depends(get_db)])
     movie, lb = row
     mf = (
         await db.execute(
-            select(MediaFile).where(MediaFile.movie_id == movie_id, MediaFile.is_active.is_(True))
+            select(MediaFile).where(
+                MediaFile.movie_id == movie_id,
+                MediaFile.is_active.is_(True),
+                MediaFile.is_present.is_(True),
+            )
         )
     ).scalar_one_or_none()
     coverage = await _coverage_by_media_file(db, [mf.id] if mf else [])
@@ -421,7 +432,10 @@ async def list_seasons(
     ).scalar_one_or_none()
     if series is None:
         raise HTTPException(status_code=404, detail=f"Series id={series_id} not found")
-    query = select(Season).where(Season.series_id == series_id)
+    query = select(Season).where(
+        Season.series_id == series_id,
+        Season.is_present.is_(True),
+    )
     if downloaded_only:
         query = query.where(season_downloaded())
     rows = (
@@ -452,7 +466,9 @@ async def list_seasons(
 async def get_episode(episode_id: int, db: Annotated[AsyncSession, Depends(get_db)]):
     """Episode detail + the shared media-file id (multi-episode files share one)."""
     episode = (
-        await db.execute(select(Episode).where(Episode.id == episode_id))
+        await db.execute(
+            select(Episode).where(Episode.id == episode_id, Episode.is_present.is_(True))
+        )
     ).scalar_one_or_none()
     if episode is None:
         raise HTTPException(status_code=404, detail=f"Episode id={episode_id} not found")
@@ -483,7 +499,11 @@ async def delete_movie_poster(
     from marquee.core.poster_service import cache_paths  # noqa: PLC0415
     from marquee.core.poster_subjects import PosterSubject  # noqa: PLC0415
 
-    movie = (await db.execute(select(Movie).where(Movie.id == movie_id))).scalar_one_or_none()
+    movie = (
+        await db.execute(
+            select(Movie).where(Movie.id == movie_id, Movie.is_present.is_(True))
+        )
+    ).scalar_one_or_none()
     if movie is None:
         raise HTTPException(status_code=404, detail=f"Movie id={movie_id} not found")
 
@@ -550,7 +570,14 @@ async def delete_season_poster(
     ).scalar_one_or_none()
     if season is None:
         raise HTTPException(status_code=404, detail=f"Season id={season_id} not found")
-    series = (await db.execute(select(Series).where(Series.id == season.series_id))).scalar_one()
+    series = (
+        await db.execute(
+            select(Series).where(
+                Series.id == season.series_id,
+                Series.is_present.is_(True),
+            )
+        )
+    ).scalar_one()
     return await _delete_subject_poster(
         db, PosterSubject.from_season(season, series), detail_prefix="Season"
     )

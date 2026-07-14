@@ -317,6 +317,8 @@ class SyncService:
         now = datetime.now(UTC)
 
         raw_movies = await self.radarr.get_movies()
+        if not isinstance(raw_movies, list):
+            raise TypeError("Radarr movie response must be a complete list")
         movie_files = []
         custom_formats = []
         quality_profiles = []
@@ -370,6 +372,9 @@ class SyncService:
                 else:
                     result.updated += 1
                 previous_tmdb_id = movie.tmdb_id
+                movie.is_present = True
+                movie.retired_at = None
+                movie.last_seen_at = now
 
                 # ── Identity ──────────────────────────────────────────
                 movie.title = data["title"]
@@ -442,6 +447,25 @@ class SyncService:
         if self.tmdb and enrich_candidates:
             await self._enrich_movies_from_tmdb(enrich_candidates)
 
+        if result.errors == 0:
+            observed_ids = {int(data["id"]) for data in raw_movies}
+            for radarr_id, movie in existing.items():
+                if radarr_id not in observed_ids and movie.is_present:
+                    movie.is_present = False
+                    movie.retired_at = now
+                    media_files = (
+                        await self.db.execute(
+                            select(MediaFile).where(
+                                MediaFile.movie_id == movie.id,
+                                MediaFile.is_present.is_(True),
+                            )
+                        )
+                    ).scalars()
+                    for media_file in media_files:
+                        media_file.is_present = False
+                        media_file.is_active = False
+                        media_file.retired_at = now
+
         await self.db.commit()
         return result
 
@@ -479,6 +503,8 @@ class SyncService:
         now = datetime.now(UTC)
 
         raw_series = await self.sonarr.get_series()
+        if not isinstance(raw_series, list):
+            raise TypeError("Sonarr series response must be a complete list")
 
         custom_formats = []
         quality_profiles = []
@@ -518,6 +544,9 @@ class SyncService:
                 else:
                     result.series.updated += 1
                 previous_tmdb_id = series.tmdb_id
+                series.is_present = True
+                series.retired_at = None
+                series.last_seen_at = now
 
                 # ── Identity ──────────────────────────────────────────
                 series.title = data["title"]
@@ -599,6 +628,44 @@ class SyncService:
         if self.tmdb and enrich_candidates:
             await self._enrich_tv_from_tmdb(enrich_candidates)
 
+        if result.series.errors + result.seasons.errors + result.episodes.errors == 0:
+            observed_ids = {int(data["id"]) for data in raw_series}
+            for sonarr_id, series in existing.items():
+                if sonarr_id not in observed_ids and series.is_present:
+                    series.is_present = False
+                    series.retired_at = now
+                    seasons = (
+                        await self.db.execute(select(Season).where(Season.series_id == series.id))
+                    ).scalars()
+                    for season in seasons:
+                        season.is_present = False
+                        season.retired_at = now
+                    episodes = (
+                        await self.db.execute(select(Episode).where(Episode.series_id == series.id))
+                    ).scalars()
+                    for episode in episodes:
+                        episode.is_present = False
+                        episode.retired_at = now
+                    media_files = (
+                        await self.db.execute(
+                            select(MediaFile)
+                            .join(
+                                EpisodeMediaFile,
+                                EpisodeMediaFile.media_file_id == MediaFile.id,
+                            )
+                            .join(Episode, Episode.id == EpisodeMediaFile.episode_id)
+                            .where(
+                                Episode.series_id == series.id,
+                                MediaFile.is_present.is_(True),
+                            )
+                            .distinct()
+                        )
+                    ).scalars()
+                    for media_file in media_files:
+                        media_file.is_present = False
+                        media_file.is_active = False
+                        media_file.retired_at = now
+
         await self.db.commit()
         return result
 
@@ -637,6 +704,7 @@ class SyncService:
         response — no extra API call needed.
         """
         result = SyncResult()
+        now = datetime.now(UTC)
 
         # Index existing seasons by season_number
         existing_rows = (
@@ -660,12 +728,26 @@ class SyncService:
             else:
                 result.updated += 1
 
+            season.is_present = True
+            season.retired_at = None
+            season.last_seen_at = now
+
             stats = sdata.get("statistics") or {}
             season.episode_count = int(stats.get("episodeCount") or 0)
             season.episode_file_count = int(stats.get("episodeFileCount") or 0)
 
             # tmdb_id for seasons is populated in Phase N
             await self._check_existing_poster(season, series=series)
+
+        observed_numbers = {
+            int(data.get("seasonNumber", 0))
+            for data in sonarr_seasons
+            if int(data.get("seasonNumber", 0)) >= 0
+        }
+        for season_number, season in existing.items():
+            if season_number not in observed_numbers and season.is_present:
+                season.is_present = False
+                season.retired_at = now
 
         return result
 
@@ -679,9 +761,12 @@ class SyncService:
         acceptable.  Episode file paths come from the episode-file join.
         """
         result = SyncResult()
+        now = datetime.now(UTC)
 
         raw_episodes = await self.sonarr.get_episodes(series.sonarr_id)
         raw_files = await self.sonarr.get_episode_files(series.sonarr_id)
+        if not isinstance(raw_episodes, list) or not isinstance(raw_files, list):
+            raise TypeError("Sonarr episode responses must be complete lists")
 
         # Build episode-file lookup
         file_by_id: dict[int, dict] = {f["id"]: f for f in raw_files}
@@ -706,6 +791,10 @@ class SyncService:
                 result.created += 1
             else:
                 result.updated += 1
+
+            episode.is_present = True
+            episode.retired_at = None
+            episode.last_seen_at = now
 
             episode.season_number = edata.get("seasonNumber", 0)
             episode.episode_number = edata.get("episodeNumber", 0)
@@ -736,6 +825,12 @@ class SyncService:
                 episode.video_height = None
                 episode.audio_languages_json = None
                 episode.subtitle_languages_json = None
+
+        observed_episode_ids = {int(data["id"]) for data in raw_episodes}
+        for sonarr_episode_id, episode in existing.items():
+            if sonarr_episode_id not in observed_episode_ids and episode.is_present:
+                episode.is_present = False
+                episode.retired_at = now
 
         # ── Physical media-file rows + episode associations (§19.3) ──
         await self.db.flush()  # assign episode.id for new rows
@@ -830,7 +925,20 @@ async def _upsert_movie_media_file(db: AsyncSession, movie: Movie, movie_file: d
     if not path and movie.folder_path and relative:
         path = str(Path(movie.folder_path) / relative)
     if not path:
-        return  # no file yet (movie monitored but not downloaded)
+        existing = (
+            await db.execute(
+                select(MediaFile).where(
+                    MediaFile.movie_id == movie.id,
+                    MediaFile.is_present.is_(True),
+                )
+            )
+        ).scalars()
+        now = datetime.now(UTC)
+        for media_file in existing:
+            media_file.is_present = False
+            media_file.is_active = False
+            media_file.retired_at = now
+        return
 
     source_key = f"radarr:movie-file:{file_id}" if file_id else f"radarr:movie:{movie.id}"
     container = Path(path).suffix.lstrip(".").lower() or None
@@ -856,6 +964,8 @@ async def _upsert_movie_media_file(db: AsyncSession, movie: Movie, movie_file: d
     for other in existing:
         if other is not current:
             other.is_active = False  # replaced/old file → keep for history
+            other.is_present = False
+            other.retired_at = datetime.now(UTC)
 
     if current is None:
         current = MediaFile(movie_id=movie.id, source="radarr", source_key=source_key, path=path)
@@ -867,6 +977,8 @@ async def _upsert_movie_media_file(db: AsyncSession, movie: Movie, movie_file: d
     current.container = container
     current.size_bytes = size
     current.is_active = True
+    current.is_present = True
+    current.retired_at = None
     current.last_seen_at = datetime.now(UTC)
     await db.flush()
     if previous_active_ids and current.id not in previous_active_ids:
@@ -933,6 +1045,8 @@ async def _upsert_episode_media_files(
         media_file.container = Path(path).suffix.lstrip(".").lower() or None
         media_file.size_bytes = fdata.get("size")
         media_file.is_active = True
+        media_file.is_present = True
+        media_file.retired_at = None
         media_file.last_seen_at = datetime.now(UTC)
         await db.flush()  # assign media_file.id
 
@@ -986,6 +1100,8 @@ async def _upsert_episode_media_files(
     stale_media_rows = (await db.execute(stale_query)).scalars().all()
     for media_row in stale_media_rows:
         media_row.is_active = False
+        media_row.is_present = False
+        media_row.retired_at = datetime.now(UTC)
 
 
 def _extract_media_info(movie_file: dict) -> tuple[int | None, int | None, str | None]:

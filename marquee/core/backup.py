@@ -47,7 +47,7 @@ class BackupService:
         ]
 
     def managed_file_targets(self) -> list[Path]:
-        return [Path("pipeline_overrides.json")]
+        return []
 
     def managed_glob_targets(self) -> list[tuple[Path, str]]:
         return [(Path("cache"), "taste_map*.npz")]

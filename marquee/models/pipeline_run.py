@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import CheckConstraint, DateTime, Float, ForeignKey, String, Text, func
+from sqlalchemy import JSON, CheckConstraint, DateTime, Float, ForeignKey, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from marquee.database import Base
@@ -23,9 +23,10 @@ class PipelineRun(Base):
 
     __table_args__ = (
         CheckConstraint(
-            "(media_type = 'movie'  AND movie_id  IS NOT NULL) OR "
+            "(media_type = 'movie' AND movie_id IS NOT NULL) OR "
             "(media_type = 'series' AND series_id IS NOT NULL) OR "
-            "(media_type = 'season' AND season_id IS NOT NULL)",
+            "(media_type = 'season' AND season_id IS NOT NULL) OR "
+            "(movie_id IS NULL AND series_id IS NULL AND season_id IS NULL)",
             name="ck_pipeline_runs_subject",
         ),
     )
@@ -33,7 +34,7 @@ class PipelineRun(Base):
     run_id: Mapped[str] = mapped_column(String(32), primary_key=True)
 
     movie_id: Mapped[int | None] = mapped_column(
-        ForeignKey("movies.id", ondelete="CASCADE"),
+        ForeignKey("movies.id", ondelete="SET NULL"),
         index=True,
         nullable=True,
     )
@@ -47,15 +48,18 @@ class PipelineRun(Base):
     )
 
     series_id: Mapped[int | None] = mapped_column(
-        ForeignKey("series.id", ondelete="CASCADE"),
+        ForeignKey("series.id", ondelete="SET NULL"),
         index=True,
         nullable=True,
     )
 
     season_id: Mapped[int | None] = mapped_column(
-        ForeignKey("seasons.id", ondelete="CASCADE"),
+        ForeignKey("seasons.id", ondelete="SET NULL"),
         index=True,
         nullable=True,
+    )
+    subject_snapshot: Mapped[dict] = mapped_column(
+        JSON, nullable=False, default=dict, server_default="{}"
     )
 
     # running | completed | flagged_manual | failed

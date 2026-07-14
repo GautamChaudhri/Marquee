@@ -27,17 +27,18 @@ class LetterboxReencodeArtifact(Base):
     __table_args__ = (
         CheckConstraint(
             "(media_type = 'movie' AND movie_id IS NOT NULL AND episode_id IS NULL) OR "
-            "(media_type = 'episode' AND episode_id IS NOT NULL AND movie_id IS NULL)",
+            "(media_type = 'episode' AND episode_id IS NOT NULL AND movie_id IS NULL) OR "
+            "(movie_id IS NULL AND episode_id IS NULL)",
             name="ck_letterbox_reencode_artifact_subject",
         ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     job_id: Mapped[str] = mapped_column(
-        ForeignKey("media_jobs.job_id", ondelete="SET NULL"), index=True, nullable=True
+        ForeignKey("jobs.id", ondelete="SET NULL"), index=True, nullable=True
     )
     movie_id: Mapped[int | None] = mapped_column(
-        ForeignKey("movies.id", ondelete="CASCADE"), index=True, nullable=True
+        ForeignKey("movies.id", ondelete="SET NULL"), index=True, nullable=True
     )
     media_type: Mapped[str] = mapped_column(
         String(10),
@@ -47,7 +48,7 @@ class LetterboxReencodeArtifact(Base):
         index=True,
     )
     episode_id: Mapped[int | None] = mapped_column(
-        ForeignKey("episodes.id", ondelete="CASCADE"), index=True, nullable=True
+        ForeignKey("episodes.id", ondelete="SET NULL"), index=True, nullable=True
     )
     media_file_id: Mapped[int | None] = mapped_column(
         ForeignKey("media_files.id", ondelete="SET NULL"), index=True, nullable=True

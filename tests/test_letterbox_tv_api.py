@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -15,16 +14,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from marquee.api.routes import letterbox as letterbox_routes
 from marquee.config import settings
 from marquee.main import app
-from marquee.media import binaries, letterbox_preview
+from marquee.media import letterbox_preview
 from marquee.models import (
     Episode,
     EpisodeMediaFile,
     Job,
     LetterboxEvent,
-    LetterboxReencodeArtifact,
     LetterboxState,
     MediaFile,
-    MediaJob,
     Movie,
     Season,
     Series,
@@ -49,12 +46,51 @@ async def test_active_tv_jobs_include_active_episode_media_file_jobs(db, tv_libr
             .where(EpisodeMediaFile.episode_id == other_episode.id, MediaFile.is_active.is_(True))
         )
     ).scalar_one()
+    now = datetime.now(UTC)
     db.add_all(
         [
-            Job(id="series-active", type="letterbox_detect", subject_type="series", subject_id=str(episode.series_id)),
-            Job(id="file-active", type="letterbox_reencode", subject_type="media_file", subject_id=str(media_file.id)),
-            Job(id="other-file", type="letterbox_reencode", subject_type="media_file", subject_id=str(other_media_file.id)),
-            Job(id="file-finished", type="letterbox_reencode", status="succeeded", subject_type="media_file", subject_id=str(media_file.id)),
+            Job(
+                id="series-active",
+                type="letterbox_detect",
+                root_id="series-active",
+                phase="running",
+                request={},
+                subject_kind="series",
+                subject_reference=str(episode.series_id),
+                subject_snapshot={},
+            ),
+            Job(
+                id="file-active",
+                type="letterbox_reencode",
+                root_id="file-active",
+                phase="running",
+                request={},
+                subject_kind="media_file",
+                subject_reference=str(media_file.id),
+                subject_snapshot={},
+            ),
+            Job(
+                id="other-file",
+                type="letterbox_reencode",
+                root_id="other-file",
+                phase="running",
+                request={},
+                subject_kind="media_file",
+                subject_reference=str(other_media_file.id),
+                subject_snapshot={},
+            ),
+            Job(
+                id="file-finished",
+                type="letterbox_reencode",
+                root_id="file-finished",
+                phase="terminal",
+                outcome="succeeded",
+                terminal_at=now,
+                request={},
+                subject_kind="media_file",
+                subject_reference=str(media_file.id),
+                subject_snapshot={},
+            ),
         ]
     )
     await db.commit()
@@ -359,10 +395,12 @@ async def tv_library(db: AsyncSession):
         Job(
             id="tv-active-job",
             type="letterbox_detect_tv_scope",
-            payload={"series_id": mixed_show.id},
-            status="running",
-            subject_type="series",
-            subject_id=str(mixed_show.id),
+            root_id="tv-active-job",
+            request={"series_id": mixed_show.id},
+            phase="running",
+            subject_kind="series",
+            subject_reference=str(mixed_show.id),
+            subject_snapshot={"title": mixed_show.title},
         )
     )
     await db.commit()
@@ -602,506 +640,13 @@ class TestTvDetail:
         assert episodes[truth.id]["aspect_label"] == "2.40:1"
 
 
-@pytest.mark.asyncio
-class TestTvDetect:
-    async def test_series_detect_builds_one_child_per_season(self, client: AsyncClient, tv_library, db):
-        mixed_show = tv_library["mixed_show"]
-        resp = await client.post(f"/api/letterbox/tv/{mixed_show.id}/detect", json={})
-        assert resp.status_code == 202
-        body = resp.json()
-        assert body["total"] == 2
-
-        parent = await db.get(Job, body["job_id"])
-        assert parent.type == "letterbox_detect_tv_batch"
-        children = (await db.execute(select(Job).where(Job.parent_id == parent.id))).scalars().all()
-        assert {child.type for child in children} == {"letterbox_detect_tv_scope"}
-        assert len(children) == 2
-        assert all(child.payload["include_open_matte"] is False for child in children)
-
-    async def test_series_detect_scope_forwards_include_open_matte_only_to_scoped_children(
-        self, client: AsyncClient, tv_library, db
-    ):
-        mixed_show = tv_library["mixed_show"]
-        ep1 = tv_library["ep1"]
-
-        show_resp = await client.post(
-            f"/api/letterbox/tv/{mixed_show.id}/detect",
-            json={"include_open_matte": True},
-        )
-        assert show_resp.status_code == 202
-        show_parent = await db.get(Job, show_resp.json()["job_id"])
-        show_children = (
-            await db.execute(select(Job).where(Job.parent_id == show_parent.id))
-        ).scalars().all()
-        assert all(child.payload["include_open_matte"] is False for child in show_children)
-
-        season_resp = await client.post(
-            f"/api/letterbox/tv/{mixed_show.id}/detect",
-            json={"season_number": 1, "include_open_matte": True},
-        )
-        assert season_resp.status_code == 202
-        season_parent = await db.get(Job, season_resp.json()["job_id"])
-        season_child = (
-            await db.execute(select(Job).where(Job.parent_id == season_parent.id))
-        ).scalar_one()
-        assert season_child.payload["include_open_matte"] is True
-
-        episode_resp = await client.post(
-            f"/api/letterbox/tv/{mixed_show.id}/detect",
-            json={"episode_id": ep1.id, "include_open_matte": True},
-        )
-        assert episode_resp.status_code == 202
-        episode_parent = await db.get(Job, episode_resp.json()["job_id"])
-        episode_child = (
-            await db.execute(select(Job).where(Job.parent_id == episode_parent.id))
-        ).scalar_one()
-        assert episode_child.payload["include_open_matte"] is True
-
-    async def test_library_detect_builds_one_child_per_show(self, client: AsyncClient, tv_library, db):
-        resp = await client.post("/api/letterbox/tv/detect", json={})
-        assert resp.status_code == 202
-        body = resp.json()
-        assert body["total"] == 2
-
-        parent = await db.get(Job, body["job_id"])
-        assert parent.type == "letterbox_detect_tv_batch"
-        assert parent.payload["force"] is False
-        children = (await db.execute(select(Job).where(Job.parent_id == parent.id))).scalars().all()
-        assert len(children) == 2
-        assert all(child.payload["force"] is False for child in children)
-        assert all(child.payload["include_open_matte"] is False for child in children)
-
-    async def test_library_detect_passes_force_to_child_payloads(
-        self, client: AsyncClient, tv_library, db
-    ):
-        resp = await client.post("/api/letterbox/tv/detect", json={"force": True})
-        assert resp.status_code == 202
-        body = resp.json()
-        assert body["total"] == 2
-
-        parent = await db.get(Job, body["job_id"])
-        assert parent.type == "letterbox_detect_tv_batch"
-        assert parent.payload["force"] is True
-        children = (await db.execute(select(Job).where(Job.parent_id == parent.id))).scalars().all()
-        assert len(children) == 2
-        assert all(child.payload["force"] is True for child in children)
 
 
-@pytest.mark.asyncio
-class TestTvActions:
-    async def test_apply_and_remove_episode_scope(self, client: AsyncClient, tv_library, db, monkeypatch, tmp_path):
-        mixed_show = tv_library["mixed_show"]
-        target = tv_library["ep1"]
-        media_path = tmp_path / "mixed-s01e01.mkv"
-        media_path.write_bytes(b"video")
-
-        media_file = (
-            await db.execute(
-                select(MediaFile)
-                .join(EpisodeMediaFile, EpisodeMediaFile.media_file_id == MediaFile.id)
-                .where(EpisodeMediaFile.episode_id == target.id)
-            )
-        ).scalar_one()
-        media_file.path = str(media_path)
-        target.episode_file_path = str(media_path)
-        state = (
-            await db.execute(
-                select(LetterboxState).where(
-                    LetterboxState.media_type == "episode",
-                    LetterboxState.episode_id == target.id,
-                )
-            )
-        ).scalar_one()
-        state.confidence = "low"
-        await db.commit()
-
-        mkv_json = json.dumps(
-            {"container": {"type": "Matroska"}, "tracks": [{"type": "video", "properties": {}}]}
-        )
-
-        def fake_run(name, args, timeout=120.0):
-            if name == "mkvmerge":
-                return binaries.CommandResult(0, mkv_json, "")
-            return binaries.CommandResult(0, "", "")
-
-        monkeypatch.setattr(binaries, "resolve", lambda name: f"/usr/bin/{name}")
-        monkeypatch.setattr(binaries, "run", fake_run)
-
-        applied = await client.post(
-            f"/api/letterbox/tv/{mixed_show.id}/apply",
-            json={"episode_id": target.id},
-        )
-        assert applied.status_code == 200
-        assert applied.json()["applied_episodes"] == 1
-
-        removed = await client.post(
-            f"/api/letterbox/tv/{mixed_show.id}/episodes/{target.id}/remove"
-        )
-        assert removed.status_code == 200
-        assert removed.json()["removed"] is True
-
-        reverted = await client.post(
-            f"/api/letterbox/tv/{mixed_show.id}/revert",
-            json={"episode_id": target.id},
-        )
-        assert reverted.status_code == 200
-        assert reverted.json()["episode_ids"] == [target.id]
-
-    async def test_apply_episode_scope_fans_out_shared_media_group(
-        self,
-        client: AsyncClient,
-        tv_library,
-        db,
-        monkeypatch,
-        tmp_path,
-    ):
-        mixed_show = tv_library["mixed_show"]
-        first = tv_library["ep1"]
-        second = tv_library["ep2"]
-        media_path = tmp_path / "mixed-shared.mkv"
-        media_path.write_bytes(b"video")
-
-        first_media_file = (
-            await db.execute(
-                select(MediaFile)
-                .join(EpisodeMediaFile, EpisodeMediaFile.media_file_id == MediaFile.id)
-                .where(EpisodeMediaFile.episode_id == first.id)
-            )
-        ).scalar_one()
-        second_media_file = (
-            await db.execute(
-                select(MediaFile)
-                .join(EpisodeMediaFile, EpisodeMediaFile.media_file_id == MediaFile.id)
-                .where(EpisodeMediaFile.episode_id == second.id)
-            )
-        ).scalar_one()
-        first_media_file.path = str(media_path)
-        second_media_file.is_active = False
-        first.episode_file_path = str(media_path)
-        second.episode_file_path = str(media_path)
-        db.add(EpisodeMediaFile(episode_id=second.id, media_file_id=first_media_file.id))
-        await db.commit()
-
-        mkv_json = json.dumps(
-            {"container": {"type": "Matroska"}, "tracks": [{"type": "video", "properties": {}}]}
-        )
-
-        def fake_run(name, args, timeout=120.0):
-            if name == "mkvmerge":
-                return binaries.CommandResult(0, mkv_json, "")
-            return binaries.CommandResult(0, "", "")
-
-        monkeypatch.setattr(binaries, "resolve", lambda name: f"/usr/bin/{name}")
-        monkeypatch.setattr(binaries, "run", fake_run)
-
-        applied = await client.post(
-            f"/api/letterbox/tv/{mixed_show.id}/apply",
-            json={"episode_id": first.id},
-        )
-        assert applied.status_code == 200
-        assert applied.json()["applied_episodes"] == 2
-        assert applied.json()["items"][0]["episode_ids"] == [first.id, second.id]
-
-    async def test_scoped_apply_and_revert_return_jobs_with_payloads(
-        self, client: AsyncClient, tv_library, db
-    ):
-        mixed_show = tv_library["mixed_show"]
-
-        default_apply = await client.post(
-            f"/api/letterbox/tv/{mixed_show.id}/apply",
-            json={"season_number": 1},
-        )
-        assert default_apply.status_code == 202
-        apply_job = await db.get(Job, default_apply.json()["job_id"])
-        assert apply_job.type == "letterbox_apply_tv_scope"
-        assert apply_job.payload["series_id"] == mixed_show.id
-        assert apply_job.payload["season_number"] == 1
-        assert apply_job.payload["confidence_levels"] == ["high"]
-
-        all_apply = await client.post(
-            f"/api/letterbox/tv/{mixed_show.id}/apply",
-            json={"season_number": 1, "confidence_levels": ["all"]},
-        )
-        assert all_apply.status_code == 202
-        all_job = await db.get(Job, all_apply.json()["job_id"])
-        assert all_job.payload["confidence_levels"] == ["all"]
-
-        invalid = await client.post(
-            f"/api/letterbox/tv/{mixed_show.id}/apply",
-            json={"season_number": 1, "confidence_levels": ["bogus"]},
-        )
-        assert invalid.status_code == 422
-
-        revert = await client.post(
-            f"/api/letterbox/tv/{mixed_show.id}/revert",
-            json={"season_number": 1},
-        )
-        assert revert.status_code == 202
-        revert_job = await db.get(Job, revert.json()["job_id"])
-        assert revert_job.type == "letterbox_revert_tv_scope"
-        assert revert_job.payload == {"series_id": mixed_show.id, "season_number": 1}
-
-    async def test_ignore_and_mark_not_letterboxed(self, client: AsyncClient, tv_library, db):
-        mixed_show = tv_library["mixed_show"]
-        ep4 = tv_library["ep4"]
-        ep1 = tv_library["ep1"]
-
-        ignored = await client.post(
-            f"/api/letterbox/tv/{mixed_show.id}/episodes/{ep4.id}/ignore"
-        )
-        assert ignored.status_code == 200
-        assert ignored.json()["status"] == "skipped"
-
-        marked = await client.post(
-            f"/api/letterbox/tv/{mixed_show.id}/episodes/{ep1.id}/mark-not-letterboxed"
-        )
-        assert marked.status_code == 200
-        assert marked.json()["status"] == "not_letterboxed"
-        assert marked.json()["confidence"] == "none"
-        assert marked.json()["recommended_crop_top"] == 0
-        assert marked.json()["recommended_crop_bottom"] == 0
-        assert marked.json()["applied_crop_top"] == 0
-        assert marked.json()["applied_crop_bottom"] == 0
-        assert marked.json()["aspect_label"] == "1.78:1"
 
 
-@pytest.mark.asyncio
-class TestTvReencode:
-    async def test_episode_reencode_plan_and_confirm_fan_out_shared_file(
-        self, client: AsyncClient, tv_library, db, monkeypatch, tmp_path
-    ):
-        mixed_show = tv_library["mixed_show"]
-        first = tv_library["ep1"]
-        second = tv_library["ep2"]
-        media_path = tmp_path / "mixed-shared.mkv"
-        media_path.write_bytes(b"video")
 
-        first_media_file = (
-            await db.execute(
-                select(MediaFile)
-                .join(EpisodeMediaFile, EpisodeMediaFile.media_file_id == MediaFile.id)
-                .where(EpisodeMediaFile.episode_id == first.id)
-            )
-        ).scalar_one()
-        second_media_file = (
-            await db.execute(
-                select(MediaFile)
-                .join(EpisodeMediaFile, EpisodeMediaFile.media_file_id == MediaFile.id)
-                .where(EpisodeMediaFile.episode_id == second.id)
-            )
-        ).scalar_one()
-        first_media_file.path = str(media_path)
-        second_media_file.is_active = False
-        first.episode_file_path = str(media_path)
-        second.episode_file_path = str(media_path)
-        db.add(EpisodeMediaFile(episode_id=second.id, media_file_id=first_media_file.id))
-        second_state = (
-            await db.execute(
-                select(LetterboxState).where(
-                    LetterboxState.media_type == "episode",
-                    LetterboxState.episode_id == second.id,
-                )
-            )
-        ).scalar_one()
-        second_state.status = "candidate"
-        second_state.recommended_crop_top = 140
-        second_state.recommended_crop_bottom = 140
-        second_state.applied_crop_top = None
-        second_state.applied_crop_bottom = None
-        await db.commit()
 
-        async def fake_build_plan(*_args, **_kwargs):
-            return {
-                "capabilities": {"can_execute": True},
-                "encoder": {"encoder": "libx265", "family": "cpu", "codec": "hevc"},
-                "crop": {"top": 140, "bottom": 140, "output_height": 800},
-                "source": {"width": 1920, "height": 1080, "has_hdr": False},
-                "warnings": [],
-            }
 
-        monkeypatch.setattr("marquee.api.routes.letterbox.letterbox_reencode.build_plan", fake_build_plan)
-
-        resp = await client.post(
-            f"/api/letterbox/tv/{mixed_show.id}/episodes/{first.id}/reencode-plan",
-            json={},
-        )
-        assert resp.status_code == 201
-        body = resp.json()
-        media_job = await db.get(MediaJob, body["job_id"])
-        request = json.loads(media_job.request_json)
-        assert request["series_id"] == mixed_show.id
-        assert request["episode_id"] == first.id
-        assert request["episode_ids"] == [first.id, second.id]
-
-        confirmed = await client.post(f"/api/media-jobs/{body['job_id']}/confirm")
-        assert confirmed.status_code == 200
-
-        states = (
-            await db.execute(
-                select(LetterboxState)
-                .where(
-                    LetterboxState.media_type == "episode",
-                    LetterboxState.episode_id.in_([first.id, second.id]),
-                )
-                .order_by(LetterboxState.episode_id)
-                .execution_options(populate_existing=True)
-            )
-        ).scalars().all()
-        assert [state.status for state in states] == ["tagged", "tagged"]
-
-    async def test_tv_batch_reencode_dedupes_filters_and_parents_bridge_jobs(
-        self, client: AsyncClient, tv_library, db, monkeypatch, tmp_path
-    ):
-        mixed_show = tv_library["mixed_show"]
-        first = tv_library["ep1"]
-        second = tv_library["ep2"]
-        third = tv_library["ep3"]
-        media_path = tmp_path / "mixed-shared.mkv"
-        media_path.write_bytes(b"video")
-
-        first_media_file = (
-            await db.execute(
-                select(MediaFile)
-                .join(EpisodeMediaFile, EpisodeMediaFile.media_file_id == MediaFile.id)
-                .where(EpisodeMediaFile.episode_id == first.id)
-            )
-        ).scalar_one()
-        second_media_file = (
-            await db.execute(
-                select(MediaFile)
-                .join(EpisodeMediaFile, EpisodeMediaFile.media_file_id == MediaFile.id)
-                .where(EpisodeMediaFile.episode_id == second.id)
-            )
-        ).scalar_one()
-        first_media_file.path = str(media_path)
-        second_media_file.is_active = False
-        first.episode_file_path = str(media_path)
-        second.episode_file_path = str(media_path)
-        db.add(EpisodeMediaFile(episode_id=second.id, media_file_id=first_media_file.id))
-        second_state = (
-            await db.execute(
-                select(LetterboxState).where(
-                    LetterboxState.media_type == "episode",
-                    LetterboxState.episode_id == second.id,
-                )
-            )
-        ).scalar_one()
-        second_state.status = "candidate"
-        second_state.confidence = "medium"
-        second_state.recommended_crop_top = 140
-        second_state.recommended_crop_bottom = 140
-        second_state.applied_crop_top = None
-        second_state.applied_crop_bottom = None
-        third_state = (
-            await db.execute(
-                select(LetterboxState).where(
-                    LetterboxState.media_type == "episode",
-                    LetterboxState.episode_id == third.id,
-                )
-            )
-        ).scalar_one()
-        third_state.status = "candidate"
-        third_state.confidence = "low"
-        third_state.applied_crop_top = None
-        third_state.applied_crop_bottom = None
-        await db.commit()
-
-        async def fake_build_plan(*_args, **_kwargs):
-            return {
-                "capabilities": {"can_execute": True},
-                "encoder": {"encoder": "libx265", "family": "cpu", "codec": "hevc"},
-                "crop": {"top": 140, "bottom": 140, "output_height": 800},
-                "source": {"width": 1920, "height": 1080, "has_hdr": False},
-                "warnings": [],
-            }
-
-        monkeypatch.setattr("marquee.api.routes.letterbox.letterbox_reencode.build_plan", fake_build_plan)
-
-        resp = await client.post(
-            f"/api/letterbox/tv/{mixed_show.id}/reencode",
-            json={"season_number": 1, "confidence_levels": ["high"], "settings": {}},
-        )
-        assert resp.status_code == 202
-        body = resp.json()
-        assert body["count"] == 1
-        assert len(body["job_ids"]) == 1
-        assert {item["code"] for item in body["skipped"]} >= {"confidence_filtered"}
-
-        parent = await db.get(Job, body["parent_job_id"])
-        assert parent.type == "letterbox_reencode_tv_batch"
-        assert parent.progress["children_total"] == 1
-        bridge = (
-            await db.execute(
-                select(Job).where(Job.parent_id == parent.id, Job.type == "letterbox_reencode")
-            )
-        ).scalar_one()
-        assert bridge.payload["media_job_id"] == body["job_ids"][0]
-
-    async def test_reencode_artifact_list_filters_labels_and_replace_ready(
-        self, client: AsyncClient, tv_library, db, monkeypatch, tmp_path
-    ):
-        mixed_show = tv_library["mixed_show"]
-        ep1 = tv_library["ep1"]
-        media_path = tmp_path / "original.mkv"
-        candidate_path = tmp_path / "candidate.mkv"
-        media_path.write_bytes(b"original")
-        candidate_path.write_bytes(b"candidate")
-        media_file = (
-            await db.execute(
-                select(MediaFile)
-                .join(EpisodeMediaFile, EpisodeMediaFile.media_file_id == MediaFile.id)
-                .where(EpisodeMediaFile.episode_id == ep1.id)
-            )
-        ).scalar_one()
-        media_file.path = str(media_path)
-        db.add(
-            LetterboxReencodeArtifact(
-                job_id=None,
-                media_type="episode",
-                episode_id=ep1.id,
-                media_file_id=media_file.id,
-                original_path=str(media_path),
-                candidate_path=str(candidate_path),
-                original_size_bytes=8,
-                candidate_size_bytes=9,
-                original_signature="old",
-                candidate_signature="new",
-                encoder="libx265",
-                encoder_family="cpu",
-                codec="hevc",
-                crop_top=140,
-                crop_bottom=140,
-                status="candidate_ready",
-            )
-        )
-        await db.commit()
-
-        listed = await client.get(
-            "/api/letterbox/reencode-artifacts",
-            params={"series_id": mixed_show.id, "season_number": 1},
-        )
-        assert listed.status_code == 200
-        item = listed.json()["items"][0]
-        assert item["series_id"] == mixed_show.id
-        assert item["series_title"] == mixed_show.title
-        assert item["episode_code"] == "S01E01"
-
-        async def fake_replace_original(_db, artifact):
-            artifact.status = "replaced"
-            await _db.commit()
-            return {"id": artifact.id, "status": "replaced"}
-
-        monkeypatch.setattr(
-            "marquee.api.routes.letterbox.letterbox_reencode.replace_original",
-            fake_replace_original,
-        )
-
-        replaced = await client.post(
-            f"/api/letterbox/tv/{mixed_show.id}/reencode-artifacts/replace-ready",
-            json={"season_number": 1},
-        )
-        assert replaced.status_code == 200
-        assert replaced.json() == {"replaced": 1, "failed": []}
 
 
 @pytest.mark.asyncio
@@ -1207,5 +752,6 @@ class TestRouteOrdering:
     async def test_tv_detect_literal_route_not_captured_by_series_route(
         self, client: AsyncClient, tv_library
     ):
-        resp = await client.post("/api/letterbox/tv/detect", json={})
-        assert resp.status_code == 202
+        response = await client.post("/api/letterbox/tv/detect", json={})
+        assert response.status_code == 503
+        assert response.json()["code"] == "job_platform_unmigrated"
