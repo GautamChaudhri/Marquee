@@ -1,4 +1,4 @@
-"""Worker-only PgQueuer process for the JMC1 control entrypoint."""
+"""Worker-only PgQueuer process for manifest-owned execution entrypoints."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from pgqueuer.models import Job as PgQueuerJob
 
 from marquee.config import settings
 from marquee.core.configuration_cache import configuration_provider
-from marquee.core.jobs.delivery import deliver_control_job
+from marquee.core.jobs.delivery import deliver_job
 from marquee.core.jobs.orphan_reconciliation import reconcile_startup_orphans
 from marquee.core.jobs.worker_nodes import record_worker_node
 from marquee.core.jobs.workspaces import reconcile_stale_workspaces
@@ -23,18 +23,41 @@ from marquee.db_migration import asyncpg_dsn, verify_runtime_schema
 logger = logging.getLogger(__name__)
 
 
+def entrypoint_concurrency_limits() -> dict[str, int]:
+    """Return explicit PgQueuer limits for every canonical execution class."""
+    return {
+        "control": settings.JOB_CONTROL_CONCURRENCY,
+        "network": settings.JOB_NETWORK_CONCURRENCY,
+        "cpu": settings.JOB_CPU_CONCURRENCY,
+        "media_read": settings.JOB_MEDIA_READ_CONCURRENCY,
+        "gpu": settings.JOB_GPU_CONCURRENCY,
+        "maintenance": settings.JOB_MAINTENANCE_CONCURRENCY,
+    }
+
+
+def _entrypoint_callback(expected_entrypoint: str):
+    async def callback(job: PgQueuerJob, context: Context) -> None:
+        await deliver_job(
+            job,
+            context,
+            expected_entrypoint=expected_entrypoint,
+        )
+
+    callback.__name__ = expected_entrypoint
+    return callback
+
+
 def create_worker(connection: asyncpg.Connection) -> PgQueuer:
-    """Build the worker manager and register only the locked control entrypoint."""
+    """Build one worker whose entrypoints all call the same fenced delivery kernel."""
     app = PgQueuer.from_asyncpg_connection(connection)
 
-    @app.entrypoint(
-        "control",
-        concurrency_limit=settings.JOB_CONTROL_CONCURRENCY,
-        accepts_context=True,
-        on_failure="hold",
-    )
-    async def control(job: PgQueuerJob, context: Context) -> None:
-        await deliver_control_job(job, context)
+    for entrypoint, concurrency_limit in entrypoint_concurrency_limits().items():
+        app.entrypoint(
+            entrypoint,
+            concurrency_limit=concurrency_limit,
+            accepts_context=True,
+            on_failure="hold",
+        )(_entrypoint_callback(entrypoint))
 
     return app
 
@@ -88,14 +111,10 @@ async def run() -> None:
         await record_worker_node(settings.JOB_WORKER_NODE_ID, readiness="ready")
         app = create_worker(connection)
         _install_shutdown_handlers(app)
-        batch_size = settings.JOB_PGQUEUER_BATCH_SIZE
         await app.qm.run(
             dequeue_timeout=timedelta(seconds=settings.JOB_PGQUEUER_DEQUEUE_SECONDS),
-            batch_size=batch_size,
-            max_concurrent_tasks=max(
-                settings.JOB_CONTROL_CONCURRENCY,
-                2 * batch_size,
-            ),
+            batch_size=settings.JOB_PGQUEUER_BATCH_SIZE,
+            max_concurrent_tasks=settings.JOB_WORKER_CONCURRENCY,
             shutdown_on_listener_failure=True,
             heartbeat_timeout=timedelta(
                 seconds=settings.JOB_PGQUEUER_HEARTBEAT_SECONDS

@@ -68,6 +68,8 @@ class JobDefinition:
     entrypoint: str
     timeout: TimeoutPolicy
     effect_safety: EffectSafety
+    default_priority: int = 50
+    default_eligibility_delay_seconds: int = 0
     safety_policy: SafetyPolicy = field(default_factory=SafetyPolicy)
     configuration_keys: frozenset[str] = field(default_factory=frozenset)
     subject_builder: Callable[..., Any] | None = None
@@ -121,6 +123,12 @@ class JobDefinitionRegistry:
             raise InvalidJobDefinitionError("disabled definitions require a reason")
         if definition.migration_state == MigrationState.PARENT_ONLY and definition.enabled:
             raise InvalidJobDefinitionError("parent-only definitions cannot dispatch")
+        if not 0 <= definition.default_priority <= 100:
+            raise InvalidJobDefinitionError("definition priority must be between zero and 100")
+        if not 0 <= definition.default_eligibility_delay_seconds <= 365 * 24 * 60 * 60:
+            raise InvalidJobDefinitionError(
+                "definition eligibility delay must be between zero and 365 days"
+            )
         if len(definition.configuration_keys) > 128:
             raise InvalidJobDefinitionError("configuration dependency set is unbounded")
         if any(not key or len(key) > 100 for key in definition.configuration_keys):

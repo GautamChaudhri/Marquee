@@ -948,6 +948,114 @@
         "title": "BatchRunRequest",
         "type": "object"
       },
+      "BatchSummaryResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "attention_summary": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Attention Summary"
+          },
+          "created_total": {
+            "title": "Created Total",
+            "type": "integer"
+          },
+          "failure_summary": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Summary"
+          },
+          "job_id": {
+            "title": "Job Id",
+            "type": "string"
+          },
+          "mode": {
+            "enum": [
+              "fixed",
+              "dynamic"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "outcomes": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Outcomes",
+            "type": "object"
+          },
+          "projection_sequence": {
+            "title": "Projection Sequence",
+            "type": "integer"
+          },
+          "sealed": {
+            "title": "Sealed",
+            "type": "boolean"
+          },
+          "sealed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sealed At"
+          },
+          "sealed_child_total": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sealed Child Total"
+          },
+          "terminal_total": {
+            "title": "Terminal Total",
+            "type": "integer"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "job_id",
+          "mode",
+          "sealed",
+          "sealed_at",
+          "sealed_child_total",
+          "created_total",
+          "terminal_total",
+          "outcomes",
+          "failure_summary",
+          "attention_summary",
+          "projection_sequence",
+          "updated_at"
+        ],
+        "title": "BatchSummaryResponse",
+        "type": "object"
+      },
       "BeforeAfterRow": {
         "additionalProperties": false,
         "properties": {
@@ -8845,6 +8953,48 @@
           }
         },
         "summary": "Stream Attempt Logs",
+        "tags": [
+          "jobs"
+        ]
+      }
+    },
+    "/api/jobs/{job_id}/batch": {
+      "get": {
+        "operationId": "get_job_batch_api_jobs__job_id__batch_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BatchSummaryResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Job Batch",
         "tags": [
           "jobs"
         ]

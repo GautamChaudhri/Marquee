@@ -20,6 +20,7 @@ from sqlalchemy import func, select, update
 
 from marquee.config import settings
 from marquee.core.jobs.artifact_service import register_virtual_artifact
+from marquee.core.jobs.batches import project_active_child
 from marquee.core.jobs.definitions import JobDefinition
 from marquee.core.jobs.event_service import job_event_writer
 from marquee.core.jobs.fenced_writer import (
@@ -290,6 +291,9 @@ async def _apply_pre_admission_intent(payload: TransportPayload) -> None:
                 state="cancelled",
                 message="cancelled before admission",
             )
+            from marquee.core.jobs.batches import project_terminal_child
+
+            await project_terminal_child(session, job)
         elif job.desired_state == "pause":
             job.pgq_job_id = None
             job.attention = None
@@ -335,6 +339,7 @@ async def _start_attempt(
         message=f"{preflight.definition.job_type} started",
         detail={"dispatch_generation": preflight.delivery.dispatch_generation},
     )
+    await project_active_child(session, job)
     return AdmittedDelivery(
         delivery=preflight.delivery,
         attempt=AttemptIdentity(
@@ -494,13 +499,16 @@ async def _register_terminal_artifact(
         logger.error("Canonical %s artifact registration failed", source, exc_info=True)
 
 
-async def deliver_control_job(
+async def deliver_job(
     transport_job: PgQueuerJob,
     context: Context,
     *,
+    expected_entrypoint: str,
     executor: LegacyNoopExecutor | None = None,
 ) -> None:
     """Gate, admit, execute, seal canonically, then allow PgQueuer acknowledgement."""
+    if str(transport_job.entrypoint) != expected_entrypoint:
+        raise DeliveryRejectedError("transport entrypoint does not match worker registration")
     payload = parse_transport_payload(transport_job.payload)
     preflight = await _preflight(transport_job, payload)
     if preflight is None:
@@ -643,3 +651,18 @@ async def deliver_control_job(
         workspace.cleanup()
     finally:
         await asyncio.shield(gates.release())
+
+
+async def deliver_control_job(
+    transport_job: PgQueuerJob,
+    context: Context,
+    *,
+    executor: LegacyNoopExecutor | None = None,
+) -> None:
+    """Retained typed control caller for the sole production-enabled definition."""
+    await deliver_job(
+        transport_job,
+        context,
+        expected_entrypoint="control",
+        executor=executor,
+    )

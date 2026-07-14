@@ -679,6 +679,23 @@ export interface paths {
 		patch?: never;
 		trace?: never;
 	};
+	'/api/jobs/{job_id}/batch': {
+		parameters: {
+			query?: never;
+			header?: never;
+			path?: never;
+			cookie?: never;
+		};
+		/** Get Job Batch */
+		get: operations['get_job_batch_api_jobs__job_id__batch_get'];
+		put?: never;
+		post?: never;
+		delete?: never;
+		options?: never;
+		head?: never;
+		patch?: never;
+		trace?: never;
+	};
 	'/api/jobs/{job_id}/cancel': {
 		parameters: {
 			query?: never;
@@ -3948,6 +3965,45 @@ export interface components {
 			 */
 			scope: string;
 		};
+		/** BatchSummaryResponse */
+		BatchSummaryResponse: {
+			/** Attention Summary */
+			attention_summary: {
+				[key: string]: unknown;
+			} | null;
+			/** Created Total */
+			created_total: number;
+			/** Failure Summary */
+			failure_summary: {
+				[key: string]: unknown;
+			} | null;
+			/** Job Id */
+			job_id: string;
+			/**
+			 * Mode
+			 * @enum {string}
+			 */
+			mode: 'fixed' | 'dynamic';
+			/** Outcomes */
+			outcomes: {
+				[key: string]: number;
+			};
+			/** Projection Sequence */
+			projection_sequence: number;
+			/** Sealed */
+			sealed: boolean;
+			/** Sealed At */
+			sealed_at: string | null;
+			/** Sealed Child Total */
+			sealed_child_total: number | null;
+			/** Terminal Total */
+			terminal_total: number;
+			/**
+			 * Updated At
+			 * Format: date-time
+			 */
+			updated_at: string;
+		};
 		/** BeforeAfterRow */
 		BeforeAfterRow: {
 			/** After */
@@ -6920,6 +6976,37 @@ export interface operations {
 				};
 				content: {
 					'text/event-stream': unknown;
+				};
+			};
+			/** @description Validation Error */
+			422: {
+				headers: {
+					[name: string]: unknown;
+				};
+				content: {
+					'application/json': components['schemas']['HTTPValidationError'];
+				};
+			};
+		};
+	};
+	get_job_batch_api_jobs__job_id__batch_get: {
+		parameters: {
+			query?: never;
+			header?: never;
+			path: {
+				job_id: string;
+			};
+			cookie?: never;
+		};
+		requestBody?: never;
+		responses: {
+			/** @description Successful Response */
+			200: {
+				headers: {
+					[name: string]: unknown;
+				};
+				content: {
+					'application/json': components['schemas']['BatchSummaryResponse'];
 				};
 			};
 			/** @description Validation Error */

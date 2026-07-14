@@ -433,6 +433,9 @@ class FencedWriter:
                 detail={"result": result} if result is not None else error,
                 canonical_version=owner.fence_token,
             )
+            from marquee.core.jobs.batches import project_terminal_child
+
+            await project_terminal_child(session, job)
         return WriteDisposition.APPLIED
 
 

@@ -1,4 +1,4 @@
-"""Scheduler-only PgQueuer process for JMC1."""
+"""Scheduler-only PgQueuer process for canonical job production."""
 
 from __future__ import annotations
 
@@ -6,21 +6,44 @@ import asyncio
 import contextlib
 import logging
 import signal
+from collections.abc import Callable
 
 import asyncpg
 from pgqueuer import PgQueuer
 
 from marquee.config import settings
 from marquee.core.configuration_cache import configuration_provider
+from marquee.core.jobs.schedules import (
+    PRODUCTION_SCHEDULE_CATALOG,
+    ScheduleCatalog,
+    ScheduleConfiguration,
+    ScheduleDiagnostics,
+    load_schedule_configuration,
+    register_schedule_callbacks,
+    schedule_diagnostics,
+)
 from marquee.core.jobs.transport_intent_monitor import monitor_until_shutdown
 from marquee.db_migration import asyncpg_dsn, verify_runtime_schema
 
 logger = logging.getLogger(__name__)
 
 
-def create_scheduler(connection: asyncpg.Connection) -> PgQueuer:
+def create_scheduler(
+    connection: asyncpg.Connection,
+    *,
+    catalog: ScheduleCatalog = PRODUCTION_SCHEDULE_CATALOG,
+    configuration_loader: Callable[[], ScheduleConfiguration] = load_schedule_configuration,
+    diagnostics: ScheduleDiagnostics = schedule_diagnostics,
+) -> PgQueuer:
     """Build the scheduler manager without registering worker handlers."""
-    return PgQueuer.from_asyncpg_connection(connection)
+    app = PgQueuer.from_asyncpg_connection(connection)
+    register_schedule_callbacks(
+        app,
+        catalog=catalog,
+        configuration_loader=configuration_loader,
+        diagnostics=diagnostics,
+    )
+    return app
 
 
 def _install_shutdown_handlers(app: PgQueuer) -> None:
@@ -33,7 +56,7 @@ def _install_shutdown_handlers(app: PgQueuer) -> None:
 
 
 async def run() -> None:
-    """Run only PgQueuer's scheduler manager; JMC1 ships no schedules."""
+    """Run only PgQueuer's scheduler manager and code-owned callbacks."""
     connection = await asyncpg.connect(
         asyncpg_dsn(),
         server_settings={"application_name": "marquee:scheduler:pgqueuer"},

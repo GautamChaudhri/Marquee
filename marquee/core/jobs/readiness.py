@@ -12,9 +12,20 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from marquee.config import settings
 from marquee.core.configuration_cache import configuration_provider
+from marquee.core.jobs.batches import (
+    MAX_BATCH_FAILURE_ITEMS,
+    MAX_DYNAMIC_CHILDREN,
+    MAX_FIXED_CHILDREN,
+)
 from marquee.core.jobs.inventory import BUILTIN_JOB_TYPES
 from marquee.core.jobs.manifest import JOB_DEFINITION_REGISTRY
+from marquee.core.jobs.pgqueuer_worker import entrypoint_concurrency_limits
 from marquee.core.jobs.process_identity import containment_capabilities
+from marquee.core.jobs.schedules import (
+    MAX_SCHEDULE_DIAGNOSTICS,
+    PRODUCTION_SCHEDULE_CATALOG,
+    PRODUCTION_SCHEDULE_OCCURRENCES_ENABLED,
+)
 from marquee.database import _get_engine
 from marquee.db_migration import (
     MIGRATION_ADVISORY_LOCK_ID,
@@ -22,6 +33,7 @@ from marquee.db_migration import (
     MigrationError,
     verify_runtime_schema,
 )
+from marquee.models import JobBatch
 
 
 def connection_budget_report() -> dict[str, Any]:
@@ -52,10 +64,13 @@ def connection_budget_report() -> dict[str, Any]:
 
 def configuration_compatible() -> bool:
     budget = connection_budget_report()
+    entrypoint_limits = entrypoint_concurrency_limits()
     return (
         budget["within_budget"]
         and settings.JOB_PGQUEUER_BATCH_SIZE >= 1
-        and settings.JOB_CONTROL_CONCURRENCY >= 1
+        and settings.JOB_PGQUEUER_BATCH_SIZE <= settings.JOB_WORKER_CONCURRENCY
+        and settings.JOB_SAFETY_GATE_CONNECTIONS >= settings.JOB_WORKER_CONCURRENCY
+        and all(limit >= 1 for limit in entrypoint_limits.values())
         and settings.JOB_PGQUEUER_HEARTBEAT_SECONDS > 0
         and settings.JOB_PGQUEUER_DEQUEUE_SECONDS > 0
     )
@@ -73,7 +88,82 @@ def registry_compatible() -> bool:
         JOB_DEFINITION_REGISTRY.validate_complete(BUILTIN_JOB_TYPES)
     except (TypeError, ValueError, RuntimeError):
         return False
-    return JOB_DEFINITION_REGISTRY.enabled_types == {"system_noop"}
+    registered_entrypoints = frozenset(entrypoint_concurrency_limits())
+    return (
+        JOB_DEFINITION_REGISTRY.enabled_types == {"system_noop"}
+        and all(
+            definition.entrypoint in registered_entrypoints
+            or (definition.entrypoint == "media_write" and not definition.enabled)
+            for definition in JOB_DEFINITION_REGISTRY
+        )
+    )
+
+
+def worker_entrypoint_report() -> dict[str, Any]:
+    limits = entrypoint_concurrency_limits()
+    enabled = sorted(
+        {
+            definition.entrypoint
+            for definition in JOB_DEFINITION_REGISTRY
+            if definition.enabled
+        }
+    )
+    return {
+        "status": "ok" if registry_compatible() else "incompatible",
+        "registered": sorted(limits),
+        "enabled": enabled,
+        "limits": {key: limits[key] for key in sorted(limits)},
+        "worker_global_limit": settings.JOB_WORKER_CONCURRENCY,
+        "dequeue_batch_size": settings.JOB_PGQUEUER_BATCH_SIZE,
+        "later_media_write_limit": settings.JOB_MEDIA_WRITE_CONCURRENCY,
+        "media_write_product_available": False,
+    }
+
+
+def schedule_catalog_report() -> dict[str, Any]:
+    definitions = tuple(PRODUCTION_SCHEDULE_CATALOG)
+    compatible = (
+        not PRODUCTION_SCHEDULE_OCCURRENCES_ENABLED
+        and all(
+            (job_definition := JOB_DEFINITION_REGISTRY.find(definition.produced_job_type))
+            is not None
+            and definition.trigger in job_definition.trigger_kinds
+            for definition in definitions
+        )
+    )
+    return {
+        "status": "ok" if compatible else "incompatible",
+        "definition_count": len(definitions),
+        "keys": sorted(definition.key for definition in definitions),
+        "entrypoints": sorted(definition.entrypoint for definition in definitions),
+        "occurrence_policies": sorted(
+            {definition.occurrence_policy.value for definition in definitions}
+        ),
+        "production_occurrences_enabled": PRODUCTION_SCHEDULE_OCCURRENCES_ENABLED,
+        "diagnostic_limit": MAX_SCHEDULE_DIAGNOSTICS,
+    }
+
+
+def batch_projection_report() -> dict[str, Any]:
+    required_columns = {
+        "parent_job_id",
+        "generation",
+        "sealed",
+        "created_total",
+        "terminal_total",
+        "projection_sequence",
+        "failure_summary",
+        "attention_summary",
+    }
+    columns = {column.name for column in JobBatch.__table__.columns}
+    return {
+        "status": "ok" if required_columns <= columns else "incompatible",
+        "version": 1,
+        "fixed_child_cap": MAX_FIXED_CHILDREN,
+        "dynamic_child_cap": MAX_DYNAMIC_CHILDREN,
+        "failure_summary_cap": MAX_BATCH_FAILURE_ITEMS,
+        "required_projection_fields": sorted(required_columns),
+    }
 
 
 async def _raw_pool_connection() -> tuple[Any, asyncpg.Connection]:
@@ -116,6 +206,15 @@ async def check_readiness() -> dict[str, Any]:
         },
         "definition_registry": {
             "status": "ok" if registry_compatible() else "incompatible"
+        },
+        "worker_entrypoints": worker_entrypoint_report(),
+        "schedule_catalog": schedule_catalog_report(),
+        "batch_projection": batch_projection_report(),
+        "connection_budget": {
+            "status": "ok"
+            if connection_budget_report()["within_budget"]
+            else "incompatible",
+            **connection_budget_report(),
         },
         "database": {"status": "unavailable"},
         "migration_lock": {"status": "unavailable"},

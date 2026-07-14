@@ -159,6 +159,7 @@
     "/{job_id}/attempts/{attempt_id}/logs",
     "/{job_id}/attempts/{attempt_id}/logs/download",
     "/{job_id}/attempts/{attempt_id}/logs/stream",
+    "/{job_id}/batch",
     "/{job_id}/children",
     "/{job_id}/events",
     "/{job_id}/presentation",

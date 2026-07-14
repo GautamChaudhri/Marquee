@@ -9,6 +9,7 @@ from marquee.models.episode import Episode
 from marquee.models.job import (
     Job,
     JobAttempt,
+    JobBatch,
     JobDispatch,
     JobEvent,
     SchemaContract,
@@ -57,6 +58,7 @@ __all__ = [
     "LetterboxReencodeArtifact",
     "Job",
     "JobAttempt",
+    "JobBatch",
     "JobDispatch",
     "JobEvent",
     "JobLog",

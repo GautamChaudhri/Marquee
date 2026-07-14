@@ -117,6 +117,12 @@ class Settings(BaseSettings):
     JOB_WORKER_CONCURRENCY: int = Field(default=4, ge=1, le=32)
     JOB_WORKER_NODE_ID: str = Field(default_factory=socket.gethostname, min_length=1, max_length=100)
     JOB_CONTROL_CONCURRENCY: int = Field(default=4, ge=1, le=32)
+    JOB_NETWORK_CONCURRENCY: int = Field(default=4, ge=1, le=32)
+    JOB_CPU_CONCURRENCY: int = Field(default=2, ge=1, le=32)
+    JOB_MEDIA_READ_CONCURRENCY: int = Field(default=2, ge=1, le=32)
+    JOB_MEDIA_WRITE_CONCURRENCY: int = Field(default=1, ge=1, le=32)
+    JOB_GPU_CONCURRENCY: int = Field(default=1, ge=1, le=32)
+    JOB_MAINTENANCE_CONCURRENCY: int = Field(default=1, ge=1, le=32)
     JOB_SAFETY_GATE_CONNECTIONS: int = Field(
         default=4,
         ge=1,
@@ -267,6 +273,12 @@ class Settings(BaseSettings):
             )
         if self.JOB_EVENT_REPLAY_LIMIT > self.JOB_EVENT_CLIENT_QUEUE_SIZE:
             raise ValueError("JOB_EVENT_REPLAY_LIMIT cannot exceed the client queue size")
+        if self.JOB_PGQUEUER_BATCH_SIZE > self.JOB_WORKER_CONCURRENCY:
+            raise ValueError("JOB_PGQUEUER_BATCH_SIZE cannot exceed JOB_WORKER_CONCURRENCY")
+        if self.JOB_SAFETY_GATE_CONNECTIONS < self.JOB_WORKER_CONCURRENCY:
+            raise ValueError(
+                "JOB_SAFETY_GATE_CONNECTIONS cannot be below JOB_WORKER_CONCURRENCY"
+            )
         return self
 
     @property
