@@ -15,6 +15,15 @@ export class ApiError extends Error {
 	}
 }
 
+export function isConfigurationConflict(error: unknown): error is ApiError {
+	if (!(error instanceof ApiError) || error.status !== 409) return false;
+	const detail = (error.body as { detail?: { code?: string } } | undefined)?.detail;
+	return detail?.code === 'configuration_version_conflict';
+}
+
+export const CONFIGURATION_CONFLICT_MESSAGE =
+	'Settings changed in another session. Current values were reloaded; review your draft and save again.';
+
 /** Default per-request timeout. A hung backend (e.g. one briefly saturated by
  *  a concurrent encode) must not hold a browser connection slot open forever —
  *  browsers cap ~6 per host, so a few stuck requests freeze the whole UI. We

@@ -5,7 +5,13 @@ import type { JobSummary, RuntimeSettings, SystemMetrics, SystemMetricsHistory }
 
 const useMocks = () => env.PUBLIC_USE_MOCKS === 'true';
 type SettingsPatch = Record<string, unknown>;
-type SettingsPutResponse = { applied: string[]; settings: RuntimeSettings };
+export type SettingsPutResponse = {
+	configuration_version: number;
+	etag: string;
+	changed: boolean;
+	applied: string[];
+	settings: RuntimeSettings;
+};
 type HealScanResponse = JobSummary & { checked?: number; restored?: number; failed?: number };
 
 export function getMetrics(fetch: Fetch): Promise<SystemMetrics> {
@@ -28,6 +34,11 @@ export function getStatus(fetch: Fetch): Promise<Record<string, unknown>> {
 export function getSettings(fetch: Fetch): Promise<RuntimeSettings> {
 	if (useMocks()) {
 		return Promise.resolve({
+			configuration_version: 1,
+			etag: '"configuration-1"',
+			stale: false,
+			health: { status: 'valid', version: 1 },
+			configuration_meta: {},
 			app: {
 				name: 'Marquee',
 				host: '0.0.0.0',
@@ -60,6 +71,7 @@ export function getSettings(fetch: Fetch): Promise<RuntimeSettings> {
 			integrations: {
 				subgen: {
 					configured: true,
+					deployment: 'external',
 					url_configured: true,
 					callback_token_configured: true,
 					url: 'http://localhost:9000',
@@ -79,11 +91,23 @@ export function getSettings(fetch: Fetch): Promise<RuntimeSettings> {
 	return apiGet<RuntimeSettings>(fetch, '/settings');
 }
 
-export function putSettings(fetch: Fetch, payload: SettingsPatch): Promise<SettingsPutResponse> {
+export function putSettings(
+	fetch: Fetch,
+	payload: SettingsPatch,
+	expectedVersion: number
+): Promise<SettingsPutResponse> {
 	if (useMocks()) {
 		return Promise.resolve({
+			configuration_version: expectedVersion + 1,
+			etag: `"configuration-${expectedVersion + 1}"`,
+			changed: Object.keys(payload).length > 0,
 			applied: Object.keys(payload),
 			settings: {
+				configuration_version: expectedVersion + 1,
+				etag: `"configuration-${expectedVersion + 1}"`,
+				stale: false,
+				health: { status: 'valid', version: expectedVersion + 1 },
+				configuration_meta: {},
 				app: {
 					name: 'Marquee',
 					host: '0.0.0.0',
@@ -116,6 +140,7 @@ export function putSettings(fetch: Fetch, payload: SettingsPatch): Promise<Setti
 				integrations: {
 					subgen: {
 						configured: true,
+						deployment: 'external',
 						url_configured: true,
 						callback_token_configured: true,
 						url: 'http://localhost:9000',
@@ -133,7 +158,10 @@ export function putSettings(fetch: Fetch, payload: SettingsPatch): Promise<Setti
 			}
 		});
 	}
-	return apiSend<SettingsPutResponse>(fetch, 'PUT', '/settings', payload);
+	return apiSend<SettingsPutResponse>(fetch, 'PUT', '/settings', {
+		...payload,
+		expected_version: expectedVersion
+	});
 }
 
 export function runHealScan(fetch: Fetch): Promise<HealScanResponse> {

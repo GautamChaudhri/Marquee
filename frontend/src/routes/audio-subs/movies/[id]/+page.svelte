@@ -12,6 +12,7 @@
 	} from '$lib/api/subtitles';
 	import { getGenerators, submitMovieGeneration } from '$lib/api/subtitle-generators';
 	import { getSettings, putSettings } from '$lib/api/system';
+	import { CONFIGURATION_CONFLICT_MESSAGE, isConfigurationConflict } from '$lib/api/client';
 	import { confirmJob, getMediaJob } from '$lib/api/media-jobs';
 	import type { MediaJob, TrackEdit } from '$lib/api/types';
 	import { trackJob } from '$lib/jobs';
@@ -176,7 +177,6 @@
 	let subgenMode = $state('transcribe');
 	let subgenLocalPathPrefix = $state('');
 	let subgenRemotePathPrefix = $state('');
-	let subgenCallbackToken = $state('');
 	let subgenSettingsInitialized = $state(false);
 
 	// Subgen Generation Form
@@ -325,14 +325,18 @@
 					model_label: subgenModelLabel,
 					mode: subgenMode,
 					local_path_prefix: subgenLocalPathPrefix || null,
-					remote_path_prefix: subgenRemotePathPrefix || null,
-					callback_token: subgenCallbackToken || null
+					remote_path_prefix: subgenRemotePathPrefix || null
 				}
 			};
-			const res = await putSettings(fetch, payload);
+			const res = await putSettings(fetch, payload, settings!.configuration_version);
 			settings = res.settings;
 			return true;
 		} catch (e: any) {
+			if (isConfigurationConflict(e)) {
+				settings = await getSettings(fetch);
+				toast(CONFIGURATION_CONFLICT_MESSAGE, 'info');
+				return false;
+			}
 			toast(`Failed to update Subgen settings: ${e.message}`, 'bad');
 			return false;
 		}
@@ -1835,16 +1839,12 @@
 								/>
 							</div>
 							<div class="setting-row">
-								<label for="callback-token" class="lbl">Callback Token:</label>
-								<input
-									type="password"
-									id="callback-token"
-									class="str-input"
-									bind:value={subgenCallbackToken}
-									placeholder={settings?.integrations?.subgen?.callback_token_configured
-										? '••••••••'
-										: 'Not set'}
-								/>
+								<span class="lbl">Callback Token:</span>
+								<span class="readonly-setting">
+									{settings?.integrations?.subgen?.callback_token_configured
+										? 'Configured by environment'
+										: 'Not configured (environment only)'}
+								</span>
 							</div>
 
 							<div class="preview-output mt-10">
@@ -2757,6 +2757,12 @@
 	}
 	.setting-row .lbl {
 		color: var(--muted);
+	}
+	.readonly-setting {
+		max-width: 180px;
+		color: var(--faint);
+		font-size: 11.5px;
+		text-align: right;
 	}
 	.str-input {
 		padding: 5px 10px;

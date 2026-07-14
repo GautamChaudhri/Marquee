@@ -49,7 +49,6 @@
 	} from '$lib/api/types';
 	import { pairKey, pairColorMap, agreeCount } from '$lib/letterbox-samples';
 
-
 	// Buckets whose detail view shows an editable before/after crop pair — an
 	// undecided or applied-but-unconfirmed crop the user might still change.
 	// Everything else (widescreen/sampled_widescreen/variable/reencoded/etc.) is settled,
@@ -57,12 +56,7 @@
 	const PAIR_PREVIEW_BUCKETS = new Set(['candidate', 'tagged']);
 	// Buckets whose preview frame(s) are worth warming ahead of expand — settled
 	// Widescreen buckets only need their single before frame.
-	const PREFETCH_BUCKETS = new Set([
-		'candidate',
-		'tagged',
-		'widescreen',
-		'sampled_widescreen'
-	]);
+	const PREFETCH_BUCKETS = new Set(['candidate', 'tagged', 'widescreen', 'sampled_widescreen']);
 
 	const expandedEpisodeIds = new SvelteSet<number>();
 	const episodeDetails = new SvelteMap<number, LetterboxEpisodeDetail>();
@@ -170,9 +164,7 @@
 				stop?: () => void;
 			}
 		>
-	>(
-		{}
-	);
+	>({});
 
 	async function refreshDetail() {
 		try {
@@ -629,7 +621,8 @@
 				if (!reencodeTracking[episodeId]) return;
 				const ev = data as { stage?: string; progress?: { percent?: number } | null };
 				if (ev.stage) reencodeTracking[episodeId].stage = ev.stage;
-				if (ev.progress?.percent != null) reencodeTracking[episodeId].progress = ev.progress.percent;
+				if (ev.progress?.percent != null)
+					reencodeTracking[episodeId].progress = ev.progress.percent;
 			}
 		);
 		void pollOnce();
@@ -757,9 +750,7 @@
 		);
 		return reencodeArtifacts.filter(
 			(a) =>
-				a.status === 'candidate_ready' &&
-				a.episode_id != null &&
-				scopedEpisodeIds.has(a.episode_id)
+				a.status === 'candidate_ready' && a.episode_id != null && scopedEpisodeIds.has(a.episode_id)
 		).length;
 	}
 
@@ -982,8 +973,7 @@
 												{#each SEASON_BUCKET_ORDER as bucket (bucket)}
 													{@const bucketCount = season.rollup.bucket_counts[bucket] ?? 0}
 													{#if bucketCount > 0}
-														{@const bucketMeta =
-															LETTERBOX_TV_BUCKET_META[bucket]}
+														{@const bucketMeta = LETTERBOX_TV_BUCKET_META[bucket]}
 														<span class="bucket-chip" style={`--chip: var(--${bucketMeta.tone})`}>
 															<span class="bucket-chip-label">{bucketMeta.label}</span>
 															<span class="bucket-chip-count">{bucketCount}</span>
@@ -1028,8 +1018,7 @@
 											label="Apply"
 											levels={confidenceFor(season.season_number)}
 											count={candidateCount(season.season_number)}
-											onToggleLevel={(level) =>
-												toggleConfidenceLevel(season.season_number, level)}
+											onToggleLevel={(level) => toggleConfidenceLevel(season.season_number, level)}
 											onToggleAll={() => toggleConfidenceAll(season.season_number)}
 											onConfirm={() => runScopeApply(season.season_number)}
 										/>
@@ -1077,8 +1066,7 @@
 												</thead>
 												<tbody>
 													{#each seasonView.filteredEpisodes as ep (ep.episode_id)}
-														{@const verd =
-															LETTERBOX_TV_BUCKET_META[ep.bucket]}
+														{@const verd = LETTERBOX_TV_BUCKET_META[ep.bucket]}
 														{@const expanded = expandedEpisodeIds.has(ep.episode_id)}
 														<tr id={`episode-${ep.season_number}-${ep.episode_id}`}>
 															<td class="expand-col">
@@ -1181,8 +1169,13 @@
 																		{/if}
 
 																		{#if reencodeTracking[ep.episode_id]}
-																			<span class="btn btn-outline btn-xs reencode-progress" title="Re-encoding…">
-																				Encoding {Math.round(reencodeTracking[ep.episode_id].progress)}%
+																			<span
+																				class="btn btn-outline btn-xs reencode-progress"
+																				title="Re-encoding…"
+																			>
+																				Encoding {Math.round(
+																					reencodeTracking[ep.episode_id].progress
+																				)}%
 																			</span>
 																		{:else}
 																			<button
@@ -1366,55 +1359,59 @@
 																								· exact{/if}
 																						</span>
 																					</div>
-																		{#if epArtifact}
-																			<div class="artifact-panel">
-																				<div class="artifact-head">
-																					<span
-																						class="artifact-status"
-																						style={`--c: var(--${epArtifact.status === 'replaced' ? 'good' : epArtifact.status === 'candidate_ready' || epArtifact.status === 'kept' ? 'info' : 'muted'})`}
-																					>
-																						{epArtifact.status}
-																					</span>
-																					<span class="mono artifact-sizes">
-																						{bytesH(epArtifact.candidate_size_bytes)}
-																						{#if epArtifact.original_size_bytes && epArtifact.candidate_size_bytes}
-																							<span class="artifact-saved">
-																								(was {bytesH(epArtifact.original_size_bytes)} ·
-																								{Math.round((1 - epArtifact.candidate_size_bytes / epArtifact.original_size_bytes) * 100)}%
-																								smaller)
-																							</span>
-																						{/if}
-																					</span>
-																				</div>
-																				<div class="artifact-actions">
-																					{#if epArtifact.status === 'candidate_ready' || epArtifact.status === 'kept'}
-																						<button
-																							class="btn btn-outline btn-xs"
-																							disabled={reencodeArtifactBusy[epArtifact.id]}
-																							onclick={() => doReplaceArtifact(epArtifact)}
-																						>
-																							Replace original
-																						</button>
-																						<button
-																							class="btn btn-outline btn-xs btn-bad"
-																							disabled={reencodeArtifactBusy[epArtifact.id]}
-																							onclick={() => doDeleteArtifact(epArtifact)}
-																						>
-																							Delete
-																						</button>
-																					{:else if epArtifact.status === 'replaced'}
-																						<button
-																							class="btn btn-outline btn-xs"
-																							disabled={reencodeArtifactBusy[epArtifact.id]}
-																							onclick={() => doRestoreArtifact(epArtifact)}
-																						>
-																							Restore original
-																						</button>
+																					{#if epArtifact}
+																						<div class="artifact-panel">
+																							<div class="artifact-head">
+																								<span
+																									class="artifact-status"
+																									style={`--c: var(--${epArtifact.status === 'replaced' ? 'good' : epArtifact.status === 'candidate_ready' || epArtifact.status === 'kept' ? 'info' : 'muted'})`}
+																								>
+																									{epArtifact.status}
+																								</span>
+																								<span class="mono artifact-sizes">
+																									{bytesH(epArtifact.candidate_size_bytes)}
+																									{#if epArtifact.original_size_bytes && epArtifact.candidate_size_bytes}
+																										<span class="artifact-saved">
+																											(was {bytesH(epArtifact.original_size_bytes)} ·
+																											{Math.round(
+																												(1 -
+																													epArtifact.candidate_size_bytes /
+																														epArtifact.original_size_bytes) *
+																													100
+																											)}% smaller)
+																										</span>
+																									{/if}
+																								</span>
+																							</div>
+																							<div class="artifact-actions">
+																								{#if epArtifact.status === 'candidate_ready' || epArtifact.status === 'kept'}
+																									<button
+																										class="btn btn-outline btn-xs"
+																										disabled={reencodeArtifactBusy[epArtifact.id]}
+																										onclick={() => doReplaceArtifact(epArtifact)}
+																									>
+																										Replace original
+																									</button>
+																									<button
+																										class="btn btn-outline btn-xs btn-bad"
+																										disabled={reencodeArtifactBusy[epArtifact.id]}
+																										onclick={() => doDeleteArtifact(epArtifact)}
+																									>
+																										Delete
+																									</button>
+																								{:else if epArtifact.status === 'replaced'}
+																									<button
+																										class="btn btn-outline btn-xs"
+																										disabled={reencodeArtifactBusy[epArtifact.id]}
+																										onclick={() => doRestoreArtifact(epArtifact)}
+																									>
+																										Restore original
+																									</button>
+																								{/if}
+																							</div>
+																						</div>
 																					{/if}
-																				</div>
-																			</div>
-																		{/if}
-																		{#if epDetail.variable_ar_note}
+																					{#if epDetail.variable_ar_note}
 																						<div class="detail-note">
 																							{epDetail.variable_ar_note}
 																						</div>
@@ -1423,18 +1420,24 @@
 																						<div class="sample-gallery">
 																							{#if epDetail.samples && epDetail.samples.length > 0}
 																								{@const colorMap = pairColorMap(epDetail.samples)}
-																								{@const { agreeCount: nAgree, totalOk } = agreeCount(epDetail.samples)}
+																								{@const { agreeCount: nAgree, totalOk } =
+																									agreeCount(epDetail.samples)}
 																								<div class="ce-summary">
 																									{#if nAgree === totalOk && totalOk > 0}
 																										All {totalOk} agree
 																									{:else}
 																										{nAgree}/{epDetail.samples.length} agree
 																									{/if}
-																									<span class="ce-hint">· click to preview that frame</span>
+																									<span class="ce-hint"
+																										>· click to preview that frame</span
+																									>
 																								</div>
 																								{#each epDetail.samples as sample (sample.minute)}
 																									{@const key = sample.ok ? pairKey(sample) : null}
-																									{@const dotColor = key != null ? (colorMap.get(key) ?? 'var(--faint)') : 'var(--bad)'}
+																									{@const dotColor =
+																										key != null
+																											? (colorMap.get(key) ?? 'var(--faint)')
+																											: 'var(--bad)'}
 																									{#if sample.ok}
 																										<button
 																											class="sample-row"
@@ -1458,7 +1461,9 @@
 																												{sample.backend ?? 'cpu'} · {sample.elapsed_ms ??
 																													'?'}ms
 																											</span>
-																											<span class="ce-dot" style="color:{dotColor}">●</span>
+																											<span class="ce-dot" style="color:{dotColor}"
+																												>●</span
+																											>
 																										</button>
 																									{:else}
 																										<div class="sample-row sample-row-error">
@@ -1468,7 +1473,9 @@
 																											<span class="sample-error">
 																												{sample.error ?? 'sample failed'}
 																											</span>
-																											<span class="ce-dot" style="color:var(--bad)">✕</span>
+																											<span class="ce-dot" style="color:var(--bad)"
+																												>✕</span
+																											>
 																										</div>
 																									{/if}
 																								{/each}
@@ -1497,7 +1504,6 @@
 					</div>
 				{/if}
 			</div>
-
 		</div>
 
 		<div class="section-container">
@@ -1580,28 +1586,28 @@
 	{/if}
 </section>
 
-	<BatchReencodeModal
-		open={reencodeModalOpen}
-		items={scopeEpisodes(reencodeModalSeason).filter((ep) => ep.bucket === 'candidate')}
-		getId={(ep: LetterboxTvEpisode) => ep.episode_id}
-		subtitle={reencodeModalSeason == null
-			? 'Queue a durable re-encode for the entire show.'
-			: `Queue a durable re-encode for Season ${reencodeModalSeason}.`}
-		busy={reencodeModalBusy}
-		onStart={startTvBatchReencode}
-		onClose={() => {
-			if (!reencodeModalBusy) reencodeModalOpen = false;
-		}}
-	/>
+<BatchReencodeModal
+	open={reencodeModalOpen}
+	items={scopeEpisodes(reencodeModalSeason).filter((ep) => ep.bucket === 'candidate')}
+	getId={(ep: LetterboxTvEpisode) => ep.episode_id}
+	subtitle={reencodeModalSeason == null
+		? 'Queue a durable re-encode for the entire show.'
+		: `Queue a durable re-encode for Season ${reencodeModalSeason}.`}
+	busy={reencodeModalBusy}
+	onStart={startTvBatchReencode}
+	onClose={() => {
+		if (!reencodeModalBusy) reencodeModalOpen = false;
+	}}
+/>
 
-	{#if reencodePlanEpisodeId != null}
-		<ReencodePlanModal
-			seriesId={seriesId}
-			episodeId={reencodePlanEpisodeId}
-			onClose={closeReencodePlan}
-			onConfirmed={(jobId) => handleReencodeConfirmed(reencodePlanEpisodeId as number, jobId)}
-		/>
-	{/if}
+{#if reencodePlanEpisodeId != null}
+	<ReencodePlanModal
+		{seriesId}
+		episodeId={reencodePlanEpisodeId}
+		onClose={closeReencodePlan}
+		onConfirmed={(jobId) => handleReencodeConfirmed(reencodePlanEpisodeId as number, jobId)}
+	/>
+{/if}
 
 <style>
 	.letterbox-tv-detail {

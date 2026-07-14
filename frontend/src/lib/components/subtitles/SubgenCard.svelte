@@ -1,16 +1,20 @@
 <script lang="ts">
 	import { testSubgen, restartSubgen, getSubgenLogs } from '$lib/api/subtitle-generators';
-	import type { SubtitleGenerator } from '$lib/api/types';
+	import type { RuntimeSettings, SubtitleGenerator } from '$lib/api/types';
 	import SubgenConfigModal from './SubgenConfigModal.svelte';
 	import { toast } from '$lib/toast';
 
 	let {
 		generator,
 		settings,
+		configurationVersion,
+		onSettingsReload,
 		onRefresh
 	}: {
 		generator: SubtitleGenerator | null;
-		settings: any;
+		settings: NonNullable<RuntimeSettings['integrations']['subgen']>;
+		configurationVersion: number;
+		onSettingsReload: (settings: RuntimeSettings) => void;
 		onRefresh: () => void;
 	} = $props();
 
@@ -26,7 +30,7 @@
 
 	let configOpen = $state(false);
 
-	const deployment = $derived(settings.SUBGEN_DEPLOYMENT || 'disabled');
+	const deployment = $derived(settings.deployment || 'disabled');
 
 	async function runTest() {
 		testing = true;
@@ -90,11 +94,6 @@
 				logsInterval = null;
 			}
 		}
-	}
-
-	function handleConfigSave(newSettings: any) {
-		configOpen = false;
-		onRefresh();
 	}
 </script>
 
@@ -220,7 +219,12 @@
 	</div>
 
 	{#if configOpen}
-		<SubgenConfigModal {settings} onClose={() => (configOpen = false)} onSave={handleConfigSave} />
+		<SubgenConfigModal
+			{settings}
+			{configurationVersion}
+			onClose={() => (configOpen = false)}
+			onReload={onSettingsReload}
+		/>
 	{/if}
 </div>
 

@@ -32,12 +32,11 @@ from marquee.api.routes.pipeline import (
 from marquee.config import settings
 from marquee.core.heal import latest_heal_summary
 from marquee.core.jobs import job_manager
-from marquee.core.jobs.manager import ACTIVE
 from marquee.core.pipeline_config import pipeline_settings
 from marquee.core.rate_limit import RateLimiter
 from marquee.core.tv_queries import season_downloaded, series_visible
 from marquee.database import get_db
-from marquee.models import ArtworkEvent, Job, JobSchedule, PipelineRun, Season, Series
+from marquee.models import ArtworkEvent, Job, PipelineRun, Season, Series
 from marquee.pipeline.run_manager import run_manager
 
 logger = logging.getLogger(__name__)
@@ -153,7 +152,10 @@ async def tv_pipeline_summary(db: Annotated[AsyncSession, Depends(get_db)]):
         (
             await db.execute(
                 select(Job)
-                .where(Job.type == "poster_pipeline_tv_batch", Job.status.in_(ACTIVE))
+                .where(
+                    Job.type == "poster_pipeline_tv_batch",
+                    Job.phase.in_(("queued", "running", "stopping")),
+                )
                 .order_by(Job.created_at.desc())
             )
         )
@@ -163,20 +165,11 @@ async def tv_pipeline_summary(db: Annotated[AsyncSession, Depends(get_db)]):
     running_jobs = []
     for job in active_jobs:
         summary = job_summary(job)
-        payload = job.payload if isinstance(job.payload, dict) else {}
+        payload = job.request if isinstance(job.request, dict) else {}
         summary["asset_count"] = len(payload.get("assets") or [])
         running_jobs.append(summary)
 
-    schedule = await db.get(JobSchedule, "poster-heal")
-    heal_schedule = (
-        {
-            "enabled": schedule.enabled,
-            "interval_minutes": schedule.interval_seconds // 60,
-            "next_run_at": schedule.next_run_at.isoformat() if schedule.next_run_at else None,
-        }
-        if schedule
-        else None
-    )
+    heal_schedule = None
 
     return {
         "shows_total": shows_total,

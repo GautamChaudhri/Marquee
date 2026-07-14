@@ -30,14 +30,12 @@ from marquee.api.routes.library import _coverage_by_media_file
 from marquee.config import settings
 from marquee.core.heal import latest_heal_summary
 from marquee.core.jobs import job_manager
-from marquee.core.jobs.manager import ACTIVE
 from marquee.core.pipeline_config import PipelineSettings, pipeline_settings
 from marquee.core.rate_limit import RateLimiter
 from marquee.database import get_db
 from marquee.models import (
     ArtworkEvent,
     Job,
-    JobSchedule,
     LetterboxState,
     MediaFile,
     Movie,
@@ -115,7 +113,8 @@ async def _repair_stale_batch_pipeline_runs(db: AsyncSession) -> int:
             .where(
                 PipelineRun.status == "running",
                 PipelineRun.batch_id.is_not(None),
-                Job.status.in_(tuple(_STALE_BATCH_JOB_TO_RUN_STATUS)),
+                Job.phase == "terminal",
+                Job.outcome.in_(tuple(_STALE_BATCH_JOB_TO_RUN_STATUS)),
             )
         )
     ).all()
@@ -125,11 +124,11 @@ async def _repair_stale_batch_pipeline_runs(db: AsyncSession) -> int:
     repaired = 0
     now = datetime.now(UTC)
     for run, job in rows:
-        new_status = _STALE_BATCH_JOB_TO_RUN_STATUS.get(job.status)
+        new_status = _STALE_BATCH_JOB_TO_RUN_STATUS.get(job.outcome)
         if new_status is None:
             continue
         run.status = new_status
-        run.completed_at = run.completed_at or job.finished_at or now
+        run.completed_at = run.completed_at or job.terminal_at or now
         if not run.error and job.error:
             if isinstance(job.error, dict):
                 run.error = str(job.error.get("message") or job.error.get("type") or job.error)
@@ -450,7 +449,7 @@ async def pipeline_summary(db: Annotated[AsyncSession, Depends(get_db)]):
                 select(Job)
                 .where(
                     Job.type.in_(("poster_pipeline", "poster_pipeline_batch")),
-                    Job.status.in_(ACTIVE),
+                    Job.phase.in_(("queued", "running", "stopping")),
                 )
                 .order_by(Job.created_at.desc())
             )
@@ -461,7 +460,7 @@ async def pipeline_summary(db: Annotated[AsyncSession, Depends(get_db)]):
     running_jobs = []
     for job in active_jobs:
         summary = job_summary(job)
-        payload = job.payload if isinstance(job.payload, dict) else {}
+        payload = job.request if isinstance(job.request, dict) else {}
         if job.type == "poster_pipeline_batch":
             summary["movie_count"] = len(payload.get("movie_ids") or [])
         elif job.subject_type == "movie" or payload.get("movie_id") is not None:
@@ -470,16 +469,7 @@ async def pipeline_summary(db: Annotated[AsyncSession, Depends(get_db)]):
             summary["movie_count"] = 0
         running_jobs.append(summary)
 
-    schedule = await db.get(JobSchedule, "poster-heal")
-    heal_schedule = (
-        {
-            "enabled": schedule.enabled,
-            "interval_minutes": schedule.interval_seconds // 60,
-            "next_run_at": schedule.next_run_at.isoformat() if schedule.next_run_at else None,
-        }
-        if schedule
-        else None
-    )
+    heal_schedule = None
 
     total = total_movies or 0
     with_poster = movies_with_poster or 0

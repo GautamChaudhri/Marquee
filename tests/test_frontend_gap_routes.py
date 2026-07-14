@@ -18,9 +18,7 @@ from marquee.models import (
     ArtworkEvent,
     DoviState,
     Job,
-    JobSchedule,
-    MediaJob,
-    MediaJobEvent,
+    JobEvent,
     Movie,
     PipelineRun,
     RadarrCustomFormat,
@@ -136,33 +134,7 @@ async def test_library_missing_filter_can_exclude_review_queue_movies(
     assert [item["title"] for item in body["items"]] == ["Still Missing"]
 
 
-@pytest.mark.asyncio
-async def test_media_job_snapshot_reflects_generic_job_failure(
-    db: AsyncSession,
-    client: AsyncClient,
-):
-    media_job = MediaJob(
-        job_id="media-failed",
-        operation="subtitle_remove",
-        status="queued",
-        media_file_id=5,
-    )
-    generic_job = Job(
-        id="generic-failed",
-        type="subtitle_remove",
-        payload={"media_job_id": media_job.job_id},
-        status="failed",
-        error={"message": "no handler for 'track_remove'"},
-    )
-    db.add_all([media_job, generic_job])
-    await db.commit()
 
-    resp = await client.get(f"/api/media-jobs/{media_job.job_id}")
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["label"] == "Subtitle Removal"
-    assert body["status"] == "failed"
-    assert body["error"] == {"message": "no handler for 'track_remove'"}
 
 
 @pytest.mark.asyncio
@@ -318,22 +290,25 @@ async def test_activity_feed_unifies_sources(db: AsyncSession, client: AsyncClie
                 status="failed",
                 error="boom",
             ),
-            MediaJob(
-                job_id="job-1",
-                operation="subtitle_scan",
-                status="running",
-                trigger="manual",
+            Job(
+                id="job-1",
+                type="subtitle_scan",
+                root_id="job-1",
+                phase="running",
+                request={},
+                subject_snapshot={"title": "Heat"},
             ),
         ]
     )
     await db.flush()
     db.add(
-        MediaJobEvent(
+        JobEvent(
             job_id="job-1",
+            event_key="progress.updated",
             stage="scan",
             state="running",
             message="Scanning subtitles",
-            progress_json={"done": 1, "total": 2},
+            detail={"done": 1, "total": 2},
         )
     )
     await db.commit()
@@ -343,11 +318,13 @@ async def test_activity_feed_unifies_sources(db: AsyncSession, client: AsyncClie
     assert by_id["pipeline-run:run-1"]["level"] == "warn"
     assert by_id["pipeline-run:run-1"]["movie_id"] == movie.id
     assert any(
-        event["id"].startswith("media-job-event:") and event["message"] == "Scanning subtitles"
+        event["id"].startswith("job-event:")
+        and event["message"] == "Scanning subtitles"
         for event in body["events"]
     )
     assert any(
-        event["id"].startswith("artwork:") and event["level"] == "ok" for event in body["events"]
+        event["id"].startswith("artwork:") and event["level"] == "ok"
+        for event in body["events"]
     )
 
 
@@ -370,16 +347,27 @@ async def test_settings_redacts_secrets(client: AsyncClient, monkeypatch):
     assert "subgen-secret" not in serialized
     assert "http://radarr.local" not in serialized
     assert body["writable"] is True
+    assert body["configuration_meta"]["SUBGEN_URL"] == {
+        "owner": "database",
+        "apply_mode": "next_job",
+        "sensitivity": "public",
+        "scope": "execution",
+    }
+    assert body["configuration_meta"]["SUBGEN_CALLBACK_TOKEN"] == {
+        "owner": "environment",
+        "apply_mode": "restart",
+        "sensitivity": "secret",
+        "scope": "execution",
+    }
+    assert body["configuration_meta"]["SUBGEN_WHISPER_MODEL"]["owner"] == "environment"
+    assert body["configuration_meta"]["SUBGEN_WHISPER_MODEL"]["apply_mode"] == "restart"
 
 
 @pytest.mark.asyncio
-async def test_put_settings_success(db: AsyncSession, client: AsyncClient, monkeypatch, tmp_path):
-    monkeypatch.setattr(
-        "marquee.core.subtitles.config._overrides_path",
-        lambda: tmp_path / "subtitle_overrides.json",
-    )
-
+async def test_put_settings_success(db: AsyncSession, client: AsyncClient):
+    original_enabled = subtitle_settings.SUBTITLE_ENABLED
     payload = {
+        "expected_version": 1,
         "subtitles": {
             "enabled": False,
             "scan_concurrency": 5,
@@ -390,7 +378,6 @@ async def test_put_settings_success(db: AsyncSession, client: AsyncClient, monke
         "subgen": {
             "url": "http://whisper.service:9000",
             "mode": "translate",
-            "callback_token": "supersecrettoken",
         },
     }
 
@@ -398,7 +385,7 @@ async def test_put_settings_success(db: AsyncSession, client: AsyncClient, monke
     assert resp.status_code == 200
     data = resp.json()
 
-    assert "applied" in data
+    assert data["configuration_version"] == 2
     assert "SUBTITLE_ENABLED" in data["applied"]
     assert "SUBTITLE_SCAN_CONCURRENCY" in data["applied"]
     assert "SUBTITLE_PREFERRED_LANGUAGES" in data["applied"]
@@ -406,48 +393,96 @@ async def test_put_settings_success(db: AsyncSession, client: AsyncClient, monke
     assert "SUBTITLE_PREFERRED_SUBTITLE_LANGUAGES" in data["applied"]
     assert "SUBGEN_URL" in data["applied"]
     assert "SUBGEN_MODE" in data["applied"]
-    assert "SUBGEN_CALLBACK_TOKEN" in data["applied"]
+    assert data["settings"]["subtitles"]["enabled"] is False
+    assert data["settings"]["integrations"]["subgen"]["mode"] == "translate"
 
-    # Verify memory mutation
-    assert subtitle_settings.SUBTITLE_ENABLED is False
-    assert subtitle_settings.SUBTITLE_SCAN_CONCURRENCY == 5
-    assert subtitle_settings.SUBTITLE_PREFERRED_LANGUAGES == ["en", "es", "fr"]
-    assert subtitle_settings.SUBTITLE_PREFERRED_AUDIO_LANGUAGES == ["en"]
-    assert subtitle_settings.SUBTITLE_PREFERRED_SUBTITLE_LANGUAGES == ["en", "fr"]
-    assert subtitle_settings.SUBGEN_URL == "http://whisper.service:9000"
-    assert subtitle_settings.SUBGEN_MODE == "translate"
-    assert subtitle_settings.SUBGEN_CALLBACK_TOKEN == "supersecrettoken"
+    # The environment singleton remains immutable.
+    assert original_enabled == subtitle_settings.SUBTITLE_ENABLED
 
-    # Verify file persistence
-    overrides_file = tmp_path / "subtitle_overrides.json"
-    assert overrides_file.exists()
-    content = json.loads(overrides_file.read_text())
-    assert content["SUBTITLE_ENABLED"] is False
-    assert content["SUBTITLE_SCAN_CONCURRENCY"] == 5
-    assert content["SUBTITLE_PREFERRED_LANGUAGES"] == ["en", "es", "fr"]
-    assert content["SUBTITLE_PREFERRED_AUDIO_LANGUAGES"] == ["en"]
-    assert content["SUBTITLE_PREFERRED_SUBTITLE_LANGUAGES"] == ["en", "fr"]
-    assert content["SUBGEN_URL"] == "http://whisper.service:9000"
-    assert content["SUBGEN_MODE"] == "translate"
-    assert content["SUBGEN_CALLBACK_TOKEN"] == "supersecrettoken"
+
+@pytest.mark.asyncio
+async def test_put_settings_stale_version_returns_current_metadata(
+    db: AsyncSession, client: AsyncClient
+):
+    winner = await client.put(
+        "/api/settings",
+        json={"expected_version": 1, "subtitles": {"preferred_languages": ["en", "fr"]}},
+    )
+    assert winner.status_code == 200
+
+    stale = await client.put(
+        "/api/settings",
+        json={"expected_version": 1, "subtitles": {"preferred_languages": ["de"]}},
+    )
+    assert stale.status_code == 409
+    assert stale.json()["detail"] == {
+        "code": "configuration_version_conflict",
+        "current_version": 2,
+        "etag": winner.json()["etag"],
+    }
+    current = (await client.get("/api/settings")).json()
+    assert current["configuration_version"] == 2
+    assert current["subtitles"]["preferred_languages"] == ["en", "fr"]
+
+
+@pytest.mark.asyncio
+async def test_audio_subs_preferences_uses_version_contract(
+    db: AsyncSession, client: AsyncClient
+):
+    winner = await client.put(
+        "/api/audio-subs/preferences",
+        json={"expected_version": 1, "preferred_languages": ["en", "es"]},
+    )
+    assert winner.status_code == 200
+    assert winner.json()["configuration_version"] == 2
+
+    stale = await client.put(
+        "/api/audio-subs/preferences",
+        json={"expected_version": 1, "preferred_languages": ["de"]},
+    )
+    assert stale.status_code == 409
+    assert stale.json()["detail"]["current_version"] == 2
+
+
+@pytest.mark.asyncio
+async def test_subgen_settings_uses_version_contract(db: AsyncSession, client: AsyncClient):
+    winner = await client.put(
+        "/api/subtitle-generators/subgen/settings",
+        json={"expected_version": 1, "url": "http://subgen.internal:9000"},
+    )
+    assert winner.status_code == 200
+    assert winner.json()["configuration_version"] == 2
+
+    stale = await client.put(
+        "/api/subtitle-generators/subgen/settings",
+        json={"expected_version": 1, "mode": "translate"},
+    )
+    assert stale.status_code == 409
+    assert stale.json()["detail"]["current_version"] == 2
+
+
+@pytest.mark.asyncio
+async def test_put_settings_rejects_secret_mutation(db: AsyncSession, client: AsyncClient):
+    resp = await client.put(
+        "/api/settings",
+        json={
+            "expected_version": 1,
+            "subgen": {"callback_token": "must-not-persist"},
+        },
+    )
+    assert resp.status_code == 400
+    assert "secret" in resp.json()["detail"].lower()
+    assert (await client.get("/api/settings")).json()["configuration_version"] == 1
 
 
 @pytest.mark.asyncio
 async def test_put_settings_persists_poster_and_heal_overrides(
-    db: AsyncSession, client: AsyncClient, monkeypatch, tmp_path
+    db: AsyncSession, client: AsyncClient
 ):
-    monkeypatch.setattr(
-        "marquee.config._overrides_path",
-        lambda: tmp_path / "settings_overrides.json",
-    )
-    monkeypatch.setattr(settings, "MOVIE_POSTER_FORMAT", "poster.jpg")
-    monkeypatch.setattr(settings, "POSTER_RESTORE_METHOD", "download")
-    monkeypatch.setattr(settings, "HEAL_ENABLED", True)
-    monkeypatch.setattr(settings, "HEAL_INTERVAL_MINUTES", 60)
-
     resp = await client.put(
         "/api/settings",
         json={
+            "expected_version": 1,
             "posters": {
                 "movie_poster_format": "{movie_basename}-poster",
                 "restore_method": "local",
@@ -458,6 +493,7 @@ async def test_put_settings_persists_poster_and_heal_overrides(
 
     assert resp.status_code == 200
     data = resp.json()
+    assert data["configuration_version"] == 2
     assert "MOVIE_POSTER_FORMAT" in data["applied"]
     assert "POSTER_RESTORE_METHOD" in data["applied"]
     assert "HEAL_ENABLED" in data["applied"]
@@ -467,233 +503,59 @@ async def test_put_settings_persists_poster_and_heal_overrides(
     assert data["settings"]["sync"]["heal_enabled"] is False
     assert data["settings"]["sync"]["heal_interval_minutes"] == 15
 
-    content = json.loads((tmp_path / "settings_overrides.json").read_text())
-    assert content["MOVIE_POSTER_FORMAT"] == "{movie_basename}-poster"
-    assert content["POSTER_RESTORE_METHOD"] == "local"
-    assert content["HEAL_ENABLED"] is False
-    assert content["HEAL_INTERVAL_MINUTES"] == 15
-
-    schedule = await db.get(JobSchedule, "poster-heal")
-    assert schedule is not None
-    assert schedule.job_type == "poster_heal"
-    assert schedule.enabled is False
-    assert schedule.interval_seconds == 15 * 60
 
 
 @pytest.mark.asyncio
 async def test_put_settings_rejects_invalid_poster_format(
-    db: AsyncSession, client: AsyncClient, monkeypatch, tmp_path
+    db: AsyncSession, client: AsyncClient
 ):
-    monkeypatch.setattr(
-        "marquee.config._overrides_path",
-        lambda: tmp_path / "settings_overrides.json",
-    )
-
     resp = await client.put(
         "/api/settings",
-        json={"posters": {"movie_poster_format": "../poster"}},
+        json={
+            "expected_version": 1,
+            "posters": {"movie_poster_format": "../poster"},
+        },
     )
 
     assert resp.status_code == 400
-    assert not (tmp_path / "settings_overrides.json").exists()
+    current = (await client.get("/api/settings")).json()
+    assert current["configuration_version"] == 1
 
 
 @pytest.mark.asyncio
 async def test_put_settings_validation_failure(
-    db: AsyncSession, client: AsyncClient, monkeypatch, tmp_path
+    db: AsyncSession, client: AsyncClient
 ):
-    monkeypatch.setattr(
-        "marquee.core.subtitles.config._overrides_path",
-        lambda: tmp_path / "subtitle_overrides.json",
-    )
-
-    # pass invalid scan_concurrency (type error)
-    payload = {"subtitles": {"scan_concurrency": "not-an-int"}}
+    payload = {
+        "expected_version": 1,
+        "subtitles": {"scan_concurrency": "not-an-int"},
+    }
     resp = await client.put("/api/settings", json=payload)
     assert resp.status_code == 422
 
-    # pass invalid preferred_languages (type error)
-    payload = {"subtitles": {"preferred_languages": "not-a-list"}}
+    payload = {
+        "expected_version": 1,
+        "subtitles": {"preferred_languages": "not-a-list"},
+    }
     resp = await client.put("/api/settings", json=payload)
     assert resp.status_code == 422
 
 
 @pytest.mark.asyncio
-async def test_extract_subtitle_track_endpoint(
-    db: AsyncSession,
-    client: AsyncClient,
-    tmp_path,
-    monkeypatch,
-):
-    from marquee.models import MediaFile, SubtitleInventory, SubtitleTrack
-
-    # Setup configurations
-    monkeypatch.setattr(type(settings), "effective_media_roots", property(lambda self: [tmp_path]))
-    monkeypatch.setattr(subtitle_settings, "SUBTITLE_ENABLED", True)
-
-    # Create dummy movie video file on disk
-    video_file = tmp_path / "test_movie.mkv"
-    video_file.write_bytes(b"mock video data")
-
-    # Create records in database
-    movie = Movie(
-        title="Test Movie",
-        year=2024,
-        folder_path=str(tmp_path),
-        movie_file_path="test_movie.mkv",
-        tmdb_id=123,
-    )
-    db.add(movie)
-    await db.flush()
-
-    media_file = MediaFile(
-        source="radarr",
-        source_key="radarr:movie-file:123",
-        movie_id=movie.id,
-        path=str(video_file),
-        size_bytes=len(video_file.read_bytes()),
-        container="mkv",
-        is_active=True,
-    )
-    db.add(media_file)
-    await db.flush()
-
-    inventory = SubtitleInventory(
-        media_file_id=media_file.id,
-        file_signature="sig",
-        container="mkv",
-    )
-    db.add(inventory)
-    await db.flush()
-
-    embedded_track = SubtitleTrack(
-        id="embedded-track-id",
-        inventory_id=inventory.id,
-        source="embedded",
-        codec="subrip",
-        kind="text",
-        language_tag="en",
-        stream_index=2,
-    )
-    external_track = SubtitleTrack(
-        id="external-track-id",
-        inventory_id=inventory.id,
-        source="external",
-        codec="subrip",
-        kind="text",
-        language_tag="fr",
-        external_path=str(tmp_path / "test_movie.fr.srt"),
-    )
-    db.add_all([embedded_track, external_track])
-    await db.commit()
-
-    # 1. Success case: extracting embedded track
-    resp = await client.post(
-        f"/api/media-files/{media_file.id}/subtitles/{embedded_track.id}/extract"
-    )
-    assert resp.status_code == 202
-    data = resp.json()
-    assert "job_id" in data
-    assert data["status"] == "queued"
-
-    # Verify that MediaJob was created in DB
-    job_id = data["job_id"]
-    from sqlalchemy import select
-
-    job = (await db.execute(select(MediaJob).where(MediaJob.job_id == job_id))).scalar_one_or_none()
-    assert job is not None
-    assert job.operation == "subtitle_extract"
-    assert job.status == "confirmed"
-    assert job.media_file_id == media_file.id
-
-    # 2. Error case: track does not exist
-    resp = await client.post(
-        f"/api/media-files/{media_file.id}/subtitles/nonexistent-track/extract"
-    )
-    assert resp.status_code == 404
-    assert resp.json()["detail"] == "Embedded track not found"
-
-    # 3. Error case: track is external
-    resp = await client.post(
-        f"/api/media-files/{media_file.id}/subtitles/{external_track.id}/extract"
-    )
-    assert resp.status_code == 404
-    assert resp.json()["detail"] == "Embedded track not found"
+async def test_extract_subtitle_track_endpoint(client: AsyncClient):
+    response = await client.post("/api/media-files/1/subtitles/track-1/extract")
+    assert response.status_code == 503
+    assert response.json()["code"] == "job_platform_unmigrated"
 
 
 @pytest.mark.asyncio
-async def test_scan_library_subtitles_endpoint(
-    db: AsyncSession,
-    client: AsyncClient,
-):
-    from sqlalchemy import select
-
-    from marquee.models import Job
-
-    # Trigger scan library
-    resp = await client.post("/api/subtitles/scan-library")
-    assert resp.status_code == 202
-    data = resp.json()
-    assert "job_id" in data
-    assert data["status"] == "queued"
-
-    # Verify that Job was created in DB
-    job_id = data["job_id"]
-    job = (await db.execute(select(Job).where(Job.id == job_id))).scalar_one_or_none()
-    assert job is not None
-    assert job.type == "subtitle_scan_all"
-    assert job.status == "queued"
-    assert job.payload == {"force": False}
+async def test_scan_library_subtitles_endpoint(client: AsyncClient):
+    response = await client.post("/api/subtitles/scan-library", json={})
+    assert response.status_code == 503
+    assert response.json()["code"] == "job_platform_unmigrated"
 
 
-@pytest.mark.asyncio
-async def test_subtitle_scan_all_handler(db: AsyncSession):
-    from sqlalchemy import select
 
-    from marquee.core.jobs.builtin_handlers import subtitle_scan_all
-    from marquee.models import Job, MediaFile, MediaJob, Movie, SubtitleInventory
-
-    # Setup configurations
-    movie1 = Movie(
-        title="Movie 1", year=2024, folder_path="/tmp/m1", movie_file_path="m1.mkv", tmdb_id=101
-    )
-    movie2 = Movie(
-        title="Movie 2", year=2024, folder_path="/tmp/m2", movie_file_path="m2.mkv", tmdb_id=102
-    )
-    db.add_all([movie1, movie2])
-    await db.flush()
-
-    mf1 = MediaFile(
-        source="radarr", source_key="k1", movie_id=movie1.id, path="m1.mkv", is_active=True
-    )
-    mf2 = MediaFile(
-        source="radarr", source_key="k2", movie_id=movie2.id, path="m2.mkv", is_active=True
-    )
-    db.add_all([mf1, mf2])
-    await db.flush()
-
-    # mf1 has a subtitle inventory, mf2 does not
-    inv1 = SubtitleInventory(media_file_id=mf1.id, container="mkv")
-    db.add(inv1)
-    await db.commit()
-
-    # 1. Run without force: should only queue mf2
-    job = Job(id="job-id-1", type="subtitle_scan_all", payload={"force": False})
-    res = await subtitle_scan_all(job)
-    assert res == {"queued_scans": 1}
-
-    # Verify that a MediaJob was created for mf2
-    media_jobs = (
-        (await db.execute(select(MediaJob).where(MediaJob.media_file_id == mf2.id))).scalars().all()
-    )
-    assert len(media_jobs) == 1
-    assert media_jobs[0].operation == "subtitle_scan"
-    assert media_jobs[0].status == "queued"
-
-    # 2. Run with force: should queue both mf1 and mf2
-    job2 = Job(id="job-id-2", type="subtitle_scan_all", payload={"force": True})
-    res2 = await subtitle_scan_all(job2)
-    assert res2 == {"queued_scans": 2}
 
 
 @pytest.mark.asyncio

@@ -231,34 +231,33 @@ async def test_tv_queries_eligibility_predicates(db: AsyncSession):
 
 
 @pytest.mark.asyncio
-async def test_settings_route_tv_format_validation(client: AsyncClient, monkeypatch, tmp_path):
-    monkeypatch.setattr(
-        "marquee.config._overrides_path",
-        lambda: tmp_path / "settings_overrides.json",
-    )
-
-    # Valid update
+async def test_settings_route_tv_format_validation(client: AsyncClient):
     resp = await client.put(
         "/api/settings",
         json={
+            "expected_version": 1,
             "posters": {
                 "series_poster_format": "show.jpg",
                 "season_poster_format": "season{season:02d}.jpg",
-            }
+            },
         },
     )
     assert resp.status_code == 200
 
-    # Invalid series format (contains placeholder)
     resp = await client.put(
         "/api/settings",
-        json={"posters": {"series_poster_format": "show_{season}.jpg"}},
+        json={
+            "expected_version": 2,
+            "posters": {"series_poster_format": "show_{season}.jpg"},
+        },
     )
     assert resp.status_code == 400
 
-    # Invalid season format (missing {season})
     resp = await client.put(
         "/api/settings",
-        json={"posters": {"season_poster_format": "season_poster.jpg"}},
+        json={
+            "expected_version": 2,
+            "posters": {"season_poster_format": "season_poster.jpg"},
+        },
     )
     assert resp.status_code == 400

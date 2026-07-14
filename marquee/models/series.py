@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from sqlalchemy import JSON, Index, Integer, String, Text, text
+from datetime import datetime
+
+from sqlalchemy import JSON, Boolean, DateTime, Index, Integer, String, Text, func, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from marquee.database import Base
@@ -47,6 +49,14 @@ class Series(Base, TimestampMixin, ArtworkMixin):
 
     # ── Origin ───────────────────────────────────────────────────────
     sonarr_id: Mapped[int | None] = mapped_column(Integer, unique=True, index=True, nullable=True)
+
+    is_present: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=text("true"), index=True
+    )
+    retired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
 
     # ── Sonarr Metadata ──────────────────────────────────────────────
     quality_profile_id: Mapped[int | None] = mapped_column(Integer, nullable=True)

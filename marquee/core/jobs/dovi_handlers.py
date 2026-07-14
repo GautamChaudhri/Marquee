@@ -206,10 +206,10 @@ async def _dovi_analyze_episode(job: Job, episode_id: int) -> dict[str, Any]:
 
 @register("dovi_analyze")
 async def dovi_analyze(job: Job) -> dict[str, Any]:
-    episode_id = job.payload.get("episode_id")
+    episode_id = job.request.get("episode_id")
     if episode_id is not None:
         return await _dovi_analyze_episode(job, int(episode_id))
-    return await _dovi_analyze_movie(job, int(job.payload["movie_id"]))
+    return await _dovi_analyze_movie(job, int(job.request["movie_id"]))
 
 
 @register("dovi_convert")
@@ -226,8 +226,8 @@ async def dovi_convert(job: Job) -> dict[str, Any]:
     )
 
     factory = _get_session_factory()
-    movie_id = int(job.payload["movie_id"])
-    kind = job.payload.get("kind")
+    movie_id = int(job.request["movie_id"])
+    kind = job.request.get("kind")
     if kind not in {"p5_to_p81", "p7_strip_el"}:
         raise DoviConversionError("invalid_kind", "Unsupported Dolby Vision conversion kind.")
 

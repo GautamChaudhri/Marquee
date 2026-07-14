@@ -459,8 +459,8 @@ async def cancel_retrain_taste(
             select(Job)
             .where(
                 Job.type == "taste_rebuild",
-                Job.subject_id == library,
-                Job.status.in_(("queued", "waiting_resource", "claimed", "running")),
+                Job.subject_reference == library,
+                Job.phase.in_(("planned", "queued", "running", "stopping")),
             )
             .order_by(Job.created_at.desc())
             .limit(1)

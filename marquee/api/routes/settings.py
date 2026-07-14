@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -10,14 +9,17 @@ from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.config import Settings
-from marquee.config import load_overrides as load_settings_overrides
-from marquee.config import save_overrides as save_settings_overrides
-from marquee.config import settings as app_settings
+from marquee.core.configuration import (
+    CONFIGURATION_CATALOG,
+    ConfigurationError,
+    ConfigurationVersionConflictError,
+    update_configuration,
+)
+from marquee.core.configuration_cache import configuration_provider
 from marquee.core.path_utils import PathValidationError
 from marquee.core.poster_service import sanitize_poster_filename
-from marquee.core.subtitles.config import subtitle_settings
+from marquee.core.subtitles.config import SubtitleSettings
 from marquee.database import get_db
-from marquee.models import JobSchedule
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
@@ -27,9 +29,28 @@ def _configured(value: object) -> bool:
 
 
 @router.get("")
-async def get_settings():
-    """Return non-secret runtime settings and integration configured flags."""
+async def get_settings(db: Annotated[AsyncSession, Depends(get_db)]):
+    """Return effective redacted settings from the current immutable revision."""
+    state = configuration_provider.state
+    provider_health = configuration_provider.health()
+    app_settings = Settings(**configuration_provider.effective("app"))
+    subtitle_settings = SubtitleSettings(**configuration_provider.effective("subtitle"))
+    metadata = {
+        key: {
+            "owner": "database" if entry.database_owned else "environment",
+            "apply_mode": entry.apply_mode,
+            "sensitivity": entry.sensitivity,
+            "scope": entry.scope,
+        }
+        for key, entry in CONFIGURATION_CATALOG.items()
+        if entry.owner in {"app", "subtitle"}
+    }
     return {
+        "configuration_version": state.version,
+        "etag": state.etag,
+        "stale": provider_health["status"] != "valid",
+        "health": provider_health,
+        "configuration_meta": metadata,
         "app": {
             "name": app_settings.APP_NAME,
             "host": app_settings.HOST,
@@ -62,7 +83,9 @@ async def get_settings():
             "subgen": {
                 "configured": subtitle_settings.generation_enabled,
                 "url_configured": _configured(subtitle_settings.SUBGEN_URL),
-                "callback_token_configured": _configured(subtitle_settings.SUBGEN_CALLBACK_TOKEN),
+                "callback_token_configured": _configured(
+                    subtitle_settings.SUBGEN_CALLBACK_TOKEN
+                ),
                 "deployment": subtitle_settings.subgen_deployment,
                 "url": subtitle_settings.subgen_url,
                 "profile_name": subtitle_settings.SUBGEN_PROFILE_NAME,
@@ -75,7 +98,9 @@ async def get_settings():
                 "transcribe_device": subtitle_settings.SUBGEN_TRANSCRIBE_DEVICE,
                 "gpu_index": subtitle_settings.SUBGEN_GPU_INDEX,
                 "compute_type": subtitle_settings.SUBGEN_COMPUTE_TYPE,
-                "concurrent_transcriptions": subtitle_settings.SUBGEN_CONCURRENT_TRANSCRIPTIONS,
+                "concurrent_transcriptions": (
+                    subtitle_settings.SUBGEN_CONCURRENT_TRANSCRIPTIONS
+                ),
                 "whisper_threads": subtitle_settings.SUBGEN_WHISPER_THREADS,
                 "model_path": subtitle_settings.SUBGEN_MODEL_PATH,
                 "naming_type": subtitle_settings.SUBGEN_NAMING_TYPE,
@@ -120,8 +145,12 @@ async def get_settings():
             "mutation_concurrency": subtitle_settings.SUBTITLE_MUTATION_CONCURRENCY,
             "generation_concurrency": subtitle_settings.SUBTITLE_GENERATION_CONCURRENCY,
             "preferred_languages": subtitle_settings.SUBTITLE_PREFERRED_LANGUAGES,
-            "preferred_audio_languages": subtitle_settings.SUBTITLE_PREFERRED_AUDIO_LANGUAGES,
-            "preferred_subtitle_languages": subtitle_settings.SUBTITLE_PREFERRED_SUBTITLE_LANGUAGES,
+            "preferred_audio_languages": (
+                subtitle_settings.SUBTITLE_PREFERRED_AUDIO_LANGUAGES
+            ),
+            "preferred_subtitle_languages": (
+                subtitle_settings.SUBTITLE_PREFERRED_SUBTITLE_LANGUAGES
+            ),
             "effective_preferred_audio_languages": (
                 subtitle_settings.effective_preferred_audio_languages
             ),
@@ -130,10 +159,14 @@ async def get_settings():
             ),
             "unknown_language_action": subtitle_settings.SUBTITLE_UNKNOWN_LANGUAGE_ACTION,
             "protect_forced": subtitle_settings.SUBTITLE_PROTECT_FORCED,
-            "protect_last_full_dialogue": subtitle_settings.SUBTITLE_PROTECT_LAST_FULL_DIALOGUE,
+            "protect_last_full_dialogue": (
+                subtitle_settings.SUBTITLE_PROTECT_LAST_FULL_DIALOGUE
+            ),
             "backup_mode": subtitle_settings.SUBTITLE_BACKUP_MODE,
             "external_delete_mode": subtitle_settings.SUBTITLE_EXTERNAL_DELETE_MODE,
-            "audio_subs_deep_scan_enabled": subtitle_settings.AUDIO_SUBS_DEEP_SCAN_ENABLED,
+            "audio_subs_deep_scan_enabled": (
+                subtitle_settings.AUDIO_SUBS_DEEP_SCAN_ENABLED
+            ),
             "audio_subs_deep_scan_hour": subtitle_settings.AUDIO_SUBS_DEEP_SCAN_HOUR,
             "audio_subs_deep_scan_batch": subtitle_settings.AUDIO_SUBS_DEEP_SCAN_BATCH,
         },
@@ -199,6 +232,7 @@ class HealSettingsUpdate(BaseModel):
 
 
 class SettingsUpdatePayload(BaseModel):
+    expected_version: int
     subtitles: SubtitlesSettingsUpdate | None = None
     subgen: SubgenSettingsUpdate | None = None
     posters: PostersSettingsUpdate | None = None
@@ -255,27 +289,8 @@ async def _upsert_poster_heal_schedule(
     enabled: bool,
     interval_minutes: int,
 ) -> None:
-    interval_seconds = max(60, interval_minutes * 60)
-    next_run_at = datetime.now(UTC) + timedelta(seconds=interval_seconds)
-    row = await db.get(JobSchedule, "poster-heal")
-    if row is None:
-        db.add(
-            JobSchedule(
-                id="poster-heal",
-                job_type="poster_heal",
-                interval_seconds=interval_seconds,
-                enabled=enabled,
-                next_run_at=next_run_at,
-            )
-        )
-    else:
-        changed = row.interval_seconds != interval_seconds or row.enabled != enabled
-        row.job_type = "poster_heal"
-        row.interval_seconds = interval_seconds
-        row.enabled = enabled
-        if changed:
-            row.next_run_at = next_run_at
-    await db.commit()
+    """Scheduling is PgQueuer-owned; A3 persists these values as configuration."""
+    return None
 
 
 @router.put("")
@@ -283,97 +298,65 @@ async def put_settings(
     payload: SettingsUpdatePayload,
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    """Update mutable UI settings, validate, mutate singleton, and save overrides."""
-    current = subtitle_settings.model_dump()
-
+    """Append one validated configuration revision using optimistic concurrency."""
+    updates: dict[str, object] = {}
     if payload.subtitles:
-        sub_update = payload.subtitles.model_dump(exclude_unset=True)
-        for key, val in sub_update.items():
-            current[f"SUBTITLE_{key.upper()}"] = val
-
+        for key, value in payload.subtitles.model_dump(exclude_unset=True).items():
+            setting_key = key.upper() if key.startswith("audio_subs_") else f"SUBTITLE_{key.upper()}"
+            updates[setting_key] = value
     if payload.subgen:
-        subgen_update = payload.subgen.model_dump(exclude_unset=True)
-        for key, val in subgen_update.items():
-            current[f"SUBGEN_{key.upper()}"] = val
-
-    from marquee.core.subtitles.config import SubtitleSettings
-
-    try:
-        SubtitleSettings(**current)
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    app_updates: dict[str, object] = {}
+        for key, value in payload.subgen.model_dump(exclude_unset=True).items():
+            updates[f"SUBGEN_{key.upper()}"] = value
     if payload.posters:
         poster_update = payload.posters.model_dump(exclude_unset=True)
         if "movie_poster_format" in poster_update:
-            app_updates["MOVIE_POSTER_FORMAT"] = _validate_movie_poster_format(
+            updates["MOVIE_POSTER_FORMAT"] = _validate_movie_poster_format(
                 poster_update["movie_poster_format"]
             )
         if "series_poster_format" in poster_update:
-            app_updates["SERIES_POSTER_FORMAT"] = _validate_series_poster_format(
+            updates["SERIES_POSTER_FORMAT"] = _validate_series_poster_format(
                 poster_update["series_poster_format"]
             )
         if "season_poster_format" in poster_update:
-            app_updates["SEASON_POSTER_FORMAT"] = _validate_season_poster_format(
+            updates["SEASON_POSTER_FORMAT"] = _validate_season_poster_format(
                 poster_update["season_poster_format"]
             )
         if "restore_method" in poster_update:
-            app_updates["POSTER_RESTORE_METHOD"] = poster_update["restore_method"]
-
+            updates["POSTER_RESTORE_METHOD"] = poster_update["restore_method"]
     if payload.heal:
         heal_update = payload.heal.model_dump(exclude_unset=True)
         if "enabled" in heal_update:
-            app_updates["HEAL_ENABLED"] = heal_update["enabled"]
+            updates["HEAL_ENABLED"] = heal_update["enabled"]
         if "interval_minutes" in heal_update:
-            app_updates["HEAL_INTERVAL_MINUTES"] = heal_update["interval_minutes"]
+            updates["HEAL_INTERVAL_MINUTES"] = heal_update["interval_minutes"]
 
-    if app_updates:
-        app_current = app_settings.model_dump()
-        app_current.update(app_updates)
-        try:
-            Settings(**app_current)
-        except Exception as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    from marquee.core.subtitles.config import load_overrides, save_overrides
-
-    updated_fields = {}
-    if payload.subtitles:
-        for key, val in payload.subtitles.model_dump(exclude_unset=True).items():
-            setting_key = f"SUBTITLE_{key.upper()}"
-            setattr(subtitle_settings, setting_key, val)
-            updated_fields[setting_key] = val
-
-    if payload.subgen:
-        for key, val in payload.subgen.model_dump(exclude_unset=True).items():
-            setting_key = f"SUBGEN_{key.upper()}"
-            setattr(subtitle_settings, setting_key, val)
-            if setting_key == "SUBGEN_CALLBACK_TOKEN":
-                updated_fields[setting_key] = "<redacted>"
-            else:
-                updated_fields[setting_key] = val
-
-    current_overrides = load_overrides()
-    for setting_key, val in updated_fields.items():
-        if setting_key == "SUBGEN_CALLBACK_TOKEN":
-            val = getattr(subtitle_settings, setting_key)
-        current_overrides[setting_key] = val
-
-    save_overrides(current_overrides)
-    if app_updates:
-        current_app_overrides = load_settings_overrides()
-        for setting_key, val in app_updates.items():
-            setattr(app_settings, setting_key, val)
-            current_app_overrides[setting_key] = val
-            updated_fields[setting_key] = val
-        save_settings_overrides(current_app_overrides)
-
-    if any(key in app_updates for key in ("HEAL_ENABLED", "HEAL_INTERVAL_MINUTES")):
-        await _upsert_poster_heal_schedule(
+    try:
+        state, changed = await update_configuration(
             db,
-            enabled=app_settings.HEAL_ENABLED,
-            interval_minutes=app_settings.HEAL_INTERVAL_MINUTES,
+            expected_version=payload.expected_version,
+            updates=updates,
+            actor={"kind": "api", "id": "settings"},
+            trigger="settings_api",
         )
-
-    return {"applied": sorted(updated_fields.keys()), "settings": await get_settings()}
+    except ConfigurationVersionConflictError as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "configuration_version_conflict",
+                "current_version": exc.current.version,
+                "etag": exc.current.etag,
+            },
+        ) from exc
+    except ConfigurationError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    await db.commit()
+    await configuration_provider.refresh_from_session(db)
+    return {
+        "configuration_version": state.version,
+        "etag": state.etag,
+        "changed": changed,
+        "applied": sorted(updates) if changed else [],
+        "settings": await get_settings(db),
+    }

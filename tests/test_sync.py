@@ -159,6 +159,62 @@ async def test_sync_movies_updates_existing(db: AsyncSession):
 
 
 @pytest.mark.asyncio
+async def test_full_movie_sync_retires_and_reactivates_stable_identity(db: AsyncSession):
+    movie = Movie(radarr_id=99, title="Retire Me", year=2020, folder_path="/movies/retire")
+    db.add(movie)
+    await db.flush()
+    media_file = MediaFile(
+        source="radarr",
+        source_key="radarr:movie-file:99",
+        source_file_id=99,
+        movie_id=movie.id,
+        path="/movies/retire/movie.mkv",
+    )
+    db.add(media_file)
+    await db.commit()
+
+    radarr = AsyncMock()
+    radarr.get_movies.return_value = []
+    radarr.get_movie_files.return_value = []
+    radarr.get_custom_formats.return_value = []
+    radarr.get_quality_profiles.return_value = []
+    await SyncService(db, radarr=radarr).sync_all()
+
+    await db.refresh(movie)
+    await db.refresh(media_file)
+    assert (movie.is_present, media_file.is_present, media_file.is_active) == (False, False, False)
+    assert movie.retired_at is not None and media_file.retired_at is not None
+
+    radarr.get_movies.return_value = [_radarr_movie(id=99)]
+    await SyncService(db, radarr=radarr).sync_all()
+
+    await db.refresh(movie)
+    reactivated_file = await db.scalar(
+        select(MediaFile).where(MediaFile.movie_id == movie.id, MediaFile.is_present.is_(True))
+    )
+    assert movie.is_present is True and movie.retired_at is None
+    assert reactivated_file is not None and reactivated_file.is_active is True
+
+
+@pytest.mark.asyncio
+async def test_partial_movie_sync_never_retires_absent_rows(db: AsyncSession):
+    movie = Movie(radarr_id=99, title="Keep Me", year=2020, folder_path="/movies/keep")
+    db.add(movie)
+    await db.commit()
+
+    radarr = AsyncMock()
+    radarr.get_movies.return_value = [{"id": 1, "title": None}]
+    radarr.get_movie_files.return_value = []
+    radarr.get_custom_formats.return_value = []
+    radarr.get_quality_profiles.return_value = []
+    report = await SyncService(db, radarr=radarr).sync_all()
+
+    await db.refresh(movie)
+    assert report.movies.errors == 1
+    assert movie.is_present is True and movie.retired_at is None
+
+
+@pytest.mark.asyncio
 async def test_sync_movies_enriches_tmdb_metadata(db: AsyncSession):
     radarr = AsyncMock()
     radarr.get_movies.return_value = [_radarr_movie()]
@@ -1086,6 +1142,40 @@ async def test_sync_series_creates_new(db: AsyncSession):
     assert len(episodes) == 1
     assert episodes[0].title == "Pilot"
     assert episodes[0].episode_file_path == "/tv/Breaking Bad/Season 1/Breaking Bad - S01E01.mkv"
+
+
+@pytest.mark.asyncio
+async def test_full_series_sync_retires_and_reactivates_descendants(db: AsyncSession):
+    sonarr = AsyncMock()
+    sonarr.get_series.return_value = [_sonarr_series()]
+    sonarr.get_episodes.return_value = [_sonarr_episode()]
+    sonarr.get_episode_files.return_value = [_sonarr_episode_file()]
+    sonarr.get_custom_formats.return_value = []
+    sonarr.get_quality_profiles.return_value = []
+    await SyncService(db, sonarr=sonarr).sync_all()
+
+    series = await db.scalar(select(Series).where(Series.sonarr_id == 100))
+    assert series is not None
+    season = await db.scalar(select(Season).where(Season.series_id == series.id))
+    episode = await db.scalar(select(Episode).where(Episode.series_id == series.id))
+    media_file = await db.scalar(
+        select(MediaFile)
+        .join(EpisodeMediaFile, EpisodeMediaFile.media_file_id == MediaFile.id)
+        .where(EpisodeMediaFile.episode_id == episode.id)
+    )
+    assert season is not None and episode is not None and media_file is not None
+
+    sonarr.get_series.return_value = []
+    await SyncService(db, sonarr=sonarr).sync_all()
+    for row in (series, season, episode, media_file):
+        await db.refresh(row)
+        assert row.is_present is False and row.retired_at is not None
+
+    sonarr.get_series.return_value = [_sonarr_series()]
+    await SyncService(db, sonarr=sonarr).sync_all()
+    for row in (series, season, episode, media_file):
+        await db.refresh(row)
+        assert row.is_present is True and row.retired_at is None
 
 
 @pytest.mark.asyncio

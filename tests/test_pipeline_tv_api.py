@@ -11,7 +11,6 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.api.routes import feedback as feedback_route
-from marquee.api.routes import pipeline_tv as pipeline_tv_route
 from marquee.main import app
 from marquee.models import Movie, PipelineRun, Season, Series
 
@@ -174,9 +173,9 @@ async def _seed_run(
 
 @pytest.mark.asyncio
 async def test_tv_summary_run_queue_and_batch_scopes(
-    db: AsyncSession, client: AsyncClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    db: AsyncSession, client: AsyncClient, tmp_path: Path
 ):
-    alpha, alpha_seasons = await _seed_series(
+    _alpha, alpha_seasons = await _seed_series(
         db,
         tmp_path,
         title="Alpha Show",
@@ -187,7 +186,7 @@ async def test_tv_summary_run_queue_and_batch_scopes(
             {"number": 1, "episode_file_count": 8, "poster": False},
         ],
     )
-    beta, _ = await _seed_series(
+    await _seed_series(
         db,
         tmp_path,
         title="Beta Show",
@@ -223,52 +222,22 @@ async def test_tv_summary_run_queue_and_batch_scopes(
     assert run_queue.status_code == 200
     items = {item["series"]["title"]: item for item in run_queue.json()["items"]}
     assert set(items) == {"Alpha Show", "Beta Show"}
-    assert items["Alpha Show"]["show_poster_missing"] is True
     assert items["Alpha Show"]["assets_to_run"] == [
         {"media_type": "series"},
         {"media_type": "season", "season_id": alpha_seasons[1].id, "number": 1},
     ]
-    assert items["Beta Show"]["no_tmdb"] is True
 
-    captured: list[dict] = []
-
-    async def fake_create(_db, **kwargs):
-        captured.append(kwargs)
-        return _fake_job("tv-job", kwargs["payload"])
-
-    monkeypatch.setattr(pipeline_tv_route.job_manager, "create", fake_create)
-
-    missing = await client.post("/api/pipeline/tv/batch", json={"scope": "missing"})
-    assert missing.status_code == 202
-    assert missing.json()["asset_count"] == 2
-    assert captured[-1]["payload"]["assets"] == [
-        {"media_type": "series", "series_id": alpha.id},
-        {"media_type": "season", "series_id": alpha.id, "season_id": alpha_seasons[1].id},
-    ]
-
-    selected = await client.post(
-        "/api/pipeline/tv/batch",
-        json={"scope": "selected", "series_ids": [alpha.id]},
-    )
-    assert selected.status_code == 202
-    assert selected.json()["asset_count"] == 3
-    assert captured[-1]["payload"]["assets"] == [
-        {"media_type": "series", "series_id": alpha.id},
-        {"media_type": "season", "series_id": alpha.id, "season_id": alpha_seasons[0].id},
-        {"media_type": "season", "series_id": alpha.id, "season_id": alpha_seasons[1].id},
-    ]
-
-    all_resp = await client.post("/api/pipeline/tv/batch", json={"scope": "all"})
-    assert all_resp.status_code == 202
-    assert all_resp.json()["asset_count"] == 5
-    assert beta.id not in {asset["series_id"] for asset in captured[-1]["payload"]["assets"]}
+    for payload in ({"scope": "missing"}, {"scope": "all"}):
+        response = await client.post("/api/pipeline/tv/batch", json=payload)
+        assert response.status_code == 503
+        assert response.json()["code"] == "job_platform_unmigrated"
 
 
 @pytest.mark.asyncio
-async def test_series_run_all_missing_only_enqueues_missing_assets(
-    db: AsyncSession, client: AsyncClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+async def test_series_run_all_missing_only_fails_closed(
+    db: AsyncSession, client: AsyncClient, tmp_path: Path
 ):
-    series, seasons = await _seed_series(
+    series, _seasons = await _seed_series(
         db,
         tmp_path,
         title="Missing Only",
@@ -280,20 +249,10 @@ async def test_series_run_all_missing_only_enqueues_missing_assets(
             {"number": 2, "episode_file_count": 8, "poster": True},
         ],
     )
-    captured: list[dict] = []
 
-    async def fake_create(_db, **kwargs):
-        captured.append(kwargs)
-        return _fake_job("tv-series-job", kwargs["payload"])
-
-    monkeypatch.setattr(pipeline_tv_route.job_manager, "create", fake_create)
-
-    resp = await client.post(f"/api/pipeline/tv/series/{series.id}/run", json={})
-    assert resp.status_code == 202
-    assert resp.json()["asset_count"] == 1
-    assert captured[-1]["payload"]["assets"] == [
-        {"media_type": "season", "series_id": series.id, "season_id": seasons[0].id}
-    ]
+    response = await client.post(f"/api/pipeline/tv/series/{series.id}/run", json={})
+    assert response.status_code == 503
+    assert response.json()["code"] == "job_platform_unmigrated"
 
 
 @pytest.mark.asyncio

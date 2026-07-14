@@ -55,16 +55,20 @@ async def _add_canonical_rows(
         id=job_id,
         type="system_noop",
         payload_version=1,
-        payload={"echo": "manual"},
+        request={"echo": "manual"},
         phase="queued",
         desired_state="run",
         dispatch_generation=generation,
         priority=priority,
         eligible_at=eligible_at,
         idempotency_key=f"system_noop:{job_id}",
+        root_id=job_id,
+        trigger_kind="system",
+        feature_area="system",
+        subject_kind="system",
+        subject_reference="system_noop",
+        subject_snapshot={"version": 1, "kind": "system", "label": "System no-op"},
         queued_at=now,
-        status="queued",
-        scheduled_at=eligible_at,
     )
     dispatch = JobDispatch(
         job_id=job_id,
@@ -74,7 +78,12 @@ async def _add_canonical_rows(
         priority=priority,
         eligible_at=eligible_at,
     )
-    event = JobEvent(job_id=job_id, state="queued", message="queued")
+    event = JobEvent(
+        job_id=job_id,
+        event_key="job.queued",
+        state="queued",
+        message="queued",
+    )
     session.add_all([job, dispatch, event])
     return job, dispatch
 
@@ -109,6 +118,8 @@ async def test_system_noop_commits_canonical_and_transport_rows_together(db) -> 
 
     assert dispatch is not None and dispatch.pgq_job_id == job.pgq_job_id
     assert dispatch.generation == job.dispatch_generation == 1
+    assert job.configuration_version == 1
+    assert job.configuration_snapshot == {}
     assert len(events) == 1 and events[0].state == "queued"
     assert row is not None
     assert row.entrypoint == "control"

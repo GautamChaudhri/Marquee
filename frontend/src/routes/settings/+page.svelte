@@ -3,6 +3,7 @@
 	import SectionHeader from '$lib/components/SectionHeader.svelte';
 	import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
 	import { getPipelineConfig, putPipelineConfig, resetDeployedPosters } from '$lib/api/config';
+	import { CONFIGURATION_CONFLICT_MESSAGE, isConfigurationConflict } from '$lib/api/client';
 	import { clearOcrLabels } from '$lib/api/pipeline';
 	import type { KnobGroup, PipelineConfig } from '$lib/api/config';
 	import { toast } from '$lib/toast';
@@ -84,7 +85,7 @@
 		if (dirtyCount === 0) return;
 		saving = true;
 		try {
-			const result = await putPipelineConfig(fetch, dirty);
+			const result = await putPipelineConfig(fetch, dirty, config!.configuration_version);
 			toast(
 				`Saved ${result.applied.length} knob${result.applied.length === 1 ? '' : 's'} — applies on the next run`,
 				'good'
@@ -94,6 +95,11 @@
 			const fresh = await getPipelineConfig(fetch);
 			config = fresh;
 		} catch (e) {
+			if (isConfigurationConflict(e)) {
+				config = await getPipelineConfig(fetch);
+				toast(CONFIGURATION_CONFLICT_MESSAGE, 'info');
+				return;
+			}
 			toast(e instanceof Error ? e.message : 'Save failed', 'bad');
 		} finally {
 			saving = false;
@@ -338,7 +344,7 @@
 		<ConfirmDialog
 			open={masterResetConfirm}
 			title="Reset all pipeline settings to defaults?"
-			message="This stages every knob back to its code default. You must still hit Save to persist the changes. Current overrides in pipeline_overrides.json will be replaced."
+			message="This stages every knob back to its code default. You must still hit Save to create a new configuration revision."
 			confirmLabel="Stage all defaults"
 			cancelLabel="Cancel"
 			tone="bad"

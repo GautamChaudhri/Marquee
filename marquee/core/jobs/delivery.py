@@ -105,27 +105,28 @@ async def _start_attempt(
     last_attempt = await session.scalar(
         select(func.max(JobAttempt.number)).where(JobAttempt.job_id == job.id)
     )
+    job.fence_token = job.fence_token + 1
     attempt = JobAttempt(
         job_id=job.id,
         number=(last_attempt or 0) + 1,
-        worker_id=f"pgqueuer:{transport_job.queue_manager_id}",
-        status="running",
-        claimed_at=now,
+        fence_token=job.fence_token,
+        pgq_job_id=int(transport_job.id),
+        transport_attempt=transport_job.attempts,
+        worker_node_id=f"pgqueuer:{transport_job.queue_manager_id}",
+        phase="running",
+        admitted_at=now,
         started_at=now,
-        metrics={
-            "pgq_job_id": int(transport_job.id),
-            "pgq_attempt": transport_job.attempts,
-        },
     )
     session.add(attempt)
     await session.flush()
     job.phase = "running"
-    job.status = "running"
+    job.current_attempt_id = attempt.id
     job.started_at = job.started_at or now
     session.add(
         JobEvent(
             job_id=job.id,
             attempt_id=attempt.id,
+            event_key="attempt.started",
             state="running",
             message="system_noop started",
             detail={"dispatch_generation": payload.dispatch_generation},
@@ -135,7 +136,7 @@ async def _start_attempt(
         job_id=job.id,
         dispatch_generation=payload.dispatch_generation,
         attempt_id=attempt.id,
-        payload=dict(job.payload),
+        payload=dict(job.request),
     )
 
 
@@ -181,13 +182,12 @@ async def _admit_delivery(
                 job.outcome = "failed"
                 job.error = error
                 job.terminal_at = now
-                job.status = "failed"
-                job.finished_at = now
                 dispatch.disposition = "failed"
                 dispatch.ended_at = now
                 session.add(
                     JobEvent(
                         job_id=job.id,
+                        event_key="job.failed",
                         state="failed",
                         message="unmigrated job definition held",
                         detail=error,
@@ -201,20 +201,18 @@ async def _admit_delivery(
                 job.phase = "terminal"
                 job.outcome = "cancelled"
                 job.terminal_at = now
-                job.status = "cancelled"
-                job.finished_at = now
                 dispatch.disposition = "cancelled"
                 dispatch.ended_at = now
                 session.add(
                     JobEvent(
                         job_id=job.id,
+                        event_key="job.cancelled",
                         state="cancelled",
                         message="cancelled before execution",
                     )
                 )
             elif job.desired_state == "pause":
                 job.pgq_job_id = None
-                job.status = "paused"
                 dispatch.disposition = "cancelled"
                 dispatch.ended_at = datetime.now(UTC)
             elif job.phase == "running":
@@ -222,14 +220,14 @@ async def _admit_delivery(
                     select(JobAttempt)
                     .where(
                         JobAttempt.job_id == job.id,
-                        JobAttempt.status == "running",
+                        JobAttempt.phase == "running",
                     )
                     .order_by(JobAttempt.number.desc())
                     .limit(1)
                     .with_for_update()
                 )
                 manager_identity = f"pgqueuer:{transport_job.queue_manager_id}"
-                if active_attempt is not None and active_attempt.worker_id == manager_identity:
+                if active_attempt is not None and active_attempt.worker_node_id == manager_identity:
                     # PgQueuer does not dispatch one picked ticket twice from the
                     # same manager. This is an in-flight duplicate, not recovery.
                     pass
@@ -240,13 +238,16 @@ async def _admit_delivery(
                             "type": "WorkerLost",
                             "message": "delivery recovered after stale transport heartbeat",
                         }
-                        active_attempt.status = "interrupted"
+                        active_attempt.phase = "finished"
+                        active_attempt.outcome = "interrupted"
+                        active_attempt.failure_class = "worker_lost"
                         active_attempt.finished_at = now
                         active_attempt.error = error
                         session.add(
                             JobEvent(
                                 job_id=job.id,
                                 attempt_id=active_attempt.id,
+                                event_key="attempt.interrupted",
                                 state="interrupted",
                                 message="stale system_noop attempt recovered",
                                 detail=error,
@@ -289,18 +290,18 @@ async def _record_success(admitted: AdmittedDelivery, result: dict[str, Any]) ->
         job.result = result
         job.error = None
         job.terminal_at = now
-        job.status = "succeeded"
-        job.finished_at = now
         if dispatch is not None:
             dispatch.disposition = "succeeded"
             dispatch.ended_at = now
         if attempt is not None:
-            attempt.status = "succeeded"
+            attempt.phase = "finished"
+            attempt.outcome = "succeeded"
             attempt.finished_at = now
         session.add(
             JobEvent(
                 job_id=job.id,
                 attempt_id=admitted.attempt_id,
+                event_key="job.succeeded",
                 state="succeeded",
                 message="system_noop completed",
                 detail={"result": result},
@@ -324,16 +325,18 @@ async def _record_retry(admitted: AdmittedDelivery, exc: RetryRequested) -> None
             "delay_seconds": exc.delay.total_seconds(),
         }
         job.phase = "queued"
-        job.status = "retry_scheduled"
         job.error = error
         if attempt is not None:
-            attempt.status = "retrying"
+            attempt.phase = "finished"
+            attempt.outcome = "retrying"
+            attempt.failure_class = "transient"
             attempt.finished_at = now
             attempt.error = error
         session.add(
             JobEvent(
                 job_id=job.id,
                 attempt_id=admitted.attempt_id,
+                event_key="job.retry_requested",
                 state="retrying",
                 message="system_noop retry requested",
                 detail=error,
@@ -370,19 +373,19 @@ async def _record_terminal_error(
         job.outcome = outcome
         job.error = error
         job.terminal_at = now
-        job.status = outcome
-        job.finished_at = now
         if dispatch is not None:
             dispatch.disposition = "cancelled" if cancelled else "failed"
             dispatch.ended_at = now
         if attempt is not None:
-            attempt.status = outcome
+            attempt.phase = "finished"
+            attempt.outcome = outcome
             attempt.finished_at = now
             attempt.error = error
         session.add(
             JobEvent(
                 job_id=job.id,
                 attempt_id=admitted.attempt_id,
+                event_key=f"job.{outcome}",
                 state=outcome,
                 message=f"system_noop {outcome}",
                 detail=error,

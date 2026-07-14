@@ -19,7 +19,6 @@ from marquee.api.routes.library import _coverage_by_media_file
 from marquee.core.dovi_analysis import conversion_eligibility
 from marquee.core.hdr_rollups import EpisodeHdr, episode_status, season_rollup, show_rollup
 from marquee.core.jobs import job_manager
-from marquee.core.jobs.manager import TERMINAL
 from marquee.core.media_files import ensure_media_file_for_movie
 from marquee.core.radarr_overlay import (
     PREFERENCE_STATUS_ORDER,
@@ -1129,9 +1128,9 @@ async def hdr_tv_detail(
                 select(Job)
                 .where(
                     Job.type == "dovi_analyze",
-                    Job.subject_type == "episode",
-                    Job.subject_id.in_([str(episode_id) for episode_id in episode_ids]),
-                    Job.status.notin_(tuple(TERMINAL)),
+                    Job.subject_kind == "episode",
+                    Job.subject_reference.in_([str(episode_id) for episode_id in episode_ids]),
+                    Job.phase != "terminal",
                 )
                 .order_by(Job.created_at.desc(), Job.id.desc())
             )
@@ -1338,9 +1337,9 @@ async def _active_dovi_job(db: AsyncSession, movie_id: int) -> Job | None:
             select(Job)
             .where(
                 Job.type == "dovi_analyze",
-                Job.subject_type == "movie",
-                Job.subject_id == str(movie_id),
-                Job.status.notin_(tuple(TERMINAL)),
+                Job.subject_kind == "movie",
+                Job.subject_reference == str(movie_id),
+                Job.phase != "terminal",
             )
             .order_by(Job.created_at.desc(), Job.id.desc())
             .limit(1)
@@ -1354,9 +1353,9 @@ async def _active_dovi_conversion_job(db: AsyncSession, movie_id: int) -> Job | 
             select(Job)
             .where(
                 Job.type == "dovi_convert",
-                Job.subject_type == "movie",
-                Job.subject_id == str(movie_id),
-                Job.status.notin_(tuple(TERMINAL)),
+                Job.subject_kind == "movie",
+                Job.subject_reference == str(movie_id),
+                Job.phase != "terminal",
             )
             .order_by(Job.created_at.desc(), Job.id.desc())
             .limit(1)
@@ -1370,8 +1369,8 @@ async def _latest_dovi_conversion_job(db: AsyncSession, movie_id: int) -> Job | 
             select(Job)
             .where(
                 Job.type == "dovi_convert",
-                Job.subject_type == "movie",
-                Job.subject_id == str(movie_id),
+                Job.subject_kind == "movie",
+                Job.subject_reference == str(movie_id),
             )
             .order_by(Job.created_at.desc(), Job.id.desc())
             .limit(1)

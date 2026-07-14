@@ -17,11 +17,7 @@ from fastapi.responses import JSONResponse, Response
 from marquee import __version__
 from marquee.api.auth import require_api_key
 from marquee.config import settings
-from marquee.core.jobs import (
-    builtin_handlers,  # noqa: F401 - registers handlers for create_and_run
-    dovi_handlers,  # noqa: F401 - registers dovi analysis handler
-    legacy_media,  # noqa: F401 - registers bridge handlers
-)
+from marquee.core.jobs.manager import UnmigratedJobPlatformError
 from marquee.core.pipeline_config import migrate_legacy_runtime_state
 from marquee.core.rate_limit import RateLimiter
 from marquee.database import close_db, init_db
@@ -119,6 +115,9 @@ async def lifespan(app: FastAPI):
     # Database
     logger.info("Initialising database ...")
     await init_db()
+    from marquee.core.configuration_cache import configuration_provider
+
+    await configuration_provider.start(role="api")
     from marquee.core.jobs.readiness import require_startup_readiness
 
     await require_startup_readiness()
@@ -169,6 +168,10 @@ async def lifespan(app: FastAPI):
                 await sampler.stop()
             except Exception:
                 logger.warning("Error stopping system metrics sampler", exc_info=True)
+        try:
+            await configuration_provider.stop()
+        except Exception:
+            logger.warning("Error stopping configuration provider", exc_info=True)
         for name in ("radarr_client", "sonarr_client", "tmdb_client"):
             client = getattr(app.state, name, None)
             if client is not None:
@@ -335,6 +338,23 @@ if settings.DEBUG:
 # ---------------------------------------------------------------------------
 # Exception Handler
 # ---------------------------------------------------------------------------
+
+
+# Legacy job-family commands fail closed until their family is rebuilt on the
+# PgQueuer runtime in later chunks. One stable envelope for every such route.
+@app.exception_handler(UnmigratedJobPlatformError)
+async def _unmigrated_job_platform_handler(
+    request: Request, exc: UnmigratedJobPlatformError
+) -> JSONResponse:
+    logger.warning("Unmigrated job command on %s %s: %s", request.method, request.url.path, exc)
+    return JSONResponse(
+        status_code=503,
+        content={
+            "detail": "This operation is not migrated to the new job runtime yet",
+            "code": "job_platform_unmigrated",
+            "operation": exc.operation,
+        },
+    )
 
 
 # FastAPI's own HTTPException handler takes priority — this only fires for

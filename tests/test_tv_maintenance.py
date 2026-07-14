@@ -189,9 +189,7 @@ async def test_tv_maintenance_job_runs(db: AsyncSession, tmp_path, monkeypatch):
     await poster_service.deploy(db, subject, source)
 
     # 1. Run poster_backup_all
-    job = Job(id="job-backup", type="poster_backup_all", payload={})
-    db.add(job)
-    await db.flush()
+    job = Job(id="job-backup", type="poster_backup_all", request={})
 
     # Delete local backup on disk
     backup_file = Path(series.poster_local_backup_path)
@@ -203,9 +201,7 @@ async def test_tv_maintenance_job_runs(db: AsyncSession, tmp_path, monkeypatch):
     assert backup_file.is_file()
 
     # 2. Run poster_rescan after shifting format setting
-    job_rescan = Job(id="job-rescan", type="poster_rescan", payload={})
-    db.add(job_rescan)
-    await db.flush()
+    job_rescan = Job(id="job-rescan", type="poster_rescan", request={})
 
     # Shift settings.SERIES_POSTER_FORMAT
     with patch.object(settings, "SERIES_POSTER_FORMAT", "custom-show.jpg"):
@@ -221,9 +217,7 @@ async def test_tv_maintenance_job_runs(db: AsyncSession, tmp_path, monkeypatch):
     assert series.poster_path is not None
 
     # 3. Run poster_deploy_reset
-    job_reset = Job(id="job-reset", type="poster_deploy_reset", payload={})
-    db.add(job_reset)
-    await db.flush()
+    job_reset = Job(id="job-reset", type="poster_deploy_reset", request={})
 
     reset_res = await poster_deploy_reset(job_reset)
     assert reset_res["reset"] == 1
@@ -251,10 +245,7 @@ async def test_tv_maintenance_job_runs(db: AsyncSession, tmp_path, monkeypatch):
         "marquee.core.arr_clients.sonarr_client.SonarrClient",
         return_value=sonarr_mock,
     ):
-        job_maintenance = Job(id="job-maint", type="poster_maintenance", payload={})
-        db.add(job_maintenance)
-        await db.flush()
-
+        job_maintenance = Job(id="job-maint", type="poster_maintenance", request={})
         maint_res = await poster_maintenance(job_maintenance)
         assert maint_res["series_deleted"] == 1
 

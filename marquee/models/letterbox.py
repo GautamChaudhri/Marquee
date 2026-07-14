@@ -15,6 +15,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from sqlalchemy import (
+    JSON,
     Boolean,
     CheckConstraint,
     DateTime,
@@ -65,7 +66,6 @@ class LetterboxState(Base, TimestampMixin):
         index=True,
         nullable=True,
     )
-
     # prefilter_candidate | prefilter_unknown | prefilter_skipped
     #   | candidate | sampled_clear | not_letterboxed | variable_unsafe
     #   | tagged | reencoded | skipped | ineligible | errored
@@ -151,7 +151,8 @@ class LetterboxEvent(Base):
     __table_args__ = (
         CheckConstraint(
             "(media_type = 'movie' AND movie_id IS NOT NULL AND episode_id IS NULL) OR "
-            "(media_type = 'episode' AND episode_id IS NOT NULL AND movie_id IS NULL)",
+            "(media_type = 'episode' AND episode_id IS NOT NULL AND movie_id IS NULL) OR "
+            "(movie_id IS NULL AND episode_id IS NULL)",
             name="ck_letterbox_event_subject",
         ),
     )
@@ -159,7 +160,7 @@ class LetterboxEvent(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
 
     movie_id: Mapped[int | None] = mapped_column(
-        ForeignKey("movies.id", ondelete="CASCADE"),
+        ForeignKey("movies.id", ondelete="SET NULL"),
         index=True,
         nullable=True,
     )
@@ -171,9 +172,12 @@ class LetterboxEvent(Base):
         index=True,
     )
     episode_id: Mapped[int | None] = mapped_column(
-        ForeignKey("episodes.id", ondelete="CASCADE"),
+        ForeignKey("episodes.id", ondelete="SET NULL"),
         index=True,
         nullable=True,
+    )
+    subject_snapshot: Mapped[dict] = mapped_column(
+        JSON, nullable=False, default=dict, server_default="{}"
     )
 
     # detect | apply | remove | ignore | confirm | heal_reapply | error

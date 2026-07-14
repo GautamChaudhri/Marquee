@@ -29,7 +29,7 @@ class MediaBackup(Base):
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True)
     job_id: Mapped[str | None] = mapped_column(
-        ForeignKey("media_jobs.job_id", ondelete="SET NULL"), index=True, nullable=True
+        ForeignKey("jobs.id", ondelete="SET NULL"), index=True, nullable=True
     )
     media_file_id: Mapped[int | None] = mapped_column(
         ForeignKey("media_files.id", ondelete="SET NULL"), index=True, nullable=True

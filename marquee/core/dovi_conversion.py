@@ -174,7 +174,7 @@ async def _run_p5_base_encode(
             )
             if persist:
                 await db.refresh(job, ["cancel_requested"])
-                if job.cancel_requested:
+                if job.desired_state == "cancel":
                     proc.terminate()
                     await proc.wait()
                     output.unlink(missing_ok=True)

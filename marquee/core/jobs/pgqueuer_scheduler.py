@@ -10,6 +10,7 @@ import asyncpg
 from pgqueuer import PgQueuer
 
 from marquee.config import settings
+from marquee.core.configuration_cache import configuration_provider
 from marquee.db_migration import asyncpg_dsn, verify_runtime_schema
 
 logger = logging.getLogger(__name__)
@@ -37,10 +38,12 @@ async def run() -> None:
     )
     try:
         await verify_runtime_schema(connection)
+        await configuration_provider.start(role="scheduler")
         app = create_scheduler(connection)
         _install_shutdown_handlers(app)
         await app.sm.run()
     finally:
+        await configuration_provider.stop()
         await connection.close()
 
 

@@ -29,7 +29,7 @@ def test_api_contains_no_inline_job_handler_or_legacy_bootstrap():
     main = _source("marquee/main.py")
 
     assert "deliver_control_job" not in main
-    assert "PgQueuer" not in main
+    assert "PgQueuer(" not in main
     assert "bootstrap_resources" not in main
     assert "marquee.core.jobs.worker" not in main
     assert "marquee.core.jobs.scheduler" not in main

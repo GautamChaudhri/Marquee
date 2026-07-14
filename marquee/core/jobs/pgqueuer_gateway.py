@@ -236,13 +236,12 @@ class PgQueuerGateway:
             job.phase = "terminal"
             job.outcome = "cancelled"
             job.terminal_at = now
-            job.status = "cancelled"
-            job.finished_at = now
             dispatch.disposition = "cancelled"
             dispatch.ended_at = now
             session.add(
                 JobEvent(
                     job_id=job.id,
+                    event_key="job.cancelled",
                     state="cancelled",
                     message="system_noop cancelled while queued",
                 )
@@ -250,10 +249,10 @@ class PgQueuerGateway:
         elif transport_status == "picked":
             job.phase = "stopping"
             job.stopping_at = now
-            job.status = "stopping"
             session.add(
                 JobEvent(
                     job_id=job.id,
+                    event_key="job.stopping",
                     state="stopping",
                     message="system_noop cancellation requested",
                 )

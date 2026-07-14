@@ -8,18 +8,45 @@ export interface Paginated<T> {
 	items: T[];
 }
 
+export interface ConfigurationHealth {
+	status: string;
+	version?: number;
+	detail?: string | null;
+	[key: string]: unknown;
+}
+
+export interface ConfigurationKeyMeta {
+	owner: 'database' | 'environment';
+	apply_mode: 'next_job' | 'restart';
+	sensitivity: 'public' | 'secret';
+	scope: 'execution' | 'application';
+}
+
 export interface RuntimeSettings {
+	configuration_version: number;
+	etag: string;
+	stale: boolean;
+	health: ConfigurationHealth;
+	configuration_meta: Record<string, ConfigurationKeyMeta>;
 	integrations: {
 		subgen?: {
 			configured?: boolean;
 			url_configured?: boolean;
 			callback_token_configured?: boolean;
+			deployment?: 'disabled' | 'external' | 'embedded';
 			url?: string | null;
 			profile_name?: string | null;
 			model_label?: string | null;
 			mode?: string | null;
 			local_path_prefix?: string | null;
 			remote_path_prefix?: string | null;
+			whisper_model?: string | null;
+			transcribe_device?: 'auto' | 'cpu' | 'cuda';
+			gpu_index?: number | null;
+			compute_type?: string | null;
+			concurrent_transcriptions?: number | null;
+			whisper_threads?: number | null;
+			model_path?: string | null;
 			[key: string]: unknown;
 		};
 		[key: string]: unknown;
@@ -1792,7 +1819,6 @@ export interface SubgenSettings {
 	mode?: 'transcribe' | 'translate';
 	local_path_prefix?: string | null;
 	remote_path_prefix?: string | null;
-	callback_token?: string | null;
 	whisper_model?: string | null;
 	embedded_port?: number | null;
 	transcribe_device?: 'auto' | 'cpu' | 'cuda';

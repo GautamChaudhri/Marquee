@@ -266,35 +266,4 @@ class WorkerSupervisor:
                 if proc.returncode is None:
                     logger.warning("worker pid=%s did not stop — SIGKILL", proc.pid)
                     self._signal_group(proc, signal.SIGKILL)
-            await self._kill_orphaned_children()
             logger.info("Embedded job runtime stopped.")
-
-    async def _kill_orphaned_children(self) -> None:
-        try:
-            from sqlalchemy import select  # noqa: PLC0415
-
-            from marquee.database import _get_session_factory  # noqa: PLC0415
-            from marquee.models import JobAttempt  # noqa: PLC0415
-
-            factory = _get_session_factory()
-            async with factory() as db:
-                attempts = (
-                    (
-                        await db.execute(
-                            select(JobAttempt).where(
-                                JobAttempt.status.in_(("claimed", "running")),
-                                JobAttempt.child_pids.is_not(None),
-                            )
-                        )
-                    )
-                    .scalars()
-                    .all()
-                )
-                for attempt in attempts:
-                    if not attempt.child_pids:
-                        continue
-                    for pid in attempt.child_pids:
-                        with contextlib.suppress(ProcessLookupError):
-                            os.kill(pid, signal.SIGKILL)
-        except Exception:  # noqa: BLE001
-            logger.exception("Failed to kill orphaned children — manual cleanup may be needed")

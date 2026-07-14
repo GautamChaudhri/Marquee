@@ -12,16 +12,17 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from marquee.core.configuration import (
+    ConfigurationError,
+    ConfigurationVersionConflictError,
+    update_configuration,
+)
+from marquee.core.configuration_cache import configuration_provider
 from marquee.core.media_files import ensure_media_file_for_movie
 from marquee.core.media_jobs import media_job_manager
 from marquee.core.subtitles import generation
-from marquee.core.subtitles.config import (
-    SubtitleSettings,
-    load_overrides,
-    save_overrides,
-    subtitle_settings,
-)
-from marquee.core.subtitles.embedded_subgen import hardware_snapshot, resolved_model_and_device
+from marquee.core.subtitles.config import subtitle_settings
+from marquee.core.subtitles.embedded_subgen import hardware_snapshot
 from marquee.core.subtitles.whisper_catalog import catalog_dicts, per_model_verdicts, recommend
 from marquee.database import get_db
 from marquee.models import Movie
@@ -61,6 +62,7 @@ class GenerateRequest(BaseModel):
 
 
 class SubgenSettingsRequest(BaseModel):
+    expected_version: int
     deployment: Literal["disabled", "external", "embedded"] | None = None
     url: str | None = None
     profile_name: str | None = None
@@ -82,22 +84,7 @@ class SubgenSettingsRequest(BaseModel):
     name_includes_model: bool | None = None
 
 
-def _validate_subgen_settings(update: dict) -> None:
-    current = subtitle_settings.model_dump()
-    current.update(update)
-    validated = SubtitleSettings(**current)
-    if validated.SUBGEN_MODE == "translate":
-        generation.validate_generation_request("translate", validated.SUBGEN_WHISPER_MODEL or validated.SUBGEN_MODEL_LABEL)
-    if validated.SUBGEN_DEPLOYMENT == "embedded":
-        resolved = resolved_model_and_device()
-        if validated.SUBGEN_GPU_INDEX is not None:
-            gpu_indexes = {gpu.index for gpu in hardware_snapshot().gpus}
-            if validated.SUBGEN_GPU_INDEX not in gpu_indexes:
-                raise HTTPException(status_code=422, detail="Configured GPU index is not available.")
-        if validated.SUBGEN_WHISPER_MODEL == "custom":
-            raise HTTPException(status_code=422, detail="Custom models require a repo id or absolute path.")
-        if not (validated.SUBGEN_WHISPER_MODEL or resolved["model"]):
-            raise HTTPException(status_code=422, detail="Embedded Subgen needs a Whisper model.")
+
 
 
 @router.get("/api/subtitle-generators/subgen/hardware")
@@ -125,37 +112,46 @@ async def subgen_hardware():
 
 
 @router.put("/api/subtitle-generators/subgen/settings")
-async def update_subgen_settings(body: SubgenSettingsRequest, request: Request):
+async def update_subgen_settings(
+    body: SubgenSettingsRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
     update = {
         f"SUBGEN_{key.upper()}": value
-        for key, value in body.model_dump(exclude_unset=True).items()
+        for key, value in body.model_dump(
+            exclude={"expected_version"}, exclude_unset=True
+        ).items()
     }
-    _validate_subgen_settings(update)
-    overrides = load_overrides()
-    for key, value in update.items():
-        setattr(subtitle_settings, key, value)
-        overrides[key] = value
-    save_overrides(overrides)
-    if "SUBGEN_DEPLOYMENT" in update or any(
-        key.startswith("SUBGEN_")
-        and key
-        in {
-            "SUBGEN_EMBEDDED_PORT",
-            "SUBGEN_WHISPER_MODEL",
-            "SUBGEN_TRANSCRIBE_DEVICE",
-            "SUBGEN_GPU_INDEX",
-            "SUBGEN_COMPUTE_TYPE",
-            "SUBGEN_CONCURRENT_TRANSCRIPTIONS",
-            "SUBGEN_WHISPER_THREADS",
-            "SUBGEN_MODEL_PATH",
-            "SUBGEN_MODE",
-        }
-        for key in update
-    ):
-        supervisor = getattr(request.app.state, "worker_supervisor", None)
-        if supervisor is not None:
-            await supervisor.restart_subgen()
-    return {"applied": sorted(update), "settings": subtitle_settings.model_dump()}
+    try:
+        state, changed = await update_configuration(
+            db,
+            expected_version=body.expected_version,
+            updates=update,
+            actor={"kind": "api", "id": "subtitle-generators"},
+            trigger="subgen_settings_api",
+        )
+    except ConfigurationVersionConflictError as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "configuration_version_conflict",
+                "current_version": exc.current.version,
+                "etag": exc.current.etag,
+            },
+        ) from exc
+    except ConfigurationError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    await db.commit()
+    await configuration_provider.refresh_from_session(db)
+    return {
+        "configuration_version": state.version,
+        "etag": state.etag,
+        "changed": changed,
+        "applied": sorted(update) if changed else [],
+        "settings": configuration_provider.effective("subtitle"),
+    }
 
 
 @router.post("/api/subtitle-generators/subgen/restart")

@@ -1,4 +1,4 @@
-"""UI-ready durable job inspection and control API."""
+"""Canonical job inspection and the narrow JMC2A control surface."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import asyncio
 import json
 import logging
 import time
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
@@ -15,247 +15,100 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from marquee.config import settings
-from marquee.core.jobs import job_manager
 from marquee.core.jobs.labels import humanize_job_type
-from marquee.core.jobs.manager import ACTIVE, TERMINAL
+from marquee.core.jobs.manager import UnmigratedJobPlatformError
+from marquee.core.jobs.pgqueuer_gateway import PgQueuerGatewayError, pgqueuer_gateway
 from marquee.database import _get_session_factory, get_db
-from marquee.models import (
-    Episode,
-    EpisodeMediaFile,
-    Job,
-    JobAttempt,
-    JobEvent,
-    JobResource,
-    JobResourceReservation,
-    JobWorker,
-    MediaFile,
-    MediaJob,
-    Movie,
-    Series,
-)
+from marquee.models import Job, JobAttempt, JobEvent
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
 logger = logging.getLogger(__name__)
 
-# SSE stream timeout (1 hour) prevents infinite streams if clients never close.
-# Clients can reconnect using Last-Event-ID to resume from where they left off.
 _SSE_TIMEOUT_SECONDS = 3600
-
-# "Currently queued" statuses — the complement of manager.ACTIVE/TERMINAL.
-# Sourced from the literal status strings manager.py actually assigns (grep,
-# not guessed) — api/routes/system.py's _worker_counts() got this wrong by
-# inventing statuses ("in_progress", "pending") that are never real values.
-_QUEUED_ISH = {"queued", "waiting_resource", "paused", "retry_scheduled"}
-_REORDERABLE = {"planned", "queued", "waiting_resource", "retry_scheduled", "paused"}
+_ACTIVE_PHASES = {"queued", "running", "stopping"}
 
 
-async def _resolve_subject_titles(
-    db: AsyncSession, jobs: list[Job]
-) -> dict[tuple[str | None, str | None], str]:
-    """Batch-resolve ``{(subject_type, subject_id): display_title}`` for a page of jobs.
-
-    Movie subjects (``subject_type in {"movie", "radarr_movie"}``) resolve
-    directly. ``media_file`` subjects (subtitle / letterbox-reencode jobs)
-    resolve through ``MediaFile.movie_id`` when movie-backed, or through
-    ``episode_media_files`` -> ``Episode`` -> ``Series`` for a
-    ``"Series S01E02"``-style label when episode-backed — there is no direct
-    ``series``/``episode`` ``subject_type`` anywhere in this codebase today.
-    Anything else (batch/maintenance pseudo-subjects) is left unresolved; the
-    frontend falls back to the raw id.
-    """
-    titles: dict[tuple[str | None, str | None], str] = {}
-
-    movie_ids = {
-        int(j.subject_id)
-        for j in jobs
-        if j.subject_type in ("movie", "radarr_movie") and j.subject_id
-    }
-    if movie_ids:
-        rows = (
-            await db.execute(
-                select(Movie.id, Movie.title, Movie.year).where(Movie.id.in_(movie_ids))
-            )
-        ).all()
-        for r in rows:
-            label = f"{r.title} ({r.year})" if r.year else r.title
-            titles[("movie", str(r.id))] = label
-            titles[("radarr_movie", str(r.id))] = label
-
-    media_file_ids = {
-        int(j.subject_id) for j in jobs if j.subject_type == "media_file" and j.subject_id
-    }
-    if media_file_ids:
-        mf_rows = (
-            await db.execute(
-                select(MediaFile.id, MediaFile.movie_id).where(MediaFile.id.in_(media_file_ids))
-            )
-        ).all()
-        movie_backed = {r.id: r.movie_id for r in mf_rows if r.movie_id}
-        if movie_backed:
-            mv_rows = (
-                await db.execute(
-                    select(Movie.id, Movie.title, Movie.year).where(
-                        Movie.id.in_(movie_backed.values())
-                    )
-                )
-            ).all()
-            mv_by_id = {r.id: (r.title, r.year) for r in mv_rows}
-            for mf_id, mv_id in movie_backed.items():
-                title, year = mv_by_id.get(mv_id, (None, None))
-                if title:
-                    titles[("media_file", str(mf_id))] = f"{title} ({year})" if year else title
-
-        episode_backed_ids = [r.id for r in mf_rows if not r.movie_id]
-        if episode_backed_ids:
-            ep_rows = (
-                await db.execute(
-                    select(
-                        EpisodeMediaFile.media_file_id,
-                        Episode.series_id,
-                        Episode.season_number,
-                        Episode.episode_number,
-                    )
-                    .join(Episode, Episode.id == EpisodeMediaFile.episode_id)
-                    .where(EpisodeMediaFile.media_file_id.in_(episode_backed_ids))
-                )
-            ).all()
-            series_ids = {r.series_id for r in ep_rows}
-            series_rows = (
-                (
-                    await db.execute(
-                        select(Series.id, Series.title).where(Series.id.in_(series_ids))
-                    )
-                ).all()
-                if series_ids
-                else []
-            )
-            series_by_id = {r.id: r.title for r in series_rows}
-            for r in ep_rows:
-                series_title = series_by_id.get(r.series_id)
-                if series_title:
-                    titles[("media_file", str(r.media_file_id))] = (
-                        f"{series_title} S{r.season_number:02d}E{r.episode_number:02d}"
-                    )
-
-    return titles
+def _display_status(job: Job) -> str:
+    return job.outcome if job.phase == "terminal" and job.outcome else job.phase
 
 
 def job_summary(job: Job, *, subject_title: str | None = None) -> dict:
+    snapshot = job.subject_snapshot if isinstance(job.subject_snapshot, dict) else {}
+    title = subject_title or snapshot.get("title") or snapshot.get("label")
+    subject = None
+    if job.subject_kind or job.subject_reference:
+        subject = {
+            "type": job.subject_kind,
+            "id": job.subject_reference,
+            "title": title,
+            "snapshot": snapshot,
+        }
     return {
         "job_id": job.id,
         "type": job.type,
         "label": humanize_job_type(job.type),
-        "status": job.status,
+        "phase": job.phase,
+        "outcome": job.outcome,
+        "status": _display_status(job),
+        "desired_state": job.desired_state,
         "priority": job.priority,
         "parent_id": job.parent_id,
         "root_id": job.root_id,
         "correlation_id": job.correlation_id,
-        "subject": (
-            {"type": job.subject_type, "id": job.subject_id, "title": subject_title}
-            if job.subject_type
-            else None
-        ),
+        "retry_of_job_id": job.retry_of_job_id,
+        "subject": subject,
         "stage": job.current_stage,
+        "current_subject": job.current_subject,
         "progress": job.progress,
-        "resource_request": job.resource_request,
-        "attempt_count": job.attempt_count,
-        "max_attempts": job.max_attempts,
-        "cancel_requested": job.cancel_requested,
-        "pause_requested": job.pause_requested,
-        "scheduled_at": job.scheduled_at.isoformat() if job.scheduled_at else None,
-        "claimed_at": job.claimed_at.isoformat() if job.claimed_at else None,
-        "started_at": job.started_at.isoformat() if job.started_at else None,
-        "finished_at": job.finished_at.isoformat() if job.finished_at else None,
+        "progress_sequence": job.progress_sequence,
+        "attention": job.attention,
+        "configuration_version": job.configuration_version,
         "created_at": job.created_at.isoformat() if job.created_at else None,
+        "planned_at": job.planned_at.isoformat() if job.planned_at else None,
+        "queued_at": job.queued_at.isoformat() if job.queued_at else None,
+        "eligible_at": job.eligible_at.isoformat() if job.eligible_at else None,
+        "started_at": job.started_at.isoformat() if job.started_at else None,
+        "stopping_at": job.stopping_at.isoformat() if job.stopping_at else None,
+        "terminal_at": job.terminal_at.isoformat() if job.terminal_at else None,
         "status_url": f"/api/jobs/{job.id}",
         "events_url": f"/api/jobs/{job.id}/events",
     }
 
 
-def _decode_media_blob(value):
-    if value is None:
-        return None
-    if isinstance(value, str):
-        try:
-            return json.loads(value)
-        except json.JSONDecodeError:
-            return value
-    return value
-
-
-def _linked_media_job_id(job: Job) -> str | None:
-    if not isinstance(job.payload, dict):
-        return None
-    media_job_id = job.payload.get("media_job_id")
-    return str(media_job_id) if media_job_id else None
-
-
-def _job_detail_data(job: Job, *, subject_title: str | None, media_job: MediaJob | None) -> dict:
-    request = _decode_media_blob(media_job.request_json) if media_job is not None else None
-    plan = _decode_media_blob(media_job.plan_json) if media_job is not None else None
-    media_result = _decode_media_blob(media_job.result_json) if media_job is not None else None
-    media_error = _decode_media_blob(media_job.error_json) if media_job is not None else None
-    data = job_summary(job, subject_title=subject_title)
+def _job_detail_data(job: Job) -> dict:
+    data = job_summary(job)
     data.update(
         {
-            "payload": job.payload,
-            "checkpoint": job.checkpoint,
-            "request": request,
-            "plan": plan,
-            "result": media_result if media_result is not None else job.result,
-            "error": media_error if media_error is not None else job.error,
-            "media_job_id": media_job.job_id if media_job is not None else None,
+            "payload_version": job.payload_version,
+            "result_version": job.result_version,
+            "error_version": job.error_version,
+            "request": job.request,
+            "plan": job.plan,
+            "result": job.result,
+            "error": job.error,
+            "retry_policy": job.retry_policy,
+            "execution_policy_id": job.execution_policy_id,
+            "configuration_snapshot": job.configuration_snapshot,
+            "trigger_kind": job.trigger_kind,
+            "initiator": job.initiator,
+            "feature_area": job.feature_area,
+            "presentation_family": job.presentation_family,
+            "dispatch_generation": job.dispatch_generation,
         }
     )
     return data
 
 
-async def _load_linked_media_jobs(db: AsyncSession, jobs: list[Job]) -> dict[str, MediaJob]:
-    media_job_ids = list(
-        {
-            media_job_id
-            for media_job_id in (_linked_media_job_id(job) for job in jobs)
-            if media_job_id
-        }
-    )
-    if not media_job_ids:
-        return {}
-    rows = (
-        (await db.execute(select(MediaJob).where(MediaJob.job_id.in_(media_job_ids))))
-        .scalars()
-        .all()
-    )
-    return {row.job_id: row for row in rows}
-
-
 async def _load_child_jobs(db: AsyncSession, parent_id: str) -> list[Job]:
-    return (
+    return list(
         (
-            await db.execute(
+            await db.scalars(
                 select(Job)
                 .where(Job.parent_id == parent_id)
                 .order_by(Job.created_at.asc(), Job.id.asc())
             )
-        )
-        .scalars()
-        .all()
+        ).all()
     )
-
-
-async def _serialize_job_details(db: AsyncSession, jobs: list[Job]) -> list[dict]:
-    if not jobs:
-        return []
-    titles = await _resolve_subject_titles(db, jobs)
-    media_jobs = await _load_linked_media_jobs(db, jobs)
-    return [
-        _job_detail_data(
-            job,
-            subject_title=titles.get((job.subject_type, job.subject_id)),
-            media_job=media_jobs.get(_linked_media_job_id(job) or ""),
-        )
-        for job in jobs
-    ]
 
 
 @router.get("")
@@ -274,24 +127,22 @@ async def list_jobs(
     until: int | None = None,
     limit: int = Query(50, ge=1, le=200),
 ):
-    """``active=true`` / ``queued_only=true`` are shorthands over manager's
-    real ``ACTIVE``/queued-ish status sets — "currently running" or
-    "currently queued" isn't one status string, and inventing ad-hoc status
-    literals at the call site is exactly the mistake that made
-    ``system.py``'s worker counts silently wrong."""
     query = select(Job)
     if status:
-        query = query.where(Job.status == status)
+        if status in {"planned", "queued", "running", "stopping", "terminal"}:
+            query = query.where(Job.phase == status)
+        else:
+            query = query.where(Job.outcome == status)
     if active:
-        query = query.where(Job.status.in_(ACTIVE))
+        query = query.where(Job.phase.in_(_ACTIVE_PHASES))
     if queued_only:
-        query = query.where(Job.status.in_(_QUEUED_ISH))
+        query = query.where(Job.phase == "queued")
     if type:
         query = query.where(Job.type == type)
     if subject_type:
-        query = query.where(Job.subject_type == subject_type)
+        query = query.where(Job.subject_kind == subject_type)
     if subject_id:
-        query = query.where(Job.subject_id == subject_id)
+        query = query.where(Job.subject_reference == subject_id)
     if parent_id:
         query = query.where(Job.parent_id == parent_id)
     if correlation_id:
@@ -302,89 +153,34 @@ async def list_jobs(
         query = query.where(Job.created_at >= datetime.fromtimestamp(since, UTC))
     if until:
         query = query.where(Job.created_at <= datetime.fromtimestamp(until, UTC))
-    if queued_only:
-        query = query.order_by(Job.priority.desc(), Job.created_at.asc(), Job.id.asc())
-    else:
-        query = query.order_by(Job.created_at.desc(), Job.id.desc())
-    query = query.limit(limit + 1)
-    rows = (await db.execute(query)).scalars().all()
+    order = (Job.priority.desc(), Job.created_at.asc(), Job.id.asc()) if queued_only else (
+        Job.created_at.desc(),
+        Job.id.desc(),
+    )
+    rows = list((await db.scalars(query.order_by(*order).limit(limit + 1))).all())
     has_more = len(rows) > limit
     rows = rows[:limit]
     next_before = (
         int(rows[-1].created_at.timestamp()) if has_more and rows and rows[-1].created_at else None
     )
-    titles = await _resolve_subject_titles(db, rows)
-    return {
-        "jobs": [
-            job_summary(row, subject_title=titles.get((row.subject_type, row.subject_id)))
-            for row in rows
-        ],
-        "next_before": next_before,
-    }
+    return {"jobs": [job_summary(row) for row in rows], "next_before": next_before}
 
 
 @router.get("/metrics")
 async def job_metrics(db: Annotated[AsyncSession, Depends(get_db)]):
-    status_counts = dict(
-        (await db.execute(select(Job.status, func.count()).group_by(Job.status))).all()
+    phase_counts = dict(
+        (await db.execute(select(Job.phase, func.count()).group_by(Job.phase))).all()
     )
-    resources = (await db.execute(select(JobResource))).scalars().all()
-    active = (
-        await db.execute(
-            select(
-                JobResourceReservation.resource_key,
-                func.coalesce(func.sum(JobResourceReservation.units), 0),
-            )
-            .where(JobResourceReservation.released_at.is_(None))
-            .group_by(JobResourceReservation.resource_key)
-        )
-    ).all()
-    in_use = dict(active)
-
-    logical_pools = {
-        "gpu",
-        "media_read",
-        "media_write",
-        "transcode",
-        "network_external",
-        "maintenance_exclusive",
-    }
-    filtered_resources = []
-    for row in resources:
-        used = int(in_use.get(row.key, 0))
-        if row.key not in logical_pools and not (row.key.startswith("media-file:") and used > 0):
-            continue
-        filtered_resources.append(
-            {
-                "key": row.key,
-                "capacity": row.capacity,
-                "in_use": used,
-                "enabled": row.enabled,
-            }
-        )
-
-    worker_cutoff = datetime.now(UTC) - timedelta(seconds=settings.JOB_LEASE_SECONDS)
-    workers = (
-        (
-            await db.execute(
-                select(JobWorker)
-                .where(
-                    JobWorker.status.in_(("starting", "running", "draining")),
-                    JobWorker.heartbeat_at >= worker_cutoff,
-                )
-                .order_by(JobWorker.heartbeat_at.desc())
-            )
-        )
-        .scalars()
-        .all()
+    outcome_counts = dict(
+        (await db.execute(select(Job.outcome, func.count()).group_by(Job.outcome))).all()
     )
+    outcome_counts.pop(None, None)
     return {
-        "counts": status_counts,
-        "resources": filtered_resources,
-        "workers": [
-            {"id": row.id, "status": row.status, "heartbeat_at": row.heartbeat_at.isoformat()}
-            for row in workers
-        ],
+        "counts": {**phase_counts, **outcome_counts},
+        "phases": phase_counts,
+        "outcomes": outcome_counts,
+        "resources": [],
+        "workers": [],
     }
 
 
@@ -399,33 +195,25 @@ async def job_metrics_by_type(
     db: Annotated[AsyncSession, Depends(get_db)],
     limit_per_type: int = Query(200, ge=1, le=2000),
 ):
-    """Success rate + duration percentiles per job type.
-
-    Computed over each type's most recent ``limit_per_type`` terminal jobs —
-    a bounded, in-Python percentile (mirroring ``pipeline.py``'s
-    ``pipeline_metrics()``) rather than a DB-side percentile function, for
-    portability. One query per distinct job type (~25 registered types);
-    acceptable for a low-traffic admin page.
-    """
-    types = (await db.execute(select(Job.type).distinct())).scalars().all()
+    types = (await db.scalars(select(Job.type).distinct())).all()
     out: dict[str, dict] = {}
     for job_type in types:
         rows = (
             await db.execute(
-                select(Job.status, Job.started_at, Job.finished_at)
-                .where(Job.type == job_type, Job.status.in_(TERMINAL))
-                .order_by(Job.finished_at.desc())
+                select(Job.outcome, Job.started_at, Job.terminal_at)
+                .where(Job.type == job_type, Job.phase == "terminal")
+                .order_by(Job.terminal_at.desc())
                 .limit(limit_per_type)
             )
         ).all()
         if not rows:
             continue
         durations = sorted(
-            (r.finished_at - r.started_at).total_seconds()
-            for r in rows
-            if r.started_at and r.finished_at
+            (row.terminal_at - row.started_at).total_seconds()
+            for row in rows
+            if row.started_at and row.terminal_at
         )
-        succeeded = sum(1 for r in rows if r.status == "succeeded")
+        succeeded = sum(1 for row in rows if row.outcome == "succeeded")
         out[job_type] = {
             "sample_size": len(rows),
             "success_rate": round(succeeded / len(rows), 3),
@@ -443,77 +231,55 @@ async def get_job(job_id: str, db: Annotated[AsyncSession, Depends(get_db)]):
     job = await db.get(Job, job_id)
     if job is None:
         raise HTTPException(404, "Job not found")
-    attempts = (
+    attempts = list(
         (
-            await db.execute(
+            await db.scalars(
                 select(JobAttempt).where(JobAttempt.job_id == job_id).order_by(JobAttempt.number)
             )
-        )
-        .scalars()
-        .all()
+        ).all()
     )
-    reservations = (
+    events = list(
         (
-            await db.execute(
-                select(JobResourceReservation).where(JobResourceReservation.job_id == job_id)
+            await db.scalars(
+                select(JobEvent).where(JobEvent.job_id == job_id).order_by(JobEvent.id)
             )
-        )
-        .scalars()
-        .all()
+        ).all()
     )
-    # The SSE endpoint (/{job_id}/events) only streams live updates — a
-    # terminal job's full audit trail has nowhere else to come from, so the
-    # detail view includes it directly, same as attempts/resources below.
-    events = (
-        (await db.execute(select(JobEvent).where(JobEvent.job_id == job_id).order_by(JobEvent.id)))
-        .scalars()
-        .all()
-    )
-    media_jobs = await _load_linked_media_jobs(db, [job])
     children = await _load_child_jobs(db, job_id)
-    child_details = await _serialize_job_details(db, children)
-    titles = await _resolve_subject_titles(db, [job])
-    data = _job_detail_data(
-        job,
-        subject_title=titles.get((job.subject_type, job.subject_id)),
-        media_job=media_jobs.get(_linked_media_job_id(job) or ""),
-    )
+    data = _job_detail_data(job)
     data.update(
         {
             "attempts": [
                 {
-                    "number": a.number,
-                    "status": a.status,
-                    "worker_id": a.worker_id,
-                    "started_at": a.started_at.isoformat() if a.started_at else None,
-                    "finished_at": a.finished_at.isoformat() if a.finished_at else None,
-                    "metrics": a.metrics,
-                    "error": a.error,
+                    "id": attempt.id,
+                    "number": attempt.number,
+                    "fence_token": attempt.fence_token,
+                    "phase": attempt.phase,
+                    "outcome": attempt.outcome,
+                    "worker_node_id": attempt.worker_node_id,
+                    "started_at": attempt.started_at.isoformat() if attempt.started_at else None,
+                    "finished_at": (
+                        attempt.finished_at.isoformat() if attempt.finished_at else None
+                    ),
+                    "metrics": attempt.metrics,
+                    "error": attempt.error,
                 }
-                for a in attempts
+                for attempt in attempts
             ],
-            "resources": [
-                {
-                    "key": r.resource_key,
-                    "units": r.units,
-                    "stage": r.stage,
-                    "acquired_at": r.acquired_at.isoformat() if r.acquired_at else None,
-                    "released_at": r.released_at.isoformat() if r.released_at else None,
-                }
-                for r in reservations
-            ],
+            "resources": [],
             "events": [
                 {
-                    "id": e.id,
-                    "stage": e.stage,
-                    "state": e.state,
-                    "message": e.message,
-                    "detail": e.detail,
-                    "created_at": e.created_at.isoformat() if e.created_at else None,
+                    "id": event.id,
+                    "event_key": event.event_key,
+                    "stage": event.stage,
+                    "state": event.state,
+                    "message": event.message,
+                    "detail": event.detail,
+                    "created_at": event.created_at.isoformat() if event.created_at else None,
                 }
-                for e in events
+                for event in events
             ],
-            "children": child_details,
+            "children": [_job_detail_data(child) for child in children],
         }
     )
     return data
@@ -521,11 +287,9 @@ async def get_job(job_id: str, db: Annotated[AsyncSession, Depends(get_db)]):
 
 @router.get("/{job_id}/children")
 async def get_job_children(job_id: str, db: Annotated[AsyncSession, Depends(get_db)]):
-    job = await db.get(Job, job_id)
-    if job is None:
+    if await db.get(Job, job_id) is None:
         raise HTTPException(404, "Job not found")
-    children = await _load_child_jobs(db, job_id)
-    return {"children": await _serialize_job_details(db, children)}
+    return {"children": [_job_detail_data(row) for row in await _load_child_jobs(db, job_id)]}
 
 
 @router.get("/{job_id}/events")
@@ -534,78 +298,48 @@ async def job_events(
     request: Request,
     last_event_id: Annotated[str | None, Header()] = None,
 ):
-    """Stream job events over SSE with disconnect detection and timeout.
-
-    Clients reconnecting after disconnect should send the last ``id`` they
-    received as the ``Last-Event-ID`` header — the stream replays all events
-    after that ID and continues live.
-
-    The stream terminates when:
-      - The job reaches a terminal state (succeeded/failed/cancelled/...)
-      - The client disconnects (browser tab closed, network interruption)
-      - The stream exceeds 1 hour (timeout — client should reconnect)
-    """
     factory = _get_session_factory()
     async with factory() as db:
         if await db.get(Job, job_id) is None:
             raise HTTPException(404, "Job not found")
     after = int(last_event_id or 0)
-    factory = _get_session_factory()
 
     async def events():
         nonlocal after
         start = time.monotonic()
         while True:
-            # Check client disconnect (browser tab closed, network drop)
             if await request.is_disconnected():
-                logger.info("SSE client disconnected for job %s (after event_id=%d)", job_id, after)
                 return
-
-            # Enforce maximum stream duration (prevents infinite streams)
-            elapsed = time.monotonic() - start
-            if elapsed > _SSE_TIMEOUT_SECONDS:
-                logger.warning(
-                    "SSE stream timeout for job %s after %.0fs (client should reconnect)",
-                    job_id,
-                    elapsed,
-                )
-                yield 'event: error\ndata: {"message": "stream timeout — reconnect with Last-Event-ID"}\n\n'
+            if time.monotonic() - start > _SSE_TIMEOUT_SECONDS:
+                yield 'event: error\ndata: {"message": "stream timeout"}\n\n'
                 return
-
             async with factory() as stream_db:
-                rows = (
+                rows = list(
                     (
-                        await stream_db.execute(
+                        await stream_db.scalars(
                             select(JobEvent)
                             .where(JobEvent.job_id == job_id, JobEvent.id > after)
                             .order_by(JobEvent.id)
                         )
-                    )
-                    .scalars()
-                    .all()
+                    ).all()
                 )
                 job = await stream_db.get(Job, job_id)
-
             for event in rows:
                 after = event.id
-                yield f"id: {event.id}\ndata: {json.dumps({'id': event.id, 'job_id': job_id, 'state': event.state, 'stage': event.stage, 'message': event.message, 'detail': event.detail}, default=str)}\n\n"
-
-            if job is None or job.status in {
-                "succeeded",
-                "failed",
-                "cancelled",
-                "interrupted",
-                "dead_letter",
-            }:
-                # Include final status so frontend can show appropriate UI
-                yield f'event: done\ndata: {{"status": "{job.status if job else "unknown"}"}}\n\n'
-                logger.debug(
-                    "SSE stream complete for job %s (status=%s)",
-                    job_id,
-                    job.status if job else None,
-                )
+                payload = {
+                    "id": event.id,
+                    "job_id": job_id,
+                    "event_key": event.event_key,
+                    "state": event.state,
+                    "stage": event.stage,
+                    "message": event.message,
+                    "detail": event.detail,
+                }
+                yield f"id: {event.id}\ndata: {json.dumps(payload, default=str)}\n\n"
+            if job is None or job.phase == "terminal":
+                status = _display_status(job) if job else "unknown"
+                yield f'event: done\ndata: {{"status": "{status}"}}\n\n'
                 return
-
             await asyncio.sleep(0.5)
 
     return StreamingResponse(
@@ -620,64 +354,41 @@ async def cancel_job(job_id: str, db: Annotated[AsyncSession, Depends(get_db)]):
     job = await db.get(Job, job_id)
     if job is None:
         raise HTTPException(404, "Job not found")
-    return job_summary(await job_manager.request_cancel(db, job))
-
-
-@router.post("/{job_id}/pause", status_code=202)
-async def pause_job(job_id: str, db: Annotated[AsyncSession, Depends(get_db)]):
-    job = await db.get(Job, job_id)
-    if job is None:
-        raise HTTPException(404, "Job not found")
-    return job_summary(await job_manager.set_paused(db, job, True))
-
-
-@router.post("/{job_id}/resume", status_code=202)
-async def resume_job(job_id: str, db: Annotated[AsyncSession, Depends(get_db)]):
-    job = await db.get(Job, job_id)
-    if job is None:
-        raise HTTPException(404, "Job not found")
-    return job_summary(await job_manager.set_paused(db, job, False))
+    if job.type != "system_noop":
+        raise UnmigratedJobPlatformError(f"{job.type}.cancel")
+    try:
+        await pgqueuer_gateway.cancel_known_ticket(db, job_id=job_id)
+        await db.commit()
+    except PgQueuerGatewayError as exc:
+        await db.rollback()
+        raise HTTPException(409, str(exc)) from exc
+    await db.refresh(job)
+    return job_summary(job)
 
 
 class PriorityUpdateRequest(BaseModel):
     priority: int
 
 
+def _unmigrated_control(operation: str) -> None:
+    raise UnmigratedJobPlatformError(operation)
+
+
+@router.post("/{job_id}/pause", status_code=202)
+async def pause_job(job_id: str):
+    _unmigrated_control(f"{job_id}.pause")
+
+
+@router.post("/{job_id}/resume", status_code=202)
+async def resume_job(job_id: str):
+    _unmigrated_control(f"{job_id}.resume")
+
+
 @router.patch("/{job_id}/priority")
-async def update_job_priority(
-    job_id: str,
-    body: PriorityUpdateRequest,
-    db: Annotated[AsyncSession, Depends(get_db)],
-):
-    job = await db.get(Job, job_id)
-    if job is None:
-        raise HTTPException(404, "Job not found")
-    if job.status not in _REORDERABLE:
-        raise HTTPException(409, f"Cannot reorder a {job.status} job")
-    job.priority = body.priority
-    await db.commit()
-    await db.refresh(job)
-    titles = await _resolve_subject_titles(db, [job])
-    return job_summary(job, subject_title=titles.get((job.subject_type, job.subject_id)))
+async def update_job_priority(job_id: str, body: PriorityUpdateRequest):
+    _unmigrated_control(f"{job_id}.priority:{body.priority}")
 
 
 @router.post("/{job_id}/retry", status_code=202)
-async def retry_job(job_id: str, db: Annotated[AsyncSession, Depends(get_db)]):
-    job = await db.get(Job, job_id)
-    if job is None:
-        raise HTTPException(404, "Job not found")
-    if job.status not in {"failed", "interrupted", "cancelled", "dead_letter"}:
-        raise HTTPException(409, f"Cannot retry a {job.status} job")
-    retry = await job_manager.create(
-        db,
-        job_type=job.type,
-        payload=job.payload,
-        priority=job.priority,
-        resources=job.resource_request,
-        parent_id=job.parent_id,
-        correlation_id=job.correlation_id,
-        subject_type=job.subject_type,
-        subject_id=job.subject_id,
-        max_attempts=job.max_attempts,
-    )
-    return job_summary(retry)
+async def retry_job(job_id: str):
+    _unmigrated_control(f"{job_id}.retry")

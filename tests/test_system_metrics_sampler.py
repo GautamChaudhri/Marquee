@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 from sqlalchemy import func, select
 
-from marquee.core.jobs.manager import job_manager
 from marquee.core.system_metrics_sampler import SystemMetricsSampler
 from marquee.models import Job, JobEvent, SystemMetricsSample
 
@@ -44,8 +45,16 @@ async def test_tick_creates_no_job_or_event_rows(db):
 
 
 async def test_tick_snapshots_active_job_ids_and_types(db):
-    job = await job_manager.create(db, job_type="system_noop")
-    job.status = "running"
+    job = Job(
+        id="active-noop",
+        type="system_noop",
+        payload_version=1,
+        request={"echo": "metrics"},
+        phase="running",
+        root_id="active-noop",
+        subject_snapshot={"version": 1, "kind": "system", "label": "System no-op"},
+    )
+    db.add(job)
     await db.commit()
 
     sampler = SystemMetricsSampler()
@@ -56,11 +65,29 @@ async def test_tick_snapshots_active_job_ids_and_types(db):
 
 
 async def test_tick_ignores_queued_and_terminal_jobs(db):
-    queued = await job_manager.create(db, job_type="system_noop")
-    succeeded = await job_manager.create(db, job_type="system_noop")
-    succeeded.status = "succeeded"
+    queued = Job(
+        id="queued-noop",
+        type="system_noop",
+        payload_version=1,
+        request={},
+        phase="queued",
+        root_id="queued-noop",
+        subject_snapshot={"version": 1, "kind": "system", "label": "Queued"},
+    )
+    succeeded = Job(
+        id="succeeded-noop",
+        type="system_noop",
+        payload_version=1,
+        request={},
+        phase="terminal",
+        outcome="succeeded",
+        terminal_at=datetime.now(UTC),
+        root_id="succeeded-noop",
+        subject_snapshot={"version": 1, "kind": "system", "label": "Succeeded"},
+    )
+    db.add_all([queued, succeeded])
     await db.commit()
-    assert queued.status == "queued"
+    assert queued.phase == "queued"
 
     sampler = SystemMetricsSampler()
     await sampler._tick()

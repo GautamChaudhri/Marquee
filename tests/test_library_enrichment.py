@@ -236,6 +236,27 @@ async def test_include_unavailable_returns_radarr_movies_without_files(
 
 
 @pytest.mark.asyncio
+async def test_retired_movies_are_excluded_from_active_library(
+    db: AsyncSession, client: AsyncClient
+):
+    retired = Movie(
+        title="Retired",
+        year=2020,
+        folder_path="/m/retired",
+        is_present=False,
+    )
+    db.add(retired)
+    await db.commit()
+
+    listing = await client.get("/api/library/movies?include_unavailable=true")
+    assert listing.status_code == 200
+    assert listing.json()["items"] == []
+
+    detail = await client.get(f"/api/library/movies/{retired.id}")
+    assert detail.status_code == 404
+
+
+@pytest.mark.asyncio
 async def test_detail_has_derived_fields(db: AsyncSession, client: AsyncClient):
     await _seed(db)
     list_body = (await client.get("/api/library/movies?q=Alpha")).json()

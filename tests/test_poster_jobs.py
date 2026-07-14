@@ -50,7 +50,7 @@ async def test_poster_rescan_updates_expected_paths(db: AsyncSession, tmp_path):
     db.add(movie)
     await db.commit()
 
-    result = await poster_rescan(Job(id="rescan", type="poster_rescan", payload={}))
+    result = await poster_rescan(Job(id="rescan", type="poster_rescan", request={}))
 
     await db.refresh(movie)
     assert result["updated"] == 1, result
@@ -71,7 +71,7 @@ async def test_poster_backup_all_copies_deployed_posters(db: AsyncSession, tmp_p
     db.add(movie)
     await db.commit()
 
-    result = await poster_backup_all(Job(id="backup", type="poster_backup_all", payload={}))
+    result = await poster_backup_all(Job(id="backup", type="poster_backup_all", request={}))
 
     await db.refresh(movie)
     assert result["copied"] == 1
@@ -87,7 +87,7 @@ async def test_poster_maintenance_skips_when_radarr_unconfigured(monkeypatch):
     monkeypatch.setattr(settings, "SONARR_API_KEY", None)
 
     result = await poster_maintenance(
-        Job(id="maintenance", type="poster_maintenance", payload={"dry_run": True})
+        Job(id="maintenance", type="poster_maintenance", request={"dry_run": True})
     )
 
     assert result["skipped"] == "neither radarr nor sonarr configured"

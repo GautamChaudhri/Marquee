@@ -13,22 +13,13 @@ from marquee.models import Movie, PipelineRun
 
 
 @pytest.fixture
-async def client():
+async def client(db):
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         yield ac
 
 
-@pytest.fixture(autouse=True)
-def overrides_to_tmp(tmp_path, monkeypatch):
-    # Redirect the overrides file and silence the extractor reset (no ML).
-    import marquee.core.pipeline_config as cfg
 
-    monkeypatch.setattr(cfg, "_overrides_path", lambda: tmp_path / "pipeline_overrides.json")
-    from marquee.pipeline.run_manager import run_manager
-
-    monkeypatch.setattr(run_manager, "reset_extractor", lambda: None)
-    yield
 
 
 # ---------------------------------------------------------------------------
@@ -41,8 +32,11 @@ async def test_get_pipeline_config(client):
     resp = await client.get("/api/config/pipeline")
     assert resp.status_code == 200
     data = resp.json()
+    assert data["configuration_version"] == 1
+    assert data["etag"].startswith('"configuration-1-')
     assert "values" in data and "defaults" in data and "restart_required" in data
     assert "GATE_MIN_AESTHETIC" in data["values"]
+    assert data["meta"]["GATE_MIN_AESTHETIC"]["owner"] == "database"
     assert "AI_MODEL" in data["restart_required"]
 
 
@@ -78,44 +72,70 @@ def test_pipeline_snapshot_includes_full_ocr_context():
 
 
 @pytest.mark.asyncio
-async def test_put_valid_knob_applies_and_persists(client, tmp_path):
+async def test_put_valid_knob_applies_and_persists(client):
     original = pipeline_settings.GATE_MIN_AESTHETIC
-    try:
-        resp = await client.put(
-            "/api/config/pipeline", json={"values": {"GATE_MIN_AESTHETIC": 3.0}}
-        )
-        assert resp.status_code == 200
-        assert pipeline_settings.GATE_MIN_AESTHETIC == 3.0
-        # Persisted to the overrides file.
-        overrides = json.loads((tmp_path / "pipeline_overrides.json").read_text())
-        assert overrides["GATE_MIN_AESTHETIC"] == 3.0
-    finally:
-        pipeline_settings.GATE_MIN_AESTHETIC = original
+    resp = await client.put(
+        "/api/config/pipeline",
+        json={"expected_version": 1, "values": {"GATE_MIN_AESTHETIC": 3.0}},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["configuration_version"] == 2
+    assert resp.json()["overrides"]["GATE_MIN_AESTHETIC"] == 3.0
+    assert original == pipeline_settings.GATE_MIN_AESTHETIC
+
+    current = (await client.get("/api/config/pipeline")).json()
+    assert current["values"]["GATE_MIN_AESTHETIC"] == 3.0
+    assert current["configuration_version"] == 2
+
+
+@pytest.mark.asyncio
+async def test_pipeline_config_stale_update_returns_current_version(client):
+    first = await client.put(
+        "/api/config/pipeline",
+        json={"expected_version": 1, "values": {"K_NEIGHBORS": 11}},
+    )
+    assert first.status_code == 200
+
+    stale = await client.put(
+        "/api/config/pipeline",
+        json={"expected_version": 1, "values": {"K_NEIGHBORS": 12}},
+    )
+    assert stale.status_code == 409
+    assert stale.json()["detail"]["code"] == "configuration_version_conflict"
+    assert stale.json()["detail"]["current_version"] == 2
 
 
 @pytest.mark.asyncio
 async def test_put_invalid_value_rejected(client):
-    # NORM_KNN_MAX must be > NORM_KNN_MIN — this violates the validator.
     resp = await client.put(
         "/api/config/pipeline",
-        json={"values": {"NORM_KNN_MAX": 0.1, "NORM_KNN_MIN": 0.4}},
+        json={
+            "expected_version": 1,
+            "values": {"NORM_KNN_MAX": 0.1, "NORM_KNN_MIN": 0.4},
+        },
     )
     assert resp.status_code == 400
-    assert "Invalid configuration" in resp.json()["detail"]
+    assert "invalid pipeline configuration" in resp.json()["detail"].lower()
 
 
 @pytest.mark.asyncio
 async def test_put_restart_required_rejected(client):
-    resp = await client.put("/api/config/pipeline", json={"values": {"AI_MODEL": "something-else"}})
+    resp = await client.put(
+        "/api/config/pipeline",
+        json={"expected_version": 1, "values": {"AI_MODEL": "something-else"}},
+    )
     assert resp.status_code == 400
     assert "restart" in resp.json()["detail"].lower()
 
 
 @pytest.mark.asyncio
 async def test_put_unknown_key_rejected(client):
-    resp = await client.put("/api/config/pipeline", json={"values": {"NOT_A_KNOB": 1}})
+    resp = await client.put(
+        "/api/config/pipeline",
+        json={"expected_version": 1, "values": {"NOT_A_KNOB": 1}},
+    )
     assert resp.status_code == 400
-    assert "Unknown" in resp.json()["detail"]
+    assert "unknown" in resp.json()["detail"].lower()
 
 
 # ---------------------------------------------------------------------------

@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.database import get_db
-from marquee.models import ArtworkEvent, MediaJob, MediaJobEvent, Movie, PipelineRun
+from marquee.models import ArtworkEvent, Job, JobEvent, Movie, PipelineRun
 
 router = APIRouter(prefix="/api/activity", tags=["activity"])
 
@@ -46,7 +46,7 @@ async def activity_feed(
     db: Annotated[AsyncSession, Depends(get_db)],
     limit: int = Query(100, ge=1, le=500),
 ):
-    """Newest activity across poster events, media-job events, and pipeline runs."""
+    """Newest activity across poster events, canonical job events, and pipeline runs."""
     artwork_rows = (
         await db.execute(
             select(ArtworkEvent, Movie)
@@ -57,9 +57,9 @@ async def activity_feed(
     ).all()
     job_event_rows = (
         await db.execute(
-            select(MediaJobEvent, MediaJob)
-            .join(MediaJob, MediaJob.job_id == MediaJobEvent.job_id)
-            .order_by(MediaJobEvent.created_at.desc())
+            select(JobEvent, Job)
+            .join(Job, Job.id == JobEvent.job_id)
+            .order_by(JobEvent.id.desc())
             .limit(limit)
         )
     ).all()
@@ -90,22 +90,22 @@ async def activity_feed(
         )
 
     for event, job in job_event_rows:
-        state = event.state or job.status
+        state = event.state or job.phase
         events.append(
             {
-                "id": f"media-job-event:{event.id}",
+                "id": f"job-event:{event.id}",
                 "level": _level(state, event.message),
-                "message": event.message or f"{job.operation.replace('_', ' ')} {state}",
+                "message": event.message or f"{job.type.replace('_', ' ')} {state}",
                 "detail": {
-                    "job_id": job.job_id,
-                    "operation": job.operation,
+                    "job_id": job.id,
+                    "type": job.type,
+                    "event_key": event.event_key,
                     "stage": event.stage,
                     "state": event.state,
-                    "progress": _loads(event.progress_json),
                 },
                 "ts": event.created_at.isoformat() if event.created_at else None,
-                "source": "media_job",
-                "entity_type": "media_job_event",
+                "source": "job",
+                "entity_type": "job_event",
                 "entity_id": event.id,
             }
         )

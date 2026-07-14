@@ -410,12 +410,23 @@ export function putAudioSubsPreferences(
 		preferred_languages?: string[] | null;
 		preferred_audio_languages?: string[] | null;
 		preferred_subtitle_languages?: string[] | null;
-	}
-): Promise<{ ok: boolean }> {
+	},
+	expectedVersion: number
+): Promise<{ ok: boolean; configuration_version: number; etag: string; changed: boolean }> {
 	if (useMocks()) {
-		return Promise.resolve({ ok: true });
+		return Promise.resolve({
+			ok: true,
+			configuration_version: expectedVersion + 1,
+			etag: `"configuration-${expectedVersion + 1}"`,
+			changed: true
+		});
 	}
-	return apiSend<{ ok: boolean }>(fetch, 'PUT', '/audio-subs/preferences', prefs);
+	return apiSend<{ ok: boolean; configuration_version: number; etag: string; changed: boolean }>(
+		fetch,
+		'PUT',
+		'/audio-subs/preferences',
+		{ ...prefs, expected_version: expectedVersion }
+	);
 }
 
 export function putSeriesPreferences(

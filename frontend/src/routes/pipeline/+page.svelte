@@ -13,7 +13,8 @@
 		runPosterMaintenance
 	} from '$lib/api/pipeline';
 	import { getTvSummary } from '$lib/api/pipeline-tv';
-	import { putSettings, runHealScan } from '$lib/api/system';
+	import { getSettings, putSettings, runHealScan } from '$lib/api/system';
+	import { CONFIGURATION_CONFLICT_MESSAGE, isConfigurationConflict } from '$lib/api/client';
 	import type { JobSnapshot } from '$lib/api/jobs';
 	import { bytesH } from '$lib/display';
 	import { trackJob, type JobProgressDetail } from '$lib/jobs';
@@ -137,6 +138,15 @@
 		healInterval = currentHealInterval;
 	}
 
+	async function handleConfigurationSaveError(error: unknown, fallback: string) {
+		if (isConfigurationConflict(error)) {
+			runtimeSettings = await getSettings(fetch);
+			toast(CONFIGURATION_CONFLICT_MESSAGE, 'info');
+			return;
+		}
+		toast(error instanceof Error ? error.message : fallback, 'bad');
+	}
+
 	async function refreshSummary() {
 		try {
 			[summary, tvSummary] = await Promise.all([
@@ -204,13 +214,17 @@
 	async function savePosterFormat() {
 		savingPoster = true;
 		try {
-			const result = await putSettings(fetch, {
-				posters: {
-					movie_poster_format: nextMovieFormat(),
-					series_poster_format: nextShowFormat(),
-					season_poster_format: nextSeasonFormat()
-				}
-			});
+			const result = await putSettings(
+				fetch,
+				{
+					posters: {
+						movie_poster_format: nextMovieFormat(),
+						series_poster_format: nextShowFormat(),
+						season_poster_format: nextSeasonFormat()
+					}
+				},
+				runtimeSettings!.configuration_version
+			);
 			runtimeSettings = result.settings;
 			resetFormsFromSettings();
 			const job = await rescanPosters(fetch);
@@ -221,7 +235,7 @@
 				toast(`${updated} updated, ${missing} missing`, missing ? 'info' : 'good');
 			});
 		} catch (e) {
-			toast(e instanceof Error ? e.message : 'Could not save poster filename', 'bad');
+			await handleConfigurationSaveError(e, 'Could not save poster filename');
 		} finally {
 			savingPoster = false;
 		}
@@ -230,12 +244,16 @@
 	async function saveRestoreMethod() {
 		savingRestore = true;
 		try {
-			const result = await putSettings(fetch, { posters: { restore_method: restoreMethod } });
+			const result = await putSettings(
+				fetch,
+				{ posters: { restore_method: restoreMethod } },
+				runtimeSettings!.configuration_version
+			);
 			runtimeSettings = result.settings;
 			resetFormsFromSettings();
 			toast('Restoration saved', 'good');
 		} catch (e) {
-			toast(e instanceof Error ? e.message : 'Could not save restoration method', 'bad');
+			await handleConfigurationSaveError(e, 'Could not save restoration method');
 		} finally {
 			savingRestore = false;
 		}
@@ -244,15 +262,17 @@
 	async function saveHeal() {
 		savingHeal = true;
 		try {
-			const result = await putSettings(fetch, {
-				heal: { enabled: healEnabled, interval_minutes: Number(healInterval) }
-			});
+			const result = await putSettings(
+				fetch,
+				{ heal: { enabled: healEnabled, interval_minutes: Number(healInterval) } },
+				runtimeSettings!.configuration_version
+			);
 			runtimeSettings = result.settings;
 			resetFormsFromSettings();
 			toast('Heal scan saved', 'good');
 			await refreshSummary();
 		} catch (e) {
-			toast(e instanceof Error ? e.message : 'Could not save heal scan', 'bad');
+			await handleConfigurationSaveError(e, 'Could not save heal scan');
 		} finally {
 			savingHeal = false;
 		}

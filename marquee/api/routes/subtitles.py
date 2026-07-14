@@ -20,19 +20,18 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.api.library_serializers import effective_movie_preferences
+from marquee.core.jobs.manager import UnmigratedJobPlatformError
 from marquee.core.media_files import (
     MediaFileNotFoundError,
     MediaFileUnavailableError,
     ensure_media_file_for_movie,
     resolve_media_file,
 )
-from marquee.core.media_jobs import media_job_manager
-from marquee.core.media_jobs.serialize import job_dict as _media_job_dict
-from marquee.core.subtitles import coverage, mutation, service
+from marquee.core.subtitles import coverage, service
 from marquee.core.subtitles.config import subtitle_settings
 from marquee.database import get_db
 from marquee.media import binaries
-from marquee.models import MediaJob, Movie
+from marquee.models import Movie
 
 logger = logging.getLogger(__name__)
 
@@ -169,113 +168,14 @@ class LibraryScanRequest(BaseModel):
     season_number: int | None = None
 
 
-# Operations that rewrite the media container itself. A plan created while one
-# of these is queued/running for the same file is guaranteed to fail preflight
-# with plan_stale after the earlier job replaces the file — reject it up front.
-_CONTAINER_MUTATING_OPS = (
-    "audio_remove",
-    "subtitle_remove",
-    "track_remove",
-    "subtitle_embed",
-    "subtitle_metadata",
-    "audio_reorder",
-    "subtitle_restore",
-    "letterbox_reencode",
-)
-
-
 @router.post("/api/media-files/{media_file_id}/subtitle-plans", status_code=201)
 async def create_subtitle_plan(
     media_file_id: int,
     body: PlanRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    """Persist an expiring before/after plan as a ``planned`` job (no writes)."""
-    _require_ffprobe()
-    pending = (
-        await db.execute(
-            select(MediaJob.job_id)
-            .where(
-                MediaJob.media_file_id == media_file_id,
-                MediaJob.operation.in_(_CONTAINER_MUTATING_OPS),
-                MediaJob.status.in_(("confirmed", "queued", "running")),
-            )
-            .limit(1)
-        )
-    ).scalar_one_or_none()
-    if pending is not None:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "code": "mutation_pending",
-                "message": "Another mutation is already queued or running for this "
-                "file — wait for it to finish, then plan again.",
-                "pending_job_id": pending,
-            },
-        )
-    try:
-        resolved = await resolve_media_file(db, media_file_id)
-        inventory = await service.get_inventory_dict(db, media_file_id)
-    except (MediaFileNotFoundError, MediaFileUnavailableError) as exc:
-        raise _map_resolve_error(exc) from exc
-
-    try:
-        plan = await mutation.build_plan(
-            db,
-            resolved,
-            inventory,
-            operation=body.operation,
-            params={
-                "track_ids": body.track_ids,
-                "audio_stream_indices": body.audio_stream_indices,
-                "audio_stream_order": body.audio_stream_order,
-                "edits": body.edits,
-            },
-            backup_requested=body.backup,
-        )
-    except mutation.PlanError as exc:
-        raise HTTPException(
-            status_code=422, detail={"code": "plan_error", "message": str(exc)}
-        ) from exc
-
-    await media_job_manager.supersede_planned_media_jobs(
-        db,
-        media_file_id=media_file_id,
-        operation=body.operation,
-        request={
-            "track_ids": body.track_ids,
-            "audio_stream_indices": body.audio_stream_indices,
-            "audio_stream_order": body.audio_stream_order,
-            "edits": body.edits,
-        },
-    )
-
-    expires_at = mutation.now_plus_ttl()
-    job = await media_job_manager.create_job(
-        db,
-        operation=body.operation,
-        media_file_id=media_file_id,
-        trigger="manual",
-        request={
-            "inventory_id": inventory["inventory_id"],
-            "track_ids": body.track_ids,
-            "audio_stream_indices": body.audio_stream_indices,
-            "audio_stream_order": body.audio_stream_order,
-            "edits": body.edits,
-            "backup": body.backup,
-            "allow_break": body.allow_break,
-        },
-        plan=plan,
-        status="planned",
-        input_signature=resolved.signature,
-        plan_expires_at=expires_at,
-    )
-    return {
-        "job_id": job.job_id,
-        "status": "planned",
-        "expires_at": expires_at.isoformat(),
-        **plan,
-    }
+    """Fail closed until subtitle mutation plans use canonical media details."""
+    raise UnmigratedJobPlatformError(f"subtitle_plan.create:{media_file_id}")
 
 
 # ---------------------------------------------------------------------------
@@ -287,11 +187,7 @@ movies_router = APIRouter(prefix="/api/movies", tags=["subtitles"])
 
 @movies_router.post("/{movie_id}/subtitles/inspect")
 async def inspect_movie_subtitles(movie_id: int, db: Annotated[AsyncSession, Depends(get_db)]):
-    """Resolve a movie's file, probe it, and return its full subtitle inventory.
-
-    Read-only. Creates the MediaFile row on demand so it works without a fresh
-    sync. This is the safe way to exercise the feature on one title.
-    """
+    """Resolve a movie's file, probe it, and return its full subtitle inventory."""
     if not subtitle_settings.SUBTITLE_ENABLED:
         raise HTTPException(status_code=503, detail="Subtitle management is disabled")
     _require_ffprobe()
@@ -322,21 +218,6 @@ async def inspect_movie_subtitles(movie_id: int, db: Annotated[AsyncSession, Dep
     except MediaFileUnavailableError as exc:
         raise _map_resolve_error(exc) from exc
 
-    # Re-attach to a running job so the progress bar survives a refresh —
-    # the page's loader calls this endpoint on every load, already scoped
-    # to this exact media file.
-    active_job = (
-        await db.execute(
-            select(MediaJob)
-            .where(
-                MediaJob.media_file_id == media_file.id,
-                MediaJob.status.in_(["queued", "running"]),
-            )
-            .order_by(MediaJob.created_at.desc())
-            .limit(1)
-        )
-    ).scalar_one_or_none()
-
     return {
         "movie_id": movie.id,
         "title": movie.title,
@@ -344,7 +225,7 @@ async def inspect_movie_subtitles(movie_id: int, db: Annotated[AsyncSession, Dep
         "path_present": True,
         "inventory": inventory,
         "preferred_languages": preferences,
-        "active_job": _media_job_dict(active_job) if active_job else None,
+        "active_job": None,
     }
 
 
@@ -380,27 +261,8 @@ async def extract_subtitle_track(
     track_id: str,
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    """Queue a job to extract an embedded subtitle track to an external sidecar."""
-    if not subtitle_settings.SUBTITLE_ENABLED:
-        raise HTTPException(status_code=503, detail="Subtitle management is disabled")
-    try:
-        await resolve_media_file(db, media_file_id)
-    except (MediaFileNotFoundError, MediaFileUnavailableError) as exc:
-        raise _map_resolve_error(exc) from exc
-
-    track = await service.get_track(db, media_file_id, track_id)
-    if track is None or track.source != "embedded":
-        raise HTTPException(status_code=404, detail="Embedded track not found")
-
-    job = await media_job_manager.create_job(
-        db,
-        operation="subtitle_extract",
-        media_file_id=media_file_id,
-        trigger="manual",
-        request={"track_id": track_id},
-        status="confirmed",
-    )
-    return {"job_id": job.job_id, "status": "queued"}
+    """Fail closed until subtitle extraction has a canonical definition."""
+    raise UnmigratedJobPlatformError(f"subtitle_extract:{media_file_id}:{track_id}")
 
 
 @router.post("/api/subtitles/scan-library", status_code=202)
@@ -408,14 +270,5 @@ async def scan_library_subtitles(
     db: Annotated[AsyncSession, Depends(get_db)],
     body: LibraryScanRequest,
 ):
-    """Enqueue a job to scan subtitle coverage for all active media files in the library."""
-    from marquee.core.jobs.manager import job_manager  # noqa: PLC0415
-
-    if body.scope == "series" and body.series_id is None:
-        raise HTTPException(status_code=422, detail="series_id is required when scope='series'")
-    job = await job_manager.create(
-        db,
-        job_type="subtitle_scan_all",
-        payload=body.model_dump(),
-    )
-    return {"job_id": job.id, "status": "queued"}
+    """Fail closed until library subtitle scans have a canonical definition."""
+    raise UnmigratedJobPlatformError(f"subtitle_scan_all:{body.scope}")

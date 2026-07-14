@@ -1,4 +1,5 @@
 import { apiGet, apiSend, type Fetch } from './client';
+import type { ConfigurationHealth } from './types';
 
 export interface KnobMeta {
 	kind: 'weight' | 'float' | 'int' | 'bool' | 'enum' | 'str';
@@ -17,6 +18,10 @@ export interface KnobGroup {
 }
 
 export interface PipelineConfig {
+	configuration_version: number;
+	etag: string;
+	stale: boolean;
+	health: ConfigurationHealth;
 	values: Record<string, unknown>;
 	defaults: Record<string, unknown>;
 	overrides: Record<string, unknown>;
@@ -26,6 +31,9 @@ export interface PipelineConfig {
 }
 
 export interface ConfigUpdateResult {
+	configuration_version: number;
+	etag: string;
+	changed: boolean;
 	applied: string[];
 	overrides: Record<string, unknown>;
 }
@@ -42,9 +50,13 @@ export function getPipelineConfig(fetchFn: Fetch): Promise<PipelineConfig> {
 
 export function putPipelineConfig(
 	fetchFn: Fetch,
-	values: Record<string, unknown>
+	values: Record<string, unknown>,
+	expectedVersion: number
 ): Promise<ConfigUpdateResult> {
-	return apiSend<ConfigUpdateResult>(fetchFn, 'PUT', '/config/pipeline', { values });
+	return apiSend<ConfigUpdateResult>(fetchFn, 'PUT', '/config/pipeline', {
+		expected_version: expectedVersion,
+		values
+	});
 }
 
 export function resetDeployedPosters(fetchFn: Fetch): Promise<PosterResetResult> {

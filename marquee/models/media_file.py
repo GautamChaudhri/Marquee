@@ -59,6 +59,10 @@ class MediaFile(Base, TimestampMixin):
     is_active: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True, server_default=text("true")
     )
+    is_present: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=text("true"), index=True
+    )
+    retired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_resolved_path: Mapped[str | None] = mapped_column(Text, nullable=True)
 

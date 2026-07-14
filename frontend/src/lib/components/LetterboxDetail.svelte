@@ -224,7 +224,6 @@
 			: null
 	);
 
-
 	async function finishDetection(jobId: string) {
 		if (detectJobId !== jobId) return;
 		stopDetectStream();
