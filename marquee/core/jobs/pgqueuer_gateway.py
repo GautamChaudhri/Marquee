@@ -14,6 +14,8 @@ from pgqueuer.errors import DuplicateJobError
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from marquee.core.jobs.definitions import JobDefinitionError
+from marquee.core.jobs.manifest import JOB_DEFINITION_REGISTRY
 from marquee.models.job import Job, JobDispatch, JobEvent
 
 ENTRYPOINT_CONTROL = "control"
@@ -157,8 +159,10 @@ class PgQueuerGateway:
         )
         if job is None or dispatch is None:
             raise PgQueuerInvariantError("canonical job and dispatch must exist before enqueue")
-        if job.type != "system_noop":
-            raise PgQueuerGatewayError("only system_noop is enabled in JMC1")
+        try:
+            JOB_DEFINITION_REGISTRY.for_dispatch(job.type, entrypoint=entrypoint)
+        except JobDefinitionError as exc:
+            raise PgQueuerGatewayError(str(exc)) from exc
         if job.phase != "queued" or job.dispatch_generation != dispatch_generation:
             raise PgQueuerInvariantError("canonical job phase/generation does not match dispatch")
         if job.pgq_job_id is not None or dispatch.pgq_job_id is not None:

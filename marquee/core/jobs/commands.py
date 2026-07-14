@@ -13,12 +13,14 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.core.configuration_cache import configuration_provider
+from marquee.core.jobs.manifest import JOB_DEFINITION_REGISTRY
 from marquee.core.jobs.pgqueuer_gateway import (
     ENTRYPOINT_CONTROL,
     PAYLOAD_VERSION,
     PgQueuerInvariantError,
     pgqueuer_gateway,
 )
+from marquee.core.jobs.subjects import SystemWorkSnapshot
 from marquee.models.job import Job, JobDispatch, JobEvent
 
 MAX_NOOP_PAYLOAD_BYTES = 4096
@@ -102,6 +104,12 @@ async def create_system_noop(
 ) -> Job:
     """Create the canonical rows and transport ticket, then commit exactly once."""
     normalized_payload = validate_system_noop_payload(payload)
+    definition = JOB_DEFINITION_REGISTRY.for_dispatch(
+        "system_noop", entrypoint=ENTRYPOINT_CONTROL
+    )
+    normalized_payload = definition.request.validate(
+        normalized_payload, version=PAYLOAD_VERSION
+    ).model_dump(mode="json", exclude_none=True)
     canonical_key = validate_system_noop_idempotency_key(idempotency_key)
     if session.in_transaction():
         raise JobCommandError("system_noop command service requires a fresh session transaction")
@@ -114,7 +122,7 @@ async def create_system_noop(
                 return existing
 
             now = datetime.now(UTC)
-            configuration = configuration_provider.snapshot_for(())
+            configuration = configuration_provider.snapshot_for(definition.configuration_keys)
             delay = execute_after or timedelta(0)
             eligible_at = now + delay
             job_id = uuid4().hex
@@ -134,11 +142,15 @@ async def create_system_noop(
                 configuration_version=configuration.version,
                 configuration_snapshot=configuration.values,
                 root_id=job_id,
-                trigger_kind="system",
-                feature_area="system",
-                subject_kind="system",
+                trigger_kind=next(iter(definition.trigger_kinds)).value,
+                feature_area=definition.feature_area.value,
+                subject_kind="system_work",
                 subject_reference="system_noop",
-                subject_snapshot={"version": 1, "kind": "system", "label": "System no-op"},
+                subject_snapshot=SystemWorkSnapshot(
+                    display_id="system:noop",
+                    display_name="System no-op",
+                    work="system_noop",
+                ).model_dump(mode="json"),
                 queued_at=now,
             )
             dispatch = JobDispatch(

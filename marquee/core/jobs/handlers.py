@@ -13,19 +13,13 @@ from marquee.models import Job
 
 JobHandler = Callable[[Job], Awaitable[dict[str, Any] | None]]
 _handlers: dict[str, JobHandler] = {}
-_instant_types: set[str] = set()
-_max_runtime_seconds: dict[str, int] = {}
 
 
-def register(job_type: str, *, instant: bool = False, max_runtime_seconds: int | None = None):
+def register(job_type: str):
     def decorator(handler: JobHandler) -> JobHandler:
         if job_type in _handlers:
             raise RuntimeError(f"duplicate job handler: {job_type}")
         _handlers[job_type] = handler
-        if instant:
-            _instant_types.add(job_type)
-        if max_runtime_seconds is not None:
-            _max_runtime_seconds[job_type] = max_runtime_seconds
         return handler
 
     return decorator
@@ -39,15 +33,7 @@ def registered_types() -> set[str]:
     return set(_handlers)
 
 
-def is_instant(job_type: str) -> bool:
-    return job_type in _instant_types
-
-
-def max_runtime_seconds(job_type: str) -> int | None:
-    return _max_runtime_seconds.get(job_type)
-
-
-@register("system_noop", instant=True)
+@register("system_noop")
 async def system_noop(job: Job) -> dict[str, Any]:
     """Small diagnostic handler used to validate deployment and job plumbing."""
     return {"echo": job.request}

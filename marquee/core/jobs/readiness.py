@@ -12,6 +12,8 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from marquee.config import settings
 from marquee.core.configuration_cache import configuration_provider
+from marquee.core.jobs.inventory import BUILTIN_JOB_TYPES
+from marquee.core.jobs.manifest import JOB_DEFINITION_REGISTRY
 from marquee.database import _get_engine
 from marquee.db_migration import (
     MIGRATION_ADVISORY_LOCK_ID,
@@ -58,6 +60,14 @@ def package_compatible() -> bool:
         return False
 
 
+def registry_compatible() -> bool:
+    try:
+        JOB_DEFINITION_REGISTRY.validate_complete(BUILTIN_JOB_TYPES)
+    except (TypeError, ValueError, RuntimeError):
+        return False
+    return JOB_DEFINITION_REGISTRY.enabled_types == {"system_noop"}
+
+
 async def _raw_pool_connection() -> tuple[Any, asyncpg.Connection]:
     sqlalchemy_connection = await _get_engine().connect()
     try:
@@ -79,6 +89,9 @@ async def check_readiness() -> dict[str, Any]:
         },
         "package": {
             "status": "ok" if package_compatible() else "incompatible"
+        },
+        "definition_registry": {
+            "status": "ok" if registry_compatible() else "incompatible"
         },
         "database": {"status": "unavailable"},
         "migration_lock": {"status": "unavailable"},
