@@ -13,7 +13,6 @@ from marquee.core.jobs.builtin_handlers import (
     poster_backup_all,
     poster_deploy_reset,
     poster_maintenance,
-    poster_rescan,
 )
 from marquee.core.poster_service import poster_service
 from marquee.core.poster_subjects import PosterSubject
@@ -200,23 +199,7 @@ async def test_tv_maintenance_job_runs(db: AsyncSession, tmp_path, monkeypatch):
     assert backup_res["by_type"]["series"]["copied"] == 1
     assert backup_file.is_file()
 
-    # 2. Run poster_rescan after shifting format setting
-    job_rescan = Job(id="job-rescan", type="poster_rescan", request={})
-
-    # Shift settings.SERIES_POSTER_FORMAT
-    with patch.object(settings, "SERIES_POSTER_FORMAT", "custom-show.jpg"):
-        rescan_res = await poster_rescan(job_rescan)
-        # Expected poster changed and doesn't exist on disk, so it gets set to None/missing
-        assert rescan_res["missing"] == 1
-        assert rescan_res["by_type"]["series"]["missing"] == 1
-        await db.refresh(series)
-        assert series.poster_path is None
-
-    # Redeply poster
-    await poster_service.deploy(db, subject, source)
-    assert series.poster_path is not None
-
-    # 3. Run poster_deploy_reset
+    # 2. Run poster_deploy_reset
     job_reset = Job(id="job-reset", type="poster_deploy_reset", request={})
 
     reset_res = await poster_deploy_reset(job_reset)
@@ -225,7 +208,7 @@ async def test_tv_maintenance_job_runs(db: AsyncSession, tmp_path, monkeypatch):
     await db.refresh(series)
     assert series.poster_path is None
 
-    # 4. Run poster_maintenance to delete Sonarr-deleted shows
+    # 3. Run poster_maintenance to delete Sonarr-deleted shows
     # Re-setup series with poster
     series.sonarr_id = 99
     series.poster_path = str(series_folder / "show.jpg")

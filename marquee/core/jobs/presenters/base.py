@@ -114,9 +114,23 @@ class PresenterContext:
 
     @property
     def summary(self) -> Mapping[str, Any]:
-        """Bounded result-summary evidence; empty when absent or untyped."""
+        """Bounded result evidence, preserving legacy summaries beside typed fields."""
         if isinstance(self.result, BuiltInResultV1):
             return self.result.summary
+        if isinstance(self.result, StrictDocument):
+            payload = self.result.model_dump(mode="json", exclude_none=True)
+            stored = payload.pop("summary", {})
+            if not isinstance(stored, Mapping):
+                self.warn("malformed_evidence", "Stored result summary has the wrong type.")
+                stored = {}
+            if stored:
+                return dict(stored)
+            # Existing V1 summaries remain authoritative for historic rows; newly typed
+            # fields fill gaps without losing their bounded legacy presentation evidence.
+            values = dict(payload)
+            values.pop("outcome", None)
+            values.pop("message", None)
+            return values
         return {}
 
     def summary_value(

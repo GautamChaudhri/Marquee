@@ -1,9 +1,8 @@
 """TV pipeline routes — run triggers, review queue, series history (design 04 §10).
 
-Mirrors ``marquee/api/routes/pipeline.py``'s movie endpoints. Every TV
-execution goes through ``poster_pipeline_tv_batch`` (batch_runner); there is
-no single-asset TV run type, since even one show or one season is "a batch
-of one" through the shared batch engine.
+Mirrors ``marquee/api/routes/pipeline.py``'s movie endpoints. TV producers
+seal ticketless ``poster_pipeline_tv_batch`` control parents whose show and
+season assets execute as canonical, non-deploying ``poster_pipeline`` children.
 """
 
 from __future__ import annotations
@@ -15,6 +14,7 @@ from collections import defaultdict
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
@@ -22,6 +22,7 @@ from sqlalchemy import exists, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.api.deps import enforce_rate_limit, get_rate_limiter
+from marquee.api.job_submission import JobSubmissionResponse, submission_response
 from marquee.api.results import poster_url
 from marquee.api.routes.jobs import job_summary
 from marquee.api.routes.pipeline import (
@@ -31,7 +32,14 @@ from marquee.api.routes.pipeline import (
 )
 from marquee.config import settings
 from marquee.core.heal import latest_heal_summary
-from marquee.core.jobs import job_manager
+from marquee.core.jobs.batches import BatchScope, create_fixed_batch
+from marquee.core.jobs.contracts import TriggerKind
+from marquee.core.jobs.submission import (
+    Initiator,
+    SubjectLocator,
+    SubmissionError,
+    SubmissionIntent,
+)
 from marquee.core.pipeline_config import pipeline_settings
 from marquee.core.rate_limit import RateLimiter
 from marquee.core.tv_queries import season_downloaded, series_visible
@@ -289,21 +297,58 @@ def _expand_assets(series_rows: list[Series], seasons_by_series: dict[int, list[
     return assets
 
 
+
+def _poster_child_intents(
+    *,
+    assets: list[dict],
+    series_by_id: dict[int, Series],
+    season_by_id: dict[int, Season],
+    nonce: str,
+    initiator: Initiator,
+    priority: int,
+) -> list[SubmissionIntent]:
+    """Freeze TV asset identity and labels before creating canonical children."""
+    children: list[SubmissionIntent] = []
+    for asset in assets:
+        series = series_by_id[asset["series_id"]]
+        if asset["media_type"] == "series":
+            subject_kind = "series"
+            subject_id = series.id
+            title = series.title
+            request_subject = {"series_id": series.id}
+            reference = f"tv:{series.tmdb_id}"
+        else:
+            season = season_by_id[asset["season_id"]]
+            subject_kind = "season"
+            subject_id = season.id
+            title = f"{series.title} · Season {season.season_number}"
+            request_subject = {"season_id": season.id}
+            reference = f"tv:{series.tmdb_id}:season:{season.season_number}"
+        children.append(
+            SubmissionIntent(
+                job_type="poster_pipeline",
+                request={
+                    **request_subject,
+                    "tmdb_id": series.tmdb_id,
+                    "title": title,
+                    "source_descriptors": [{"provider": "tmdb", "reference": reference}],
+                },
+                subject=SubjectLocator(kind=subject_kind, reference=str(subject_id)),
+                trigger=TriggerKind.BATCH,
+                initiator=initiator,
+                idempotency_key=f"poster_pipeline:batch-{nonce}-{subject_kind}-{subject_id}",
+                priority=priority,
+            )
+        )
+    return children
+
+
 @router.post("/batch", status_code=202)
 async def run_tv_pipeline_batch(
     body: TVBatchRunRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
-):
-    """Enqueue one stage-batched TV run.
-
-    ``scope="missing"``: series with a null show poster get a series asset,
-    and each downloaded season with a null poster gets a season asset.
-    ``scope="all"``: every asset (show + all downloaded seasons) for every
-    visible series with a TMDB id. ``scope="selected"``: the same full
-    expansion as "all", restricted to ``series_ids`` — the operator explicitly
-    picked these shows, so re-running one refreshes everything, not just
-    what's missing.
-    """
+) -> JobSubmissionResponse:
+    """Create a ticketless TV poster parent with one immutable child per asset."""
     scope = body.scope
     if scope not in ("missing", "all", "selected"):
         raise HTTPException(status_code=400, detail=f"unknown scope {scope!r}")
@@ -313,16 +358,21 @@ async def run_tv_pipeline_batch(
     query = select(Series).where(series_visible(), Series.tmdb_id.is_not(None))
     if scope == "selected":
         query = query.where(Series.id.in_(body.series_ids))
-    series_rows = (await db.execute(query.order_by(Series.id))).scalars().all()
-    series_ids = [s.id for s in series_rows]
+    series_rows = list((await db.execute(query.order_by(Series.id))).scalars().all())
+    series_ids = [series.id for series in series_rows]
     season_rows = (
-        (
-            await db.execute(
-                select(Season).where(Season.series_id.in_(series_ids), season_downloaded())
+        list(
+            (
+                await db.execute(
+                    select(Season).where(
+                        Season.series_id.in_(series_ids),
+                        season_downloaded(),
+                    )
+                )
             )
+            .scalars()
+            .all()
         )
-        .scalars()
-        .all()
         if series_ids
         else []
     )
@@ -340,21 +390,37 @@ async def run_tv_pipeline_batch(
             detail=f"batch of {len(assets)} assets exceeds PIPELINE_BATCH_MAX_MOVIES={cap}",
         )
 
-    job = await job_manager.create(
-        db,
-        job_type="poster_pipeline_tv_batch",
-        payload={"assets": assets, "scope": scope},
+    nonce = uuid4().hex
+    initiator = Initiator(kind="system", identifier="pipeline-tv-api")
+    children = _poster_child_intents(
+        assets=assets,
+        series_by_id={series.id: series for series in series_rows},
+        season_by_id={season.id: season for season in season_rows},
+        nonce=nonce,
+        initiator=initiator,
         priority=80,
-        resources={"gpu": 1, "network_external": 1},
-        subject_type="pipeline_tv_batch",
-        subject_id=scope,
-        max_attempts=1,
-        idempotency_key=f"poster-tv-batch:{scope}:{int(time.time() // 30)}",
     )
-    response = job_summary(job)
-    response["asset_count"] = len(assets)
-    response["series_count"] = len({a["series_id"] for a in assets})
-    return response
+    if db.in_transaction():
+        await db.commit()
+    try:
+        async with db.begin():
+            result = await create_fixed_batch(
+                db,
+                parent_job_type="poster_pipeline_tv_batch",
+                parent_request={"scope": scope, "selection_count": len(assets)},
+                scope=BatchScope(
+                    reference=nonce,
+                    display_name="Poster analysis · television",
+                    summary=f"{scope} · {len(assets)} show and season assets",
+                ),
+                trigger=TriggerKind.BATCH,
+                initiator=initiator,
+                idempotency_key=f"poster_pipeline_tv_batch:manual-{nonce}",
+                children=children,
+            )
+    except SubmissionError as exc:
+        raise HTTPException(status_code=422, detail=exc.code) from exc
+    return submission_response(result.parent)
 
 
 class SeriesRunRequest(BaseModel):
@@ -368,8 +434,8 @@ async def run_series_pipeline(
     body: SeriesRunRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
     limiter: Annotated[RateLimiter, Depends(get_rate_limiter)],
-):
-    """Enqueue a stage-batched run for one series (show and/or its seasons)."""
+) -> JobSubmissionResponse:
+    """Create a ticketless parent for one show's selected poster assets."""
     series = (await db.execute(select(Series).where(Series.id == series_id))).scalar_one_or_none()
     if series is None:
         raise HTTPException(status_code=404, detail=f"Series id={series_id} not found")
@@ -383,17 +449,21 @@ async def run_series_pipeline(
         raise HTTPException(
             status_code=400, detail=f"Series {series.title!r} has no TMDB ID — run sync"
         )
-
     if body.include not in ("all_missing", "show", "seasons"):
         raise HTTPException(status_code=400, detail=f"unknown include {body.include!r}")
 
-    downloaded_seasons = (
-        (await db.execute(select(Season).where(Season.series_id == series_id, season_downloaded())))
+    downloaded_seasons = list(
+        (
+            await db.execute(
+                select(Season)
+                .where(Season.series_id == series_id, season_downloaded())
+                .order_by(Season.id)
+            )
+        )
         .scalars()
         .all()
     )
-    downloaded_by_id = {s.id: s for s in downloaded_seasons}
-
+    downloaded_by_id = {season.id: season for season in downloaded_seasons}
     assets: list[dict] = []
     if body.include == "all_missing":
         if series.poster_path is None:
@@ -401,41 +471,58 @@ async def run_series_pipeline(
     elif body.include == "show":
         assets.append({"media_type": "series", "series_id": series.id})
     if body.include in ("all_missing", "seasons"):
-        if body.season_ids:
-            requested = set(body.season_ids)
-            unknown = requested - downloaded_by_id.keys()
-            if unknown:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"season ids not downloaded/known: {sorted(unknown)}",
-                )
-            target_seasons = [downloaded_by_id[sid] for sid in requested]
-        else:
-            target_seasons = list(downloaded_seasons)
+        requested = set(body.season_ids or ())
+        unknown = requested - downloaded_by_id.keys()
+        if unknown:
+            raise HTTPException(
+                status_code=400,
+                detail=f"season ids not downloaded/known: {sorted(unknown)}",
+            )
+        target_seasons = [
+            season for season in downloaded_seasons if not requested or season.id in requested
+        ]
         for season in target_seasons:
             if body.include == "all_missing" and season.poster_path is not None:
                 continue
-            assets.append({"media_type": "season", "series_id": series.id, "season_id": season.id})
-
+            assets.append(
+                {"media_type": "season", "series_id": series.id, "season_id": season.id}
+            )
     if not assets:
         raise HTTPException(status_code=400, detail="no assets to run")
 
     enforce_rate_limit(limiter, f"pipeline:tv:{series_id}", settings.RATE_PIPELINE_RUN_SECONDS)
-    limiter.record(f"pipeline:tv:{series_id}")
-    job = await job_manager.create(
-        db,
-        job_type="poster_pipeline_tv_batch",
-        payload={"assets": assets, "scope": f"series:{series_id}"},
+    nonce = uuid4().hex
+    initiator = Initiator(kind="system", identifier="pipeline-tv-api")
+    children = _poster_child_intents(
+        assets=assets,
+        series_by_id={series.id: series},
+        season_by_id=downloaded_by_id,
+        nonce=nonce,
+        initiator=initiator,
         priority=85,
-        resources={"gpu": 1, "network_external": 1},
-        subject_type="pipeline_tv_batch",
-        subject_id=str(series_id),
-        max_attempts=1,
-        idempotency_key=f"poster-tv-series:{series_id}:{int(time.time() // settings.RATE_PIPELINE_RUN_SECONDS)}",
     )
-    response = job_summary(job)
-    response["asset_count"] = len(assets)
-    return response
+    if db.in_transaction():
+        await db.commit()
+    try:
+        async with db.begin():
+            result = await create_fixed_batch(
+                db,
+                parent_job_type="poster_pipeline_tv_batch",
+                parent_request={"scope": "series", "selection_count": len(assets)},
+                scope=BatchScope(
+                    reference=nonce,
+                    display_name=f"Poster analysis · {series.title}",
+                    summary=f"{len(assets)} show and season assets",
+                ),
+                trigger=TriggerKind.BATCH,
+                initiator=initiator,
+                idempotency_key=f"poster_pipeline_tv_batch:series-{series_id}-{nonce}",
+                children=children,
+            )
+    except SubmissionError as exc:
+        raise HTTPException(status_code=422, detail=exc.code) from exc
+    limiter.record(f"pipeline:tv:{series_id}")
+    return submission_response(result.parent)
 
 
 # ---------------------------------------------------------------------------

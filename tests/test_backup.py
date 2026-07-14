@@ -262,22 +262,32 @@ def test_only_system_noop_is_dispatch_enabled_and_executable() -> None:
     assert JOB_DEFINITION_REGISTRY.enabled_types == {
         "system_noop",
         "library_sync",
+        "poster_pipeline",
         "letterbox_detect",
         "letterbox_detect_episode",
         "letterbox_detect_tv_scope",
         "subtitle_scan",
         "subtitle_policy_audit",
         "dovi_analyze",
+        "learned_head_train",
+        "poster_rescan",
+        "taste_map",
+        "taste_rebuild",
     }
     assert set(EXECUTION_HANDLERS) == {
         "system_noop",
         "library_sync",
+        "poster_pipeline",
         "letterbox_detect",
         "letterbox_detect_episode",
         "letterbox_detect_tv_scope",
         "subtitle_scan",
         "subtitle_policy_audit",
         "dovi_analyze",
+        "learned_head_train",
+        "poster_rescan",
+        "taste_map",
+        "taste_rebuild",
     }
 
     for definition in JOB_DEFINITION_REGISTRY:

@@ -178,6 +178,7 @@ def test_unregistered_presenter_key_raises():
 
 def test_poster_pipeline_detail_golden():
     job = make_job(
+        request={"movie_id": 11, "title": "Blade Runner"},
         result={
             "outcome": "succeeded",
             "message": "Selected candidate 3 of 47.",

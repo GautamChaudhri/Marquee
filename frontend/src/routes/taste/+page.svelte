@@ -138,22 +138,17 @@
 			rebuildJobId = job.job_id;
 			toast('Taste rebuild queued', 'info');
 			stopRebuild?.();
-			stopRebuild = trackJob(
-				fetch,
-				job.job_id,
-				{
-					onProgress: ({ status: s, detail }) => {
-						rebuildStatus = s;
-						rebuildDetail = detail;
-					},
-					onDone: (j) => {
-						rebuilding = false;
-						toast(`Taste rebuild ${j.status}`, j.status === 'succeeded' ? 'good' : 'bad');
-						void refresh();
-					}
+			stopRebuild = trackJob(fetch, job.job_id, {
+				onProgress: ({ status: s, detail }) => {
+					rebuildStatus = s;
+					rebuildDetail = detail;
 				},
-				{ eventsUrl: job.events_url }
-			);
+				onDone: (j) => {
+					rebuilding = false;
+					toast(`Taste rebuild ${j.status}`, j.status === 'succeeded' ? 'good' : 'bad');
+					void refresh();
+				}
+			});
 		} catch (e) {
 			rebuilding = false;
 			toast(e instanceof Error ? e.message : 'Rebuild failed to start', 'bad');
@@ -190,22 +185,17 @@
 			const job = await retrainHead(fetch, library);
 			toast('Key Art Engine training queued', 'info');
 			stopHead?.();
-			stopHead = trackJob(
-				fetch,
-				job.job_id,
-				{
-					onProgress: ({ status: s, detail }) => {
-						headStatus = s;
-						headDetailProgress = detail;
-					},
-					onDone: (j) => {
-						headTraining = false;
-						toast(`Key Art Engine ${j.status}`, j.status === 'succeeded' ? 'good' : 'bad');
-						void refresh();
-					}
+			stopHead = trackJob(fetch, job.job_id, {
+				onProgress: ({ status: s, detail }) => {
+					headStatus = s;
+					headDetailProgress = detail;
 				},
-				{ eventsUrl: job.events_url }
-			);
+				onDone: (j) => {
+					headTraining = false;
+					toast(`Key Art Engine ${j.status}`, j.status === 'succeeded' ? 'good' : 'bad');
+					void refresh();
+				}
+			});
 		} catch (e) {
 			headTraining = false;
 			toast(e instanceof Error ? e.message : 'Training failed to start', 'bad');

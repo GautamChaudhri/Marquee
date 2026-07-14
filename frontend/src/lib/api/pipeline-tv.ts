@@ -1,6 +1,6 @@
 import { apiGet, apiSend, type Fetch } from './client';
+import type { components } from './generated/openapi';
 import type {
-	JobSummary,
 	PipelineMetrics,
 	SeriesArtworkEventsResponse,
 	SeriesRunsResponse,
@@ -9,6 +9,8 @@ import type {
 	TvReviewQueue,
 	TvRunQueue
 } from './types';
+
+type JobSubmissionResponse = components['schemas']['JobSubmissionResponse'];
 
 export function getTvSummary(fetchFn: Fetch): Promise<TvPipelineSummary> {
 	return apiGet<TvPipelineSummary>(fetchFn, '/pipeline/tv/summary');
@@ -21,16 +23,21 @@ export function getTvRunQueue(fetchFn: Fetch): Promise<TvRunQueue> {
 export function runTvBatch(
 	fetchFn: Fetch,
 	body: { scope: 'missing' | 'all' | 'selected'; series_ids?: number[] }
-): Promise<JobSummary> {
-	return apiSend<JobSummary>(fetchFn, 'POST', '/pipeline/tv/batch', body);
+): Promise<JobSubmissionResponse> {
+	return apiSend<JobSubmissionResponse>(fetchFn, 'POST', '/pipeline/tv/batch', body);
 }
 
 export function runSeries(
 	fetchFn: Fetch,
 	seriesId: number,
 	body: { include: 'all_missing' | 'show' | 'seasons'; season_ids?: number[] }
-): Promise<JobSummary> {
-	return apiSend<JobSummary>(fetchFn, 'POST', `/pipeline/tv/series/${seriesId}/run`, body);
+): Promise<JobSubmissionResponse> {
+	return apiSend<JobSubmissionResponse>(
+		fetchFn,
+		'POST',
+		`/pipeline/tv/series/${seriesId}/run`,
+		body
+	);
 }
 
 export function getTvReviewQueue(

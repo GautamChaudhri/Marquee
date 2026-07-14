@@ -19,6 +19,7 @@ from marquee.models.letterbox import LetterboxEvent, LetterboxState
 from marquee.models.letterbox_reencode import LetterboxReencodeArtifact
 from marquee.models.media_backup import MediaBackup
 from marquee.models.media_file import EpisodeMediaFile, MediaFile
+from marquee.models.ml_publication import MlActivePublication
 from marquee.models.movie import Movie
 from marquee.models.pipeline_run import PipelineRun
 from marquee.models.radarr_overlay import (
@@ -69,6 +70,7 @@ __all__ = [
     "EpisodeMediaFile",
     "MediaFile",
     "MediaBackup",
+    "MlActivePublication",
     "SubtitleInventory",
     "SubtitleTrack",
     "ManagedSubtitleAsset",

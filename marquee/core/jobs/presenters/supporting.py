@@ -68,6 +68,9 @@ _SYNC_COUNT_FACTS = (
 )
 
 _ML_FACTS = (
+    ("family", "Family"),
+    ("version", "Version"),
+    ("checksum", "Checksum"),
     ("namespace", "Library"),
     ("model_name", "Model"),
     ("profile_version", "Profile version"),
@@ -110,6 +113,7 @@ class SupportingPresenter(JobPresenter):
                 if value:
                     facts.append(Fact(label=label, value=TextValue(text=value)))
             for key, label in (
+                ("active_generation", "Generation"),
                 ("exemplar_count", "Exemplars"),
                 ("negative_count", "Negative exemplars"),
                 ("label_count", "Feedback labels"),
@@ -118,6 +122,11 @@ class SupportingPresenter(JobPresenter):
                 value = ctx.summary_value(key, int)
                 if isinstance(value, int) and value >= 0:
                     facts.append(Fact(label=label, value=NumberValue(value=value)))
+            metrics = ctx.summary_value("metrics", dict)
+            if metrics:
+                input_count = metrics.get("input_count")
+                if isinstance(input_count, int) and not isinstance(input_count, bool):
+                    facts.append(Fact(label="Inputs", value=NumberValue(value=input_count)))
 
         if self.definition_is_maintenance():
             subject = ctx.subject

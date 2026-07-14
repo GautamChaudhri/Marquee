@@ -181,24 +181,19 @@
 			batchRunning = true;
 			batchDetail = {};
 			stopBatch?.();
-			stopBatch = trackJob(
-				fetch,
-				jobId,
-				{
-					onProgress: ({ status, detail }) => {
-						batchStatus = status;
-						batchDetail = detail;
-					},
-					onDone: (j) => {
-						batchRunning = false;
-						batchStatus = j.status;
-						storeBatchId(null);
-						toast(`Batch ${j.status}`, j.status === 'succeeded' ? 'good' : 'bad');
-						void refreshAll();
-					}
+			stopBatch = trackJob(fetch, jobId, {
+				onProgress: ({ status, detail }) => {
+					batchStatus = status;
+					batchDetail = detail;
 				},
-				{ eventsUrl: job.events_url }
-			);
+				onDone: (j) => {
+					batchRunning = false;
+					batchStatus = j.status;
+					storeBatchId(null);
+					toast(`Batch ${j.status}`, j.status === 'succeeded' ? 'good' : 'bad');
+					void refreshAll();
+				}
+			});
 		}
 	}
 
@@ -244,28 +239,28 @@
 			const job = await runBatch(fetch, { scope, movie_ids: movieIds });
 			batchJobId = job.job_id;
 			storeBatchId(job.job_id);
-			const n = job.movie_count ?? 0;
-			toast(`Batch queued — ${n} movie${n === 1 ? '' : 's'}`, 'info');
+			const selectedCount = scope === 'selected' ? (movieIds?.length ?? 0) : null;
+			toast(
+				selectedCount === null
+					? 'Poster-analysis batch queued'
+					: `Batch queued — ${selectedCount} movie${selectedCount === 1 ? '' : 's'}`,
+				'info'
+			);
 			if (scope === 'selected') selected.clear();
 			stopBatch?.();
-			stopBatch = trackJob(
-				fetch,
-				job.job_id,
-				{
-					onProgress: ({ status, detail }) => {
-						batchStatus = status;
-						batchDetail = detail;
-					},
-					onDone: (j) => {
-						batchRunning = false;
-						batchStatus = j.status;
-						storeBatchId(null);
-						toast(`Batch ${j.status}`, j.status === 'succeeded' ? 'good' : 'bad');
-						void refreshAll();
-					}
+			stopBatch = trackJob(fetch, job.job_id, {
+				onProgress: ({ status, detail }) => {
+					batchStatus = status;
+					batchDetail = detail;
 				},
-				{ eventsUrl: job.events_url }
-			);
+				onDone: (j) => {
+					batchRunning = false;
+					batchStatus = j.status;
+					storeBatchId(null);
+					toast(`Batch ${j.status}`, j.status === 'succeeded' ? 'good' : 'bad');
+					void refreshAll();
+				}
+			});
 		} catch (e) {
 			batchRunning = false;
 			const msg =
@@ -292,15 +287,10 @@
 		if (m.tmdb_id == null || batchRunning) return;
 		try {
 			const ref = await triggerRun(fetch, m.id);
-			await goto(`/pipeline/runs/${ref.run_id}`);
+			await goto(ref.detail_url);
 		} catch (e) {
 			if (e instanceof ApiError && e.status === 409) {
-				const d = (e.body as { detail?: { active_run_id?: string } })?.detail;
-				if (d?.active_run_id) {
-					await goto(`/pipeline/runs/${d.active_run_id}`);
-					return;
-				}
-				toast('A run is already active for this movie', 'info');
+				toast('The same poster analysis was already submitted', 'info');
 			} else {
 				toast(e instanceof Error ? e.message : 'Run failed to start', 'bad');
 			}

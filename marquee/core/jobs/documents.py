@@ -163,6 +163,130 @@ class DoviAnalyzeRequestV1(StrictDocument):
         return self
 
 
+class PosterSourceDescriptorV1(StrictDocument):
+    """Server-owned, path-free descriptor for one configured candidate source."""
+
+    provider: Literal["tmdb", "fanart", "local_cache"] = "tmdb"
+    reference: str = Field(min_length=1, max_length=160, pattern=r"^[A-Za-z0-9._:-]+$")
+
+
+class PosterPipelineRequestV1(StrictDocument):
+    """Immutable, non-deploying poster-analysis intent for one domain subject."""
+
+    movie_id: int | None = Field(default=None, ge=1)
+    series_id: int | None = Field(default=None, ge=1)
+    season_id: int | None = Field(default=None, ge=1)
+    episode_id: int | None = Field(default=None, ge=1)
+    tmdb_id: int | None = Field(default=None, ge=1)
+    title: str = Field(min_length=1, max_length=300)
+    source_descriptors: tuple[PosterSourceDescriptorV1, ...] = Field(
+        default=(), max_length=12
+    )
+    profile_version: str | None = Field(default=None, max_length=128)
+    model_version: str | None = Field(default=None, max_length=128)
+    prior_poster_checksum: str | None = Field(
+        default=None, min_length=64, max_length=64, pattern=r"^[0-9a-f]+$"
+    )
+
+    @model_validator(mode="after")
+    def require_one_subject(self) -> PosterPipelineRequestV1:
+        if sum(value is not None for value in (self.movie_id, self.series_id, self.season_id, self.episode_id)) != 1:
+            raise ValueError("poster analysis requires exactly one subject")
+        return self
+
+
+class PosterBatchRequestV1(StrictDocument):
+    """Sealed server-selected scope for a canonical poster-analysis batch."""
+
+    scope: Literal["selected", "missing", "all", "series"] = "selected"
+    selection_count: int = Field(ge=0, le=10_000)
+
+
+class PosterCandidateSummaryV1(StrictDocument):
+    candidate_id: str = Field(min_length=1, max_length=80, pattern=r"^[A-Za-z0-9._:-]+$")
+    source: str = Field(min_length=1, max_length=80)
+    decision: Literal["recommended", "accepted", "rejected", "unavailable"]
+    gate: str | None = Field(default=None, max_length=80)
+    score: float | None = Field(default=None, ge=0.0, le=1.0)
+    artifact_key: str | None = Field(default=None, max_length=300)
+
+
+class PosterPipelineResultV1(StrictDocument):
+    """Typed analysis result while retaining bounded legacy summary readability."""
+
+    outcome: Literal["succeeded", "no_change", "review_required"] = "succeeded"
+    message: str | None = Field(default=None, max_length=1000)
+    summary: dict[str, JsonValue] = Field(default_factory=dict)
+    subject_label: str = Field(default="Unknown subject", min_length=1, max_length=300)
+    source_count: int = Field(default=0, ge=0, le=100)
+    candidate_count: int = Field(default=0, ge=0, le=100)
+    accepted_count: int = Field(default=0, ge=0, le=100)
+    rejected_by_gate: dict[str, int] = Field(default_factory=dict)
+    recommendation: PosterCandidateSummaryV1 | None = None
+    profile_version: str | None = Field(default=None, max_length=128)
+    model_version: str | None = Field(default=None, max_length=128)
+    prior_poster_checksum: str | None = Field(default=None, max_length=64)
+    review_reason: str | None = Field(default=None, max_length=300)
+    warnings: tuple[str, ...] = Field(default=(), max_length=20)
+    artifact_ids: tuple[int, ...] = Field(default=(), max_length=12)
+
+
+class TasteRebuildRequestV1(StrictDocument):
+    source: Literal["training_dir", "library"] = "training_dir"
+    library: Literal["movies", "tv"] = "movies"
+    expected_generation: int = Field(default=0, ge=0)
+    seed: int = Field(default=0, ge=0, le=2**31 - 1)
+
+
+class TasteMapRequestV1(StrictDocument):
+    library: Literal["movies", "tv"] = "movies"
+    expected_generation: int = Field(default=0, ge=0)
+    seed: int = Field(default=0, ge=0, le=2**31 - 1)
+
+
+class LearnedHeadTrainRequestV1(StrictDocument):
+    library: Literal["movies", "tv"] = "movies"
+    expected_generation: int = Field(default=0, ge=0)
+    seed: int = Field(default=0, ge=0, le=2**31 - 1)
+
+
+class MlPublicationResultV1(StrictDocument):
+    outcome: Literal["succeeded", "no_change", "superseded"] = "succeeded"
+    family: Literal["taste_profile", "taste_map", "learned_head"]
+    version: str = Field(min_length=1, max_length=128)
+    checksum: str = Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]+$")
+    expected_generation: int = Field(ge=0)
+    active_generation: int = Field(ge=0)
+    activated: bool
+    artifact_ids: tuple[int, ...] = Field(default=(), max_length=12)
+    metrics: dict[str, float | int] = Field(default_factory=dict)
+
+
+class PosterRescanRequestV1(StrictDocument):
+    scope: Literal["all", "movie", "series"] = "all"
+    movie_id: int | None = Field(default=None, ge=1)
+    series_id: int | None = Field(default=None, ge=1)
+
+    @model_validator(mode="after")
+    def require_scoped_subject(self) -> PosterRescanRequestV1:
+        if self.scope == "all" and (self.movie_id is not None or self.series_id is not None):
+            raise ValueError("all-poster rescan cannot carry a subject id")
+        if self.scope == "movie" and (self.movie_id is None or self.series_id is not None):
+            raise ValueError("movie-poster rescan requires only movie_id")
+        if self.scope == "series" and (self.series_id is None or self.movie_id is not None):
+            raise ValueError("series-poster rescan requires only series_id")
+        return self
+
+
+class PosterRescanResultV1(StrictDocument):
+    outcome: Literal["succeeded", "no_change"] = "succeeded"
+    observed: int = Field(ge=0)
+    changed: int = Field(ge=0)
+    missing: int = Field(ge=0)
+    artifact_ids: tuple[int, ...] = Field(default=(), max_length=4)
+    warnings: tuple[str, ...] = Field(default=(), max_length=20)
+
+
 class BuiltInIntentV1(StrictDocument):
     """Strict union of current legacy intent fields; server policy is never accepted."""
 

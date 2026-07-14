@@ -12954,7 +12954,7 @@
     },
     "/api/pipeline/batch": {
       "post": {
-        "description": "Enqueue one stage-batched run over many movies (OCR/DINO load once).",
+        "description": "Create a ticketless poster-analysis parent with one immutable child per movie.",
         "operationId": "run_pipeline_batch_api_pipeline_batch_post",
         "requestBody": {
           "content": {
@@ -12970,7 +12970,9 @@
           "202": {
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/JobSubmissionResponse"
+                }
               }
             },
             "description": "Successful Response"
@@ -13135,7 +13137,7 @@
     },
     "/api/pipeline/movie/{movie_id}/run": {
       "post": {
-        "description": "Start a pipeline run for a movie. 202 + run_id, or 409 if one is active.",
+        "description": "Submit one canonical, non-deploying poster-analysis job for a movie.",
         "operationId": "run_pipeline_api_pipeline_movie__movie_id__run_post",
         "parameters": [
           {
@@ -13152,7 +13154,9 @@
           "202": {
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/JobSubmissionResponse"
+                }
               }
             },
             "description": "Successful Response"
@@ -13196,12 +13200,15 @@
     },
     "/api/pipeline/rescan-posters": {
       "post": {
+        "description": "Submit the canonical read-only poster projection rescan.",
         "operationId": "rescan_posters_api_pipeline_rescan_posters_post",
         "responses": {
           "202": {
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/JobSubmissionResponse"
+                }
               }
             },
             "description": "Successful Response"
@@ -13488,7 +13495,7 @@
     },
     "/api/pipeline/tv/batch": {
       "post": {
-        "description": "Enqueue one stage-batched TV run.\n\n``scope=\"missing\"``: series with a null show poster get a series asset,\nand each downloaded season with a null poster gets a season asset.\n``scope=\"all\"``: every asset (show + all downloaded seasons) for every\nvisible series with a TMDB id. ``scope=\"selected\"``: the same full\nexpansion as \"all\", restricted to ``series_ids`` — the operator explicitly\npicked these shows, so re-running one refreshes everything, not just\nwhat's missing.",
+        "description": "Create a ticketless TV poster parent with one immutable child per asset.",
         "operationId": "run_tv_pipeline_batch_api_pipeline_tv_batch_post",
         "requestBody": {
           "content": {
@@ -13504,7 +13511,9 @@
           "202": {
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/JobSubmissionResponse"
+                }
               }
             },
             "description": "Successful Response"
@@ -13741,7 +13750,7 @@
     },
     "/api/pipeline/tv/series/{series_id}/run": {
       "post": {
-        "description": "Enqueue a stage-batched run for one series (show and/or its seasons).",
+        "description": "Create a ticketless parent for one show's selected poster assets.",
         "operationId": "run_series_pipeline_api_pipeline_tv_series__series_id__run_post",
         "parameters": [
           {
@@ -13768,7 +13777,9 @@
           "202": {
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/JobSubmissionResponse"
+                }
               }
             },
             "description": "Successful Response"
@@ -14817,7 +14828,7 @@
     },
     "/api/taste/head/retrain": {
       "post": {
-        "description": "Train the learned head (UI \"Key Art Engine\") from accumulated labels.\n\nPicks accumulate labels + exemplars into storage; this is the manual\ntrigger that (re)trains the head from them, through the job manager. Cheap\nnumpy fit — no GPU reservation.",
+        "description": "Submit an immutable learned-head publication job.",
         "operationId": "retrain_learned_head_api_taste_head_retrain_post",
         "parameters": [
           {
@@ -14835,7 +14846,9 @@
           "202": {
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/JobSubmissionResponse"
+                }
               }
             },
             "description": "Successful Response"
@@ -14956,6 +14969,7 @@
     },
     "/api/taste/heads/{artifact_id}/activate": {
       "post": {
+        "description": "Reject manual pointer mutation; publication belongs to the owning job.",
         "operationId": "activate_learned_head_api_taste_heads__artifact_id__activate_post",
         "parameters": [
           {
@@ -15128,7 +15142,7 @@
     },
     "/api/taste/map/rebuild": {
       "post": {
-        "description": "Force a taste-map rebuild in the background.",
+        "description": "Submit an immutable taste-map publication job.",
         "operationId": "rebuild_map_api_taste_map_rebuild_post",
         "parameters": [
           {
@@ -15146,7 +15160,9 @@
           "202": {
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/JobSubmissionResponse"
+                }
               }
             },
             "description": "Successful Response"
@@ -15299,6 +15315,7 @@
     },
     "/api/taste/profiles/{artifact_id}/activate": {
       "post": {
+        "description": "Reject manual pointer mutation; publication belongs to the owning job.",
         "operationId": "activate_taste_profile_api_taste_profiles__artifact_id__activate_post",
         "parameters": [
           {
@@ -15478,7 +15495,7 @@
     },
     "/api/taste/retrain": {
       "post": {
-        "description": "Rebuild the taste profile in the background (job platform).\n\n``source=\"training_dir\"`` (default) uses the curated positive folder;\n``source=\"library\"`` rebuilds from every deployed poster.\n``library=\"movies\"`` (default) | ``\"tv\"``.",
+        "description": "Submit an immutable taste-profile publication job.",
         "operationId": "retrain_taste_api_taste_retrain_post",
         "requestBody": {
           "content": {
@@ -15501,7 +15518,9 @@
           "202": {
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/JobSubmissionResponse"
+                }
               }
             },
             "description": "Successful Response"
@@ -15525,7 +15544,7 @@
     },
     "/api/taste/retrain/cancel": {
       "post": {
-        "description": "Request cancellation through the durable job lifecycle.",
+        "description": "Request cancellation through the canonical durable lifecycle.",
         "operationId": "cancel_retrain_taste_api_taste_retrain_cancel_post",
         "parameters": [
           {

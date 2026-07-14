@@ -67,7 +67,7 @@ def test_source_inventory_matches_freeze() -> None:
     )
     assert route_types == set(ROUTE_CONSTRUCTED_TYPES)
     assert len(MEDIA_OPERATION_TYPES) == 12
-    assert len(PARENT_ONLY_TYPES) == 8
+    assert len(PARENT_ONLY_TYPES) == 10
     assert len(BUILTIN_JOB_TYPES) == 49
 
 

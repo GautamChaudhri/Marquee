@@ -1,4 +1,5 @@
 import { apiGet, apiSend, type Fetch } from './client';
+import type { components } from './generated/openapi';
 import type {
 	BatchScope,
 	CacheSizes,
@@ -8,16 +9,17 @@ import type {
 	OcrLabelClearResult,
 	OcrLabelRunState,
 	PipelineMetrics,
-	PipelineRunRef,
 	PipelineSummary,
 	ReviewQueueAutoApproveResult,
 	ReviewQueue,
 	RunResultsResponse
 } from './types';
 
-/** Start a single-movie pipeline run. 202 + run_id, or 409 if one is active. */
-export function triggerRun(fetchFn: Fetch, movieId: number): Promise<PipelineRunRef> {
-	return apiSend<PipelineRunRef>(fetchFn, 'POST', `/pipeline/movie/${movieId}/run`);
+type JobSubmissionResponse = components['schemas']['JobSubmissionResponse'];
+
+/** Submit canonical non-deploying analysis for one movie. */
+export function triggerRun(fetchFn: Fetch, movieId: number): Promise<JobSubmissionResponse> {
+	return apiSend<JobSubmissionResponse>(fetchFn, 'POST', `/pipeline/movie/${movieId}/run`);
 }
 
 /** Full results for a run (auto-pick, ranked, rejected-by-stage), or — while it
@@ -26,20 +28,20 @@ export function getRunResults(fetchFn: Fetch, runId: string): Promise<RunResults
 	return apiGet<RunResultsResponse>(fetchFn, `/pipeline/runs/${runId}`);
 }
 
-/** Enqueue one stage-batched run over many movies (OCR/DINO load once). */
+/** Submit a canonical ticketless parent over server-frozen movie children. */
 export function runBatch(
 	fetchFn: Fetch,
 	body: { scope: BatchScope; movie_ids?: number[] }
-): Promise<JobSummary> {
-	return apiSend<JobSummary>(fetchFn, 'POST', '/pipeline/batch', body);
+): Promise<JobSubmissionResponse> {
+	return apiSend<JobSubmissionResponse>(fetchFn, 'POST', '/pipeline/batch', body);
 }
 
 export function getPipelineSummary(fetchFn: Fetch): Promise<PipelineSummary> {
 	return apiGet<PipelineSummary>(fetchFn, '/pipeline/summary');
 }
 
-export function rescanPosters(fetchFn: Fetch): Promise<JobSummary> {
-	return apiSend<JobSummary>(fetchFn, 'POST', '/pipeline/rescan-posters', {});
+export function rescanPosters(fetchFn: Fetch): Promise<JobSubmissionResponse> {
+	return apiSend<JobSubmissionResponse>(fetchFn, 'POST', '/pipeline/rescan-posters', {});
 }
 
 export function backupAllPosters(fetchFn: Fetch): Promise<JobSummary> {

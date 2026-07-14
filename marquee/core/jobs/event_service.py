@@ -52,6 +52,7 @@ SEMANTIC_EVENT_KEYS = frozenset(
         "job.unsafe",
         "log.available",
         "log.truncated",
+        "ml.publication.activated",
         "progress.updated",
     }
 )

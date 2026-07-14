@@ -1081,3 +1081,271 @@ Shared implementer log for JMC4A → JMC4B → JMC4C. Append after every phase c
   recovery creation). It will be protected by timestamped local recovery branch/tag and a verified
   complete external Git bundle. The compact-tree resolver is the local annotated tag
   `jmc4b-complete`, created only after exact tree/parent verification.
+
+## JMC4C Phase C0 completion — 2026-07-14
+
+- Preconditions reconciled to the compact plan base `jmc4b-complete` =
+  `0dd6b9ad4e5a26cc73513c9fcacc53472ec5352f`, tree
+  `43b5be86908c1b86a03b0d66ad912d67e9c6beec`, sole parent
+  `490bc1d5d5a31f6d31397a8c3aed3c1b27c2c307` (`jmc4a-complete`). The annotated tag and the
+  configured author resolve to the one compact JMC4B commit; the worktree was clean before C0.
+  The prior JMC4B recovery branch `recovery/jmc4b-20260714T203252Z`, annotated tag
+  `recovery/jmc4b-pre-squash-20260714T203252Z`, and verified external bundle
+  `/home/quartermaster/backups/Marquee/marquee-jmc4b-pre-squash-20260714T203252Z.bundle` all
+  resolve to the same certified tree.
+- C0 phase commit `71e57eb` (`freeze jmc4c poster contracts`), configured author. It adds the
+  machine-checkable pre-migration inventory for exactly `poster_pipeline`,
+  `poster_pipeline_batch`, `poster_pipeline_tv_batch`, `taste_rebuild`, `taste_map`,
+  `learned_head_train`, and `poster_rescan`. The freeze records their definitions, executors,
+  routes, legacy lifecycle/progress calls, direct artifact activation paths, and the exact
+  deferred mutation set. It also proves all `media_write` definitions remain dispatch-disabled.
+- Reproduced JMC4A/JMC4B focused producer/batch/schedule and family gates: **80 passed**. The
+  pre-C0 retained full suite was **1100 passed / 21 retained failures / 2 warnings**; after the
+  four C0 freeze tests it is **1104 passed / 21 retained failures / 2 warnings** (1125 total;
+  zero errors, skips, or xfails) on the owned guarded-reset PostgreSQL database
+  `postgresql+asyncpg://marquee@127.0.0.1:55446/marquee_test`. The known failures did not grow.
+  `ruff check marquee tests`, `git diff --check`, Alembic drift check, OpenAPI export/check
+  (197 paths), frontend lint/build, and `svelte-check` (0 errors; inherited 16 warnings) pass.
+- Capability record: Python 3.13.14, pytest 9.0.3, PostgreSQL 18.3 disposable instance, and
+  NVIDIA GeForce RTX 3070 (driver 595.80, 8192 MiB). The owned environment has ONNX Runtime
+  1.27.0, OpenCV 4.13.0.92, Torch 2.7.1+cu126, PaddleOCR 3.7.0, PaddlePaddle GPU 3.3.1, plus
+  bundled CLIP ViT-B/32 and DINOv2 ViT-S/14 ONNX models. Live OCR/CLIP/DINO work remains an
+  operator smoke; deterministic fakes are mandatory for the C phases. RTK is used for all
+  development/Git commands; its optional gain database is unavailable, while the required proxy
+  commands operate normally. The required ByteRover MCP is available, but the optional `brv` CLI
+  is not installed; this was reported before work began.
+- Frozen operating budget remains the B5 production-like envelope: 28 of 32 PostgreSQL
+  connections reserved under the worker/API/event-writer plan, four worker tasks, bounded
+  artifacts/workspaces, and no product `media_write` dispatch. No production schedule changed:
+  only canonical `library-sync` and `audio-subs-deep-scan` remain allowed. C1 starts from this
+  evidence only; it must replace the poster run manager/page bridge and keep the production
+  definition disabled until C2 certification.
+
+## JMC4C Phase C1 completion — 2026-07-14
+
+- Phase commit `b243bbf` (`build poster workspace contract`), configured author. It introduces
+  strict, path-free, server-policy-only poster/ML request and result documents plus the confined
+  `execute_poster_pipeline(context, request)` boundary. Candidate descriptors are bounded opaque
+  provider references; no request accepts a filesystem/model path, GPU allocation, artifact key,
+  timeout, retry policy, or artwork operation.
+- The execution primitive has no run-manager, page-progress bridge, detached worker, legacy job
+  manager, cancellation registry, or artwork/active-model writer dependency. It uses the immutable
+  execution context, honest named progress stages, workspace-only report staging, JMC3 physical
+  artifact registration, and a fence check before evidence publication. A stale attempt quarantines
+  workspace evidence rather than attaching a canonical result. The analysis definition is now
+  declared `read_only` but remains disabled; legacy batch definitions and all destructive work are
+  unchanged until their dedicated phase.
+- Focused contract/manifest/presenter tests: **16 passed**. An initial full run exposed six
+  expected contract-test deltas while the batch migration was prematurely represented as parent
+  work; those changes were reverted to C3 scope, the typed request golden was corrected, and the
+  corrected retained full gate is **1108 passed / 21 retained failures / 2 warnings** (1129 total,
+  zero errors, skips, or xfails) in 63.48s. `ruff check marquee tests`, `git diff --check`,
+  OpenAPI check (197 paths), frontend lint/build, and `svelte-check` (0 errors; inherited 16
+  warnings) pass. No schema migration or frontend contract change was required.
+- No live-model workload ran in C1 because the product definition remains disabled. The C0 owned
+  PostgreSQL, storage/connection/worker budgets, schedule allowlist, and operator-only DOVI/GPU
+  exceptions remain in force. C2 may register and enable only the single poster pipeline after
+  canonical route, retry/cancellation, artifact, presenter, and strict non-deployment gates pass.
+
+## JMC4C Phase C2 completion — 2026-07-14
+
+- Phase commit `c0debbb` (`migrate-poster-pipeline`), configured author. The single-subject
+  `poster_pipeline` is now the sole enabled canonical GPU/read-only executor for poster analysis.
+  Its movie route freezes server-owned subject and TMDB source descriptors and submits through
+  the canonical JMC2 submission service; the legacy built-in handler, direct `job_manager.create`
+  call, response aliases, and frontend `run_id`/custom-events bridge are removed.
+- The typed request/result manifest, canonical inventory, worker registration, presenter summary,
+  OpenAPI schema, generated TypeScript, and both movie callers agree on the canonical contract.
+  The result document cannot claim deployment, restore, heal, reset, active-artwork, or path
+  mutation. Execution remains confined to the attempt workspace and registers only immutable
+  analysis evidence after a current-attempt fence check.
+- Focused route, workspace, manifest, presenter, worker-registration, freeze, and backup gates
+  passed (**54 tests** in the principal focused set, with the exact older freeze/worker sets also
+  reconciled). The retained full gate is **1111 passed / 21 retained failures / 2 warnings**
+  (1132 total, zero errors, skips, or xfails) in 61.15s on the owned PostgreSQL database. The
+  failure set is exactly the established baseline. `ruff check marquee tests`, `git diff --check`,
+  OpenAPI generate/check, frontend lint/build, and `svelte-check` (0 errors; inherited 16 warnings)
+  pass.
+- No live OCR/CLIP/DINO smoke was used for certification; deterministic candidate fixtures remain
+  the required CI evidence and the owned GPU/model capability remains operator-smoke evidence.
+  The legacy movie/TV batch definitions remain disabled and unchanged pending C3 conversion to
+  ticketless canonical parent jobs. Production schedule allowlists and all `media_write`
+  definitions remain unchanged and disabled.
+
+## JMC4C Phase C3 completion — 2026-07-14
+
+- Phase commit `8ed60bd` (`migrate-poster-batches`), configured author. Both
+  `poster_pipeline_batch` and `poster_pipeline_tv_batch` are now canonical read-only/control,
+  determinate, fixed-child parent definitions with no PgQueuer executor. Their legacy built-in
+  handlers, run-manager/model-cache ownership, cancellation registry, page-progress bridge, and
+  direct `job_manager.create` producers are removed.
+- Movie-library, TV-library, selected-show, and selected-season producers freeze bounded subject,
+  title, TMDB source, scope, and child count snapshots before sealing a ticketless parent. Every
+  logical artwork decision is one ordinary `poster_pipeline` child with batch provenance. Parent
+  payloads contain only scope/count; aggregate progress/results continue through the JMC4A batch
+  projection instead of copying candidate detail into the parent.
+- C3 also corrects the manifest's reverse parent/child trigger derivation: any enabled leaf named
+  by a canonical parent now explicitly allows `batch` provenance. Focused PostgreSQL/PgQueuer,
+  route, parent/child persistence, inventory, worker, backup, and freeze gates passed (**62 tests**
+  in the expanded contract set plus **14** corrected regression/route tests). The retained full
+  gate is **1113 passed / 21 retained failures / 2 warnings** (1134 total; zero errors, skips, or
+  xfails) in 61.36s. The failure set is exactly the established baseline.
+- `ruff check marquee tests`, `git diff --check`, OpenAPI export/generate/check (197 paths),
+  frontend lint/build, and `svelte-check` (0 errors; inherited 16 warnings) pass. Frontend movie,
+  TV, and show-detail callers now consume canonical submission responses and canonical event
+  discovery. Schedules, storage/connection budgets, live-model exception, and every disabled
+  `media_write` definition remain unchanged. C4 may now migrate immutable ML publication and the
+  non-destructive poster rescan.
+
+## JMC4C Phase C4 completion — 2026-07-14
+
+- Phase commit `e87ee54` (`migrate-ml-and-poster-rescan`), configured author. The enabled
+  `taste_rebuild`, `taste_map`, and `learned_head_train` families now have exactly one canonical
+  executor each. Every run freezes its expected active generation and deterministic seed, writes
+  only to its attempt workspace, registers a checksum-verified immutable family artifact, checks
+  cancellation and fence ownership immediately before activation, and compare-and-sets the
+  PostgreSQL active pointer under a family advisory lock. Conflicts return a bounded superseded
+  result and never overwrite the prior version. Manual profile/head activation endpoints now
+  reject pointer mutation as job-owned.
+- Alembic head `0006_jmc4c` adds the fenced `ml_active_publications` pointer table with immutable
+  artifact and job/attempt provenance. Upgrade, downgrade to `0005_jmc4b`, re-upgrade, application
+  schema-marker migration, and Alembic drift checks pass. Real PostgreSQL tests prove first
+  activation, conflict preservation, cancellation immediately before activation, stale-writer
+  rejection, immutable on-disk permissions, and semantic activation evidence.
+- `poster_rescan` is now a single canonical `media_read`/read-only executor and route. It resolves
+  server-owned subject snapshots, confines translated paths, hashes bounded files, retains a
+  bounded immutable observation report, and performs only fenced derived poster path/checksum
+  projection updates. Focused execution proves changed and `no_change` outcomes while the observed
+  poster remains present; the handler contains no delete, replace, heal, restore, deploy, or fetch
+  operation. Its legacy executor and direct producer are removed.
+- Focused C4 publication/rescan tests pass (**8 tests**) along with the expanded migration,
+  manifest, presenter, route, freeze, backup, and historical-contract sets (**66 tests** in the
+  principal regression set). The retained full gate is **1120 passed / 21 retained failures / 2
+  warnings** (1141 total; zero errors, skips, or xfails) in 63.34s on the owned PostgreSQL
+  database. The failure set is exactly the established C0 baseline. `ruff check marquee tests`,
+  `git diff --check`, Alembic check and migration round-trip, OpenAPI export/generate/check (197
+  paths), frontend lint/build, and `svelte-check` (0 errors; inherited 16 warnings) pass.
+- The immutable JSON family artifacts certify the publication coordinator, provenance, validation
+  round-trip, cancellation, and fencing without downloading or executing optional live models.
+  A controlled operator smoke with the configured CLIP/DINO/OCR assets remains deferred; it may
+  publish only through this coordinator. Schedule allowlists, the 28-of-32 PostgreSQL connection
+  budget, bounded evidence/workspace policies, and every disabled `media_write` product definition
+  remain unchanged for C5.
+
+## JMC4C Phase C5 completion — 2026-07-14
+
+- Phase commit `a3fa386` (`certify jmc4c nonmutating surface`), configured author. The final
+  machine-checkable certification fixes the enabled leaf manifest at exactly `dovi_analyze`,
+  `learned_head_train`, `letterbox_detect`, `letterbox_detect_episode`,
+  `letterbox_detect_tv_scope`, `library_sync`, `poster_pipeline`, `poster_rescan`,
+  `subtitle_policy_audit`, `subtitle_scan`, `system_noop`, `taste_map`, and `taste_rebuild`.
+  Those thirteen definitions are exactly the canonical PgQueuer execution-handler keys. The
+  poster movie/television batch definitions remain ticketless control parents, and every enabled
+  Chunk 4 product leaf is read-only.
+- The exact C15 mutation/operator-owned set remains dispatch-disabled: `audio_remove`,
+  `audio_reorder`, `backup_create`, `dovi_convert`, `job_retention_purge`, `letterbox_apply`,
+  `letterbox_apply_tv_scope`, `letterbox_heal`, `letterbox_reencode`, `letterbox_remove`,
+  `letterbox_revert_tv_scope`, `pipeline_cache_clear`, `poster_backup_all`,
+  `poster_deploy_reset`, `poster_heal`, `poster_maintenance`, `radarr_upgrade`, `subtitle_embed`,
+  `subtitle_extract`, `subtitle_generate`, `subtitle_metadata`, `subtitle_policy`,
+  `subtitle_remove`, `subtitle_restore`, `system_metrics_purge`, and `track_remove`. Static proof
+  also confirms that no enabled definition has the `media_write` execution class.
+- Product schedule state is unchanged and exact: only `library-sync` producing `library_sync` and
+  `audio-subs-deep-scan` producing the ticketless `audio_subs_deep_scan` parent exist in the
+  production catalog. Occurrences remain globally disabled outside the explicit activation
+  allowlist; neither schedule can produce a `media_write` leaf.
+- The final focused JMC4C smoke is **21 passed**. The retained full-suite gate is **1124 passed /
+  21 retained failures / 2 warnings** (1145 total) in 66.27s on the owned PostgreSQL database,
+  with zero new failures, errors, skips, or xfails. The 21 failures exactly match C0: nine dev-OCR
+  fixtures, TV dev reset, effective OCR workers, run conflict/refusal/retrain cancellation,
+  two sync replacement fixtures, system metrics, heads backfill, taste duplicate normalization,
+  and the 8 GiB GPU recommendation. A supplemental all-JMC glob passed 197 tests and exposed only
+  three established order-dependent JMC1 readiness failures when isolated from full-suite order;
+  it introduced no JMC4C failure.
+- `ruff check marquee tests`, `git diff --check`, Alembic drift at head `0006_jmc4c`, deterministic
+  OpenAPI and generated TypeScript checks (197 paths), frontend lint/build, and `svelte-check`
+  (0 errors; inherited 16 warnings) pass. The four-worker, 28-of-32 PostgreSQL connection,
+  bounded event/log/artifact/workspace, API/query, and immutable-storage budgets remain the
+  certified B5/C0 envelope and showed no saturation regression in the retained acceptance sets.
+- Native/tool capability is unchanged: ffprobe/FFmpeg/ImageMagick and deterministic model fixtures
+  were exercised; `dovi_tool` is absent. Optional live OCR/CLIP/DINO publication and controlled
+  DOVI deep-analysis remain honest operator smokes. They cannot bypass the fenced coordinator or
+  enable any deferred mutation. C5 certification is complete; the only remaining JMC4C work is
+  the mandatory final certification entry, verified external recovery material, and exact
+  tree-preserving history compaction from `jmc4b-complete`.
+
+## JMC4C final pre-squash certification — 2026-07-14
+
+- Exact plan base: annotated `jmc4b-complete`, peeled commit
+  `0dd6b9ad4e5a26cc73513c9fcacc53472ec5352f`, tree
+  `43b5be86908c1b86a03b0d66ad912d67e9c6beec`, sole parent
+  `490bc1d5d5a31f6d31397a8c3aed3c1b27c2c307`. The range after that base is clean,
+  linear, merge-free, JMC4C-only, configured-author-only, and unpushed. The branch is ahead of
+  `origin/job-manager`; no recovery or product ref was pushed.
+- Complete ordered phase record: C0 `71e57eb26183d730772e7daf6231d8b5a50e0b66`,
+  `e90f04c2643ef8185da64afd0d4fad3e16ff4a6a`; C1
+  `b243bbfa2754765948d77c538260e957354b6ef7`,
+  `9173f385ff8f9729453603c751b3aec398433e67`; C2
+  `c0debbbb3c5cd93faf355268e84ae7c8b12453f0`,
+  `1af3ea5160b37346bdccbbb2eaea9a9634da48a6`; C3
+  `8ed60bdd75f4f58f9e53f8291d0403365f546a9a`,
+  `2d306cc667e2bff38b8697da2928958312c49d31`; C4
+  `e87ee54881e343a240403f1d43e1526930af78f0`,
+  `059b900507d458652b4f03b4a7c5ac1928681636`; C5
+  `a3fa386e58da545d655be79b0fff571107f0b151`,
+  `9ff3ff41647f82b1b6575f9b8f6c16cb18d55e61`; and this final certification entry.
+- Full certification: **1124 passed / 21 retained failures / 2 warnings** (1145 total) in 66.27s,
+  with no new failures, errors, skips, or xfails. The exact retained baseline remains the nine
+  dev-OCR fixtures, TV dev reset, effective OCR workers, run conflict, refused run/retrain,
+  retrain cancellation, two sync replacement fixtures, system metrics, active-head backfill,
+  duplicate taste-profile normalization, and 8 GiB GPU recommendation. Focused post-C5 JMC4C
+  smoke is **21 passed**; all phase-specific success/no-change/failure/retry/cancellation,
+  redelivery/fence, bounded parent, artifact, presenter, schedule, saturation, and failure-injection
+  acceptance sets passed. Ruff, Alembic drift/head, OpenAPI/type drift, frontend check/lint/build,
+  and `git diff --check` pass; svelte-check reports 0 errors and the inherited 16 warnings.
+- Enabled leaf/PgQueuer executor manifest is exactly `dovi_analyze`, `learned_head_train`,
+  `letterbox_detect`, `letterbox_detect_episode`, `letterbox_detect_tv_scope`, `library_sync`,
+  `poster_pipeline`, `poster_rescan`, `subtitle_policy_audit`, `subtitle_scan`, `system_noop`,
+  `taste_map`, and `taste_rebuild`. Canonical `poster_pipeline_batch` and
+  `poster_pipeline_tv_batch` are ticketless control parents. Every enabled Chunk 4 product leaf is
+  read-only and no enabled definition has `media_write` execution authority.
+- Exact C15 deferred/disabled manifest is `audio_remove`, `audio_reorder`, `backup_create`,
+  `dovi_convert`, `job_retention_purge`, `letterbox_apply`, `letterbox_apply_tv_scope`,
+  `letterbox_heal`, `letterbox_reencode`, `letterbox_remove`, `letterbox_revert_tv_scope`,
+  `pipeline_cache_clear`, `poster_backup_all`, `poster_deploy_reset`, `poster_heal`,
+  `poster_maintenance`, `radarr_upgrade`, `subtitle_embed`, `subtitle_extract`,
+  `subtitle_generate`, `subtitle_metadata`, `subtitle_policy`, `subtitle_remove`,
+  `subtitle_restore`, `system_metrics_purge`, and `track_remove`. All other destructive/operator
+  integrations remain fail closed under their existing definition policy.
+- Schedule state is exact: `library-sync` produces `library_sync`, and
+  `audio-subs-deep-scan` produces the ticketless `audio_subs_deep_scan` parent. These are the only
+  production catalog entries and the only explicitly allowlisted occurrence families; global
+  production occurrences remain disabled elsewhere. Neither schedule creates a destructive or
+  `media_write` child.
+- Certified budgets remain four worker tasks; 28 of 32 PostgreSQL connections across API, worker,
+  scheduler, and event-writer roles; bounded subject/candidate/image caps; bounded parent summaries,
+  event/log/artifact pages, API/query payloads, attempt workspaces, and retained immutable artifact
+  storage. Saturation/fairness, advisory-gate, schedule uniqueness, API latency, event lag,
+  throughput, batch-query, and storage-cap suites stayed within the B5/C0 envelope.
+- Schema/contract state is Alembic `0006_jmc4c`, deterministic OpenAPI with 197 paths, and current
+  openapi-typescript 7.13.0 output. The owned test capability is Python 3.13.14, pytest 9.0.3,
+  PostgreSQL 18.3, NVIDIA RTX 3070/8192 MiB, ONNX Runtime 1.27.0, OpenCV 4.13.0.92, Torch
+  2.7.1+cu126, PaddleOCR 3.7.0, PaddlePaddle GPU 3.3.1, and bundled CLIP ViT-B/32 plus DINOv2
+  ViT-S/14 ONNX assets. Deterministic model fixtures and native ffprobe/FFmpeg/ImageMagick paths
+  were certified. `dovi_tool` is absent; controlled live OCR/CLIP/DINO publication and DOVI deep
+  analysis remain operator smokes and may not bypass canonical fencing or enable mutation.
+- Deviations are documented and bounded: the disposable database used port 55446; the optional
+  RTK gain database and `brv` CLI were unavailable while RTK proxying and ByteRover MCP operated;
+  the isolated all-JMC glob retains three order-dependent JMC1 readiness failures that pass in the
+  authoritative full-suite order. No safety, ancestry, schema, contract, or acceptance gate was
+  weakened. Chunk 4 certifies analysis and immutable derived artifacts, not poster deployment,
+  healing/reset/restore, or source-media mutation.
+- Pending operator actions: install/verify `dovi_tool` on controlled workers; run optional live
+  DOVI deep-analysis and OCR/CLIP/DINO fixture smokes through the canonical workspace/publication
+  path; retain every recovery ref/bundle; do not enable deferred mutation without Chunk 5 design
+  authority. Chunk 5 may start only from the compact resolver tag `jmc4c-complete` after its tree,
+  parent, recovery, and post-rewrite smoke are verified.
+- **Pre-squash tip:** `HEAD` at this final pre-squash timeline commit, resolved immediately before
+  recovery creation. It will be protected by timestamped local recovery branch/tag and a verified
+  complete repository-external bundle. The intended compact-tree resolver is the local annotated
+  tag `jmc4c-complete`; the timeline is not edited after compaction.

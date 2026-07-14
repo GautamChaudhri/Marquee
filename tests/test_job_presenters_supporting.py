@@ -197,22 +197,20 @@ def test_taste_rebuild_presents_model_facts():
         subject_snapshot=MODEL_SNAPSHOT,
         result={
             "outcome": "succeeded",
-            "message": None,
-            "summary": {
-                "namespace": "movies",
-                "model_name": "clip-vit-b-32",
-                "profile_version": "taste-v4",
-                "device": "cuda:0",
-                "exemplar_count": 430,
-                "negative_count": 55,
-                "artifact": "taste_profile.clip-vit-b-32.npz",
-            },
+            "family": "taste_profile",
+            "version": "taste-v4",
+            "checksum": "a" * 64,
+            "expected_generation": 3,
+            "active_generation": 4,
+            "activated": True,
+            "artifact_ids": [1],
+            "metrics": {"input_count": 430, "seed": 7},
         },
     )
     presentation = present_job(job, definition_for("taste_rebuild"))
     facts = next(s for s in presentation.sections if s.kind == "facts")
     labels = {fact.label for fact in facts.facts}
-    assert {"Library", "Model", "Profile version", "Device", "Exemplars"} <= labels
+    assert {"Family", "Version", "Checksum", "Generation", "Inputs"} <= labels
 
 
 def test_maintenance_dry_run_and_metrics():

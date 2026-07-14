@@ -51,6 +51,13 @@ class ArtifactPolicy:
 
 
 ARTIFACT_POLICIES: dict[str, ArtifactPolicy] = {
+    "taste_profile": ArtifactPolicy(
+        ".json", frozenset({"application/json"}), 1024 * 1024
+    ),
+    "taste_map": ArtifactPolicy(".json", frozenset({"application/json"}), 1024 * 1024),
+    "learned_head": ArtifactPolicy(
+        ".json", frozenset({"application/json"}), 1024 * 1024
+    ),
     "command_report": ArtifactPolicy(".json", frozenset({"application/json"}), 1024 * 1024),
     "validation_report": ArtifactPolicy(
         ".json", frozenset({"application/json"}), 1024 * 1024

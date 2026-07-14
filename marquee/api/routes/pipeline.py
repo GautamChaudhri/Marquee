@@ -10,6 +10,7 @@ from collections import Counter, defaultdict
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
@@ -17,6 +18,7 @@ from sqlalchemy import exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.api.deps import enforce_rate_limit, get_rate_limiter
+from marquee.api.job_submission import JobSubmissionResponse, submission_response
 from marquee.api.library_serializers import enrich_movie
 from marquee.api.results import (
     build_results_payload,
@@ -29,6 +31,16 @@ from marquee.api.routes.library import _coverage_by_media_file
 from marquee.config import settings
 from marquee.core.heal import latest_heal_summary
 from marquee.core.jobs import job_manager
+from marquee.core.jobs.batches import BatchScope, create_fixed_batch
+from marquee.core.jobs.contracts import TriggerKind
+from marquee.core.jobs.submission import (
+    IdempotencyConflictError,
+    Initiator,
+    SubjectLocator,
+    SubmissionError,
+    SubmissionIntent,
+    submit_job,
+)
 from marquee.core.pipeline_config import PipelineSettings, pipeline_settings
 from marquee.core.rate_limit import RateLimiter
 from marquee.database import get_db
@@ -167,8 +179,8 @@ async def run_pipeline(
     movie_id: int,
     db: Annotated[AsyncSession, Depends(get_db)],
     limiter: Annotated[RateLimiter, Depends(get_rate_limiter)],
-):
-    """Start a pipeline run for a movie. 202 + run_id, or 409 if one is active."""
+) -> JobSubmissionResponse:
+    """Submit one canonical, non-deploying poster-analysis job for a movie."""
     movie = (await db.execute(select(Movie).where(Movie.id == movie_id))).scalar_one_or_none()
     if movie is None:
         raise HTTPException(status_code=404, detail=f"Movie id={movie_id} not found")
@@ -183,20 +195,35 @@ async def run_pipeline(
 
     enforce_rate_limit(limiter, f"pipeline:{movie_id}", settings.RATE_PIPELINE_RUN_SECONDS)
     limiter.record(f"pipeline:{movie_id}")
-    job = await job_manager.create(
-        db,
-        job_type="poster_pipeline",
-        payload={"movie_id": movie.id},
-        priority=90,
-        resources={"gpu": 1, "network_external": 1},
-        subject_type="movie",
-        subject_id=movie.id,
-        idempotency_key=f"poster-pipeline:{movie.id}:{int(__import__('time').time() // settings.RATE_PIPELINE_RUN_SECONDS)}",
-    )
-    response = job_summary(job)
-    response["run_id"] = job.id
-    response["results_url"] = f"/api/pipeline/runs/{job.id}"
-    return response
+    if db.in_transaction():
+        await db.commit()
+    try:
+        async with db.begin():
+            result = await submit_job(
+                db,
+                job_type="poster_pipeline",
+                request={
+                    "movie_id": movie.id,
+                    "tmdb_id": movie.tmdb_id,
+                    "title": movie.title,
+                    "source_descriptors": [
+                        {"provider": "tmdb", "reference": f"movie:{movie.tmdb_id}"}
+                    ],
+                },
+                subject=SubjectLocator(kind="movie", reference=str(movie.id)),
+                trigger=TriggerKind.MANUAL,
+                initiator=Initiator(kind="system", identifier="pipeline-api"),
+                idempotency_key=(
+                    f"poster_pipeline:movie:{movie.id}:"
+                    f"{int(time.time() // settings.RATE_PIPELINE_RUN_SECONDS)}"
+                ),
+                priority=90,
+            )
+    except IdempotencyConflictError as exc:
+        raise HTTPException(status_code=409, detail=exc.code) from exc
+    except SubmissionError as exc:
+        raise HTTPException(status_code=422, detail=exc.code) from exc
+    return submission_response(result)
 
 
 
@@ -381,47 +408,75 @@ class BatchRunRequest(BaseModel):
 async def run_pipeline_batch(
     body: BatchRunRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
-):
-    """Enqueue one stage-batched run over many movies (OCR/DINO load once)."""
+) -> JobSubmissionResponse:
+    """Create a ticketless poster-analysis parent with one immutable child per movie."""
     scope = body.scope
     if scope == "selected":
         if not body.movie_ids:
             raise HTTPException(status_code=400, detail="scope=selected requires movie_ids")
-        query = select(Movie.id).where(
+        query = select(Movie).where(
             Movie.id.in_(body.movie_ids), Movie.tmdb_id.is_not(None), _downloaded()
         )
     elif scope == "missing":
-        query = select(Movie.id).where(
+        query = select(Movie).where(
             Movie.poster_path.is_(None), Movie.tmdb_id.is_not(None), _downloaded()
         )
     elif scope == "all":
-        query = select(Movie.id).where(Movie.tmdb_id.is_not(None), _downloaded())
+        query = select(Movie).where(Movie.tmdb_id.is_not(None), _downloaded())
     else:
         raise HTTPException(status_code=400, detail=f"unknown scope {scope!r}")
 
-    movie_ids = list((await db.execute(query.order_by(Movie.id))).scalars().all())
-    if not movie_ids:
+    movies = list((await db.execute(query.order_by(Movie.id))).scalars().all())
+    if not movies:
         raise HTTPException(status_code=404, detail=f"no eligible movies for scope={scope!r}")
     cap = pipeline_settings.PIPELINE_BATCH_MAX_MOVIES
-    if len(movie_ids) > cap:
+    if len(movies) > cap:
         raise HTTPException(
             status_code=400,
-            detail=f"batch of {len(movie_ids)} movies exceeds PIPELINE_BATCH_MAX_MOVIES={cap}",
+            detail=f"batch of {len(movies)} movies exceeds PIPELINE_BATCH_MAX_MOVIES={cap}",
         )
-    job = await job_manager.create(
-        db,
-        job_type="poster_pipeline_batch",
-        payload={"movie_ids": movie_ids, "scope": scope},
-        priority=80,
-        resources={"gpu": 1, "network_external": 1},
-        subject_type="pipeline_batch",
-        subject_id=scope,
-        max_attempts=1,
-        idempotency_key=f"poster-batch:{scope}:{int(time.time() // 30)}",
-    )
-    response = job_summary(job)
-    response["movie_count"] = len(movie_ids)
-    return response
+    nonce = uuid4().hex
+    initiator = Initiator(kind="system", identifier="pipeline-api")
+    children = [
+        SubmissionIntent(
+            job_type="poster_pipeline",
+            request={
+                "movie_id": movie.id,
+                "tmdb_id": movie.tmdb_id,
+                "title": movie.title,
+                "source_descriptors": [
+                    {"provider": "tmdb", "reference": f"movie:{movie.tmdb_id}"}
+                ],
+            },
+            subject=SubjectLocator(kind="movie", reference=str(movie.id)),
+            trigger=TriggerKind.BATCH,
+            initiator=initiator,
+            idempotency_key=f"poster_pipeline:batch-{nonce}-movie-{movie.id}",
+            priority=80,
+        )
+        for movie in movies
+    ]
+    if db.in_transaction():
+        await db.commit()
+    try:
+        async with db.begin():
+            result = await create_fixed_batch(
+                db,
+                parent_job_type="poster_pipeline_batch",
+                parent_request={"scope": scope, "selection_count": len(movies)},
+                scope=BatchScope(
+                    reference=nonce,
+                    display_name="Poster analysis · movies",
+                    summary=f"{scope} · {len(movies)} movies",
+                ),
+                trigger=TriggerKind.BATCH,
+                initiator=initiator,
+                idempotency_key=f"poster_pipeline_batch:manual-{nonce}",
+                children=children,
+            )
+    except SubmissionError as exc:
+        raise HTTPException(status_code=422, detail=exc.code) from exc
+    return submission_response(result.parent)
 
 
 @router.get("/summary")
@@ -490,19 +545,29 @@ async def pipeline_summary(db: Annotated[AsyncSession, Depends(get_db)]):
 
 
 @router.post("/rescan-posters", status_code=202)
-async def rescan_posters(db: Annotated[AsyncSession, Depends(get_db)]):
-    job = await job_manager.create(
-        db,
-        job_type="poster_rescan",
-        payload={},
-        priority=35,
-        resources={"media_read": 1},
-        subject_type="maintenance",
-        subject_id="poster-rescan",
-        max_attempts=1,
-        idempotency_key=f"poster-rescan:{int(time.time() // 30)}",
-    )
-    return job_summary(job)
+async def rescan_posters(
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> JobSubmissionResponse:
+    """Submit the canonical read-only poster projection rescan."""
+    if db.in_transaction():
+        await db.commit()
+    try:
+        async with db.begin():
+            result = await submit_job(
+                db,
+                job_type="poster_rescan",
+                request={"scope": "all"},
+                subject=SubjectLocator(kind="poster_candidate_set", reference="all"),
+                trigger=TriggerKind.MANUAL,
+                initiator=Initiator(kind="system", identifier="pipeline-api"),
+                idempotency_key=f"poster_rescan:all:{int(time.time() // 30)}",
+                priority=35,
+            )
+    except IdempotencyConflictError as exc:
+        raise HTTPException(status_code=409, detail=exc.code) from exc
+    except SubmissionError as exc:
+        raise HTTPException(status_code=422, detail=exc.code) from exc
+    return submission_response(result)
 
 
 @router.post("/backup-all", status_code=202)

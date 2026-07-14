@@ -2126,7 +2126,7 @@ export interface paths {
 		put?: never;
 		/**
 		 * Run Pipeline Batch
-		 * @description Enqueue one stage-batched run over many movies (OCR/DINO load once).
+		 * @description Create a ticketless poster-analysis parent with one immutable child per movie.
 		 */
 		post: operations['run_pipeline_batch_api_pipeline_batch_post'];
 		delete?: never;
@@ -2223,7 +2223,7 @@ export interface paths {
 		put?: never;
 		/**
 		 * Run Pipeline
-		 * @description Start a pipeline run for a movie. 202 + run_id, or 409 if one is active.
+		 * @description Submit one canonical, non-deploying poster-analysis job for a movie.
 		 */
 		post: operations['run_pipeline_api_pipeline_movie__movie_id__run_post'];
 		delete?: never;
@@ -2266,7 +2266,10 @@ export interface paths {
 		};
 		get?: never;
 		put?: never;
-		/** Rescan Posters */
+		/**
+		 * Rescan Posters
+		 * @description Submit the canonical read-only poster projection rescan.
+		 */
 		post: operations['rescan_posters_api_pipeline_rescan_posters_post'];
 		delete?: never;
 		options?: never;
@@ -2428,15 +2431,7 @@ export interface paths {
 		put?: never;
 		/**
 		 * Run Tv Pipeline Batch
-		 * @description Enqueue one stage-batched TV run.
-		 *
-		 *     ``scope="missing"``: series with a null show poster get a series asset,
-		 *     and each downloaded season with a null poster gets a season asset.
-		 *     ``scope="all"``: every asset (show + all downloaded seasons) for every
-		 *     visible series with a TMDB id. ``scope="selected"``: the same full
-		 *     expansion as "all", restricted to ``series_ids`` — the operator explicitly
-		 *     picked these shows, so re-running one refreshes everything, not just
-		 *     what's missing.
+		 * @description Create a ticketless TV poster parent with one immutable child per asset.
 		 */
 		post: operations['run_tv_pipeline_batch_api_pipeline_tv_batch_post'];
 		delete?: never;
@@ -2570,7 +2565,7 @@ export interface paths {
 		put?: never;
 		/**
 		 * Run Series Pipeline
-		 * @description Enqueue a stage-batched run for one series (show and/or its seasons).
+		 * @description Create a ticketless parent for one show's selected poster assets.
 		 */
 		post: operations['run_series_pipeline_api_pipeline_tv_series__series_id__run_post'];
 		delete?: never;
@@ -3150,11 +3145,7 @@ export interface paths {
 		put?: never;
 		/**
 		 * Retrain Learned Head
-		 * @description Train the learned head (UI "Key Art Engine") from accumulated labels.
-		 *
-		 *     Picks accumulate labels + exemplars into storage; this is the manual
-		 *     trigger that (re)trains the head from them, through the job manager. Cheap
-		 *     numpy fit — no GPU reservation.
+		 * @description Submit an immutable learned-head publication job.
 		 */
 		post: operations['retrain_learned_head_api_taste_head_retrain_post'];
 		delete?: never;
@@ -3207,7 +3198,10 @@ export interface paths {
 		};
 		get?: never;
 		put?: never;
-		/** Activate Learned Head */
+		/**
+		 * Activate Learned Head
+		 * @description Reject manual pointer mutation; publication belongs to the owning job.
+		 */
 		post: operations['activate_learned_head_api_taste_heads__artifact_id__activate_post'];
 		delete?: never;
 		options?: never;
@@ -3283,7 +3277,7 @@ export interface paths {
 		put?: never;
 		/**
 		 * Rebuild Map
-		 * @description Force a taste-map rebuild in the background.
+		 * @description Submit an immutable taste-map publication job.
 		 */
 		post: operations['rebuild_map_api_taste_map_rebuild_post'];
 		delete?: never;
@@ -3336,7 +3330,10 @@ export interface paths {
 		};
 		get?: never;
 		put?: never;
-		/** Activate Taste Profile */
+		/**
+		 * Activate Taste Profile
+		 * @description Reject manual pointer mutation; publication belongs to the owning job.
+		 */
 		post: operations['activate_taste_profile_api_taste_profiles__artifact_id__activate_post'];
 		delete?: never;
 		options?: never;
@@ -3406,11 +3403,7 @@ export interface paths {
 		put?: never;
 		/**
 		 * Retrain Taste
-		 * @description Rebuild the taste profile in the background (job platform).
-		 *
-		 *     ``source="training_dir"`` (default) uses the curated positive folder;
-		 *     ``source="library"`` rebuilds from every deployed poster.
-		 *     ``library="movies"`` (default) | ``"tv"``.
+		 * @description Submit an immutable taste-profile publication job.
 		 */
 		post: operations['retrain_taste_api_taste_retrain_post'];
 		delete?: never;
@@ -3430,7 +3423,7 @@ export interface paths {
 		put?: never;
 		/**
 		 * Cancel Retrain Taste
-		 * @description Request cancellation through the durable job lifecycle.
+		 * @description Request cancellation through the canonical durable lifecycle.
 		 */
 		post: operations['cancel_retrain_taste_api_taste_retrain_cancel_post'];
 		delete?: never;
@@ -9625,7 +9618,7 @@ export interface operations {
 					[name: string]: unknown;
 				};
 				content: {
-					'application/json': unknown;
+					'application/json': components['schemas']['JobSubmissionResponse'];
 				};
 			};
 			/** @description Validation Error */
@@ -9773,7 +9766,7 @@ export interface operations {
 					[name: string]: unknown;
 				};
 				content: {
-					'application/json': unknown;
+					'application/json': components['schemas']['JobSubmissionResponse'];
 				};
 			};
 			/** @description Validation Error */
@@ -9822,7 +9815,7 @@ export interface operations {
 					[name: string]: unknown;
 				};
 				content: {
-					'application/json': unknown;
+					'application/json': components['schemas']['JobSubmissionResponse'];
 				};
 			};
 		};
@@ -10049,7 +10042,7 @@ export interface operations {
 					[name: string]: unknown;
 				};
 				content: {
-					'application/json': unknown;
+					'application/json': components['schemas']['JobSubmissionResponse'];
 				};
 			};
 			/** @description Validation Error */
@@ -10251,7 +10244,7 @@ export interface operations {
 					[name: string]: unknown;
 				};
 				content: {
-					'application/json': unknown;
+					'application/json': components['schemas']['JobSubmissionResponse'];
 				};
 			};
 			/** @description Validation Error */
@@ -11133,7 +11126,7 @@ export interface operations {
 					[name: string]: unknown;
 				};
 				content: {
-					'application/json': unknown;
+					'application/json': components['schemas']['JobSubmissionResponse'];
 				};
 			};
 			/** @description Validation Error */
@@ -11373,7 +11366,7 @@ export interface operations {
 					[name: string]: unknown;
 				};
 				content: {
-					'application/json': unknown;
+					'application/json': components['schemas']['JobSubmissionResponse'];
 				};
 			};
 			/** @description Validation Error */
@@ -11628,7 +11621,7 @@ export interface operations {
 					[name: string]: unknown;
 				};
 				content: {
-					'application/json': unknown;
+					'application/json': components['schemas']['JobSubmissionResponse'];
 				};
 			};
 			/** @description Validation Error */

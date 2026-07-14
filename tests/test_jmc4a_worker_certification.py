@@ -190,7 +190,7 @@ def test_readiness_is_sanitized_and_reports_locked_jmc4a_boundaries() -> None:
     assert worker["registered"] == sorted(
         item.value for item in ExecutionClass if item != ExecutionClass.MEDIA_WRITE
     )
-    assert worker["enabled"] == ["control", "cpu", "media_read", "network"]
+    assert worker["enabled"] == ["control", "cpu", "gpu", "media_read", "network"]
     assert worker["later_media_write_limit"] == 1
     assert worker["media_write_product_available"] is False
     assert schedule == {
@@ -220,25 +220,35 @@ def test_final_manifest_keeps_only_system_noop_enabled() -> None:
     assert JOB_DEFINITION_REGISTRY.enabled_types == {
         "system_noop",
         "library_sync",
+        "poster_pipeline",
         "letterbox_detect",
         "letterbox_detect_episode",
         "letterbox_detect_tv_scope",
         "subtitle_scan",
         "subtitle_policy_audit",
         "dovi_analyze",
+        "learned_head_train",
+        "poster_rescan",
+        "taste_map",
+        "taste_rebuild",
     }
     enabled = [definition for definition in JOB_DEFINITION_REGISTRY if definition.enabled]
     assert sorted(
         (definition.job_type, definition.entrypoint) for definition in enabled
     ) == [
         ("dovi_analyze", "media_read"),
+        ("learned_head_train", "cpu"),
         ("letterbox_detect", "media_read"),
         ("letterbox_detect_episode", "media_read"),
         ("letterbox_detect_tv_scope", "media_read"),
         ("library_sync", "network"),
+        ("poster_pipeline", "gpu"),
+        ("poster_rescan", "media_read"),
         ("subtitle_policy_audit", "cpu"),
         ("subtitle_scan", "media_read"),
         ("system_noop", "control"),
+        ("taste_map", "cpu"),
+        ("taste_rebuild", "gpu"),
     ]
     assert all(
         not definition.enabled
