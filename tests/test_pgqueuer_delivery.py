@@ -257,6 +257,53 @@ async def test_fenced_writer_rejects_stale_attempt_ownership(db):
     assert job is not None and (job.phase, job.outcome) == ("running", None)
 
 
+@pytest.mark.parametrize("terminal_action", ["fail", "retry"])
+async def test_mutation_publish_intent_is_quarantined_instead_of_retried(db, terminal_action):
+    job_id, ticket_id = await _canonical_ticket(db)
+    admitted = asyncio.Event()
+    release = asyncio.Event()
+
+    async def executor(payload, context):
+        admitted.set()
+        await release.wait()
+        return payload
+
+    task = asyncio.create_task(
+        deliver_control_job(_transport_job(job_id, ticket_id), _context(), executor=executor)
+    )
+    await admitted.wait()
+    await db.rollback()
+    job = await db.get(Job, job_id)
+    assert job is not None and job.current_attempt_id is not None
+    ownership = AttemptOwnership(
+        job_id=job.id,
+        attempt_id=job.current_attempt_id,
+        fence_token=job.fence_token,
+        dispatch_generation=job.dispatch_generation,
+    )
+    writer = FencedWriter(ownership, JOB_DEFINITION_REGISTRY.get("poster_deploy"))
+    assert await writer.record_publish_intent({"destination_identity": "synthetic-poster"})
+
+    if terminal_action == "retry":
+        disposition = await writer.retry(reason="synthetic crash", delay_seconds=0)
+    else:
+        disposition = await writer.fail(RuntimeError("synthetic crash"))
+    assert disposition == WriteDisposition.APPLIED
+
+    await db.rollback()
+    db.expire_all()
+    job = await db.get(Job, job_id)
+    assert job is not None
+    assert (job.phase, job.outcome) == ("terminal", "unsafe")
+    assert job.error["atomicity"]["uncertain_state"] is True
+    assert job.error["atomicity"]["published"] is False
+    assert job.error["stage"] in {"publication_reconciliation", "retry_classification"}
+
+    release.set()
+    with pytest.raises(DeliveryRejectedError, match="completion conflicted"):
+        await task
+
+
 async def test_pause_before_admission_consumes_no_attempt(db):
     job_id, ticket_id = await _canonical_ticket(db)
     job = await db.get(Job, job_id)

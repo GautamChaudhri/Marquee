@@ -8,16 +8,18 @@ snapshot, and undo round-trip are exercised directly.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 
 from marquee.api.routes import feedback as feedback_route
+from marquee.config import settings
 from marquee.core.pipeline_config import pipeline_settings
 from marquee.main import app
 from marquee.ml import feedback_store
 from marquee.ml.namespaces import get_namespace
-from marquee.models import Movie, PipelineRun, Season, Series
+from marquee.models import Job, Movie, PipelineRun, Season, Series
 
 
 @pytest.fixture
@@ -31,6 +33,7 @@ async def client():
 def labels_to_tmp(tmp_path, monkeypatch):
     """Redirect the labels file to a temp path for every test."""
     monkeypatch.setattr(pipeline_settings, "FEEDBACK_LABELS_PATH", tmp_path / "labels.jsonl")
+    monkeypatch.setattr(pipeline_settings, "FEEDBACK_DEPLOY_DEFAULT", False)
     # Avoid all ML: stub the profile-add and head-retrain hooks.
     monkeypatch.setattr(feedback_route, "_add_to_profile", lambda *a, **k: "Die Hard (1988).jpg")
     monkeypatch.setattr(
@@ -302,15 +305,6 @@ async def test_run_marked_reviewed(client, db, tmp_path):
 async def test_bulk_auto_approve_reviews_entire_queue(client, db, tmp_path, monkeypatch):
     from sqlalchemy import func, select
 
-    async def fake_deploy(_db, subject, _pick, _run):
-        entity = subject.entity
-        entity.poster_path = f"/deployed/{entity.id}.jpg"
-        entity.poster_user_approved = True
-        entity.poster_ai_selected = True
-        return entity.poster_path, None
-
-    monkeypatch.setattr(feedback_route, "_deploy_pick", fake_deploy)
-
     completed_ids: list[int] = []
     for i in range(61):
         movie = Movie(
@@ -365,7 +359,7 @@ async def test_bulk_auto_approve_reviews_entire_queue(client, db, tmp_path, monk
     )
     await db.commit()
 
-    resp = await client.post("/api/pipeline/review-queue/approve-auto", json={"deploy": True})
+    resp = await client.post("/api/pipeline/review-queue/approve-auto", json={"deploy": False})
 
     assert resp.status_code == 200
     data = resp.json()
@@ -384,7 +378,7 @@ async def test_bulk_auto_approve_reviews_entire_queue(client, db, tmp_path, monk
     posters = await db.scalar(
         select(func.count()).select_from(Movie).where(Movie.poster_path.is_not(None))
     )
-    assert posters == 61
+    assert posters == 0
 
     manual = (
         await db.execute(select(PipelineRun).where(PipelineRun.run_id == "manual-run"))
@@ -659,23 +653,30 @@ async def test_tv_series_feedback_writes_to_tv_namespace(client, db, tmp_path):
 
 @pytest.mark.asyncio
 async def test_tv_season_feedback_uses_series_root_and_season_filename(
-    client, db, tmp_path, monkeypatch
+    client, db, tmp_path, monkeypatch, installed_pgqueuer
 ):
     series, season = await _seed_tv_run(db, tmp_path, run_id="tv-season", media_type="season")
-    deploy_calls: list[tuple[str, str, str]] = []
-
-    async def fake_deploy(_db, subject, _pick, _run):
-        deploy_calls.append((subject.media_type, subject.folder_raw, subject.render_filename()))
-        return str(tmp_path / "deployed" / subject.render_filename()), None
-
-    monkeypatch.setattr(feedback_route, "_deploy_pick", fake_deploy)
+    originals = tmp_path / "0-originals"
+    originals.mkdir()
+    (originals / "auto.jpg").write_bytes(b"server-owned-candidate")
+    monkeypatch.setattr(settings, "DATA_DIR", tmp_path)
 
     resp = await client.post(
         "/api/feedback",
-        json={"run_id": "tv-season", "action": "approve", "deploy": True},
+        json={
+            "run_id": "tv-season",
+            "action": "approve",
+            "deploy": True,
+            "idempotency_key": "poster_deploy:feedback-tv-season-1",
+        },
     )
-    assert resp.status_code == 200
-    assert deploy_calls == [("season", series.series_path, f"season{season.season_number:02d}.jpg")]
+    assert resp.status_code == 202
+    job_id = resp.json()["deployment_job"]["job_id"]
+    job = await db.get(Job, job_id)
+    assert job.type == "poster_deploy"
+    assert job.subject_kind == "season"
+    assert job.request["target_id"] == season.id
+    assert not (Path(series.series_path) / f"season{season.season_number:02d}.jpg").exists()
 
     tv_rows = feedback_store.read_all(get_namespace("tv"))
     assert len(tv_rows) == 1

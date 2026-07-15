@@ -225,6 +225,18 @@ class FilesystemBoundary:
                 os.close(parent_fd)
             os.close(root_fd)
 
+    def fsync_parent(self, classified: ClassifiedPath) -> None:
+        """Durably seal directory metadata after a confined publication or deletion."""
+        root_fd, parent_fd, _leaf = self._open_parent(
+            classified.root.resolved(), classified.key
+        )
+        try:
+            os.fsync(parent_fd)
+        finally:
+            if parent_fd != root_fd:
+                os.close(parent_fd)
+            os.close(root_fd)
+
     def create_file(
         self,
         classified: ClassifiedPath,
@@ -321,6 +333,26 @@ class FilesystemBoundary:
         fd, raw = tempfile.mkstemp(prefix=prefix, dir=directory_path)
         try:
             return self.classify(raw, roots=(current.root.name,), write=True), fd
+        except BaseException:
+            os.close(fd)
+            os.unlink(raw)
+            raise
+
+    def temporary_root_file(
+        self, root_name: str, *, prefix: str = ".marquee-"
+    ) -> tuple[ClassifiedPath, int]:
+        """Create destination-filesystem staging directly inside a classified root."""
+        root = self._roots.get(root_name)
+        if root is None:
+            raise FilesystemBoundaryError(f"unknown filesystem root {root_name!r}")
+        if root.access != "read_write":
+            raise FilesystemBoundaryError(f"root {root_name!r} is read-only")
+        if "/" in prefix or "\\" in prefix or "\0" in prefix:
+            raise FilesystemBoundaryError("temporary-file prefix is unsafe")
+        root_path = root.resolved()
+        fd, raw = tempfile.mkstemp(prefix=prefix, dir=root_path)
+        try:
+            return self.classify(raw, roots=(root_name,), write=True), fd
         except BaseException:
             os.close(fd)
             os.unlink(raw)

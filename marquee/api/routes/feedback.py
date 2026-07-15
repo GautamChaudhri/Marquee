@@ -22,11 +22,23 @@ from pathlib import Path
 from typing import Annotated
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from marquee.api.job_submission import submission_response
+from marquee.core.jobs.mutation_documents import PosterCandidateSelectionV1
+from marquee.core.jobs.poster_submission import (
+    PosterSelectionError,
+    pipeline_candidate_selection,
+    submit_poster_leaf,
+)
+from marquee.core.jobs.submission import (
+    IdempotencyConflictError,
+    SubmissionError,
+    SubmissionResult,
+)
 from marquee.core.pipeline_config import pipeline_settings
 from marquee.core.poster_subjects import MEDIA_TYPE_MOVIE, MEDIA_TYPE_SEASON, PosterSubject
 from marquee.database import get_db
@@ -51,6 +63,7 @@ class FeedbackRequest(BaseModel):
     order: list[str] | None = None
     hated: list[str] | None = None
     deploy: bool | None = None  # defaults to FEEDBACK_DEPLOY_DEFAULT
+    idempotency_key: str | None = None
 
 
 class UndoRequest(BaseModel):
@@ -302,33 +315,28 @@ def _maybe_retrain_head(namespace: TasteNamespace) -> dict:
 
 
 async def _deploy_pick(
-    db: AsyncSession, subject: PosterSubject, pick: dict, run: PipelineRun
-) -> tuple[str | None, str | None]:
-    """Deploy the user's chosen poster to the media folder. Best-effort:
-    a deploy failure must not lose the label/profile work already written."""
-    from marquee.core.poster_service import poster_service, tmdb_original_url  # noqa: PLC0415
-
-    # Prefer the recorded (full-res for ranked picks) image; fall back to w500.
-    source = Path(pick.get("image_path") or "")
-    if not source.is_file():
-        source = Path(run.output_dir or "") / "0-originals" / pick["orig_filename"]
-    if not source.is_file():
-        return None, f"source image not found for {pick['orig_filename']}"
-
-    try:
-        result = await poster_service.deploy(
-            db,
-            subject,
-            source,
-            source="feedback",
-            ai_selected=True,
-            user_approved=True,
-            poster_source_url=tmdb_original_url(pick["orig_filename"]),
-        )
-        return result.deployed_path, None
-    except Exception as exc:  # noqa: BLE001 — surfaced, not fatal to the feedback
-        logger.warning("DEPLOY | feedback deploy failed for %s: %s", subject.title, exc)
-        return None, str(exc)
+    db: AsyncSession,
+    subject: PosterSubject,
+    candidate: PosterCandidateSelectionV1,
+    *,
+    idempotency_key: str,
+) -> SubmissionResult:
+    """Snapshot a server-owned selection and submit the canonical deploy leaf."""
+    return await submit_poster_leaf(
+        db,
+        job_type="poster_deploy",
+        target_kind=subject.media_type,
+        target_id=subject.id,
+        request={
+            "target_kind": subject.media_type,
+            "target_id": subject.id,
+            "candidate": candidate.model_dump(mode="json"),
+            "ai_selected": True,
+            "user_approved": True,
+        },
+        idempotency_key=idempotency_key,
+        initiator="feedback-selection",
+    )
 
 
 async def _load_feedback_subject(
@@ -388,6 +396,15 @@ async def apply_feedback_request(
 ) -> dict:
     run, archive, subject, by_name, auto = await _load_feedback_run(db, body.run_id)
     namespace, asset_kind = _namespace_and_kind(run.media_type)
+    deploy_requested = (
+        pipeline_settings.FEEDBACK_DEPLOY_DEFAULT if body.deploy is None else body.deploy
+    )
+    if (
+        deploy_requested
+        and body.action in {"approve", "override", "rank"}
+        and body.idempotency_key is None
+    ):
+        raise HTTPException(status_code=422, detail="idempotency_key is required for deploy")
 
     event_id = uuid4().hex
     ts = datetime.now(UTC).isoformat()
@@ -397,6 +414,7 @@ async def apply_feedback_request(
     pick: dict | None = None
     favorites_exemplars: list[str] = []
     negatives_added: list[str] = []
+    deployment_candidate: PosterCandidateSelectionV1 | None = None
 
     if body.action == "reject_all":
         if auto is None:
@@ -439,6 +457,18 @@ async def apply_feedback_request(
 
         if pick is None:
             raise HTTPException(status_code=400, detail="No auto-pick available to approve")
+        if deploy_requested:
+            try:
+                deployment_candidate = pipeline_candidate_selection(
+                    run,
+                    pick,
+                    selection_facts={
+                        "feedback_action": "approved_selection",
+                        "profile_version": run.scorer_name,
+                    },
+                )
+            except PosterSelectionError as exc:
+                raise HTTPException(status_code=422, detail="poster_selection_invalid") from exc
 
         # Override = pairwise: negative for the auto-pick the user passed over.
         if (
@@ -553,6 +583,19 @@ async def apply_feedback_request(
                 status_code=400,
                 detail=f"order/hated must cover every ranked candidate (missing: {sorted(missing)})",
             )
+        pick = order_cands[0] if order_cands else None
+        if deploy_requested and pick is not None:
+            try:
+                deployment_candidate = pipeline_candidate_selection(
+                    run,
+                    pick,
+                    selection_facts={
+                        "feedback_action": "ranked_selection",
+                        "profile_version": run.scorer_name,
+                    },
+                )
+            except PosterSelectionError as exc:
+                raise HTTPException(status_code=422, detail="poster_selection_invalid") from exc
 
         # Embed each candidate with its (backfilled) normalized features and
         # baseline (pipeline) rank, for the trainer's inversion math.
@@ -615,7 +658,6 @@ async def apply_feedback_request(
             )
         )
         exemplar_added = favorites_exemplars[0] if favorites_exemplars else None
-        pick = order_cands[0] if order_cands else None
 
     else:
         raise HTTPException(status_code=400, detail=f"Unknown action {body.action!r}")
@@ -629,11 +671,23 @@ async def apply_feedback_request(
     head_info = await asyncio.to_thread(_maybe_retrain_head, namespace)
 
     # Deploy the chosen poster to the media folder (approve/override only).
-    deployed_to = None
-    deploy_error = None
-    deploy = pipeline_settings.FEEDBACK_DEPLOY_DEFAULT if body.deploy is None else body.deploy
-    if deploy and pick is not None:
-        deployed_to, deploy_error = await _deploy_pick(db, subject, pick, run)
+    deployment_job = None
+    if deploy_requested and pick is not None:
+        if deployment_candidate is None:
+            raise HTTPException(status_code=422, detail="poster_selection_invalid")
+        try:
+            deployment_job = await _deploy_pick(
+                db,
+                subject,
+                deployment_candidate,
+                idempotency_key=body.idempotency_key,
+            )
+        except IdempotencyConflictError as exc:
+            raise HTTPException(status_code=409, detail=exc.code) from exc
+        except PosterSelectionError as exc:
+            raise HTTPException(status_code=422, detail="poster_selection_invalid") from exc
+        except SubmissionError as exc:
+            raise HTTPException(status_code=422, detail=exc.code) from exc
 
     # Mark the run reviewed.
     run.feedback_event_id = event_id
@@ -650,8 +704,11 @@ async def apply_feedback_request(
         "remapped_to": remapped_to,
         "gate_override": gate_override,
         "head": head_info,
-        "deployed_to": deployed_to,
-        "deploy_error": deploy_error,
+        "deployment_job": (
+            submission_response(deployment_job).model_dump(mode="json")
+            if deployment_job is not None
+            else None
+        ),
     }
 
 
@@ -664,9 +721,13 @@ async def apply_feedback_request(
 async def submit_feedback(
     body: FeedbackRequest,
     request: Request,
+    response: Response,
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    return await apply_feedback_request(body, request, db)
+    result = await apply_feedback_request(body, request, db)
+    if result["deployment_job"] is not None:
+        response.status_code = 202
+    return result
 
 
 @router.post("/undo")

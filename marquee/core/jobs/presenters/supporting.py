@@ -84,6 +84,9 @@ _MAINTENANCE_METRICS = (
     ("records_removed", "Records removed", None),
     ("files_removed", "Files removed", None),
     ("bytes_freed", "Space freed", "bytes"),
+    ("planned_count", "Planned", None),
+    ("processed_count", "Processed", None),
+    ("deleted_count", "Deleted", None),
 )
 
 
@@ -131,13 +134,16 @@ class SupportingPresenter(JobPresenter):
         if self.definition_is_maintenance():
             subject = ctx.subject
             if subject.kind == "maintenance_scope":
+                dry_run = ctx.summary_value("dry_run", bool)
+                if dry_run is None:
+                    dry_run = subject.dry_run
                 facts.append(Fact(label="Scope", value=TextValue(text=subject.scope)))
                 facts.append(
                     Fact(
                         label="Mode",
                         value=BadgeValue(
-                            text="Dry run" if subject.dry_run else "Applied",
-                            tone="neutral" if subject.dry_run else "positive",
+                            text="Dry run" if dry_run else "Applied",
+                            tone="neutral" if dry_run else "positive",
                         ),
                     )
                 )

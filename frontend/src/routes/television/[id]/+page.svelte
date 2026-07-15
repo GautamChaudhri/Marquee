@@ -84,8 +84,7 @@
 		deleting = 'show';
 		try {
 			await deleteSeriesPoster(fetch, series.id);
-			toast('Show poster deleted', 'good');
-			await invalidateAll();
+			toast('Show poster reset queued', 'good');
 		} catch (e) {
 			toast(e instanceof Error ? e.message : 'Failed to delete show poster', 'bad');
 		} finally {
@@ -97,8 +96,7 @@
 		deleting = `season:${seasonId}`;
 		try {
 			await deleteSeasonPoster(fetch, seasonId);
-			toast('Season poster deleted', 'good');
-			await invalidateAll();
+			toast('Season poster reset queued', 'good');
 		} catch (e) {
 			toast(e instanceof Error ? e.message : 'Failed to delete season poster', 'bad');
 		} finally {
@@ -109,8 +107,7 @@
 	async function fallbackToShowPoster(seasonId: number) {
 		try {
 			await useShowPoster(fetch, seasonId);
-			toast('Show poster applied to season', 'good');
-			await invalidateAll();
+			toast('Show poster deployment queued', 'good');
 		} catch (e) {
 			toast(e instanceof Error ? e.message : 'Failed to use show poster', 'bad');
 		}

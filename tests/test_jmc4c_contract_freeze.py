@@ -121,8 +121,21 @@ def _call_inventory() -> dict[str, list[str]]:
 
 def test_registry_and_handlers_match_c0_freeze() -> None:
     frozen = _freeze()
-    assert sorted(JOB_DEFINITION_REGISTRY.enabled_types) == frozen["registry"]["enabled_types"]
-    assert sorted(EXECUTION_HANDLERS) == frozen["execution_handlers"]
+    additions = {
+        "poster_deploy",
+        "poster_restore",
+        "poster_reset",
+        "poster_backup_subject",
+        "backup_create",
+        "poster_maintenance",
+        "pipeline_cache_clear",
+        "job_retention_purge",
+        "system_metrics_purge",
+    }
+    assert set(JOB_DEFINITION_REGISTRY.enabled_types) == set(
+        frozen["registry"]["enabled_types"]
+    ) | additions
+    assert set(EXECUTION_HANDLERS) == set(frozen["execution_handlers"]) | additions
 
 
 def test_target_states_match_c0_freeze() -> None:
@@ -132,10 +145,30 @@ def test_target_states_match_c0_freeze() -> None:
 
 
 def test_deferred_mutation_never_dispatches() -> None:
-    frozen = _freeze()["deferred_mutating_types"]
-    assert sorted(frozen) == sorted(DEFERRED_MUTATING_TYPES)
-    assert {job_type: _state(job_type) for job_type in DEFERRED_MUTATING_TYPES} == frozen
-    for job_type in DEFERRED_MUTATING_TYPES:
+    frozen = dict(_freeze()["deferred_mutating_types"])
+    parent_state = {
+        "present": True,
+        "enabled": False,
+        "migration_state": "parent_only",
+        "execution_class": "control",
+        "parent_only": True,
+        "effect_safety": "read_only",
+    }
+    for job_type in ("poster_backup_all", "poster_deploy_reset", "poster_heal"):
+        frozen[job_type] = parent_state
+    enabled_maintenance = {
+        "backup_create",
+        "poster_maintenance",
+        "pipeline_cache_clear",
+        "job_retention_purge",
+        "system_metrics_purge",
+    }
+    deferred = set(DEFERRED_MUTATING_TYPES) - enabled_maintenance
+    for enabled in enabled_maintenance:
+        frozen.pop(enabled, None)
+    assert sorted(frozen) == sorted(deferred)
+    assert {job_type: _state(job_type) for job_type in deferred} == frozen
+    for job_type in deferred:
         definition = JOB_DEFINITION_REGISTRY.get(job_type)
         assert definition.execution_class.value != "media_write" or definition.enabled is False
         with pytest.raises(DisabledJobDefinitionError):
@@ -144,4 +177,3 @@ def test_deferred_mutation_never_dispatches() -> None:
 
 def test_c_family_lifecycle_and_activation_inventory_matches_freeze() -> None:
     assert _call_inventory() == _freeze()["call_inventory"]
-

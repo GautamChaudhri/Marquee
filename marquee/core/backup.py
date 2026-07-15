@@ -89,10 +89,18 @@ class BackupService:
             cancelled=lambda: False,
             deadline_seconds=30,
         ):
-            identity = await self._backup_identity()
-            result = await asyncio.to_thread(self._create_backup_sync, identity)
-            await asyncio.to_thread(self._rotate_backups_sync, settings.BACKUP_RETENTION_DAYS)
-            return result
+            return await self._create_backup_with_lock_held()
+
+    async def create_backup_with_maintenance_held(self) -> BackupResult:
+        """Create a backup when the canonical attempt already owns the exclusive barrier."""
+        async with self._operation_lock:
+            return await self._create_backup_with_lock_held()
+
+    async def _create_backup_with_lock_held(self) -> BackupResult:
+        identity = await self._backup_identity()
+        result = await asyncio.to_thread(self._create_backup_sync, identity)
+        await asyncio.to_thread(self._rotate_backups_sync, settings.BACKUP_RETENTION_DAYS)
+        return result
 
     async def list_backups(self) -> list[BackupInfo]:
         async with self._operation_lock:

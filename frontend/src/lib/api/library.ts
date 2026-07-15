@@ -9,6 +9,9 @@ import type {
 	SeriesDetail,
 	SeriesListItem
 } from './types';
+import type { components } from './generated/openapi';
+
+type JobSubmissionResponse = components['schemas']['JobSubmissionResponse'];
 
 const useMocks = () => env.PUBLIC_USE_MOCKS === 'true';
 
@@ -29,12 +32,11 @@ export function getMovie(fetch: Fetch, id: number): Promise<MovieDetail> {
 	return apiGet<MovieDetail>(fetch, `/library/movies/${id}`);
 }
 
-export function deleteMoviePoster(
-	fetch: Fetch,
-	id: number
-): Promise<{ ok: boolean; deleted: boolean; error: string | null }> {
-	if (useMocks()) return Promise.resolve({ ok: true, deleted: true, error: null });
-	return apiSend(fetch, 'DELETE', `/library/movies/${id}/poster`);
+export function deleteMoviePoster(fetch: Fetch, id: number): Promise<JobSubmissionResponse> {
+	if (useMocks()) throw new Error('Poster reset jobs are unavailable in mock mode');
+	return apiSend(fetch, 'DELETE', `/library/movies/${id}/poster`, undefined, {
+		'Idempotency-Key': `poster_reset:${crypto.randomUUID()}`
+	});
 }
 
 export function listSeries(
@@ -56,16 +58,14 @@ export function getSeasonPosterUrl(id: number): string {
 	return `/api/library/seasons/${id}/poster`;
 }
 
-export function deleteSeriesPoster(
-	fetch: Fetch,
-	id: number
-): Promise<{ ok: boolean; deleted: boolean; error: string | null }> {
-	return apiSend(fetch, 'DELETE', `/library/series/${id}/poster`);
+export function deleteSeriesPoster(fetch: Fetch, id: number): Promise<JobSubmissionResponse> {
+	return apiSend(fetch, 'DELETE', `/library/series/${id}/poster`, undefined, {
+		'Idempotency-Key': `poster_reset:${crypto.randomUUID()}`
+	});
 }
 
-export function deleteSeasonPoster(
-	fetch: Fetch,
-	id: number
-): Promise<{ ok: boolean; deleted: boolean; error: string | null }> {
-	return apiSend(fetch, 'DELETE', `/library/seasons/${id}/poster`);
+export function deleteSeasonPoster(fetch: Fetch, id: number): Promise<JobSubmissionResponse> {
+	return apiSend(fetch, 'DELETE', `/library/seasons/${id}/poster`, undefined, {
+		'Idempotency-Key': `poster_reset:${crypto.randomUUID()}`
+	});
 }

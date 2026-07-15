@@ -4,6 +4,7 @@ import uuid
 
 import pytest
 import pytest_asyncio
+from pgqueuer import Queries
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
@@ -94,3 +95,17 @@ async def db():
         yield session
         await session.rollback()
         await session.close()
+
+
+@pytest_asyncio.fixture
+async def installed_pgqueuer(db: AsyncSession) -> Queries:
+    """Install PgQueuer tables for route tests that submit real canonical tickets."""
+    async with _get_engine().connect() as connection:
+        raw = await connection.get_raw_connection()
+        queries = Queries.from_asyncpg_connection(raw.driver_connection)
+        await queries.install()
+        try:
+            yield queries
+        finally:
+            await db.rollback()
+            await queries.uninstall()

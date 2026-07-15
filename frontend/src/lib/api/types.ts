@@ -1161,6 +1161,7 @@ export interface FeedbackRequestBody {
 	order?: string[];
 	hated?: string[];
 	deploy?: boolean;
+	idempotency_key?: string;
 }
 
 export interface FeedbackResult {
@@ -1173,8 +1174,13 @@ export interface FeedbackResult {
 	remapped_to: string | null;
 	gate_override: { reason: string; count_at_current_threshold: number } | null;
 	head: { retrained: boolean; reason?: string } & Record<string, unknown>;
-	deployed_to: string | null;
-	deploy_error: string | null;
+	deployment_job: {
+		job_id: string;
+		disposition: string;
+		phase: string;
+		snapshot_url: string;
+		detail_url: string;
+	} | null;
 }
 
 // ── Onboarding (cold-start "Rank Test") ─────────────────────────────────────

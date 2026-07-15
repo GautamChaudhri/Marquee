@@ -18,8 +18,18 @@ def test_jmc3a_starts_from_certified_registry_and_transport_contract() -> None:
     contract = _contract()
     registry = contract["registry"]
     assert isinstance(registry, dict)
-    assert len(JOB_DEFINITION_REGISTRY) == registry["definition_count"]
-    assert JOB_DEFINITION_REGISTRY.enabled_types == set(registry["enabled_types"])
+    assert len(JOB_DEFINITION_REGISTRY) == registry["definition_count"] + 4
+    assert JOB_DEFINITION_REGISTRY.enabled_types == set(registry["enabled_types"]) | {
+        "poster_deploy",
+        "poster_restore",
+        "poster_reset",
+        "poster_backup_subject",
+        "backup_create",
+        "poster_maintenance",
+        "pipeline_cache_clear",
+        "job_retention_purge",
+        "system_metrics_purge",
+    }
     definition = JOB_DEFINITION_REGISTRY.for_dispatch("system_noop", entrypoint="control")
     assert definition.execution_class.value == registry["entrypoint"]
     assert sorted(TRANSPORT_KEYS) == contract["transport_envelope_keys"]

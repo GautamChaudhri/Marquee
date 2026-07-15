@@ -79,9 +79,20 @@ def test_canonical_schema_registry_and_execution_inventory_is_frozen() -> None:
     assert {model.__tablename__: list(model.__table__.columns.keys()) for model in models} == frozen[
         "models"
     ]
-    assert len(JOB_DEFINITION_REGISTRY) == frozen["registry"]["definition_count"]
-    assert sorted(JOB_DEFINITION_REGISTRY.enabled_types) == frozen["registry"]["enabled_types"]
-    assert sorted(EXECUTION_HANDLERS) == frozen["execution_handlers"]
+    assert len(JOB_DEFINITION_REGISTRY) == frozen["registry"]["definition_count"] + 4
+    poster_leaves = {
+        "poster_deploy",
+        "poster_restore",
+        "poster_reset",
+        "poster_backup_subject",
+        "backup_create",
+        "poster_maintenance",
+        "pipeline_cache_clear",
+        "job_retention_purge",
+        "system_metrics_purge",
+    }
+    assert JOB_DEFINITION_REGISTRY.enabled_types == set(frozen["registry"]["enabled_types"]) | poster_leaves
+    assert set(EXECUTION_HANDLERS) == set(frozen["execution_handlers"]) | poster_leaves
 
 
 def test_gateway_commands_parent_worker_scheduler_and_routes_are_frozen() -> None:
@@ -109,6 +120,7 @@ def test_gateway_commands_parent_worker_scheduler_and_routes_are_frozen() -> Non
         "gpu",
         "maintenance",
         "media_read",
+        "media_write",
         "network",
     ]
     assert _decorated_nested_functions(
@@ -118,4 +130,14 @@ def test_gateway_commands_parent_worker_scheduler_and_routes_are_frozen() -> Non
 
 
 def test_every_legacy_producer_call_is_frozen() -> None:
-    assert _legacy_producer_calls() == _freeze()["legacy_producer_calls"]
+    frozen = dict(_freeze()["legacy_producer_calls"])
+    for retired in (
+        "marquee/api/routes/pipeline.py:backup_all_posters:job_manager.create",
+        "marquee/api/routes/pipeline.py:reset_deployed_posters:job_manager.create_and_run",
+        "marquee/api/routes/system.py:trigger_heal:job_manager.create_and_run",
+        "marquee/api/routes/backup.py:create_backup:job_manager.create_and_run",
+        "marquee/api/routes/pipeline.py:clear_pipeline_cache:job_manager.create_and_run",
+        "marquee/api/routes/pipeline.py:poster_maintenance:job_manager.create",
+    ):
+        frozen.pop(retired)
+    assert _legacy_producer_calls() == frozen

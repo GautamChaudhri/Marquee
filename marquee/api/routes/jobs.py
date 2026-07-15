@@ -102,6 +102,7 @@ from marquee.models import (
     JobEvent,
     JobLog,
     MediaFile,
+    MediaOperationDetail,
     Movie,
     Season,
     Series,
@@ -683,12 +684,15 @@ async def get_job_presentation(job_id: str, db: Annotated[AsyncSession, Depends(
                 )
                 .exists()
                 .label("artifacts_available"),
-            ).where(Job.id == job_id)
+                MediaOperationDetail,
+            )
+            .outerjoin(MediaOperationDetail, MediaOperationDetail.job_id == Job.id)
+            .where(Job.id == job_id)
         )
     ).one_or_none()
     if evidence is None:
         raise _error(404, ERROR_JOB_NOT_FOUND, "Job was not found.", job_id=job_id)
-    job, logs_available, artifacts_available = evidence
+    job, logs_available, artifacts_available, mutation_detail = evidence
     definition = _definition_for(job.type)
     presenter = _presenter_for(definition)
     live: dict[str, Any] = {}
@@ -706,6 +710,7 @@ async def get_job_presentation(job_id: str, db: Annotated[AsyncSession, Depends(
             live_subject_missing=missing,
             logs_available=logs_available,
             artifacts_available=artifacts_available,
+            mutation_detail=mutation_detail,
         )
     except PresentationIntegrityError as exc:
         logger.error("presentation integrity failure for job %s: %s", job_id, exc)

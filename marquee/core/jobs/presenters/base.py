@@ -29,6 +29,8 @@ from marquee.core.jobs.documents import (
     StrictDocument,
 )
 from marquee.core.jobs.labels import humanize_job_type
+from marquee.core.jobs.mutation_documents import MutationEvidenceV1
+from marquee.core.jobs.mutation_evidence import read_mutation_evidence
 from marquee.core.jobs.policies import ActionContext, allowed_actions
 from marquee.core.jobs.presentation import (
     CompactProgress,
@@ -51,13 +53,14 @@ from marquee.core.jobs.presentation import (
     PresentationTrigger,
     RowLinks,
     SuggestedAction,
+    TextValue,
     WarningItem,
 )
 from marquee.core.jobs.progress import JobProgress
 from marquee.core.jobs.subjects import SUBJECT_SNAPSHOT_ADAPTER, SubjectSnapshot
 
 if TYPE_CHECKING:
-    from marquee.models import Job
+    from marquee.models import Job, MediaOperationDetail
 
 
 class PresentationIntegrityError(RuntimeError):
@@ -103,6 +106,7 @@ class PresenterContext:
     result: BuiltInResultV1 | StrictDocument | None
     error: SafeJobErrorV1 | None
     progress: JobProgress | None
+    mutation: MutationEvidenceV1 | None = None
     warnings: list[WarningItem] = field(default_factory=list)
     live: Mapping[str, Any] = field(default_factory=dict)
     live_subject_missing: bool = False
@@ -165,6 +169,7 @@ def load_context(
     live_subject_missing: bool = False,
     logs_available: bool = False,
     artifacts_available: bool = False,
+    mutation_detail: MediaOperationDetail | None = None,
 ) -> PresenterContext:
     """Validate stored documents into a presenter context.
 
@@ -230,6 +235,18 @@ def load_context(
                 )
             )
 
+    mutation: MutationEvidenceV1 | None = None
+    if mutation_detail is not None:
+        try:
+            mutation = read_mutation_evidence(mutation_detail)
+        except ValidationError:
+            warnings.append(
+                WarningItem(
+                    code="malformed_evidence",
+                    message="The stored mutation evidence could not be validated.",
+                )
+            )
+
     context = PresenterContext(
         job=job,
         definition=definition,
@@ -238,6 +255,7 @@ def load_context(
         result=result,
         error=error,
         progress=progress,
+        mutation=mutation,
         live=dict(live or {}),
         live_subject_missing=live_subject_missing,
         logs_available=logs_available,
@@ -539,6 +557,29 @@ class JobPresenter:
             artifacts_available=ctx.artifacts_available,
         )
         sections = list(self.sections(ctx))
+        if ctx.mutation is not None:
+            mutation = ctx.mutation
+            sections.append(
+                FactsSection(
+                    title="Mutation evidence",
+                    facts=(
+                        Fact(
+                            label="Validation",
+                            value=TextValue(text=mutation.validation.verdict),
+                        ),
+                        Fact(
+                            label="Atomicity",
+                            value=TextValue(text=mutation.atomicity.boundary),
+                        ),
+                        Fact(
+                            label="Published",
+                            value=TextValue(
+                                text="Yes" if mutation.atomicity.published else "No"
+                            ),
+                        ),
+                    ),
+                )
+            )
         if job.retry_of_job_id:
             sections.append(
                 FactsSection(

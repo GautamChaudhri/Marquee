@@ -117,3 +117,30 @@ def test_atomic_replace_rejects_cross_device_without_copy_fallback(tmp_path: Pat
 
     assert staged_path.read_bytes() == b"new"
     assert destination_path.read_bytes() == b"old"
+
+
+def test_destination_root_staging_and_parent_fsync_are_confined(tmp_path: Path) -> None:
+    root = tmp_path / "media"
+    root.mkdir()
+    boundary = boundary_for_roots({"media": root}, access="read_write")
+
+    staged, fd = boundary.temporary_root_file("media", prefix=".poster-stage-")
+    _write = b"validated"
+    try:
+        os.write(fd, _write)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+    assert staged.root.name == "media"
+    assert staged.key.value.startswith(".poster-stage-")
+    assert (root / staged.key.value).read_bytes() == _write
+    boundary.fsync_parent(staged)
+
+
+def test_destination_root_staging_rejects_unsafe_prefix(tmp_path: Path) -> None:
+    root = tmp_path / "media"
+    root.mkdir()
+    boundary = boundary_for_roots({"media": root}, access="read_write")
+    with pytest.raises(FilesystemBoundaryError, match="prefix is unsafe"):
+        boundary.temporary_root_file("media", prefix="../escape")

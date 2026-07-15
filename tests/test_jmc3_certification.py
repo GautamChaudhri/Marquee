@@ -60,4 +60,13 @@ def test_only_system_noop_remains_production_enabled() -> None:
         "poster_rescan",
         "taste_map",
         "taste_rebuild",
+        "poster_deploy",
+        "poster_restore",
+        "poster_reset",
+        "poster_backup_subject",
+        "backup_create",
+        "poster_maintenance",
+        "pipeline_cache_clear",
+        "job_retention_purge",
+        "system_metrics_purge",
     }

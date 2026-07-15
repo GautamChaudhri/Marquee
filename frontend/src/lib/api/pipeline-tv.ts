@@ -55,7 +55,10 @@ export function approveTvAuto(
 		fetchFn,
 		'POST',
 		'/pipeline/tv/review-queue/approve-auto',
-		body
+		body,
+		body.deploy === false
+			? undefined
+			: { 'Idempotency-Key': `poster_deploy:${crypto.randomUUID()}` }
 	);
 }
 
@@ -63,11 +66,16 @@ export function resetTvReview(fetchFn: Fetch): Promise<{ reset: number }> {
 	return apiSend(fetchFn, 'POST', '/pipeline/tv/review/reset', {});
 }
 
-export function useShowPoster(
-	fetchFn: Fetch,
-	seasonId: number
-): Promise<{ deployed_path: string; cache_path: string; sha256: string; backup_path: string }> {
-	return apiSend(fetchFn, 'POST', `/pipeline/tv/seasons/${seasonId}/use-show-poster`, {});
+export function useShowPoster(fetchFn: Fetch, seasonId: number): Promise<JobSubmissionResponse> {
+	return apiSend(
+		fetchFn,
+		'POST',
+		`/pipeline/tv/seasons/${seasonId}/use-show-poster`,
+		{},
+		{
+			'Idempotency-Key': `poster_deploy:${crypto.randomUUID()}`
+		}
+	);
 }
 
 export function getTvMetrics(

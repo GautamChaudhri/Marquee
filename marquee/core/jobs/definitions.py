@@ -115,21 +115,37 @@ class JobDefinitionRegistry:
         if definition.presenter_key in {"generic", "default", "unknown"}:
             raise InvalidJobDefinitionError("built-ins require a non-generic presenter key")
         if definition.enabled:
-            # Chunk 4 enables only non-mutating families. The certified-enabled set is
-            # governed by the manifest allowlist; this guard enforces the safety envelope:
-            # an enabled definition must be read-only, never media-write, and in the ENABLED
-            # migration state. Mutating and parent-only definitions stay dispatch-disabled.
             if definition.migration_state != MigrationState.ENABLED:
                 raise InvalidJobDefinitionError(
                     "dispatch-enabled definitions require the ENABLED migration state"
                 )
-            if definition.effect_safety != EffectSafety.READ_ONLY:
+            if definition.effect_safety == EffectSafety.UNSAFE_MUTATION:
+                request_model = definition.request.models[definition.request.current_version]
+                result_model = definition.result.models[definition.result.current_version]
+                if request_model.__name__ == "BuiltInIntentV1" or result_model.__name__ == "BuiltInResultV1":
+                    raise InvalidJobDefinitionError(
+                        "enabled mutations require family-specific request and result documents"
+                    )
+                if definition.retry_policy is None:
+                    raise InvalidJobDefinitionError("enabled mutations require a retry policy")
+                definition.retry_policy.validate_safety(definition.effect_safety)
+                if definition.execution_class == ExecutionClass.MEDIA_WRITE:
+                    if not definition.safety_policy.media_write:
+                        raise InvalidJobDefinitionError(
+                            "enabled media-write mutations require the media-write safety gate"
+                        )
+                elif definition.execution_class == ExecutionClass.MAINTENANCE:
+                    if not definition.safety_policy.exclusive_maintenance:
+                        raise InvalidJobDefinitionError(
+                            "enabled maintenance mutations require the exclusive barrier"
+                        )
+                else:
+                    raise InvalidJobDefinitionError(
+                        "enabled mutation leaves must use media_write or maintenance"
+                    )
+            elif definition.execution_class == ExecutionClass.MEDIA_WRITE:
                 raise InvalidJobDefinitionError(
-                    "only read-only definitions may be dispatch-enabled before chunk 5"
-                )
-            if definition.execution_class == ExecutionClass.MEDIA_WRITE:
-                raise InvalidJobDefinitionError(
-                    "media_write definitions cannot be dispatch-enabled"
+                    "read-only definitions cannot use the media_write execution class"
                 )
         elif not definition.disabled_reason:
             raise InvalidJobDefinitionError("disabled definitions require a reason")

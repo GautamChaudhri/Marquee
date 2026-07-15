@@ -109,11 +109,8 @@
 	async function handleReset() {
 		resetBusy = true;
 		try {
-			const result = await resetDeployedPosters(fetch);
-			toast(
-				`Reset ${result.reset} movie${result.reset === 1 ? '' : 's'} — posters deleted, re-run the pipeline to replace them`,
-				'good'
-			);
+			await resetDeployedPosters(fetch);
+			toast('Poster reset queued; progress is available in Jobs.', 'good');
 		} catch (e) {
 			toast(e instanceof Error ? e.message : 'Reset failed', 'bad');
 		} finally {

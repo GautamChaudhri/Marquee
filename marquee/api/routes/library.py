@@ -11,21 +11,24 @@ from __future__ import annotations
 import json
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from sqlalchemy import exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from marquee.api.job_submission import submission_response
 from marquee.api.library_serializers import (
     enrich_movie,
     hdr_filter,
     poster_status_filter,
 )
+from marquee.core.jobs.poster_submission import submit_poster_leaf
+from marquee.core.jobs.submission import IdempotencyConflictError, SubmissionError
+from marquee.core.poster_subjects import PosterSubject
 from marquee.core.sort_title import title_sort_expr
 from marquee.core.subtitles import coverage as subtitle_coverage
 from marquee.core.tv_queries import season_downloaded, series_visible
 from marquee.database import get_db
 from marquee.models import (
-    ArtworkEvent,
     Episode,
     EpisodeMediaFile,
     LetterboxState,
@@ -85,20 +88,6 @@ def _poster_summary(entity) -> dict:
     }
 
 
-def _reset_poster_columns(entity) -> None:
-    entity.poster_path = None
-    entity.poster_source = None
-    entity.poster_source_url = None
-    entity.poster_ai_selected = False
-    entity.poster_embedding = None
-    entity.poster_sha256 = None
-    entity.poster_phash = None
-    entity.poster_user_approved = False
-    entity.poster_deployed_filename = None
-    entity.poster_deployed_at = None
-    entity.poster_local_backup_path = None
-
-
 def _season_poster_status(downloaded_seasons: int, seasons_with_poster: int) -> str:
     if downloaded_seasons <= 0 or seasons_with_poster <= 0:
         return "missing"
@@ -123,50 +112,29 @@ def _serve_subject_poster(subject, *, media_type: str):
         raise HTTPException(status_code=404, detail="Poster file not found on disk") from exc
 
 
-async def _delete_subject_poster(db: AsyncSession, subject, *, detail_prefix: str) -> dict:
-    from marquee.core.filesystem import (  # noqa: PLC0415
-        FilesystemBoundaryError,
-        boundary_for_roots,
-    )
-    from marquee.core.path_utils import safe_translate_and_validate  # noqa: PLC0415
-
-    entity = subject.entity
-    if not entity.poster_path:
-        return {"ok": True, "detail": f"{detail_prefix} does not have a deployed poster"}
-
-    stored_path = str(entity.poster_path)
+async def _submit_poster_reset(
+    db: AsyncSession, *, kind: str, subject_id: int, idempotency_key: str
+):
     try:
-        folder = safe_translate_and_validate(subject.folder_raw, source=subject.path_source)
-        boundary = boundary_for_roots(
-            {"subject": folder}, access="read_write", purpose="poster-delete"
-        )
-        classified = boundary.classify(stored_path, require_exists=False, write=True)
-        boundary.delete_file(classified, missing_ok=True)
-    except (FilesystemBoundaryError, OSError, ValueError) as exc:
-        error_msg = str(exc)
-        db.add(
-            ArtworkEvent(
-                **subject.event_fk_kwargs(),
-                action="deploy_reset_error",
-                source="maintenance",
-                detail=json.dumps({"deleted_path": stored_path, "error": error_msg}),
-            )
+        result = await submit_poster_leaf(
+            db,
+            job_type="poster_reset",
+            target_kind=kind,
+            target_id=subject_id,
+            request={
+                "target_kind": kind,
+                "target_id": subject_id,
+                "preserve_cache": True,
+            },
+            idempotency_key=idempotency_key,
+            initiator=f"library-{kind}-poster-reset",
         )
         await db.commit()
-        return {"ok": False, "deleted": False, "error": error_msg}
-
-    _reset_poster_columns(entity)
-
-    db.add(
-        ArtworkEvent(
-            **subject.event_fk_kwargs(),
-            action="deploy_reset",
-            source="maintenance",
-            detail=json.dumps({"deleted_path": stored_path}),
-        )
-    )
-    await db.commit()
-    return {"ok": True, "deleted": True, "error": None}
+    except IdempotencyConflictError as exc:
+        raise HTTPException(status_code=409, detail=exc.code) from exc
+    except SubmissionError as exc:
+        raise HTTPException(status_code=422, detail=exc.code) from exc
+    return submission_response(result)
 
 
 @router.get("/movies")
@@ -286,8 +254,6 @@ async def list_movies(
 
 @router.get("/movies/{movie_id}/poster")
 async def get_movie_poster(movie_id: int, db: Annotated[AsyncSession, Depends(get_db)]):
-    from marquee.core.poster_subjects import PosterSubject  # noqa: PLC0415
-
     movie = (
         await db.execute(
             select(Movie).where(Movie.id == movie_id, Movie.is_present.is_(True))
@@ -501,18 +467,16 @@ async def get_episode(episode_id: int, db: Annotated[AsyncSession, Depends(get_d
     }
 
 
-@router.delete("/movies/{movie_id}/poster")
+@router.delete("/movies/{movie_id}/poster", status_code=202)
 async def delete_movie_poster(
     movie_id: int,
     db: Annotated[AsyncSession, Depends(get_db)],
+    idempotency_key: Annotated[str, Header(alias="Idempotency-Key")],
 ):
     """Delete a movie's deployed poster and reset all its poster_* columns.
 
     This is the single-movie equivalent of the global poster_deploy_reset job.
     """
-    from marquee.core.poster_service import cache_paths  # noqa: PLC0415
-    from marquee.core.poster_subjects import PosterSubject  # noqa: PLC0415
-
     movie = (
         await db.execute(
             select(Movie).where(Movie.id == movie_id, Movie.is_present.is_(True))
@@ -521,18 +485,13 @@ async def delete_movie_poster(
     if movie is None:
         raise HTTPException(status_code=404, detail=f"Movie id={movie_id} not found")
 
-    response = await _delete_subject_poster(
-        db, PosterSubject.from_movie(movie), detail_prefix="Movie"
+    return await _submit_poster_reset(
+        db, kind="movie", subject_id=movie_id, idempotency_key=idempotency_key
     )
-    if movie.tmdb_id:
-        response["cache_kept"] = str(cache_paths(movie.tmdb_id)[0])
-    return response
 
 
 @router.get("/series/{series_id}/poster")
 async def get_series_poster(series_id: int, db: Annotated[AsyncSession, Depends(get_db)]):
-    from marquee.core.poster_subjects import PosterSubject  # noqa: PLC0415
-
     series = (
         await db.execute(select(Series).where(Series.id == series_id, series_visible()))
     ).scalar_one_or_none()
@@ -543,8 +502,6 @@ async def get_series_poster(series_id: int, db: Annotated[AsyncSession, Depends(
 
 @router.get("/seasons/{season_id}/poster")
 async def get_season_poster(season_id: int, db: Annotated[AsyncSession, Depends(get_db)]):
-    from marquee.core.poster_subjects import PosterSubject  # noqa: PLC0415
-
     row = (
         await db.execute(
             select(Season, Series)
@@ -559,41 +516,33 @@ async def get_season_poster(season_id: int, db: Annotated[AsyncSession, Depends(
     )
 
 
-@router.delete("/series/{series_id}/poster")
+@router.delete("/series/{series_id}/poster", status_code=202)
 async def delete_series_poster(
     series_id: int,
     db: Annotated[AsyncSession, Depends(get_db)],
+    idempotency_key: Annotated[str, Header(alias="Idempotency-Key")],
 ):
-    from marquee.core.poster_subjects import PosterSubject  # noqa: PLC0415
-
     series = (
         await db.execute(select(Series).where(Series.id == series_id, series_visible()))
     ).scalar_one_or_none()
     if series is None:
         raise HTTPException(status_code=404, detail=f"Series id={series_id} not found")
-    return await _delete_subject_poster(db, PosterSubject.from_series(series), detail_prefix="Series")
+    return await _submit_poster_reset(
+        db, kind="series", subject_id=series_id, idempotency_key=idempotency_key
+    )
 
 
-@router.delete("/seasons/{season_id}/poster")
+@router.delete("/seasons/{season_id}/poster", status_code=202)
 async def delete_season_poster(
     season_id: int,
     db: Annotated[AsyncSession, Depends(get_db)],
+    idempotency_key: Annotated[str, Header(alias="Idempotency-Key")],
 ):
-    from marquee.core.poster_subjects import PosterSubject  # noqa: PLC0415
-
     season = (
         await db.execute(select(Season).where(Season.id == season_id, season_downloaded()))
     ).scalar_one_or_none()
     if season is None:
         raise HTTPException(status_code=404, detail=f"Season id={season_id} not found")
-    series = (
-        await db.execute(
-            select(Series).where(
-                Series.id == season.series_id,
-                Series.is_present.is_(True),
-            )
-        )
-    ).scalar_one()
-    return await _delete_subject_poster(
-        db, PosterSubject.from_season(season, series), detail_prefix="Season"
+    return await _submit_poster_reset(
+        db, kind="season", subject_id=season_id, idempotency_key=idempotency_key
     )

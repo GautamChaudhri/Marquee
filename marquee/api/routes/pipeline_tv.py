@@ -12,11 +12,10 @@ import logging
 import time
 from collections import defaultdict
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Annotated
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from pydantic import BaseModel
 from sqlalchemy import exists, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -34,7 +33,14 @@ from marquee.config import settings
 from marquee.core.heal import latest_heal_summary
 from marquee.core.jobs.batches import BatchScope, create_fixed_batch
 from marquee.core.jobs.contracts import TriggerKind
+from marquee.core.jobs.poster_submission import (
+    PosterSelectionError,
+    poster_child_idempotency_key,
+    subject_artwork_selection,
+    submit_poster_leaf,
+)
 from marquee.core.jobs.submission import (
+    IdempotencyConflictError,
     Initiator,
     SubjectLocator,
     SubmissionError,
@@ -643,43 +649,62 @@ class TVReviewApproveAutoRequest(BaseModel):
 async def approve_tv_review_queue_auto(
     body: TVReviewApproveAutoRequest,
     request: Request,
+    response: Response,
     db: Annotated[AsyncSession, Depends(get_db)],
+    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ):
     """Approve every approvable run in the current TV review queue."""
     from marquee.api.routes.feedback import FeedbackRequest, apply_feedback_request  # noqa: PLC0415
 
+    if body.deploy and idempotency_key is None:
+        raise HTTPException(status_code=422, detail="Idempotency-Key is required for deploy")
     await _repair_stale_batch_pipeline_runs(db)
     candidates = await _tv_review_queue_candidates(db)
     latest_by_subject = _latest_tv_review_runs(candidates, series_id=body.series_id)
 
     approved = skipped_no_auto = failed = 0
     errors: list[dict[str, object]] = []
+    deployment_jobs: list[dict[str, object]] = []
     for run in latest_by_subject.values():
         if run.status != "completed" or not run.auto_pick_filename:
             skipped_no_auto += 1
             continue
         try:
-            await apply_feedback_request(
-                FeedbackRequest(run_id=run.run_id, action="approve", deploy=body.deploy),
+            result = await apply_feedback_request(
+                FeedbackRequest(
+                    run_id=run.run_id,
+                    action="approve",
+                    deploy=body.deploy,
+                    idempotency_key=(
+                        poster_child_idempotency_key(idempotency_key, run.run_id)
+                        if idempotency_key is not None
+                        else None
+                    ),
+                ),
                 request,
                 db,
             )
+            if result.get("deployment_job") is not None:
+                deployment_jobs.append(result["deployment_job"])
             approved += 1
         except HTTPException as exc:
             await db.rollback()
             failed += 1
             errors.append({"run_id": run.run_id, "error": exc.detail})
-        except Exception as exc:  # noqa: BLE001
+        except Exception:  # noqa: BLE001
             await db.rollback()
             failed += 1
-            errors.append({"run_id": run.run_id, "error": str(exc)})
+            errors.append({"run_id": run.run_id, "error": "feedback_apply_failed"})
 
+    if body.deploy:
+        response.status_code = 202
     return {
         "total": len(latest_by_subject),
         "approved": approved,
         "skipped_no_auto": skipped_no_auto,
         "failed": failed,
         "errors": errors,
+        "deployment_jobs": deployment_jobs,
     }
 
 
@@ -767,12 +792,12 @@ async def reset_tv_review_queue(db: Annotated[AsyncSession, Depends(get_db)]):
 # ---------------------------------------------------------------------------
 
 
-@router.post("/seasons/{season_id}/use-show-poster")
+@router.post("/seasons/{season_id}/use-show-poster", status_code=202)
 async def use_show_poster_for_season(
     season_id: int,
     db: Annotated[AsyncSession, Depends(get_db)],
+    idempotency_key: Annotated[str, Header(alias="Idempotency-Key")],
 ):
-    from marquee.core.poster_service import poster_service  # noqa: PLC0415
     from marquee.core.poster_subjects import PosterSubject  # noqa: PLC0415
 
     season = (await db.execute(select(Season).where(Season.id == season_id))).scalar_one_or_none()
@@ -792,57 +817,34 @@ async def use_show_poster_for_season(
         )
 
     show_subject = PosterSubject.from_series(series)
-    source_file: Path | None = None
-    backup = show_subject.backup_file()
-    if backup.is_file():
-        source_file = backup
-    else:
-        cache_paths = show_subject.cache_paths()
-        if cache_paths and cache_paths[0].is_file():
-            source_file = cache_paths[0]
-        elif Path(series.poster_path).is_file():
-            source_file = Path(series.poster_path)
-    if source_file is None:
-        raise HTTPException(status_code=404, detail="No source bytes available for the show poster")
-
-    season_subject = PosterSubject.from_season(season, series)
-    result = await poster_service.deploy(
-        db,
-        season_subject,
-        source_file,
-        source="show_poster_fallback",
-        ai_selected=False,
-        user_approved=True,
-        poster_source=series.poster_source,
-        poster_source_url=series.poster_source_url,
-    )
-
-    latest_run = (
-        (
-            await db.execute(
-                select(PipelineRun)
-                .where(
-                    PipelineRun.media_type == "season",
-                    PipelineRun.season_id == season_id,
-                    PipelineRun.feedback_event_id.is_(None),
-                    PipelineRun.status.in_(_REVIEW_QUEUE_STATUSES),
-                )
-                .order_by(PipelineRun.started_at.desc())
-            )
+    try:
+        candidate = subject_artwork_selection(
+            show_subject,
+            selection_facts={"reason": "show_poster_fallback", "season_id": season_id},
         )
-        .scalars()
-        .first()
-    )
-    if latest_run is not None:
-        latest_run.feedback_event_id = f"show_poster_fallback_{int(time.time())}"
+        result = await submit_poster_leaf(
+            db,
+            job_type="poster_deploy",
+            target_kind="season",
+            target_id=season_id,
+            request={
+                "target_kind": "season",
+                "target_id": season_id,
+                "candidate": candidate.model_dump(mode="json"),
+                "ai_selected": False,
+                "user_approved": True,
+            },
+            idempotency_key=idempotency_key,
+            initiator="season-show-poster",
+        )
         await db.commit()
-
-    return {
-        "deployed_path": result.deployed_path,
-        "cache_path": result.cache_path,
-        "sha256": result.sha256,
-        "backup_path": result.backup_path,
-    }
+    except IdempotencyConflictError as exc:
+        raise HTTPException(status_code=409, detail=exc.code) from exc
+    except SubmissionError as exc:
+        raise HTTPException(status_code=422, detail=exc.code) from exc
+    except PosterSelectionError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return submission_response(result)
 
 
 # ---------------------------------------------------------------------------

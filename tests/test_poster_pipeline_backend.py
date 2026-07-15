@@ -422,15 +422,17 @@ def test_copy_library_posters_names_and_dedupes(tmp_path: Path):
 # ---------------------------------------------------------------------------
 
 
-def test_new_job_handlers_registered():
+def test_canonical_poster_and_maintenance_handlers_registered():
     import marquee.core.jobs.builtin_handlers  # noqa: F401 — registers handlers
     from marquee.core.jobs.handlers import registered_types
 
-    assert {
-        "pipeline_cache_clear",
-        "poster_backup_all",
-        "poster_maintenance",
-    } <= registered_types()
+    assert {"pipeline_cache_clear", "poster_maintenance"}.isdisjoint(registered_types())
     from marquee.core.jobs.delivery import EXECUTION_HANDLERS
 
-    assert {"learned_head_train", "poster_rescan"} <= set(EXECUTION_HANDLERS)
+    assert {
+        "learned_head_train",
+        "poster_rescan",
+        "poster_backup_subject",
+        "pipeline_cache_clear",
+        "poster_maintenance",
+    } <= set(EXECUTION_HANDLERS)

@@ -17,7 +17,6 @@ from marquee.core.jobs.batches import (
     MAX_DYNAMIC_CHILDREN,
     MAX_FIXED_CHILDREN,
 )
-from marquee.core.jobs.contracts import ExecutionClass
 from marquee.core.jobs.inventory import BUILTIN_JOB_TYPES
 from marquee.core.jobs.manifest import ENABLED_JOB_TYPES, JOB_DEFINITION_REGISTRY
 from marquee.core.jobs.pgqueuer_worker import entrypoint_concurrency_limits
@@ -94,11 +93,7 @@ def registry_compatible() -> bool:
     return (
         JOB_DEFINITION_REGISTRY.enabled_types == ENABLED_JOB_TYPES
         and all(
-            (
-                definition.entrypoint in registered_entrypoints
-                or (definition.entrypoint == "media_write" and not definition.enabled)
-            )
-            and not (definition.enabled and definition.execution_class == ExecutionClass.MEDIA_WRITE)
+            definition.entrypoint in registered_entrypoints
             for definition in JOB_DEFINITION_REGISTRY
         )
     )
@@ -120,8 +115,7 @@ def worker_entrypoint_report() -> dict[str, Any]:
         "limits": {key: limits[key] for key in sorted(limits)},
         "worker_global_limit": settings.JOB_WORKER_CONCURRENCY,
         "dequeue_batch_size": settings.JOB_PGQUEUER_BATCH_SIZE,
-        "later_media_write_limit": settings.JOB_MEDIA_WRITE_CONCURRENCY,
-        "media_write_product_available": False,
+        "media_write_product_available": True,
     }
 
 

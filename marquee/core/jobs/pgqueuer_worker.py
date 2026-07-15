@@ -30,6 +30,7 @@ def entrypoint_concurrency_limits() -> dict[str, int]:
         "network": settings.JOB_NETWORK_CONCURRENCY,
         "cpu": settings.JOB_CPU_CONCURRENCY,
         "media_read": settings.JOB_MEDIA_READ_CONCURRENCY,
+        "media_write": settings.JOB_MEDIA_WRITE_CONCURRENCY,
         "gpu": settings.JOB_GPU_CONCURRENCY,
         "maintenance": settings.JOB_MAINTENANCE_CONCURRENCY,
     }

@@ -271,6 +271,31 @@ async def _resolve_subject(
                     "Subtitle policy audit",
                     "existing subtitle inventory",
                 ),
+                "backup-create": (
+                    "maintenance:backup-create",
+                    "Create system backup",
+                    "database and application data",
+                ),
+                "poster-maintenance": (
+                    "maintenance:poster-maintenance",
+                    "Poster maintenance",
+                    "orphaned poster cache entries",
+                ),
+                "pipeline-cache": (
+                    "maintenance:pipeline-cache",
+                    "Pipeline cache cleanup",
+                    "unreferenced pipeline cache entries",
+                ),
+                "job-retention": (
+                    "maintenance:job-retention",
+                    "Job history retention",
+                    "expired canonical job evidence",
+                ),
+                "system-metrics": (
+                    "maintenance:system-metrics",
+                    "System metrics retention",
+                    "expired system metrics samples",
+                ),
             }
             display_id, display_name, scope = scopes[locator.reference]
             return MaintenanceScopeSnapshot(
