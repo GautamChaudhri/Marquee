@@ -1,5 +1,5 @@
 import { env } from '$env/dynamic/public';
-import { ApiError, apiGet, type Fetch } from './client';
+import { ApiError, apiGet, apiSend, type Fetch } from './client';
 import { cancelJob as cancelCanonicalJob } from './jobs';
 import type { components } from './generated/openapi';
 import type { MediaJob } from './types';
@@ -121,17 +121,34 @@ export function listMediaJobs(
 
 export async function confirmJob(
 	fetch: Fetch,
-	jobId: string
+	jobId: string,
+	expectedPlanVersion?: string,
+	expectedConfigurationVersion?: number
 ): Promise<{ job_id: string; status: 'queued' }> {
 	if (useMocks()) return Promise.resolve({ job_id: jobId, status: 'queued' });
-	const snapshot = await apiGet<components['schemas']['JobSnapshotResponse']>(
+	if (expectedPlanVersion === undefined) {
+		const snapshot = await apiGet<components['schemas']['JobSnapshotResponse']>(
+			fetch,
+			`/jobs/${jobId}/snapshot`
+		);
+		if (snapshot.phase === 'queued' || snapshot.phase === 'running') {
+			return { job_id: jobId, status: 'queued' };
+		}
+		throw new ApiError(409, 'This operation does not expose a canonical confirmation plan.');
+	}
+	const result = await apiSend<components['schemas']['JobSubmissionResponse']>(
 		fetch,
-		`/jobs/${jobId}/snapshot`
+		'POST',
+		`/jobs/${jobId}/mutation-confirmation`,
+		{
+			expected_plan_version: expectedPlanVersion,
+			expected_configuration_version: expectedConfigurationVersion
+		}
 	);
-	if (snapshot.phase === 'queued' || snapshot.phase === 'running') {
+	if (result.phase === 'queued' || result.phase === 'running') {
 		return { job_id: jobId, status: 'queued' };
 	}
-	throw new ApiError(409, 'This planned operation is not available on the canonical job API.');
+	throw new ApiError(409, 'The canonical mutation plan was not dispatched.');
 }
 
 export async function cancelJob(

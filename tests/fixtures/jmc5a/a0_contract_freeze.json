@@ -2,23 +2,23 @@
   "deferred_types": {
     "audio_remove": {
       "effect_safety": "unsafe_mutation",
-      "enabled": false,
+      "enabled": true,
       "execution_class": "media_write",
-      "migration_state": "defined_disabled",
+      "migration_state": "enabled",
       "parent_only": false,
       "present": true,
-      "request_model": "BuiltInIntentV1",
-      "result_model": "BuiltInResultV1"
+      "request_model": "TrackRemoveRequestV1",
+      "result_model": "MediaTrackMutationResultV1"
     },
     "audio_reorder": {
       "effect_safety": "unsafe_mutation",
-      "enabled": false,
+      "enabled": true,
       "execution_class": "media_write",
-      "migration_state": "defined_disabled",
+      "migration_state": "enabled",
       "parent_only": false,
       "present": true,
-      "request_model": "BuiltInIntentV1",
-      "result_model": "BuiltInResultV1"
+      "request_model": "AudioReorderRequestV1",
+      "result_model": "MediaTrackMutationResultV1"
     },
     "dovi_convert": {
       "effect_safety": "unsafe_mutation",
@@ -92,87 +92,89 @@
     },
     "subtitle_embed": {
       "effect_safety": "unsafe_mutation",
-      "enabled": false,
+      "enabled": true,
       "execution_class": "media_write",
-      "migration_state": "defined_disabled",
+      "migration_state": "enabled",
       "parent_only": false,
       "present": true,
-      "request_model": "BuiltInIntentV1",
-      "result_model": "BuiltInResultV1"
+      "request_model": "SubtitleEmbedRequestV1",
+      "result_model": "MediaTrackMutationResultV1"
     },
     "subtitle_extract": {
       "effect_safety": "unsafe_mutation",
-      "enabled": false,
+      "enabled": true,
       "execution_class": "media_write",
-      "migration_state": "defined_disabled",
+      "migration_state": "enabled",
       "parent_only": false,
       "present": true,
-      "request_model": "BuiltInIntentV1",
-      "result_model": "BuiltInResultV1"
+      "request_model": "SubtitleExtractRequestV1",
+      "result_model": "SubtitleSidecarResultV1"
     },
     "subtitle_generate": {
       "effect_safety": "unsafe_mutation",
-      "enabled": false,
+      "enabled": true,
       "execution_class": "media_write",
-      "migration_state": "defined_disabled",
+      "migration_state": "enabled",
       "parent_only": false,
       "present": true,
-      "request_model": "BuiltInIntentV1",
-      "result_model": "BuiltInResultV1"
+      "request_model": "SubtitleGenerateRequestV1",
+      "result_model": "SubtitleGenerationResultV1"
     },
     "subtitle_metadata": {
       "effect_safety": "unsafe_mutation",
-      "enabled": false,
+      "enabled": true,
       "execution_class": "media_write",
-      "migration_state": "defined_disabled",
+      "migration_state": "enabled",
       "parent_only": false,
       "present": true,
-      "request_model": "BuiltInIntentV1",
-      "result_model": "BuiltInResultV1"
+      "request_model": "SubtitleMetadataRequestV1",
+      "result_model": "MediaTrackMutationResultV1"
     },
     "subtitle_policy": {
       "effect_safety": "unsafe_mutation",
-      "enabled": false,
+      "enabled": true,
       "execution_class": "media_write",
-      "migration_state": "defined_disabled",
+      "migration_state": "enabled",
       "parent_only": false,
       "present": true,
-      "request_model": "BuiltInIntentV1",
-      "result_model": "BuiltInResultV1"
+      "request_model": "SubtitlePolicyRequestV1",
+      "result_model": "MediaTrackMutationResultV1"
     },
     "subtitle_remove": {
       "effect_safety": "unsafe_mutation",
-      "enabled": false,
+      "enabled": true,
       "execution_class": "media_write",
-      "migration_state": "defined_disabled",
+      "migration_state": "enabled",
       "parent_only": false,
       "present": true,
-      "request_model": "BuiltInIntentV1",
-      "result_model": "BuiltInResultV1"
+      "request_model": "TrackRemoveRequestV1",
+      "result_model": "MediaTrackMutationResultV1"
     },
     "subtitle_restore": {
       "effect_safety": "unsafe_mutation",
-      "enabled": false,
+      "enabled": true,
       "execution_class": "media_write",
-      "migration_state": "defined_disabled",
+      "migration_state": "enabled",
       "parent_only": false,
       "present": true,
-      "request_model": "BuiltInIntentV1",
-      "result_model": "BuiltInResultV1"
+      "request_model": "SubtitleRestoreRequestV1",
+      "result_model": "MediaTrackMutationResultV1"
     },
     "track_remove": {
       "effect_safety": "unsafe_mutation",
-      "enabled": false,
+      "enabled": true,
       "execution_class": "media_write",
-      "migration_state": "defined_disabled",
+      "migration_state": "enabled",
       "parent_only": false,
       "present": true,
-      "request_model": "BuiltInIntentV1",
-      "result_model": "BuiltInResultV1"
+      "request_model": "TrackRemoveRequestV1",
+      "result_model": "MediaTrackMutationResultV1"
     }
   },
   "registry": {
     "enabled_types": [
+      "audio_remove",
+      "audio_reorder",
       "backup_create",
       "dovi_analyze",
       "job_retention_purge",
@@ -189,14 +191,24 @@
       "poster_rescan",
       "poster_reset",
       "poster_restore",
+      "subtitle_embed",
+      "subtitle_extract",
+      "subtitle_generate",
+      "subtitle_metadata",
+      "subtitle_policy",
       "subtitle_policy_audit",
+      "subtitle_remove",
+      "subtitle_restore",
       "subtitle_scan",
       "system_metrics_purge",
       "system_noop",
       "taste_map",
-      "taste_rebuild"
+      "taste_rebuild",
+      "track_remove"
     ],
     "execution_handlers": [
+      "audio_remove",
+      "audio_reorder",
       "backup_create",
       "dovi_analyze",
       "job_retention_purge",
@@ -213,12 +225,20 @@
       "poster_rescan",
       "poster_reset",
       "poster_restore",
+      "subtitle_embed",
+      "subtitle_extract",
+      "subtitle_generate",
+      "subtitle_metadata",
+      "subtitle_policy",
       "subtitle_policy_audit",
+      "subtitle_remove",
+      "subtitle_restore",
       "subtitle_scan",
       "system_metrics_purge",
       "system_noop",
       "taste_map",
-      "taste_rebuild"
+      "taste_rebuild",
+      "track_remove"
     ],
     "registered_handlers": [
       "dovi_convert",
@@ -403,6 +423,7 @@
     "tests/test_jmc5a_maintenance.py",
     "tests/test_jmc5a_poster_mutations.py",
     "tests/test_jmc5a_poster_parents.py",
+    "tests/test_jmc5b_media_backups.py",
     "tests/test_poster_jobs.py",
     "tests/test_poster_pipeline_backend.py",
     "tests/test_poster_service.py",

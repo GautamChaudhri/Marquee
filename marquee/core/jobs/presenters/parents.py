@@ -20,6 +20,7 @@ from marquee.core.jobs.presenters.base import JobPresenter, PresenterContext
 
 PARENT_JOB_TYPES = (
     "subtitle_generate_batch",
+    "subtitle_policy_batch",
     "dovi_analyze_batch",
     "letterbox_detect_tv_batch",
     "letterbox_detect_batch",
@@ -29,6 +30,7 @@ PARENT_JOB_TYPES = (
 
 _HEADLINES = {
     "subtitle_generate_batch": "Generate subtitles across the selection",
+    "subtitle_policy_batch": "Apply the subtitle policy across the selection",
     "dovi_analyze_batch": "Analyze Dolby Vision across the selection",
     "letterbox_detect_tv_batch": "Detect TV letterbox bars across the selection",
     "letterbox_detect_batch": "Detect letterbox bars across the selection",
@@ -38,6 +40,7 @@ _HEADLINES = {
 
 _CHILD_NOUNS = {
     "subtitle_generate_batch": "files",
+    "subtitle_policy_batch": "files",
     "dovi_analyze_batch": "movies",
     "letterbox_detect_tv_batch": "episodes",
     "letterbox_detect_batch": "movies",

@@ -5,7 +5,8 @@ import type {
 	SubtitleGenerator,
 	GenerationRequest,
 	SubgenHardwareResponse,
-	SubgenSettings
+	SubgenSettings,
+	SubtitlePlan
 } from './types';
 
 const useMocks = () => env.PUBLIC_USE_MOCKS === 'true';
@@ -19,18 +20,28 @@ export function submitGeneration(
 	fetch: Fetch,
 	mediaFileId: number,
 	request: GenerationRequest
-): Promise<{ job_id: string; events_url: string }> {
+): Promise<SubtitlePlan> {
 	if (useMocks()) {
 		return Promise.resolve({
 			job_id: `job-mock-gen-${Date.now()}`,
-			events_url: `/api/jobs/job-mock-gen-${Date.now()}/snapshot`
+			phase: 'planned',
+			disposition: 'created',
+			operation: 'subtitle_generate',
+			plan_version: '0'.repeat(64),
+			input_signature: 'mock-signature',
+			configuration_version: 1,
+			plan_expires_at: new Date(Date.now() + 15 * 60_000).toISOString(),
+			snapshot_url: `/api/jobs/job-mock-gen-${Date.now()}/snapshot`,
+			detail_url: `/api/jobs/job-mock-gen-${Date.now()}/presentation`,
+			confirmation_url: `/api/jobs/job-mock-gen-${Date.now()}/mutation-confirmation`
 		});
 	}
-	return apiSend<{ job_id: string; events_url: string }>(
+	return apiSend<SubtitlePlan>(
 		fetch,
 		'POST',
 		`/media-files/${mediaFileId}/subtitle-generations`,
-		request
+		request,
+		{ 'Idempotency-Key': `subtitle_generate:${crypto.randomUUID()}` }
 	);
 }
 
@@ -38,19 +49,25 @@ export function submitMovieGeneration(
 	fetch: Fetch,
 	movieId: number,
 	request: GenerationRequest
-): Promise<{ job_id: string; events_url: string }> {
+): Promise<SubtitlePlan> {
 	if (useMocks()) {
 		return Promise.resolve({
 			job_id: `job-mock-gen-${Date.now()}`,
-			events_url: `/api/jobs/job-mock-gen-${Date.now()}/snapshot`
+			phase: 'planned',
+			disposition: 'created',
+			operation: 'subtitle_generate',
+			plan_version: '0'.repeat(64),
+			input_signature: 'mock-signature',
+			configuration_version: 1,
+			plan_expires_at: new Date(Date.now() + 15 * 60_000).toISOString(),
+			snapshot_url: `/api/jobs/job-mock-gen-${Date.now()}/snapshot`,
+			detail_url: `/api/jobs/job-mock-gen-${Date.now()}/presentation`,
+			confirmation_url: `/api/jobs/job-mock-gen-${Date.now()}/mutation-confirmation`
 		});
 	}
-	return apiSend<{ job_id: string; events_url: string }>(
-		fetch,
-		'POST',
-		`/movies/${movieId}/subtitle-generations`,
-		request
-	);
+	return apiSend<SubtitlePlan>(fetch, 'POST', `/movies/${movieId}/subtitle-generations`, request, {
+		'Idempotency-Key': `subtitle_generate:${crypto.randomUUID()}`
+	});
 }
 
 export function getSubgenHardware(fetch: Fetch): Promise<SubgenHardwareResponse> {

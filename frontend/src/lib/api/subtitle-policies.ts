@@ -122,18 +122,20 @@ export function applyPolicy(
 	fetch: Fetch,
 	id: number,
 	movieIds: number[]
-): Promise<{ batch_id: number; queued: number; skipped: number }> {
+): Promise<{ job_id: string; disposition: string; phase: string; snapshot_url: string }> {
 	if (useMocks()) {
 		return Promise.resolve({
-			batch_id: Math.floor(Math.random() * 100),
-			queued: movieIds.length,
-			skipped: 0
+			job_id: `job-mock-policy-${Date.now()}`,
+			disposition: 'created',
+			phase: 'queued',
+			snapshot_url: '/api/jobs/job-mock-policy/snapshot'
 		});
 	}
-	return apiSend<{ batch_id: number; queued: number; skipped: number }>(
+	return apiSend<{ job_id: string; disposition: string; phase: string; snapshot_url: string }>(
 		fetch,
 		'POST',
 		`/subtitle-policies/${id}/apply`,
-		{ movie_ids: movieIds }
+		{ movie_ids: movieIds },
+		{ 'Idempotency-Key': `subtitle_policy_batch:${crypto.randomUUID()}` }
 	);
 }

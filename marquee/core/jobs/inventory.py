@@ -50,6 +50,7 @@ PARENT_ONLY_TYPES = frozenset(
         "poster_deploy_reset",
         "poster_heal",
         "subtitle_generate_batch",
+        "subtitle_policy_batch",
         "subtitle_scan_all",
     }
 )

@@ -6,6 +6,20 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+from marquee.core.jobs.audio_subtitle_documents import (
+    AudioReorderRequestV1,
+    MediaTrackMutationResultV1,
+    SubtitleBatchRequestV1,
+    SubtitleEmbedRequestV1,
+    SubtitleExtractRequestV1,
+    SubtitleGenerateRequestV1,
+    SubtitleGenerationResultV1,
+    SubtitleMetadataRequestV1,
+    SubtitlePolicyRequestV1,
+    SubtitleRestoreRequestV1,
+    SubtitleSidecarResultV1,
+    TrackRemoveRequestV1,
+)
 from marquee.core.jobs.contracts import (
     EffectSafety,
     ExecutionClass,
@@ -144,18 +158,19 @@ _SPECS = (
     _spec("dovi_convert", FeatureArea.HDR, ExecutionClass.MEDIA_WRITE, _U, "media_file", "movie", "episode"),
     _spec("subtitle_scan", FeatureArea.AUDIO_SUBTITLES, ExecutionClass.MEDIA_READ, _R, "media_file"),
     _spec("subtitle_policy_audit", FeatureArea.AUDIO_SUBTITLES, ExecutionClass.CPU, _R, "maintenance_scope"),
-    _spec("audio_remove", FeatureArea.AUDIO_SUBTITLES, ExecutionClass.MEDIA_WRITE, _U, "track"),
-    _spec("track_remove", FeatureArea.AUDIO_SUBTITLES, ExecutionClass.MEDIA_WRITE, _U, "track"),
-    _spec("subtitle_remove", FeatureArea.AUDIO_SUBTITLES, ExecutionClass.MEDIA_WRITE, _U, "track"),
+    _spec("audio_remove", FeatureArea.AUDIO_SUBTITLES, ExecutionClass.MEDIA_WRITE, _U, "track", "media_file"),
+    _spec("track_remove", FeatureArea.AUDIO_SUBTITLES, ExecutionClass.MEDIA_WRITE, _U, "track", "media_file"),
+    _spec("subtitle_remove", FeatureArea.AUDIO_SUBTITLES, ExecutionClass.MEDIA_WRITE, _U, "track", "media_file"),
     _spec("subtitle_embed", FeatureArea.AUDIO_SUBTITLES, ExecutionClass.MEDIA_WRITE, _U, "track", "media_file"),
-    _spec("subtitle_metadata", FeatureArea.AUDIO_SUBTITLES, ExecutionClass.MEDIA_WRITE, _U, "track"),
+    _spec("subtitle_metadata", FeatureArea.AUDIO_SUBTITLES, ExecutionClass.MEDIA_WRITE, _U, "track", "media_file"),
     _spec("audio_reorder", FeatureArea.AUDIO_SUBTITLES, ExecutionClass.MEDIA_WRITE, _U, "track", "media_file"),
-    _spec("subtitle_extract", FeatureArea.AUDIO_SUBTITLES, ExecutionClass.MEDIA_WRITE, _U, "track"),
+    _spec("subtitle_extract", FeatureArea.AUDIO_SUBTITLES, ExecutionClass.MEDIA_WRITE, _U, "track", "media_file"),
     _spec("subtitle_generate", FeatureArea.AUDIO_SUBTITLES, ExecutionClass.MEDIA_WRITE, _U, "media_file", "episode"),
     _spec("subtitle_policy", FeatureArea.AUDIO_SUBTITLES, ExecutionClass.MEDIA_WRITE, _U, "track", "media_file"),
     _spec("subtitle_restore", FeatureArea.AUDIO_SUBTITLES, ExecutionClass.MEDIA_WRITE, _U, "track", "media_file"),
     _spec("letterbox_reencode", FeatureArea.LETTERBOX, ExecutionClass.MEDIA_WRITE, _U, "media_file", "movie", "episode"),
     _spec("subtitle_generate_batch", FeatureArea.AUDIO_SUBTITLES, ExecutionClass.CONTROL, _R, "aggregate_batch", progress=ProgressStrategy.DETERMINATE, children=("subtitle_generate",)),
+    _spec("subtitle_policy_batch", FeatureArea.AUDIO_SUBTITLES, ExecutionClass.CONTROL, _R, "aggregate_batch", progress=ProgressStrategy.DETERMINATE, children=("subtitle_policy",)),
     _spec("dovi_analyze_batch", FeatureArea.HDR, ExecutionClass.CONTROL, _R, "aggregate_batch", progress=ProgressStrategy.DETERMINATE, children=("dovi_analyze",)),
     _spec("letterbox_detect_tv_batch", FeatureArea.LETTERBOX, ExecutionClass.CONTROL, _R, "aggregate_batch", progress=ProgressStrategy.DETERMINATE, children=("letterbox_detect_tv_scope",)),
     _spec("letterbox_detect_batch", FeatureArea.LETTERBOX, ExecutionClass.CONTROL, _R, "aggregate_batch", progress=ProgressStrategy.DETERMINATE, children=("letterbox_detect",)),
@@ -194,12 +209,33 @@ ENABLED_JOB_TYPES: frozenset[str] = frozenset(
         "taste_rebuild",
         "taste_map",
         "learned_head_train",
+        "audio_remove",
+        "track_remove",
+        "subtitle_remove",
+        "audio_reorder",
+        "subtitle_metadata",
+        "subtitle_extract",
+        "subtitle_embed",
+        "subtitle_generate",
+        "subtitle_policy",
+        "subtitle_restore",
     }
 )
 
 # Per-type request document models. Types absent here fall back to the generic BuiltInIntentV1
 # (or the tiny SystemNoopRequestV1 for system_noop). Results stay generic BuiltInResultV1.
 _REQUEST_MODELS: dict[str, type[StrictDocument]] = {
+    "audio_remove": TrackRemoveRequestV1,
+    "track_remove": TrackRemoveRequestV1,
+    "subtitle_remove": TrackRemoveRequestV1,
+    "audio_reorder": AudioReorderRequestV1,
+    "subtitle_metadata": SubtitleMetadataRequestV1,
+    "subtitle_extract": SubtitleExtractRequestV1,
+    "subtitle_embed": SubtitleEmbedRequestV1,
+    "subtitle_generate": SubtitleGenerateRequestV1,
+    "subtitle_policy": SubtitlePolicyRequestV1,
+    "subtitle_restore": SubtitleRestoreRequestV1,
+    "subtitle_policy_batch": SubtitleBatchRequestV1,
     "library_sync": LibrarySyncRequestV1,
     "subtitle_scan": SubtitleScanRequestV1,
     "subtitle_policy_audit": SubtitlePolicyAuditRequestV1,
@@ -229,6 +265,16 @@ _REQUEST_MODELS: dict[str, type[StrictDocument]] = {
 }
 
 _RESULT_MODELS: dict[str, type[StrictDocument]] = {
+    "audio_remove": MediaTrackMutationResultV1,
+    "track_remove": MediaTrackMutationResultV1,
+    "subtitle_remove": MediaTrackMutationResultV1,
+    "audio_reorder": MediaTrackMutationResultV1,
+    "subtitle_metadata": MediaTrackMutationResultV1,
+    "subtitle_extract": SubtitleSidecarResultV1,
+    "subtitle_embed": MediaTrackMutationResultV1,
+    "subtitle_generate": SubtitleGenerationResultV1,
+    "subtitle_policy": MediaTrackMutationResultV1,
+    "subtitle_restore": MediaTrackMutationResultV1,
     "poster_pipeline": PosterPipelineResultV1,
     "poster_rescan": PosterRescanResultV1,
     "taste_rebuild": MlPublicationResultV1,

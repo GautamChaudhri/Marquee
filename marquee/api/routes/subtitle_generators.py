@@ -7,19 +7,24 @@ import time
 from pathlib import Path
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from marquee.api.routes.subtitles import PlanRequest, create_subtitle_plan
 from marquee.core.configuration import (
     ConfigurationError,
     ConfigurationVersionConflictError,
     update_configuration,
 )
 from marquee.core.configuration_cache import configuration_provider
+from marquee.core.jobs.audio_subtitle_planning import (
+    AudioSubtitlePlanError,
+    load_before_inventory,
+    selector_by_stream_index,
+)
 from marquee.core.media_files import ensure_media_file_for_movie
-from marquee.core.media_jobs import media_job_manager
 from marquee.core.subtitles import generation
 from marquee.core.subtitles.config import subtitle_settings
 from marquee.core.subtitles.embedded_subgen import hardware_snapshot
@@ -194,19 +199,44 @@ async def generate_for_media_file(
     media_file_id: int,
     body: GenerateRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
+    idempotency_key: Annotated[str, Header(alias="Idempotency-Key", min_length=1, max_length=240)],
 ):
     if not subtitle_settings.generation_enabled:
         raise HTTPException(status_code=503, detail="Generation disabled.")
     generation.validate_generation_request(body.task, generation.current_subgen_model())
-    job = await media_job_manager.create_job(
+    try:
+        _resolved, inventory = await load_before_inventory(db, media_file_id)
+        audio = [entry for entry in inventory.entries if entry.facts.kind == "audio"]
+        if not audio or audio[0].stream_index is None:
+            raise AudioSubtitlePlanError("the media file has no audio source track")
+        source = (
+            selector_by_stream_index(
+                inventory, kind="audio", stream_index=body.stream_index
+            )
+            if body.stream_index is not None
+            else selector_by_stream_index(
+                inventory, kind="audio", stream_index=audio[0].stream_index
+            )
+        )
+    except AudioSubtitlePlanError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    await db.rollback()
+    return await create_subtitle_plan(
+        media_file_id,
+        PlanRequest(
+            operation="subtitle_generate",
+            request={
+                "media_file_id": media_file_id,
+                "language_tag": body.language_hint or "und",
+                "publish": "embed" if body.output == "embedded" else "sidecar",
+                "source_selector": source.model_dump(mode="json"),
+                "provider_id": body.generator_id,
+                "task": body.task,
+            },
+        ),
         db,
-        operation="subtitle_generate",
-        media_file_id=media_file_id,
-        trigger="manual",
-        request=body.model_dump(),
-        status="queued",
+        idempotency_key,
     )
-    return {"job_id": job.job_id, "status_url": f"/api/jobs/{job.job_id}/snapshot"}
 
 
 @router.post("/api/movies/{movie_id}/subtitle-generations", status_code=202)
@@ -214,6 +244,7 @@ async def generate_for_movie(
     movie_id: int,
     body: GenerateRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
+    idempotency_key: Annotated[str, Header(alias="Idempotency-Key", min_length=1, max_length=240)],
 ):
     if not subtitle_settings.generation_enabled:
         raise HTTPException(status_code=503, detail="Generation disabled.")
@@ -224,12 +255,10 @@ async def generate_for_movie(
     media_file = await ensure_media_file_for_movie(db, movie)
     if media_file is None:
         raise HTTPException(status_code=422, detail="Movie has no media file")
-    job = await media_job_manager.create_job(
+    await db.commit()
+    return await generate_for_media_file(
+        media_file.id,
+        body,
         db,
-        operation="subtitle_generate",
-        media_file_id=media_file.id,
-        trigger="manual",
-        request=body.model_dump(),
-        status="queued",
+        idempotency_key,
     )
-    return {"job_id": job.job_id, "status_url": f"/api/jobs/{job.job_id}/snapshot"}

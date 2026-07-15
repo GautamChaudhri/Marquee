@@ -272,7 +272,12 @@
 		progressPercent = 5;
 
 		try {
-			const res = await confirmJob(fetch, planResult.job_id);
+			const res = await confirmJob(
+				fetch,
+				planResult.job_id,
+				planResult.plan_version,
+				planResult.configuration_version
+			);
 			activeJobId = planResult.job_id;
 			progressMessage = 'Waiting in queue...';
 
@@ -296,6 +301,7 @@
 
 		try {
 			const res = await extractTrack(fetch, mediaFileId, track.id);
+			await confirmJob(fetch, res.job_id, res.plan_version, res.configuration_version);
 			activeJobId = res.job_id;
 			progressMessage = 'Extraction started...';
 
@@ -328,7 +334,12 @@
 					});
 
 					progressMessage = 'Confirming original track removal...';
-					const confirmRes = await confirmJob(fetch, plan.job_id);
+					const confirmRes = await confirmJob(
+						fetch,
+						plan.job_id,
+						plan.plan_version,
+						plan.configuration_version
+					);
 					activeJobId = plan.job_id;
 
 					await monitorJob(plan.job_id, () => {

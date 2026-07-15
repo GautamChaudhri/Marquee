@@ -88,8 +88,19 @@ def _legacy_bypass_calls() -> dict[str, int]:
 
 def test_registry_and_execution_handlers_match_freeze() -> None:
     frozen = _freeze()
-    assert len(JOB_DEFINITION_REGISTRY) == frozen["registry"]["definition_count"] + 4
+    assert len(JOB_DEFINITION_REGISTRY) == frozen["registry"]["definition_count"] + 5  # +subtitle_policy_batch (JMC5B B05)
     poster_leaves = {
+        "subtitle_policy",
+        "subtitle_restore",
+        "subtitle_generate",
+        "subtitle_extract",
+        "subtitle_embed",
+        # JMC5B B2 track mutations.
+        "audio_remove",
+        "track_remove",
+        "subtitle_remove",
+        "audio_reorder",
+        "subtitle_metadata",
         "poster_deploy",
         "poster_restore",
         "poster_reset",
@@ -122,6 +133,17 @@ def test_deferred_destructive_types_stay_present_and_disabled() -> None:
     for job_type in ("poster_backup_all", "poster_deploy_reset", "poster_heal"):
         frozen[job_type] = parent_state
     for enabled in (
+        "subtitle_policy",
+        "subtitle_restore",
+        "subtitle_generate",
+        "subtitle_extract",
+        "subtitle_embed",
+        # JMC5B B2 enabled these; the still-deferred set below stays disabled.
+        "audio_remove",
+        "track_remove",
+        "subtitle_remove",
+        "audio_reorder",
+        "subtitle_metadata",
         "backup_create",
         "poster_maintenance",
         "pipeline_cache_clear",
@@ -149,6 +171,11 @@ def test_legacy_bypass_call_graph_matches_freeze() -> None:
         "marquee/api/routes/backup.py:create_backup:job_manager.create_and_run",
         "marquee/api/routes/pipeline.py:clear_pipeline_cache:job_manager.create_and_run",
         "marquee/api/routes/pipeline.py:poster_maintenance:job_manager.create",
+        "marquee/api/routes/audio_subs.py:generate_tv:job_manager.create_batch",
+        "marquee/api/routes/subtitle_generators.py:generate_for_media_file:media_job_manager.create_job",
+        "marquee/api/routes/subtitle_generators.py:generate_for_movie:media_job_manager.create_job",
+        "marquee/core/subtitles/generation.py:run_generation_job:cancel_registry.get",
+        "marquee/core/subtitles/mutation.py:_raise_if_cancel_requested:cancel_registry.get",
     ):
         frozen.pop(retired)
     assert _legacy_bypass_calls() == frozen

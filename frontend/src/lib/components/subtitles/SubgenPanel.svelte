@@ -7,7 +7,7 @@
 	import ProgressBar from '../ProgressBar.svelte';
 	import { subscribe } from '$lib/sse';
 	import { toast } from '$lib/toast';
-	import { getMediaJob } from '$lib/api/media-jobs';
+	import { confirmJob, getMediaJob } from '$lib/api/media-jobs';
 
 	let {
 		movieId = null,
@@ -102,6 +102,7 @@
 				language_hint: targetLang || null,
 				output: outputTarget
 			});
+			await confirmJob(fetch, res.job_id, res.plan_version, res.configuration_version);
 
 			activeJobId = res.job_id;
 			progressMessage = 'Job queued...';

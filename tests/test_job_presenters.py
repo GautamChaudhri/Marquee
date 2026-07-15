@@ -325,29 +325,6 @@ def test_dovi_analyze_detail_golden():
 
 
 def test_remux_failure_marks_all_targets_not_applied():
-    tracks = [
-        {
-            "track_kind": "subtitle",
-            "language": "eng",
-            "codec": "subrip",
-            "title": "English (SDH)",
-            "is_sdh": True,
-            "embedded": True,
-            "requested": "remove",
-            "outcome": "not_applied",
-            "reason": "The remux failed before any change was written.",
-        },
-        {
-            "track_kind": "audio",
-            "language": "fra",
-            "codec": "ac3",
-            "channels": 6,
-            "embedded": True,
-            "requested": "remove",
-            "outcome": "not_applied",
-            "reason": "The remux failed before any change was written.",
-        },
-    ]
     job = make_job(
         type="subtitle_remove",
         feature_area="audio_subtitles",
@@ -380,16 +357,22 @@ def test_remux_failure_marks_all_targets_not_applied():
         },
         result={
             "outcome": "failed",
-            "message": None,
-            "summary": {
-                "subtitle_targets": 1,
-                "audio_targets": 1,
-                "atomic": True,
-                "audio_before": 3,
-                "audio_after": 3,
-                "subtitle_before": 4,
-                "subtitle_after": 4,
-                "tracks": tracks,
+            "reason_code": "tool_failed",
+            "message": "The remux failed before any change was written.",
+            "requested_targets": [{'key': 'subtitle:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:0', 'kind': 'track', 'label': 'Subtitle en', 'operation': 'subtitle_remove', 'selector_facts': {'kind': 'subtitle', 'source': 'embedded', 'language_tag': 'en', 'codec': 'subrip', 'is_default': False, 'is_forced': False, 'is_hearing_impaired': False}}, {'key': 'audio:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:0', 'kind': 'track', 'label': 'Audio fr', 'operation': 'subtitle_remove', 'selector_facts': {'kind': 'audio', 'source': 'embedded', 'language_tag': 'fr', 'codec': 'ac3', 'is_default': False, 'is_forced': False, 'is_hearing_impaired': False, 'channels': 6}}],
+            "target_outcomes": [{'target': {'key': 'subtitle:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:0', 'kind': 'track', 'label': 'Subtitle en', 'operation': 'subtitle_remove', 'selector_facts': {'kind': 'subtitle', 'source': 'embedded', 'language_tag': 'en', 'codec': 'subrip', 'is_default': False, 'is_forced': False, 'is_hearing_impaired': False}}, 'status': 'not_applied', 'stage': 'remux', 'reason_code': 'tool_failed', 'message': 'The remux failed before any change was written.', 'bytes_changed': False, 'product_state_changed': False}, {'target': {'key': 'audio:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:0', 'kind': 'track', 'label': 'Audio fr', 'operation': 'subtitle_remove', 'selector_facts': {'kind': 'audio', 'source': 'embedded', 'language_tag': 'fr', 'codec': 'ac3', 'is_default': False, 'is_forced': False, 'is_hearing_impaired': False, 'channels': 6}}, 'status': 'not_applied', 'stage': 'remux', 'reason_code': 'tool_failed', 'message': 'The remux failed before any change was written.', 'bytes_changed': False, 'product_state_changed': False}],
+            "validation": {"verdict": "failed"},
+                "atomicity": {
+                "group_id": "subtitle_remove:314",
+                "boundary": "all_or_nothing",
+                "published": False,
+                "rollback_available": False,
+                    "uncertain_state": False,
+                },
+            "before_inventory": {
+                "signature": "sha256:before",
+                "container": "matroska",
+                "entries": [],
             },
         },
     )
@@ -418,16 +401,51 @@ def test_subtitle_generate_detail_golden():
         subject_snapshot=MEDIA_FILE_SNAPSHOT,
         result={
             "outcome": "succeeded",
-            "message": "Generated English subtitles.",
-            "summary": {
-                "language": "English",
-                "source_track": "audio stream 3",
-                "provider": "Embedded Subgen",
-                "model": "whisper-turbo",
-                "output_name": "The.Expanse.S03E07.en.srt",
-                "external_before": 0,
-                "external_after": 1,
+            "reason_code": "generated",
+            "message": "Subtitles were generated and published.",
+            "requested_targets": [{'key': 'subtitle:generated:English', 'kind': 'track', 'label': 'Generated English subtitles', 'operation': 'subtitle_generate', 'selector_facts': {'kind': 'subtitle', 'source': 'external', 'language_tag': 'English'}}],
+            "target_outcomes": [
+                {
+                    "target": {'key': 'subtitle:generated:English', 'kind': 'track', 'label': 'Generated English subtitles', 'operation': 'subtitle_generate', 'selector_facts': {'kind': 'subtitle', 'source': 'external', 'language_tag': 'English'}},
+                    "status": "succeeded",
+                    "stage": "sidecar",
+                    "reason_code": "generated",
+                    "message": "Published as a managed sidecar.",
+                    "bytes_changed": True,
+                    "product_state_changed": True,
+                }
+            ],
+            "validation": {"verdict": "passed"},
+            "atomicity": {
+                "group_id": "subtitle_generate:314",
+                "boundary": "single_target",
+                "published": True,
+                "rollback_available": False,
+                "uncertain_state": False,
             },
+            "generation_atomicity": {
+                "group_id": "subtitle_generate:314:generation",
+                "boundary": "single_target",
+                "published": True,
+                "rollback_available": True,
+                "uncertain_state": False,
+            },
+            "before_inventory": {
+                "signature": "sha256:before",
+                "container": "matroska",
+                "entries": [],
+            },
+            "sidecar": {
+                "managed_asset_id": "asset-314",
+                "storage_key": "jmc5/managed-subtitles/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.srt",
+                "checksum": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "size_bytes": 64,
+                "language_tag": "English",
+            },
+            "provider": "subgen-default",
+            "generated": True,
+            "embedded": False,
+            "source_track": "audio stream 3",
         },
     )
     presentation = present_job(job, definition_for("subtitle_generate"))

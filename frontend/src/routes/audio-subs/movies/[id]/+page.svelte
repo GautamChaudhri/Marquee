@@ -504,6 +504,7 @@
 		const originalStreamIndex = singleSelectedTrack.stream_index;
 		try {
 			const res = await extractTrack(fetch, mediaFileId, trackId);
+			await confirmJob(fetch, res.job_id, res.plan_version, res.configuration_version);
 			monitorJob(res.job_id, async (freshInspect) => {
 				if (withDelete) {
 					toast('Sidecar extracted. Remuxing to delete original embedded track...', 'info');
@@ -520,7 +521,7 @@
 							operation: 'subtitle_remove',
 							track_ids: [freshTrack.id]
 						});
-						await confirmJob(fetch, plan.job_id);
+						await confirmJob(fetch, plan.job_id, plan.plan_version, plan.configuration_version);
 						monitorJob(plan.job_id);
 					} catch (e: any) {
 						toast(`Cleanup remux failed: ${e.message}`, 'bad');
@@ -546,7 +547,7 @@
 				operation: 'subtitle_embed',
 				track_ids: [trackId]
 			});
-			await confirmJob(fetch, plan.job_id);
+			await confirmJob(fetch, plan.job_id, plan.plan_version, plan.configuration_version);
 			monitorJob(plan.job_id, async (freshInspect) => {
 				if (withDelete) {
 					toast('Track embedded. Removing external sidecar file...', 'info');
@@ -563,7 +564,12 @@
 							operation: 'subtitle_remove',
 							track_ids: [freshTrack.id]
 						});
-						await confirmJob(fetch, removePlan.job_id);
+						await confirmJob(
+							fetch,
+							removePlan.job_id,
+							removePlan.plan_version,
+							removePlan.configuration_version
+						);
 						monitorJob(removePlan.job_id);
 					} catch (e: any) {
 						toast(`Cleanup sidecar deletion failed: ${e.message}`, 'bad');
@@ -627,7 +633,7 @@
 				track_ids: targetTrackIds,
 				audio_stream_indices: targetAudioIndices
 			});
-			await confirmJob(fetch, plan.job_id);
+			await confirmJob(fetch, plan.job_id, plan.plan_version, plan.configuration_version);
 			monitorJob(plan.job_id);
 		} catch (e: any) {
 			toast(apiErrorText(e, 'Batch delete failed'), 'bad');
@@ -653,6 +659,7 @@
 				language_hint: audioLangHint || null,
 				output: subgenOutputTarget
 			});
+			await confirmJob(fetch, res.job_id, res.plan_version, res.configuration_version);
 			monitorJob(res.job_id);
 		} catch (e: any) {
 			toast(e.message || 'Generation failed', 'bad');
@@ -980,7 +987,7 @@
 					track_ids: [],
 					edits: metadataEdits
 				});
-				await confirmJob(fetch, plan.job_id);
+				await confirmJob(fetch, plan.job_id, plan.plan_version, plan.configuration_version);
 				const job = await runJobAndWait(plan.job_id);
 				if (job.status !== 'succeeded' && job.status !== 'completed') return;
 			}
@@ -990,7 +997,7 @@
 					track_ids: [],
 					audio_stream_order: draftOrder
 				});
-				await confirmJob(fetch, plan.job_id);
+				await confirmJob(fetch, plan.job_id, plan.plan_version, plan.configuration_version);
 				await runJobAndWait(plan.job_id);
 			}
 			audioDirty = false;
@@ -1036,7 +1043,7 @@
 				track_ids: [],
 				edits: metadataEdits
 			});
-			await confirmJob(fetch, plan.job_id);
+			await confirmJob(fetch, plan.job_id, plan.plan_version, plan.configuration_version);
 			await runJobAndWait(plan.job_id);
 			subtitleDirty = false;
 		} catch (e: any) {
@@ -1055,7 +1062,7 @@
 				track_ids: selectedTrackIds,
 				audio_stream_indices: selectedAudioIndices
 			});
-			await confirmJob(fetch, plan.job_id);
+			await confirmJob(fetch, plan.job_id, plan.plan_version, plan.configuration_version);
 			monitorJob(plan.job_id);
 		} catch (e: any) {
 			toast(apiErrorText(e, 'Delete failed'), 'bad');

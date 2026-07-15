@@ -7,6 +7,17 @@ from marquee.core.jobs.manifest import JOB_DEFINITION_REGISTRY
 from marquee.core.jobs.schedules import PRODUCTION_SCHEDULE_CATALOG
 
 ENABLED_LEAVES = {
+    "subtitle_policy",
+    "subtitle_restore",
+    "subtitle_generate",
+    "subtitle_extract",
+    "subtitle_embed",
+    "audio_remove",
+    "track_remove",
+    "subtitle_remove",
+    "audio_reorder",
+    "subtitle_metadata",
+
     "dovi_analyze",
     "learned_head_train",
     "letterbox_detect",
@@ -29,6 +40,19 @@ ENABLED_LEAVES = {
     "pipeline_cache_clear",
     "job_retention_purge",
     "system_metrics_purge",
+}
+
+B2_TRACK_MUTATIONS = {
+    "audio_remove",
+    "track_remove",
+    "subtitle_remove",
+    "audio_reorder",
+    "subtitle_metadata",
+    "subtitle_extract",
+    "subtitle_embed",
+    "subtitle_generate",
+    "subtitle_policy",
+    "subtitle_restore",
 }
 
 A4_MAINTENANCE = {
@@ -75,14 +99,19 @@ def test_final_enabled_manifest_has_exactly_one_executor_per_leaf() -> None:
 
 
 def test_c15_mutating_and_operator_owned_manifest_is_dispatch_disabled() -> None:
-    deferred = C15_DEFERRED - A4_MAINTENANCE
+    deferred = C15_DEFERRED - A4_MAINTENANCE - B2_TRACK_MUTATIONS
     assert {definition.job_type for definition in JOB_DEFINITION_REGISTRY} >= deferred
     assert all(not JOB_DEFINITION_REGISTRY.get(job_type).enabled for job_type in deferred)
     assert {
         definition.job_type
         for definition in JOB_DEFINITION_REGISTRY
         if definition.enabled and definition.execution_class.value == "media_write"
-    } == {"poster_deploy", "poster_restore", "poster_reset", "poster_backup_subject"}
+    } == {
+        "poster_deploy",
+        "poster_restore",
+        "poster_reset",
+        "poster_backup_subject",
+    } | B2_TRACK_MUTATIONS
 
 
 def test_enabled_chunk_four_is_read_only_and_parent_batches_are_ticketless() -> None:
@@ -96,6 +125,7 @@ def test_enabled_chunk_four_is_read_only_and_parent_batches_are_ticketless() -> 
             "poster_reset",
             "poster_backup_subject",
             *A4_MAINTENANCE,
+            *B2_TRACK_MUTATIONS,
         }
     )
     for job_type in ("poster_pipeline_batch", "poster_pipeline_tv_batch"):

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 JOB_LABELS: dict[str, str] = {
     "audio_remove": "Audio Track Removal",
+    "subtitle_policy_batch": "Subtitle Policy Batch",
     "audio_subs_deep_scan": "Audio & Subtitle Deep Scan",
     "audio_reorder": "Audio Stream Reorder",
     "backup_create": "Backup Creation",

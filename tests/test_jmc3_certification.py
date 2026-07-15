@@ -47,6 +47,16 @@ async def test_real_app_has_no_inline_restore_or_delete_backup_route() -> None:
 def test_only_system_noop_remains_production_enabled() -> None:
     """The final JMC3 state dispatches exactly one production definition."""
     assert JOB_DEFINITION_REGISTRY.enabled_types == {
+        "subtitle_policy",
+        "subtitle_restore",
+        "subtitle_generate",
+        "subtitle_extract",
+        "subtitle_embed",
+        "audio_remove",
+        "track_remove",
+        "subtitle_remove",
+        "audio_reorder",
+        "subtitle_metadata",
         "system_noop",
         "library_sync",
         "poster_pipeline",

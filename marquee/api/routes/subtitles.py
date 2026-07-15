@@ -13,15 +13,27 @@ import logging
 from pathlib import Path
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, Header, HTTPException
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.api.job_submission import submission_response
 from marquee.api.library_serializers import effective_movie_preferences
-from marquee.core.jobs.manager import UnmigratedJobPlatformError
+from marquee.core.jobs.audio_subtitle_planning import (
+    AudioSubtitlePlanError,
+    load_before_inventory,
+    plan_audio_subtitle_mutation,
+    selector_by_stream_index,
+)
+from marquee.core.jobs.mutation_planning import (
+    PlanConflictError,
+    PlanValidationError,
+    confirm_mutation,
+    plan_version,
+)
 from marquee.core.jobs.submission import Initiator, SubmissionError
+from marquee.core.jobs.track_selectors import TrackSelectorError
 from marquee.core.media_files import (
     MediaFileNotFoundError,
     MediaFileUnavailableError,
@@ -33,7 +45,7 @@ from marquee.core.subtitles.config import subtitle_settings
 from marquee.core.subtitles.scan_batch import create_subtitle_scan_batch
 from marquee.database import get_db
 from marquee.media import binaries
-from marquee.models import Movie
+from marquee.models import Job, MediaOperationDetail, Movie
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +84,10 @@ async def get_subtitles(
     """Inventory, coverage, capabilities, and per-track actions for a file."""
     _require_ffprobe()
     try:
-        return await service.get_inventory_dict(db, media_file_id, force=force)
+        payload = await service.get_inventory_dict(db, media_file_id, force=force)
+        _resolved, inventory = await load_before_inventory(db, media_file_id)
+        payload["mutation_inventory"] = inventory.model_dump(mode="json")
+        return payload
     except (MediaFileNotFoundError, MediaFileUnavailableError) as exc:
         raise _map_resolve_error(exc) from exc
 
@@ -82,7 +97,10 @@ async def scan_subtitles(media_file_id: int, db: Annotated[AsyncSession, Depends
     """Force a fresh inventory scan (inline for a single file)."""
     _require_ffprobe()
     try:
-        return await service.get_inventory_dict(db, media_file_id, force=True)
+        payload = await service.get_inventory_dict(db, media_file_id, force=True)
+        _resolved, inventory = await load_before_inventory(db, media_file_id)
+        payload["mutation_inventory"] = inventory.model_dump(mode="json")
+        return payload
     except (MediaFileNotFoundError, MediaFileUnavailableError) as exc:
         raise _map_resolve_error(exc) from exc
 
@@ -158,13 +176,24 @@ async def download_track(
 
 
 class PlanRequest(BaseModel):
-    operation: str  # audio_remove | subtitle_remove | subtitle_embed | subtitle_metadata | track_remove | audio_reorder
-    track_ids: list[str] = []
-    audio_stream_indices: list[int] = []
-    audio_stream_order: list[int] = []
-    edits: list[dict] = []
-    backup: bool = False
-    allow_break: bool = False
+    operation: Literal[
+        "audio_remove",
+        "track_remove",
+        "subtitle_remove",
+        "audio_reorder",
+        "subtitle_metadata",
+        "subtitle_extract",
+        "subtitle_embed",
+        "subtitle_generate",
+        "subtitle_policy",
+        "subtitle_restore",
+    ]
+    request: dict[str, object]
+
+
+class ConfirmMutationRequest(BaseModel):
+    expected_plan_version: str = Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$")
+    expected_configuration_version: int = Field(ge=0)
 
 
 class MovieSubtitlePreferencesUpdate(BaseModel):
@@ -185,9 +214,80 @@ async def create_subtitle_plan(
     media_file_id: int,
     body: PlanRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
+    idempotency_key: Annotated[str, Header(alias="Idempotency-Key", min_length=1, max_length=240)],
 ):
-    """Fail closed until subtitle mutation plans use canonical media details."""
-    raise UnmigratedJobPlatformError(f"subtitle_plan.create:{media_file_id}")
+    """Create a transport-free canonical mutation plan with immutable evidence."""
+    try:
+        async with db.begin():
+            result, resolved, _inventory = await plan_audio_subtitle_mutation(
+                db,
+                job_type=body.operation,
+                request=body.request,
+                media_file_id=media_file_id,
+                idempotency_key=idempotency_key,
+                initiator=Initiator(kind="user", identifier="audio-subtitle-api"),
+            )
+            detail = await db.get(MediaOperationDetail, result.job_id)
+            job = await db.get(Job, result.job_id)
+            if detail is None or job is None:
+                raise PlanValidationError("planned mutation evidence was not persisted")
+            version = plan_version(detail)
+            expires_at = detail.plan_expires_at
+        return {
+            "job_id": result.job_id,
+            "disposition": result.disposition,
+            "phase": result.phase,
+            "operation": body.operation,
+            "plan_version": version,
+            "input_signature": resolved.signature,
+            "configuration_version": job.configuration_version,
+            "plan_expires_at": expires_at,
+            "snapshot_url": result.snapshot_link,
+            "detail_url": result.detail_link,
+            "confirmation_url": f"/api/jobs/{result.job_id}/mutation-confirmation",
+        }
+    except PlanConflictError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": exc.reason, "message": str(exc)},
+        ) from exc
+    except (AudioSubtitlePlanError, PlanValidationError, SubmissionError, TrackSelectorError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except (MediaFileNotFoundError, MediaFileUnavailableError) as exc:
+        raise _map_resolve_error(exc) from exc
+
+
+@router.post("/api/jobs/{job_id}/mutation-confirmation", status_code=202)
+async def confirm_subtitle_plan(
+    job_id: str,
+    body: ConfirmMutationRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    """Re-resolve the source and dispatch the same planned job exactly once."""
+    try:
+        async with db.begin():
+            detail = await db.get(MediaOperationDetail, job_id)
+            if detail is None or detail.media_file_id is None:
+                raise PlanConflictError("missing", "the planned media mutation no longer exists")
+            resolved = await resolve_media_file(db, detail.media_file_id)
+            result = await confirm_mutation(
+                db,
+                job_id=job_id,
+                expected_plan_version=body.expected_plan_version,
+                current_input_signature=resolved.signature,
+                confirmed_by=Initiator(kind="user", identifier="audio-subtitle-api"),
+                expected_configuration_version=body.expected_configuration_version,
+            )
+        return submission_response(result)
+    except PlanConflictError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": exc.reason, "message": str(exc)},
+        ) from exc
+    except (PlanValidationError, SubmissionError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except (MediaFileNotFoundError, MediaFileUnavailableError) as exc:
+        raise _map_resolve_error(exc) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -272,9 +372,34 @@ async def extract_subtitle_track(
     media_file_id: int,
     track_id: str,
     db: Annotated[AsyncSession, Depends(get_db)],
+    idempotency_key: Annotated[str, Header(alias="Idempotency-Key", min_length=1, max_length=240)],
 ):
-    """Fail closed until subtitle extraction has a canonical definition."""
-    raise UnmigratedJobPlatformError(f"subtitle_extract:{media_file_id}:{track_id}")
+    """Plan extraction using a durable selector resolved from the current inventory."""
+    track = await service.get_track(db, media_file_id, track_id)
+    if track is None or track.source != "embedded" or track.stream_index is None:
+        raise HTTPException(status_code=404, detail="Embedded subtitle track not found")
+    try:
+        _resolved, inventory = await load_before_inventory(db, media_file_id)
+        selector = selector_by_stream_index(
+            inventory, kind="subtitle", stream_index=track.stream_index
+        )
+    except (AudioSubtitlePlanError, MediaFileNotFoundError, MediaFileUnavailableError) as exc:
+        if isinstance(exc, (MediaFileNotFoundError, MediaFileUnavailableError)):
+            raise _map_resolve_error(exc) from exc
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    await db.rollback()
+    return await create_subtitle_plan(
+        media_file_id,
+        PlanRequest(
+            operation="subtitle_extract",
+            request={
+                "media_file_id": media_file_id,
+                "selector": selector.model_dump(mode="json"),
+            },
+        ),
+        db,
+        idempotency_key,
+    )
 
 
 @router.post("/api/subtitles/scan-library", status_code=202)

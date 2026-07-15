@@ -1818,6 +1818,28 @@
         "title": "ConfigUpdate",
         "type": "object"
       },
+      "ConfirmMutationRequest": {
+        "properties": {
+          "expected_configuration_version": {
+            "minimum": 0.0,
+            "title": "Expected Configuration Version",
+            "type": "integer"
+          },
+          "expected_plan_version": {
+            "maxLength": 64,
+            "minLength": 64,
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Expected Plan Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected_plan_version",
+          "expected_configuration_version"
+        ],
+        "title": "ConfirmMutationRequest",
+        "type": "object"
+      },
       "DeepScanRequest": {
         "properties": {
           "scope": {
@@ -3928,56 +3950,31 @@
       },
       "PlanRequest": {
         "properties": {
-          "allow_break": {
-            "default": false,
-            "title": "Allow Break",
-            "type": "boolean"
-          },
-          "audio_stream_indices": {
-            "default": [],
-            "items": {
-              "type": "integer"
-            },
-            "title": "Audio Stream Indices",
-            "type": "array"
-          },
-          "audio_stream_order": {
-            "default": [],
-            "items": {
-              "type": "integer"
-            },
-            "title": "Audio Stream Order",
-            "type": "array"
-          },
-          "backup": {
-            "default": false,
-            "title": "Backup",
-            "type": "boolean"
-          },
-          "edits": {
-            "default": [],
-            "items": {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            "title": "Edits",
-            "type": "array"
-          },
           "operation": {
+            "enum": [
+              "audio_remove",
+              "track_remove",
+              "subtitle_remove",
+              "audio_reorder",
+              "subtitle_metadata",
+              "subtitle_extract",
+              "subtitle_embed",
+              "subtitle_generate",
+              "subtitle_policy",
+              "subtitle_restore"
+            ],
             "title": "Operation",
             "type": "string"
           },
-          "track_ids": {
-            "default": [],
-            "items": {
-              "type": "string"
-            },
-            "title": "Track Ids",
-            "type": "array"
+          "request": {
+            "additionalProperties": true,
+            "title": "Request",
+            "type": "object"
           }
         },
         "required": [
-          "operation"
+          "operation",
+          "request"
         ],
         "title": "PlanRequest",
         "type": "object"
@@ -4993,14 +4990,18 @@
       "SelectionBody": {
         "properties": {
           "movie_ids": {
-            "default": [],
             "items": {
               "type": "integer"
             },
+            "maxItems": 500,
+            "minItems": 1,
             "title": "Movie Ids",
             "type": "array"
           }
         },
+        "required": [
+          "movie_ids"
+        ],
         "title": "SelectionBody",
         "type": "object"
       },
@@ -7126,6 +7127,7 @@
     },
     "/api/audio-subs/tv/{series_id}/generate": {
       "post": {
+        "description": "Seal one immutable canonical generation child per episode file.",
         "operationId": "generate_tv_api_audio_subs_tv__series_id__generate_post",
         "parameters": [
           {
@@ -7135,6 +7137,17 @@
             "schema": {
               "title": "Series Id",
               "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 240,
+              "minLength": 1,
+              "title": "Idempotency-Key",
+              "type": "string"
             }
           }
         ],
@@ -9363,6 +9376,57 @@
         "summary": "List Job Events",
         "tags": [
           "jobs"
+        ]
+      }
+    },
+    "/api/jobs/{job_id}/mutation-confirmation": {
+      "post": {
+        "description": "Re-resolve the source and dispatch the same planned job exactly once.",
+        "operationId": "confirm_subtitle_plan_api_jobs__job_id__mutation_confirmation_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConfirmMutationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Confirm Subtitle Plan",
+        "tags": [
+          "subtitles"
         ]
       }
     },
@@ -12292,6 +12356,17 @@
               "title": "Media File Id",
               "type": "integer"
             }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 240,
+              "minLength": 1,
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -12332,7 +12407,7 @@
     },
     "/api/media-files/{media_file_id}/subtitle-plans": {
       "post": {
-        "description": "Fail closed until subtitle mutation plans use canonical media details.",
+        "description": "Create a transport-free canonical mutation plan with immutable evidence.",
         "operationId": "create_subtitle_plan_api_media_files__media_file_id__subtitle_plans_post",
         "parameters": [
           {
@@ -12342,6 +12417,17 @@
             "schema": {
               "title": "Media File Id",
               "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 240,
+              "minLength": 1,
+              "title": "Idempotency-Key",
+              "type": "string"
             }
           }
         ],
@@ -12525,7 +12611,7 @@
     },
     "/api/media-files/{media_file_id}/subtitles/{track_id}/extract": {
       "post": {
-        "description": "Fail closed until subtitle extraction has a canonical definition.",
+        "description": "Plan extraction using a durable selector resolved from the current inventory.",
         "operationId": "extract_subtitle_track_api_media_files__media_file_id__subtitles__track_id__extract_post",
         "parameters": [
           {
@@ -12543,6 +12629,17 @@
             "required": true,
             "schema": {
               "title": "Track Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 240,
+              "minLength": 1,
+              "title": "Idempotency-Key",
               "type": "string"
             }
           }
@@ -12716,6 +12813,17 @@
             "schema": {
               "title": "Movie Id",
               "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 240,
+              "minLength": 1,
+              "title": "Idempotency-Key",
+              "type": "string"
             }
           }
         ],
@@ -14513,7 +14621,7 @@
     },
     "/api/subtitle-policies/{policy_id}/apply": {
       "post": {
-        "description": "Fail closed until subtitle-policy mutations have a canonical definition.",
+        "description": "Evaluate once, freeze one immutable plan per file, and seal the batch.",
         "operationId": "apply_policy_api_subtitle_policies__policy_id__apply_post",
         "parameters": [
           {
@@ -14523,6 +14631,17 @@
             "schema": {
               "title": "Policy Id",
               "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 240,
+              "minLength": 1,
+              "title": "Idempotency-Key",
+              "type": "string"
             }
           }
         ],

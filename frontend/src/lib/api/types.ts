@@ -1509,6 +1509,41 @@ export interface SubtitleInventory {
 	audio_streams: AudioStreamInfo[];
 	file_signature: string;
 	scanned_at: string;
+	mutation_inventory?: MutationTrackInventory;
+}
+
+export interface MutationTrackFacts {
+	kind: 'audio' | 'subtitle';
+	source: 'embedded' | 'external';
+	language_tag: string;
+	codec: string | null;
+	channels: number | null;
+	title: string | null;
+	is_default: boolean;
+	is_forced: boolean;
+	is_hearing_impaired: boolean;
+	managed_key: string | null;
+}
+
+export interface MutationTrackSelector {
+	track_key: string;
+	facts: MutationTrackFacts;
+	inventory_signature: string;
+	stream_index_hint: number | null;
+	tool_track_id_hint: number | null;
+}
+
+export interface MutationTrackEntry {
+	track_key: string;
+	facts: MutationTrackFacts;
+	stream_index: number | null;
+	tool_track_id: number | null;
+}
+
+export interface MutationTrackInventory {
+	signature: string;
+	tracks: MutationTrackEntry[];
+	container: string | null;
 }
 
 // ── Plans ──
@@ -1545,20 +1580,16 @@ export interface SubtitlePlanRequest {
 
 export interface SubtitlePlan {
 	job_id: string;
-	status: string;
+	phase: 'planned';
+	disposition: 'created' | 'reused';
 	operation: string;
-	before: Record<string, unknown>;
-	after: Record<string, unknown>;
-	warnings: unknown[];
-	storage: {
-		source_bytes?: number;
-		estimated_temp_bytes?: number;
-		free_bytes?: number;
-		backup_requested?: boolean;
-		estimated_bytes?: number;
-		available_bytes?: number;
-	};
-	plan_expires_at?: string;
+	plan_version: string;
+	input_signature: string;
+	configuration_version: number;
+	plan_expires_at: string;
+	snapshot_url: string;
+	detail_url: string;
+	confirmation_url: string;
 }
 
 export interface MediaJob {

@@ -18,8 +18,19 @@ def test_jmc3a_starts_from_certified_registry_and_transport_contract() -> None:
     contract = _contract()
     registry = contract["registry"]
     assert isinstance(registry, dict)
-    assert len(JOB_DEFINITION_REGISTRY) == registry["definition_count"] + 4
+    assert len(JOB_DEFINITION_REGISTRY) == registry["definition_count"] + 5  # +subtitle_policy_batch (JMC5B B05)
     assert JOB_DEFINITION_REGISTRY.enabled_types == set(registry["enabled_types"]) | {
+        "subtitle_policy",
+        "subtitle_restore",
+        "subtitle_generate",
+        "subtitle_extract",
+        "subtitle_embed",
+        # JMC5B B2 track mutations.
+        "audio_remove",
+        "track_remove",
+        "subtitle_remove",
+        "audio_reorder",
+        "subtitle_metadata",
         "poster_deploy",
         "poster_restore",
         "poster_reset",
@@ -37,6 +48,7 @@ def test_jmc3a_starts_from_certified_registry_and_transport_contract() -> None:
 
 def test_jmc3a_a0_inventory_paths_exist_and_are_project_relative() -> None:
     contract = _contract()
+    retired_in_jmc5b = {"marquee/core/subtitles/mutation.py"}
     inventory_keys = (
         "direct_process_launch_files",
         "security_prefix_hotspots",
@@ -50,6 +62,9 @@ def test_jmc3a_a0_inventory_paths_exist_and_are_project_relative() -> None:
             path = Path(value)
             assert not path.is_absolute()
             assert ".." not in path.parts
+            if value in retired_in_jmc5b:
+                assert not (ROOT / path).exists()
+                continue
             assert (ROOT / path).is_file(), f"stale A0 inventory entry: {value}"
 
 

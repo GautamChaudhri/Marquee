@@ -135,7 +135,10 @@ export interface paths {
 		};
 		get?: never;
 		put?: never;
-		/** Generate Tv */
+		/**
+		 * Generate Tv
+		 * @description Seal one immutable canonical generation child per episode file.
+		 */
 		post: operations['generate_tv_api_audio_subs_tv__series_id__generate_post'];
 		delete?: never;
 		options?: never;
@@ -741,6 +744,26 @@ export interface paths {
 		get: operations['list_job_events_api_jobs__job_id__events_get'];
 		put?: never;
 		post?: never;
+		delete?: never;
+		options?: never;
+		head?: never;
+		patch?: never;
+		trace?: never;
+	};
+	'/api/jobs/{job_id}/mutation-confirmation': {
+		parameters: {
+			query?: never;
+			header?: never;
+			path?: never;
+			cookie?: never;
+		};
+		get?: never;
+		put?: never;
+		/**
+		 * Confirm Subtitle Plan
+		 * @description Re-resolve the source and dispatch the same planned job exactly once.
+		 */
+		post: operations['confirm_subtitle_plan_api_jobs__job_id__mutation_confirmation_post'];
 		delete?: never;
 		options?: never;
 		head?: never;
@@ -1790,7 +1813,7 @@ export interface paths {
 		put?: never;
 		/**
 		 * Create Subtitle Plan
-		 * @description Fail closed until subtitle mutation plans use canonical media details.
+		 * @description Create a transport-free canonical mutation plan with immutable evidence.
 		 */
 		post: operations['create_subtitle_plan_api_media_files__media_file_id__subtitle_plans_post'];
 		delete?: never;
@@ -1870,7 +1893,7 @@ export interface paths {
 		put?: never;
 		/**
 		 * Extract Subtitle Track
-		 * @description Fail closed until subtitle extraction has a canonical definition.
+		 * @description Plan extraction using a durable selector resolved from the current inventory.
 		 */
 		post: operations['extract_subtitle_track_api_media_files__media_file_id__subtitles__track_id__extract_post'];
 		delete?: never;
@@ -2800,7 +2823,7 @@ export interface paths {
 		put?: never;
 		/**
 		 * Apply Policy
-		 * @description Fail closed until subtitle-policy mutations have a canonical definition.
+		 * @description Evaluate once, freeze one immutable plan per file, and seal the batch.
 		 */
 		post: operations['apply_policy_api_subtitle_policies__policy_id__apply_post'];
 		delete?: never;
@@ -4237,6 +4260,13 @@ export interface components {
 				[key: string]: unknown;
 			};
 		};
+		/** ConfirmMutationRequest */
+		ConfirmMutationRequest: {
+			/** Expected Configuration Version */
+			expected_configuration_version: number;
+			/** Expected Plan Version */
+			expected_plan_version: string;
+		};
 		/** DeepScanRequest */
 		DeepScanRequest: {
 			/**
@@ -4905,39 +4935,24 @@ export interface components {
 		/** PlanRequest */
 		PlanRequest: {
 			/**
-			 * Allow Break
-			 * @default false
+			 * Operation
+			 * @enum {string}
 			 */
-			allow_break: boolean;
-			/**
-			 * Audio Stream Indices
-			 * @default []
-			 */
-			audio_stream_indices: number[];
-			/**
-			 * Audio Stream Order
-			 * @default []
-			 */
-			audio_stream_order: number[];
-			/**
-			 * Backup
-			 * @default false
-			 */
-			backup: boolean;
-			/**
-			 * Edits
-			 * @default []
-			 */
-			edits: {
+			operation:
+				| 'audio_remove'
+				| 'track_remove'
+				| 'subtitle_remove'
+				| 'audio_reorder'
+				| 'subtitle_metadata'
+				| 'subtitle_extract'
+				| 'subtitle_embed'
+				| 'subtitle_generate'
+				| 'subtitle_policy'
+				| 'subtitle_restore';
+			/** Request */
+			request: {
 				[key: string]: unknown;
-			}[];
-			/** Operation */
-			operation: string;
-			/**
-			 * Track Ids
-			 * @default []
-			 */
-			track_ids: string[];
+			};
 		};
 		/** PolicyAuditBody */
 		PolicyAuditBody: {
@@ -5287,10 +5302,7 @@ export interface components {
 		};
 		/** SelectionBody */
 		SelectionBody: {
-			/**
-			 * Movie Ids
-			 * @default []
-			 */
+			/** Movie Ids */
 			movie_ids: number[];
 		};
 		/** SeriesPreferencesRequest */
@@ -6024,7 +6036,9 @@ export interface operations {
 	generate_tv_api_audio_subs_tv__series_id__generate_post: {
 		parameters: {
 			query?: never;
-			header?: never;
+			header: {
+				'Idempotency-Key': string;
+			};
 			path: {
 				series_id: number;
 			};
@@ -7171,6 +7185,41 @@ export interface operations {
 				};
 				content: {
 					'application/json': components['schemas']['EventListResponse'];
+				};
+			};
+			/** @description Validation Error */
+			422: {
+				headers: {
+					[name: string]: unknown;
+				};
+				content: {
+					'application/json': components['schemas']['HTTPValidationError'];
+				};
+			};
+		};
+	};
+	confirm_subtitle_plan_api_jobs__job_id__mutation_confirmation_post: {
+		parameters: {
+			query?: never;
+			header?: never;
+			path: {
+				job_id: string;
+			};
+			cookie?: never;
+		};
+		requestBody: {
+			content: {
+				'application/json': components['schemas']['ConfirmMutationRequest'];
+			};
+		};
+		responses: {
+			/** @description Successful Response */
+			202: {
+				headers: {
+					[name: string]: unknown;
+				};
+				content: {
+					'application/json': unknown;
 				};
 			};
 			/** @description Validation Error */
@@ -9059,7 +9108,9 @@ export interface operations {
 	generate_for_media_file_api_media_files__media_file_id__subtitle_generations_post: {
 		parameters: {
 			query?: never;
-			header?: never;
+			header: {
+				'Idempotency-Key': string;
+			};
 			path: {
 				media_file_id: number;
 			};
@@ -9094,7 +9145,9 @@ export interface operations {
 	create_subtitle_plan_api_media_files__media_file_id__subtitle_plans_post: {
 		parameters: {
 			query?: never;
-			header?: never;
+			header: {
+				'Idempotency-Key': string;
+			};
 			path: {
 				media_file_id: number;
 			};
@@ -9225,7 +9278,9 @@ export interface operations {
 	extract_subtitle_track_api_media_files__media_file_id__subtitles__track_id__extract_post: {
 		parameters: {
 			query?: never;
-			header?: never;
+			header: {
+				'Idempotency-Key': string;
+			};
 			path: {
 				media_file_id: number;
 				track_id: string;
@@ -9351,7 +9406,9 @@ export interface operations {
 	generate_for_movie_api_movies__movie_id__subtitle_generations_post: {
 		parameters: {
 			query?: never;
-			header?: never;
+			header: {
+				'Idempotency-Key': string;
+			};
 			path: {
 				movie_id: number;
 			};
@@ -10749,7 +10806,9 @@ export interface operations {
 	apply_policy_api_subtitle_policies__policy_id__apply_post: {
 		parameters: {
 			query?: never;
-			header?: never;
+			header: {
+				'Idempotency-Key': string;
+			};
 			path: {
 				policy_id: number;
 			};

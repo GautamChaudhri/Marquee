@@ -33,6 +33,17 @@ def test_jmc3b_starts_from_the_certified_production_registry() -> None:
     registry = _contract()["registry"]
     assert isinstance(registry, dict)
     assert JOB_DEFINITION_REGISTRY.enabled_types == set(registry["enabled_types"]) | {
+        "subtitle_policy",
+        "subtitle_restore",
+        "subtitle_generate",
+        "subtitle_extract",
+        "subtitle_embed",
+        # JMC5B B2 track mutations.
+        "audio_remove",
+        "track_remove",
+        "subtitle_remove",
+        "audio_reorder",
+        "subtitle_metadata",
         "poster_deploy",
         "poster_restore",
         "poster_reset",
@@ -44,6 +55,16 @@ def test_jmc3b_starts_from_the_certified_production_registry() -> None:
         "system_metrics_purge",
     }
     assert JOB_DEFINITION_REGISTRY.enabled_types == {
+        "subtitle_policy",
+        "subtitle_restore",
+        "subtitle_generate",
+        "subtitle_extract",
+        "subtitle_embed",
+        "audio_remove",
+        "track_remove",
+        "subtitle_remove",
+        "audio_reorder",
+        "subtitle_metadata",
         "system_noop",
         "library_sync",
         "poster_pipeline",
