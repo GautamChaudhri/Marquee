@@ -41,6 +41,7 @@ SEMANTIC_EVENT_KEYS = frozenset(
         "job.no_change",
         "job.partially_succeeded",
         "job.paused",
+        "job.planned",
         "job.priority_changed",
         "job.queued",
         "job.resumed",

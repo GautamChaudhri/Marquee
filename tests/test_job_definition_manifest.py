@@ -81,7 +81,7 @@ def _subjects():
 
 
 def test_manifest_has_exactly_one_definition_for_every_inventory_source() -> None:
-    assert len(JOB_DEFINITION_REGISTRY) == 53
+    assert len(JOB_DEFINITION_REGISTRY) == 54  # +subtitle_policy_batch (JMC5B B05)
     assert JOB_DEFINITION_REGISTRY.types == BUILTIN_JOB_TYPES
     for inventory in (
         REGISTERED_HANDLER_TYPES,
@@ -119,6 +119,17 @@ def test_only_noop_is_enabled_and_webhook_stays_reserved_disabled() -> None:
         "poster_rescan",
         "taste_map",
         "taste_rebuild",
+        # JMC5B B2: audio/subtitle removals, reorder, and metadata.
+        "audio_remove",
+        "track_remove",
+        "subtitle_remove",
+        "audio_reorder",
+        "subtitle_metadata",
+        "subtitle_extract",
+        "subtitle_embed",
+        "subtitle_generate",
+        "subtitle_policy",
+        "subtitle_restore",
     }
     webhook = JOB_DEFINITION_REGISTRY.get("radarr_upgrade")
     assert webhook.trigger_kinds == {TriggerKind.WEBHOOK}
@@ -185,6 +196,91 @@ def test_all_documents_are_strict_current_v1_and_policy_is_not_client_input() ->
             "scope": "missing",
             "selection_count": 0,
         },
+        "audio_remove": {"media_file_id": 1, "selectors": [{
+                "track_key": "audio:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:0",
+                "facts": {
+                    "kind": "audio",
+                    "source": "embedded",
+                    "language_tag": "en",
+                    "codec": "ac3",
+                    "channels": 6,
+                },
+                "inventory_signature": "sha256:example",
+            }]},
+        "track_remove": {"media_file_id": 1, "selectors": [{
+                "track_key": "audio:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:0",
+                "facts": {
+                    "kind": "audio",
+                    "source": "embedded",
+                    "language_tag": "en",
+                    "codec": "ac3",
+                    "channels": 6,
+                },
+                "inventory_signature": "sha256:example",
+            }]},
+        "subtitle_remove": {"media_file_id": 1, "selectors": [{
+                "track_key": "audio:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:0",
+                "facts": {
+                    "kind": "audio",
+                    "source": "embedded",
+                    "language_tag": "en",
+                    "codec": "ac3",
+                    "channels": 6,
+                },
+                "inventory_signature": "sha256:example",
+            }]},
+        "audio_reorder": {"media_file_id": 1, "ordered_selectors": [{
+                "track_key": "audio:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:0",
+                "facts": {
+                    "kind": "audio",
+                    "source": "embedded",
+                    "language_tag": "en",
+                    "codec": "ac3",
+                    "channels": 6,
+                },
+                "inventory_signature": "sha256:example",
+            }, {
+                "track_key": "audio:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:0",
+                "facts": {
+                    "kind": "audio",
+                    "source": "embedded",
+                    "language_tag": "fr",
+                    "codec": "ac3",
+                    "channels": 6,
+                },
+                "inventory_signature": "sha256:example",
+            }]},
+        "subtitle_metadata": {"media_file_id": 1, "edits": [{"selector": {
+                "track_key": "subtitle:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:0",
+                "facts": {
+                    "kind": "subtitle",
+                    "source": "embedded",
+                    "language_tag": "en",
+                    "codec": "subrip",
+                    },
+                "inventory_signature": "sha256:example",
+            }, "is_forced": True}]},
+        "subtitle_extract": {"media_file_id": 1, "selector": {
+                "track_key": "subtitle:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:0",
+                "facts": {
+                    "kind": "subtitle",
+                    "source": "embedded",
+                    "language_tag": "en",
+                    "codec": "subrip",
+                },
+                "inventory_signature": "sha256:example",
+            }},
+        "subtitle_embed": {"media_file_id": 1, "managed_asset_id": "asset-1", "language_tag": "en"},
+        "subtitle_generate": {"media_file_id": 1, "language_tag": "en"},
+        "subtitle_policy": {"media_file_id": 1, "policy_id": 1, "policy_revision": 1},
+        "subtitle_restore": {
+            "media_file_id": 1,
+            "artifact_key": "jmc5/media-backups/mf-1/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.mkv",
+            "checksum": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "source_signature": "sha256:src:1",
+            "expected_destination_signature": "sha256:dst:1",
+        },
+        "subtitle_policy_batch": {"policy_id": 1, "policy_revision": 1},
         "backup_create": {},
         "poster_maintenance": {},
         "pipeline_cache_clear": {},
@@ -262,6 +358,35 @@ def test_all_documents_are_strict_current_v1_and_policy_is_not_client_input() ->
         "poster_backup_subject",
     ):
         valid_results[job_type] = mutation_result
+    track_result = {**mutation_result, "before_inventory": {"signature": "sha256:example", "container": "matroska", "entries": []}}
+    for job_type in (
+        "audio_remove",
+        "track_remove",
+        "subtitle_remove",
+        "audio_reorder",
+        "subtitle_metadata",
+        "subtitle_embed",
+        "subtitle_policy",
+        "subtitle_restore",
+    ):
+        valid_results[job_type] = track_result
+    valid_results["subtitle_extract"] = {**mutation_result, "before_inventory": {"signature": "sha256:example", "container": "matroska", "entries": []}}
+    valid_results["subtitle_generate"] = {
+        **mutation_result,
+        "before_inventory": {
+            "signature": "sha256:example",
+            "container": "matroska",
+            "entries": [],
+        },
+        "provider": "subgen",
+        "generation_atomicity": {
+            "group_id": "subtitle-generate:media-file:1",
+            "boundary": "single_target",
+            "published": False,
+            "rollback_available": True,
+            "uncertain_state": False,
+        },
+    }
     maintenance_result = {
         "outcome": "no_change",
         "message": "No eligible maintenance targets were found.",

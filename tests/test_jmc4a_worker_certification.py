@@ -223,8 +223,18 @@ def test_readiness_is_sanitized_and_reports_locked_jmc4a_boundaries() -> None:
 
 
 def test_final_manifest_keeps_only_system_noop_enabled() -> None:
-    assert len(JOB_DEFINITION_REGISTRY) == 53
+    assert len(JOB_DEFINITION_REGISTRY) == 54  # +subtitle_policy_batch (JMC5B B05)
     assert JOB_DEFINITION_REGISTRY.enabled_types == {
+        "subtitle_policy",
+        "subtitle_restore",
+        "subtitle_generate",
+        "subtitle_extract",
+        "subtitle_embed",
+        "audio_remove",
+        "track_remove",
+        "subtitle_remove",
+        "audio_reorder",
+        "subtitle_metadata",
         "system_noop",
         "library_sync",
         "poster_pipeline",
@@ -252,6 +262,8 @@ def test_final_manifest_keeps_only_system_noop_enabled() -> None:
     assert sorted(
         (definition.job_type, definition.entrypoint) for definition in enabled
     ) == [
+        ("audio_remove", "media_write"),
+        ("audio_reorder", "media_write"),
         ("backup_create", "maintenance"),
         ("dovi_analyze", "media_read"),
         ("job_retention_purge", "maintenance"),
@@ -268,15 +280,39 @@ def test_final_manifest_keeps_only_system_noop_enabled() -> None:
             ("poster_rescan", "media_read"),
             ("poster_reset", "media_write"),
             ("poster_restore", "media_write"),
+        ("subtitle_embed", "media_write"),
+        ("subtitle_extract", "media_write"),
+        ("subtitle_generate", "media_write"),
+        ("subtitle_metadata", "media_write"),
+        ("subtitle_policy", "media_write"),
         ("subtitle_policy_audit", "cpu"),
+        ("subtitle_remove", "media_write"),
+        ("subtitle_restore", "media_write"),
         ("subtitle_scan", "media_read"),
         ("system_metrics_purge", "maintenance"),
         ("system_noop", "control"),
         ("taste_map", "cpu"),
         ("taste_rebuild", "gpu"),
+        ("track_remove", "media_write"),
     ]
     assert {
         definition.job_type
         for definition in JOB_DEFINITION_REGISTRY
         if definition.enabled and definition.entrypoint == "media_write"
-    } == {"poster_backup_subject", "poster_deploy", "poster_reset", "poster_restore"}
+    } == {
+        "poster_backup_subject",
+        "poster_deploy",
+        "poster_reset",
+        "poster_restore",
+        # JMC5B B2 track mutations.
+        "audio_remove",
+        "audio_reorder",
+        "subtitle_embed",
+        "subtitle_extract",
+        "subtitle_generate",
+        "subtitle_metadata",
+        "subtitle_policy",
+        "subtitle_remove",
+        "subtitle_restore",
+        "track_remove",
+    }

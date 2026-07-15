@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { generateTv } from '$lib/api/subtitles';
 	import { submitGeneration } from '$lib/api/subtitle-generators';
+	import { confirmJob } from '$lib/api/media-jobs';
 	import type { AudioStreamInfo } from '$lib/api/types';
 	import { toast } from '$lib/toast';
 
@@ -48,6 +49,7 @@
 					stream_index: streamIndex ?? undefined
 				};
 				const res = await submitGeneration(fetch, mediaFileId, req as any);
+				await confirmJob(fetch, res.job_id, res.plan_version, res.configuration_version);
 				toast('Subtitle generation job started', 'good');
 				onSuccess(res.job_id, false);
 			} else {

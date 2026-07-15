@@ -30,9 +30,10 @@ def test_raw_poster_delete_and_cross_device_copy_fallback_are_absent() -> None:
     library = (REPOSITORY / "marquee" / "api" / "routes" / "library.py").read_text(
         encoding="utf-8"
     )
-    mutation = (REPOSITORY / "marquee" / "core" / "subtitles" / "mutation.py").read_text(
-        encoding="utf-8"
+    mutation_handlers = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (REPOSITORY / "marquee" / "core" / "jobs").glob("*mutation*.py")
     )
     assert "Path(entity.poster_path).unlink" not in handlers
     assert "Path(entity.poster_path).unlink" not in library
-    assert "marquee-replace" not in mutation
+    assert "marquee-replace" not in mutation_handlers

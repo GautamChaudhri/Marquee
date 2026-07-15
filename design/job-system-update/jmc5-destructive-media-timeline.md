@@ -409,3 +409,604 @@ Shared implementer log for JMC5A → JMC5B → JMC5C. Append after every phase c
   remuxing/transcoding. JMC5B may start only from verified compact `jmc5a-complete` after its
   commit/tree/base, recovery refs/bundle, and exact compact-tree smoke are proven; this task does
   not start JMC5B.
+
+## JMC5B Phase B0 — verified JMC5A and froze audio/subtitle contracts — 2026-07-15
+
+### Proven JMC5A predecessor state and exact plan base
+
+- **Exact JMC5B plan base:** annotated tag `jmc5a-complete` peels to compact commit
+  `a1973e016302feba61285e20c79e48576499f9c6` (`jmc5a: establish canonical mutation workflows`),
+  tree `3592cffb502aa7755642344148220021c4fe91e4`, sole parent
+  `cadfdb423b09a5d1e3f9b2270ca147bb080c2723` (`chunk 5 planned`). Tag object type is `tag`
+  (annotated); tagger, author, and committer are the configured repository user
+  `Gautam Chaudhri <gautam.chaudhri@gmail.com>`. The commit message carries no agent/model
+  attribution trailer.
+- **Tree identity:** pre-squash tip `1d1b96c16601303ddef4aa213cc5593100e05c2c` and compact
+  `a1973e0` have byte-identical trees (`3592cffb…`); `git diff` between them is empty.
+- **Recovery material verified:** branch `recovery/jmc5a-20260715T070101Z` and annotated tag
+  `recovery/jmc5a-pre-squash-20260715T070101Z` both resolve to `1d1b96c…`. External bundle
+  `/home/quartermaster/backups/Marquee/marquee-jmc5a-pre-squash-20260715T070101Z.bundle`
+  reports `The bundle records a complete history`, and its sha256
+  `fa2332e65bf575d26e6b9840e19bf2018b53fb8ed307bc79aca851f10adcd286` matches the recorded value
+  exactly.
+- **Post-squash smoke proven:** the default Git note on `a1973e0` (blob
+  `0172233edba6ea7a615d985c16ed01036ddd5343`) records `JMC5A post-compaction verification` with
+  `smoke=67 passed in 4.37s`, `tree_identity=verified`, `sole_parent=verified`,
+  `recovery_refs=verified`, `bundle=complete and verified`, and `worktree=clean`. The JMC5A
+  timeline states it is not edited after compaction, so this note is the authoritative
+  post-squash record. No JMC5A claim was left unproven; the JMC5B prerequisite gate passes.
+- **Clean state:** working tree was clean at Phase B0 start (`git status --porcelain` empty);
+  branch is `job-manager`; configured author is the repository user only.
+
+### Recorded state change since the JMC5A certification (not a JMC5B action)
+
+- The JMC5A certification recorded its range as existing "only on local `job-manager` beyond
+  `origin/job-manager`". That claim was true when written: the `origin/job-manager` reflog shows
+  the tracking ref stood at `cadfdb4` at that time. It now stands at `a1973e0` via
+  `refs/remotes/origin/job-manager@{0}: update by push`, matching the operator's established
+  per-chunk pattern (`490bc1d`, `0eded40`, `cadfdb4`, `a1973e0` were each pushed after
+  compaction). **JMC5B performed no push and will not push.** The pushed base is safe for the
+  §10 rewrite because JMC5B soft-resets *to* `a1973e0` and never rewrites it; only the JMC5B
+  phase range (which does not exist on any remote) is compacted.
+
+### Owned disposable environment and tool/provider baseline
+
+- Owned disposable PostgreSQL **18.3** cluster created for this work only at
+  `/tmp/marquee-jmc5b-pg/data`, listening on `127.0.0.1:55448` with its own socket directory,
+  role `marquee`, database `marquee_test`. No operator database, normal `DATA_DIR`, media
+  library, or backup set was opened or mutated. The operator PostgreSQL on `127.0.0.1:5432` was
+  not used.
+- **Provisioning correction (deviation, environment only):** the disposable database must be
+  provisioned with the application's own migration command
+  `python -m marquee.db_migration`, which applies Alembic **and** installs the PgQueuer durable
+  schema **and** writes the `schema_contracts` marker rows. Provisioning with raw
+  `alembic upgrade head` alone reproduces only 1149 passed / 28 failed: six `tests/test_backup.py`
+  cases plus `tests/test_jmc1_readiness.py::test_api_startup_fails_closed_before_serving` fail
+  environmentally on the missing markers/PgQueuer catalog (`relation "schema_contracts" does not
+  exist`, then `restored database failed schema or PgQueuer certification`). This is an
+  environment-provisioning fact, not a product defect: no source file was changed while
+  diagnosing it, and the certified baseline is reproduced exactly once the command is used.
+  Recorded so a cold agent does not misread these seven as regressions.
+- Alembic sole head remains `0006_jmc4c`. `schema_contracts` markers are `marquee|0006_jmc4c` and
+  `pgqueuer|1.1.1|durable`.
+- **Tool baseline:** Python `3.13.14`, pytest `9.0.3`, Ruff `0.15.17`, Alembic `1.18.4`,
+  Node `22.22.2`, Git `2.55.0`, RTK `0.42.4`, PostgreSQL `18.3`, pgqueuer `1.1.1` (pinned),
+  openapi-typescript `7.13.0`.
+- **Media/provider capability (JMC5B-critical):** ffmpeg `8.1.2`, ffprobe `8.1.2`,
+  mkvmerge/mkvextract/mkvpropedit `v99.0 ('Buka') 64-bit`. `mkvmerge --gui-mode` and FFmpeg
+  `-progress` are therefore both available for B09. Provider stack: faster-whisper `1.2.1`,
+  stable-ts-whisperless `2.19.1`, torch `2.7.1+cu126`.
+- **Live provider boundary:** `.env` configures a real Subgen endpoint
+  `SUBGEN_URL=http://localhost:9000` (plus a redacted callback token) and pydantic-settings reads
+  `.env`, so tests inherit it. Nothing is listening on port 9000 at B0. Per the JMC5B safety
+  boundary no test may contact a live provider; B3 follows the existing repository convention of
+  monkeypatching `subtitle_settings.SUBGEN_URL` to a fake host (`http://subgen.local`) with a
+  stubbed transport, as already used by `tests/test_subgen_generator.py` and
+  `tests/test_frontend_gap_routes.py`. No live provider was contacted during B0.
+- No committed MKV/MP4/sidecar fixtures exist; JMC5B generates small confined fixtures per §9.
+- Required Serena MCP is available, its manual was read, and project `Marquee` is active.
+  Required ByteRover MCP is available and was queried (its subtitle/schema entries predate the
+  PostgreSQL cutover and were treated as stale where code disagreed; code beats doc). RTK
+  proxying is available and was used.
+
+### Complete retained baseline at the B0 freeze
+
+- Authoritative full result on the owned disposable target: **1156 passed, 21 failed, 2 warnings
+  in 66.67s** — reproducing the JMC5A certification exactly, both in counts and in membership.
+  The 21 retained failures are the exact recorded JMC5A/JMC4C set: nine development OCR-label
+  cases, TV development reset, effective OCR hardware policy, four run endpoints, two sync
+  resets, system metrics, two taste-artifact cases, and the Whisper catalog verdict. No failure,
+  error, skip, or xfail was added.
+- Shared gates all pass: `ruff check marquee tests` (`All checks passed!`); Alembic offline
+  `upgrade head --sql` with no new operations at head `0006_jmc4c`; deterministic OpenAPI
+  `api:check` current at **197 paths**; `api:generate:check` clean under openapi-typescript
+  7.13.0; frontend `check` at **495 files, 0 errors, 16 warnings, 8 files with problems** (the
+  exact inherited set); frontend `lint` and `build` pass; `git diff --check` clean.
+
+### Frozen JMC5B authority inventory (B0, no runtime behavior changed)
+
+- New freeze `tests/test_jmc5b_contract_freeze.py` (7 tests) with fixture
+  `tests/fixtures/jmc5b/b0_contract_freeze.json`. It pins the registry surfaces, the twelve
+  JMC5B definition states, legacy authority, direct launches, the audio/subtitle route surface,
+  and the existing audio/subtitle test inventory.
+- **Definition state:** all ten B04 leaves (`audio_remove`, `track_remove`, `subtitle_remove`,
+  `subtitle_embed`, `subtitle_metadata`, `audio_reorder`, `subtitle_extract`,
+  `subtitle_generate`, `subtitle_policy`, `subtitle_restore`) are present, **dispatch-disabled**,
+  `media_write`, `unsafe_mutation`, and still carry the generic `BuiltInIntentV1`/
+  `BuiltInResultV1` documents that A02 forbids for enabled mutating definitions — B1/B2 must give
+  them family-specific typed documents before enabling. Nine already declare the
+  `mkvmerge_gui` tool adapter; `subtitle_generate` declares none (correct: provider-based).
+  `subtitle_generate_batch` exists parent-only and disabled. **`subtitle_policy_batch` does not
+  exist yet** and must be added by B05/B4.
+- **Legacy `MediaJob`/`MediaBackup`/`cancel_registry` inventory (exact, 7 sites):**
+  `marquee/api/routes/subtitle_generators.py:generate_for_media_file` and `:generate_for_movie`
+  call `media_job_manager`; `marquee/core/subtitles/backup.py:_backup_for_job`,
+  `marquee/core/subtitles/mutation.py:_make_backup`, and
+  `marquee/core/subtitles/mutation.py:_remove_external_sidecars` use `MediaBackup`;
+  `marquee/core/subtitles/generation.py:run_generation_job` and
+  `marquee/core/subtitles/mutation.py:_raise_if_cancel_requested` use `cancel_registry`.
+  The `MediaJob`/`MediaJobEvent`/`MediaBatch` lifecycle is already removed — `media_jobs/manager.py`
+  is a fail-closed facade and the `marquee/api/routes/media_jobs.py` route module is already
+  absent. `MediaBackup` (`marquee/models/media_backup.py`, exported from `marquee/models/__init__.py`)
+  is therefore the only remaining legacy authority with real power, and is B12's removal target.
+- **Direct subprocess launches inside JMC5B scope (exact, 5 calls / 3 scopes):**
+  `marquee/core/subtitles/generation.py:_extract_audio_for_asr` (1),
+  `marquee/core/subtitles/mutation.py:execute_job` (1), and
+  `marquee/core/subtitles/mutation.py:link_or_copy` (3). All must move behind the JMC3 tracked
+  launcher per B10. Launches in `letterbox_reencode.py` and `dovi_conversion.py` are JMC5C scope
+  and are deliberately untouched; `process_launcher.py`, `supervisor.py`, `backup.py`,
+  `db_migration.py`, `media/binaries.py`, and the vendored Subgen are out of this inventory.
+- **Route surface frozen (32 audio/subtitle routes):** `audio_subs.py` (8),
+  `subtitles.py` (9), `subtitle_policies.py` (7), `subtitle_generators.py` (8).
+
+### Phase B0 result and exact next steps
+
+- Phase commit: see below. Focused freeze result: **7 passed**. B0 changed no runtime behavior:
+  it adds only a test module and its fixture.
+- Current phase is **B1 — planned/confirm flow, selectors, and canonical backup evidence**.
+  Exact next work: implement `plan_mutation(...)`/`confirm_mutation(...)` on the canonical
+  submission service with a real `planned` phase and no PgQueuer ticket; store immutable
+  request/before-snapshot/expected-target/source-signature/confirmation-requirements/expiry in
+  `MediaOperationDetail` without rewriting the requested operation on confirm; add typed
+  `MutationTargetV1`-based track selectors (kind, source, language, codec, channels, title,
+  dispositions, managed key, inventory signature, original index as hint only) and typed
+  before/actual inventories; add canonical checksummed job-linked backup artifacts; prove
+  stale-plan, expired-plan, mismatched-confirmation, retired-subject, changed-source, and
+  already-dispatched conflicts plus exactly-once confirmation dispatch; delete `MediaBackup`
+  authority from target metadata; then update this B0 freeze in the same phase commit.
+- No deviation from the plan's architecture or safety rules exists. The only recorded deviations
+  are environmental: the disposable-database provisioning correction above, and the stale
+  ByteRover subtitle/schema entries.
+
+### Pending operator work after B0
+
+- All prior JMC4/JMC5A operator smokes remain pending. JMC5B live smokes — real Subgen provider
+  generation, representative-hardware remux, and operator-library mutation — are pending and must
+  not be implied from mocks. No operator media, normal `DATA_DIR`, backup set, remote ref, or
+  external provider was touched during B0.
+
+## JMC5B Phase B1 checkpoint — planned/confirmed flow landed — 2026-07-15
+
+- Phase B0 commit: `c85c5d28641d03ea8c069088d52593216fa106c5`
+  (`freeze jmc5b audio and subtitle contracts`), sole parent `a1973e0` (the recorded plan base),
+  configured author. Focused freeze: **7 passed**. Full retained: **1163 passed, 21 failed**
+  (= certified 1156 baseline + 7 freeze tests, identical failure membership).
+- B1 checkpoint commit: `1f0e37261d6900c5cf5ef9accca273cca4dee900`
+  (`add canonical planned and confirmed mutation flow`), sole parent `c85c5d2`, configured author.
+  Focused: **9 passed**. Full retained: **1172 passed, 21 failed, 2 warnings in 69.71s**
+  (= 1163 + 9 new B1 tests; the 21 retained failures are unchanged in count and membership).
+  Ruff and `git diff --check` pass.
+- Landed in B1 so far (B02/B03): new `marquee/core/jobs/mutation_planning.py` providing
+  `plan_mutation(...)` and `confirm_mutation(...)`. A plan creates a real canonical job in
+  `phase='planned'` with `dispatch_generation = 0`, **no** `JobDispatch` row and **no** PgQueuer
+  ticket, plus the strict 1:1 `MediaOperationDetail` carrying the immutable request, before
+  snapshot, requested/expected targets, source signature, confirmation requirements, and expiry.
+  `confirm_mutation` row-locks job + detail, validates plan version (a sha256 fingerprint over the
+  immutable plan documents), expiry, source signature, desired state, and optional expected
+  configuration version, records confirmation provenance, then creates dispatch generation 1 and
+  enqueues **exactly once**. Confirmation never rewrites the requested operation — the stored
+  request is replayed verbatim (asserted).
+- Proven by `tests/test_jmc5b_mutation_planning.py` (9 tests): transport-free planned job with
+  immutable documents; required targets/signature/bounded TTL; idempotent repeated plan;
+  exactly-once confirmation dispatch with provenance and idempotent confirm replay; and typed
+  conflicts for stale plan version, changed source signature, expired plan, cancelled plan, and
+  missing plan — each proving `dispatch_generation` stays 0 so nothing can publish.
+- Registry change: `job.planned` added to `SEMANTIC_EVENT_KEYS` in
+  `marquee/core/jobs/event_service.py`. No frozen contract test regressed.
+- **B1 is NOT complete.** Remaining B1 work, in order: typed audio/subtitle track selectors and
+  before/actual inventories per §5 (track kind, embedded/external source, language, codec,
+  channels, title, default/forced/HI dispositions, managed key, inventory signature, original
+  index as hint only, with stale/ambiguous resolution failing before mutation); canonical
+  checksummed job-linked backup artifacts (B12); deletion of `MediaBackup` authority from target
+  metadata (`marquee/core/subtitles/backup.py`, `marquee/core/subtitles/mutation.py:_make_backup`
+  and `:_remove_external_sidecars`, `marquee/models/media_backup.py`, and the
+  `marquee/models/__init__.py` export); and the B0 freeze update in the same phase commit.
+  B2–B5 are untouched. `subtitle_policy_batch` still does not exist. No JMC5B leaf is enabled yet
+  and every one still carries the generic `BuiltInIntentV1`/`BuiltInResultV1` that A02 forbids for
+  enabled mutating definitions.
+- Environment for resumption: owned disposable PostgreSQL 18.3 at `127.0.0.1:55448`
+  (`/tmp/marquee-jmc5b-pg/data`, role `marquee`, db `marquee_test`). It is in `/tmp` and will not
+  survive a reboot; recreate with `initdb`, then provision with
+  `DB_URL=postgresql+asyncpg://marquee@127.0.0.1:55448/marquee_test python -m marquee.db_migration`
+  (**not** raw `alembic upgrade head` — see the B0 provisioning note, or seven backup/readiness
+  tests fail environmentally). Run tests with that same `DB_URL`.
+- No push, force-push, or recovery-material deletion occurred. No operator media, `DATA_DIR`,
+  backup set, or live Subgen provider was touched.
+
+## JMC5B Phase B1 complete — planned/confirm, selectors, canonical backups — 2026-07-15
+
+- B1 commits: `1f0e37261d6900c5cf5ef9accca273cca4dee900`
+  (`add canonical planned and confirmed mutation flow`), `dc3918b` (checkpoint record), and
+  `eb24963` (`add durable track selectors and canonical media backups`). All configured author,
+  linear, sole-parent.
+- Full retained result: **1188 passed, 21 failed, 2 warnings in 66.88s** — the 21 retained
+  failures are exactly the certified JMC5A/JMC4C set, unchanged in count and membership. B1 added
+  25 passing tests (9 planning + 9 selectors + 7 backups). Ruff and `git diff --check` pass.
+- **Durable selectors (§5/B07)** — `marquee/core/jobs/track_selectors.py`. Verified in code that
+  neither obvious identity is durable: `SubtitleTrack.id` is regenerated as a fresh `uuid4` on
+  every rescan (`marquee/core/subtitles/service.py:68,92`), and a raw container stream index
+  shifts whenever an earlier track is removed or reordered. The selector therefore carries a
+  **derived** key `kind:fact_fingerprint:ordinal` built from immutable facts (kind, embedded/
+  external source, language, codec, channels, title, default/forced/hearing-impaired, managed key)
+  plus an occurrence ordinal that keeps the §9 duplicate-metadata fixture individually
+  addressable, together with the inventory signature and the original stream/tool identity kept
+  strictly as `*_hint` diagnostics. `resolve_selector` fails closed with typed
+  `signature_changed` / `stale` / `ambiguous` reasons before any mutation; `resolve_all` also
+  refuses the same track twice in one request. Proven to survive stream-index drift.
+- **Canonical checksummed backups (B12)** — `marquee/core/jobs/media_backups.py`. A backup is a
+  confined, content-addressed artifact at `data:jmc5/media-backups/{subject}/{sha256}.{ext}`
+  copied through `FilesystemBoundary.copy_file` (not the 32 MB-bounded publication coordinator,
+  which cannot carry source media), fsynced, re-hashed, and returned as the A1
+  `MutationBackupV1` document (artifact key + checksum + size + source signature + retention +
+  restore eligibility). It is idempotent by content, fails closed when a recorded key's bytes
+  disagree, and `verify_media_backup` refuses missing/tampered/ineligible artifacts before any
+  restore consumes them. Backup keys reject traversal and unsafe suffixes; `file_signature`'s
+  existing `st_nlink != 1` rule refuses hardlinked sources.
+- **`MediaBackup` authority in target metadata is gone**: the typed path records only
+  `MutationBackupV1` storage keys, never a `MediaBackup` row or physical path. The remaining
+  legacy `MediaBackup` consumers (`marquee/core/subtitles/backup.py`,
+  `marquee/core/subtitles/mutation.py:_make_backup` and `:_remove_external_sidecars`) sit on the
+  **unreachable** legacy executor chain — `mutation.execute_job` is only reached from
+  `generation.py:306` and `restore.py:127`, both of which require legacy job rows that
+  `media_job_manager` refuses to create (fail-closed facade). The model/table/service deletion and
+  its migration therefore land with B2–B4 as each module is replaced, per B12.
+- Freeze maintenance: `tests/fixtures/jmc5a/a0_contract_freeze.json` `test_inventory` gained
+  `tests/test_jmc5b_media_backups.py` (added only; nothing removed). This was the JMC5A A0 freeze
+  correctly catching a new backup-named test module, and is recorded rather than suppressed —
+  no assertion was weakened. The JMC5B B0 freeze passes unchanged because B1 altered no route,
+  definition, legacy-authority, or direct-launch surface.
+- Registry change from B1: `job.planned` added to `SEMANTIC_EVENT_KEYS`.
+- Current phase is **B2 — removals, reorder, and metadata**. Exact next work: add family-specific
+  typed request/result/error documents for `audio_remove`, `track_remove`, `subtitle_remove`,
+  `audio_reorder`, and `subtitle_metadata` (replacing the generic `BuiltInIntentV1`/
+  `BuiltInResultV1` that A02 forbids for enabled mutating definitions); build mkvmerge command
+  arrays from the frozen plan rather than client arguments; parse `mkvmerge --gui-mode` progress
+  with truthful indeterminate fallback; stage on the destination filesystem, validate, and
+  publish only through the JMC3 coordinator; run an authoritative post-operation ffprobe/
+  MKVToolNix rescan (B13); attribute per-target outcomes with failing stage; enable exactly those
+  five leaves; migrate their routes to planned/confirm submission; regenerate OpenAPI/TypeScript;
+  and update both freezes in the same phase commit. Generated confined MKV/MP4 fixtures are still
+  to be built (none are committed).
+
+## JMC5B Phase B2 in progress — plan building proven against real media — 2026-07-15
+
+- B2 commits so far: `c77b06c` (`add generated media fixtures and typed track inventories`),
+  `3c1c4f8` (`add typed audio and subtitle family documents`), and `0896912`
+  (`build mkvmerge remux plans from frozen inventories`). All configured author, linear.
+- Full retained result: **1206 passed, 21 failed, 2 warnings in 71.60s**. The 21 retained failures
+  are exactly the certified set — verified by set-difference against the recorded membership, not
+  by count alone. Ruff and `git diff --check` pass.
+- **Generated fixtures (§9)** — `tests/support/media_fixtures.py`. Nothing binary is committed:
+  small MKVs are synthesised per test with ffmpeg/mkvmerge into `tmp_path`, covering multiple
+  audio/subtitle codecs (ac3/aac/subrip), languages, channel counts (6/2), titles,
+  default/forced dispositions, attachments, chapters, and a duplicate-metadata pair.
+  `require_media_tools()` skips cleanly when native tools are absent.
+- **Typed inventories (§5/B13)** — `marquee/core/jobs/track_inventory_adapter.py` builds one typed
+  inventory from real `probe_container` output for both before and actual state. Verified against
+  real media: the probe **normalizes** language tags to ISO 639-1 (`fr`), even though mkvmerge was
+  given `fra` and ffprobe reports `fre` — so the derived selector is stable across that naming
+  difference. Duplicate real tracks stay individually addressable, selectors survive stream-index
+  drift, a replaced file fails on `signature_changed`, and removing one track leaves only that
+  selector `stale`.
+- **Family documents (B04/A02)** — `marquee/core/jobs/audio_subtitle_documents.py`:
+  `TrackRemoveRequestV1`, `AudioReorderRequestV1`, `SubtitleMetadataRequestV1`/
+  `SubtitleMetadataEditV1`, and `MediaTrackMutationResultV1`. Requests accept durable selectors
+  only — no container, tool arguments, paths, stream indexes, or execution policy — and reject
+  duplicate/empty targets, partial reorders, cross-kind targets, and no-op edits. The result
+  enforces B13: a target that changed bytes cannot be reported without the authoritative actual
+  inventory.
+- **Plan building (§6.1)** — `marquee/core/jobs/mkvmerge_plan.py` builds argument arrays from the
+  frozen resolved inventory, never from client arguments. Proven by executing **real mkvmerge**
+  and re-probing: removal drops only the target while preserving non-target streams, surviving
+  track identity/title/default flag, chapters, and attachments; removing all audio emits an
+  explicit `--no-audio`; reorder produces the requested order; a plan may not empty the file.
+- **B09 reuses JMC3, not a second parser:** `MkvmergeProgressAdapter`
+  (`marquee/core/jobs/progress_adapters.py:100`) already parses `#GUI#progress`, `#GUI#error`,
+  `#GUI#warning`, and `#GUI#exit` with a monotonic guard and a bounded 64 KB buffer (the §9
+  stderr-flood case). Verified it parses real `mkvmerge --gui-mode` output to 100%. Confirmed by
+  experiment that mkvmerge emits `#GUI#progress N%` on stdout.
+- **Verified tool fact:** mkvpropedit's `track:@N` selects by Matroska `TrackNumber`, which is
+  *not* mkvmerge's 0-based track id (`@4` targeted mkvmerge id=3). The builder therefore uses the
+  documented type-relative selector (`track:s1`) derived from the authoritative inventory instead
+  of relying on an `id + 1` coincidence. Metadata edits use mkvpropedit in place and are proven
+  not to rewrite stream payloads.
+- **B2 remaining (exact next work):** the remux coordinator wiring these plans to the JMC3 tracked
+  launcher (B10) with destination-filesystem staging, candidate validation, fence/signature
+  recheck, coordinator-only publication (B11), canonical backup before replacement (B12), and the
+  authoritative post-operation rescan (B13); per-target outcome attribution with failing stage;
+  registering execution handlers and enabling exactly `audio_remove`, `track_remove`,
+  `subtitle_remove`, `audio_reorder`, `subtitle_metadata` with their typed documents wired into
+  `manifest.py` (`_REQUEST_MODELS`/`_RESULT_MODELS` and `ENABLED_JOB_TYPES`); migrating their
+  routes to planned/confirm submission; regenerating OpenAPI/TypeScript; presenter fixtures; and
+  updating both freezes in the same phase commit. Enabling a leaf without a registered handler
+  breaks definition-coverage, so those land together.
+- B3–B5 untouched. `subtitle_policy_batch` still absent. `MediaBackup` model/table still present
+  behind the unreachable legacy executor chain.
+
+## JMC5B Phase B2 — five track-mutation leaves enabled and proven — 2026-07-15
+
+- B2 commits: `c77b06c`, `3c1c4f8`, `0896912`, `2b2e790`
+  (`enable canonical track removal reorder and metadata leaves`), and `027d097`
+  (`prove track mutation handlers against real media`). All configured author, linear.
+- Full retained result: **1213 passed, 21 failed, 2 warnings**. The 21 are the exact certified
+  set, verified by **set-difference in both directions** (no new failure; none disappeared).
+  Ruff, Alembic offline, deterministic OpenAPI (197 paths), and `git diff --check` pass.
+- **Enabled exactly five `media_write` leaves**: `audio_remove`, `track_remove`,
+  `subtitle_remove`, `audio_reorder`, `subtitle_metadata`, each with family-specific typed
+  request/result documents (A02's ban on generic `BuiltInIntentV1`/`BuiltInResultV1` for enabled
+  mutating definitions is now satisfied for them), registered handlers in
+  `marquee/core/jobs/handlers_track_mutations.py`, and the `mkvmerge_gui` progress adapter.
+- **B10 reuses the JMC3 launcher**: `ProcessLauncher.launch(tool, args)` already exists and its
+  `TOOL_CATALOG` already permits `mkvmerge`/`mkvpropedit`. No new exec surface was created and no
+  direct `create_subprocess_exec` was added.
+- **End-to-end proof over real media** (`tests/test_jmc5b_track_mutation_handlers.py`, 7 tests):
+  a real `ProcessLauncher` runs real mkvmerge/mkvpropedit over generated fixtures. Proven:
+  removal publishes and is confirmed by the authoritative rescan while preserving chapters,
+  attachments, and non-target streams; a canonical checksummed backup exists under the confined
+  data root before replacement (B12); multi-target removal reports every target; reorder
+  publishes the requested order; an already-satisfied metadata edit is a reasoned `no_change`
+  that writes nothing; and a metadata edit publishes and rescans. Two fail-closed proofs assert
+  the source bytes are **byte-identical** afterwards: a stale selector fails at `resolve`, and a
+  changed source signature fails with `signature_changed` — both with every target `not_applied`
+  and `published=false`.
+- **Presenter migrated to typed evidence (§7)**: `presenters/audio_subs.py` now derives the
+  headline, the track table, and the before/after inventory from the typed result's
+  `requested_targets`/`target_outcomes`/`before_inventory`/`actual_inventory` instead of the
+  legacy `summary` dict. **Defect found and fixed while doing so:** the before/after row computed
+  `changed = before != after`, which reported *changed* for a failed remux because `after` was
+  unknown (`None`). It now requires a known, differing count, so a failed remux correctly reports
+  nothing changed.
+- **Freeze/certification maintenance (no assertion weakened):** enabling five leaves legitimately
+  moved them out of every prior chunk's "still deferred" enumeration. Updated
+  `test_jmc3_certification`, `test_jmc3a/3b/4a/4b/4c_contract_freeze`,
+  `test_jmc4a_worker_certification`, `test_jmc4c_certification`, `test_backup`,
+  `test_job_definition_manifest`, and both JMC5A/JMC5B freeze fixtures — using the same
+  named-exemption pattern JMC5A used for `A4_MAINTENANCE` (now `B2_TRACK_MUTATIONS`). The safety
+  invariant is intact: every type still deferred must raise `DisabledJobDefinitionError`, and the
+  enabled `media_write` set is asserted to be exactly the four poster leaves plus these five.
+- **Verified tool facts:** mkvmerge emits `#GUI#progress N%` on stdout and JMC3's
+  `MkvmergeProgressAdapter` parses it to 100% (B09 needs no new parser). mkvpropedit's `track:@N`
+  selects by Matroska `TrackNumber`, not mkvmerge's 0-based id, so the builder uses the
+  documented type-relative selector derived from the authoritative inventory.
+- Current phase is **B3 — embed, extract, and generation**. Exact next work: migrate
+  `subtitle_embed`, `subtitle_extract`, and `subtitle_generate`; remove the direct
+  `create_subprocess_exec` calls and `cancel_registry` from `marquee/core/subtitles/generation.py`
+  and `mutation.py`; certify provider polling/late output/bounded waits with a stubbed provider
+  (never the live `SUBGEN_URL=http://localhost:9000`); prove the external/embedded atomic-group
+  split (B08/B15) and registered-artifact returns (B17). Then B4 (policy, restore, batches,
+  `subtitle_policy_batch`) and B5 (certification + §10 squash). `MediaBackup` model/table still
+  present behind the unreachable legacy executor chain; it is removed with its last consumer.
+
+## JMC5B Phase B3 in progress — extract and embed enabled — 2026-07-15
+
+- B3 commit so far: `1237146` (`add canonical subtitle extract and embed leaves`), configured
+  author, sole parent `fc99888`.
+- Full retained result: **1220 passed, 21 failed, 2 warnings**. The 21 are the exact certified set
+  (verified by set-difference both directions). Ruff, deterministic OpenAPI (197 paths), and
+  `git diff --check` pass. Seven JMC5B leaves are now enabled: the five B2 track mutations plus
+  `subtitle_extract` and `subtitle_embed`.
+- **`mkvextract` is deliberately NOT used.** It is absent from the JMC3 launcher's `TOOL_CATALOG`
+  (`ffprobe`, `ffmpeg`, `mkvmerge`, `mkvpropedit`, `convert`, `dovi_tool`). Rather than widen the
+  exec surface, extraction uses the already-allowlisted `ffmpeg` (`-map 0:s:N -c:s copy`), which
+  was verified by experiment to extract correctly and to emit `-progress` records.
+- **Extraction (B17)**: stages ffmpeg output, validates it (non-empty, valid UTF-8, contains cue
+  timing), then publishes a **content-addressed managed sidecar** at
+  `data:jmc5/managed-subtitles/{sha256}.srt` and registers a `ManagedSubtitleAsset` row whose
+  public handle is the key, never a path. Proven over real media: the published artifact matches
+  its checksum and contains the expected track, the **source is byte-identical afterwards**,
+  repeated extraction is idempotent by content (one file, one asset row), and a stale selector
+  fails at `resolve` writing nothing.
+- **Embedding (§6.2/B13)**: consumes only a validated managed asset key — never a caller path —
+  verifies the sidecar's checksum before use, remuxes through the tracked launcher, creates a
+  canonical backup, publishes atomically, and proves the exact new track by rescan. Proven:
+  extract→embed round-trip lands a second track with the requested language/title/forced flag; an
+  unknown asset fails at `preflight` (`asset_missing`); a tampered sidecar fails at `validate`
+  (`asset_invalid`). Both failures leave the source byte-identical and `published=false`.
+- **Refactor forced by a real defect:** `handlers_sidecars` initially imported private helpers from
+  `handlers_track_mutations`, which produced a circular import at collection. The shared
+  confinement/probe/resolution helpers now live in
+  `marquee/core/jobs/media_mutation_support.py` and both handler modules depend on it. Test
+  fixtures likewise moved to `tests/support/jmc5b_harness.py`, registered via `pytest_plugins` in
+  `tests/conftest.py`, so fixtures resolve by name without cross-importing test modules.
+- Freeze/certification maintenance extended to the two new leaves using the same named-exemption
+  pattern; the safety invariant (still-deferred types must raise `DisabledJobDefinitionError`,
+  and the enabled `media_write` set is exact) remains intact.
+- **B3 remaining:** `subtitle_generate` (B14/B15/B16) — provider submission/wait/download/
+  reconciliation as distinct stages, bounded cancellable polling, late-output-after-cancellation
+  safety, the generation/embed atomic-group split proving "generated but not embedded", and
+  removal of the direct `create_subprocess_exec` + `cancel_registry` from
+  `marquee/core/subtitles/generation.py` and `mutation.py`. Tests must stub the provider
+  (`SUBGEN_URL` monkeypatched to a fake host); the live `http://localhost:9000` is never contacted.
+  Then B4 (policy, restore, batches, `subtitle_policy_batch`) and B5 (certification + §10 squash).
+
+## JMC5B Phase B3 — extract, embed, and generation enabled — 2026-07-15
+
+- B3 commits: `1237146` (extract/embed) and `d34891e`
+  (`add canonical subtitle generation with bounded provider polling`). Configured author, linear.
+- Full retained result: **1229 passed, 21 failed, 2 warnings**. The 21 are the exact certified set
+  (set-difference verified both directions). Ruff, deterministic OpenAPI (197 paths), and
+  `git diff --check` pass. **Eight of the ten B04 leaves are now enabled**: `audio_remove`,
+  `track_remove`, `subtitle_remove`, `audio_reorder`, `subtitle_metadata`, `subtitle_extract`,
+  `subtitle_embed`, `subtitle_generate`. Remaining: `subtitle_policy`, `subtitle_restore` (B4).
+- **Generation (§6.3/B14/B15/B16)** — `marquee/core/jobs/handlers_generation.py`. Submission,
+  waiting, reconciliation, download, validation, and publication are distinct stages.
+  `wait_for_provider` polls `reconcile` with a bounded deadline and checks cooperative
+  cancellation **before every poll and every sleep**, so a cancelled job stops waiting without the
+  provider responding. Webhook completion stays deferred (B16): completion is discovered only by
+  reconciliation polling. B14 is asserted — the job never rewrites its type or request; the
+  publish target is fixed at request time.
+- **B15 evidence split proven**: `SubtitleGenerationResultV1` carries `generated` and `embedded`
+  separately. Tests prove a rejected submission is `generated=false` with nothing published;
+  invalid provider output is **`generated=true`, `sidecar=None`** ("generated but nothing
+  published"); and late output arriving after cancellation is `generated=true` but refuses to
+  publish, leaving the managed store empty. Bounded-deadline and provider failed/timeout states
+  are named honestly (`provider_timeout`, `provider_failed`).
+- **Live provider never contacted.** `.env` sets `SUBGEN_URL=http://localhost:9000`; every
+  generation test uses a local `StubProvider` double injected by monkeypatching `get_generator`,
+  and performs no network I/O. Real-provider generation remains an un-run operator smoke.
+- **Presenter migrated for generation (§7):** the headline's language and the Provider fact now
+  come from the typed result (`requested_targets[].selector_facts.language_tag`, `provider`), and
+  the typed result carries a safe `source_track` label (never a path or raw index). The JMC2C
+  golden `subtitle_generate_detail.json` was regenerated and **reviewed**: the headline is
+  unchanged ("Generate English subtitles from audio stream 3"), Provider now reads from the typed
+  document, and the presentation gained `track_table` + `change_list` sections — richer, as §7
+  requires. The legacy `Model`/`Output file` facts came from the removed summary; §7 requires
+  provider/task/language and the produced artifact, all of which are present (the artifact via the
+  sidecar/track table).
+- **Two of my own fixtures were wrong and the models caught them** — recorded rather than worked
+  around: the golden claimed a published sidecar while recording no artifact, which
+  `SubtitleSidecarResultV1`'s invariant correctly rejected; and a stubbed cancellation was
+  off-by-one against the handler's real pre-publish check. Both were fixed in the tests, not by
+  loosening the models.
+- Current phase is **B4 — policy, restore, and batches**. Exact next work: migrate
+  `subtitle_policy` and `subtitle_restore`; add the parent-only `subtitle_policy_batch` (B05) and
+  keep `subtitle_generate_batch` parent-only; freeze the evaluated policy/version and one
+  immutable child plan per file before creating children (B18, no mid-batch policy adoption);
+  prove restore validates the canonical backup checksum, original source identity, and current
+  destination, never deletes its only verified backup, and refuses to overwrite a newly changed
+  file without a fresh plan; prove batch aggregation, zero-child/no-change, mixed outcomes, and
+  cancellation. Then B5 (full certification + §10 squash + `jmc5b-complete`). The direct
+  `create_subprocess_exec` and `cancel_registry` in `marquee/core/subtitles/generation.py` and
+  `mutation.py` still exist on the unreachable legacy chain and are removed with `MediaBackup`
+  when B4 retires their last consumers.
+
+## JMC5B Phase B4 — policy, restore, and sealed batches — 2026-07-15
+
+- B4 commit: `9998ad9` (`add canonical subtitle policy restore and sealed batches`), configured
+  author, sole parent `3e27d07`.
+- Full retained result: **1239 passed, 21 failed, 2 warnings**. The 21 are the exact certified set
+  (set-difference verified both directions). Ruff, deterministic OpenAPI (197 paths), and
+  `git diff --check` pass.
+- **All ten B04 leaves are now enabled**: `audio_remove`, `track_remove`, `subtitle_remove`,
+  `subtitle_embed`, `subtitle_metadata`, `audio_reorder`, `subtitle_extract`, `subtitle_generate`,
+  `subtitle_policy`, `subtitle_restore`. JMC5C's set remains dispatch-disabled and verified:
+  `dovi_convert`, `letterbox_apply`, `letterbox_heal`, `letterbox_reencode`, `letterbox_remove`,
+  `radarr_upgrade`.
+- **`subtitle_policy_batch` added (B05)** as a ticketless parent-only aggregate (registry 53 → 54).
+  `marquee/core/jobs/subtitle_parents.py` evaluates the policy once and **freezes** the per-file
+  decision into each child's immutable request (B18). Proven: the sealed parent carries no PgQueuer
+  ticket, each child carries the frozen `remove_selectors` and the evaluated `policy_revision`, a
+  file the policy selected nothing for becomes a child with an empty frozen plan, an empty scope
+  seals zero children, duplicate files and an unbounded scope are refused, and child idempotency
+  keys are deterministic and path-free. No child ever re-reads live policy, so a policy edited
+  after sealing cannot be adopted mid-batch.
+- **`subtitle_policy` leaf** executes only its frozen plan; a plan that selected nothing is a
+  reasoned `no_change` (`policy_selected_nothing`) that writes nothing.
+- **`subtitle_restore` leaf (B12)** consumes only a confined artifact key + checksum + recorded
+  source lineage. Proven over real media: it refuses a destination that changed since planning
+  (`destination_changed`), refuses a tampered backup artifact at `validate`, reports
+  `already_restored` when the destination already matches, and on a real round-trip (remove a
+  track, then restore) **republishes the original bytes exactly**, proves both audio tracks
+  returned by rescan, and **leaves its backup intact** — the backup is copied and the copy is
+  published, so a restore never consumes its only verified backup.
+- **Defect found and fixed in my own handler:** the restore no-change check originally compared
+  `resolved_file.signature` (from `compute_signature`) against the backup's `source_signature`
+  (from `signature_text`). Those are different schemes and can never compare equal, so an
+  already-restored file would have been needlessly republished instead of reporting `no_change`.
+  It now compares the destination's actual content digest against the backup checksum.
+- **Registry-growth gates satisfied, not suppressed:** adding a definition tripped
+  `test_job_definition_inventory`, `test_job_presenters_supporting`,
+  `test_job_definition_manifest`, and the jmc3a/4a/4b freezes. `subtitle_policy_batch` was given a
+  real parent presenter, headline, child noun, and label so the "every definition has a dedicated
+  presenter" coverage gate passes on merit; the count assertions were updated to 54 with the
+  reason recorded inline.
+- Current phase is **B5 — JMC5B certification and history compaction**. Exact next work: run the
+  complete §9 acceptance matrix and every shared gate from the B4 tree; add the static legacy scan
+  proving migrated modules contain no `MediaJob`/`MediaBackup`/`media_job_manager`/
+  `cancel_registry`/direct child launch; retire the now-unreachable legacy
+  `marquee/core/subtitles/mutation.py`, `generation.py`, `restore.py`, `backup.py` consumers and
+  the `MediaBackup` model/table (with its Alembic migration); migrate the audio/subtitle routes to
+  canonical planned/confirm submission and regenerate OpenAPI/TypeScript; then perform §10
+  (recovery refs + verified bundle + tree-identical squash + `jmc5b-complete`).
+
+## JMC5B Phase B5 — canonical route cutover and legacy retirement — 2026-07-15
+
+- B5 implementation commit: `37df97db0105e224a0d8c67f72d2097f6bc05d48`
+  (`=finish-jmc5b-mutation-migration`), configured repository author, sole parent
+  `90a80cfdc3fb75020e00cabd4ec77078e7c9ebac`. The unusual leading `=` is an RTK argument-rendering
+  artifact on this temporary phase commit only; §10 replaces the entire phase range with the exact
+  required compact subject.
+- **Canonical public flow:** audio/subtitle mutation routes now create typed planned jobs and
+  dispatch only through exactly-once confirmation with matching plan version, source signature,
+  and configuration version. Planning creates no PgQueuer ticket. A changed source is rejected
+  before dispatch. Movie and TV generation and policy application create ticketless sealed parents
+  with immutable typed children. Generation never rewrites its job type/request and bounded provider
+  reconciliation is independent of the deferred webhook.
+- **Legacy authority retired:** the process-local media-job facade, legacy mutation/backup/restore
+  modules, physical-path backup model/export, and `media_backups` table are deleted. Alembic sole
+  head is `0007_jmc5b`; its one-way migration drops the legacy table. Canonical restore consumes a
+  confined checksummed job artifact and never consumes its only verified backup. Static scans of
+  the migrated route/handler/generation modules return no legacy lifecycle/model/manager/cancel or
+  direct-subprocess symbol.
+- **Publication and validation:** every source-changing leaf stages on the destination filesystem,
+  uses `media_write`, per-file exclusion, one automatic domain attempt, the tracked launcher, and
+  fenced coordinator publication. Remove/reorder/embed/metadata/policy/restore publication is
+  coordinator-only; metadata edits a candidate rather than the source in place. Post-publication
+  inventory uses the actual recomputed signature. External selectors are refused for source-changing
+  remux operations. Sidecar generation records an explicit generation atomic group and, for embed,
+  a separate embed group.
+- **Focused media/contract result:** all JMC5B modules **88 passed**; the final backup/restore/freeze
+  resmoke after the legacy-name cleanup **24 passed**. Generated confined MKV/sidecar fixtures cover
+  selector stability, removals/reorder/metadata, embed/extract/generation, backup/restore, policy
+  batches, stale confirmation, coordinator fences, tool failures, cancellation, and atomic-group
+  outcomes. No operator media or live provider was contacted.
+- **Complete retained result:** **1233 passed, 21 failed, 2 warnings in 87.20s** on owned disposable
+  PostgreSQL 18.3 at `127.0.0.1:55449/marquee_test`. Failure membership is exactly the certified
+  retained set in both directions: nine development OCR-label cases, TV development reset,
+  effective OCR hardware policy, four run endpoints, two sync resets, system metrics, two
+  taste-artifact cases, and the Whisper catalog verdict. There is no new failure, error, skip,
+  xfail, quarantine, or weakened assertion.
+- **Shared gates:** Ruff passes; `git diff --check` passes; offline Alembic upgrade SQL reaches
+  `0007_jmc5b`; focused schema/Alembic/ORM/audio-subtitle schema result is **55 passed**; deterministic
+  OpenAPI is current at **198 paths**; openapi-typescript `7.13.0` regeneration is clean; frontend
+  check is **0 errors, 16 inherited warnings in 8 files**; frontend lint and production build pass.
+- **Tool/provider/fixture envelope:** Python `3.13.14`, pytest `9.0.3`, Ruff `0.15.17`, Alembic
+  `1.18.4`, Node `22.22.2`, Git `2.55.0`, RTK `0.42.4`, PostgreSQL `18.3`, pgqueuer `1.1.1`, ffmpeg/
+  ffprobe `8.1.2`, MKVToolNix `v99.0 ('Buka') 64-bit`, faster-whisper `1.2.1`,
+  stable-ts-whisperless `2.19.1`, and torch `2.7.1+cu126`. Tests used only generated confined
+  fixtures and stubbed `http://subgen.local` transport; the configured localhost provider was not
+  contacted.
+- **Enabled/deferred manifest:** enabled leaves are `audio_remove`, `track_remove`,
+  `subtitle_remove`, `subtitle_embed`, `subtitle_metadata`, `audio_reorder`, `subtitle_extract`,
+  `subtitle_generate`, `subtitle_policy`, and `subtitle_restore`; enabled parent-only aggregates are
+  `subtitle_policy_batch` and `subtitle_generate_batch`. Deferred/dispatch-disabled for JMC5C remain
+  `dovi_convert`, `letterbox_apply`, `letterbox_apply_tv_scope`, `letterbox_heal`,
+  `letterbox_reencode`, `letterbox_remove`, and `radarr_upgrade`; Subgen webhook completion is also
+  deferred.
+- Current phase remains **B5 certification and §10 history compaction**. Exact next steps: commit
+  this timeline checkpoint; prove the post-base range is owned, linear, sole-parent, and unpushed;
+  record the pre-squash tip/tree and intended tag; create timestamped recovery branch/tag and a
+  verified complete external bundle; soft-reset through RTK to exact base
+  `a1973e016302feba61285e20c79e48576499f9c6`; create the exact configured-author compact commit;
+  prove tree identity/sole parent/clean state; create annotated `jmc5b-complete`; run the prescribed
+  post-squash smoke. Stop on any ownership, ancestry, backup, or tree mismatch.
+- **Pending operator actions:** real Subgen generation, representative-hardware remux, and any
+  operator-library mutation remain deliberately unrun, as do inherited JMC4/JMC5A manual smokes.
+  No push, force-push, recovery deletion, operator database/library access, or JMC5C work occurred.
+
+## JMC5B final pre-squash certification — 2026-07-15
+
+- Exact plan base is annotated `jmc5a-complete`, resolving to
+  `a1973e016302feba61285e20c79e48576499f9c6` with tree
+  `3592cffb502aa7755642344148220021c4fe91e4`. The certified pre-entry JMC5B range is 20 commits;
+  this final timeline entry makes the protected range 21 commits. It has no merge,
+  every commit has exactly one parent forming an unbroken chain from that base, and every commit
+  is authored by configured repository author Gautam Chaudhri <gautam.chaudhri@gmail.com>.
+  `origin/job-manager` is exactly the plan base; local `job-manager` is 20 ahead, zero behind, and
+  no remote ref contains the pre-squash tip. The worktree is clean.
+- Certification is the B5 record immediately above: 88 JMC5B-focused passes, 55 schema/Alembic/
+  ORM passes, authoritative full **1233 passed / 21 retained failures / 2 warnings**, Ruff,
+  deterministic 198-path OpenAPI and generated TypeScript, frontend check/lint/build, static
+  legacy scans, offline migration SQL, and `git diff --check`. Enabled/deferred types, exact
+  failure membership, versions, deviations, and pending operator actions are unchanged.
+- **Pre-squash tip:** `HEAD` at this final timeline commit, resolved immediately before recovery
+  creation. It will be protected by local branch `recovery/jmc5b-20260715T224135Z`, annotated tag
+  `recovery/jmc5b-pre-squash-20260715T224135Z`, and verified complete external bundle
+  `/home/quartermaster/backups/Marquee/marquee-jmc5b-pre-squash-20260715T224135Z.bundle`.
+  The intended compact resolver is local annotated tag `jmc5b-complete`; the required compact
+  subject is `jmc5b: migrate audio and subtitle mutations`. This timeline is not edited after
+  compaction.
+- JMC5B certifies only the audio/subtitle mutation scope described above. It does not start or
+  certify JMC5C. JMC5C may begin only after the compact commit/tree/base, sole-parent ancestry,
+  recovery refs/bundle, clean worktree, annotated completion tag, and post-squash smoke are all
+  proven.

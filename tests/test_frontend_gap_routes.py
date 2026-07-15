@@ -544,8 +544,8 @@ async def test_put_settings_validation_failure(
 @pytest.mark.asyncio
 async def test_extract_subtitle_track_endpoint(client: AsyncClient):
     response = await client.post("/api/media-files/1/subtitles/track-1/extract")
-    assert response.status_code == 503
-    assert response.json()["code"] == "job_platform_unmigrated"
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["loc"] == ["header", "Idempotency-Key"]
 
 
 @pytest.mark.asyncio
@@ -557,103 +557,3 @@ async def test_scan_library_subtitles_endpoint(db: AsyncSession, client: AsyncCl
     assert body["disposition"] == "created"
     assert body["phase"] == "terminal"
     assert body["snapshot_url"] == f"/api/jobs/{body['job_id']}/snapshot"
-
-
-
-
-
-@pytest.mark.asyncio
-async def test_build_argv_heals_null_tool_track_id(db: AsyncSession):
-    from marquee.core.subtitles.adapters.matroska import MatroskaAdapter
-    from marquee.core.subtitles.mutation import _build_argv
-    from marquee.core.subtitles.probe import EmbeddedSub, ProbeResult
-    from marquee.models import MediaFile, Movie, SubtitleInventory, SubtitleTrack
-
-    # Create dummy movie & media file
-    movie = Movie(
-        title="Dummy Movie",
-        year=2024,
-        folder_path="/tmp/dummy",
-        movie_file_path="dummy.mkv",
-        tmdb_id=999,
-    )
-    db.add(movie)
-    await db.flush()
-
-    media_file = MediaFile(
-        source="radarr", source_key="dummy-key", movie_id=movie.id, path="dummy.mkv", is_active=True
-    )
-    db.add(media_file)
-    await db.flush()
-
-    # Create dummy inventory & tracks
-    inv = SubtitleInventory(media_file_id=media_file.id, container="mkv")
-    db.add(inv)
-    await db.flush()
-
-    track = SubtitleTrack(
-        id="embedded-track-id",
-        inventory_id=inv.id,
-        source="embedded",
-        stream_index=2,
-        tool_track_id=None,
-    )
-    db.add(track)
-    await db.commit()
-
-    # Create mock source probe with aligned tool_track_id
-    source_probe = ProbeResult(
-        container="matroska",
-        duration_seconds=120.0,
-        subtitles=[
-            EmbeddedSub(
-                stream_index=2,
-                codec="subrip",
-                kind="text",
-                language_raw="eng",
-                language_tag="en",
-                language_source="metadata",
-                title=None,
-                is_default=False,
-                is_forced=False,
-                is_sdh=False,
-                is_commentary=False,
-                tool_track_id=3,  # Present in probe!
-            )
-        ],
-    )
-
-    from pathlib import Path
-
-    from marquee.core.media_files import ResolvedMediaFile
-
-    resolved = ResolvedMediaFile(
-        media_file_id=media_file.id,
-        source="radarr",
-        path=Path("/tmp/dummy.mkv"),
-        size_bytes=100,
-        mtime_ns=0,
-        st_nlink=1,
-        signature="sig",
-        container="mkv",
-        movie_id=movie.id,
-    )
-    request = {"inventory_id": inv.id, "track_ids": [track.id]}
-    adapter = MatroskaAdapter()
-
-    # Call _build_argv - it should align on the fly and not raise UnsupportedContainerError
-    argv, expected_delta, expected_audio_delta, ext_rem = await _build_argv(
-        db,
-        None,
-        "subtitle_remove",
-        request,
-        None,
-        source_probe,
-        adapter,
-        Path("/tmp/dummy_out.mkv"),
-        resolved,
-    )
-
-    # Check track.tool_track_id is updated
-    assert track.tool_track_id == 3
-    assert expected_audio_delta == 0

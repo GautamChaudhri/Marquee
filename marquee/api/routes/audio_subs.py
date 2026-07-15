@@ -6,7 +6,7 @@ import json
 from collections import defaultdict
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -26,8 +26,14 @@ from marquee.core.configuration import (
     update_configuration,
 )
 from marquee.core.configuration_cache import configuration_provider
-from marquee.core.jobs.manager import job_manager
+from marquee.core.jobs.audio_subtitle_documents import SubtitleGenerateRequestV1
+from marquee.core.jobs.audio_subtitle_planning import (
+    AudioSubtitlePlanError,
+    load_before_inventory,
+    selector_by_stream_index,
+)
 from marquee.core.jobs.submission import Initiator, SubmissionError
+from marquee.core.jobs.subtitle_parents import create_subtitle_generate_batch
 from marquee.core.subtitles import coverage as subtitle_coverage
 from marquee.core.subtitles import generation
 from marquee.core.subtitles.config import subtitle_settings
@@ -101,7 +107,7 @@ def _effective_series_languages(series: Series) -> tuple[list[str], list[str]]:
 
 
 async def _active_media_jobs(db: AsyncSession) -> dict[int, dict[str, list[str]]]:
-    # The legacy MediaJob lifecycle was removed with the canonical schema; no
+    # The legacy process-local lifecycle was removed with the canonical schema; no
     # subtitle scan/generate work can be active until the family is remigrated.
     return {}
 
@@ -511,29 +517,69 @@ async def generate_tv(
     series_id: int,
     body: TvGenerateRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
+    idempotency_key: Annotated[
+        str, Header(alias="Idempotency-Key", min_length=1, max_length=240)
+    ],
 ):
-    series = (await db.execute(select(Series).where(Series.id == series_id, series_visible()))).scalar_one_or_none()
-    if series is None:
-        raise HTTPException(status_code=404, detail=f"Series id={series_id} not found")
-    stmt = (
-        select(EpisodeMediaFile.media_file_id)
-        .join(Episode, Episode.id == EpisodeMediaFile.episode_id)
-        .where(Episode.series_id == series_id, Episode.episode_file_path.is_not(None))
-    )
-    if body.season_number is not None:
-        stmt = stmt.where(Episode.season_number == body.season_number)
-    media_file_ids = sorted(set((await db.execute(stmt)).scalars().all()))
-    if not media_file_ids:
-        raise HTTPException(status_code=400, detail="No episode media files found for generation")
-    generation.validate_generation_request(body.task, generation.current_subgen_model())
-    batch, _children = await job_manager.create_batch(
-        db,
-        parent_type="subtitle_generate_batch",
-        parent_payload={"series_id": series_id, **body.model_dump()},
-        media_file_ids=media_file_ids,
-    )
-    return {
-        "job_id": batch.id,
-        "total": len(media_file_ids),
-        "status_url": f"/api/jobs/{batch.id}/snapshot",
-    }
+    """Seal one immutable canonical generation child per episode file."""
+    try:
+        async with db.begin():
+            series = (
+                await db.execute(
+                    select(Series).where(Series.id == series_id, series_visible())
+                )
+            ).scalar_one_or_none()
+            if series is None:
+                raise HTTPException(status_code=404, detail=f"Series id={series_id} not found")
+            stmt = (
+                select(EpisodeMediaFile.media_file_id)
+                .join(Episode, Episode.id == EpisodeMediaFile.episode_id)
+                .where(Episode.series_id == series_id, Episode.episode_file_path.is_not(None))
+            )
+            if body.season_number is not None:
+                stmt = stmt.where(Episode.season_number == body.season_number)
+            media_file_ids = sorted(set((await db.execute(stmt)).scalars().all()))
+            if not media_file_ids:
+                raise HTTPException(
+                    status_code=400, detail="No episode media files found for generation"
+                )
+            generation.validate_generation_request(body.task, generation.current_subgen_model())
+            requests = []
+            for media_file_id in media_file_ids:
+                _resolved, inventory = await load_before_inventory(db, media_file_id)
+                audio = [entry for entry in inventory.entries if entry.facts.kind == "audio"]
+                if not audio or audio[0].stream_index is None:
+                    raise AudioSubtitlePlanError(
+                        f"media file {media_file_id} has no deterministic audio source"
+                    )
+                source = selector_by_stream_index(
+                    inventory,
+                    kind="audio",
+                    stream_index=body.stream_index
+                    if body.stream_index is not None
+                    else audio[0].stream_index,
+                )
+                requests.append(
+                    SubtitleGenerateRequestV1(
+                        media_file_id=media_file_id,
+                        language_tag=body.language_hint or "und",
+                        publish="embed" if body.output == "embedded" else "sidecar",
+                        source_selector=source,
+                        task=body.task,
+                    )
+                )
+            result = await create_subtitle_generate_batch(
+                db,
+                requests=requests,
+                idempotency_key=idempotency_key,
+                initiator=Initiator(kind="user", identifier="subtitle-generation-api"),
+                series_id=series_id,
+                season_number=body.season_number,
+                parent_job_type="subtitle_generate_batch",
+            )
+        response = submission_response(result.parent)
+        return {**response.model_dump(mode="json"), "total": len(requests)}
+    except AudioSubtitlePlanError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except SubmissionError as exc:
+        raise HTTPException(status_code=422, detail=exc.code) from exc

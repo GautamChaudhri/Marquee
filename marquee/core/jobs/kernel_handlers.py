@@ -11,12 +11,16 @@ from __future__ import annotations
 
 from marquee.core.jobs import (
     handlers_dovi,  # noqa: F401  (registration side effect)
+    handlers_generation,  # noqa: F401  (registration side effect)
     handlers_letterbox,  # noqa: F401  (registration side effect)
     handlers_library,  # noqa: F401  (registration side effect)
     handlers_maintenance,  # noqa: F401  (registration side effect)
     handlers_ml,  # noqa: F401  (registration side effect)
+    handlers_policy_restore,  # noqa: F401  (registration side effect)
     handlers_poster_mutations,  # noqa: F401  (registration side effect)
     handlers_posters,  # noqa: F401  (registration side effect)
     handlers_rescan,  # noqa: F401  (registration side effect)
+    handlers_sidecars,  # noqa: F401  (registration side effect)
     handlers_subtitles,  # noqa: F401  (registration side effect)
+    handlers_track_mutations,  # noqa: F401  (registration side effect)
 )

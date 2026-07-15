@@ -7,6 +7,8 @@ import type {
 	SubtitleInventory,
 	SubtitlePlanRequest,
 	SubtitlePlan,
+	MutationTrackEntry,
+	MutationTrackSelector,
 	AudioSubsSummary,
 	AudioSubsTvIndex,
 	AudioSubsTvDetail,
@@ -114,49 +116,119 @@ export function createPlan(
 	if (useMocks()) {
 		return Promise.resolve({
 			job_id: `job-mock-plan-${Date.now()}`,
-			status: 'planned',
+			phase: 'planned',
+			disposition: 'created',
 			operation: request.operation,
-			before: {},
-			after: {},
-			warnings:
-				request.operation === 'subtitle_remove'
-					? ['This will permanently remux the video file.']
-					: [],
-			capabilities: {
-				can_remove: true,
-				can_embed_text: true,
-				can_embed_bitmap: true,
-				can_edit_metadata: true
-			},
-			storage: {
-				estimated_bytes: 120000000,
-				available_bytes: 850000000000
-			}
+			plan_version: '0'.repeat(64),
+			input_signature: 'mock-signature',
+			configuration_version: 1,
+			plan_expires_at: new Date(Date.now() + 15 * 60_000).toISOString(),
+			snapshot_url: `/api/jobs/job-mock-plan/snapshot`,
+			detail_url: `/api/jobs/job-mock-plan/presentation`,
+			confirmation_url: `/api/jobs/job-mock-plan/mutation-confirmation`
 		});
 	}
-	return apiSend<SubtitlePlan>(
-		fetch,
-		'POST',
-		`/media-files/${mediaFileId}/subtitle-plans`,
-		request
-	);
+	return getInventory(fetch, mediaFileId).then((inventory) => {
+		const mutation = inventory.mutation_inventory;
+		if (!mutation) throw new Error('The server did not return a canonical track inventory.');
+		const selector = (entry: MutationTrackEntry): MutationTrackSelector => ({
+			track_key: entry.track_key,
+			facts: entry.facts,
+			inventory_signature: mutation.signature,
+			stream_index_hint: entry.stream_index,
+			tool_track_id_hint: entry.tool_track_id
+		});
+		const byStream = (kind: 'audio' | 'subtitle', index: number) => {
+			const matches = mutation.tracks.filter(
+				(entry) => entry.facts.kind === kind && entry.stream_index === index
+			);
+			if (matches.length !== 1) throw new Error('The selected track is stale or ambiguous.');
+			return selector(matches[0]);
+		};
+		const subtitleSelectors = request.track_ids.map((id) => {
+			const track = inventory.tracks.find((candidate) => candidate.id === id);
+			if (!track || track.stream_index == null || track.source !== 'embedded') {
+				throw new Error('Only a current embedded track can be selected for this mutation.');
+			}
+			return byStream('subtitle', track.stream_index);
+		});
+		const audioSelectors = (request.audio_stream_indices ?? []).map((index) =>
+			byStream('audio', index)
+		);
+		let canonicalRequest: Record<string, unknown>;
+		if (
+			request.operation === 'audio_remove' ||
+			request.operation === 'subtitle_remove' ||
+			request.operation === 'track_remove'
+		) {
+			canonicalRequest = {
+				media_file_id: mediaFileId,
+				selectors: [...subtitleSelectors, ...audioSelectors]
+			};
+		} else if (request.operation === 'audio_reorder') {
+			canonicalRequest = {
+				media_file_id: mediaFileId,
+				ordered_selectors: (request.audio_stream_order ?? []).map((index) =>
+					byStream('audio', index)
+				)
+			};
+		} else if (request.operation === 'subtitle_metadata') {
+			canonicalRequest = {
+				media_file_id: mediaFileId,
+				edits: (request.edits ?? []).map((edit) => {
+					const track = inventory.tracks.find((candidate) => candidate.id === edit.track_id);
+					if (!track || track.stream_index == null || track.source !== 'embedded') {
+						throw new Error('Subtitle metadata requires a current embedded subtitle track.');
+					}
+					return {
+						selector: byStream('subtitle', track.stream_index),
+						language_tag: edit.language_tag,
+						title: edit.title,
+						is_default: edit.is_default,
+						is_forced: edit.is_forced,
+						is_hearing_impaired: edit.is_sdh
+					};
+				})
+			};
+		} else {
+			throw new Error('This action requires a managed subtitle artifact.');
+		}
+		return apiSend<SubtitlePlan>(
+			fetch,
+			'POST',
+			`/media-files/${mediaFileId}/subtitle-plans`,
+			{ operation: request.operation, request: canonicalRequest },
+			{ 'Idempotency-Key': `${request.operation}:${crypto.randomUUID()}` }
+		);
+	});
 }
 
 export function extractTrack(
 	fetch: Fetch,
 	mediaFileId: number,
 	trackId: string
-): Promise<{ job_id: string; status: 'queued' }> {
+): Promise<SubtitlePlan> {
 	if (useMocks()) {
 		return Promise.resolve({
 			job_id: `job-mock-extract-${Date.now()}`,
-			status: 'queued'
+			phase: 'planned',
+			disposition: 'created',
+			operation: 'subtitle_extract',
+			plan_version: '0'.repeat(64),
+			input_signature: 'mock-signature',
+			configuration_version: 1,
+			plan_expires_at: new Date(Date.now() + 15 * 60_000).toISOString(),
+			snapshot_url: '/api/jobs/job-mock-extract/snapshot',
+			detail_url: '/api/jobs/job-mock-extract/presentation',
+			confirmation_url: '/api/jobs/job-mock-extract/mutation-confirmation'
 		});
 	}
-	return apiSend<{ job_id: string; status: 'queued' }>(
+	return apiSend<SubtitlePlan>(
 		fetch,
 		'POST',
-		`/media-files/${mediaFileId}/subtitles/${trackId}/extract`
+		`/media-files/${mediaFileId}/subtitles/${trackId}/extract`,
+		undefined,
+		{ 'Idempotency-Key': `subtitle_extract:${crypto.randomUUID()}` }
 	);
 }
 
@@ -473,18 +545,19 @@ export function generateTv(
 		task?: 'transcribe' | 'translate';
 		stream_index?: number | null;
 	}
-): Promise<{ job_id: string; total: number; events_url: string }> {
+): Promise<{ job_id: string; total: number; snapshot_url: string }> {
 	if (useMocks()) {
 		return Promise.resolve({
 			job_id: `job-mock-gen-tv-${Date.now()}`,
 			total: 5,
-			events_url: `/api/jobs/job-mock-gen-tv-${Date.now()}/snapshot`
+			snapshot_url: `/api/jobs/job-mock-gen-tv-${Date.now()}/snapshot`
 		});
 	}
-	return apiSend<{ job_id: string; total: number; events_url: string }>(
+	return apiSend<{ job_id: string; total: number; snapshot_url: string }>(
 		fetch,
 		'POST',
 		`/audio-subs/tv/${seriesId}/generate`,
-		body
+		body,
+		{ 'Idempotency-Key': `subtitle_generate_batch:${crypto.randomUUID()}` }
 	);
 }

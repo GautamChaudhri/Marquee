@@ -13,14 +13,17 @@ import logging
 from typing import Annotated, Literal
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, Header, HTTPException
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.api.job_submission import JobSubmissionResponse, submission_response
+from marquee.core.jobs.audio_subtitle_planning import (
+    AudioSubtitlePlanError,
+    load_before_inventory,
+)
 from marquee.core.jobs.contracts import TriggerKind
-from marquee.core.jobs.manager import UnmigratedJobPlatformError
 from marquee.core.jobs.submission import (
     IdempotencyConflictError,
     Initiator,
@@ -28,8 +31,11 @@ from marquee.core.jobs.submission import (
     SubmissionError,
     submit_job,
 )
+from marquee.core.jobs.subtitle_parents import FrozenFilePlan, create_subtitle_policy_batch
+from marquee.core.jobs.track_selectors import selector_for
+from marquee.core.subtitles import policy as policy_service
 from marquee.database import get_db
-from marquee.models import SubtitlePolicy
+from marquee.models import MediaFile, SubtitlePolicy
 
 logger = logging.getLogger(__name__)
 
@@ -157,7 +163,7 @@ async def delete_policy(policy_id: int, db: Annotated[AsyncSession, Depends(get_
 
 
 class SelectionBody(BaseModel):
-    movie_ids: list[int] = []
+    movie_ids: list[int] = Field(min_length=1, max_length=500)
 
 
 class PolicyAuditBody(BaseModel):
@@ -198,7 +204,97 @@ async def audit_policy(
 
 @router.post("/{policy_id}/apply", status_code=202)
 async def apply_policy(
-    policy_id: int, body: SelectionBody, db: Annotated[AsyncSession, Depends(get_db)]
+    policy_id: int,
+    body: SelectionBody,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    idempotency_key: Annotated[str, Header(alias="Idempotency-Key", min_length=1, max_length=240)],
 ):
-    """Fail closed until subtitle-policy mutations have a canonical definition."""
-    raise UnmigratedJobPlatformError(f"subtitle_policy.apply:{policy_id}")
+    """Evaluate once, freeze one immutable plan per file, and seal the batch."""
+    try:
+        async with db.begin():
+            policy = await db.scalar(
+                select(SubtitlePolicy).where(SubtitlePolicy.id == policy_id).with_for_update()
+            )
+            if policy is None:
+                raise HTTPException(status_code=404, detail=f"Policy {policy_id} not found")
+            rows = list(
+                (
+                    await db.scalars(
+                        select(MediaFile)
+                        .where(MediaFile.movie_id.in_(set(body.movie_ids)), MediaFile.is_present.is_(True))
+                        .order_by(MediaFile.id)
+                        .limit(501)
+                    )
+                ).all()
+            )
+            if len(rows) > 500:
+                raise HTTPException(status_code=422, detail="Policy selection exceeds 500 files")
+            plans: list[FrozenFilePlan] = []
+            policy_document = _policy_snapshot(policy)
+            for media_file in rows:
+                _resolved, typed_inventory = await load_before_inventory(db, media_file.id)
+                subtitle_entries = [
+                    entry for entry in typed_inventory.entries if entry.facts.kind == "subtitle"
+                ]
+                audio_entries = [
+                    entry for entry in typed_inventory.entries if entry.facts.kind == "audio"
+                ]
+                policy_tracks = [
+                    {
+                        "id": entry.track_key,
+                        **entry.facts.model_dump(mode="json"),
+                        "is_sdh": entry.facts.is_hearing_impaired,
+                    }
+                    for entry in subtitle_entries
+                ]
+                policy_audio = [
+                    {"id": entry.track_key, **entry.facts.model_dump(mode="json")}
+                    for entry in audio_entries
+                ]
+                evaluation = policy_service.evaluate_policy(
+                    policy_tracks,
+                    policy_audio,
+                    policy_document,
+                )
+                if evaluation.has_review:
+                    raise HTTPException(
+                        status_code=409,
+                        detail={
+                            "code": "policy_review_required",
+                            "message": "The evaluated policy requires review before mutation.",
+                        },
+                    )
+                selectors = []
+                for track_id in evaluation.removals:
+                    track = next(
+                        (entry for entry in subtitle_entries if entry.track_key == track_id),
+                        None,
+                    )
+                    if track is None or track.facts.source != "embedded":
+                        raise HTTPException(
+                            status_code=422,
+                            detail="Policy selected an external or stale track that cannot be remuxed.",
+                        )
+                    selectors.append(selector_for(track, typed_inventory))
+                plans.append(
+                    FrozenFilePlan(
+                        media_file_id=media_file.id,
+                        remove_selectors=tuple(selectors),
+                    )
+                )
+            result = await create_subtitle_policy_batch(
+                db,
+                policy_id=policy.id,
+                policy_revision=policy.revision,
+                plans=plans,
+                idempotency_key=idempotency_key,
+                initiator=Initiator(kind="user", identifier="subtitle-policy-api"),
+                scope="selected",
+            )
+        return submission_response(result.parent)
+    except AudioSubtitlePlanError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except IdempotencyConflictError as exc:
+        raise HTTPException(status_code=409, detail=exc.code) from exc
+    except SubmissionError as exc:
+        raise HTTPException(status_code=422, detail=exc.code) from exc

@@ -142,7 +142,7 @@
 			const movieIds = libraryRes.items.map((m) => m.id);
 
 			const res = await applyPolicy(fetch, policy.id, movieIds);
-			toast(`Policy applied: Queued ${res.queued} jobs (skipped ${res.skipped})`, 'good');
+			toast(`Policy batch queued: ${res.job_id}`, 'good');
 		} catch (e: any) {
 			toast(`Failed to apply: ${e.message}`, 'bad');
 		} finally {

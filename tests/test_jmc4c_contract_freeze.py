@@ -122,6 +122,17 @@ def _call_inventory() -> dict[str, list[str]]:
 def test_registry_and_handlers_match_c0_freeze() -> None:
     frozen = _freeze()
     additions = {
+        "subtitle_policy",
+        "subtitle_restore",
+        "subtitle_generate",
+        "subtitle_extract",
+        "subtitle_embed",
+        # JMC5B B2 track mutations.
+        "audio_remove",
+        "track_remove",
+        "subtitle_remove",
+        "audio_reorder",
+        "subtitle_metadata",
         "poster_deploy",
         "poster_restore",
         "poster_reset",
@@ -157,6 +168,17 @@ def test_deferred_mutation_never_dispatches() -> None:
     for job_type in ("poster_backup_all", "poster_deploy_reset", "poster_heal"):
         frozen[job_type] = parent_state
     enabled_maintenance = {
+        "subtitle_policy",
+        "subtitle_restore",
+        "subtitle_generate",
+        "subtitle_extract",
+        "subtitle_embed",
+        # JMC5B B2 enabled these; the still-deferred set below stays disabled.
+        "audio_remove",
+        "track_remove",
+        "subtitle_remove",
+        "audio_reorder",
+        "subtitle_metadata",
         "backup_create",
         "poster_maintenance",
         "pipeline_cache_clear",

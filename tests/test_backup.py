@@ -261,6 +261,16 @@ async def test_restore_backup_validates_only_and_never_mutates_targets(
 
 def test_only_system_noop_is_dispatch_enabled_and_executable() -> None:
     assert JOB_DEFINITION_REGISTRY.enabled_types == {
+        "subtitle_policy",
+        "subtitle_restore",
+        "subtitle_generate",
+        "subtitle_extract",
+        "subtitle_embed",
+        "audio_remove",
+        "track_remove",
+        "subtitle_remove",
+        "audio_reorder",
+        "subtitle_metadata",
         "system_noop",
         "library_sync",
         "poster_pipeline",
@@ -285,6 +295,16 @@ def test_only_system_noop_is_dispatch_enabled_and_executable() -> None:
         "system_metrics_purge",
     }
     assert set(EXECUTION_HANDLERS) == {
+        "subtitle_policy",
+        "subtitle_restore",
+        "subtitle_generate",
+        "subtitle_extract",
+        "subtitle_embed",
+        "audio_remove",
+        "track_remove",
+        "subtitle_remove",
+        "audio_reorder",
+        "subtitle_metadata",
         "system_noop",
         "library_sync",
         "poster_pipeline",

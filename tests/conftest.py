@@ -19,6 +19,8 @@ from marquee.database import (
     reset_database,
 )
 
+pytest_plugins = ["tests.support.jmc5b_harness"]
+
 
 @pytest_asyncio.fixture(scope="session", autouse=True)
 async def isolated_database(tmp_path_factory):

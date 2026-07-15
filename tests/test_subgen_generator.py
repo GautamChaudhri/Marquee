@@ -89,6 +89,7 @@ async def test_translate_request_rejects_nontranslating_model(client: AsyncClien
     resp = await client.post(
         "/api/media-files/1/subtitle-generations",
         json={"task": "translate", "output": "external"},
+        headers={"Idempotency-Key": "translate-rejected-model"},
     )
 
     assert resp.status_code == 422

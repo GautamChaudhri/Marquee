@@ -66,7 +66,7 @@ def _optional_signature(
 
 class PublicationCoordinator:
     def __init__(self, boundary: FilesystemBoundary, *, maximum_bytes: int = 64 * 1024 * 1024):
-        if maximum_bytes < 1 or maximum_bytes > 1024 * 1024 * 1024:
+        if maximum_bytes < 1 or maximum_bytes > 16 * 1024 * 1024 * 1024 * 1024:
             raise ValueError("publication size bound is invalid")
         self.boundary = boundary
         self.maximum_bytes = maximum_bytes
@@ -112,6 +112,7 @@ class PublicationCoordinator:
             finally:
                 os.close(fd)
             self.boundary.atomic_replace(staged, destination)
+            self.boundary.fsync_parent(destination)
 
         evidence = {"destination_key": destination.key.value, "output": asdict(output)}
         if not _applied(await fence.publish_atomic(replace, evidence)):

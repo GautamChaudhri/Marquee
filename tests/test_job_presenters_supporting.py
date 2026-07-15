@@ -59,13 +59,13 @@ SYSTEM_SNAPSHOT = {
 
 
 def test_every_builtin_definition_has_a_dedicated_presenter():
-    assert len(JOB_DEFINITION_REGISTRY) == 53
+    assert len(JOB_DEFINITION_REGISTRY) == 54  # +subtitle_policy_batch (JMC5B B05)
     for definition in JOB_DEFINITION_REGISTRY:
         presenter = resolve_presenter(definition)
         assert not presenter.generic, definition.job_type
         assert presenter.key == definition.presenter_key
         assert presenter is not GENERIC_PRESENTER
-    assert len(JOB_PRESENTER_REGISTRY) == 53
+    assert len(JOB_PRESENTER_REGISTRY) == 54  # +subtitle_policy_batch (JMC5B B05)
 
 
 def test_every_definition_renders_a_minimal_presentation():

@@ -79,8 +79,19 @@ def test_canonical_schema_registry_and_execution_inventory_is_frozen() -> None:
     assert {model.__tablename__: list(model.__table__.columns.keys()) for model in models} == frozen[
         "models"
     ]
-    assert len(JOB_DEFINITION_REGISTRY) == frozen["registry"]["definition_count"] + 4
+    assert len(JOB_DEFINITION_REGISTRY) == frozen["registry"]["definition_count"] + 5  # +subtitle_policy_batch (JMC5B B05)
     poster_leaves = {
+        "subtitle_policy",
+        "subtitle_restore",
+        "subtitle_generate",
+        "subtitle_extract",
+        "subtitle_embed",
+        # JMC5B B2 track mutations.
+        "audio_remove",
+        "track_remove",
+        "subtitle_remove",
+        "audio_reorder",
+        "subtitle_metadata",
         "poster_deploy",
         "poster_restore",
         "poster_reset",
@@ -138,6 +149,9 @@ def test_every_legacy_producer_call_is_frozen() -> None:
         "marquee/api/routes/backup.py:create_backup:job_manager.create_and_run",
         "marquee/api/routes/pipeline.py:clear_pipeline_cache:job_manager.create_and_run",
         "marquee/api/routes/pipeline.py:poster_maintenance:job_manager.create",
+        "marquee/api/routes/audio_subs.py:generate_tv:job_manager.create_batch",
+        "marquee/api/routes/subtitle_generators.py:generate_for_media_file:media_job_manager.create_job",
+        "marquee/api/routes/subtitle_generators.py:generate_for_movie:media_job_manager.create_job",
     ):
         frozen.pop(retired)
     assert _legacy_producer_calls() == frozen
