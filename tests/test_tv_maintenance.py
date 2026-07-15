@@ -1,6 +1,5 @@
-from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from types import SimpleNamespace
 
 import pytest
 from PIL import Image
@@ -8,15 +7,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.config import settings
-from marquee.core.heal import heal_scan
-from marquee.core.jobs.builtin_handlers import (
-    poster_backup_all,
-    poster_deploy_reset,
-    poster_maintenance,
-)
+from marquee.core.jobs import handlers_maintenance
 from marquee.core.poster_service import poster_service
 from marquee.core.poster_subjects import PosterSubject
-from marquee.models import Job, Season, Series
+from marquee.database import _get_session_factory
+from marquee.models import Season, Series
 
 
 def _make_image(path, color=(20, 100, 150)):
@@ -125,42 +120,7 @@ async def test_tv_deploy_and_restore_series_and_season(db: AsyncSession, tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_tv_heal_scan(db: AsyncSession, tmp_path):
-    series_folder = tmp_path / "Breaking Bad"
-    series_folder.mkdir(parents=True)
-    series = Series(
-        title="Breaking Bad",
-        year=2008,
-        series_path=str(series_folder),
-        tmdb_id=1396,
-        sonarr_id=10,
-    )
-    db.add(series)
-    await db.flush()
-
-    source = _make_image(tmp_path / "src.jpg")
-    subject = PosterSubject.from_series(series)
-    await poster_service.deploy(db, subject, source)
-
-    # Set poster_deployed_at in the past to bypass grace period
-    series.poster_deployed_at = datetime.now(UTC) - timedelta(hours=1)
-    await db.commit()
-
-    # Delete deployed poster
-    Path(series.poster_path).unlink()
-
-    # Run heal_scan
-    with patch("marquee.core.heal._get_session_factory", return_value=lambda: db):
-        res = await heal_scan()
-
-    assert res["checked"] == 1
-    assert res["restored"] == 1
-    assert res["by_type"]["series"]["restored"] == 1
-    assert Path(series.poster_path).is_file()
-
-
-@pytest.mark.asyncio
-async def test_tv_maintenance_job_runs(db: AsyncSession, tmp_path, monkeypatch):
+async def test_tv_maintenance_prunes_only_orphan_cache(db: AsyncSession, tmp_path):
     # Setup a Series and a visible Season
     series_folder = tmp_path / "Breaking Bad"
     series_folder.mkdir(parents=True)
@@ -187,51 +147,36 @@ async def test_tv_maintenance_job_runs(db: AsyncSession, tmp_path, monkeypatch):
     subject = PosterSubject.from_series(series)
     await poster_service.deploy(db, subject, source)
 
-    # 1. Run poster_backup_all
-    job = Job(id="job-backup", type="poster_backup_all", request={})
-
-    # Delete local backup on disk
-    backup_file = Path(series.poster_local_backup_path)
-    backup_file.unlink()
-
-    backup_res = await poster_backup_all(job)
-    assert backup_res["copied"] == 1
-    assert backup_res["by_type"]["series"]["copied"] == 1
-    assert backup_file.is_file()
-
-    # 2. Run poster_deploy_reset
-    job_reset = Job(id="job-reset", type="poster_deploy_reset", request={})
-
-    reset_res = await poster_deploy_reset(job_reset)
-    assert reset_res["reset"] == 1
-    assert reset_res["by_type"]["series"]["reset"] == 1
-    await db.refresh(series)
-    assert series.poster_path is None
-
-    # 3. Run poster_maintenance to delete Sonarr-deleted shows
-    # Re-setup series with poster
-    series.sonarr_id = 99
-    series.poster_path = str(series_folder / "show.jpg")
-    (series_folder / "show.jpg").touch()
     await db.commit()
+    orphan = _make_image(settings.poster_cache_path / "tv" / "9999.jpg")
+    referenced = settings.poster_cache_path / "tv" / "1396.jpg"
+    assert referenced.exists()
 
-    # Mock SonarrClient
-    mock_sonarr_payload = [{"id": 100}]  # series 99 is missing -> deleted candidate
-    sonarr_mock = AsyncMock()
-    sonarr_mock.get_series.return_value = mock_sonarr_payload
+    async def owns_current_attempt(_session):
+        return True
 
-    # Patch settings.sonarr_configured and client class using monkeypatch
-    monkeypatch.setattr(type(settings), "sonarr_configured", property(lambda self: True))
-    monkeypatch.setattr(type(settings), "radarr_configured", property(lambda self: False))
+    context = SimpleNamespace(
+        request={"dry_run": True, "max_items": 10, "batch_size": 1},
+        delivery=SimpleNamespace(canonical_job_id="job-maint"),
+        attempt=SimpleNamespace(attempt_id=1, fence_token=1),
+        cancellation=SimpleNamespace(cancel_called=False),
+        writer=SimpleNamespace(owns_current_attempt=owns_current_attempt),
+        session_factory=_get_session_factory(),
+    )
 
-    with patch(
-        "marquee.core.arr_clients.sonarr_client.SonarrClient",
-        return_value=sonarr_mock,
-    ):
-        job_maintenance = Job(id="job-maint", type="poster_maintenance", request={})
-        maint_res = await poster_maintenance(job_maintenance)
-        assert maint_res["series_deleted"] == 1
+    plan = await handlers_maintenance.execute_poster_maintenance(context)
+    context.request = {
+        "dry_run": False,
+        "confirmed_plan_checksum": plan["plan_checksum"],
+        "max_items": 10,
+        "batch_size": 1,
+    }
+    result = await handlers_maintenance.execute_poster_maintenance(context)
 
-        # Check DB series row is deleted
-        series_in_db = (await db.execute(select(Series).where(Series.id == series.id))).scalar_one_or_none()
-        assert series_in_db is None
+    assert result["deleted_count"] == 1
+    assert not orphan.exists()
+    assert referenced.exists()
+    series_in_db = (
+        await db.execute(select(Series).where(Series.id == series.id))
+    ).scalar_one_or_none()
+    assert series_in_db is not None

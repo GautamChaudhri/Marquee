@@ -218,6 +218,11 @@ async def _preflight(
         requirements = requirements_for_policy(
             definition.safety_policy,
             allocation_identity=f"{job.id}:{payload.dispatch_generation}:{transport_job.attempts}",
+            media_file_identity=(
+                f"{job.subject_kind}:{job.subject_reference}:poster"
+                if definition.safety_policy.media_file
+                else None
+            ),
         )
         return PreflightDelivery(
             delivery=delivery,

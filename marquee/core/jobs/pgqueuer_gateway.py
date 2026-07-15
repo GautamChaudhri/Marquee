@@ -21,10 +21,10 @@ from marquee.core.jobs.manifest import JOB_DEFINITION_REGISTRY
 from marquee.models.job import Job, JobDispatch, JobEvent
 
 ENTRYPOINT_CONTROL = "control"
-# Registered worker execution entrypoints that may receive a ticket. `media_write` is never
-# enqueued before chunk 5; parent-only jobs never receive a ticket at all.
+# Registered worker execution entrypoints that may receive a ticket. Parent-only jobs never
+# receive a ticket at all.
 ENQUEUEABLE_ENTRYPOINTS = frozenset(
-    {"control", "network", "cpu", "media_read", "gpu", "maintenance"}
+    {"control", "network", "cpu", "media_read", "media_write", "gpu", "maintenance"}
 )
 PAYLOAD_VERSION = 1
 MIN_PRIORITY = 0

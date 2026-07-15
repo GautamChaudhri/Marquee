@@ -120,6 +120,46 @@ async def test_stale_fence_and_changed_destination_never_publish(tmp_path: Path)
 
 
 @pytest.mark.asyncio
+async def test_coordinator_delete_is_fenced_and_identity_checked(tmp_path: Path) -> None:
+    workspace = AttemptWorkspaceManager.for_data_dir(tmp_path).create(
+        job_id="job_delete", attempt_id=1, fence_token=1
+    )
+    destination = workspace.boundary.from_key(
+        "data", f"{workspace.directory.key.value}/destination.bin"
+    )
+    fd = workspace.boundary.create_file(destination)
+    _write(fd, b"original")
+    expected = file_signature(workspace.boundary, destination)
+
+    with pytest.raises(PublicationError, match="stale ownership"):
+        await PublicationCoordinator(workspace.boundary).delete(
+            destination=destination,
+            expected_destination=expected,
+            fence=Fence(apply=False),
+        )
+    assert file_signature(workspace.boundary, destination) == expected
+
+    replacement_fd = workspace.boundary.create_file(destination, exclusive=False)
+    _write(replacement_fd, b"changed")
+    with pytest.raises(PublicationError, match="destination.*changed"):
+        await PublicationCoordinator(workspace.boundary).delete(
+            destination=destination,
+            expected_destination=expected,
+            fence=Fence(),
+        )
+
+    changed = file_signature(workspace.boundary, destination)
+    fence = Fence()
+    await PublicationCoordinator(workspace.boundary).delete(
+        destination=destination,
+        expected_destination=changed,
+        fence=fence,
+    )
+    assert not (tmp_path / destination.key.value).exists()
+    assert fence.intent["operation"] == "delete"
+
+
+@pytest.mark.asyncio
 async def test_commit_crash_leaves_durable_intent_for_quarantine(tmp_path: Path) -> None:
     workspace = AttemptWorkspaceManager.for_data_dir(tmp_path).create(
         job_id="job_4", attempt_id=1, fence_token=1

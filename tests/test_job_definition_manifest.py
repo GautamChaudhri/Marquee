@@ -81,7 +81,7 @@ def _subjects():
 
 
 def test_manifest_has_exactly_one_definition_for_every_inventory_source() -> None:
-    assert len(JOB_DEFINITION_REGISTRY) == 49
+    assert len(JOB_DEFINITION_REGISTRY) == 53
     assert JOB_DEFINITION_REGISTRY.types == BUILTIN_JOB_TYPES
     for inventory in (
         REGISTERED_HANDLER_TYPES,
@@ -100,6 +100,15 @@ def test_only_noop_is_enabled_and_webhook_stays_reserved_disabled() -> None:
         "system_noop",
         "library_sync",
         "poster_pipeline",
+        "poster_deploy",
+        "poster_restore",
+        "poster_reset",
+        "poster_backup_subject",
+        "backup_create",
+        "poster_maintenance",
+        "pipeline_cache_clear",
+        "job_retention_purge",
+        "system_metrics_purge",
         "letterbox_detect",
         "letterbox_detect_episode",
         "letterbox_detect_tv_scope",
@@ -147,6 +156,40 @@ def test_all_documents_are_strict_current_v1_and_policy_is_not_client_input() ->
         "taste_map": {},
         "learned_head_train": {},
         "poster_rescan": {},
+        "poster_deploy": {
+            "target_kind": "movie",
+            "target_id": 1,
+            "candidate": {
+                "source": "pipeline_run",
+                "storage_key": "runs/example/candidate.jpg",
+                "run_id": "run-example",
+                "candidate_reference": "candidate.jpg",
+                "expected_checksum": "a" * 64,
+            },
+        },
+        "poster_restore": {"target_kind": "movie", "target_id": 1},
+        "poster_reset": {"target_kind": "movie", "target_id": 1},
+        "poster_backup_subject": {"target_kind": "movie", "target_id": 1},
+        "poster_deploy_reset": {
+            "operation": "reset",
+            "scope": "all",
+            "selection_count": 0,
+        },
+        "poster_backup_all": {
+            "operation": "backup",
+            "scope": "all",
+            "selection_count": 0,
+        },
+        "poster_heal": {
+            "operation": "heal",
+            "scope": "missing",
+            "selection_count": 0,
+        },
+        "backup_create": {},
+        "poster_maintenance": {},
+        "pipeline_cache_clear": {},
+        "job_retention_purge": {"retention_days": 30},
+        "system_metrics_purge": {"retention_days": 30},
     }
     valid_results = {
         "taste_rebuild": {
@@ -175,6 +218,66 @@ def test_all_documents_are_strict_current_v1_and_policy_is_not_client_input() ->
         },
         "poster_rescan": {"observed": 0, "changed": 0, "missing": 0},
     }
+    mutation_result = {
+        "outcome": "no_change",
+        "reason_code": "already_identical",
+        "message": "The poster already matches.",
+        "requested_targets": [
+            {
+                "key": "movie:1:poster",
+                "kind": "movie_artwork",
+                "label": "Example",
+                "operation": "poster_deploy",
+            }
+        ],
+        "target_outcomes": [
+            {
+                "target": {
+                    "key": "movie:1:poster",
+                    "kind": "movie_artwork",
+                    "label": "Example",
+                    "operation": "poster_deploy",
+                },
+                "status": "skipped",
+                "stage": "publishing",
+                "reason_code": "already_identical",
+                "message": "No bytes changed.",
+                "bytes_changed": False,
+                "product_state_changed": False,
+            }
+        ],
+        "validation": {"verdict": "passed"},
+        "atomicity": {
+            "group_id": "poster:movie:1",
+            "boundary": "single_target",
+            "published": False,
+            "rollback_available": True,
+            "uncertain_state": False,
+        },
+    }
+    for job_type in (
+        "poster_deploy",
+        "poster_restore",
+        "poster_reset",
+        "poster_backup_subject",
+    ):
+        valid_results[job_type] = mutation_result
+    maintenance_result = {
+        "outcome": "no_change",
+        "message": "No eligible maintenance targets were found.",
+        "plan_checksum": "a" * 64,
+        "planned_count": 0,
+        "processed_count": 0,
+        "deleted_count": 0,
+    }
+    for job_type in (
+        "backup_create",
+        "poster_maintenance",
+        "pipeline_cache_clear",
+        "job_retention_purge",
+        "system_metrics_purge",
+    ):
+        valid_results[job_type] = {**maintenance_result, "operation": job_type}
     for definition in JOB_DEFINITION_REGISTRY:
         assert definition.request.current_version == 1
         assert definition.result.current_version == 1
@@ -182,9 +285,15 @@ def test_all_documents_are_strict_current_v1_and_policy_is_not_client_input() ->
         assert not forbidden & definition.request.models[1].model_fields.keys()
         definition.request.validate(valid_requests.get(definition.job_type, {}), version=1)
         definition.result.validate(valid_results.get(definition.job_type, {}), version=1)
-        definition.error.validate(
-            {"code": "test_failure", "summary": "Safe summary"}, version=1
-        )
+        error = {"code": "test_failure", "summary": "Safe summary"}
+        if definition.job_type in {
+            "poster_deploy",
+            "poster_restore",
+            "poster_reset",
+            "poster_backup_subject",
+        }:
+            error["stage"] = "execution"
+        definition.error.validate(error, version=1)
         with pytest.raises(ValidationError):
             definition.request.validate({"timeout": 1}, version=1)
         with pytest.raises(UnsupportedDocumentVersionError):

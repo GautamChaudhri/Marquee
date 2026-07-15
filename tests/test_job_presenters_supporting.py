@@ -59,13 +59,13 @@ SYSTEM_SNAPSHOT = {
 
 
 def test_every_builtin_definition_has_a_dedicated_presenter():
-    assert len(JOB_DEFINITION_REGISTRY) == 49
+    assert len(JOB_DEFINITION_REGISTRY) == 53
     for definition in JOB_DEFINITION_REGISTRY:
         presenter = resolve_presenter(definition)
         assert not presenter.generic, definition.job_type
         assert presenter.key == definition.presenter_key
         assert presenter is not GENERIC_PRESENTER
-    assert len(JOB_PRESENTER_REGISTRY) == 49
+    assert len(JOB_PRESENTER_REGISTRY) == 53
 
 
 def test_every_definition_renders_a_minimal_presentation():
@@ -222,8 +222,15 @@ def test_maintenance_dry_run_and_metrics():
         subject_snapshot=MAINTENANCE_SNAPSHOT,
         result={
             "outcome": "succeeded",
-            "message": None,
-            "summary": {"records_removed": 1200, "bytes_freed": 3400000, "retention_days": 30},
+            "operation": "job_retention_purge",
+            "message": "Dry-run plan sealed without mutation.",
+            "dry_run": True,
+            "plan_checksum": "a" * 64,
+            "planned_count": 1200,
+            "processed_count": 0,
+            "deleted_count": 0,
+            "counts": {"jobs": 1200},
+            "cancelled": False,
         },
     )
     presentation = present_job(job, definition_for("job_retention_purge"))
@@ -232,7 +239,7 @@ def test_maintenance_dry_run_and_metrics():
         fact.value.type == "badge" and fact.value.text == "Dry run" for fact in facts.facts
     )
     cards = next(s for s in presentation.sections if s.kind == "metric_cards")
-    assert any(card.value.type == "bytes" for card in cards.cards)
+    assert any(card.label == "Planned" and card.value.value == 1200 for card in cards.cards)
 
 
 def test_parent_batch_children_from_live_counts():

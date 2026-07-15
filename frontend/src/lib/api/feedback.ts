@@ -5,7 +5,11 @@ import type { FeedbackRequestBody, FeedbackResult } from './types';
  *  pairwise labels, appends the pick to the taste profile, and (by default)
  *  deploys the chosen poster to the movie folder. */
 export function submitFeedback(fetchFn: Fetch, body: FeedbackRequestBody): Promise<FeedbackResult> {
-	return apiSend<FeedbackResult>(fetchFn, 'POST', '/feedback', body);
+	const mutation =
+		body.action !== 'reject_all' && body.deploy !== false && !body.idempotency_key
+			? { ...body, idempotency_key: `poster_deploy:${crypto.randomUUID()}` }
+			: body;
+	return apiSend<FeedbackResult>(fetchFn, 'POST', '/feedback', mutation);
 }
 
 /** Undo a feedback submission by its event id (removes labels + exemplar). */

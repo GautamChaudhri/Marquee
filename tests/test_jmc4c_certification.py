@@ -14,12 +14,29 @@ ENABLED_LEAVES = {
     "letterbox_detect_tv_scope",
     "library_sync",
     "poster_pipeline",
+    "poster_deploy",
+    "poster_restore",
+    "poster_reset",
+    "poster_backup_subject",
     "poster_rescan",
     "subtitle_policy_audit",
     "subtitle_scan",
     "system_noop",
     "taste_map",
     "taste_rebuild",
+    "backup_create",
+    "poster_maintenance",
+    "pipeline_cache_clear",
+    "job_retention_purge",
+    "system_metrics_purge",
+}
+
+A4_MAINTENANCE = {
+    "backup_create",
+    "poster_maintenance",
+    "pipeline_cache_clear",
+    "job_retention_purge",
+    "system_metrics_purge",
 }
 
 C15_DEFERRED = {
@@ -58,19 +75,28 @@ def test_final_enabled_manifest_has_exactly_one_executor_per_leaf() -> None:
 
 
 def test_c15_mutating_and_operator_owned_manifest_is_dispatch_disabled() -> None:
-    assert {definition.job_type for definition in JOB_DEFINITION_REGISTRY} >= C15_DEFERRED
-    assert all(not JOB_DEFINITION_REGISTRY.get(job_type).enabled for job_type in C15_DEFERRED)
-    assert all(
-        not definition.enabled
+    deferred = C15_DEFERRED - A4_MAINTENANCE
+    assert {definition.job_type for definition in JOB_DEFINITION_REGISTRY} >= deferred
+    assert all(not JOB_DEFINITION_REGISTRY.get(job_type).enabled for job_type in deferred)
+    assert {
+        definition.job_type
         for definition in JOB_DEFINITION_REGISTRY
-        if definition.execution_class.value == "media_write"
-    )
+        if definition.enabled and definition.execution_class.value == "media_write"
+    } == {"poster_deploy", "poster_restore", "poster_reset", "poster_backup_subject"}
 
 
 def test_enabled_chunk_four_is_read_only_and_parent_batches_are_ticketless() -> None:
     assert all(
         JOB_DEFINITION_REGISTRY.get(job_type).effect_safety.value == "read_only"
-        for job_type in ENABLED_LEAVES - {"system_noop"}
+        for job_type in ENABLED_LEAVES
+        - {
+            "system_noop",
+            "poster_deploy",
+            "poster_restore",
+            "poster_reset",
+            "poster_backup_subject",
+            *A4_MAINTENANCE,
+        }
     )
     for job_type in ("poster_pipeline_batch", "poster_pipeline_tv_batch"):
         definition = JOB_DEFINITION_REGISTRY.get(job_type)
@@ -81,9 +107,10 @@ def test_enabled_chunk_four_is_read_only_and_parent_batches_are_ticketless() -> 
 
 def test_product_schedule_catalog_remains_exact_and_nonmutating() -> None:
     schedules = {definition.key: definition for definition in PRODUCTION_SCHEDULE_CATALOG}
-    assert list(schedules) == ["library-sync", "audio-subs-deep-scan"]
+    assert list(schedules) == ["library-sync", "poster-heal", "audio-subs-deep-scan"]
     assert schedules["library-sync"].produced_job_type == "library_sync"
     assert schedules["audio-subs-deep-scan"].produced_job_type == "audio_subs_deep_scan"
+    assert schedules["poster-heal"].produced_job_type == "poster_heal"
     assert all(
         JOB_DEFINITION_REGISTRY.get(definition.produced_job_type).execution_class.value
         != "media_write"

@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from PIL import Image
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.config import settings
-from marquee.core.jobs.builtin_handlers import poster_backup_all, poster_maintenance
-from marquee.models import Job, Movie
+from marquee.core.jobs import handlers_maintenance
+from marquee.database import _get_session_factory
 
 
 def _make_image(path: Path) -> Path:
@@ -37,37 +37,35 @@ def poster_paths_to_tmp(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_poster_backup_all_copies_deployed_posters(db: AsyncSession, tmp_path):
-    poster = _make_image(tmp_path / "movie" / "poster.jpg")
-    movie = Movie(
-        title="Alpha",
-        year=2020,
-        folder_path=str(poster.parent),
-        movie_file_path="alpha.mkv",
-        tmdb_id=1,
-        poster_path=str(poster),
-    )
-    db.add(movie)
-    await db.commit()
-
-    result = await poster_backup_all(Job(id="backup", type="poster_backup_all", request={}))
-
-    await db.refresh(movie)
-    assert result["copied"] == 1
-    assert (settings.poster_backup_path / f"{movie.id}.jpg").is_file()
-    assert movie.poster_local_backup_path == str(settings.poster_backup_path / f"{movie.id}.jpg")
-
-
-@pytest.mark.asyncio
-async def test_poster_maintenance_skips_when_radarr_unconfigured(monkeypatch):
-    monkeypatch.setattr(settings, "RADARR_URL", None)
-    monkeypatch.setattr(settings, "RADARR_API_KEY", None)
-    monkeypatch.setattr(settings, "SONARR_URL", None)
-    monkeypatch.setattr(settings, "SONARR_API_KEY", None)
-
-    result = await poster_maintenance(
-        Job(id="maintenance", type="poster_maintenance", request={"dry_run": True})
+async def test_poster_maintenance_seals_a_path_free_dry_run(tmp_path):
+    orphan = _make_image(settings.poster_cache_path / "movies" / "9001.jpg")
+    outside = _make_image(tmp_path / "outside.jpg")
+    symlink = settings.poster_cache_path / "movies" / "linked.jpg"
+    symlink.symlink_to(outside)
+    context = SimpleNamespace(
+        request={"dry_run": True, "max_items": 10, "batch_size": 1},
+        delivery=SimpleNamespace(canonical_job_id="maintenance"),
+        cancellation=SimpleNamespace(cancel_called=False),
+        writer=SimpleNamespace(owns_current_attempt=lambda _session: True),
+        session_factory=_get_session_factory(),
     )
 
-    assert result["skipped"] == "neither radarr nor sonarr configured"
+    result = await handlers_maintenance.execute_poster_maintenance(context)
+
+    assert result["outcome"] == "no_change"
     assert result["dry_run"] is True
+    assert result["planned_count"] == 1
+    assert len(result["plan_checksum"]) == 64
+    assert orphan.exists()
+    assert symlink.is_symlink()
+    assert outside.exists()
+
+    context.request = {
+        "dry_run": False,
+        "confirmed_plan_checksum": "0" * 64,
+        "max_items": 10,
+        "batch_size": 1,
+    }
+    with pytest.raises(handlers_maintenance.MaintenanceOperationError, match="does not match"):
+        await handlers_maintenance.execute_poster_maintenance(context)
+    assert orphan.exists()

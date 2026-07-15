@@ -8,20 +8,22 @@ import os
 from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from marquee.api.routes.jobs import job_summary
+from marquee.api.job_submission import JobSubmissionResponse, submission_response
 from marquee.api.routes.webhooks import webhook_state
 from marquee.config import settings
 from marquee.core import system_metrics
 from marquee.core.configuration_cache import configuration_provider
 from marquee.core.heal import latest_heal_summary
-from marquee.core.jobs import job_manager
+from marquee.core.jobs.contracts import TriggerKind
 from marquee.core.jobs.labels import humanize_job_type
 from marquee.core.jobs.pgqueuer_gateway import pgqueuer_gateway
+from marquee.core.jobs.poster_parents import create_poster_parent
 from marquee.core.jobs.readiness import connection_budget_report
+from marquee.core.jobs.submission import Initiator, SubmissionError
 from marquee.core.letterbox_heal import letterbox_heal_state
 from marquee.core.pipeline_config import pipeline_settings
 from marquee.database import get_db, pool_stats, reset_database
@@ -350,18 +352,28 @@ async def generator_health():
     return {"generators": await list_generators()}
 
 
-@router.post("/heal")
-async def trigger_heal(db: Annotated[AsyncSession, Depends(get_db)]):
+@router.post("/heal", status_code=202)
+async def trigger_heal(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    idempotency_key: Annotated[str, Header(alias="Idempotency-Key")],
+) -> JobSubmissionResponse:
     """Run the self-heal poster existence scan on demand."""
-    job = await job_manager.create_and_run(
-        db,
-        job_type="poster_heal",
-        priority=30,
-        subject_type="maintenance",
-        subject_id="poster-heal",
-        worker_id="inline-api",
-    )
-    return {**job_summary(job), **(job.result or {})}
+    initiator = Initiator(kind="system", identifier="system-api")
+    if db.in_transaction():
+        await db.commit()
+    try:
+        async with db.begin():
+            result = await create_poster_parent(
+                db,
+                parent_job_type="poster_heal",
+                idempotency_key=idempotency_key,
+                trigger=TriggerKind.BATCH,
+                initiator=initiator,
+                priority=30,
+            )
+    except (SubmissionError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail="poster_heal_scope_invalid") from exc
+    return submission_response(result.parent)
 
 
 @router.post("/release-gpu")

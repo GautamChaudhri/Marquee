@@ -32,7 +32,17 @@ def _contract() -> dict[str, object]:
 def test_jmc3b_starts_from_the_certified_production_registry() -> None:
     registry = _contract()["registry"]
     assert isinstance(registry, dict)
-    assert JOB_DEFINITION_REGISTRY.enabled_types == set(registry["enabled_types"])
+    assert JOB_DEFINITION_REGISTRY.enabled_types == set(registry["enabled_types"]) | {
+        "poster_deploy",
+        "poster_restore",
+        "poster_reset",
+        "poster_backup_subject",
+        "backup_create",
+        "poster_maintenance",
+        "pipeline_cache_clear",
+        "job_retention_purge",
+        "system_metrics_purge",
+    }
     assert JOB_DEFINITION_REGISTRY.enabled_types == {
         "system_noop",
         "library_sync",
@@ -47,6 +57,15 @@ def test_jmc3b_starts_from_the_certified_production_registry() -> None:
             "poster_rescan",
             "taste_map",
             "taste_rebuild",
+            "poster_deploy",
+            "poster_restore",
+            "poster_reset",
+            "poster_backup_subject",
+            "backup_create",
+            "poster_maintenance",
+            "pipeline_cache_clear",
+            "job_retention_purge",
+            "system_metrics_purge",
         }
 
 

@@ -1407,22 +1407,6 @@
         "title": "BytesValue",
         "type": "object"
       },
-      "CacheClearRequest": {
-        "properties": {
-          "include_archives": {
-            "default": false,
-            "title": "Include Archives",
-            "type": "boolean"
-          },
-          "include_embeddings": {
-            "default": true,
-            "title": "Include Embeddings",
-            "type": "boolean"
-          }
-        },
-        "title": "CacheClearRequest",
-        "type": "object"
-      },
       "CandidateOverlayRequest": {
         "properties": {
           "run_id": {
@@ -2429,6 +2413,17 @@
               }
             ],
             "title": "Hated"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
           },
           "order": {
             "anyOf": [
@@ -3622,22 +3617,6 @@
         "title": "LinkValue",
         "type": "object"
       },
-      "MaintenanceRequest": {
-        "properties": {
-          "dry_run": {
-            "default": false,
-            "title": "Dry Run",
-            "type": "boolean"
-          },
-          "force": {
-            "default": false,
-            "title": "Force",
-            "type": "boolean"
-          }
-        },
-        "title": "MaintenanceRequest",
-        "type": "object"
-      },
       "MeasurementMode": {
         "enum": [
           "determinate",
@@ -3897,6 +3876,56 @@
         "title": "OcrLabelRequest",
         "type": "object"
       },
+      "PipelineCacheClearRequestV1": {
+        "additionalProperties": false,
+        "properties": {
+          "batch_size": {
+            "default": 100,
+            "maximum": 500.0,
+            "minimum": 1.0,
+            "title": "Batch Size",
+            "type": "integer"
+          },
+          "confirmed_plan_checksum": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "minLength": 64,
+                "pattern": "^[0-9a-f]+$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confirmed Plan Checksum"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "include_archives": {
+            "default": false,
+            "title": "Include Archives",
+            "type": "boolean"
+          },
+          "include_embeddings": {
+            "default": true,
+            "title": "Include Embeddings",
+            "type": "boolean"
+          },
+          "max_items": {
+            "default": 10000,
+            "maximum": 10000.0,
+            "minimum": 1.0,
+            "title": "Max Items",
+            "type": "integer"
+          }
+        },
+        "title": "PipelineCacheClearRequestV1",
+        "type": "object"
+      },
       "PlanRequest": {
         "properties": {
           "allow_break": {
@@ -4043,6 +4072,46 @@
           "name"
         ],
         "title": "PolicyBody",
+        "type": "object"
+      },
+      "PosterMaintenanceRequestV1": {
+        "additionalProperties": false,
+        "properties": {
+          "batch_size": {
+            "default": 100,
+            "maximum": 500.0,
+            "minimum": 1.0,
+            "title": "Batch Size",
+            "type": "integer"
+          },
+          "confirmed_plan_checksum": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "minLength": 64,
+                "pattern": "^[0-9a-f]+$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confirmed Plan Checksum"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "max_items": {
+            "default": 10000,
+            "maximum": 10000.0,
+            "minimum": 1.0,
+            "title": "Max Items",
+            "type": "integer"
+          }
+        },
+        "title": "PosterMaintenanceRequestV1",
         "type": "object"
       },
       "PostersSettingsUpdate": {
@@ -11818,10 +11887,19 @@
               "title": "Movie Id",
               "type": "integer"
             }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
           }
         ],
         "responses": {
-          "200": {
+          "202": {
             "content": {
               "application/json": {
                 "schema": {}
@@ -11896,10 +11974,19 @@
               "title": "Season Id",
               "type": "integer"
             }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
           }
         ],
         "responses": {
-          "200": {
+          "202": {
             "content": {
               "application/json": {
                 "schema": {}
@@ -12068,10 +12155,19 @@
               "title": "Series Id",
               "type": "integer"
             }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
           }
         ],
         "responses": {
-          "200": {
+          "202": {
             "content": {
               "application/json": {
                 "schema": {}
@@ -12936,14 +13032,37 @@
     "/api/pipeline/backup-all": {
       "post": {
         "operationId": "backup_all_posters_api_pipeline_backup_all_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "202": {
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/JobSubmissionResponse"
+                }
               }
             },
             "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "summary": "Backup All Posters",
@@ -13018,21 +13137,34 @@
       "post": {
         "description": "Clear downloaded-poster pipeline caches. Never touches head/taste data.",
         "operationId": "clear_pipeline_cache_api_pipeline_cache_clear_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/CacheClearRequest"
+                "$ref": "#/components/schemas/PipelineCacheClearRequestV1"
               }
             }
           },
           "required": true
         },
         "responses": {
-          "200": {
+          "202": {
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/JobSubmissionResponse"
+                }
               }
             },
             "description": "Successful Response"
@@ -13057,11 +13189,22 @@
     "/api/pipeline/maintenance": {
       "post": {
         "operationId": "poster_maintenance_api_pipeline_maintenance_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/MaintenanceRequest"
+                "$ref": "#/components/schemas/PosterMaintenanceRequestV1"
               }
             }
           },
@@ -13071,7 +13214,9 @@
           "202": {
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/JobSubmissionResponse"
+                }
               }
             },
             "description": "Successful Response"
@@ -13180,16 +13325,39 @@
     },
     "/api/pipeline/posters/reset": {
       "post": {
-        "description": "Delete every deployed poster and reset movies to missing.\n\nEnqueues a ``poster_deploy_reset`` durable job that walks all movies\nwith a deployed poster, deletes the poster file from the media folder\n(keeping the ``data/cache/posters`` copies as restore fallbacks), and\nresets all ``poster_*`` columns so the movies reappear in the Run tab.",
+        "description": "Seal a canonical reset parent with one isolated child per poster subject.",
         "operationId": "reset_deployed_posters_api_pipeline_posters_reset_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
-          "200": {
+          "202": {
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/JobSubmissionResponse"
+                }
               }
             },
             "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "summary": "Reset Deployed Posters",
@@ -13276,6 +13444,24 @@
       "post": {
         "description": "Approve every approvable run in the current review queue.",
         "operationId": "approve_review_queue_auto_api_pipeline_review_queue_approve_auto_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -13632,6 +13818,24 @@
       "post": {
         "description": "Approve every approvable run in the current TV review queue.",
         "operationId": "approve_tv_review_queue_auto_api_pipeline_tv_review_queue_approve_auto_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -13720,10 +13924,19 @@
               "title": "Season Id",
               "type": "integer"
             }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
           }
         ],
         "responses": {
-          "200": {
+          "202": {
             "content": {
               "application/json": {
                 "schema": {}
@@ -14468,14 +14681,37 @@
       "post": {
         "description": "Create a local rollback backup of managed Marquee state.",
         "operationId": "create_backup_api_system_backup_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
-          "200": {
+          "202": {
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/JobSubmissionResponse"
+                }
               }
             },
             "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "summary": "Create Backup",
@@ -14508,14 +14744,37 @@
       "post": {
         "description": "Run the self-heal poster existence scan on demand.",
         "operationId": "trigger_heal_api_system_heal_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
-          "200": {
+          "202": {
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/JobSubmissionResponse"
+                }
               }
             },
             "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "summary": "Trigger Heal",

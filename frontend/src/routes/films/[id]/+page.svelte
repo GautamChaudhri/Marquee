@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onDestroy } from 'svelte';
-	import { goto, invalidateAll } from '$app/navigation';
+	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { deleteMoviePoster } from '$lib/api/library';
 	import { setMovieTextProfile, type TextProfile } from '$lib/api/text-profiles';
@@ -148,12 +148,8 @@
 		deletingPoster = true;
 		deletePosterError = null;
 		try {
-			const res = await deleteMoviePoster(fetch, movie.id);
-			if (res.ok) {
-				await invalidateAll();
-			} else {
-				deletePosterError = res.error ?? 'Failed to delete poster';
-			}
+			await deleteMoviePoster(fetch, movie.id);
+			deletePosterError = 'Poster reset queued; job progress is available in Jobs.';
 		} catch (e) {
 			deletePosterError = e instanceof Error ? e.message : 'Failed to delete poster';
 		} finally {

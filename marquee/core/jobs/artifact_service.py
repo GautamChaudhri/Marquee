@@ -62,6 +62,9 @@ ARTIFACT_POLICIES: dict[str, ArtifactPolicy] = {
     "validation_report": ArtifactPolicy(
         ".json", frozenset({"application/json"}), 1024 * 1024
     ),
+    "backup_manifest": ArtifactPolicy(
+        ".json", frozenset({"application/json"}), 1024 * 1024
+    ),
     "diagnostic_text": ArtifactPolicy(
         ".txt", frozenset({"text/plain"}), 1024 * 1024
     ),

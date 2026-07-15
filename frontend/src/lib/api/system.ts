@@ -1,7 +1,8 @@
 import { env } from '$env/dynamic/public';
 import { apiGet, apiSend, type Fetch } from './client';
+import type { components } from './generated/openapi';
 import { mockMetrics, mockMetricsHistory } from './mock';
-import type { JobSummary, RuntimeSettings, SystemMetrics, SystemMetricsHistory } from './types';
+import type { RuntimeSettings, SystemMetrics, SystemMetricsHistory } from './types';
 
 const useMocks = () => env.PUBLIC_USE_MOCKS === 'true';
 type SettingsPatch = Record<string, unknown>;
@@ -12,7 +13,7 @@ export type SettingsPutResponse = {
 	applied: string[];
 	settings: RuntimeSettings;
 };
-type HealScanResponse = JobSummary & { checked?: number; restored?: number; failed?: number };
+type JobSubmissionResponse = components['schemas']['JobSubmissionResponse'];
 
 export function getMetrics(fetch: Fetch): Promise<SystemMetrics> {
 	if (useMocks()) return Promise.resolve(mockMetrics());
@@ -164,26 +165,22 @@ export function putSettings(
 	});
 }
 
-export function runHealScan(fetch: Fetch): Promise<HealScanResponse> {
+export function runHealScan(fetch: Fetch): Promise<JobSubmissionResponse> {
 	if (useMocks()) {
-		const now = new Date().toISOString();
 		return Promise.resolve({
 			job_id: 'mock-heal',
-			type: 'poster_heal',
-			status: 'succeeded',
-			stage: 'done',
-			progress: { percent: 100 },
-			message: 'Mock heal finished',
-			subject: { type: 'maintenance', id: 'poster-heal' },
-			cancel_requested: false,
-			events_url: '/api/jobs/mock-heal/snapshot',
-			status_url: '/api/jobs/mock-heal',
-			created_at: now,
-			updated_at: now,
-			checked: 1,
-			restored: 0,
-			failed: 0
+			job_type: 'poster_heal',
+			phase: 'queued',
+			disposition: 'created',
+			snapshot_url: '/api/jobs/mock-heal/snapshot',
+			detail_url: '/api/jobs/mock-heal'
 		});
 	}
-	return apiSend<HealScanResponse>(fetch, 'POST', '/system/heal');
+	return apiSend<JobSubmissionResponse>(
+		fetch,
+		'POST',
+		'/system/heal',
+		{},
+		{ 'Idempotency-Key': `poster_heal:${crypto.randomUUID()}` }
+	);
 }

@@ -65,9 +65,27 @@ class FencedWriter:
         ) is not None
 
     async def succeed(self, result: dict[str, Any]) -> WriteDisposition:
-        validated = self.definition.result.validate(
+        document = self.definition.result.validate(
             result, version=self.definition.result.current_version
-        ).model_dump(mode="json")
+        )
+        validated = document.model_dump(mode="json")
+        from marquee.core.jobs.mutation_documents import (  # noqa: PLC0415
+            MutationResultV1,
+        )
+
+        if isinstance(document, MutationResultV1):
+            outcome = document.outcome.value
+            return await self._terminal(
+                outcome=outcome,
+                dispatch_disposition=(
+                    "succeeded"
+                    if outcome in {"succeeded", "no_change", "partially_succeeded"}
+                    else outcome
+                ),
+                result=validated,
+                error=None,
+                expected_desired_states=("run",),
+            )
         return await self._terminal(
             outcome="succeeded",
             dispatch_disposition="succeeded",
@@ -80,25 +98,65 @@ class FencedWriter:
         self, exc: BaseException, *, cancelled: bool = False
     ) -> WriteDisposition:
         outcome = "cancelled" if cancelled else "failed"
+        error_payload = _safe_error(exc, cancelled=cancelled)
+        error_model = self.definition.error.models[self.definition.error.current_version]
+        attempt_has_intent = attempt_has_publication = False
+        if "atomicity" in error_model.model_fields:
+            attempt_has_intent, attempt_has_publication = await self._publication_state()
+            uncertain = attempt_has_intent and not attempt_has_publication
+            error_payload["atomicity"] = self._atomicity_evidence(
+                published=attempt_has_publication,
+                uncertain=uncertain,
+            )
+            if uncertain:
+                outcome = "unsafe"
+                error_payload.update(
+                    code="publication_state_uncertain",
+                    summary="Publication intent exists without sealed publication evidence",
+                )
+        if "stage" in error_model.model_fields:
+            error_payload["stage"] = (
+                "publication_reconciliation"
+                if outcome == "unsafe"
+                else ("cancelled" if cancelled else "execution")
+            )
         error = self.definition.error.validate(
-            _safe_error(exc, cancelled=cancelled),
+            error_payload,
             version=self.definition.error.current_version,
         ).model_dump(mode="json")
         return await self._terminal(
             outcome=outcome,
-            dispatch_disposition=outcome,
+            dispatch_disposition="failed" if outcome == "unsafe" else outcome,
             result=None,
             error=error,
-            expected_desired_states=("run", "cancel") if cancelled else ("run",),
+            expected_desired_states=(
+                ("run", "cancel") if cancelled or outcome == "unsafe" else ("run",)
+            ),
+            attempt_outcome="interrupted" if outcome == "unsafe" else None,
         )
 
     async def retry(self, *, reason: str, delay_seconds: float) -> WriteDisposition:
+        error_model = self.definition.error.models[self.definition.error.current_version]
+        error_payload: dict[str, Any] = {
+            "code": "retry_requested",
+            "summary": (reason or "retry requested")[:500],
+            "diagnostics": {"delay_seconds": delay_seconds},
+        }
+        if "atomicity" in error_model.model_fields:
+            has_intent, has_publication = await self._publication_state()
+            if has_intent or has_publication:
+                return await self.unsafe(
+                    "Mutation retry refused because publication cannot be proven absent",
+                    code="mutation_retry_not_safe",
+                    stage="retry_classification",
+                )
+            error_payload["stage"] = "retry_classification"
+            error_payload["atomicity"] = self._atomicity_evidence(
+                published=False,
+                uncertain=False,
+            )
         error = self.definition.error.validate(
-            {
-                "code": "retry_requested",
-                "summary": (reason or "retry requested")[:500],
-                "diagnostics": {"delay_seconds": delay_seconds},
-            },
+            error_payload,
             version=self.definition.error.current_version,
         ).model_dump(mode="json")
         owner = self.ownership
@@ -247,13 +305,29 @@ class FencedWriter:
             attempt.metrics = metrics
         return WriteDisposition.APPLIED
 
-    async def unsafe(self, reason: str) -> WriteDisposition:
+    async def unsafe(
+        self,
+        reason: str,
+        *,
+        code: str = "unsafe_process_identity",
+        stage: str = "safety",
+    ) -> WriteDisposition:
+        error_model = self.definition.error.models[self.definition.error.current_version]
+        payload: dict[str, Any] = {
+            "code": code,
+            "summary": reason[:500],
+            "diagnostics": {},
+        }
+        if "atomicity" in error_model.model_fields:
+            has_intent, has_publication = await self._publication_state()
+            payload["atomicity"] = self._atomicity_evidence(
+                published=has_publication,
+                uncertain=has_intent and not has_publication,
+            )
+        if "stage" in error_model.model_fields:
+            payload["stage"] = stage
         error = self.definition.error.validate(
-            {
-                "code": "unsafe_process_identity",
-                "summary": reason[:500],
-                "diagnostics": {},
-            },
+            payload,
             version=self.definition.error.current_version,
         ).model_dump(mode="json")
         return await self._terminal(
@@ -318,6 +392,31 @@ class FencedWriter:
             )
         return WriteDisposition.APPLIED
 
+    async def _publication_state(self) -> tuple[bool, bool]:
+        """Return durable intent/publication evidence for this exact fenced attempt."""
+        owner = self.ownership
+        factory = _get_session_factory()
+        async with factory() as session:
+            metrics = await session.scalar(
+                select(JobAttempt.metrics).where(
+                    JobAttempt.id == owner.attempt_id,
+                    JobAttempt.job_id == owner.job_id,
+                    JobAttempt.fence_token == owner.fence_token,
+                )
+            )
+        values = metrics if isinstance(metrics, dict) else {}
+        return values.get("publish_intent") is not None, values.get("publication") is not None
+
+    def _atomicity_evidence(self, *, published: bool, uncertain: bool) -> dict[str, Any]:
+        owner = self.ownership
+        return {
+            "group_id": f"job:{owner.job_id}:attempt:{owner.attempt_id}",
+            "boundary": "single_target",
+            "published": published,
+            "rollback_available": False,
+            "uncertain_state": uncertain,
+        }
+
     async def record_publish_intent(self, intent: dict[str, Any]) -> WriteDisposition:
         """Durably record bounded publication intent before any destination mutation."""
         owner = self.ownership
@@ -345,6 +444,10 @@ class FencedWriter:
             if attempt is None:
                 raise RuntimeError("fenced attempt changed while recording publish intent")
             metrics = dict(attempt.metrics or {})
+            # Only the most recent intent/publication pair is authoritative. Clearing
+            # the prior publication makes a crash between a later intent and its
+            # publication visibly ambiguous to workspace reconciliation.
+            metrics.pop("publication", None)
             metrics["publish_intent"] = intent
             attempt.metrics = metrics
         return WriteDisposition.APPLIED

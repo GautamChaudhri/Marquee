@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 import pytest_asyncio
@@ -13,6 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.api.routes import feedback as feedback_route
+from marquee.config import settings
 from marquee.database import _get_engine
 from marquee.main import app
 from marquee.models import Job, JobBatch, Movie, PipelineRun, Season, Series
@@ -337,8 +337,9 @@ async def test_tv_review_queue_grouping_and_movie_guard(
     approve = await client.post(
         "/api/pipeline/tv/review-queue/approve-auto",
         json={"deploy": True, "series_id": alpha.id},
+        headers={"Idempotency-Key": "poster_deploy:tv-review-alpha"},
     )
-    assert approve.status_code == 200
+    assert approve.status_code == 202
     assert approve.json()["total"] == 2
     assert approve.json()["approved"] == 1
     assert approve.json()["skipped_no_auto"] == 1
@@ -352,7 +353,11 @@ async def test_tv_review_queue_grouping_and_movie_guard(
 
 @pytest.mark.asyncio
 async def test_use_show_poster_for_season_and_shared_run_results(
-    db: AsyncSession, client: AsyncClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    db: AsyncSession,
+    client: AsyncClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    installed_pgqueuer: Queries,
 ):
     series, seasons = await _seed_series(
         db,
@@ -371,29 +376,21 @@ async def test_use_show_poster_for_season_and_shared_run_results(
         season=seasons[0],
         status="flagged_manual",
     )
+    monkeypatch.setattr(settings, "MEDIA_ROOTS", [str(tmp_path)])
 
-    deploy_calls: list[tuple[str, str]] = []
-    fake_result = SimpleNamespace(
-        deployed_path=str(Path(series.series_path) / "season01.jpg"),
-        cache_path=str(tmp_path / "cache.jpg"),
-        sha256="abc",
-        backup_path=str(tmp_path / "backup.jpg"),
+    resp = await client.post(
+        f"/api/pipeline/tv/seasons/{seasons[0].id}/use-show-poster",
+        headers={"Idempotency-Key": "poster_deploy:season-use-show-1"},
     )
-
-    async def fake_deploy(_db, subject, source_file, **kwargs):
-        deploy_calls.append((subject.media_type, Path(source_file).name))
-        return fake_result
-
-    from marquee.core.poster_service import poster_service
-
-    monkeypatch.setattr(poster_service, "deploy", fake_deploy)
-
-    resp = await client.post(f"/api/pipeline/tv/seasons/{seasons[0].id}/use-show-poster")
-    assert resp.status_code == 200
-    assert deploy_calls == [("season", "show.jpg")]
+    assert resp.status_code == 202
+    job = await db.get(Job, resp.json()["job_id"])
+    assert job.type == "poster_deploy"
+    assert job.subject_kind == "season"
+    assert job.request["candidate"]["source"] == "subject_artwork"
+    assert not (Path(series.series_path) / "season01.jpg").exists()
 
     await db.refresh(run)
-    assert run.feedback_event_id.startswith("show_poster_fallback_")
+    assert run.feedback_event_id is None
 
     run_results = await client.get(f"/api/pipeline/runs/{run.run_id}")
     assert run_results.status_code == 200
@@ -416,6 +413,9 @@ async def test_use_show_poster_for_season_requires_deployed_show_poster(
         seasons=[{"number": 1, "episode_file_count": 8, "poster": False}],
     )
 
-    resp = await client.post(f"/api/pipeline/tv/seasons/{seasons[0].id}/use-show-poster")
+    resp = await client.post(
+        f"/api/pipeline/tv/seasons/{seasons[0].id}/use-show-poster",
+        headers={"Idempotency-Key": "poster_deploy:missing-show-poster"},
+    )
     assert resp.status_code == 409
     assert series.poster_path is None

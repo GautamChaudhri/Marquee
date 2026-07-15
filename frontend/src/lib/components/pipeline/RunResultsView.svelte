@@ -459,9 +459,8 @@
 				deploy
 			});
 			lastEventId = res.event_id;
-			const where = res.deployed_to ? ' · deployed' : res.deploy_error ? ' · deploy failed' : '';
-			toast(`Poster selected${where}`, res.deploy_error ? 'info' : 'good');
-			if (res.deploy_error) toast(res.deploy_error, 'bad', 5000);
+			const where = res.deployment_job ? ' · deployment queued' : '';
+			toast(`Poster selected${where}`, 'good');
 			cancelConfirm();
 			await reload();
 		} catch (e) {

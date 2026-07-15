@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Annotated
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from pydantic import BaseModel
 from sqlalchemy import exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -30,9 +30,14 @@ from marquee.api.routes.jobs import job_summary
 from marquee.api.routes.library import _coverage_by_media_file
 from marquee.config import settings
 from marquee.core.heal import latest_heal_summary
-from marquee.core.jobs import job_manager
 from marquee.core.jobs.batches import BatchScope, create_fixed_batch
 from marquee.core.jobs.contracts import TriggerKind
+from marquee.core.jobs.mutation_documents import (
+    PipelineCacheClearRequestV1,
+    PosterMaintenanceRequestV1,
+)
+from marquee.core.jobs.poster_parents import create_poster_parent
+from marquee.core.jobs.poster_submission import poster_child_idempotency_key
 from marquee.core.jobs.submission import (
     IdempotencyConflictError,
     Initiator,
@@ -162,11 +167,6 @@ def _backup_stats() -> dict[str, int]:
                 count += 1
                 total_bytes += entry.stat().st_size
     return {"count": count, "bytes": total_bytes}
-
-
-class MaintenanceRequest(BaseModel):
-    dry_run: bool = False
-    force: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -571,40 +571,52 @@ async def rescan_posters(
 
 
 @router.post("/backup-all", status_code=202)
-async def backup_all_posters(db: Annotated[AsyncSession, Depends(get_db)]):
-    job = await job_manager.create(
-        db,
-        job_type="poster_backup_all",
-        payload={},
-        priority=35,
-        resources={"media_read": 1},
-        subject_type="maintenance",
-        subject_id="poster-backup-all",
-        max_attempts=1,
-        idempotency_key=f"poster-backup-all:{int(time.time() // 30)}",
-    )
-    return job_summary(job)
+async def backup_all_posters(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    idempotency_key: Annotated[str, Header(alias="Idempotency-Key")],
+) -> JobSubmissionResponse:
+    initiator = Initiator(kind="system", identifier="pipeline-api")
+    if db.in_transaction():
+        await db.commit()
+    try:
+        async with db.begin():
+            result = await create_poster_parent(
+                db,
+                parent_job_type="poster_backup_all",
+                idempotency_key=idempotency_key,
+                trigger=TriggerKind.BATCH,
+                initiator=initiator,
+            )
+    except (SubmissionError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail="poster_backup_scope_invalid") from exc
+    return submission_response(result.parent)
 
 
 @router.post("/maintenance", status_code=202)
 async def poster_maintenance(
-    body: MaintenanceRequest,
+    body: PosterMaintenanceRequestV1,
     db: Annotated[AsyncSession, Depends(get_db)],
-):
-    job = await job_manager.create(
-        db,
-        job_type="poster_maintenance",
-        payload=body.model_dump(),
-        priority=30,
-        resources={"network_external": 1, "maintenance_exclusive": 1},
-        subject_type="maintenance",
-        subject_id="poster-maintenance",
-        max_attempts=1,
-        idempotency_key=(
-            f"poster-maintenance:{body.dry_run}:{body.force}:{int(time.time() // 30)}"
-        ),
-    )
-    return job_summary(job)
+    idempotency_key: Annotated[str, Header(alias="Idempotency-Key")],
+) -> JobSubmissionResponse:
+    if db.in_transaction():
+        await db.commit()
+    try:
+        async with db.begin():
+            result = await submit_job(
+                db,
+                job_type="poster_maintenance",
+                request=body.model_dump(mode="json"),
+                subject=SubjectLocator(
+                    kind="maintenance_scope", reference="poster-maintenance"
+                ),
+                trigger=TriggerKind.MANUAL,
+                initiator=Initiator(kind="system", identifier="pipeline-api"),
+                idempotency_key=idempotency_key,
+                priority=30,
+            )
+    except SubmissionError as exc:
+        raise HTTPException(status_code=422, detail=exc.code) from exc
+    return submission_response(result)
 
 
 # ---------------------------------------------------------------------------
@@ -620,59 +632,60 @@ async def get_pipeline_cache():
     return cache_sizes()
 
 
-class CacheClearRequest(BaseModel):
-    include_embeddings: bool = True
-    include_archives: bool = False
-
-
 class ReviewQueueApproveAutoRequest(BaseModel):
     deploy: bool = True
 
 
-@router.post("/cache/clear")
+@router.post("/cache/clear", status_code=202)
 async def clear_pipeline_cache(
-    body: CacheClearRequest,
+    body: PipelineCacheClearRequestV1,
     db: Annotated[AsyncSession, Depends(get_db)],
-):
+    idempotency_key: Annotated[str, Header(alias="Idempotency-Key")],
+) -> JobSubmissionResponse:
     """Clear downloaded-poster pipeline caches. Never touches head/taste data."""
-    job = await job_manager.create_and_run(
-        db,
-        job_type="pipeline_cache_clear",
-        payload={
-            "include_embeddings": body.include_embeddings,
-            "include_archives": body.include_archives,
-        },
-        priority=40,
-        subject_type="pipeline_cache",
-        subject_id="default",
-        max_attempts=1,
-        worker_id="inline-api",
-    )
-    return {**job_summary(job), **(job.result or {})}
+    if db.in_transaction():
+        await db.commit()
+    try:
+        async with db.begin():
+            result = await submit_job(
+                db,
+                job_type="pipeline_cache_clear",
+                request=body.model_dump(mode="json"),
+                subject=SubjectLocator(
+                    kind="maintenance_scope", reference="pipeline-cache"
+                ),
+                trigger=TriggerKind.MANUAL,
+                initiator=Initiator(kind="system", identifier="pipeline-api"),
+                idempotency_key=idempotency_key,
+                priority=40,
+            )
+    except SubmissionError as exc:
+        raise HTTPException(status_code=422, detail=exc.code) from exc
+    return submission_response(result)
 
 
-@router.post("/posters/reset")
+@router.post("/posters/reset", status_code=202)
 async def reset_deployed_posters(
     db: Annotated[AsyncSession, Depends(get_db)],
-):
-    """Delete every deployed poster and reset movies to missing.
-
-    Enqueues a ``poster_deploy_reset`` durable job that walks all movies
-    with a deployed poster, deletes the poster file from the media folder
-    (keeping the ``data/cache/posters`` copies as restore fallbacks), and
-    resets all ``poster_*`` columns so the movies reappear in the Run tab.
-    """
-    job = await job_manager.create_and_run(
-        db,
-        job_type="poster_deploy_reset",
-        payload={},
-        priority=30,
-        subject_type="pipeline_posters",
-        subject_id="deploy_reset",
-        max_attempts=1,
-        worker_id="inline-api",
-    )
-    return {**job_summary(job), **(job.result or {})}
+    idempotency_key: Annotated[str, Header(alias="Idempotency-Key")],
+) -> JobSubmissionResponse:
+    """Seal a canonical reset parent with one isolated child per poster subject."""
+    initiator = Initiator(kind="system", identifier="pipeline-api")
+    if db.in_transaction():
+        await db.commit()
+    try:
+        async with db.begin():
+            result = await create_poster_parent(
+                db,
+                parent_job_type="poster_deploy_reset",
+                idempotency_key=idempotency_key,
+                trigger=TriggerKind.BATCH,
+                initiator=initiator,
+                priority=30,
+            )
+    except (SubmissionError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail="poster_reset_scope_invalid") from exc
+    return submission_response(result.parent)
 
 
 # ---------------------------------------------------------------------------
@@ -861,11 +874,15 @@ async def review_queue(
 async def approve_review_queue_auto(
     body: ReviewQueueApproveAutoRequest,
     request: Request,
+    response: Response,
     db: Annotated[AsyncSession, Depends(get_db)],
+    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ):
     """Approve every approvable run in the current review queue."""
     from marquee.api.routes.feedback import FeedbackRequest, apply_feedback_request  # noqa: PLC0415
 
+    if body.deploy and idempotency_key is None:
+        raise HTTPException(status_code=422, detail="Idempotency-Key is required for deploy")
     await _repair_stale_batch_pipeline_runs(db)
 
     latest = _review_queue_latest()
@@ -890,17 +907,29 @@ async def approve_review_queue_auto(
     skipped_no_auto = 0
     failed = 0
     errors: list[dict[str, object]] = []
+    deployment_jobs: list[dict[str, object]] = []
 
     for run, movie in rows:
         if run.status != "completed" or not run.auto_pick_filename:
             skipped_no_auto += 1
             continue
         try:
-            await apply_feedback_request(
-                FeedbackRequest(run_id=run.run_id, action="approve", deploy=body.deploy),
+            result = await apply_feedback_request(
+                FeedbackRequest(
+                    run_id=run.run_id,
+                    action="approve",
+                    deploy=body.deploy,
+                    idempotency_key=(
+                        poster_child_idempotency_key(idempotency_key, run.run_id)
+                        if idempotency_key is not None
+                        else None
+                    ),
+                ),
                 request,
                 db,
             )
+            if result.get("deployment_job") is not None:
+                deployment_jobs.append(result["deployment_job"])
             approved += 1
         except HTTPException as exc:
             await db.rollback()
@@ -913,7 +942,7 @@ async def approve_review_queue_auto(
                     "error": exc.detail,
                 }
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception:  # noqa: BLE001
             await db.rollback()
             failed += 1
             errors.append(
@@ -921,16 +950,19 @@ async def approve_review_queue_auto(
                     "run_id": run.run_id,
                     "movie_id": movie.id,
                     "title": movie.title,
-                    "error": str(exc),
+                    "error": "feedback_apply_failed",
                 }
             )
 
+    if body.deploy:
+        response.status_code = 202
     return {
         "total": len(rows),
         "approved": approved,
         "skipped_no_auto": skipped_no_auto,
         "failed": failed,
         "errors": errors,
+        "deployment_jobs": deployment_jobs,
     }
 
 

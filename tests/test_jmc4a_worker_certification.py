@@ -79,11 +79,7 @@ async def test_worker_registers_every_execution_class_with_explicit_limits(db) -
         app = create_worker(raw.driver_connection)
 
     limits = entrypoint_concurrency_limits()
-    assert set(limits) == {
-        execution_class.value
-        for execution_class in ExecutionClass
-        if execution_class != ExecutionClass.MEDIA_WRITE
-    }
+    assert set(limits) == {execution_class.value for execution_class in ExecutionClass}
     assert {
         entrypoint: executor.parameters.concurrency_limit
         for entrypoint, executor in app.qm.entrypoint_registry.items()
@@ -188,19 +184,30 @@ def test_readiness_is_sanitized_and_reports_locked_jmc4a_boundaries() -> None:
 
     assert worker["status"] == "ok"
     assert worker["registered"] == sorted(
-        item.value for item in ExecutionClass if item != ExecutionClass.MEDIA_WRITE
+        item.value for item in ExecutionClass
     )
-    assert worker["enabled"] == ["control", "cpu", "gpu", "media_read", "network"]
-    assert worker["later_media_write_limit"] == 1
-    assert worker["media_write_product_available"] is False
+    assert worker["enabled"] == [
+        "control",
+        "cpu",
+        "gpu",
+        "maintenance",
+        "media_read",
+        "media_write",
+        "network",
+    ]
+    assert worker["media_write_product_available"] is True
     assert schedule == {
         "status": "ok",
-        "definition_count": 2,
-        "keys": ["audio-subs-deep-scan", "library-sync"],
-        "entrypoints": ["schedule_audio_subs_deep_scan", "schedule_library_sync"],
+        "definition_count": 3,
+        "keys": ["audio-subs-deep-scan", "library-sync", "poster-heal"],
+        "entrypoints": [
+            "schedule_audio_subs_deep_scan",
+            "schedule_library_sync",
+            "schedule_poster_heal",
+        ],
         "occurrence_policies": ["hourly_window", "interval_bucket"],
         "production_occurrences_enabled": False,
-        "activated_keys": ["audio-subs-deep-scan", "library-sync"],
+        "activated_keys": ["audio-subs-deep-scan", "library-sync", "poster-heal"],
         "diagnostic_limit": 100,
     }
     assert batch["status"] == "ok"
@@ -216,11 +223,20 @@ def test_readiness_is_sanitized_and_reports_locked_jmc4a_boundaries() -> None:
 
 
 def test_final_manifest_keeps_only_system_noop_enabled() -> None:
-    assert len(JOB_DEFINITION_REGISTRY) == 49
+    assert len(JOB_DEFINITION_REGISTRY) == 53
     assert JOB_DEFINITION_REGISTRY.enabled_types == {
         "system_noop",
         "library_sync",
         "poster_pipeline",
+        "poster_deploy",
+        "poster_restore",
+        "poster_reset",
+        "poster_backup_subject",
+        "backup_create",
+        "poster_maintenance",
+        "pipeline_cache_clear",
+        "job_retention_purge",
+        "system_metrics_purge",
         "letterbox_detect",
         "letterbox_detect_episode",
         "letterbox_detect_tv_scope",
@@ -236,22 +252,31 @@ def test_final_manifest_keeps_only_system_noop_enabled() -> None:
     assert sorted(
         (definition.job_type, definition.entrypoint) for definition in enabled
     ) == [
+        ("backup_create", "maintenance"),
         ("dovi_analyze", "media_read"),
+        ("job_retention_purge", "maintenance"),
         ("learned_head_train", "cpu"),
         ("letterbox_detect", "media_read"),
         ("letterbox_detect_episode", "media_read"),
         ("letterbox_detect_tv_scope", "media_read"),
         ("library_sync", "network"),
-        ("poster_pipeline", "gpu"),
-        ("poster_rescan", "media_read"),
+        ("pipeline_cache_clear", "maintenance"),
+        ("poster_backup_subject", "media_write"),
+        ("poster_deploy", "media_write"),
+        ("poster_maintenance", "maintenance"),
+            ("poster_pipeline", "gpu"),
+            ("poster_rescan", "media_read"),
+            ("poster_reset", "media_write"),
+            ("poster_restore", "media_write"),
         ("subtitle_policy_audit", "cpu"),
         ("subtitle_scan", "media_read"),
+        ("system_metrics_purge", "maintenance"),
         ("system_noop", "control"),
         ("taste_map", "cpu"),
         ("taste_rebuild", "gpu"),
     ]
-    assert all(
-        not definition.enabled
+    assert {
+        definition.job_type
         for definition in JOB_DEFINITION_REGISTRY
-        if definition.entrypoint == "media_write"
-    )
+        if definition.enabled and definition.entrypoint == "media_write"
+    } == {"poster_backup_subject", "poster_deploy", "poster_reset", "poster_restore"}

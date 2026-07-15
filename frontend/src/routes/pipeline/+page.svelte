@@ -287,16 +287,7 @@
 		healBusy = true;
 		try {
 			const job = await runHealScan(fetch);
-			trackAction(job, 'Heal scan', (done) => {
-				const result = (done.result ?? {}) as Record<string, unknown>;
-				const checked = Number(result.checked ?? 0);
-				const restored = Number(result.restored ?? 0);
-				const failed = Number(result.failed ?? 0);
-				toast(
-					`Heal scan complete: ${checked} checked, ${restored} restored, ${failed} failed`,
-					restored ? 'good' : 'info'
-				);
-			});
+			trackAction(job, 'Heal scan');
 		} catch (e) {
 			toast(e instanceof Error ? e.message : 'Could not start heal scan', 'bad');
 		} finally {

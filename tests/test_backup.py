@@ -6,6 +6,7 @@ import shutil
 import tarfile
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -273,6 +274,15 @@ def test_only_system_noop_is_dispatch_enabled_and_executable() -> None:
         "poster_rescan",
         "taste_map",
         "taste_rebuild",
+        "poster_deploy",
+        "poster_restore",
+        "poster_reset",
+        "poster_backup_subject",
+        "backup_create",
+        "poster_maintenance",
+        "pipeline_cache_clear",
+        "job_retention_purge",
+        "system_metrics_purge",
     }
     assert set(EXECUTION_HANDLERS) == {
         "system_noop",
@@ -288,6 +298,15 @@ def test_only_system_noop_is_dispatch_enabled_and_executable() -> None:
         "poster_rescan",
         "taste_map",
         "taste_rebuild",
+        "poster_deploy",
+        "poster_restore",
+        "poster_reset",
+        "poster_backup_subject",
+        "backup_create",
+        "poster_maintenance",
+        "pipeline_cache_clear",
+        "job_retention_purge",
+        "system_metrics_purge",
     }
 
     for definition in JOB_DEFINITION_REGISTRY:
@@ -299,7 +318,7 @@ def test_only_system_noop_is_dispatch_enabled_and_executable() -> None:
 
 
 @pytest.mark.asyncio
-async def test_backup_create_route_cannot_reach_backup_service(
+async def test_backup_create_route_submits_without_inline_backup(
     client: AsyncClient, monkeypatch: pytest.MonkeyPatch
 ):
     async def must_not_create() -> None:
@@ -307,10 +326,24 @@ async def test_backup_create_route_cannot_reach_backup_service(
 
     monkeypatch.setattr(backup_service, "create_backup", must_not_create)
 
-    response = await client.post("/api/system/backup")
+    async def fake_submit(_session, **kwargs):
+        assert kwargs["job_type"] == "backup_create"
+        return SimpleNamespace(
+            job_id="backup-route-job",
+            disposition="created",
+            phase="queued",
+            snapshot_link="/api/jobs/backup-route-job/snapshot",
+            detail_link="/api/jobs/backup-route-job",
+        )
 
-    assert response.status_code == 503
-    assert response.json()["code"] == "job_platform_unmigrated"
+    monkeypatch.setattr("marquee.api.routes.backup.submit_job", fake_submit)
+
+    response = await client.post(
+        "/api/system/backup", headers={"Idempotency-Key": "backup_create:route-canonical"}
+    )
+
+    assert response.status_code == 202, response.json()
+    assert response.json()["job_id"]
 
 
 def test_backup_scheduler_has_no_production_startup_caller() -> None:
@@ -478,9 +511,22 @@ async def test_backup_api_endpoints(client, monkeypatch: pytest.MonkeyPatch):
 
     monkeypatch.setattr(backup_service, "list_backups", fake_list)
 
-    create_response = await client.post("/api/system/backup")
-    assert create_response.status_code == 503
-    assert create_response.json()["code"] == "job_platform_unmigrated"
+    async def fake_submit(_session, **kwargs):
+        assert kwargs["job_type"] == "backup_create"
+        return SimpleNamespace(
+            job_id="backup-api-job",
+            disposition="created",
+            phase="queued",
+            snapshot_link="/api/jobs/backup-api-job/snapshot",
+            detail_link="/api/jobs/backup-api-job",
+        )
+
+    monkeypatch.setattr("marquee.api.routes.backup.submit_job", fake_submit)
+
+    create_response = await client.post(
+        "/api/system/backup", headers={"Idempotency-Key": "backup_create:api-endpoint"}
+    )
+    assert create_response.status_code == 202, create_response.json()
 
     list_response = await client.get("/api/system/backups")
     assert list_response.status_code == 200

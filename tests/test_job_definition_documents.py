@@ -140,8 +140,8 @@ def test_registry_validates_dispatch_and_disabled_contracts() -> None:
         [_definition(job_type="library_sync", enabled=True)]
     )
     assert read_only_enabled.for_dispatch("library_sync", entrypoint="control").enabled
-    # Mutating effects can never be dispatch-enabled before chunk 5.
-    with pytest.raises(InvalidJobDefinitionError, match="read-only"):
+    # Chunk 5 mutations require the complete typed/retry/safety contract.
+    with pytest.raises(InvalidJobDefinitionError, match="retry policy"):
         JobDefinitionRegistry(
             [
                 _definition(
@@ -151,7 +151,7 @@ def test_registry_validates_dispatch_and_disabled_contracts() -> None:
                 )
             ]
         )
-    # media_write is never dispatch-enabled in chunk 4.
+    # A supposedly read-only definition cannot claim the media-write class.
     with pytest.raises(InvalidJobDefinitionError, match="media_write"):
         JobDefinitionRegistry(
             [

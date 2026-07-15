@@ -9,167 +9,43 @@ run periodically from the app lifespan.
 
 from __future__ import annotations
 
-import asyncio
 import logging
-from datetime import UTC, datetime, timedelta
-from pathlib import Path
 
-from sqlalchemy import or_, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from marquee.config import settings
-from marquee.core.poster_service import poster_service
-from marquee.database import _get_session_factory
-from marquee.models import Job, Movie
+from marquee.models import Job, JobBatch
 
 logger = logging.getLogger(__name__)
 
 
 async def latest_heal_summary(db: AsyncSession) -> dict | None:
-    """Return the latest successful canonical heal record."""
-    job = await db.scalar(
-        select(Job)
-        .where(
-            Job.type == "poster_heal",
-            Job.phase == "terminal",
-            Job.outcome == "succeeded",
+    """Return the latest terminal canonical heal parent projection."""
+    row = (
+        await db.execute(
+            select(Job, JobBatch)
+            .join(JobBatch, JobBatch.parent_job_id == Job.id)
+            .where(Job.type == "poster_heal", Job.phase == "terminal")
+            .order_by(Job.terminal_at.desc())
+            .limit(1)
         )
-        .order_by(Job.terminal_at.desc())
-        .limit(1)
-    )
-    if job is None:
+    ).first()
+    if row is None:
         return None
-    result = job.result or {}
-    summary = {
-        "last_run": job.terminal_at.isoformat() if job.terminal_at else None,
-        "checked": result.get("checked", 0),
-        "restored": result.get("restored", 0),
-        "failed": result.get("failed", 0),
-    }
-    if "by_type" in result:
-        summary["by_type"] = result["by_type"]
-    return summary
-
-
-async def heal_scan() -> dict:
-    """Stat every deployed poster; restore the missing ones from cache/URL."""
-    factory = _get_session_factory()
-    checked = restored = failed = 0
-    by_type = {
-        "movie": {"checked": 0, "restored": 0, "failed": 0},
-        "series": {"checked": 0, "restored": 0, "failed": 0},
-        "season": {"checked": 0, "restored": 0, "failed": 0},
-    }
-    # Freshly deployed posters get a grace window: the deploy may still be
-    # mid-flight in the API process, and restoring over it would clobber it.
-    grace_cutoff = datetime.now(UTC) - timedelta(minutes=settings.HEAL_RECENT_DEPLOY_GRACE_MINUTES)
-    from marquee.core.poster_subjects import PosterSubject
-    from marquee.models import Season, Series
-
-    async with factory() as db:
-        # 1. Walk Movies
-        movies = (
-            (
-                await db.execute(
-                    select(Movie).where(
-                        Movie.poster_path.is_not(None),
-                        or_(
-                            Movie.poster_deployed_at.is_(None),
-                            Movie.poster_deployed_at < grace_cutoff,
-                        ),
-                    )
-                )
-            )
-            .scalars()
-            .all()
-        )
-        for movie in movies:
-            checked += 1
-            by_type["movie"]["checked"] += 1
-            if movie.poster_path and await asyncio.to_thread(Path(movie.poster_path).is_file):
-                continue
-            logger.info("HEAL | poster missing for movie %s — restoring", movie.title)
-            subject = PosterSubject.from_movie(movie)
-            result = await poster_service.restore(db, subject, source="heal")
-            if result.restored:
-                restored += 1
-                by_type["movie"]["restored"] += 1
-            else:
-                failed += 1
-                by_type["movie"]["failed"] += 1
-
-        # 2. Walk Series
-        series_list = (
-            (
-                await db.execute(
-                    select(Series).where(
-                        Series.poster_path.is_not(None),
-                        or_(
-                            Series.poster_deployed_at.is_(None),
-                            Series.poster_deployed_at < grace_cutoff,
-                        ),
-                    )
-                )
-            )
-            .scalars()
-            .all()
-        )
-        for series in series_list:
-            checked += 1
-            by_type["series"]["checked"] += 1
-            if series.poster_path and await asyncio.to_thread(Path(series.poster_path).is_file):
-                continue
-            logger.info("HEAL | poster missing for series %s — restoring", series.title)
-            subject = PosterSubject.from_series(series)
-            result = await poster_service.restore(db, subject, source="heal")
-            if result.restored:
-                restored += 1
-                by_type["series"]["restored"] += 1
-            else:
-                failed += 1
-                by_type["series"]["failed"] += 1
-
-        # 3. Walk Seasons
-        seasons_info = (
-            (
-                await db.execute(
-                    select(Season, Series)
-                    .join(Series, Series.id == Season.series_id)
-                    .where(
-                        Season.poster_path.is_not(None),
-                        or_(
-                            Season.poster_deployed_at.is_(None),
-                            Season.poster_deployed_at < grace_cutoff,
-                        ),
-                    )
-                )
-            )
-            .all()
-        )
-        for season, series in seasons_info:
-            checked += 1
-            by_type["season"]["checked"] += 1
-            if season.poster_path and await asyncio.to_thread(Path(season.poster_path).is_file):
-                continue
-            logger.info("HEAL | poster missing for season %s S%02d — restoring", series.title, season.season_number)
-            subject = PosterSubject.from_season(season, series)
-            result = await poster_service.restore(db, subject, source="heal")
-            if result.restored:
-                restored += 1
-                by_type["season"]["restored"] += 1
-            else:
-                failed += 1
-                by_type["season"]["failed"] += 1
-
-    logger.info(
-        "HEAL | scan complete | checked=%d restored=%d failed=%d",
-        checked,
-        restored,
-        failed,
-    )
+    job, projection = row
+    request = job.request if isinstance(job.request, dict) else {}
+    selected = int(request.get("selection_count", projection.created_total))
+    unchanged = int(request.get("unchanged_count", 0))
+    unsupported = int(request.get("unsupported_count", 0))
     return {
-        "checked": checked,
-        "restored": restored,
-        "failed": failed,
-        "by_type": by_type,
+        "last_run": job.terminal_at.isoformat() if job.terminal_at else None,
+        "checked": selected + unchanged + unsupported,
+        "restored": projection.succeeded_total,
+        "failed": (
+            projection.failed_total
+            + projection.dead_letter_total
+            + projection.unsafe_total
+        ),
+        "unchanged": unchanged,
+        "unsupported": unsupported,
     }

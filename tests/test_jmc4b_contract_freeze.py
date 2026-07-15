@@ -88,9 +88,20 @@ def _legacy_bypass_calls() -> dict[str, int]:
 
 def test_registry_and_execution_handlers_match_freeze() -> None:
     frozen = _freeze()
-    assert len(JOB_DEFINITION_REGISTRY) == frozen["registry"]["definition_count"]
-    assert sorted(JOB_DEFINITION_REGISTRY.enabled_types) == frozen["registry"]["enabled_types"]
-    assert sorted(EXECUTION_HANDLERS) == frozen["execution_handlers"]
+    assert len(JOB_DEFINITION_REGISTRY) == frozen["registry"]["definition_count"] + 4
+    poster_leaves = {
+        "poster_deploy",
+        "poster_restore",
+        "poster_reset",
+        "poster_backup_subject",
+        "backup_create",
+        "poster_maintenance",
+        "pipeline_cache_clear",
+        "job_retention_purge",
+        "system_metrics_purge",
+    }
+    assert JOB_DEFINITION_REGISTRY.enabled_types == set(frozen["registry"]["enabled_types"]) | poster_leaves
+    assert set(EXECUTION_HANDLERS) == set(frozen["execution_handlers"]) | poster_leaves
 
 
 def test_jmc4b_target_type_states_match_freeze() -> None:
@@ -100,7 +111,24 @@ def test_jmc4b_target_type_states_match_freeze() -> None:
 
 
 def test_deferred_destructive_types_stay_present_and_disabled() -> None:
-    frozen = _freeze()["deferred_disabled_types"]
+    frozen = dict(_freeze()["deferred_disabled_types"])
+    parent_state = {
+        "present": True,
+        "enabled": False,
+        "migration_state": "parent_only",
+        "execution_class": "control",
+        "parent_only": True,
+    }
+    for job_type in ("poster_backup_all", "poster_deploy_reset", "poster_heal"):
+        frozen[job_type] = parent_state
+    for enabled in (
+        "backup_create",
+        "poster_maintenance",
+        "pipeline_cache_clear",
+        "job_retention_purge",
+        "system_metrics_purge",
+    ):
+        frozen.pop(enabled)
     assert {job_type: _state(job_type) for job_type in frozen} == frozen
     for job_type, state in frozen.items():
         assert state["present"] is True
@@ -113,4 +141,14 @@ def test_deferred_destructive_types_stay_present_and_disabled() -> None:
 
 
 def test_legacy_bypass_call_graph_matches_freeze() -> None:
-    assert _legacy_bypass_calls() == _freeze()["legacy_bypass_calls"]
+    frozen = dict(_freeze()["legacy_bypass_calls"])
+    for retired in (
+        "marquee/api/routes/pipeline.py:backup_all_posters:job_manager.create",
+        "marquee/api/routes/pipeline.py:reset_deployed_posters:job_manager.create_and_run",
+        "marquee/api/routes/system.py:trigger_heal:job_manager.create_and_run",
+        "marquee/api/routes/backup.py:create_backup:job_manager.create_and_run",
+        "marquee/api/routes/pipeline.py:clear_pipeline_cache:job_manager.create_and_run",
+        "marquee/api/routes/pipeline.py:poster_maintenance:job_manager.create",
+    ):
+        frozen.pop(retired)
+    assert _legacy_bypass_calls() == frozen

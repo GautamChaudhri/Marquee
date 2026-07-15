@@ -5,12 +5,11 @@ from pathlib import Path
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.config import settings
 from marquee.main import app
-from marquee.models import ArtworkEvent, Season, Series
+from marquee.models import Job, Season, Series
 
 
 @pytest_asyncio.fixture
@@ -168,7 +167,11 @@ async def test_get_series_and_list_seasons_include_downloaded_specials_and_overr
 
 @pytest.mark.asyncio
 async def test_series_and_season_poster_file_and_delete_endpoints(
-    db: AsyncSession, client: AsyncClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    db: AsyncSession,
+    client: AsyncClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    installed_pgqueuer,
 ):
     monkeypatch.setattr(settings, "MEDIA_ROOTS", [str(tmp_path)])
     series, seasons = await _seed_series(
@@ -186,39 +189,36 @@ async def test_series_and_season_poster_file_and_delete_endpoints(
     season_file = await client.get(f"/api/library/seasons/{seasons[0].id}/poster")
     assert season_file.status_code == 200
 
-    delete_show = await client.delete(f"/api/library/series/{series.id}/poster")
-    assert delete_show.status_code == 200
+    delete_show = await client.delete(
+        f"/api/library/series/{series.id}/poster",
+        headers={"Idempotency-Key": "poster_reset:series-reset-1"},
+    )
+    assert delete_show.status_code == 202
     await db.refresh(series)
-    assert series.poster_path is None
-    show_event = (
-        await db.execute(
-            select(ArtworkEvent)
-            .where(ArtworkEvent.series_id == series.id, ArtworkEvent.media_type == "series")
-            .order_by(ArtworkEvent.created_at.desc())
-        )
-    ).scalar_one()
-    assert show_event.action == "deploy_reset"
+    assert series.poster_path is not None
+    show_job = await db.get(Job, delete_show.json()["job_id"])
+    assert show_job.type == "poster_reset"
+    assert show_job.subject_kind == "series"
 
-    delete_season = await client.delete(f"/api/library/seasons/{seasons[0].id}/poster")
-    assert delete_season.status_code == 200
+    delete_season = await client.delete(
+        f"/api/library/seasons/{seasons[0].id}/poster",
+        headers={"Idempotency-Key": "poster_reset:season-reset-1"},
+    )
+    assert delete_season.status_code == 202
     await db.refresh(seasons[0])
-    assert seasons[0].poster_path is None
-    season_event = (
-        await db.execute(
-            select(ArtworkEvent)
-            .where(
-                ArtworkEvent.season_id == seasons[0].id,
-                ArtworkEvent.media_type == "season",
-            )
-            .order_by(ArtworkEvent.created_at.desc())
-        )
-    ).scalar_one()
-    assert season_event.action == "deploy_reset"
+    assert seasons[0].poster_path is not None
+    season_job = await db.get(Job, delete_season.json()["job_id"])
+    assert season_job.type == "poster_reset"
+    assert season_job.subject_kind == "season"
 
 
 @pytest.mark.asyncio
 async def test_series_poster_delete_rejects_poisoned_stored_path(
-    db: AsyncSession, client: AsyncClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    db: AsyncSession,
+    client: AsyncClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    installed_pgqueuer,
 ):
     media_root = tmp_path / "media"
     outside = tmp_path / "outside.jpg"
@@ -236,10 +236,12 @@ async def test_series_poster_delete_rejects_poisoned_stored_path(
     series.poster_path = str(outside)
     await db.commit()
 
-    response = await client.delete(f"/api/library/series/{series.id}/poster")
+    response = await client.delete(
+        f"/api/library/series/{series.id}/poster",
+        headers={"Idempotency-Key": "poster_reset:poisoned-series-reset"},
+    )
 
-    assert response.status_code == 200
-    assert response.json()["ok"] is False
+    assert response.status_code == 202
     assert outside.read_bytes() == b"keep"
     await db.refresh(series)
     assert series.poster_path == str(outside)

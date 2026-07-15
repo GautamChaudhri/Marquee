@@ -105,13 +105,22 @@ export async function apiGet<T>(
 export async function apiSend<
 	T,
 	M extends 'POST' | 'PUT' | 'PATCH' | 'DELETE' = 'POST' | 'PUT' | 'PATCH' | 'DELETE'
->(fetch: Fetch, method: M, path: ApiPathFor<Lowercase<M>>, body?: unknown): Promise<T> {
+>(
+	fetch: Fetch,
+	method: M,
+	path: ApiPathFor<Lowercase<M>>,
+	body?: unknown,
+	headers?: Record<string, string>
+): Promise<T> {
 	const res = await fetchWithTimeout(
 		fetch,
 		`/api${path}`,
 		{
 			method,
-			headers: body !== undefined ? { 'content-type': 'application/json' } : undefined,
+			headers: {
+				...(body !== undefined ? { 'content-type': 'application/json' } : {}),
+				...headers
+			},
 			body: body !== undefined ? JSON.stringify(body) : undefined
 		},
 		path,

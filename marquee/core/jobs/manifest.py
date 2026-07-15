@@ -51,8 +51,25 @@ from marquee.core.jobs.inventory import (
     SCHEDULE_PRODUCED_TYPES,
     WEBHOOK_RESERVED_TYPES,
 )
+from marquee.core.jobs.mutation_documents import (
+    BackupCreateRequestV1,
+    MaintenanceErrorV1,
+    MaintenanceResultV1,
+    MetricsPurgeRequestV1,
+    MutationErrorV1,
+    PipelineCacheClearRequestV1,
+    PosterBackupRequestV1,
+    PosterDeployRequestV1,
+    PosterMaintenanceRequestV1,
+    PosterMutationResultV1,
+    PosterParentRequestV1,
+    PosterResetRequestV1,
+    PosterRestoreRequestV1,
+    RetentionPurgeRequestV1,
+)
 from marquee.core.jobs.policies import ActionPolicy, ParentAggregationPolicy, RetryPolicy
 from marquee.core.jobs.progress import ProgressPolicy
+from marquee.core.jobs.safety_gates import SafetyPolicy
 from marquee.core.jobs.subjects import SUBJECT_SNAPSHOT_ADAPTER, SubjectSnapshot
 
 
@@ -92,7 +109,7 @@ _U = EffectSafety.UNSAFE_MUTATION
 
 _SPECS = (
     _spec("system_noop", FeatureArea.SYSTEM, ExecutionClass.CONTROL, _R, "system_work", progress=ProgressStrategy.NONE),
-    _spec("poster_heal", FeatureArea.AI_POSTERS, ExecutionClass.NETWORK, _U, "movie", "series", "season"),
+    _spec("poster_heal", FeatureArea.AI_POSTERS, ExecutionClass.CONTROL, _R, "aggregate_batch", progress=ProgressStrategy.DETERMINATE, children=("poster_restore",)),
     _spec("letterbox_heal", FeatureArea.LETTERBOX, ExecutionClass.MEDIA_WRITE, _U, "media_file"),
     _spec("letterbox_detect", FeatureArea.LETTERBOX, ExecutionClass.MEDIA_READ, _R, "movie", "media_file"),
     _spec("letterbox_detect_episode", FeatureArea.LETTERBOX, ExecutionClass.MEDIA_READ, _R, "episode", "media_file"),
@@ -109,16 +126,20 @@ _SPECS = (
     _spec("audio_subs_deep_scan", FeatureArea.AUDIO_SUBTITLES, ExecutionClass.CONTROL, _R, "aggregate_batch", progress=ProgressStrategy.DETERMINATE, children=("subtitle_scan",)),
     _spec("radarr_upgrade", FeatureArea.LIBRARY_INTEGRATIONS, ExecutionClass.NETWORK, _R, "movie"),
     _spec("poster_pipeline", FeatureArea.AI_POSTERS, ExecutionClass.GPU, _R, "movie", "series", "season", "episode"),
+    _spec("poster_deploy", FeatureArea.AI_POSTERS, ExecutionClass.MEDIA_WRITE, _U, "movie", "series", "season"),
+    _spec("poster_restore", FeatureArea.AI_POSTERS, ExecutionClass.MEDIA_WRITE, _U, "movie", "series", "season"),
+    _spec("poster_reset", FeatureArea.AI_POSTERS, ExecutionClass.MEDIA_WRITE, _U, "movie", "series", "season"),
+    _spec("poster_backup_subject", FeatureArea.AI_POSTERS, ExecutionClass.MEDIA_WRITE, _U, "movie", "series", "season"),
     _spec("poster_pipeline_batch", FeatureArea.AI_POSTERS, ExecutionClass.CONTROL, _R, "aggregate_batch", progress=ProgressStrategy.DETERMINATE, children=("poster_pipeline",)),
     _spec("poster_pipeline_tv_batch", FeatureArea.AI_POSTERS, ExecutionClass.CONTROL, _R, "aggregate_batch", progress=ProgressStrategy.DETERMINATE, children=("poster_pipeline",)),
     _spec("learned_head_train", FeatureArea.ML_TASTE, ExecutionClass.CPU, _R, "model_profile_training"),
-    _spec("pipeline_cache_clear", FeatureArea.MAINTENANCE, ExecutionClass.MAINTENANCE, _U, "maintenance_scope"),
-    _spec("poster_deploy_reset", FeatureArea.AI_POSTERS, ExecutionClass.NETWORK, _U, "maintenance_scope"),
+    _spec("pipeline_cache_clear", FeatureArea.MAINTENANCE, ExecutionClass.MAINTENANCE, _U, "maintenance_scope", progress=ProgressStrategy.DETERMINATE),
+    _spec("poster_deploy_reset", FeatureArea.AI_POSTERS, ExecutionClass.CONTROL, _R, "aggregate_batch", progress=ProgressStrategy.DETERMINATE, children=("poster_reset",)),
     _spec("poster_rescan", FeatureArea.AI_POSTERS, ExecutionClass.MEDIA_READ, _R, "poster_candidate_set"),
-    _spec("poster_backup_all", FeatureArea.AI_POSTERS, ExecutionClass.MAINTENANCE, _U, "maintenance_scope"),
-    _spec("poster_maintenance", FeatureArea.AI_POSTERS, ExecutionClass.MAINTENANCE, _U, "maintenance_scope"),
-    _spec("job_retention_purge", FeatureArea.MAINTENANCE, ExecutionClass.MAINTENANCE, _U, "maintenance_scope"),
-    _spec("system_metrics_purge", FeatureArea.MAINTENANCE, ExecutionClass.MAINTENANCE, _U, "maintenance_scope"),
+    _spec("poster_backup_all", FeatureArea.AI_POSTERS, ExecutionClass.CONTROL, _R, "aggregate_batch", progress=ProgressStrategy.DETERMINATE, children=("poster_backup_subject",)),
+    _spec("poster_maintenance", FeatureArea.AI_POSTERS, ExecutionClass.MAINTENANCE, _U, "maintenance_scope", progress=ProgressStrategy.DETERMINATE),
+    _spec("job_retention_purge", FeatureArea.MAINTENANCE, ExecutionClass.MAINTENANCE, _U, "maintenance_scope", progress=ProgressStrategy.DETERMINATE),
+    _spec("system_metrics_purge", FeatureArea.MAINTENANCE, ExecutionClass.MAINTENANCE, _U, "maintenance_scope", progress=ProgressStrategy.DETERMINATE),
     _spec("dovi_analyze", FeatureArea.HDR, ExecutionClass.MEDIA_READ, _R, "media_file", "movie", "episode"),
     _spec("dovi_convert", FeatureArea.HDR, ExecutionClass.MEDIA_WRITE, _U, "media_file", "movie", "episode"),
     _spec("subtitle_scan", FeatureArea.AUDIO_SUBTITLES, ExecutionClass.MEDIA_READ, _R, "media_file"),
@@ -160,7 +181,16 @@ ENABLED_JOB_TYPES: frozenset[str] = frozenset(
         "letterbox_detect_tv_scope",
         "dovi_analyze",
         "poster_pipeline",
+        "poster_deploy",
+        "poster_backup_subject",
+        "backup_create",
+        "poster_maintenance",
+        "pipeline_cache_clear",
+        "job_retention_purge",
+        "system_metrics_purge",
         "poster_rescan",
+        "poster_reset",
+        "poster_restore",
         "taste_rebuild",
         "taste_map",
         "learned_head_train",
@@ -184,6 +214,18 @@ _REQUEST_MODELS: dict[str, type[StrictDocument]] = {
     "taste_map": TasteMapRequestV1,
     "learned_head_train": LearnedHeadTrainRequestV1,
     "poster_rescan": PosterRescanRequestV1,
+    "poster_deploy": PosterDeployRequestV1,
+    "poster_restore": PosterRestoreRequestV1,
+    "poster_reset": PosterResetRequestV1,
+    "poster_backup_subject": PosterBackupRequestV1,
+    "poster_deploy_reset": PosterParentRequestV1,
+    "poster_backup_all": PosterParentRequestV1,
+    "poster_heal": PosterParentRequestV1,
+    "backup_create": BackupCreateRequestV1,
+    "poster_maintenance": PosterMaintenanceRequestV1,
+    "pipeline_cache_clear": PipelineCacheClearRequestV1,
+    "job_retention_purge": RetentionPurgeRequestV1,
+    "system_metrics_purge": MetricsPurgeRequestV1,
 }
 
 _RESULT_MODELS: dict[str, type[StrictDocument]] = {
@@ -192,6 +234,27 @@ _RESULT_MODELS: dict[str, type[StrictDocument]] = {
     "taste_rebuild": MlPublicationResultV1,
     "taste_map": MlPublicationResultV1,
     "learned_head_train": MlPublicationResultV1,
+    "poster_deploy": PosterMutationResultV1,
+    "poster_restore": PosterMutationResultV1,
+    "poster_reset": PosterMutationResultV1,
+    "poster_backup_subject": PosterMutationResultV1,
+    "backup_create": MaintenanceResultV1,
+    "poster_maintenance": MaintenanceResultV1,
+    "pipeline_cache_clear": MaintenanceResultV1,
+    "job_retention_purge": MaintenanceResultV1,
+    "system_metrics_purge": MaintenanceResultV1,
+}
+
+_ERROR_MODELS: dict[str, type[StrictDocument]] = {
+    "poster_deploy": MutationErrorV1,
+    "poster_restore": MutationErrorV1,
+    "poster_reset": MutationErrorV1,
+    "poster_backup_subject": MutationErrorV1,
+    "backup_create": MaintenanceErrorV1,
+    "poster_maintenance": MaintenanceErrorV1,
+    "pipeline_cache_clear": MaintenanceErrorV1,
+    "job_retention_purge": MaintenanceErrorV1,
+    "system_metrics_purge": MaintenanceErrorV1,
 }
 
 # Library synchronization has no reliable upstream item/page total, so it narrates honest
@@ -348,6 +411,31 @@ _POSTER_RESCAN_PROGRESS = ProgressPolicy(
     eta_capability=True,
 )
 
+_POSTER_MUTATION_PROGRESS = ProgressPolicy(
+    strategy=ProgressStrategy.INDETERMINATE,
+    overall_unit="targets",
+    denominator_source="single_target",
+    current_unit="steps",
+    aggregation_strategy="current_target",
+    stages=tuple(
+        (stage, f"jobs.poster_mutation.progress.{stage}")
+        for stage in (
+            "resolving",
+            "snapshotting",
+            "backing_up",
+            "staging",
+            "validating",
+            "publishing",
+            "finalizing",
+        )
+    ),
+    tool_adapter=None,
+    persistence_cadence_seconds=2,
+    meaningful_delta_percent=1,
+    max_snapshot_staleness_seconds=10,
+    eta_capability=False,
+)
+
 # Per-type progress policy overrides. Types absent here use the generic `_progress(spec)`.
 _PROGRESS_POLICIES: dict[str, ProgressPolicy] = {
     "library_sync": _LIBRARY_SYNC_PROGRESS,
@@ -359,6 +447,10 @@ _PROGRESS_POLICIES: dict[str, ProgressPolicy] = {
     "dovi_analyze": _DOVI_ANALYZE_PROGRESS,
     "poster_pipeline": _POSTER_PIPELINE_PROGRESS,
     "poster_rescan": _POSTER_RESCAN_PROGRESS,
+    "poster_deploy": _POSTER_MUTATION_PROGRESS,
+    "poster_restore": _POSTER_MUTATION_PROGRESS,
+    "poster_reset": _POSTER_MUTATION_PROGRESS,
+    "poster_backup_subject": _POSTER_MUTATION_PROGRESS,
     "taste_rebuild": _ML_PUBLICATION_PROGRESS,
     "taste_map": _ML_PUBLICATION_PROGRESS,
     "learned_head_train": _ML_PUBLICATION_PROGRESS,
@@ -481,11 +573,20 @@ def _definition(spec: _DefinitionSpec) -> JobDefinition:
         disabled_reason=None if enabled else "execution migration is deferred beyond JMC2B",
         request=current_adapter(DocumentKind.REQUEST, request_model),
         result=current_adapter(DocumentKind.RESULT, _RESULT_MODELS.get(spec.job_type, BuiltInResultV1)),
-        error=current_adapter(DocumentKind.ERROR, SafeJobErrorV1),
+        error=current_adapter(
+            DocumentKind.ERROR, _ERROR_MODELS.get(spec.job_type, SafeJobErrorV1)
+        ),
         execution_class=spec.execution,
         entrypoint=spec.execution.value,
         timeout=TimeoutPolicy(seconds=30 if is_noop else 24 * 60 * 60),
         effect_safety=spec.safety,
+        safety_policy=(
+            SafetyPolicy(media_file=True, media_write=True)
+            if spec.execution == ExecutionClass.MEDIA_WRITE
+            else SafetyPolicy(exclusive_maintenance=True)
+            if spec.execution == ExecutionClass.MAINTENANCE and spec.safety == _U
+            else SafetyPolicy()
+        ),
         configuration_keys=(
             frozenset(
                 {
@@ -503,7 +604,8 @@ def _definition(spec: _DefinitionSpec) -> JobDefinition:
         action_policy=ActionPolicy(
             pause=False,
             logs=spec.execution != ExecutionClass.CONTROL,
-            artifacts=spec.execution in {ExecutionClass.MEDIA_WRITE, ExecutionClass.GPU},
+            artifacts=spec.execution
+            in {ExecutionClass.MEDIA_WRITE, ExecutionClass.GPU, ExecutionClass.MAINTENANCE},
         ),
         parent_policy=ParentAggregationPolicy(fixed_children=True) if parent_only else None,
         trigger_kinds=_triggers(spec.job_type),

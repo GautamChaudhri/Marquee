@@ -44,8 +44,14 @@ export function rescanPosters(fetchFn: Fetch): Promise<JobSubmissionResponse> {
 	return apiSend<JobSubmissionResponse>(fetchFn, 'POST', '/pipeline/rescan-posters', {});
 }
 
-export function backupAllPosters(fetchFn: Fetch): Promise<JobSummary> {
-	return apiSend<JobSummary>(fetchFn, 'POST', '/pipeline/backup-all', {});
+export function backupAllPosters(fetchFn: Fetch): Promise<JobSubmissionResponse> {
+	return apiSend<JobSubmissionResponse>(
+		fetchFn,
+		'POST',
+		'/pipeline/backup-all',
+		{},
+		{ 'Idempotency-Key': `poster_backup_all:${crypto.randomUUID()}` }
+	);
 }
 
 export function runPosterMaintenance(
@@ -71,7 +77,10 @@ export function approveReviewQueueAutoPicks(
 		fetchFn,
 		'POST',
 		'/pipeline/review-queue/approve-auto',
-		body
+		body,
+		body.deploy === false
+			? undefined
+			: { 'Idempotency-Key': `poster_deploy:${crypto.randomUUID()}` }
 	);
 }
 

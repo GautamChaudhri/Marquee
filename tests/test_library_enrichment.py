@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from marquee.config import settings
 from marquee.core.subtitles.config import subtitle_settings
 from marquee.main import app
-from marquee.models import LetterboxState, MediaFile, Movie, SubtitleInventory
+from marquee.models import Job, LetterboxState, MediaFile, Movie, SubtitleInventory
 
 
 @pytest.fixture(autouse=True)
@@ -273,12 +273,12 @@ async def test_detail_has_derived_fields(db: AsyncSession, client: AsyncClient):
 
 @pytest.mark.asyncio
 async def test_delete_movie_poster(
-    db: AsyncSession, client: AsyncClient, tmp_path, monkeypatch: pytest.MonkeyPatch
+    db: AsyncSession,
+    client: AsyncClient,
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    installed_pgqueuer,
 ):
-    from sqlalchemy import select  # noqa: PLC0415
-
-    from marquee.models import ArtworkEvent  # noqa: PLC0415
-
     # 1. Create a dummy movie with a valid folder_path and poster_path
     movie_folder = tmp_path / "Dune (2021)"
     movie_folder.mkdir()
@@ -298,27 +298,21 @@ async def test_delete_movie_poster(
     await db.refresh(movie)
 
     # 2. Call DELETE endpoint
-    resp = await client.delete(f"/api/library/movies/{movie.id}/poster")
-    assert resp.status_code == 200
+    resp = await client.delete(
+        f"/api/library/movies/{movie.id}/poster",
+        headers={"Idempotency-Key": "poster_reset:movie-reset-1"},
+    )
+    assert resp.status_code == 202
     body = resp.json()
-    assert body["ok"] is True
-    assert body["deleted"] is True
-    assert body["error"] is None
+    job = await db.get(Job, body["job_id"])
+    assert job.type == "poster_reset"
+    assert job.subject_kind == "movie"
+    assert job.subject_reference == str(movie.id)
 
-    # 3. Verify file is deleted on disk
-    assert not poster_file.exists()
+    # Submission never performs the mutation inline.
+    assert poster_file.exists()
 
     # 4. Verify DB state is reset
     await db.refresh(movie)
-    assert movie.poster_path is None
-    assert movie.poster_user_approved is False
-
-    # 5. Verify ArtworkEvent is inserted
-    events = (
-        (await db.execute(select(ArtworkEvent).where(ArtworkEvent.movie_id == movie.id)))
-        .scalars()
-        .all()
-    )
-    assert len(events) == 1
-    assert events[0].action == "deploy_reset"
-    assert events[0].source == "maintenance"
+    assert movie.poster_path == str(poster_file)
+    assert movie.poster_user_approved is True

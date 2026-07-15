@@ -2243,12 +2243,7 @@ export interface paths {
 		put?: never;
 		/**
 		 * Reset Deployed Posters
-		 * @description Delete every deployed poster and reset movies to missing.
-		 *
-		 *     Enqueues a ``poster_deploy_reset`` durable job that walks all movies
-		 *     with a deployed poster, deletes the poster file from the media folder
-		 *     (keeping the ``data/cache/posters`` copies as restore fallbacks), and
-		 *     resets all ``poster_*`` columns so the movies reappear in the Run tab.
+		 * @description Seal a canonical reset parent with one isolated child per poster subject.
 		 */
 		post: operations['reset_deployed_posters_api_pipeline_posters_reset_post'];
 		delete?: never;
@@ -4106,19 +4101,6 @@ export interface components {
 			 */
 			type: 'bytes';
 		};
-		/** CacheClearRequest */
-		CacheClearRequest: {
-			/**
-			 * Include Archives
-			 * @default false
-			 */
-			include_archives: boolean;
-			/**
-			 * Include Embeddings
-			 * @default true
-			 */
-			include_embeddings: boolean;
-		};
 		/** CandidateOverlayRequest */
 		CandidateOverlayRequest: {
 			/** Run Id */
@@ -4443,6 +4425,8 @@ export interface components {
 			deploy?: boolean | null;
 			/** Hated */
 			hated?: string[] | null;
+			/** Idempotency Key */
+			idempotency_key?: string | null;
 			/** Order */
 			order?: string[] | null;
 			/** Run Id */
@@ -4801,19 +4785,6 @@ export interface components {
 			 */
 			type: 'link';
 		};
-		/** MaintenanceRequest */
-		MaintenanceRequest: {
-			/**
-			 * Dry Run
-			 * @default false
-			 */
-			dry_run: boolean;
-			/**
-			 * Force
-			 * @default false
-			 */
-			force: boolean;
-		};
 		/**
 		 * MeasurementMode
 		 * @enum {string}
@@ -4900,6 +4871,36 @@ export interface components {
 			orig_filename: string;
 			/** Run Id */
 			run_id: string;
+		};
+		/** PipelineCacheClearRequestV1 */
+		PipelineCacheClearRequestV1: {
+			/**
+			 * Batch Size
+			 * @default 100
+			 */
+			batch_size: number;
+			/** Confirmed Plan Checksum */
+			confirmed_plan_checksum?: string | null;
+			/**
+			 * Dry Run
+			 * @default true
+			 */
+			dry_run: boolean;
+			/**
+			 * Include Archives
+			 * @default false
+			 */
+			include_archives: boolean;
+			/**
+			 * Include Embeddings
+			 * @default true
+			 */
+			include_embeddings: boolean;
+			/**
+			 * Max Items
+			 * @default 10000
+			 */
+			max_items: number;
 		};
 		/** PlanRequest */
 		PlanRequest: {
@@ -5011,6 +5012,26 @@ export interface components {
 			 * @default keep
 			 */
 			unknown_action: string;
+		};
+		/** PosterMaintenanceRequestV1 */
+		PosterMaintenanceRequestV1: {
+			/**
+			 * Batch Size
+			 * @default 100
+			 */
+			batch_size: number;
+			/** Confirmed Plan Checksum */
+			confirmed_plan_checksum?: string | null;
+			/**
+			 * Dry Run
+			 * @default true
+			 */
+			dry_run: boolean;
+			/**
+			 * Max Items
+			 * @default 10000
+			 */
+			max_items: number;
 		};
 		/** PostersSettingsUpdate */
 		PostersSettingsUpdate: {
@@ -8781,7 +8802,9 @@ export interface operations {
 	delete_movie_poster_api_library_movies__movie_id__poster_delete: {
 		parameters: {
 			query?: never;
-			header?: never;
+			header: {
+				'Idempotency-Key': string;
+			};
 			path: {
 				movie_id: number;
 			};
@@ -8790,7 +8813,7 @@ export interface operations {
 		requestBody?: never;
 		responses: {
 			/** @description Successful Response */
-			200: {
+			202: {
 				headers: {
 					[name: string]: unknown;
 				};
@@ -8843,7 +8866,9 @@ export interface operations {
 	delete_season_poster_api_library_seasons__season_id__poster_delete: {
 		parameters: {
 			query?: never;
-			header?: never;
+			header: {
+				'Idempotency-Key': string;
+			};
 			path: {
 				season_id: number;
 			};
@@ -8852,7 +8877,7 @@ export interface operations {
 		requestBody?: never;
 		responses: {
 			/** @description Successful Response */
-			200: {
+			202: {
 				headers: {
 					[name: string]: unknown;
 				};
@@ -8968,7 +8993,9 @@ export interface operations {
 	delete_series_poster_api_library_series__series_id__poster_delete: {
 		parameters: {
 			query?: never;
-			header?: never;
+			header: {
+				'Idempotency-Key': string;
+			};
 			path: {
 				series_id: number;
 			};
@@ -8977,7 +9004,7 @@ export interface operations {
 		requestBody?: never;
 		responses: {
 			/** @description Successful Response */
-			200: {
+			202: {
 				headers: {
 					[name: string]: unknown;
 				};
@@ -9582,7 +9609,9 @@ export interface operations {
 	backup_all_posters_api_pipeline_backup_all_post: {
 		parameters: {
 			query?: never;
-			header?: never;
+			header: {
+				'Idempotency-Key': string;
+			};
 			path?: never;
 			cookie?: never;
 		};
@@ -9594,7 +9623,16 @@ export interface operations {
 					[name: string]: unknown;
 				};
 				content: {
-					'application/json': unknown;
+					'application/json': components['schemas']['JobSubmissionResponse'];
+				};
+			};
+			/** @description Validation Error */
+			422: {
+				headers: {
+					[name: string]: unknown;
+				};
+				content: {
+					'application/json': components['schemas']['HTTPValidationError'];
 				};
 			};
 		};
@@ -9655,23 +9693,25 @@ export interface operations {
 	clear_pipeline_cache_api_pipeline_cache_clear_post: {
 		parameters: {
 			query?: never;
-			header?: never;
+			header: {
+				'Idempotency-Key': string;
+			};
 			path?: never;
 			cookie?: never;
 		};
 		requestBody: {
 			content: {
-				'application/json': components['schemas']['CacheClearRequest'];
+				'application/json': components['schemas']['PipelineCacheClearRequestV1'];
 			};
 		};
 		responses: {
 			/** @description Successful Response */
-			200: {
+			202: {
 				headers: {
 					[name: string]: unknown;
 				};
 				content: {
-					'application/json': unknown;
+					'application/json': components['schemas']['JobSubmissionResponse'];
 				};
 			};
 			/** @description Validation Error */
@@ -9688,13 +9728,15 @@ export interface operations {
 	poster_maintenance_api_pipeline_maintenance_post: {
 		parameters: {
 			query?: never;
-			header?: never;
+			header: {
+				'Idempotency-Key': string;
+			};
 			path?: never;
 			cookie?: never;
 		};
 		requestBody: {
 			content: {
-				'application/json': components['schemas']['MaintenanceRequest'];
+				'application/json': components['schemas']['PosterMaintenanceRequestV1'];
 			};
 		};
 		responses: {
@@ -9704,7 +9746,7 @@ export interface operations {
 					[name: string]: unknown;
 				};
 				content: {
-					'application/json': unknown;
+					'application/json': components['schemas']['JobSubmissionResponse'];
 				};
 			};
 			/** @description Validation Error */
@@ -9783,19 +9825,30 @@ export interface operations {
 	reset_deployed_posters_api_pipeline_posters_reset_post: {
 		parameters: {
 			query?: never;
-			header?: never;
+			header: {
+				'Idempotency-Key': string;
+			};
 			path?: never;
 			cookie?: never;
 		};
 		requestBody?: never;
 		responses: {
 			/** @description Successful Response */
-			200: {
+			202: {
 				headers: {
 					[name: string]: unknown;
 				};
 				content: {
-					'application/json': unknown;
+					'application/json': components['schemas']['JobSubmissionResponse'];
+				};
+			};
+			/** @description Validation Error */
+			422: {
+				headers: {
+					[name: string]: unknown;
+				};
+				content: {
+					'application/json': components['schemas']['HTTPValidationError'];
 				};
 			};
 		};
@@ -9855,7 +9908,9 @@ export interface operations {
 	approve_review_queue_auto_api_pipeline_review_queue_approve_auto_post: {
 		parameters: {
 			query?: never;
-			header?: never;
+			header?: {
+				'Idempotency-Key'?: string | null;
+			};
 			path?: never;
 			cookie?: never;
 		};
@@ -10122,7 +10177,9 @@ export interface operations {
 	approve_tv_review_queue_auto_api_pipeline_tv_review_queue_approve_auto_post: {
 		parameters: {
 			query?: never;
-			header?: never;
+			header?: {
+				'Idempotency-Key'?: string | null;
+			};
 			path?: never;
 			cookie?: never;
 		};
@@ -10195,7 +10252,9 @@ export interface operations {
 	use_show_poster_for_season_api_pipeline_tv_seasons__season_id__use_show_poster_post: {
 		parameters: {
 			query?: never;
-			header?: never;
+			header: {
+				'Idempotency-Key': string;
+			};
 			path: {
 				season_id: number;
 			};
@@ -10204,7 +10263,7 @@ export interface operations {
 		requestBody?: never;
 		responses: {
 			/** @description Successful Response */
-			200: {
+			202: {
 				headers: {
 					[name: string]: unknown;
 				};
@@ -10813,19 +10872,30 @@ export interface operations {
 	create_backup_api_system_backup_post: {
 		parameters: {
 			query?: never;
-			header?: never;
+			header: {
+				'Idempotency-Key': string;
+			};
 			path?: never;
 			cookie?: never;
 		};
 		requestBody?: never;
 		responses: {
 			/** @description Successful Response */
-			200: {
+			202: {
 				headers: {
 					[name: string]: unknown;
 				};
 				content: {
-					'application/json': unknown;
+					'application/json': components['schemas']['JobSubmissionResponse'];
+				};
+			};
+			/** @description Validation Error */
+			422: {
+				headers: {
+					[name: string]: unknown;
+				};
+				content: {
+					'application/json': components['schemas']['HTTPValidationError'];
 				};
 			};
 		};
@@ -10853,19 +10923,30 @@ export interface operations {
 	trigger_heal_api_system_heal_post: {
 		parameters: {
 			query?: never;
-			header?: never;
+			header: {
+				'Idempotency-Key': string;
+			};
 			path?: never;
 			cookie?: never;
 		};
 		requestBody?: never;
 		responses: {
 			/** @description Successful Response */
-			200: {
+			202: {
 				headers: {
 					[name: string]: unknown;
 				};
 				content: {
-					'application/json': unknown;
+					'application/json': components['schemas']['JobSubmissionResponse'];
+				};
+			};
+			/** @description Validation Error */
+			422: {
+				headers: {
+					[name: string]: unknown;
+				};
+				content: {
+					'application/json': components['schemas']['HTTPValidationError'];
 				};
 			};
 		};

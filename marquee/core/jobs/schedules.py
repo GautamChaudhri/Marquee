@@ -9,9 +9,10 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Protocol
+from typing import Literal, Protocol
 
 from pgqueuer import PgQueuer
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.config import settings
@@ -24,6 +25,7 @@ from marquee.core.jobs.submission import (
     submit_job,
 )
 from marquee.database import _get_session_factory
+from marquee.models import Job
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +36,7 @@ PRODUCTION_SCHEDULE_OCCURRENCES_ENABLED = False
 # Production schedule keys that are certified to produce real occurrences. Grows one entry
 # per JMC4B family: `library-sync` activated in B2; `audio-subs-deep-scan` follows in B3.
 ACTIVATED_SCHEDULE_KEYS: frozenset[str] = frozenset(
-    {"library-sync", "audio-subs-deep-scan"}
+    {"library-sync", "audio-subs-deep-scan", "poster-heal"}
 )
 _KEY = re.compile(r"^[a-z][a-z0-9-]{0,62}[a-z0-9]$")
 
@@ -58,6 +60,8 @@ class ScheduleConfiguration:
     audio_subs_deep_scan_enabled: bool
     audio_subs_deep_scan_hour: int
     audio_subs_deep_scan_batch: int
+    poster_heal_enabled: bool = True
+    poster_heal_interval_minutes: int = 30
     production_occurrences_enabled: bool = PRODUCTION_SCHEDULE_OCCURRENCES_ENABLED
 
 
@@ -84,6 +88,7 @@ class ScheduleDefinition:
     request_builder: RequestBuilder
     subject_builder: SubjectBuilder
     batch_producer: BatchProducer | None = None
+    interval_source: Literal["sync", "poster_heal"] = "sync"
 
     def __post_init__(self) -> None:
         if not _KEY.fullmatch(self.key):
@@ -176,6 +181,8 @@ def load_schedule_configuration() -> ScheduleConfiguration:
         audio_subs_deep_scan_enabled=bool(subtitle["AUDIO_SUBS_DEEP_SCAN_ENABLED"]),
         audio_subs_deep_scan_hour=int(subtitle["AUDIO_SUBS_DEEP_SCAN_HOUR"]),
         audio_subs_deep_scan_batch=int(subtitle["AUDIO_SUBS_DEEP_SCAN_BATCH"]),
+        poster_heal_enabled=settings.HEAL_ENABLED,
+        poster_heal_interval_minutes=settings.HEAL_INTERVAL_MINUTES,
     )
 
 
@@ -192,7 +199,11 @@ def normalize_due_occurrence(
     if definition.occurrence_policy == OccurrencePolicy.EXACT_SECOND:
         return current
     if definition.occurrence_policy == OccurrencePolicy.INTERVAL_BUCKET:
-        interval = configuration.sync_interval_minutes
+        interval = (
+            configuration.poster_heal_interval_minutes
+            if definition.interval_source == "poster_heal"
+            else configuration.sync_interval_minutes
+        )
         if interval < 1:
             return None
         epoch_minutes = int(current.timestamp()) // 60
@@ -317,6 +328,56 @@ async def _audio_subs_deep_scan_batch(
     return result.parent
 
 
+async def _poster_heal_batch(
+    session: AsyncSession,
+    _configuration: ScheduleConfiguration,
+    due: datetime,
+) -> SubmissionResult:
+    """Coalesce overlap and seal one restore child per currently missing poster."""
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+        {"key": "schedule:poster-heal:active-parent"},
+    )
+    occurrence_idempotency_key = f"poster_heal:schedule-{_format_utc(due)}"
+    existing = await session.scalar(
+        select(Job).where(Job.idempotency_key == occurrence_idempotency_key)
+    )
+    if existing is not None:
+        return SubmissionResult(
+            job_id=existing.id,
+            disposition="reused",
+            phase=existing.phase,
+            snapshot_link=f"/api/jobs/{existing.id}/snapshot",
+            detail_link=f"/projection-room/jobs/{existing.id}",
+        )
+    active = await session.scalar(
+        select(Job)
+        .where(Job.type == "poster_heal", Job.phase != "terminal")
+        .order_by(Job.created_at)
+        .limit(1)
+        .with_for_update()
+    )
+    if active is not None:
+        return SubmissionResult(
+            job_id=active.id,
+            disposition="reused",
+            phase=active.phase,
+            snapshot_link=f"/api/jobs/{active.id}/snapshot",
+            detail_link=f"/projection-room/jobs/{active.id}",
+        )
+    from marquee.core.jobs.poster_parents import create_poster_parent  # noqa: PLC0415
+
+    result = await create_poster_parent(
+        session,
+        parent_job_type="poster_heal",
+        idempotency_key=occurrence_idempotency_key,
+        trigger=TriggerKind.SCHEDULE,
+        initiator=_SCHEDULER_INITIATOR,
+        priority=30,
+    )
+    return result.parent
+
+
 PRODUCTION_SCHEDULE_CATALOG = ScheduleCatalog(
     (
         ScheduleDefinition(
@@ -334,6 +395,30 @@ PRODUCTION_SCHEDULE_CATALOG = ScheduleCatalog(
             subject_builder=lambda _config, _due: SubjectLocator(
                 kind="maintenance_scope", reference="library-sync"
             ),
+        ),
+        ScheduleDefinition(
+            key="poster-heal",
+            entrypoint="schedule_poster_heal",
+            expression="* * * * *",
+            produced_job_type="poster_heal",
+            trigger=TriggerKind.SCHEDULE,
+            initiator=_SCHEDULER_INITIATOR,
+            enabled_predicate=lambda config: (
+                "poster-heal" in ACTIVATED_SCHEDULE_KEYS
+                and config.poster_heal_enabled
+                and config.poster_heal_interval_minutes > 0
+            ),
+            occurrence_policy=OccurrencePolicy.INTERVAL_BUCKET,
+            interval_source="poster_heal",
+            request_builder=lambda _config, _due: {
+                "operation": "heal",
+                "scope": "missing",
+                "selection_count": 0,
+            },
+            subject_builder=lambda _config, _due: SubjectLocator(
+                kind="aggregate_batch", reference="poster-heal"
+            ),
+            batch_producer=_poster_heal_batch,
         ),
         ScheduleDefinition(
             key="audio-subs-deep-scan",

@@ -7,22 +7,14 @@ and parent constructors so drift fails loudly.
 
 REGISTERED_HANDLER_TYPES = frozenset(
     {
-        "backup_create",
         "dovi_convert",
-        "job_retention_purge",
         "letterbox_apply",
         "letterbox_apply_tv_scope",
         "letterbox_heal",
         "letterbox_remove",
         "letterbox_revert_tv_scope",
         "library_sync",
-        "pipeline_cache_clear",
-        "poster_backup_all",
-        "poster_deploy_reset",
-        "poster_heal",
-        "poster_maintenance",
         "radarr_upgrade",
-        "system_metrics_purge",
         "system_noop",
     }
 )
@@ -54,6 +46,9 @@ PARENT_ONLY_TYPES = frozenset(
         "letterbox_reencode_tv_batch",
         "poster_pipeline_batch",
         "poster_pipeline_tv_batch",
+        "poster_backup_all",
+        "poster_deploy_reset",
+        "poster_heal",
         "subtitle_generate_batch",
         "subtitle_scan_all",
     }
@@ -76,11 +71,29 @@ CANONICAL_READ_ONLY_TYPES = frozenset(
     }
 )
 
+CANONICAL_MUTATION_TYPES = frozenset(
+    {"poster_deploy", "poster_restore", "poster_reset", "poster_backup_subject"}
+)
+
+# Canonical exclusive-maintenance definitions migrated in JMC5A. They remain built-in
+# inventory entries after their legacy ``@register`` handlers are retired.
+CANONICAL_MAINTENANCE_TYPES = frozenset(
+    {
+        "backup_create",
+        "job_retention_purge",
+        "pipeline_cache_clear",
+        "poster_maintenance",
+        "system_metrics_purge",
+    }
+)
+
 BUILTIN_JOB_TYPES = (
     REGISTERED_HANDLER_TYPES
     | MEDIA_OPERATION_TYPES
     | PARENT_ONLY_TYPES
     | CANONICAL_READ_ONLY_TYPES
+    | CANONICAL_MUTATION_TYPES
+    | CANONICAL_MAINTENANCE_TYPES
 )
 
 ROUTE_CONSTRUCTED_TYPES = frozenset(
@@ -104,6 +117,7 @@ ROUTE_CONSTRUCTED_TYPES = frozenset(
         "library_sync",
         "pipeline_cache_clear",
         "poster_backup_all",
+        "poster_deploy",
         "poster_deploy_reset",
         "poster_heal",
         "poster_maintenance",
@@ -111,6 +125,7 @@ ROUTE_CONSTRUCTED_TYPES = frozenset(
         "poster_pipeline_batch",
         "poster_pipeline_tv_batch",
         "poster_rescan",
+        "poster_reset",
         "radarr_upgrade",
         "subtitle_generate_batch",
         "subtitle_policy_audit",

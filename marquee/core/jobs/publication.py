@@ -117,3 +117,38 @@ class PublicationCoordinator:
         if not _applied(await fence.publish_atomic(replace, evidence)):
             raise PublicationError("stale ownership rejected atomic publication")
         return output
+
+    async def delete(
+        self,
+        *,
+        destination: ClassifiedPath,
+        expected_destination: FileSignature,
+        fence: PublicationFence,
+    ) -> None:
+        """Fence and fsync one confined deletion with the same publication authority."""
+        current = _optional_signature(self.boundary, destination)
+        if current != expected_destination:
+            raise PublicationError("destination identity changed before deletion")
+        intent = {
+            "operation": "delete",
+            "destination_key": destination.key.value,
+            "expected_destination": asdict(expected_destination),
+        }
+        if not _applied(await fence.record_publish_intent(intent)):
+            raise PublicationError("stale ownership rejected deletion intent")
+
+        def remove() -> None:
+            destination_now = _optional_signature(self.boundary, destination)
+            if destination_now != expected_destination:
+                raise PublicationError("destination changed at deletion boundary")
+            if not self.boundary.delete_file(destination, missing_ok=False):
+                raise PublicationError("destination disappeared at deletion boundary")
+            self.boundary.fsync_parent(destination)
+
+        evidence = {
+            "operation": "delete",
+            "destination_key": destination.key.value,
+            "deleted": True,
+        }
+        if not _applied(await fence.publish_atomic(remove, evidence)):
+            raise PublicationError("stale ownership rejected atomic deletion")

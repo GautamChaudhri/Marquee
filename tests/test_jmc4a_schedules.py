@@ -13,6 +13,7 @@ from pgqueuer import Queries
 from sqlalchemy import func, select
 
 import marquee.core.jobs.submission as submission_module
+from marquee.config import settings
 from marquee.core.jobs.contracts import TriggerKind
 from marquee.core.jobs.definitions import JobDefinitionRegistry
 from marquee.core.jobs.manifest import JOB_DEFINITION_REGISTRY
@@ -30,7 +31,7 @@ from marquee.core.jobs.schedules import (
     submit_schedule_occurrence,
 )
 from marquee.database import _get_engine, _get_session_factory
-from marquee.models import Job
+from marquee.models import Job, Movie
 
 
 @pytest_asyncio.fixture(autouse=True)
@@ -47,7 +48,13 @@ async def installed_pgqueuer(db) -> Queries:
 
 
 def _configuration(
-    *, enabled: bool = True, production: bool = True, interval: int = 15, hour: int = 3
+    *,
+    enabled: bool = True,
+    production: bool = True,
+    interval: int = 15,
+    hour: int = 3,
+    heal_enabled: bool = True,
+    heal_interval: int = 30,
 ) -> ScheduleConfiguration:
     return ScheduleConfiguration(
         revision=1,
@@ -55,6 +62,8 @@ def _configuration(
         audio_subs_deep_scan_enabled=enabled,
         audio_subs_deep_scan_hour=hour,
         audio_subs_deep_scan_batch=200,
+        poster_heal_enabled=heal_enabled,
+        poster_heal_interval_minutes=heal_interval,
         production_occurrences_enabled=production,
     )
 
@@ -83,6 +92,7 @@ async def test_production_catalog_is_registered_but_occurrences_are_code_disable
     definitions = {definition.key: definition for definition in PRODUCTION_SCHEDULE_CATALOG}
     assert list(definitions) == [
         "library-sync",
+        "poster-heal",
         "audio-subs-deep-scan",
     ]
     # library-sync is activated per-schedule in JMC4B B2, independent of the global test flag.
@@ -110,6 +120,7 @@ async def test_production_catalog_is_registered_but_occurrences_are_code_disable
         )
     assert {(key.entrypoint, key.expression) for key in app.sm.registry} == {
         ("schedule_library_sync", "* * * * *"),
+        ("schedule_poster_heal", "* * * * *"),
         ("schedule_audio_subs_deep_scan", "0 * * * *"),
     }
 
@@ -165,6 +176,19 @@ def test_interval_misfires_coalesce_to_only_the_current_utc_bucket() -> None:
     assert first == duplicate == datetime(2026, 7, 13, 12, 0, tzinfo=UTC)
     assert following == datetime(2026, 7, 13, 12, 15, tzinfo=UTC)
     assert occurrence_key(definition, first) == "schedule:library-sync:20260713T120000Z"
+
+
+def test_poster_heal_uses_its_own_interval_bucket_and_enablement() -> None:
+    definition = next(
+        item for item in PRODUCTION_SCHEDULE_CATALOG if item.key == "poster-heal"
+    )
+    config = _configuration(interval=5, heal_interval=30)
+    due = normalize_due_occurrence(
+        definition, _schedule(datetime(2026, 7, 13, 12, 29, 59, tzinfo=UTC)), config
+    )
+    assert due == datetime(2026, 7, 13, 12, 0, tzinfo=UTC)
+    assert not definition.enabled_predicate(_configuration(heal_enabled=False))
+    assert not definition.enabled_predicate(_configuration(heal_interval=0))
 
 
 def test_hourly_occurrence_is_utc_and_skips_the_wrong_hour() -> None:
@@ -283,6 +307,90 @@ async def test_fixed_schedule_disable_reenable_does_not_create_extra_jobs(
         "disabled",
         "reused",
     ]
+
+
+@pytest.mark.asyncio
+async def test_poster_heal_schedule_coalesces_overlap_and_reuses_after_restart(
+    db, tmp_path, monkeypatch
+) -> None:
+    definition = next(
+        item for item in PRODUCTION_SCHEDULE_CATALOG if item.key == "poster-heal"
+    )
+    media_root = tmp_path / "media"
+    movie_folder = media_root / "Movie"
+    movie_folder.mkdir(parents=True)
+    monkeypatch.setattr(settings, "MEDIA_ROOTS", [str(media_root)])
+    movie = Movie(
+        title="Missing",
+        year=2026,
+        radarr_id=7801,
+        folder_path=str(movie_folder),
+        poster_path=str(movie_folder / "poster.jpg"),
+    )
+    db.add(movie)
+    await db.commit()
+    factory = _get_session_factory()
+    diagnostics = ScheduleDiagnostics()
+    first, overlap = await asyncio.gather(
+        submit_schedule_occurrence(
+            definition,
+            _schedule(datetime(2026, 7, 13, 12, 1, tzinfo=UTC)),
+            configuration_loader=lambda: _configuration(heal_interval=30),
+            diagnostics=diagnostics,
+            session_factory=factory,
+        ),
+        submit_schedule_occurrence(
+            definition,
+            _schedule(datetime(2026, 7, 13, 12, 31, tzinfo=UTC)),
+            configuration_loader=lambda: _configuration(heal_interval=30),
+            diagnostics=diagnostics,
+            session_factory=factory,
+        ),
+    )
+    restarted = await submit_schedule_occurrence(
+        definition,
+        _schedule(datetime(2026, 7, 13, 12, 1, tzinfo=UTC)),
+        configuration_loader=lambda: _configuration(heal_interval=30),
+        diagnostics=diagnostics,
+        session_factory=factory,
+    )
+    assert first is not None and overlap is not None
+    assert {first.disposition, overlap.disposition} == {"created", "reused"}
+    assert overlap.job_id == first.job_id
+    assert overlap.detail_link == f"/projection-room/jobs/{first.job_id}"
+    assert restarted is not None and restarted.job_id == first.job_id
+    assert await db.scalar(select(func.count()).select_from(Job).where(Job.type == "poster_heal")) == 1
+
+
+@pytest.mark.asyncio
+async def test_poster_heal_schedule_disable_reenable_creates_one_empty_parent(db) -> None:
+    definition = next(
+        item for item in PRODUCTION_SCHEDULE_CATALOG if item.key == "poster-heal"
+    )
+    due = _schedule(datetime(2026, 7, 13, 13, 4, tzinfo=UTC))
+    factory = _get_session_factory()
+    disabled = await submit_schedule_occurrence(
+        definition,
+        due,
+        configuration_loader=lambda: _configuration(heal_enabled=False),
+        session_factory=factory,
+    )
+    created = await submit_schedule_occurrence(
+        definition,
+        due,
+        configuration_loader=lambda: _configuration(heal_enabled=True),
+        session_factory=factory,
+    )
+    reused = await submit_schedule_occurrence(
+        definition,
+        due,
+        configuration_loader=lambda: _configuration(heal_enabled=True),
+        session_factory=factory,
+    )
+    assert disabled is None
+    assert created is not None and created.disposition == "created"
+    assert reused is not None and reused.disposition == "reused"
+    assert await db.scalar(select(func.count()).select_from(Job).where(Job.type == "poster_heal")) == 1
 
 
 @pytest.mark.asyncio
