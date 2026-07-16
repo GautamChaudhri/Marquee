@@ -1,0 +1,251 @@
+<script lang="ts">
+	import type { ConnectionState, RecordFreshness } from '../store.svelte';
+	import { activityCallout, metricCards } from '../presentation';
+	import type { JobPresentation, JobRow, JobSnapshotResponse } from '../types';
+	import ActivityCallout from './ActivityCallout.svelte';
+	import ConcurrentSubjects from './ConcurrentSubjects.svelte';
+	import EvidenceMetrics from './EvidenceMetrics.svelte';
+	import ProgressMeasure from './ProgressMeasure.svelte';
+	import SubjectHeader from './SubjectHeader.svelte';
+
+	type Variant = 'compact' | 'expanded';
+	type CancelHandler = (jobId: string, expectedFenceToken: number) => void | Promise<void>;
+
+	let {
+		row,
+		snapshot = null,
+		presentation = null,
+		children = [],
+		childrenHasMore = false,
+		variant = 'compact',
+		connection = 'live',
+		recordFreshness = 'live',
+		artworkUrl = null,
+		activityHref = '/projection-room',
+		onCancel
+	}: {
+		row: JobRow;
+		snapshot?: JobSnapshotResponse | null;
+		presentation?: JobPresentation | null;
+		children?: JobRow[];
+		childrenHasMore?: boolean;
+		variant?: Variant;
+		connection?: ConnectionState;
+		recordFreshness?: RecordFreshness;
+		artworkUrl?: string | null;
+		activityHref?: string;
+		onCancel?: CancelHandler;
+	} = $props();
+
+	let sendingCancel = $state(false);
+	const subject = $derived(presentation?.subject ?? row.subject);
+	const actionHeadline = $derived(presentation?.action.headline ?? row.action_headline);
+	const status = $derived(snapshot?.status ?? presentation?.status ?? row.status);
+	const attention = $derived(snapshot?.attention ?? presentation?.attention ?? row.attention);
+	const progress = $derived(snapshot?.progress ?? presentation?.progress ?? row.progress ?? null);
+	const actions = $derived(
+		snapshot?.allowed_actions ?? presentation?.allowed_actions ?? row.allowed_actions
+	);
+	const fenceToken = $derived(snapshot?.fence_token ?? null);
+	const callout = $derived(
+		activityCallout(status, attention, progress, connection, recordFreshness)
+	);
+	const metrics = $derived(metricCards(presentation));
+	const detailHref = $derived(presentation?.links.detail ?? row.links.detail);
+	const logsHref = $derived(presentation?.links.attempts ?? null);
+	const artifactsHref = $derived(presentation?.links.artifacts ?? null);
+	const canCancel = $derived(actions.includes('cancel') && fenceToken != null && onCancel != null);
+	const announcement = $derived(
+		[subject.display_name, actionHeadline, status.label, progress?.stage_label]
+			.filter((part): part is string => Boolean(part))
+			.join('. ')
+	);
+
+	async function cancel(): Promise<void> {
+		if (!canCancel || fenceToken == null || !onCancel || sendingCancel) return;
+		sendingCancel = true;
+		try {
+			await onCancel(row.job_id, fenceToken);
+		} finally {
+			sendingCancel = false;
+		}
+	}
+</script>
+
+<article class="card" class:expanded={variant === 'expanded'} data-tone={status.tone}>
+	<div class="announcement" aria-live="polite" aria-atomic="true">{announcement}</div>
+	<div class="topline">
+		<SubjectHeader {subject} {artworkUrl} compact={variant === 'compact'} />
+		<span class="status"><i aria-hidden="true"></i>{status.label}</span>
+	</div>
+
+	<div class="action">
+		<strong>{actionHeadline}</strong>
+		{#if progress?.headline}<span>{progress.headline}</span>{/if}
+	</div>
+
+	{#if progress?.overall}
+		<ProgressMeasure measurement={progress.overall} fallbackLabel="Overall progress" />
+	{/if}
+	{#if progress?.current}
+		<div class="current-work">
+			{#if progress.current_subject}
+				<span class="current-subject">Now: {progress.current_subject.display_name}</span>
+			{/if}
+			<ProgressMeasure measurement={progress.current} fallbackLabel="Current work" />
+		</div>
+	{/if}
+
+	{#if callout}<ActivityCallout {callout} />{/if}
+
+	{#if variant === 'expanded'}
+		<EvidenceMetrics {metrics} />
+		<ConcurrentSubjects {children} hasMore={childrenHasMore} />
+	{/if}
+
+	<nav class="actions" aria-label={`Actions for ${subject.display_name}`}>
+		<a href={activityHref}>Activity</a>
+		<a href={detailHref}>Details</a>
+		{#if actions.includes('open_logs') && logsHref}<a href={logsHref}>Logs</a>{/if}
+		{#if actions.includes('open_artifacts') && artifactsHref}
+			<a href={artifactsHref}>Artifacts</a>
+		{/if}
+		{#if canCancel}
+			<button type="button" onclick={cancel} disabled={sendingCancel}>
+				{sendingCancel ? 'Sending…' : 'Cancel'}
+			</button>
+		{/if}
+	</nav>
+</article>
+
+<style>
+	.card {
+		display: grid;
+		min-width: 0;
+		gap: 12px;
+		padding: 13px;
+		border: 1px solid var(--line);
+		border-left: 3px solid var(--tone-color);
+		border-radius: var(--radius);
+		background: var(--panel);
+		box-shadow: 0 8px 28px color-mix(in srgb, var(--shadow) 18%, transparent);
+		--tone-color: var(--muted);
+	}
+	.card[data-tone='active'] {
+		--tone-color: var(--info);
+	}
+	.card[data-tone='positive'] {
+		--tone-color: var(--good);
+	}
+	.card[data-tone='warning'] {
+		--tone-color: var(--warn);
+	}
+	.card[data-tone='negative'] {
+		--tone-color: var(--bad);
+	}
+	.expanded {
+		gap: 16px;
+		padding: 17px;
+	}
+	.announcement {
+		position: absolute;
+		width: 1px;
+		height: 1px;
+		padding: 0;
+		overflow: hidden;
+		clip: rect(0, 0, 0, 0);
+		white-space: nowrap;
+		border: 0;
+	}
+	.topline {
+		display: flex;
+		align-items: flex-start;
+		justify-content: space-between;
+		gap: 12px;
+	}
+	.status {
+		display: inline-flex;
+		align-items: center;
+		gap: 7px;
+		padding: 4px 7px;
+		flex: none;
+		border: 1px solid var(--line2);
+		border-radius: 99px;
+		color: var(--muted);
+		font-size: 11px;
+	}
+	.status i {
+		width: 7px;
+		height: 7px;
+		border-radius: 50%;
+		background: var(--tone-color);
+	}
+	.action {
+		display: grid;
+		gap: 3px;
+	}
+	.action strong {
+		font-size: 13px;
+	}
+	.action span,
+	.current-subject {
+		color: var(--muted);
+		font-size: 12px;
+	}
+	.current-work {
+		display: grid;
+		gap: 6px;
+		padding-top: 10px;
+		border-top: 1px solid var(--line);
+	}
+	.actions {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 6px;
+		padding-top: 2px;
+	}
+	.actions a,
+	.actions button {
+		min-height: 32px;
+		padding: 6px 10px;
+		border: 1px solid var(--line2);
+		border-radius: var(--radius-sm);
+		background: var(--panel2);
+		color: var(--text);
+		font-size: 12px;
+	}
+	.actions a:hover,
+	.actions button:hover:not(:disabled) {
+		border-color: var(--gold);
+	}
+	.actions button {
+		margin-left: auto;
+		color: var(--bad);
+	}
+	.actions button:disabled {
+		cursor: wait;
+		opacity: 0.65;
+	}
+	@media (max-width: 480px) {
+		.card,
+		.expanded {
+			gap: 11px;
+			padding: 11px;
+		}
+		.topline {
+			display: grid;
+		}
+		.status {
+			justify-self: start;
+		}
+		.actions a,
+		.actions button {
+			flex: 1 1 auto;
+			text-align: center;
+		}
+		.actions button {
+			margin-left: 0;
+		}
+	}
+</style>

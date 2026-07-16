@@ -6,8 +6,10 @@
 	import TopBar from '$lib/components/TopBar.svelte';
 	import Toast from '$lib/components/Toast.svelte';
 	import CmdPalette from '$lib/components/CmdPalette.svelte';
+	import { createJobProgressStore, setJobProgressStore } from '$lib/activity/context';
 
 	let { children } = $props();
+	setJobProgressStore(createJobProgressStore());
 	let paletteOpen = $state(false);
 
 	function onKeydown(e: KeyboardEvent) {

@@ -1,0 +1,470 @@
+{
+  "job_paths": {
+    "/api/activity": [
+      "GET"
+    ],
+    "/api/jobs": [
+      "GET"
+    ],
+    "/api/jobs/actions": [
+      "POST"
+    ],
+    "/api/jobs/events/stream": [
+      "GET"
+    ],
+    "/api/jobs/{job_id}/artifacts": [
+      "GET"
+    ],
+    "/api/jobs/{job_id}/artifacts/{artifact_id}/download": [
+      "GET"
+    ],
+    "/api/jobs/{job_id}/attempts": [
+      "GET"
+    ],
+    "/api/jobs/{job_id}/attempts/{attempt_id}/logs": [
+      "GET"
+    ],
+    "/api/jobs/{job_id}/attempts/{attempt_id}/logs/download": [
+      "GET"
+    ],
+    "/api/jobs/{job_id}/attempts/{attempt_id}/logs/stream": [
+      "GET"
+    ],
+    "/api/jobs/{job_id}/batch": [
+      "GET"
+    ],
+    "/api/jobs/{job_id}/cancel": [
+      "POST"
+    ],
+    "/api/jobs/{job_id}/children": [
+      "GET"
+    ],
+    "/api/jobs/{job_id}/events": [
+      "GET"
+    ],
+    "/api/jobs/{job_id}/mutation-confirmation": [
+      "POST"
+    ],
+    "/api/jobs/{job_id}/pause": [
+      "POST"
+    ],
+    "/api/jobs/{job_id}/presentation": [
+      "GET"
+    ],
+    "/api/jobs/{job_id}/priority": [
+      "PATCH"
+    ],
+    "/api/jobs/{job_id}/raw/{kind}": [
+      "GET"
+    ],
+    "/api/jobs/{job_id}/resume": [
+      "POST"
+    ],
+    "/api/jobs/{job_id}/retry": [
+      "POST"
+    ],
+    "/api/jobs/{job_id}/snapshot": [
+      "GET"
+    ]
+  },
+  "openapi": "3.1.0",
+  "path_count": 201,
+  "schemas": {
+    "ArtifactListResponse": {
+      "props": [
+        "items",
+        "limit",
+        "next_cursor"
+      ],
+      "required": [
+        "items",
+        "limit",
+        "next_cursor"
+      ]
+    },
+    "AttemptListResponse": {
+      "props": [
+        "items",
+        "limit",
+        "next_cursor"
+      ],
+      "required": [
+        "items",
+        "limit",
+        "next_cursor"
+      ]
+    },
+    "BulkActionRequest": {
+      "props": [
+        "items"
+      ],
+      "required": [
+        "items"
+      ]
+    },
+    "BulkActionResponse": {
+      "props": [
+        "items"
+      ],
+      "required": [
+        "items"
+      ]
+    },
+    "ChildListResponse": {
+      "props": [
+        "items",
+        "limit",
+        "next_cursor"
+      ],
+      "required": [
+        "items",
+        "limit",
+        "next_cursor"
+      ]
+    },
+    "CommandRequest": {
+      "props": [
+        "expected_fence_token"
+      ],
+      "required": [
+        "expected_fence_token"
+      ]
+    },
+    "CommandResponse": {
+      "props": [
+        "action",
+        "execution_class",
+        "original_job_id",
+        "replacement_job_id",
+        "snapshot"
+      ],
+      "required": [
+        "action",
+        "execution_class",
+        "snapshot"
+      ]
+    },
+    "CompactProgress": {
+      "props": [
+        "current",
+        "current_subject",
+        "freshness",
+        "headline",
+        "overall",
+        "sequence",
+        "stage_key",
+        "stage_label",
+        "updated_at",
+        "wait"
+      ],
+      "required": []
+    },
+    "EventItem": {
+      "props": [
+        "canonical_version",
+        "created_at",
+        "detail",
+        "event_key",
+        "id",
+        "message",
+        "stage",
+        "state"
+      ],
+      "required": [
+        "canonical_version",
+        "created_at",
+        "detail",
+        "event_key",
+        "id",
+        "message",
+        "stage",
+        "state"
+      ]
+    },
+    "EventListResponse": {
+      "props": [
+        "items",
+        "limit",
+        "next_cursor"
+      ],
+      "required": [
+        "items",
+        "limit",
+        "next_cursor"
+      ]
+    },
+    "EventReconciliation": {
+      "props": [
+        "presentation_url",
+        "snapshot_url"
+      ],
+      "required": [
+        "presentation_url",
+        "snapshot_url"
+      ]
+    },
+    "JobEventDelta": {
+      "props": [
+        "detail",
+        "message",
+        "stage",
+        "state"
+      ],
+      "required": [
+        "state"
+      ]
+    },
+    "JobEventFrame": {
+      "props": [
+        "attempt_id",
+        "canonical_version",
+        "cursor",
+        "delta",
+        "event_key",
+        "job_id",
+        "occurred_at",
+        "reconciliation",
+        "version"
+      ],
+      "required": [
+        "canonical_version",
+        "cursor",
+        "delta",
+        "event_key",
+        "job_id",
+        "reconciliation"
+      ]
+    },
+    "JobListResponse": {
+      "props": [
+        "items",
+        "limit",
+        "next_cursor",
+        "view"
+      ],
+      "required": [
+        "items",
+        "limit",
+        "next_cursor",
+        "view"
+      ]
+    },
+    "JobPresentation": {
+      "props": [
+        "action",
+        "allowed_actions",
+        "attention",
+        "evidence",
+        "failures",
+        "feature_area",
+        "impact",
+        "job_id",
+        "job_type",
+        "label",
+        "label_key",
+        "links",
+        "presentation_family",
+        "presenter_key",
+        "presenter_version",
+        "progress",
+        "sections",
+        "status",
+        "subject",
+        "suggested_actions",
+        "trigger",
+        "version",
+        "warnings"
+      ],
+      "required": [
+        "action",
+        "attention",
+        "feature_area",
+        "job_id",
+        "job_type",
+        "label",
+        "label_key",
+        "links",
+        "presentation_family",
+        "presenter_key",
+        "presenter_version",
+        "status",
+        "subject",
+        "trigger"
+      ]
+    },
+    "JobRow": {
+      "props": [
+        "action_headline",
+        "allowed_actions",
+        "attention",
+        "created_at",
+        "duration_seconds",
+        "eligible_at",
+        "evidence",
+        "feature_area",
+        "impact",
+        "is_parent",
+        "job_id",
+        "job_type",
+        "label",
+        "label_key",
+        "links",
+        "parent_id",
+        "presentation_family",
+        "priority",
+        "progress",
+        "queue_rank",
+        "retry_of_job_id",
+        "root_id",
+        "started_at",
+        "status",
+        "subject",
+        "terminal_at",
+        "trigger",
+        "version"
+      ],
+      "required": [
+        "action_headline",
+        "attention",
+        "feature_area",
+        "job_id",
+        "job_type",
+        "label",
+        "label_key",
+        "links",
+        "presentation_family",
+        "priority",
+        "status",
+        "subject",
+        "trigger"
+      ]
+    },
+    "JobSnapshotResponse": {
+      "props": [
+        "allowed_actions",
+        "attention",
+        "configuration_version",
+        "created_at",
+        "desired_state",
+        "eligible_at",
+        "fence_token",
+        "job_id",
+        "label",
+        "last_event_id",
+        "links",
+        "outcome",
+        "parent_id",
+        "phase",
+        "priority",
+        "progress",
+        "progress_sequence",
+        "retry_of_job_id",
+        "root_id",
+        "started_at",
+        "status",
+        "terminal_at",
+        "type",
+        "updated_at",
+        "version"
+      ],
+      "required": [
+        "allowed_actions",
+        "attention",
+        "configuration_version",
+        "created_at",
+        "desired_state",
+        "eligible_at",
+        "fence_token",
+        "job_id",
+        "label",
+        "last_event_id",
+        "links",
+        "outcome",
+        "parent_id",
+        "phase",
+        "priority",
+        "progress",
+        "progress_sequence",
+        "retry_of_job_id",
+        "root_id",
+        "started_at",
+        "status",
+        "terminal_at",
+        "type",
+        "updated_at"
+      ]
+    },
+    "JobSubmissionResponse": {
+      "props": [
+        "detail_url",
+        "disposition",
+        "job_id",
+        "phase",
+        "snapshot_url"
+      ],
+      "required": [
+        "detail_url",
+        "disposition",
+        "job_id",
+        "phase",
+        "snapshot_url"
+      ]
+    },
+    "MeasurementMode": {
+      "enum": [
+        "determinate",
+        "indeterminate",
+        "none"
+      ]
+    },
+    "PresentationSubject": {
+      "props": [
+        "artwork_key",
+        "context",
+        "display_id",
+        "display_name",
+        "kind",
+        "missing_live_subject",
+        "snapshot_at"
+      ],
+      "required": [
+        "display_id",
+        "display_name",
+        "kind"
+      ]
+    },
+    "ProgressFreshness": {
+      "enum": [
+        "live",
+        "stale",
+        "terminal"
+      ]
+    },
+    "ProgressMeasurement": {
+      "props": [
+        "completed",
+        "label",
+        "mode",
+        "percent",
+        "scope_id",
+        "total",
+        "unit"
+      ],
+      "required": [
+        "mode",
+        "scope_id"
+      ]
+    },
+    "ProgressWait": {
+      "props": [
+        "eligible_at",
+        "kind",
+        "label_key"
+      ],
+      "required": [
+        "kind",
+        "label_key"
+      ]
+    }
+  }
+}
