@@ -21,7 +21,6 @@ from marquee.models import (
     Episode,
     EpisodeMediaFile,
     LetterboxEvent,
-    LetterboxReencodeArtifact,
     LetterboxState,
     MediaFile,
     Movie,
@@ -503,7 +502,7 @@ async def test_sync_movies_prefilter_does_not_overwrite_detector_truth(db: Async
 
 
 @pytest.mark.asyncio
-async def test_movie_media_replacement_keeps_reencode_provenance_on_signature_match(
+async def test_movie_media_replacement_resets_letterbox_state(
     db: AsyncSession, monkeypatch
 ):
     movie = Movie(
@@ -537,24 +536,6 @@ async def test_movie_media_replacement_keeps_reencode_provenance_on_signature_ma
             original_aspect_label="2.40:1",
         )
     )
-    artifact = LetterboxReencodeArtifact(
-        media_type="movie",
-        movie_id=movie.id,
-        media_file_id=old_media_file.id,
-        original_path="/movies/Dune (2021)/old.mkv",
-        candidate_path="/movies/Dune (2021)/new.mkv",
-        original_size_bytes=10,
-        candidate_size_bytes=9,
-        original_signature="old",
-        candidate_signature="sig-match",
-        encoder="hevc_nvenc",
-        encoder_family="nvidia",
-        codec="hevc",
-        crop_top=140,
-        crop_bottom=140,
-        status="replaced",
-    )
-    db.add(artifact)
     await db.commit()
 
     monkeypatch.setattr("marquee.core.sync_service.compute_signature", lambda _path: "sig-match")
@@ -588,17 +569,10 @@ async def test_movie_media_replacement_keeps_reencode_provenance_on_signature_ma
             )
         )
     ).scalars().all()
-    current_media = (
-        await db.execute(
-            select(MediaFile).where(MediaFile.source_key == "radarr:movie-file:2002")
-        )
-    ).scalar_one()
-
-    assert state.status == "reencoded"
-    assert state.resolved_by == "reencode"
+    assert state.status == "prefilter_candidate"
+    assert state.resolved_by is None
     assert old_media_file.is_active is False
-    assert artifact.media_file_id == current_media.id
-    assert reset_events == []
+    assert len(reset_events) == 1
 
 
 @pytest.mark.asyncio
@@ -644,25 +618,6 @@ async def test_movie_media_replacement_resets_letterbox_state_on_signature_misma
             original_crop_top=140,
             original_crop_bottom=140,
             original_aspect_label="2.40:1",
-        )
-    )
-    db.add(
-        LetterboxReencodeArtifact(
-            media_type="movie",
-            movie_id=movie.id,
-            media_file_id=old_media_file.id,
-            original_path="/movies/Dune (2021)/old.mkv",
-            candidate_path="/movies/Dune (2021)/new.mkv",
-            original_size_bytes=10,
-            candidate_size_bytes=9,
-            original_signature="old",
-            candidate_signature="sig-match",
-            encoder="hevc_nvenc",
-            encoder_family="nvidia",
-            codec="hevc",
-            crop_top=140,
-            crop_bottom=140,
-            status="replaced",
         )
     )
     await db.commit()
@@ -783,6 +738,7 @@ async def test_episode_media_replacement_resets_stale_letterbox_state_and_links(
 
     await _upsert_episode_media_files(
         db,
+        series.id,
         [_sonarr_episode(episodeFileId=5002)],
         {
             5002: _sonarr_episode_file(

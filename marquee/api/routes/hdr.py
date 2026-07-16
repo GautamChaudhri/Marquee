@@ -18,11 +18,19 @@ from marquee.api.job_submission import JobSubmissionResponse, submission_respons
 from marquee.api.library_serializers import enrich_movie, resolution_label
 from marquee.api.routes.jobs import job_summary
 from marquee.api.routes.library import _coverage_by_media_file
-from marquee.core.dovi_analysis import conversion_eligibility
+from marquee.core.dovi_eligibility import conversion_eligibility
 from marquee.core.hdr_rollups import EpisodeHdr, episode_status, season_rollup, show_rollup
-from marquee.core.jobs import job_manager
 from marquee.core.jobs.batches import BatchScope, create_fixed_batch
 from marquee.core.jobs.contracts import TriggerKind
+from marquee.core.jobs.dovi_conversion_documents import (
+    DoviConvertRequestV1,
+    DoviDiscardRequestV1,
+    DoviProbeV1,
+    DoviPublishRequestV1,
+    DoviRestoreRequestV1,
+)
+from marquee.core.jobs.mutation_documents import MutationTargetV1
+from marquee.core.jobs.mutation_planning import MutationPlan, plan_mutation, plan_version
 from marquee.core.jobs.submission import (
     Initiator,
     SubjectLocator,
@@ -58,8 +66,10 @@ from marquee.models import (
     Episode,
     EpisodeMediaFile,
     Job,
+    JobArtifact,
     LetterboxState,
     MediaFile,
+    MediaOperationDetail,
     Movie,
     RadarrCustomFormat,
     RadarrOverlayProfilePreference,
@@ -1622,22 +1632,250 @@ async def convert_movie_dovi(
                 "message": conversion.get("reason") or "This stream is not eligible.",
             },
         )
-    active = await _active_dovi_conversion_job(db, movie.id)
-    if active is not None:
-        return _dovi_job_detail(active)
     media_file = await ensure_media_file_for_movie(db, movie)
-    file_lock = {f"media-file:{media_file.id}": 1} if media_file is not None else {}
-    job = await job_manager.create(
-        db,
-        job_type="dovi_convert",
-        payload={"movie_id": movie.id, "kind": kind},
-        priority=75,
-        resources={"media_write": 1, **file_lock},
-        subject_type="movie",
-        subject_id=movie.id,
-        max_attempts=1,
+    if media_file is None:
+        raise HTTPException(status_code=409, detail="No active media file is available.")
+    try:
+        resolved = await resolve_media_file(db, media_file.id)
+    except (MediaFileUnavailableError, OSError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if not movie.video_width or not movie.video_height:
+        raise HTTPException(status_code=409, detail="Source dimensions are unavailable; sync first.")
+    source_probe = DoviProbeV1(
+        codec=state.source_codec,
+        width=movie.video_width,
+        height=movie.video_height,
+        has_hdr=True,
+        has_dolby_vision=True,
+        video_streams=1,
+        audio_streams=0,
+        subtitle_streams=0,
+        attachment_streams=0,
+        dovi_profile=state.dovi_profile,
+        dovi_level=state.dovi_level,
+        enhancement_layer_present=state.el_present,
+        bl_signal_compatibility_id=state.bl_signal_compatibility_id,
     )
-    return _dovi_job_detail(job)
+    request = DoviConvertRequestV1(
+        media_file_id=media_file.id,
+        movie_id=movie.id,
+        kind=kind,
+        source_signature=resolved.signature,
+        source_size_bytes=resolved.size_bytes,
+        source_probe=source_probe,
+        source_el_type=state.el_type,
+    )
+    target = MutationTargetV1(
+        key=f"media-file:{media_file.id}:dovi-candidate",
+        kind="media_file",
+        label="Dolby Vision conversion candidate",
+        operation="convert",
+        selector_facts={"media_file_id": media_file.id, "movie_id": movie.id, "kind": kind},
+    )
+    try:
+        planned = await plan_mutation(
+            db,
+            job_type="dovi_convert",
+            request=request.model_dump(mode="json", exclude_none=True),
+            subject=SubjectLocator(kind="movie", reference=str(movie.id)),
+            initiator=Initiator(kind="user", identifier="hdr-api"),
+            idempotency_key=f"dovi_convert:plan-{uuid4().hex}",
+            priority=75,
+            plan=MutationPlan(
+                operation_kind="dovi_convert",
+                media_file_id=media_file.id,
+                media_snapshot={"media_file_id": media_file.id, "movie_id": movie.id},
+                before_targets=(target,),
+                requested_targets=(target,),
+                expected_targets=(target,),
+                input_signature=resolved.signature,
+                confirmation_requirements={"explicit_confirmation": True, "kind": kind},
+            ),
+        )
+    except SubmissionError as exc:
+        raise HTTPException(status_code=422, detail=exc.code) from exc
+    job = await db.get(Job, planned.job_id)
+    detail = await db.get(MediaOperationDetail, planned.job_id)
+    if job is None or detail is None or detail.plan_expires_at is None:
+        raise HTTPException(status_code=500, detail="Dolby Vision plan was not persisted")
+    job_detail = _dovi_job_detail(job)
+    if job_detail is None:
+        raise HTTPException(status_code=500, detail="Dolby Vision plan detail is unavailable")
+    await db.commit()
+    return {
+        **job_detail,
+        "plan_version": plan_version(detail),
+        "configuration_version": job.configuration_version,
+        "expires_at": detail.plan_expires_at.isoformat(),
+        "requires_confirmation": True,
+    }
+
+
+async def _dovi_candidate(db: AsyncSession, movie_id: int, artifact_id: int) -> JobArtifact:
+    artifact = await db.get(JobArtifact, artifact_id)
+    metadata = artifact.artifact_metadata if artifact is not None else None
+    if (
+        artifact is None
+        or artifact.kind != "media_candidate"
+        or not isinstance(metadata, dict)
+        or metadata.get("operation_family") != "dovi"
+        or int(metadata.get("movie_id") or 0) != movie_id
+    ):
+        raise HTTPException(status_code=404, detail="Dolby Vision candidate not found")
+    return artifact
+
+
+async def _plan_dovi_decision(
+    db: AsyncSession,
+    *,
+    operation: str,
+    job_type: str,
+    request: DoviPublishRequestV1 | DoviRestoreRequestV1 | DoviDiscardRequestV1,
+    input_signature: str,
+) -> dict[str, object]:
+    target = MutationTargetV1(
+        key=f"media-file:{request.media_file_id}:dovi-{operation}",
+        kind="media_candidate" if operation == "discard" else "media_file",
+        label=f"Dolby Vision {operation}",
+        operation=operation,
+        selector_facts={
+            "media_file_id": request.media_file_id,
+            "candidate_artifact_id": request.candidate_artifact_id,
+        },
+    )
+    try:
+        planned = await plan_mutation(
+            db,
+            job_type=job_type,
+            request=request.model_dump(mode="json", exclude_none=True),
+            subject=SubjectLocator(kind="movie", reference=str(request.movie_id)),
+            initiator=Initiator(kind="user", identifier="hdr-api"),
+            idempotency_key=f"dovi_{operation}:plan-{uuid4().hex}",
+            priority=75,
+            plan=MutationPlan(
+                operation_kind=f"dovi_{operation}",
+                media_file_id=request.media_file_id,
+                media_snapshot={
+                    "media_file_id": request.media_file_id,
+                    "movie_id": request.movie_id,
+                    "candidate_artifact_id": request.candidate_artifact_id,
+                },
+                before_targets=(target,),
+                requested_targets=(target,),
+                expected_targets=(target,),
+                input_signature=input_signature,
+                confirmation_requirements={
+                    "explicit_confirmation": True,
+                    "operation": operation,
+                },
+            ),
+        )
+    except SubmissionError as exc:
+        raise HTTPException(status_code=422, detail=exc.code) from exc
+    job = await db.get(Job, planned.job_id)
+    detail = await db.get(MediaOperationDetail, planned.job_id)
+    if job is None or detail is None or detail.plan_expires_at is None:
+        raise HTTPException(status_code=500, detail="Dolby Vision decision was not persisted")
+    job_detail = _dovi_job_detail(job)
+    if job_detail is None:
+        raise HTTPException(status_code=500, detail="Dolby Vision decision detail is unavailable")
+    await db.commit()
+    return {
+        **job_detail,
+        "plan_version": plan_version(detail),
+        "configuration_version": job.configuration_version,
+        "expires_at": detail.plan_expires_at.isoformat(),
+        "requires_confirmation": True,
+    }
+
+
+@router.post("/{movie_id}/conversion-candidates/{artifact_id}/publish")
+async def publish_movie_dovi(
+    movie_id: int,
+    artifact_id: int,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    artifact = await _dovi_candidate(db, movie_id, artifact_id)
+    metadata = artifact.artifact_metadata or {}
+    request = DoviPublishRequestV1(
+        media_file_id=int(metadata["media_file_id"]),
+        movie_id=movie_id,
+        candidate_artifact_id=artifact.id,
+        candidate_job_id=artifact.job_id,
+        candidate_checksum=str(artifact.checksum),
+        candidate_size_bytes=int(artifact.size_bytes or 0),
+        expected_source_signature=str(metadata["source_signature"]),
+        source_probe=DoviProbeV1.model_validate(metadata.get("source_probe")),
+        candidate_probe=DoviProbeV1.model_validate(metadata.get("output_probe")),
+    )
+    return await _plan_dovi_decision(
+        db,
+        operation="publish",
+        job_type="dovi_publish",
+        request=request,
+        input_signature=request.expected_source_signature,
+    )
+
+
+@router.post("/{movie_id}/conversion-candidates/{artifact_id}/restore")
+async def restore_movie_dovi(
+    movie_id: int,
+    artifact_id: int,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    artifact = await _dovi_candidate(db, movie_id, artifact_id)
+    metadata = artifact.artifact_metadata or {}
+    backup_id = int(metadata.get("backup_artifact_id") or 0)
+    backup = await db.get(JobArtifact, backup_id)
+    media_file_id = int(metadata.get("media_file_id") or 0)
+    resolved = await resolve_media_file(db, media_file_id)
+    if (
+        backup is None
+        or backup.checksum is None
+        or backup.size_bytes is None
+        or not metadata.get("published")
+    ):
+        raise HTTPException(status_code=409, detail="Restorable publication evidence is unavailable")
+    request = DoviRestoreRequestV1(
+        media_file_id=media_file_id,
+        movie_id=movie_id,
+        candidate_artifact_id=artifact.id,
+        backup_artifact_id=backup.id,
+        backup_checksum=backup.checksum,
+        backup_size_bytes=backup.size_bytes,
+        expected_destination_signature=resolved.signature,
+        published_checksum=str(metadata.get("published_checksum") or artifact.checksum),
+    )
+    return await _plan_dovi_decision(
+        db,
+        operation="restore",
+        job_type="dovi_restore",
+        request=request,
+        input_signature=resolved.signature,
+    )
+
+
+@router.post("/{movie_id}/conversion-candidates/{artifact_id}/discard")
+async def discard_movie_dovi(
+    movie_id: int,
+    artifact_id: int,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    artifact = await _dovi_candidate(db, movie_id, artifact_id)
+    metadata = artifact.artifact_metadata or {}
+    request = DoviDiscardRequestV1(
+        media_file_id=int(metadata["media_file_id"]),
+        movie_id=movie_id,
+        candidate_artifact_id=artifact.id,
+        candidate_checksum=str(artifact.checksum),
+    )
+    return await _plan_dovi_decision(
+        db,
+        operation="discard",
+        job_type="dovi_discard",
+        request=request,
+        input_signature=request.candidate_checksum,
+    )
 
 
 @router.post("/analyze", status_code=202)

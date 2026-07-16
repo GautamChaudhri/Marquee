@@ -6,7 +6,7 @@ from threading import Event
 
 import pytest
 
-from marquee.core.jobs.cancel_registry import JobCancelledError
+from marquee.core.cancellation import JobCancelledError
 from marquee.core.sync_service import SyncService
 from marquee.ml.head_trainer import train_from_labels
 from marquee.ml.taste_map import build_map

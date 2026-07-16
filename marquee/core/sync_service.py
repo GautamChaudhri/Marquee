@@ -26,7 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from marquee.config import settings
 from marquee.core.arr_clients.radarr_client import RadarrClient
 from marquee.core.arr_clients.sonarr_client import SonarrClient
-from marquee.core.jobs.cancel_registry import raise_if_cancelled
+from marquee.core.cancellation import raise_if_cancelled
 from marquee.core.letterbox_prefilter import refresh_letterbox_prefilter_for_movie
 from marquee.core.media_files import compute_signature
 from marquee.core.path_utils import safe_translate_and_validate
@@ -37,7 +37,6 @@ from marquee.models import (
     Episode,
     EpisodeMediaFile,
     LetterboxEvent,
-    LetterboxReencodeArtifact,
     LetterboxState,
     MediaFile,
     Movie,
@@ -70,7 +69,7 @@ def _reset_letterbox_state_for_new_file(state: LetterboxState) -> None:
     state.error = None
     state.variable_ar = False
     state.variable_ar_note = None
-    state.eligible = None
+    state.eligible = False
     state.ineligible_reason = None
     state.last_detected_at = None
     state.source_width = None
@@ -94,27 +93,6 @@ def _signature_for_media_file(media_file: MediaFile) -> tuple[str | None, str | 
         return None, str(exc)
 
 
-async def _latest_letterbox_artifact(
-    db: AsyncSession,
-    *,
-    media_type: str,
-    movie_id: int | None = None,
-    episode_id: int | None = None,
-) -> LetterboxReencodeArtifact | None:
-    return (
-        await db.execute(
-            select(LetterboxReencodeArtifact)
-            .where(
-                LetterboxReencodeArtifact.media_type == media_type,
-                LetterboxReencodeArtifact.movie_id == movie_id,
-                LetterboxReencodeArtifact.episode_id == episode_id,
-            )
-            .order_by(LetterboxReencodeArtifact.updated_at.desc(), LetterboxReencodeArtifact.id.desc())
-            .limit(1)
-        )
-    ).scalar_one_or_none()
-
-
 async def _reset_letterbox_for_media_replacement(
     db: AsyncSession,
     *,
@@ -136,21 +114,6 @@ async def _reset_letterbox_for_media_replacement(
         return
 
     current_signature, signature_error = _signature_for_media_file(current_media_file)
-    artifact = await _latest_letterbox_artifact(
-        db,
-        media_type=media_type,
-        movie_id=movie_id,
-        episode_id=episode_id,
-    )
-    if (
-        state.resolved_by == "reencode"
-        and artifact is not None
-        and current_signature is not None
-        and artifact.candidate_signature == current_signature
-    ):
-        artifact.media_file_id = current_media_file.id
-        return
-
     if (
         state.resolved_by != "reencode"
         and state.status in {"prefilter_candidate", "prefilter_unknown", "prefilter_skipped"}
@@ -177,7 +140,6 @@ async def _reset_letterbox_for_media_replacement(
                     "previous_status": previous_status,
                     "previous_resolved_by": previous_resolved_by,
                     "current_media_file_id": current_media_file.id,
-                    "artifact_id": artifact.id if artifact is not None else None,
                     "current_signature": current_signature,
                     "signature_error": signature_error,
                 }
@@ -1000,6 +962,7 @@ async def _upsert_episode_media_files(
     # Map each episode-file id to the set of Episode rows that reference it.
     eps_by_file: dict[int, list[Episode]] = {}
     previous_media_file_by_episode: dict[int, int] = {}
+    displaced_media_file_ids: set[int] = set()
     episode_ids = [int(edata["id"]) for edata in raw_episodes if edata.get("id") is not None]
     if episode_ids:
         previous_rows = (
@@ -1060,6 +1023,7 @@ async def _upsert_episode_media_files(
                 )
             ).scalars().all()
             for stale_link in stale_links:
+                displaced_media_file_ids.add(stale_link.media_file_id)
                 await db.delete(stale_link)
 
         for ep in episodes:
@@ -1082,6 +1046,23 @@ async def _upsert_episode_media_files(
                     episode_id=ep.id,
                     current_media_file=media_file,
                 )
+
+    if displaced_media_file_ids:
+        await db.flush()
+        for media_file_id in displaced_media_file_ids:
+            remaining_link = (
+                await db.execute(
+                    select(EpisodeMediaFile.media_file_id).where(
+                        EpisodeMediaFile.media_file_id == media_file_id
+                    )
+                )
+            ).scalar_one_or_none()
+            if remaining_link is None:
+                displaced = await db.get(MediaFile, media_file_id)
+                if displaced is not None:
+                    displaced.is_active = False
+                    displaced.is_present = False
+                    displaced.retired_at = datetime.now(UTC)
 
     expected_source_keys = {f"sonarr:episode-file:{file_id}" for file_id in eps_by_file}
     stale_query = (

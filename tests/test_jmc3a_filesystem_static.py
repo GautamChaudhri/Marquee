@@ -24,9 +24,6 @@ def test_string_prefix_is_not_used_for_path_confinement() -> None:
 
 
 def test_raw_poster_delete_and_cross_device_copy_fallback_are_absent() -> None:
-    handlers = (REPOSITORY / "marquee" / "core" / "jobs" / "builtin_handlers.py").read_text(
-        encoding="utf-8"
-    )
     library = (REPOSITORY / "marquee" / "api" / "routes" / "library.py").read_text(
         encoding="utf-8"
     )
@@ -34,6 +31,6 @@ def test_raw_poster_delete_and_cross_device_copy_fallback_are_absent() -> None:
         path.read_text(encoding="utf-8")
         for path in (REPOSITORY / "marquee" / "core" / "jobs").glob("*mutation*.py")
     )
-    assert "Path(entity.poster_path).unlink" not in handlers
+    assert not (REPOSITORY / "marquee/core/jobs/builtin_handlers.py").exists()
     assert "Path(entity.poster_path).unlink" not in library
     assert "marquee-replace" not in mutation_handlers

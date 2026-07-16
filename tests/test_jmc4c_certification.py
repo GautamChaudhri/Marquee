@@ -19,6 +19,10 @@ ENABLED_LEAVES = {
     "subtitle_metadata",
 
     "dovi_analyze",
+    "dovi_convert",
+    "dovi_publish",
+    "dovi_restore",
+    "dovi_discard",
     "learned_head_train",
     "letterbox_detect",
     "letterbox_detect_episode",
@@ -40,6 +44,12 @@ ENABLED_LEAVES = {
     "pipeline_cache_clear",
     "job_retention_purge",
     "system_metrics_purge",
+    "letterbox_apply",
+    "letterbox_remove",
+    "letterbox_reencode",
+    "letterbox_reencode_publish",
+    "letterbox_reencode_restore",
+    "letterbox_reencode_discard",
 }
 
 B2_TRACK_MUTATIONS = {
@@ -99,7 +109,12 @@ def test_final_enabled_manifest_has_exactly_one_executor_per_leaf() -> None:
 
 
 def test_c15_mutating_and_operator_owned_manifest_is_dispatch_disabled() -> None:
-    deferred = C15_DEFERRED - A4_MAINTENANCE - B2_TRACK_MUTATIONS
+    deferred = C15_DEFERRED - A4_MAINTENANCE - B2_TRACK_MUTATIONS - {
+        "letterbox_apply",
+        "letterbox_remove",
+        "letterbox_reencode",
+        "dovi_convert",
+    }
     assert {definition.job_type for definition in JOB_DEFINITION_REGISTRY} >= deferred
     assert all(not JOB_DEFINITION_REGISTRY.get(job_type).enabled for job_type in deferred)
     assert {
@@ -111,7 +126,18 @@ def test_c15_mutating_and_operator_owned_manifest_is_dispatch_disabled() -> None
         "poster_restore",
         "poster_reset",
         "poster_backup_subject",
-    } | B2_TRACK_MUTATIONS
+        } | B2_TRACK_MUTATIONS | {
+            "letterbox_apply",
+            "letterbox_reencode",
+            "letterbox_reencode_publish",
+            "letterbox_reencode_restore",
+            "letterbox_reencode_discard",
+                "letterbox_remove",
+                "dovi_convert",
+                "dovi_publish",
+                "dovi_restore",
+                "dovi_discard",
+            }
 
 
 def test_enabled_chunk_four_is_read_only_and_parent_batches_are_ticketless() -> None:
@@ -125,8 +151,18 @@ def test_enabled_chunk_four_is_read_only_and_parent_batches_are_ticketless() -> 
             "poster_reset",
             "poster_backup_subject",
             *A4_MAINTENANCE,
-            *B2_TRACK_MUTATIONS,
-        }
+                *B2_TRACK_MUTATIONS,
+                "letterbox_apply",
+                "letterbox_reencode",
+                "letterbox_reencode_publish",
+                "letterbox_reencode_restore",
+                "letterbox_reencode_discard",
+                    "letterbox_remove",
+                    "dovi_convert",
+                    "dovi_publish",
+                    "dovi_restore",
+                    "dovi_discard",
+            }
     )
     for job_type in ("poster_pipeline_batch", "poster_pipeline_tv_batch"):
         definition = JOB_DEFINITION_REGISTRY.get(job_type)

@@ -7,6 +7,12 @@ from pydantic import ValidationError
 
 from marquee.core.jobs.contracts import MigrationState
 from marquee.core.jobs.definitions import InvalidJobDefinitionError, JobDefinitionRegistry
+from marquee.core.jobs.documents import (
+    BuiltInIntentV1,
+    BuiltInResultV1,
+    DocumentKind,
+    current_adapter,
+)
 from marquee.core.jobs.manifest import JOB_DEFINITION_REGISTRY
 from marquee.core.jobs.mutation_documents import (
     MutationAtomicityV1,
@@ -236,6 +242,8 @@ def test_enabled_mutations_cannot_use_generic_builtin_documents() -> None:
         enabled=True,
         migration_state=MigrationState.ENABLED,
         disabled_reason=None,
+        request=current_adapter(DocumentKind.REQUEST, BuiltInIntentV1),
+        result=current_adapter(DocumentKind.RESULT, BuiltInResultV1),
     )
     with pytest.raises(InvalidJobDefinitionError, match="family-specific"):
         JobDefinitionRegistry((generic_enabled,))

@@ -611,7 +611,7 @@
 		busy = true;
 		try {
 			await replaceOriginal(fetch, artifact.id);
-			toast('Original replaced — re-encode applied', 'good');
+			toast('Publication queued', 'good');
 			lastId = null;
 			onChanged();
 		} catch (e) {
@@ -626,13 +626,7 @@
 		busy = true;
 		try {
 			await deleteArtifact(fetch, artifact.id);
-			toast('Candidate discarded', 'good');
-			artifact = null;
-			plan = null;
-			method = 'quick';
-			encodeStage = null;
-			encodeProgress = 0;
-			lastId = null;
+			toast('Candidate discard queued', 'good');
 			onChanged();
 		} catch (e) {
 			toast(e instanceof Error ? e.message : 'Discard failed', 'bad');
@@ -714,13 +708,13 @@
 					<button
 						class="btn-sec"
 						disabled={busy}
-						onclick={() => run(() => restoreOriginal(fetch, a.id), 'Original restored')}
+						onclick={() => run(() => restoreOriginal(fetch, a.id), 'Restore queued')}
 					>
 						Restore original →
 					</button>
 					<div class="note good">
-						The original is preserved under <span class="mono">.marquee/backups</span> — restoring swaps
-						it back into place.
+						The original is preserved as a checksummed canonical artifact; restore is a separate
+						confirmed job.
 					</div>
 				{:else}
 					<div class="note">No re-encode record found for this file.</div>

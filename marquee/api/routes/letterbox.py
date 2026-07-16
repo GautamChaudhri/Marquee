@@ -17,7 +17,6 @@ from typing import Annotated
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy import String, case, cast, delete, exists, func, select, union
 from sqlalchemy.exc import OperationalError
@@ -29,10 +28,22 @@ from marquee.api.job_submission import JobSubmissionResponse, submission_respons
 from marquee.api.routes.jobs import job_summary
 from marquee.config import settings
 from marquee.core import letterbox_reencode
-from marquee.core.jobs import job_manager
 from marquee.core.jobs.batches import BatchScope, create_fixed_batch
 from marquee.core.jobs.contracts import TriggerKind
-from marquee.core.jobs.manager import UnmigratedJobPlatformError
+from marquee.core.jobs.letterbox_reencode_documents import (
+    LetterboxReencodeDiscardRequestV1,
+    LetterboxReencodePublishRequestV1,
+    LetterboxReencodeRequestV1,
+    LetterboxReencodeRestoreRequestV1,
+    ReencodeProbeV1,
+)
+from marquee.core.jobs.mutation_documents import MutationTargetV1
+from marquee.core.jobs.mutation_planning import (
+    MutationPlan,
+    confirm_mutation,
+    plan_mutation,
+    plan_version,
+)
 from marquee.core.jobs.submission import (
     Initiator,
     SubjectLocator,
@@ -70,10 +81,11 @@ from marquee.models import (
     Episode,
     EpisodeMediaFile,
     Job,
+    JobArtifact,
     LetterboxEvent,
-    LetterboxReencodeArtifact,
     LetterboxState,
     MediaFile,
+    MediaOperationDetail,
     Movie,
     Series,
 )
@@ -109,6 +121,237 @@ def _letterbox_detection_config_snapshot() -> dict[str, object]:
         "asymmetric": settings.LETTERBOX_ASYMMETRIC,
         "early_stop_windows": settings.LETTERBOX_EARLY_STOP_WINDOWS,
     }
+
+
+async def _letterbox_mutation_snapshot(
+    db: AsyncSession, movie: Movie, state: LetterboxState
+) -> tuple[MediaFile, dict[str, object]]:
+    """Seal the source and detector facts consumed by a canonical tag mutation."""
+    media_file = await ensure_media_file_for_movie(db, movie)
+    if media_file is None:
+        raise HTTPException(status_code=409, detail="movie has no active media file")
+    try:
+        resolved = await resolve_media_file(db, media_file.id)
+    except (MediaFileNotFoundError, MediaFileUnavailableError) as exc:
+        raise HTTPException(status_code=409, detail="movie media file is unavailable") from exc
+    return media_file, _letterbox_state_snapshot(state, resolved.signature)
+
+
+def _letterbox_state_snapshot(state: LetterboxState, source_signature: str) -> dict[str, object]:
+    if state.source_width is None or state.source_height is None:
+        raise HTTPException(status_code=422, detail="letterbox source dimensions are unknown")
+    return {
+        "source_signature": source_signature,
+        "status": state.status,
+        "confidence": state.confidence,
+        "variable_ar": state.variable_ar,
+        "source_width": state.source_width,
+        "source_height": state.source_height,
+        "current_crop_top": state.applied_crop_top,
+        "current_crop_bottom": state.applied_crop_bottom,
+        "recommended_crop_top": state.recommended_crop_top,
+        "recommended_crop_bottom": state.recommended_crop_bottom,
+    }
+
+
+async def _tv_mutation_intents(
+    db: AsyncSession,
+    rows: list[tuple[Episode, Series, LetterboxState | None, int | None]],
+    *,
+    operation: str,
+    confidence_levels: tuple[str, ...] = (),
+    initiator: Initiator,
+) -> tuple[SubmissionIntent, ...]:
+    """Resolve one immutable child per physical TV file."""
+    grouped: dict[int, list[tuple[Episode, LetterboxState]]] = {}
+    for episode, _series, state, media_file_id in rows:
+        if state is None or media_file_id is None or state.variable_ar:
+            continue
+        if operation == "apply":
+            if state.status != "candidate" or state.confidence not in confidence_levels:
+                continue
+            if not (state.recommended_crop_top or state.recommended_crop_bottom):
+                continue
+        elif state.applied_crop_top is None and state.applied_crop_bottom is None:
+            continue
+        grouped.setdefault(media_file_id, []).append((episode, state))
+
+    intents: list[SubmissionIntent] = []
+    for media_file_id, group in sorted(grouped.items()):
+        resolved = await resolve_media_file(db, media_file_id)
+        snapshots = [
+            _letterbox_state_snapshot(state, resolved.signature) for _episode, state in group
+        ]
+        if any(snapshot != snapshots[0] for snapshot in snapshots[1:]):
+            raise HTTPException(
+                status_code=409,
+                detail=f"episodes sharing media file {media_file_id} have inconsistent letterbox state",
+            )
+        request: dict[str, object] = {
+            "media_file_id": media_file_id,
+            "subject_kind": "episode",
+            "subject_ids": [episode.id for episode, _state in group],
+            "before": snapshots[0],
+            "source": "api",
+        }
+        if operation == "apply":
+            request["crop_top"] = group[0][1].recommended_crop_top or 0
+            request["crop_bottom"] = group[0][1].recommended_crop_bottom or 0
+        intents.append(
+            SubmissionIntent(
+                job_type=f"letterbox_{operation}",
+                request=request,
+                subject=SubjectLocator(kind="media_file", reference=str(media_file_id)),
+                trigger=TriggerKind.BATCH,
+                initiator=initiator,
+                idempotency_key=f"letterbox_{operation}:batch-{uuid4().hex}",
+                priority=70,
+            )
+        )
+    return tuple(intents)
+
+
+async def _submit_tv_mutation_parent(
+    db: AsyncSession,
+    *,
+    series_id: int,
+    season_number: int | None,
+    rows: list[tuple[Episode, Series, LetterboxState | None, int | None]],
+    operation: str,
+    confidence_levels: tuple[str, ...] = (),
+) -> JobSubmissionResponse:
+    initiator = Initiator(kind="system", identifier="letterbox-api")
+    children = await _tv_mutation_intents(
+        db,
+        rows,
+        operation=operation,
+        confidence_levels=confidence_levels,
+        initiator=initiator,
+    )
+    if not children:
+        raise HTTPException(status_code=400, detail="No eligible TV media files in the sealed scope")
+    if db.in_transaction():
+        await db.commit()
+    parent_type = (
+        "letterbox_apply_tv_scope" if operation == "apply" else "letterbox_revert_tv_scope"
+    )
+    scope_key = uuid4().hex[:12]
+    try:
+        async with db.begin():
+            result = await create_fixed_batch(
+                db,
+                parent_job_type=(
+                    "letterbox_apply_tv_scope"
+                    if operation == "apply"
+                    else "letterbox_revert_tv_scope"
+                ),
+                parent_request={
+                    "operation": operation,
+                    "series_id": series_id,
+                    "season_number": season_number,
+                    "confidence_levels": list(confidence_levels),
+                    "sealed_file_count": len(children),
+                },
+                scope=BatchScope(
+                    reference=f"series-{series_id}-{operation}-{scope_key}",
+                    display_name=f"Letterbox {operation}: series {series_id}",
+                    summary=f"{len(children)} sealed physical media files",
+                ),
+                trigger=TriggerKind.MANUAL,
+                initiator=initiator,
+                idempotency_key=f"{parent_type}:manual-{uuid4().hex}",
+                children=children,
+                priority=70,
+            )
+    except SubmissionError as exc:
+        raise HTTPException(status_code=422, detail=exc.code) from exc
+    return submission_response(result.parent)
+
+
+async def _letterbox_heal_intents(
+    db: AsyncSession, *, initiator: Initiator
+) -> tuple[SubmissionIntent, ...]:
+    """Seal tagged movie/episode files; leaf probes decide intact versus drifted."""
+    intents: list[SubmissionIntent] = []
+    movie_rows = (
+        await db.execute(
+            select(Movie, LetterboxState)
+            .join(LetterboxState, LetterboxState.movie_id == Movie.id)
+            .where(
+                LetterboxState.media_type == "movie",
+                LetterboxState.status == "tagged",
+                LetterboxState.variable_ar.is_(False),
+            )
+        )
+    ).all()
+    for movie, state in movie_rows:
+        if state.applied_crop_top is None or state.applied_crop_bottom is None:
+            continue
+        media_file, before = await _letterbox_mutation_snapshot(db, movie, state)
+        intents.append(
+            SubmissionIntent(
+                job_type="letterbox_apply",
+                request={
+                    "media_file_id": media_file.id,
+                    "subject_kind": "movie",
+                    "subject_ids": [movie.id],
+                    "before": before,
+                    "crop_top": state.applied_crop_top,
+                    "crop_bottom": state.applied_crop_bottom,
+                    "source": "heal",
+                },
+                subject=SubjectLocator(kind="media_file", reference=str(media_file.id)),
+                trigger=TriggerKind.BATCH,
+                initiator=initiator,
+                idempotency_key=f"letterbox_apply:heal-{uuid4().hex}",
+                priority=20,
+            )
+        )
+
+    episode_rows = (
+        await db.execute(
+            select(Episode, LetterboxState, EpisodeMediaFile.media_file_id)
+            .join(LetterboxState, LetterboxState.episode_id == Episode.id)
+            .join(EpisodeMediaFile, EpisodeMediaFile.episode_id == Episode.id)
+            .where(
+                LetterboxState.media_type == "episode",
+                LetterboxState.status == "tagged",
+                LetterboxState.variable_ar.is_(False),
+            )
+        )
+    ).all()
+    grouped: dict[int, list[tuple[Episode, LetterboxState]]] = {}
+    for episode, state, media_file_id in episode_rows:
+        if state.applied_crop_top is None or state.applied_crop_bottom is None:
+            continue
+        grouped.setdefault(media_file_id, []).append((episode, state))
+    for media_file_id, group in sorted(grouped.items()):
+        resolved = await resolve_media_file(db, media_file_id)
+        snapshots = [
+            _letterbox_state_snapshot(state, resolved.signature) for _episode, state in group
+        ]
+        if any(snapshot != snapshots[0] for snapshot in snapshots[1:]):
+            continue
+        intents.append(
+            SubmissionIntent(
+                job_type="letterbox_apply",
+                request={
+                    "media_file_id": media_file_id,
+                    "subject_kind": "episode",
+                    "subject_ids": [episode.id for episode, _state in group],
+                    "before": snapshots[0],
+                    "crop_top": group[0][1].applied_crop_top,
+                    "crop_bottom": group[0][1].applied_crop_bottom,
+                    "source": "heal",
+                },
+                subject=SubjectLocator(kind="media_file", reference=str(media_file_id)),
+                trigger=TriggerKind.BATCH,
+                initiator=initiator,
+                idempotency_key=f"letterbox_apply:heal-{uuid4().hex}",
+                priority=20,
+            )
+        )
+    return tuple(intents)
 
 
 async def _file_lock(db: AsyncSession, movie: Movie) -> dict[str, int]:
@@ -229,10 +472,6 @@ def _as_utc(value: datetime | None) -> datetime | None:
     return value.replace(tzinfo=UTC)
 
 
-async def _generic_media_job_bridge(db: AsyncSession, media_job: object) -> Job | None:
-    raise UnmigratedJobPlatformError("letterbox.media_job_bridge")
-
-
 def _resolution_label(width: int | None, height: int | None) -> str | None:
     if not width or not height:
         return None
@@ -318,20 +557,22 @@ def _dolby_vision_summary(movie: Movie) -> dict:
     }
 
 
-def _media_job_summary(job: object) -> dict:
-    raise UnmigratedJobPlatformError("letterbox.media_job_summary")
-
-
 async def _latest_reencode_snapshot(db: AsyncSession, movie: Movie) -> dict | None:
     artifact = await db.scalar(
-        select(LetterboxReencodeArtifact)
-        .where(LetterboxReencodeArtifact.movie_id == movie.id)
-        .order_by(LetterboxReencodeArtifact.created_at.desc(), LetterboxReencodeArtifact.id.desc())
+        select(JobArtifact)
+        .join(Job, Job.id == JobArtifact.job_id)
+        .where(
+            JobArtifact.kind == "media_candidate",
+            Job.type == "letterbox_reencode",
+            Job.subject_kind == "movie",
+            Job.subject_reference == str(movie.id),
+        )
+        .order_by(JobArtifact.created_at.desc(), JobArtifact.id.desc())
         .limit(1)
     )
     if artifact is None:
         return None
-    return {"job": None, "artifact": letterbox_reencode.artifact_to_dict(artifact)}
+    return {"job": None, "artifact": _canonical_reencode_artifact(artifact)}
 
 
 def _prefilter_movie_to_dict(movie: Movie, state: LetterboxState | None) -> dict:
@@ -821,22 +1062,20 @@ async def letterbox_summary(db: Annotated[AsyncSession, Depends(get_db)]):
     movie_breakdown = _aggregate_verdict_breakdown(movie_states)
     movie_artifacts = (
         await db.execute(
-            select(LetterboxReencodeArtifact).where(LetterboxReencodeArtifact.media_type == "movie")
+            select(JobArtifact)
+            .join(Job, Job.id == JobArtifact.job_id)
+            .where(
+                JobArtifact.kind == "media_candidate",
+                Job.type == "letterbox_reencode",
+                Job.subject_kind == "movie",
+            )
         )
     ).scalars().all()
     movie_reencode = {
         "count": len(movie_artifacts),
-        "space_reclaimed_bytes": sum(
-            max(0, (artifact.original_size_bytes or 0) - (artifact.candidate_size_bytes or 0))
-            for artifact in movie_artifacts
-            if artifact.status == "replaced"
-        ),
-        "awaiting_decision": sum(
-            1 for artifact in movie_artifacts if artifact.status in {"candidate_ready", "kept"}
-        ),
-        "saved_originals_on_disk": sum(
-            1 for artifact in movie_artifacts if artifact.saved_original_path
-        ),
+        "space_reclaimed_bytes": 0,
+        "awaiting_decision": sum(artifact.status == "available" for artifact in movie_artifacts),
+        "saved_originals_on_disk": 0,
     }
 
     tv_rows = await _load_tv_episode_rows(db)
@@ -1616,10 +1855,6 @@ class TvReplaceReadyRequest(BaseModel):
     season_number: int | None = None
 
 
-class RestoreReencodeRequest(BaseModel):
-    keep_candidate: bool = False
-
-
 def _scope_episode_group(
     rows: list[tuple[Episode, Series, LetterboxState | None, int | None]],
     episode_id: int,
@@ -1641,13 +1876,13 @@ def _validate_confidence_levels(levels: list[str] | None) -> list[str] | None:
     return ["high"] if levels is None else levels
 
 
-@router.post("/tv/{series_id}/apply")
+@router.post("/tv/{series_id}/apply", status_code=202)
 async def apply_tv_scope(
     series_id: int,
     body: TvApplyRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
-):
-    confidence_levels = _validate_confidence_levels(body.confidence_levels)
+) -> JobSubmissionResponse:
+    confidence_levels = tuple(_validate_confidence_levels(body.confidence_levels) or ())
     rows = await _tv_scope_rows(
         db,
         series_id,
@@ -1657,65 +1892,22 @@ async def apply_tv_scope(
         raise HTTPException(status_code=404, detail=f"Series id={series_id} not found")
     if body.episode_id is not None:
         rows = _scope_episode_group(rows, body.episode_id)
-    else:
-        job = await job_manager.create(
-            db,
-            job_type="letterbox_apply_tv_scope",
-            payload={
-                "series_id": series_id,
-                "season_number": body.season_number,
-                "confidence_levels": confidence_levels,
-            },
-            priority=70,
-            resources={"media_write": 1},
-            subject_type="series",
-            subject_id=series_id,
-            max_attempts=1,
-        )
-        return JSONResponse(job_summary(job), status_code=202)
-
-    groups: dict[int, tuple[list[tuple[Episode, Series, LetterboxState | None, int | None]], LetterboxState]] = {}
-    for row in rows:
-        episode, _series, state, media_file_id = row
-        if state is None or state.status != "candidate":
-            continue
-        if not (state.recommended_crop_top or state.recommended_crop_bottom):
-            continue
-        group_key = media_file_id if media_file_id is not None else -(episode.id or 0)
-        groups.setdefault(group_key, (_scope_episode_group(rows, episode.id), state))
-    if not groups:
-        raise HTTPException(status_code=400, detail="No eligible TV episodes with a crop to apply")
-
-    results: list[dict] = []
-    for group_rows, state in groups.values():
-        result = await letterbox_service.apply_episode_group(
-            db,
-            [episode for episode, *_rest in group_rows],
-            top=state.recommended_crop_top or 0,
-            bottom=state.recommended_crop_bottom or 0,
-        )
-        results.append(
-            {
-                "episode_ids": [episode.id for episode, *_rest in group_rows],
-                "top": result.top,
-                "bottom": result.bottom,
-                "path": result.path,
-                "verified": result.verified,
-            }
-        )
-    return {
-        "applied_groups": len(results),
-        "applied_episodes": sum(len(item["episode_ids"]) for item in results),
-        "items": results,
-    }
+    return await _submit_tv_mutation_parent(
+        db,
+        series_id=series_id,
+        season_number=body.season_number,
+        rows=rows,
+        operation="apply",
+        confidence_levels=confidence_levels,
+    )
 
 
-@router.post("/tv/{series_id}/revert")
+@router.post("/tv/{series_id}/revert", status_code=202)
 async def revert_tv_scope(
     series_id: int,
     body: TvRevertRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
-):
+) -> JobSubmissionResponse:
     rows = await _tv_scope_rows(
         db,
         series_id,
@@ -1724,42 +1916,24 @@ async def revert_tv_scope(
     if not rows:
         raise HTTPException(status_code=404, detail=f"Series id={series_id} not found")
     if body.episode_id is not None:
-        group_rows = _scope_episode_group(rows, body.episode_id)
-        result = await letterbox_service.remove_episode_group(
-            db,
-            [episode for episode, *_rest in group_rows],
-            source="api",
-        )
-        return {
-            "removed": result.removed,
-            "path": result.path,
-            "episode_ids": [episode.id for episode, *_rest in group_rows],
-        }
-
-    job = await job_manager.create(
+        rows = _scope_episode_group(rows, body.episode_id)
+    return await _submit_tv_mutation_parent(
         db,
-        job_type="letterbox_revert_tv_scope",
-        payload={"series_id": series_id, "season_number": body.season_number},
-        priority=70,
-        resources={"media_write": 1},
-        subject_type="series",
-        subject_id=series_id,
-        max_attempts=1,
+        series_id=series_id,
+        season_number=body.season_number,
+        rows=rows,
+        operation="remove",
     )
-    return JSONResponse(job_summary(job), status_code=202)
 
 
-@router.post("/movies/{movie_id}/apply")
+@router.post("/movies/{movie_id}/apply", status_code=202)
 async def apply_one(
     movie_id: int,
     body: ApplyRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
-):
+) -> JobSubmissionResponse:
     movie = await _load_movie(db, movie_id)
     state = await _load_state(db, movie_id)
-    eligibility = letterbox_service.check_eligibility(movie)
-    if not eligibility.eligible:
-        raise HTTPException(status_code=422, detail=eligibility.reason or "ineligible")
     if state.status == "variable_unsafe":
         raise HTTPException(
             status_code=422,
@@ -1769,34 +1943,41 @@ async def apply_one(
     bottom = body.bottom if body.bottom is not None else state.recommended_crop_bottom
     if not top and not bottom:
         raise HTTPException(status_code=422, detail="No crop to apply (recommendation is 0).")
+    media_file, before = await _letterbox_mutation_snapshot(db, movie, state)
+    if db.in_transaction():
+        await db.commit()
+    try:
+        async with db.begin():
+            result = await submit_job(
+                db,
+                job_type="letterbox_apply",
+                request={
+                    "media_file_id": media_file.id,
+                    "subject_kind": "movie",
+                    "subject_ids": [movie.id],
+                    "before": before,
+                    "crop_top": top or 0,
+                    "crop_bottom": bottom or 0,
+                    "source": "api",
+                },
+                subject=SubjectLocator(kind="media_file", reference=str(media_file.id)),
+                trigger=TriggerKind.MANUAL,
+                initiator=Initiator(kind="system", identifier="letterbox-api"),
+                idempotency_key=f"letterbox_apply:manual-{uuid4().hex}",
+                priority=80,
+            )
+    except SubmissionError as exc:
+        raise HTTPException(status_code=422, detail=exc.code) from exc
+    return submission_response(result)
 
-    job = await job_manager.create_and_run(
-        db,
-        job_type="letterbox_apply",
-        payload={"movie_id": movie.id, "top": top or 0, "bottom": bottom or 0},
-        priority=80,
-        subject_type="movie",
-        subject_id=movie.id,
-        max_attempts=1,
-        worker_id="inline-api",
-    )
-    return {**job_summary(job), **(job.result or {})}
 
-
-@router.post("/apply")
-async def apply_batch(body: BatchApplyRequest, db: Annotated[AsyncSession, Depends(get_db)]):
-    """Queue one durable apply child per eligible movie."""
-    batch = await job_manager.create(
-        db,
-        job_type="letterbox_apply_batch",
-        payload={"movie_ids": body.movie_ids, "only_high": body.only_high},
-        priority=70,
-        subject_type="letterbox_batch",
-        subject_id=uuid4().hex,
-        status="waiting_external",
-    )
-    skipped = []
-    queued = 0
+@router.post("/apply", status_code=202)
+async def apply_batch(
+    body: BatchApplyRequest, db: Annotated[AsyncSession, Depends(get_db)]
+) -> JobSubmissionResponse:
+    """Seal one canonical apply child per eligible physical movie file."""
+    initiator = Initiator(kind="system", identifier="letterbox-api")
+    children: list[SubmissionIntent] = []
     for movie_id in body.movie_ids:
         movie = (await db.execute(select(Movie).where(Movie.id == movie_id))).scalar_one_or_none()
         state = (
@@ -1808,39 +1989,58 @@ async def apply_batch(body: BatchApplyRequest, db: Annotated[AsyncSession, Depen
             )
         ).scalar_one_or_none()
         if movie is None or state is None:
-            skipped.append({"movie_id": movie_id, "reason": "not_found"})
             continue
         if state.status == "variable_unsafe" or not state.recommended_crop_top:
-            skipped.append({"movie_id": movie_id, "reason": "not_applicable"})
             continue
         if body.only_high and state.confidence != "high":
-            skipped.append({"movie_id": movie_id, "reason": "not_high_confidence"})
             continue
-        await job_manager.create(
-            db,
-            job_type="letterbox_apply",
-            payload={
-                "movie_id": movie.id,
-                "top": state.recommended_crop_top or 0,
-                "bottom": state.recommended_crop_bottom or 0,
-            },
-            priority=70,
-            resources={"media_write": 1, **(await _file_lock(db, movie))},
-            parent_id=batch.id,
-            correlation_id=batch.correlation_id,
-            subject_type="movie",
-            subject_id=movie.id,
-            max_attempts=1,
+        media_file, before = await _letterbox_mutation_snapshot(db, movie, state)
+        children.append(
+            SubmissionIntent(
+                job_type="letterbox_apply",
+                request={
+                    "media_file_id": media_file.id,
+                    "subject_kind": "movie",
+                    "subject_ids": [movie.id],
+                    "before": before,
+                    "crop_top": state.recommended_crop_top or 0,
+                    "crop_bottom": state.recommended_crop_bottom or 0,
+                    "source": "api",
+                },
+                subject=SubjectLocator(kind="media_file", reference=str(media_file.id)),
+                trigger=TriggerKind.BATCH,
+                initiator=initiator,
+                idempotency_key=f"letterbox_apply:batch-{uuid4().hex}",
+                priority=70,
+            )
         )
-        queued += 1
-    if not queued:
-        batch.status = "succeeded"
-        batch.finished_at = datetime.now(UTC)
-        batch.progress = {"children_total": 0, "children_completed": 0, "children_failed": 0}
+    if db.in_transaction():
         await db.commit()
-    result = job_summary(batch)
-    result.update({"queued": queued, "skipped": skipped})
-    return result
+    scope_key = uuid4().hex[:12]
+    try:
+        async with db.begin():
+            result = await create_fixed_batch(
+                db,
+                parent_job_type="letterbox_apply_batch",
+                parent_request={
+                    "operation": "apply",
+                    "confidence_levels": ["high"] if body.only_high else [],
+                    "sealed_file_count": len(children),
+                },
+                scope=BatchScope(
+                    reference=f"movies-apply-{scope_key}",
+                    display_name="Letterbox apply: selected movies",
+                    summary=f"{len(children)} sealed physical media files",
+                ),
+                trigger=TriggerKind.MANUAL,
+                initiator=initiator,
+                idempotency_key=f"letterbox_apply_batch:manual-{uuid4().hex}",
+                children=children,
+                priority=70,
+            )
+    except SubmissionError as exc:
+        raise HTTPException(status_code=422, detail=exc.code) from exc
+    return submission_response(result.parent)
 
 
 @router.post("/movies/{movie_id}/confirm")
@@ -1873,19 +2073,244 @@ def _map_reencode_error(exc: letterbox_reencode.ReencodePlanError) -> HTTPExcept
     )
 
 
-async def _load_reencode_artifact(db: AsyncSession, artifact_id: int) -> LetterboxReencodeArtifact:
-    artifact = await db.get(LetterboxReencodeArtifact, artifact_id)
+def _canonical_reencode_artifact(artifact: JobArtifact) -> dict[str, object]:
+    return {
+        "id": artifact.id,
+        "job_id": artifact.job_id,
+        "status": artifact.status,
+        "kind": artifact.kind,
+        "name": artifact.name,
+        "content_type": artifact.content_type,
+        "size_bytes": artifact.size_bytes,
+        "checksum": artifact.checksum,
+        "metadata": artifact.artifact_metadata,
+        "created_at": artifact.created_at.isoformat(),
+        "expires_at": artifact.expires_at.isoformat() if artifact.expires_at else None,
+    }
+
+
+async def _load_reencode_artifact(db: AsyncSession, artifact_id: int) -> JobArtifact:
+    artifact = await db.get(JobArtifact, artifact_id)
     if artifact is None:
         raise HTTPException(status_code=404, detail=f"Re-encode artifact {artifact_id} not found")
+    if artifact.kind != "media_candidate":
+        raise HTTPException(status_code=404, detail=f"Re-encode artifact {artifact_id} not found")
     return artifact
+
+
+def _artifact_subject(artifact: JobArtifact) -> tuple[str, int, int]:
+    metadata = artifact.artifact_metadata or {}
+    try:
+        media_file_id = int(metadata["media_file_id"])
+        subject_kind = str(metadata["subject_kind"])
+        subject_id = int(metadata["subject_id"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail="Candidate ownership evidence is incomplete") from exc
+    if subject_kind not in {"movie", "episode"} or media_file_id < 1 or subject_id < 1:
+        raise HTTPException(status_code=409, detail="Candidate ownership evidence is invalid")
+    return subject_kind, subject_id, media_file_id
+
+
+def _candidate_probes(artifact: JobArtifact) -> tuple[ReencodeProbeV1, ReencodeProbeV1]:
+    metadata = artifact.artifact_metadata or {}
+    try:
+        return (
+            ReencodeProbeV1.model_validate(metadata["source_probe"]),
+            ReencodeProbeV1.model_validate(metadata["output_probe"]),
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail="Candidate probe evidence is incomplete") from exc
+
+
+async def _plan_reencode_decision(
+    db: AsyncSession,
+    *,
+    operation: str,
+    job_type: str,
+    request: (
+        LetterboxReencodePublishRequestV1
+        | LetterboxReencodeRestoreRequestV1
+        | LetterboxReencodeDiscardRequestV1
+    ),
+    input_signature: str,
+) -> tuple[Job, datetime, str]:
+    target = MutationTargetV1(
+        key=f"media-file:{request.media_file_id}:reencode-{operation}",
+        kind="media_file" if operation != "discard" else "media_candidate",
+        label=f"Letterbox re-encode {operation}",
+        operation=operation,
+        selector_facts={
+            "media_file_id": request.media_file_id,
+            "candidate_artifact_id": request.candidate_artifact_id,
+        },
+    )
+    try:
+        result = await plan_mutation(
+            db,
+            job_type=job_type,
+            request=request.model_dump(mode="json", exclude_none=True),
+            subject=SubjectLocator(kind=request.subject_kind, reference=str(request.subject_id)),
+            initiator=Initiator(kind="user", identifier="letterbox-api"),
+            idempotency_key=f"letterbox_reencode_{operation}:plan-{uuid4().hex}",
+            priority=70,
+            plan=MutationPlan(
+                operation_kind=f"letterbox_reencode_{operation}",
+                media_file_id=request.media_file_id,
+                media_snapshot={
+                    "media_file_id": request.media_file_id,
+                    "subject_kind": request.subject_kind,
+                    "subject_id": request.subject_id,
+                    "candidate_artifact_id": request.candidate_artifact_id,
+                },
+                before_targets=(target,),
+                requested_targets=(target,),
+                expected_targets=(target,),
+                input_signature=input_signature,
+                confirmation_requirements={
+                    "explicit_confirmation": True,
+                    "operation": operation,
+                },
+            ),
+        )
+    except SubmissionError as exc:
+        raise HTTPException(status_code=422, detail=exc.code) from exc
+    job = await db.get(Job, result.job_id)
+    detail = await db.get(MediaOperationDetail, result.job_id)
+    if job is None or detail is None or detail.plan_expires_at is None:
+        raise HTTPException(status_code=500, detail="Artifact decision plan was not persisted")
+    await db.commit()
+    return job, detail.plan_expires_at, plan_version(detail)
+
+
+def _reencode_request(
+    plan: dict,
+    *,
+    media_file_id: int,
+    subject_kind: str,
+    subject_id: int,
+) -> LetterboxReencodeRequestV1:
+    source = plan["source"]
+    encoder = plan["encoder"]
+    crop = plan["crop"]
+    return LetterboxReencodeRequestV1.model_validate(
+        {
+            "media_file_id": media_file_id,
+            "subject_kind": subject_kind,
+            "subject_id": subject_id,
+            "crop_top": crop["top"],
+            "crop_bottom": crop["bottom"],
+            "output_height": crop["output_height"],
+            "source": {
+                "signature": source["signature"],
+                "size_bytes": source["size_bytes"],
+                "codec": source["codec"],
+                "width": source["width"],
+                "height": source["height"],
+                "duration_seconds": source["duration_seconds"],
+                "pixel_format": source["pix_fmt"],
+                "color_transfer": source["color_transfer"],
+                "color_primaries": source["color_primaries"],
+                "color_space": source["color_space"],
+                "has_hdr": source["has_hdr"],
+                "has_dolby_vision": source["has_dovi"],
+                "video_streams": source["video_streams"],
+                "audio_streams": source["audio_streams"],
+                "subtitle_streams": source["subtitle_streams"],
+                "attachment_streams": source["attachment_streams"],
+            },
+            "encoder": {
+                "codec": encoder["codec"],
+                "encoder": encoder["encoder"],
+                "family": encoder["family"],
+                "quality": encoder["quality"],
+                "preset": encoder["preset"],
+                "used_cpu_fallback": encoder["used_cpu_fallback"],
+            },
+        }
+    )
+
+
+async def _plan_reencode(
+    db: AsyncSession,
+    *,
+    request: LetterboxReencodeRequestV1,
+    subject: SubjectLocator,
+    idempotency_key: str,
+):
+    target = MutationTargetV1(
+        key=f"media-file:{request.media_file_id}:reencode-candidate",
+        kind="media_candidate",
+        label="Permanent letterbox crop candidate",
+        operation="reencode",
+        selector_facts={
+            "media_file_id": request.media_file_id,
+            "crop_top": request.crop_top,
+            "crop_bottom": request.crop_bottom,
+        },
+    )
+    return await plan_mutation(
+        db,
+        job_type="letterbox_reencode",
+        request=request.model_dump(mode="json"),
+        subject=subject,
+        initiator=Initiator(kind="user", identifier="letterbox-api"),
+        idempotency_key=idempotency_key,
+        priority=70,
+        plan=MutationPlan(
+            operation_kind="letterbox_reencode",
+            media_file_id=request.media_file_id,
+            media_snapshot=request.source.model_dump(mode="json"),
+            before_targets=(target,),
+            requested_targets=(target,),
+            expected_targets=(target,),
+            input_signature=request.source.signature,
+            confirmation_requirements={"candidate_only": True, "source_publish": False},
+        ),
+    )
 
 
 async def _create_reencode_plan_job(
     db: AsyncSession,
     movie_id: int,
     body: ReencodePlanRequest,
-) -> tuple[object, dict, datetime]:
-    raise UnmigratedJobPlatformError(f"letterbox_reencode.plan.movie:{movie_id}")
+) -> tuple[Job, dict, datetime]:
+    movie = await _load_movie(db, movie_id)
+    state = await _load_state(db, movie_id)
+    media_file = await ensure_media_file_for_movie(db, movie)
+    if media_file is None:
+        raise HTTPException(status_code=422, detail="Movie has no active media file")
+    resolved = await resolve_media_file(db, media_file.id)
+    top = body.top if body.top is not None else state.recommended_crop_top or 0
+    bottom = body.bottom if body.bottom is not None else state.recommended_crop_bottom or 0
+    try:
+        plan = await letterbox_reencode.build_plan(
+            db,
+            resolved,
+            top=top,
+            bottom=bottom,
+            allow_cpu_fallback=body.allow_cpu_fallback,
+            encoder=body.encoder,
+            quality=body.quality,
+            preset=body.preset,
+            codec=body.codec,
+        )
+        request = _reencode_request(
+            plan, media_file_id=media_file.id, subject_kind="movie", subject_id=movie.id
+        )
+        result = await _plan_reencode(
+            db,
+            request=request,
+            subject=SubjectLocator(kind="movie", reference=str(movie.id)),
+            idempotency_key=f"letterbox-reencode-plan:{movie.id}:{uuid4().hex}",
+        )
+    except letterbox_reencode.ReencodePlanError as exc:
+        raise _map_reencode_error(exc) from exc
+    job = await db.get(Job, result.job_id)
+    detail = await db.get(MediaOperationDetail, result.job_id)
+    if job is None or detail is None or detail.plan_expires_at is None:
+        raise HTTPException(status_code=500, detail="Re-encode plan evidence was not persisted")
+    await db.commit()
+    return job, plan, detail.plan_expires_at
 
 
 async def _create_tv_reencode_plan_job(
@@ -1893,14 +2318,66 @@ async def _create_tv_reencode_plan_job(
     series_id: int,
     episode_id: int,
     body: ReencodePlanRequest,
-) -> tuple[object, dict, datetime]:
-    raise UnmigratedJobPlatformError(
-        f"letterbox_reencode.plan.episode:{series_id}:{episode_id}"
-    )
+) -> tuple[Job, dict, datetime]:
+    rows = await _tv_scope_rows(db, series_id)
+    row = next((item for item in rows if item[0].id == episode_id), None)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"Episode id={episode_id} not found")
+    episode, _series, state, media_file_id = row
+    if state is None or media_file_id is None:
+        raise HTTPException(status_code=422, detail="Episode lacks detection or active media")
+    resolved = await resolve_media_file(db, media_file_id)
+    top = body.top if body.top is not None else state.recommended_crop_top or 0
+    bottom = body.bottom if body.bottom is not None else state.recommended_crop_bottom or 0
+    try:
+        plan = await letterbox_reencode.build_plan(
+            db,
+            resolved,
+            top=top,
+            bottom=bottom,
+            allow_cpu_fallback=body.allow_cpu_fallback,
+            encoder=body.encoder,
+            quality=body.quality,
+            preset=body.preset,
+            codec=body.codec,
+        )
+        request = _reencode_request(
+            plan,
+            media_file_id=media_file_id,
+            subject_kind="episode",
+            subject_id=episode.id,
+        )
+        result = await _plan_reencode(
+            db,
+            request=request,
+            subject=SubjectLocator(kind="episode", reference=str(episode.id)),
+            idempotency_key=f"letterbox-reencode-plan:{episode.id}:{uuid4().hex}",
+        )
+    except letterbox_reencode.ReencodePlanError as exc:
+        raise _map_reencode_error(exc) from exc
+    job = await db.get(Job, result.job_id)
+    detail = await db.get(MediaOperationDetail, result.job_id)
+    if job is None or detail is None or detail.plan_expires_at is None:
+        raise HTTPException(status_code=500, detail="Re-encode plan evidence was not persisted")
+    await db.commit()
+    return job, plan, detail.plan_expires_at
 
 
 async def _confirm_media_job_plan(db: AsyncSession, job: object) -> None:
-    raise UnmigratedJobPlatformError("letterbox_reencode.confirm")
+    if not isinstance(job, Job):
+        raise HTTPException(status_code=500, detail="Invalid canonical re-encode plan")
+    detail = await db.get(MediaOperationDetail, job.id)
+    if detail is None:
+        raise HTTPException(status_code=409, detail="Re-encode plan evidence is missing")
+    await confirm_mutation(
+        db,
+        job_id=job.id,
+        expected_plan_version=plan_version(detail),
+        current_input_signature=detail.input_signature,
+        confirmed_by=Initiator(kind="user", identifier="letterbox-api"),
+        expected_configuration_version=job.configuration_version,
+    )
+    await db.commit()
 
 
 @router.post("/movies/{movie_id}/reencode-plan", status_code=201)
@@ -1914,7 +2391,7 @@ async def create_reencode_plan(
     job, plan, expires_at = await _create_reencode_plan_job(db, movie_id, body)
     return {
         **plan,
-        "job_id": job.job_id,
+        "job_id": job.id,
         "status": "planned",
         "expires_at": expires_at.isoformat(),
     }
@@ -1931,7 +2408,7 @@ async def create_tv_reencode_plan(
     job, plan, expires_at = await _create_tv_reencode_plan_job(db, series_id, episode_id, body)
     return {
         **plan,
-        "job_id": job.job_id,
+        "job_id": job.id,
         "status": "planned",
         "expires_at": expires_at.isoformat(),
     }
@@ -1961,7 +2438,7 @@ async def batch_reencode(
         try:
             job, _plan, _expires = await _create_reencode_plan_job(db, movie_id, plan_body)
             await _confirm_media_job_plan(db, job)
-            job_ids.append(job.job_id)
+            job_ids.append(job.id)
         except HTTPException as exc:
             detail = exc.detail if isinstance(exc.detail, dict) else {"message": str(exc.detail)}
             skipped.append(
@@ -1986,20 +2463,6 @@ async def tv_batch_reencode(
     rows = await _tv_scope_rows(db, series_id, season_number=body.season_number)
     if not rows:
         raise HTTPException(status_code=404, detail=f"Series id={series_id} not found")
-
-    parent = await job_manager.create(
-        db,
-        job_type="letterbox_reencode_tv_batch",
-        payload={
-            "series_id": series_id,
-            "season_number": body.season_number,
-            "confidence_levels": confidence_levels,
-        },
-        priority=70,
-        subject_type="series",
-        subject_id=series_id,
-        status="waiting_external",
-    )
 
     plan_body = ReencodePlanRequest(
         top=body.settings.crop_top_override,
@@ -2057,21 +2520,49 @@ async def tv_batch_reencode(
             continue
         groups.setdefault(media_file_id, (episode, state))
 
-    job_ids: list[str] = []
-    for episode, _state in groups.values():
+    nonce = uuid4().hex
+    initiator = Initiator(kind="user", identifier="letterbox-api")
+    children: list[SubmissionIntent] = []
+    for media_file_id, (episode, state) in groups.items():
         try:
-            job, _plan, _expires = await _create_tv_reencode_plan_job(
-                db, series_id, episode.id, plan_body
+            resolved = await resolve_media_file(db, media_file_id)
+            top = plan_body.top if plan_body.top is not None else state.recommended_crop_top or 0
+            bottom = (
+                plan_body.bottom
+                if plan_body.bottom is not None
+                else state.recommended_crop_bottom or 0
             )
-            await _confirm_media_job_plan(db, job)
-            generic = await _generic_media_job_bridge(db, job)
-            if generic is not None:
-                generic.parent_id = parent.id
-                generic.root_id = parent.root_id
-                generic.correlation_id = parent.correlation_id
-            job_ids.append(job.job_id)
-        except HTTPException as exc:
-            detail = exc.detail if isinstance(exc.detail, dict) else {"message": str(exc.detail)}
+            plan = await letterbox_reencode.build_plan(
+                db,
+                resolved,
+                top=top,
+                bottom=bottom,
+                allow_cpu_fallback=plan_body.allow_cpu_fallback,
+                encoder=plan_body.encoder,
+                quality=plan_body.quality,
+                preset=plan_body.preset,
+                codec=plan_body.codec,
+            )
+            request = _reencode_request(
+                plan,
+                media_file_id=media_file_id,
+                subject_kind="episode",
+                subject_id=episode.id,
+            )
+            children.append(
+                SubmissionIntent(
+                    job_type="letterbox_reencode",
+                    request=request.model_dump(mode="json"),
+                    subject=SubjectLocator(kind="episode", reference=str(episode.id)),
+                    trigger=TriggerKind.BATCH,
+                    initiator=initiator,
+                    idempotency_key=f"letterbox_reencode:tv-{nonce}-{media_file_id}",
+                    priority=70,
+                )
+            )
+        except (HTTPException, letterbox_reencode.ReencodePlanError) as exc:
+            detail_value = exc.detail if isinstance(exc, HTTPException) else str(exc)
+            detail = detail_value if isinstance(detail_value, dict) else {"message": str(detail_value)}
             skipped.append(
                 {
                     "episode_id": episode.id,
@@ -2080,20 +2571,36 @@ async def tv_batch_reencode(
                     "sXXeYY": f"S{episode.season_number:02d}E{episode.episode_number:02d}",
                 }
             )
-    parent.progress = {
-        "children_total": len(job_ids),
-        "children_completed": 0,
-        "children_failed": 0,
-    }
-    if not job_ids:
-        parent.status = "succeeded"
-        parent.finished_at = datetime.now(UTC)
-    await db.commit()
+    if db.in_transaction():
+        await db.commit()
+    try:
+        async with db.begin():
+            result = await create_fixed_batch(
+                db,
+                parent_job_type="letterbox_reencode_tv_batch",
+                parent_request={
+                    "series_id": series_id,
+                    "season_number": body.season_number,
+                    "confidence_levels": confidence_levels,
+                },
+                scope=BatchScope(
+                    reference=f"series-{series_id}-reencode-{nonce[:12]}",
+                    display_name=f"Letterbox re-encode: series {series_id}",
+                    summary=f"{len(children)} sealed physical media files",
+                ),
+                trigger=TriggerKind.MANUAL,
+                initiator=initiator,
+                idempotency_key=f"letterbox_reencode_tv_batch:manual-{nonce}",
+                children=children,
+                priority=70,
+            )
+    except SubmissionError as exc:
+        raise HTTPException(status_code=422, detail=exc.code) from exc
     return {
-        "job_ids": job_ids,
-        "count": len(job_ids),
+        "job_ids": [child.job_id for child in result.children],
+        "count": len(result.children),
         "skipped": skipped,
-        "parent_job_id": parent.id,
+        "parent_job_id": result.parent.job_id,
     }
 
 
@@ -2107,54 +2614,35 @@ async def list_reencode_artifacts(
     limit: int = Query(100, ge=1, le=500),
 ):
     query = (
-        select(LetterboxReencodeArtifact)
-        .order_by(LetterboxReencodeArtifact.created_at.desc())
+        select(JobArtifact)
+        .join(Job, Job.id == JobArtifact.job_id)
+        .where(JobArtifact.kind == "media_candidate", Job.type == "letterbox_reencode")
+        .order_by(JobArtifact.created_at.desc(), JobArtifact.id.desc())
         .limit(limit)
     )
     if status:
-        query = query.where(LetterboxReencodeArtifact.status == status)
-    if movie_id:
-        query = query.where(LetterboxReencodeArtifact.movie_id == movie_id)
-    if series_id is not None or season_number is not None:
-        query = (
-            query.join(
-                EpisodeMediaFile,
-                EpisodeMediaFile.media_file_id == LetterboxReencodeArtifact.media_file_id,
-            )
-            .join(Episode, Episode.id == EpisodeMediaFile.episode_id)
-            .where(LetterboxReencodeArtifact.media_type == "episode")
-            .distinct()
+        query = query.where(JobArtifact.status == status)
+    if movie_id is not None:
+        query = query.where(
+            Job.subject_kind == "movie", Job.subject_reference == str(movie_id)
         )
+    if series_id is not None or season_number is not None:
+        query = query.join(
+            Episode,
+            cast(Episode.id, String) == Job.subject_reference,
+        ).where(Job.subject_kind == "episode")
         if series_id is not None:
             query = query.where(Episode.series_id == series_id)
         if season_number is not None:
             query = query.where(Episode.season_number == season_number)
-    rows = (await db.execute(query)).scalars().all()
-    items = []
-    for row in rows:
-        item = letterbox_reencode.artifact_to_dict(row)
-        if row.media_type == "episode" and row.episode_id is not None:
-            tv_row = (
-                await db.execute(
-                    select(Episode, Series)
-                    .join(Series, Series.id == Episode.series_id)
-                    .where(Episode.id == row.episode_id)
-                )
-            ).one_or_none()
-            if tv_row is not None:
-                episode, series = tv_row
-                item.update(
-                    {
-                        "series_id": series.id,
-                        "series_title": series.title,
-                        "episode_code": f"S{episode.season_number:02d}E{episode.episode_number:02d}",
-                    }
-                )
-        items.append(item)
-    return {
-        "summary": await letterbox_reencode.artifact_summary(db),
-        "items": items,
+    rows = (await db.execute(query)).scalars().unique().all()
+    counts = {
+        "total": len(rows),
+        "available": sum(row.status == "available" for row in rows),
+        "pending": sum(row.status == "pending" for row in rows),
+        "failed": sum(row.status == "failed" for row in rows),
     }
+    return {"summary": counts, "items": [_canonical_reencode_artifact(row) for row in rows]}
 
 
 @router.post("/tv/{series_id}/reencode-artifacts/replace-ready")
@@ -2163,30 +2651,114 @@ async def replace_ready_tv_reencode_artifacts(
     body: TvReplaceReadyRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    query = (
-        select(LetterboxReencodeArtifact)
-        .join(EpisodeMediaFile, EpisodeMediaFile.media_file_id == LetterboxReencodeArtifact.media_file_id)
-        .join(Episode, Episode.id == EpisodeMediaFile.episode_id)
-        .where(
-            LetterboxReencodeArtifact.media_type == "episode",
-            LetterboxReencodeArtifact.status == "candidate_ready",
-            Episode.series_id == series_id,
-        )
-        .distinct()
-        .order_by(LetterboxReencodeArtifact.id)
+    rows = await _tv_scope_rows(db, series_id, season_number=body.season_number)
+    if not rows:
+        raise HTTPException(status_code=404, detail=f"Series id={series_id} not found")
+    media_file_ids = {
+        media_file_id for _episode, _series, _state, media_file_id in rows if media_file_id
+    }
+    artifacts = list(
+        (
+            await db.scalars(
+                select(JobArtifact)
+                .where(
+                    JobArtifact.kind == "media_candidate",
+                    JobArtifact.status == "available",
+                )
+                .order_by(JobArtifact.created_at.desc(), JobArtifact.id.desc())
+                .limit(10_000)
+            )
+        ).all()
     )
-    if body.season_number is not None:
-        query = query.where(Episode.season_number == body.season_number)
-    artifacts = (await db.execute(query)).scalars().all()
-    replaced = 0
-    failed: list[dict] = []
+    latest: dict[int, JobArtifact] = {}
     for artifact in artifacts:
+        metadata = artifact.artifact_metadata or {}
         try:
-            await letterbox_reencode.replace_original(db, artifact)
-            replaced += 1
-        except letterbox_reencode.ReencodePlanError as exc:
-            failed.append({"artifact_id": artifact.id, "code": exc.code, "reason": str(exc)})
-    return {"replaced": replaced, "failed": failed}
+            media_file_id = int(metadata.get("media_file_id") or 0)
+        except (TypeError, ValueError):
+            continue
+        if media_file_id in media_file_ids and media_file_id not in latest:
+            latest[media_file_id] = artifact
+
+    initiator = Initiator(kind="user", identifier="letterbox-api")
+    children: list[SubmissionIntent] = []
+    skipped: list[dict[str, object]] = []
+    for media_file_id in sorted(media_file_ids):
+        artifact = latest.get(media_file_id)
+        if artifact is None or not artifact.checksum or not artifact.size_bytes:
+            skipped.append({"media_file_id": media_file_id, "reason": "no_ready_candidate"})
+            continue
+        metadata = artifact.artifact_metadata or {}
+        if metadata.get("published") and not metadata.get("restored"):
+            skipped.append({"media_file_id": media_file_id, "reason": "already_published"})
+            continue
+        try:
+            subject_kind, subject_id, _ = _artifact_subject(artifact)
+            source_probe, candidate_probe = _candidate_probes(artifact)
+            resolved = await resolve_media_file(db, media_file_id)
+            if resolved.path.suffix.lower() != ".mkv":
+                raise ValueError("unsupported_container")
+            expected_source_signature = str(metadata.get("source_signature") or "")
+            if resolved.signature != expected_source_signature:
+                raise ValueError("source_changed")
+            request = LetterboxReencodePublishRequestV1(
+                media_file_id=media_file_id,
+                subject_kind=subject_kind,
+                subject_id=subject_id,
+                candidate_artifact_id=artifact.id,
+                candidate_job_id=artifact.job_id,
+                candidate_checksum=artifact.checksum,
+                candidate_size_bytes=artifact.size_bytes,
+                expected_source_signature=expected_source_signature,
+                crop_top=int(metadata.get("crop_top") or 0),
+                crop_bottom=int(metadata.get("crop_bottom") or 0),
+                source_probe=source_probe,
+                candidate_probe=candidate_probe,
+            )
+        except (HTTPException, ValueError):
+            skipped.append({"media_file_id": media_file_id, "reason": "stale_candidate"})
+            continue
+        children.append(
+            SubmissionIntent(
+                job_type="letterbox_reencode_publish",
+                request=request.model_dump(mode="json"),
+                subject=SubjectLocator(kind=subject_kind, reference=str(subject_id)),
+                trigger=TriggerKind.BATCH,
+                initiator=initiator,
+                idempotency_key=f"letterbox_reencode_publish:tv-{uuid4().hex}",
+                priority=70,
+            )
+        )
+    if db.in_transaction():
+        await db.commit()
+    try:
+        async with db.begin():
+            result = await create_fixed_batch(
+                db,
+                parent_job_type="letterbox_reencode_publish_batch",
+                parent_request={
+                    "series_id": series_id,
+                    "season_number": body.season_number,
+                },
+                scope=BatchScope(
+                    reference=f"series-{series_id}-publish-{uuid4().hex[:12]}",
+                    display_name=f"Publish letterbox candidates: series {series_id}",
+                    summary=f"{len(children)} sealed physical media files",
+                ),
+                trigger=TriggerKind.MANUAL,
+                initiator=initiator,
+                idempotency_key=f"letterbox_reencode_publish_batch:manual-{uuid4().hex}",
+                children=children,
+                priority=70,
+            )
+    except SubmissionError as exc:
+        raise HTTPException(status_code=422, detail=exc.code) from exc
+    return {
+        "parent_job_id": result.parent.job_id,
+        "job_ids": [child.job_id for child in result.children],
+        "count": len(result.children),
+        "skipped": skipped,
+    }
 
 
 @router.post("/reencode-artifacts/{artifact_id}/replace-original")
@@ -2195,25 +2767,103 @@ async def replace_reencode_original(
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
     artifact = await _load_reencode_artifact(db, artifact_id)
-    try:
-        return await letterbox_reencode.replace_original(db, artifact)
-    except letterbox_reencode.ReencodePlanError as exc:
-        raise _map_reencode_error(exc) from exc
+    if artifact.status != "available" or not artifact.checksum or not artifact.size_bytes:
+        raise HTTPException(status_code=409, detail="Candidate is not available for publication")
+    metadata = artifact.artifact_metadata or {}
+    if metadata.get("published") and not metadata.get("restored"):
+        raise HTTPException(status_code=409, detail="Candidate is already published")
+    subject_kind, subject_id, media_file_id = _artifact_subject(artifact)
+    source_probe, candidate_probe = _candidate_probes(artifact)
+    resolved = await resolve_media_file(db, media_file_id)
+    if resolved.path.suffix.lower() != ".mkv":
+        raise HTTPException(status_code=422, detail="Only Matroska publication is certified")
+    expected_source_signature = str(metadata.get("source_signature") or "")
+    if not expected_source_signature or resolved.signature != expected_source_signature:
+        raise HTTPException(status_code=409, detail="Source changed after candidate creation")
+    request = LetterboxReencodePublishRequestV1(
+        media_file_id=media_file_id,
+        subject_kind=subject_kind,
+        subject_id=subject_id,
+        candidate_artifact_id=artifact.id,
+        candidate_job_id=artifact.job_id,
+        candidate_checksum=artifact.checksum,
+        candidate_size_bytes=artifact.size_bytes,
+        expected_source_signature=expected_source_signature,
+        crop_top=int(metadata.get("crop_top") or 0),
+        crop_bottom=int(metadata.get("crop_bottom") or 0),
+        source_probe=source_probe,
+        candidate_probe=candidate_probe,
+    )
+    job, expires_at, expected_plan_version = await _plan_reencode_decision(
+        db,
+        operation="publish",
+        job_type="letterbox_reencode_publish",
+        request=request,
+        input_signature=resolved.signature,
+    )
+    return {
+        "job_id": job.id,
+        "status": "planned",
+        "expires_at": expires_at.isoformat(),
+        "plan_version": expected_plan_version,
+        "configuration_version": job.configuration_version,
+        "artifact_id": artifact.id,
+        "operation": "publish",
+    }
 
 
 @router.post("/reencode-artifacts/{artifact_id}/restore-original")
 async def restore_reencode_original(
     artifact_id: int,
-    body: RestoreReencodeRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
     artifact = await _load_reencode_artifact(db, artifact_id)
-    try:
-        return await letterbox_reencode.restore_original(
-            db, artifact, keep_candidate=body.keep_candidate
-        )
-    except letterbox_reencode.ReencodePlanError as exc:
-        raise _map_reencode_error(exc) from exc
+    metadata = artifact.artifact_metadata or {}
+    backup_artifact_id = int(metadata.get("backup_artifact_id") or 0)
+    backup = await db.get(JobArtifact, backup_artifact_id) if backup_artifact_id else None
+    if (
+        not metadata.get("published")
+        or metadata.get("restored")
+        or backup is None
+        or backup.kind != "media_backup"
+        or backup.status != "available"
+        or not backup.checksum
+        or not backup.size_bytes
+        or not artifact.checksum
+    ):
+        raise HTTPException(status_code=409, detail="Restorable canonical backup is unavailable")
+    subject_kind, subject_id, media_file_id = _artifact_subject(artifact)
+    resolved = await resolve_media_file(db, media_file_id)
+    if resolved.path.suffix.lower() != ".mkv":
+        raise HTTPException(status_code=422, detail="Only Matroska restoration is certified")
+    request = LetterboxReencodeRestoreRequestV1(
+        media_file_id=media_file_id,
+        subject_kind=subject_kind,
+        subject_id=subject_id,
+        candidate_artifact_id=artifact.id,
+        backup_artifact_id=backup.id,
+        backup_checksum=backup.checksum,
+        backup_size_bytes=backup.size_bytes,
+        expected_destination_signature=resolved.signature,
+        published_checksum=artifact.checksum,
+    )
+    job, expires_at, expected_plan_version = await _plan_reencode_decision(
+        db,
+        operation="restore",
+        job_type="letterbox_reencode_restore",
+        request=request,
+        input_signature=resolved.signature,
+    )
+    return {
+        "job_id": job.id,
+        "status": "planned",
+        "expires_at": expires_at.isoformat(),
+        "plan_version": expected_plan_version,
+        "configuration_version": job.configuration_version,
+        "artifact_id": artifact.id,
+        "operation": "restore",
+        "candidate_retained": True,
+    }
 
 
 @router.delete("/reencode-artifacts/{artifact_id}")
@@ -2222,44 +2872,82 @@ async def delete_reencode_artifact(
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
     artifact = await _load_reencode_artifact(db, artifact_id)
-    return await letterbox_reencode.delete_artifact_files(db, artifact)
+    if artifact.status != "available" or not artifact.checksum:
+        raise HTTPException(status_code=409, detail="Candidate is not available for discard")
+    subject_kind, subject_id, media_file_id = _artifact_subject(artifact)
+    resolved = await resolve_media_file(db, media_file_id)
+    request = LetterboxReencodeDiscardRequestV1(
+        media_file_id=media_file_id,
+        subject_kind=subject_kind,
+        subject_id=subject_id,
+        candidate_artifact_id=artifact.id,
+        candidate_checksum=artifact.checksum,
+    )
+    job, expires_at, expected_plan_version = await _plan_reencode_decision(
+        db,
+        operation="discard",
+        job_type="letterbox_reencode_discard",
+        request=request,
+        input_signature=resolved.signature,
+    )
+    return {
+        "job_id": job.id,
+        "status": "planned",
+        "expires_at": expires_at.isoformat(),
+        "plan_version": expected_plan_version,
+        "configuration_version": job.configuration_version,
+        "artifact_id": artifact.id,
+        "operation": "discard",
+    }
 
 
-@router.post("/tv/{series_id}/episodes/{episode_id}/remove")
+@router.post("/tv/{series_id}/episodes/{episode_id}/remove", status_code=202)
 async def remove_tv_episode(
     series_id: int,
     episode_id: int,
     db: Annotated[AsyncSession, Depends(get_db)],
-):
+) -> JobSubmissionResponse:
     rows = await _tv_scope_rows(db, series_id)
     group_rows = _scope_episode_group(rows, episode_id)
-    result = await letterbox_service.remove_episode_group(
+    return await _submit_tv_mutation_parent(
         db,
-        [episode for episode, *_rest in group_rows],
-        source="api",
+        series_id=series_id,
+        season_number=None,
+        rows=group_rows,
+        operation="remove",
     )
-    return {
-        "removed": result.removed,
-        "path": result.path,
-        "episode_ids": [episode.id for episode, *_rest in group_rows],
-    }
 
 
-@router.post("/movies/{movie_id}/remove")
-async def remove_one(movie_id: int, db: Annotated[AsyncSession, Depends(get_db)]):
+@router.post("/movies/{movie_id}/remove", status_code=202)
+async def remove_one(
+    movie_id: int, db: Annotated[AsyncSession, Depends(get_db)]
+) -> JobSubmissionResponse:
     movie = await _load_movie(db, movie_id)
-    await _load_state(db, movie_id)
-    job = await job_manager.create_and_run(
-        db,
-        job_type="letterbox_remove",
-        payload={"movie_id": movie.id},
-        priority=80,
-        subject_type="movie",
-        subject_id=movie.id,
-        max_attempts=1,
-        worker_id="inline-api",
-    )
-    return {**job_summary(job), **(job.result or {})}
+    state = await _load_state(db, movie_id)
+    media_file, before = await _letterbox_mutation_snapshot(db, movie, state)
+    if db.in_transaction():
+        await db.commit()
+    try:
+        async with db.begin():
+            result = await submit_job(
+                db,
+                job_type="letterbox_remove",
+                request={
+                    "media_file_id": media_file.id,
+                    "subject_kind": "movie",
+                    "subject_ids": [movie.id],
+                    "before": before,
+                    "source": "api",
+                },
+                subject=SubjectLocator(kind="media_file", reference=str(media_file.id)),
+                trigger=TriggerKind.MANUAL,
+                initiator=Initiator(kind="system", identifier="letterbox-api"),
+                idempotency_key=f"letterbox_remove:manual-{uuid4().hex}",
+                priority=80,
+            )
+    except SubmissionError as exc:
+        raise HTTPException(status_code=422, detail=exc.code) from exc
+    return submission_response(result)
 
 
 @router.post("/tv/{series_id}/episodes/{episode_id}/ignore")
@@ -2389,13 +3077,39 @@ async def mark_not_letterboxed(movie_id: int, db: Annotated[AsyncSession, Depend
     return response
 
 
-@router.post("/heal")
-async def letterbox_heal(db: Annotated[AsyncSession, Depends(get_db)]):
-    """Re-apply crop tags that drifted off tagged files (tag-drift scan)."""
-    job = await job_manager.create(
-        db, job_type="letterbox_heal", priority=20, resources={"media_write": 1}
-    )
-    return job_summary(job)
+@router.post("/heal", status_code=202)
+async def letterbox_heal(
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> JobSubmissionResponse:
+    """Seal tagged files; ordinary apply leaves probe and repair only verified drift."""
+    initiator = Initiator(kind="system", identifier="letterbox-heal-api")
+    children = await _letterbox_heal_intents(db, initiator=initiator)
+    if db.in_transaction():
+        await db.commit()
+    scope_key = uuid4().hex[:12]
+    try:
+        async with db.begin():
+            result = await create_fixed_batch(
+                db,
+                parent_job_type="letterbox_heal",
+                parent_request={
+                    "operation": "heal_apply",
+                    "sealed_file_count": len(children),
+                },
+                scope=BatchScope(
+                    reference=f"letterbox-heal-{scope_key}",
+                    display_name="Letterbox metadata healing",
+                    summary=f"{len(children)} tagged physical media files",
+                ),
+                trigger=TriggerKind.MANUAL,
+                initiator=initiator,
+                idempotency_key=f"letterbox_heal:manual-{uuid4().hex}",
+                children=children,
+                priority=20,
+            )
+    except SubmissionError as exc:
+        raise HTTPException(status_code=422, detail=exc.code) from exc
+    return submission_response(result.parent)
 
 
 # ---------------------------------------------------------------------------

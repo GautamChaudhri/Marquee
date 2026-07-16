@@ -16,7 +16,6 @@ from marquee.models.job import (
 )
 from marquee.models.job_evidence import JobArtifact, JobLog, MediaOperationDetail, WorkerNode
 from marquee.models.letterbox import LetterboxEvent, LetterboxState
-from marquee.models.letterbox_reencode import LetterboxReencodeArtifact
 from marquee.models.media_file import EpisodeMediaFile, MediaFile
 from marquee.models.ml_publication import MlActivePublication
 from marquee.models.movie import Movie
@@ -55,7 +54,6 @@ __all__ = [
     "DoviState",
     "LetterboxEvent",
     "LetterboxState",
-    "LetterboxReencodeArtifact",
     "Job",
     "JobAttempt",
     "JobBatch",

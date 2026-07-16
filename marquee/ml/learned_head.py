@@ -29,7 +29,7 @@ from pathlib import Path
 
 import numpy as np
 
-from marquee.core.jobs.cancel_registry import raise_if_cancelled
+from marquee.core.cancellation import raise_if_cancelled
 from marquee.core.pipeline_config import pipeline_settings
 from marquee.ml.artifact_codec import (
     decode_unicode_list,

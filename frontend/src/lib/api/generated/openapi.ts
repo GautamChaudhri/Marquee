@@ -506,6 +506,57 @@ export interface paths {
 		patch?: never;
 		trace?: never;
 	};
+	'/api/hdr/{movie_id}/conversion-candidates/{artifact_id}/discard': {
+		parameters: {
+			query?: never;
+			header?: never;
+			path?: never;
+			cookie?: never;
+		};
+		get?: never;
+		put?: never;
+		/** Discard Movie Dovi */
+		post: operations['discard_movie_dovi_api_hdr__movie_id__conversion_candidates__artifact_id__discard_post'];
+		delete?: never;
+		options?: never;
+		head?: never;
+		patch?: never;
+		trace?: never;
+	};
+	'/api/hdr/{movie_id}/conversion-candidates/{artifact_id}/publish': {
+		parameters: {
+			query?: never;
+			header?: never;
+			path?: never;
+			cookie?: never;
+		};
+		get?: never;
+		put?: never;
+		/** Publish Movie Dovi */
+		post: operations['publish_movie_dovi_api_hdr__movie_id__conversion_candidates__artifact_id__publish_post'];
+		delete?: never;
+		options?: never;
+		head?: never;
+		patch?: never;
+		trace?: never;
+	};
+	'/api/hdr/{movie_id}/conversion-candidates/{artifact_id}/restore': {
+		parameters: {
+			query?: never;
+			header?: never;
+			path?: never;
+			cookie?: never;
+		};
+		get?: never;
+		put?: never;
+		/** Restore Movie Dovi */
+		post: operations['restore_movie_dovi_api_hdr__movie_id__conversion_candidates__artifact_id__restore_post'];
+		delete?: never;
+		options?: never;
+		head?: never;
+		patch?: never;
+		trace?: never;
+	};
 	'/api/hdr/{movie_id}/convert': {
 		parameters: {
 			query?: never;
@@ -900,7 +951,7 @@ export interface paths {
 		put?: never;
 		/**
 		 * Apply Batch
-		 * @description Queue one durable apply child per eligible movie.
+		 * @description Seal one canonical apply child per eligible physical movie file.
 		 */
 		post: operations['apply_batch_api_letterbox_apply_post'];
 		delete?: never;
@@ -1037,7 +1088,7 @@ export interface paths {
 		put?: never;
 		/**
 		 * Letterbox Heal
-		 * @description Re-apply crop tags that drifted off tagged files (tag-drift scan).
+		 * @description Seal tagged files; ordinary apply leaves probe and repair only verified drift.
 		 */
 		post: operations['letterbox_heal_api_letterbox_heal_post'];
 		delete?: never;
@@ -5275,14 +5326,6 @@ export interface components {
 				[key: string]: number;
 			} | null;
 		};
-		/** RestoreReencodeRequest */
-		RestoreReencodeRequest: {
-			/**
-			 * Keep Candidate
-			 * @default false
-			 */
-			keep_candidate: boolean;
-		};
 		/** ReviewQueueApproveAutoRequest */
 		ReviewQueueApproveAutoRequest: {
 			/**
@@ -6711,6 +6754,102 @@ export interface operations {
 			};
 		};
 	};
+	discard_movie_dovi_api_hdr__movie_id__conversion_candidates__artifact_id__discard_post: {
+		parameters: {
+			query?: never;
+			header?: never;
+			path: {
+				movie_id: number;
+				artifact_id: number;
+			};
+			cookie?: never;
+		};
+		requestBody?: never;
+		responses: {
+			/** @description Successful Response */
+			200: {
+				headers: {
+					[name: string]: unknown;
+				};
+				content: {
+					'application/json': unknown;
+				};
+			};
+			/** @description Validation Error */
+			422: {
+				headers: {
+					[name: string]: unknown;
+				};
+				content: {
+					'application/json': components['schemas']['HTTPValidationError'];
+				};
+			};
+		};
+	};
+	publish_movie_dovi_api_hdr__movie_id__conversion_candidates__artifact_id__publish_post: {
+		parameters: {
+			query?: never;
+			header?: never;
+			path: {
+				movie_id: number;
+				artifact_id: number;
+			};
+			cookie?: never;
+		};
+		requestBody?: never;
+		responses: {
+			/** @description Successful Response */
+			200: {
+				headers: {
+					[name: string]: unknown;
+				};
+				content: {
+					'application/json': unknown;
+				};
+			};
+			/** @description Validation Error */
+			422: {
+				headers: {
+					[name: string]: unknown;
+				};
+				content: {
+					'application/json': components['schemas']['HTTPValidationError'];
+				};
+			};
+		};
+	};
+	restore_movie_dovi_api_hdr__movie_id__conversion_candidates__artifact_id__restore_post: {
+		parameters: {
+			query?: never;
+			header?: never;
+			path: {
+				movie_id: number;
+				artifact_id: number;
+			};
+			cookie?: never;
+		};
+		requestBody?: never;
+		responses: {
+			/** @description Successful Response */
+			200: {
+				headers: {
+					[name: string]: unknown;
+				};
+				content: {
+					'application/json': unknown;
+				};
+			};
+			/** @description Validation Error */
+			422: {
+				headers: {
+					[name: string]: unknown;
+				};
+				content: {
+					'application/json': components['schemas']['HTTPValidationError'];
+				};
+			};
+		};
+	};
 	convert_movie_dovi_api_hdr__movie_id__convert_post: {
 		parameters: {
 			query?: never;
@@ -7483,12 +7622,12 @@ export interface operations {
 		};
 		responses: {
 			/** @description Successful Response */
-			200: {
+			202: {
 				headers: {
 					[name: string]: unknown;
 				};
 				content: {
-					'application/json': unknown;
+					'application/json': components['schemas']['JobSubmissionResponse'];
 				};
 			};
 			/** @description Validation Error */
@@ -7676,12 +7815,12 @@ export interface operations {
 		requestBody?: never;
 		responses: {
 			/** @description Successful Response */
-			200: {
+			202: {
 				headers: {
 					[name: string]: unknown;
 				};
 				content: {
-					'application/json': unknown;
+					'application/json': components['schemas']['JobSubmissionResponse'];
 				};
 			};
 		};
@@ -7767,12 +7906,12 @@ export interface operations {
 		};
 		responses: {
 			/** @description Successful Response */
-			200: {
+			202: {
 				headers: {
 					[name: string]: unknown;
 				};
 				content: {
-					'application/json': unknown;
+					'application/json': components['schemas']['JobSubmissionResponse'];
 				};
 			};
 			/** @description Validation Error */
@@ -7994,12 +8133,12 @@ export interface operations {
 		requestBody?: never;
 		responses: {
 			/** @description Successful Response */
-			200: {
+			202: {
 				headers: {
 					[name: string]: unknown;
 				};
 				content: {
-					'application/json': unknown;
+					'application/json': components['schemas']['JobSubmissionResponse'];
 				};
 			};
 			/** @description Validation Error */
@@ -8150,11 +8289,7 @@ export interface operations {
 			};
 			cookie?: never;
 		};
-		requestBody: {
-			content: {
-				'application/json': components['schemas']['RestoreReencodeRequest'];
-			};
-		};
+		requestBody?: never;
 		responses: {
 			/** @description Successful Response */
 			200: {
@@ -8350,12 +8485,12 @@ export interface operations {
 		};
 		responses: {
 			/** @description Successful Response */
-			200: {
+			202: {
 				headers: {
 					[name: string]: unknown;
 				};
 				content: {
-					'application/json': unknown;
+					'application/json': components['schemas']['JobSubmissionResponse'];
 				};
 			};
 			/** @description Validation Error */
@@ -8585,12 +8720,12 @@ export interface operations {
 		requestBody?: never;
 		responses: {
 			/** @description Successful Response */
-			200: {
+			202: {
 				headers: {
 					[name: string]: unknown;
 				};
 				content: {
-					'application/json': unknown;
+					'application/json': components['schemas']['JobSubmissionResponse'];
 				};
 			};
 			/** @description Validation Error */
@@ -8690,12 +8825,12 @@ export interface operations {
 		};
 		responses: {
 			/** @description Successful Response */
-			200: {
+			202: {
 				headers: {
 					[name: string]: unknown;
 				};
 				content: {
-					'application/json': unknown;
+					'application/json': components['schemas']['JobSubmissionResponse'];
 				};
 			};
 			/** @description Validation Error */

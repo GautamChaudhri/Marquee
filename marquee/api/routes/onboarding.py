@@ -17,9 +17,16 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from marquee.api.routes.jobs import job_summary
+from marquee.api.job_submission import submission_response
 from marquee.api.routes.pipeline import _downloaded
-from marquee.core.jobs import job_manager
+from marquee.core.jobs.batches import BatchScope, create_fixed_batch
+from marquee.core.jobs.contracts import TriggerKind
+from marquee.core.jobs.submission import (
+    Initiator,
+    SubjectLocator,
+    SubmissionIntent,
+    submit_job,
+)
 from marquee.core.pipeline_config import pipeline_settings
 from marquee.database import get_db
 from marquee.models import Movie
@@ -83,34 +90,68 @@ async def onboarding_start(
         if not downloaded:
             raise HTTPException(status_code=400, detail="no downloaded movies for the library path")
         service.start(service.PATH_LIBRARY)
-        rebuild = await job_manager.create(
+        initiator = Initiator(kind="system", identifier="onboarding-api")
+        rebuild = await submit_job(
             db,
             job_type="taste_rebuild",
-            payload={"source": "library"},
+            request={"source": "library", "library": "movies"},
+            subject=SubjectLocator(
+                kind="model_profile_training", reference="taste_profile:movies"
+            ),
+            trigger=TriggerKind.MANUAL,
+            initiator=initiator,
+            idempotency_key=f"taste_rebuild:{_idem('taste-library')}",
             priority=90,
-            resources={"gpu": 1},
-            subject_type="taste_profile",
-            subject_id="default",
-            max_attempts=1,
-            idempotency_key=_idem("taste-library"),
         )
         sample = service.stratified_sample(downloaded, pipeline_settings.ONBOARDING_RANK_TEST_MAX)
-        batch = await job_manager.create(
-            db,
-            job_type="poster_pipeline_batch",
-            payload={"movie_ids": sample, "scope": "selected"},
-            priority=80,
-            resources={"gpu": 1, "network_external": 1},
-            subject_type="pipeline_batch",
-            subject_id="onboarding",
-            max_attempts=1,
-            idempotency_key=_idem("batch"),
+        movies = list(
+            (
+                await db.scalars(
+                    select(Movie).where(Movie.id.in_(sample)).order_by(Movie.id)
+                )
+            ).all()
         )
+        nonce = str(int(time.time() * 1_000_000))
+        children = [
+            SubmissionIntent(
+                job_type="poster_pipeline",
+                request={
+                    "movie_id": movie.id,
+                    "tmdb_id": movie.tmdb_id,
+                    "title": movie.title,
+                    "source_descriptors": [
+                        {"provider": "tmdb", "reference": f"movie:{movie.tmdb_id}"}
+                    ],
+                },
+                subject=SubjectLocator(kind="movie", reference=str(movie.id)),
+                trigger=TriggerKind.BATCH,
+                initiator=initiator,
+                idempotency_key=f"poster_pipeline:onboard-{nonce}-{movie.id}",
+                priority=80,
+            )
+            for movie in movies
+        ]
+        batch = await create_fixed_batch(
+            db,
+            parent_job_type="poster_pipeline_batch",
+            parent_request={"scope": "selected", "selection_count": len(children)},
+            scope=BatchScope(
+                reference=f"onboarding-{nonce}",
+                display_name="Onboarding poster analysis",
+                summary=f"{len(children)} selected movies",
+            ),
+            trigger=TriggerKind.BATCH,
+            initiator=initiator,
+            idempotency_key=f"poster_pipeline_batch:onboard-{nonce}",
+            children=children,
+            priority=80,
+        )
+        await db.commit()
         return {
             "path": "library",
             "sample_movie_ids": sample,
-            "rebuild_job": job_summary(rebuild),
-            "batch_job": job_summary(batch),
+            "rebuild_job": submission_response(rebuild),
+            "batch_job": submission_response(batch.parent),
             "status": service.status(),
         }
 
@@ -164,29 +205,35 @@ async def onboarding_complete(db: Annotated[AsyncSession, Depends(get_db)]):
         )
     state = service.read_state()
     source = "library" if state.get("path") == service.PATH_LIBRARY else "training_dir"
-    rebuild = await job_manager.create(
+    initiator = Initiator(kind="system", identifier="onboarding-api")
+    rebuild = await submit_job(
         db,
         job_type="taste_rebuild",
-        payload={"source": source},
+        request={"source": source, "library": "movies"},
+        subject=SubjectLocator(
+            kind="model_profile_training", reference="taste_profile:movies"
+        ),
+        trigger=TriggerKind.MANUAL,
+        initiator=initiator,
+        idempotency_key=f"taste_rebuild:{_idem('complete-taste')}",
         priority=90,
-        resources={"gpu": 1},
-        subject_type="taste_profile",
-        subject_id="default",
-        max_attempts=1,
-        idempotency_key=_idem("complete-taste"),
     )
-    head = await job_manager.create(
+    head = await submit_job(
         db,
         job_type="learned_head_train",
+        request={"library": "movies"},
+        subject=SubjectLocator(
+            kind="model_profile_training", reference="learned_head:movies"
+        ),
+        trigger=TriggerKind.MANUAL,
+        initiator=initiator,
+        idempotency_key=f"learned_head_train:{_idem('complete-head')}",
         priority=70,
-        subject_type="learned_head",
-        subject_id="default",
-        max_attempts=1,
-        idempotency_key=_idem("complete-head"),
     )
+    await db.commit()
     service.mark_complete()
     return {
-        "rebuild_job": job_summary(rebuild),
-        "head_job": job_summary(head),
+        "rebuild_job": submission_response(rebuild),
+        "head_job": submission_response(head),
         "status": service.status(),
     }

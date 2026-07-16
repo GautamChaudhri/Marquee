@@ -18,7 +18,7 @@ def test_jmc3a_starts_from_certified_registry_and_transport_contract() -> None:
     contract = _contract()
     registry = contract["registry"]
     assert isinstance(registry, dict)
-    assert len(JOB_DEFINITION_REGISTRY) == registry["definition_count"] + 5  # +subtitle_policy_batch (JMC5B B05)
+    assert len(JOB_DEFINITION_REGISTRY) == registry["definition_count"] + 12
     assert JOB_DEFINITION_REGISTRY.enabled_types == set(registry["enabled_types"]) | {
         "subtitle_policy",
         "subtitle_restore",
@@ -40,6 +40,16 @@ def test_jmc3a_starts_from_certified_registry_and_transport_contract() -> None:
         "pipeline_cache_clear",
         "job_retention_purge",
         "system_metrics_purge",
+        "letterbox_apply",
+        "letterbox_remove",
+            "letterbox_reencode",
+            "letterbox_reencode_publish",
+            "letterbox_reencode_restore",
+                "letterbox_reencode_discard",
+                "dovi_convert",
+                "dovi_publish",
+                "dovi_restore",
+                "dovi_discard",
     }
     definition = JOB_DEFINITION_REGISTRY.for_dispatch("system_noop", entrypoint="control")
     assert definition.execution_class.value == registry["entrypoint"]
@@ -48,7 +58,11 @@ def test_jmc3a_starts_from_certified_registry_and_transport_contract() -> None:
 
 def test_jmc3a_a0_inventory_paths_exist_and_are_project_relative() -> None:
     contract = _contract()
-    retired_in_jmc5b = {"marquee/core/subtitles/mutation.py"}
+    retired_in_jmc5c = {
+        "marquee/core/dovi_conversion.py",
+        "marquee/core/jobs/builtin_handlers.py",
+        "marquee/core/subtitles/mutation.py",
+    }
     inventory_keys = (
         "direct_process_launch_files",
         "security_prefix_hotspots",
@@ -62,7 +76,7 @@ def test_jmc3a_a0_inventory_paths_exist_and_are_project_relative() -> None:
             path = Path(value)
             assert not path.is_absolute()
             assert ".." not in path.parts
-            if value in retired_in_jmc5b:
+            if value in retired_in_jmc5c:
                 assert not (ROOT / path).exists()
                 continue
             assert (ROOT / path).is_file(), f"stale A0 inventory entry: {value}"

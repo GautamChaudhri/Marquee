@@ -704,7 +704,7 @@
 		reencodeArtifactBusy[artifact.id] = true;
 		try {
 			await replaceOriginal(fetch, artifact.id);
-			toast('Original replaced — re-encode applied', 'good');
+			toast('Publication queued', 'good');
 			await loadReencodeArtifacts();
 			void refreshDetail();
 		} catch (e) {
@@ -719,7 +719,7 @@
 		reencodeArtifactBusy[artifact.id] = true;
 		try {
 			await restoreOriginal(fetch, artifact.id);
-			toast('Original restored', 'good');
+			toast('Restore queued', 'good');
 			await loadReencodeArtifacts();
 			void refreshDetail();
 		} catch (e) {
@@ -735,7 +735,7 @@
 		reencodeArtifactBusy[artifact.id] = true;
 		try {
 			await deleteArtifact(fetch, artifact.id);
-			toast('Candidate discarded', 'good');
+			toast('Candidate discard queued', 'good');
 			await loadReencodeArtifacts();
 		} catch (e) {
 			toast(e instanceof Error ? e.message : 'Discard failed', 'bad');

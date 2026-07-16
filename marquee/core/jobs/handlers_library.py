@@ -2,8 +2,8 @@
 
 Reuses the existing :class:`~marquee.core.sync_service.SyncService` domain logic through the
 JMC3 execution context: cancellation, progress, and the domain-projection session all come from
-the immutable :class:`~marquee.core.jobs.delivery.ExecutionContext`.  It never opens a legacy
-manager lifecycle, emits through ``job_manager``, or persists provider credentials.
+the immutable :class:`~marquee.core.jobs.delivery.ExecutionContext`. It does not open a parallel
+lifecycle or persist provider credentials.
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ import asyncio
 from typing import Any
 
 from marquee.config import settings
-from marquee.core.jobs.cancel_registry import JobCancelledError
+from marquee.core.cancellation import JobCancelledError
 from marquee.core.jobs.delivery import ExecutionContext, register_execution_handler
 from marquee.core.jobs.progress import MeasurementMode, ProgressMeasurementUpdate
 from marquee.core.jobs.progress_service import ProgressObservation, progress_writer

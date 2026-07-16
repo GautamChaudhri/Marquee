@@ -59,13 +59,13 @@ SYSTEM_SNAPSHOT = {
 
 
 def test_every_builtin_definition_has_a_dedicated_presenter():
-    assert len(JOB_DEFINITION_REGISTRY) == 54  # +subtitle_policy_batch (JMC5B B05)
+    assert len(JOB_DEFINITION_REGISTRY) == 61  # +Dolby Vision publication family (JMC5C C4)
     for definition in JOB_DEFINITION_REGISTRY:
         presenter = resolve_presenter(definition)
         assert not presenter.generic, definition.job_type
         assert presenter.key == definition.presenter_key
         assert presenter is not GENERIC_PRESENTER
-    assert len(JOB_PRESENTER_REGISTRY) == 54  # +subtitle_policy_batch (JMC5B B05)
+    assert len(JOB_PRESENTER_REGISTRY) == 61  # +Dolby Vision publication family (JMC5C C4)
 
 
 def test_every_definition_renders_a_minimal_presentation():
@@ -324,6 +324,93 @@ def test_parent_batch_malformed_children_warns():
     presentation = present_job(job, definition_for("letterbox_apply_batch"))
     assert not any(s.kind == "children" for s in presentation.sections)
     assert any(w.code == "malformed_evidence" for w in presentation.warnings)
+
+
+def test_letterbox_mutation_presents_requested_and_freshly_verified_crop():
+    probe = {
+        "source_signature": "mtime_ns=1:size=2048",
+        "container": "Matroska",
+        "video_track_id": 0,
+        "width": 1920,
+        "height": 1080,
+        "crop_present": True,
+        "crop_top": 140,
+        "crop_bottom": 140,
+        "crop_left": 0,
+        "crop_right": 0,
+    }
+    target = {
+        "key": "media-file:71",
+        "kind": "media_file",
+        "label": "Movie media file 71",
+        "operation": "apply",
+        "selector_facts": {"subject_kind": "movie", "subject_ids": [11]},
+    }
+    job = make_job(
+        type="letterbox_apply",
+        feature_area="letterbox",
+        presentation_family="letterbox",
+        request={
+            "media_file_id": 71,
+            "subject_kind": "movie",
+            "subject_ids": [11],
+            "before": {
+                "source_signature": "mtime_ns=1:size=2048",
+                "status": "candidate",
+                "confidence": "high",
+                "variable_ar": False,
+                "source_width": 1920,
+                "source_height": 1080,
+                "current_crop_top": None,
+                "current_crop_bottom": None,
+                "recommended_crop_top": 140,
+                "recommended_crop_bottom": 140,
+            },
+            "crop_top": 140,
+            "crop_bottom": 140,
+            "source": "api",
+        },
+        result={
+            "outcome": "no_change",
+            "reason_code": "already_applied",
+            "message": "authoritative probe already matches",
+            "requested_targets": [target],
+            "target_outcomes": [
+                {
+                    "target": target,
+                    "status": "skipped",
+                    "stage": "preflight",
+                    "reason_code": "already_applied",
+                    "message": "authoritative probe already matches",
+                    "bytes_changed": False,
+                    "product_state_changed": False,
+                }
+            ],
+            "validation": {
+                "source_probe": {},
+                "output_probe": {},
+                "verdict": "passed",
+            },
+            "atomicity": {
+                "group_id": "letterbox-apply:71",
+                "boundary": "single_target",
+                "published": False,
+                "rollback_available": False,
+                "uncertain_state": False,
+            },
+            "before_probe": probe,
+            "actual_probe": probe,
+        },
+        outcome="no_change",
+    )
+
+    presentation = present_job(job, definition_for("letterbox_apply"))
+
+    crop_text = "140 px from the top and 140 px from the bottom"
+    assert presentation.action.headline == f"Apply the letterbox crop tag: {crop_text}"
+    letterbox = next(section for section in presentation.sections if section.title == "Letterbox")
+    verified = next(fact for fact in letterbox.facts if fact.label == "Verified crop metadata")
+    assert verified.value.text == crop_text
 
 
 def test_retry_lineage_is_presented():

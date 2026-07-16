@@ -26,7 +26,9 @@ def _columns(table_name: str) -> list[str]:
 
 def test_deployment_table_set_matches_freeze() -> None:
     frozen = _fixture()
-    assert sorted(get_deployment_metadata().tables) == frozen["deployment_tables"]
+    assert sorted(get_deployment_metadata().tables) == sorted(
+        set(frozen["deployment_tables"]) - {"letterbox_reencode_artifacts"}
+    )
     assert sorted(EXCLUDED_DEPLOYMENT_TABLES) == frozen["excluded_tables"]
 
 

@@ -53,6 +53,16 @@ def test_jmc3b_starts_from_the_certified_production_registry() -> None:
         "pipeline_cache_clear",
         "job_retention_purge",
         "system_metrics_purge",
+        "letterbox_apply",
+        "letterbox_remove",
+            "letterbox_reencode",
+            "letterbox_reencode_publish",
+            "letterbox_reencode_restore",
+            "letterbox_reencode_discard",
+            "dovi_convert",
+            "dovi_publish",
+            "dovi_restore",
+            "dovi_discard",
     }
     assert JOB_DEFINITION_REGISTRY.enabled_types == {
         "subtitle_policy",
@@ -74,6 +84,10 @@ def test_jmc3b_starts_from_the_certified_production_registry() -> None:
         "subtitle_scan",
         "subtitle_policy_audit",
             "dovi_analyze",
+            "dovi_convert",
+            "dovi_publish",
+            "dovi_restore",
+            "dovi_discard",
             "learned_head_train",
             "poster_rescan",
             "taste_map",
@@ -87,7 +101,13 @@ def test_jmc3b_starts_from_the_certified_production_registry() -> None:
             "pipeline_cache_clear",
             "job_retention_purge",
             "system_metrics_purge",
-        }
+            "letterbox_apply",
+        "letterbox_remove",
+            "letterbox_reencode",
+            "letterbox_reencode_publish",
+            "letterbox_reencode_restore",
+            "letterbox_reencode_discard",
+            }
 
 
 def test_jmc2_contract_tests_are_explicit_inputs_to_jmc3b() -> None:
@@ -175,6 +195,9 @@ def test_obsolete_helpers_have_an_explicit_removal_or_replacement_plan() -> None
     paths = [plan["path"] for plan in plans]
     assert paths == sorted(set(paths))
     for plan in plans:
+        if plan["path"] == "marquee/pipeline/progress_bridge.py":
+            assert not (ROOT / plan["path"]).exists()
+            continue
         assert (ROOT / plan["path"]).is_file()
         assert plan["contract"]
         assert plan["disposition"]

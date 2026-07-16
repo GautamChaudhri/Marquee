@@ -40,8 +40,8 @@ from marquee.models import (
     Episode,
     EpisodeMediaFile,
     Job,
+    JobArtifact,
     LetterboxEvent,
-    LetterboxReencodeArtifact,
     LetterboxState,
     MediaFile,
     Movie,
@@ -2754,25 +2754,22 @@ async def test_movie_detail_includes_finished_reencode_artifact(client, db, tmp_
             outcome="succeeded",
             terminal_at=datetime.now(UTC),
             request={},
+            subject_kind="movie",
+            subject_reference=str(movie.id),
             subject_snapshot={"title": movie.title},
         )
     )
     await db.commit()
     db.add(
-        LetterboxReencodeArtifact(
+        JobArtifact(
             job_id="job1",
-            movie_id=movie.id,
-            media_file_id=media_file.id,
-            original_path=str(media),
-            candidate_path=str(media.with_name("Movie (2020).letterbox.job1.mkv")),
-            original_size_bytes=1,
-            candidate_size_bytes=2,
-            encoder="hevc_nvenc",
-            encoder_family="nvidia",
-            codec="hevc",
-            crop_top=140,
-            crop_bottom=140,
-            status="candidate_ready",
+            kind="media_candidate",
+            name="letterbox-candidate.mkv",
+            status="available",
+            storage_key="jmc3/evidence/artifacts/job1/1/artifact-1.mkv",
+            content_type="video/x-matroska",
+            size_bytes=2,
+            artifact_metadata={"media_file_id": media_file.id, "crop_top": 140, "crop_bottom": 140},
         )
     )
     await db.commit()
@@ -2782,7 +2779,7 @@ async def test_movie_detail_includes_finished_reencode_artifact(client, db, tmp_
     body = resp.json()
     assert body["reencode"]["job"] is None
     assert body["reencode"]["artifact"]["job_id"] == "job1"
-    assert body["reencode"]["artifact"]["status"] == "candidate_ready"
+    assert body["reencode"]["artifact"]["status"] == "available"
 
 
 
@@ -2993,8 +2990,14 @@ async def test_legacy_job_events_route_is_removed(client):
     assert resp.status_code == 404
 
 @pytest.mark.asyncio
-async def test_apply_success_with_mocked_binaries(client, db, tmp_path, monkeypatch):
-    movie, media = _movie_with_file(tmp_path)
+async def test_apply_submits_canonical_verified_mutation(client, db, tmp_path, monkeypatch):
+    from marquee.core.jobs.pgqueuer_gateway import pgqueuer_gateway
+
+    async def enqueue_stub(*_args, **_kwargs):
+        return 1
+
+    monkeypatch.setattr(pgqueuer_gateway, "enqueue", enqueue_stub)
+    movie, _media = _movie_with_file(tmp_path)
     db.add(movie)
     await db.commit()
     await db.refresh(movie)
@@ -3003,26 +3006,22 @@ async def test_apply_success_with_mocked_binaries(client, db, tmp_path, monkeypa
             movie_id=movie.id,
             status="candidate",
             confidence="high",
+            source_width=1920,
+            source_height=1080,
             recommended_crop_top=140,
             recommended_crop_bottom=140,
         )
     )
     await db.commit()
 
-    mkv_json = json.dumps(
-        {"container": {"type": "Matroska"}, "tracks": [{"type": "video", "properties": {}}]}
-    )
-
-    def fake_run(name, args, timeout=120.0):
-        if name == "mkvmerge":
-            return binaries.CommandResult(0, mkv_json, "")
-        return binaries.CommandResult(0, "", "")  # mkvpropedit
-
-    monkeypatch.setattr(binaries, "resolve", lambda name: f"/usr/bin/{name}")
-    monkeypatch.setattr(binaries, "run", fake_run)
     resp = await client.post(f"/api/letterbox/movies/{movie.id}/apply", json={})
-    assert resp.status_code == 503
-    assert resp.json()["code"] == "job_platform_unmigrated"
+    assert resp.status_code == 202, resp.text
+    payload = resp.json()
+    assert payload["phase"] == "queued"
+    job = await db.get(Job, payload["job_id"])
+    assert job.type == "letterbox_apply"
+    assert job.request["media_file_id"] > 0
+    assert job.request["before"]["source_width"] == 1920
 
 
 @pytest.mark.asyncio

@@ -81,7 +81,7 @@ def _subjects():
 
 
 def test_manifest_has_exactly_one_definition_for_every_inventory_source() -> None:
-    assert len(JOB_DEFINITION_REGISTRY) == 54  # +subtitle_policy_batch (JMC5B B05)
+    assert len(JOB_DEFINITION_REGISTRY) == 61  # +JMC5C Dolby Vision conversion/publication
     assert JOB_DEFINITION_REGISTRY.types == BUILTIN_JOB_TYPES
     for inventory in (
         REGISTERED_HANDLER_TYPES,
@@ -109,12 +109,22 @@ def test_only_noop_is_enabled_and_webhook_stays_reserved_disabled() -> None:
         "pipeline_cache_clear",
         "job_retention_purge",
         "system_metrics_purge",
+        "letterbox_apply",
+            "letterbox_remove",
+            "letterbox_reencode",
+            "letterbox_reencode_publish",
+            "letterbox_reencode_restore",
+            "letterbox_reencode_discard",
         "letterbox_detect",
         "letterbox_detect_episode",
         "letterbox_detect_tv_scope",
         "subtitle_scan",
         "subtitle_policy_audit",
         "dovi_analyze",
+        "dovi_convert",
+        "dovi_publish",
+        "dovi_restore",
+        "dovi_discard",
         "learned_head_train",
         "poster_rescan",
         "taste_map",
@@ -155,11 +165,58 @@ def test_all_documents_are_strict_current_v1_and_policy_is_not_client_input() ->
         "letterbox_detect": {"movie_id": 1, "media_file_id": 1},
         "letterbox_detect_episode": {"media_file_id": 1, "episode_ids": [1]},
             "letterbox_detect_tv_scope": {"series_id": 1},
-        "dovi_analyze": {
+            "dovi_analyze": {
+                    "media_file_id": 1,
+                    "movie_id": 1,
+                    "source_signature": "a" * 40,
+            },
+            "dovi_convert": {
                 "media_file_id": 1,
                 "movie_id": 1,
-                "source_signature": "a" * 40,
-        },
+                "kind": "p5_to_p81",
+                "source_signature": "sha256:source",
+                "source_size_bytes": 1000,
+                "source_probe": {
+                    "codec": "hevc", "width": 3840, "height": 2160,
+                    "has_hdr": True, "has_dolby_vision": True,
+                    "video_streams": 1, "audio_streams": 1,
+                    "subtitle_streams": 0, "attachment_streams": 0,
+                    "dovi_profile": 5, "enhancement_layer_present": False,
+                    "bl_signal_compatibility_id": 0,
+                },
+            },
+            "dovi_publish": {
+                "media_file_id": 1, "movie_id": 1,
+                "candidate_artifact_id": 1, "candidate_job_id": "candidate-job",
+                "candidate_checksum": "a" * 64, "candidate_size_bytes": 1000,
+                "expected_source_signature": "sha256:source",
+                "source_probe": {
+                    "codec": "hevc", "width": 3840, "height": 2160,
+                    "has_hdr": True, "has_dolby_vision": True,
+                    "video_streams": 1, "audio_streams": 1,
+                    "subtitle_streams": 0, "attachment_streams": 0,
+                    "dovi_profile": 5,
+                },
+                "candidate_probe": {
+                    "codec": "hevc", "width": 3840, "height": 2160,
+                    "has_hdr": True, "has_dolby_vision": True,
+                    "video_streams": 1, "audio_streams": 1,
+                    "subtitle_streams": 0, "attachment_streams": 0,
+                    "dovi_profile": 8, "enhancement_layer_present": False,
+                    "bl_signal_compatibility_id": 1,
+                },
+            },
+            "dovi_restore": {
+                "media_file_id": 1, "movie_id": 1, "candidate_artifact_id": 1,
+                "backup_artifact_id": 2, "backup_checksum": "b" * 64,
+                "backup_size_bytes": 1000,
+                "expected_destination_signature": "sha256:candidate",
+                "published_checksum": "a" * 64,
+            },
+            "dovi_discard": {
+                "media_file_id": 1, "movie_id": 1, "candidate_artifact_id": 1,
+                "candidate_checksum": "a" * 64,
+            },
         "poster_pipeline": {"movie_id": 1, "title": "Example"},
         "poster_pipeline_batch": {"scope": "selected", "selection_count": 1},
         "poster_pipeline_tv_batch": {"scope": "series", "selection_count": 1},
@@ -286,6 +343,118 @@ def test_all_documents_are_strict_current_v1_and_policy_is_not_client_input() ->
         "pipeline_cache_clear": {},
         "job_retention_purge": {"retention_days": 30},
         "system_metrics_purge": {"retention_days": 30},
+        "letterbox_apply": {
+            "media_file_id": 1,
+            "subject_kind": "movie",
+            "subject_ids": [1],
+            "before": {
+                "source_signature": "sha256:source",
+                "status": "candidate",
+                "confidence": "high",
+                "variable_ar": False,
+                "source_width": 1920,
+                "source_height": 1080,
+                "recommended_crop_top": 140,
+                "recommended_crop_bottom": 140,
+            },
+            "crop_top": 140,
+            "crop_bottom": 140,
+        },
+        "letterbox_remove": {
+            "media_file_id": 1,
+            "subject_kind": "movie",
+            "subject_ids": [1],
+            "before": {
+                "source_signature": "sha256:source",
+                "status": "tagged",
+                "confidence": "high",
+                "variable_ar": False,
+                "source_width": 1920,
+                "source_height": 1080,
+                "current_crop_top": 140,
+                "current_crop_bottom": 140,
+                "recommended_crop_top": 140,
+                "recommended_crop_bottom": 140,
+            },
+        },
+        "letterbox_heal": {"operation": "heal_apply", "sealed_file_count": 0},
+        "letterbox_apply_tv_scope": {"operation": "apply", "sealed_file_count": 0},
+        "letterbox_revert_tv_scope": {"operation": "remove", "sealed_file_count": 0},
+        "letterbox_apply_batch": {"operation": "apply", "sealed_file_count": 0},
+            "letterbox_reencode": {
+            "media_file_id": 1,
+            "subject_kind": "movie",
+            "subject_id": 1,
+            "crop_top": 140,
+            "crop_bottom": 140,
+            "output_height": 800,
+            "source": {
+                "signature": "sha256:source",
+                "size_bytes": 1000,
+                "codec": "h264",
+                "width": 1920,
+                "height": 1080,
+                "duration_seconds": 60.0,
+                "pixel_format": "yuv420p",
+                "has_hdr": False,
+                "has_dolby_vision": False,
+                "video_streams": 1,
+                "audio_streams": 1,
+                "subtitle_streams": 0,
+                "attachment_streams": 0,
+            },
+            "encoder": {
+                "codec": "h264",
+                "encoder": "libx264",
+                "family": "cpu",
+                "quality": 23,
+                "used_cpu_fallback": True,
+                },
+            },
+            "letterbox_reencode_publish": {
+                "media_file_id": 1,
+                "subject_kind": "movie",
+                "subject_id": 1,
+                "candidate_artifact_id": 1,
+                "candidate_job_id": "candidate-job",
+                "candidate_checksum": "a" * 64,
+                "candidate_size_bytes": 1000,
+                "expected_source_signature": "sha256:source",
+                "crop_top": 140,
+                "crop_bottom": 140,
+                "source_probe": {
+                    "codec": "h264", "width": 1920, "height": 1080,
+                    "duration_seconds": 60.0, "has_hdr": False,
+                    "has_dolby_vision": False, "video_streams": 1,
+                    "audio_streams": 1, "subtitle_streams": 0,
+                    "attachment_streams": 0,
+                },
+                "candidate_probe": {
+                    "codec": "h264", "width": 1920, "height": 800,
+                    "duration_seconds": 60.0, "has_hdr": False,
+                    "has_dolby_vision": False, "video_streams": 1,
+                    "audio_streams": 1, "subtitle_streams": 0,
+                    "attachment_streams": 0,
+                },
+            },
+            "letterbox_reencode_restore": {
+                "media_file_id": 1,
+                "subject_kind": "movie",
+                "subject_id": 1,
+                "candidate_artifact_id": 1,
+                "backup_artifact_id": 2,
+                "backup_checksum": "b" * 64,
+                "backup_size_bytes": 1000,
+                "expected_destination_signature": "sha256:candidate",
+                "published_checksum": "a" * 64,
+            },
+            "letterbox_reencode_discard": {
+                "media_file_id": 1,
+                "subject_kind": "movie",
+                "subject_id": 1,
+                "candidate_artifact_id": 1,
+                "candidate_checksum": "a" * 64,
+            },
     }
     valid_results = {
         "taste_rebuild": {
@@ -358,6 +527,8 @@ def test_all_documents_are_strict_current_v1_and_policy_is_not_client_input() ->
         "poster_backup_subject",
     ):
         valid_results[job_type] = mutation_result
+    for job_type in ("letterbox_apply", "letterbox_remove"):
+        valid_results[job_type] = mutation_result
     track_result = {**mutation_result, "before_inventory": {"signature": "sha256:example", "container": "matroska", "entries": []}}
     for job_type in (
         "audio_remove",
@@ -386,6 +557,40 @@ def test_all_documents_are_strict_current_v1_and_policy_is_not_client_input() ->
             "rollback_available": True,
             "uncertain_state": False,
         },
+    }
+    valid_results["letterbox_reencode"] = {
+        "outcome": "failed",
+        "reason_code": "test",
+        "message": "Typed failure evidence.",
+        "crop_top": 140,
+        "crop_bottom": 140,
+        "encoder": "libx264",
+        "hardware_family": "cpu",
+        "used_cpu_fallback": True,
+    }
+    for operation in ("publish", "restore", "discard"):
+        valid_results[f"letterbox_reencode_{operation}"] = {
+            "outcome": "failed",
+            "operation": operation,
+            "reason_code": "test",
+            "message": "Typed failure evidence.",
+            "media_file_id": 1,
+            "candidate_artifact_id": 1,
+        }
+        valid_results[f"dovi_{operation}"] = {
+            "outcome": "failed",
+            "operation": operation,
+            "reason_code": "test",
+            "message": "Typed failure evidence.",
+            "media_file_id": 1,
+            "movie_id": 1,
+            "candidate_artifact_id": 1,
+        }
+    valid_results["dovi_convert"] = {
+        "outcome": "failed",
+        "reason_code": "test",
+        "message": "Typed failure evidence.",
+        "kind": "p5_to_p81",
     }
     maintenance_result = {
         "outcome": "no_change",

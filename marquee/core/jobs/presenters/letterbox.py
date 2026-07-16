@@ -10,6 +10,7 @@ through the progress contract's overall/current scopes.
 
 from __future__ import annotations
 
+from marquee.core.jobs.letterbox_mutation_documents import LetterboxMutationResultV1
 from marquee.core.jobs.presentation import (
     BadgeValue,
     BeforeAfterRow,
@@ -36,6 +37,9 @@ LETTERBOX_JOB_TYPES = (
     "letterbox_apply_tv_scope",
     "letterbox_revert_tv_scope",
     "letterbox_reencode",
+    "letterbox_reencode_publish",
+    "letterbox_reencode_restore",
+    "letterbox_reencode_discard",
     "letterbox_heal",
 )
 
@@ -48,6 +52,9 @@ _HEADLINES = {
     "letterbox_apply_tv_scope": "Apply letterbox crop tags across this show",
     "letterbox_revert_tv_scope": "Revert letterbox changes across this show",
     "letterbox_reencode": "Re-encode to remove letterbox bars",
+    "letterbox_reencode_publish": "Publish the letterbox re-encode candidate",
+    "letterbox_reencode_restore": "Restore the pre-publication media file",
+    "letterbox_reencode_discard": "Discard the letterbox re-encode candidate",
     "letterbox_heal": "Heal letterbox state for this file",
 }
 
@@ -70,6 +77,12 @@ class LetterboxPresenter(JobPresenter):
         if self.job_type.startswith("letterbox_detect") and thorough is not None:
             mode = "thorough" if thorough else "fast"
             headline = f"{headline} using {mode} analysis"
+        if self.job_type == "letterbox_apply":
+            crop = _crop_text(
+                getattr(request, "crop_top", None), getattr(request, "crop_bottom", None)
+            )
+            if crop:
+                headline = f"Apply the letterbox crop tag: {crop}"
         if self.job_type == "letterbox_reencode":
             crop = _crop_text(
                 ctx.summary_value("crop_top", int), ctx.summary_value("crop_bottom", int)
@@ -103,8 +116,22 @@ class LetterboxPresenter(JobPresenter):
         crop = _crop_text(
             ctx.summary_value("crop_top", int), ctx.summary_value("crop_bottom", int)
         )
+        if isinstance(ctx.result, LetterboxMutationResultV1) and ctx.result.actual_probe is not None:
+            crop = (
+                _crop_text(
+                    ctx.result.actual_probe.crop_top,
+                    ctx.result.actual_probe.crop_bottom,
+                )
+                if ctx.result.actual_probe.crop_present
+                else "Confirmed absent"
+            )
         if crop:
-            facts.append(Fact(label="Detected crop", value=TextValue(text=crop)))
+            label = (
+                "Verified crop metadata"
+                if isinstance(ctx.result, LetterboxMutationResultV1)
+                else "Detected crop"
+            )
+            facts.append(Fact(label=label, value=TextValue(text=crop)))
         operation = ctx.summary_value("operation", str)
         if operation:
             facts.append(Fact(label="Requested operation", value=TextValue(text=operation)))

@@ -1,4 +1,4 @@
-"""Permanent letterbox re-encode planning, execution, and artifact lifecycle."""
+"""Pure permanent letterbox re-encode planning and validation helpers."""
 
 from __future__ import annotations
 
@@ -6,36 +6,17 @@ import asyncio
 import contextlib
 import json
 import logging
-import os
 import shutil
-import time
-from collections import deque
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from pathlib import Path
-from uuid import uuid4
 
-from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.config import settings
-from marquee.core.jobs import cancel_registry
-from marquee.core.jobs.cancel_registry import JobCancelledError
-from marquee.core.jobs.child_tracking import clear_child_pid, record_child_pid
-from marquee.core.jobs.manager import UnmigratedJobPlatformError
-from marquee.core.media_files import (
-    ResolvedMediaFile,
-    compute_signature,
-    resolve_media_file,
-)
-from marquee.media import binaries, letterbox_detect
+from marquee.core.media_files import ResolvedMediaFile
+from marquee.media import binaries
 from marquee.media.concurrency import gated
-from marquee.models import (
-    EpisodeMediaFile,
-    LetterboxReencodeArtifact,
-    LetterboxState,
-    MediaFile,
-)
+from marquee.models import MediaFile
 
 logger = logging.getLogger(__name__)
 
@@ -53,70 +34,13 @@ class ReencodePlanError(Exception):
         super().__init__(message)
 
 
-async def _episode_ids_for_media_file(db: AsyncSession, media_file_id: int | None) -> list[int]:
-    if media_file_id is None:
-        return []
-    return list(
-        (
-            await db.execute(
-                select(EpisodeMediaFile.episode_id)
-                .where(EpisodeMediaFile.media_file_id == media_file_id)
-                .order_by(EpisodeMediaFile.episode_id)
-            )
-        ).scalars()
-    )
 
 
-async def _states_for_artifact(
-    db: AsyncSession, artifact: LetterboxReencodeArtifact
-) -> list[LetterboxState]:
-    if artifact.media_type == "episode":
-        return list(
-            (
-                await db.execute(
-                    select(LetterboxState)
-                    .join(EpisodeMediaFile, EpisodeMediaFile.episode_id == LetterboxState.episode_id)
-                    .where(
-                        LetterboxState.media_type == "episode",
-                        EpisodeMediaFile.media_file_id == artifact.media_file_id,
-                    )
-                    .order_by(LetterboxState.episode_id)
-                )
-            ).scalars()
-        )
-    state = (
-        await db.execute(
-            select(LetterboxState).where(
-                LetterboxState.media_type == artifact.media_type,
-                LetterboxState.movie_id == artifact.movie_id,
-                LetterboxState.episode_id == artifact.episode_id,
-            )
-        )
-    ).scalar_one_or_none()
-    return [state] if state is not None else []
 
 
-async def _raise_if_cancel_requested(
-    db: AsyncSession,
-    job: object,
-    *,
-    rpu_task: asyncio.Task | None = None,
-    cleanup_paths: list[Path] | None = None,
-) -> None:
-    await db.refresh(job, ["cancel_requested"])
-    cancel_event = cancel_registry.get(job.job_id)
-    registry_cancelled = cancel_event is not None and cancel_event.is_set()
-    if job.desired_state != "cancel" and not registry_cancelled:
-        return
-    if rpu_task is not None and not rpu_task.done():
-        rpu_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await rpu_task
-    for path in cleanup_paths or []:
-        path.unlink(missing_ok=True)
-    if registry_cancelled and job.desired_state != "cancel":
-        raise JobCancelledError("letterbox re-encode interrupted")
-    raise ReencodePlanError("cancelled", "letterbox re-encode cancelled")
+
+
+
 
 
 @dataclass
@@ -483,12 +407,10 @@ def _managed_root(source: Path) -> Path:
     return source.parent.parent / ".marquee"
 
 
-def candidate_output_path(source: Path, source_key: str, job_id: str) -> Path:
-    return _managed_root(source) / "letterbox" / "candidates" / source_key / job_id / source.name
 
 
-def saved_original_path(source: Path, source_key: str, job_id: str) -> Path:
-    return _managed_root(source) / "backups" / source_key / job_id / source.name
+
+
 
 
 async def _mkdir_with_retry(
@@ -693,12 +615,12 @@ async def build_plan(
         "method": "permanent_reencode",
         "crop": {"top": top, "bottom": bottom, "output_height": source.height - top - bottom},
         "source": {
-            "path": str(resolved.path),
             "size_bytes": resolved.size_bytes,
             "signature": resolved.signature,
             "codec": source.codec,
             "width": source.width,
             "height": source.height,
+            "duration_seconds": source.duration_s,
             "pix_fmt": source.pix_fmt,
             "color_transfer": source.color_transfer,
             "color_primaries": source.color_primaries,
@@ -709,6 +631,10 @@ async def build_plan(
             "dovi_level": source.dovi_level,
             "dovi_el_present": source.dovi_el_present,
             "dovi_bl_signal_compatibility_id": source.dovi_bl_signal_compatibility_id,
+            "video_streams": source.video_streams,
+            "audio_streams": source.audio_streams,
+            "subtitle_streams": source.subtitle_streams,
+            "attachment_streams": source.attachment_streams,
         },
         "encoder": encoder_plan,
         "acceleration": acceleration,
@@ -871,334 +797,25 @@ def _parse_progress(line: str, duration_s: float | None, values: dict[str, str])
     return progress
 
 
-async def _drain_stderr(stream: asyncio.StreamReader) -> str:
-    """Continuously drain stderr while retaining a bounded diagnostic tail."""
-    tail: deque[str] = deque()
-    tail_bytes = 0
-    pending = ""
-
-    def append(chunk: str) -> None:
-        nonlocal tail_bytes
-        tail.append(chunk)
-        tail_bytes += len(chunk.encode(errors="replace"))
-        while len(tail) > _STDERR_TAIL_MAX_LINES or tail_bytes > _STDERR_TAIL_MAX_BYTES:
-            tail_bytes -= len(tail.popleft().encode(errors="replace"))
-
-    while chunk := await stream.read(4096):
-        pending += chunk.decode(errors="replace")
-        lines = pending.splitlines(keepends=True)
-        pending = lines.pop() if lines and not lines[-1].endswith(("\n", "\r")) else ""
-        for line in lines:
-            append(line)
-    if pending:
-        append(pending)
-    return "".join(tail)
 
 
-async def _terminate_process(
-    proc: asyncio.subprocess.Process,
-    *,
-    grace_seconds: float = _PROCESS_TERMINATE_GRACE_SECONDS,
-) -> None:
-    """Terminate a child process without allowing cleanup to wait forever."""
-    if proc.returncode is not None:
-        return
-    with contextlib.suppress(ProcessLookupError):
-        proc.terminate()
-    try:
-        await asyncio.wait_for(proc.wait(), timeout=grace_seconds)
-        return
-    except TimeoutError:
-        logger.warning("child process %s ignored SIGTERM; sending SIGKILL", proc.pid)
-    with contextlib.suppress(ProcessLookupError):
-        proc.kill()
-    with contextlib.suppress(TimeoutError):
-        await asyncio.wait_for(proc.wait(), timeout=grace_seconds)
 
 
-async def _finish_stderr_drain(stderr_task: asyncio.Task[str]) -> str:
-    try:
-        return await stderr_task
-    except asyncio.CancelledError:
-        raise
-    except Exception:  # noqa: BLE001 - diagnostics must not mask the encode result
-        logger.warning("failed to drain re-encode stderr", exc_info=True)
-        return ""
 
 
-async def _cancelled_encode_cleanup(
-    proc: asyncio.subprocess.Process,
-    output: Path | None,
-    stderr_task: asyncio.Task[str],
-) -> None:
-    """Complete critical child cleanup after the encode task is cancelled."""
-    await _terminate_process(proc)
-    if output is not None:
-        output.unlink(missing_ok=True)
-    await _finish_stderr_drain(stderr_task)
-    await clear_child_pid(proc.pid)
 
 
-async def _media_job_cancel_requested(job_id: str) -> bool:
-    """Legacy media execution is unavailable until its canonical definition ships."""
-    raise UnmigratedJobPlatformError(f"media_job.cancel:{job_id}")
 
 
-async def _run_encode_attempt(
-    db: AsyncSession,
-    job: object,
-    emit,
-    source: Path,
-    output: Path,
-    plan: dict,
-    source_info: SourceVideo,
-) -> tuple[bool, str]:
-    """Run one FFmpeg encode attempt and return its failure diagnostic, if any."""
-    proc = await asyncio.create_subprocess_exec(
-        binaries.resolve("ffmpeg") or "ffmpeg",
-        *build_ffmpeg_args(source, output, plan),
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    await record_child_pid(proc.pid)
-    assert proc.stderr is not None
-    stderr_task = asyncio.create_task(_drain_stderr(proc.stderr))
-    cancellation_cleanup_started = False
-    try:
-        assert proc.stdout is not None
-        # ffmpeg emits a progress packet several times per second. Publish every
-        # packet live, but only persist it (and poll cancellation) about once/sec.
-        last_persist = 0.0
-        last_progress = time.monotonic()
-        progress_values: dict[str, str] = {}
-        while True:
-            try:
-                line = await asyncio.wait_for(
-                    proc.stdout.readline(),
-                    timeout=max(0.0, settings.JOB_ENCODE_STALL_SECONDS - (time.monotonic() - last_progress)),
-                )
-            except TimeoutError:
-                await _terminate_process(proc)
-                output.unlink(missing_ok=True)
-                diagnostic = await _finish_stderr_drain(stderr_task)
-                message = "FFmpeg stopped emitting progress"
-                if diagnostic:
-                    message = f"{message}: {diagnostic[-1000:]}"
-                await emit(db, job.job_id, "encode", "stalled", message=message)
-                raise ReencodePlanError("encode_stalled", diagnostic or message) from None
-            if not line:
-                break
-            progress = _parse_progress(
-                line.decode(errors="replace"), source_info.duration_s, progress_values
-            )
-            if progress is None:
-                continue
-            now = time.monotonic()
-            last_progress = now
-            if now - last_persist < 1.0:
-                await emit(db, job.job_id, "encode", "running", progress=progress, persist=False)
-                continue
-            last_persist = now
-            await emit(db, job.job_id, "encode", "running", progress=progress, persist=True)
-            if await _media_job_cancel_requested(job.job_id):
-                await _terminate_process(proc)
-                output.unlink(missing_ok=True)
-                raise ReencodePlanError("cancelled", "letterbox re-encode cancelled")
-        await proc.wait()
-        diagnostic = await _finish_stderr_drain(stderr_task)
-        if proc.returncode != 0:
-            output.unlink(missing_ok=True)
-            return False, diagnostic
-        return True, diagnostic
-    except asyncio.CancelledError:
-        cancellation_cleanup_started = True
-        with contextlib.suppress(asyncio.CancelledError, TimeoutError):
-            await asyncio.shield(
-                asyncio.wait_for(
-                    _cancelled_encode_cleanup(proc, output, stderr_task),
-                    timeout=2 * _PROCESS_TERMINATE_GRACE_SECONDS + 2,
-                )
-            )
-        raise
-    finally:
-        if not cancellation_cleanup_started:
-            if proc.returncode is None:
-                await _terminate_process(proc)
-            await _finish_stderr_drain(stderr_task)
-            await clear_child_pid(proc.pid)
 
 
-async def execute_job(db: AsyncSession, job: object, emit) -> dict:
-    request = json.loads(job.request_json) if job.request_json else {}
-    plan = json.loads(job.plan_json) if job.plan_json else {}
-    resolved = await resolve_media_file(db, job.media_file_id)
-    if job.input_signature and resolved.signature != job.input_signature:
-        raise ReencodePlanError("plan_stale", "file changed since the re-encode plan was created")
 
-    media_row = await db.get(MediaFile, resolved.media_file_id)
-    source_key = _source_key(media_row, resolved)
-    out = candidate_output_path(resolved.path, source_key, job.job_id)
-    await _mkdir_with_retry(out.parent, boundary=_managed_root(resolved.path))
-    out.unlink(missing_ok=True)
-    dovi_preserve = bool(plan.get("dovi", {}).get("supported"))
-    ffmpeg_out = out
-    encoded_out = out.with_name(f".{out.stem}.encoded{out.suffix}") if dovi_preserve else out
-    if dovi_preserve:
-        encoded_out.unlink(missing_ok=True)
-        ffmpeg_out = encoded_out
 
-    source_info = await gated(inspect_source, resolved.path)
-    if source_info is None:
-        raise ReencodePlanError("probe_failed", "could not inspect source before encoding")
-    await _raise_if_cancel_requested(db, job, cleanup_paths=[out, encoded_out])
 
-    # Start DOVI RPU extraction in parallel with the main encode (Fix C).
-    # Both operations read the source file; RPU extraction is I/O-bound and
-    # finishes well before the encode does, so the RPU will be ready by the
-    # time the encode completes — making RPU extraction effectively free.
-    rpu_task: asyncio.Task | None = None
-    rpu_work: Path | None = None
-    if dovi_preserve:
-        rpu_work = encoded_out.parent / f".dovi-{job.job_id}"
-        if rpu_work.exists():
-            shutil.rmtree(rpu_work)
-        rpu_work.mkdir(parents=True, exist_ok=True)
-        rpu_path = rpu_work / "RPU.bin"
-        rpu_task = asyncio.create_task(
-            _extract_rpu_piped(resolved.path, rpu_path),
-            name=f"dovi-rpu-{job.job_id}",
-        )
-        logger.info("DOVI RPU extraction started in parallel for %s", job.job_id)
-    await _raise_if_cancel_requested(db, job, rpu_task=rpu_task, cleanup_paths=[out, encoded_out])
 
-    acceleration = plan.get("acceleration") or {}
-    acceleration_active = bool(acceleration.get("enabled"))
-    pipeline_label = (
-        "NVIDIA NVDEC \u2192 GPU crop \u2192 NVENC" if acceleration_active else "CPU decode/crop"
-    )
-    crop = plan.get("crop") or {}
-    crop_label = f"crop top={crop.get('top')} bottom={crop.get('bottom')} \u2014 " if crop else ""
-    await emit(
-        db,
-        job.job_id,
-        "encode",
-        "start",
-        message=f"Re-encoding with {crop_label}{plan['encoder']['encoder']} ({pipeline_label})",
-    )
 
-    succeeded, diagnostic = await _run_encode_attempt(
-        db, job, emit, resolved.path, ffmpeg_out, plan, source_info
-    )
-    await _raise_if_cancel_requested(db, job, rpu_task=rpu_task, cleanup_paths=[out, encoded_out])
-    execution_acceleration = dict(acceleration)
-    if not succeeded and acceleration_active:
-        logger.warning(
-            "NVIDIA zero-copy encode failed; retrying with CPU decode/crop: %s", diagnostic
-        )
-        fallback_reason = _clean_ffmpeg_error(diagnostic, resolved.path)
-        fallback_plan = json.loads(json.dumps(plan))
-        fallback_plan["acceleration"] = {
-            "enabled": False,
-            "mode": "cpu_decode_crop_fallback",
-            "decoder": acceleration.get("decoder"),
-            "reason": fallback_reason,
-        }
-        execution_acceleration = fallback_plan["acceleration"]
-        await emit(
-            db,
-            job.job_id,
-            "encode",
-            "fallback",
-            message=f"NVIDIA acceleration failed; retrying with CPU decode/crop. {fallback_reason}",
-            progress={"percent": 0},
-        )
-        succeeded, diagnostic = await _run_encode_attempt(
-            db, job, emit, resolved.path, ffmpeg_out, fallback_plan, source_info
-        )
-    if not succeeded:
-        # Clean up the parallel RPU task if the encode itself failed.
-        if rpu_task is not None and not rpu_task.done():
-            rpu_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await rpu_task
-        raise ReencodePlanError("ffmpeg_failed", diagnostic[:500])
-    await _raise_if_cancel_requested(db, job, rpu_task=rpu_task, cleanup_paths=[out, encoded_out])
 
-    dovi_status = plan.get("dovi", {}).get("status", "not_present")
-    if dovi_preserve:
-        await emit(db, job.job_id, "dovi", "start", message="Preserving Dolby Vision RPU")
-        try:
-            await _preserve_dovi(
-                resolved.path,
-                encoded_out,
-                out,
-                job.job_id,
-                emit,
-                db,
-                job,
-                rpu_task=rpu_task,
-            )
-            dovi_status = "preserved"
-        except Exception as exc:  # noqa: BLE001
-            out.unlink(missing_ok=True)
-            raise ReencodePlanError("dovi_preservation_failed", str(exc)) from exc
-        finally:
-            encoded_out.unlink(missing_ok=True)
-    await _raise_if_cancel_requested(db, job, cleanup_paths=[out])
 
-    await emit(db, job.job_id, "validate", "start")
-    validation = await gated(validate_candidate, resolved.path, out, plan, source_info)
-    if validation:
-        out.unlink(missing_ok=True)
-        raise ReencodePlanError("validation_failed", "; ".join(validation))
-    await _raise_if_cancel_requested(db, job, cleanup_paths=[out])
-
-    candidate_stat = out.stat()
-    episode_ids = await _episode_ids_for_media_file(db, resolved.media_file_id)
-    artifact_subject = (
-        {"media_type": "episode", "episode_id": min(episode_ids), "movie_id": None}
-        if resolved.movie_id is None and episode_ids
-        else {"media_type": "movie", "movie_id": resolved.movie_id or int(request.get("movie_id") or 0)}
-    )
-    artifact = LetterboxReencodeArtifact(
-        job_id=job.job_id,
-        **artifact_subject,
-        media_file_id=resolved.media_file_id,
-        original_path=str(resolved.path),
-        candidate_path=str(out),
-        original_size_bytes=resolved.size_bytes,
-        candidate_size_bytes=candidate_stat.st_size,
-        original_signature=resolved.signature,
-        candidate_signature=compute_signature(
-            out, size=candidate_stat.st_size, mtime_ns=candidate_stat.st_mtime_ns
-        ),
-        encoder=plan["encoder"]["encoder"],
-        encoder_family=plan["encoder"]["family"],
-        codec=plan["encoder"]["codec"],
-        crop_top=int(plan["crop"]["top"]),
-        crop_bottom=int(plan["crop"]["bottom"]),
-        hdr_status="preserved" if plan["source"].get("has_hdr") else "not_present",
-        dovi_status=dovi_status,
-        detail_json=json.dumps(
-            {
-                "plan": plan,
-                "warnings": plan.get("warnings", []),
-                "execution": {"acceleration": execution_acceleration},
-            },
-            default=str,
-        ),
-        status="candidate_ready",
-    )
-    db.add(artifact)
-    await db.commit()
-    await db.refresh(artifact)
-    await emit(db, job.job_id, "done", "complete")
-    return {
-        "artifact_id": artifact.id,
-        "candidate_path": str(out),
-        "candidate_size_bytes": candidate_stat.st_size,
-        "acceleration": execution_acceleration,
-    }
 
 
 async def _run_checked(
@@ -1209,49 +826,7 @@ async def _run_checked(
     job: object | None = None,
     timeout: float | None = 3600,
 ) -> None:
-    proc = await asyncio.create_subprocess_exec(
-        binaries.resolve(binary_name) or binary_name,
-        *args,
-        stdout=asyncio.subprocess.DEVNULL,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    await record_child_pid(proc.pid)
-    assert proc.stderr is not None
-    stderr_task = asyncio.create_task(_drain_stderr(proc.stderr))
-    cancellation_cleanup_started = False
-    try:
-        loop = asyncio.get_running_loop()
-        started = loop.time()
-        while proc.returncode is None:
-            try:
-                await asyncio.wait_for(proc.wait(), timeout=1.0)
-            except TimeoutError:
-                if timeout is not None and (loop.time() - started) > timeout:
-                    await _terminate_process(proc)
-                    raise RuntimeError(f"{binary_name} timed out") from None
-                if db is not None and job is not None and await _media_job_cancel_requested(job.job_id):
-                    await _terminate_process(proc)
-                    raise ReencodePlanError("cancelled", "letterbox re-encode cancelled") from None
-        stderr = await _finish_stderr_drain(stderr_task)
-    except asyncio.CancelledError:
-        cancellation_cleanup_started = True
-        with contextlib.suppress(asyncio.CancelledError, TimeoutError):
-            await asyncio.shield(
-                asyncio.wait_for(
-                    _cancelled_encode_cleanup(proc, None, stderr_task),
-                    timeout=2 * _PROCESS_TERMINATE_GRACE_SECONDS + 2,
-                )
-            )
-        raise
-    finally:
-        if not cancellation_cleanup_started:
-            if proc.returncode is None:
-                await _terminate_process(proc)
-            await _finish_stderr_drain(stderr_task)
-            await clear_child_pid(proc.pid)
-    if proc.returncode != 0:
-        message = stderr[:500]
-        raise RuntimeError(message or f"{binary_name} exited {proc.returncode}")
+    raise RuntimeError("legacy re-encode process execution is retired")
 
 
 async def _piped_ffmpeg_to_dovi(
@@ -1260,196 +835,19 @@ async def _piped_ffmpeg_to_dovi(
     *,
     timeout: float = 3600,
 ) -> None:
-    """Run an FFmpeg demux piped into dovi_tool via stdin.
-
-    FFmpeg writes raw HEVC to stdout; dovi_tool reads it from stdin.
-    This avoids dovi_tool parsing the MKV container (which is much slower
-    than FFmpeg's demuxer) and eliminates intermediate files on disk.
-    """
-    ffmpeg_bin = binaries.resolve("ffmpeg") or "ffmpeg"
-    dovi_bin = binaries.resolve("dovi_tool") or "dovi_tool"
-
-    ffmpeg_proc = await asyncio.create_subprocess_exec(
-        ffmpeg_bin,
-        *ffmpeg_args,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.DEVNULL,
-    )
-    await record_child_pid(ffmpeg_proc.pid)
-    assert ffmpeg_proc.stdout is not None
-    dovi_proc = await asyncio.create_subprocess_exec(
-        dovi_bin,
-        *dovi_args,
-        stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.DEVNULL,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    await record_child_pid(dovi_proc.pid)
-    assert dovi_proc.stdin is not None
-
-    try:
-        # asyncio subprocess streams aren't real file descriptors, so FFmpeg's
-        # stdout can't be handed to dovi_tool's stdin= directly (that's what
-        # crashed: Popen calls .fileno() on it). Pump bytes through ourselves.
-        async def _pump() -> None:
-            try:
-                while True:
-                    chunk = await ffmpeg_proc.stdout.read(1 << 20)  # type: ignore[union-attr]
-                    if not chunk:
-                        break
-                    try:
-                        dovi_proc.stdin.write(chunk)  # type: ignore[union-attr]
-                        await dovi_proc.stdin.drain()  # type: ignore[union-attr]
-                    except (BrokenPipeError, ConnectionResetError):
-                        break
-            finally:
-                with contextlib.suppress(Exception):
-                    dovi_proc.stdin.close()  # type: ignore[union-attr]
-
-        _, (_, dovi_stderr) = await asyncio.wait_for(
-            asyncio.gather(_pump(), dovi_proc.communicate()), timeout=timeout
-        )
-        await ffmpeg_proc.wait()
-    finally:
-        await clear_child_pid(ffmpeg_proc.pid)
-        await clear_child_pid(dovi_proc.pid)
-
-    if ffmpeg_proc.returncode != 0:
-        raise RuntimeError(
-            f"FFmpeg HEVC extraction exited {ffmpeg_proc.returncode} during DOVI pipe"
-        )
-    if dovi_proc.returncode != 0:
-        message = (dovi_stderr or b"").decode(errors="replace")[:500]
-        raise RuntimeError(message or f"dovi_tool exited {dovi_proc.returncode}")
+    raise RuntimeError("legacy re-encode Dolby Vision piping is retired")
 
 
-async def _extract_rpu_piped(source_mkv: Path, rpu_out: Path, *, timeout: float = 3600) -> None:
-    """Pipe FFmpeg HEVC demux → dovi_tool extract-rpu.
-
-    FFmpeg handles MKV demuxing (fast), dovi_tool only sees raw HEVC NALs
-    which is much faster than having dovi_tool parse the MKV itself.
-    """
-    ffmpeg_args = [
-        "-hide_banner",
-        "-nostdin",
-        "-i",
-        str(source_mkv),
-        "-map",
-        "0:v:0",
-        "-c:v",
-        "copy",
-        "-bsf:v",
-        "hevc_mp4toannexb",
-        "-f",
-        "hevc",
-        "pipe:1",
-    ]
-    dovi_args = ["--crop", "extract-rpu", "-", "-o", str(rpu_out)]
-    await _piped_ffmpeg_to_dovi(ffmpeg_args, dovi_args, timeout=timeout)
-
-
-async def _inject_rpu_piped(
-    encoded_mkv: Path, rpu: Path, injected_hevc: Path, *, timeout: float = 3600
+async def _extract_rpu_piped(
+    source_mkv: Path, rpu_out: Path, *, timeout: float = 3600
 ) -> None:
-    """Pipe encoded MKV's HEVC stream → dovi_tool inject-rpu.
-
-    Eliminates the intermediate encoded.hevc file entirely — FFmpeg streams
-    the HEVC bitstream directly to dovi_tool via stdin.
-    """
-    ffmpeg_args = [
-        "-hide_banner",
-        "-nostdin",
-        "-i",
-        str(encoded_mkv),
-        "-map",
-        "0:v:0",
-        "-c:v",
-        "copy",
-        "-bsf:v",
-        "hevc_mp4toannexb",
-        "-f",
-        "hevc",
-        "pipe:1",
-    ]
-    dovi_args = [
-        "inject-rpu",
-        "-i",
-        "-",
-        "--rpu-in",
-        str(rpu),
-        "-o",
-        str(injected_hevc),
-    ]
-    await _piped_ffmpeg_to_dovi(ffmpeg_args, dovi_args, timeout=timeout)
+    raise RuntimeError("legacy re-encode RPU extraction is retired")
 
 
-async def _preserve_dovi(
-    source_mkv: Path,
-    encoded_mkv: Path,
-    final_mkv: Path,
-    job_id: str,
-    emit,
-    db: AsyncSession,
-    job: object,
-    rpu_task: asyncio.Task | None = None,
-) -> None:
-    """Dolby Vision RPU preservation with piped architecture.
 
-    If *rpu_task* is provided it should be an ``asyncio.Task`` wrapping
-    ``_extract_rpu_piped()`` that was launched in parallel with the main
-    encode.  When the encode finishes faster than RPU extraction (unlikely
-    for long files) we simply await it here.
-    """
-    work = encoded_mkv.parent / f".dovi-{job_id}"
-    work.mkdir(parents=True, exist_ok=True)
-    try:
-        rpu = work / "RPU.bin"
-        injected_hevc = work / "injected.hevc"
 
-        # Step 1: Await parallel RPU extraction (started during encode) or run it now.
-        await emit(
-            db,
-            job.job_id,
-            "dovi",
-            "running",
-            message="Extracting Dolby Vision RPU from source (1/3)\u2026",
-        )
-        await _raise_if_cancel_requested(db, job, rpu_task=rpu_task, cleanup_paths=[final_mkv])
-        if rpu_task is not None:
-            await rpu_task
-        else:
-            await _extract_rpu_piped(source_mkv, rpu)
-        await _raise_if_cancel_requested(db, job, cleanup_paths=[final_mkv])
 
-        # Step 2: Pipe encoded HEVC → inject RPU (no intermediate file).
-        await emit(
-            db,
-            job.job_id,
-            "dovi",
-            "running",
-            message="Injecting RPU into encoded video (2/3)\u2026",
-        )
-        await _inject_rpu_piped(encoded_mkv, rpu, injected_hevc)
-        await _raise_if_cancel_requested(db, job, cleanup_paths=[final_mkv, injected_hevc])
 
-        # Step 3: Final remux — encoded MKV audio/subs + injected HEVC video.
-        await emit(
-            db,
-            job.job_id,
-            "dovi",
-            "running",
-            message="Remuxing final output with Dolby Vision (3/3)\u2026",
-        )
-        await _run_checked(
-            "ffmpeg",
-            build_dovi_remux_args(encoded_mkv, injected_hevc, final_mkv),
-            db=db,
-            job=job,
-            timeout=3600,
-        )
-    finally:
-        with contextlib.suppress(OSError):
-            shutil.rmtree(work)
 
 
 def validate_candidate(
@@ -1483,184 +881,3 @@ def validate_candidate(
     if plan.get("dovi", {}).get("supported") and not out.has_dovi:
         problems.append("Dolby Vision metadata was not detected in the output")
     return problems
-
-
-async def artifact_summary(db: AsyncSession) -> dict:
-    rows = (
-        await db.execute(
-            select(
-                LetterboxReencodeArtifact.status,
-                func.count(),
-                func.coalesce(func.sum(LetterboxReencodeArtifact.candidate_size_bytes), 0),
-                func.coalesce(func.sum(LetterboxReencodeArtifact.saved_original_size_bytes), 0),
-            ).group_by(LetterboxReencodeArtifact.status)
-        )
-    ).all()
-    total_candidates = 0
-    total_saved = 0
-    counts = {}
-    for status, count, candidate_bytes, saved_bytes in rows:
-        counts[status] = count
-        total_candidates += int(candidate_bytes or 0)
-        total_saved += int(saved_bytes or 0)
-    return {
-        "counts": counts,
-        "candidate_bytes": total_candidates,
-        "saved_original_bytes": total_saved,
-        "total_bytes": total_candidates + total_saved,
-    }
-
-
-def artifact_to_dict(artifact: LetterboxReencodeArtifact) -> dict:
-    return {
-        "id": artifact.id,
-        "job_id": artifact.job_id,
-        "media_type": artifact.media_type,
-        "movie_id": artifact.movie_id,
-        "episode_id": artifact.episode_id,
-        "media_file_id": artifact.media_file_id,
-        "status": artifact.status,
-        "original_path": artifact.original_path,
-        "candidate_path": artifact.candidate_path,
-        "saved_original_path": artifact.saved_original_path,
-        "original_size_bytes": artifact.original_size_bytes,
-        "candidate_size_bytes": artifact.candidate_size_bytes,
-        "saved_original_size_bytes": artifact.saved_original_size_bytes,
-        "encoder": artifact.encoder,
-        "encoder_family": artifact.encoder_family,
-        "codec": artifact.codec,
-        "crop_top": artifact.crop_top,
-        "crop_bottom": artifact.crop_bottom,
-        "hdr_status": artifact.hdr_status,
-        "dovi_status": artifact.dovi_status,
-        "detail": json.loads(artifact.detail_json) if artifact.detail_json else None,
-        "created_at": artifact.created_at.isoformat() if artifact.created_at else None,
-        "updated_at": artifact.updated_at.isoformat() if artifact.updated_at else None,
-    }
-
-
-async def replace_original(db: AsyncSession, artifact: LetterboxReencodeArtifact) -> dict:
-    if artifact.status not in {"candidate_ready", "kept"}:
-        raise ReencodePlanError(
-            "invalid_status", f"artifact is not replaceable from status {artifact.status}"
-        )
-    original = Path(artifact.original_path)
-    candidate = Path(artifact.candidate_path or "")
-    if not original.is_file() or not candidate.is_file():
-        artifact.status = "missing"
-        await db.commit()
-        raise ReencodePlanError("missing_file", "original or candidate file is missing")
-    media_row = await db.get(MediaFile, artifact.media_file_id) if artifact.media_file_id else None
-    source_key = (
-        (media_row.source_key if media_row else f"movie-{artifact.movie_id}")
-        .replace(":", "_")
-        .replace("/", "_")
-        .replace("\\", "_")
-    )
-    saved = (
-        Path(artifact.saved_original_path)
-        if artifact.saved_original_path
-        else saved_original_path(original, source_key, artifact.job_id or uuid4().hex)
-    )
-    saved.parent.mkdir(parents=True, exist_ok=True)
-    os.replace(original, saved)
-    os.replace(candidate, original)
-    stat = saved.stat()
-    artifact.saved_original_path = str(saved)
-    artifact.saved_original_size_bytes = stat.st_size
-    artifact.saved_original_signature = compute_signature(
-        saved, size=stat.st_size, mtime_ns=stat.st_mtime_ns
-    )
-    resolved_at = datetime.now(UTC)
-    artifact.status = "replaced"
-    artifact.updated_at = resolved_at
-    if media_row is not None:
-        media_row.size_bytes = original.stat().st_size
-    states = await _states_for_artifact(db, artifact)
-    for state in states:
-        aspect_label = state.aspect_label
-        if aspect_label is None and artifact.detail_json:
-            try:
-                detail = json.loads(artifact.detail_json)
-            except json.JSONDecodeError:
-                detail = {}
-            plan = detail.get("plan") if isinstance(detail, dict) else {}
-            source = plan.get("source") if isinstance(plan, dict) else {}
-            crop = plan.get("crop") if isinstance(plan, dict) else {}
-            try:
-                width = int(source.get("width") or 0)
-                output_height = int(crop.get("output_height") or 0)
-            except (TypeError, ValueError):
-                width = output_height = 0
-            if width > 0 and output_height > 0:
-                aspect_label = letterbox_detect.aspect_label(width, output_height)
-        state.status = "reencoded"
-        state.applied_crop_top = artifact.crop_top
-        state.applied_crop_bottom = artifact.crop_bottom
-        state.last_applied_at = resolved_at
-        state.error = None
-        state.resolved_by = "reencode"
-        state.resolved_at = resolved_at
-        state.original_crop_top = artifact.crop_top
-        state.original_crop_bottom = artifact.crop_bottom
-        state.original_aspect_label = aspect_label
-    await db.commit()
-    return artifact_to_dict(artifact)
-
-
-async def restore_original(
-    db: AsyncSession, artifact: LetterboxReencodeArtifact, *, keep_candidate: bool = False
-) -> dict:
-    if artifact.status != "replaced":
-        raise ReencodePlanError("invalid_status", "only replaced artifacts can restore an original")
-    original = Path(artifact.original_path)
-    saved = Path(artifact.saved_original_path or "")
-    if not saved.is_file():
-        artifact.status = "missing"
-        await db.commit()
-        raise ReencodePlanError("missing_file", "saved original is missing")
-    if keep_candidate:
-        candidate = Path(artifact.candidate_path or "")
-        if not candidate:
-            candidate = original.with_name(f".{original.name}.letterbox.{artifact.job_id}.mkv")
-        candidate.parent.mkdir(parents=True, exist_ok=True)
-        if original.is_file():
-            os.replace(original, candidate)
-        artifact.candidate_path = str(candidate)
-        artifact.candidate_size_bytes = candidate.stat().st_size if candidate.is_file() else None
-    os.replace(saved, original)
-    artifact.status = "restored"
-    artifact.saved_original_path = None
-    artifact.updated_at = datetime.now(UTC)
-    media_row = await db.get(MediaFile, artifact.media_file_id) if artifact.media_file_id else None
-    if media_row is not None:
-        media_row.size_bytes = original.stat().st_size
-    states = await _states_for_artifact(db, artifact)
-    for state in states:
-        state.status = "candidate"
-        state.applied_crop_top = None
-        state.applied_crop_bottom = None
-        state.resolved_by = None
-        state.resolved_at = None
-        state.original_crop_top = None
-        state.original_crop_bottom = None
-        state.original_aspect_label = None
-    await db.commit()
-    return artifact_to_dict(artifact)
-
-
-async def delete_artifact_files(db: AsyncSession, artifact: LetterboxReencodeArtifact) -> dict:
-    deleted: list[str] = []
-    for raw in (artifact.candidate_path, artifact.saved_original_path):
-        if not raw:
-            continue
-        path = Path(raw)
-        if path == Path(artifact.original_path):
-            continue
-        if path.exists():
-            path.unlink()
-            deleted.append(str(path))
-    artifact.status = "deleted"
-    artifact.updated_at = datetime.now(UTC)
-    await db.commit()
-    return {"id": artifact.id, "deleted": deleted, "status": artifact.status}

@@ -9,9 +9,8 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 from marquee.core import system_metrics
-from marquee.core.jobs.manager import job_manager
 from marquee.main import app
-from marquee.models import SystemMetricsSample
+from marquee.models import Job, SystemMetricsSample
 
 
 @pytest_asyncio.fixture
@@ -95,10 +94,20 @@ async def test_metrics_history_returns_points_rates_and_job_overlay(db, client: 
             ),
         ]
     )
-    job = await job_manager.create(db, job_type="system_noop")
-    job.status = "succeeded"
+    job = Job(
+        id="metrics-history-job",
+        root_id="metrics-history-job",
+        type="system_noop",
+        request={},
+        phase="terminal",
+        outcome="succeeded",
+        subject_snapshot={},
+        trigger_kind="system",
+        feature_area="system",
+    )
     job.started_at = now - timedelta(minutes=2, seconds=30)
-    job.finished_at = now - timedelta(minutes=1, seconds=15)
+    job.terminal_at = now - timedelta(minutes=1, seconds=15)
+    db.add(job)
     await db.commit()
 
     resp = await client.get(
@@ -112,7 +121,7 @@ async def test_metrics_history_returns_points_rates_and_job_overlay(db, client: 
     assert body["points"][1]["disk_read_bps"] is not None
     assert body["points"][1]["net_recv_bps"] is not None
     assert body["jobs"][0]["job_id"] == job.id
-    assert body["jobs"][0]["label"] == "System Noop"
+    assert body["jobs"][0]["label"] == "Health Check"
 
 
 def test_fmt_uptime():

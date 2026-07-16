@@ -42,8 +42,8 @@ import httpx
 import numpy as np
 
 from marquee.config import settings
+from marquee.core.cancellation import JobCancelledError
 from marquee.core.download_guard import ensure_image_response
-from marquee.core.jobs.cancel_registry import JobCancelledError
 from marquee.core.pipeline_config import pipeline_settings
 from marquee.core.poster_sources.tmdb import PosterCandidate, TMDBClient
 from marquee.core.text_profiles import OcrGateContext

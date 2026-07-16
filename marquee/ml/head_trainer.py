@@ -30,7 +30,7 @@ from pathlib import Path
 import numpy as np
 
 from marquee.config import settings
-from marquee.core.jobs.cancel_registry import raise_if_cancelled
+from marquee.core.cancellation import raise_if_cancelled
 from marquee.core.pipeline_config import pipeline_settings
 from marquee.ml import feedback_store
 from marquee.ml.learned_head import LogisticHead, fit_scale_bias

@@ -118,9 +118,7 @@ def test_c4_documents_are_strict_bounded_and_nonmutating() -> None:
 def test_c4_has_one_executor_and_no_legacy_publication_bypass() -> None:
     expected = {"taste_rebuild", "taste_map", "learned_head_train", "poster_rescan"}
     assert expected <= set(EXECUTION_HANDLERS)
-    legacy = Path("marquee/core/jobs/builtin_handlers.py").read_text()
-    for job_type in expected:
-        assert f'@register("{job_type}")' not in legacy
+    assert not Path("marquee/core/jobs/builtin_handlers.py").exists()
 
     ml_source = Path("marquee/core/jobs/ml_publication.py").read_text()
     assert "pg_advisory_xact_lock" in ml_source

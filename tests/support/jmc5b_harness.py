@@ -6,6 +6,7 @@ by name without cross-importing test modules.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
@@ -16,10 +17,11 @@ from marquee.core.filesystem import FilesystemBoundary, RootSpec
 from marquee.core.jobs.manifest import JOB_DEFINITION_REGISTRY
 from marquee.core.jobs.process_launcher import ProcessLauncher
 from marquee.core.jobs.track_inventory_adapter import inventory_from_probe
+from marquee.core.jobs.workspaces import AttemptWorkspaceManager
 from marquee.core.media_files import compute_signature
 from marquee.core.subtitles.probe import probe_container
 from marquee.database import _get_session_factory
-from marquee.models import Job, MediaFile
+from marquee.models import Job, JobAttempt, MediaFile
 
 
 class Fence:
@@ -98,15 +100,36 @@ async def execution_context(db, tmp_path: Path, *, job_type: str, request: dict)
             subject_snapshot={"version": 1, "kind": "track"},
         )
     )
+    await db.flush()
+    attempt = JobAttempt(
+        job_id=job_id,
+        number=1,
+        fence_token=7,
+        phase="running",
+        started_at=datetime.now(UTC),
+    )
+    db.add(attempt)
+    await db.flush()
+    job = await db.get(Job, job_id)
+    assert job is not None
+    job.current_attempt_id = attempt.id
     await db.commit()
+    data_root = tmp_path / "data"
+    data_root.mkdir(parents=True, exist_ok=True)
+    workspace = AttemptWorkspaceManager.for_data_dir(data_root).create(
+        job_id=job_id,
+        attempt_id=attempt.id,
+        fence_token=7,
+    )
     return SimpleNamespace(
         delivery=SimpleNamespace(canonical_job_id=job_id),
-        attempt=SimpleNamespace(attempt_id=1, fence_token=7),
+        attempt=SimpleNamespace(attempt_id=attempt.id, fence_token=7),
         request=request,
         definition=JOB_DEFINITION_REGISTRY.get(job_type),
         cancellation=SimpleNamespace(is_cancelled=lambda: False),
         writer=Fence(),
         process_launcher=launcher_for(tmp_path),
+        workspace=workspace,
         session_factory=_get_session_factory(),
     )
 

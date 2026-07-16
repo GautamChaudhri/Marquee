@@ -7,7 +7,6 @@ import type {
 	LetterboxJobRef,
 	LetterboxStatus,
 	MediaJobSnapshot,
-	ReencodeArtifact,
 	ReencodeArtifactList,
 	ReencodeOptions,
 	ReencodePlan,
@@ -208,30 +207,68 @@ export function listReencodeArtifacts(
 	});
 }
 
-export function replaceOriginal(fetchFn: Fetch, artifactId: number): Promise<ReencodeArtifact> {
-	return apiSend<ReencodeArtifact>(
+interface ReencodeDecisionPlan {
+	job_id: string;
+	status: 'planned';
+	plan_version: string;
+	configuration_version: number;
+}
+
+type ReencodeDecisionPath =
+	| `/letterbox/reencode-artifacts/${number}/replace-original`
+	| `/letterbox/reencode-artifacts/${number}/restore-original`
+	| `/letterbox/reencode-artifacts/${number}`;
+
+async function planAndConfirmArtifactDecision(
+	fetchFn: Fetch,
+	method: 'POST' | 'DELETE',
+	path: ReencodeDecisionPath
+): Promise<{ job_id: string; status: 'queued' }> {
+	const plan = await apiSend<ReencodeDecisionPlan>(
+		fetchFn,
+		method,
+		path,
+		method === 'POST' ? {} : undefined
+	);
+	return confirmCanonicalMediaJob(
+		fetchFn,
+		plan.job_id,
+		plan.plan_version,
+		plan.configuration_version
+	);
+}
+
+export function replaceOriginal(
+	fetchFn: Fetch,
+	artifactId: number
+): Promise<{ job_id: string; status: 'queued' }> {
+	return planAndConfirmArtifactDecision(
 		fetchFn,
 		'POST',
-		`/letterbox/reencode-artifacts/${artifactId}/replace-original`,
-		{}
+		`/letterbox/reencode-artifacts/${artifactId}/replace-original`
 	);
 }
 
 export function restoreOriginal(
 	fetchFn: Fetch,
-	artifactId: number,
-	keepCandidate = false
-): Promise<ReencodeArtifact> {
-	return apiSend<ReencodeArtifact>(
+	artifactId: number
+): Promise<{ job_id: string; status: 'queued' }> {
+	return planAndConfirmArtifactDecision(
 		fetchFn,
 		'POST',
-		`/letterbox/reencode-artifacts/${artifactId}/restore-original`,
-		{ keep_candidate: keepCandidate }
+		`/letterbox/reencode-artifacts/${artifactId}/restore-original`
 	);
 }
 
-export function deleteArtifact(fetchFn: Fetch, artifactId: number): Promise<unknown> {
-	return apiSend(fetchFn, 'DELETE', `/letterbox/reencode-artifacts/${artifactId}`);
+export function deleteArtifact(
+	fetchFn: Fetch,
+	artifactId: number
+): Promise<{ job_id: string; status: 'queued' }> {
+	return planAndConfirmArtifactDecision(
+		fetchFn,
+		'DELETE',
+		`/letterbox/reencode-artifacts/${artifactId}`
+	);
 }
 
 // ── TV Letterbox Client functions ───────────────────────────────────────────

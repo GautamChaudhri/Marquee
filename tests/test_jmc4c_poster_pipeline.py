@@ -108,8 +108,7 @@ def test_single_pipeline_call_graph_has_one_canonical_executor() -> None:
         for node in ast.walk(route)
     )
 
-    legacy = Path("marquee/core/jobs/builtin_handlers.py").read_text()
-    assert '@register("poster_pipeline")' not in legacy
+    assert not Path("marquee/core/jobs/builtin_handlers.py").exists()
     registrations = Path("marquee/core/jobs/handlers_posters.py").read_text()
     assert registrations.count('register_execution_handler("poster_pipeline"') == 1
 
@@ -158,9 +157,7 @@ async def test_movie_batch_is_ticketless_parent_with_frozen_children(client, db)
 
 
 def test_batch_parents_have_no_executor_or_legacy_lifecycle_calls() -> None:
-    legacy = Path("marquee/core/jobs/builtin_handlers.py").read_text()
-    assert '@register("poster_pipeline_batch")' not in legacy
-    assert '@register("poster_pipeline_tv_batch")' not in legacy
+    assert not Path("marquee/core/jobs/builtin_handlers.py").exists()
     for route_path, names in (
         ("marquee/api/routes/pipeline.py", {"run_pipeline_batch"}),
         (

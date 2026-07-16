@@ -200,9 +200,10 @@ class Settings(BaseSettings):
         default=30,
         ge=1,
         le=3650,
-        description="Days to retain terminal Job rows (and their attempts/"
-        "events/resource reservations, plus any bridged MediaJob row) before "
-        "the daily job_retention_purge job deletes them.",
+        description=(
+            "Days to retain terminal canonical jobs and their durable evidence before the "
+            "daily job_retention_purge job deletes them."
+        ),
     )
     # Filesystem the dashboard disk gauge reports on. Defaults to the volume
     # holding DATA_DIR; point it at the media volume for a more useful number.
