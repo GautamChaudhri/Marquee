@@ -8,7 +8,7 @@ from sqlalchemy import event
 
 from marquee.database import _get_engine
 from marquee.main import app
-from marquee.models import Job
+from marquee.models import Job, JobAttempt
 
 NOW = datetime(2026, 7, 13, 12, 0, tzinfo=UTC)
 SYSTEM_SUBJECT = {
@@ -113,6 +113,63 @@ async def test_queue_history_are_partitioned_and_cursor_bound(db, client):
 
 
 @pytest.mark.asyncio
+async def test_activity_attention_is_one_bounded_server_aggregate(db, client):
+    running = make_job(job_id="attention-running-000000000001", phase="running")
+    warning = make_job(job_id="attention-warning-000000000001", phase="running", offset=1)
+    warning.attention = {"level": "warning", "reason": "slow"}
+    waiting = make_job(job_id="attention-waiting-000000000001", phase="queued", offset=2)
+    error = make_job(job_id="attention-error-0000000000001", phase="queued", offset=3)
+    error.attention = {"level": "error", "reason": "blocked"}
+    retrying = make_job(job_id="attention-retrying-00000000001", phase="queued", offset=4)
+    retrying.progress = {"wait": {"kind": "retry"}}
+    db.add_all([running, warning, waiting, error, retrying])
+    await db.commit()
+
+    with count_queries() as queries:
+        response = await client.get("/api/jobs/attention")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "running": 2,
+        "waiting_held": 2,
+        "retrying": 1,
+        "needs_attention": 2,
+        "warning": 1,
+        "error": 1,
+        "highest_severity": "error",
+    }
+    assert queries[0] == 1
+
+
+@pytest.mark.asyncio
+async def test_queue_filters_by_execution_class_and_worker(db, client):
+    matching = make_job(job_id="workerfilter00000000000000000001", phase="running")
+    matching.execution_policy_id = "gpu"
+    other = make_job(job_id="otherfilter000000000000000000001", phase="running", offset=1)
+    other.execution_policy_id = "cpu"
+    db.add_all([matching, other])
+    await db.flush()
+    db.add(
+        JobAttempt(
+            job_id=matching.id,
+            number=1,
+            fence_token=1,
+            worker_node_id="worker-a",
+            phase="running",
+        )
+    )
+    await db.commit()
+
+    response = await client.get(
+        "/api/jobs",
+        params={"view": "queue", "execution_class": "gpu", "worker_id": "worker-a"},
+    )
+
+    assert response.status_code == 200
+    assert [item["job_id"] for item in response.json()["items"]] == [matching.id]
+
+
+@pytest.mark.asyncio
 async def test_snapshot_presentation_and_raw_documents_are_bounded(db, client):
     job = make_job(job_id="snapshot00000000000000000000001", phase="queued")
     db.add(job)
@@ -167,3 +224,48 @@ async def test_read_query_budgets_hold_at_maximum_page_size(db, client):
         response = await client.get(f"/api/jobs/{job_id}/children", params={"limit": 200})
     assert response.status_code == 200
     assert children_queries[0] == 2
+
+
+@pytest.mark.asyncio
+async def test_batch_children_are_failed_first_with_stable_cursors_beyond_100(db, client):
+    parent = make_job(job_id="parent00000000000000000000000001", phase="running")
+    children = []
+    for index in range(105):
+        outcome = "failed" if index in {80, 104} else "succeeded"
+        child = make_job(
+            job_id=f"child{index:027d}",
+            phase="terminal",
+            outcome=outcome,
+            offset=index,
+        )
+        child.parent_id = parent.id
+        child.root_id = parent.id
+        children.append(child)
+    db.add_all([parent, *children])
+    await db.commit()
+
+    first = await client.get(
+        f"/api/jobs/{parent.id}/children",
+        params={"limit": 100, "sort": "failed_first"},
+    )
+    assert first.status_code == 200
+    first_body = first.json()
+    assert len(first_body["items"]) == 100
+    assert [item["status"]["outcome"] for item in first_body["items"][:2]] == [
+        "failed",
+        "failed",
+    ]
+    assert first_body["next_cursor"]
+
+    second = await client.get(
+        f"/api/jobs/{parent.id}/children",
+        params={
+            "limit": 100,
+            "sort": "failed_first",
+            "cursor": first_body["next_cursor"],
+        },
+    )
+    assert second.status_code == 200
+    assert len(second.json()["items"]) == 5
+    ids = [item["job_id"] for item in first_body["items"] + second.json()["items"]]
+    assert len(ids) == len(set(ids)) == 105

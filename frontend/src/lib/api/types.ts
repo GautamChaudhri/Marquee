@@ -291,8 +291,12 @@ export interface HdrMovieDetail {
 	hdr_bucket: string;
 	dovi: DoviState | null;
 	binaries: { dovi_tool: boolean; ffmpeg: boolean; ffprobe: boolean };
-	analysis_job: import('./jobs').JobSnapshot | null;
-	conversion_job: import('./jobs').JobSnapshot | null;
+	conversion_candidate: {
+		artifact_id: number;
+		artifact_size_bytes: number | null;
+		kind: 'p5_to_p81' | 'p7_strip_el';
+		original_untouched: boolean;
+	} | null;
 }
 
 // ── TV HDR (design/plans/06 §5–6, 07) ──────────────────────────────────────
@@ -408,7 +412,6 @@ export interface HdrTvDetail {
 	};
 	rollup: ShowRollup;
 	seasons: HdrTvSeason[];
-	analysis_jobs: import('./jobs').JobListItem[];
 	binaries: { ffprobe: boolean };
 }
 
@@ -499,13 +502,7 @@ export interface LetterboxDetail {
 	preview_minute?: number;
 	preview_urls?: { before: string; after: string };
 	reencode?: {
-		job: MediaJobSnapshot | null;
 		artifact: ReencodeArtifact | null;
-	} | null;
-	detection_job?: {
-		job_id: string;
-		status: string;
-		events_url: string;
 	} | null;
 }
 
@@ -547,13 +544,6 @@ export interface LetterboxStatus {
 	not_honored_by?: string[];
 	last_scan: string | null;
 	batch_active: string | null;
-}
-
-export interface LetterboxJobRef {
-	job_id: string;
-	detector?: string;
-	total: number;
-	events_url: string;
 }
 
 export interface LetterboxAnalyzeSummary {
@@ -617,6 +607,8 @@ export interface ReencodePlan {
 	job_id: string;
 	status: string;
 	expires_at: string;
+	plan_version: string;
+	configuration_version: number;
 	method: string;
 	crop: { top: number; bottom: number; output_height: number };
 	source: {
@@ -1909,7 +1901,6 @@ export interface LetterboxTvListItem {
 	episodes_total: number;
 	dominant_aspect_label: string | null;
 	rollup: LetterboxTvShowRollup;
-	active_job_ids: string[];
 }
 
 export interface LetterboxTvEpisode {
@@ -1958,7 +1949,6 @@ export interface LetterboxTvDetail {
 	};
 	rollup: LetterboxTvShowRollup;
 	seasons: LetterboxTvSeason[];
-	active_job_ids: string[];
 }
 
 /** Single-episode detail (GET /letterbox/tv/{seriesId}/episodes/{episodeId}) — the

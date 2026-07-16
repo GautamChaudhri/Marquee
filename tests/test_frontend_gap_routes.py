@@ -15,10 +15,7 @@ from marquee.config import settings
 from marquee.core.subtitles.config import subtitle_settings
 from marquee.main import app
 from marquee.models import (
-    ArtworkEvent,
     DoviState,
-    Job,
-    JobEvent,
     Movie,
     PipelineRun,
     RadarrCustomFormat,
@@ -269,63 +266,6 @@ async def test_hdr_distribution_and_filter(db: AsyncSession, client: AsyncClient
             "excluded_targets": [],
         }
     ]
-
-
-@pytest.mark.asyncio
-async def test_activity_feed_unifies_sources(db: AsyncSession, client: AsyncClient):
-    movie = Movie(title="Heat", year=1995, folder_path="/m/heat", tmdb_id=949)
-    db.add(movie)
-    await db.flush()
-    db.add_all(
-        [
-            ArtworkEvent(
-                movie_id=movie.id,
-                action="deploy",
-                source="feedback",
-                detail=json.dumps({"path": "/m/heat/poster.jpg"}),
-            ),
-            PipelineRun(
-                run_id="run-1",
-                movie_id=movie.id,
-                status="failed",
-                error="boom",
-            ),
-            Job(
-                id="job-1",
-                type="subtitle_scan",
-                root_id="job-1",
-                phase="running",
-                request={},
-                subject_snapshot={"title": "Heat"},
-            ),
-        ]
-    )
-    await db.flush()
-    db.add(
-        JobEvent(
-            job_id="job-1",
-            event_key="progress.updated",
-            stage="scan",
-            state="running",
-            message="Scanning subtitles",
-            detail={"done": 1, "total": 2},
-        )
-    )
-    await db.commit()
-
-    body = (await client.get("/api/activity")).json()
-    by_id = {event["id"]: event for event in body["events"]}
-    assert by_id["pipeline-run:run-1"]["level"] == "warn"
-    assert by_id["pipeline-run:run-1"]["movie_id"] == movie.id
-    assert any(
-        event["id"].startswith("job-event:")
-        and event["message"] == "Scanning subtitles"
-        for event in body["events"]
-    )
-    assert any(
-        event["id"].startswith("artwork:") and event["level"] == "ok"
-        for event in body["events"]
-    )
 
 
 @pytest.mark.asyncio

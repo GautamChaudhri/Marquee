@@ -1,7 +1,8 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
 	import { generateTv } from '$lib/api/subtitles';
 	import { submitGeneration } from '$lib/api/subtitle-generators';
-	import { confirmJob } from '$lib/api/media-jobs';
+	import { confirmMutation } from '$lib/activity/client';
 	import type { AudioStreamInfo } from '$lib/api/types';
 	import { toast } from '$lib/toast';
 
@@ -29,7 +30,7 @@
 		onSuccess: (jobId: string, isBatch: boolean) => void;
 	} = $props();
 
-	let languageHint = $state(audioLanguages[0] || 'en');
+	let languageHint = $state(untrack(() => audioLanguages[0] || 'en'));
 	let output = $state<'external' | 'embedded'>('external');
 	let task = $state<'transcribe' | 'translate'>('transcribe');
 	let streamIndex = $state<number | null>(null);
@@ -49,7 +50,7 @@
 					stream_index: streamIndex ?? undefined
 				};
 				const res = await submitGeneration(fetch, mediaFileId, req as any);
-				await confirmJob(fetch, res.job_id, res.plan_version, res.configuration_version);
+				await confirmMutation(fetch, res.job_id, res.plan_version, res.configuration_version);
 				toast('Subtitle generation job started', 'good');
 				onSuccess(res.job_id, false);
 			} else {

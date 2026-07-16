@@ -1,11 +1,10 @@
 <script lang="ts">
-	import { onDestroy } from 'svelte';
+	import { untrack } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { toast } from '$lib/toast';
 	import { detectLetterboxTv, detectLetterboxTvLibrary } from '$lib/api/letterbox';
-	import { cancelJob, type JobSnapshot } from '$lib/api/jobs';
-	import { trackJob } from '$lib/jobs';
+	import FeatureActivityPanel from '$lib/activity/components/FeatureActivityPanel.svelte';
 	import SectionHeader from '$lib/components/SectionHeader.svelte';
 	import SegmentedBar from '$lib/components/SegmentedBar.svelte';
 	import UniformityChip from '$lib/components/UniformityChip.svelte';
@@ -18,11 +17,13 @@
 	let filters = $derived(data.filters);
 
 	// Filters local state
-	let searchQuery = $state(filters.q || '');
-	let filterVerdict = $state(filters.verdict || '');
-	let filterUniformity = $state(filters.uniformity || '');
+	let searchQuery = $state(untrack(() => filters.q || ''));
+	let filterVerdict = $state(untrack(() => filters.verdict || ''));
+	let filterUniformity = $state(untrack(() => filters.uniformity || ''));
 	let filterHasCandidates = $state(
-		filters.has_candidates === true ? 'true' : filters.has_candidates === false ? 'false' : ''
+		untrack(() =>
+			filters.has_candidates === true ? 'true' : filters.has_candidates === false ? 'false' : ''
+		)
 	);
 
 	// Selection
@@ -49,12 +50,7 @@
 	// Batch Detection State
 	let detecting = $state(false);
 	let exhaustive = $state(false);
-	let activeJobId = $state<string | null>(null);
-	let progress = $state(0);
-	let progressDone = $state(0);
-	let progressTotal = $state(0);
-	let jobStatus = $state<string | null>(null);
-	let trackStop = $state<(() => void) | null>(null);
+	let initiatedJobIds = $state<string[]>([]);
 
 	function updateFilters() {
 		// eslint-disable-next-line svelte/prefer-svelte-reactivity -- transient query builder, not reactive state
@@ -125,12 +121,7 @@
 
 		if (detecting) return;
 		detecting = true;
-		progress = 0;
-		progressDone = 0;
-		progressTotal = 0;
-
 		try {
-			let ref;
 			if (selected.length > 0) {
 				// Detect selected shows one by one (or enqueued in a batch via backend if we can)
 				// Wait! The backend detect_tv_series endpoint is POST /api/letterbox/tv/{series_id}/detect
@@ -140,17 +131,16 @@
 				// To make it simple and robust, if they select specific shows, let's run detect on each!
 				toast(`Starting detection for ${selected.length} selected shows...`, 'good');
 				for (const id of selected) {
-					await detectLetterboxTv(fetch, id, { exhaustive });
+					const ref = await detectLetterboxTv(fetch, id, { exhaustive });
+					bindJob(ref.job_id);
 				}
 				toast('Selected shows enqueued for detection!', 'good');
-				detecting = false;
 				selectedIds = {};
 			} else {
 				// Detect all
-				ref = await detectLetterboxTvLibrary(fetch, { exhaustive });
-				activeJobId = ref.job_id;
+				const ref = await detectLetterboxTvLibrary(fetch, { exhaustive });
+				bindJob(ref.job_id);
 				toast(`Started library TV detection (${exhaustive ? 'exhaustive' : 'triage'})...`, 'good');
-				rehydrateJob(ref.job_id);
 			}
 		} catch (e) {
 			toast(e instanceof Error ? e.message : 'Failed to start TV detection', 'bad');
@@ -158,58 +148,14 @@
 		}
 	}
 
-	function rehydrateJob(jobId: string) {
-		detecting = true;
-		jobStatus = 'running';
-
-		trackStop?.();
-		trackStop = trackJob<JobSnapshot>(
-			fetch,
-			jobId,
-			{
-				onProgress: (p) => {
-					jobStatus = p.status;
-					const prg = p.detail || {};
-					progressDone = Number(prg.children_completed || prg.done || 0);
-					progressTotal = Number(prg.children_total || prg.total || 0);
-					progress = progressTotal > 0 ? (progressDone / progressTotal) * 100 : 0;
-				},
-				onDone: (job) => {
-					detecting = false;
-					activeJobId = null;
-					jobStatus = job.status;
-					toast('TV Letterbox detection completed successfully!', 'good');
-					// reload page
-					goto(page.url.pathname + page.url.search, { invalidateAll: true });
-				},
-				onError: (msg) => {
-					toast(`TV detection job error: ${msg}`, 'bad');
-					detecting = false;
-					activeJobId = null;
-				}
-			},
-			{
-				eventsUrl: `/api/jobs/${jobId}/snapshot`
-			}
-		);
+	function bindJob(jobId: string) {
+		if (!initiatedJobIds.includes(jobId)) initiatedJobIds = [...initiatedJobIds, jobId];
 	}
 
-	async function cancelCurrentJob() {
-		if (!activeJobId) return;
-		try {
-			await cancelJob(fetch, activeJobId);
-			toast('Cancellation requested', 'info');
-			trackStop?.();
-			detecting = false;
-			activeJobId = null;
-		} catch (e) {
-			toast(e instanceof Error ? e.message : 'Could not cancel job', 'bad');
-		}
+	function handleJobSettled() {
+		detecting = false;
+		void goto(page.url.pathname + page.url.search, { invalidateAll: true });
 	}
-
-	onDestroy(() => {
-		trackStop?.();
-	});
 </script>
 
 <svelte:head>
@@ -218,26 +164,13 @@
 
 <section class="page letterbox-tv-list">
 	<SectionHeader title="Television Letterbox" subtitle="Manage crop tags for TV episodes." />
-
-	<!-- Active job progress banner -->
-	{#if detecting && activeJobId}
-		<div class="progress-banner glass-panel animate-fade-in">
-			<div class="progress-details">
-				<span class="spinner"></span>
-				<div>
-					<h3>TV Letterbox Scan In Progress</h3>
-					<p class="progress-desc">
-						Status: <strong class="capitalize">{jobStatus || 'running'}</strong> · {progressDone} / {progressTotal}
-						shows completed
-					</p>
-				</div>
-			</div>
-			<div class="progress-bar-container">
-				<div class="progress-bar-fill" style={`width: ${progress}%`}></div>
-			</div>
-			<button class="btn btn-bad btn-sm" onclick={cancelCurrentJob}>Cancel</button>
-		</div>
-	{/if}
+	<FeatureActivityPanel
+		scopeKey="feature:letterbox:television"
+		query={{ feature_area: 'letterbox', subject_kind: 'series' }}
+		jobIds={initiatedJobIds}
+		heading="Television letterbox activity"
+		onSettled={handleJobSettled}
+	/>
 
 	<!-- Header control row -->
 	<div class="controls-card glass-panel">
@@ -341,9 +274,6 @@
 								<a href={`/letterbox/tv/${item.series_id}`} class="show-link">
 									<span class="show-title">{item.title}</span>
 									{#if item.year}<span class="show-year">({item.year})</span>{/if}
-									{#if item.active_job_ids && item.active_job_ids.length > 0}
-										<span class="spinner-sm text-good" title="Scan running"></span>
-									{/if}
 								</a>
 							</td>
 							<td class="verdict-col">
@@ -402,44 +332,6 @@
 		border-radius: var(--radius);
 		padding: 20px;
 		box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
-	}
-
-	/* Progress banner */
-	.progress-banner {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: 20px;
-		border-left: 4px solid var(--good);
-	}
-	.progress-details {
-		display: flex;
-		align-items: center;
-		gap: 12px;
-		flex-shrink: 0;
-	}
-	.progress-details h3 {
-		margin: 0;
-		font-size: 14px;
-		font-weight: 600;
-	}
-	.progress-desc {
-		margin: 2px 0 0 0;
-		font-size: 11px;
-		color: var(--muted);
-	}
-	.progress-bar-container {
-		flex: 1;
-		height: 6px;
-		background: var(--ink3);
-		border-radius: 3px;
-		overflow: hidden;
-	}
-	.progress-bar-fill {
-		height: 100%;
-		background: var(--good);
-		border-radius: 3px;
-		transition: width 0.3s ease;
 	}
 
 	/* Controls card */
@@ -616,38 +508,6 @@
 		gap: 4px;
 	}
 
-	/* Spinner */
-	.spinner {
-		width: 16px;
-		height: 16px;
-		border: 2px solid var(--line);
-		border-top: 2px solid var(--good);
-		border-radius: 50%;
-		animation: spin 1s linear infinite;
-		display: inline-block;
-	}
-	.spinner-sm {
-		width: 12px;
-		height: 12px;
-		border: 1.5px solid transparent;
-		border-top: 1.5px solid var(--good);
-		border-radius: 50%;
-		animation: spin 1s linear infinite;
-		display: inline-block;
-	}
-	@keyframes spin {
-		0% {
-			transform: rotate(0deg);
-		}
-		100% {
-			transform: rotate(360deg);
-		}
-	}
-
-	.text-good {
-		color: var(--good);
-	}
-
 	/* Buttons */
 	.btn {
 		display: inline-flex;
@@ -682,17 +542,5 @@
 	}
 	.btn-outline:hover {
 		background: var(--ink2);
-	}
-	.btn-bad {
-		background: var(--bad);
-		color: white;
-		border-color: color-mix(in srgb, var(--bad) 80%, black);
-	}
-	.btn-sm {
-		padding: 4px 8px;
-		font-size: 11px;
-	}
-	.capitalize {
-		text-transform: capitalize;
 	}
 </style>

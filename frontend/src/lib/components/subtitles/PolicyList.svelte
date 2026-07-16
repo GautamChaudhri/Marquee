@@ -1,4 +1,3 @@
-<!-- eslint-disable @typescript-eslint/no-explicit-any @typescript-eslint/no-unused-vars svelte/require-each-key -->
 <script lang="ts">
 	import { listPolicies, deletePolicy } from '$lib/api/subtitle-policies';
 	import type { SubtitlePolicy } from '$lib/api/types';

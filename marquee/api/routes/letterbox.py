@@ -18,14 +18,13 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import String, case, cast, delete, exists, func, select, union
+from sqlalchemy import String, case, cast, delete, exists, func, select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
 from marquee.api.deps import enforce_rate_limit, get_rate_limiter
 from marquee.api.job_submission import JobSubmissionResponse, submission_response
-from marquee.api.routes.jobs import job_summary
 from marquee.config import settings
 from marquee.core import letterbox_reencode
 from marquee.core.jobs.batches import BatchScope, create_fixed_batch
@@ -794,34 +793,6 @@ async def _load_tv_episode_rows(
     return (await db.execute(query)).all()
 
 
-async def _active_tv_job_ids(db: AsyncSession, series_id: int) -> list[str]:
-    series_jobs = select(Job.id).where(
-        Job.subject_kind == "series",
-        Job.subject_reference == str(series_id),
-        Job.phase != "terminal",
-    )
-    media_file_jobs = (
-        select(Job.id)
-        .join(MediaFile, Job.subject_reference == cast(MediaFile.id, String))
-        .join(EpisodeMediaFile, EpisodeMediaFile.media_file_id == MediaFile.id)
-        .join(Episode, Episode.id == EpisodeMediaFile.episode_id)
-        .where(
-            Job.subject_kind == "media_file",
-            Job.phase != "terminal",
-            MediaFile.is_active.is_(True),
-            Episode.series_id == series_id,
-        )
-    )
-    rows = (
-        await db.execute(
-            select(Job.id)
-            .where(Job.id.in_(union(series_jobs, media_file_jobs)))
-            .order_by(Job.created_at.desc(), Job.id.desc())
-        )
-    ).scalars().all()
-    return rows
-
-
 # ---------------------------------------------------------------------------
 # Status + listing
 # ---------------------------------------------------------------------------
@@ -1191,7 +1162,6 @@ async def list_tv_letterbox(
             "episodes_total": rollup["episodes_total"],
             "dominant_aspect_label": rollup["dominant_aspect_label"],
             "rollup": rollup,
-            "active_job_ids": await _active_tv_job_ids(db, series.id),
         }
         content_types = {content_type["type"] for content_type in rollup["content_types"]}
         if verdict and rollup["verdict"] != verdict and verdict not in content_types:
@@ -1332,7 +1302,6 @@ async def tv_letterbox_detail(series_id: int, db: Annotated[AsyncSession, Depend
         },
         "rollup": show_rollup(season_rollups),
         "seasons": season_payloads,
-        "active_job_ids": await _active_tv_job_ids(db, series.id),
     }
 
 
@@ -1401,9 +1370,6 @@ async def get_movie_detail(movie_id: int, db: Annotated[AsyncSession, Depends(ge
     reencode_snapshot = await _latest_reencode_snapshot(db, movie)
     if reencode_snapshot is not None:
         detail["reencode"] = reencode_snapshot
-    detect_job = await _active_detect_job(db, movie.id)
-    if detect_job is not None:
-        detail["detection_job"] = job_summary(detect_job)
     detail["preview_minute"] = preview_minute
     detail["sample_previews"] = _sample_preview_entries(
         samples,
@@ -1504,27 +1470,6 @@ async def _start_detect_job(
         idempotency_key=f"letterbox_detect_batch:manual-{nonce}",
         children=children,
     )
-
-
-async def _active_detect_job(db: AsyncSession, movie_id: int) -> Job | None:
-    """Find the active canonical media-file observation for this movie."""
-    return (
-        await db.execute(
-            select(Job)
-            .join(
-                MediaFile,
-                (Job.subject_kind == "media_file")
-                & (Job.subject_reference == cast(MediaFile.id, String)),
-            )
-            .where(
-                Job.type == "letterbox_detect",
-                MediaFile.movie_id == movie_id,
-                Job.phase != "terminal",
-            )
-            .order_by(Job.created_at.desc(), Job.id.desc())
-            .limit(1)
-        )
-    ).scalar_one_or_none()
 
 
 async def _tv_scope_rows(
@@ -2309,6 +2254,8 @@ async def _create_reencode_plan_job(
     detail = await db.get(MediaOperationDetail, result.job_id)
     if job is None or detail is None or detail.plan_expires_at is None:
         raise HTTPException(status_code=500, detail="Re-encode plan evidence was not persisted")
+    plan["plan_version"] = plan_version(detail)
+    plan["configuration_version"] = job.configuration_version
     await db.commit()
     return job, plan, detail.plan_expires_at
 
@@ -2359,6 +2306,8 @@ async def _create_tv_reencode_plan_job(
     detail = await db.get(MediaOperationDetail, result.job_id)
     if job is None or detail is None or detail.plan_expires_at is None:
         raise HTTPException(status_code=500, detail="Re-encode plan evidence was not persisted")
+    plan["plan_version"] = plan_version(detail)
+    plan["configuration_version"] = job.configuration_version
     await db.commit()
     return job, plan, detail.plan_expires_at
 

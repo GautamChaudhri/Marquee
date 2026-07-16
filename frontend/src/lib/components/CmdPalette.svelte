@@ -16,7 +16,7 @@
 		{ label: 'Radarr Overlay', href: '/hdr', icon: 'hdr' },
 		{ label: 'Audio & Subs', href: '/audio-subs', icon: 'subtitles' },
 		{ label: 'Letterbox', href: '/letterbox', icon: 'letterbox' },
-		{ label: 'Activity', href: '/activity', icon: 'activity' },
+		{ label: 'Activity', href: '/projection-room', icon: 'projection-room' },
 		{ label: 'Settings', href: '/settings', icon: 'settings' }
 	];
 	const matches = $derived(

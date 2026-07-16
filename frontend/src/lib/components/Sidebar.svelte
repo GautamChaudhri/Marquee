@@ -1,12 +1,14 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import { sidebarCollapsed } from '$lib/theme';
+	import ActivityNavBadge from '$lib/activity/components/ActivityNavBadge.svelte';
 	import Icon from './Icon.svelte';
 
 	interface Link {
 		label: string;
 		href: string;
 		icon: string;
+		activityBadge?: boolean;
 	}
 	const GROUPS: { name: string; links: Link[] }[] = [
 		{
@@ -35,8 +37,12 @@
 		{
 			name: 'System',
 			links: [
-				{ label: 'Projection Room', href: '/projection-room', icon: 'projection-room' },
-				{ label: 'Activity', href: '/activity', icon: 'activity' },
+				{
+					label: 'Activity',
+					href: '/projection-room',
+					icon: 'projection-room',
+					activityBadge: true
+				},
 				{ label: 'Settings', href: '/settings', icon: 'settings' }
 			]
 		}
@@ -62,6 +68,7 @@
 					<a href={l.href} class="link" class:on={isActive(l.href)} title={l.label}>
 						<Icon name={l.icon} size={18} />
 						{#if !$sidebarCollapsed}<span>{l.label}</span>{/if}
+						{#if l.activityBadge}<ActivityNavBadge />{/if}
 					</a>
 				{/each}
 			</div>
@@ -137,7 +144,7 @@
 		font-size: 10px;
 		text-transform: uppercase;
 		letter-spacing: 0.07em;
-		color: var(--faint2);
+		color: var(--muted);
 		padding: 4px 10px;
 		font-weight: 700;
 	}
@@ -198,7 +205,7 @@
 		line-height: 1.25;
 	}
 	.t small {
-		color: var(--faint);
+		color: var(--muted);
 		font-size: 10px;
 	}
 	.collapse {

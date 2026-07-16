@@ -1,28 +1,27 @@
-<!-- eslint-disable @typescript-eslint/no-explicit-any -->
 <script lang="ts">
+	import { untrack } from 'svelte';
+	import FeatureActivityPanel from '$lib/activity/components/FeatureActivityPanel.svelte';
+	import type { JobSnapshotResponse } from '$lib/activity/types';
 	import SectionHeader from '$lib/components/SectionHeader.svelte';
 	import PreferredLanguagesEditor from '$lib/components/subtitles/PreferredLanguagesEditor.svelte';
 	import SubgenCard from '$lib/components/subtitles/SubgenCard.svelte';
 	import StatCard from '$lib/components/StatCard.svelte';
-	import ProgressBar from '$lib/components/ProgressBar.svelte';
 	import { getAudioSubsSummary, deepScan } from '$lib/api/subtitles';
-	import { trackJob } from '$lib/jobs';
 	import { toast } from '$lib/toast';
 	import type { RuntimeSettings } from '$lib/api/types';
 
 	let { data } = $props();
 
-	let summary = $state(data.summary);
-	// svelte-ignore state_referenced_locally
-	let runtimeSettings = $state<RuntimeSettings | null>(data.settings);
-	let error = $state(data.error);
+	let summary = $state(untrack(() => data.summary));
+	let runtimeSettings = $state<RuntimeSettings | null>(untrack(() => data.settings));
+	let error = $state(untrack(() => data.error));
 
 	function acceptSettings(settings: RuntimeSettings) {
 		runtimeSettings = settings;
 	}
 
-	let activeJobId = $state<string | null>(null);
-	let jobProgress = $state<{ stage: string; percent: number; message: string } | null>(null);
+	let scanning = $state(false);
+	let initiatedJobIds = $state<string[]>([]);
 
 	async function refreshSummary() {
 		try {
@@ -33,34 +32,24 @@
 	}
 
 	async function triggerScan(scope: 'movies' | 'tv' | 'all') {
+		scanning = true;
 		try {
 			const res = await deepScan(fetch, scope);
-			activeJobId = res.job_id;
+			initiatedJobIds = [...new Set([...initiatedJobIds, res.job_id])];
 			toast(`Scan enqueued: ${scope}`, 'good');
-
-			trackJob(fetch, res.job_id, {
-				onProgress: (p) => {
-					jobProgress = {
-						stage: p.detail.stage || 'Deep Scan',
-						percent: typeof p.detail.percent === 'number' ? p.detail.percent : 0,
-						message: p.detail.message || ''
-					};
-				},
-				onDone: () => {
-					activeJobId = null;
-					jobProgress = null;
-					toast('Subtitle deep scan finished', 'good');
-					refreshSummary();
-				},
-				onError: (msg) => {
-					activeJobId = null;
-					jobProgress = null;
-					toast(`Scan failed: ${msg}`, 'bad');
-				}
-			});
 		} catch (e: any) {
+			scanning = false;
 			toast(e.message || 'Failed to enqueue deep scan', 'bad');
 		}
+	}
+
+	async function handleJobSettled(snapshot: JobSnapshotResponse) {
+		scanning = false;
+		toast(
+			`Subtitle scan ${snapshot.status.label.toLowerCase()}`,
+			snapshot.status.outcome === 'succeeded' ? 'good' : 'bad'
+		);
+		await refreshSummary();
 	}
 </script>
 
@@ -72,6 +61,13 @@
 	<SectionHeader
 		title="Audio & Subtitles Dashboard"
 		subtitle="Overview of library localization coverage, languages preferences, and automatic speech recognition (ASR) generators."
+	/>
+	<FeatureActivityPanel
+		scopeKey="feature:audio-subtitles:overview"
+		query={{ feature_area: 'audio_subtitles' }}
+		jobIds={initiatedJobIds}
+		heading="Audio and subtitle activity"
+		onSettled={handleJobSettled}
 	/>
 
 	{#if error}
@@ -247,35 +243,14 @@
 						{/if}
 					</div>
 
-					{#if jobProgress}
-						<div class="progress-box">
-							<div class="prog-head">
-								<span>{jobProgress.stage}</span>
-								<span>{jobProgress.percent}%</span>
-							</div>
-							<ProgressBar value={jobProgress.percent} />
-							{#if jobProgress.message}
-								<small>{jobProgress.message}</small>
-							{/if}
-						</div>
-					{/if}
-
 					<div class="actions">
-						<button
-							class="btn secondary"
-							onclick={() => triggerScan('movies')}
-							disabled={!!activeJobId}
-						>
+						<button class="btn secondary" onclick={() => triggerScan('movies')} disabled={scanning}>
 							Scan Movies
 						</button>
-						<button
-							class="btn secondary"
-							onclick={() => triggerScan('tv')}
-							disabled={!!activeJobId}
-						>
+						<button class="btn secondary" onclick={() => triggerScan('tv')} disabled={scanning}>
 							Scan TV
 						</button>
-						<button class="btn primary" onclick={() => triggerScan('all')} disabled={!!activeJobId}>
+						<button class="btn primary" onclick={() => triggerScan('all')} disabled={scanning}>
 							Scan All
 						</button>
 					</div>
@@ -546,25 +521,6 @@
 	.meta-item .val {
 		font-size: 13px;
 		font-weight: 600;
-	}
-	.progress-box {
-		display: flex;
-		flex-direction: column;
-		gap: 6px;
-		background: var(--ink2);
-		padding: 10px;
-		border-radius: var(--radius-sm);
-		border: 1px solid var(--line);
-	}
-	.progress-box .prog-head {
-		display: flex;
-		justify-content: space-between;
-		font-size: 11.5px;
-		font-weight: 600;
-	}
-	.progress-box small {
-		font-size: 11px;
-		color: var(--muted);
 	}
 	.scan-card .actions {
 		display: flex;

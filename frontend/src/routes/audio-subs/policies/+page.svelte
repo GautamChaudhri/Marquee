@@ -1,4 +1,5 @@
 <script lang="ts">
+	import FeatureActivityPanel from '$lib/activity/components/FeatureActivityPanel.svelte';
 	import SectionHeader from '$lib/components/SectionHeader.svelte';
 	import PolicyList from '$lib/components/subtitles/PolicyList.svelte';
 	import PolicyEditor from '$lib/components/subtitles/PolicyEditor.svelte';
@@ -6,6 +7,11 @@
 
 	let activePolicy = $state<SubtitlePolicy | null>(null);
 	let editorOpen = $state(false);
+	let initiatedJobIds = $state<string[]>([]);
+
+	function bindJob(jobId: string) {
+		if (!initiatedJobIds.includes(jobId)) initiatedJobIds = [...initiatedJobIds, jobId];
+	}
 
 	function openPolicyEditor(policy: SubtitlePolicy) {
 		activePolicy = policy;
@@ -31,6 +37,12 @@
 		title="Audio & Subtitle Cleanup Policies"
 		subtitle="Configure rules to automatically clean up unwanted languages and track formats."
 	/>
+	<FeatureActivityPanel
+		scopeKey="feature:audio-subtitles:policies"
+		query={{ feature_area: 'audio_subtitles', subject_kind: 'maintenance_scope' }}
+		jobIds={initiatedJobIds}
+		heading="Policy activity"
+	/>
 
 	<div class="policies-wrapper">
 		{#if editorOpen}
@@ -38,6 +50,7 @@
 				policy={activePolicy || ({} as any)}
 				onSave={closePolicyEditor}
 				onCancel={closePolicyEditor}
+				onJob={bindJob}
 			/>
 		{:else}
 			<PolicyList onEdit={openPolicyEditor} onAudit={openPolicyEditor} onApply={openPolicyEditor} />

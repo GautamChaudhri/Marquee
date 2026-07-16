@@ -1,9 +1,9 @@
 <script lang="ts">
-	import { onDestroy } from 'svelte';
 	import { goto } from '$app/navigation';
+	import FeatureActivityPanel from '$lib/activity/components/FeatureActivityPanel.svelte';
+	import type { JobSnapshotResponse } from '$lib/activity/types';
 	import { analyzeDoviBatch, putRadarrOverlayPreferences } from '$lib/api/radarr-overlay';
 	import { analyzeTvDovi, getHdrSummary, putSonarrPreferences } from '$lib/api/hdr';
-	import { trackJob } from '$lib/jobs';
 	import PreferenceTargetsEditor from '$lib/components/PreferenceTargetsEditor.svelte';
 	import SectionHeader from '$lib/components/SectionHeader.svelte';
 	import SegmentedBar from '$lib/components/SegmentedBar.svelte';
@@ -62,43 +62,18 @@
 
 	// ── DoVi analysis (movies + TV) ────────────────────────────────────────
 	let analyzingMovies = $state(false);
-	let moviesPercent = $state(0);
-	let moviesMessage = $state('');
-	let stopMoviesAnalyze: (() => void) | null = null;
-
 	let analyzingTv = $state(false);
-	let tvPercent = $state(0);
-	let tvMessage = $state('');
-	let stopTvAnalyze: (() => void) | null = null;
+	let movieJobId = $state<string | null>(null);
+	let tvJobId = $state<string | null>(null);
+	let initiatedJobIds = $state<string[]>([]);
 
 	async function analyzeAllMovies() {
 		if (analyzingMovies) return;
 		analyzingMovies = true;
-		moviesPercent = 0;
-		moviesMessage = 'Queuing Dolby Vision analysis…';
 		try {
-			const { job_id, total } = await analyzeDoviBatch(fetch);
-			moviesMessage = `Analyzing ${total} Dolby Vision ${total === 1 ? 'title' : 'titles'}…`;
-			stopMoviesAnalyze = trackJob(
-				fetch,
-				job_id,
-				{
-					onProgress: ({ detail }) => {
-						const d = detail as { percent?: number; message?: string };
-						if (typeof d.percent === 'number') moviesPercent = d.percent;
-						if (typeof d.message === 'string') moviesMessage = d.message;
-					},
-					onDone: async (job) => {
-						stopMoviesAnalyze = null;
-						analyzingMovies = false;
-						moviesPercent = 100;
-						toast(`Movie DoVi analysis ${job.status}`, job.status === 'succeeded' ? 'good' : 'bad');
-						await refresh();
-					},
-					onError: () => toast('Analysis progress stream interrupted', 'bad')
-				},
-				{ eventsUrl: `/api/jobs/${job_id}/snapshot` }
-			);
+			const { job_id } = await analyzeDoviBatch(fetch);
+			movieJobId = job_id;
+			initiatedJobIds = [...new Set([...initiatedJobIds, job_id])];
 		} catch (e) {
 			analyzingMovies = false;
 			toast(e instanceof Error ? e.message : 'Could not start Dolby Vision analysis', 'bad');
@@ -108,31 +83,10 @@
 	async function analyzeAllShows() {
 		if (analyzingTv) return;
 		analyzingTv = true;
-		tvPercent = 0;
-		tvMessage = 'Queuing Dolby Vision analysis…';
 		try {
-			const { job_id, total } = await analyzeTvDovi(fetch);
-			tvMessage = `Analyzing ${total} Dolby Vision ${total === 1 ? 'episode' : 'episodes'}…`;
-			stopTvAnalyze = trackJob(
-				fetch,
-				job_id,
-				{
-					onProgress: ({ detail }) => {
-						const d = detail as { percent?: number; message?: string };
-						if (typeof d.percent === 'number') tvPercent = d.percent;
-						if (typeof d.message === 'string') tvMessage = d.message;
-					},
-					onDone: async (job) => {
-						stopTvAnalyze = null;
-						analyzingTv = false;
-						tvPercent = 100;
-						toast(`TV DoVi analysis ${job.status}`, job.status === 'succeeded' ? 'good' : 'bad');
-						await refresh();
-					},
-					onError: () => toast('Analysis progress stream interrupted', 'bad')
-				},
-				{ eventsUrl: `/api/jobs/${job_id}/snapshot` }
-			);
+			const { job_id } = await analyzeTvDovi(fetch);
+			tvJobId = job_id;
+			initiatedJobIds = [...new Set([...initiatedJobIds, job_id])];
 		} catch (e) {
 			analyzingTv = false;
 			toast(e instanceof Error ? e.message : 'Could not start Dolby Vision analysis', 'bad');
@@ -163,10 +117,15 @@
 		await refresh();
 	}
 
-	onDestroy(() => {
-		stopMoviesAnalyze?.();
-		stopTvAnalyze?.();
-	});
+	async function handleJobSettled(snapshot: JobSnapshotResponse) {
+		if (snapshot.job_id === movieJobId) analyzingMovies = false;
+		if (snapshot.job_id === tvJobId) analyzingTv = false;
+		toast(
+			`Dolby Vision analysis ${snapshot.status.label.toLowerCase()}`,
+			snapshot.status.outcome === 'succeeded' ? 'good' : 'bad'
+		);
+		await refresh();
+	}
 </script>
 
 <SectionHeader
@@ -177,6 +136,13 @@
 {#if error || !summary}
 	<div class="error">{error ?? 'Failed to load HDR summary.'}</div>
 {:else}
+	<FeatureActivityPanel
+		scopeKey="feature:hdr:overview"
+		query={{ feature_area: 'hdr' }}
+		jobIds={initiatedJobIds}
+		heading="HDR activity"
+		onSettled={handleJobSettled}
+	/>
 	<div class="section">
 		<div class="actions">
 			<button class="action" onclick={() => goto('/hdr/movies')}>
@@ -286,14 +252,6 @@
 				<button class="analyze-btn" onclick={analyzeAllMovies} disabled={analyzingMovies}>
 					{analyzingMovies ? 'Analyzing…' : 'Analyze all movies'}
 				</button>
-				{#if analyzingMovies}
-					<div class="analyze-banner">
-						<div class="analyze-bar">
-							<span style={`width:${Math.max(4, moviesPercent)}%`}></span>
-						</div>
-						<small>{moviesMessage}</small>
-					</div>
-				{/if}
 			</div>
 			<div class="dovi-card">
 				<div class="dovi-head">
@@ -305,14 +263,6 @@
 				<button class="analyze-btn" onclick={analyzeAllShows} disabled={analyzingTv}>
 					{analyzingTv ? 'Analyzing…' : 'Analyze all shows'}
 				</button>
-				{#if analyzingTv}
-					<div class="analyze-banner">
-						<div class="analyze-bar">
-							<span style={`width:${Math.max(4, tvPercent)}%`}></span>
-						</div>
-						<small>{tvMessage}</small>
-					</div>
-				{/if}
 			</div>
 		</div>
 	</div>
@@ -495,23 +445,6 @@
 	.analyze-btn:disabled {
 		opacity: 0.6;
 		cursor: progress;
-	}
-	.analyze-banner {
-		display: flex;
-		flex-direction: column;
-		gap: 6px;
-	}
-	.analyze-bar {
-		height: 6px;
-		border-radius: 999px;
-		background: var(--line);
-		overflow: hidden;
-	}
-	.analyze-bar span {
-		display: block;
-		height: 100%;
-		background: var(--gold);
-		transition: width 0.3s ease;
 	}
 	.insights-grid {
 		display: grid;

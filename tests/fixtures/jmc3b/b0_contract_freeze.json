@@ -179,6 +179,7 @@
   },
   "existing_jobs_get_routes": [
     "",
+    "/attention",
     "/events/stream",
     "/{job_id}/artifacts",
     "/{job_id}/artifacts/{artifact_id}/download",

@@ -1,6 +1,49 @@
 {
   "components": {
     "schemas": {
+      "ActivityAttentionResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "error": {
+            "title": "Error",
+            "type": "integer"
+          },
+          "highest_severity": {
+            "$ref": "#/components/schemas/AttentionLevel"
+          },
+          "needs_attention": {
+            "title": "Needs Attention",
+            "type": "integer"
+          },
+          "retrying": {
+            "title": "Retrying",
+            "type": "integer"
+          },
+          "running": {
+            "title": "Running",
+            "type": "integer"
+          },
+          "waiting_held": {
+            "title": "Waiting Held",
+            "type": "integer"
+          },
+          "warning": {
+            "title": "Warning",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "running",
+          "waiting_held",
+          "retrying",
+          "needs_attention",
+          "warning",
+          "error",
+          "highest_severity"
+        ],
+        "title": "ActivityAttentionResponse",
+        "type": "object"
+      },
       "ApplyRequest": {
         "properties": {
           "bottom": {
@@ -3135,8 +3178,19 @@
           "evidence": {
             "$ref": "#/components/schemas/EvidenceAvailability"
           },
+          "execution_class": {
+            "maxLength": 40,
+            "minLength": 1,
+            "title": "Execution Class",
+            "type": "string"
+          },
           "feature_area": {
             "$ref": "#/components/schemas/FeatureArea"
+          },
+          "fence_token": {
+            "minimum": 0.0,
+            "title": "Fence Token",
+            "type": "integer"
           },
           "impact": {
             "anyOf": [
@@ -3300,6 +3354,8 @@
           "status",
           "trigger",
           "attention",
+          "fence_token",
+          "execution_class",
           "priority",
           "links"
         ],
@@ -3357,6 +3413,10 @@
               }
             ],
             "title": "Eligible At"
+          },
+          "execution_class": {
+            "title": "Execution Class",
+            "type": "string"
           },
           "fence_token": {
             "title": "Fence Token",
@@ -3508,6 +3568,7 @@
           "outcome",
           "desired_state",
           "fence_token",
+          "execution_class",
           "priority",
           "status",
           "attention",
@@ -3898,6 +3959,693 @@
         "title": "OcrLabelRequest",
         "type": "object"
       },
+      "OperationsConnectionBudget": {
+        "properties": {
+          "configured": {
+            "title": "Configured",
+            "type": "integer"
+          },
+          "maximum": {
+            "title": "Maximum",
+            "type": "integer"
+          },
+          "within_budget": {
+            "title": "Within Budget",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "configured",
+          "maximum",
+          "within_budget"
+        ],
+        "title": "OperationsConnectionBudget",
+        "type": "object"
+      },
+      "OperationsDatabase": {
+        "properties": {
+          "budget": {
+            "$ref": "#/components/schemas/OperationsConnectionBudget"
+          },
+          "connection_roles": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Connection Roles",
+            "type": "object"
+          },
+          "observed_connections": {
+            "title": "Observed Connections",
+            "type": "integer"
+          },
+          "pool_checked_in": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pool Checked In"
+          },
+          "pool_checked_out": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pool Checked Out"
+          },
+          "pool_overflow": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pool Overflow"
+          },
+          "pool_size": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pool Size"
+          }
+        },
+        "required": [
+          "observed_connections",
+          "connection_roles",
+          "budget"
+        ],
+        "title": "OperationsDatabase",
+        "type": "object"
+      },
+      "OperationsEvents": {
+        "properties": {
+          "last_observed_event_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Observed Event At"
+          },
+          "listener_healthy": {
+            "title": "Listener Healthy",
+            "type": "boolean"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "required": [
+          "listener_healthy",
+          "source"
+        ],
+        "title": "OperationsEvents",
+        "type": "object"
+      },
+      "OperationsHistoryJob": {
+        "properties": {
+          "finished_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "job_id": {
+            "title": "Job Id",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "subject": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subject"
+          },
+          "type": {
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "job_id",
+          "type",
+          "label",
+          "status"
+        ],
+        "title": "OperationsHistoryJob",
+        "type": "object"
+      },
+      "OperationsHistoryPoint": {
+        "properties": {
+          "active_jobs": {
+            "title": "Active Jobs",
+            "type": "integer"
+          },
+          "cpu_avg": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cpu Avg"
+          },
+          "disk_read_bps": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Disk Read Bps"
+          },
+          "disk_write_bps": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Disk Write Bps"
+          },
+          "gpu_dec": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gpu Dec"
+          },
+          "gpu_enc": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gpu Enc"
+          },
+          "gpu_mem": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gpu Mem"
+          },
+          "gpu_util": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gpu Util"
+          },
+          "net_recv_bps": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Net Recv Bps"
+          },
+          "net_sent_bps": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Net Sent Bps"
+          },
+          "ram_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ram Pct"
+          },
+          "ts": {
+            "format": "date-time",
+            "title": "Ts",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ts",
+          "active_jobs"
+        ],
+        "title": "OperationsHistoryPoint",
+        "type": "object"
+      },
+      "OperationsHistoryResponse": {
+        "properties": {
+          "end_at": {
+            "format": "date-time",
+            "title": "End At",
+            "type": "string"
+          },
+          "jobs": {
+            "items": {
+              "$ref": "#/components/schemas/OperationsHistoryJob"
+            },
+            "title": "Jobs",
+            "type": "array"
+          },
+          "jobs_truncated": {
+            "title": "Jobs Truncated",
+            "type": "boolean"
+          },
+          "points": {
+            "items": {
+              "$ref": "#/components/schemas/OperationsHistoryPoint"
+            },
+            "title": "Points",
+            "type": "array"
+          },
+          "start_at": {
+            "format": "date-time",
+            "title": "Start At",
+            "type": "string"
+          },
+          "window": {
+            "enum": [
+              "15m",
+              "1h",
+              "6h",
+              "24h"
+            ],
+            "title": "Window",
+            "type": "string"
+          }
+        },
+        "required": [
+          "window",
+          "start_at",
+          "end_at",
+          "points",
+          "jobs",
+          "jobs_truncated"
+        ],
+        "title": "OperationsHistoryResponse",
+        "type": "object"
+      },
+      "OperationsNode": {
+        "properties": {
+          "cpu_model": {
+            "title": "Cpu Model",
+            "type": "string"
+          },
+          "cpu_percent": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cpu Percent"
+          },
+          "cpu_temperature_c": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cpu Temperature C"
+          },
+          "gpu_memory_percent": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gpu Memory Percent"
+          },
+          "gpu_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gpu Model"
+          },
+          "gpu_percent": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gpu Percent"
+          },
+          "network_received_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Network Received Bytes"
+          },
+          "network_sent_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Network Sent Bytes"
+          },
+          "ram_percent": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ram Percent"
+          },
+          "ram_total_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ram Total Bytes"
+          },
+          "ram_used_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ram Used Bytes"
+          },
+          "uptime": {
+            "title": "Uptime",
+            "type": "string"
+          }
+        },
+        "required": [
+          "cpu_model",
+          "uptime"
+        ],
+        "title": "OperationsNode",
+        "type": "object"
+      },
+      "OperationsSchemaContract": {
+        "properties": {
+          "catalog_fingerprint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Catalog Fingerprint"
+          },
+          "component": {
+            "title": "Component",
+            "type": "string"
+          },
+          "durability": {
+            "title": "Durability",
+            "type": "string"
+          },
+          "expected_version": {
+            "title": "Expected Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "component",
+          "expected_version",
+          "durability"
+        ],
+        "title": "OperationsSchemaContract",
+        "type": "object"
+      },
+      "OperationsSnapshot": {
+        "properties": {
+          "contracts": {
+            "items": {
+              "$ref": "#/components/schemas/OperationsSchemaContract"
+            },
+            "title": "Contracts",
+            "type": "array"
+          },
+          "database": {
+            "$ref": "#/components/schemas/OperationsDatabase"
+          },
+          "events": {
+            "$ref": "#/components/schemas/OperationsEvents"
+          },
+          "generated_at": {
+            "format": "date-time",
+            "title": "Generated At",
+            "type": "string"
+          },
+          "node": {
+            "$ref": "#/components/schemas/OperationsNode"
+          },
+          "storage": {
+            "$ref": "#/components/schemas/OperationsStorage"
+          },
+          "transport": {
+            "$ref": "#/components/schemas/OperationsTransport"
+          },
+          "version": {
+            "const": 1,
+            "default": 1,
+            "title": "Version",
+            "type": "integer"
+          },
+          "workers": {
+            "$ref": "#/components/schemas/OperationsWorkers"
+          }
+        },
+        "required": [
+          "generated_at",
+          "node",
+          "workers",
+          "transport",
+          "database",
+          "events",
+          "storage"
+        ],
+        "title": "OperationsSnapshot",
+        "type": "object"
+      },
+      "OperationsStorage": {
+        "properties": {
+          "disk_percent": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Disk Percent"
+          },
+          "disk_total_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Disk Total Bytes"
+          },
+          "disk_used_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Disk Used Bytes"
+          },
+          "poster_cache_bytes": {
+            "title": "Poster Cache Bytes",
+            "type": "integer"
+          },
+          "poster_cache_items": {
+            "title": "Poster Cache Items",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "poster_cache_items",
+          "poster_cache_bytes"
+        ],
+        "title": "OperationsStorage",
+        "type": "object"
+      },
+      "OperationsTransport": {
+        "properties": {
+          "held_failed": {
+            "title": "Held Failed",
+            "type": "integer"
+          },
+          "oldest_eligible_age_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Oldest Eligible Age Seconds"
+          },
+          "picked": {
+            "title": "Picked",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "picked",
+          "held_failed"
+        ],
+        "title": "OperationsTransport",
+        "type": "object"
+      },
+      "OperationsWorkers": {
+        "properties": {
+          "active": {
+            "title": "Active",
+            "type": "integer"
+          },
+          "listener_healthy": {
+            "title": "Listener Healthy",
+            "type": "boolean"
+          },
+          "queued": {
+            "title": "Queued",
+            "type": "integer"
+          },
+          "supervisor_available": {
+            "title": "Supervisor Available",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "active",
+          "queued",
+          "supervisor_available",
+          "listener_healthy"
+        ],
+        "title": "OperationsWorkers",
+        "type": "object"
+      },
       "PipelineCacheClearRequestV1": {
         "additionalProperties": false,
         "properties": {
@@ -3977,6 +4725,65 @@
           "request"
         ],
         "title": "PlanRequest",
+        "type": "object"
+      },
+      "PlannedJobSubmissionResponse": {
+        "description": "Canonical submission handle plus the bounded mutation-confirmation fence.",
+        "properties": {
+          "configuration_version": {
+            "title": "Configuration Version",
+            "type": "integer"
+          },
+          "detail_url": {
+            "title": "Detail Url",
+            "type": "string"
+          },
+          "disposition": {
+            "enum": [
+              "created",
+              "reused"
+            ],
+            "title": "Disposition",
+            "type": "string"
+          },
+          "expires_at": {
+            "title": "Expires At",
+            "type": "string"
+          },
+          "job_id": {
+            "title": "Job Id",
+            "type": "string"
+          },
+          "phase": {
+            "title": "Phase",
+            "type": "string"
+          },
+          "plan_version": {
+            "title": "Plan Version",
+            "type": "string"
+          },
+          "requires_confirmation": {
+            "const": true,
+            "default": true,
+            "title": "Requires Confirmation",
+            "type": "boolean"
+          },
+          "snapshot_url": {
+            "title": "Snapshot Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "job_id",
+          "disposition",
+          "phase",
+          "snapshot_url",
+          "detail_url",
+          "plan_version",
+          "configuration_version",
+          "expires_at"
+        ],
+        "title": "PlannedJobSubmissionResponse",
         "type": "object"
       },
       "PolicyAuditBody": {
@@ -6773,50 +7580,6 @@
   },
   "openapi": "3.1.0",
   "paths": {
-    "/api/activity": {
-      "get": {
-        "description": "Newest activity across poster events, canonical job events, and pipeline runs.",
-        "operationId": "activity_feed_api_activity_get",
-        "parameters": [
-          {
-            "in": "query",
-            "name": "limit",
-            "required": false,
-            "schema": {
-              "default": 100,
-              "maximum": 500,
-              "minimum": 1,
-              "title": "Limit",
-              "type": "integer"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Activity Feed",
-        "tags": [
-          "activity"
-        ]
-      }
-    },
     "/api/audio-subs/deep-scan": {
       "post": {
         "operationId": "deep_scan_api_audio_subs_deep_scan_post",
@@ -8258,7 +9021,9 @@
           "200": {
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/PlannedJobSubmissionResponse"
+                }
               }
             },
             "description": "Successful Response"
@@ -8307,7 +9072,9 @@
           "200": {
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/PlannedJobSubmissionResponse"
+                }
               }
             },
             "description": "Successful Response"
@@ -8356,7 +9123,9 @@
           "200": {
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/PlannedJobSubmissionResponse"
+                }
               }
             },
             "description": "Successful Response"
@@ -8407,7 +9176,9 @@
           "200": {
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/PlannedJobSubmissionResponse"
+                }
               }
             },
             "description": "Successful Response"
@@ -8684,6 +9455,40 @@
           },
           {
             "in": "query",
+            "name": "worker_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 100,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Worker Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "execution_class",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 80,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Execution Class"
+            }
+          },
+          {
+            "in": "query",
             "name": "created_after",
             "required": false,
             "schema": {
@@ -8779,6 +9584,28 @@
           }
         },
         "summary": "Bulk Job Actions",
+        "tags": [
+          "jobs"
+        ]
+      }
+    },
+    "/api/jobs/attention": {
+      "get": {
+        "description": "Return one bounded aggregate for the Activity strip and navigation badge.",
+        "operationId": "activity_attention_api_jobs_attention_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActivityAttentionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Activity Attention",
         "tags": [
           "jobs"
         ]
@@ -9415,6 +10242,20 @@
               ],
               "title": "Outcome"
             }
+          },
+          {
+            "in": "query",
+            "name": "sort",
+            "required": false,
+            "schema": {
+              "default": "failed_first",
+              "enum": [
+                "created",
+                "failed_first"
+              ],
+              "title": "Sort",
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -9661,8 +10502,8 @@
       }
     },
     "/api/jobs/{job_id}/priority": {
-      "patch": {
-        "operationId": "update_job_priority_api_jobs__job_id__priority_patch",
+      "post": {
+        "operationId": "update_job_priority_api_jobs__job_id__priority_post",
         "parameters": [
           {
             "in": "path",
@@ -14799,7 +15640,9 @@
           "202": {
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/JobSubmissionResponse"
+                }
               }
             },
             "description": "Successful Response"
@@ -15092,6 +15935,12 @@
             "required": false,
             "schema": {
               "default": "1h",
+              "enum": [
+                "15m",
+                "1h",
+                "6h",
+                "24h"
+              ],
               "title": "Window",
               "type": "string"
             }
@@ -15111,7 +15960,9 @@
           "200": {
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/OperationsHistoryResponse"
+                }
               }
             },
             "description": "Successful Response"
@@ -15128,6 +15979,28 @@
           }
         },
         "summary": "System Metrics History",
+        "tags": [
+          "system"
+        ]
+      }
+    },
+    "/api/system/operations": {
+      "get": {
+        "description": "One bounded typed snapshot for the lazy secondary Operations surface.",
+        "operationId": "operations_snapshot_api_system_operations_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperationsSnapshot"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Operations Snapshot",
         "tags": [
           "system"
         ]

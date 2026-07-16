@@ -1,10 +1,10 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onMount, untrack } from 'svelte';
 	import { SvelteMap, SvelteSet } from 'svelte/reactivity';
 	import { page } from '$app/state';
 	import { aspectRatio, bytesH, confidenceTone } from '$lib/display';
 	import { toast } from '$lib/toast';
-	import { subscribe } from '$lib/sse';
+	import FeatureActivityPanel from '$lib/activity/components/FeatureActivityPanel.svelte';
 	import {
 		getLetterboxTvDetail,
 		getLetterboxTvEpisodeDetail,
@@ -19,17 +19,12 @@
 		replaceOriginal,
 		restoreOriginal,
 		deleteArtifact,
-		replaceReadyTvArtifacts,
-		getMediaJob
+		replaceReadyTvArtifacts
 	} from '$lib/api/letterbox';
-	import { cancelJob, getJob, type JobSnapshot } from '$lib/api/jobs';
-	import { trackJob } from '$lib/jobs';
-	import { displayJobLabel } from '$lib/job-labels';
 	import SectionHeader from '$lib/components/SectionHeader.svelte';
 	import EpisodeHeatmap from '$lib/components/subtitles/EpisodeHeatmap.svelte';
 	import UniformityChip from '$lib/components/UniformityChip.svelte';
 	import LetterboxFrame from '$lib/components/LetterboxFrame.svelte';
-	import ProgressBar from '$lib/components/ProgressBar.svelte';
 	import ConfidencePopover from '$lib/components/letterbox/ConfidencePopover.svelte';
 	import BatchReencodeModal from '$lib/components/letterbox/BatchReencodeModal.svelte';
 	import ReencodePlanModal from '$lib/components/letterbox/ReencodePlanModal.svelte';
@@ -43,7 +38,6 @@
 		LetterboxTvEpisode,
 		LetterboxTvSeason,
 		LetterboxEpisodeDetail,
-		JobSummary,
 		ReencodeArtifact,
 		BatchReencodeSettings
 	} from '$lib/api/types';
@@ -108,7 +102,7 @@
 
 	let { data } = $props();
 
-	let detail = $state(data.detail);
+	let detail = $state(untrack(() => data.detail));
 	let seriesId = $derived(Number(page.params.id));
 
 	$effect(() => {
@@ -149,22 +143,23 @@
 		});
 	}
 
-	// Background poll to refresh data when jobs are running
-	let pollInterval: ReturnType<typeof setInterval>;
-	let activeRuns = $state<
-		Record<
-			string,
-			{
-				progress: number;
-				status: string;
-				stage?: string;
-				cancelling?: boolean;
-				type?: string;
-				label?: string | null;
-				stop?: () => void;
-			}
-		>
-	>({});
+	let initiatedJobIds = $state<string[]>([]);
+
+	function bindJobs(jobIds: string[]) {
+		const additions = jobIds.filter((jobId) => !initiatedJobIds.includes(jobId));
+		if (additions.length > 0) initiatedJobIds = [...initiatedJobIds, ...additions];
+	}
+
+	function bindResult(value: unknown) {
+		if (!value || typeof value !== 'object') return;
+		if ('job_id' in value && typeof value.job_id === 'string') bindJobs([value.job_id]);
+		if ('job_ids' in value && Array.isArray(value.job_ids)) {
+			bindJobs(value.job_ids.filter((jobId): jobId is string => typeof jobId === 'string'));
+		}
+		if ('parent_job_id' in value && typeof value.parent_job_id === 'string') {
+			bindJobs([value.parent_job_id]);
+		}
+	}
 
 	async function refreshDetail() {
 		try {
@@ -212,101 +207,21 @@
 	onMount(() => {
 		void runPrefetchPass();
 		void loadReencodeArtifacts();
-		pollInterval = setInterval(() => {
-			// Check if we need to poll (if there are active runs or active_job_ids in detail)
-			const hasActiveJobs =
-				detail?.active_job_ids?.length > 0 || Object.keys(activeRuns).length > 0;
-			if (hasActiveJobs) {
-				void refreshDetail();
-			}
-		}, 4000);
-
-		// Rehydrate any active jobs listed in detail
-		if (detail?.active_job_ids) {
-			for (const jobId of detail.active_job_ids) {
-				rehydrateJob(jobId);
-			}
-		}
 
 		return () => {
 			prefetchGeneration += 1;
-			clearInterval(pollInterval);
-			for (const run of Object.values(activeRuns)) {
-				run.stop?.();
-			}
 		};
 	});
 
-	function rehydrateJob(jobId: string) {
-		if (activeRuns[jobId]) return;
-
-		activeRuns[jobId] = { progress: 0, status: 'running' };
-		getJob(fetch, jobId)
-			.then((job) => {
-				if (activeRuns[jobId]) {
-					activeRuns[jobId].type = job.type;
-					activeRuns[jobId].label = job.label;
-				}
-			})
-			.catch(() => {
-				// non-fatal — the progress bar just falls back to a humanized job type
-			});
-		const stop = trackJob<JobSnapshot>(
-			fetch,
-			jobId,
-			{
-				onProgress: (p) => {
-					if (activeRuns[jobId]) {
-						activeRuns[jobId].status = p.status;
-						const progress = p.detail || {};
-						if (typeof progress.percent === 'number' && Number.isFinite(progress.percent)) {
-							activeRuns[jobId].progress = Math.max(0, Math.min(100, progress.percent));
-							activeRuns[jobId].stage =
-								typeof progress.stage === 'string' ? progress.stage : undefined;
-						} else {
-							const done = Number(progress.done || progress.children_completed || 0);
-							const total = Number(progress.total || progress.children_total || 0);
-							activeRuns[jobId].progress = total > 0 ? (done / total) * 100 : 0;
-						}
-					}
-				},
-				onDone: (job) => {
-					delete activeRuns[jobId];
-					toast(`${displayJobLabel(job)} finished!`, 'good');
-					prefetchGeneration += 1;
-					episodeDetails.clear();
-					episodeDetailErrors.clear();
-					void (async () => {
-						await refreshDetail();
-						await runPrefetchPass();
-						await loadReencodeArtifacts();
-					})();
-				},
-				onError: () => {
-					delete activeRuns[jobId];
-					void refreshDetail();
-				}
-			},
-			{
-				eventsUrl: `/api/jobs/${jobId}/snapshot`
-			}
-		);
-		activeRuns[jobId].stop = stop;
-	}
-
-	async function cancelActiveRun(jobId: string) {
-		const run = activeRuns[jobId];
-		if (!run || run.cancelling) return;
-		try {
-			await cancelJob(fetch, jobId);
-			const current = activeRuns[jobId];
-			if (current) {
-				current.cancelling = true;
-				current.status = 'cancelling';
-			}
-		} catch {
-			toast('Could not cancel job', 'bad');
-		}
+	function handleJobSettled() {
+		prefetchGeneration += 1;
+		episodeDetails.clear();
+		episodeDetailErrors.clear();
+		void (async () => {
+			await refreshDetail();
+			await runPrefetchPass();
+			await loadReencodeArtifacts();
+		})();
 	}
 
 	// Filters for Episode Table
@@ -353,8 +268,7 @@
 				include_open_matte: isIncludeOpenMatte || undefined
 			});
 			toast(`Started season ${seasonNumber} detect job...`, 'good');
-			rehydrateJob(ref.job_id);
-			void refreshDetail();
+			bindJobs([ref.job_id]);
 		} catch (e) {
 			toast(e instanceof Error ? e.message : 'Season scan failed to start', 'bad');
 		}
@@ -409,19 +323,17 @@
 				season_number: seasonNumber ?? undefined,
 				confidence_levels: levels
 			});
-			const job = res as JobSummary;
-			if (job?.job_id) {
+			bindResult(res);
+			if (res && typeof res === 'object' && 'job_id' in res) {
 				toast(
 					seasonNumber == null
 						? 'Started show-wide apply job...'
 						: `Started season ${seasonNumber} apply job...`,
 					'good'
 				);
-				rehydrateJob(job.job_id);
 			} else {
 				toast('Applied crop tags!', 'good');
 			}
-			void refreshDetail();
 		} catch (e) {
 			toast(e instanceof Error ? e.message : 'Failed to apply crop', 'bad');
 		}
@@ -453,19 +365,17 @@
 			const res = await revertLetterboxTv(fetch, seriesId, {
 				season_number: seasonNumber ?? undefined
 			});
-			const job = res as JobSummary;
-			if (job?.job_id) {
+			bindResult(res);
+			if (res && typeof res === 'object' && 'job_id' in res) {
 				toast(
 					seasonNumber == null
 						? 'Started show-wide revert job...'
 						: `Started season ${seasonNumber} revert job...`,
 					'good'
 				);
-				rehydrateJob(job.job_id);
 			} else {
 				toast('Reverted crops successfully.', 'good');
 			}
-			void refreshDetail();
 		} catch (e) {
 			toast(e instanceof Error ? e.message : 'Revert failed', 'bad');
 		}
@@ -480,8 +390,7 @@
 				force: true
 			});
 			toast('Started episode scan...', 'good');
-			rehydrateJob(ref.job_id);
-			void refreshDetail();
+			bindJobs([ref.job_id]);
 		} catch (e) {
 			toast(e instanceof Error ? e.message : 'Episode scan failed to start', 'bad');
 		}
@@ -489,9 +398,9 @@
 
 	async function runEpisodeApply(episodeId: number) {
 		try {
-			await applyLetterboxTv(fetch, seriesId, { episode_id: episodeId });
+			const result = await applyLetterboxTv(fetch, seriesId, { episode_id: episodeId });
+			bindResult(result);
 			toast('Applied crop tag to episode!', 'good');
-			void refreshDetail();
 		} catch (e) {
 			toast(e instanceof Error ? e.message : 'Failed to apply episode crop', 'bad');
 		}
@@ -499,9 +408,9 @@
 
 	async function runEpisodeClear(episodeId: number) {
 		try {
-			await markNotLetterboxedTvEpisode(fetch, seriesId, episodeId);
+			const result = await markNotLetterboxedTvEpisode(fetch, seriesId, episodeId);
+			bindResult(result);
 			toast('Episode marked as not letterboxed.', 'good');
-			void refreshDetail();
 		} catch (e) {
 			toast(e instanceof Error ? e.message : 'Failed to mark not letterboxed', 'bad');
 		}
@@ -509,9 +418,9 @@
 
 	async function runEpisodeIgnore(episodeId: number) {
 		try {
-			await ignoreLetterboxTvEpisode(fetch, seriesId, episodeId);
+			const result = await ignoreLetterboxTvEpisode(fetch, seriesId, episodeId);
+			bindResult(result);
 			toast('Episode marked skipped / ignore.', 'good');
-			void refreshDetail();
 		} catch (e) {
 			toast(e instanceof Error ? e.message : 'Failed to ignore episode', 'bad');
 		}
@@ -519,9 +428,9 @@
 
 	async function runEpisodeRevert(episodeId: number) {
 		try {
-			await removeLetterboxTvEpisode(fetch, seriesId, episodeId);
+			const result = await removeLetterboxTvEpisode(fetch, seriesId, episodeId);
+			bindResult(result);
 			toast('Removed crop tag from episode.', 'good');
-			void refreshDetail();
 		} catch (e) {
 			toast(e instanceof Error ? e.message : 'Failed to remove crop tag', 'bad');
 		}
@@ -536,20 +445,14 @@
 				include_open_matte: true
 			});
 			toast('Started scan (include OM/PB)...', 'good');
-			rehydrateJob(ref.job_id);
-			void refreshDetail();
+			bindJobs([ref.job_id]);
 		} catch (e) {
 			toast(e instanceof Error ? e.message : 'Scan failed to start', 'bad');
 		}
 	}
 
-	// Single-episode reencode: plan modal → confirm → track the media job.
+	// Single-episode reencode: plan modal → shared activity card.
 	let reencodePlanEpisodeId = $state<number | null>(null);
-	let reencodeTracking = $state<
-		Record<number, { progress: number; stage: string | null; status: string }>
-	>({});
-	const reencodeUnsubs: Record<number, () => void> = {};
-	const reencodePollTimers: Record<number, ReturnType<typeof setInterval>> = {};
 
 	function openReencodePlan(episodeId: number) {
 		reencodePlanEpisodeId = episodeId;
@@ -559,80 +462,10 @@
 		reencodePlanEpisodeId = null;
 	}
 
-	function stopReencodeTracking(episodeId: number) {
-		reencodeUnsubs[episodeId]?.();
-		delete reencodeUnsubs[episodeId];
-		if (reencodePollTimers[episodeId]) {
-			clearInterval(reencodePollTimers[episodeId]);
-			delete reencodePollTimers[episodeId];
-		}
-	}
-
-	async function finishEpisodeReencode(episodeId: number, jobId: string) {
-		stopReencodeTracking(episodeId);
-		delete reencodeTracking[episodeId];
-		try {
-			const job = await getMediaJob(fetch, jobId);
-			if (job.error) {
-				toast(job.error.error ?? 'Re-encode failed (check job log)', 'bad');
-			} else {
-				toast('Re-encode complete — review the candidate below', 'good');
-			}
-		} catch {
-			toast('Re-encode finished — refresh to see the result', 'info');
-		}
-		void loadReencodeArtifacts();
-		void refreshDetail();
-	}
-
-	function startEpisodeReencodeTracking(episodeId: number, jobId: string) {
-		if (reencodeTracking[episodeId]) return;
-		reencodeTracking[episodeId] = { progress: 0, stage: null, status: 'queued' };
-
-		async function pollOnce() {
-			try {
-				const job = await getMediaJob(fetch, jobId);
-				if (!reencodeTracking[episodeId]) return;
-				reencodeTracking[episodeId].status = job.status;
-				if (job.stage) reencodeTracking[episodeId].stage = job.stage;
-				if (job.progress_total > 0) {
-					const pct = (job.progress_done / job.progress_total) * 100;
-					if (pct > reencodeTracking[episodeId].progress) {
-						reencodeTracking[episodeId].progress = pct;
-					}
-				}
-				if (job.status !== 'queued' && job.status !== 'running') {
-					await finishEpisodeReencode(episodeId, jobId);
-				}
-			} catch {
-				// transient — keep polling
-			}
-		}
-
-		reencodeUnsubs[episodeId] = subscribe(
-			`/api/jobs/${jobId}/snapshot`,
-			['message', 'done'],
-			(type, data) => {
-				if (type === 'done') {
-					void finishEpisodeReencode(episodeId, jobId);
-					return;
-				}
-				if (type === 'error') return;
-				if (!reencodeTracking[episodeId]) return;
-				const ev = data as { stage?: string; progress?: { percent?: number } | null };
-				if (ev.stage) reencodeTracking[episodeId].stage = ev.stage;
-				if (ev.progress?.percent != null)
-					reencodeTracking[episodeId].progress = ev.progress.percent;
-			}
-		);
-		void pollOnce();
-		reencodePollTimers[episodeId] = setInterval(() => void pollOnce(), 2000);
-	}
-
-	function handleReencodeConfirmed(episodeId: number, jobId: string) {
+	function handleReencodeConfirmed(_episodeId: number, jobId: string) {
 		closeReencodePlan();
 		toast('Re-encode started...', 'good');
-		startEpisodeReencodeTracking(episodeId, jobId);
+		bindJobs([jobId]);
 	}
 
 	// Season/show batch reencode (BatchReencodeModal, generalized in C7).
@@ -668,7 +501,7 @@
 					'info'
 				);
 			}
-			rehydrateJob(result.parent_job_id);
+			bindResult(result);
 			reencodeModalOpen = false;
 		} catch (e) {
 			toast(e instanceof Error ? e.message : 'Could not queue re-encodes', 'bad');
@@ -703,10 +536,9 @@
 		if (reencodeArtifactBusy[artifact.id]) return;
 		reencodeArtifactBusy[artifact.id] = true;
 		try {
-			await replaceOriginal(fetch, artifact.id);
+			const result = await replaceOriginal(fetch, artifact.id);
+			bindResult(result);
 			toast('Publication queued', 'good');
-			await loadReencodeArtifacts();
-			void refreshDetail();
 		} catch (e) {
 			toast(e instanceof Error ? e.message : 'Replace failed', 'bad');
 		} finally {
@@ -718,10 +550,9 @@
 		if (reencodeArtifactBusy[artifact.id]) return;
 		reencodeArtifactBusy[artifact.id] = true;
 		try {
-			await restoreOriginal(fetch, artifact.id);
+			const result = await restoreOriginal(fetch, artifact.id);
+			bindResult(result);
 			toast('Restore queued', 'good');
-			await loadReencodeArtifacts();
-			void refreshDetail();
 		} catch (e) {
 			toast(e instanceof Error ? e.message : 'Restore failed', 'bad');
 		} finally {
@@ -734,9 +565,9 @@
 		if (!confirm('Discard this re-encode candidate?')) return;
 		reencodeArtifactBusy[artifact.id] = true;
 		try {
-			await deleteArtifact(fetch, artifact.id);
+			const result = await deleteArtifact(fetch, artifact.id);
+			bindResult(result);
 			toast('Candidate discard queued', 'good');
-			await loadReencodeArtifacts();
 		} catch (e) {
 			toast(e instanceof Error ? e.message : 'Discard failed', 'bad');
 		} finally {
@@ -774,6 +605,7 @@
 			const res = await replaceReadyTvArtifacts(fetch, seriesId, {
 				season_number: seasonNumber ?? undefined
 			});
+			bindResult(res);
 			toast(`Replaced ${res.replaced} original file${res.replaced === 1 ? '' : 's'}`, 'good');
 			if (res.failed.length > 0) {
 				toast(`${res.failed.length} replace${res.failed.length === 1 ? '' : 's'} failed`, 'bad');
@@ -850,33 +682,13 @@
 				</div>
 			{/snippet}
 		</SectionHeader>
-
-		{#if Object.keys(activeRuns).length > 0}
-			<div class="active-runs">
-				{#each Object.entries(activeRuns) as [jobId, run] (jobId)}
-					<div class="active-run">
-						<div class="active-run-head">
-							<span class="active-run-label">
-								{displayJobLabel({ type: run.type ?? 'unknown', label: run.label })}
-							</span>
-							<span class="active-run-status mono"
-								>{run.cancelling ? 'cancelling' : (run.stage ?? run.status)}</span
-							>
-							<button
-								class="active-run-cancel"
-								type="button"
-								disabled={run.cancelling}
-								title={run.cancelling ? 'Cancellation requested' : 'Cancel job'}
-								onclick={() => cancelActiveRun(jobId)}
-							>
-								✕
-							</button>
-						</div>
-						<ProgressBar value={run.progress} tone="gold" height={5} />
-					</div>
-				{/each}
-			</div>
-		{/if}
+		<FeatureActivityPanel
+			scopeKey={`feature:letterbox:series:${seriesId}`}
+			query={{ feature_area: 'letterbox', subject_kind: 'series', subject_id: String(seriesId) }}
+			jobIds={initiatedJobIds}
+			heading="Show letterbox activity"
+			onSettled={handleJobSettled}
+		/>
 
 		<!-- Heatmap centerpiece -->
 		<div class="section-container">
@@ -1168,24 +980,13 @@
 																			</button>
 																		{/if}
 
-																		{#if reencodeTracking[ep.episode_id]}
-																			<span
-																				class="btn btn-outline btn-xs reencode-progress"
-																				title="Re-encoding…"
-																			>
-																				Encoding {Math.round(
-																					reencodeTracking[ep.episode_id].progress
-																				)}%
-																			</span>
-																		{:else}
-																			<button
-																				class="btn btn-outline btn-xs"
-																				title="Plan a permanent re-encode"
-																				onclick={() => openReencodePlan(ep.episode_id)}
-																			>
-																				Reencode
-																			</button>
-																		{/if}
+																		<button
+																			class="btn btn-outline btn-xs"
+																			title="Plan a permanent re-encode"
+																			onclick={() => openReencodePlan(ep.episode_id)}
+																		>
+																			Reencode
+																		</button>
 																	{/if}
 																</div>
 															</td>
@@ -1647,49 +1448,6 @@
 		flex-direction: column;
 		gap: 12px;
 	}
-	.active-runs {
-		display: flex;
-		flex-direction: column;
-		gap: 8px;
-		margin-bottom: 4px;
-	}
-	.active-run {
-		display: flex;
-		flex-direction: column;
-		gap: 6px;
-		padding: 10px 12px;
-		border: 1px solid var(--line);
-		border-radius: 10px;
-		background: var(--ink3);
-	}
-	.active-run-head {
-		display: flex;
-		align-items: center;
-		gap: 10px;
-		font-size: 12px;
-	}
-	.active-run-label {
-		font-weight: 600;
-		color: var(--text);
-	}
-	.active-run-status {
-		color: var(--muted);
-		text-transform: capitalize;
-	}
-	.active-run-cancel {
-		margin-left: auto;
-		border: none;
-		background: transparent;
-		color: var(--muted);
-		cursor: pointer;
-		font-size: 12px;
-		padding: 2px 6px;
-		border-radius: 6px;
-	}
-	.active-run-cancel:hover {
-		background: var(--ink2);
-		color: var(--bad);
-	}
 	.section-title {
 		margin: 0;
 		font-size: 15px;
@@ -2079,10 +1837,6 @@
 	.artifact-actions {
 		display: flex;
 		gap: 8px;
-	}
-	.reencode-progress {
-		cursor: default;
-		color: var(--muted);
 	}
 	.method-tag,
 	.preview-chip {

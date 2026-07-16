@@ -20,6 +20,7 @@ import {
 	parseSnapshot
 } from './validators';
 import type {
+	ActivityAttentionResponse,
 	ArtifactListResponse,
 	AttemptListResponse,
 	AttemptLogPage,
@@ -31,8 +32,11 @@ import type {
 	EventListResponse,
 	JobListResponse,
 	JobPresentation,
+	JobSubmissionResponse,
 	JobSnapshotResponse,
 	ListJobsQuery,
+	OperationsHistoryResponse,
+	OperationsSnapshot,
 	RawDocumentKind
 } from './types';
 
@@ -49,12 +53,34 @@ type ArtifactsQuery = NonNullable<
 type AttemptLogsQuery = NonNullable<
 	paths['/api/jobs/{job_id}/attempts/{attempt_id}/logs']['get']['parameters']['query']
 >;
+type OperationsHistoryQuery = NonNullable<
+	paths['/api/system/metrics/history']['get']['parameters']['query']
+>;
 
 // ---- discovery + reconciliation -------------------------------------------
 
 /** `GET /api/jobs` — the bounded Queue/History list used for active discovery. */
 export async function listJobs(fetch: Fetch, query: ListJobsQuery = {}): Promise<JobListResponse> {
 	return parseListEnvelope<JobListResponse>(await apiGet(fetch, '/jobs', query), 'job list');
+}
+
+/** `GET /api/jobs/attention` — bounded counts for the strip and navigation badge. */
+export function getActivityAttention(fetch: Fetch): Promise<ActivityAttentionResponse> {
+	return apiGet<ActivityAttentionResponse>(fetch, '/jobs/attention');
+}
+
+/** One versioned bounded snapshot for the lazy secondary Operations surface. */
+export function getOperations(fetch: Fetch, signal?: AbortSignal): Promise<OperationsSnapshot> {
+	return apiGet<OperationsSnapshot>(fetch, '/system/operations', undefined, signal);
+}
+
+/** Separately bounded/downsampled host history, loaded only when expanded. */
+export function getOperationsHistory(
+	fetch: Fetch,
+	query: OperationsHistoryQuery = {},
+	signal?: AbortSignal
+): Promise<OperationsHistoryResponse> {
+	return apiGet<OperationsHistoryResponse>(fetch, '/system/metrics/history', query, signal);
 }
 
 /** `GET /api/jobs/{id}/snapshot` — the only endpoint used for active reconciliation. */
@@ -78,10 +104,11 @@ export function getBatchSummary(fetch: Fetch, jobId: string): Promise<BatchSumma
 export async function listAttempts(
 	fetch: Fetch,
 	jobId: string,
-	query: AttemptsQuery = {}
+	query: AttemptsQuery = {},
+	signal?: AbortSignal
 ): Promise<AttemptListResponse> {
 	return parseListEnvelope<AttemptListResponse>(
-		await apiGet(fetch, `/jobs/${jobId}/attempts`, query),
+		await apiGet(fetch, `/jobs/${jobId}/attempts`, query, signal),
 		'attempt list'
 	);
 }
@@ -90,10 +117,11 @@ export async function listAttempts(
 export async function listEvents(
 	fetch: Fetch,
 	jobId: string,
-	query: EventsQuery = {}
+	query: EventsQuery = {},
+	signal?: AbortSignal
 ): Promise<EventListResponse> {
 	return parseListEnvelope<EventListResponse>(
-		await apiGet(fetch, `/jobs/${jobId}/events`, query),
+		await apiGet(fetch, `/jobs/${jobId}/events`, query, signal),
 		'event list'
 	);
 }
@@ -114,10 +142,11 @@ export async function listChildren(
 export async function listArtifacts(
 	fetch: Fetch,
 	jobId: string,
-	query: ArtifactsQuery = {}
+	query: ArtifactsQuery = {},
+	signal?: AbortSignal
 ): Promise<ArtifactListResponse> {
 	return parseListEnvelope<ArtifactListResponse>(
-		await apiGet(fetch, `/jobs/${jobId}/artifacts`, query),
+		await apiGet(fetch, `/jobs/${jobId}/artifacts`, query, signal),
 		'artifact list'
 	);
 }
@@ -127,18 +156,20 @@ export function listAttemptLogs(
 	fetch: Fetch,
 	jobId: string,
 	attemptId: number,
-	query: AttemptLogsQuery = {}
+	query: AttemptLogsQuery = {},
+	signal?: AbortSignal
 ): Promise<AttemptLogPage> {
-	return apiGet<AttemptLogPage>(fetch, `/jobs/${jobId}/attempts/${attemptId}/logs`, query);
+	return apiGet<AttemptLogPage>(fetch, `/jobs/${jobId}/attempts/${attemptId}/logs`, query, signal);
 }
 
 /** `GET /api/jobs/{id}/raw/{kind}` — a single virtual raw document (free-form JSON). */
 export function getRawDocument(
 	fetch: Fetch,
 	jobId: string,
-	kind: RawDocumentKind
+	kind: RawDocumentKind,
+	signal?: AbortSignal
 ): Promise<unknown> {
-	return apiGet<unknown>(fetch, `/jobs/${jobId}/raw/${kind}`);
+	return apiGet<unknown>(fetch, `/jobs/${jobId}/raw/${kind}`, undefined, signal);
 }
 
 // ---- lifecycle commands (validated before their effect is applied) ---------
@@ -172,7 +203,20 @@ export function retryJob(fetch: Fetch, jobId: string, fence: number): Promise<Co
 	return command(fetch, jobId, 'retry', fence);
 }
 
-/** `PATCH /api/jobs/{id}/priority` — reprioritize within the execution class. */
+/** Confirm one immutable media mutation plan through the generated canonical contract. */
+export function confirmMutation(
+	fetch: Fetch,
+	jobId: string,
+	expectedPlanVersion: string,
+	expectedConfigurationVersion: number
+): Promise<JobSubmissionResponse> {
+	return apiSend<JobSubmissionResponse>(fetch, 'POST', `/jobs/${jobId}/mutation-confirmation`, {
+		expected_plan_version: expectedPlanVersion,
+		expected_configuration_version: expectedConfigurationVersion
+	});
+}
+
+/** `POST /api/jobs/{id}/priority` — reprioritize within the execution class. */
 export async function setJobPriority(
 	fetch: Fetch,
 	jobId: string,
@@ -180,7 +224,7 @@ export async function setJobPriority(
 	expectedFenceToken: number
 ): Promise<CommandResponse> {
 	return parseCommandResponse(
-		await apiSend(fetch, 'PATCH', `/jobs/${jobId}/priority`, {
+		await apiSend(fetch, 'POST', `/jobs/${jobId}/priority`, {
 			priority,
 			expected_fence_token: expectedFenceToken
 		})

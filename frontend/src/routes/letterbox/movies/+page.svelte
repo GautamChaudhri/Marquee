@@ -1,10 +1,8 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { browser } from '$app/environment';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
-	import { subscribe } from '$lib/sse';
-	import { jitterMs } from '$lib/jobs';
+	import FeatureActivityPanel from '$lib/activity/components/FeatureActivityPanel.svelte';
 	import { toast } from '$lib/toast';
 	import {
 		analyzeAll,
@@ -14,20 +12,9 @@
 		confirmLetterbox,
 		listColumn
 	} from '$lib/api/letterbox';
-	import {
-		cancelJob as cancelBatchJob,
-		getJob,
-		isTerminal,
-		runningChildMovieId
-	} from '$lib/api/jobs';
-	import type {
-		BatchReencodeSettings,
-		LetterboxAnalyzeSummary,
-		LetterboxColumnItem
-	} from '$lib/api/types';
+	import type { BatchReencodeSettings, LetterboxColumnItem } from '$lib/api/types';
 	import SectionHeader from '$lib/components/SectionHeader.svelte';
 	import StatusDot from '$lib/components/StatusDot.svelte';
-	import ProgressBar from '$lib/components/ProgressBar.svelte';
 	import Icon from '$lib/components/Icon.svelte';
 	import LetterboxCard from '$lib/components/LetterboxCard.svelte';
 	import LetterboxDetail from '$lib/components/LetterboxDetail.svelte';
@@ -96,10 +83,6 @@
 	function select(id: number) {
 		selectedId = id;
 	}
-
-	let detailEncoding = $state(false);
-	let detailEncodeProgress = $state(0);
-	let detailEncodeStage = $state<string | null>(null);
 
 	function setTab(key: TabKey) {
 		if (key === activeTab) return;
@@ -218,6 +201,7 @@
 		batchReencodeBusy = true;
 		try {
 			const result = await batchReencode(fetch, payload.ids, payload.settings);
+			bindJobs(result.job_ids);
 			if (result.count > 0) {
 				toast(`Queued ${result.count} permanent re-encodes`, 'good');
 			} else {
@@ -237,73 +221,17 @@
 		}
 	}
 
-	// ── Analyze (batch frame analysis tracked via the durable job) ─────────────
-	// The bar is driven by SSE *and* a snapshot poll (the SSE opened right after
-	// the POST doesn't always stream on the first run, so the poll guarantees the
-	// bar moves). It survives a refresh and stays until dismissed.
-	const LB_BATCH_KEY = 'lb.activeBatch';
-	const LB_BATCH_TOTAL_KEY = 'lb.activeBatch.total';
+	// ── Analyze ────────────────────────────────────────────────────────────────
 	let analyzing = $state(false);
-	let progress = $state(0);
-	let progressTotal = $state(0);
-	let progressDone = $state(0);
-	let currentBatchId = $state<string | null>(null);
-	let batchStatus = $state<string | null>(null);
-	let result = $state<LetterboxAnalyzeSummary | null>(null);
-	let unsub: (() => void) | null = null;
-	let refreshQueued = false;
-	let pollInterval: ReturnType<typeof setInterval> | null = null;
-	let pollTick = 0;
+	let initiatedJobIds = $state<string[]>([]);
 
-	// Per-movie progress: `currentMovie` (precise %/stage from SSE) and
-	// `currentScanId` (the running child from the poll) together identify the card
-	// to mark as scanning.
-	let currentMovie = $state<{
-		id: number;
-		title: string;
-		stage: string;
-		progress: number;
-	} | null>(null);
-	let currentScanId = $state<number | null>(null);
-	const scanId = $derived(currentMovie?.id ?? currentScanId);
-
-	function storeBatch(id: string | null, total?: number) {
-		if (!browser) return;
-		if (id) {
-			localStorage.setItem(LB_BATCH_KEY, id);
-			if (total !== undefined) localStorage.setItem(LB_BATCH_TOTAL_KEY, String(total));
-		} else {
-			localStorage.removeItem(LB_BATCH_KEY);
-			localStorage.removeItem(LB_BATCH_TOTAL_KEY);
-		}
-	}
-
-	/** Map the job's domain-neutral child-status tally to the UI summary. */
-	function summaryFrom(
-		s: Record<string, number> | null | undefined
-	): LetterboxAnalyzeSummary | null {
-		if (!s) return null;
-		const total = Object.values(s).reduce((a, b) => a + (b ?? 0), 0);
-		return {
-			candidate: s.candidate ?? 0,
-			not_letterboxed: s.not_letterboxed ?? 0,
-			variable: s.variable_unsafe ?? 0,
-			errored: s.errored ?? 0,
-			failed: s.failed ?? s.dead_letter ?? 0,
-			total,
-			completed: total
-		};
-	}
-
-	function summaryFromResult(resultValue: unknown): LetterboxAnalyzeSummary | null {
-		if (!resultValue || typeof resultValue !== 'object' || !('summary' in resultValue)) return null;
-		const summary = (resultValue as { summary?: Record<string, number> | null }).summary;
-		return summaryFrom(summary ?? null);
+	function bindJobs(jobIds: string[]) {
+		const additions = jobIds.filter((jobId) => !initiatedJobIds.includes(jobId));
+		if (additions.length > 0) initiatedJobIds = [...initiatedJobIds, ...additions];
 	}
 
 	/** Fetch updated tray data from the backend and merge into reactive state. */
 	async function refreshTrays() {
-		if (!browser) return;
 		try {
 			const [candidates, detected, preview, notLb, processed] = await Promise.all([
 				listColumn(fetch, {
@@ -349,264 +277,30 @@
 					total: processed.items.filter((i) => i.reviewed).length
 				}
 			};
-		} catch (e) {
-			// Silently degrade - don't spam toasts during active polling
-			console.warn('Tray refresh failed:', e);
-		}
-	}
-
-	/** Read the batch snapshot and advance the bar + scanning marker from it. */
-	async function syncBatchProgress() {
-		if (!currentBatchId || !analyzing) return;
-		try {
-			const job = await getJob(fetch, currentBatchId);
-			const prog = job.progress ?? {};
-			if (typeof prog.children_total === 'number' && prog.children_total > 0) {
-				progressTotal = prog.children_total;
-			}
-			if (typeof prog.children_completed === 'number') progressDone = prog.children_completed;
-			progress = progressTotal > 0 ? (progressDone / progressTotal) * 100 : 0;
-			if (isTerminal(job.status)) {
-				batchStatus = job.status;
-				result = summaryFromResult(job.result);
-				finishAnalyze();
-				return;
-			}
-			currentScanId = await runningChildMovieId(fetch, currentBatchId);
 		} catch {
-			/* transient — keep polling */
+			// The activity card retains the job outcome; a later navigation reloads the trays.
 		}
-	}
-
-	/** One poll tick: progress every ~1.5s, trays every other tick (~3s). */
-	async function pollActive() {
-		pollTick++;
-		await syncBatchProgress();
-		if (pollTick % 2 === 0) await refreshTrays();
-	}
-
-	function startPolling() {
-		if (pollInterval) return;
-		pollInterval = setInterval(() => void pollActive(), jitterMs(1500));
-	}
-
-	function stopPolling() {
-		if (pollInterval) {
-			clearInterval(pollInterval);
-			pollInterval = null;
-		}
-		pollTick = 0;
-	}
-
-	/** Refresh the trays so finished movies hop to their next stage. Coalesced so a
-	 *  burst of replayed events (after a refresh) triggers a single reload. */
-	function scheduleTrayRefresh() {
-		if (refreshQueued) return;
-		refreshQueued = true;
-		setTimeout(() => {
-			refreshQueued = false;
-			refreshTrays();
-		}, 800);
-	}
-
-	function onBatchEvent(type: string, raw: unknown) {
-		if (type === 'done') {
-			finishAnalyze();
-			return;
-		}
-		const ev = (raw ?? {}) as Record<string, unknown>;
-		if (typeof ev.state === 'string' && ev.state !== 'progress') batchStatus = ev.state;
-		const detail = (ev.detail ?? {}) as Record<string, unknown>;
-
-		// Track per-movie progress (precise %/stage straight from the child).
-		if (ev.state === 'child_progress') {
-			if (typeof detail.movie_id === 'number' && typeof detail.title === 'string') {
-				currentMovie = {
-					id: detail.movie_id as number,
-					title: detail.title as string,
-					stage: (detail.stage as string) || 'processing',
-					progress: (detail.progress as number) || 0
-				};
-			}
-		}
-
-		// Batch-level progress
-		if (typeof detail.children_completed === 'number') {
-			progressDone = detail.children_completed as number;
-			if (typeof detail.children_total === 'number')
-				progressTotal = detail.children_total as number;
-			progress = progressTotal ? (progressDone / progressTotal) * 100 : 0;
-			scheduleTrayRefresh(); // a child finished → reflect its move
-
-			// Clear current movie when a child completes
-			if (currentMovie && currentMovie.progress >= 90) {
-				setTimeout(() => {
-					currentMovie = null;
-				}, 1000);
-			}
-		}
-
-		if (
-			(ev.state === 'succeeded' ||
-				ev.state === 'failed' ||
-				ev.state === 'cancelled' ||
-				ev.state === 'interrupted') &&
-			detail.summary
-		) {
-			result = summaryFrom(detail.summary as Record<string, number>);
-		}
-	}
-
-	/** Subscribe to a batch job's durable event stream. The stream replays all
-	 *  prior events on connect, so this catches up to live progress after a refresh. */
-	function attachBatch(eventsUrl: string) {
-		unsub?.();
-		unsub = subscribe(eventsUrl, ['message', 'done'], onBatchEvent);
 	}
 
 	async function doAnalyze() {
 		if (analyzing) return;
 		analyzing = true;
-		batchStatus = 'waiting_external';
-		result = null;
-		progress = 0;
-		progressDone = 0;
-		progressTotal = 0;
-		currentMovie = null;
-		currentScanId = null;
 		try {
 			const ref = await analyzeAll(fetch);
-			progressTotal = ref.total;
-			if (ref.total === 0) {
-				toast('No candidates to analyze', 'info');
-				analyzing = false;
-				currentBatchId = null;
-				batchStatus = null;
-				storeBatch(null);
-				return;
-			}
-			currentBatchId = ref.job_id;
-			storeBatch(ref.job_id, ref.total);
-			// Route through the same proven path the post-refresh flow uses: seed
-			// from the job snapshot, attach SSE, and start the poll.
-			await rehydrateBatch(ref.job_id, { allowActive: true });
+			bindJobs([ref.job_id]);
+			toast('Queued candidate analysis', 'good');
 		} catch (e) {
 			analyzing = false;
-			currentBatchId = null;
-			batchStatus = null;
 			toast(e instanceof Error ? e.message : 'Analysis failed to start', 'bad');
 		}
 	}
 
-	function finishAnalyze() {
-		if (!analyzing) return; // SSE 'done' and the poll can both land here
+	function handleJobSettled() {
 		analyzing = false;
-		stopPolling();
-		currentMovie = null;
-		currentScanId = null;
-		if (batchStatus === 'succeeded') progress = 100;
-		unsub?.();
-		unsub = null;
-		if (batchStatus === 'cancelled') {
-			toast(`Analysis cancelled at ${progressDone}/${progressTotal}`, 'info');
-		} else if (batchStatus === 'interrupted') {
-			toast(`Analysis stopped at ${progressDone}/${progressTotal}`, 'info');
-		} else if (batchStatus === 'failed') {
-			toast('Analysis failed', 'bad');
-		} else if (result) {
-			const nlb = result.not_letterboxed;
-			toast(
-				`Analysis complete — ${result.candidate} staged${nlb ? `, ${nlb} cleared` : ''}`,
-				'good'
-			);
-		} else {
-			toast('Analysis complete', 'good');
-		}
-		refreshTrays();
-		// The batch id stays in localStorage so the summary survives a refresh
-		// until the user dismisses it.
-	}
-
-	function dismissAnalyze() {
-		result = null;
-		analyzing = false;
-		stopPolling();
-		currentMovie = null;
-		currentScanId = null;
-		currentBatchId = null;
-		batchStatus = null;
-		progress = 0;
-		progressDone = 0;
-		progressTotal = 0;
-		storeBatch(null);
-	}
-
-	async function cancelAnalyze() {
-		if (!currentBatchId || batchStatus === 'cancelling') return;
-		try {
-			const job = await cancelBatchJob(fetch, currentBatchId);
-			batchStatus = job.status;
-			analyzing = !isTerminal(job.status);
-			toast(job.status === 'cancelled' ? 'Analysis cancelled' : 'Cancellation requested', 'info');
-			if (isTerminal(job.status)) {
-				await rehydrateBatch(currentBatchId, { allowActive: true });
-			}
-		} catch (e) {
-			toast(e instanceof Error ? e.message : 'Could not cancel analysis', 'bad');
-		}
-	}
-
-	/** Re-attach to an in-flight or just-finished batch after a (re)load. */
-	async function rehydrateBatch(jobId: string, options: { allowActive: boolean }) {
-		const { allowActive } = options;
-		let job;
-		try {
-			job = await getJob(fetch, jobId);
-		} catch {
-			currentBatchId = null;
-			batchStatus = null;
-			storeBatch(null);
-			return;
-		}
-		currentBatchId = jobId;
-		batchStatus = job.status;
-		const prog = job.progress ?? {};
-
-		// Restore progressTotal from multiple sources to prevent 0/0 display after refresh
-		const storedTotal = browser ? localStorage.getItem(LB_BATCH_TOTAL_KEY) : null;
-		const jobTotal = prog.children_total;
-		const fallbackTotal = storedTotal ? parseInt(storedTotal, 10) : progressTotal;
-
-		progressTotal = jobTotal ?? fallbackTotal;
-		progressDone = prog.children_completed ?? 0;
-		progress = progressTotal > 0 ? (progressDone / progressTotal) * 100 : 0;
-		if (!allowActive && !isTerminal(job.status)) {
-			dismissAnalyze();
-			return;
-		}
-		if (isTerminal(job.status)) {
-			analyzing = false;
-			stopPolling();
-			currentMovie = null;
-			currentScanId = null;
-			result = summaryFromResult(job.result);
-			if (!result && !progressTotal) storeBatch(null); // nothing to show → forget it
-		} else {
-			analyzing = true;
-			startPolling();
-			attachBatch(job.events_url);
-		}
+		void refreshTrays();
 	}
 
 	onMount(() => {
-		const active = data.status?.batch_active ?? null;
-		const stored = browser ? localStorage.getItem(LB_BATCH_KEY) : null;
-		if (active) {
-			void rehydrateBatch(active, { allowActive: true });
-			return;
-		}
-		if (stored) void rehydrateBatch(stored, { allowActive: false });
-
 		// Refresh trays when user returns to tab (ensures data consistency)
 		const onVisibilityChange = () => {
 			if (document.visibilityState === 'visible' && !analyzing) {
@@ -618,11 +312,6 @@
 		return () => {
 			document.removeEventListener('visibilitychange', onVisibilityChange);
 		};
-	});
-
-	$effect(() => () => {
-		unsub?.();
-		stopPolling();
 	});
 
 	// ── Header chips ───────────────────────────────────────────────────────────
@@ -637,14 +326,6 @@
 
 	const st = $derived(data.status);
 	const detectedTotal = $derived(cols.detected.total);
-	const showAnalyzeBanner = $derived(
-		analyzing ||
-			result !== null ||
-			batchStatus === 'cancelled' ||
-			batchStatus === 'interrupted' ||
-			batchStatus === 'failed'
-	);
-
 	// ── "View all" modal ───────────────────────────────────────────────────────
 	interface ModalCfg {
 		variant: Variant;
@@ -717,24 +398,7 @@
 		<div class="list-empty">No films in this stage.</div>
 	{:else}
 		{#each items as item (item.movie_id)}
-			<LetterboxCard
-				{item}
-				{variant}
-				selected={item.movie_id === selected}
-				scanning={(analyzing && item.movie_id === scanId) ||
-					(detailEncoding && item.movie_id === selected)}
-				progress={currentMovie && currentMovie.id === item.movie_id
-					? currentMovie.progress
-					: detailEncoding && item.movie_id === selected
-						? detailEncodeProgress
-						: 0}
-				stage={currentMovie && currentMovie.id === item.movie_id
-					? currentMovie.stage
-					: detailEncoding && item.movie_id === selected
-						? detailEncodeStage
-						: null}
-				onSelect={select}
-			/>
+			<LetterboxCard {item} {variant} selected={item.movie_id === selected} onSelect={select} />
 		{/each}
 		{#if total > items.length}
 			<button class="list-more" onclick={() => openModal(MODAL_CFGS[variant])}
@@ -752,6 +416,13 @@
 			</button>
 		{/snippet}
 	</SectionHeader>
+	<FeatureActivityPanel
+		scopeKey="feature:letterbox:movies"
+		query={{ feature_area: 'letterbox', subject_kind: 'movie' }}
+		jobIds={initiatedJobIds}
+		heading="Movie letterbox activity"
+		onSettled={handleJobSettled}
+	/>
 
 	{#if st}
 		<div class="statusbar">
@@ -768,64 +439,6 @@
 		</div>
 	{:else if data.error}
 		<div class="banner err">{data.error} The backend may be offline.</div>
-	{/if}
-
-	{#if showAnalyzeBanner}
-		<div class="analyze-bar" class:done={!analyzing}>
-			<div class="ab-row">
-				<span class="ab-label">
-					{#if analyzing}
-						{#if batchStatus === 'cancelling'}
-							<span class="spin">⟳</span> Cancelling analysis… {progressDone}/{progressTotal}
-						{:else}
-							<span class="spin">⟳</span> Analyzing candidates… {progressDone}/{progressTotal}
-						{/if}
-					{:else if batchStatus === 'cancelled' || batchStatus === 'interrupted'}
-						Analysis stopped at <strong>{progressDone}</strong>/<strong>{progressTotal}</strong>
-						{#if result}
-							· <strong>{result.candidate}</strong> detected ·
-							<strong>{result.not_letterboxed}</strong> not letterboxed · {result.variable} unsafe
-							{#if result.errored || result.failed}
-								· {result.errored + result.failed} failed{/if}
-						{/if}
-					{:else if batchStatus === 'failed'}
-						Analysis failed at <strong>{progressDone}</strong>/<strong>{progressTotal}</strong>
-						{#if result}
-							· <strong>{result.candidate}</strong> detected ·
-							<strong>{result.not_letterboxed}</strong> not letterboxed · {result.variable} unsafe
-							{#if result.errored || result.failed}
-								· {result.errored + result.failed} failed{/if}
-						{/if}
-					{:else if result}
-						✓ Analysis complete — <strong>{result.candidate}</strong> detected ·
-						<strong>{result.not_letterboxed}</strong> not letterboxed · {result.variable} unsafe
-						{#if result.errored || result.failed}
-							· {result.errored + result.failed} failed{/if}
-					{/if}
-				</span>
-				<div class="ab-actions">
-					{#if analyzing}
-						<button
-							class="ab-cancel"
-							onclick={cancelAnalyze}
-							disabled={batchStatus === 'cancelling' || !currentBatchId}
-						>
-							{batchStatus === 'cancelling' ? 'Cancelling…' : 'Cancel'}
-						</button>
-					{:else}
-						<button class="ab-dismiss" onclick={dismissAnalyze} aria-label="Dismiss">
-							<Icon name="x" size={14} />
-						</button>
-					{/if}
-				</div>
-			</div>
-			{#if analyzing}
-				<ProgressBar value={progress} tone="gold" />
-				<div class="ab-hint">
-					Live progress shows on the film being analyzed in the Staging / Candidates tab.
-				</div>
-			{/if}
-		</div>
 	{/if}
 
 	<!-- Two fixed panes: tabbed film list | persistent inspector -->
@@ -899,11 +512,6 @@
 				onChanged={refreshTrays}
 				onAnalyzeAll={doAnalyze}
 				{analyzing}
-				onEncodeState={(enc, p, s) => {
-					detailEncoding = enc;
-					detailEncodeProgress = p;
-					detailEncodeStage = s;
-				}}
 			/>
 		</section>
 	</div>
@@ -941,18 +549,6 @@
 								{item}
 								variant={modal.variant}
 								selected={item.movie_id === selected}
-								scanning={(analyzing && item.movie_id === scanId) ||
-									(detailEncoding && item.movie_id === selected)}
-								progress={currentMovie && currentMovie.id === item.movie_id
-									? currentMovie.progress
-									: detailEncoding && item.movie_id === selected
-										? detailEncodeProgress
-										: 0}
-								stage={currentMovie && currentMovie.id === item.movie_id
-									? currentMovie.stage
-									: detailEncoding && item.movie_id === selected
-										? detailEncodeStage
-										: null}
 								onSelect={(id) => {
 									select(id);
 									closeModal();
@@ -1021,77 +617,6 @@
 		color: var(--bad);
 		font-size: 13px;
 		margin-bottom: 12px;
-	}
-
-	/* analyze header */
-	.analyze-bar {
-		border: 1px solid var(--gold-deep);
-		background: var(--gold-soft);
-		border-radius: var(--radius-sm);
-		padding: 11px 14px;
-		margin-bottom: 12px;
-		display: flex;
-		flex-direction: column;
-		gap: 8px;
-		flex: none;
-	}
-	.analyze-bar.done {
-		border-color: color-mix(in srgb, var(--good) 40%, var(--line2));
-		background: color-mix(in srgb, var(--good) 8%, transparent);
-	}
-	.ab-row {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: 12px;
-	}
-	.ab-label {
-		font-size: 12.5px;
-		color: var(--text);
-	}
-	.ab-label strong {
-		color: var(--gold);
-	}
-	.analyze-bar.done .ab-label strong {
-		color: var(--good);
-	}
-	.ab-hint {
-		font-size: 11px;
-		color: var(--muted);
-	}
-	.ab-dismiss {
-		flex: none;
-		display: grid;
-		place-items: center;
-		width: 24px;
-		height: 24px;
-		border: none;
-		background: transparent;
-		color: var(--muted);
-		border-radius: 6px;
-	}
-	.ab-actions {
-		flex: none;
-		display: flex;
-		align-items: center;
-	}
-	.ab-dismiss:hover {
-		background: var(--panel2);
-		color: var(--text);
-	}
-	.ab-cancel {
-		flex: none;
-		border: 1px solid color-mix(in srgb, var(--gold) 40%, var(--line2));
-		background: color-mix(in srgb, var(--gold) 14%, transparent);
-		color: var(--text);
-		border-radius: 999px;
-		padding: 6px 10px;
-		font-size: 12px;
-		font-weight: 600;
-	}
-	.ab-cancel:disabled {
-		opacity: 0.7;
-		cursor: default;
 	}
 
 	/* two-pane split */
@@ -1282,15 +807,6 @@
 		opacity: 0.5;
 		cursor: not-allowed;
 	}
-	@keyframes spin {
-		to {
-			transform: rotate(360deg);
-		}
-	}
-	.spin {
-		display: inline-block;
-		animation: spin 1s linear infinite;
-	}
 
 	/* modal */
 	.modal-backdrop {
@@ -1380,12 +896,6 @@
 		}
 		.list {
 			max-height: 420px;
-		}
-	}
-
-	@media (prefers-reduced-motion: reduce) {
-		.spin {
-			animation: none;
 		}
 	}
 </style>

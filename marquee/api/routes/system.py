@@ -6,7 +6,7 @@ import logging
 import math
 import os
 from datetime import UTC, datetime, timedelta
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from sqlalchemy import func, select, text
@@ -14,6 +14,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.api.job_submission import JobSubmissionResponse, submission_response
 from marquee.api.routes.webhooks import webhook_state
+from marquee.api.system_operations import (
+    OperationsConnectionBudget,
+    OperationsDatabase,
+    OperationsEvents,
+    OperationsHistoryResponse,
+    OperationsNode,
+    OperationsSnapshot,
+    OperationsStorage,
+    OperationsTransport,
+    OperationsWorkers,
+)
 from marquee.config import settings
 from marquee.core import system_metrics
 from marquee.core.configuration_cache import configuration_provider
@@ -141,7 +152,7 @@ def _downsample_history(points: list[dict], target_points: int) -> list[dict]:
 
 async def _history_jobs(
     db: AsyncSession, *, start_at: datetime, end_at: datetime
-) -> list[dict]:
+) -> tuple[list[dict], bool]:
     rows = (
         (
             await db.execute(
@@ -152,13 +163,15 @@ async def _history_jobs(
                     func.coalesce(Job.terminal_at, end_at) >= start_at,
                 )
                 .order_by(Job.started_at.asc(), Job.id.asc())
+                .limit(201)
             )
         )
         .scalars()
         .all()
     )
+    truncated = len(rows) > 200
     history: list[dict] = []
-    for job in rows:
+    for job in rows[:200]:
         snapshot = job.subject_snapshot if isinstance(job.subject_snapshot, dict) else {}
         subject = (
             snapshot.get("display_name")
@@ -177,18 +190,16 @@ async def _history_jobs(
                 "finished_at": job.terminal_at.isoformat() if job.terminal_at else None,
             }
         )
-    return history
+    return history, truncated
 
 
-@router.get("/metrics/history")
+@router.get("/metrics/history", response_model=OperationsHistoryResponse)
 async def system_metrics_history(
     db: Annotated[AsyncSession, Depends(get_db)],
-    window: str = "1h",
+    window: Literal["15m", "1h", "6h", "24h"] = "1h",
     resolution: int = 120,
 ):
-    window_seconds = _HISTORY_WINDOWS.get(window)
-    if window_seconds is None:
-        return {"window": window, "points": [], "jobs": []}
+    window_seconds = _HISTORY_WINDOWS[window]
     resolution = min(max(resolution, 12), 240)
     end_at = datetime.now(UTC)
     start_at = end_at - timedelta(seconds=window_seconds)
@@ -251,12 +262,14 @@ async def system_metrics_history(
         }
         points.append(point)
         previous = sample
+    jobs, jobs_truncated = await _history_jobs(db, start_at=start_at, end_at=end_at)
     return {
         "window": window,
         "start_at": start_at.isoformat(),
         "end_at": end_at.isoformat(),
         "points": _downsample_history(points, resolution),
-        "jobs": await _history_jobs(db, start_at=start_at, end_at=end_at),
+        "jobs": jobs,
+        "jobs_truncated": jobs_truncated,
     }
 
 
@@ -342,6 +355,83 @@ async def job_transport_diagnostics(
             "budget": connection_budget_report(),
         },
     }
+
+
+@router.get("/operations", response_model=OperationsSnapshot)
+async def operations_snapshot(
+    request: Request,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> OperationsSnapshot:
+    """One bounded typed snapshot for the lazy secondary Operations surface."""
+    metrics = system_metrics.collect(settings.metrics_disk_path)
+    worker_counts = await _worker_counts(db)
+    transport = await job_transport_diagnostics(request, db)
+    supervisor = getattr(request.app.state, "worker_supervisor", None)
+    listener = transport["listener"]
+    connections = transport["connections"]
+    budget = connections["budget"]
+    pool = pool_stats()
+    cache = _cache_stats()
+    cpu = metrics["cpu"]
+    ram = metrics["ram"]
+    gpu = metrics["gpu"]
+    disk = metrics["disk"]
+    network = metrics["net"]
+
+    return OperationsSnapshot(
+        generated_at=datetime.now(UTC),
+        node=OperationsNode(
+            cpu_model=str(cpu["model"]),
+            cpu_percent=cpu.get("avg"),
+            cpu_temperature_c=cpu.get("temp"),
+            ram_percent=ram.get("pct"),
+            ram_used_bytes=ram.get("used"),
+            ram_total_bytes=ram.get("total"),
+            gpu_model=gpu.get("model") if gpu else None,
+            gpu_percent=gpu.get("util") if gpu else None,
+            gpu_memory_percent=gpu.get("memUtil") if gpu else None,
+            network_received_bytes=network.get("bytesRecv"),
+            network_sent_bytes=network.get("bytesSent"),
+            uptime=str(metrics["uptime"]),
+        ),
+        workers=OperationsWorkers(
+            active=worker_counts["active"],
+            queued=worker_counts["queued"],
+            supervisor_available=supervisor is not None,
+            listener_healthy=bool(listener["healthy"]),
+        ),
+        transport=OperationsTransport(
+            picked=int(transport["picked"]),
+            held_failed=int(transport["held_failed"]),
+            oldest_eligible_age_seconds=transport["oldest_eligible_age_seconds"],
+        ),
+        database=OperationsDatabase(
+            observed_connections=int(connections["observed"]),
+            connection_roles=connections["roles"],
+            pool_size=pool["size"],
+            pool_checked_in=pool["checked_in"],
+            pool_checked_out=pool["checked_out"],
+            pool_overflow=pool["overflow"],
+            budget=OperationsConnectionBudget(
+                configured=int(budget["configured"]),
+                maximum=int(budget["maximum"]),
+                within_budget=bool(budget["within_budget"]),
+            ),
+        ),
+        events=OperationsEvents(
+            listener_healthy=bool(listener["healthy"]),
+            source=str(listener["source"]),
+            last_observed_event_at=listener["last_observed_event_at"],
+        ),
+        storage=OperationsStorage(
+            poster_cache_items=cache["posters"],
+            poster_cache_bytes=cache["bytes"],
+            disk_percent=disk.get("pct"),
+            disk_used_bytes=disk.get("used"),
+            disk_total_bytes=disk.get("total"),
+        ),
+        contracts=transport["contracts"],
+    )
 
 
 @router.get("/status/generators")

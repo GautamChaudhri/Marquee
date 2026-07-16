@@ -1,4 +1,3 @@
-<!-- eslint-disable @typescript-eslint/no-unused-vars svelte/prefer-svelte-reactivity svelte/no-unused-svelte-ignore svelte/require-each-key -->
 <script lang="ts">
 	import { SvelteURLSearchParams, SvelteSet } from 'svelte/reactivity';
 	import { page } from '$app/state';

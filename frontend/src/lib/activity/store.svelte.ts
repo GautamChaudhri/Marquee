@@ -156,11 +156,20 @@ export interface ScopeHandle {
 	release(): void;
 }
 
+export interface ScopeView {
+	readonly key: string;
+	readonly jobIds: readonly string[];
+	readonly loading: boolean;
+	readonly error: string | null;
+	readonly nextCursor: string | null;
+}
+
 export class JobProgressStore {
 	connection = $state<ConnectionState>('initial');
 	lastSuccessAt = $state<number | null>(null);
 	eventCursor = $state<number | null>(null);
 	readonly records = new SvelteMap<string, JobRecord>();
+	readonly scopeViews = new SvelteMap<string, ScopeView>();
 
 	readonly #deps: JobProgressStoreDeps;
 	readonly #cadence: StoreCadence;
@@ -201,10 +210,39 @@ export class JobProgressStore {
 				retryCancel: null
 			};
 			this.#scopes.set(key, scope);
+			this.#publishScope(scope, { loading: true });
 			this.#ensureStarted();
 			void this.#discover(scope);
 		}
 		return { key, release: () => this.#releaseScope(key) };
+	}
+
+	/** Canonical records currently discovered for one list scope, in server order. */
+	recordsForScope(key: string): JobRecord[] {
+		const view = this.scopeViews.get(key);
+		if (!view) return [];
+		return view.jobIds
+			.map((jobId) => this.records.get(jobId))
+			.filter((record): record is JobRecord => record !== undefined);
+	}
+
+	/** Load the next stable server cursor for a scope, if one exists. */
+	loadMore(key: string): void {
+		const scope = this.#scopes.get(key);
+		const cursor = this.scopeViews.get(key)?.nextCursor;
+		if (!scope || !cursor || scope.inFlight) return;
+		void this.#discover(scope, cursor);
+	}
+
+	/** Re-run first-page discovery while preserving last-good rows on failure. */
+	refreshScope(key: string): void {
+		const scope = this.#scopes.get(key);
+		if (!scope) return;
+		scope.inFlight?.abort();
+		scope.inFlight = null;
+		scope.retryCancel?.();
+		scope.retryCancel = null;
+		void this.#discover(scope);
 	}
 
 	/** Bind directly to a known job id (e.g. a just-submitted job) via its snapshot. */
@@ -258,6 +296,7 @@ export class JobProgressStore {
 		scope.inFlight?.abort();
 		scope.retryCancel?.();
 		this.#scopes.delete(key);
+		this.scopeViews.delete(key);
 		this.#pruneUnreferencedRecords();
 		if (this.#scopes.size === 0 && this.#trackedIds.size === 0) this.#teardown();
 	}
@@ -284,26 +323,39 @@ export class JobProgressStore {
 
 	// ---- Queue discovery ---------------------------------------------------
 
-	async #discover(scope: ScopeState): Promise<void> {
+	async #discover(scope: ScopeState, cursor: string | null = null): Promise<void> {
 		if (this.#stopped || scope.inFlight) return; // one in-flight per scope
 		scope.retryCancel?.();
 		scope.retryCancel = null;
 		const controller = new AbortController();
 		scope.inFlight = controller;
+		this.#publishScope(scope, { loading: true, error: null });
 		try {
-			const response = await listJobs(this.#withSignal(controller), scope.query);
+			const response = await listJobs(this.#withSignal(controller), {
+				...scope.query,
+				cursor: cursor ?? undefined
+			});
 			if (controller.signal.aborted || this.#stopped) return;
 			// A bounded first page cannot prove that a previously discovered job is
 			// gone. Keep the union and let its authoritative snapshot move it to
 			// History; absence from one Queue page never removes a card.
 			for (const row of response.items) scope.jobIds.add(row.job_id);
 			for (const row of response.items) this.#mergeRow(row);
+			this.#publishScope(scope, {
+				loading: false,
+				error: null,
+				nextCursor: response.next_cursor
+			});
 			this.#pruneUnreferencedRecords();
 			scope.backoffMs = this.#cadence.backoffBaseMs;
 			this.#markSuccess();
 		} catch (error) {
 			if (controller.signal.aborted || this.#stopped) return;
 			this.#handleRequestFailure(error);
+			this.#publishScope(scope, {
+				loading: false,
+				error: 'Activity could not be refreshed. Showing the last good results.'
+			});
 			scope.retryCancel = this.#deps.schedule(() => {
 				scope.retryCancel = null;
 				void this.#discover(scope);
@@ -312,6 +364,18 @@ export class JobProgressStore {
 		} finally {
 			if (scope.inFlight === controller) scope.inFlight = null;
 		}
+	}
+
+	#publishScope(scope: ScopeState, update: Partial<Omit<ScopeView, 'key' | 'jobIds'>>): void {
+		const previous = this.scopeViews.get(scope.key);
+		this.scopeViews.set(scope.key, {
+			key: scope.key,
+			jobIds: [...scope.jobIds],
+			loading: update.loading ?? previous?.loading ?? false,
+			error: update.error === undefined ? (previous?.error ?? null) : update.error,
+			nextCursor:
+				update.nextCursor === undefined ? (previous?.nextCursor ?? null) : update.nextCursor
+		});
 	}
 
 	// ---- event stream ------------------------------------------------------
@@ -473,7 +537,7 @@ export class JobProgressStore {
 			snapshot: existing?.snapshot ?? null,
 			progress: existing?.progress ?? row.progress ?? null,
 			progressSequence: existing?.progressSequence ?? row.progress?.sequence ?? 0,
-			fenceToken: existing?.fenceToken ?? null,
+			fenceToken: row.fence_token,
 			partition,
 			freshness: partition === 'history' ? 'terminal' : 'live',
 			updatedAt: this.#deps.now()

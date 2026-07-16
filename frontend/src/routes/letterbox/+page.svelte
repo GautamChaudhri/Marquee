@@ -1,33 +1,23 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
-	import { browser } from '$app/environment';
+	import { untrack } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { toast } from '$lib/toast';
 	import { bytesH } from '$lib/display';
 	import { analyzeAll, detectLetterboxTvLibrary, getLetterboxSummary } from '$lib/api/letterbox';
-	import { listJobs, cancelJob, type JobSnapshot } from '$lib/api/jobs';
-	import { trackJob } from '$lib/jobs';
+	import FeatureActivityPanel from '$lib/activity/components/FeatureActivityPanel.svelte';
 	import SectionHeader from '$lib/components/SectionHeader.svelte';
 	import AspectRatioBar from '$lib/components/letterbox/AspectRatioBar.svelte';
 
 	let { data } = $props();
 
-	let summary = $state(data.summary);
-	let error = $state(data.error);
+	let summary = $state(untrack(() => data.summary));
+	let error = $state(untrack(() => data.error));
 
 	// Batch Detection State
 	let movieDetecting = $state(false);
 	let tvDetecting = $state(false);
 	let tvExhaustive = $state(false);
-	let activeTvJobId = $state<string | null>(null);
-	let tvProgress = $state(0);
-	let tvProgressDone = $state(0);
-	let tvProgressTotal = $state(0);
-	let tvJobStatus = $state<string | null>(null);
-	let trackStop = $state<(() => void) | null>(null);
-
-	// Poll summary data periodically (every 10s) to keep it fresh
-	let pollInterval: ReturnType<typeof setInterval>;
+	let initiatedJobIds = $state<string[]>([]);
 
 	async function refreshSummary() {
 		try {
@@ -44,66 +34,14 @@
 		}
 	}
 
-	onMount(() => {
-		pollInterval = setInterval(refreshSummary, 10000);
+	function bindJob(jobId: string) {
+		if (!initiatedJobIds.includes(jobId)) initiatedJobIds = [...initiatedJobIds, jobId];
+	}
 
-		// Check for active TV detection job on mount
-		void (async () => {
-			try {
-				const { jobs } = await listJobs(fetch, {
-					type: 'letterbox_detect_tv_batch',
-					active: true,
-					limit: 1
-				});
-				if (jobs.length > 0) {
-					const activeTvJob = jobs[0].job_id;
-					activeTvJobId = activeTvJob;
-					rehydrateTvJob(activeTvJob);
-				}
-			} catch {
-				// Ignore
-			}
-		})();
-
-		return () => {
-			clearInterval(pollInterval);
-			trackStop?.();
-		};
-	});
-
-	function rehydrateTvJob(jobId: string) {
-		tvDetecting = true;
-		tvJobStatus = 'running';
-
-		trackStop?.();
-		trackStop = trackJob<JobSnapshot>(
-			fetch,
-			jobId,
-			{
-				onProgress: (p) => {
-					tvJobStatus = p.status;
-					const progress = p.detail || {};
-					tvProgressDone = Number(progress.children_completed || progress.done || 0);
-					tvProgressTotal = Number(progress.children_total || progress.total || 0);
-					tvProgress = tvProgressTotal > 0 ? (tvProgressDone / tvProgressTotal) * 100 : 0;
-				},
-				onDone: (job) => {
-					tvDetecting = false;
-					activeTvJobId = null;
-					tvJobStatus = job.status;
-					toast('TV Letterbox detection completed successfully!', 'good');
-					void refreshSummary();
-				},
-				onError: (msg) => {
-					toast(`TV detection job error: ${msg}`, 'bad');
-					tvDetecting = false;
-					activeTvJobId = null;
-				}
-			},
-			{
-				eventsUrl: `/api/jobs/${jobId}/snapshot`
-			}
-		);
+	function handleJobSettled() {
+		movieDetecting = false;
+		tvDetecting = false;
+		void refreshSummary();
 	}
 
 	async function startMovieDetect() {
@@ -111,10 +49,8 @@
 		movieDetecting = true;
 		try {
 			const ref = await analyzeAll(fetch);
+			bindJob(ref.job_id);
 			toast('Started movie letterbox scan...', 'good');
-			if (browser) {
-				localStorage.setItem('letterbox:batch', ref.job_id);
-			}
 			void goto('/letterbox/movies');
 		} catch (e) {
 			toast(e instanceof Error ? e.message : 'Failed to start movie scan', 'bad');
@@ -126,31 +62,13 @@
 	async function startTvDetect() {
 		if (tvDetecting) return;
 		tvDetecting = true;
-		tvProgress = 0;
-		tvProgressDone = 0;
-		tvProgressTotal = 0;
 		try {
 			const ref = await detectLetterboxTvLibrary(fetch, { exhaustive: tvExhaustive });
-			activeTvJobId = ref.job_id;
+			bindJob(ref.job_id);
 			toast(`Started TV letterbox scan (${tvExhaustive ? 'exhaustive' : 'triage'})...`, 'good');
-			rehydrateTvJob(ref.job_id);
 		} catch (e) {
 			toast(e instanceof Error ? e.message : 'Failed to start TV scan', 'bad');
 			tvDetecting = false;
-		}
-	}
-
-	async function stopTvDetect() {
-		if (!activeTvJobId) return;
-		try {
-			await cancelJob(fetch, activeTvJobId);
-			toast('TV letterbox scan cancellation requested', 'info');
-			trackStop?.();
-			tvDetecting = false;
-			activeTvJobId = null;
-			void refreshSummary();
-		} catch (e) {
-			toast(e instanceof Error ? e.message : 'Failed to cancel TV scan', 'bad');
 		}
 	}
 </script>
@@ -164,6 +82,13 @@
 		title="Letterbox Management"
 		subtitle="Detect, tag, and reencode black bar borders to recover screen real estate."
 	/>
+	<FeatureActivityPanel
+		scopeKey="feature:letterbox:overview"
+		query={{ feature_area: 'letterbox' }}
+		jobIds={initiatedJobIds}
+		heading="Letterbox activity"
+		onSettled={handleJobSettled}
+	/>
 
 	{#if error}
 		<div class="error-banner">
@@ -173,28 +98,6 @@
 	{/if}
 
 	{#if summary}
-		<!-- Active TV Job Progress Overlay/Banner -->
-		{#if tvDetecting}
-			<div class="progress-card glass-panel animate-fade-in">
-				<div class="progress-header">
-					<div class="progress-title-group">
-						<span class="spinner"></span>
-						<div class="progress-details">
-							<h3>TV Letterbox Detection Active</h3>
-							<p class="progress-subtitle">
-								Status: <strong class="capitalize">{tvJobStatus || 'running'}</strong> · {tvProgressDone}
-								/ {tvProgressTotal} shows processed
-							</p>
-						</div>
-					</div>
-					<button class="btn btn-bad btn-sm" onclick={stopTvDetect}>Cancel Run</button>
-				</div>
-				<div class="progress-bar-container">
-					<div class="progress-bar-fill" style={`width: ${tvProgress}%`}></div>
-				</div>
-			</div>
-		{/if}
-
 		<!-- workflow funnels C2 -->
 		<div class="funnel-container">
 			<!-- Movies Funnel -->
@@ -603,58 +506,6 @@
 			box-shadow 0.2s ease;
 	}
 
-	/* Progress card */
-	.progress-card {
-		border-left: 4px solid var(--good);
-		display: flex;
-		flex-direction: column;
-		gap: 12px;
-	}
-	.progress-header {
-		display: flex;
-		justify-content: space-between;
-		align-items: center;
-	}
-	.progress-title-group {
-		display: flex;
-		align-items: center;
-		gap: 12px;
-	}
-	.progress-details h3 {
-		margin: 0;
-		font-size: 15px;
-		font-weight: 600;
-		color: var(--text);
-	}
-	.progress-subtitle {
-		margin: 2px 0 0 0;
-		font-size: 12px;
-		color: var(--muted);
-	}
-	.progress-bar-container {
-		height: 6px;
-		background: var(--ink3);
-		border-radius: 3px;
-		overflow: hidden;
-		width: 100%;
-	}
-	.progress-bar-fill {
-		height: 100%;
-		background: var(--good);
-		border-radius: 3px;
-		transition: width 0.3s ease;
-	}
-
-	/* Spinner */
-	.spinner {
-		width: 20px;
-		height: 20px;
-		border: 2px solid var(--line);
-		border-top: 2px solid var(--good);
-		border-radius: 50%;
-		animation: spin 1s linear infinite;
-		display: inline-block;
-	}
 	.spinner-sm {
 		width: 12px;
 		height: 12px;
@@ -1072,11 +923,6 @@
 	.btn-outline:hover {
 		background: var(--ink2);
 	}
-	.btn-bad {
-		background: var(--bad);
-		color: white;
-		border-color: color-mix(in srgb, var(--bad) 80%, black);
-	}
 	.btn-sm {
 		padding: 4px 8px;
 		font-size: 11px;
@@ -1138,9 +984,5 @@
 	.entrypoint-btn:hover .arrow {
 		transform: translateX(4px);
 		color: var(--text);
-	}
-
-	.capitalize {
-		text-transform: capitalize;
 	}
 </style>

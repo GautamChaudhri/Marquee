@@ -1,9 +1,10 @@
 <script lang="ts">
 	import { goto, invalidateAll } from '$app/navigation';
+	import FeatureActivityPanel from '$lib/activity/components/FeatureActivityPanel.svelte';
+	import type { JobSnapshotResponse } from '$lib/activity/types';
 	import SectionHeader from '$lib/components/SectionHeader.svelte';
 	import PosterThumb from '$lib/components/PosterThumb.svelte';
 	import StatusDot from '$lib/components/StatusDot.svelte';
-	import RunProgress from '$lib/components/RunProgress.svelte';
 	import {
 		deleteSeasonPoster,
 		deleteSeriesPoster,
@@ -17,7 +18,6 @@
 		type SeriesTextProfileSelection
 	} from '$lib/api/text-profiles';
 	import { posterStatusFromSummary, posterStatusMeta, toneVar } from '$lib/display';
-	import { trackJob, type JobProgressDetail } from '$lib/jobs';
 	import { toast } from '$lib/toast';
 	import type { PageData } from './$types';
 
@@ -25,8 +25,7 @@
 
 	const series = $derived(data.series);
 	let running = $state(false);
-	let runStatus = $state('running');
-	let runDetail = $state<JobProgressDetail>({});
+	let initiatedJobIds = $state<string[]>([]);
 	let deleting = $state<string | null>(null);
 	let savingProfiles = $state(false);
 	// svelte-ignore state_referenced_locally
@@ -55,24 +54,12 @@
 	async function startRun(include: 'all_missing' | 'show' | 'seasons', seasonIds?: number[]) {
 		if (!series || running) return;
 		running = true;
-		runStatus = 'running';
-		runDetail = {};
 		try {
 			const job = await runSeries(fetch, series.id, {
 				include,
 				season_ids: seasonIds?.length ? seasonIds : undefined
 			});
-			trackJob(fetch, job.job_id, {
-				onProgress: ({ status, detail }) => {
-					runStatus = status;
-					runDetail = detail;
-				},
-				onDone: async (snapshot) => {
-					running = false;
-					toast(`Series run ${snapshot.status}`, snapshot.status === 'succeeded' ? 'good' : 'bad');
-					await invalidateAll();
-				}
-			});
+			initiatedJobIds = [...initiatedJobIds, job.job_id];
 		} catch (e) {
 			running = false;
 			toast(e instanceof Error ? e.message : 'Failed to start run', 'bad');
@@ -83,7 +70,8 @@
 		if (!series) return;
 		deleting = 'show';
 		try {
-			await deleteSeriesPoster(fetch, series.id);
+			const job = await deleteSeriesPoster(fetch, series.id);
+			initiatedJobIds = [...initiatedJobIds, job.job_id];
 			toast('Show poster reset queued', 'good');
 		} catch (e) {
 			toast(e instanceof Error ? e.message : 'Failed to delete show poster', 'bad');
@@ -95,7 +83,8 @@
 	async function removeSeasonPoster(seasonId: number) {
 		deleting = `season:${seasonId}`;
 		try {
-			await deleteSeasonPoster(fetch, seasonId);
+			const job = await deleteSeasonPoster(fetch, seasonId);
+			initiatedJobIds = [...initiatedJobIds, job.job_id];
 			toast('Season poster reset queued', 'good');
 		} catch (e) {
 			toast(e instanceof Error ? e.message : 'Failed to delete season poster', 'bad');
@@ -106,11 +95,21 @@
 
 	async function fallbackToShowPoster(seasonId: number) {
 		try {
-			await useShowPoster(fetch, seasonId);
+			const job = await useShowPoster(fetch, seasonId);
+			initiatedJobIds = [...initiatedJobIds, job.job_id];
 			toast('Show poster deployment queued', 'good');
 		} catch (e) {
 			toast(e instanceof Error ? e.message : 'Failed to use show poster', 'bad');
 		}
+	}
+
+	async function handleJobSettled(snapshot: JobSnapshotResponse) {
+		running = false;
+		toast(
+			`${snapshot.label} ${snapshot.status.label.toLowerCase()}`,
+			snapshot.status.outcome === 'succeeded' ? 'good' : 'bad'
+		);
+		await invalidateAll();
 	}
 
 	async function saveProfiles() {
@@ -140,6 +139,13 @@
 	<SectionHeader
 		title={series.title}
 		subtitle={`${series.year ?? '—'} · ${series.downloaded_seasons} downloaded seasons`}
+	/>
+	<FeatureActivityPanel
+		scopeKey={`feature:television:posters:${series.id}`}
+		query={{ feature_area: 'ai_posters' }}
+		jobIds={initiatedJobIds}
+		heading="Television poster activity"
+		onSettled={handleJobSettled}
 	/>
 
 	<div class="layout">
@@ -186,9 +192,6 @@
 					</button>
 				{/if}
 			</div>
-			{#if running}
-				<RunProgress detail={runDetail} status={runStatus} title="Running TV pipeline" />
-			{/if}
 		</aside>
 
 		<div class="pane">

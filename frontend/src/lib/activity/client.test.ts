@@ -3,6 +3,8 @@ import type { Fetch } from '../api/client';
 import {
 	bulkJobActions,
 	cancelJob,
+	getOperations,
+	getOperationsHistory,
 	getPresentation,
 	getRawDocument,
 	getSnapshot,
@@ -88,6 +90,45 @@ describe('read wrappers hit the canonical bounded routes', () => {
 		]);
 		expect(rec.every((r) => r.method === 'GET')).toBe(true);
 	});
+
+	it('keeps Operations snapshot and history on separate bounded routes', async () => {
+		const rec: Recorded[] = [];
+		await getOperations(stub({ version: 1 }, rec));
+		await getOperationsHistory(stub({ points: [] }, rec), {
+			window: '6h',
+			resolution: 120
+		});
+		expect(rec.map((r) => r.url)).toEqual([
+			'/api/system/operations',
+			'/api/system/metrics/history?window=6h&resolution=120'
+		]);
+	});
+
+	it('aborts hidden Operations work', async () => {
+		const controller = new AbortController();
+		const waitingFetch = ((_: unknown, init?: RequestInit) =>
+			new Promise<Response>((_, reject) => {
+				init?.signal?.addEventListener('abort', () =>
+					reject(new DOMException('operations hidden', 'AbortError'))
+				);
+			})) as unknown as Fetch;
+		const request = getOperations(waitingFetch, controller.signal);
+		controller.abort();
+		await expect(request).rejects.toMatchObject({ name: 'AbortError' });
+	});
+
+	it('tears down an in-flight diagnostic request when its panel aborts', async () => {
+		const controller = new AbortController();
+		const waitingFetch = ((_: unknown, init?: RequestInit) =>
+			new Promise<Response>((_, reject) => {
+				init?.signal?.addEventListener('abort', () =>
+					reject(new DOMException('panel hidden', 'AbortError'))
+				);
+			})) as unknown as Fetch;
+		const request = listEvents(waitingFetch, 'j1', { limit: 100 }, controller.signal);
+		controller.abort();
+		await expect(request).rejects.toMatchObject({ name: 'AbortError' });
+	});
 });
 
 describe('command wrappers post the fence-guarded body', () => {
@@ -108,12 +149,12 @@ describe('command wrappers post the fence-guarded body', () => {
 		}
 	});
 
-	it('setJobPriority PATCHes priority with the fence token', async () => {
+	it('setJobPriority POSTs priority with the fence token', async () => {
 		const rec: Recorded[] = [];
 		await setJobPriority(stub(commandBody, rec), 'j1', 5, 9);
 		expect(rec[0]).toEqual({
 			url: '/api/jobs/j1/priority',
-			method: 'PATCH',
+			method: 'POST',
 			body: { priority: 5, expected_fence_token: 9 }
 		});
 	});

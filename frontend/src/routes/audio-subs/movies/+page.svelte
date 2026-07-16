@@ -1,5 +1,7 @@
-<!-- eslint-disable @typescript-eslint/no-explicit-any -->
 <script lang="ts">
+	import { untrack } from 'svelte';
+	import { invalidateAll } from '$app/navigation';
+	import FeatureActivityPanel from '$lib/activity/components/FeatureActivityPanel.svelte';
 	import SectionHeader from '$lib/components/SectionHeader.svelte';
 	import SubtitleMovieList from '$lib/components/subtitles/SubtitleMovieList.svelte';
 	import { scanLibrarySubtitles } from '$lib/api/subtitles';
@@ -7,8 +9,9 @@
 
 	let { data } = $props();
 
-	let movies = $state(data.movies?.items || []);
+	let movies = $state(untrack(() => data.movies?.items || []));
 	let scanningLibrary = $state(false);
+	let initiatedJobIds = $state<string[]>([]);
 
 	$effect(() => {
 		if (data.movies?.items) {
@@ -19,10 +22,13 @@
 	async function triggerLibraryScan() {
 		scanningLibrary = true;
 		try {
-			await scanLibrarySubtitles(fetch, false);
+			const job = await scanLibrarySubtitles(fetch, false);
+			if (!initiatedJobIds.includes(job.job_id)) {
+				initiatedJobIds = [...initiatedJobIds, job.job_id];
+			}
 			toast('Library subtitle scan job enqueued', 'good');
-		} catch (e: any) {
-			toast(e.message || 'Failed to enqueue library scan job', 'bad');
+		} catch (e: unknown) {
+			toast(e instanceof Error ? e.message : 'Failed to enqueue library scan job', 'bad');
 		} finally {
 			scanningLibrary = false;
 		}
@@ -44,6 +50,13 @@
 		title="Movie Subtitle Inventory"
 		subtitle="Manage container embedded and external audio and subtitle tracks for films."
 		action={pageActions}
+	/>
+	<FeatureActivityPanel
+		scopeKey="feature:audio-subtitles:movies"
+		query={{ feature_area: 'audio_subtitles', subject_kind: 'movie' }}
+		jobIds={initiatedJobIds}
+		heading="Movie subtitle activity"
+		onSettled={() => invalidateAll()}
 	/>
 
 	{#if data.error}

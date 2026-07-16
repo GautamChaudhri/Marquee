@@ -9,6 +9,7 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 from marquee.core import system_metrics
+from marquee.core.jobs.pgqueuer_gateway import pgqueuer_gateway
 from marquee.main import app
 from marquee.models import Job, SystemMetricsSample
 
@@ -128,3 +129,60 @@ def test_fmt_uptime():
     assert system_metrics._fmt_uptime(90) == "1m"
     assert system_metrics._fmt_uptime(3 * 3600 + 5 * 60) == "3h 5m"
     assert system_metrics._fmt_uptime(2 * 86400 + 3 * 3600) == "2d 3h 0m"
+
+
+@pytest.mark.asyncio
+async def test_operations_snapshot_is_typed_bounded_and_payload_free(
+    db, client: AsyncClient, monkeypatch
+):
+    monkeypatch.setattr(
+        system_metrics,
+        "collect",
+        lambda _path: {
+            "cpu": {"model": "Synthetic CPU", "avg": 12, "temp": 40},
+            "gpu": None,
+            "gpus": [],
+            "ram": {"used": 20, "total": 100, "pct": 20},
+            "disk": {"used": 30, "total": 100, "pct": 30, "readBytes": 1, "writeBytes": 2},
+            "net": {"bytesRecv": 3, "bytesSent": 4},
+            "uptime": "1h 2m",
+        },
+    )
+
+    async def queue_statistics(_db):
+        return []
+
+    monkeypatch.setattr(pgqueuer_gateway, "queue_statistics", queue_statistics)
+
+    response = await client.get("/api/system/operations")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["version"] == 1
+    assert body["node"]["cpu_model"] == "Synthetic CPU"
+    assert set(body) == {
+        "version",
+        "generated_at",
+        "node",
+        "workers",
+        "transport",
+        "database",
+        "events",
+        "storage",
+        "contracts",
+    }
+    serialized = response.text.lower()
+    assert "payload" not in serialized
+    assert "request" not in serialized
+    assert "result" not in serialized
+
+    schema = (await client.get("/openapi.json")).json()
+    operation = schema["paths"]["/api/system/operations"]["get"]
+    assert operation["responses"]["200"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/OperationsSnapshot"
+    }
+
+
+@pytest.mark.asyncio
+async def test_operations_history_rejects_unbounded_window(client: AsyncClient):
+    response = await client.get("/api/system/metrics/history", params={"window": "all"})
+    assert response.status_code == 422

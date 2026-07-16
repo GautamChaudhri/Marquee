@@ -1,4 +1,5 @@
 <script lang="ts">
+	import FeatureActivityPanel from '$lib/activity/components/FeatureActivityPanel.svelte';
 	import TabBar from '$lib/components/TabBar.svelte';
 	import SectionHeader from '$lib/components/SectionHeader.svelte';
 	import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
@@ -22,6 +23,7 @@
 	let masterResetConfirm = $state(false);
 	let clearOcrDialogOpen = $state(false);
 	let clearOcrBusy = $state(false);
+	let initiatedJobIds = $state<string[]>([]);
 
 	// ── Derived ──────────────────────────────────────────────────────
 	let currentValues = $derived({ ...config?.values, ...dirty });
@@ -109,8 +111,11 @@
 	async function handleReset() {
 		resetBusy = true;
 		try {
-			await resetDeployedPosters(fetch);
-			toast('Poster reset queued; progress is available in Jobs.', 'good');
+			const job = await resetDeployedPosters(fetch);
+			if (!initiatedJobIds.includes(job.job_id)) {
+				initiatedJobIds = [...initiatedJobIds, job.job_id];
+			}
+			toast('Poster reset queued.', 'good');
 		} catch (e) {
 			toast(e instanceof Error ? e.message : 'Reset failed', 'bad');
 		} finally {
@@ -146,6 +151,12 @@
 	<SectionHeader
 		title="Pipeline settings"
 		subtitle="Tune every knob of the poster pipeline. Changes apply on the next run — no restart needed."
+	/>
+	<FeatureActivityPanel
+		scopeKey="feature:settings:poster-reset"
+		query={{ feature_area: 'ai_posters' }}
+		jobIds={initiatedJobIds}
+		heading="Poster reset activity"
 	/>
 
 	{#if error}

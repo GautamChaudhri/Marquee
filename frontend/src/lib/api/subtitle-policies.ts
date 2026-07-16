@@ -1,7 +1,8 @@
 import { env } from '$env/dynamic/public';
+import type { JobSubmissionResponse } from '$lib/activity/types';
 import { apiGet, apiSend, type Fetch } from './client';
 import { mockPolicies } from './mock';
-import type { SubtitlePolicy, PolicyAuditResult } from './types';
+import type { SubtitlePolicy } from './types';
 
 const useMocks = () => env.PUBLIC_USE_MOCKS === 'true';
 
@@ -69,52 +70,19 @@ export function deletePolicy(fetch: Fetch, id: number): Promise<{ deleted: numbe
 export function auditPolicy(
 	fetch: Fetch,
 	id: number,
-	movieIds: number[]
-): Promise<PolicyAuditResult> {
+	scope: 'all' | 'movies' | 'tv' = 'all'
+): Promise<JobSubmissionResponse> {
 	if (useMocks()) {
 		return Promise.resolve({
-			policy_id: id,
-			total_removals: 2,
-			items: [
-				{
-					movie_id: movieIds[0] ?? 1,
-					media_file_id: `mf-${movieIds[0] ?? 1}`,
-					removals: 1,
-					protected: 1,
-					review_required: 0,
-					warnings: [],
-					coverage_before: {
-						audio_languages: ['en'],
-						full_dialogue_languages: ['en', 'fr'],
-						forced_only_languages: [],
-						sdh_languages: [],
-						commentary_present: false,
-						external_present: false,
-						embedded_present: true,
-						generated_present: false,
-						unknown_present: false,
-						missing_preferred_languages: [],
-						track_count: 2
-					},
-					coverage_after: {
-						audio_languages: ['en'],
-						full_dialogue_languages: ['en'],
-						forced_only_languages: [],
-						sdh_languages: [],
-						commentary_present: false,
-						external_present: false,
-						embedded_present: true,
-						generated_present: false,
-						unknown_present: false,
-						missing_preferred_languages: [],
-						track_count: 1
-					}
-				}
-			]
+			detail_url: `/api/jobs/job-mock-policy-audit-${id}`,
+			disposition: 'created',
+			job_id: `job-mock-policy-audit-${id}`,
+			phase: 'queued',
+			snapshot_url: `/api/jobs/job-mock-policy-audit-${id}/snapshot`
 		});
 	}
-	return apiSend<PolicyAuditResult>(fetch, 'POST', `/subtitle-policies/${id}/audit`, {
-		movie_ids: movieIds
+	return apiSend<JobSubmissionResponse>(fetch, 'POST', `/subtitle-policies/${id}/audit`, {
+		scope
 	});
 }
 
@@ -122,16 +90,17 @@ export function applyPolicy(
 	fetch: Fetch,
 	id: number,
 	movieIds: number[]
-): Promise<{ job_id: string; disposition: string; phase: string; snapshot_url: string }> {
+): Promise<JobSubmissionResponse> {
 	if (useMocks()) {
 		return Promise.resolve({
+			detail_url: '/api/jobs/job-mock-policy',
 			job_id: `job-mock-policy-${Date.now()}`,
 			disposition: 'created',
 			phase: 'queued',
 			snapshot_url: '/api/jobs/job-mock-policy/snapshot'
 		});
 	}
-	return apiSend<{ job_id: string; disposition: string; phase: string; snapshot_url: string }>(
+	return apiSend<JobSubmissionResponse>(
 		fetch,
 		'POST',
 		`/subtitle-policies/${id}/apply`,

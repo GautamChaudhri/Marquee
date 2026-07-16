@@ -1,7 +1,5 @@
 import type { PageLoad } from './$types';
 import { getTvMetrics, getTvReviewQueue, getTvRunQueue, getTvSummary } from '$lib/api/pipeline-tv';
-import { listJobs } from '$lib/api/jobs';
-import type { JobListItem } from '$lib/api/jobs';
 import type { PipelineMetrics, TvPipelineSummary, TvReviewQueue, TvRunQueue } from '$lib/api/types';
 
 const EMPTY_SUMMARY: TvPipelineSummary = {
@@ -21,7 +19,7 @@ const EMPTY_SUMMARY: TvPipelineSummary = {
 
 export const load: PageLoad = async ({ fetch }) => {
 	const safe = <T>(p: Promise<T>, fallback: T): Promise<T> => p.catch(() => fallback);
-	const [summary, runQueue, reviewQueue, metrics, activeJob] = await Promise.all([
+	const [summary, runQueue, reviewQueue, metrics] = await Promise.all([
 		safe<TvPipelineSummary>(getTvSummary(fetch), EMPTY_SUMMARY),
 		safe<TvRunQueue>(getTvRunQueue(fetch), { items: [], total: 0 }),
 		safe<TvReviewQueue>(getTvReviewQueue(fetch, { page_size: 200 }), {
@@ -30,13 +28,7 @@ export const load: PageLoad = async ({ fetch }) => {
 			page_size: 200,
 			items: []
 		}),
-		safe<PipelineMetrics | null>(getTvMetrics(fetch, { limit: 500 }), null),
-		safe<JobListItem | null>(
-			listJobs(fetch, { type: 'poster_pipeline_tv_batch', status: 'running', limit: 1 }).then(
-				(r) => r.jobs[0] ?? null
-			),
-			null
-		)
+		safe<PipelineMetrics | null>(getTvMetrics(fetch, { limit: 500 }), null)
 	]);
-	return { summary, runQueue, reviewQueue, metrics, activeJob };
+	return { summary, runQueue, reviewQueue, metrics };
 };

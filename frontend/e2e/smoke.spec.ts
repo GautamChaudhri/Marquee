@@ -15,7 +15,7 @@ test.describe('activity shell smoke', () => {
 		await page.goto('/projection-room');
 		await expect(page.locator('main')).toBeVisible();
 		const results = await new AxeBuilder({ page }).analyze();
-		expect(Array.isArray(results.violations)).toBe(true);
+		expect(results.violations).toEqual([]);
 		await testInfo.attach('axe-violations.json', {
 			body: JSON.stringify(results.violations, null, 2),
 			contentType: 'application/json'

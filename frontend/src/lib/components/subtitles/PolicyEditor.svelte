@@ -1,18 +1,19 @@
-<!-- eslint-disable @typescript-eslint/no-explicit-any svelte/require-each-key -->
 <script lang="ts">
 	import { createPolicy, updatePolicy, auditPolicy, applyPolicy } from '$lib/api/subtitle-policies';
 	import { listMovies } from '$lib/api/library';
-	import type { SubtitlePolicy, PolicyAuditResult } from '$lib/api/types';
+	import type { SubtitlePolicy } from '$lib/api/types';
 	import { toast } from '$lib/toast';
 
 	let {
 		policy,
 		onSave,
-		onCancel
+		onCancel,
+		onJob
 	}: {
 		policy: SubtitlePolicy;
 		onSave: () => void;
 		onCancel: () => void;
+		onJob: (jobId: string) => void;
 	} = $props();
 
 	let isNew = $derived(!policy.id);
@@ -49,7 +50,6 @@
 
 	// Audit & Apply state
 	let auditing = $state(false);
-	let auditResult = $state<PolicyAuditResult | null>(null);
 	let applying = $state(false);
 
 	async function handleSave() {
@@ -94,18 +94,7 @@
 	// Audits policy on the first 10 movies in the library
 	async function runAudit() {
 		auditing = true;
-		auditResult = null;
 		try {
-			// Fetch movies first
-			const libraryRes = await listMovies(fetch, { page_size: 10 });
-			const movieIds = libraryRes.items.map((m) => m.id);
-
-			if (movieIds.length === 0) {
-				toast('No movies found in library to audit', 'info');
-				auditing = false;
-				return;
-			}
-
 			// We need a saved policy to audit, so save/create a temporary policy or use current id
 			if (isNew) {
 				toast('Please save the policy first before running an audit.', 'info');
@@ -113,11 +102,11 @@
 				return;
 			}
 
-			const res = await auditPolicy(fetch, policy.id, movieIds);
-			auditResult = res;
-			toast('Audit dry-run completed', 'good');
-		} catch (e: any) {
-			toast(`Audit failed: ${e.message}`, 'bad');
+			const res = await auditPolicy(fetch, policy.id, 'movies');
+			onJob(res.job_id);
+			toast('Audit dry-run queued', 'good');
+		} catch (e: unknown) {
+			toast(`Audit failed: ${e instanceof Error ? e.message : 'Unknown error'}`, 'bad');
 		} finally {
 			auditing = false;
 		}
@@ -142,9 +131,10 @@
 			const movieIds = libraryRes.items.map((m) => m.id);
 
 			const res = await applyPolicy(fetch, policy.id, movieIds);
-			toast(`Policy batch queued: ${res.job_id}`, 'good');
-		} catch (e: any) {
-			toast(`Failed to apply: ${e.message}`, 'bad');
+			onJob(res.job_id);
+			toast('Policy batch queued', 'good');
+		} catch (e: unknown) {
+			toast(`Failed to apply: ${e instanceof Error ? e.message : 'Unknown error'}`, 'bad');
 		} finally {
 			applying = false;
 		}
@@ -288,47 +278,6 @@
 			<h5>Audit Dry-Run Result</h5>
 			{#if auditing}
 				<div class="audit-loading">Running dry-run audit against library...</div>
-			{:else if auditResult}
-				<div class="audit-summary">
-					<div class="stat">
-						<span class="lbl">Matched Tracks</span>
-						<span class="val text-warn">{auditResult.total_removals}</span>
-					</div>
-					<div class="stat">
-						<span class="lbl">Affected Files</span>
-						<span class="val">{auditResult.items.length}</span>
-					</div>
-				</div>
-				<div class="audit-items-list">
-					{#each auditResult.items as item}
-						<div class="audit-item">
-							<div class="audit-item-head">
-								<strong>Movie ID {item.movie_id}</strong>
-								<span class="removals-badge">-{item.removals} tracks</span>
-							</div>
-							{#if item.warnings?.length > 0}
-								<div class="item-warns">
-									{#each item.warnings as w}
-										<div class="item-warn">⚠️ {w}</div>
-									{/each}
-								</div>
-							{/if}
-							<div class="cov-comp">
-								<div class="cov">
-									Before: {item.coverage_before.full_dialogue_languages.join(', ').toUpperCase() ||
-										'None'}
-								</div>
-								<div class="cov">
-									After: {item.coverage_after.full_dialogue_languages.join(', ').toUpperCase() ||
-										'None'}
-								</div>
-							</div>
-						</div>
-					{/each}
-					{#if auditResult.items.length === 0}
-						<div class="audit-empty">No subtitle tracks match this policy cleanup criteria.</div>
-					{/if}
-				</div>
 			{:else}
 				<div class="audit-placeholder">
 					Save changes and click "Audit" to evaluate this cleanup policy against your library
@@ -525,80 +474,6 @@
 		text-align: center;
 		padding: 32px 0;
 	}
-	.audit-summary {
-		display: grid;
-		grid-template-columns: 1fr 1fr;
-		gap: 10px;
-		margin-bottom: 14px;
-		background: var(--panel);
-		border: 1px solid var(--line);
-		padding: 10px;
-		border-radius: 6px;
-	}
-	.audit-summary .stat {
-		display: flex;
-		flex-direction: column;
-		text-align: center;
-	}
-	.audit-summary .lbl {
-		font-size: 11px;
-		color: var(--muted);
-	}
-	.audit-summary .val {
-		font-size: 16px;
-		font-weight: 700;
-	}
-	.text-warn {
-		color: var(--warn);
-	}
-	.audit-items-list {
-		overflow-y: auto;
-		display: flex;
-		flex-direction: column;
-		gap: 10px;
-		padding-right: 4px;
-	}
-	.audit-item {
-		background: var(--panel);
-		border: 1px solid var(--line);
-		border-radius: 6px;
-		padding: 8px 10px;
-		font-size: 12.5px;
-	}
-	.audit-item-head {
-		display: flex;
-		justify-content: space-between;
-		margin-bottom: 6px;
-	}
-	.removals-badge {
-		background: rgba(239, 83, 80, 0.15);
-		color: #ff7b72;
-		font-size: 10px;
-		font-weight: 700;
-		padding: 1px 5px;
-		border-radius: 3px;
-	}
-	.item-warns {
-		margin-bottom: 6px;
-	}
-	.item-warn {
-		color: var(--warn);
-		font-size: 11px;
-	}
-	.cov-comp {
-		font-size: 11px;
-		color: var(--muted);
-		display: flex;
-		flex-direction: column;
-		gap: 2px;
-	}
-	.audit-empty {
-		text-align: center;
-		padding: 24px 0;
-		color: var(--muted);
-		font-size: 12.5px;
-	}
-
 	/* Buttons */
 	.btn {
 		font-size: 13px;

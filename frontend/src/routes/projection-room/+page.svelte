@@ -1,565 +1,513 @@
 <script lang="ts">
-	import { onDestroy, onMount } from 'svelte';
-	import { browser } from '$app/environment';
-	import { goto } from '$app/navigation';
+	import { onDestroy, onMount, untrack } from 'svelte';
 	import { page } from '$app/state';
-	import { SvelteMap } from 'svelte/reactivity';
-	import SectionHeader from '$lib/components/SectionHeader.svelte';
-	import TabBar from '$lib/components/TabBar.svelte';
-	import RunningJobCard from '$lib/components/RunningJobCard.svelte';
-	import QueuedJobRow from '$lib/components/QueuedJobRow.svelte';
-	import ResourcePoolPanel from '$lib/components/ResourcePoolPanel.svelte';
-	import WorkerHealthPanel from '$lib/components/WorkerHealthPanel.svelte';
-	import HistoryTable from '$lib/components/HistoryTable.svelte';
-	import SystemMetricsPanel from '$lib/components/SystemMetricsPanel.svelte';
 	import {
+		bulkJobActions,
 		cancelJob,
-		getJobDetail,
-		getJobMetrics,
-		isTerminal,
-		listJobs,
+		getActivityAttention,
+		pauseJob,
+		resumeJob,
+		retryJob,
 		setJobPriority
-	} from '$lib/api/jobs';
-	import type { JobListItem, JobMetrics } from '$lib/api/jobs';
-	import { getMetrics, getMetricsHistory } from '$lib/api/system';
-	import type { SystemMetrics, SystemMetricsHistory } from '$lib/api/types';
-	import { jitterMs, trackJob, type JobProgressDetail } from '$lib/jobs';
+	} from '$lib/activity/client';
+	import ActivityAttentionStrip from '$lib/activity/components/ActivityAttentionStrip.svelte';
+	import ActivityDisplayControls from '$lib/activity/components/ActivityDisplayControls.svelte';
+	import ActivityFilters from '$lib/activity/components/ActivityFilters.svelte';
+	import ActivityRow from '$lib/activity/components/ActivityRow.svelte';
+	import { getJobProgressStore } from '$lib/activity/context';
+	import {
+		DEFAULT_ACTIVITY_PREFERENCES,
+		loadActivityPreferences,
+		normalizeActivityPreferences,
+		saveActivityPreferences,
+		type ActivityPreferences
+	} from '$lib/activity/preferences';
+	import type { ActivityAttentionResponse, CommandResponse, JobRow } from '$lib/activity/types';
+	import {
+		activityListQuery,
+		activityParams,
+		activityScopeKey,
+		parseActivityUrl,
+		type ActivityUrlState,
+		type ActivityView
+	} from '$lib/activity/url-state';
+	import SectionHeader from '$lib/components/SectionHeader.svelte';
 	import { toast } from '$lib/toast';
 	import type { PageData } from './$types';
 
 	let { data }: { data: PageData } = $props();
+	const store = getJobProgressStore();
+	let urlState = $derived(parseActivityUrl(page.url.searchParams));
+	let scopeKey = $state('');
+	let attention = $derived<ActivityAttentionResponse | null>(data.attention);
+	let preferences = $state<ActivityPreferences>({ ...DEFAULT_ACTIVITY_PREFERENCES });
+	let attentionController: AbortController | null = null;
+	let attentionTimer: ReturnType<typeof setInterval> | null = null;
+	let popstateHandler: (() => void) | null = null;
+	let selectedIds = $state<string[]>([]);
+	let bulkPriority = $state(50);
+	let bulkBusy = $state(false);
 
-	type Tab = 'live' | 'history' | 'system';
-	let tab = $state<Tab>((page.url.searchParams.get('tab') as Tab) ?? 'live');
-	function setTab(id: string) {
-		tab = id as Tab;
-		// eslint-disable-next-line svelte/prefer-svelte-reactivity -- transient query builder
-		const sp = new URLSearchParams(page.url.searchParams);
-		sp.set('tab', id);
-		goto(`/projection-room?${sp.toString()}`, {
-			replaceState: true,
-			keepFocus: true,
-			noScroll: true
-		});
-	}
-	// ── Live: running jobs (multi-job design/21 pattern) ────────────────────
-	const ACTIVE_KEY = 'marquee:projection-room:activeJobs';
-
-	function readActiveIds(): string[] {
-		if (!browser) return [];
-		try {
-			return JSON.parse(localStorage.getItem(ACTIVE_KEY) ?? '[]');
-		} catch {
-			return [];
-		}
-	}
-	function addActiveId(id: string) {
-		if (!browser) return;
-		// eslint-disable-next-line svelte/prefer-svelte-reactivity -- transient dedup, discarded immediately
-		const ids = new Set(readActiveIds());
-		ids.add(id);
-		localStorage.setItem(ACTIVE_KEY, JSON.stringify([...ids]));
-	}
-	function removeActiveId(id: string) {
-		if (!browser) return;
-		// eslint-disable-next-line svelte/prefer-svelte-reactivity -- transient dedup, discarded immediately
-		const ids = new Set(readActiveIds());
-		ids.delete(id);
-		localStorage.setItem(ACTIVE_KEY, JSON.stringify([...ids]));
-	}
-
-	let trackedJobs = new SvelteMap<
-		string,
-		{ job: JobListItem; detail: JobProgressDetail; status: string }
-	>();
-	// Cleanup callbacks only — never read for rendering, so plain Map is fine.
-	// eslint-disable-next-line svelte/prefer-svelte-reactivity -- non-reactive bookkeeping
-	const stops = new Map<string, () => void>();
-
-	/** Fetch the job's full current snapshot once, seed state from it (never
-	 *  reset to 0%/queued), then resume live tracking through the shared
-	 *  trackJob() engine. Mirrors pipeline/+page.svelte's rehydrateBatch. */
-	async function rehydrateRunningJob(jobId: string) {
-		if (trackedJobs.has(jobId)) return;
-		let snapshot: JobListItem;
-		try {
-			snapshot = await getJobDetail(fetch, jobId);
-			if (isTerminal(snapshot.status)) {
-				removeActiveId(jobId);
-				return;
-			}
-		} catch {
-			removeActiveId(jobId);
-			return;
-		}
-		addActiveId(jobId);
-		trackedJobs.set(jobId, {
-			job: snapshot,
-			detail: (snapshot.progress ?? {}) as JobProgressDetail,
-			status: snapshot.status
-		});
-		const stop = trackJob(
-			fetch,
-			jobId,
-			{
-				onProgress: ({ status, detail }) => {
-					const entry = trackedJobs.get(jobId);
-					if (entry) {
-						trackedJobs.set(jobId, {
-							...entry,
-							status: entry.status === 'cancelling' && status === 'running' ? 'cancelling' : status,
-							detail
-						});
-					}
-				},
-				onDone: () => {
-					stops.get(jobId)?.();
-					stops.delete(jobId);
-					trackedJobs.delete(jobId);
-					removeActiveId(jobId);
-					void refreshTick();
-				}
-			},
-			{ eventsUrl: snapshot.events_url }
-		);
-		stops.set(jobId, stop);
-	}
-
-	async function cancelTracked(jobId: string) {
-		try {
-			await cancelJob(fetch, jobId);
-			const entry = trackedJobs.get(jobId);
-			if (entry) trackedJobs.set(jobId, { ...entry, status: 'cancelling' });
-		} catch {
-			toast('Could not cancel job', 'bad');
-		}
-	}
-
-	// ── Live: queued jobs + resource/worker health (plain periodic refresh —
-	// these don't need their own SSE, just to stay reasonably fresh) ───────
-	// svelte-ignore state_referenced_locally
-	let queuedJobs = $state<JobListItem[]>(data.queued.jobs);
-	// svelte-ignore state_referenced_locally
-	let jobMetrics = $state<JobMetrics>(data.jobMetrics);
-
-	const tabs = $derived([
-		{ id: 'live', label: 'Live', count: trackedJobs.size + queuedJobs.length },
-		{ id: 'history', label: 'History' },
-		{ id: 'system', label: 'System' }
+	const scope = $derived(scopeKey ? (store.scopeViews.get(scopeKey) ?? null) : null);
+	const records = $derived(
+		urlState.view === 'operations'
+			? []
+			: store.recordsForScope(scopeKey).filter((record) => record.partition === urlState.view)
+	);
+	const selectedRecords = $derived(records.filter((record) => selectedIds.includes(record.jobId)));
+	const selectedClasses = $derived([
+		...new Set(selectedRecords.map((record) => record.row?.execution_class).filter(Boolean))
 	]);
 
-	async function refreshTick() {
+	$effect(() => {
+		if (urlState.view === 'operations') {
+			scopeKey = '';
+			return;
+		}
+		const key = activityScopeKey(urlState);
+		scopeKey = key;
+		const handle = untrack(() => store.acquireScope(key, activityListQuery(urlState)));
+		return () => handle.release();
+	});
+
+	function navigate(next: ActivityUrlState, replace = false): void {
+		const url = `/projection-room?${activityParams(next).toString()}`;
+		if (replace) window.history.replaceState(page.state, '', url);
+		else window.history.pushState(page.state, '', url);
+		urlState = next;
+	}
+
+	function setView(view: ActivityView): void {
+		navigate({ ...urlState, view, phase: '', outcome: '', sort: 'default' });
+	}
+
+	function clearFilters(): void {
+		navigate(parseActivityUrl(new URLSearchParams(`view=${urlState.view}`)), true);
+	}
+
+	function changePreferences(next: ActivityPreferences): void {
+		preferences = normalizeActivityPreferences(next);
+		saveActivityPreferences(localStorage, preferences);
+	}
+
+	async function refreshAttention(): Promise<void> {
+		if (document.hidden) return;
+		attentionController?.abort();
+		attentionController = new AbortController();
 		try {
-			const [running, queued, metrics] = await Promise.all([
-				listJobs(fetch, { active: true, limit: 50 }),
-				listJobs(fetch, { queued_only: true, limit: 50 }),
-				getJobMetrics(fetch)
-			]);
-			queuedJobs = queued.jobs;
-			jobMetrics = metrics;
-			for (const j of running.jobs) void rehydrateRunningJob(j.job_id);
+			attention = await getActivityAttention((input, init) =>
+				fetch(input, { ...init, signal: attentionController?.signal })
+			);
 		} catch {
-			/* keep showing stale data on a transient failure */
+			// Preserve the last-good attention summary.
 		}
 	}
 
-	// ── System tab ───────────────────────────────────────────────────────
-	// svelte-ignore state_referenced_locally
-	let hostMetrics = $state<SystemMetrics | null>(data.hostMetrics);
-	let historyWindow = $state<'15m' | '1h' | '6h' | '24h'>('1h');
-	// svelte-ignore state_referenced_locally
-	let hostHistory = $state<SystemMetricsHistory | null>(data.hostHistory);
-	async function refreshHostMetrics() {
+	type LifecycleAction = 'cancel' | 'pause' | 'resume' | 'change_priority' | 'retry';
+	const BULK_ACTIONS: LifecycleAction[] = ['cancel', 'pause', 'resume', 'retry'];
+
+	async function command(
+		row: JobRow,
+		action: LifecycleAction,
+		priority?: number
+	): Promise<CommandResponse> {
 		try {
-			hostMetrics = await getMetrics(fetch);
-		} catch {
-			/* keep stale reading */
+			const response =
+				action === 'cancel'
+					? await cancelJob(fetch, row.job_id, row.fence_token)
+					: action === 'pause'
+						? await pauseJob(fetch, row.job_id, row.fence_token)
+						: action === 'resume'
+							? await resumeJob(fetch, row.job_id, row.fence_token)
+							: action === 'retry'
+								? await retryJob(fetch, row.job_id, row.fence_token)
+								: await setJobPriority(
+										fetch,
+										row.job_id,
+										priority ?? row.priority,
+										row.fence_token
+									);
+			store.track(row.job_id);
+			if (response.replacement_job_id) store.track(response.replacement_job_id);
+			store.refreshScope(scopeKey);
+			void refreshAttention();
+			toast(
+				response.replacement_job_id
+					? 'Retry successor queued. The original terminal record remains unchanged.'
+					: `${response.action} accepted within ${response.execution_class}.`,
+				'good'
+			);
+			return response;
+		} catch (reason) {
+			toast('The job changed before the command could be accepted. Refreshing Activity.', 'bad');
+			store.refreshScope(scopeKey);
+			throw reason;
 		}
 	}
 
-	async function refreshHostHistory() {
+	function select(jobId: string, selected: boolean): void {
+		selectedIds = selected
+			? [...new Set([...selectedIds, jobId])].slice(0, 100)
+			: selectedIds.filter((id) => id !== jobId);
+	}
+
+	async function runBulk(action: LifecycleAction): Promise<void> {
+		if (bulkBusy) return;
+		const eligible = selectedRecords.filter(
+			(record) => record.row?.allowed_actions.includes(action) && record.row != null
+		);
+		if (eligible.length === 0) {
+			toast('None of the selected jobs currently offer that server capability.', 'bad');
+			return;
+		}
+		bulkBusy = true;
 		try {
-			hostHistory = await getMetricsHistory(fetch, { window: historyWindow });
+			const response = await bulkJobActions(fetch, {
+				items: eligible.map((record, index) => ({
+					request_id: `activity-${index}-${record.jobId}`.slice(0, 80),
+					job_id: record.jobId,
+					action,
+					expected_fence_token: record.row!.fence_token,
+					priority: action === 'change_priority' ? bulkPriority : null
+				}))
+			});
+			const succeeded = response.items.filter((item) => item.success);
+			const failed = response.items.filter((item) => !item.success);
+			for (const item of succeeded) {
+				store.track(item.job_id);
+				if (item.response?.replacement_job_id) store.track(item.response.replacement_job_id);
+			}
+			toast(
+				`${succeeded.length} command${succeeded.length === 1 ? '' : 's'} accepted; ${failed.length} conflicted.`,
+				failed.length ? 'bad' : 'good'
+			);
+			selectedIds = failed.map((item) => item.job_id);
+			store.refreshScope(scopeKey);
+			void refreshAttention();
 		} catch {
-			/* keep stale history */
+			toast('Bulk commands could not be submitted. The selection is preserved.', 'bad');
+		} finally {
+			bulkBusy = false;
 		}
 	}
-
-	async function changeHistoryWindow(next: '15m' | '1h' | '6h' | '24h') {
-		historyWindow = next;
-		await refreshHostHistory();
-	}
-
-	async function reprioritize(jobId: string, priority: number) {
-		await setJobPriority(fetch, jobId, priority);
-		await refreshTick();
-	}
-
-	let refreshTimer: ReturnType<typeof setInterval> | null = null;
 
 	onMount(() => {
-		// eslint-disable-next-line svelte/prefer-svelte-reactivity -- transient, local to this callback
-		const seen = new Set<string>();
-		for (const j of data.running.jobs) {
-			seen.add(j.job_id);
-			void rehydrateRunningJob(j.job_id);
-		}
-		for (const id of readActiveIds()) {
-			if (!seen.has(id)) void rehydrateRunningJob(id);
-		}
-		refreshTimer = setInterval(() => {
-			void refreshTick();
-			void refreshHostMetrics();
-			void refreshHostHistory();
-		}, jitterMs(4000));
+		preferences = loadActivityPreferences(localStorage);
+		popstateHandler = () => {
+			urlState = parseActivityUrl(new URL(window.location.href).searchParams);
+		};
+		window.addEventListener('popstate', popstateHandler);
+		void refreshAttention();
+		attentionTimer = setInterval(() => void refreshAttention(), 30_000);
 	});
 
 	onDestroy(() => {
-		if (refreshTimer) clearInterval(refreshTimer);
-		for (const stop of stops.values()) stop();
-	});
-
-	// ── History tab ──────────────────────────────────────────────────────
-	const knownTypes = $derived(
-		[
-			...new Set([...Object.keys(data.byType.by_type), ...data.running.jobs.map((j) => j.type)])
-		].sort()
-	);
-	const RESOURCE_KEYS = [
-		'gpu',
-		'media_read',
-		'media_write',
-		'transcode',
-		'network_external',
-		'maintenance_exclusive'
-	];
-
-	let selectedTypes = $state<Set<string>>(new Set());
-	let statusFilter = $state('');
-	let computeFilter = $state<'all' | 'gpu' | 'cpu_only' | 'other'>('all');
-	let resourceFilter = $state('');
-	let subjectQuery = $state('');
-	let sinceDate = $state('');
-	let untilDate = $state('');
-
-	let historyJobs = $state<JobListItem[]>([]);
-	let historyLoading = $state(false);
-
-	function toggleType(t: string) {
-		// Copy-then-reassign: selectedTypes ($state) is replaced wholesale below,
-		// so the plain-Set reactivity caveat doesn't apply to this local copy.
-		// eslint-disable-next-line svelte/prefer-svelte-reactivity
-		const next = new Set(selectedTypes);
-		if (next.has(t)) next.delete(t);
-		else next.add(t);
-		selectedTypes = next;
-	}
-
-	async function loadHistory() {
-		historyLoading = true;
-		try {
-			const params: Parameters<typeof listJobs>[1] = { limit: 100 };
-			if (selectedTypes.size === 1) params.type = [...selectedTypes][0];
-			if (statusFilter) params.status = statusFilter;
-			if (sinceDate) params.since = Math.floor(new Date(sinceDate).getTime() / 1000);
-			if (untilDate) params.until = Math.floor(new Date(untilDate).getTime() / 1000);
-			const res = await listJobs(fetch, params);
-			let jobs = res.jobs;
-			if (selectedTypes.size > 1) jobs = jobs.filter((j) => selectedTypes.has(j.type));
-			if (computeFilter !== 'all') {
-				jobs = jobs.filter((j) => {
-					const keys = Object.keys(j.resource_request ?? {});
-					if (computeFilter === 'gpu') return keys.includes('gpu');
-					if (computeFilter === 'cpu_only') return keys.length === 0;
-					return keys.length > 0 && !keys.includes('gpu');
-				});
-			}
-			if (resourceFilter) {
-				jobs = jobs.filter((j) => resourceFilter in (j.resource_request ?? {}));
-			}
-			if (subjectQuery.trim()) {
-				const q = subjectQuery.trim().toLowerCase();
-				jobs = jobs.filter((j) =>
-					(j.subject?.title ?? j.subject?.id ?? '').toLowerCase().includes(q)
-				);
-			}
-			historyJobs = jobs;
-		} catch {
-			historyJobs = [];
-		} finally {
-			historyLoading = false;
-		}
-	}
-
-	$effect(() => {
-		// Re-run whenever any filter changes. selectedTypes is always
-		// reassigned to a new Set (never mutated in place), so plain $state
-		// reactivity picks up the change like any other tracked dependency.
-		void selectedTypes;
-		void statusFilter;
-		void computeFilter;
-		void resourceFilter;
-		void sinceDate;
-		void untilDate;
-		void loadHistory();
+		if (popstateHandler) window.removeEventListener('popstate', popstateHandler);
+		attentionController?.abort();
+		if (attentionTimer) clearInterval(attentionTimer);
 	});
 </script>
 
+<svelte:head><title>Activity · Marquee</title></svelte:head>
+
 <SectionHeader
-	title="Projection Room"
-	subtitle="Every job the platform is running, queued, or has run — plus live host metrics."
+	title="Activity"
+	subtitle="Projection Room · durable work, outcomes, and evidence across every Marquee feature."
 />
 
-<TabBar {tabs} active={tab} onSelect={setTab} />
+<ActivityAttentionStrip summary={attention} />
 
-<div class="content">
-	{#if tab === 'live'}
-		<section>
-			<h3>Running ({trackedJobs.size})</h3>
-			{#if trackedJobs.size === 0}
-				<p class="empty">Nothing is running right now.</p>
-			{:else}
-				<div class="running-grid">
-					{#each [...trackedJobs.entries()] as [jobId, t] (jobId)}
-						<RunningJobCard
-							job={t.job}
-							detail={t.detail}
-							status={t.status}
-							onCancel={() => cancelTracked(jobId)}
-						/>
-					{/each}
-				</div>
-			{/if}
-		</section>
+<nav class="views" aria-label="Activity views">
+	{#each [{ id: 'queue', label: 'Queue', detail: 'Running and expected work' }, { id: 'history', label: 'History', detail: 'Completed outcomes' }, { id: 'operations', label: 'Operations', detail: 'Infrastructure diagnostics' }] as item (item.id)}
+		<button
+			type="button"
+			class:active={urlState.view === item.id}
+			aria-current={urlState.view === item.id ? 'page' : undefined}
+			onclick={() => setView(item.id as ActivityView)}
+		>
+			<strong>{item.label}</strong><span>{item.detail}</span>
+		</button>
+	{/each}
+</nav>
 
-		<section>
-			<h3>Queued ({queuedJobs.length})</h3>
-			<div class="panel-box">
-				{#if queuedJobs.length === 0}
-					<p class="empty">Nothing waiting.</p>
-				{:else}
-					{#each queuedJobs as job (job.job_id)}
-						<QueuedJobRow {job} resources={jobMetrics.resources} onPriorityChange={reprioritize} />
-					{/each}
-				{/if}
+{#if urlState.view === 'operations'}
+	{#await import('$lib/activity/components/OperationsView.svelte') then module}
+		<module.default />
+	{:catch}
+		<p class="state error">Operations could not be loaded. Queue and History remain available.</p>
+	{/await}
+{:else}
+	<section class="activity-view" aria-labelledby="activity-view-title">
+		<div class="toolbar">
+			<div>
+				<h2 id="activity-view-title">{urlState.view === 'queue' ? 'Queue' : 'History'}</h2>
+				<p>
+					{urlState.view === 'queue'
+						? 'Attention and running work come first; server ordering is authoritative.'
+						: 'Newest terminal outcomes appear first unless a different server sort is selected.'}
+				</p>
 			</div>
-		</section>
-
-		<div class="two-col">
-			<section>
-				<h3>Resource pools</h3>
-				<ResourcePoolPanel resources={jobMetrics.resources} />
-			</section>
-			<section>
-				<h3>Workers</h3>
-				<div class="panel-box">
-					<WorkerHealthPanel workers={jobMetrics.workers} />
-				</div>
-			</section>
+			<ActivityDisplayControls {preferences} onChange={changePreferences} />
 		</div>
-	{:else if tab === 'history'}
-		<section>
-			<div class="filters">
-				<div class="filter-group">
-					<span class="filter-label">Type</span>
-					<div class="chips">
-						{#each knownTypes as t (t)}
-							<button class="chip" class:on={selectedTypes.has(t)} onclick={() => toggleType(t)}>
-								{t}
-							</button>
-						{/each}
-					</div>
-				</div>
-				<label class="filter-field">
-					<span class="filter-label">Status</span>
-					<select bind:value={statusFilter}>
-						<option value="">Any</option>
-						<option value="succeeded">Succeeded</option>
-						<option value="failed">Failed</option>
-						<option value="cancelled">Cancelled</option>
-						<option value="interrupted">Interrupted</option>
-						<option value="dead_letter">Dead letter</option>
-					</select>
-				</label>
-				<label class="filter-field">
-					<span class="filter-label">Compute</span>
-					<select bind:value={computeFilter}>
-						<option value="all">Any</option>
-						<option value="gpu">GPU</option>
-						<option value="cpu_only">CPU-only</option>
-						<option value="other">Other resource</option>
-					</select>
-				</label>
-				<label class="filter-field">
-					<span class="filter-label">Resource</span>
-					<select bind:value={resourceFilter}>
-						<option value="">Any</option>
-						{#each RESOURCE_KEYS as k (k)}
-							<option value={k}>{k}</option>
-						{/each}
-					</select>
-				</label>
-				<label class="filter-field">
-					<span class="filter-label">Movie / show</span>
-					<input type="text" placeholder="Search title…" bind:value={subjectQuery} />
-				</label>
-				<label class="filter-field">
-					<span class="filter-label">Since</span>
-					<input type="date" bind:value={sinceDate} />
-				</label>
-				<label class="filter-field">
-					<span class="filter-label">Until</span>
-					<input type="date" bind:value={untilDate} />
-				</label>
-			</div>
 
-			{#if Object.keys(data.byType.by_type).length > 0}
-				<div class="stats-strip">
-					{#each Object.entries(data.byType.by_type) as [type, stats] (type)}
-						<span class="stat-chip">
-							<strong>{type}</strong>
-							{(stats.success_rate * 100).toFixed(0)}% success · avg {stats.duration_seconds.avg?.toFixed(
-								0
-							) ?? '—'}s
-						</span>
-					{/each}
-				</div>
-			{/if}
+		<ActivityFilters
+			state={urlState}
+			onApply={(next) => navigate(next, true)}
+			onClear={clearFilters}
+		/>
 
-			<div class="panel-box table-box">
-				{#if historyLoading}
-					<p class="empty">Loading…</p>
-				{:else}
-					<HistoryTable jobs={historyJobs} onRetried={loadHistory} />
+		{#if selectedRecords.length}
+			<div class="bulk" aria-label="Bulk Activity commands">
+				<strong>{selectedRecords.length} selected</strong>
+				{#each BULK_ACTIONS as action (action)}
+					{#if selectedRecords.some((record) => record.row?.allowed_actions.includes(action))}
+						<button type="button" onclick={() => runBulk(action)} disabled={bulkBusy}
+							>{action}</button
+						>
+					{/if}
+				{/each}
+				{#if selectedRecords.some( (record) => record.row?.allowed_actions.includes('change_priority') )}
+					<label>
+						<span
+							>Priority · {selectedClasses.length === 1
+								? selectedClasses[0]
+								: 'mixed classes'}</span
+						>
+						<input bind:value={bulkPriority} type="number" min="0" max="100" step="5" />
+					</label>
+					<button
+						type="button"
+						onclick={() => runBulk('change_priority')}
+						disabled={bulkBusy || selectedClasses.length !== 1}>Set priority</button
+					>
 				{/if}
+				<button type="button" class="quiet" onclick={() => (selectedIds = [])}
+					>Clear selection</button
+				>
 			</div>
-		</section>
-	{:else if tab === 'system'}
-		<section>
-			{#if hostMetrics}
-				<SystemMetricsPanel
-					metrics={hostMetrics}
-					history={hostHistory}
-					window={historyWindow}
-					onWindowChange={changeHistoryWindow}
+		{/if}
+
+		{#if scope?.error}
+			<p class="state warning" role="status">{scope.error}</p>
+		{/if}
+		{#if store.connection === 'reconnecting' || store.connection === 'stale'}
+			<p class="state warning" role="status">
+				Activity is reconnecting. Last-good results stay visible while the server is repaired.
+			</p>
+		{:else if store.connection === 'incompatible'}
+			<p class="state error" role="alert">
+				This Activity client is incompatible with the server contract. Refresh after updating
+				Marquee.
+			</p>
+		{/if}
+
+		<div class="list" class:compact={preferences.density === 'compact'} aria-busy={scope?.loading}>
+			{#each records as record (record.jobId)}
+				<ActivityRow
+					{record}
+					columns={preferences.columns}
+					density={preferences.density}
+					connection={store.connection}
+					selected={selectedIds.includes(record.jobId)}
+					onSelected={(value) => select(record.jobId, value)}
+					onCommand={command}
 				/>
 			{:else}
-				<p class="empty">Host metrics unavailable.</p>
+				{#if scope?.loading}
+					<p class="state">Loading bounded {urlState.view} results…</p>
+				{:else}
+					<div class="empty">
+						<strong
+							>{urlState.view === 'queue' ? 'Nothing is waiting.' : 'No outcomes match.'}</strong
+						>
+						<span>
+							{urlState.view === 'queue'
+								? 'New work will appear here automatically.'
+								: 'Clear filters or start work from a feature page.'}
+						</span>
+					</div>
+				{/if}
+			{/each}
+		</div>
+
+		<div class="pagination">
+			<button type="button" onclick={() => store.refreshScope(scopeKey)} disabled={scope?.loading}>
+				Refresh
+			</button>
+			{#if scope?.nextCursor}
+				<button type="button" onclick={() => store.loadMore(scopeKey)} disabled={scope.loading}>
+					Load more
+				</button>
 			{/if}
-		</section>
-	{/if}
-</div>
+		</div>
+	</section>
+{/if}
 
 <style>
-	.content {
-		display: flex;
-		flex-direction: column;
-		gap: 28px;
-		margin-top: 18px;
-	}
-	section h3 {
-		font-size: 13px;
-		font-weight: 650;
-		color: var(--muted);
-		text-transform: uppercase;
-		letter-spacing: 0.04em;
-		margin: 0 0 10px;
-	}
-	.empty {
-		color: var(--muted);
-		font-size: 13px;
-		margin: 0;
-	}
-	.running-grid {
+	.views {
 		display: grid;
-		grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-		gap: 12px;
+		grid-template-columns: 1fr 1fr minmax(180px, 0.7fr);
+		gap: 8px;
+		margin: 14px 0 18px;
 	}
-	.panel-box {
-		background: var(--panel);
+	.views button {
+		display: grid;
+		gap: 2px;
+		min-width: 0;
+		padding: 11px 13px;
+		text-align: left;
 		border: 1px solid var(--line);
-		border-radius: var(--radius);
-		padding: 10px 14px;
-	}
-	.table-box {
-		padding: 0;
-		overflow: hidden;
-	}
-	.two-col {
-		display: grid;
-		grid-template-columns: 1fr 1fr;
-		gap: 20px;
-	}
-	.filters {
-		display: flex;
-		flex-wrap: wrap;
-		align-items: flex-end;
-		gap: 14px;
-		margin-bottom: 14px;
-	}
-	.filter-field {
-		display: flex;
-		flex-direction: column;
-		gap: 4px;
-	}
-	.filter-group {
-		display: flex;
-		flex-direction: column;
-		gap: 4px;
-	}
-	.filter-label {
-		font-size: 10px;
-		text-transform: uppercase;
-		letter-spacing: 0.05em;
-		color: var(--faint2);
-		font-weight: 700;
-	}
-	select,
-	input[type='text'],
-	input[type='date'] {
-		background: var(--panel2);
-		border: 1px solid var(--line2);
-		border-radius: 7px;
-		color: var(--text);
-		padding: 6px 9px;
-		font-size: 12.5px;
-	}
-	.chips {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 5px;
-		max-width: 480px;
-	}
-	.chip {
-		padding: 3px 9px;
-		border-radius: 99px;
-		border: 1px solid var(--line2);
-		background: var(--panel2);
+		border-radius: var(--radius-sm);
+		background: var(--panel);
 		color: var(--muted);
-		font-size: 11.5px;
 	}
-	.chip.on {
-		background: var(--gold-soft);
+	.views button:last-child {
+		margin-left: 8px;
+	}
+	.views button.active {
 		border-color: var(--gold-deep);
+		background: var(--gold-soft);
 		color: var(--gold);
 	}
-	.stats-strip {
+	.views button.active span {
+		color: var(--text);
+	}
+	.views strong {
+		font-size: 13px;
+	}
+	.views span {
+		color: var(--muted);
+		font-size: 10.5px;
+	}
+	.activity-view {
+		display: grid;
+		gap: 14px;
+	}
+	.toolbar {
+		display: flex;
+		align-items: start;
+		justify-content: space-between;
+		gap: 12px;
+	}
+	.toolbar h2 {
+		margin: 0;
+		font-size: 17px;
+	}
+	.toolbar p {
+		margin: 3px 0 0;
+		color: var(--muted);
+		font-size: 12px;
+	}
+	.list {
+		display: grid;
+		gap: 10px;
+		min-width: 0;
+	}
+	.list > :global(*) {
+		content-visibility: auto;
+		contain-intrinsic-size: auto 280px;
+	}
+	.list.compact {
+		gap: 6px;
+	}
+	.state {
+		margin: 0;
+		padding: 10px 12px;
+		border: 1px solid var(--line);
+		border-radius: var(--radius-sm);
+		color: var(--muted);
+		font-size: 12px;
+	}
+	.state.warning {
+		border-color: color-mix(in srgb, var(--warn) 38%, var(--line));
+	}
+	.state.error {
+		border-color: color-mix(in srgb, var(--bad) 38%, var(--line));
+		color: var(--bad);
+	}
+	.empty {
+		display: grid;
+		gap: 4px;
+		padding: 34px 16px;
+		text-align: center;
+		border: 1px dashed var(--line2);
+		border-radius: var(--radius);
+		color: var(--muted);
+	}
+	.empty strong {
+		color: var(--text);
+	}
+	.pagination {
+		display: flex;
+		justify-content: center;
+		gap: 8px;
+	}
+	.bulk {
 		display: flex;
 		flex-wrap: wrap;
-		gap: 8px;
-		margin-bottom: 14px;
-	}
-	.stat-chip {
-		padding: 5px 10px;
-		border-radius: 8px;
+		align-items: center;
+		gap: 7px;
+		position: sticky;
+		top: 8px;
+		z-index: 4;
+		padding: 9px 10px;
+		border: 1px solid var(--gold-deep);
+		border-radius: var(--radius-sm);
 		background: var(--panel2);
-		border: 1px solid var(--line);
-		font-size: 11.5px;
-		color: var(--muted);
-		font-family: var(--font-mono);
+		box-shadow: 0 8px 24px var(--shadow);
+		font-size: 11px;
 	}
-	.stat-chip strong {
+	.bulk button,
+	.bulk label {
+		min-height: 32px;
+		padding: 6px 9px;
+		border: 1px solid var(--line2);
+		border-radius: 7px;
+		background: var(--panel);
 		color: var(--text);
-		font-family: inherit;
+	}
+	.bulk label {
+		display: inline-flex;
+		align-items: center;
+		gap: 6px;
+		color: var(--muted);
+	}
+	.bulk input {
+		width: 56px;
+		border: 0;
+		background: transparent;
+		color: var(--text);
+	}
+	.bulk .quiet {
+		margin-left: auto;
+		color: var(--muted);
+	}
+	.pagination button {
+		min-height: 36px;
+		padding: 7px 12px;
+		border: 1px solid var(--line2);
+		border-radius: 7px;
+		background: var(--panel);
+		color: var(--text);
+	}
+	@media (max-width: 700px) {
+		.views {
+			grid-template-columns: 1fr 1fr;
+		}
+		.views button:last-child {
+			grid-column: 1 / -1;
+			margin-left: 0;
+		}
+	}
+	@media (max-width: 480px) {
+		.views {
+			grid-template-columns: 1fr;
+		}
+		.views button:last-child {
+			grid-column: auto;
+		}
+		.toolbar {
+			align-items: stretch;
+		}
 	}
 </style>

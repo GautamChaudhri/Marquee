@@ -1,7 +1,8 @@
 <script lang="ts">
-	import { onDestroy } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
+	import FeatureActivityPanel from '$lib/activity/components/FeatureActivityPanel.svelte';
+	import type { JobSnapshotResponse } from '$lib/activity/types';
 	import { deleteMoviePoster } from '$lib/api/library';
 	import { setMovieTextProfile, type TextProfile } from '$lib/api/text-profiles';
 	import { posterStatusMeta, letterboxMeta, toneVar } from '$lib/display';
@@ -16,8 +17,6 @@
 		removeLetterbox
 	} from '$lib/api/letterbox';
 	import { triggerRun, listMovieRuns, getRunResults } from '$lib/api/pipeline';
-	import { trackJob, type JobProgressDetail } from '$lib/jobs';
-	import RunProgress from '$lib/components/RunProgress.svelte';
 	import PosterThumb from '$lib/components/PosterThumb.svelte';
 	import HdrBadge from '$lib/components/HdrBadge.svelte';
 	import StatusDot from '$lib/components/StatusDot.svelte';
@@ -68,9 +67,8 @@
 	let pipeRunning = $state(false);
 	let pipeError = $state<string | null>(null);
 	let pipeRunId = $state<string | null>(null);
-	let pipeDetail = $state<JobProgressDetail>({});
-	let pipeStatus = $state('running');
-	let stopPipe: (() => void) | null = null;
+	let posterJobIds = $state<string[]>([]);
+	let letterboxJobIds = $state<string[]>([]);
 	let runs = $state<PipelineRunSummary[]>([]);
 	let latest = $state<RunResults | null>(null);
 	let posterLoaded = false;
@@ -80,23 +78,10 @@
 		pipeRunning = true;
 		pipeError = null;
 		pipeRunId = null;
-		pipeDetail = {};
-		pipeStatus = 'running';
 		try {
 			const ref = await triggerRun(fetch, movie.id);
 			pipeRunId = ref.job_id;
-			stopPipe?.();
-			stopPipe = trackJob(fetch, ref.job_id, {
-				onProgress: ({ status, detail }) => {
-					pipeStatus = status;
-					pipeDetail = detail;
-				},
-				onDone: (j) => {
-					pipeRunning = false;
-					pipeStatus = j.status;
-					void loadRuns();
-				}
-			});
+			posterJobIds = [...posterJobIds, ref.job_id];
 		} catch (e) {
 			if (e instanceof ApiError && e.status === 409) {
 				const detail = (e.body as { detail?: { message?: string; active_run_id?: string } })
@@ -148,8 +133,9 @@
 		deletingPoster = true;
 		deletePosterError = null;
 		try {
-			await deleteMoviePoster(fetch, movie.id);
-			deletePosterError = 'Poster reset queued; job progress is available in Jobs.';
+			const job = await deleteMoviePoster(fetch, movie.id);
+			posterJobIds = [...posterJobIds, job.job_id];
+			deletePosterError = 'Poster reset queued; progress is shown below.';
 		} catch (e) {
 			deletePosterError = e instanceof Error ? e.message : 'Failed to delete poster';
 		} finally {
@@ -163,7 +149,31 @@
 			loadRuns();
 		}
 	});
-	onDestroy(() => stopPipe?.());
+
+	async function handlePosterJobSettled(snapshot: JobSnapshotResponse) {
+		pipeRunning = false;
+		toast(
+			`${snapshot.label} ${snapshot.status.label.toLowerCase()}`,
+			snapshot.status.outcome === 'succeeded' ? 'good' : 'bad'
+		);
+		await loadRuns();
+	}
+
+	async function handleLetterboxJobSettled(snapshot: JobSnapshotResponse) {
+		lbLoading = false;
+		lbState = undefined;
+		toast(
+			`${snapshot.label} ${snapshot.status.label.toLowerCase()}`,
+			snapshot.status.outcome === 'succeeded' ? 'good' : 'bad'
+		);
+		await loadLb();
+	}
+
+	function bindLetterboxJob(result: unknown) {
+		if (typeof result !== 'object' || result === null || !('job_id' in result)) return;
+		const jobId = (result as { job_id?: unknown }).job_id;
+		if (typeof jobId === 'string') letterboxJobIds = [...letterboxJobIds, jobId];
+	}
 
 	// ── Letterbox ─────────────────────────────────────────────────────────────
 	let lbState = $state<LetterboxDetail | null | undefined>(undefined);
@@ -188,8 +198,8 @@
 		lbLoading = true;
 		lbError = null;
 		try {
-			await detectLetterbox(fetch, movie.id);
-			lbState = await getLetterboxState(fetch, movie.id);
+			const job = await detectLetterbox(fetch, movie.id);
+			bindLetterboxJob(job);
 		} catch (e) {
 			lbError = e instanceof Error ? e.message : 'Detection failed';
 		} finally {
@@ -202,11 +212,13 @@
 		lbLoading = true;
 		lbError = null;
 		try {
-			if (action === 'apply') await applyLetterbox(fetch, movie.id);
+			if (action === 'apply') bindLetterboxJob(await applyLetterbox(fetch, movie.id));
 			else if (action === 'ignore') await ignoreLetterbox(fetch, movie.id);
-			else await removeLetterbox(fetch, movie.id);
-			lbState = undefined;
-			await loadLb();
+			else bindLetterboxJob(await removeLetterbox(fetch, movie.id));
+			if (action === 'ignore') {
+				lbState = undefined;
+				await loadLb();
+			}
 		} catch (e) {
 			lbError = e instanceof Error ? e.message : 'Action failed';
 			lbLoading = false;
@@ -442,9 +454,17 @@
 						</div>
 					{/if}
 
-					{#if pipeRunning}
-						<RunProgress detail={pipeDetail} status={pipeStatus} title="Selecting poster" />
-					{/if}
+					<FeatureActivityPanel
+						scopeKey={`feature:film:posters:${movie.id}`}
+						query={{
+							feature_area: 'ai_posters',
+							subject_kind: 'movie',
+							subject_id: String(movie.id)
+						}}
+						jobIds={posterJobIds}
+						heading="Poster activity"
+						onSettled={handlePosterJobSettled}
+					/>
 
 					{#if latest}
 						<a class="review-summary" href={`/pipeline/runs/${latest.run_id}`}>
@@ -594,6 +614,17 @@
 			{:else if tab === 'letterbox'}
 				<div class="tab-content">
 					<div class="section-label">Letterbox detection</div>
+					<FeatureActivityPanel
+						scopeKey={`feature:film:letterbox:${movie.id}`}
+						query={{
+							feature_area: 'letterbox',
+							subject_kind: 'movie',
+							subject_id: String(movie.id)
+						}}
+						jobIds={letterboxJobIds}
+						heading="Letterbox activity"
+						onSettled={handleLetterboxJobSettled}
+					/>
 
 					{#if lbLoading && lbState === undefined}
 						<div class="empty-state">Loading…</div>

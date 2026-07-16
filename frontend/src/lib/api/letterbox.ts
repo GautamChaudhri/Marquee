@@ -1,12 +1,12 @@
 import { ApiError, apiGet, apiSend, type Fetch } from './client';
+import { confirmMutation } from '$lib/activity/client';
+import type { JobSubmissionResponse } from '$lib/activity/types';
 import type {
 	BatchReencodeResponse,
 	BatchReencodeSettings,
 	LetterboxColumn,
 	LetterboxDetail,
-	LetterboxJobRef,
 	LetterboxStatus,
-	MediaJobSnapshot,
 	ReencodeArtifactList,
 	ReencodeOptions,
 	ReencodePlan,
@@ -14,16 +14,9 @@ import type {
 	LetterboxTvDetail,
 	LetterboxEpisodeDetail,
 	LetterboxSummaryResponse,
-	JobSummary,
 	TvBatchReencodeResponse,
 	TvReplaceReadyResponse
 } from './types';
-import type { JobSnapshot } from './jobs';
-import { cancelJob as cancelCanonicalJob } from './jobs';
-import {
-	confirmJob as confirmCanonicalMediaJob,
-	getMediaJob as getCanonicalMediaJob
-} from './media-jobs';
 
 // ── Single-movie state + actions (also used by the film detail hub) ──────────
 
@@ -43,9 +36,13 @@ export function detectLetterbox(
 	fetchFn: Fetch,
 	movieId: number,
 	options: { thorough?: boolean } = {}
-): Promise<JobSnapshot> {
+): Promise<JobSubmissionResponse> {
 	const suffix = options.thorough ? '?thorough=true' : '';
-	return apiSend<JobSnapshot>(fetchFn, 'POST', `/letterbox/movies/${movieId}/detect${suffix}`);
+	return apiSend<JobSubmissionResponse>(
+		fetchFn,
+		'POST',
+		`/letterbox/movies/${movieId}/detect${suffix}`
+	);
 }
 
 export function applyLetterbox(fetchFn: Fetch, movieId: number): Promise<unknown> {
@@ -75,7 +72,10 @@ export function confirmLetterbox(fetchFn: Fetch, movieId: number): Promise<Lette
 }
 
 /** Reprocess: strip the tag, then re-run frame analysis. Lands back in Staging. */
-export async function reprocessLetterbox(fetchFn: Fetch, movieId: number): Promise<JobSnapshot> {
+export async function reprocessLetterbox(
+	fetchFn: Fetch,
+	movieId: number
+): Promise<JobSubmissionResponse> {
 	await removeLetterbox(fetchFn, movieId);
 	return detectLetterbox(fetchFn, movieId);
 }
@@ -111,8 +111,8 @@ export function scanLibrary(fetchFn: Fetch): Promise<unknown> {
 }
 
 /** Start a batch frame-analysis job over all candidates. Returns the SSE ref. */
-export function analyzeAll(fetchFn: Fetch): Promise<LetterboxJobRef> {
-	return apiSend<LetterboxJobRef>(fetchFn, 'POST', '/letterbox/detect', {
+export function analyzeAll(fetchFn: Fetch): Promise<JobSubmissionResponse> {
+	return apiSend<JobSubmissionResponse>(fetchFn, 'POST', '/letterbox/detect', {
 		all_candidates: true
 	});
 }
@@ -149,52 +149,6 @@ export function batchReencode(
 	});
 }
 
-/** Confirm a planned media job → queues it for the durable worker. */
-export function confirmJob(
-	fetchFn: Fetch,
-	jobId: string
-): Promise<{ job_id: string; status: string }> {
-	return confirmCanonicalMediaJob(fetchFn, jobId);
-}
-
-/** Fetch a media job's current snapshot, including its recorded error (if failed). */
-export async function getMediaJob(fetchFn: Fetch, jobId: string): Promise<MediaJobSnapshot> {
-	const job = await getCanonicalMediaJob(fetchFn, jobId);
-	return {
-		job_id: job.job_id,
-		operation: job.operation,
-		status: job.status,
-		stage: job.progress?.stage ?? null,
-		trigger: 'user',
-		media_file_id: job.media_file_id == null ? null : Number(job.media_file_id),
-		batch_id: null,
-		progress_done: job.progress?.percent ?? 0,
-		progress_total: 100,
-		plan: null,
-		result: job.result,
-		error:
-			job.error && typeof job.error === 'object'
-				? { error: String(job.error.error ?? 'Job failed') }
-				: typeof job.error === 'string'
-					? { error: job.error }
-					: null,
-		input_signature: null,
-		plan_expires_at: null,
-		confirmed_at: null,
-		created_at: job.created_at,
-		updated_at: job.updated_at
-	};
-}
-
-/** Cancel a media job. A planned/queued job is dropped; a running one is asked to stop. */
-export async function cancelJob(
-	fetchFn: Fetch,
-	jobId: string
-): Promise<{ job_id: string; cancel_requested: boolean }> {
-	const snapshot = await cancelCanonicalJob(fetchFn, jobId);
-	return { job_id: snapshot.job_id, cancel_requested: snapshot.cancel_requested };
-}
-
 export function listReencodeArtifacts(
 	fetchFn: Fetch,
 	q: { movie_id?: number; status?: string; series_id?: number; season_number?: number } = {}
@@ -223,25 +177,20 @@ async function planAndConfirmArtifactDecision(
 	fetchFn: Fetch,
 	method: 'POST' | 'DELETE',
 	path: ReencodeDecisionPath
-): Promise<{ job_id: string; status: 'queued' }> {
+): Promise<JobSubmissionResponse> {
 	const plan = await apiSend<ReencodeDecisionPlan>(
 		fetchFn,
 		method,
 		path,
 		method === 'POST' ? {} : undefined
 	);
-	return confirmCanonicalMediaJob(
-		fetchFn,
-		plan.job_id,
-		plan.plan_version,
-		plan.configuration_version
-	);
+	return confirmMutation(fetchFn, plan.job_id, plan.plan_version, plan.configuration_version);
 }
 
 export function replaceOriginal(
 	fetchFn: Fetch,
 	artifactId: number
-): Promise<{ job_id: string; status: 'queued' }> {
+): Promise<JobSubmissionResponse> {
 	return planAndConfirmArtifactDecision(
 		fetchFn,
 		'POST',
@@ -252,7 +201,7 @@ export function replaceOriginal(
 export function restoreOriginal(
 	fetchFn: Fetch,
 	artifactId: number
-): Promise<{ job_id: string; status: 'queued' }> {
+): Promise<JobSubmissionResponse> {
 	return planAndConfirmArtifactDecision(
 		fetchFn,
 		'POST',
@@ -260,10 +209,7 @@ export function restoreOriginal(
 	);
 }
 
-export function deleteArtifact(
-	fetchFn: Fetch,
-	artifactId: number
-): Promise<{ job_id: string; status: 'queued' }> {
+export function deleteArtifact(fetchFn: Fetch, artifactId: number): Promise<JobSubmissionResponse> {
 	return planAndConfirmArtifactDecision(
 		fetchFn,
 		'DELETE',
@@ -320,31 +266,31 @@ export function detectLetterboxTv(
 		force?: boolean;
 		include_open_matte?: boolean;
 	} = {}
-): Promise<LetterboxJobRef> {
-	return apiSend<LetterboxJobRef>(fetchFn, 'POST', `/letterbox/tv/${seriesId}/detect`, body);
+): Promise<JobSubmissionResponse> {
+	return apiSend<JobSubmissionResponse>(fetchFn, 'POST', `/letterbox/tv/${seriesId}/detect`, body);
 }
 
 export function detectLetterboxTvLibrary(
 	fetchFn: Fetch,
 	body: { exhaustive?: boolean; force?: boolean } = {}
-): Promise<LetterboxJobRef> {
-	return apiSend<LetterboxJobRef>(fetchFn, 'POST', '/letterbox/tv/detect', body);
+): Promise<JobSubmissionResponse> {
+	return apiSend<JobSubmissionResponse>(fetchFn, 'POST', '/letterbox/tv/detect', body);
 }
 
 export function applyLetterboxTv(
 	fetchFn: Fetch,
 	seriesId: number,
 	body: { season_number?: number; episode_id?: number; confidence_levels?: string[] } = {}
-): Promise<unknown | JobSummary> {
-	return apiSend(fetchFn, 'POST', `/letterbox/tv/${seriesId}/apply`, body);
+): Promise<JobSubmissionResponse> {
+	return apiSend<JobSubmissionResponse>(fetchFn, 'POST', `/letterbox/tv/${seriesId}/apply`, body);
 }
 
 export function revertLetterboxTv(
 	fetchFn: Fetch,
 	seriesId: number,
 	body: { season_number?: number; episode_id?: number } = {}
-): Promise<unknown | JobSummary> {
-	return apiSend(fetchFn, 'POST', `/letterbox/tv/${seriesId}/revert`, body);
+): Promise<JobSubmissionResponse> {
+	return apiSend<JobSubmissionResponse>(fetchFn, 'POST', `/letterbox/tv/${seriesId}/revert`, body);
 }
 
 export function createTvReencodePlan(
@@ -420,5 +366,3 @@ export function markNotLetterboxedTvEpisode(
 		`/letterbox/tv/${seriesId}/episodes/${episodeId}/mark-not-letterboxed`
 	);
 }
-
-export type { MediaJobSnapshot } from './types';

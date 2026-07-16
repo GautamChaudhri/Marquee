@@ -1,13 +1,12 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
-	import { browser } from '$app/environment';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { SvelteSet } from 'svelte/reactivity';
+	import FeatureActivityPanel from '$lib/activity/components/FeatureActivityPanel.svelte';
+	import type { JobSnapshotResponse } from '$lib/activity/types';
 	import SectionHeader from '$lib/components/SectionHeader.svelte';
 	import TabBar from '$lib/components/TabBar.svelte';
 	import PosterThumb from '$lib/components/PosterThumb.svelte';
-	import RunProgress from '$lib/components/RunProgress.svelte';
 	import MetricsChart from '$lib/components/MetricsChart.svelte';
 	import {
 		approveTvAuto,
@@ -17,8 +16,6 @@
 		runSeries,
 		runTvBatch
 	} from '$lib/api/pipeline-tv';
-	import { getJob, isTerminal } from '$lib/api/jobs';
-	import { trackJob, type JobProgressDetail } from '$lib/jobs';
 	import { toast } from '$lib/toast';
 	import type { PageData } from './$types';
 
@@ -48,16 +45,8 @@
 	let metrics = $state(data.metrics);
 	const selected = new SvelteSet<number>();
 
-	const BATCH_STORAGE_KEY = 'marquee:pipeline:activeTvBatch';
+	let initiatedJobIds = $state<string[]>([]);
 	let batchRunning = $state(false);
-	let batchStatus = $state('running');
-	let batchDetail = $state<JobProgressDetail>({});
-
-	function storeBatchId(id: string | null) {
-		if (!browser) return;
-		if (id) localStorage.setItem(BATCH_STORAGE_KEY, id);
-		else localStorage.removeItem(BATCH_STORAGE_KEY);
-	}
 
 	async function refresh() {
 		try {
@@ -121,20 +110,7 @@
 		try {
 			const job = await runTvBatch(fetch, { scope, series_ids: seriesIds });
 			batchRunning = true;
-			batchStatus = job.phase;
-			storeBatchId(job.job_id);
-			trackJob(fetch, job.job_id, {
-				onProgress: ({ status, detail }) => {
-					batchStatus = status;
-					batchDetail = detail;
-				},
-				onDone: async (snapshot) => {
-					batchRunning = false;
-					storeBatchId(null);
-					toast(`TV batch ${snapshot.status}`, snapshot.status === 'succeeded' ? 'good' : 'bad');
-					await refresh();
-				}
-			});
+			initiatedJobIds = [...new Set([...initiatedJobIds, job.job_id])];
 		} catch (e) {
 			toast(e instanceof Error ? e.message : 'Failed to start TV batch', 'bad');
 		}
@@ -143,53 +119,20 @@
 	async function startOne(seriesId: number) {
 		try {
 			const job = await runSeries(fetch, seriesId, { include: 'all_missing' });
-			trackJob(fetch, job.job_id, {
-				onDone: async (snapshot) => {
-					toast(`Series run ${snapshot.status}`, snapshot.status === 'succeeded' ? 'good' : 'bad');
-					await refresh();
-				}
-			});
+			initiatedJobIds = [...new Set([...initiatedJobIds, job.job_id])];
 		} catch (e) {
 			toast(e instanceof Error ? e.message : 'Failed to run series', 'bad');
 		}
 	}
 
-	async function rehydrate(jobId: string) {
-		const job = await getJob(fetch, jobId).catch(() => null);
-		if (!job) return;
-		if (isTerminal(job.status)) {
-			storeBatchId(null);
-			return;
-		}
-		batchRunning = true;
-		trackJob(
-			fetch,
-			jobId,
-			{
-				onProgress: ({ status, detail }) => {
-					batchStatus = status;
-					batchDetail = detail;
-				},
-				onDone: async () => {
-					batchRunning = false;
-					storeBatchId(null);
-					await refresh();
-				}
-			},
-			{ eventsUrl: job.events_url }
+	async function handleJobSettled(snapshot: JobSnapshotResponse) {
+		batchRunning = false;
+		toast(
+			`TV poster work ${snapshot.status.label.toLowerCase()}`,
+			snapshot.status.outcome === 'succeeded' ? 'good' : 'bad'
 		);
+		await refresh();
 	}
-
-	onMount(() => {
-		if (data.activeJob?.job_id) {
-			void rehydrate(data.activeJob.job_id);
-			return;
-		}
-		if (browser) {
-			const stored = localStorage.getItem(BATCH_STORAGE_KEY);
-			if (stored) void rehydrate(stored);
-		}
-	});
 
 	async function approveAll(seriesId?: number) {
 		try {
@@ -212,18 +155,26 @@
 
 <TabBar {tabs} active={tab} onSelect={setTab} />
 
-{#if batchRunning}
-	<RunProgress detail={batchDetail} status={batchStatus} title="Running TV poster batch" />
-{/if}
+<FeatureActivityPanel
+	scopeKey="feature:pipeline:tv"
+	query={{ feature_area: 'ai_posters', subject_kind: 'series' }}
+	jobIds={initiatedJobIds}
+	heading="TV poster activity"
+	onSettled={handleJobSettled}
+/>
 
 {#if tab === 'run'}
 	<div class="run-head">
-		<button class="btn-gold" onclick={() => startBatch('missing')}>Run all missing</button>
-		<button class="btn-sec" onclick={() => startBatch('all')}>Re-run whole library</button>
+		<button class="btn-gold" onclick={() => startBatch('missing')} disabled={batchRunning}
+			>Run all missing</button
+		>
+		<button class="btn-sec" onclick={() => startBatch('all')} disabled={batchRunning}
+			>Re-run whole library</button
+		>
 		<button
 			class="btn-sec"
 			onclick={() => startBatch('selected', [...selected])}
-			disabled={selected.size === 0}
+			disabled={selected.size === 0 || batchRunning}
 		>
 			Run selected ({selected.size})
 		</button>

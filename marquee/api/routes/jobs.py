@@ -209,6 +209,18 @@ class JobListResponse(BaseModel):
     limit: int
 
 
+class ActivityAttentionResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    running: int
+    waiting_held: int
+    retrying: int
+    needs_attention: int
+    warning: int
+    error: int
+    highest_severity: AttentionLevel
+
+
 _SEVERITY = case(
     (Job.attention.op("->>")("level") == "error", 2),
     (Job.attention.op("->>")("level") == "warning", 1),
@@ -364,6 +376,8 @@ async def list_jobs(
     parent_id: Annotated[str | None, Query(max_length=32)] = None,
     root_id: Annotated[str | None, Query(max_length=32)] = None,
     correlation_id: Annotated[str | None, Query(max_length=64)] = None,
+    worker_id: Annotated[str | None, Query(max_length=100)] = None,
+    execution_class: Annotated[str | None, Query(max_length=80)] = None,
     created_after: int | None = None,
     created_before: int | None = None,
 ):
@@ -400,6 +414,8 @@ async def list_jobs(
         "parent_id": parent_id,
         "root_id": root_id,
         "correlation_id": correlation_id,
+        "worker_id": worker_id,
+        "execution_class": execution_class,
         "created_after": created_after,
         "created_before": created_before,
     }
@@ -445,6 +461,14 @@ async def list_jobs(
         query = query.where(Job.root_id == root_id)
     if correlation_id:
         query = query.where(Job.correlation_id == correlation_id)
+    if worker_id:
+        query = query.where(
+            select(JobAttempt.id)
+            .where(JobAttempt.job_id == Job.id, JobAttempt.worker_node_id == worker_id)
+            .exists()
+        )
+    if execution_class:
+        query = query.where(Job.execution_policy_id == execution_class)
     if created_after:
         query = query.where(Job.created_at >= datetime.fromtimestamp(created_after, UTC))
     if created_before:
@@ -499,6 +523,50 @@ async def list_jobs(
     return JobListResponse(view=view, items=items, next_cursor=next_cursor, limit=limit)
 
 
+@router.get("/attention", response_model=ActivityAttentionResponse)
+async def activity_attention(
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> ActivityAttentionResponse:
+    """Return one bounded aggregate for the Activity strip and navigation badge."""
+    retrying = func.coalesce(Job.progress["wait"]["kind"].as_string() == "retry", False)
+    warning = Job.attention["level"].as_string() == AttentionLevel.WARNING.value
+    error = Job.attention["level"].as_string() == AttentionLevel.ERROR.value
+    active = Job.phase.in_(_QUEUE_PHASES)
+    row = (
+        await db.execute(
+            select(
+                func.count().filter(Job.phase.in_(("running", "stopping"))),
+                func.count().filter(
+                    Job.phase.in_(("planned", "queued")),
+                    ~retrying,
+                ),
+                func.count().filter(active, retrying),
+                func.count().filter(active, or_(warning, error)),
+                func.count().filter(active, warning),
+                func.count().filter(active, error),
+            )
+        )
+    ).one()
+    error_count = int(row[5] or 0)
+    warning_count = int(row[4] or 0)
+    highest = (
+        AttentionLevel.ERROR
+        if error_count
+        else AttentionLevel.WARNING
+        if warning_count
+        else AttentionLevel.NORMAL
+    )
+    return ActivityAttentionResponse(
+        running=int(row[0] or 0),
+        waiting_held=int(row[1] or 0),
+        retrying=int(row[2] or 0),
+        needs_attention=int(row[3] or 0),
+        warning=warning_count,
+        error=error_count,
+        highest_severity=highest,
+    )
+
+
 def _attach_queue_ranks(items: list[JobRow], rows: list[Job]) -> None:
     """Approximate class-local rank for queued rows; never a global promise."""
     queued = [job for job in rows if job.phase == "queued"]
@@ -545,6 +613,7 @@ class JobSnapshotResponse(BaseModel):
     outcome: str | None
     desired_state: str
     fence_token: int
+    execution_class: str
     priority: int
     status: PresentationStatus
     attention: PresentationAttention
@@ -578,6 +647,7 @@ async def _snapshot_for_job(job: Job, db: AsyncSession) -> JobSnapshotResponse:
         outcome=job.outcome,
         desired_state=job.desired_state,
         fence_token=job.fence_token,
+        execution_class=definition.execution_class.value,
         priority=job.priority,
         status=present_status(job),
         attention=present_attention(ctx),
@@ -1261,6 +1331,7 @@ async def list_job_children(
     cursor: str | None = None,
     limit: int = Query(DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
     outcome: str | None = None,
+    sort: Literal["created", "failed_first"] = "failed_first",
 ):
     await _load_job(db, job_id)
     if outcome is not None:
@@ -1269,27 +1340,41 @@ async def list_job_children(
         if outcome not in JOB_OUTCOMES:
             raise _error(422, ERROR_INVALID_FILTER, f"unknown outcome {outcome!r}")
     contract = cursor_contract(
-        view="children", filters={"job_id": job_id, "outcome": outcome}, sort="created"
+        view="children", filters={"job_id": job_id, "outcome": outcome}, sort=sort
     )
-    query = (
-        select(Job)
-        .where(Job.parent_id == job_id)
-        .order_by(Job.created_at.asc(), Job.id.asc())
+    failure_rank = case(
+        (Job.outcome.in_(("failed", "partially_succeeded", "unsafe", "dead_letter")), 0),
+        else_=1,
     )
+    query = select(Job).where(Job.parent_id == job_id)
+    if sort == "failed_first":
+        query = query.order_by(failure_rank.asc(), Job.created_at.asc(), Job.id.asc())
+    else:
+        query = query.order_by(Job.created_at.asc(), Job.id.asc())
     if outcome:
         query = query.where(Job.outcome == outcome)
     if cursor:
         try:
-            created_raw, after_id = decode_cursor(cursor, contract=contract)
+            values = decode_cursor(cursor, contract=contract)
+            if sort == "failed_first":
+                after_rank, created_raw, after_id = values
+                after_rank = int(after_rank)
+            else:
+                created_raw, after_id = values
+                after_rank = None
             created = _parse_cursor_datetime(created_raw, "created_at")
         except (InvalidCursorError, ValueError) as exc:
             raise _error(422, ERROR_INVALID_CURSOR, str(exc)) from None
-        query = query.where(
-            or_(
-                Job.created_at > created,
-                and_(Job.created_at == created, Job.id > after_id),
-            )
+        created_after = or_(
+            Job.created_at > created,
+            and_(Job.created_at == created, Job.id > after_id),
         )
+        if after_rank is None:
+            query = query.where(created_after)
+        else:
+            query = query.where(
+                or_(failure_rank > after_rank, and_(failure_rank == after_rank, created_after))
+            )
     rows = list((await db.scalars(query.limit(limit + 1))).all())
     has_more = len(rows) > limit
     rows = rows[:limit]
@@ -1298,14 +1383,16 @@ async def list_job_children(
         definition = _definition_for(child.type)
         presenter = _presenter_for(definition)
         items.append(presenter.present_row(load_context(child, definition)))
-    next_cursor = (
-        encode_cursor(
-            contract=contract,
-            key=(_cursor_value(rows[-1].created_at), rows[-1].id),
-        )
-        if has_more and rows
-        else None
-    )
+    next_cursor = None
+    if has_more and rows:
+        last = rows[-1]
+        key: tuple[Any, ...] = (_cursor_value(last.created_at), last.id)
+        if sort == "failed_first":
+            key = (
+                0 if last.outcome in {"failed", "partially_succeeded", "unsafe", "dead_letter"} else 1,
+                *key,
+            )
+        next_cursor = encode_cursor(contract=contract, key=key)
     return ChildListResponse(items=items, next_cursor=next_cursor, limit=limit)
 
 
@@ -1549,7 +1636,7 @@ async def resume_job(
     )
 
 
-@router.patch("/{job_id}/priority", response_model=CommandResponse)
+@router.post("/{job_id}/priority", response_model=CommandResponse)
 async def update_job_priority(
     job_id: str,
     body: PriorityUpdateRequest,

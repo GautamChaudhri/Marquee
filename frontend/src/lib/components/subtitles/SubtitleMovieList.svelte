@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
 	import type { MovieListItem } from '$lib/api/types';
 	import SubtitleMovieRow from './SubtitleMovieRow.svelte';
 
@@ -11,7 +12,7 @@
 	} = $props();
 
 	let searchQuery = $state('');
-	let filterStatus = $state<string>(initialFilter);
+	let filterStatus = $state<string>(untrack(() => initialFilter));
 
 	$effect(() => {
 		if (initialFilter) {
