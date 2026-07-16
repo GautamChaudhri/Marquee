@@ -9,6 +9,9 @@
 **Destructive-job presentation bindings:** [JMC5A mutation, artwork, and maintenance](jmc5a-mutation-contracts-artwork-and-maintenance.md),
 [JMC5B audio and subtitle mutations](jmc5b-audio-subtitle-mutations.md), and
 [JMC5C letterbox, HDR, and runtime retirement](jmc5c-letterbox-hdr-and-runtime-retirement.md)
+**Frontend delivery:** [JMC6A shared Activity client and progress](jmc6a-shared-activity-client-and-progress.md)
+and [JMC6B Projection Room and feature pages](jmc6b-projection-room-and-feature-pages.md)
+**Final certification:** [JMC6C zero-green certification and CI](jmc6c-zero-green-certification-and-ci.md)
 
 ## Product decision
 

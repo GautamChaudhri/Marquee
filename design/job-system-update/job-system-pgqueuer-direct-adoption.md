@@ -22,6 +22,9 @@
 **Destructive job plans:** [JMC5A mutation/artwork/maintenance](jmc5a-mutation-contracts-artwork-and-maintenance.md),
 [JMC5B audio/subtitle mutations](jmc5b-audio-subtitle-mutations.md), and
 [JMC5C letterbox/HDR/runtime retirement](jmc5c-letterbox-hdr-and-runtime-retirement.md)
+**Final product/certification plans:** [JMC6A shared Activity client/progress](jmc6a-shared-activity-client-and-progress.md),
+[JMC6B Projection Room/feature pages](jmc6b-projection-room-and-feature-pages.md), and
+[JMC6C zero-green certification/CI](jmc6c-zero-green-certification-and-ci.md)
 
 ## Decision
 

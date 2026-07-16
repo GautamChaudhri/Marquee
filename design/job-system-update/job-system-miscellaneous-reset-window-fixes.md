@@ -6,6 +6,9 @@
 **Related architecture:** [direct PgQueuer adoption](job-system-pgqueuer-direct-adoption.md)
 **Chunk 3 filesystem work:** [JMC3A execution kernel and filesystem safety](jmc3a-execution-kernel-and-filesystem-safety.md)
 **Chunk 3 backup/ingress work:** [JMC3C backup, ingress, and certification](jmc3c-backup-ingress-and-certification.md)
+**Final frontend/test/CI work:** [JMC6A shared Activity client and progress](jmc6a-shared-activity-client-and-progress.md),
+[JMC6B Projection Room and feature pages](jmc6b-projection-room-and-feature-pages.md), and
+[JMC6C zero-green certification and CI](jmc6c-zero-green-certification-and-ci.md)
 
 ## Purpose
 
