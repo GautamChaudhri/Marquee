@@ -1,0 +1,89 @@
+{
+  "base": {
+    "tag": "jmc6a-complete",
+    "commit": "a0355e07515c8cfee77ed7a2e31fc38d340eb445",
+    "tree": "7849db9ab8558d8007d23909c44d6fb6f261e2f7",
+    "parent": "c8413aacc2552301e963084bdcad953b7dc1b78a"
+  },
+  "openapi": {
+    "version": "3.1.0",
+    "path_count": 202,
+    "obsolete_activity_path": "/api/activity",
+    "operations_existing_paths": [
+      "/api/system/status",
+      "/api/system/job-transport",
+      "/api/system/metrics",
+      "/api/system/metrics/history"
+    ],
+    "operations_target": "/api/system/operations",
+    "operations_history": "/api/system/metrics/history",
+    "priority_method_at_base": "patch",
+    "priority_method_target": "post"
+  },
+  "duplicate_activity_ui": [
+    "routes/activity/+page.svelte",
+    "lib/components/Sidebar.svelte",
+    "lib/components/CmdPalette.svelte",
+    "lib/components/TopBar.svelte"
+  ],
+  "projection_room_legacy_components": [
+    "lib/components/RunningJobCard.svelte",
+    "lib/components/QueuedJobRow.svelte",
+    "lib/components/HistoryTable.svelte",
+    "lib/components/ResourcePoolPanel.svelte",
+    "lib/components/WorkerHealthPanel.svelte",
+    "lib/components/SystemMetricsPanel.svelte"
+  ],
+  "job_authority_local_storage": [
+    "routes/projection-room/+page.svelte",
+    "routes/pipeline/tv/+page.svelte",
+    "routes/pipeline/movies/+page.svelte",
+    "routes/letterbox/+page.svelte",
+    "routes/letterbox/movies/+page.svelte",
+    "routes/hdr/movies/[id]/+page.svelte",
+    "routes/audio-subs/movies/[id]/+page.svelte"
+  ],
+  "broad_file_lint_suppressions": [
+    "routes/hdr/movies/+page.svelte",
+    "routes/hdr/tv/[id]/+page.svelte",
+    "routes/hdr/tv/+page.svelte",
+    "lib/components/subtitles/SubgenStatus.svelte",
+    "routes/audio-subs/+page.svelte",
+    "lib/components/subtitles/SubtitleMovieDetail.svelte",
+    "lib/components/subtitles/PolicyList.svelte",
+    "lib/components/subtitles/TrackTable.svelte",
+    "lib/components/subtitles/TrackRow.svelte",
+    "lib/components/subtitles/PolicyEditor.svelte",
+    "lib/components/subtitles/SubgenPanel.svelte",
+    "lib/components/subtitles/SubtitleSettings.svelte",
+    "lib/components/subtitles/SubtitleMovieRow.svelte",
+    "lib/components/subtitles/JobList.svelte",
+    "routes/audio-subs/tv/+page.svelte",
+    "lib/components/Icon.svelte",
+    "routes/audio-subs/movies/+page.svelte",
+    "routes/audio-subs/tv/[id]/+page.svelte",
+    "routes/audio-subs/movies/[id]/+page.svelte"
+  ],
+  "svelte_warning_files": {
+    "lib/components/subtitles/GenerateSubtitlesModal.svelte": 1,
+    "lib/components/subtitles/SubtitleMovieList.svelte": 1,
+    "routes/audio-subs/+page.svelte": 2,
+    "routes/audio-subs/movies/+page.svelte": 1,
+    "routes/audio-subs/tv/[id]/+page.svelte": 3,
+    "routes/letterbox/+page.svelte": 2,
+    "routes/letterbox/tv/+page.svelte": 5,
+    "routes/letterbox/tv/[id]/+page.svelte": 1
+  },
+  "fixture_subject_kinds": [
+    "movie",
+    "series",
+    "season",
+    "episode",
+    "media_file",
+    "track",
+    "poster_generation",
+    "model_profile_training",
+    "maintenance",
+    "batch"
+  ]
+}

@@ -32,7 +32,6 @@
 	};
 </script>
 
-<!-- eslint-disable svelte/no-at-html-tags -- P is a static internal icon table, no user input -->
 <svg
 	width={size}
 	height={size}
@@ -42,5 +41,8 @@
 	stroke-width={stroke}
 	stroke-linecap="round"
 	stroke-linejoin="round"
-	aria-hidden="true">{@html P[name] ?? ''}</svg
+	aria-hidden="true"
 >
+	<!-- eslint-disable-next-line svelte/no-at-html-tags -- P is a static internal icon table, no user input -->
+	{@html P[name] ?? ''}
+</svg>

@@ -12,11 +12,13 @@
   "created_at": "2026-07-13T10:00:00Z",
   "duration_seconds": 900.0,
   "eligible_at": "2026-07-13T10:00:00Z",
+  "execution_class": "gpu",
   "evidence": {
     "artifacts_available": false,
     "logs_available": false
   },
   "feature_area": "ai_posters",
+  "fence_token": 1,
   "impact": {
     "duration_seconds": 900.0,
     "input_bytes": null,

@@ -19,6 +19,15 @@ class JobSubmissionResponse(BaseModel):
     detail_url: str
 
 
+class PlannedJobSubmissionResponse(JobSubmissionResponse):
+    """Canonical submission handle plus the bounded mutation-confirmation fence."""
+
+    plan_version: str
+    configuration_version: int
+    expires_at: str
+    requires_confirmation: Literal[True] = True
+
+
 def submission_response(result: SubmissionResult) -> JobSubmissionResponse:
     return JobSubmissionResponse(
         job_id=result.job_id,

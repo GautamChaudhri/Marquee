@@ -2,8 +2,9 @@
 	import { onMount } from 'svelte';
 	import { bytesH } from '$lib/display';
 	import { toast } from '$lib/toast';
+	import { confirmMutation } from '$lib/activity/client';
 	import type { ReencodePlan } from '$lib/api/types';
-	import { createTvReencodePlan, confirmJob, cancelJob } from '$lib/api/letterbox';
+	import { createTvReencodePlan } from '$lib/api/letterbox';
 	import {
 		ENCODER_LABELS,
 		KNOWN_ENCODERS,
@@ -86,7 +87,7 @@
 		if (!plan || confirming) return;
 		confirming = true;
 		try {
-			await confirmJob(fetch, plan.job_id);
+			await confirmMutation(fetch, plan.job_id, plan.plan_version, plan.configuration_version);
 			onConfirmed(plan.job_id);
 		} catch (e) {
 			toast(e instanceof Error ? e.message : 'Could not start encode', 'bad');
@@ -95,15 +96,8 @@
 		}
 	}
 
-	async function discard() {
+	function discard() {
 		if (confirming) return;
-		if (plan) {
-			try {
-				await cancelJob(fetch, plan.job_id);
-			} catch {
-				// best effort — plan expires on its own if the cancel fails
-			}
-		}
 		onClose();
 	}
 </script>

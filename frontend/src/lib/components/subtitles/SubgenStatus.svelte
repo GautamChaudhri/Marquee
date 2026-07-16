@@ -1,4 +1,3 @@
-<!-- eslint-disable @typescript-eslint/no-explicit-any svelte/require-each-key -->
 <script lang="ts">
 	import { getGenerators } from '$lib/api/subtitle-generators';
 	import type { SubtitleGenerator } from '$lib/api/types';

@@ -1,8 +1,8 @@
-<!-- eslint-disable @typescript-eslint/no-explicit-any @typescript-eslint/no-unused-vars svelte/prefer-svelte-reactivity svelte/require-each-key -->
 <script lang="ts">
-	import { onDestroy, onMount } from 'svelte';
-	import { browser } from '$app/environment';
-	import { page } from '$app/state';
+	import { SvelteMap } from 'svelte/reactivity';
+	import FeatureActivityPanel from '$lib/activity/components/FeatureActivityPanel.svelte';
+	import { confirmMutation } from '$lib/activity/client';
+	import type { JobSnapshotResponse } from '$lib/activity/types';
 	import {
 		inspectMovie,
 		scanSubtitles,
@@ -13,13 +13,10 @@
 	import { getGenerators, submitMovieGeneration } from '$lib/api/subtitle-generators';
 	import { getSettings, putSettings } from '$lib/api/system';
 	import { CONFIGURATION_CONFLICT_MESSAGE, isConfigurationConflict } from '$lib/api/client';
-	import { confirmJob, getMediaJob } from '$lib/api/media-jobs';
-	import type { MediaJob, TrackEdit } from '$lib/api/types';
-	import { trackJob } from '$lib/jobs';
+	import type { TrackEdit } from '$lib/api/types';
 	import { toast } from '$lib/toast';
 	import { bytesH } from '$lib/display';
 	import TabBar from '$lib/components/TabBar.svelte';
-	import ProgressBar from '$lib/components/ProgressBar.svelte';
 	import PosterThumb from '$lib/components/PosterThumb.svelte';
 
 	let { data } = $props();
@@ -32,14 +29,6 @@
 	// svelte-ignore state_referenced_locally
 	let settings = $state(data.settings);
 	let error = $derived(data.error);
-
-	type FailedJobBanner = {
-		jobId: string;
-		stage: string;
-		progress: number;
-		message: string;
-		logs: string[];
-	};
 
 	// Tabs Configuration
 	const tabs = [
@@ -197,11 +186,11 @@
 	let subgenOutputTarget = $state<'external' | 'embedded'>('external');
 
 	// Job Running / SSE Progress Tracking
-	let runningJobId = $state<string | null>(null);
-	let progressPercent = $state(0);
-	let progressStage = $state('');
-	let progressMessage = $state('');
-	let jobLog = $state<string[]>([]);
+	let initiatedJobIds = $state<string[]>([]);
+	const settledHandlers = new SvelteMap<
+		string,
+		(snapshot: JobSnapshotResponse, freshInspect: any) => void | Promise<void>
+	>();
 	let busy = $state(false);
 
 	// Surface the backend's structured error message (e.g. the 409
@@ -210,23 +199,6 @@
 	function apiErrorText(e: any, fallback: string): string {
 		return e?.body?.detail?.message || e?.message || fallback;
 	}
-
-	// Persist the active job id per-movie so the bar survives a refresh or
-	// a navigate-away-and-back (the root layout remounts this component on
-	// every route change). Mirrors routes/pipeline + routes/letterbox.
-	const SUBTITLE_JOB_KEY = `marquee:subtitles:activeJob:${page.params.id}`;
-	let stopTracking: (() => void) | null = null;
-
-	function storeJobId(id: string | null) {
-		if (!browser) return;
-		if (id) localStorage.setItem(SUBTITLE_JOB_KEY, id);
-		else localStorage.removeItem(SUBTITLE_JOB_KEY);
-	}
-
-	onDestroy(() => {
-		stopTracking?.();
-		stopTracking = null;
-	});
 
 	// Initialize override inputs from loaded settings
 	$effect(() => {
@@ -342,158 +314,38 @@
 		}
 	}
 
-	// Terminal MediaJob statuses (mirrors the backend's `terminal` set in
-	// media_jobs.py's SSE endpoint).
-	const TERMINAL_STATUSES = ['succeeded', 'completed', 'failed', 'cancelled', 'interrupted'];
-	let failedJob = $state<FailedJobBanner | null>(null);
-
-	function jobErrorMessage(job: MediaJob): string {
-		if (typeof job.error === 'string' && job.error) return job.error;
-		if (job.error && typeof job.error === 'object') {
-			const record = job.error as Record<string, unknown>;
-			const message = record.error ?? record.message ?? record.code;
-			if (typeof message === 'string' && message) return message;
-		}
-		return 'Unknown error';
-	}
-
-	function rememberFailedJob(job: MediaJob) {
-		failedJob = {
-			jobId: job.job_id,
-			stage: job.progress?.stage ?? job.status,
-			progress: job.progress?.percent ?? progressPercent,
-			message: `Operation failed: ${jobErrorMessage(job)}`,
-			logs: [...jobLog]
-		};
-	}
-
-	function dismissFailedJob() {
-		failedJob = null;
-	}
-
-	/** Resume/attach the shared poll-plus-SSE tracker for a job whose initial
-	 *  progress state has already been seeded by the caller. Always goes
-	 *  through `trackJob()` so this bar gets the same "seed immediately" /
-	 *  "either SSE or poll can finalize" guarantees as the letterbox and
-	 *  poster-pipeline bars. */
-	function attachTracking(
-		jobId: string,
-		onCompleteCallback?: (freshInspect: any) => void | Promise<void>,
-		onSettled?: (job: MediaJob) => void
-	) {
-		storeJobId(jobId);
-		stopTracking?.();
-		stopTracking = trackJob<MediaJob>(
-			fetch,
-			jobId,
-			{
-				onProgress: ({ detail }) => {
-					if (typeof detail?.stage === 'string') progressStage = detail.stage;
-					if (typeof detail?.percent === 'number') progressPercent = detail.percent;
-					if (typeof detail?.message === 'string') progressMessage = detail.message;
-					jobLog = [...jobLog, `[${progressStage || 'info'}] ${progressMessage || ''}`];
-				},
-				onDone: async (job) => {
-					stopTracking = null;
-					runningJobId = null;
-					busy = false;
-					storeJobId(null);
-					if (job.status === 'succeeded' || job.status === 'completed') {
-						failedJob = null;
-						progressPercent = 100;
-						toast('Subtitles operation completed successfully!', 'good');
-						const freshInspect = await refreshInventory();
-						if (onCompleteCallback) await onCompleteCallback(freshInspect);
-					} else {
-						progressPercent = job.progress?.percent ?? progressPercent;
-						progressStage = job.progress?.stage ?? job.status;
-						progressMessage = job.progress?.message ?? `Operation failed: ${jobErrorMessage(job)}`;
-						rememberFailedJob(job);
-						toast(`Operation failed: ${jobErrorMessage(job)}`, 'bad');
-						await refreshInventory();
-					}
-					onSettled?.(job);
-				}
-			},
-			{ eventsUrl: `/api/jobs/${jobId}/snapshot`, fetchJob: getMediaJob }
-		);
-	}
-
-	// Start tracking a freshly-created media job.
+	// Bind a returned ID immediately; the contextual store/card owns all lifecycle state.
 	function monitorJob(
 		jobId: string,
 		onCompleteCallback?: (freshInspect: any) => void | Promise<void>,
-		onSettled?: (job: MediaJob) => void
+		onSettled?: (snapshot: JobSnapshotResponse) => void
 	) {
-		runningJobId = jobId;
-		failedJob = null;
-		progressPercent = 0;
-		progressStage = 'queued';
-		progressMessage = 'Waiting in job queue...';
-		jobLog = [];
-		attachTracking(jobId, onCompleteCallback, onSettled);
+		initiatedJobIds = initiatedJobIds.includes(jobId)
+			? initiatedJobIds
+			: [...initiatedJobIds, jobId];
+		settledHandlers.set(jobId, async (snapshot, freshInspect) => {
+			if (snapshot.status.outcome === 'succeeded' && onCompleteCallback) {
+				await onCompleteCallback(freshInspect);
+			}
+			onSettled?.(snapshot);
+		});
 	}
 
-	// Run a job and resolve once it reaches a terminal state, regardless of
-	// success/failure — used to chain sequential plan+confirm calls (Save).
-	function runJobAndWait(jobId: string): Promise<MediaJob> {
+	function runJobAndWait(jobId: string): Promise<JobSnapshotResponse> {
 		return new Promise((resolve) => monitorJob(jobId, undefined, resolve));
 	}
 
-	/** Re-attach to a job after page load: fetch its snapshot, then either
-	 *  show the terminal result or resume tracking — never reset progress
-	 *  to 0 if the job is already partway through. Mirrors
-	 *  routes/pipeline + routes/letterbox `rehydrateBatch`. */
-	async function rehydrateJob(jobId: string) {
-		let job: MediaJob;
-		try {
-			job = await getMediaJob(fetch, jobId);
-		} catch {
-			storeJobId(null);
-			return;
-		}
-
-		if (TERMINAL_STATUSES.includes(job.status)) {
-			runningJobId = null;
-			busy = false;
-			storeJobId(null);
-			if (job.status === 'succeeded' || job.status === 'completed') {
-				failedJob = null;
-				toast('Subtitles operation completed successfully!', 'good');
-			} else {
-				progressStage = job.progress?.stage ?? job.status;
-				progressPercent = job.progress?.percent ?? progressPercent;
-				progressMessage = job.progress?.message ?? `Operation failed: ${jobErrorMessage(job)}`;
-				rememberFailedJob(job);
-				toast(`Operation failed: ${jobErrorMessage(job)}`, 'bad');
-			}
-			await refreshInventory();
-			return;
-		}
-
-		runningJobId = jobId;
-		progressStage = job.progress?.stage ?? job.status;
-		progressPercent = job.progress?.percent ?? 0;
-		progressMessage = job.progress?.message ?? 'Waiting in job queue...';
-		jobLog = [];
-		busy = true;
-		attachTracking(jobId);
+	async function handleJobSettled(snapshot: JobSnapshotResponse) {
+		const handler = settledHandlers.get(snapshot.job_id);
+		settledHandlers.delete(snapshot.job_id);
+		const freshInspect = await refreshInventory();
+		if (handler) await handler(snapshot, freshInspect);
+		busy = settledHandlers.size > 0;
+		toast(
+			`${snapshot.label} ${snapshot.status.label.toLowerCase()}`,
+			snapshot.status.outcome === 'succeeded' ? 'good' : 'bad'
+		);
 	}
-
-	onMount(() => {
-		// Priority 1: the page loader's inspect() call found an active job
-		// for this exact media file.
-		const active = data.inspect?.active_job?.job_id ?? null;
-		if (active) {
-			void rehydrateJob(active);
-			return;
-		}
-		// Priority 2: localStorage still holds a job id from before refresh.
-		if (browser) {
-			const stored = localStorage.getItem(SUBTITLE_JOB_KEY);
-			if (stored) void rehydrateJob(stored);
-		}
-	});
 
 	// ── ACTION: Extract Embedded to Sidecar ──
 	async function handleExtractTrack(withDelete: boolean) {
@@ -504,7 +356,7 @@
 		const originalStreamIndex = singleSelectedTrack.stream_index;
 		try {
 			const res = await extractTrack(fetch, mediaFileId, trackId);
-			await confirmJob(fetch, res.job_id, res.plan_version, res.configuration_version);
+			await confirmMutation(fetch, res.job_id, res.plan_version, res.configuration_version);
 			monitorJob(res.job_id, async (freshInspect) => {
 				if (withDelete) {
 					toast('Sidecar extracted. Remuxing to delete original embedded track...', 'info');
@@ -521,7 +373,12 @@
 							operation: 'subtitle_remove',
 							track_ids: [freshTrack.id]
 						});
-						await confirmJob(fetch, plan.job_id, plan.plan_version, plan.configuration_version);
+						await confirmMutation(
+							fetch,
+							plan.job_id,
+							plan.plan_version,
+							plan.configuration_version
+						);
 						monitorJob(plan.job_id);
 					} catch (e: any) {
 						toast(`Cleanup remux failed: ${e.message}`, 'bad');
@@ -547,7 +404,7 @@
 				operation: 'subtitle_embed',
 				track_ids: [trackId]
 			});
-			await confirmJob(fetch, plan.job_id, plan.plan_version, plan.configuration_version);
+			await confirmMutation(fetch, plan.job_id, plan.plan_version, plan.configuration_version);
 			monitorJob(plan.job_id, async (freshInspect) => {
 				if (withDelete) {
 					toast('Track embedded. Removing external sidecar file...', 'info');
@@ -564,7 +421,7 @@
 							operation: 'subtitle_remove',
 							track_ids: [freshTrack.id]
 						});
-						await confirmJob(
+						await confirmMutation(
 							fetch,
 							removePlan.job_id,
 							removePlan.plan_version,
@@ -633,7 +490,7 @@
 				track_ids: targetTrackIds,
 				audio_stream_indices: targetAudioIndices
 			});
-			await confirmJob(fetch, plan.job_id, plan.plan_version, plan.configuration_version);
+			await confirmMutation(fetch, plan.job_id, plan.plan_version, plan.configuration_version);
 			monitorJob(plan.job_id);
 		} catch (e: any) {
 			toast(apiErrorText(e, 'Batch delete failed'), 'bad');
@@ -659,7 +516,7 @@
 				language_hint: audioLangHint || null,
 				output: subgenOutputTarget
 			});
-			await confirmJob(fetch, res.job_id, res.plan_version, res.configuration_version);
+			await confirmMutation(fetch, res.job_id, res.plan_version, res.configuration_version);
 			monitorJob(res.job_id);
 		} catch (e: any) {
 			toast(e.message || 'Generation failed', 'bad');
@@ -987,9 +844,9 @@
 					track_ids: [],
 					edits: metadataEdits
 				});
-				await confirmJob(fetch, plan.job_id, plan.plan_version, plan.configuration_version);
+				await confirmMutation(fetch, plan.job_id, plan.plan_version, plan.configuration_version);
 				const job = await runJobAndWait(plan.job_id);
-				if (job.status !== 'succeeded' && job.status !== 'completed') return;
+				if (job.status.outcome !== 'succeeded') return;
 			}
 			if (orderChanged) {
 				const plan = await createPlan(fetch, movie.media_file_id, {
@@ -997,7 +854,7 @@
 					track_ids: [],
 					audio_stream_order: draftOrder
 				});
-				await confirmJob(fetch, plan.job_id, plan.plan_version, plan.configuration_version);
+				await confirmMutation(fetch, plan.job_id, plan.plan_version, plan.configuration_version);
 				await runJobAndWait(plan.job_id);
 			}
 			audioDirty = false;
@@ -1043,7 +900,7 @@
 				track_ids: [],
 				edits: metadataEdits
 			});
-			await confirmJob(fetch, plan.job_id, plan.plan_version, plan.configuration_version);
+			await confirmMutation(fetch, plan.job_id, plan.plan_version, plan.configuration_version);
 			await runJobAndWait(plan.job_id);
 			subtitleDirty = false;
 		} catch (e: any) {
@@ -1062,7 +919,7 @@
 				track_ids: selectedTrackIds,
 				audio_stream_indices: selectedAudioIndices
 			});
-			await confirmJob(fetch, plan.job_id, plan.plan_version, plan.configuration_version);
+			await confirmMutation(fetch, plan.job_id, plan.plan_version, plan.configuration_version);
 			monitorJob(plan.job_id);
 		} catch (e: any) {
 			toast(apiErrorText(e, 'Delete failed'), 'bad');
@@ -1138,43 +995,13 @@
 			<TabBar {tabs} active={activeTab} onSelect={(id) => (activeTab = id)} />
 		</div>
 
-		<!-- Progress Overlay when job runs -->
-		{#if runningJobId}
-			<div class="job-progress-banner mq-rise">
-				<div class="banner-head">
-					<span class="title">🏃 Active Subtitles Task</span>
-					<span class="status-badge font-mono">{progressStage.toUpperCase()}</span>
-				</div>
-				<ProgressBar value={progressPercent} />
-				<p class="banner-message">{progressMessage}</p>
-				{#if jobLog.length > 0}
-					<details class="logs-fold">
-						<summary>Show execution logs</summary>
-						<pre class="logs-pre">{jobLog.join('\n')}</pre>
-					</details>
-				{/if}
-			</div>
-		{:else if failedJob}
-			<div class="job-progress-banner job-progress-banner-failed mq-rise">
-				<div class="banner-head">
-					<span class="title">Subtitles Task Failed</span>
-					<div class="banner-actions">
-						<span class="status-badge status-badge-failed font-mono"
-							>{failedJob.stage.toUpperCase()}</span
-						>
-						<button class="dismiss-btn" onclick={dismissFailedJob}>Dismiss</button>
-					</div>
-				</div>
-				<ProgressBar value={failedJob.progress} />
-				<p class="banner-message">{failedJob.message}</p>
-				{#if failedJob.logs.length > 0}
-					<details class="logs-fold">
-						<summary>Show execution logs</summary>
-						<pre class="logs-pre">{failedJob.logs.join('\n')}</pre>
-					</details>
-				{/if}
-			</div>
-		{/if}
+		<FeatureActivityPanel
+			scopeKey={`feature:audio-subtitles:movie:${movie.id}`}
+			query={{ feature_area: 'audio_subtitles' }}
+			jobIds={initiatedJobIds}
+			heading="Movie audio and subtitle activity"
+			onSettled={handleJobSettled}
+		/>
 
 		<!-- Tab Content -->
 		<div class="tab-content-wrapper">
@@ -2057,10 +1884,6 @@
 		display: flex;
 		align-items: center;
 		gap: 10px;
-	}
-	.banner-head .title {
-		font-size: 14px;
-		font-weight: 600;
 	}
 	.status-badge {
 		background: var(--gold-soft);

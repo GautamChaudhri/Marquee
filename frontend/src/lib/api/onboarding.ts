@@ -1,4 +1,5 @@
 import { apiGet, apiSend, type Fetch } from './client';
+import type { JobSubmissionResponse } from '$lib/activity/types';
 import type { OnboardingStatus, TasteTestMovie } from './types';
 
 /** Cold-start onboarding status: data state + Rank Test progress. */
@@ -40,6 +41,10 @@ export function tasteTestRank(
 }
 
 /** Mark the Rank Test complete (≥min) → rebuild profile + train head. */
-export function completeOnboarding(fetchFn: Fetch): Promise<{ status: OnboardingStatus }> {
+export function completeOnboarding(fetchFn: Fetch): Promise<{
+	status: OnboardingStatus;
+	rebuild_job: JobSubmissionResponse;
+	head_job: JobSubmissionResponse;
+}> {
 	return apiSend(fetchFn, 'POST', '/onboarding/complete', {});
 }

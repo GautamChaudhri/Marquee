@@ -157,6 +157,7 @@
   ],
   "scheduler_callbacks": [],
   "job_routes": [
+    "GET /api/jobs/attention activity_attention",
     "GET /api/jobs/events/stream stream_job_events",
     "GET /api/jobs list_jobs",
     "GET /api/jobs/{job_id}/snapshot get_job_snapshot",
@@ -174,7 +175,7 @@
     "POST /api/jobs/{job_id}/cancel cancel_job",
     "POST /api/jobs/{job_id}/pause pause_job",
     "POST /api/jobs/{job_id}/resume resume_job",
-    "PATCH /api/jobs/{job_id}/priority update_job_priority",
+    "POST /api/jobs/{job_id}/priority update_job_priority",
     "POST /api/jobs/{job_id}/retry retry_job",
     "POST /api/jobs/actions bulk_job_actions"
   ],

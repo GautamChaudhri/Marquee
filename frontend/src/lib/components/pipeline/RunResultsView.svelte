@@ -1,10 +1,10 @@
 <script lang="ts">
-	import { onMount, onDestroy } from 'svelte';
+	import { onDestroy } from 'svelte';
 	import { goto } from '$app/navigation';
+	import FeatureActivityPanel from '$lib/activity/components/FeatureActivityPanel.svelte';
 	import TabBar from '$lib/components/TabBar.svelte';
 	import ScoreBar from '$lib/components/ScoreBar.svelte';
 	import StatusDot from '$lib/components/StatusDot.svelte';
-	import RunProgress from '$lib/components/RunProgress.svelte';
 	import PosterCandidateTile from '$lib/components/PosterCandidateTile.svelte';
 	import PosterStack from '$lib/components/PosterStack.svelte';
 	import PosterRankPanel from '$lib/components/PosterRankPanel.svelte';
@@ -13,7 +13,6 @@
 	import { getRunResults, markOcrFalseAcceptance, markOcrFalseRejection } from '$lib/api/pipeline';
 	import { ApiError } from '$lib/api/client';
 	import { submitFeedback, undoFeedback } from '$lib/api/feedback';
-	import { trackJob, type JobProgressDetail } from '$lib/jobs';
 	import { toast } from '$lib/toast';
 	import { gradientFor } from '$lib/display';
 	import type {
@@ -44,9 +43,6 @@
 
 	// svelte-ignore state_referenced_locally
 	let run = $state<RunResultsResponse | null>(data.run);
-	let runningDetail = $state<JobProgressDetail>({});
-	let runningStatus = $state('running');
-	let stop: (() => void) | null = null;
 
 	const results = $derived(run && 'ranked' in run ? (run as RunResults) : null);
 	const running = $derived(run != null && !('ranked' in run));
@@ -355,22 +351,6 @@
 			.map(([k, v]) => ({ value: Math.abs(v) / max, label: k, signed: v }));
 	}
 
-	// ── Live tracking while running ──────────────────────────────────────────────
-	function startTracking(eventsUrl: string) {
-		stop?.();
-		stop = trackJob(
-			fetch,
-			data.runId,
-			{
-				onProgress: ({ status, detail }) => {
-					runningStatus = status;
-					runningDetail = detail;
-				},
-				onDone: () => void reload()
-			},
-			{ eventsUrl }
-		);
-	}
 	async function reload() {
 		try {
 			run = await getRunResults(fetch, data.runId);
@@ -378,11 +358,7 @@
 			/* keep the running view; the poll will retry */
 		}
 	}
-	onMount(() => {
-		if (run && !('ranked' in run)) startTracking(run.events_url);
-	});
 	onDestroy(() => {
-		stop?.();
 		if (confirmTimer) clearTimeout(confirmTimer);
 	});
 
@@ -661,7 +637,13 @@
 {:else if running}
 	<div class="running-wrap">
 		<h2>{results?.movie?.title ?? 'Pipeline run'}</h2>
-		<RunProgress detail={runningDetail} status={runningStatus} title="Selecting poster" />
+		<FeatureActivityPanel
+			scopeKey={`feature:pipeline:run:${data.runId}`}
+			query={{ feature_area: 'ai_posters' }}
+			jobIds={[data.runId]}
+			heading="Poster selection activity"
+			onSettled={reload}
+		/>
 		<p class="run-hint">Live progress — results appear here as soon as the run finishes.</p>
 	</div>
 {:else if results}

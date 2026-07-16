@@ -515,6 +515,8 @@ class JobRow(StrictDocument):
     parent_id: str | None = Field(default=None, max_length=32)
     root_id: str | None = Field(default=None, max_length=32)
     retry_of_job_id: str | None = Field(default=None, max_length=32)
+    fence_token: int = Field(ge=0)
+    execution_class: str = Field(min_length=1, max_length=40)
     priority: int
     queue_rank: int | None = Field(default=None, ge=1)
     eligible_at: datetime | None = None

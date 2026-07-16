@@ -16,8 +16,7 @@
 		hdr: { title: 'Radarr Overlay', sub: 'HDR targets, scores & upgrade signals' },
 		subtitles: { title: 'Subtitles', sub: 'Inventory, policies & generation' },
 		letterbox: { title: 'Letterbox', sub: 'Black-bar detection & cropping' },
-		'projection-room': { title: 'Projection Room', sub: 'Jobs, queues & system metrics' },
-		activity: { title: 'Activity', sub: 'Recent events' },
+		'projection-room': { title: 'Activity', sub: 'Queue, history & operations' },
 		settings: { title: 'Settings', sub: 'Connections & preferences' }
 	};
 	const seg = $derived(page.url.pathname.split('/').filter(Boolean)[0] ?? 'dashboard');
@@ -92,7 +91,7 @@
 	kbd {
 		font-family: var(--font-mono);
 		font-size: 10px;
-		color: var(--faint);
+		color: var(--muted);
 		border: 1px solid var(--line2);
 		border-radius: 4px;
 		padding: 0 4px;

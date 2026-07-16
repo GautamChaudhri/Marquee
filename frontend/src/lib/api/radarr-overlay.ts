@@ -1,6 +1,6 @@
 import { env } from '$env/dynamic/public';
-import type { JobSnapshot } from './jobs';
-import { confirmJob as confirmCanonicalMediaJob } from './media-jobs';
+import { confirmMutation } from '$lib/activity/client';
+import type { JobSubmissionResponse, PlannedJobSubmissionResponse } from '$lib/activity/types';
 import { apiGet, apiSend, type ApiPathFor, type Fetch } from './client';
 import { mockRadarrOverlay } from './mock';
 import type {
@@ -42,22 +42,19 @@ export function getHdrDetail(fetch: Fetch, movieId: number): Promise<HdrMovieDet
 	return apiGet<HdrMovieDetail>(fetch, `/hdr/${movieId}`);
 }
 
-export function analyzeMovieDovi(fetch: Fetch, movieId: number): Promise<JobSnapshot> {
-	return apiSend<JobSnapshot>(fetch, 'POST', `/hdr/${movieId}/analyze`);
+export function analyzeMovieDovi(fetch: Fetch, movieId: number): Promise<JobSubmissionResponse> {
+	return apiSend<JobSubmissionResponse>(fetch, 'POST', `/hdr/${movieId}/analyze`);
 }
 
 export function convertMovieDovi(
 	fetch: Fetch,
 	movieId: number,
 	kind: 'p5_to_p81' | 'p7_strip_el'
-): Promise<JobSnapshot> {
-	return apiSend<JobSnapshot & { plan_version: string; configuration_version: number }>(
-		fetch,
-		'POST',
-		`/hdr/${movieId}/convert`,
-		{ kind }
-	).then(async (planned) => {
-		await confirmCanonicalMediaJob(
+): Promise<PlannedJobSubmissionResponse> {
+	return apiSend<PlannedJobSubmissionResponse>(fetch, 'POST', `/hdr/${movieId}/convert`, {
+		kind
+	}).then(async (planned) => {
+		await confirmMutation(
 			fetch,
 			planned.job_id,
 			planned.plan_version,
@@ -67,16 +64,12 @@ export function convertMovieDovi(
 	});
 }
 
-async function confirmDoviDecision(fetch: Fetch, path: ApiPathFor<'post'>): Promise<JobSnapshot> {
-	const planned = await apiSend<
-		JobSnapshot & { plan_version: string; configuration_version: number }
-	>(fetch, 'POST', path);
-	await confirmCanonicalMediaJob(
-		fetch,
-		planned.job_id,
-		planned.plan_version,
-		planned.configuration_version
-	);
+async function confirmDoviDecision(
+	fetch: Fetch,
+	path: ApiPathFor<'post'>
+): Promise<PlannedJobSubmissionResponse> {
+	const planned = await apiSend<PlannedJobSubmissionResponse>(fetch, 'POST', path);
+	await confirmMutation(fetch, planned.job_id, planned.plan_version, planned.configuration_version);
 	return planned;
 }
 
@@ -95,8 +88,8 @@ export function discardDoviCandidate(fetch: Fetch, movieId: number, artifactId: 
 export function analyzeDoviBatch(
 	fetch: Fetch,
 	movieIds?: number[]
-): Promise<{ job_id: string; total: number; events_url: string }> {
-	return apiSend<{ job_id: string; total: number; events_url: string }>(
+): Promise<JobSubmissionResponse> {
+	return apiSend<JobSubmissionResponse>(
 		fetch,
 		'POST',
 		'/hdr/analyze',

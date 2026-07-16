@@ -1,22 +1,22 @@
-<!-- eslint-disable @typescript-eslint/no-explicit-any -->
 <script lang="ts">
+	import { untrack } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
+	import FeatureActivityPanel from '$lib/activity/components/FeatureActivityPanel.svelte';
+	import type { JobSnapshotResponse } from '$lib/activity/types';
 	import SectionHeader from '$lib/components/SectionHeader.svelte';
 	import SegmentedBar from '$lib/components/SegmentedBar.svelte';
 	import UniformityChip from '$lib/components/UniformityChip.svelte';
 	import CoverageChips from '$lib/components/subtitles/CoverageChips.svelte';
 	import EpisodeHeatmap from '$lib/components/subtitles/EpisodeHeatmap.svelte';
 	import GenerateSubtitlesModal from '$lib/components/subtitles/GenerateSubtitlesModal.svelte';
-	import ProgressBar from '$lib/components/ProgressBar.svelte';
 	import { getAudioSubsTvDetail, putSeriesPreferences, deepScanSeries } from '$lib/api/subtitles';
-	import { trackJob } from '$lib/jobs';
 	import { toast } from '$lib/toast';
 
 	let { data } = $props();
 
-	let detail = $state(data.detail);
-	let error = $state(data.error);
+	let detail = $state(untrack(() => data.detail));
+	let error = $state(untrack(() => data.error));
 
 	// Overrides state
 	let audioOverride = $state('');
@@ -74,8 +74,8 @@
 	let generateAudioStreams = $state<any[]>([]);
 
 	// Job tracking state
-	let activeJobId = $state<string | null>(null);
-	let jobProgress = $state<{ stage: string; percent: number; message: string } | null>(null);
+	let jobBusy = $state(false);
+	let initiatedJobIds = $state<string[]>([]);
 
 	function openGenerateModal(scope: 'series' | 'season' | 'episode', opts: any = {}) {
 		generateScope = scope;
@@ -89,59 +89,30 @@
 
 	function handleGenerateSuccess(jobId: string) {
 		generateModalOpen = false;
-		activeJobId = jobId;
-
-		trackJob(fetch, jobId, {
-			onProgress: (p) => {
-				jobProgress = {
-					stage: p.detail.stage || 'Generating Subtitles',
-					percent: typeof p.detail.percent === 'number' ? p.detail.percent : 0,
-					message: p.detail.message || ''
-				};
-			},
-			onDone: () => {
-				activeJobId = null;
-				jobProgress = null;
-				toast('Subtitles generated successfully', 'good');
-				refreshDetail();
-			},
-			onError: (msg) => {
-				activeJobId = null;
-				jobProgress = null;
-				toast(`Subtitle generation failed: ${msg}`, 'bad');
-			}
-		});
+		jobBusy = true;
+		initiatedJobIds = [...new Set([...initiatedJobIds, jobId])];
 	}
 
 	async function runDeepScan(seasonNumber?: number | null) {
 		if (!detail) return;
+		jobBusy = true;
 		try {
 			const res = await deepScanSeries(fetch, detail.series.id, seasonNumber);
+			initiatedJobIds = [...new Set([...initiatedJobIds, res.job_id])];
 			toast('Series deep scan enqueued', 'good');
-
-			trackJob(fetch, res.job_id, {
-				onProgress: (p) => {
-					jobProgress = {
-						stage: p.detail.stage || 'Scanning series',
-						percent: typeof p.detail.percent === 'number' ? p.detail.percent : 0,
-						message: p.detail.message || ''
-					};
-				},
-				onDone: () => {
-					activeJobId = null;
-					jobProgress = null;
-					toast('Series deep scan finished', 'good');
-					refreshDetail();
-				},
-				onError: (msg) => {
-					activeJobId = null;
-					jobProgress = null;
-					toast(`Scan failed: ${msg}`, 'bad');
-				}
-			});
 		} catch (e: any) {
+			jobBusy = false;
 			toast(e.message || 'Failed to trigger scan', 'bad');
 		}
+	}
+
+	async function handleJobSettled(snapshot: JobSnapshotResponse) {
+		jobBusy = false;
+		toast(
+			`${snapshot.label} ${snapshot.status.label.toLowerCase()}`,
+			snapshot.status.outcome === 'succeeded' ? 'good' : 'bad'
+		);
+		await refreshDetail();
 	}
 
 	// Filters for Episode Table
@@ -213,7 +184,7 @@
 				</div>
 
 				<div class="header-actions">
-					<button class="btn secondary" onclick={() => runDeepScan(null)} disabled={!!activeJobId}>
+					<button class="btn secondary" onclick={() => runDeepScan(null)} disabled={jobBusy}>
 						🔍 Deep Scan All
 					</button>
 					<button
@@ -221,7 +192,7 @@
 						onclick={() =>
 							detail &&
 							openGenerateModal('series', { audioLanguages: detail.rollup.missing_languages })}
-						disabled={!!activeJobId}
+						disabled={jobBusy}
 					>
 						⚡ Generate All Subtitles
 					</button>
@@ -261,19 +232,13 @@
 			</div>
 		</div>
 
-		<!-- Tracking Progress Bar -->
-		{#if jobProgress}
-			<div class="progress-banner mq-rise">
-				<div class="prog-head">
-					<strong>{jobProgress.stage}</strong>
-					<span>{jobProgress.percent}%</span>
-				</div>
-				<ProgressBar value={jobProgress.percent} />
-				{#if jobProgress.message}
-					<small>{jobProgress.message}</small>
-				{/if}
-			</div>
-		{/if}
+		<FeatureActivityPanel
+			scopeKey={`feature:audio-subtitles:series:${detail.series.id}`}
+			query={{ feature_area: 'audio_subtitles' }}
+			jobIds={initiatedJobIds}
+			heading="Series audio and subtitle activity"
+			onSettled={handleJobSettled}
+		/>
 
 		<!-- Heatmap Centerpiece -->
 		<div class="section-title">
@@ -329,7 +294,7 @@
 							<button
 								class="btn secondary btn-xs"
 								onclick={() => runDeepScan(season.season_number)}
-								disabled={!!activeJobId}
+								disabled={jobBusy}
 							>
 								🔍 Scan Season
 							</button>
@@ -340,7 +305,7 @@
 										seasonNumber: season.season_number,
 										audioLanguages: season.rollup.missing_languages
 									})}
-								disabled={!!activeJobId}
+								disabled={jobBusy}
 							>
 								⚡ Generate Subtitles
 							</button>
@@ -408,7 +373,7 @@
 													mediaFileId: ep.media_file_id,
 													audioLanguages: ep.audio_languages
 												})}
-											disabled={!ep.media_file_id || !!activeJobId}
+											disabled={!ep.media_file_id || jobBusy}
 											title="Generate Subtitles"
 										>
 											⚡
@@ -579,15 +544,6 @@
 		flex-direction: column;
 		gap: 6px;
 	}
-	.progress-banner .prog-head {
-		display: flex;
-		justify-content: space-between;
-		font-size: 12.5px;
-	}
-	.progress-banner small {
-		font-size: 11px;
-		color: var(--muted);
-	}
 	.section-title h3 {
 		margin: 0;
 		font-size: 14px;
@@ -696,9 +652,6 @@
 	}
 	tr:last-child td {
 		border-bottom: none;
-	}
-	tr.highlight-row {
-		background: color-mix(in srgb, var(--gold) 10%, transparent);
 	}
 	.code {
 		font-family: var(--font-mono);

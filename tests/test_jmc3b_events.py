@@ -315,7 +315,7 @@ async def test_command_event_carries_the_committed_canonical_version(db) -> None
     await db.commit()
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        changed = await client.patch(
+        changed = await client.post(
             f"/api/jobs/{job.id}/priority",
             json={"expected_fence_token": 3, "priority": 70},
         )

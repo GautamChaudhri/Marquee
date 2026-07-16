@@ -53,19 +53,25 @@ async function fetchWithTimeout(
 	url: string,
 	init: RequestInit,
 	path: string,
-	method: string
+	method: string,
+	externalSignal?: AbortSignal
 ): Promise<Response> {
 	const controller = new AbortController();
+	const abortFromCaller = () => controller.abort(externalSignal?.reason);
+	if (externalSignal?.aborted) abortFromCaller();
+	else externalSignal?.addEventListener('abort', abortFromCaller, { once: true });
 	const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 	try {
 		return await fetchFn(url, { ...init, signal: controller.signal });
 	} catch (e) {
 		if (e instanceof DOMException && e.name === 'AbortError') {
+			if (externalSignal?.aborted) throw e;
 			throw new ApiError(0, `${method} ${path} → timed out after ${REQUEST_TIMEOUT_MS}ms`);
 		}
 		throw e;
 	} finally {
 		clearTimeout(timer);
+		externalSignal?.removeEventListener('abort', abortFromCaller);
 	}
 }
 
@@ -88,10 +94,11 @@ async function parse(res: Response): Promise<unknown> {
 export async function apiGet<T>(
 	fetch: Fetch,
 	path: ApiGetPath,
-	params?: Record<string, unknown>
+	params?: Record<string, unknown>,
+	signal?: AbortSignal
 ): Promise<T> {
 	const path_ = `${path}${buildQuery(params)}`;
-	const res = await fetchWithTimeout(fetch, `/api${path_}`, {}, path, 'GET');
+	const res = await fetchWithTimeout(fetch, `/api${path_}`, {}, path, 'GET', signal);
 	if (!res.ok) {
 		throw new ApiError(
 			res.status,

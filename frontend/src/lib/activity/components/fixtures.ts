@@ -71,6 +71,8 @@ export function makeRow(overrides: Partial<JobRow> = {}): JobRow {
 			wait: null
 		},
 		priority: 0,
+		fence_token: 0,
+		execution_class: 'gpu',
 		queue_rank: 1,
 		is_parent: false,
 		allowed_actions: ['cancel', 'open_detail'],
@@ -106,6 +108,7 @@ export function makeSnapshot(
 		outcome: row.status.outcome ?? null,
 		desired_state: 'run',
 		fence_token: 7,
+		execution_class: row.execution_class,
 		progress_sequence: row.progress?.sequence ?? 0,
 		progress: row.progress ?? null,
 		status: row.status,

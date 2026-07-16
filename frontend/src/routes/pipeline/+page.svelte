@@ -1,8 +1,9 @@
 <script lang="ts">
-	import { onDestroy, onMount } from 'svelte';
 	import { goto } from '$app/navigation';
+	import { SvelteMap } from 'svelte/reactivity';
+	import FeatureActivityPanel from '$lib/activity/components/FeatureActivityPanel.svelte';
+	import type { JobSnapshotResponse } from '$lib/activity/types';
 	import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
-	import RunProgress from '$lib/components/RunProgress.svelte';
 	import SectionHeader from '$lib/components/SectionHeader.svelte';
 	import StatCard from '$lib/components/StatCard.svelte';
 	import TextProfilePanel from '$lib/components/pipeline/TextProfilePanel.svelte';
@@ -15,37 +16,22 @@
 	import { getTvSummary } from '$lib/api/pipeline-tv';
 	import { getSettings, putSettings, runHealScan } from '$lib/api/system';
 	import { CONFIGURATION_CONFLICT_MESSAGE, isConfigurationConflict } from '$lib/api/client';
-	import type { JobSnapshot } from '$lib/api/jobs';
 	import { bytesH } from '$lib/display';
-	import { trackJob, type JobProgressDetail } from '$lib/jobs';
 	import { toast } from '$lib/toast';
-	import type {
-		PipelineSummary,
-		RuntimeSettings,
-		SummaryRunningJob,
-		TvPipelineSummary
-	} from '$lib/api/types';
+	import type { PipelineSummary, RuntimeSettings, TvPipelineSummary } from '$lib/api/types';
 	import type { PageData } from './$types';
 
 	let { data }: { data: PageData } = $props();
 
 	type Preset = 'movie' | 'poster' | 'custom';
-	type RunningDisplay = SummaryRunningJob & { detail: JobProgressDetail; status: string };
-
 	// svelte-ignore state_referenced_locally
 	let summary = $state<PipelineSummary>(data.summary);
 	// svelte-ignore state_referenced_locally
 	let tvSummary = $state<TvPipelineSummary | null>(data.tvSummary);
 	// svelte-ignore state_referenced_locally
 	let runtimeSettings = $state<RuntimeSettings | null>(data.settings);
-	// svelte-ignore state_referenced_locally
-	let runningJobs = $state<RunningDisplay[]>(
-		summary.running_jobs.map((job) => ({
-			...job,
-			status: job.status,
-			detail: (job.progress ?? {}) as JobProgressDetail
-		}))
-	);
+	let initiatedJobIds = $state<string[]>([]);
+	const settledHandlers = new SvelteMap<string, (snapshot: JobSnapshotResponse) => void>();
 
 	let savingPoster = $state(false);
 	let savingRestore = $state(false);
@@ -95,8 +81,6 @@
 	const healDirty = $derived(
 		healEnabled !== currentHealEnabled || Number(healInterval) !== currentHealInterval
 	);
-
-	let stops: (() => void)[] = [];
 
 	function formatToPreset(format: string): Preset {
 		if (format === '{movie_basename}.jpg') return 'movie';
@@ -152,66 +136,28 @@
 				getPipelineSummary(fetch),
 				getTvSummary(fetch).catch(() => tvSummary)
 			]);
-			runningJobs = summary.running_jobs.map((job) => ({
-				...job,
-				status: job.status,
-				detail: (job.progress ?? {}) as JobProgressDetail
-			}));
-			trackRunningJobs();
 		} catch {
 			/* keep stale cards */
 		}
 	}
 
-	function stopTracking() {
-		for (const stop of stops) stop();
-		stops = [];
-	}
-
-	function trackRunningJobs() {
-		stopTracking();
-		for (const job of runningJobs) {
-			const stop = trackJob(
-				fetch,
-				job.job_id,
-				{
-					onProgress: ({ status, detail }) => {
-						runningJobs = runningJobs.map((item) =>
-							item.job_id === job.job_id ? { ...item, status, detail } : item
-						);
-					},
-					onDone: (done) => {
-						toast(
-							`${done.label ?? job.label ?? 'Job'} ${done.status}`,
-							done.status === 'succeeded' ? 'good' : 'bad'
-						);
-						void refreshSummary();
-					}
-				},
-				{ eventsUrl: job.events_url }
-			);
-			stops.push(stop);
-		}
-	}
-
 	function trackAction(
-		job: { job_id: string; events_url?: string },
+		job: { job_id: string },
 		label: string,
-		onDone?: (job: JobSnapshot) => void
+		onDone?: (job: JobSnapshotResponse) => void
 	) {
-		const stop = trackJob(
-			fetch,
-			job.job_id,
-			{
-				onDone: (done) => {
-					toast(`${label} ${done.status}`, done.status === 'succeeded' ? 'good' : 'bad');
-					onDone?.(done);
-					void refreshSummary();
-				}
-			},
-			{ eventsUrl: job.events_url }
-		);
-		stops.push(stop);
+		initiatedJobIds = [...new Set([...initiatedJobIds, job.job_id])];
+		settledHandlers.set(job.job_id, (snapshot) => {
+			const succeeded = snapshot.status.outcome === 'succeeded';
+			toast(`${label} ${snapshot.status.label.toLowerCase()}`, succeeded ? 'good' : 'bad');
+			onDone?.(snapshot);
+			void refreshSummary();
+		});
+	}
+
+	function handleSettled(snapshot: JobSnapshotResponse) {
+		settledHandlers.get(snapshot.job_id)?.(snapshot);
+		settledHandlers.delete(snapshot.job_id);
 	}
 
 	async function savePosterFormat() {
@@ -231,12 +177,7 @@
 			runtimeSettings = result.settings;
 			resetFormsFromSettings();
 			const job = await rescanPosters(fetch);
-			trackAction(job, 'Poster rescan', (done) => {
-				const result = (done.result ?? {}) as Record<string, unknown>;
-				const updated = Number(result.changed ?? 0);
-				const missing = Number(result.missing ?? 0);
-				toast(`${updated} updated, ${missing} missing`, missing ? 'info' : 'good');
-			});
+			trackAction(job, 'Poster rescan');
 		} catch (e) {
 			await handleConfigurationSaveError(e, 'Could not save poster filename');
 		} finally {
@@ -314,7 +255,7 @@
 		try {
 			const job = await runPosterMaintenance(fetch, { dry_run: true });
 			trackAction(job, 'Maintenance preview', (done) => {
-				maintenancePreview = (done.result ?? {}) as Record<string, unknown>;
+				if (done.status.outcome === 'succeeded') maintenancePreview = {};
 				maintenanceBusy = false;
 			});
 		} catch (e) {
@@ -340,14 +281,6 @@
 	function isoDate(value: string | null | undefined): string {
 		return value ? new Date(value).toLocaleString() : 'Never';
 	}
-
-	onMount(() => {
-		trackRunningJobs();
-	});
-
-	onDestroy(() => {
-		stopTracking();
-	});
 </script>
 
 <SectionHeader title="Poster Pipeline" subtitle="Manage poster selection and restoration" />
@@ -391,16 +324,13 @@
 
 <TextProfilePanel initial={data.textProfiles} />
 
-{#if runningJobs.length}
-	<section class="band">
-		<h2>Running Jobs</h2>
-		<div class="runs">
-			{#each runningJobs as job (job.job_id)}
-				<RunProgress title={job.label ?? job.type} status={job.status} detail={job.detail} />
-			{/each}
-		</div>
-	</section>
-{/if}
+<FeatureActivityPanel
+	scopeKey="feature:pipeline:overview"
+	query={{ feature_area: 'ai_posters' }}
+	jobIds={initiatedJobIds}
+	heading="Poster activity"
+	onSettled={handleSettled}
+/>
 
 <div class="settings-grid">
 	<details class="panel" open>
@@ -560,17 +490,6 @@
 		font-family: var(--font-mono);
 		color: var(--gold);
 		font-size: 13px;
-	}
-	.band {
-		margin-bottom: 18px;
-	}
-	h2 {
-		font-size: 14px;
-		margin: 0 0 10px;
-	}
-	.runs {
-		display: grid;
-		gap: 10px;
 	}
 	.settings-grid {
 		display: grid;

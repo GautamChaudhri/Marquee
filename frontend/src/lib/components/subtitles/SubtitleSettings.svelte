@@ -1,4 +1,3 @@
-<!-- eslint-disable @typescript-eslint/no-explicit-any @typescript-eslint/no-unused-vars -->
 <script lang="ts">
 	import { getGenerators } from '$lib/api/subtitle-generators';
 	import type { RuntimeSettings, SubtitleGenerator } from '$lib/api/types';

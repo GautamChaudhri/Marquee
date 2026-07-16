@@ -1,13 +1,12 @@
-<!-- eslint-disable @typescript-eslint/no-unused-vars svelte/prefer-svelte-reactivity svelte/no-unused-svelte-ignore svelte/require-each-key -->
 <script lang="ts">
-	import { onDestroy, onMount } from 'svelte';
+	import FeatureActivityPanel from '$lib/activity/components/FeatureActivityPanel.svelte';
+	import type { JobSnapshotResponse } from '$lib/activity/types';
 	import SectionHeader from '$lib/components/SectionHeader.svelte';
 	import HdrBadge from '$lib/components/HdrBadge.svelte';
 	import SegmentedBar from '$lib/components/SegmentedBar.svelte';
 	import UniformityChip from '$lib/components/UniformityChip.svelte';
 	import HdrHeatmap from '$lib/components/HdrHeatmap.svelte';
 	import { toast } from '$lib/toast';
-	import { trackJob } from '$lib/jobs';
 	import { analyzeSeriesDovi, getHdrTvDetail } from '$lib/api/hdr';
 	import { SHOW_STATUS_META } from '$lib/hdr-display';
 	import { toneVar } from '$lib/display';
@@ -25,14 +24,7 @@
 	let activeStatusFilter = $state<string>('');
 
 	let analyzing = $state(false);
-	let analyzePercent = $state(0);
-	let analyzeMessage = $state('');
-	let stopAnalyzeTracking: (() => void) | null = null;
-
-	const TERMINAL = ['succeeded', 'failed', 'cancelled'];
-	function isTerminal(status: string) {
-		return TERMINAL.includes(status);
-	}
+	let initiatedJobIds = $state<string[]>([]);
 
 	async function refresh() {
 		if (!detail) return;
@@ -44,61 +36,26 @@
 		}
 	}
 
-	function attachAnalyze(jobId: string) {
-		stopAnalyzeTracking?.();
-		analyzing = true;
-		stopAnalyzeTracking = trackJob(
-			fetch,
-			jobId,
-			{
-				onProgress: ({ detail: d }) => {
-					const p = d as { percent?: number; message?: string; stage?: string };
-					if (typeof p.percent === 'number') analyzePercent = p.percent;
-					if (typeof p.message === 'string') analyzeMessage = p.message;
-					else if (typeof p.stage === 'string') analyzeMessage = p.stage;
-				},
-				onDone: async (job) => {
-					stopAnalyzeTracking = null;
-					analyzing = false;
-					analyzePercent = 100;
-					if (job.status === 'succeeded') {
-						toast('Dolby Vision analysis complete', 'good');
-					} else {
-						toast(`Analysis ${job.status}`, 'bad');
-					}
-					await refresh();
-				},
-				onError: () => toast('Analysis progress stream interrupted', 'bad')
-			},
-			{ eventsUrl: `/api/jobs/${jobId}/snapshot` }
-		);
-	}
-
 	async function runAnalyze(seasonNumber?: number | null) {
 		if (analyzing || !detail) return;
 		analyzing = true;
-		analyzePercent = 0;
-		analyzeMessage = 'Queuing Dolby Vision analysis…';
 		try {
-			const { job_id, total } = await analyzeSeriesDovi(fetch, detail.series.id, seasonNumber);
-			analyzeMessage = `Analyzing ${total} Dolby Vision ${total === 1 ? 'episode' : 'episodes'}…`;
-			attachAnalyze(job_id);
+			const { job_id } = await analyzeSeriesDovi(fetch, detail.series.id, seasonNumber);
+			initiatedJobIds = [...new Set([...initiatedJobIds, job_id])];
 		} catch (e) {
 			analyzing = false;
 			toast(e instanceof Error ? e.message : 'Could not start Dolby Vision analysis', 'bad');
 		}
 	}
 
-	onMount(() => {
-		const active = detail?.analysis_jobs?.find((j) => !isTerminal(j.status))?.job_id ?? null;
-		if (active) {
-			attachAnalyze(active);
-		}
-	});
-
-	onDestroy(() => {
-		stopAnalyzeTracking?.();
-	});
+	async function handleJobSettled(snapshot: JobSnapshotResponse) {
+		analyzing = false;
+		toast(
+			`Dolby Vision analysis ${snapshot.status.label.toLowerCase()}`,
+			snapshot.status.outcome === 'succeeded' ? 'good' : 'bad'
+		);
+		await refresh();
+	}
 
 	const DOVI_P8_VARIANT: Record<number, string> = {
 		1: 'P8.1',
@@ -204,6 +161,13 @@
 		<div class="header-nav">
 			<a class="back-link" href="/hdr/tv">← Back to Shows</a>
 		</div>
+		<FeatureActivityPanel
+			scopeKey={`feature:hdr:series:${detail.series.id}`}
+			query={{ feature_area: 'hdr' }}
+			jobIds={initiatedJobIds}
+			heading="Series HDR activity"
+			onSettled={handleJobSettled}
+		/>
 
 		<div class="hero">
 			<div>
@@ -255,14 +219,6 @@
 					{/if}
 				</div>
 			</div>
-			{#if analyzing}
-				<div class="analyze-progress">
-					<div class="progress-bar">
-						<span style={`width:${Math.max(4, analyzePercent)}%`}></span>
-					</div>
-					<small>{analyzeMessage}</small>
-				</div>
-			{/if}
 		</div>
 
 		<!-- Heatmap Centerpiece -->
@@ -549,25 +505,6 @@
 	.warn-text {
 		font-size: 11px;
 		color: var(--bad);
-	}
-	.analyze-progress {
-		display: flex;
-		flex-direction: column;
-		gap: 6px;
-		padding-top: 8px;
-		border-top: 1px dashed var(--line);
-	}
-	.progress-bar {
-		height: 6px;
-		border-radius: 999px;
-		background: var(--line);
-		overflow: hidden;
-	}
-	.progress-bar span {
-		display: block;
-		height: 100%;
-		background: var(--gold);
-		transition: width 0.3s ease;
 	}
 	.section-block {
 		display: flex;

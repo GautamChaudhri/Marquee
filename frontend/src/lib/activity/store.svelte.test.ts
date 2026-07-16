@@ -290,6 +290,35 @@ describe('discovery and single stream', () => {
 		expect(h.store.records.get('j1')?.partition).toBe('queue');
 	});
 
+	it('appends the next bounded cursor page in server order', async () => {
+		h.setList({ items: [row('j1')], limit: 1, next_cursor: 'page-2', view: 'queue' });
+		h.store.acquireScope('activity', { view: 'queue', limit: 1 });
+		await flush();
+		h.setList({ items: [row('j2')], limit: 1, next_cursor: null, view: 'queue' });
+
+		h.store.loadMore('activity');
+		await flush();
+
+		expect(h.store.recordsForScope('activity').map((record) => record.jobId)).toEqual(['j1', 'j2']);
+		expect(h.calls.at(-1)?.url).toContain('cursor=page-2');
+	});
+
+	it('preserves last-good scope rows and cursor after a refresh failure', async () => {
+		h.setList({ items: [row('j1')], limit: 1, next_cursor: 'page-2', view: 'queue' });
+		h.store.acquireScope('activity', { view: 'queue', limit: 1 });
+		await flush();
+		h.failNext();
+
+		h.store.refreshScope('activity');
+		await flush();
+
+		expect(h.store.recordsForScope('activity').map((record) => record.jobId)).toEqual(['j1']);
+		expect(h.store.scopeViews.get('activity')).toMatchObject({
+			error: 'Activity could not be refreshed. Showing the last good results.',
+			nextCursor: 'page-2'
+		});
+	});
+
 	it('repairs immediately when a hidden tab becomes visible', async () => {
 		h.setList({ items: [row('j1')], limit: 50, next_cursor: null, view: 'queue' });
 		h.hidden.value = true;

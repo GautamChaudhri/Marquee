@@ -13,7 +13,12 @@ export type JobRow = Schemas['JobRow'];
 export type JobListResponse = Schemas['JobListResponse'];
 export type JobSnapshotResponse = Schemas['JobSnapshotResponse'];
 export type JobPresentation = Schemas['JobPresentation'];
+export type PresentationSection = JobPresentation['sections'][number];
+export type PresentationValue = Schemas['Fact']['value'];
 export type BatchSummaryResponse = Schemas['BatchSummaryResponse'];
+export type ActivityAttentionResponse = Schemas['ActivityAttentionResponse'];
+export type OperationsSnapshot = Schemas['OperationsSnapshot'];
+export type OperationsHistoryResponse = Schemas['OperationsHistoryResponse'];
 
 export type CompactProgress = Schemas['CompactProgress'];
 export type ProgressMeasurement = Schemas['ProgressMeasurement'];
@@ -37,9 +42,12 @@ export type EventItem = Schemas['EventItem'];
 export type EventListResponse = Schemas['EventListResponse'];
 
 export type AttemptListResponse = Schemas['AttemptListResponse'];
+export type AttemptItem = Schemas['AttemptItem'];
 export type AttemptLogPage = Schemas['AttemptLogPage'];
+export type AttemptLogLine = Schemas['AttemptLogLine'];
 export type ChildListResponse = Schemas['ChildListResponse'];
 export type ArtifactListResponse = Schemas['ArtifactListResponse'];
+export type ArtifactItemResponse = Schemas['ArtifactItemResponse'];
 
 export type CommandResponse = Schemas['CommandResponse'];
 export type CommandRequest = Schemas['CommandRequest'];
@@ -49,6 +57,7 @@ export type BulkActionResponse = Schemas['BulkActionResponse'];
 export type BulkActionItem = Schemas['BulkActionItem'];
 export type ConfirmMutationRequest = Schemas['ConfirmMutationRequest'];
 export type JobSubmissionResponse = Schemas['JobSubmissionResponse'];
+export type PlannedJobSubmissionResponse = Schemas['PlannedJobSubmissionResponse'];
 
 export type JobAction = Schemas['JobAction'];
 export type FeatureArea = Schemas['FeatureArea'];

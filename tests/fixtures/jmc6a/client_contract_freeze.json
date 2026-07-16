@@ -1,8 +1,5 @@
 {
   "job_paths": {
-    "/api/activity": [
-      "GET"
-    ],
     "/api/jobs": [
       "GET"
     ],
@@ -52,7 +49,7 @@
       "GET"
     ],
     "/api/jobs/{job_id}/priority": [
-      "PATCH"
+      "POST"
     ],
     "/api/jobs/{job_id}/raw/{kind}": [
       "GET"

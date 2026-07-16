@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
+	import FeatureActivityPanel from '$lib/activity/components/FeatureActivityPanel.svelte';
 	import SectionHeader from '$lib/components/SectionHeader.svelte';
 	import ProgressBar from '$lib/components/ProgressBar.svelte';
 	import PosterRankPanel from '$lib/components/PosterRankPanel.svelte';
@@ -21,6 +22,7 @@
 	let movies = $state<TasteTestMovie[]>([]);
 	let index = $state(0);
 	let busy = $state(false);
+	let initiatedJobIds = $state<string[]>([]);
 
 	const started = $derived(!!status?.path);
 	const isTasteTest = $derived(status?.path === 'taste_test');
@@ -80,6 +82,7 @@
 		busy = true;
 		try {
 			const res = await completeOnboarding(fetch);
+			initiatedJobIds = [res.rebuild_job.job_id, res.head_job.job_id];
 			status = res.status;
 			toast('Key Art Engine activated — training your taste now', 'good');
 			void goto('/taste');
@@ -105,6 +108,13 @@
 <SectionHeader
 	title="Jump-start the Key Art Engine"
 	subtitle="A quick taste test teaches the engine your style"
+/>
+
+<FeatureActivityPanel
+	scopeKey="feature:onboarding:training"
+	query={{ feature_area: 'ml_taste' }}
+	jobIds={initiatedJobIds}
+	heading="Training activity"
 />
 
 {#if data.error}

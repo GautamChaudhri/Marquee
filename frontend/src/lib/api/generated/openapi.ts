@@ -4,26 +4,6 @@
  */
 
 export interface paths {
-	'/api/activity': {
-		parameters: {
-			query?: never;
-			header?: never;
-			path?: never;
-			cookie?: never;
-		};
-		/**
-		 * Activity Feed
-		 * @description Newest activity across poster events, canonical job events, and pipeline runs.
-		 */
-		get: operations['activity_feed_api_activity_get'];
-		put?: never;
-		post?: never;
-		delete?: never;
-		options?: never;
-		head?: never;
-		patch?: never;
-		trace?: never;
-	};
 	'/api/audio-subs/deep-scan': {
 		parameters: {
 			query?: never;
@@ -611,6 +591,26 @@ export interface paths {
 		patch?: never;
 		trace?: never;
 	};
+	'/api/jobs/attention': {
+		parameters: {
+			query?: never;
+			header?: never;
+			path?: never;
+			cookie?: never;
+		};
+		/**
+		 * Activity Attention
+		 * @description Return one bounded aggregate for the Activity strip and navigation badge.
+		 */
+		get: operations['activity_attention_api_jobs_attention_get'];
+		put?: never;
+		post?: never;
+		delete?: never;
+		options?: never;
+		head?: never;
+		patch?: never;
+		trace?: never;
+	};
 	'/api/jobs/events/stream': {
 		parameters: {
 			query?: never;
@@ -864,12 +864,12 @@ export interface paths {
 		};
 		get?: never;
 		put?: never;
-		post?: never;
+		/** Update Job Priority */
+		post: operations['update_job_priority_api_jobs__job_id__priority_post'];
 		delete?: never;
 		options?: never;
 		head?: never;
-		/** Update Job Priority */
-		patch: operations['update_job_priority_api_jobs__job_id__priority_patch'];
+		patch?: never;
 		trace?: never;
 	};
 	'/api/jobs/{job_id}/raw/{kind}': {
@@ -3066,6 +3066,26 @@ export interface paths {
 		patch?: never;
 		trace?: never;
 	};
+	'/api/system/operations': {
+		parameters: {
+			query?: never;
+			header?: never;
+			path?: never;
+			cookie?: never;
+		};
+		/**
+		 * Operations Snapshot
+		 * @description One bounded typed snapshot for the lazy secondary Operations surface.
+		 */
+		get: operations['operations_snapshot_api_system_operations_get'];
+		put?: never;
+		post?: never;
+		delete?: never;
+		options?: never;
+		head?: never;
+		patch?: never;
+		trace?: never;
+	};
 	'/api/system/release-gpu': {
 		parameters: {
 			query?: never;
@@ -3754,6 +3774,22 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
 	schemas: {
+		/** ActivityAttentionResponse */
+		ActivityAttentionResponse: {
+			/** Error */
+			error: number;
+			highest_severity: components['schemas']['AttentionLevel'];
+			/** Needs Attention */
+			needs_attention: number;
+			/** Retrying */
+			retrying: number;
+			/** Running */
+			running: number;
+			/** Waiting Held */
+			waiting_held: number;
+			/** Warning */
+			warning: number;
+		};
 		/** ApplyRequest */
 		ApplyRequest: {
 			/** Bottom */
@@ -4721,7 +4757,11 @@ export interface components {
 			/** Eligible At */
 			eligible_at?: string | null;
 			evidence?: components['schemas']['EvidenceAvailability'];
+			/** Execution Class */
+			execution_class: string;
 			feature_area: components['schemas']['FeatureArea'];
+			/** Fence Token */
+			fence_token: number;
 			impact?: components['schemas']['PresentationImpact'] | null;
 			/**
 			 * Is Parent
@@ -4777,6 +4817,8 @@ export interface components {
 			desired_state: string;
 			/** Eligible At */
 			eligible_at: string | null;
+			/** Execution Class */
+			execution_class: string;
 			/** Fence Token */
 			fence_token: number;
 			/** Job Id */
@@ -4953,6 +4995,206 @@ export interface components {
 			/** Run Id */
 			run_id: string;
 		};
+		/** OperationsConnectionBudget */
+		OperationsConnectionBudget: {
+			/** Configured */
+			configured: number;
+			/** Maximum */
+			maximum: number;
+			/** Within Budget */
+			within_budget: boolean;
+		};
+		/** OperationsDatabase */
+		OperationsDatabase: {
+			budget: components['schemas']['OperationsConnectionBudget'];
+			/** Connection Roles */
+			connection_roles: {
+				[key: string]: number;
+			};
+			/** Observed Connections */
+			observed_connections: number;
+			/** Pool Checked In */
+			pool_checked_in?: number | null;
+			/** Pool Checked Out */
+			pool_checked_out?: number | null;
+			/** Pool Overflow */
+			pool_overflow?: number | null;
+			/** Pool Size */
+			pool_size?: number | null;
+		};
+		/** OperationsEvents */
+		OperationsEvents: {
+			/** Last Observed Event At */
+			last_observed_event_at?: string | null;
+			/** Listener Healthy */
+			listener_healthy: boolean;
+			/** Source */
+			source: string;
+		};
+		/** OperationsHistoryJob */
+		OperationsHistoryJob: {
+			/** Finished At */
+			finished_at?: string | null;
+			/** Job Id */
+			job_id: string;
+			/** Label */
+			label: string;
+			/** Started At */
+			started_at?: string | null;
+			/** Status */
+			status: string;
+			/** Subject */
+			subject?: string | null;
+			/** Type */
+			type: string;
+		};
+		/** OperationsHistoryPoint */
+		OperationsHistoryPoint: {
+			/** Active Jobs */
+			active_jobs: number;
+			/** Cpu Avg */
+			cpu_avg?: number | null;
+			/** Disk Read Bps */
+			disk_read_bps?: number | null;
+			/** Disk Write Bps */
+			disk_write_bps?: number | null;
+			/** Gpu Dec */
+			gpu_dec?: number | null;
+			/** Gpu Enc */
+			gpu_enc?: number | null;
+			/** Gpu Mem */
+			gpu_mem?: number | null;
+			/** Gpu Util */
+			gpu_util?: number | null;
+			/** Net Recv Bps */
+			net_recv_bps?: number | null;
+			/** Net Sent Bps */
+			net_sent_bps?: number | null;
+			/** Ram Pct */
+			ram_pct?: number | null;
+			/**
+			 * Ts
+			 * Format: date-time
+			 */
+			ts: string;
+		};
+		/** OperationsHistoryResponse */
+		OperationsHistoryResponse: {
+			/**
+			 * End At
+			 * Format: date-time
+			 */
+			end_at: string;
+			/** Jobs */
+			jobs: components['schemas']['OperationsHistoryJob'][];
+			/** Jobs Truncated */
+			jobs_truncated: boolean;
+			/** Points */
+			points: components['schemas']['OperationsHistoryPoint'][];
+			/**
+			 * Start At
+			 * Format: date-time
+			 */
+			start_at: string;
+			/**
+			 * Window
+			 * @enum {string}
+			 */
+			window: '15m' | '1h' | '6h' | '24h';
+		};
+		/** OperationsNode */
+		OperationsNode: {
+			/** Cpu Model */
+			cpu_model: string;
+			/** Cpu Percent */
+			cpu_percent?: number | null;
+			/** Cpu Temperature C */
+			cpu_temperature_c?: number | null;
+			/** Gpu Memory Percent */
+			gpu_memory_percent?: number | null;
+			/** Gpu Model */
+			gpu_model?: string | null;
+			/** Gpu Percent */
+			gpu_percent?: number | null;
+			/** Network Received Bytes */
+			network_received_bytes?: number | null;
+			/** Network Sent Bytes */
+			network_sent_bytes?: number | null;
+			/** Ram Percent */
+			ram_percent?: number | null;
+			/** Ram Total Bytes */
+			ram_total_bytes?: number | null;
+			/** Ram Used Bytes */
+			ram_used_bytes?: number | null;
+			/** Uptime */
+			uptime: string;
+		};
+		/** OperationsSchemaContract */
+		OperationsSchemaContract: {
+			/** Catalog Fingerprint */
+			catalog_fingerprint?: string | null;
+			/** Component */
+			component: string;
+			/** Durability */
+			durability: string;
+			/** Expected Version */
+			expected_version: number;
+		};
+		/** OperationsSnapshot */
+		OperationsSnapshot: {
+			/** Contracts */
+			contracts?: components['schemas']['OperationsSchemaContract'][];
+			database: components['schemas']['OperationsDatabase'];
+			events: components['schemas']['OperationsEvents'];
+			/**
+			 * Generated At
+			 * Format: date-time
+			 */
+			generated_at: string;
+			node: components['schemas']['OperationsNode'];
+			storage: components['schemas']['OperationsStorage'];
+			transport: components['schemas']['OperationsTransport'];
+			/**
+			 * Version
+			 * @default 1
+			 * @constant
+			 */
+			version: 1;
+			workers: components['schemas']['OperationsWorkers'];
+		};
+		/** OperationsStorage */
+		OperationsStorage: {
+			/** Disk Percent */
+			disk_percent?: number | null;
+			/** Disk Total Bytes */
+			disk_total_bytes?: number | null;
+			/** Disk Used Bytes */
+			disk_used_bytes?: number | null;
+			/** Poster Cache Bytes */
+			poster_cache_bytes: number;
+			/** Poster Cache Items */
+			poster_cache_items: number;
+		};
+		/** OperationsTransport */
+		OperationsTransport: {
+			/** Held Failed */
+			held_failed: number;
+			/** Oldest Eligible Age Seconds */
+			oldest_eligible_age_seconds?: number | null;
+			/** Picked */
+			picked: number;
+		};
+		/** OperationsWorkers */
+		OperationsWorkers: {
+			/** Active */
+			active: number;
+			/** Listener Healthy */
+			listener_healthy: boolean;
+			/** Queued */
+			queued: number;
+			/** Supervisor Available */
+			supervisor_available: boolean;
+		};
 		/** PipelineCacheClearRequestV1 */
 		PipelineCacheClearRequestV1: {
 			/**
@@ -5004,6 +5246,37 @@ export interface components {
 			request: {
 				[key: string]: unknown;
 			};
+		};
+		/**
+		 * PlannedJobSubmissionResponse
+		 * @description Canonical submission handle plus the bounded mutation-confirmation fence.
+		 */
+		PlannedJobSubmissionResponse: {
+			/** Configuration Version */
+			configuration_version: number;
+			/** Detail Url */
+			detail_url: string;
+			/**
+			 * Disposition
+			 * @enum {string}
+			 */
+			disposition: 'created' | 'reused';
+			/** Expires At */
+			expires_at: string;
+			/** Job Id */
+			job_id: string;
+			/** Phase */
+			phase: string;
+			/** Plan Version */
+			plan_version: string;
+			/**
+			 * Requires Confirmation
+			 * @default true
+			 * @constant
+			 */
+			requires_confirmation: true;
+			/** Snapshot Url */
+			snapshot_url: string;
 		};
 		/** PolicyAuditBody */
 		PolicyAuditBody: {
@@ -5858,37 +6131,6 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
-	activity_feed_api_activity_get: {
-		parameters: {
-			query?: {
-				limit?: number;
-			};
-			header?: never;
-			path?: never;
-			cookie?: never;
-		};
-		requestBody?: never;
-		responses: {
-			/** @description Successful Response */
-			200: {
-				headers: {
-					[name: string]: unknown;
-				};
-				content: {
-					'application/json': unknown;
-				};
-			};
-			/** @description Validation Error */
-			422: {
-				headers: {
-					[name: string]: unknown;
-				};
-				content: {
-					'application/json': components['schemas']['HTTPValidationError'];
-				};
-			};
-		};
-	};
 	deep_scan_api_audio_subs_deep_scan_post: {
 		parameters: {
 			query?: never;
@@ -6772,7 +7014,7 @@ export interface operations {
 					[name: string]: unknown;
 				};
 				content: {
-					'application/json': unknown;
+					'application/json': components['schemas']['PlannedJobSubmissionResponse'];
 				};
 			};
 			/** @description Validation Error */
@@ -6804,7 +7046,7 @@ export interface operations {
 					[name: string]: unknown;
 				};
 				content: {
-					'application/json': unknown;
+					'application/json': components['schemas']['PlannedJobSubmissionResponse'];
 				};
 			};
 			/** @description Validation Error */
@@ -6836,7 +7078,7 @@ export interface operations {
 					[name: string]: unknown;
 				};
 				content: {
-					'application/json': unknown;
+					'application/json': components['schemas']['PlannedJobSubmissionResponse'];
 				};
 			};
 			/** @description Validation Error */
@@ -6871,7 +7113,7 @@ export interface operations {
 					[name: string]: unknown;
 				};
 				content: {
-					'application/json': unknown;
+					'application/json': components['schemas']['PlannedJobSubmissionResponse'];
 				};
 			};
 			/** @description Validation Error */
@@ -6904,6 +7146,8 @@ export interface operations {
 				parent_id?: string | null;
 				root_id?: string | null;
 				correlation_id?: string | null;
+				worker_id?: string | null;
+				execution_class?: string | null;
 				created_after?: number | null;
 				created_before?: number | null;
 			};
@@ -6962,6 +7206,26 @@ export interface operations {
 				};
 				content: {
 					'application/json': components['schemas']['HTTPValidationError'];
+				};
+			};
+		};
+	};
+	activity_attention_api_jobs_attention_get: {
+		parameters: {
+			query?: never;
+			header?: never;
+			path?: never;
+			cookie?: never;
+		};
+		requestBody?: never;
+		responses: {
+			/** @description Successful Response */
+			200: {
+				headers: {
+					[name: string]: unknown;
+				};
+				content: {
+					'application/json': components['schemas']['ActivityAttentionResponse'];
 				};
 			};
 		};
@@ -7274,6 +7538,7 @@ export interface operations {
 				cursor?: string | null;
 				limit?: number;
 				outcome?: string | null;
+				sort?: 'created' | 'failed_first';
 			};
 			header?: never;
 			path: {
@@ -7438,7 +7703,7 @@ export interface operations {
 			};
 		};
 	};
-	update_job_priority_api_jobs__job_id__priority_patch: {
+	update_job_priority_api_jobs__job_id__priority_post: {
 		parameters: {
 			query?: never;
 			header?: never;
@@ -10961,7 +11226,7 @@ export interface operations {
 					[name: string]: unknown;
 				};
 				content: {
-					'application/json': unknown;
+					'application/json': components['schemas']['JobSubmissionResponse'];
 				};
 			};
 			/** @description Validation Error */
@@ -11188,7 +11453,7 @@ export interface operations {
 	system_metrics_history_api_system_metrics_history_get: {
 		parameters: {
 			query?: {
-				window?: string;
+				window?: '15m' | '1h' | '6h' | '24h';
 				resolution?: number;
 			};
 			header?: never;
@@ -11203,7 +11468,7 @@ export interface operations {
 					[name: string]: unknown;
 				};
 				content: {
-					'application/json': unknown;
+					'application/json': components['schemas']['OperationsHistoryResponse'];
 				};
 			};
 			/** @description Validation Error */
@@ -11213,6 +11478,26 @@ export interface operations {
 				};
 				content: {
 					'application/json': components['schemas']['HTTPValidationError'];
+				};
+			};
+		};
+	};
+	operations_snapshot_api_system_operations_get: {
+		parameters: {
+			query?: never;
+			header?: never;
+			path?: never;
+			cookie?: never;
+		};
+		requestBody?: never;
+		responses: {
+			/** @description Successful Response */
+			200: {
+				headers: {
+					[name: string]: unknown;
+				};
+				content: {
+					'application/json': components['schemas']['OperationsSnapshot'];
 				};
 			};
 		};

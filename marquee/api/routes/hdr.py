@@ -14,9 +14,12 @@ from pydantic import BaseModel
 from sqlalchemy import String, cast, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from marquee.api.job_submission import JobSubmissionResponse, submission_response
+from marquee.api.job_submission import (
+    JobSubmissionResponse,
+    PlannedJobSubmissionResponse,
+    submission_response,
+)
 from marquee.api.library_serializers import enrich_movie, resolution_label
-from marquee.api.routes.jobs import job_summary
 from marquee.api.routes.library import _coverage_by_media_file
 from marquee.core.dovi_eligibility import conversion_eligibility
 from marquee.core.hdr_rollups import EpisodeHdr, episode_status, season_rollup, show_rollup
@@ -24,6 +27,7 @@ from marquee.core.jobs.batches import BatchScope, create_fixed_batch
 from marquee.core.jobs.contracts import TriggerKind
 from marquee.core.jobs.dovi_conversion_documents import (
     DoviConvertRequestV1,
+    DoviConvertResultV1,
     DoviDiscardRequestV1,
     DoviProbeV1,
     DoviPublishRequestV1,
@@ -1146,26 +1150,6 @@ async def hdr_tv_detail(
 
     rollup = show_rollup(season_rollups)
 
-    episode_ids = [episode.id for episode, _ in episode_rows]
-    active_jobs = (
-        (
-            await db.execute(
-                select(Job)
-                .where(
-                    Job.type == "dovi_analyze",
-                    Job.subject_kind == "episode",
-                    Job.subject_reference.in_([str(episode_id) for episode_id in episode_ids]),
-                    Job.phase != "terminal",
-                )
-                .order_by(Job.created_at.desc(), Job.id.desc())
-            )
-        )
-        .scalars()
-        .all()
-        if episode_ids
-        else []
-    )
-
     return {
         "series": {
             "id": series.id,
@@ -1185,7 +1169,6 @@ async def hdr_tv_detail(
         },
         "rollup": rollup,
         "seasons": seasons_payload,
-        "analysis_jobs": [job_summary(job) for job in active_jobs],
         "binaries": {"ffprobe": binaries.resolve("ffprobe") is not None},
     }
 
@@ -1463,13 +1446,23 @@ async def _latest_dovi_conversion_job(db: AsyncSession, movie_id: int) -> Job | 
     ).scalar_one_or_none()
 
 
-def _dovi_job_detail(job: Job | None) -> dict | None:
-    if job is None:
+def _dovi_conversion_candidate(job: Job | None) -> dict[str, object] | None:
+    """Project a validated built-in result into the feature page's domain read model."""
+    if job is None or job.result is None:
         return None
-    data = job_summary(job)
-    data["result"] = job.result
-    data["error"] = job.error
-    return data
+    try:
+        result = DoviConvertResultV1.model_validate(job.result)
+    except ValueError:
+        logger.warning("Ignoring invalid dovi_convert result for job %s", job.id)
+        return None
+    if result.outcome != "succeeded" or result.artifact_id is None:
+        return None
+    return {
+        "artifact_id": result.artifact_id,
+        "artifact_size_bytes": result.artifact_size_bytes,
+        "kind": result.kind,
+        "original_untouched": result.original_untouched,
+    }
 
 
 def _dovi_state_to_dict(state: DoviState | None) -> dict[str, Any] | None:
@@ -1540,7 +1533,6 @@ async def hdr_movie_detail(
         else None
     )
     hdr_tags = ordered_tags(classify_hdr_tags(movie.hdr_type_raw))
-    active = await _active_dovi_job(db, movie_id)
     conversion_job = await _latest_dovi_conversion_job(db, movie_id)
     return {
         "movie": _movie_detail_dict(movie),
@@ -1553,8 +1545,7 @@ async def hdr_movie_detail(
             "dovi_tool": binaries.resolve("dovi_tool") is not None,
             "ffprobe": binaries.resolve("ffprobe") is not None,
         },
-        "analysis_job": job_summary(active) if active else None,
-        "conversion_job": _dovi_job_detail(conversion_job),
+        "conversion_candidate": _dovi_conversion_candidate(conversion_job),
     }
 
 
@@ -1598,12 +1589,12 @@ async def analyze_movie_dovi(
     return submission_response(result)
 
 
-@router.post("/{movie_id}/convert")
+@router.post("/{movie_id}/convert", response_model=PlannedJobSubmissionResponse)
 async def convert_movie_dovi(
     movie_id: int,
     body: DoviConvertRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
-):
+) -> dict[str, object]:
     """Enqueue a supported Dolby Vision Profile 8.1 remediation job."""
     missing = [
         name for name in ("ffmpeg", "ffprobe", "dovi_tool") if binaries.resolve(name) is None
@@ -1698,17 +1689,13 @@ async def convert_movie_dovi(
     detail = await db.get(MediaOperationDetail, planned.job_id)
     if job is None or detail is None or detail.plan_expires_at is None:
         raise HTTPException(status_code=500, detail="Dolby Vision plan was not persisted")
-    job_detail = _dovi_job_detail(job)
-    if job_detail is None:
-        raise HTTPException(status_code=500, detail="Dolby Vision plan detail is unavailable")
     await db.commit()
-    return {
-        **job_detail,
-        "plan_version": plan_version(detail),
-        "configuration_version": job.configuration_version,
-        "expires_at": detail.plan_expires_at.isoformat(),
-        "requires_confirmation": True,
-    }
+    return PlannedJobSubmissionResponse(
+        **submission_response(planned).model_dump(),
+        plan_version=plan_version(detail),
+        configuration_version=job.configuration_version,
+        expires_at=detail.plan_expires_at.isoformat(),
+    ).model_dump(mode="json")
 
 
 async def _dovi_candidate(db: AsyncSession, movie_id: int, artifact_id: int) -> JobArtifact:
@@ -1776,25 +1763,24 @@ async def _plan_dovi_decision(
     detail = await db.get(MediaOperationDetail, planned.job_id)
     if job is None or detail is None or detail.plan_expires_at is None:
         raise HTTPException(status_code=500, detail="Dolby Vision decision was not persisted")
-    job_detail = _dovi_job_detail(job)
-    if job_detail is None:
-        raise HTTPException(status_code=500, detail="Dolby Vision decision detail is unavailable")
     await db.commit()
-    return {
-        **job_detail,
-        "plan_version": plan_version(detail),
-        "configuration_version": job.configuration_version,
-        "expires_at": detail.plan_expires_at.isoformat(),
-        "requires_confirmation": True,
-    }
+    return PlannedJobSubmissionResponse(
+        **submission_response(planned).model_dump(),
+        plan_version=plan_version(detail),
+        configuration_version=job.configuration_version,
+        expires_at=detail.plan_expires_at.isoformat(),
+    ).model_dump(mode="json")
 
 
-@router.post("/{movie_id}/conversion-candidates/{artifact_id}/publish")
+@router.post(
+    "/{movie_id}/conversion-candidates/{artifact_id}/publish",
+    response_model=PlannedJobSubmissionResponse,
+)
 async def publish_movie_dovi(
     movie_id: int,
     artifact_id: int,
     db: Annotated[AsyncSession, Depends(get_db)],
-):
+) -> dict[str, object]:
     artifact = await _dovi_candidate(db, movie_id, artifact_id)
     metadata = artifact.artifact_metadata or {}
     request = DoviPublishRequestV1(
@@ -1817,12 +1803,15 @@ async def publish_movie_dovi(
     )
 
 
-@router.post("/{movie_id}/conversion-candidates/{artifact_id}/restore")
+@router.post(
+    "/{movie_id}/conversion-candidates/{artifact_id}/restore",
+    response_model=PlannedJobSubmissionResponse,
+)
 async def restore_movie_dovi(
     movie_id: int,
     artifact_id: int,
     db: Annotated[AsyncSession, Depends(get_db)],
-):
+) -> dict[str, object]:
     artifact = await _dovi_candidate(db, movie_id, artifact_id)
     metadata = artifact.artifact_metadata or {}
     backup_id = int(metadata.get("backup_artifact_id") or 0)
@@ -1855,12 +1844,15 @@ async def restore_movie_dovi(
     )
 
 
-@router.post("/{movie_id}/conversion-candidates/{artifact_id}/discard")
+@router.post(
+    "/{movie_id}/conversion-candidates/{artifact_id}/discard",
+    response_model=PlannedJobSubmissionResponse,
+)
 async def discard_movie_dovi(
     movie_id: int,
     artifact_id: int,
     db: Annotated[AsyncSession, Depends(get_db)],
-):
+) -> dict[str, object]:
     artifact = await _dovi_candidate(db, movie_id, artifact_id)
     metadata = artifact.artifact_metadata or {}
     request = DoviDiscardRequestV1(

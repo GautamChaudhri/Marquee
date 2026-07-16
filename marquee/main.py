@@ -278,7 +278,6 @@ async def log_requests(request: Request, call_next):
 # Routers
 # ---------------------------------------------------------------------------
 
-from marquee.api.routes.activity import router as activity_router  # noqa: E402
 from marquee.api.routes.audio_subs import router as audio_subs_router  # noqa: E402
 from marquee.api.routes.backup import router as backup_router  # noqa: E402
 from marquee.api.routes.config import router as config_router  # noqa: E402
@@ -317,7 +316,6 @@ app.include_router(onboarding_router)
 app.include_router(config_router)
 app.include_router(text_profiles_router)
 app.include_router(backup_router)
-app.include_router(activity_router)
 app.include_router(hdr_router)
 app.include_router(settings_router)
 app.include_router(system_router)

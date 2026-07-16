@@ -1,10 +1,9 @@
-<!-- eslint-disable @typescript-eslint/no-unused-vars svelte/prefer-svelte-reactivity svelte/no-unused-svelte-ignore svelte/require-each-key -->
 <script lang="ts">
-	import { onDestroy } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
+	import FeatureActivityPanel from '$lib/activity/components/FeatureActivityPanel.svelte';
+	import type { JobSnapshotResponse } from '$lib/activity/types';
 	import { analyzeDoviBatch } from '$lib/api/radarr-overlay';
-	import { trackJob } from '$lib/jobs';
 	import HdrBadge from '$lib/components/HdrBadge.svelte';
 	import { toast } from '$lib/toast';
 	import type { HdrKind, RadarrOverlayItem, RadarrOverlayStatus } from '$lib/api/types';
@@ -176,53 +175,39 @@
 
 	// ── Analyze DoVi (batch over Radarr-known Dolby Vision titles) ────────
 	let analyzing = $state(false);
-	let analyzePercent = $state(0);
-	let analyzeMessage = $state('');
-	let stopAnalyze: (() => void) | null = null;
+	let initiatedJobIds = $state<string[]>([]);
 
 	async function analyzeAllDovi() {
 		if (analyzing) return;
 		analyzing = true;
-		analyzePercent = 0;
-		analyzeMessage = 'Queuing Dolby Vision analysis…';
 		try {
-			const { job_id, total } = await analyzeDoviBatch(fetch);
-			analyzeMessage = `Analyzing ${total} Dolby Vision ${total === 1 ? 'title' : 'titles'}…`;
-			stopAnalyze = trackJob(
-				fetch,
-				job_id,
-				{
-					onProgress: ({ detail }) => {
-						const d = detail as { percent?: number; message?: string };
-						if (typeof d.percent === 'number') analyzePercent = d.percent;
-						if (typeof d.message === 'string') analyzeMessage = d.message;
-					},
-					onDone: async (job) => {
-						stopAnalyze = null;
-						analyzing = false;
-						analyzePercent = 100;
-						if (job.status === 'succeeded') {
-							toast('Dolby Vision analysis complete', 'good');
-							await goto(page.url, { replaceState: true, noScroll: true, invalidateAll: true });
-						} else {
-							toast(`Analysis ${job.status}`, 'bad');
-						}
-					},
-					onError: () => toast('Analysis progress stream interrupted', 'bad')
-				},
-				{ eventsUrl: `/api/jobs/${job_id}/snapshot` }
-			);
+			const { job_id } = await analyzeDoviBatch(fetch);
+			initiatedJobIds = [...new Set([...initiatedJobIds, job_id])];
 		} catch (e) {
 			analyzing = false;
 			toast(e instanceof Error ? e.message : 'Could not start Dolby Vision analysis', 'bad');
 		}
 	}
 
-	onDestroy(() => stopAnalyze?.());
+	async function handleJobSettled(snapshot: JobSnapshotResponse) {
+		analyzing = false;
+		toast(
+			`Dolby Vision analysis ${snapshot.status.label.toLowerCase()}`,
+			snapshot.status.outcome === 'succeeded' ? 'good' : 'bad'
+		);
+		await goto(page.url, { replaceState: true, noScroll: true, invalidateAll: true });
+	}
 </script>
 
 {#if data.error || !data.data}
 	<section class="page">
+		<FeatureActivityPanel
+			scopeKey="feature:hdr:movies"
+			query={{ feature_area: 'hdr' }}
+			jobIds={initiatedJobIds}
+			heading="Movie HDR activity"
+			onSettled={handleJobSettled}
+		/>
 		<div class="hero">
 			<div>
 				<p class="eyebrow">Toolbox</p>
@@ -265,13 +250,6 @@
 				</button>
 			</div>
 		</div>
-
-		{#if analyzing}
-			<div class="analyze-banner">
-				<div class="analyze-bar"><span style={`width:${Math.max(4, analyzePercent)}%`}></span></div>
-				<small>{analyzeMessage}</small>
-			</div>
-		{/if}
 
 		<div class="panel">
 			<div class="bar-head">
@@ -525,24 +503,6 @@
 	.analyze-btn:disabled {
 		opacity: 0.6;
 		cursor: progress;
-	}
-	.analyze-banner {
-		margin-top: 14px;
-		display: flex;
-		flex-direction: column;
-		gap: 6px;
-	}
-	.analyze-bar {
-		height: 6px;
-		border-radius: 999px;
-		background: var(--line);
-		overflow: hidden;
-	}
-	.analyze-bar span {
-		display: block;
-		height: 100%;
-		background: var(--gold);
-		transition: width 0.3s ease;
 	}
 	.stat,
 	.panel {

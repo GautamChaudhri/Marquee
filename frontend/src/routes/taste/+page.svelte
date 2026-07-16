@@ -1,12 +1,12 @@
 <script lang="ts">
-	import { onDestroy } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
+	import FeatureActivityPanel from '$lib/activity/components/FeatureActivityPanel.svelte';
+	import type { JobSnapshotResponse } from '$lib/activity/types';
 	import SectionHeader from '$lib/components/SectionHeader.svelte';
 	import StatCard from '$lib/components/StatCard.svelte';
 	import ProgressBar from '$lib/components/ProgressBar.svelte';
 	import StatusDot from '$lib/components/StatusDot.svelte';
-	import RunProgress from '$lib/components/RunProgress.svelte';
 	import Icon from '$lib/components/Icon.svelte';
 	import TasteMap from '$lib/components/TasteMap.svelte';
 	import {
@@ -14,7 +14,6 @@
 		activateTasteProfile,
 		archiveLearnedHead,
 		archiveTasteProfile,
-		cancelRetrain,
 		deleteLearnedHead,
 		deleteTasteProfile,
 		deleteTasteProfileExemplar,
@@ -29,7 +28,6 @@
 		retrainHead,
 		retrainTaste
 	} from '$lib/api/taste';
-	import { trackJob, type JobProgressDetail } from '$lib/jobs';
 	import { toast } from '$lib/toast';
 	import type {
 		ManagedArtifactSummary,
@@ -122,52 +120,26 @@
 		{ id: 'library', label: 'Library posters', hint: 'Every deployed poster' }
 	]);
 	let source = $state<TasteSource>('training_dir');
-	let rebuildDetail = $state<JobProgressDetail>({});
-	let rebuildStatus = $state('running');
 	let rebuilding = $state(false);
 	let rebuildJobId = $state<string | null>(null);
-	let stopRebuild: (() => void) | null = null;
+	let headJobId = $state<string | null>(null);
+	let initiatedJobIds = $state<string[]>([]);
 
 	async function startRebuild() {
 		if (rebuilding) return;
 		rebuilding = true;
-		rebuildDetail = {};
-		rebuildStatus = 'running';
 		try {
 			const job = await retrainTaste(fetch, source, library);
 			rebuildJobId = job.job_id;
+			initiatedJobIds = [...new Set([...initiatedJobIds, job.job_id])];
 			toast('Taste rebuild queued', 'info');
-			stopRebuild?.();
-			stopRebuild = trackJob(fetch, job.job_id, {
-				onProgress: ({ status: s, detail }) => {
-					rebuildStatus = s;
-					rebuildDetail = detail;
-				},
-				onDone: (j) => {
-					rebuilding = false;
-					toast(`Taste rebuild ${j.status}`, j.status === 'succeeded' ? 'good' : 'bad');
-					void refresh();
-				}
-			});
 		} catch (e) {
 			rebuilding = false;
 			toast(e instanceof Error ? e.message : 'Rebuild failed to start', 'bad');
 		}
 	}
 
-	async function cancelRebuild() {
-		try {
-			await cancelRetrain(fetch);
-			toast('Cancellation requested', 'info');
-		} catch {
-			toast('Could not cancel', 'bad');
-		}
-	}
-
-	let headDetailProgress = $state<JobProgressDetail>({});
-	let headStatus = $state('running');
 	let headTraining = $state(false);
-	let stopHead: (() => void) | null = null;
 	const head = $derived(status?.learned_head);
 	const headUnit = $derived(head?.mode === 'pairwise' ? 'pairs' : 'labels');
 	const ready = $derived(
@@ -179,23 +151,11 @@
 	async function startHead() {
 		if (headTraining) return;
 		headTraining = true;
-		headDetailProgress = {};
-		headStatus = 'running';
 		try {
 			const job = await retrainHead(fetch, library);
+			headJobId = job.job_id;
+			initiatedJobIds = [...new Set([...initiatedJobIds, job.job_id])];
 			toast('Key Art Engine training queued', 'info');
-			stopHead?.();
-			stopHead = trackJob(fetch, job.job_id, {
-				onProgress: ({ status: s, detail }) => {
-					headStatus = s;
-					headDetailProgress = detail;
-				},
-				onDone: (j) => {
-					headTraining = false;
-					toast(`Key Art Engine ${j.status}`, j.status === 'succeeded' ? 'good' : 'bad');
-					void refresh();
-				}
-			});
 		} catch (e) {
 			headTraining = false;
 			toast(e instanceof Error ? e.message : 'Training failed to start', 'bad');
@@ -345,10 +305,15 @@
 		return (row.summary?.[key] as number | string | undefined) ?? 0;
 	}
 
-	onDestroy(() => {
-		stopRebuild?.();
-		stopHead?.();
-	});
+	async function handleJobSettled(snapshot: JobSnapshotResponse) {
+		if (snapshot.job_id === rebuildJobId) rebuilding = false;
+		if (snapshot.job_id === headJobId) headTraining = false;
+		toast(
+			`Taste work ${snapshot.status.label.toLowerCase()}`,
+			snapshot.status.outcome === 'succeeded' ? 'good' : 'bad'
+		);
+		await refresh();
+	}
 
 	$effect(() => {
 		if (!selectedProfileId && profiles.length) {
@@ -449,6 +414,14 @@
 		</div>
 	{/if}
 
+	<FeatureActivityPanel
+		scopeKey={`feature:taste:${library}`}
+		query={{ feature_area: 'ml_taste' }}
+		jobIds={initiatedJobIds}
+		heading="Taste training activity"
+		onSettled={handleJobSettled}
+	/>
+
 	<div class="train-cols">
 		<section class="train-card">
 			<h3>Initial training</h3>
@@ -469,14 +442,6 @@
 					</button>
 				{/each}
 			</div>
-			{#if rebuilding || rebuildJobId}
-				<RunProgress
-					detail={rebuildDetail}
-					status={rebuildStatus}
-					title="Rebuilding taste profile"
-					onCancel={rebuilding ? cancelRebuild : undefined}
-				/>
-			{/if}
 			<button class="btn-gold" onclick={startRebuild} disabled={rebuilding}>
 				{rebuilding ? 'Rebuilding…' : 'Rebuild profile'}
 			</button>
@@ -488,13 +453,6 @@
 				Picks accumulate labels automatically. Train the learned ranker whenever you want to fold in
 				your latest choices.
 			</p>
-			{#if headTraining}
-				<RunProgress
-					detail={headDetailProgress}
-					status={headStatus}
-					title="Training Key Art Engine"
-				/>
-			{/if}
 			{#if !ready}
 				<div class="hint">
 					Needs more data to activate. Keep approving posters to reach the thresholds above.

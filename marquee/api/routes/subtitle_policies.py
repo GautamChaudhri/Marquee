@@ -208,7 +208,7 @@ async def apply_policy(
     body: SelectionBody,
     db: Annotated[AsyncSession, Depends(get_db)],
     idempotency_key: Annotated[str, Header(alias="Idempotency-Key", min_length=1, max_length=240)],
-):
+) -> JobSubmissionResponse:
     """Evaluate once, freeze one immutable plan per file, and seal the batch."""
     try:
         async with db.begin():

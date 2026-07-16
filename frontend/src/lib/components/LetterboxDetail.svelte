@@ -1,13 +1,10 @@
 <script lang="ts">
-	import { onDestroy } from 'svelte';
+	import FeatureActivityPanel from '$lib/activity/components/FeatureActivityPanel.svelte';
+	import { confirmMutation } from '$lib/activity/client';
+	import type { JobSnapshotResponse } from '$lib/activity/types';
 	import { aspectRatio, confidenceTone, letterboxMeta, toneVar } from '$lib/display';
 	import { toast } from '$lib/toast';
-	import type {
-		LetterboxDetail,
-		MediaJobSnapshot,
-		ReencodeArtifact,
-		ReencodePlan
-	} from '$lib/api/types';
+	import type { LetterboxDetail, ReencodeArtifact, ReencodePlan } from '$lib/api/types';
 	import {
 		getLetterboxState,
 		detectLetterbox,
@@ -17,17 +14,11 @@
 		removeLetterbox,
 		confirmLetterbox,
 		createReencodePlan,
-		confirmJob,
-		cancelJob,
-		getMediaJob,
 		listReencodeArtifacts,
 		replaceOriginal,
 		restoreOriginal,
 		deleteArtifact
 	} from '$lib/api/letterbox';
-	import { subscribe } from '$lib/sse';
-	import { getJob, isTerminal, type JobSnapshot } from '$lib/api/jobs';
-	import { jitterMs } from '$lib/jobs';
 	import {
 		CPU_PRESETS,
 		KNOWN_ENCODERS,
@@ -39,7 +30,6 @@
 		type QualityProfile
 	} from '$lib/letterbox/encodeSettings';
 	import StatusDot from './StatusDot.svelte';
-	import ProgressBar from './ProgressBar.svelte';
 	import Icon from './Icon.svelte';
 	import LetterboxFrame from './LetterboxFrame.svelte';
 	import { pairKey, pairColorMap, agreeCount } from '$lib/letterbox-samples';
@@ -54,14 +44,12 @@
 		movieId,
 		onChanged,
 		onAnalyzeAll,
-		analyzing = false,
-		onEncodeState
+		analyzing = false
 	}: {
 		movieId: number | null;
 		onChanged: () => void;
 		onAnalyzeAll: () => void;
 		analyzing?: boolean;
-		onEncodeState?: (encoding: boolean, progress: number, stage: string | null) => void;
 	} = $props();
 
 	let detail = $state<LetterboxDetail | null>(null);
@@ -71,40 +59,11 @@
 	let showConf = $state(false);
 	let previewMinute = $state<number | null>(null);
 
-	function stopEncodeStream() {
-		if (unsub) {
-			unsub();
-			unsub = null;
-		}
-		if (encodePoll) {
-			clearInterval(encodePoll);
-			encodePoll = null;
-		}
-	}
-
-	let detectUnsub: (() => void) | null = null;
 	let detecting = $state(false);
-	let detectJobId = $state<string | null>(null);
-
-	function stopDetectStream() {
-		detectUnsub?.();
-		detectUnsub = null;
-	}
-
-	// This component is reused as movieId changes (not remounted), so the
-	// movieId effect tears down the prior stream — but also close it on actual
-	// unmount so a live subscription never dangles and wedges a browser connection
-	// slot (onbeforeunload only covers full-page navigation, not SPA unmount).
-	onDestroy(() => {
-		stopEncodeStream();
-		stopDetectStream();
-	});
+	let initiatedJobIds = $state<string[]>([]);
 
 	function resetReencodeState() {
-		stopEncodeStream();
-		stopDetectStream();
 		detecting = false;
-		detectJobId = null;
 		method = 'quick';
 		settingsMode = 'simple';
 		selectedProfile = 'balanced';
@@ -114,12 +73,6 @@
 		planLoading = false;
 		artifact = null;
 		encoding = false;
-		encodeDone = false;
-		encodeProgress = 0;
-		encodeStage = null;
-		encodeMessage = null;
-		encodeFps = null;
-		encodeSpeed = null;
 		setEncoder = 'auto';
 		setQuality = null;
 		setPreset = '';
@@ -144,7 +97,6 @@
 			.then((d) => {
 				detail = d;
 				hydrateReencodeState(d);
-				hydrateDetection(d?.detection_job ?? null);
 			})
 			.catch((e) => (loadError = e instanceof Error ? e.message : 'Failed to load'))
 			.finally(() => (loading = false));
@@ -224,56 +176,39 @@
 			: null
 	);
 
-	async function finishDetection(jobId: string) {
-		if (detectJobId !== jobId) return;
-		stopDetectStream();
+	function bindJob(result: unknown) {
+		if (typeof result !== 'object' || result === null || !('job_id' in result)) return false;
+		const jobId = (result as { job_id?: unknown }).job_id;
+		if (typeof jobId !== 'string') return false;
+		initiatedJobIds = initiatedJobIds.includes(jobId)
+			? initiatedJobIds
+			: [...initiatedJobIds, jobId];
+		return true;
+	}
+
+	async function handleJobSettled(snapshot: JobSnapshotResponse) {
 		detecting = false;
-		detectJobId = null;
-		try {
-			const job = await getJob(fetch, jobId);
-			if (job.status === 'succeeded') {
-				toast('Analysis complete', 'good');
-			} else {
-				const message =
-					job.error && typeof job.error === 'object' && 'message' in job.error
-						? String(job.error.message)
-						: null;
-				toast(message ?? `Analysis ${job.status}`, 'bad');
-			}
-		} catch {
-			toast('Analysis finished; refreshing the movie state', 'info');
+		encoding = false;
+		busy = false;
+		if (snapshot.type === 'letterbox_reencode' && snapshot.status.outcome === 'succeeded' && id) {
+			const list = await listReencodeArtifacts(fetch, { movie_id: id });
+			artifact =
+				list.items.find((a) => a.status === 'candidate_ready' || a.status === 'kept') ?? null;
 		}
+		toast(
+			`${snapshot.label} ${snapshot.status.label.toLowerCase()}`,
+			snapshot.status.outcome === 'succeeded' ? 'good' : 'bad'
+		);
 		lastId = null;
 		onChanged();
-	}
-
-	function trackDetection(job: Pick<JobSnapshot, 'job_id' | 'status' | 'events_url'>) {
-		stopDetectStream();
-		detectJobId = job.job_id;
-		detecting = !isTerminal(job.status);
-		if (!detecting) {
-			void finishDetection(job.job_id);
-			return;
-		}
-		detectUnsub = subscribe(job.events_url, ['message', 'done'], (type, raw) => {
-			if (type === 'done') {
-				void finishDetection(job.job_id);
-				return;
-			}
-			const event = (raw ?? {}) as { state?: string };
-			if (event.state && isTerminal(event.state)) void finishDetection(job.job_id);
-		});
-	}
-
-	function hydrateDetection(job: LetterboxDetail['detection_job']) {
-		if (job) trackDetection(job);
 	}
 
 	async function startDetection() {
 		if (id == null || busy || detecting) return;
 		busy = true;
 		try {
-			trackDetection(await detectLetterbox(fetch, id));
+			detecting = true;
+			bindJob(await detectLetterbox(fetch, id));
 			toast('Analysis queued', 'info');
 		} catch (e) {
 			toast(e instanceof Error ? e.message : 'Could not queue analysis', 'bad');
@@ -286,7 +221,8 @@
 		if (id == null || busy || detecting) return;
 		busy = true;
 		try {
-			trackDetection(await detectLetterbox(fetch, id, { thorough: true }));
+			detecting = true;
+			bindJob(await detectLetterbox(fetch, id, { thorough: true }));
 			toast('Thorough analysis queued', 'info');
 		} catch (e) {
 			toast(e instanceof Error ? e.message : 'Could not queue thorough analysis', 'bad');
@@ -299,8 +235,9 @@
 		if (id == null || busy || detecting) return;
 		busy = true;
 		try {
-			await removeLetterbox(fetch, id);
-			trackDetection(await detectLetterbox(fetch, id));
+			bindJob(await removeLetterbox(fetch, id));
+			detecting = true;
+			bindJob(await detectLetterbox(fetch, id));
 			toast('Reprocess queued', 'info');
 		} catch (e) {
 			toast(e instanceof Error ? e.message : 'Could not queue reprocess', 'bad');
@@ -313,10 +250,12 @@
 		if (movieId == null || busy) return;
 		busy = true;
 		try {
-			await fn();
+			const result = await fn();
 			toast(okMsg, 'good');
-			lastId = null;
-			onChanged();
+			if (!bindJob(result)) {
+				lastId = null;
+				onChanged();
+			}
 		} catch (e) {
 			toast(e instanceof Error ? e.message : 'Action failed', 'bad');
 		} finally {
@@ -352,24 +291,12 @@
 	let planError = $state<string | null>(null);
 	let planLoading = $state(false);
 	let encoding = $state(false);
-	let encodeProgress = $state(0);
-	let encodeStage = $state<string | null>(null);
-	let encodeMessage = $state<string | null>(null);
-	let encodeFps = $state<number | null>(null);
-	let encodeSpeed = $state<number | null>(null);
 	let artifact = $state<ReencodeArtifact | null>(null);
-	let unsub: (() => void) | null = null;
-	// Poll fallback for the encode bar + a once-only completion guard. The first
-	// A subscription opened right after confirm sometimes doesn't stream live, so we
-	// drive progress from the job snapshot too (mirrors the board's tray poll).
-	let encodePoll: ReturnType<typeof setInterval> | null = null;
-	let encodeDone = false;
 
 	const reencodeMode = $derived.by(() => {
-		const jobStatus = detail?.reencode?.job?.status;
 		const artifactStatus = detail?.reencode?.artifact?.status;
-		if (jobStatus === 'planned') return 'planned';
-		if (jobStatus === 'queued' || jobStatus === 'running') return 'encoding';
+		if (plan && !encoding) return 'planned';
+		if (encoding) return 'encoding';
 		if (artifactStatus === 'candidate_ready' || artifactStatus === 'kept') return 'ready';
 		return null;
 	});
@@ -385,73 +312,13 @@
 		plan?.encoder.available_encoders.filter((e) => KNOWN_ENCODERS.includes(e)) ?? []
 	);
 
-	function subscribeToEncode(jobId: string) {
-		stopEncodeStream();
-		unsub = subscribe(`/api/jobs/${jobId}/snapshot`, ['message', 'done'], async (type, data) => {
-			if (type === 'done') {
-				stopEncodeStream();
-				await finishEncode(jobId);
-				return;
-			}
-			// Transient connection drop: the subscription reconnects and the
-			// backend replays history, so just wait it out rather than breaking.
-			if (type === 'error') return;
-			const ev = data as {
-				stage?: string;
-				state?: string;
-				message?: string;
-				progress?: { percent?: number; fps?: number; speed?: number } | null;
-			};
-			if (ev.stage) encodeStage = ev.stage;
-			if (ev.progress?.percent != null) encodeProgress = ev.progress.percent;
-			if (ev.progress?.fps != null) encodeFps = ev.progress.fps;
-			if (ev.progress?.speed != null) encodeSpeed = ev.progress.speed;
-			if (ev.message) encodeMessage = ev.message;
-			if (onEncodeState) onEncodeState(encoding, encodeProgress, encodeStage);
-		});
-	}
-
-	/** Read the media-job snapshot once and advance the encode bar from it. */
-	async function pollEncodeOnce(jobId: string) {
-		try {
-			const job = await getMediaJob(fetch, jobId);
-			if (job.stage) encodeStage = job.stage;
-			if (job.progress_total > 0) {
-				const pct = (job.progress_done / job.progress_total) * 100;
-				if (pct > encodeProgress) encodeProgress = pct; // monotonic; don't fight SSE
-			}
-			if (job.status !== 'queued' && job.status !== 'running') {
-				await finishEncode(jobId);
-			}
-			if (onEncodeState) onEncodeState(encoding, encodeProgress, encodeStage);
-		} catch {
-			/* transient — keep polling */
-		}
-	}
-
-	/** Track a running encode via SSE *and* a snapshot poll, seeded immediately so
-	 *  the bar moves on the first run without needing a page refresh. */
-	function startEncodeTracking(jobId: string) {
-		encodeDone = false;
-		subscribeToEncode(jobId);
-		if (encodePoll) clearInterval(encodePoll);
-		encodePoll = setInterval(() => void pollEncodeOnce(jobId), jitterMs(1500));
-		void pollEncodeOnce(jobId);
-	}
-
 	function hydrateReencodeState(snapshot: LetterboxDetail | null) {
-		stopEncodeStream();
 		plan = null;
 		jobId = null;
 		planError = null;
 		planLoading = false;
 		artifact = null;
 		encoding = false;
-		encodeProgress = 0;
-		encodeStage = null;
-		encodeMessage = null;
-		encodeFps = null;
-		encodeSpeed = null;
 
 		const reencode = snapshot?.reencode;
 		if (!reencode) {
@@ -460,25 +327,6 @@
 		}
 
 		method = 'permanent';
-		const job: MediaJobSnapshot | null = reencode.job;
-		if (job?.plan) {
-			plan = job.plan;
-		}
-		jobId = job?.job_id ?? null;
-
-		if (job?.status === 'planned') {
-			planError = job.error?.error ?? null;
-			return;
-		}
-
-		if (job?.status === 'queued' || job?.status === 'running') {
-			encoding = true;
-			encodeStage = job.stage ?? job.status;
-			encodeProgress = job.progress_total > 0 ? (job.progress_done / job.progress_total) * 100 : 0;
-			startEncodeTracking(job.job_id);
-			return;
-		}
-
 		if (reencode.artifact?.status === 'candidate_ready' || reencode.artifact?.status === 'kept') {
 			artifact = reencode.artifact;
 		}
@@ -533,87 +381,25 @@
 		if (!plan || !jobId || id == null) return;
 		const confirmId = jobId;
 		encoding = true;
-		encodeProgress = 0;
-		encodeStage = 'queued';
-		encodeMessage = plan.acceleration?.enabled
-			? 'NVIDIA NVDEC → GPU crop → NVENC'
-			: `CPU decode/crop${plan.acceleration?.reason ? ` · ${plan.acceleration.reason}` : ''}`;
-		encodeFps = null;
-		encodeSpeed = null;
 		artifact = null;
 		try {
-			await confirmJob(fetch, confirmId);
+			bindJob(
+				await confirmMutation(fetch, confirmId, plan.plan_version, plan.configuration_version)
+			);
 		} catch (e) {
 			encoding = false;
 			toast(e instanceof Error ? e.message : 'Could not start encode', 'bad');
 			return;
 		}
-		startEncodeTracking(confirmId);
-		if (detail) {
-			detail.status = 'tagged';
-			detail.reviewed = false;
-			if (!detail.reencode) {
-				detail.reencode = {
-					job: { status: 'queued' } as unknown as MediaJobSnapshot,
-					artifact: null
-				};
-			} else if (detail.reencode.job) {
-				detail.reencode.job.status = 'queued';
-			}
-		}
 		onChanged();
-	}
-
-	async function discardPlan() {
-		if (!jobId) {
-			resetReencodeState();
-			return;
-		}
-		// run() reloads the detail + re-hydrates, so the now-cancelled job drops
-		// out of the active snapshot and the method picker reappears.
-		await run(() => cancelJob(fetch, jobId!), 'Plan discarded');
-	}
-
-	async function finishEncode(jobId: string) {
-		if (id == null) return;
-		if (encodeDone) return; // SSE 'done' and the poll can both land here
-		encodeDone = true;
-		stopEncodeStream();
-		try {
-			const list = await listReencodeArtifacts(fetch, { movie_id: id });
-			const ready = list.items.find((a) => a.status === 'candidate_ready' || a.status === 'kept');
-			if (ready) {
-				artifact = ready;
-				encodeProgress = 100;
-				toast('Re-encode complete — review the candidate', 'good');
-			} else {
-				toast(await describeFailedJob(jobId), 'bad');
-			}
-		} catch (e) {
-			toast(e instanceof Error ? e.message : 'Could not load candidate', 'bad');
-		} finally {
-			encoding = false;
-		}
-	}
-
-	async function describeFailedJob(jobId: string): Promise<string> {
-		const fallback = 'Re-encode finished but no candidate was produced (check job log)';
-		try {
-			const job = await getMediaJob(fetch, jobId);
-			return job.error?.error ?? fallback;
-		} catch {
-			return fallback;
-		}
 	}
 
 	async function doReplace() {
 		if (!artifact || busy) return;
 		busy = true;
 		try {
-			await replaceOriginal(fetch, artifact.id);
+			bindJob(await replaceOriginal(fetch, artifact.id));
 			toast('Publication queued', 'good');
-			lastId = null;
-			onChanged();
 		} catch (e) {
 			toast(e instanceof Error ? e.message : 'Replace failed', 'bad');
 		} finally {
@@ -625,9 +411,8 @@
 		if (!artifact || busy) return;
 		busy = true;
 		try {
-			await deleteArtifact(fetch, artifact.id);
+			bindJob(await deleteArtifact(fetch, artifact.id));
 			toast('Candidate discard queued', 'good');
-			onChanged();
 		} catch (e) {
 			toast(e instanceof Error ? e.message : 'Discard failed', 'bad');
 		} finally {
@@ -636,9 +421,16 @@
 	}
 </script>
 
-<svelte:window onbeforeunload={() => stopEncodeStream()} />
-
 <div class="panel" style="--panel-accent:{panelAccent}">
+	{#if movieId != null}
+		<FeatureActivityPanel
+			scopeKey={`feature:letterbox:movie:${movieId}`}
+			query={{ feature_area: 'letterbox', subject_kind: 'movie', subject_id: String(movieId) }}
+			jobIds={initiatedJobIds}
+			heading="Movie letterbox activity"
+			onSettled={handleJobSettled}
+		/>
+	{/if}
 	{#if movieId == null}
 		<div class="empty">
 			<Icon name="letterbox" size={32} stroke={1} />
@@ -853,16 +645,8 @@
 						</div>
 					{:else if encoding}
 						<div class="applied-card">
-							<div class="alabel">Encoding · {encodeStage ?? 'working'}</div>
-							<ProgressBar value={encodeProgress} tone="gold" />
-							<div class="crop-note" style="margin-top:6px">
-								{Math.round(encodeProgress)}%
-								{#if encodeFps != null}
-									· {encodeFps.toFixed(1)} fps{/if}
-								{#if encodeSpeed != null}
-									· {encodeSpeed.toFixed(2)}×{/if}
-							</div>
-							{#if encodeMessage}<div class="note">{encodeMessage}</div>{/if}
+							<div class="alabel">Encoding in progress</div>
+							<div class="note">Live progress and available actions are shown above.</div>
 						</div>
 					{:else if reencodeMode === 'planned'}
 						<div class="applied-card">
@@ -900,7 +684,6 @@
 						<button class="btn-gold" disabled={busy} onclick={startEncode}>
 							Confirm & encode →
 						</button>
-						<button class="btn-ghost" disabled={busy} onclick={discardPlan}> Discard plan </button>
 						<div class="note">
 							This plan is already saved. Confirm it to start the queued re-encode job, or discard
 							it to choose a different method.

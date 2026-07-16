@@ -64,7 +64,7 @@ async def test_priority_is_optimistic_and_execution_class_scoped(db, client):
     db.add(job)
     await db.commit()
 
-    response = await client.patch(
+    response = await client.post(
         f"/api/jobs/{job.id}/priority",
         json={"expected_fence_token": 0, "priority": 80},
     )
@@ -74,7 +74,7 @@ async def test_priority_is_optimistic_and_execution_class_scoped(db, client):
     assert body["snapshot"]["priority"] == 80
     assert body["snapshot"]["fence_token"] == 1
 
-    stale = await client.patch(
+    stale = await client.post(
         f"/api/jobs/{job.id}/priority",
         json={"expected_fence_token": 0, "priority": 90},
     )
@@ -196,3 +196,30 @@ async def test_retry_creates_successor_with_lineage(db, client, monkeypatch):
     await db.refresh(original)
     assert original.phase == "terminal"
     assert original.fence_token == 1
+
+
+@pytest.mark.asyncio
+async def test_action_targets_job_discovered_beyond_first_page(db, client):
+    jobs = [make_job(f"action{i:026d}") for i in range(101)]
+    for index, job in enumerate(jobs):
+        job.created_at = NOW.replace(microsecond=index)
+        job.eligible_at = job.created_at
+    db.add_all(jobs)
+    await db.commit()
+
+    first = await client.get("/api/jobs", params={"view": "queue", "limit": 100})
+    assert first.status_code == 200
+    second = await client.get(
+        "/api/jobs",
+        params={"view": "queue", "limit": 100, "cursor": first.json()["next_cursor"]},
+    )
+    target = second.json()["items"][0]
+
+    response = await client.post(
+        f"/api/jobs/{target['job_id']}/priority",
+        json={"expected_fence_token": target["fence_token"], "priority": 75},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["snapshot"]["priority"] == 75
+    assert (await client.patch(f"/api/jobs/{target['job_id']}/priority")).status_code == 405

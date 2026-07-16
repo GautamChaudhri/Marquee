@@ -1,15 +1,13 @@
 <script lang="ts">
-	import { onDestroy, onMount } from 'svelte';
-	import { browser } from '$app/environment';
 	import { invalidateAll } from '$app/navigation';
+	import FeatureActivityPanel from '$lib/activity/components/FeatureActivityPanel.svelte';
+	import type { JobSnapshotResponse } from '$lib/activity/types';
 	import {
 		analyzeMovieDovi,
 		convertMovieDovi,
 		discardDoviCandidate,
 		publishDoviCandidate
 	} from '$lib/api/radarr-overlay';
-	import { isTerminal } from '$lib/api/jobs';
-	import { trackJob } from '$lib/jobs';
 	import HdrBadge from '$lib/components/HdrBadge.svelte';
 	import { toast } from '$lib/toast';
 	import type { HdrKind } from '$lib/api/types';
@@ -22,114 +20,17 @@
 	let dovi = $derived(data.detail?.dovi ?? null);
 
 	let analyzing = $state(false);
-	let analyzePercent = $state(0);
-	let analyzeMessage = $state('');
 	let converting = $state(false);
-	let convertPercent = $state(0);
-	let convertMessage = $state('');
-	let stopAnalyzeTracking: (() => void) | null = null;
-	let stopConvertTracking: (() => void) | null = null;
+	let initiatedJobIds = $state<string[]>([]);
 
-	const analyzeJobKey = $derived(movie ? `marquee:hdr:analysisJob:${movie.id}` : null);
-	const convertJobKey = $derived(movie ? `marquee:hdr:convertJob:${movie.id}` : null);
-
-	type ConversionResult = {
-		outcome?: string;
-		kind?: string;
-		artifact_id?: number;
-		artifact_size_bytes?: number;
-		original_untouched?: boolean;
-	};
-
-	let conversionResult = $derived(
-		(detail?.conversion_job?.result ?? null) as ConversionResult | null
-	);
-	let conversionError = $derived.by(() => {
-		const error = detail?.conversion_job?.error;
-		if (error && typeof error === 'object' && 'message' in error) {
-			return typeof error.message === 'string' ? error.message : null;
-		}
-		return null;
-	});
-
-	function storeJob(key: string | null, id: string | null) {
-		if (!browser || !key) return;
-		if (id) localStorage.setItem(key, id);
-		else localStorage.removeItem(key);
-	}
-
-	function attachAnalyze(jobId: string) {
-		storeJob(analyzeJobKey, jobId);
-		stopAnalyzeTracking?.();
-		analyzing = true;
-		stopAnalyzeTracking = trackJob(
-			fetch,
-			jobId,
-			{
-				onProgress: ({ detail: d }) => {
-					const p = d as { percent?: number; message?: string; stage?: string };
-					if (typeof p.percent === 'number') analyzePercent = p.percent;
-					if (typeof p.message === 'string') analyzeMessage = p.message;
-					else if (typeof p.stage === 'string') analyzeMessage = p.stage;
-				},
-				onDone: async (job) => {
-					stopAnalyzeTracking = null;
-					analyzing = false;
-					analyzePercent = 100;
-					storeJob(analyzeJobKey, null);
-					if (job.status === 'succeeded') {
-						toast('Dolby Vision analysis complete', 'good');
-					} else {
-						toast(`Analysis ${job.status}`, 'bad');
-					}
-					await invalidateAll();
-				},
-				onError: () => toast('Analysis progress stream interrupted', 'bad')
-			},
-			{ eventsUrl: `/api/jobs/${jobId}/snapshot` }
-		);
-	}
-
-	function attachConvert(jobId: string) {
-		storeJob(convertJobKey, jobId);
-		stopConvertTracking?.();
-		converting = true;
-		stopConvertTracking = trackJob(
-			fetch,
-			jobId,
-			{
-				onProgress: ({ detail: d }) => {
-					const p = d as { percent?: number; message?: string; stage?: string };
-					if (typeof p.percent === 'number') convertPercent = p.percent;
-					if (typeof p.message === 'string') convertMessage = p.message;
-					else if (typeof p.stage === 'string') convertMessage = p.stage;
-				},
-				onDone: async (job) => {
-					stopConvertTracking = null;
-					converting = false;
-					convertPercent = 100;
-					storeJob(convertJobKey, null);
-					if (job.status === 'succeeded') {
-						toast('Dolby Vision candidate ready', 'good');
-					} else {
-						toast(`Conversion ${job.status}`, 'bad');
-					}
-					await invalidateAll();
-				},
-				onError: () => toast('Conversion progress stream interrupted', 'bad')
-			},
-			{ eventsUrl: `/api/jobs/${jobId}/snapshot`, pollMs: 2000 }
-		);
-	}
+	let conversionResult = $derived(detail?.conversion_candidate ?? null);
 
 	async function runAnalyze() {
 		if (analyzing || !movie) return;
 		analyzing = true;
-		analyzePercent = 0;
-		analyzeMessage = 'Queuing analysis…';
 		try {
 			const job = await analyzeMovieDovi(fetch, movie.id);
-			attachAnalyze(job.job_id);
+			initiatedJobIds = [...new Set([...initiatedJobIds, job.job_id])];
 		} catch (e) {
 			analyzing = false;
 			toast(e instanceof Error ? e.message : 'Could not start analysis', 'bad');
@@ -139,11 +40,9 @@
 	async function runConvert(kind: 'p5_to_p81' | 'p7_strip_el') {
 		if (converting || !movie) return;
 		converting = true;
-		convertPercent = 0;
-		convertMessage = 'Queuing conversion…';
 		try {
 			const job = await convertMovieDovi(fetch, movie.id, kind);
-			attachConvert(job.job_id);
+			initiatedJobIds = [...new Set([...initiatedJobIds, job.job_id])];
 		} catch (e) {
 			converting = false;
 			toast(e instanceof Error ? e.message : 'Could not start conversion', 'bad');
@@ -157,41 +56,23 @@
 				operation === 'publish'
 					? await publishDoviCandidate(fetch, movie.id, conversionResult.artifact_id)
 					: await discardDoviCandidate(fetch, movie.id, conversionResult.artifact_id);
-			attachConvert(job.job_id);
+			converting = true;
+			initiatedJobIds = [...new Set([...initiatedJobIds, job.job_id])];
 			toast(operation === 'publish' ? 'Publication queued' : 'Candidate discard queued', 'good');
 		} catch (e) {
 			toast(e instanceof Error ? e.message : `Could not ${operation} candidate`, 'bad');
 		}
 	}
 
-	onMount(() => {
-		const active = detail?.analysis_job?.job_id ?? null;
-		if (active) {
-			attachAnalyze(active);
-		}
-		const activeConvert =
-			detail?.conversion_job && !isTerminal(detail.conversion_job.status)
-				? detail.conversion_job.job_id
-				: null;
-		if (activeConvert) {
-			attachConvert(activeConvert);
-		}
-		if (browser) {
-			if (!active && analyzeJobKey) {
-				const stored = localStorage.getItem(analyzeJobKey);
-				if (stored) attachAnalyze(stored);
-			}
-			if (!activeConvert && convertJobKey) {
-				const stored = localStorage.getItem(convertJobKey);
-				if (stored) attachConvert(stored);
-			}
-		}
-	});
-
-	onDestroy(() => {
-		stopAnalyzeTracking?.();
-		stopConvertTracking?.();
-	});
+	async function handleJobSettled(snapshot: JobSnapshotResponse) {
+		if (snapshot.type === 'dovi_analyze') analyzing = false;
+		if (snapshot.type === 'dovi_convert') converting = false;
+		toast(
+			`${snapshot.label} ${snapshot.status.label.toLowerCase()}`,
+			snapshot.status.outcome === 'succeeded' ? 'good' : 'bad'
+		);
+		await invalidateAll();
+	}
 
 	const PROFILE_NOTE: Record<number, string> = {
 		5: 'Profile 5 — IPT-PQ-C2 color. Shows green/purple tints on non-DV hardware.',
@@ -257,6 +138,13 @@
 	{#if data.error || !detail || !movie}
 		<div class="error">{data.error ?? 'Movie not found.'}</div>
 	{:else}
+		<FeatureActivityPanel
+			scopeKey={`feature:hdr:movie:${movie.id}`}
+			query={{ feature_area: 'hdr', subject_kind: 'movie', subject_id: String(movie.id) }}
+			jobIds={initiatedJobIds}
+			heading="Movie HDR activity"
+			onSettled={handleJobSettled}
+		/>
 		<div class="header mq-rise">
 			<div class="title-row">
 				<h1>{movie.title} <span class="year">({movie.year})</span></h1>
@@ -278,22 +166,6 @@
 					<strong>dovi_tool not found on PATH.</strong> Profiles can be read, but FEL/MEL detection and
 					remediation need dovi_tool.
 				{/if}
-			</div>
-		{/if}
-
-		{#if analyzing}
-			<div class="banner">
-				<div class="bar"><span style={`width:${Math.max(4, analyzePercent)}%`}></span></div>
-				<small>{analyzeMessage}</small>
-			</div>
-		{/if}
-
-		{#if converting}
-			<div class="banner">
-				<div class="bar convert-bar">
-					<span style={`width:${Math.max(4, convertPercent)}%`}></span>
-				</div>
-				<small>{convertMessage}</small>
 			</div>
 		{/if}
 
@@ -453,8 +325,6 @@
 									<button onclick={() => decideCandidate('discard')}>Discard</button>
 								</div>
 							</div>
-						{:else if conversionError}
-							<p class="empty bad">Last conversion failed: {conversionError}</p>
 						{/if}
 					{:else}
 						<p class="empty">No single-layer conversion applies to this stream.</p>
@@ -540,21 +410,6 @@
 	.banner.warn {
 		border-color: var(--gold);
 		background: color-mix(in srgb, var(--gold) 10%, transparent);
-	}
-	.bar {
-		height: 6px;
-		border-radius: 999px;
-		background: var(--line);
-		overflow: hidden;
-	}
-	.bar span {
-		display: block;
-		height: 100%;
-		background: var(--gold);
-		transition: width 0.3s ease;
-	}
-	.convert-bar span {
-		background: var(--good);
 	}
 	.grid {
 		display: grid;

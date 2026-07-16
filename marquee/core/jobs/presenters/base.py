@@ -686,6 +686,8 @@ class JobPresenter:
             parent_id=job.parent_id,
             root_id=job.root_id,
             retry_of_job_id=job.retry_of_job_id,
+            fence_token=job.fence_token,
+            execution_class=definition.execution_class.value,
             priority=job.priority,
             eligible_at=job.eligible_at,
             created_at=job.created_at,

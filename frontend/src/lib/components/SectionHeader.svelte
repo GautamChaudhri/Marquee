@@ -6,7 +6,7 @@
 
 <div class="head">
 	<div>
-		<h2>{title}</h2>
+		<h1>{title}</h1>
 		{#if subtitle}<p>{subtitle}</p>{/if}
 	</div>
 	{#if action}
@@ -22,7 +22,7 @@
 		gap: 16px;
 		margin-bottom: 16px;
 	}
-	h2 {
+	h1 {
 		margin: 0;
 		font-size: 18px;
 		font-weight: 650;

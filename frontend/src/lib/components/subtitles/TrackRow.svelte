@@ -1,4 +1,3 @@
-<!-- eslint-disable svelte/require-each-key -->
 <script lang="ts">
 	import type { SubtitleTrack } from '$lib/api/types';
 	import { bytesH } from '$lib/display';

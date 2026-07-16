@@ -1,4 +1,5 @@
 import { apiGet, apiSend, type Fetch } from './client';
+import type { JobSubmissionResponse } from '$lib/activity/types';
 import type {
 	HdrPreferenceChoice,
 	HdrSummary,
@@ -41,15 +42,12 @@ export function analyzeSeriesDovi(
 	fetch: Fetch,
 	seriesId: number,
 	seasonNumber?: number | null
-): Promise<{ job_id: string; total: number; events_url: string }> {
+): Promise<JobSubmissionResponse> {
 	return apiSend(fetch, 'POST', `/hdr/tv/${seriesId}/analyze`, {
 		season_number: seasonNumber ?? null
 	});
 }
 
-export function analyzeTvDovi(
-	fetch: Fetch,
-	seriesIds?: number[]
-): Promise<{ job_id: string; total: number; events_url: string }> {
+export function analyzeTvDovi(fetch: Fetch, seriesIds?: number[]): Promise<JobSubmissionResponse> {
 	return apiSend(fetch, 'POST', '/hdr/tv/analyze', seriesIds ? { series_ids: seriesIds } : {});
 }

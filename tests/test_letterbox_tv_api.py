@@ -11,7 +11,6 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from marquee.api.routes import letterbox as letterbox_routes
 from marquee.config import settings
 from marquee.main import app
 from marquee.media import letterbox_preview
@@ -29,77 +28,12 @@ from marquee.models import (
 
 
 @pytest.mark.asyncio
-async def test_active_tv_jobs_include_active_episode_media_file_jobs(db, tv_library):
-    episode = tv_library["ep1"]
-    other_episode = tv_library["clean_ep1"]
-    media_file = (
-        await db.execute(
-            select(MediaFile)
-            .join(EpisodeMediaFile)
-            .where(EpisodeMediaFile.episode_id == episode.id, MediaFile.is_active.is_(True))
-        )
-    ).scalar_one()
-    other_media_file = (
-        await db.execute(
-            select(MediaFile)
-            .join(EpisodeMediaFile)
-            .where(EpisodeMediaFile.episode_id == other_episode.id, MediaFile.is_active.is_(True))
-        )
-    ).scalar_one()
-    now = datetime.now(UTC)
-    db.add_all(
-        [
-            Job(
-                id="series-active",
-                type="letterbox_detect",
-                root_id="series-active",
-                phase="running",
-                request={},
-                subject_kind="series",
-                subject_reference=str(episode.series_id),
-                subject_snapshot={},
-            ),
-            Job(
-                id="file-active",
-                type="letterbox_reencode",
-                root_id="file-active",
-                phase="running",
-                request={},
-                subject_kind="media_file",
-                subject_reference=str(media_file.id),
-                subject_snapshot={},
-            ),
-            Job(
-                id="other-file",
-                type="letterbox_reencode",
-                root_id="other-file",
-                phase="running",
-                request={},
-                subject_kind="media_file",
-                subject_reference=str(other_media_file.id),
-                subject_snapshot={},
-            ),
-            Job(
-                id="file-finished",
-                type="letterbox_reencode",
-                root_id="file-finished",
-                phase="terminal",
-                outcome="succeeded",
-                terminal_at=now,
-                request={},
-                subject_kind="media_file",
-                subject_reference=str(media_file.id),
-                subject_snapshot={},
-            ),
-        ]
-    )
-    await db.commit()
+async def test_tv_feature_payloads_do_not_aggregate_active_jobs(client: AsyncClient, tv_library):
+    listing = (await client.get("/api/letterbox/tv")).json()
+    assert all("active_job_ids" not in item for item in listing["items"])
 
-    active_ids = await letterbox_routes._active_tv_job_ids(db, episode.series_id)
-    assert "series-active" in active_ids
-    assert "file-active" in active_ids
-    assert "other-file" not in active_ids
-    assert "file-finished" not in active_ids
+    detail = (await client.get(f"/api/letterbox/tv/{tv_library['mixed_show'].id}")).json()
+    assert "active_job_ids" not in detail
 
 
 @pytest_asyncio.fixture
@@ -520,7 +454,7 @@ class TestTvList:
             {"type": "widescreen", "count": 2}
         ]
         assert by_title["Mixed Show"]["rollup"]["verdict"] == "needs_action"
-        assert by_title["Mixed Show"]["active_job_ids"] == ["tv-active-job"]
+        assert "active_job_ids" not in by_title["Mixed Show"]
 
     async def test_list_filters_by_has_candidates(self, client: AsyncClient, tv_library):
         body = (await client.get("/api/letterbox/tv", params={"has_candidates": "true"})).json()

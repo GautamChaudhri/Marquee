@@ -1,4 +1,3 @@
-<!-- eslint-disable @typescript-eslint/no-explicit-any svelte/prefer-svelte-reactivity svelte/require-each-key -->
 <script lang="ts">
 	import type { MovieListItem } from '$lib/api/types';
 	import type { Tone } from '$lib/display';
