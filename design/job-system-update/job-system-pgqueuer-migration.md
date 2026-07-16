@@ -575,9 +575,18 @@ validation and the custom runtime has no executable or persistent remains.
 
 ## Chunk 6 — Projection Room Activity and final certification
 
+**Implementation plans:** [JMC6A shared Activity client and progress](jmc6a-shared-activity-client-and-progress.md),
+[JMC6B Projection Room and feature pages](jmc6b-projection-room-and-feature-pages.md), and
+[JMC6C zero-green certification and CI](jmc6c-zero-green-certification-and-ci.md).
+
 ### Objective
 
 Build the final Queue/History Activity experience and certify the complete target system.
+
+This is the final numbered implementation chunk. Its compact local completion is followed by an
+owner activation audit, an authorized push, and a passing GitHub-hosted workflow; those release
+gates do not create a seventh implementation chunk. Optional media capabilities that lack a real
+tool/profile/hardware smoke remain readiness-disabled even when the core job platform is complete.
 
 ### Implementation
 

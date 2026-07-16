@@ -5,6 +5,8 @@
 **Resulting design:** [Projection Room redesign](projection-room-job-experience-redesign.md)
 **Delivery:** [clean-slate PgQueuer program](job-system-pgqueuer-migration.md)
 **Progress design:** [job progress and loading experience](job-progress-and-loading-experience.md)
+**Implementation:** [JMC6A shared Activity client and progress](jmc6a-shared-activity-client-and-progress.md)
+and [JMC6B Projection Room and feature pages](jmc6b-projection-room-and-feature-pages.md)
 
 ## Purpose and method
 

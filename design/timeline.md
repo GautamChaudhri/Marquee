@@ -74,7 +74,7 @@ its own unpushed range to one tree-identical completion commit/tag. No JMC4 impl
 pushes. Recommended implementation tiers are God for JMC4A, Mid for JMC4B, and God for
 JMC4C.
 
-## JMC5 — Destructive media jobs and runtime retirement (planned)
+## JMC5 — Destructive media jobs and runtime retirement (completed)
 
 Chunk 5 is one ordered mutation/removal program split into three independently gated plans:
 
@@ -97,6 +97,42 @@ internal phases, retains phase commits until every gate passes, then creates ver
 recovery material and compacts only its own unpushed range to one tree-identical completion
 commit/tag. No JMC5 implementer pushes. All three plans require the God model tier because each
 crosses irreversible side effects, replay/crash safety, or final runtime/schema deletion gates.
+
+Completion is recorded by compact annotated tags `jmc5a-complete`, `jmc5b-complete`, and
+`jmc5c-complete`; `jmc5c-complete` resolves to `30cc8c1`. The final retained baseline is 1249
+passed/17 failed with two warnings, while frontend check has zero errors and 16 inherited warnings.
+Those retained failures and warnings are assigned to JMC6 rather than hidden or quarantined.
+
+## JMC6 — Activity, zero-green certification, and CI (planned)
+
+Chunk 6 is the final numbered job-manager program and is split into three independently gated
+plans:
+
+1. [`jmc6a-shared-activity-client-and-progress.md`](job-system-update/jmc6a-shared-activity-client-and-progress.md)
+   establishes generated/runtime-validated API boundaries, the one server-authoritative client
+   store, multiplexed event/snapshot reconciliation, shared progress cards, and the frontend test
+   harness.
+2. [`jmc6b-projection-room-and-feature-pages.md`](job-system-update/jmc6b-projection-room-and-feature-pages.md)
+   rebuilds Projection Room as Queue/History Activity with job-specific detail and lazy Operations,
+   then migrates every initiating feature page and removes page-local trackers/loading bars.
+3. [`jmc6c-zero-green-certification-and-ci.md`](job-system-update/jmc6c-zero-green-certification-and-ci.md)
+   disposes every historical failing test, reaches the complete local zero-green baseline, runs
+   workload/saturation/fault/backup/upgrade/live-media certification, modernizes GitHub Actions,
+   and creates the activation-audit handoff.
+
+They execute strictly JMC6A → JMC6B → JMC6C and share
+`design/job-system-update/jmc6-activity-and-certification-timeline.md`. JMC6A creates that timeline;
+the architect intentionally does not pre-create it. Each plan runs continuously through internal
+phases, keeps phase commits until every gate passes, creates verified external recovery material,
+and compacts only its own unpushed range into one tree-identical completion commit/tag. No JMC6
+implementer pushes or activates the system. All three plans require the God model tier because they
+cross shared client concurrency, every product surface, destructive evidence interpretation, or
+final system/CI certification.
+
+JMC6 is the last implementation chunk. After `jmc6c-complete`, the owner still performs the planned
+whole-system once-over, authorizes the push, requires the new GitHub workflow to pass, and activates
+only capabilities whose required live smokes succeeded. That is a release/activation gate, not a
+seventh construction chunk.
 
 ## Overview
 
