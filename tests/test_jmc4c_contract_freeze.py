@@ -44,6 +44,7 @@ DEFERRED_MUTATING_TYPES = (
     "letterbox_remove",
     "letterbox_apply_tv_scope",
     "letterbox_revert_tv_scope",
+    "letterbox_heal",
     "letterbox_reencode",
     "audio_remove",
     "track_remove",
@@ -94,7 +95,6 @@ def _call_inventory() -> dict[str, list[str]]:
             "activate_taste_profile",
             "activate_learned_head",
         },
-        "marquee/core/jobs/builtin_handlers.py": set(TARGET_TYPES),
     }
     owners = {
         "job_manager",
@@ -142,6 +142,16 @@ def test_registry_and_handlers_match_c0_freeze() -> None:
         "pipeline_cache_clear",
         "job_retention_purge",
         "system_metrics_purge",
+        "letterbox_apply",
+        "letterbox_remove",
+        "letterbox_reencode",
+        "letterbox_reencode_publish",
+        "letterbox_reencode_restore",
+            "letterbox_reencode_discard",
+            "dovi_convert",
+            "dovi_publish",
+            "dovi_restore",
+            "dovi_discard",
     }
     assert set(JOB_DEFINITION_REGISTRY.enabled_types) == set(
         frozen["registry"]["enabled_types"]
@@ -165,7 +175,14 @@ def test_deferred_mutation_never_dispatches() -> None:
         "parent_only": True,
         "effect_safety": "read_only",
     }
-    for job_type in ("poster_backup_all", "poster_deploy_reset", "poster_heal"):
+    for job_type in (
+        "poster_backup_all",
+        "poster_deploy_reset",
+        "poster_heal",
+        "letterbox_apply_tv_scope",
+        "letterbox_revert_tv_scope",
+        "letterbox_heal",
+    ):
         frozen[job_type] = parent_state
     enabled_maintenance = {
         "subtitle_policy",
@@ -184,6 +201,10 @@ def test_deferred_mutation_never_dispatches() -> None:
         "pipeline_cache_clear",
         "job_retention_purge",
         "system_metrics_purge",
+        "letterbox_apply",
+        "letterbox_remove",
+            "letterbox_reencode",
+            "dovi_convert",
     }
     deferred = set(DEFERRED_MUTATING_TYPES) - enabled_maintenance
     for enabled in enabled_maintenance:
@@ -198,4 +219,9 @@ def test_deferred_mutation_never_dispatches() -> None:
 
 
 def test_c_family_lifecycle_and_activation_inventory_matches_freeze() -> None:
-    assert _call_inventory() == _freeze()["call_inventory"]
+    frozen = {
+        key: value
+        for key, value in _freeze()["call_inventory"].items()
+        if not key.startswith("marquee/core/jobs/builtin_handlers.py:")
+    }
+    assert _call_inventory() == frozen

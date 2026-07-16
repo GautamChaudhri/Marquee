@@ -26,7 +26,13 @@ from marquee.core.jobs.presentation import (
 )
 from marquee.core.jobs.presenters.base import JobPresenter, PresenterContext
 
-HDR_JOB_TYPES = ("dovi_analyze", "dovi_convert")
+HDR_JOB_TYPES = (
+    "dovi_analyze",
+    "dovi_convert",
+    "dovi_publish",
+    "dovi_restore",
+    "dovi_discard",
+)
 
 
 class HdrPresenter(JobPresenter):
@@ -39,8 +45,31 @@ class HdrPresenter(JobPresenter):
                     "bit depth, and color metadata."
                 ),
             )
-        source = ctx.summary_value("source_profile", str)
-        target = ctx.summary_value("target_profile", str)
+        if self.job_type == "dovi_publish":
+            return PresentationAction(
+                headline="Publish the Dolby Vision candidate",
+                explanation="Atomically deploys a verified candidate after saving the original.",
+            )
+        if self.job_type == "dovi_restore":
+            return PresentationAction(
+                headline="Restore the pre-conversion media file",
+                explanation="Restores and rescans the canonical pre-publication backup.",
+            )
+        if self.job_type == "dovi_discard":
+            return PresentationAction(
+                headline="Discard the Dolby Vision candidate",
+                explanation="Deletes only the unreferenced candidate from confined storage.",
+            )
+        kind = ctx.summary_value("kind", str)
+        if kind == "p5_to_p81":
+            source, target = "P5", "P8.1"
+        elif kind == "p7_strip_el":
+            source, target = "P7", "P8.1"
+        else:
+            source_value = ctx.summary_value("source_profile", (str, int))
+            target_value = ctx.summary_value("target_profile", (str, int))
+            source = f"P{source_value}" if isinstance(source_value, int) else source_value
+            target = f"P{target_value}" if isinstance(target_value, int) else target_value
         if source and target:
             headline = f"Convert Dolby Vision {source} to {target}"
         else:

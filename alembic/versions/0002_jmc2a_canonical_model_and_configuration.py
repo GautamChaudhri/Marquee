@@ -227,62 +227,6 @@ def upgrade() -> None:
     op.create_index('ix_job_events_created_at', 'job_events', ['created_at'], unique=False)
     op.create_index(op.f('ix_job_events_job_id'), 'job_events', ['job_id'], unique=False)
     op.create_index('ix_job_events_job_id_id', 'job_events', ['job_id', 'id'], unique=False)
-    op.create_table('letterbox_reencode_artifacts',
-    sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
-    sa.Column('job_id', sa.String(length=32), nullable=True),
-    sa.Column('movie_id', sa.Integer(), nullable=True),
-    sa.Column('media_type', sa.String(length=10), server_default=sa.text("'movie'"), nullable=False),
-    sa.Column('episode_id', sa.Integer(), nullable=True),
-    sa.Column('media_file_id', sa.Integer(), nullable=True),
-    sa.Column('original_path', sa.Text(), nullable=False),
-    sa.Column('candidate_path', sa.Text(), nullable=True),
-    sa.Column('saved_original_path', sa.Text(), nullable=True),
-    sa.Column('original_size_bytes', sa.BigInteger(), nullable=True),
-    sa.Column('candidate_size_bytes', sa.BigInteger(), nullable=True),
-    sa.Column('saved_original_size_bytes', sa.BigInteger(), nullable=True),
-    sa.Column('original_signature', sa.String(length=128), nullable=True),
-    sa.Column('candidate_signature', sa.String(length=128), nullable=True),
-    sa.Column('saved_original_signature', sa.String(length=128), nullable=True),
-    sa.Column('encoder', sa.String(length=40), nullable=True),
-    sa.Column('encoder_family', sa.String(length=20), nullable=True),
-    sa.Column('codec', sa.String(length=20), nullable=True),
-    sa.Column('crop_top', sa.Integer(), nullable=False),
-    sa.Column('crop_bottom', sa.Integer(), nullable=False),
-    sa.Column('hdr_status', sa.String(length=24), nullable=True),
-    sa.Column('dovi_status', sa.String(length=24), nullable=True),
-    sa.Column('detail_json', sa.Text(), nullable=True),
-    sa.Column('status', sa.String(length=24), server_default='candidate_ready', nullable=False),
-    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
-    sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=True),
-    sa.CheckConstraint("(media_type = 'movie' AND movie_id IS NOT NULL AND episode_id IS NULL) OR (media_type = 'episode' AND episode_id IS NOT NULL AND movie_id IS NULL)", name='ck_letterbox_reencode_artifact_subject'),
-    sa.ForeignKeyConstraint(['episode_id'], ['episodes.id'], ondelete='CASCADE'),
-    sa.ForeignKeyConstraint(['job_id'], ['jobs.id'], ondelete='SET NULL'),
-    sa.ForeignKeyConstraint(['media_file_id'], ['media_files.id'], ondelete='SET NULL'),
-    sa.ForeignKeyConstraint(['movie_id'], ['movies.id'], ondelete='CASCADE'),
-    sa.PrimaryKeyConstraint('id')
-    )
-    op.create_index(op.f('ix_letterbox_reencode_artifacts_episode_id'), 'letterbox_reencode_artifacts', ['episode_id'], unique=False)
-    op.create_index(op.f('ix_letterbox_reencode_artifacts_job_id'), 'letterbox_reencode_artifacts', ['job_id'], unique=False)
-    op.create_index(op.f('ix_letterbox_reencode_artifacts_media_file_id'), 'letterbox_reencode_artifacts', ['media_file_id'], unique=False)
-    op.create_index(op.f('ix_letterbox_reencode_artifacts_media_type'), 'letterbox_reencode_artifacts', ['media_type'], unique=False)
-    op.create_index(op.f('ix_letterbox_reencode_artifacts_movie_id'), 'letterbox_reencode_artifacts', ['movie_id'], unique=False)
-    op.create_table('media_backups',
-    sa.Column('id', sa.String(length=32), nullable=False),
-    sa.Column('job_id', sa.String(length=32), nullable=True),
-    sa.Column('media_file_id', sa.Integer(), nullable=True),
-    sa.Column('original_path', sa.Text(), nullable=False),
-    sa.Column('backup_path', sa.Text(), nullable=False),
-    sa.Column('original_signature', sa.String(length=128), nullable=True),
-    sa.Column('size_bytes', sa.BigInteger(), nullable=True),
-    sa.Column('status', sa.String(length=12), server_default='available', nullable=False),
-    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
-    sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=True),
-    sa.ForeignKeyConstraint(['job_id'], ['jobs.id'], ondelete='SET NULL'),
-    sa.ForeignKeyConstraint(['media_file_id'], ['media_files.id'], ondelete='SET NULL'),
-    sa.PrimaryKeyConstraint('id')
-    )
-    op.create_index(op.f('ix_media_backups_job_id'), 'media_backups', ['job_id'], unique=False)
-    op.create_index(op.f('ix_media_backups_media_file_id'), 'media_backups', ['media_file_id'], unique=False)
     op.create_table('worker_nodes',
     sa.Column('id', sa.String(length=100), nullable=False),
     sa.Column('build', sa.String(length=64), nullable=True),
@@ -412,22 +356,6 @@ def upgrade() -> None:
     op.drop_constraint(op.f('letterbox_events_episode_id_fkey'), 'letterbox_events', type_='foreignkey')
     op.create_foreign_key(None, 'letterbox_events', 'episodes', ['episode_id'], ['id'], ondelete='SET NULL')
     op.create_foreign_key(None, 'letterbox_events', 'movies', ['movie_id'], ['id'], ondelete='SET NULL')
-    op.drop_constraint(op.f('letterbox_reencode_artifacts_episode_id_fkey'), 'letterbox_reencode_artifacts', type_='foreignkey')
-    op.drop_constraint(op.f('letterbox_reencode_artifacts_movie_id_fkey'), 'letterbox_reencode_artifacts', type_='foreignkey')
-    op.drop_constraint(
-        'ck_letterbox_reencode_artifact_subject',
-        'letterbox_reencode_artifacts',
-        type_='check',
-    )
-    op.create_check_constraint(
-        'ck_letterbox_reencode_artifact_subject',
-        'letterbox_reencode_artifacts',
-        "(media_type = 'movie' AND movie_id IS NOT NULL AND episode_id IS NULL) OR "
-        "(media_type = 'episode' AND episode_id IS NOT NULL AND movie_id IS NULL) OR "
-        "(movie_id IS NULL AND episode_id IS NULL)",
-    )
-    op.create_foreign_key(None, 'letterbox_reencode_artifacts', 'movies', ['movie_id'], ['id'], ondelete='SET NULL')
-    op.create_foreign_key(None, 'letterbox_reencode_artifacts', 'episodes', ['episode_id'], ['id'], ondelete='SET NULL')
     op.add_column('media_files', sa.Column('is_present', sa.Boolean(), server_default=sa.text('true'), nullable=False))
     op.add_column('media_files', sa.Column('retired_at', sa.DateTime(timezone=True), nullable=True))
     op.create_index(op.f('ix_media_files_is_present'), 'media_files', ['is_present'], unique=False)

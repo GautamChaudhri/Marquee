@@ -105,21 +105,6 @@
       "title": "Letterbox"
     },
     {
-      "cards": [
-        {
-          "interpretation": null,
-          "label": "Confidence",
-          "value": {
-            "type": "number",
-            "unit": "%",
-            "value": 98.0
-          }
-        }
-      ],
-      "kind": "metric_cards",
-      "title": "Detection"
-    },
-    {
       "kind": "before_after",
       "rows": [
         {

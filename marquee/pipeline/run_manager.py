@@ -42,7 +42,7 @@ from uuid import uuid4
 from sqlalchemy import select
 
 from marquee.config import settings
-from marquee.core.jobs.cancel_registry import JobCancelledError
+from marquee.core.cancellation import JobCancelledError
 from marquee.core.poster_sources.tmdb import TMDBClient
 from marquee.core.text_profiles import OcrGateContext
 from marquee.database import _get_session_factory

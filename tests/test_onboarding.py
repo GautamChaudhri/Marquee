@@ -181,8 +181,8 @@ async def test_complete_succeeds_after_minimum(bundle, client, monkeypatch):
     async def _fake_create(*args, **kwargs):
         return object()
 
-    monkeypatch.setattr(onb.job_manager, "create", _fake_create)
-    monkeypatch.setattr(onb, "job_summary", lambda job: {"id": "fake"})
+    monkeypatch.setattr(onb, "submit_job", _fake_create)
+    monkeypatch.setattr(onb, "submission_response", lambda _result: {"job_id": "fake"})
 
     resp = await client.post("/api/onboarding/complete")
     assert resp.status_code == 200

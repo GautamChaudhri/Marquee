@@ -17,7 +17,6 @@ from marquee.models import (
     JobEvent,
     JobLog,
     LetterboxEvent,
-    LetterboxReencodeArtifact,
     MediaFile,
     MediaOperationDetail,
     Movie,
@@ -242,7 +241,6 @@ def test_historical_subject_foreign_keys_null_instead_of_deleting_evidence():
     historical_subjects = {
         ArtworkEvent: {"movie_id", "series_id", "season_id"},
         LetterboxEvent: {"movie_id", "episode_id"},
-        LetterboxReencodeArtifact: {"movie_id", "episode_id", "media_file_id"},
         MediaOperationDetail: {"media_file_id"},
         PipelineRun: {"movie_id", "series_id", "season_id"},
     }

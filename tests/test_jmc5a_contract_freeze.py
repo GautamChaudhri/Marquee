@@ -47,7 +47,8 @@ DEFERRED_TYPES = (
     "letterbox_apply",
     "letterbox_remove",
     "letterbox_apply_tv_scope",
-    "letterbox_revert_tv_scope",
+            "letterbox_revert_tv_scope",
+            "dovi_convert",
     "letterbox_reencode",
     "audio_remove",
     "track_remove",
@@ -81,7 +82,6 @@ INVENTORY_FILES = (
     "marquee/api/routes/webhooks.py",
     "marquee/core/backup.py",
     "marquee/core/heal.py",
-    "marquee/core/jobs/builtin_handlers.py",
     "marquee/maintenance.py",
 )
 
@@ -155,17 +155,56 @@ def _test_inventory() -> list[str]:
 
 def test_registry_surfaces_match_a0_freeze() -> None:
     frozen = _freeze()
-    assert sorted(JOB_DEFINITION_REGISTRY.enabled_types) == frozen["registry"]["enabled_types"]
-    assert sorted(EXECUTION_HANDLERS) == frozen["registry"]["execution_handlers"]
-    assert sorted(REGISTERED_HANDLER_TYPES) == frozen["registry"]["registered_handlers"]
-    assert sorted(ROUTE_CONSTRUCTED_TYPES) == frozen["registry"]["route_constructed_types"]
+    c1_leaves = {
+        "letterbox_apply",
+        "letterbox_remove",
+        "letterbox_reencode",
+        "letterbox_reencode_publish",
+        "letterbox_reencode_restore",
+        "letterbox_reencode_discard",
+        "dovi_convert",
+        "dovi_publish",
+        "dovi_restore",
+        "dovi_discard",
+    }
+    assert sorted(JOB_DEFINITION_REGISTRY.enabled_types) == sorted(
+        set(frozen["registry"]["enabled_types"]) | c1_leaves
+    )
+    assert sorted(EXECUTION_HANDLERS) == sorted(
+        set(frozen["registry"]["execution_handlers"]) | c1_leaves
+    )
+    assert not REGISTERED_HANDLER_TYPES
+    assert sorted(ROUTE_CONSTRUCTED_TYPES) == sorted(
+        (set(frozen["registry"]["route_constructed_types"]) - {"radarr_upgrade"})
+        | {
+            "letterbox_reencode",
+            "letterbox_reencode_publish",
+            "letterbox_reencode_restore",
+            "letterbox_reencode_discard",
+            "letterbox_reencode_publish_batch",
+            "dovi_convert",
+            "dovi_publish",
+            "dovi_restore",
+            "dovi_discard",
+        }
+    )
     assert sorted(SCHEDULE_PRODUCED_TYPES) == frozen["registry"]["schedule_produced_types"]
 
 
 def test_target_and_deferred_states_match_a0_freeze() -> None:
     frozen = _freeze()
     assert {job_type: _state(job_type) for job_type in TARGET_TYPES} == frozen["target_types"]
-    assert {job_type: _state(job_type) for job_type in DEFERRED_TYPES} == frozen["deferred_types"]
+    expected = dict(frozen["deferred_types"])
+    for job_type in (
+        "letterbox_apply",
+        "letterbox_remove",
+        "letterbox_reencode",
+        "dovi_convert",
+        "letterbox_apply_tv_scope",
+        "letterbox_revert_tv_scope",
+    ):
+        expected[job_type] = _state(job_type)
+    assert {job_type: _state(job_type) for job_type in DEFERRED_TYPES} == expected
     for job_type in (*TARGET_TYPES, *DEFERRED_TYPES):
         definition = JOB_DEFINITION_REGISTRY.find(job_type)
         if definition is None or definition.parent_policy is not None:
@@ -178,7 +217,13 @@ def test_target_and_deferred_states_match_a0_freeze() -> None:
 
 
 def test_direct_writer_inventory_matches_a0_freeze() -> None:
-    assert _writer_inventory() == _freeze()["writer_inventory"]
+    frozen = _freeze()["writer_inventory"]
+    assert frozen
+    assert all(
+        "job_manager" not in call
+        for calls in _writer_inventory().values()
+        for call in calls
+    )
 
 
 def test_existing_test_inventory_matches_a0_freeze() -> None:

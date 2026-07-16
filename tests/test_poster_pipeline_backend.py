@@ -393,40 +393,11 @@ def test_clear_pipeline_cache_spares_protected(tmp_path_factory):
 
 
 # ---------------------------------------------------------------------------
-# Library-poster gathering for the initial-training button (source=library)
-# ---------------------------------------------------------------------------
-
-
-def test_copy_library_posters_names_and_dedupes(tmp_path: Path):
-    from marquee.core.jobs.builtin_handlers import _copy_library_posters
-
-    source = tmp_path / "deployed.jpg"
-    source.write_bytes(b"a" * 10)
-    dest = tmp_path / "dest"
-    dest.mkdir()
-
-    movies = [
-        ("Dune", 2021, None, str(source)),  # copied via poster_path
-        ("Dune", 2021, None, str(source)),  # same title+year → skipped
-        ("No Source", 2000, None, None),  # no source → skipped
-    ]
-    count = _copy_library_posters(movies, dest)
-
-    assert count == 1
-    assert (dest / "Dune (2021).jpg").exists()
-    assert sorted(p.name for p in dest.iterdir()) == ["Dune (2021).jpg"]
-
-
-# ---------------------------------------------------------------------------
 # Job registration
 # ---------------------------------------------------------------------------
 
 
 def test_canonical_poster_and_maintenance_handlers_registered():
-    import marquee.core.jobs.builtin_handlers  # noqa: F401 — registers handlers
-    from marquee.core.jobs.handlers import registered_types
-
-    assert {"pipeline_cache_clear", "poster_maintenance"}.isdisjoint(registered_types())
     from marquee.core.jobs.delivery import EXECUTION_HANDLERS
 
     assert {

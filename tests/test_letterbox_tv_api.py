@@ -723,7 +723,12 @@ async def test_tv_dev_reset_all_deletes_episode_rows_and_previews_only(
         await db.execute(select(LetterboxEvent).where(LetterboxEvent.media_type == "episode"))
     ).scalars().all() == []
     assert (
-        await db.execute(select(LetterboxState).where(LetterboxState.media_type == "movie"))
+        await db.execute(
+            select(LetterboxState).where(
+                LetterboxState.media_type == "movie",
+                LetterboxState.movie_id == movie.id,
+            )
+        )
     ).scalar_one().movie_id == movie.id
     assert (
         await db.execute(select(LetterboxEvent).where(LetterboxEvent.media_type == "movie"))

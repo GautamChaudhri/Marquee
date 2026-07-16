@@ -391,6 +391,7 @@ class ProcessLauncher:
         args: Sequence[str],
         *,
         stdout_limit: int = DEFAULT_TOOL_STDOUT_LIMIT,
+        stdout_sink: PipeSink | None = None,
     ) -> TrackedProcess:
         """Launch one allowlisted read-only media tool as a tracked, contained process.
 
@@ -444,7 +445,7 @@ class ProcessLauncher:
                     process.stdout,
                     capture_limit=stdout_limit,
                     source="stdout",
-                    sink=None,
+                    sink=stdout_sink,
                 )
             )
             stderr_task = asyncio.create_task(

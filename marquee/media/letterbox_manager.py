@@ -111,18 +111,8 @@ _V1_RECOMMENDED_RE = re.compile(r"Recommended crop for .*?:\s*(\d+)x(\d+)\+(-?\d
 
 
 async def _emit_child_progress(db: AsyncSession, parent_job_id: str | None, detail: dict) -> None:
-    """Best-effort telemetry; a progress failure must not fail detection."""
-    if not parent_job_id:
-        return
-    try:
-        from marquee.core.jobs import job_manager  # noqa: PLC0415
-        from marquee.models import Job  # noqa: PLC0415
-
-        parent = await db.get(Job, parent_job_id)
-        if parent is not None:
-            await job_manager.emit(db, parent, state="child_progress", detail=detail)
-    except Exception:  # noqa: BLE001 - state detection takes precedence over UI telemetry
-        logger.exception("could not emit letterbox child progress")
+    """Compatibility callback; canonical parent progress derives from durable child state."""
+    del db, parent_job_id, detail
 
 
 class BatchInProgressError(Exception):

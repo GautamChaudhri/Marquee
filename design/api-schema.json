@@ -4941,17 +4941,6 @@
         "title": "RescoreRequest",
         "type": "object"
       },
-      "RestoreReencodeRequest": {
-        "properties": {
-          "keep_candidate": {
-            "default": false,
-            "title": "Keep Candidate",
-            "type": "boolean"
-          }
-        },
-        "title": "RestoreReencodeRequest",
-        "type": "object"
-      },
       "ReviewQueueApproveAutoRequest": {
         "properties": {
           "deploy": {
@@ -8242,6 +8231,153 @@
         ]
       }
     },
+    "/api/hdr/{movie_id}/conversion-candidates/{artifact_id}/discard": {
+      "post": {
+        "operationId": "discard_movie_dovi_api_hdr__movie_id__conversion_candidates__artifact_id__discard_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "movie_id",
+            "required": true,
+            "schema": {
+              "title": "Movie Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "path",
+            "name": "artifact_id",
+            "required": true,
+            "schema": {
+              "title": "Artifact Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Discard Movie Dovi",
+        "tags": [
+          "hdr"
+        ]
+      }
+    },
+    "/api/hdr/{movie_id}/conversion-candidates/{artifact_id}/publish": {
+      "post": {
+        "operationId": "publish_movie_dovi_api_hdr__movie_id__conversion_candidates__artifact_id__publish_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "movie_id",
+            "required": true,
+            "schema": {
+              "title": "Movie Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "path",
+            "name": "artifact_id",
+            "required": true,
+            "schema": {
+              "title": "Artifact Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Publish Movie Dovi",
+        "tags": [
+          "hdr"
+        ]
+      }
+    },
+    "/api/hdr/{movie_id}/conversion-candidates/{artifact_id}/restore": {
+      "post": {
+        "operationId": "restore_movie_dovi_api_hdr__movie_id__conversion_candidates__artifact_id__restore_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "movie_id",
+            "required": true,
+            "schema": {
+              "title": "Movie Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "path",
+            "name": "artifact_id",
+            "required": true,
+            "schema": {
+              "title": "Artifact Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Restore Movie Dovi",
+        "tags": [
+          "hdr"
+        ]
+      }
+    },
     "/api/hdr/{movie_id}/convert": {
       "post": {
         "description": "Enqueue a supported Dolby Vision Profile 8.1 remediation job.",
@@ -9789,7 +9925,7 @@
     },
     "/api/letterbox/apply": {
       "post": {
-        "description": "Queue one durable apply child per eligible movie.",
+        "description": "Seal one canonical apply child per eligible physical movie file.",
         "operationId": "apply_batch_api_letterbox_apply_post",
         "requestBody": {
           "content": {
@@ -9802,10 +9938,12 @@
           "required": true
         },
         "responses": {
-          "200": {
+          "202": {
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/JobSubmissionResponse"
+                }
               }
             },
             "description": "Successful Response"
@@ -10095,13 +10233,15 @@
     },
     "/api/letterbox/heal": {
       "post": {
-        "description": "Re-apply crop tags that drifted off tagged files (tag-drift scan).",
+        "description": "Seal tagged files; ordinary apply leaves probe and repair only verified drift.",
         "operationId": "letterbox_heal_api_letterbox_heal_post",
         "responses": {
-          "200": {
+          "202": {
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/JobSubmissionResponse"
+                }
               }
             },
             "description": "Successful Response"
@@ -10234,10 +10374,12 @@
           "required": true
         },
         "responses": {
-          "200": {
+          "202": {
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/JobSubmissionResponse"
+                }
               }
             },
             "description": "Successful Response"
@@ -10571,10 +10713,12 @@
           }
         ],
         "responses": {
-          "200": {
+          "202": {
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/JobSubmissionResponse"
+                }
               }
             },
             "description": "Successful Response"
@@ -10838,16 +10982,6 @@
             }
           }
         ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/RestoreReencodeRequest"
-              }
-            }
-          },
-          "required": true
-        },
         "responses": {
           "200": {
             "content": {
@@ -11133,10 +11267,12 @@
           "required": true
         },
         "responses": {
-          "200": {
+          "202": {
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/JobSubmissionResponse"
+                }
               }
             },
             "description": "Successful Response"
@@ -11519,10 +11655,12 @@
           }
         ],
         "responses": {
-          "200": {
+          "202": {
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/JobSubmissionResponse"
+                }
               }
             },
             "description": "Successful Response"
@@ -11669,10 +11807,12 @@
           "required": true
         },
         "responses": {
-          "200": {
+          "202": {
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/JobSubmissionResponse"
+                }
               }
             },
             "description": "Successful Response"

@@ -1010,3 +1010,359 @@ Shared implementer log for JMC5A → JMC5B → JMC5C. Append after every phase c
   certify JMC5C. JMC5C may begin only after the compact commit/tree/base, sole-parent ancestry,
   recovery refs/bundle, clean worktree, annotated completion tag, and post-squash smoke are all
   proven.
+
+## JMC5C Phase C0 — verified JMC5B and froze final runtime authority — 2026-07-15
+
+### Exact predecessor and JMC5C plan base
+
+- **Exact JMC5C plan base:** annotated tag `jmc5b-complete` peels to compact commit
+  `c0b5c03c0101395ba8b4a76612201c99b1f4af90`
+  (`jmc5b: migrate audio and subtitle mutations`), tree
+  `2ca6a4ea5b92253d223b1e1b8dd7659208a5386d`, with sole parent
+  `a1973e016302feba61285e20c79e48576499f9c6` (`jmc5a-complete`). The tag object is annotated;
+  author, committer, tagger, and configured repository user are Gautam Chaudhri
+  <gautam.chaudhri@gmail.com>. The worktree was clean and local `job-manager` was exactly the
+  compact commit when C0 began.
+- Pre-squash tip `c83a33b0875dc6a1454ee11e49b2f5fb21224a6f`, recovery branch
+  `recovery/jmc5b-20260715T224135Z`, and annotated recovery tag
+  `recovery/jmc5b-pre-squash-20260715T224135Z` all resolve to the certified tree
+  `2ca6a4ea...`; compact-to-recovery `git diff` is empty. External bundle
+  `/home/quartermaster/backups/Marquee/marquee-jmc5b-pre-squash-20260715T224135Z.bundle`
+  records complete history and has verified sha256
+  `13fc1f6ec381a67c9da6c5ec5d5175f943219a11c25149076c29c58f009878a8`.
+- The default Git note on the compact commit records the exact post-compaction smoke
+  (**88 passed in 24.04s**), tree identity, sole parent, recovery refs, complete bundle, clean
+  worktree, and the authoritative retained result. Every JMC5B prerequisite is proven; no
+  prerequisite repair or deviation was required.
+
+### Disposable environment, capabilities, and retained baseline
+
+- C0 created an owned PostgreSQL **18.3** cluster at `/tmp/marquee-jmc5c-pg/data`, listening only
+  on `127.0.0.1:55450`, role `marquee`, database `marquee_test`, with its own socket/log roots.
+  It was provisioned by `python -m marquee.db_migration`; no operator database, library, normal
+  `DATA_DIR`, backup set, external service, or remote ref was opened or mutated.
+- Alembic sole head is `0007_jmc5b`. Live schema markers/fingerprints are
+  `marquee|0007_jmc5b|31aac90aaebe2ab73367d88d2bedbda1735c53d132c7cb29213b39d074131208`
+  and `pgqueuer|1.1.1|durable|19377622f52c906a7a5cb6e68b4db6d30e7cc9534aac933c156c33666f4eb21a`.
+- Authoritative clean-base full suite: **1233 passed, 21 failed, 2 warnings in 87.33s**. Failure
+  membership is identical to JMC5B in both count and names: nine development OCR-label cases,
+  TV development reset, effective OCR hardware policy, four run endpoints, two sync resets,
+  system metrics, two taste-artifact cases, and the Whisper catalog verdict. No skip, xfail,
+  error, quarantine, or assertion weakening was introduced.
+- Tool baseline: Python 3.13.14, pytest 9.0.3, Ruff 0.15.17, Node 22.22.2, Git 2.55.0,
+  PostgreSQL 18.3, FFmpeg/ffprobe 8.1.2, and MKVToolNix v99.0 (`Buka`). Required Serena MCP and
+  ByteRover MCP are available; RTK 0.42.4 is available. Optional local `brv` CLI/swarm remains
+  unavailable, so required ByteRover work uses MCP.
+- Storage capability: repository/workspace is XFS with 4096-byte blocks and about 149 GiB free;
+  `/tmp` is tmpfs with 4096-byte blocks and about 11 GiB free. Candidate staging/publication tests
+  must choose one of these same-filesystem roots explicitly; cross-device publication is rejected.
+  Current cgroup is unified v2 at `/user.slice/user-1001.slice/session-8.scope`.
+- **Capability exceptions:** `dovi_tool` is absent. NVIDIA encoder/decoder names exist in the
+  FFmpeg build, but `nvidia-smi` cannot communicate with a driver, so no live NVIDIA hardware
+  capability is certified. Real Dolby Vision conversion and GPU encode/fallback smokes cannot be
+  inferred from mocks; corresponding definitions remain disabled unless the runtime becomes
+  available and their live gates pass. CPU FFmpeg/MKVToolNix fixture work remains available.
+
+### Final C0 writer/runtime/schema freeze
+
+- Added `tests/test_jmc5c_contract_freeze.py`, which pins the exact 32 enabled definitions and
+  execution handlers, all seven existing disabled JMC5C leaves, all six planned-but-absent
+  publish/restore/discard leaves, the two direct-launch modules/scopes, parallel re-encode model
+  and Alembic authority, fail-closed manager/cancel/decorator registry, inline route/job calls,
+  publication helpers, embedded supervisor hook, and deferred `radarr_upgrade` state.
+- Remaining direct child launches in JMC5C scope are exactly four call sites in
+  `marquee/core/dovi_conversion.py` and four in `marquee/core/letterbox_reencode.py`; they are
+  owned by `_run_p5_base_encode`, `_pipe_hevc_to_dovi`, `_run_encode_attempt`, `_run_checked`,
+  and `_piped_ffmpeg_to_dovi`. The approved JMC3 launcher remains the only target replacement.
+- Remaining parallel artifact authority is `LetterboxReencodeArtifact` plus table
+  `letterbox_reencode_artifacts`, route query/list/replace/restore/delete calls, and helpers
+  `replace_original`, `restore_original`, and `delete_artifact_files`. Fresh schema still contains
+  this obsolete table; no `media_backups`, `MediaJob`, `MediaBatch`, or `MediaJobEvent` table is
+  present.
+- Remaining legacy/runtime authority includes `core/jobs/manager.py`, process-local
+  `cancel_registry.py`, decorator-based `builtin_handlers.py`, `job_manager` imports in letterbox,
+  HDR, onboarding, webhook, DOVI and pipeline paths, `_generic_media_job_bridge`, and the embedded
+  `WorkerSupervisor` startup hook. Webhook/`radarr_upgrade` remains reserved and disabled.
+- Existing JMC5C leaves use generic `BuiltInIntentV1`/`BuiltInResultV1` and are dispatch-disabled.
+  Existing ticketless parents are `letterbox_apply_batch`, `letterbox_reencode_tv_batch`,
+  `letterbox_apply_tv_scope`, and `letterbox_revert_tv_scope` in their pre-C1 form. Schedule
+  producers remain exactly `audio_subs_deep_scan`, `library_sync`, and `poster_heal`; there is no
+  executable webhook or `radarr_upgrade` schedule.
+
+### Phase status and next work
+
+- **Current phase is C0 verification/freeze, pending its focused/full/shared gates and configured-
+  author phase commit.** Exact next work: run the new freeze tests, Ruff, complete retained suite,
+  deterministic schema/OpenAPI/type/frontend and diff gates; commit the non-behavioral freeze;
+  append the commit/result; then immediately begin C1 typed letterbox mutation documents,
+  canonical handlers, post-write probes, parents, route submission, and healing children.
+- No product behavior, schema, generated contract, frontend, or runtime enablement changed in this
+  entry. No push, force-push, recovery deletion, operator-library access, or Chunk 6 work occurred.
+
+### C0 completion checkpoint
+
+- Phase commit `84545ab` (`freeze-jmc5c-final-runtime-inventory`) has sole parent the exact
+  JMC5B compact plan base, uses the configured repository author, and changes only the executable
+  C0 freeze plus this timeline. Focused C0 result is **5 passed**.
+- Complete retained result after adding the freeze is **1238 passed, 21 failed, 2 warnings in
+  88.53s**. The five-pass increase is exactly the new C0 module; retained failure membership is
+  unchanged in both directions. Ruff and `git diff --check` pass. Alembic offline SQL reaches
+  `0007_jmc5b`; deterministic OpenAPI is current at **198 paths**; generated TypeScript is clean;
+  frontend check reports 0 errors and the inherited 16 warnings in 8 files; lint and build pass.
+- **C0 is complete. Current phase is C1 — letterbox tag, revert, healing, and parents.** Exact next
+  work: add family-specific request/result/error documents for apply/remove/revert/heal; implement
+  canonical execution handlers using the JMC5A mutation evidence, media-write admission, tracked
+  MKVToolNix launcher, destination staging where required, fresh post-write probes, and coherent
+  `LetterboxState`/event updates; seal TV/batch/heal parents into per-file children; convert routes
+  to canonical submission without an inline mutation or legacy response bridge; then run C1 media,
+  cancellation, parent, presenter, API, retained, Ruff, schema/type/frontend and static gates.
+
+### C1 completion checkpoint
+
+- Phase commit `3c7f5ee5c42d25be08c4fd80d7abcd5cd007105d`
+  (`migrate-letterbox-metadata-mutations`) has tree
+  `aa68315d3f95457687db244f494a7be76f1e1a26`, sole parent
+  `d4238e7d8dd99596586499961ca9b1d508763f9b`, and the configured repository author. It adds the
+  typed apply/remove/source-probe/result documents, enables exactly the two ordinary media-write
+  leaves, and converts `letterbox_heal`, `letterbox_apply_tv_scope`, and
+  `letterbox_revert_tv_scope` to ticketless fixed parents. Movie, movie-batch, TV, episode-group,
+  and healing routes now submit canonical leaves/parents; the five legacy letterbox handlers and
+  every route-level apply/remove episode-group mutation were removed.
+- The canonical leaf is candidate-first and per-file: resolve and seal-check, tracked `mkvmerge`
+  probe, confined same-filesystem staging, tracked `mkvpropedit`, candidate validation, canonical
+  backup, fenced atomic publication, actual-source rescan, and only then a short locked
+  `LetterboxState`/event transaction. Cancellation is typed `cancelled`; post-publication probe or
+  database uncertainty is typed `unsafe`; heal children return `no_change` for intact tags and
+  repair only verified drift. Shared episode files seal one child with all linked episode IDs.
+- Focused C1 contract/media/parent/presenter/API result is **24 passed**. The complete affected
+  letterbox selection is **148 passed** plus the exact retained TV development-reset failure. The
+  authoritative retained result is **1246 passed, 21 retained failures, 2 warnings in 89.17s**;
+  failure membership is unchanged in both directions and no skip, xfail, or error was added.
+- Shared gates pass: Ruff over `marquee` and `tests`; `git diff --check`; Alembic offline SQL through
+  `0007_jmc5b`; deterministic OpenAPI current at **198 paths**; regenerated openapi-typescript
+  7.13.0 output and post-commit `api:generate:check`; frontend check at **0 errors and the inherited
+  16 warnings in 8 files**; frontend lint and build. Serena/static proofs find no
+  `job_manager.create_and_run`, `letterbox_service.apply_episode_group`, or
+  `letterbox_service.remove_episode_group` in the letterbox route, and exactly one canonical
+  executor remains for each enabled apply/remove leaf.
+- Capability exceptions are unchanged: real MKVToolNix fixtures certified metadata mutation;
+  `dovi_tool` and supported GPU hardware remain unavailable and therefore uncertified, with no
+  inference from mocks. No operator library, operator database, push, force-push, recovery
+  deletion, or Chunk 6 work occurred.
+- **C1 is complete. Current phase is C2 — letterbox re-encode and candidate evidence.** Exact next
+  work: freeze the existing re-encode lifecycle and process/publish call graph; add typed canonical
+  re-encode requests/results/progress and candidate artifact evidence; move every encoder/probe/
+  mux child through the tracked launcher and confined workspace; remove
+  `LetterboxReencodeArtifact` as lifecycle authority without yet migrating C3 publish/restore/
+  discard routes; then certify CPU, available GPU/fallback, invalid-duration, cancellation/crash,
+  decode, dimensions/crop, size, and HDR/Dolby Vision preservation gates before committing C2.
+
+### C2 completion checkpoint
+
+- Phase commit `b2ad7458f8cd1b7a768399c42757baffedf5219b`
+  (`migrate-letterbox-reencode-candidates`) has tree
+  `e08c0d1c140f544c82944bfb197deff28c60196f`, sole parent
+  `307d86b7fe4b04b852319cb6daaf352e392a775b`, and the configured repository author. It adds strict
+  path-free re-encode request/result documents, enables the canonical `letterbox_reencode` leaf,
+  routes FFmpeg/ffprobe through the tracked launcher with live determinate progress, stages only in
+  an attempt workspace, validates the confined candidate, and registers it as the canonical
+  `media_candidate` artifact. Candidate generation never publishes or mutates the source.
+- The legacy re-encode executor, inline replacement/restore/delete helpers, parallel artifact
+  queries, and sync-time legacy artifact reattachment are no longer runtime authority. The dormant
+  `LetterboxReencodeArtifact` ORM/table mapping remains solely for the destructive C5 baseline
+  rewrite, while C3 publish/restore/discard endpoints fail closed until their canonical leaves are
+  installed. The deliberately frozen legacy manager/TV-parent authority remains for C5 retirement.
+- Focused C2 process/contract/media result is **43 passed**. A generated confined MKV proves real
+  CPU candidate creation, crop dimensions, stream/duration validation, bounded progress capture,
+  workspace cleanup, and canonical artifact evidence. Dolby Vision input fails closed with
+  `dolby_vision_uncertified`; `dovi_tool` and live NVIDIA hardware remain unavailable, so no real
+  Dolby Vision or GPU/fallback certification is claimed. The owned PostgreSQL JMC1 migration gate
+  is **14 passed**.
+- Authoritative complete retained result is **1249 passed, 20 failed, 2 warnings in 89.88s** on
+  owned PostgreSQL 18.3 at `127.0.0.1:55450/marquee_test`. C2 adds three passing tests and corrects
+  one retained sync failure by resetting stale state instead of reattaching obsolete candidate
+  authority. The remaining failure membership is the prior retained set minus that corrected sync
+  case; there is no new failure, error, skip, xfail, quarantine, ignored test, or weakened safety
+  assertion. Ruff and `git diff --check` pass.
+- **C2 is complete. Current phase is C3 — letterbox publish, restore, discard, and bulk decisions.**
+  Exact next work: add typed canonical publish/restore/discard leaves and fixed bulk parents; replace
+  every fail-closed/inline artifact decision route with canonical submission; enforce media-write
+  admission, per-file exclusion, candidate and source fences, a checksummed canonical backup,
+  same-filesystem atomic publication, actual post-publish rescan, retention/linkage, idempotent
+  reconciliation, restore/discard safety, stale-artifact refusal, and partial-failure aggregation;
+  then run focused crash/cancellation/publication tests plus the complete retained/shared gates.
+
+### C3 completion checkpoint
+
+- Phase commit `b3e475681d56d42518665762ed3bbefefbb9edb3`
+  (`migrate-letterbox-publication-decisions`) has tree
+  `b1a06b3e47d78548189df6f60df58091e8c62f01`, sole parent
+  `b4befc68a25c45d554ca7dcec39dfc807378523d`, and the configured repository author. It enables
+  strict typed `letterbox_reencode_publish`, `letterbox_reencode_restore`, and
+  `letterbox_reencode_discard` leaves plus the fixed `letterbox_reencode_publish_batch` parent,
+  registers dedicated presenters/progress/inventory, and removes inline artifact decisions from
+  the single-file and bulk product routes.
+- Publication resolves only canonical candidate evidence, verifies its checksum, ownership,
+  container, source signature, and recorded probes, then creates a checksummed canonical
+  `media_backup`, copies into destination-local confined staging, performs fenced atomic
+  replacement, probes the actual destination, and updates projections only after verification.
+  Restore follows the same destination-local publication protocol. Discard is a separate,
+  idempotent candidate-only command and refuses a published candidate until restore. A retry after
+  process death between replacement and result persistence reconciles by destination checksum and
+  backup linkage without a second publication; uncertain/missing-backup state fails unsafe.
+- Focused C3 publication/contract result is **30 passed**; the complete historical freeze matrix is
+  **45 passed** and the JMC3/JMC4 worker certification selection is **13 passed**. The affected
+  letterbox/route selection is **170 passed** plus the exact retained TV development-reset failure.
+  Real confined MKV tests prove publish, restore, discard, corrupt-candidate rejection, direct
+  mutation confirmation, and post-replacement crash reconciliation.
+- Authoritative complete retained result is **1255 passed, 20 failed, 2 warnings in 90.66s** on
+  owned PostgreSQL 18.3 at `127.0.0.1:55450/marquee_test`. The failure membership is the exact C2
+  retained set; there is no new failure, error, skip, or xfail. Ruff and `git diff --check` pass;
+  deterministic OpenAPI remains current at **198 paths**; frontend check has **0 errors and the
+  inherited 16 warnings in 8 files**; frontend lint and production build pass.
+- Capability exceptions are unchanged: real MKV publication is certified, while `dovi_tool` and
+  supported GPU hardware remain unavailable and uncertified. No operator library or operator
+  database was mutated, and no push, force-push, recovery deletion, or Chunk 6 work occurred.
+- **C3 is complete. Current phase is C4 — Dolby Vision conversion and publication.** Exact next
+  work: migrate `dovi_convert` into strict typed canonical candidate generation and publication,
+  add any bounded fixed parent required by current product routes, certify supported profiles/tool
+  modes, pipe/process/progress/fallback/preservation and every publication failure boundary, and
+  keep unavailable live-tool/hardware modes explicitly uncertified before committing C4.
+
+### C4 completion checkpoint
+
+- Phase commit `b4467320bb2a815cb6e0307c749ba8562cd843d8`
+  (`migrate-dolby-vision-conversion-publication`) has tree
+  `68746c1bf93d8ebd2ad912a9f1886e0fe0d9ceab`, sole parent
+  `95a36a818fd4127afcbe790426e3ea3c6fee3b1e`, and the configured repository author. It replaces
+  the decorator-based DoVi conversion executor with strict path-free `dovi_convert` candidate
+  generation and adds canonical `dovi_publish`, `dovi_restore`, and `dovi_discard` media-write
+  decisions. No `dovi_convert_batch` was added because no bounded product conversion-batch route
+  exists.
+- Profile 5→8.1 and eligible Profile 7 plans seal source identity and probe evidence, execute only
+  through the tracked launcher and attempt workspace, and register an immutable checksummed
+  `media_candidate` without modifying source media. Publication verifies candidate/source fences,
+  creates a canonical original artifact, copies into destination-local staging, atomically
+  publishes, rescans actual bytes, and persists projections only after validation. Restore and
+  discard use the same evidence boundary; retry reconciliation refuses unprovable publication.
+- Focused DoVi/route/manifest/presenter/contract result is **86 passed**. The complete historical
+  freeze and worker-certification selection is **58 passed**. Generated OpenAPI is current at
+  **201 paths** and the TypeScript client exposes plan/confirm conversion and candidate decisions
+  without filesystem paths.
+- Authoritative complete retained result is **1259 passed, 20 failed, 2 warnings in 94.31s** on
+  owned PostgreSQL 18.3 at `127.0.0.1:55450/marquee_test`. Failure membership is the exact C3
+  retained set; there is no new failure, error, skip, or xfail. Ruff and `git diff --check` pass;
+  frontend check has **0 errors and the inherited 16 warnings in 8 files**; lint and production
+  build pass.
+- Real `dovi_tool`, supported GPU encoding, Profile 5/7 live conversion, and hardware fallback
+  remain unavailable and explicitly uncertified. Deterministic contracts/mocks do not elevate
+  those capabilities to readiness. Real confined MKV publication/restore/discard evidence is
+  certified. No operator media, operator database, push, force-push, or recovery deletion occurred.
+- **C4 is complete. Current phase is C5 — legacy runtime/schema removal.** Exact next work: delete
+  every custom manager, process-local cancellation/handler registry and bridge, obsolete runtime
+  model/table and route/helper dependency; rewrite the unreleased Marquee baseline; prove a fresh
+  owned reset plus PgQueuer/schema equivalence; and demonstrate exactly one canonical executor for
+  every enabled leaf while reserved product types remain fail-closed.
+
+### C5 completion checkpoint
+
+- Phase commit `c1b210d4f89c14eaf2ae182246b365ac2c301955`
+  (`retire-legacy-runtime-schema`) has tree
+  `01fb9789ac389c7fec17e37d262be40a6225b555`, sole parent
+  `85a80511dcfcac205847fbdc4915c43eb407ae36`, and the configured repository author. It deletes the
+  custom manager, process-local cancellation registry, decorator handler registry, child tracking,
+  progress bridge, obsolete Dolby Vision runtime modules, and parallel letterbox artifact ORM.
+  Neutral cancellation, pure eligibility policy, subtitle candidate discovery, and sealed Profile 5
+  arguments remain only in non-runtime or canonical handler modules.
+- Onboarding and TV re-encode parents now create only canonical jobs/fixed batches. The Radarr
+  webhook creates no job; `radarr_upgrade` remains a reserved disabled definition and is absent
+  from route and schedule producer manifests. `REGISTERED_HANDLER_TYPES` is empty, and the enabled
+  definition and canonical execution-handler sets remain exact and equal.
+- The authorized unreleased baseline rewrite removes `media_backups` and
+  `letterbox_reencode_artifacts`, deletes revision `0007_jmc5b`, and makes `0006_jmc4c` the sole
+  Alembic head. A destructive reset of owned PostgreSQL 18.3 at
+  `127.0.0.1:55450/marquee_test` installs revisions 0001–0006 and PgQueuer successfully. The fresh
+  table manifest contains only canonical job/artifact/projection tables plus external PgQueuer
+  tables; JMC1 reset/schema/PgQueuer integration is **14 passed**.
+- Focused retirement, route, historical-freeze, sync, definition, and presentation coverage is
+  **165 passed** across the recorded selections. Authoritative retained result is **1249 passed,
+  17 retained failures, 2 warnings in 92.10s** on the owned PostgreSQL database. The 13-test count
+  reduction from C4 is exactly obsolete direct tests of deleted runtime modules; no new failure,
+  error, skip, or xfail was added. The retained failures remain the known OCR snapshot, hardware
+  policy, run endpoint, taste-artifact, and Whisper verdict cases reserved for Chunk 6.
+- Ruff, `git diff --check`, deterministic OpenAPI/type generation at **201 paths**, frontend check
+  at **0 errors and the inherited 16 warnings in 8 files**, frontend lint, and production build
+  pass. Serena/static source proof finds no production `job_manager`, `media_job_manager`,
+  `cancel_registry`, legacy register/resolve registry, `create_and_run`, parallel artifact object,
+  or obsolete runtime bridge. Real DoVi/GPU capability remains unavailable and explicitly
+  uncertified; real confined CPU MKV mutation/publication evidence from C1–C4 remains certified.
+- **C5 is complete. Current phase is C6 — complete Chunk 5 certification and history
+  compaction.** Exact next work: run the complete fixture/crash/cancellation/saturation/schema/
+  static/API/presentation/frontend matrix, record final manifests and capability exceptions, then
+  perform the mandatory clean-range/recovery-bundle/tree-identity squash and create the annotated
+  local `jmc5c-complete` tag without pushing or beginning Chunk 6.
+
+## JMC5C final pre-squash certification — 2026-07-16
+
+- Exact plan base is annotated `jmc5b-complete`, resolving to
+  `c0b5c03c0101395ba8b4a76612201c99b1f4af90` with tree
+  `2ca6a4ea5b92253d223b1e1b8dd7659208a5386d`. The certified pre-entry JMC5C range is 12 commits;
+  this final timeline entry makes the protected range 13 commits. It contains no merge, every
+  commit has exactly one parent forming an unbroken chain from that base, and every commit is
+  authored by configured repository author Gautam Chaudhri <gautam.chaudhri@gmail.com>.
+  `origin/job-manager` is exactly the plan base; local `job-manager` is 12 ahead, zero behind, no
+  remote ref contains the pre-squash tip, and the worktree is clean.
+- Phase implementation commits are C0 `84545abd1c2b54dd73ea5f0323e3982b813268d0`, C1
+  `3c7f5ee5c42d25be08c4fd80d7abcd5cd007105d`, C2
+  `b2ad7458f8cd1b7a768399c42757baffedf5219b`, C3
+  `b3e475681d56d42518665762ed3bbefefbb9edb3`, C4
+  `b4467320bb2a815cb6e0307c749ba8562cd843d8`, and C5
+  `c1b210d4f89c14eaf2ae182246b365ac2c301955`; their intervening commits are timeline-only.
+- Final execution manifest has **61 definitions, 42 enabled leaves, and exactly the same 42
+  canonical handlers**: `audio_remove`, `audio_reorder`, `backup_create`, `dovi_analyze`,
+  `dovi_convert`, `dovi_discard`, `dovi_publish`, `dovi_restore`, `job_retention_purge`,
+  `learned_head_train`, `letterbox_apply`, `letterbox_detect`, `letterbox_detect_episode`,
+  `letterbox_detect_tv_scope`, `letterbox_reencode`, `letterbox_reencode_discard`,
+  `letterbox_reencode_publish`, `letterbox_reencode_restore`, `letterbox_remove`, `library_sync`,
+  `pipeline_cache_clear`, `poster_backup_subject`, `poster_deploy`, `poster_maintenance`,
+  `poster_pipeline`, `poster_rescan`, `poster_reset`, `poster_restore`, `subtitle_embed`,
+  `subtitle_extract`, `subtitle_generate`, `subtitle_metadata`, `subtitle_policy`,
+  `subtitle_policy_audit`, `subtitle_remove`, `subtitle_restore`, `subtitle_scan`,
+  `system_metrics_purge`, `system_noop`, `taste_map`, `taste_rebuild`, and `track_remove`.
+- The 19 disabled ticketless/reserved types are `audio_subs_deep_scan`, `dovi_analyze_batch`,
+  `letterbox_apply_batch`, `letterbox_apply_tv_scope`, `letterbox_detect_batch`,
+  `letterbox_detect_tv_batch`, `letterbox_heal`, `letterbox_reencode_publish_batch`,
+  `letterbox_reencode_tv_batch`, `letterbox_revert_tv_scope`, `poster_backup_all`,
+  `poster_deploy_reset`, `poster_heal`, `poster_pipeline_batch`, `poster_pipeline_tv_batch`,
+  `radarr_upgrade`, `subtitle_generate_batch`, `subtitle_policy_batch`, and `subtitle_scan_all`.
+  Schedule producers are exactly `audio_subs_deep_scan`, `library_sync`, and `poster_heal`;
+  production occurrences remain disabled. `radarr_upgrade` has no route or schedule producer.
+- Fresh owned PostgreSQL 18.3 reset and external PgQueuer 1.1.1 verification pass at
+  `127.0.0.1:55450/marquee_test`. The Marquee contract is
+  `0006_jmc4c|9158c083cfe84e8975473bd681a67036bb5d5485ad41a42b108c0a89ebac9701`; PgQueuer is
+  `1.1.1|durable|19377622f52c906a7a5cb6e68b4db6d30e7cc9534aac933c156c33666f4eb21a`.
+  Fresh schema contains canonical jobs/evidence/projections and external PgQueuer only, with no
+  custom queue/resource/recovery tables, `media_backups`, `letterbox_reencode_artifacts`,
+  `MediaJob`, `MediaBatch`, or `MediaJobEvent` object.
+- Final C6 crash/cancellation/process/safety/resource/schema/media selection is **82 passed**.
+  Owned-PostgreSQL migration/reset/PgQueuer verification is **14 passed**. Authoritative full
+  retained suite is **1249 passed, 17 retained failures, 2 warnings in 92.10s** with no new
+  failure, error, skip, or xfail. Ruff, static legacy/direct-launch proofs, deterministic OpenAPI
+  **3.1.0 / 201 paths**, generated TypeScript drift, frontend check (**0 errors, inherited 16
+  warnings in 8 files**), frontend lint/build, and `git diff --check` pass. Fixed/dynamic batch
+  caps are 500/500 and the configured connection budget is 28 of 32, within budget.
+- Generated confined CPU MKV fixtures certify tag mutation, candidate creation, publication,
+  restore/discard, rescan, cancellation, post-replacement crash reconciliation, and no duplicate
+  publication. A generated two-second 1280x720 fixture was really encoded by `hevc_nvenc` on an
+  NVIDIA GeForce RTX 3070 using driver 595.80/CUDA 13.2, cropped to 1280x680, probed as HEVC at
+  exactly 2.000 seconds, and fully decoded successfully. `dovi_tool` remains absent, so real
+  Profile 5/7 conversion, RPU preservation, and DoVi hardware fallback remain explicitly
+  uncertified and are pending operator smokes; mocks do not elevate readiness. FFmpeg/ffprobe is
+  8.1.2 and MKVToolNix is v99.0 (`Buka`). No operator media/database was accessed.
+- **Pre-squash tip:** `HEAD` at this final timeline commit, resolved immediately before recovery
+  creation. It will be protected by local branch `recovery/jmc5c-20260716T042308Z`, annotated tag
+  `recovery/jmc5c-pre-squash-20260716T042308Z`, and verified complete external bundle
+  `/home/quartermaster/backups/Marquee/marquee-jmc5c-pre-squash-20260716T042308Z.bundle`.
+  The intended compact resolver is local annotated tag `jmc5c-complete`; the required compact
+  subject is `jmc5c: complete destructive media migration`. This timeline is not edited after
+  compaction. No push, force-push, recovery deletion, operator action, or Chunk 6 work occurred.

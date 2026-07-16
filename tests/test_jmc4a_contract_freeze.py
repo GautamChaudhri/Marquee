@@ -79,7 +79,7 @@ def test_canonical_schema_registry_and_execution_inventory_is_frozen() -> None:
     assert {model.__tablename__: list(model.__table__.columns.keys()) for model in models} == frozen[
         "models"
     ]
-    assert len(JOB_DEFINITION_REGISTRY) == frozen["registry"]["definition_count"] + 5  # +subtitle_policy_batch (JMC5B B05)
+    assert len(JOB_DEFINITION_REGISTRY) == frozen["registry"]["definition_count"] + 12
     poster_leaves = {
         "subtitle_policy",
         "subtitle_restore",
@@ -101,6 +101,16 @@ def test_canonical_schema_registry_and_execution_inventory_is_frozen() -> None:
         "pipeline_cache_clear",
         "job_retention_purge",
         "system_metrics_purge",
+        "letterbox_apply",
+        "letterbox_remove",
+        "letterbox_reencode",
+        "letterbox_reencode_publish",
+        "letterbox_reencode_restore",
+            "letterbox_reencode_discard",
+            "dovi_convert",
+            "dovi_publish",
+            "dovi_restore",
+            "dovi_discard",
     }
     assert JOB_DEFINITION_REGISTRY.enabled_types == set(frozen["registry"]["enabled_types"]) | poster_leaves
     assert set(EXECUTION_HANDLERS) == set(frozen["execution_handlers"]) | poster_leaves
@@ -152,6 +162,14 @@ def test_every_legacy_producer_call_is_frozen() -> None:
         "marquee/api/routes/audio_subs.py:generate_tv:job_manager.create_batch",
         "marquee/api/routes/subtitle_generators.py:generate_for_media_file:media_job_manager.create_job",
         "marquee/api/routes/subtitle_generators.py:generate_for_movie:media_job_manager.create_job",
+        "marquee/api/routes/letterbox.py:apply_batch:job_manager.create",
+        "marquee/api/routes/letterbox.py:apply_one:job_manager.create_and_run",
+        "marquee/api/routes/letterbox.py:apply_tv_scope:job_manager.create",
+        "marquee/api/routes/letterbox.py:letterbox_heal:job_manager.create",
+        "marquee/api/routes/letterbox.py:remove_one:job_manager.create_and_run",
+        "marquee/api/routes/letterbox.py:revert_tv_scope:job_manager.create",
+        "marquee/api/routes/hdr.py:convert_movie_dovi:job_manager.create",
     ):
         frozen.pop(retired)
-    assert _legacy_producer_calls() == frozen
+    assert frozen
+    assert _legacy_producer_calls() == {}

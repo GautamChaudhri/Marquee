@@ -26,6 +26,7 @@ PARENT_JOB_TYPES = (
     "letterbox_detect_batch",
     "letterbox_apply_batch",
     "letterbox_reencode_tv_batch",
+    "letterbox_reencode_publish_batch",
 )
 
 _HEADLINES = {
@@ -36,6 +37,7 @@ _HEADLINES = {
     "letterbox_detect_batch": "Detect letterbox bars across the selection",
     "letterbox_apply_batch": "Apply letterbox crops across the selection",
     "letterbox_reencode_tv_batch": "Re-encode TV letterbox bars across the selection",
+    "letterbox_reencode_publish_batch": "Publish letterbox candidates across the selection",
 }
 
 _CHILD_NOUNS = {
@@ -46,6 +48,7 @@ _CHILD_NOUNS = {
     "letterbox_detect_batch": "movies",
     "letterbox_apply_batch": "movies",
     "letterbox_reencode_tv_batch": "episodes",
+    "letterbox_reencode_publish_batch": "files",
 }
 
 _COUNT_KEYS = ("total", "queued", "running", "succeeded", "no_change", "failed", "cancelled")

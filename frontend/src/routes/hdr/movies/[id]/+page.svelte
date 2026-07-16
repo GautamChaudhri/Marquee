@@ -2,7 +2,12 @@
 	import { onDestroy, onMount } from 'svelte';
 	import { browser } from '$app/environment';
 	import { invalidateAll } from '$app/navigation';
-	import { analyzeMovieDovi, convertMovieDovi } from '$lib/api/radarr-overlay';
+	import {
+		analyzeMovieDovi,
+		convertMovieDovi,
+		discardDoviCandidate,
+		publishDoviCandidate
+	} from '$lib/api/radarr-overlay';
 	import { isTerminal } from '$lib/api/jobs';
 	import { trackJob } from '$lib/jobs';
 	import HdrBadge from '$lib/components/HdrBadge.svelte';
@@ -29,10 +34,10 @@
 	const convertJobKey = $derived(movie ? `marquee:hdr:convertJob:${movie.id}` : null);
 
 	type ConversionResult = {
-		status?: string;
+		outcome?: string;
 		kind?: string;
-		candidate_path?: string;
-		candidate_size_bytes?: number;
+		artifact_id?: number;
+		artifact_size_bytes?: number;
 		original_untouched?: boolean;
 	};
 
@@ -142,6 +147,20 @@
 		} catch (e) {
 			converting = false;
 			toast(e instanceof Error ? e.message : 'Could not start conversion', 'bad');
+		}
+	}
+
+	async function decideCandidate(operation: 'publish' | 'discard') {
+		if (!movie || !conversionResult?.artifact_id) return;
+		try {
+			const job =
+				operation === 'publish'
+					? await publishDoviCandidate(fetch, movie.id, conversionResult.artifact_id)
+					: await discardDoviCandidate(fetch, movie.id, conversionResult.artifact_id);
+			attachConvert(job.job_id);
+			toast(operation === 'publish' ? 'Publication queued' : 'Candidate discard queued', 'good');
+		} catch (e) {
+			toast(e instanceof Error ? e.message : `Could not ${operation} candidate`, 'bad');
 		}
 	}
 
@@ -416,17 +435,22 @@
 									: 'Non-destructive candidate'}</span
 							>
 						</div>
-						{#if conversionResult?.candidate_path}
+						{#if conversionResult?.artifact_id}
 							<div class="result">
 								<div class="kv">
 									<span class="lbl">Candidate</span>
-									<span class="val mono">{conversionResult.candidate_path}</span>
+									<span class="val mono">Artifact #{conversionResult.artifact_id}</span>
 								</div>
 								<div class="kv">
 									<span class="lbl">Original</span>
 									<span class="val"
 										>{conversionResult.original_untouched ? 'untouched' : 'replaced'}</span
 									>
+								</div>
+								<div class="actions">
+									<button class="primary" onclick={() => decideCandidate('publish')}>Publish</button
+									>
+									<button onclick={() => decideCandidate('discard')}>Discard</button>
 								</div>
 							</div>
 						{:else if conversionError}

@@ -18,7 +18,6 @@ from marquee import __version__
 from marquee.api.auth import require_api_key
 from marquee.api.request_limits import RequestBodyLimitMiddleware
 from marquee.config import settings
-from marquee.core.jobs.manager import UnmigratedJobPlatformError
 from marquee.core.pipeline_config import migrate_legacy_runtime_state
 from marquee.core.rate_limit import RateLimiter
 from marquee.database import close_db, init_db
@@ -339,23 +338,6 @@ if settings.DEBUG:
 # ---------------------------------------------------------------------------
 # Exception Handler
 # ---------------------------------------------------------------------------
-
-
-# Legacy job-family commands fail closed until their family is rebuilt on the
-# PgQueuer runtime in later chunks. One stable envelope for every such route.
-@app.exception_handler(UnmigratedJobPlatformError)
-async def _unmigrated_job_platform_handler(
-    request: Request, exc: UnmigratedJobPlatformError
-) -> JSONResponse:
-    logger.warning("Unmigrated job command on %s %s: %s", request.method, request.url.path, exc)
-    return JSONResponse(
-        status_code=503,
-        content={
-            "detail": "This operation is not migrated to the new job runtime yet",
-            "code": "job_platform_unmigrated",
-            "operation": exc.operation,
-        },
-    )
 
 
 # FastAPI's own HTTPException handler takes priority — this only fires for

@@ -33,12 +33,18 @@ def _literal_keywords(paths: list[Path], names: set[str]) -> set[str]:
             if not isinstance(node, ast.Call):
                 continue
             for keyword in node.keywords:
-                if (
-                    keyword.arg in names
-                    and isinstance(keyword.value, ast.Constant)
-                    and isinstance(keyword.value.value, str)
-                ):
-                    values.add(keyword.value.value)
+                if keyword.arg in names:
+                    candidates = (
+                        (keyword.value.body, keyword.value.orelse)
+                        if isinstance(keyword.value, ast.IfExp)
+                        else (keyword.value,)
+                    )
+                    values.update(
+                        candidate.value
+                        for candidate in candidates
+                        if isinstance(candidate, ast.Constant)
+                        and isinstance(candidate.value, str)
+                    )
     return values
 
 
@@ -66,9 +72,9 @@ def test_source_inventory_matches_freeze() -> None:
         {"job_type", "parent_type", "parent_job_type"},
     )
     assert route_types == set(ROUTE_CONSTRUCTED_TYPES)
-    assert len(MEDIA_OPERATION_TYPES) == 12
-    assert len(PARENT_ONLY_TYPES) == 14  # +subtitle_policy_batch (JMC5B B05)
-    assert len(BUILTIN_JOB_TYPES) == 54  # +subtitle_policy_batch (JMC5B B05)
+    assert len(MEDIA_OPERATION_TYPES) == 19
+    assert len(PARENT_ONLY_TYPES) == 18  # +C3 fixed letterbox publish parent
+    assert len(BUILTIN_JOB_TYPES) == 61  # +JMC5C Dolby Vision conversion/publication
 
 
 def test_stable_taxonomy_values() -> None:

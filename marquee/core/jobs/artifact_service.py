@@ -74,6 +74,12 @@ ARTIFACT_POLICIES: dict[str, ArtifactPolicy] = {
     "evidence_frame": ArtifactPolicy(
         ".png", frozenset({"image/png"}), 10 * 1024 * 1024
     ),
+    "media_candidate": ArtifactPolicy(
+        ".mkv", frozenset({"video/x-matroska"}), 8 * 1024 * 1024 * 1024 * 1024
+    ),
+    "media_backup": ArtifactPolicy(
+        ".mkv", frozenset({"video/x-matroska"}), 8 * 1024 * 1024 * 1024 * 1024
+    ),
 }
 
 

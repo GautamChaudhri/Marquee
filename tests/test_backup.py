@@ -280,6 +280,10 @@ def test_only_system_noop_is_dispatch_enabled_and_executable() -> None:
         "subtitle_scan",
         "subtitle_policy_audit",
         "dovi_analyze",
+        "dovi_convert",
+        "dovi_publish",
+        "dovi_restore",
+        "dovi_discard",
         "learned_head_train",
         "poster_rescan",
         "taste_map",
@@ -293,6 +297,12 @@ def test_only_system_noop_is_dispatch_enabled_and_executable() -> None:
         "pipeline_cache_clear",
         "job_retention_purge",
         "system_metrics_purge",
+        "letterbox_apply",
+        "letterbox_remove",
+        "letterbox_reencode",
+        "letterbox_reencode_publish",
+        "letterbox_reencode_restore",
+        "letterbox_reencode_discard",
     }
     assert set(EXECUTION_HANDLERS) == {
         "subtitle_policy",
@@ -314,6 +324,10 @@ def test_only_system_noop_is_dispatch_enabled_and_executable() -> None:
         "subtitle_scan",
         "subtitle_policy_audit",
         "dovi_analyze",
+        "dovi_convert",
+        "dovi_publish",
+        "dovi_restore",
+        "dovi_discard",
         "learned_head_train",
         "poster_rescan",
         "taste_map",
@@ -327,6 +341,12 @@ def test_only_system_noop_is_dispatch_enabled_and_executable() -> None:
         "pipeline_cache_clear",
         "job_retention_purge",
         "system_metrics_purge",
+        "letterbox_apply",
+        "letterbox_remove",
+        "letterbox_reencode",
+        "letterbox_reencode_publish",
+        "letterbox_reencode_restore",
+        "letterbox_reencode_discard",
     }
 
     for definition in JOB_DEFINITION_REGISTRY:
