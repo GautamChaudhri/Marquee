@@ -839,7 +839,7 @@ async def use_show_poster_for_season(
         )
         await db.commit()
     except IdempotencyConflictError as exc:
-        raise HTTPException(status_code=409, detail=exc.code) from exc
+        raise HTTPException(status_code=409, detail=exc.api_detail) from exc
     except SubmissionError as exc:
         raise HTTPException(status_code=422, detail=exc.code) from exc
     except PosterSelectionError as exc:

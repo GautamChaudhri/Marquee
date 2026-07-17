@@ -38,6 +38,7 @@ ENABLED_LEAVES = {
     "subtitle_scan",
     "system_noop",
     "taste_map",
+    "taste_enrich",
     "taste_rebuild",
     "backup_create",
     "poster_maintenance",

@@ -221,6 +221,22 @@ describe('discovery and single stream', () => {
 		expect(h.store.records.get('j1')?.partition).toBe('queue');
 		expect(h.store.records.get('j1')?.progress?.overall?.percent).toBe(20);
 		expect(h.store.lastSuccessAt).not.toBeNull();
+		expect(h.store.activityForScope('posters')).toEqual({
+			active: true,
+			conflicting: true,
+			activeJobIds: ['j1']
+		});
+	});
+
+	it('derives inactive action authority from an authoritative terminal row', async () => {
+		h.setList({ items: [row('j1', 'terminal')], limit: 50, next_cursor: null, view: 'queue' });
+		h.store.acquireScope('posters', { view: 'queue' });
+		await flush();
+		expect(h.store.activityForScope('posters')).toEqual({
+			active: false,
+			conflicting: false,
+			activeJobIds: []
+		});
 	});
 
 	it('opens exactly one EventSource across many scopes', async () => {
@@ -228,6 +244,34 @@ describe('discovery and single stream', () => {
 		h.store.acquireScope('b', { view: 'queue', feature_area: 'letterbox' });
 		await flush();
 		expect(h.sources).toHaveLength(1);
+	});
+
+	it('sends exact subject and job-type scope to server discovery', async () => {
+		h.store.acquireScope('movie:42', {
+			view: 'queue',
+			feature_area: 'audio_subtitles',
+			types: ['subtitle_scan', 'subtitle_remove'],
+			subject_kind: 'media_file',
+			subject_reference: ['42']
+		});
+		await flush();
+		expect(h.calls[0]?.url).toContain('types=subtitle_scan%2Csubtitle_remove');
+		expect(h.calls[0]?.url).toContain('subject_kind=media_file');
+		expect(h.calls[0]?.url).toContain('subject_reference=42');
+	});
+
+	it('lets two independent tabs recover the same canonical active job', async () => {
+		const second = setup();
+		const response = { items: [row('j1')], limit: 20, next_cursor: null, view: 'queue' };
+		h.setList(response);
+		second.setList(response);
+		h.store.acquireScope('movie:42', { view: 'queue', subject_reference: ['42'] });
+		second.store.acquireScope('movie:42', { view: 'queue', subject_reference: ['42'] });
+		await flush();
+		expect(h.store.activityForScope('movie:42').activeJobIds).toEqual(['j1']);
+		expect(second.store.activityForScope('movie:42').activeJobIds).toEqual(['j1']);
+		expect(h.sources).toHaveLength(1);
+		expect(second.sources).toHaveLength(1);
 	});
 
 	it('tears down the stream only after the last consumer releases', async () => {

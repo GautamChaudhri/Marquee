@@ -130,7 +130,7 @@ def test_staleness_triggers_rebuild(synthetic_profile, tmp_path):
 
 @pytest.mark.asyncio
 async def test_map_endpoint(client, synthetic_profile):
-    resp = await client.get("/api/taste/map?recompute=true")
+    resp = await client.get("/api/taste/map")
     assert resp.status_code == 200
     data = resp.json()
     assert len(data["points"]) == 12

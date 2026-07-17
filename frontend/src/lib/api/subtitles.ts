@@ -1,8 +1,8 @@
 import { env } from '$env/dynamic/public';
 import { apiGet, apiSend, type Fetch } from './client';
 import { mockSubtitleInventory } from './mock';
+import type { components } from './generated/openapi';
 import type {
-	MediaJob,
 	PreferredLanguageState,
 	SubtitleInventory,
 	SubtitlePlanRequest,
@@ -16,15 +16,32 @@ import type {
 } from './types';
 
 const useMocks = () => env.PUBLIC_USE_MOCKS === 'true';
+type JobSubmissionResponse = components['schemas']['JobSubmissionResponse'];
 
 export function getInventory(fetch: Fetch, mediaFileId: number): Promise<SubtitleInventory> {
 	if (useMocks()) return Promise.resolve(mockSubtitleInventory(mediaFileId));
 	return apiGet<SubtitleInventory>(fetch, `/media-files/${mediaFileId}/subtitles`);
 }
 
-export function scanSubtitles(fetch: Fetch, mediaFileId: number): Promise<SubtitleInventory> {
-	if (useMocks()) return Promise.resolve(mockSubtitleInventory(mediaFileId));
-	return apiSend<SubtitleInventory>(fetch, 'POST', `/media-files/${mediaFileId}/subtitles/scan`);
+export function scanSubtitles(fetch: Fetch, mediaFileId: number): Promise<JobSubmissionResponse> {
+	if (useMocks()) {
+		const jobId = `mock-subtitle-scan-${mediaFileId}`;
+		return Promise.resolve({
+			job_id: jobId,
+			disposition: 'created',
+			idempotent: false,
+			phase: 'queued',
+			snapshot_url: `/api/jobs/${jobId}/snapshot`,
+			detail_url: `/projection-room/jobs/${jobId}`,
+			activity_url: `/projection-room?view=queue&job=${jobId}`,
+			active_conflict: null
+		});
+	}
+	return apiSend<JobSubmissionResponse>(
+		fetch,
+		'POST',
+		`/media-files/${mediaFileId}/subtitles/scan`
+	);
 }
 
 export function previewTrack(fetch: Fetch, mediaFileId: number, trackId: string): Promise<string> {
@@ -44,7 +61,6 @@ export function inspectMovie(
 	media_file_id: number;
 	path_present: boolean;
 	inventory: SubtitleInventory;
-	active_job: MediaJob | null;
 	preferred_languages?: PreferredLanguageState;
 }> {
 	if (useMocks()) {
@@ -54,7 +70,6 @@ export function inspectMovie(
 			media_file_id: movieId,
 			path_present: true,
 			inventory: mockSubtitleInventory(movieId),
-			active_job: null,
 			preferred_languages: {
 				shared: ['en'],
 				audio: ['en'],
@@ -71,7 +86,6 @@ export function inspectMovie(
 		media_file_id: number;
 		path_present: boolean;
 		inventory: SubtitleInventory;
-		active_job: MediaJob | null;
 		preferred_languages?: PreferredLanguageState;
 	}>(fetch, 'POST', `/movies/${movieId}/subtitles/inspect`);
 }

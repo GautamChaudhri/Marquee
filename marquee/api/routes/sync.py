@@ -47,9 +47,11 @@ async def sync_all(
             return JobSubmissionResponse(
                 job_id=active.id,
                 disposition="reused",
+                idempotent=True,
                 phase=active.phase,
                 snapshot_url=f"/api/jobs/{active.id}/snapshot",
                 detail_url=f"/projection-room/jobs/{active.id}",
+                activity_url=f"/projection-room?view=queue&job={active.id}",
             )
         try:
             result = await submit_job(
@@ -62,7 +64,7 @@ async def sync_all(
                 idempotency_key=f"library_sync:manual-{uuid4().hex}",
             )
         except IdempotencyConflictError as exc:
-            raise HTTPException(status_code=409, detail=exc.code) from exc
+            raise HTTPException(status_code=409, detail=exc.api_detail) from exc
         except SubmissionError as exc:
             raise HTTPException(status_code=422, detail=exc.code) from exc
 

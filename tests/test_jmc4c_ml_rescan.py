@@ -22,6 +22,7 @@ from marquee.core.jobs.documents import (
     MlPublicationResultV1,
     PosterRescanRequestV1,
     PosterRescanResultV1,
+    TasteEnrichRequestV1,
     TasteMapRequestV1,
     TasteRebuildRequestV1,
 )
@@ -61,6 +62,7 @@ async def test_ml_routes_submit_generation_snapshots_and_reject_manual_activatio
     routes = (
         ("/api/taste/retrain", "taste_rebuild", "taste_profile", "gpu"),
         ("/api/taste/map/rebuild", "taste_map", "taste_map", "cpu"),
+        ("/api/taste/enrich", "taste_enrich", "taste_enrichment", "cpu"),
         ("/api/taste/head/retrain", "learned_head_train", "learned_head", "cpu"),
     )
     for route, job_type, family, entrypoint in routes:
@@ -101,6 +103,7 @@ async def test_rescan_route_is_canonical_media_read_submission(client, db) -> No
 def test_c4_documents_are_strict_bounded_and_nonmutating() -> None:
     assert TasteRebuildRequestV1().expected_generation == 0
     assert TasteMapRequestV1().seed == 0
+    assert TasteEnrichRequestV1().library == "movies"
     assert LearnedHeadTrainRequestV1().library == "movies"
     assert PosterRescanRequestV1(scope="movie", movie_id=1).movie_id == 1
     assert not {
@@ -116,7 +119,13 @@ def test_c4_documents_are_strict_bounded_and_nonmutating() -> None:
 
 
 def test_c4_has_one_executor_and_no_legacy_publication_bypass() -> None:
-    expected = {"taste_rebuild", "taste_map", "learned_head_train", "poster_rescan"}
+    expected = {
+        "taste_rebuild",
+        "taste_map",
+        "taste_enrich",
+        "learned_head_train",
+        "poster_rescan",
+    }
     assert expected <= set(EXECUTION_HANDLERS)
     assert not Path("marquee/core/jobs/builtin_handlers.py").exists()
 

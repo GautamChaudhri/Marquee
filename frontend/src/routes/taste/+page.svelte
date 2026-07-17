@@ -21,6 +21,7 @@
 		getLearnedHeadDetail,
 		getLearnedHeads,
 		getTasteMap,
+		rebuildTasteMap,
 		getTasteProfileDetail,
 		getTasteProfileExemplars,
 		getTasteProfiles,
@@ -80,7 +81,7 @@
 		try {
 			const [nextStatus, nextMap, nextProfiles, nextHeads] = await Promise.all([
 				getTasteStatus(fetch, library),
-				getTasteMap(fetch, false, library).catch(() => mapData),
+				getTasteMap(fetch, library).catch(() => mapData),
 				getTasteProfiles(fetch, library).then((value) => value.profiles),
 				getLearnedHeads(fetch).then((value) => value.heads)
 			]);
@@ -167,8 +168,12 @@
 		mapLoading = true;
 		mapError = null;
 		try {
-			mapData = await getTasteMap(fetch, true, library);
-			toast('Taste map rebuilt', 'good');
+			const job = await rebuildTasteMap(fetch, library);
+			initiatedJobIds = [...new Set([...initiatedJobIds, job.job_id])];
+			toast(
+				job.idempotent ? 'Taste map rebuild already active' : 'Taste map rebuild queued',
+				'info'
+			);
 		} catch (e) {
 			mapError = e instanceof Error ? e.message : 'Map rebuild failed';
 			toast(mapError, 'bad');
@@ -183,9 +188,12 @@
 		if (enriching) return;
 		enriching = true;
 		try {
-			mapData = await enrichProfile(fetch);
-			toast('Metadata enriched and taste map refreshed', 'good');
-			void refresh();
+			const job = await enrichProfile(fetch, library);
+			initiatedJobIds = [...new Set([...initiatedJobIds, job.job_id])];
+			toast(
+				job.idempotent ? 'Profile enrichment already active' : 'Profile enrichment queued',
+				'info'
+			);
 		} catch (e) {
 			toast(e instanceof Error ? e.message : 'Enrichment failed', 'bad');
 		} finally {
@@ -275,7 +283,7 @@
 		try {
 			await deleteTasteProfileExemplar(fetch, profileDetail.id, name);
 			toast('Exemplar removed', 'good');
-			mapData = await getTasteMap(fetch, false, library);
+			mapData = await getTasteMap(fetch, library);
 			await refresh();
 		} catch (e) {
 			toast(e instanceof Error ? e.message : 'Could not remove exemplar', 'bad');
@@ -312,7 +320,9 @@
 			`Taste work ${snapshot.status.label.toLowerCase()}`,
 			snapshot.status.outcome === 'succeeded' ? 'good' : 'bad'
 		);
-		await refresh();
+		if (snapshot.status.outcome === 'succeeded' || snapshot.status.outcome === 'no_change') {
+			await refresh();
+		}
 	}
 
 	$effect(() => {

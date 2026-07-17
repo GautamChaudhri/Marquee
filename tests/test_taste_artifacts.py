@@ -12,7 +12,7 @@ from marquee.core.pipeline_config import pipeline_settings
 from marquee.main import app
 from marquee.ml import artifact_registry
 from marquee.ml.artifact_codec import unicode_array, unicode_scalar
-from marquee.models import ArtifactSnapshot
+from marquee.models import ArtifactSnapshot, Job
 
 
 @pytest.fixture
@@ -84,7 +84,7 @@ def managed_head(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_profiles_endpoint_backfills_active_profile(client, db, managed_profile):
     resp = await client.get("/api/taste/profiles")
-    assert resp.status_code == 200
+    assert resp.status_code == 200, resp.text
     profiles = resp.json()["profiles"]
     assert len(profiles) == 1
     profile = profiles[0]
@@ -126,7 +126,9 @@ async def test_delete_active_profile_conflict(client, db, managed_profile):
 
 
 @pytest.mark.asyncio
-async def test_delete_profile_exemplar_updates_profile_and_map(client, db, managed_profile):
+async def test_delete_profile_exemplar_schedules_map_successor(
+    client, db, managed_profile, installed_pgqueuer
+):
     profiles = (await client.get("/api/taste/profiles")).json()["profiles"]
     profile_id = profiles[0]["id"]
     exemplars = (await client.get(f"/api/taste/profiles/{profile_id}/exemplars")).json()["exemplars"]
@@ -135,15 +137,22 @@ async def test_delete_profile_exemplar_updates_profile_and_map(client, db, manag
     resp = await client.delete(
         f"/api/taste/profiles/{profile_id}/exemplars/{quote(target, safe='')}"
     )
-    assert resp.status_code == 200
+    assert resp.status_code == 200, resp.text
+    payload = resp.json()
+    successor = payload["successor_job"]
+    assert successor["disposition"] == "created"
+
+    job = await db.get(Job, successor["job_id"])
+    assert job is not None
+    assert job.subject_kind == "model_profile_training"
+    assert job.subject_reference == "taste_map:movies"
+    assert job.request["profile_revision"] == profile_id
+    assert job.request["trigger_reference"] == f"exemplar_deleted:{target}"
 
     detail = await client.get(f"/api/taste/profiles/{profile_id}")
     assert detail.status_code == 200
     assert detail.json()["summary"]["exemplars"] == 11
 
-    taste_map = await client.get("/api/taste/map")
-    assert taste_map.status_code == 200
-    assert taste_map.json()["summary"]["exemplars"] == 11
 
 
 @pytest.mark.asyncio

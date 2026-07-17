@@ -144,6 +144,7 @@
 	}
 
 	let initiatedJobIds = $state<string[]>([]);
+	let scopeActive = $state(false);
 
 	function bindJobs(jobIds: string[]) {
 		const additions = jobIds.filter((jobId) => !initiatedJobIds.includes(jobId));
@@ -664,16 +665,24 @@
 						onToggleAll={() => toggleConfidenceAll(null)}
 						onConfirm={() => runScopeApply(null)}
 					/>
-					<button class="btn btn-outline btn-sm" onclick={() => runScopeRevert(null)}>
+					<button
+						class="btn btn-outline btn-sm"
+						onclick={() => runScopeRevert(null)}
+						disabled={scopeActive}
+					>
 						Revert
 					</button>
-					<button class="btn btn-outline btn-sm" onclick={() => openReencodeModal(null)}>
+					<button
+						class="btn btn-outline btn-sm"
+						onclick={() => openReencodeModal(null)}
+						disabled={scopeActive}
+					>
 						Reencode
 					</button>
 					{#if readyArtifactCount(null) > 0}
 						<button
 							class="btn btn-outline btn-sm"
-							disabled={replaceAllReadyBusy['show']}
+							disabled={replaceAllReadyBusy['show'] || scopeActive}
 							onclick={() => doReplaceAllReady(null)}
 						>
 							Replace all ready ({readyArtifactCount(null)})
@@ -684,8 +693,23 @@
 		</SectionHeader>
 		<FeatureActivityPanel
 			scopeKey={`feature:letterbox:series:${seriesId}`}
-			query={{ feature_area: 'letterbox', subject_kind: 'series', subject_id: String(seriesId) }}
+			query={{
+				feature_area: 'letterbox',
+				types: [
+					'letterbox_detect_episode',
+					'letterbox_detect_tv_scope',
+					'letterbox_apply',
+					'letterbox_remove',
+					'letterbox_reencode',
+					'letterbox_reencode_publish',
+					'letterbox_reencode_restore',
+					'letterbox_reencode_discard'
+				],
+				subject_kind: 'series',
+				subject_reference: [String(seriesId)]
+			}}
 			jobIds={initiatedJobIds}
+			bind:active={scopeActive}
 			heading="Show letterbox activity"
 			onSettled={handleJobSettled}
 		/>
@@ -936,6 +960,7 @@
 																			class="btn btn-outline btn-xs"
 																			title="Scan this episode anyway (force + include OM/PB)"
 																			onclick={() => runScanAnyway(ep.episode_id)}
+																			disabled={scopeActive}
 																		>
 																			Scan anyway
 																		</button>
@@ -944,6 +969,7 @@
 																			class="btn btn-outline btn-xs"
 																			title="Detect letterbox borders"
 																			onclick={() => runEpisodeDetect(ep.episode_id)}
+																			disabled={scopeActive}
 																		>
 																			Detect
 																		</button>

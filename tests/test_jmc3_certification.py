@@ -73,6 +73,7 @@ def test_only_system_noop_remains_production_enabled() -> None:
         "learned_head_train",
         "poster_rescan",
         "taste_map",
+        "taste_enrich",
         "taste_rebuild",
         "poster_deploy",
         "poster_restore",

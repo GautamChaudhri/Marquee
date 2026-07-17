@@ -1882,7 +1882,7 @@ export interface paths {
 		};
 		/**
 		 * Get Subtitles
-		 * @description Inventory, coverage, capabilities, and per-track actions for a file.
+		 * @description Read persisted inventory, coverage, capabilities, and track actions.
 		 */
 		get: operations['get_subtitles_api_media_files__media_file_id__subtitles_get'];
 		put?: never;
@@ -1904,7 +1904,7 @@ export interface paths {
 		put?: never;
 		/**
 		 * Scan Subtitles
-		 * @description Force a fresh inventory scan (inline for a single file).
+		 * @description Submit one canonical subtitle inventory scan for a media file.
 		 */
 		post: operations['scan_subtitles_api_media_files__media_file_id__subtitles_scan_post'];
 		delete?: never;
@@ -2041,7 +2041,7 @@ export interface paths {
 		put?: never;
 		/**
 		 * Inspect Movie Subtitles
-		 * @description Resolve a movie's file, probe it, and return its full subtitle inventory.
+		 * @description Resolve a movie's file and return its persisted subtitle inventory.
 		 */
 		post: operations['inspect_movie_subtitles_api_movies__movie_id__subtitles_inspect_post'];
 		delete?: never;
@@ -3174,7 +3174,7 @@ export interface paths {
 		put?: never;
 		/**
 		 * Enrich Profile
-		 * @description Run profile enrichment (genres, years, tmdb_ids) and rebuild the map.
+		 * @description Submit immutable taste-profile enrichment publication.
 		 */
 		post: operations['enrich_profile_api_taste_enrich_post'];
 		delete?: never;
@@ -3324,7 +3324,7 @@ export interface paths {
 		};
 		/**
 		 * Get Taste Map
-		 * @description 3D/2D projection of the taste profile, with clusters + outliers.
+		 * @description Return the last published taste-map artifact without recomputation.
 		 */
 		get: operations['get_taste_map_api_taste_map_get'];
 		put?: never;
@@ -3707,6 +3707,21 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
 	schemas: {
+		/** ActiveJobConflict */
+		ActiveJobConflict: {
+			/**
+			 * Code
+			 * @default active_overlap_conflict
+			 * @constant
+			 */
+			code: 'active_overlap_conflict';
+			/** Detail Url */
+			detail_url: string;
+			/** Job Id */
+			job_id: string;
+			/** Snapshot Url */
+			snapshot_url: string;
+		};
 		/** ActivityAttentionResponse */
 		ActivityAttentionResponse: {
 			/** Error */
@@ -4797,6 +4812,9 @@ export interface components {
 		 * @description Bounded canonical submission handle (never a legacy or numeric transport id).
 		 */
 		JobSubmissionResponse: {
+			active_conflict?: components['schemas']['ActiveJobConflict'] | null;
+			/** Activity Url */
+			activity_url: string;
 			/** Detail Url */
 			detail_url: string;
 			/**
@@ -4804,6 +4822,8 @@ export interface components {
 			 * @enum {string}
 			 */
 			disposition: 'created' | 'reused';
+			/** Idempotent */
+			idempotent: boolean;
 			/** Job Id */
 			job_id: string;
 			/** Phase */
@@ -5273,6 +5293,9 @@ export interface components {
 		 * @description Canonical submission handle plus the bounded mutation-confirmation fence.
 		 */
 		PlannedJobSubmissionResponse: {
+			active_conflict?: components['schemas']['ActiveJobConflict'] | null;
+			/** Activity Url */
+			activity_url: string;
 			/** Configuration Version */
 			configuration_version: number;
 			/** Detail Url */
@@ -5284,6 +5307,8 @@ export interface components {
 			disposition: 'created' | 'reused';
 			/** Expires At */
 			expires_at: string;
+			/** Idempotent */
+			idempotent: boolean;
 			/** Job Id */
 			job_id: string;
 			/** Phase */
@@ -7134,8 +7159,10 @@ export interface operations {
 				q?: string | null;
 				feature_area?: components['schemas']['FeatureArea'] | null;
 				type?: string | null;
+				types?: string[] | null;
 				subject_kind?: string | null;
 				subject_id?: string | null;
+				subject_reference?: string[] | null;
 				phase?: string | null;
 				outcome?: string | null;
 				attention?: components['schemas']['AttentionLevel'] | null;
@@ -9578,9 +9605,7 @@ export interface operations {
 	};
 	get_subtitles_api_media_files__media_file_id__subtitles_get: {
 		parameters: {
-			query?: {
-				force?: boolean;
-			};
+			query?: never;
 			header?: never;
 			path: {
 				media_file_id: number;
@@ -9612,7 +9637,9 @@ export interface operations {
 	scan_subtitles_api_media_files__media_file_id__subtitles_scan_post: {
 		parameters: {
 			query?: never;
-			header?: never;
+			header?: {
+				'Idempotency-Key'?: string | null;
+			};
 			path: {
 				media_file_id: number;
 			};
@@ -9621,12 +9648,12 @@ export interface operations {
 		requestBody?: never;
 		responses: {
 			/** @description Successful Response */
-			200: {
+			202: {
 				headers: {
 					[name: string]: unknown;
 				};
 				content: {
-					'application/json': unknown;
+					'application/json': components['schemas']['JobSubmissionResponse'];
 				};
 			};
 			/** @description Validation Error */
@@ -11581,7 +11608,9 @@ export interface operations {
 	};
 	enrich_profile_api_taste_enrich_post: {
 		parameters: {
-			query?: never;
+			query?: {
+				library?: string;
+			};
 			header?: never;
 			path?: never;
 			cookie?: never;
@@ -11589,12 +11618,21 @@ export interface operations {
 		requestBody?: never;
 		responses: {
 			/** @description Successful Response */
-			200: {
+			202: {
 				headers: {
 					[name: string]: unknown;
 				};
 				content: {
-					'application/json': unknown;
+					'application/json': components['schemas']['JobSubmissionResponse'];
+				};
+			};
+			/** @description Validation Error */
+			422: {
+				headers: {
+					[name: string]: unknown;
+				};
+				content: {
+					'application/json': components['schemas']['HTTPValidationError'];
 				};
 			};
 		};
@@ -11844,7 +11882,6 @@ export interface operations {
 	get_taste_map_api_taste_map_get: {
 		parameters: {
 			query?: {
-				recompute?: boolean;
 				library?: string;
 			};
 			header?: never;

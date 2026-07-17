@@ -327,142 +327,19 @@ async def test_release_gpu_endpoint_reports_busy(client):
     assert resp.json()["status"] == "busy"
 
 
-class _FakeQueue:
-    def __init__(self, messages=None):
-        self._messages = list(messages or [])
-        self.closed = False
-
-    def get_nowait(self):
-        import queue
-
-        if not self._messages:
-            raise queue.Empty
-        return self._messages.pop(0)
-
-    def close(self):
-        self.closed = True
-
-
-class _FakeProcess:
-    def __init__(self, exitcode=0):
-        self.exitcode = exitcode
-
-    def is_alive(self):
-        return False
-
-    def terminate(self):
-        raise AssertionError("dead process should not be terminated")
-
-    def kill(self):
-        raise AssertionError("dead process should not be killed")
-
-    def join(self, timeout=None):
-        return None
-
-
-class _AliveFakeProcess:
-    def __init__(self):
-        self.exitcode = None
-        self.terminated = False
-        self.killed = False
-        self.pid = 12345
-
-    def is_alive(self):
-        return not (self.terminated or self.killed)
-
-    def terminate(self):
-        self.terminated = True
-        self.exitcode = -15
-
-    def kill(self):
-        self.killed = True
-        self.exitcode = -9
-
-    def join(self, timeout=None):
-        return None
-
-
-def test_taste_rebuild_progress_preserves_old_fields_and_adds_liveness():
+def test_taste_rebuild_has_no_process_local_execution_state():
     from marquee.api.routes import taste as taste_route
 
-    taste_route._mark_rebuild_started()
-    taste_route._apply_rebuild_progress(
-        {
-            "stage": "calibration",
-            "substage": "ocr",
-            "current_item": "poster.jpg",
-            "processed": 2,
-            "total": 430,
-            "message": "Measuring OCR title geometry for poster.jpg.",
-            "pid": 123,
-        }
-    )
-
-    rebuild = taste_route._rebuild_state
-    assert rebuild["status"] == "running"
-    assert rebuild["running"] is True
-    assert rebuild["stage"] == "calibration"
-    assert rebuild["processed"] == 2
-    assert rebuild["total"] == 430
-    assert rebuild["substage"] == "ocr"
-    assert rebuild["current_item"] == "poster.jpg"
-    assert rebuild["message"]
-    assert rebuild["pid"] == 123
-    assert rebuild["updated_at"]
-    assert rebuild["stage_started_at"]
-
-
-@pytest.mark.asyncio
-async def test_taste_rebuild_monitor_marks_completed(monkeypatch):
-    from marquee.api.routes import taste as taste_route
-
-    monkeypatch.setattr(run_manager, "release_gpu_resources", lambda: {})
-    run_manager.begin_rebuild()
-    started = taste_route._mark_rebuild_started()
-
-    await taste_route._monitor_rebuild_process(_FakeProcess(0), _FakeQueue(), started)
-
-    assert taste_route._rebuild_state["status"] == "completed"
-    assert taste_route._rebuild_state["running"] is False
-    assert taste_route._rebuild_state["finished_at"]
-    assert run_manager.gpu_busy() is None
-
-
-@pytest.mark.asyncio
-async def test_taste_rebuild_monitor_records_cancelled(monkeypatch):
-    from marquee.api.routes import taste as taste_route
-
-    process = _AliveFakeProcess()
-    monkeypatch.setattr(run_manager, "release_gpu_resources", lambda: {})
-    run_manager.begin_rebuild()
-    started = taste_route._mark_rebuild_started()
-    taste_route._rebuild_cancel_requested = "cancelled by test"
-
-    await taste_route._monitor_rebuild_process(process, _FakeQueue(), started)
-
-    assert process.terminated is True
-    assert taste_route._rebuild_state["status"] == "cancelled"
-    assert taste_route._rebuild_state["running"] is False
-    assert taste_route._rebuild_state["error"] == "cancelled by test"
-    assert run_manager.gpu_busy() is None
-
-
-@pytest.mark.asyncio
-async def test_taste_rebuild_monitor_records_failure(monkeypatch):
-    from marquee.api.routes import taste as taste_route
-
-    monkeypatch.setattr(run_manager, "release_gpu_resources", lambda: {})
-    run_manager.begin_rebuild()
-    started = taste_route._mark_rebuild_started()
-    queue = _FakeQueue([{"type": "error", "error": "boom"}])
-
-    await taste_route._monitor_rebuild_process(_FakeProcess(1), queue, started)
-
-    assert taste_route._rebuild_state["status"] == "failed"
-    assert taste_route._rebuild_state["running"] is False
-    assert taste_route._rebuild_state["error"] == "boom"
-    assert taste_route._rebuild_state["finished_at"]
-    assert run_manager.gpu_busy() is None
+    for removed in (
+        "_rebuild_state",
+        "_rebuild_process",
+        "_rebuild_queue",
+        "_rebuild_cancel_requested",
+        "_mark_rebuild_started",
+        "_apply_rebuild_progress",
+        "_monitor_rebuild_process",
+    ):
+        assert not hasattr(taste_route, removed)
 
 
 def test_measure_exemplar_features_reports_substage_progress(tmp_path, monkeypatch):

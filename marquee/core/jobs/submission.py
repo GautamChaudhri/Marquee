@@ -14,9 +14,9 @@ from pydantic import ValidationError
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from marquee.core.configuration_cache import configuration_provider
+from marquee.core.configuration_cache import ExecutionConfigurationSnapshot, configuration_provider
 from marquee.core.jobs.contracts import TriggerKind
-from marquee.core.jobs.definitions import JobDefinition, JobDefinitionError
+from marquee.core.jobs.definitions import ActiveOverlapMode, JobDefinition, JobDefinitionError
 from marquee.core.jobs.event_service import job_event_writer
 from marquee.core.jobs.manifest import JOB_DEFINITION_REGISTRY
 from marquee.core.jobs.pgqueuer_gateway import (
@@ -61,6 +61,29 @@ class SubmissionValidationError(SubmissionError):
 
 class IdempotencyConflictError(SubmissionError):
     code = "idempotency_conflict"
+
+    @property
+    def api_detail(self) -> str | dict[str, str]:
+        return self.code
+
+
+class ActiveOverlapConflictError(IdempotencyConflictError):
+    code = "active_overlap_conflict"
+
+    def __init__(self, active_job_id: str) -> None:
+        super().__init__(self.code)
+        self.active_job_id = active_job_id
+        self.snapshot_link = f"/api/jobs/{active_job_id}/snapshot"
+        self.detail_link = f"/projection-room/jobs/{active_job_id}"
+
+    @property
+    def api_detail(self) -> dict[str, str]:
+        return {
+            "code": self.code,
+            "job_id": self.active_job_id,
+            "snapshot_url": self.snapshot_link,
+            "detail_url": self.detail_link,
+        }
 
 
 class SubmissionInvariantError(SubmissionError):
@@ -152,6 +175,8 @@ class SubmissionResult:
     phase: str
     snapshot_link: str
     detail_link: str
+    activity_link: str
+    idempotent: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -171,6 +196,8 @@ def _result(job: Job, disposition: Literal["created", "reused"]) -> SubmissionRe
         phase=job.phase,
         snapshot_link=f"/api/jobs/{job.id}/snapshot",
         detail_link=f"/projection-room/jobs/{job.id}",
+        activity_link=f"/projection-room?view=queue&job={job.id}",
+        idempotent=disposition == "reused",
     )
 
 
@@ -241,6 +268,83 @@ async def _lock_idempotency(session: AsyncSession, key: str) -> None:
         {"key": key},
     )
 
+def _active_overlap_scope(
+    prepared: _PreparedSubmission,
+    *,
+    parent_id: str | None,
+    correlation_id: str,
+) -> dict[str, str | None]:
+    policy = prepared.definition.overlap_policy
+    return {
+        "job_type": prepared.intent.job_type,
+        "subject_kind": prepared.intent.subject.kind,
+        "subject_reference": prepared.intent.subject.reference,
+        "parent_id": parent_id if policy.include_parent_scope else None,
+        "correlation_id": (
+            correlation_id
+            if policy.include_parent_scope and parent_id is not None
+            else None
+        ),
+    }
+
+
+async def _resolve_active_overlap(
+    session: AsyncSession,
+    prepared: _PreparedSubmission,
+    configuration: ExecutionConfigurationSnapshot,
+    *,
+    parent_id: str | None,
+    correlation_id: str,
+) -> Job | None:
+    if prepared.definition.overlap_policy.mode == ActiveOverlapMode.ALLOW:
+        return None
+    scope = _active_overlap_scope(
+        prepared,
+        parent_id=parent_id,
+        correlation_id=correlation_id,
+    )
+    lock_key = json.dumps(scope, sort_keys=True, separators=(",", ":"))
+    await _lock_idempotency(session, f"active:{lock_key}")
+
+    query = select(Job).where(
+        Job.type == prepared.intent.job_type,
+        Job.subject_kind == prepared.intent.subject.kind,
+        Job.subject_reference == prepared.intent.subject.reference,
+        Job.phase.in_(("planned", "queued", "running", "stopping")),
+    )
+    if prepared.definition.overlap_policy.include_parent_scope and parent_id is not None:
+        query = query.where(
+            Job.parent_id == parent_id,
+            Job.correlation_id == correlation_id,
+        )
+    active = list(
+        (
+            await session.scalars(
+                query.order_by(Job.created_at.asc(), Job.id.asc()).with_for_update()
+            )
+        ).all()
+    )
+    equivalent = next(
+        (
+            job
+            for job in active
+            if job.request == prepared.request
+            and (
+                not prepared.definition.overlap_policy.include_configuration
+                or job.configuration_version == configuration.version
+            )
+        ),
+        None,
+    )
+    if equivalent is not None:
+        return equivalent
+    if (
+        active
+        and prepared.definition.overlap_policy.mode == ActiveOverlapMode.REJECT_CONFLICT
+    ):
+        raise ActiveOverlapConflictError(active[0].id)
+    return None
+
 
 async def _resolve_subject(
     session: AsyncSession, locator: SubjectLocator
@@ -305,13 +409,19 @@ async def _resolve_subject(
             )
         if locator.kind == "model_profile_training":
             family, library = locator.reference.split(":", 1)
-            if family not in {"taste_profile", "taste_map", "learned_head"}:
+            if family not in {
+                "taste_profile",
+                "taste_map",
+                "taste_enrichment",
+                "learned_head",
+            }:
                 raise ValueError
             if library not in {"movies", "tv"}:
                 raise ValueError
             labels = {
                 "taste_profile": "Taste profile",
                 "taste_map": "Taste map",
+                "taste_enrichment": "Taste profile enrichment",
                 "learned_head": "Learned ranking head",
             }
             return ModelProfileTrainingSnapshot(
@@ -413,6 +523,7 @@ def _validate_existing(
 async def _create_rows(
     session: AsyncSession,
     prepared: _PreparedSubmission,
+    configuration: ExecutionConfigurationSnapshot,
     *,
     parent_id: str | None,
     root_id: str,
@@ -425,9 +536,6 @@ async def _create_rows(
         if subject_builder is None:
             raise SubmissionInvariantError("enabled definition has no subject builder")
         subject = subject_builder(subject)
-        configuration = configuration_provider.snapshot_for(
-            prepared.definition.configuration_keys
-        )
     except SubmissionError:
         raise
     except (TypeError, ValueError, ValidationError) as exc:
@@ -457,6 +565,7 @@ async def _create_rows(
             "presenter_key": definition.presenter_key,
             "progress_policy": _json_policy(definition.progress_policy),
             "action_policy": _json_policy(definition.action_policy),
+            "overlap_policy": _json_policy(definition.overlap_policy),
         },
         phase="queued",
         desired_state="run",
@@ -553,9 +662,23 @@ async def submit_job(
         )
         return _result(existing, "reused")
 
+    configuration = configuration_provider.snapshot_for(
+        prepared.definition.configuration_keys
+    )
+    active = await _resolve_active_overlap(
+        session,
+        prepared,
+        configuration,
+        parent_id=parent_id,
+        correlation_id=correlation_id,
+    )
+    if active is not None:
+        return _result(active, "reused")
+
     job, enqueue_intent = await _create_rows(
         session,
         prepared,
+        configuration,
         parent_id=parent_id,
         root_id=root_id,
         correlation_id=correlation_id,
@@ -628,9 +751,24 @@ async def submit_jobs(
             jobs.append(existing)
             dispositions.append("reused")
             continue
+        configuration = configuration_provider.snapshot_for(
+            prepared.definition.configuration_keys
+        )
+        active = await _resolve_active_overlap(
+            session,
+            prepared,
+            configuration,
+            parent_id=parent_id,
+            correlation_id=correlation_id,
+        )
+        if active is not None:
+            jobs.append(active)
+            dispositions.append("reused")
+            continue
         job, enqueue_intent = await _create_rows(
             session,
             prepared,
+            configuration,
             parent_id=parent_id,
             root_id=root_id,
             correlation_id=correlation_id,

@@ -53,13 +53,19 @@ export function cancelRetrain(
 	return apiSend(fetchFn, 'POST', '/taste/retrain/cancel', {});
 }
 
-/** Load (or force-rebuild) the 3D/2D taste-map projection. */
+/** Load the last published 3D/2D taste-map projection. */
 export function getTasteMap(
 	fetchFn: Fetch,
-	recompute = false,
 	library: TasteLibrary = 'movies'
 ): Promise<TasteMapData> {
-	return apiGet<TasteMapData>(fetchFn, '/taste/map', { recompute, library });
+	return apiGet<TasteMapData>(fetchFn, '/taste/map', { library });
+}
+
+export function rebuildTasteMap(
+	fetchFn: Fetch,
+	library: TasteLibrary = 'movies'
+): Promise<JobSubmissionResponse> {
+	return apiSend<JobSubmissionResponse>(fetchFn, 'POST', `/taste/map/rebuild?library=${library}`);
 }
 
 /** Project a pipeline run's ranked candidates into the taste-map space. */
@@ -74,10 +80,12 @@ export function overlayCandidates(
 	});
 }
 
-/** Run profile enrichment (genres, years, tmdb_ids) and rebuild the map.
- *  Returns the refreshed taste-map data directly. */
-export function enrichProfile(fetchFn: Fetch): Promise<TasteMapData> {
-	return apiSend<TasteMapData>(fetchFn, 'POST', '/taste/enrich');
+/** Publish enriched profile metadata through the canonical job system. */
+export function enrichProfile(
+	fetchFn: Fetch,
+	library: TasteLibrary = 'movies'
+): Promise<JobSubmissionResponse> {
+	return apiSend<JobSubmissionResponse>(fetchFn, 'POST', `/taste/enrich?library=${library}`);
 }
 
 /** The k nearest exemplars to a given exemplar (click-to-explore). */

@@ -1,0 +1,78 @@
+{
+  "canonical_seams": [
+    {
+      "route": "/api/media-files/{media_file_id}/subtitles/scan",
+      "job_type": "subtitle_scan",
+      "feature_area": "audio_subtitles",
+      "subject_kind": "media_file",
+      "subject_reference": "{media_file_id}",
+      "overlap": "coalesce_equivalent",
+      "refresh": "subtitle_inventory"
+    },
+    {
+      "route": "/api/taste/retrain",
+      "job_type": "taste_rebuild",
+      "feature_area": "ml_taste",
+      "subject_kind": "model_profile_training",
+      "subject_reference": "taste_profile:{library}",
+      "overlap": "coalesce_equivalent",
+      "refresh": "taste_profile"
+    },
+    {
+      "route": "/api/taste/map/rebuild",
+      "job_type": "taste_map",
+      "feature_area": "ml_taste",
+      "subject_kind": "model_profile_training",
+      "subject_reference": "taste_map:{library}",
+      "overlap": "coalesce_equivalent",
+      "refresh": "taste_map"
+    },
+    {
+      "route": "/api/taste/enrich",
+      "job_type": "taste_enrich",
+      "feature_area": "ml_taste",
+      "subject_kind": "model_profile_training",
+      "subject_reference": "taste_profile:{library}",
+      "overlap": "reject_conflict",
+      "refresh": "taste_profile_and_map"
+    },
+    {
+      "route": "feedback_successor",
+      "job_type": "learned_head_train",
+      "feature_area": "ml_taste",
+      "subject_kind": "model_profile_training",
+      "subject_reference": "learned_head:{library}",
+      "overlap": "coalesce_equivalent",
+      "refresh": "learned_head"
+    }
+  ],
+  "feature_panels": {
+    "detail": [
+      "frontend/src/lib/components/LetterboxDetail.svelte",
+      "frontend/src/lib/components/pipeline/RunResultsView.svelte",
+      "frontend/src/routes/audio-subs/movies/[id]/+page.svelte",
+      "frontend/src/routes/audio-subs/tv/[id]/+page.svelte",
+      "frontend/src/routes/films/[id]/+page.svelte",
+      "frontend/src/routes/hdr/movies/[id]/+page.svelte",
+      "frontend/src/routes/hdr/tv/[id]/+page.svelte",
+      "frontend/src/routes/letterbox/tv/[id]/+page.svelte",
+      "frontend/src/routes/television/[id]/+page.svelte"
+    ],
+    "overview": [
+      "frontend/src/routes/audio-subs/+page.svelte",
+      "frontend/src/routes/audio-subs/movies/+page.svelte",
+      "frontend/src/routes/audio-subs/policies/+page.svelte",
+      "frontend/src/routes/hdr/+page.svelte",
+      "frontend/src/routes/hdr/movies/+page.svelte",
+      "frontend/src/routes/letterbox/+page.svelte",
+      "frontend/src/routes/letterbox/movies/+page.svelte",
+      "frontend/src/routes/letterbox/tv/+page.svelte",
+      "frontend/src/routes/onboarding/+page.svelte",
+      "frontend/src/routes/pipeline/+page.svelte",
+      "frontend/src/routes/pipeline/movies/+page.svelte",
+      "frontend/src/routes/pipeline/tv/+page.svelte",
+      "frontend/src/routes/settings/+page.svelte",
+      "frontend/src/routes/taste/+page.svelte"
+    ]
+  }
+}

@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
+from enum import StrEnum
 from types import MappingProxyType
 from typing import Any
 
@@ -51,6 +52,21 @@ class TimeoutPolicy:
             raise ValueError("timeout must be between one second and seven days")
 
 
+class ActiveOverlapMode(StrEnum):
+    COALESCE_EQUIVALENT = "coalesce_equivalent"
+    REJECT_CONFLICT = "reject_conflict"
+    ALLOW = "allow"
+
+
+@dataclass(frozen=True, slots=True)
+class ActiveOverlapPolicy:
+    """Definition-owned policy for canonical active-work resolution."""
+
+    mode: ActiveOverlapMode
+    include_configuration: bool = True
+    include_parent_scope: bool = True
+
+
 @dataclass(frozen=True)
 class JobDefinition:
     job_type: str
@@ -68,6 +84,9 @@ class JobDefinition:
     entrypoint: str
     timeout: TimeoutPolicy
     effect_safety: EffectSafety
+    overlap_policy: ActiveOverlapPolicy = field(
+        default_factory=lambda: ActiveOverlapPolicy(ActiveOverlapMode.COALESCE_EQUIVALENT)
+    )
     default_priority: int = 50
     default_eligibility_delay_seconds: int = 0
     safety_policy: SafetyPolicy = field(default_factory=SafetyPolicy)

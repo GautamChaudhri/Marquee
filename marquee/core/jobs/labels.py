@@ -49,6 +49,7 @@ JOB_LABELS: dict[str, str] = {
     "subtitle_scan_all": "Subtitle Scan (All)",
     "system_metrics_purge": "Metrics Cleanup",
     "system_noop": "Health Check",
+    "taste_enrich": "Taste Profile Enrichment",
     "taste_map": "Taste Map Generation",
     "taste_rebuild": "Taste Model Rebuild",
     "track_remove": "Track Removal",

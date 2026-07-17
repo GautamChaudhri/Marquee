@@ -192,6 +192,8 @@
 		(snapshot: JobSnapshotResponse, freshInspect: any) => void | Promise<void>
 	>();
 	let busy = $state(false);
+	let scopeActive = $state(false);
+	const actionBusy = $derived(busy || scopeActive);
 
 	// Surface the backend's structured error message (e.g. the 409
 	// mutation_pending guard: "another mutation is already queued or running
@@ -245,9 +247,12 @@
 		if (!movie || !movie.media_file_id) return;
 		busy = true;
 		try {
-			await scanSubtitles(fetch, movie.media_file_id);
-			toast('Subtitles scanned successfully!', 'good');
-			await refreshInventory();
+			const submission = await scanSubtitles(fetch, movie.media_file_id);
+			monitorJob(submission.job_id);
+			toast(
+				submission.idempotent ? 'Subtitle scan already active' : 'Subtitle scan queued',
+				'info'
+			);
 		} catch (e: any) {
 			toast(e.message || 'Scan failed', 'bad');
 		} finally {
@@ -338,7 +343,9 @@
 	async function handleJobSettled(snapshot: JobSnapshotResponse) {
 		const handler = settledHandlers.get(snapshot.job_id);
 		settledHandlers.delete(snapshot.job_id);
-		const freshInspect = await refreshInventory();
+		const refreshProductData =
+			snapshot.status.outcome === 'succeeded' || snapshot.status.outcome === 'no_change';
+		const freshInspect = refreshProductData ? await refreshInventory() : null;
 		if (handler) await handler(snapshot, freshInspect);
 		busy = settledHandlers.size > 0;
 		toast(
@@ -997,8 +1004,25 @@
 
 		<FeatureActivityPanel
 			scopeKey={`feature:audio-subtitles:movie:${movie.id}`}
-			query={{ feature_area: 'audio_subtitles' }}
+			query={{
+				feature_area: 'audio_subtitles',
+				types: [
+					'audio_remove',
+					'audio_reorder',
+					'subtitle_embed',
+					'subtitle_extract',
+					'subtitle_generate',
+					'subtitle_metadata',
+					'subtitle_policy',
+					'subtitle_remove',
+					'subtitle_restore',
+					'subtitle_scan'
+				],
+				subject_kind: 'media_file',
+				subject_reference: [String(movie.media_file_id)]
+			}}
 			jobIds={initiatedJobIds}
+			bind:active={scopeActive}
 			heading="Movie audio and subtitle activity"
 			onSettled={handleJobSettled}
 		/>
@@ -1338,7 +1362,7 @@
 
 					<!-- Right Panel: Coverage & Batch Delete Drawer -->
 					<div class="right-panel">
-						<button class="rescan-side-button" onclick={handleRescan} disabled={busy}>
+						<button class="rescan-side-button" onclick={handleRescan} disabled={actionBusy}>
 							🔄 Re-Scan File
 						</button>
 
@@ -1741,7 +1765,7 @@
 							</div>
 
 							<div class="form-foot">
-								<button class="btn primary" onclick={handleGenerateAI} disabled={busy}>
+								<button class="btn primary" onclick={handleGenerateAI} disabled={actionBusy}>
 									🚀 Generate Subtitles for Movie
 								</button>
 							</div>

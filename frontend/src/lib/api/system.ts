@@ -169,11 +169,13 @@ export function runHealScan(fetch: Fetch): Promise<JobSubmissionResponse> {
 	if (useMocks()) {
 		return Promise.resolve({
 			job_id: 'mock-heal',
-			job_type: 'poster_heal',
 			phase: 'queued',
 			disposition: 'created',
+			idempotent: false,
 			snapshot_url: '/api/jobs/mock-heal/snapshot',
-			detail_url: '/api/jobs/mock-heal'
+			detail_url: '/projection-room/jobs/mock-heal',
+			activity_url: '/projection-room?view=queue&job=mock-heal',
+			active_conflict: null
 		});
 	}
 	return apiSend<JobSubmissionResponse>(

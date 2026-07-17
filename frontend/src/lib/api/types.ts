@@ -573,26 +573,6 @@ export interface BatchReencodeResponse {
 	skipped: Array<{ movie_id: number; code?: string | null; reason: string }>;
 }
 
-export interface MediaJobSnapshot {
-	job_id: string;
-	operation: string;
-	status: string;
-	stage: string | null;
-	trigger: string;
-	media_file_id: number | null;
-	batch_id: string | null;
-	progress_done: number;
-	progress_total: number;
-	plan: ReencodePlan | null;
-	result: Record<string, unknown> | null;
-	error: { error: string; code?: string | null } | null;
-	input_signature: string | null;
-	plan_expires_at: string | null;
-	confirmed_at: string | null;
-	created_at: string | null;
-	updated_at: string | null;
-}
-
 export interface DolbyVisionInfo {
 	present: boolean;
 	profile: number | null;
@@ -1582,28 +1562,6 @@ export interface SubtitlePlan {
 	snapshot_url: string;
 	detail_url: string;
 	confirmation_url: string;
-}
-
-export interface MediaJob {
-	job_id: string;
-	status: string;
-	operation: string;
-	label?: string;
-	media_file_id: string | number | null;
-	created_at: string;
-	updated_at: string;
-	started_at: string | null;
-	completed_at: string | null;
-	result: Record<string, unknown> | null;
-	error: Record<string, unknown> | string | null;
-	progress: {
-		stage: string;
-		percent: number;
-		message: string;
-	} | null;
-	events_url: string;
-	backup_id: string | null;
-	plan: Record<string, unknown> | null;
 }
 
 // ── Generators ──

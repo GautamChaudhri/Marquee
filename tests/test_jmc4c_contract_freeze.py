@@ -127,6 +127,7 @@ def test_registry_and_handlers_match_c0_freeze() -> None:
         "subtitle_generate",
         "subtitle_extract",
         "subtitle_embed",
+        "taste_enrich",
         # JMC5B B2 track mutations.
         "audio_remove",
         "track_remove",

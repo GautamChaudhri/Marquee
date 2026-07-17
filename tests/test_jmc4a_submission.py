@@ -19,6 +19,7 @@ from marquee.core.jobs.definitions import JobDefinitionRegistry
 from marquee.core.jobs.manifest import JOB_DEFINITION_REGISTRY
 from marquee.core.jobs.pgqueuer_gateway import pgqueuer_gateway
 from marquee.core.jobs.submission import (
+    ActiveOverlapConflictError,
     IdempotencyConflictError,
     ParentBinding,
     SubjectLocator,
@@ -71,6 +72,8 @@ async def test_submit_job_requires_caller_transaction_and_returns_api_safe_links
         assert result.phase == "queued"
         assert result.snapshot_link == f"/api/jobs/{result.job_id}/snapshot"
         assert result.detail_link == f"/projection-room/jobs/{result.job_id}"
+        assert result.activity_link == f"/projection-room?view=queue&job={result.job_id}"
+        assert result.idempotent is False
         assert not hasattr(result, "pgq_job_id")
         assert job is not None and job.pgq_job_id is not None
         assert job.root_id == job.correlation_id == job.id
@@ -104,6 +107,11 @@ async def test_submit_job_requires_caller_transaction_and_returns_api_safe_links
                 "logs": False,
                 "artifacts": False,
                 "detail": True,
+            },
+            "overlap_policy": {
+                "mode": "allow",
+                "include_configuration": True,
+                "include_parent_scope": True,
             },
         }
         assert job.retry_policy == {
@@ -373,3 +381,109 @@ async def test_submit_jobs_rejects_empty_duplicates_and_unbound_children(db) -> 
         bound = replace(unbound, parent=ParentBinding(parent_id="missing"))
         with pytest.raises(SubmissionValidationError, match="duplicate idempotency"):
             await submit_jobs(db, intents=(bound, bound))
+
+
+
+@pytest.mark.asyncio
+async def test_active_overlap_coalesces_equivalent_requests_with_different_client_keys(db) -> None:
+    factory = _get_session_factory()
+
+    async def create(key: str):
+        async with factory() as session, session.begin():
+            return await submit_job(
+                session,
+                job_type="taste_map",
+                request={"library": "movies", "expected_generation": 0, "seed": 0},
+                subject=SubjectLocator(
+                    kind="model_profile_training",
+                    reference="taste_map:movies",
+                ),
+                trigger=TriggerKind.MANUAL,
+                initiator=None,
+                idempotency_key=key,
+            )
+
+    first, second = await asyncio.gather(
+        create("taste_map:overlap-a"),
+        create("taste_map:overlap-b"),
+    )
+
+    assert first.job_id == second.job_id
+    assert {first.disposition, second.disposition} == {"created", "reused"}
+    assert {first.idempotent, second.idempotent} == {False, True}
+    async with factory() as session:
+        assert await session.scalar(
+            select(func.count(Job.id)).where(
+                Job.type == "taste_map",
+                Job.subject_reference == "taste_map:movies",
+            )
+        ) == 1
+
+
+@pytest.mark.asyncio
+async def test_active_overlap_rejects_conflicting_unsafe_request(db) -> None:
+    async with db.begin():
+        active = await submit_job(
+            db,
+            job_type="backup_create",
+            request={"reason": "manual"},
+            subject=SubjectLocator(
+                kind="maintenance_scope",
+                reference="backup-create",
+            ),
+            trigger=TriggerKind.MANUAL,
+            initiator=None,
+            idempotency_key="backup_create:overlap-a",
+        )
+
+    with pytest.raises(ActiveOverlapConflictError) as raised:
+        async with db.begin():
+            await submit_job(
+                db,
+                job_type="backup_create",
+                request={"reason": "pre_maintenance"},
+                subject=SubjectLocator(
+                    kind="maintenance_scope",
+                    reference="backup-create",
+                ),
+                trigger=TriggerKind.MANUAL,
+                initiator=None,
+                idempotency_key="backup_create:overlap-b",
+            )
+
+    assert raised.value.active_job_id == active.job_id
+    assert raised.value.snapshot_link == f"/api/jobs/{active.job_id}/snapshot"
+    assert raised.value.detail_link == f"/projection-room/jobs/{active.job_id}"
+
+
+@pytest.mark.asyncio
+async def test_terminal_job_releases_active_overlap_scope(db) -> None:
+    async with db.begin():
+        first = await submit_job(
+            db,
+            job_type="backup_create",
+            request={"reason": "manual"},
+            subject=SubjectLocator(kind="maintenance_scope", reference="backup-create"),
+            trigger=TriggerKind.MANUAL,
+            initiator=None,
+            idempotency_key="backup_create:terminal-release-a",
+        )
+        job = await db.get(Job, first.job_id)
+        assert job is not None
+        job.phase = "terminal"
+        job.outcome = "succeeded"
+        job.terminal_at = datetime.now(UTC)
+
+    async with db.begin():
+        successor = await submit_job(
+            db,
+            job_type="backup_create",
+            request={"reason": "pre_maintenance"},
+            subject=SubjectLocator(kind="maintenance_scope", reference="backup-create"),
+            trigger=TriggerKind.MANUAL,
+            initiator=None,
+            idempotency_key="backup_create:terminal-release-b",
+        )
+
+    assert successor.job_id != first.job_id
+    assert successor.disposition == "created"

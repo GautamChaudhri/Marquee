@@ -15,6 +15,7 @@ from marquee.core.jobs.delivery import ExecutionContext, register_execution_hand
 from marquee.core.jobs.documents import (
     LearnedHeadTrainRequestV1,
     MlPublicationResultV1,
+    TasteEnrichRequestV1,
     TasteMapRequestV1,
     TasteRebuildRequestV1,
 )
@@ -26,7 +27,7 @@ from marquee.core.jobs.progress import (
 from marquee.core.jobs.progress_service import ProgressObservation, progress_writer
 from marquee.models import Movie, PipelineRun, Series
 
-MlFamily = Literal["taste_profile", "taste_map", "learned_head"]
+MlFamily = Literal["taste_profile", "taste_map", "taste_enrichment", "learned_head"]
 
 
 async def _progress(context: ExecutionContext, stage: str, ordinal: int) -> None:
@@ -102,7 +103,7 @@ async def _execute_publication(
             "coverage": 1.0 if input_count else 0.0,
             "feature_version": "marquee-features-v1",
         }
-    elif family == "taste_map":
+    elif family in {"taste_map", "taste_enrichment"}:
         family_evidence = {
             "subject_coverage": input_count,
             "candidate_coverage": input_count,
@@ -207,6 +208,18 @@ async def execute_taste_map(context: ExecutionContext) -> dict[str, object]:
     )
 
 
+async def execute_taste_enrich(context: ExecutionContext) -> dict[str, object]:
+    request = TasteEnrichRequestV1.model_validate(context.request)
+    return await _execute_publication(
+        context,
+        family="taste_enrichment",
+        library=request.library,
+        expected_generation=request.expected_generation,
+        seed=request.seed,
+        request=request.model_dump(mode="json"),
+    )
+
+
 async def execute_learned_head(context: ExecutionContext) -> dict[str, object]:
     request = LearnedHeadTrainRequestV1.model_validate(context.request)
     return await _execute_publication(
@@ -221,4 +234,5 @@ async def execute_learned_head(context: ExecutionContext) -> dict[str, object]:
 
 register_execution_handler("taste_rebuild", execute_taste_rebuild)
 register_execution_handler("taste_map", execute_taste_map)
+register_execution_handler("taste_enrich", execute_taste_enrich)
 register_execution_handler("learned_head_train", execute_learned_head)

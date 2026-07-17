@@ -71,6 +71,7 @@ ENABLED_TYPES = {
     "system_metrics_purge",
     "system_noop",
     "taste_map",
+    "taste_enrich",
     "taste_rebuild",
     "track_remove",
 }

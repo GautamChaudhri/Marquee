@@ -81,7 +81,7 @@ def _subjects():
 
 
 def test_manifest_has_exactly_one_definition_for_every_inventory_source() -> None:
-    assert len(JOB_DEFINITION_REGISTRY) == 61  # +JMC5C Dolby Vision conversion/publication
+    assert len(JOB_DEFINITION_REGISTRY) == 62  # +JMC6E dedicated taste enrichment
     assert JOB_DEFINITION_REGISTRY.types == BUILTIN_JOB_TYPES
     for inventory in (
         REGISTERED_HANDLER_TYPES,
@@ -128,6 +128,7 @@ def test_only_noop_is_enabled_and_webhook_stays_reserved_disabled() -> None:
         "learned_head_train",
         "poster_rescan",
         "taste_map",
+        "taste_enrich",
         "taste_rebuild",
         # JMC5B B2: audio/subtitle removals, reorder, and metadata.
         "audio_remove",
@@ -222,6 +223,7 @@ def test_all_documents_are_strict_current_v1_and_policy_is_not_client_input() ->
         "poster_pipeline_tv_batch": {"scope": "series", "selection_count": 1},
         "taste_rebuild": {},
         "taste_map": {},
+        "taste_enrich": {},
         "learned_head_train": {},
         "poster_rescan": {},
         "poster_deploy": {
@@ -473,6 +475,14 @@ def test_all_documents_are_strict_current_v1_and_policy_is_not_client_input() ->
             "active_generation": 1,
             "activated": True,
         },
+        "taste_enrich": {
+            "family": "taste_enrichment",
+            "version": "v1-test",
+            "checksum": "a" * 64,
+            "expected_generation": 0,
+            "active_generation": 1,
+            "activated": True,
+        },
         "learned_head_train": {
             "family": "learned_head",
             "version": "v1-test",
@@ -666,6 +676,7 @@ def test_progress_policies_are_complete_and_native_adapters_are_truthful() -> No
         "track_remove": "mkvmerge_gui",
         "taste_rebuild": "immutable_ml_publication",
         "taste_map": "immutable_ml_publication",
+        "taste_enrich": "immutable_ml_publication",
         "learned_head_train": "immutable_ml_publication",
     }
     for definition in JOB_DEFINITION_REGISTRY:

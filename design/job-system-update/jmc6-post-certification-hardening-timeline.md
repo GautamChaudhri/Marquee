@@ -312,3 +312,344 @@ only active plan. No push, production activation, or JMC6E work is authorized.
   material; the production schedule master gate remains default-off; owner-authorized push and
   GitHub-hosted CI, optional witnessed Dolby Vision Profile 5/7 certification, and JMC6E-F remain
   pending after the full hardening sequence.
+
+## JMC6E Phase E0 — predecessor verification and seam manifest freeze
+
+### Exact starting state
+
+- JMC6E started at `2026-07-17T20:26:02Z` from annotated `jmc6d-complete`, resolving to compact
+  commit `cbc976bae52ff62078d965cadf915fc5ec5d6a8f`, tree
+  `9e8317b706481dc3a6b46c05e8837d3389d5616e`, with sole parent
+  `jmc6c-complete` (`5b831b1ca0a5cd27670284dcc3be82b7028fa5a6`). `HEAD` and
+  `job-manager` are exactly at that compact commit; the worktree is clean.
+- `origin/job-manager` remains at `jmc6a-complete`; the local branch is ahead by exactly the compact
+  JMC6B, JMC6C, and JMC6D commits. No push or activation was performed. Repository author remains
+  Gautam Chaudhri <gautam.chaudhri@gmail.com> and is the only permitted JMC6E identity.
+- Recovery branch `recovery/jmc6d-20260717T190525Z` and annotated tag
+  `recovery/jmc6d-pre-squash-20260717T190525Z` both resolve to pre-squash tip
+  `dabf415b582fb5faa1d0c680d5fcb0258c446a34` and the certified compact tree. External bundle
+  `/tmp/marquee-jmc6d-recovery-20260717T190525Z.bundle` verifies as complete SHA-1 history with
+  exactly those recovery refs. Timeline D0-D5 phase hashes and the certified tree match Git.
+- Required instructions and plans were read in full, including JMC6E, JMC6D, the shared timeline,
+  progress/Projection Room architecture, JMC6A/JMC6B, plan workflow, and the specified backend and
+  frontend ground-rule sections. Serena, ByteRover MCP, and RTK are operational and in use.
+
+### Verified predecessor and baseline evidence
+
+- Owned disposable PostgreSQL 18.3 is at `127.0.0.1:55451/marquee_test`, user `marquee`, data root
+  `/tmp/marquee-jmc6e-pg.AFr9Ug`. The official migration service installed and verified Marquee
+  head `0007_jmc6d` and PgQueuer 1.1.1 durable. Contract fingerprints are Marquee
+  `36754af6f0001c36d1d8c0102e6260855425405ac4bf2fa3fc5c219ead5be82b` and PgQueuer
+  `19377622f52c906a7a5cb6e68b4db6d30e7cc9534aac933c156c33666f4eb21a`.
+- JMC6D runtime/recovery/activation focused suite is **78 passed in 11.98s**. The authoritative
+  complete backend baseline is **1301 passed, 0 failed, 0 skipped, 0 xfail/xpass, 2 unchanged UMAP
+  warnings in 96.32s**. Two discarded provisioning runs (1294/7 and 1300/1) proved the new empty
+  database first lacked the public Alembic schema and then the PgQueuer catalog; after applying the
+  official complete migration service, the focused failure and full suite passed without source
+  changes.
+- Ruff over `marquee tests scripts`, `alembic check`, current/head checks, deterministic OpenAPI,
+  generated TypeScript drift, and `git diff --check` pass. OpenAPI is 3.1.0 with 199 paths and
+  SHA-256 `f68d2e3b38e6c4124da05e965c2f6d3f38eb81ae874b42c527aa0c50e7b8ad1d`; generated TypeScript
+  SHA-256 is `5e4b817e2e7050aa251fdae5c75e6222cf56851096ad94`.
+- Frontend baseline: `svelte-check` 0 errors/0 warnings; Prettier/ESLint clean; 10 Vitest files and
+  108 tests pass; production build passes; CI fresh-server Playwright/axe is 11/11. The build emits
+  only the recorded large-chunk/plugin-timing notices. Generated-client regeneration is clean.
+- Initial static seam audit reproduces every JMC6E target: single-file subtitle scan executes inline;
+  taste GET accepts `recompute`; enrichment executes profile/map work via `asyncio.to_thread`;
+  feedback apply/undo performs learned-head retraining inline; exemplar deletion rebuilds the map
+  inline; legacy process-local taste rebuild state remains; and multiple subject-detail
+  `FeatureActivityPanel` consumers query only feature-wide scope. There are 24 panel instances,
+  including broad movie/series detail scopes, and the subtitle client still exposes handwritten
+  `MediaJob`/`active_job` compatibility data.
+
+### Current phase and exact next steps
+
+- **Current phase:** E0 — verify JMC6D and freeze route/page manifest.
+- **In progress:** freeze the complete initiating-action/definition/feature/subject/correlation/
+  overlap/capability/terminal-refresh manifest and add intentional red contracts for inline-work
+  absence, exact scope recovery beyond 20 unrelated jobs, overlap-policy coverage, refresh duplicate
+  submission, and generated API drift.
+- **Exact next steps:** inspect the canonical definition/submission/list/store contracts with Serena;
+  add the E0 manifest fixture and failing backend/frontend/static tests; run the focused red inventory,
+  complete backend comparison, Ruff, schema/generated/frontend gates, and diff check; commit E0 with
+  the configured author; append its hash and continue immediately to E1.
+- **Deviations:** none. The first two backend attempts were discarded environment-provisioning runs,
+  not retained failures or code changes; the certified run uses the official migration service.
+- **Pending operator actions:** do not push, activate, use operator media/database state, or delete
+  JMC6C/JMC6D recovery material. Production schedules remain default-off. No Docker recreation or
+  optional witnessed Dolby Vision certification is claimed.
+
+### E0 phase commit
+
+- **Completed work and commit:** `882fd5cd7670baacbdb5b4a55fb9ecee907716eb` (`freeze canonical
+  seam failures`) records the verified compact JMC6D ancestry/tree/recovery material, complete
+  backend/frontend/static/schema/generated baseline, initial canonical-seam audit, route/page
+  manifest, and six intentional red contracts for the locked JMC6E gaps.
+- **Verification:** focused E0 inventory is exactly 6 failed; complete inventory is **1301 passed,
+  exactly 6 intentional E1-E4 failures, 2 unchanged UMAP warnings in 97.12s**. Ruff over
+  `marquee tests scripts` and `git diff --check` pass. The clean predecessor frontend, schema,
+  migration, OpenAPI, and generated-contract gates are recorded above and no corresponding source
+  changed in E0.
+- **Current phase:** E1 — overlap policy and exact list filters.
+- **Exact next steps:** add typed definition-owned overlap policy, server-computed immutable scope,
+  transactionally serialized equivalent/conflict resolution, typed submission dispositions and
+  Activity links; add exact multi-type/subject-reference/root/correlation list filters with indexed
+  query budgets; regenerate OpenAPI/types; certify concurrent submission and terminal scope release;
+  run every phase gate and commit E1.
+- **Deviations and reasons:** none. E0 intentionally commits red contracts as required by the plan;
+  the failure membership is exact and the predecessor baseline remains separately certified.
+- **Pending operator actions:** unchanged; no push, activation, operator media/database access, or
+  recovery-material deletion.
+
+### E1 phase completion
+
+- **Phase commit:** `29f48c6a6a54e1ca752640e89b4dc03e3b8d32f2` (`close overlap and recovery
+  contracts`).
+- **Completed work:** added typed, definition-owned `coalesce_equivalent`, `reject_conflict`, and
+  explicitly safe `allow` overlap policies; server-derived immutable overlap scope; transaction-
+  serialized advisory locking and canonical active lookup; equivalent-job reuse with
+  `idempotent=true`; typed unsafe conflict links; canonical Activity links; exact bounded multi-type
+  and subject-reference filters alongside existing parent/root/correlation filters; and forward
+  Alembic revision `0008_jmc6e` with the composite active-scope index. Submission plan evidence,
+  batch/schedule paths, route responses, mocks, generated OpenAPI, and generated TypeScript were
+  migrated to the expanded contract. Concurrent requests, conflicting unsafe requests, terminal
+  scope release, and recovery beyond 20 unrelated jobs have dedicated PostgreSQL tests.
+- **Verification before commit:** official migration service and Alembic head/check pass at
+  `0008_jmc6e` with no model drift. Focused schema/definition/submission/list suite is **46 passed**;
+  the complete non-future inventory is **1305 passed, 0 failed, 0 skipped/xfail/xpass, 2 unchanged
+  UMAP warnings in 96.92s**. The literal complete suite is **1308 passed with exactly 3 intentional
+  E2-E4 freeze failures and 2 unchanged warnings in 96.71s**; the E1 overlap, exact-filter, and
+  response-contract freezes are green. Ruff over `marquee tests scripts`, deterministic OpenAPI
+  check (199 paths), generated TypeScript drift, and `git diff --check` pass. OpenAPI SHA-256 is
+  `990ad060e6a263a4ab54e21ddd23f5ea664e4b3778fca1c7ebec4061bb0dacee`; generated TypeScript
+  SHA-256 is `e2b0c927803cffe292bf6ec7b1f208b48c0a491a5e4fcd7758484aee26ab43b1`.
+- **Frontend verification:** generated-client regeneration is clean; Svelte check is 0 errors/0
+  warnings; Prettier/ESLint pass; all 108 Vitest tests pass; production build passes with only the
+  recorded chunk/plugin notices; Playwright/axe is 11/11.
+- **Current phase:** E2 — canonical subtitle scan.
+- **Exact next steps:** replace the inline single-file subtitle scan with canonical `subtitle_scan`
+  submission using immutable file/subject/configuration evidence; migrate movie/episode/file clients
+  to the standard response; refresh inventory only after terminal success/no-change; remove the
+  handwritten `active_job`/`MediaJob` seam; certify duplicate-click reuse, cancellation, failure,
+  no-change, and refresh recovery; run all gates and commit E2.
+- **Deviations and reasons:** no product or architecture deviations. The initial combined Alembic/
+  test command was denied local-loopback access by the sandbox and was rerun with approved access;
+  it is environment evidence, not a retained test failure. The complete suite intentionally retains
+  only the three future-phase E2-E4 red contracts established in E0.
+- **Pending operator actions:** unchanged; do not push, activate, touch operator media/database
+  state, or delete recovery material.
+
+### JMC6E certified phase ledger and compaction handoff
+
+- **Verified linear phase range after `jmc6d-complete`:** E0
+  `882fd5cd7670baacbdb5b4a55fb9ecee907716eb`; E1
+  `29f48c6a6a54e1ca752640e89b4dc03e3b8d32f2`; E2
+  `a1990a5acfd5e33db2c5ede1c7ad5cb531c80497`; E3
+  `8685cba7047f26eba418db452bc58d1e3f6d1d92`; E4
+  `0f4e6223728656ab9e86ce8a2a2a8d7a1cb3caaf`; E5
+  `ae63f7d23d9f4d4696cfa957172dc5df622c126e`.
+- **Certified E5 product tree:** `eea3d12e41996344bc3b9dce7f2a0489eacb36aa`. The only subsequent
+  pre-compaction content change is this timeline ledger, which corrects the previously mistyped E0
+  hash and records the Git-derived handoff. The recovery refs, external bundle, and final compact
+  commit must preserve the ledger-bearing pre-compaction tree exactly.
+- **Ownership, ancestry, and publication:** the six phase commits are a single-parent linear range
+  rooted directly at compact annotated `jmc6d-complete`; configured author and committer are Gautam
+  Chaudhri `<gautam.chaudhri@gmail.com>`. `origin` is configured, but no remote-tracking ref contains
+  the JMC6E tip; the range is local-only and no push was performed. The worktree was clean
+  immediately after E5.
+- **Current phase:** create the timestamped recovery branch and annotated recovery tag, create and
+  verify an external bundle containing the complete pre-squash recovery ancestry, then perform the
+  final-only exact-tree soft squash and create annotated `jmc6e-complete` without editing this
+  timeline afterward.
+- **Exact next steps:** commit this ledger; record its exact tree in the recovery ref/tag/bundle and
+  terminal verification output; confirm no Git lock or competing worktree owns the branch; create
+  recovery material; verify the bundle; re-check clean linear ancestry and configured ownership;
+  squash; prove the compact commit has parent `jmc6d-complete` and the exact recovery tree; tag it;
+  do not push and do not start JMC6F.
+- **Deviations and reasons:** the E0 hash copied into the earlier timeline entry differed from Git by
+  more than abbreviation and was corrected before recovery or rewrite. No commit, tree, test result,
+  or implementation content was changed by that correction.
+- **Pending operator actions:** preserve the recovery branch/tag and external bundle; no push,
+  activation, operator-state mutation, or recovery deletion.
+
+### E5 integrated certification
+
+- **Phase commit:** pending this timeline-bearing certification commit; its exact hash will be
+  appended before recovery refs or compaction.
+- **Completed work:** certified the complete JMC6E acceptance inventory across overlap/coalescing,
+  exact recovery, canonical single-file subtitle scans, read-only GET routes, canonical taste/map/
+  enrichment/head jobs, exact feedback/undo/exemplar successor lineage, terminal-only refresh, and
+  shared-store page authority. A separate empty `marquee_jmc6e_final` database was upgraded through
+  every Alembic revision to `0008_jmc6e` by the official `marquee.db_migration` service, including
+  PgQueuer 1.1.1 install/upgrade/durable/autovac/verify and contract-marker generation. Current,
+  heads, and model drift all report `0008_jmc6e`; `alembic check` reports no new upgrade operations;
+  a second complete migration-service run is idempotent.
+- **Backend/static/schema/generated verification:** the literal full backend suite is **1314 passed,
+  0 failed, 0 skipped/xfail/xpass in 87.92s** with the disposable database selected explicitly.
+  Ruff lint over `marquee tests` passes. OpenAPI is current at 199 paths and SHA-256
+  `b840054960e2770292a8438625f49883ae2fbb0ce2bf435f8681984dcf27c1b6`; regenerated TypeScript is
+  byte-clean at SHA-256 `bd761262334fd7739a2f8966ea89a55428516587053b7c177a043186780517e6`.
+  `git diff --check` passes.
+- **Frontend/browser verification:** Svelte check is 0 errors/0 warnings; Prettier/ESLint pass; all
+  111 Vitest tests pass; the production build passes with only the recorded chunk/plugin notices;
+  generated-client regeneration produces no diff; a fresh complete Playwright/axe run is 11/11.
+- **Current phase:** final-only recovery and compaction.
+- **Exact next steps:** verify the worktree contains only this timeline update; commit E5 with the
+  configured author; append that hash and the complete phase-hash ledger; prove the local range is
+  linear, JMC6E-only, unpushed, and authored only by the configured identity; record the certified
+  pre-squash tree and concurrency/ownership checks; create timestamped recovery branch and annotated
+  recovery tag plus a verified external bundle; commit that final pre-compaction record; re-prove
+  clean ownership/ancestry/tree identity; soft-squash exactly `jmc6d-complete..HEAD` to
+  `jmc6e: close canonical job and refresh seams`; prove exact tree identity; create annotated
+  `jmc6e-complete`; do not edit the timeline after compaction and do not push or begin JMC6F.
+- **Deviations and reasons:** the first literal full backend invocation inherited an unrelated
+  default database instead of the disposable JMC6E cluster: 1297 tests passed, six backup tests
+  found no `schema_contracts` table, and eleven isolated-database setup cases found that other
+  cluster's role lacked `CREATEDB`. The explicitly pinned disposable cluster reports `marquee` as
+  superuser/`CREATEDB`; after its normal test database received the official migration service, the
+  unchanged full suite passed 1314/1314. A repository-wide `ruff format --check` reports 215
+  pre-existing files that the installed formatter would rewrite, so no broad mechanical formatting
+  change was made; Ruff lint and the repository's required Prettier/ESLint gates pass. The first E5
+  Playwright run passed 10/11 while the unchanged full-page Activity snapshot alternated between
+  900px and 989px startup heights before stabilizing. Its fresh focused rerun passed, followed by a
+  clean fresh 11/11 complete run; no snapshot or shell styling was changed.
+- **Pending operator actions:** none beyond preserving the local unpushed result and the documented
+  recovery material. No push, activation, operator media/database access, Docker change, public
+  reset replacement, webhook/auth work, or recovery deletion is authorized.
+
+### E4 phase completion
+
+- **Phase commit:** `0f4e6223728656ab9e86ce8a2a2a8d7a1cb3caaf` (`derive exact feature
+  activity state`).
+- **Completed work:** every subject-detail `FeatureActivityPanel` consumer now sends the relevant
+  canonical job types plus an exact immutable `subject_reference` set or run correlation identity;
+  none relies on `subject_id` or feature-wide first-page recovery. The one shared Activity store now
+  exposes server-derived active/conflicting state for an exact scope plus immediately returned job
+  IDs. The shared panel binds that authority into each initiating page, and movie/series/file/HDR/
+  letterbox/poster actions combine it with local flags that cover only the in-flight HTTP request.
+  Overview panels retain the shared Activity handoff, while the store retains bounded cursor loading,
+  last-good union semantics, one multiplexed SSE stream, snapshot repair, hidden-tab throttling, and
+  storage-independent rediscovery. Added deterministic store fixtures for exact query encoding,
+  active/terminal action authority, and two independent tabs recovering the same canonical job; the
+  static freeze now requires exact scope, job types, and server-active binding for all nine detail
+  consumers.
+- **Verification before commit:** focused exact-list/overlap/detail-page suite is **25 passed** and
+  the complete backend inventory is **1314 passed, 0 failed, 0 skipped/xfail/xpass in 90.47s**.
+  Ruff over `marquee tests scripts`, deterministic OpenAPI check at 199 paths, and
+  `git diff --check` pass; no schema or generated contract changed in E4. Frontend Svelte check is
+  0 errors/0 warnings; Prettier/ESLint pass; all 111 Vitest tests pass; production build passes with
+  only the recorded chunk/plugin notices; fresh-server Playwright/axe is 11/11.
+- **Current phase:** E5 — integrated certification and final-only compaction.
+- **Exact next steps:** run the complete JMC6E acceptance inventory,
+  migration current/head/check and upgrade/fresh-target rehearsal, PgQueuer install/upgrade/verify,
+  deterministic OpenAPI/TypeScript regeneration proof, full backend/frontend/static/schema/browser
+  gates, linear local-only ancestry/author/tree checks, and final `git diff --check`; record the
+  certified phase hashes and tree; create timestamped recovery branch/tag and verified external
+  bundle; then, only if ownership/ancestry/concurrency/tree identity remain exact, squash the
+  JMC6E-only range to `jmc6e: close canonical job and refresh seams`, prove tree identity, create
+  annotated `jmc6e-complete`, and make no post-compaction timeline edit.
+- **Deviations and reasons:** no product or architecture deviation. The first E4 Playwright run had
+  one activity-card contrast failure while the other 10 tests passed; the unchanged fixture passed
+  immediately in a fresh focused run and the subsequent complete fresh-server suite passed 11/11.
+  No snapshot, palette, or accessibility expectation was changed. This is retained as a discarded
+  environment/theme-resolution race, not represented as a clean result.
+- **Pending operator actions:** unchanged; no push, activation, operator media/database access, or
+  recovery deletion.
+
+### E2 phase completion
+
+- **Phase commit:** `a1990a5acfd5e33db2c5ede1c7ad5cb531c80497` (`canonicalize subtitle
+  inventory scans`).
+- **Completed work:** `POST /api/media-files/{id}/subtitles/scan` now resolves the live file only
+  for bounded validation and submits the existing typed `subtitle_scan` definition with an immutable
+  `media_file` subject; the route returns the standard canonical submission response and different
+  request keys coalesce through E1 server policy. Persisted inventory GET/inspect reads no longer
+  probe, scan, or publish and explicitly report missing/stale inventory. The movie client consumes
+  the generated submission type, tracks the canonical ID immediately, recovers all relevant work by
+  exact media-file subject and job types, and refreshes product data only for terminal succeeded or
+  no-change outcomes. The permanently empty handwritten `active_job`, `MediaJob`, and unused
+  `MediaJobSnapshot` compatibility seam is removed. Route inventory freezes now record
+  `subtitle_scan` as a canonical route-constructed type.
+- **Verification before commit:** focused canonical route/handler/read-purity suite is **9 passed**,
+  covering equivalent duplicate requests, no-change, cancellation before I/O, probe-failure
+  preservation of the last valid inventory, force behavior, and GET signature-drift reporting.
+  Broader subtitle/mutation/E2 contract suite is **37 passed** apart from the two intentional E3/E4
+  aggregate freezes. The full non-future suite is **1310 passed, 0 failed, 0 skipped/xfail/xpass, 2
+  unchanged UMAP warnings in 96.30s**. A literal full run before the final route-inventory freeze
+  update was 1313 passed with the two intentional E3/E4 failures plus that single corrected freeze;
+  the corrected inventory/freeze set is subsequently 13/13 green. Ruff, Alembic head/check at
+  `0008_jmc6e`, deterministic OpenAPI check (199 paths), generated TypeScript drift, and
+  `git diff --check` pass. OpenAPI SHA-256 is
+  `8c9828c5d80051af272e2a82d378c91d103804d87208d257bb924d25d545ddc8`; TypeScript SHA-256 is
+  `b9b78f051a19a6393c90123cc1206f9977f220de1ca45c4fb0de182bccff8cb7`.
+- **Frontend verification:** Svelte check is 0 errors/0 warnings; Prettier/ESLint pass after applying
+  the repository formatter to the changed movie page; all 108 Vitest tests pass; production build
+  passes with only recorded chunk/plugin notices; Playwright/axe is 11/11.
+- **Current phase:** E3 — canonical taste, enrichment, and training successors.
+- **Exact next steps:** make taste map GET pure; add a dedicated enabled typed `taste_enrich`
+  definition/handler/presenter/progress path because enrichment remains exposed; route rebuild and
+  enrichment only through canonical submissions; replace feedback/undo learned-head inline training
+  and exemplar inline map rebuild with exact-revision successor jobs; remove process-local rebuild
+  execution state; certify immutable publication/failure preservation/retry/progress/evidence/lineage;
+  run all gates and commit E3.
+- **Deviations and reasons:** no architecture deviation. The earlier combined frontend gate continued
+  after Prettier reported one changed-file style issue, so the file was formatted and the lint gate
+  rerun clean before certification. The two remaining intentional failures are exactly the E3 inline
+  taste/training aggregate and E4 detail-panel scope freeze.
+- **Pending operator actions:** unchanged; no push, activation, operator media/database access, or
+  recovery deletion.
+
+### E3 phase completion
+
+- **Phase commit:** `8685cba7047f26eba418db452bc58d1e3f6d1d92` (`canonicalize taste
+  model work`).
+- **Completed work:** made every taste/profile/head GET path read-only; removed the map
+  `recompute` contract and all route-owned multiprocessing, queue, monitor, cancellation, and
+  process-local rebuild state; retained the exposed enrichment product as a dedicated enabled
+  `taste_enrich` definition with strict request/result/progress, handler, presenter, labels, and
+  immutable JMC4 publication semantics; and routed rebuild, map publication, enrichment, and manual
+  learned-head training through standard canonical submissions. Feedback apply/undo now commits its
+  bounded record independently and returns an optional `learned_head_train` successor linked to the
+  exact feedback revision and mutation. Exemplar deletion durably updates the active profile and
+  submits a typed `taste_map` successor with exact profile/trigger lineage and a deterministic safe
+  idempotency key. The taste page records canonical IDs immediately and refreshes products only for
+  terminal succeeded/no-change outcomes. Historical registry freezes and generated OpenAPI/client
+  contracts were advanced for the new authoritative definition.
+- **Verification before commit:** focused taste/feedback/definition/publication lineage suite is
+  **99 passed with exactly the one intentional E4 detail-panel freeze remaining**; dedicated
+  retained-contract correction suite is **21 passed**. The complete non-future backend inventory is
+  **1313 passed, 0 failed, 0 skipped/xfail/xpass, 1 intentional E4 test deselected in 89.66s**.
+  Ruff over `marquee tests scripts`, `alembic check` at `0008_jmc6e`, deterministic OpenAPI check
+  (199 paths), the no-bypass static scan, and `git diff --check` pass. OpenAPI SHA-256 is
+  `b840054960e2770292a8438625f49883ae2fbb0ce2bf435f8681984dcf27c1b6`; generated TypeScript
+  SHA-256 is `bd761262334fd7739a2f8966ea89a55428516587053b7c177a043186780517e6`.
+- **Frontend verification:** Svelte check is 0 errors/0 warnings; Prettier/ESLint pass; all 108
+  Vitest tests pass; production build passes with only the recorded large-chunk/plugin notices;
+  fresh-server Playwright/axe is 11/11.
+- **Current phase:** E4 — exact feature-page recovery and action state.
+- **Exact next steps:** update all eight remaining broad detail-panel
+  consumers to exact immutable subject/correlation scope; expose exact derived active/conflicting
+  state from the one shared Activity store; use local flags only for the initiating HTTP request;
+  retain deterministic overview pagination or Activity handoff; certify recovery beyond 20 jobs,
+  refresh/navigation with empty storage, snapshot repair, dropped SSE, hidden-tab behavior, rapid
+  duplicate clicks, two tabs, and concurrent requests; run every phase gate and commit E4.
+- **Deviations and reasons:** no product or architecture deviation. The first complete E3 run
+  correctly exposed nine retained registry freezes that did not yet include the authoritative new
+  definition and four obsolete tests whose sole purpose was exercising the forbidden process-local
+  monitor. Those contracts were updated to the canonical registry and an explicit absence guard;
+  the corrected focused and complete suites are green. The optional ByteRover CLI remains absent,
+  while the required ByteRover MCP query is operational and was used.
+- **Pending operator actions:** unchanged; do not push, activate, touch operator media/database
+  state, or delete recovery material.
+
+### Authoritative final JMC6E state
+
+- **Timeline ordering:** the phase records above were appended around stable section anchors and are
+  not physically chronological. Their authoritative order is E0, E1, E2, E3, E4, E5, then the
+  Git-derived certified phase ledger; that ledger supersedes any earlier copied hash.
+- **Current phase:** final-only recovery and exact-tree compaction; implementation and certification
+  are complete.
+- **Exact next steps:** commit the final pre-compaction record; create and verify timestamped
+  recovery refs and an external bundle at that clean tip; squash only the linear JMC6E range; prove
+  parent and tree identity; create annotated `jmc6e-complete`; make no later timeline edit.
+- **Pending operator actions:** do not push, activate, delete recovery material, or start JMC6F.

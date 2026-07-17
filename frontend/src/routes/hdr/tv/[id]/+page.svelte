@@ -25,6 +25,7 @@
 
 	let analyzing = $state(false);
 	let initiatedJobIds = $state<string[]>([]);
+	let scopeActive = $state(false);
 
 	async function refresh() {
 		if (!detail) return;
@@ -163,8 +164,14 @@
 		</div>
 		<FeatureActivityPanel
 			scopeKey={`feature:hdr:series:${detail.series.id}`}
-			query={{ feature_area: 'hdr' }}
+			query={{
+				feature_area: 'hdr',
+				types: ['dovi_analyze', 'dovi_convert', 'dovi_publish', 'dovi_restore', 'dovi_discard'],
+				subject_kind: 'series',
+				subject_reference: [String(detail.series.id)]
+			}}
 			jobIds={initiatedJobIds}
+			bind:active={scopeActive}
 			heading="Series HDR activity"
 			onSettled={handleJobSettled}
 		/>
@@ -210,7 +217,7 @@
 					<button
 						class="action-btn"
 						onclick={() => runAnalyze(null)}
-						disabled={analyzing || !detail.binaries.ffprobe}
+						disabled={analyzing || scopeActive || !detail.binaries.ffprobe}
 					>
 						{analyzing ? 'Analyzing…' : 'Analyze entire show'}
 					</button>
@@ -270,7 +277,7 @@
 									<button
 										class="season-btn"
 										onclick={() => runAnalyze(season.season_number)}
-										disabled={analyzing || !detail.binaries.ffprobe}
+										disabled={analyzing || scopeActive || !detail.binaries.ffprobe}
 									>
 										Analyze season
 									</button>

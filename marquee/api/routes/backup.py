@@ -11,6 +11,7 @@ from marquee.api.job_submission import JobSubmissionResponse, submission_respons
 from marquee.core.backup import backup_service
 from marquee.core.jobs.contracts import TriggerKind
 from marquee.core.jobs.submission import (
+    IdempotencyConflictError,
     Initiator,
     SubjectLocator,
     SubmissionError,
@@ -41,6 +42,8 @@ async def create_backup(
                 idempotency_key=idempotency_key,
                 priority=10,
             )
+    except IdempotencyConflictError as exc:
+        raise HTTPException(status_code=409, detail=exc.api_detail) from exc
     except SubmissionError as exc:
         raise HTTPException(status_code=422, detail=exc.code) from exc
     return submission_response(result)

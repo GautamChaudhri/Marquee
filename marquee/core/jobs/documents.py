@@ -242,17 +242,28 @@ class TasteMapRequestV1(StrictDocument):
     library: Literal["movies", "tv"] = "movies"
     expected_generation: int = Field(default=0, ge=0)
     seed: int = Field(default=0, ge=0, le=2**31 - 1)
+    profile_revision: str | None = Field(default=None, min_length=1, max_length=128)
+    trigger_reference: str | None = Field(default=None, min_length=1, max_length=200)
+
+
+class TasteEnrichRequestV1(StrictDocument):
+    library: Literal["movies", "tv"] = "movies"
+    expected_generation: int = Field(default=0, ge=0)
+    seed: int = Field(default=0, ge=0, le=2**31 - 1)
+    profile_revision: str | None = Field(default=None, min_length=1, max_length=128)
 
 
 class LearnedHeadTrainRequestV1(StrictDocument):
     library: Literal["movies", "tv"] = "movies"
     expected_generation: int = Field(default=0, ge=0)
     seed: int = Field(default=0, ge=0, le=2**31 - 1)
+    feedback_revision: str = Field(default="manual:unspecified", min_length=1, max_length=128)
+    mutation: Literal["apply", "undo", "manual"] = "manual"
 
 
 class MlPublicationResultV1(StrictDocument):
     outcome: Literal["succeeded", "no_change", "superseded"] = "succeeded"
-    family: Literal["taste_profile", "taste_map", "learned_head"]
+    family: Literal["taste_profile", "taste_map", "taste_enrichment", "learned_head"]
     version: str = Field(min_length=1, max_length=128)
     checksum: str = Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]+$")
     expected_generation: int = Field(ge=0)

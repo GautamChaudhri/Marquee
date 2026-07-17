@@ -12,13 +12,14 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 from typing import Annotated, Literal
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from marquee.api.job_submission import submission_response
+from marquee.api.job_submission import JobSubmissionResponse, submission_response
 from marquee.api.library_serializers import effective_movie_preferences
 from marquee.core.jobs.audio_subtitle_planning import (
     AudioSubtitlePlanError,
@@ -26,13 +27,20 @@ from marquee.core.jobs.audio_subtitle_planning import (
     plan_audio_subtitle_mutation,
     selector_by_stream_index,
 )
+from marquee.core.jobs.contracts import TriggerKind
 from marquee.core.jobs.mutation_planning import (
     PlanConflictError,
     PlanValidationError,
     confirm_mutation,
     plan_version,
 )
-from marquee.core.jobs.submission import Initiator, SubmissionError
+from marquee.core.jobs.submission import (
+    IdempotencyConflictError,
+    Initiator,
+    SubjectLocator,
+    SubmissionError,
+    submit_job,
+)
 from marquee.core.jobs.track_selectors import TrackSelectorError
 from marquee.core.media_files import (
     MediaFileNotFoundError,
@@ -79,30 +87,60 @@ def _map_resolve_error(exc: Exception) -> HTTPException:
 async def get_subtitles(
     media_file_id: int,
     db: Annotated[AsyncSession, Depends(get_db)],
-    force: bool = False,
 ):
-    """Inventory, coverage, capabilities, and per-track actions for a file."""
-    _require_ffprobe()
+    """Read persisted inventory, coverage, capabilities, and track actions."""
     try:
-        payload = await service.get_inventory_dict(db, media_file_id, force=force)
+        payload = await service.get_inventory_dict(db, media_file_id)
         _resolved, inventory = await load_before_inventory(db, media_file_id)
         payload["mutation_inventory"] = inventory.model_dump(mode="json")
         return payload
+    except service.SubtitleInventoryMissingError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "subtitle_inventory_missing",
+                "message": str(exc),
+                "scan_url": f"/api/media-files/{media_file_id}/subtitles/scan",
+            },
+        ) from exc
     except (MediaFileNotFoundError, MediaFileUnavailableError) as exc:
         raise _map_resolve_error(exc) from exc
 
 
-@router.post("/api/media-files/{media_file_id}/subtitles/scan")
-async def scan_subtitles(media_file_id: int, db: Annotated[AsyncSession, Depends(get_db)]):
-    """Force a fresh inventory scan (inline for a single file)."""
-    _require_ffprobe()
+@router.post(
+    "/api/media-files/{media_file_id}/subtitles/scan",
+    status_code=202,
+)
+async def scan_subtitles(
+    media_file_id: int,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    idempotency_key: Annotated[
+        str | None, Header(alias="Idempotency-Key", min_length=1, max_length=200)
+    ] = None,
+) -> JobSubmissionResponse:
+    """Submit one canonical subtitle inventory scan for a media file."""
     try:
-        payload = await service.get_inventory_dict(db, media_file_id, force=True)
-        _resolved, inventory = await load_before_inventory(db, media_file_id)
-        payload["mutation_inventory"] = inventory.model_dump(mode="json")
-        return payload
+        await resolve_media_file(db, media_file_id)
+        if db.in_transaction():
+            await db.rollback()
+        async with db.begin():
+            result = await submit_job(
+                db,
+                job_type="subtitle_scan",
+                request={"force": False},
+                subject=SubjectLocator(kind="media_file", reference=str(media_file_id)),
+                trigger=TriggerKind.MANUAL,
+                initiator=Initiator(kind="system", identifier="subtitle-scan-api"),
+                idempotency_key=idempotency_key
+                or f"subtitle_scan:manual-{media_file_id}-{uuid4().hex}",
+            )
     except (MediaFileNotFoundError, MediaFileUnavailableError) as exc:
         raise _map_resolve_error(exc) from exc
+    except IdempotencyConflictError as exc:
+        raise HTTPException(status_code=409, detail=exc.api_detail) from exc
+    except SubmissionError as exc:
+        raise HTTPException(status_code=422, detail=exc.code) from exc
+    return submission_response(result)
 
 
 @router.get("/api/media-files/{media_file_id}/subtitles/{track_id}/preview")
@@ -299,10 +337,9 @@ movies_router = APIRouter(prefix="/api/movies", tags=["subtitles"])
 
 @movies_router.post("/{movie_id}/subtitles/inspect")
 async def inspect_movie_subtitles(movie_id: int, db: Annotated[AsyncSession, Depends(get_db)]):
-    """Resolve a movie's file, probe it, and return its full subtitle inventory."""
+    """Resolve a movie's file and return its persisted subtitle inventory."""
     if not subtitle_settings.SUBTITLE_ENABLED:
         raise HTTPException(status_code=503, detail="Subtitle management is disabled")
-    _require_ffprobe()
 
     movie = (await db.execute(select(Movie).where(Movie.id == movie_id))).scalar_one_or_none()
     if movie is None:
@@ -323,10 +360,19 @@ async def inspect_movie_subtitles(movie_id: int, db: Annotated[AsyncSession, Dep
         inventory = await service.get_inventory_dict(
             db,
             media_file.id,
-            force=True,
             preferred_audio_languages=preferences["audio"],
             preferred_subtitle_languages=preferences["subtitles"],
         )
+    except service.SubtitleInventoryMissingError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "subtitle_inventory_missing",
+                "message": str(exc),
+                "media_file_id": media_file.id,
+                "scan_url": f"/api/media-files/{media_file.id}/subtitles/scan",
+            },
+        ) from exc
     except MediaFileUnavailableError as exc:
         raise _map_resolve_error(exc) from exc
 
@@ -337,7 +383,6 @@ async def inspect_movie_subtitles(movie_id: int, db: Annotated[AsyncSession, Dep
         "path_present": True,
         "inventory": inventory,
         "preferred_languages": preferences,
-        "active_job": None,
     }
 
 

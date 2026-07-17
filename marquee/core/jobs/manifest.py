@@ -29,6 +29,8 @@ from marquee.core.jobs.contracts import (
     TriggerKind,
 )
 from marquee.core.jobs.definitions import (
+    ActiveOverlapMode,
+    ActiveOverlapPolicy,
     JobDefinition,
     JobDefinitionRegistry,
     TimeoutPolicy,
@@ -54,6 +56,7 @@ from marquee.core.jobs.documents import (
     SubtitlePolicyAuditRequestV1,
     SubtitleScanRequestV1,
     SystemNoopRequestV1,
+    TasteEnrichRequestV1,
     TasteMapRequestV1,
     TasteRebuildRequestV1,
     current_adapter,
@@ -157,6 +160,7 @@ _SPECS = (
     _spec("backup_create", FeatureArea.MAINTENANCE, ExecutionClass.MAINTENANCE, _U, "maintenance_scope"),
     _spec("taste_rebuild", FeatureArea.ML_TASTE, ExecutionClass.GPU, _R, "model_profile_training"),
     _spec("taste_map", FeatureArea.ML_TASTE, ExecutionClass.CPU, _R, "model_profile_training"),
+    _spec("taste_enrich", FeatureArea.ML_TASTE, ExecutionClass.CPU, _R, "model_profile_training"),
     _spec("library_sync", FeatureArea.LIBRARY_INTEGRATIONS, ExecutionClass.NETWORK, _R, "maintenance_scope"),
     _spec("subtitle_scan_all", FeatureArea.AUDIO_SUBTITLES, ExecutionClass.CONTROL, _R, "aggregate_batch", progress=ProgressStrategy.DETERMINATE, children=("subtitle_scan",)),
     _spec("audio_subs_deep_scan", FeatureArea.AUDIO_SUBTITLES, ExecutionClass.CONTROL, _R, "aggregate_batch", progress=ProgressStrategy.DETERMINATE, children=("subtitle_scan",)),
@@ -247,6 +251,7 @@ ENABLED_JOB_TYPES: frozenset[str] = frozenset(
         "poster_restore",
         "taste_rebuild",
         "taste_map",
+        "taste_enrich",
         "learned_head_train",
         "audio_remove",
         "track_remove",
@@ -301,6 +306,7 @@ _REQUEST_MODELS: dict[str, type[StrictDocument]] = {
     "poster_pipeline_tv_batch": PosterBatchRequestV1,
     "taste_rebuild": TasteRebuildRequestV1,
     "taste_map": TasteMapRequestV1,
+    "taste_enrich": TasteEnrichRequestV1,
     "learned_head_train": LearnedHeadTrainRequestV1,
     "poster_rescan": PosterRescanRequestV1,
     "poster_deploy": PosterDeployRequestV1,
@@ -342,6 +348,7 @@ _RESULT_MODELS: dict[str, type[StrictDocument]] = {
     "poster_rescan": PosterRescanResultV1,
     "taste_rebuild": MlPublicationResultV1,
     "taste_map": MlPublicationResultV1,
+    "taste_enrich": MlPublicationResultV1,
     "learned_head_train": MlPublicationResultV1,
     "poster_deploy": PosterMutationResultV1,
     "poster_restore": PosterMutationResultV1,
@@ -621,6 +628,7 @@ _PROGRESS_POLICIES: dict[str, ProgressPolicy] = {
     "poster_backup_subject": _POSTER_MUTATION_PROGRESS,
     "taste_rebuild": _ML_PUBLICATION_PROGRESS,
     "taste_map": _ML_PUBLICATION_PROGRESS,
+    "taste_enrich": _ML_PUBLICATION_PROGRESS,
     "learned_head_train": _ML_PUBLICATION_PROGRESS,
 }
 
@@ -713,6 +721,16 @@ def _progress(spec: _DefinitionSpec) -> ProgressPolicy:
     )
 
 
+def _overlap_policy(spec: _DefinitionSpec) -> ActiveOverlapPolicy:
+    if spec.job_type == "system_noop":
+        mode = ActiveOverlapMode.ALLOW
+    elif spec.safety == EffectSafety.UNSAFE_MUTATION:
+        mode = ActiveOverlapMode.REJECT_CONFLICT
+    else:
+        mode = ActiveOverlapMode.COALESCE_EQUIVALENT
+    return ActiveOverlapPolicy(mode=mode)
+
+
 def _definition(spec: _DefinitionSpec) -> JobDefinition:
     enabled = spec.job_type in ENABLED_JOB_TYPES
     is_noop = spec.job_type == "system_noop"
@@ -748,6 +766,7 @@ def _definition(spec: _DefinitionSpec) -> JobDefinition:
         entrypoint=spec.execution.value,
         timeout=TimeoutPolicy(seconds=30 if is_noop else 24 * 60 * 60),
         effect_safety=spec.safety,
+        overlap_policy=_overlap_policy(spec),
         safety_policy=(
             SafetyPolicy(media_file=True, media_write=True)
             if spec.execution == ExecutionClass.MEDIA_WRITE

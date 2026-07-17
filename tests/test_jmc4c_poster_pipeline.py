@@ -54,12 +54,15 @@ async def test_movie_route_returns_canonical_nonmutating_submission(client, db) 
     assert response.status_code == 202
     body = response.json()
     assert body == {
-        "job_id": body["job_id"],
-        "disposition": "created",
-        "phase": "queued",
-        "snapshot_url": f"/api/jobs/{body['job_id']}/snapshot",
-        "detail_url": f"/projection-room/jobs/{body['job_id']}",
-    }
+            "job_id": body["job_id"],
+            "disposition": "created",
+            "idempotent": False,
+            "phase": "queued",
+            "snapshot_url": f"/api/jobs/{body['job_id']}/snapshot",
+            "detail_url": f"/projection-room/jobs/{body['job_id']}",
+            "activity_url": f"/projection-room?view=queue&job={body['job_id']}",
+            "active_conflict": None,
+        }
     job = await db.get(Job, body["job_id"])
     assert job is not None
     assert job.type == "poster_pipeline"

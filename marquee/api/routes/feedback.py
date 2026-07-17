@@ -28,6 +28,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.api.job_submission import submission_response
+from marquee.core.jobs.contracts import TriggerKind
 from marquee.core.jobs.mutation_documents import PosterCandidateSelectionV1
 from marquee.core.jobs.poster_submission import (
     PosterSelectionError,
@@ -36,15 +37,18 @@ from marquee.core.jobs.poster_submission import (
 )
 from marquee.core.jobs.submission import (
     IdempotencyConflictError,
+    Initiator,
+    SubjectLocator,
     SubmissionError,
     SubmissionResult,
+    submit_job,
 )
 from marquee.core.pipeline_config import pipeline_settings
 from marquee.core.poster_subjects import MEDIA_TYPE_MOVIE, MEDIA_TYPE_SEASON, PosterSubject
 from marquee.database import get_db
 from marquee.ml import feedback_store, profile_updater
 from marquee.ml.namespaces import TasteNamespace, get_namespace
-from marquee.models import Movie, PipelineRun, Season, Series
+from marquee.models import MlActivePublication, Movie, PipelineRun, Season, Series
 from marquee.pipeline.features import load_cached_embedding
 from marquee.pipeline.run_manager import run_manager
 from marquee.pipeline.types import find_auto_pick_candidate
@@ -305,13 +309,49 @@ def _add_to_profile(
     )
 
 
-def _maybe_retrain_head(namespace: TasteNamespace) -> dict:
+async def _schedule_learned_head_successor(
+    db: AsyncSession,
+    namespace: TasteNamespace,
+    *,
+    feedback_revision: str,
+    mutation: str,
+) -> dict:
     if not pipeline_settings.HEAD_AUTO_RETRAIN:
-        return {"retrained": False, "reason": "auto-retrain disabled"}
-    from marquee.ml.head_trainer import train_from_labels  # noqa: PLC0415
-
-    head, info = train_from_labels(namespace=namespace)
-    return {"retrained": head is not None, "reason": info.get("reason"), **info}
+        return {"scheduled": False, "reason": "auto-retrain disabled", "job": None}
+    generation = await db.scalar(
+        select(MlActivePublication.generation).where(
+            MlActivePublication.family == f"learned_head:{namespace.library}"
+        )
+    )
+    if db.in_transaction():
+        await db.commit()
+    async with db.begin():
+        result = await submit_job(
+            db,
+            job_type="learned_head_train",
+            request={
+                "library": namespace.library,
+                "expected_generation": int(generation or 0),
+                "seed": 0,
+                "feedback_revision": feedback_revision,
+                "mutation": mutation,
+            },
+            subject=SubjectLocator(
+                kind="model_profile_training",
+                reference=f"learned_head:{namespace.library}",
+            ),
+            trigger=TriggerKind.MANUAL,
+            initiator=Initiator(kind="system", identifier="feedback-api"),
+            idempotency_key=(
+                f"learned_head_train:{namespace.library}:{mutation}:{feedback_revision}"
+            ),
+            priority=50,
+        )
+    return {
+        "scheduled": True,
+        "reason": "feedback revision committed",
+        "job": submission_response(result).model_dump(mode="json"),
+    }
 
 
 async def _deploy_pick(
@@ -668,8 +708,6 @@ async def apply_feedback_request(
     if exemplar_added is not None:
         run_manager.reset_extractor()
 
-    head_info = await asyncio.to_thread(_maybe_retrain_head, namespace)
-
     # Deploy the chosen poster to the media folder (approve/override only).
     deployment_job = None
     if deploy_requested and pick is not None:
@@ -683,7 +721,7 @@ async def apply_feedback_request(
                 idempotency_key=body.idempotency_key,
             )
         except IdempotencyConflictError as exc:
-            raise HTTPException(status_code=409, detail=exc.code) from exc
+            raise HTTPException(status_code=409, detail=exc.api_detail) from exc
         except PosterSelectionError as exc:
             raise HTTPException(status_code=422, detail="poster_selection_invalid") from exc
         except SubmissionError as exc:
@@ -692,6 +730,13 @@ async def apply_feedback_request(
     # Mark the run reviewed.
     run.feedback_event_id = event_id
     await db.commit()
+
+    head_info = await _schedule_learned_head_successor(
+        db,
+        namespace,
+        feedback_revision=event_id,
+        mutation="apply",
+    )
 
     gate_override = _gate_override_for(pick, namespace) if pick is not None else None
 
@@ -725,7 +770,7 @@ async def submit_feedback(
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
     result = await apply_feedback_request(body, request, db)
-    if result["deployment_job"] is not None:
+    if result["deployment_job"] is not None or result["head"]["job"] is not None:
         response.status_code = 202
     return result
 
@@ -733,6 +778,7 @@ async def submit_feedback(
 @router.post("/undo")
 async def undo_feedback(
     body: UndoRequest,
+    response: Response,
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
     runs = (
@@ -783,10 +829,17 @@ async def undo_feedback(
     await db.commit()
 
     head_info = (
-        await asyncio.to_thread(_maybe_retrain_head, namespace)
+        await _schedule_learned_head_successor(
+            db,
+            namespace,
+            feedback_revision=body.event_id,
+            mutation="undo",
+        )
         if namespace is not None
-        else {"retrained": False, "reason": "namespace not resolved"}
+        else {"scheduled": False, "reason": "namespace not resolved", "job": None}
     )
+    if head_info["job"] is not None:
+        response.status_code = 202
     return {
         "removed_labels": len(removed),
         "exemplars_removed": removed_exemplars,
