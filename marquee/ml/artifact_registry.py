@@ -288,6 +288,11 @@ async def _resolve_profile_entries(
             entry["title"] = resolved[1]
             entry["year"] = entry["year"] or resolved[2]
             entry["tmdb_id"] = entry["tmdb_id"] or resolved[3]
+        else:
+            # No live Movie row matched: keep the immutable title/year/tmdb
+            # snapshot but null the FK so the exemplar never references a movie
+            # that is absent from `movies` (durable-history evidence linkage).
+            entry["movie_id"] = None
 
     return entries
 
@@ -383,12 +388,18 @@ async def _head_movies(db: AsyncSession, ns: TasteNamespace) -> list[dict[str, A
     grouped: Counter[tuple[int | None, str, int | None, int | None]] = Counter()
     for row in rows:
         movie_id = int(raw_movie_id) if (raw_movie_id := row.get("movie_id")) is not None else None
-        if movie_id in resolved:
+        if movie_id is not None and movie_id in resolved:
             title, year, tmdb_id = resolved[movie_id]
         else:
-            title = row.get("title") or f"Movie {movie_id}" if movie_id is not None else "Unknown"
+            # The live Movie row is absent (retired/deleted or never synced).
+            # Keep the durable title snapshot but null the FK: an artifact
+            # snapshot must survive a retired live projection, and
+            # artifact_snapshot_movies.movie_id is nullable/SET NULL, so it must
+            # never carry an id that no longer exists in `movies`.
+            title = row.get("title") or (f"Movie {movie_id}" if movie_id is not None else "Unknown")
             year = row.get("year")
             tmdb_id = None
+            movie_id = None
         grouped[(movie_id, str(title), year, tmdb_id)] += 1
 
     items = [

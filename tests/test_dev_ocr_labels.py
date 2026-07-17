@@ -47,6 +47,7 @@ def _full_ocr_snapshot() -> dict[str, object]:
         "allow_studio": False,
         "allow_rating": False,
         "allow_tagline": False,
+        "allow_billing": False,
         "confidence_threshold": 0.75,
         "strip_confidence_threshold": 0.65,
         "bottom_confidence_threshold": 0.5,

@@ -10,21 +10,28 @@ from marquee.core.jobs.snapshotting import snapshot_definition_configuration
 from tests.test_job_definition_documents import _definition
 
 
-def test_definition_snapshots_only_declared_configuration_keys() -> None:
+@pytest.fixture
+async def config_provider(db):
+    """The configuration provider with a valid revision.
+
+    Depending on ``db`` (which loads the initial configuration revision) keeps
+    these snapshot tests independent of collection order instead of relying on
+    another test having initialized the module-global provider first.
+    """
+    return configuration_provider
+
+
+async def test_definition_snapshots_only_declared_configuration_keys(config_provider) -> None:
     definition = replace(
         _definition(),
-        configuration_keys=frozenset(
-            {"OCR_CONFIDENCE_THRESHOLD", "OCR_MAX_RESIDUAL_BOXES"}
-        ),
+        configuration_keys=frozenset({"OCR_CONFIDENCE_THRESHOLD", "OCR_MAX_RESIDUAL_BOXES"}),
     )
-    snapshot = snapshot_definition_configuration(definition, configuration_provider)
+    snapshot = snapshot_definition_configuration(definition, config_provider)
     assert set(snapshot.values) == definition.configuration_keys
-    assert snapshot.version == configuration_provider.state.version
+    assert snapshot.version == config_provider.state.version
 
 
-def test_definition_configuration_rejects_secret_or_restart_keys() -> None:
-    definition = replace(
-        _definition(), configuration_keys=frozenset({"SUBGEN_CALLBACK_TOKEN"})
-    )
+async def test_definition_configuration_rejects_secret_or_restart_keys(config_provider) -> None:
+    definition = replace(_definition(), configuration_keys=frozenset({"SUBGEN_CALLBACK_TOKEN"}))
     with pytest.raises(ConfigurationError, match="cannot enter a job snapshot"):
-        snapshot_definition_configuration(definition, configuration_provider)
+        snapshot_definition_configuration(definition, config_provider)

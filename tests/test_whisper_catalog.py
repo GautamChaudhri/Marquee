@@ -20,7 +20,9 @@ def test_gpu_recommendation_prefers_turbo_on_8gb():
 
     assert recommendation["device"] == "cuda"
     assert recommendation["model_id"] == "large-v3-turbo"
-    assert verdicts["large-v3"]["verdict"] in {"fits_int8", "too_big"}
+    # large-v3 fp16 (4.7 GB) fits the 8 GB budget (8 − 1.5 GB reserve = 6.5 GB),
+    # yet turbo stays the transcribe pick (faster, lighter) — the intended policy.
+    assert verdicts["large-v3"]["verdict"] == "fits_fp16"
 
 
 def test_gpu_translate_prefers_large_v3_on_24gb():

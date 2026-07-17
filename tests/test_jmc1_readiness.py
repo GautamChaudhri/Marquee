@@ -50,7 +50,9 @@ async def _install_fake_connection(monkeypatch, *, lock_available=True):
     return sqlalchemy_connection, pg_connection
 
 
-async def test_healthy_readiness_checks_every_component(monkeypatch):
+async def test_healthy_readiness_checks_every_component(db, monkeypatch):
+    # `db` loads the initial configuration revision so the "configuration"
+    # readiness component is healthy regardless of test-collection order.
     sqlalchemy_connection, pg_connection = await _install_fake_connection(monkeypatch)
     report = await readiness.check_readiness()
 
@@ -84,7 +86,9 @@ async def test_readiness_reports_schema_incompatibility_without_details(monkeypa
     assert "raw pgqueuer" not in serialized
 
 
-async def test_readiness_reports_unreachable_database_and_recovers(monkeypatch):
+async def test_readiness_reports_unreachable_database_and_recovers(db, monkeypatch):
+    # `db` loads the initial configuration revision so the eventual recovery to
+    # "ready" is independent of test-collection order.
     from marquee.core.jobs.event_stream import job_event_tailer
 
     calls = 0
@@ -248,7 +252,9 @@ async def test_runtime_roles_fail_before_manager_start(
     assert connection.closed is True
 
 
-async def test_api_startup_fails_closed_before_serving(monkeypatch):
+async def test_api_startup_fails_closed_before_serving(db, monkeypatch):
+    # `db` loads the initial configuration revision so lifespan startup reaches
+    # the readiness gate regardless of test-collection order.
     import marquee.main as main_module
 
     async def init_database():
