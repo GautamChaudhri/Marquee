@@ -8,10 +8,12 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
+from marquee.config import settings
 from marquee.core import system_metrics
+from marquee.core.jobs.manifest import JOB_DEFINITION_REGISTRY
 from marquee.core.jobs.pgqueuer_gateway import pgqueuer_gateway
 from marquee.main import app
-from marquee.models import Job, SystemMetricsSample
+from marquee.models import Job, RuntimeInstance, SystemMetricsSample
 
 
 @pytest_asyncio.fixture
@@ -168,6 +170,7 @@ async def test_operations_snapshot_is_typed_bounded_and_payload_free(
         "database",
         "events",
         "storage",
+        "schedules",
         "contracts",
     }
     serialized = response.text.lower()
@@ -183,6 +186,125 @@ async def test_operations_snapshot_is_typed_bounded_and_payload_free(
 
 
 @pytest.mark.asyncio
+async def test_operations_health_uses_fresh_external_runtime_evidence(
+    db, client: AsyncClient, monkeypatch
+):
+    app.state.worker_supervisor = None
+    db.add(
+        RuntimeInstance(
+            id="00000000-0000-4000-8000-000000000001",
+            role="worker",
+            node_label="external-worker",
+            build="jmc6d-test",
+            host_boot_id="boot-test",
+            process_id=4242,
+            process_start_ticks=101,
+            process_group_id=4242,
+            advertised_entrypoints=["control"],
+            capabilities={"entrypoints": ["control"]},
+            readiness="ready",
+            started_at=datetime.now(UTC),
+            last_heartbeat_at=datetime.now(UTC),
+            heartbeat_expires_at=datetime.now(UTC) + timedelta(seconds=30),
+        )
+    )
+    await db.commit()
+
+    async def queue_statistics(_db):
+        return []
+
+    monkeypatch.setattr(pgqueuer_gateway, "queue_statistics", queue_statistics)
+    body = (await client.get("/api/system/operations")).json()
+
+    assert body["workers"]["listener_healthy"] is True
+    assert body["workers"]["runtime_instances"]["active"] == 1
+    assert body["workers"]["runtime_instances"]["roles"] == {"worker": 1}
+
+
+@pytest.mark.asyncio
 async def test_operations_history_rejects_unbounded_window(client: AsyncClient):
     response = await client.get("/api/system/metrics/history", params={"window": "all"})
     assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_operations_runtime_instance_detail_is_bounded(
+    db, client: AsyncClient, monkeypatch
+):
+    app.state.worker_supervisor = None
+    monkeypatch.setattr(settings, "JOB_RUNTIME_QUERY_LIMIT", 2)
+    now = datetime.now(UTC)
+    for index in range(4):
+        db.add(
+            RuntimeInstance(
+                id=f"00000000-0000-4000-8000-{index:012d}",
+                role="worker",
+                node_label=f"worker-{index}",
+                build="jmc6d-test",
+                host_boot_id="boot-test",
+                process_id=6100 + index,
+                process_start_ticks=300 + index,
+                process_group_id=6100 + index,
+                advertised_entrypoints=["control"],
+                capabilities={"entrypoints": ["control"]},
+                readiness="ready",
+                started_at=now,
+                last_heartbeat_at=now + timedelta(seconds=index),
+                heartbeat_expires_at=now + timedelta(seconds=30),
+            )
+        )
+    await db.commit()
+
+    async def queue_statistics(_db):
+        return []
+
+    monkeypatch.setattr(pgqueuer_gateway, "queue_statistics", queue_statistics)
+    body = (await client.get("/api/system/operations")).json()
+    runtime = body["workers"]["runtime_instances"]
+
+    # Aggregate counts see every row; the detail list stays bounded by the limit.
+    assert runtime["active"] == 4
+    assert len(runtime["instances"]) == 2
+    assert runtime["truncated"] is True
+
+
+@pytest.mark.asyncio
+async def test_operations_reports_capability_mismatch_for_uncovered_entrypoints(
+    db, client: AsyncClient, monkeypatch
+):
+    app.state.worker_supervisor = None
+    required = sorted({d.entrypoint for d in JOB_DEFINITION_REGISTRY if d.enabled})
+    covered = required[:1]
+    missing = required[1:]
+    assert missing  # more than one enabled execution class exists to be uncovered
+    now = datetime.now(UTC)
+    db.add(
+        RuntimeInstance(
+            id="00000000-0000-4000-8000-000000000401",
+            role="worker",
+            node_label="partial-worker",
+            build="jmc6d-test",
+            host_boot_id="boot-test",
+            process_id=6401,
+            process_start_ticks=401,
+            process_group_id=6401,
+            advertised_entrypoints=covered,
+            capabilities={"entrypoints": covered},
+            readiness="ready",
+            started_at=now,
+            last_heartbeat_at=now,
+            heartbeat_expires_at=now + timedelta(seconds=30),
+        )
+    )
+    await db.commit()
+
+    async def queue_statistics(_db):
+        return []
+
+    monkeypatch.setattr(pgqueuer_gateway, "queue_statistics", queue_statistics)
+    body = (await client.get("/api/system/operations")).json()
+    runtime = body["workers"]["runtime_instances"]
+
+    # An enabled definition whose execution class has no fresh capable worker is visible.
+    assert runtime["capability_mismatches"] == missing
+    assert runtime["scheduler_present"] is False

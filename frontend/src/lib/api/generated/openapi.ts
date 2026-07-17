@@ -3643,73 +3643,6 @@ export interface paths {
 		patch?: never;
 		trace?: never;
 	};
-	'/api/webhooks/radarr': {
-		parameters: {
-			query?: never;
-			header?: never;
-			path?: never;
-			cookie?: never;
-		};
-		get?: never;
-		put?: never;
-		/**
-		 * Radarr Webhook
-		 * @description Receive Radarr events; restore posters on upgrade (fast ACK).
-		 */
-		post: operations['radarr_webhook_api_webhooks_radarr_post'];
-		delete?: never;
-		options?: never;
-		head?: never;
-		patch?: never;
-		trace?: never;
-	};
-	'/api/webhooks/sonarr': {
-		parameters: {
-			query?: never;
-			header?: never;
-			path?: never;
-			cookie?: never;
-		};
-		get?: never;
-		put?: never;
-		/**
-		 * Sonarr Webhook
-		 * @description Receive Sonarr events. Currently path-updates on Rename only.
-		 *
-		 *     Sonarr's file-level upgrades don't delete the series/season posters, so
-		 *     full restoration is deferred; the payload is parsed and Test/Rename are
-		 *     handled so the webhook can be configured today.
-		 */
-		post: operations['sonarr_webhook_api_webhooks_sonarr_post'];
-		delete?: never;
-		options?: never;
-		head?: never;
-		patch?: never;
-		trace?: never;
-	};
-	'/api/webhooks/subgen': {
-		parameters: {
-			query?: never;
-			header?: never;
-			path?: never;
-			cookie?: never;
-		};
-		get?: never;
-		put?: never;
-		/**
-		 * Subgen Callback
-		 * @description Subgen completion callback (design §24.4) — an optimization, not the SoT.
-		 *
-		 *     The generation worker reconciles via the filesystem regardless; this just
-		 *     records the callback so we have an audit trail and can surface it.
-		 */
-		post: operations['subgen_callback_api_webhooks_subgen_post'];
-		delete?: never;
-		options?: never;
-		head?: never;
-		patch?: never;
-		trace?: never;
-	};
 	'/health': {
 		parameters: {
 			query?: never;
@@ -5129,6 +5062,92 @@ export interface components {
 			/** Uptime */
 			uptime: string;
 		};
+		/** OperationsRuntimeInstance */
+		OperationsRuntimeInstance: {
+			/** Build */
+			build: string;
+			/** Capability Availability */
+			capability_availability?: {
+				[key: string]: boolean;
+			};
+			/** Containment */
+			containment?: {
+				[key: string]: string | boolean;
+			};
+			/** Entrypoints */
+			entrypoints?: string[];
+			/** Heartbeat Fresh */
+			heartbeat_fresh: boolean;
+			/**
+			 * Last Heartbeat At
+			 * Format: date-time
+			 */
+			last_heartbeat_at: string;
+			/** Node Label */
+			node_label: string;
+			/**
+			 * Readiness
+			 * @enum {string}
+			 */
+			readiness: 'starting' | 'ready' | 'not_ready' | 'stopped';
+			/**
+			 * Role
+			 * @enum {string}
+			 */
+			role: 'worker' | 'scheduler';
+		};
+		/** OperationsRuntimeInstances */
+		OperationsRuntimeInstances: {
+			/** Active */
+			active: number;
+			/** Capability Mismatches */
+			capability_mismatches?: string[];
+			/** Instances */
+			instances?: components['schemas']['OperationsRuntimeInstance'][];
+			/** Last Heartbeat At */
+			last_heartbeat_at?: string | null;
+			/** Roles */
+			roles?: {
+				[key: string]: number;
+			};
+			/** Scheduler Present */
+			scheduler_present: boolean;
+			/** Stale */
+			stale: number;
+			/** Stopped */
+			stopped: number;
+			/**
+			 * Truncated
+			 * @default false
+			 */
+			truncated: boolean;
+		};
+		/** OperationsScheduleState */
+		OperationsScheduleState: {
+			/** Configured */
+			configured: boolean;
+			/** Disabled Reason */
+			disabled_reason?: string | null;
+			/** Effectively Enabled */
+			effectively_enabled: boolean;
+			/** Individually Activated */
+			individually_activated: boolean;
+			/** Key */
+			key: string;
+			/** Registered */
+			registered: boolean;
+		};
+		/** OperationsSchedules */
+		OperationsSchedules: {
+			/** Effectively Enabled */
+			effectively_enabled: number;
+			/** Production Schedules Enabled */
+			production_schedules_enabled: boolean;
+			/** Scheduler Present */
+			scheduler_present: boolean;
+			/** Schedules */
+			schedules?: components['schemas']['OperationsScheduleState'][];
+		};
 		/** OperationsSchemaContract */
 		OperationsSchemaContract: {
 			/** Catalog Fingerprint */
@@ -5152,6 +5171,7 @@ export interface components {
 			 */
 			generated_at: string;
 			node: components['schemas']['OperationsNode'];
+			schedules: components['schemas']['OperationsSchedules'];
 			storage: components['schemas']['OperationsStorage'];
 			transport: components['schemas']['OperationsTransport'];
 			/**
@@ -5192,6 +5212,7 @@ export interface components {
 			listener_healthy: boolean;
 			/** Queued */
 			queued: number;
+			runtime_instances: components['schemas']['OperationsRuntimeInstances'];
 			/** Supervisor Available */
 			supervisor_available: boolean;
 		};
@@ -5559,17 +5580,6 @@ export interface components {
 			kind: string;
 			/** Label Key */
 			label_key: string;
-		};
-		/** RadarrWebhookPayload */
-		RadarrWebhookPayload: {
-			/** Eventtype */
-			eventType?: string | null;
-			/**
-			 * Isupgrade
-			 * @default false
-			 */
-			isUpgrade: boolean;
-			movie?: components['schemas']['_ArrMovie'] | null;
 		};
 		/** ReencodePlanRequest */
 		ReencodePlanRequest: {
@@ -6108,19 +6118,6 @@ export interface components {
 			 * @enum {string}
 			 */
 			kind: 'warnings';
-		};
-		/** _ArrMovie */
-		_ArrMovie: {
-			/** Folderpath */
-			folderPath?: string | null;
-			/** Id */
-			id?: number | null;
-			/** Title */
-			title?: string | null;
-			/** Tmdbid */
-			tmdbId?: number | null;
-			/** Year */
-			year?: number | null;
 		};
 	};
 	responses: never;
@@ -12523,109 +12520,6 @@ export interface operations {
 			cookie?: never;
 		};
 		requestBody?: never;
-		responses: {
-			/** @description Successful Response */
-			200: {
-				headers: {
-					[name: string]: unknown;
-				};
-				content: {
-					'application/json': unknown;
-				};
-			};
-			/** @description Validation Error */
-			422: {
-				headers: {
-					[name: string]: unknown;
-				};
-				content: {
-					'application/json': components['schemas']['HTTPValidationError'];
-				};
-			};
-		};
-	};
-	radarr_webhook_api_webhooks_radarr_post: {
-		parameters: {
-			query?: never;
-			header?: never;
-			path?: never;
-			cookie?: never;
-		};
-		requestBody: {
-			content: {
-				'application/json': components['schemas']['RadarrWebhookPayload'];
-			};
-		};
-		responses: {
-			/** @description Successful Response */
-			200: {
-				headers: {
-					[name: string]: unknown;
-				};
-				content: {
-					'application/json': unknown;
-				};
-			};
-			/** @description Validation Error */
-			422: {
-				headers: {
-					[name: string]: unknown;
-				};
-				content: {
-					'application/json': components['schemas']['HTTPValidationError'];
-				};
-			};
-		};
-	};
-	sonarr_webhook_api_webhooks_sonarr_post: {
-		parameters: {
-			query?: never;
-			header?: never;
-			path?: never;
-			cookie?: never;
-		};
-		requestBody: {
-			content: {
-				'application/json': components['schemas']['RadarrWebhookPayload'];
-			};
-		};
-		responses: {
-			/** @description Successful Response */
-			200: {
-				headers: {
-					[name: string]: unknown;
-				};
-				content: {
-					'application/json': unknown;
-				};
-			};
-			/** @description Validation Error */
-			422: {
-				headers: {
-					[name: string]: unknown;
-				};
-				content: {
-					'application/json': components['schemas']['HTTPValidationError'];
-				};
-			};
-		};
-	};
-	subgen_callback_api_webhooks_subgen_post: {
-		parameters: {
-			query?: {
-				token?: string | null;
-			};
-			header?: never;
-			path?: never;
-			cookie?: never;
-		};
-		requestBody: {
-			content: {
-				'application/json': {
-					[key: string]: unknown;
-				};
-			};
-		};
 		responses: {
 			/** @description Successful Response */
 			200: {

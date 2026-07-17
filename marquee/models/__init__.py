@@ -14,7 +14,13 @@ from marquee.models.job import (
     JobEvent,
     SchemaContract,
 )
-from marquee.models.job_evidence import JobArtifact, JobLog, MediaOperationDetail, WorkerNode
+from marquee.models.job_evidence import (
+    JobArtifact,
+    JobLog,
+    MediaOperationDetail,
+    RuntimeInstance,
+    WorkerNode,
+)
 from marquee.models.letterbox import LetterboxEvent, LetterboxState
 from marquee.models.media_file import EpisodeMediaFile, MediaFile
 from marquee.models.ml_publication import MlActivePublication
@@ -62,6 +68,7 @@ __all__ = [
     "JobLog",
     "JobArtifact",
     "WorkerNode",
+    "RuntimeInstance",
     "MediaOperationDetail",
     "SchemaContract",
     "EpisodeMediaFile",

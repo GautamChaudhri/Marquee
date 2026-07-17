@@ -79,7 +79,6 @@ INVENTORY_FILES = (
     "marquee/api/routes/pipeline.py",
     "marquee/api/routes/pipeline_tv.py",
     "marquee/api/routes/system.py",
-    "marquee/api/routes/webhooks.py",
     "marquee/core/backup.py",
     "marquee/core/heal.py",
     "marquee/maintenance.py",

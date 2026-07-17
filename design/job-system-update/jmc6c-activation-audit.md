@@ -1,5 +1,13 @@
 # JMC6C Activation Audit
 
+> **Post-certification notice (2026-07-17):** The owner's required whole-system source audit found
+> activation-blocking gaps not exercised by the JMC6C green suite. This audit remains historical
+> evidence for the compact `jmc6c-complete` tree but is not the current activation authority.
+> Complete [JMC6D runtime recovery and activation safety](jmc6d-runtime-recovery-and-activation-safety.md),
+> [JMC6E canonical seam and refresh closure](jmc6e-canonical-seam-and-refresh-closure.md), and
+> [JMC6F legacy retirement and activation certification](jmc6f-legacy-retirement-and-activation-certification.md)
+> before repeating the owner activation decision.
+
 Owner checklist for the compact `jmc6c-complete` candidate. This record freezes the locally
 verified first-release contracts and does not authorize a push, production activation, or an
 uncertified media capability.
@@ -89,4 +97,3 @@ JMC6 timeline.
   local actionlint result is not a hosted CI result.
 - [ ] Only after review, authorized push, and passing hosted CI, activate the explicitly approved
   certified definitions/schedules. Retain disabled readiness for every unavailable capability.
-

@@ -26,13 +26,20 @@ from marquee.core.jobs.fenced_writer import (
     WriteDisposition,
 )
 from marquee.core.jobs.manifest import JOB_DEFINITION_REGISTRY
+from marquee.core.jobs.orphan_reconciliation import (
+    _bounded_candidates,
+    reconcile_candidate,
+    reconcile_startup_orphans,
+)
 from marquee.core.jobs.pgqueuer_gateway import pgqueuer_gateway
 from marquee.core.jobs.pgqueuer_scheduler import create_scheduler
 from marquee.core.jobs.pgqueuer_worker import create_worker
+from marquee.core.jobs.process_identity import IdentityStatus, read_boot_id
 from marquee.core.jobs.progress_service import progress_writer
 from marquee.core.jobs.safety_gates import SafetyGateService, SafetyRequirements
 from marquee.database import _get_engine
 from marquee.main import app
+from marquee.models import RuntimeInstance
 from marquee.models.job import Job, JobAttempt, JobDispatch, JobEvent
 
 
@@ -175,11 +182,12 @@ async def test_duplicate_delivery_performs_effect_once(db):
         deliver_control_job(transport_job, _context(), executor=executor)
     )
     await admitted.wait()
-    await deliver_control_job(
-        transport_job,
-        _context(),
-        executor=executor,
-    )
+    with pytest.raises(RetryRequested, match="active attempt"):
+        await deliver_control_job(
+            transport_job,
+            _context(),
+            executor=executor,
+        )
     release.set()
     await first
     assert calls == 1
@@ -372,12 +380,18 @@ async def test_duplicate_delivery_never_guesses_running_attempt_is_abandoned(db)
         )
     )
     await admitted.wait()
-    await deliver_control_job(
-        _transport_job(job_id, ticket_id),
-        _context(),
-    )
+    retry: RetryRequested | None = None
+    try:
+        await deliver_control_job(
+            _transport_job(job_id, ticket_id),
+            _context(),
+        )
+    except RetryRequested as exc:
+        retry = exc
     release.set()
     await first
+    assert retry is not None
+    assert "active attempt" in str(retry)
 
     await db.rollback()
     job = await db.get(Job, job_id)
@@ -393,6 +407,225 @@ async def test_duplicate_delivery_never_guesses_running_attempt_is_abandoned(db)
     assert [(attempt.phase, attempt.outcome) for attempt in attempts] == [
         ("finished", "succeeded"),
     ]
+
+
+async def test_orphan_candidates_are_global_across_container_identity_change(db):
+    job_id, ticket_id = await _canonical_ticket(db)
+    job = await db.get(Job, job_id)
+    assert job is not None
+    attempt = JobAttempt(
+        job_id=job_id,
+        number=1,
+        fence_token=1,
+        pgq_job_id=ticket_id,
+        transport_attempt=0,
+        worker_node_id="container-before-recreation",
+        phase="running",
+        admitted_at=datetime.now(UTC),
+        started_at=datetime.now(UTC),
+    )
+    db.add(attempt)
+    await db.flush()
+    job.phase = "running"
+    job.fence_token = 1
+    job.current_attempt_id = attempt.id
+    await db.commit()
+
+    candidates = await _bounded_candidates("container-after-recreation", limit=50)
+
+    assert [candidate.ownership.attempt_id for candidate in candidates] == [attempt.id]
+
+
+async def _attach_runtime_attempt(
+    db,
+    *,
+    fresh: bool,
+    job_type: str = "system_noop",
+    metrics: dict | None = None,
+    with_process_identity: bool = False,
+) -> tuple[str, int, int]:
+    job_id, ticket_id = await _canonical_ticket(db)
+    now = datetime.now(UTC)
+    runtime_id = str(uuid4())
+    runtime = RuntimeInstance(
+        id=runtime_id,
+        role="worker",
+        node_label="remote-runtime",
+        build="jmc6d-test",
+        host_boot_id=read_boot_id() if with_process_identity else "remote-boot",
+        process_id=42420,
+        process_start_ticks=202,
+        process_group_id=42420,
+        advertised_entrypoints=["control"],
+        capabilities={"entrypoints": ["control"]},
+        readiness="ready",
+        started_at=now - timedelta(minutes=1),
+        last_heartbeat_at=now if fresh else now - timedelta(minutes=1),
+        heartbeat_expires_at=now + timedelta(seconds=30) if fresh else now - timedelta(seconds=1),
+    )
+    db.add(runtime)
+    job = await db.get(Job, job_id)
+    assert job is not None
+    job.type = job_type
+    attempt_metrics = dict(metrics or {})
+    attempt = JobAttempt(
+        job_id=job_id,
+        number=1,
+        fence_token=1,
+        pgq_job_id=ticket_id,
+        transport_attempt=0,
+        worker_node_id="remote-runtime",
+        runtime_instance_id=runtime_id,
+        process_id=42420 if with_process_identity else None,
+        process_group_id=42420 if with_process_identity else None,
+        host_boot_id=read_boot_id() if with_process_identity else None,
+        metrics=(
+            {**attempt_metrics, "process_start_ticks": 202}
+            if with_process_identity
+            else attempt_metrics
+        ),
+        phase="running",
+        admitted_at=now - timedelta(minutes=1),
+        started_at=now - timedelta(minutes=1),
+    )
+    db.add(attempt)
+    await db.flush()
+    job.phase = "running"
+    job.fence_token = 1
+    job.current_attempt_id = attempt.id
+    await db.commit()
+    return job_id, ticket_id, attempt.id
+
+
+async def test_fresh_runtime_attempt_is_never_superseded(db):
+    job_id, _ticket_id, attempt_id = await _attach_runtime_attempt(db, fresh=True)
+
+    counts = await reconcile_startup_orphans(
+        worker_node="different-container",
+        cooperative_seconds=0.01,
+        term_seconds=0.01,
+    )
+
+    assert counts == {"active": 1, "interrupted": 0, "unsafe": 0, "stale": 0}
+    await db.rollback()
+    job = await db.get(Job, job_id)
+    attempt = await db.get(JobAttempt, attempt_id)
+    assert job is not None and attempt is not None
+    assert (job.phase, attempt.phase) == ("running", "running")
+
+
+async def test_expired_remote_read_only_attempt_is_policy_superseded(db):
+    job_id, _ticket_id, attempt_id = await _attach_runtime_attempt(db, fresh=False)
+
+    counts = await reconcile_startup_orphans(
+        worker_node="replacement-container",
+        cooperative_seconds=0.01,
+        term_seconds=0.01,
+    )
+
+    assert counts == {"active": 0, "interrupted": 1, "unsafe": 0, "stale": 0}
+    await db.rollback()
+    job = await db.get(Job, job_id)
+    attempt = await db.get(JobAttempt, attempt_id)
+    assert job is not None and attempt is not None
+    assert (job.phase, job.outcome, attempt.phase, attempt.outcome) == (
+        "queued",
+        None,
+        "finished",
+        "interrupted",
+    )
+
+
+async def test_redelivery_atomically_supersedes_expired_replay_safe_attempt(db):
+    job_id, ticket_id, attempt_id = await _attach_runtime_attempt(db, fresh=False)
+
+    await deliver_control_job(_transport_job(job_id, ticket_id), _context())
+
+    await db.rollback()
+    job = await db.get(Job, job_id)
+    prior_attempt = await db.get(JobAttempt, attempt_id)
+    attempts = (
+        await db.scalars(
+            select(JobAttempt).where(JobAttempt.job_id == job_id).order_by(JobAttempt.number)
+        )
+    ).all()
+    assert job is not None and prior_attempt is not None
+    assert (job.phase, job.outcome, job.fence_token) == ("terminal", "succeeded", 2)
+    assert (prior_attempt.phase, prior_attempt.outcome) == (
+        "finished",
+        "interrupted",
+    )
+    assert [(attempt.number, attempt.fence_token, attempt.outcome) for attempt in attempts] == [
+        (1, 1, "interrupted"),
+        (2, 2, "succeeded"),
+    ]
+
+
+async def test_expired_unsafe_mutation_is_terminal_and_transport_held(db):
+    job_id, ticket_id, attempt_id = await _attach_runtime_attempt(
+        db,
+        fresh=False,
+        job_type="poster_deploy",
+        metrics={"publish_intent": {"destination_identity": "unprovable"}},
+    )
+    candidate = (await _bounded_candidates("replacement-container", limit=10))[0]
+
+    assert (
+        await reconcile_candidate(candidate, cooperative_seconds=0.01, term_seconds=0.01)
+        == "unsafe"
+    )
+    await db.rollback()
+    job = await db.get(Job, job_id)
+    attempt = await db.get(JobAttempt, attempt_id)
+    assert job is not None and attempt is not None
+    assert (job.phase, job.outcome, attempt.phase, attempt.outcome) == (
+        "terminal",
+        "unsafe",
+        "finished",
+        "interrupted",
+    )
+    assert job.error["atomicity"]["uncertain_state"] is True
+    with pytest.raises(DeliveryRejectedError, match="held for operator resolution"):
+        await deliver_control_job(_transport_job(job_id, ticket_id), _context())
+
+
+async def test_same_host_pid_reuse_or_foreign_identity_is_never_signaled_or_replayed(
+    db, monkeypatch
+):
+    job_id, _ticket_id, _attempt_id = await _attach_runtime_attempt(
+        db, fresh=False, with_process_identity=True
+    )
+    candidate = (await _bounded_candidates("replacement-container", limit=10))[0]
+    monkeypatch.setattr(
+        "marquee.core.jobs.orphan_reconciliation.terminate_verified_orphan",
+        lambda *_args, **_kwargs: asyncio.sleep(0, result=IdentityStatus.MISMATCH),
+    )
+
+    assert (
+        await reconcile_candidate(candidate, cooperative_seconds=0.01, term_seconds=0.01)
+        == "unsafe"
+    )
+    await db.rollback()
+    job = await db.get(Job, job_id)
+    assert job is not None and (job.phase, job.outcome) == ("terminal", "unsafe")
+
+
+async def test_recovery_rejects_stale_fence_without_changing_new_owner(db):
+    job_id, _ticket_id, _attempt_id = await _attach_runtime_attempt(db, fresh=False)
+    candidate = (await _bounded_candidates("replacement-container", limit=10))[0]
+    await db.rollback()
+    job = await db.get(Job, job_id)
+    assert job is not None
+    job.fence_token += 1
+    await db.commit()
+
+    assert (
+        await reconcile_candidate(candidate, cooperative_seconds=0.01, term_seconds=0.01)
+        == "stale"
+    )
+    await db.rollback()
+    job = await db.get(Job, job_id)
+    assert job is not None and (job.phase, job.outcome, job.fence_token) == ("running", None, 2)
 
 
 async def test_retry_is_persisted_before_pgqueuer_signal_is_rethrown(db):

@@ -106,7 +106,13 @@ async def test_control_network_cpu_media_read_gpu_and_maintenance_canaries_obey_
     max_by_entrypoint: defaultdict[str, int] = defaultdict(int)
     seen: set[str] = set()
 
-    async def canary(_job, _context, *, expected_entrypoint: str) -> None:
+    async def canary(
+        _job,
+        _context,
+        *,
+        expected_entrypoint: str,
+        runtime_instance_id: str | None = None,
+    ) -> None:
         nonlocal active_total, max_total
         active_total += 1
         active_by_entrypoint[expected_entrypoint] += 1
@@ -206,8 +212,37 @@ def test_readiness_is_sanitized_and_reports_locked_jmc4a_boundaries() -> None:
             "schedule_poster_heal",
         ],
         "occurrence_policies": ["hourly_window", "interval_bucket"],
-        "production_occurrences_enabled": False,
+        "production_schedules_enabled": False,
         "activated_keys": ["audio-subs-deep-scan", "library-sync", "poster-heal"],
+        "schedules": [
+            {
+                "key": "library-sync",
+                "entrypoint": "schedule_library_sync",
+                "registered": True,
+                "individually_activated": True,
+                "configured": True,
+                "effectively_enabled": False,
+                "disabled_reason": "production schedule master gate disabled",
+            },
+            {
+                "key": "poster-heal",
+                "entrypoint": "schedule_poster_heal",
+                "registered": True,
+                "individually_activated": True,
+                "configured": True,
+                "effectively_enabled": False,
+                "disabled_reason": "production schedule master gate disabled",
+            },
+            {
+                "key": "audio-subs-deep-scan",
+                "entrypoint": "schedule_audio_subs_deep_scan",
+                "registered": True,
+                "individually_activated": True,
+                "configured": False,
+                "effectively_enabled": False,
+                "disabled_reason": "production schedule master gate disabled",
+            },
+        ],
         "diagnostic_limit": 100,
     }
     assert batch["status"] == "ok"

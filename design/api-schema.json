@@ -4453,6 +4453,223 @@
         "title": "OperationsNode",
         "type": "object"
       },
+      "OperationsRuntimeInstance": {
+        "properties": {
+          "build": {
+            "title": "Build",
+            "type": "string"
+          },
+          "capability_availability": {
+            "additionalProperties": {
+              "type": "boolean"
+            },
+            "title": "Capability Availability",
+            "type": "object"
+          },
+          "containment": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "boolean"
+                }
+              ]
+            },
+            "title": "Containment",
+            "type": "object"
+          },
+          "entrypoints": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Entrypoints",
+            "type": "array"
+          },
+          "heartbeat_fresh": {
+            "title": "Heartbeat Fresh",
+            "type": "boolean"
+          },
+          "last_heartbeat_at": {
+            "format": "date-time",
+            "title": "Last Heartbeat At",
+            "type": "string"
+          },
+          "node_label": {
+            "title": "Node Label",
+            "type": "string"
+          },
+          "readiness": {
+            "enum": [
+              "starting",
+              "ready",
+              "not_ready",
+              "stopped"
+            ],
+            "title": "Readiness",
+            "type": "string"
+          },
+          "role": {
+            "enum": [
+              "worker",
+              "scheduler"
+            ],
+            "title": "Role",
+            "type": "string"
+          }
+        },
+        "required": [
+          "role",
+          "node_label",
+          "build",
+          "readiness",
+          "heartbeat_fresh",
+          "last_heartbeat_at"
+        ],
+        "title": "OperationsRuntimeInstance",
+        "type": "object"
+      },
+      "OperationsRuntimeInstances": {
+        "properties": {
+          "active": {
+            "title": "Active",
+            "type": "integer"
+          },
+          "capability_mismatches": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Capability Mismatches",
+            "type": "array"
+          },
+          "instances": {
+            "items": {
+              "$ref": "#/components/schemas/OperationsRuntimeInstance"
+            },
+            "title": "Instances",
+            "type": "array"
+          },
+          "last_heartbeat_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Heartbeat At"
+          },
+          "roles": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Roles",
+            "type": "object"
+          },
+          "scheduler_present": {
+            "title": "Scheduler Present",
+            "type": "boolean"
+          },
+          "stale": {
+            "title": "Stale",
+            "type": "integer"
+          },
+          "stopped": {
+            "title": "Stopped",
+            "type": "integer"
+          },
+          "truncated": {
+            "default": false,
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "active",
+          "stale",
+          "stopped",
+          "scheduler_present"
+        ],
+        "title": "OperationsRuntimeInstances",
+        "type": "object"
+      },
+      "OperationsScheduleState": {
+        "properties": {
+          "configured": {
+            "title": "Configured",
+            "type": "boolean"
+          },
+          "disabled_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Disabled Reason"
+          },
+          "effectively_enabled": {
+            "title": "Effectively Enabled",
+            "type": "boolean"
+          },
+          "individually_activated": {
+            "title": "Individually Activated",
+            "type": "boolean"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "registered": {
+            "title": "Registered",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "key",
+          "registered",
+          "individually_activated",
+          "configured",
+          "effectively_enabled"
+        ],
+        "title": "OperationsScheduleState",
+        "type": "object"
+      },
+      "OperationsSchedules": {
+        "properties": {
+          "effectively_enabled": {
+            "title": "Effectively Enabled",
+            "type": "integer"
+          },
+          "production_schedules_enabled": {
+            "title": "Production Schedules Enabled",
+            "type": "boolean"
+          },
+          "scheduler_present": {
+            "title": "Scheduler Present",
+            "type": "boolean"
+          },
+          "schedules": {
+            "items": {
+              "$ref": "#/components/schemas/OperationsScheduleState"
+            },
+            "title": "Schedules",
+            "type": "array"
+          }
+        },
+        "required": [
+          "production_schedules_enabled",
+          "scheduler_present",
+          "effectively_enabled"
+        ],
+        "title": "OperationsSchedules",
+        "type": "object"
+      },
       "OperationsSchemaContract": {
         "properties": {
           "catalog_fingerprint": {
@@ -4510,6 +4727,9 @@
           "node": {
             "$ref": "#/components/schemas/OperationsNode"
           },
+          "schedules": {
+            "$ref": "#/components/schemas/OperationsSchedules"
+          },
           "storage": {
             "$ref": "#/components/schemas/OperationsStorage"
           },
@@ -4533,7 +4753,8 @@
           "transport",
           "database",
           "events",
-          "storage"
+          "storage",
+          "schedules"
         ],
         "title": "OperationsSnapshot",
         "type": "object"
@@ -4632,6 +4853,9 @@
             "title": "Queued",
             "type": "integer"
           },
+          "runtime_instances": {
+            "$ref": "#/components/schemas/OperationsRuntimeInstances"
+          },
           "supervisor_available": {
             "title": "Supervisor Available",
             "type": "boolean"
@@ -4641,7 +4865,8 @@
           "active",
           "queued",
           "supervisor_available",
-          "listener_healthy"
+          "listener_healthy",
+          "runtime_instances"
         ],
         "title": "OperationsWorkers",
         "type": "object"
@@ -5597,38 +5822,6 @@
           "label_key"
         ],
         "title": "ProgressWait",
-        "type": "object"
-      },
-      "RadarrWebhookPayload": {
-        "properties": {
-          "eventType": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Eventtype"
-          },
-          "isUpgrade": {
-            "default": false,
-            "title": "Isupgrade",
-            "type": "boolean"
-          },
-          "movie": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/_ArrMovie"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          }
-        },
-        "title": "RadarrWebhookPayload",
         "type": "object"
       },
       "ReencodePlanRequest": {
@@ -7509,67 +7702,6 @@
           "items"
         ],
         "title": "WarningsSection",
-        "type": "object"
-      },
-      "_ArrMovie": {
-        "properties": {
-          "folderPath": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Folderpath"
-          },
-          "id": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Id"
-          },
-          "title": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Title"
-          },
-          "tmdbId": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Tmdbid"
-          },
-          "year": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Year"
-          }
-        },
-        "title": "_ArrMovie",
         "type": "object"
       }
     }
@@ -17413,146 +17545,6 @@
         "summary": "Update Text Profile",
         "tags": [
           "text-profiles"
-        ]
-      }
-    },
-    "/api/webhooks/radarr": {
-      "post": {
-        "description": "Receive Radarr events; restore posters on upgrade (fast ACK).",
-        "operationId": "radarr_webhook_api_webhooks_radarr_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/RadarrWebhookPayload"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Radarr Webhook",
-        "tags": [
-          "webhooks"
-        ]
-      }
-    },
-    "/api/webhooks/sonarr": {
-      "post": {
-        "description": "Receive Sonarr events. Currently path-updates on Rename only.\n\nSonarr's file-level upgrades don't delete the series/season posters, so\nfull restoration is deferred; the payload is parsed and Test/Rename are\nhandled so the webhook can be configured today.",
-        "operationId": "sonarr_webhook_api_webhooks_sonarr_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/RadarrWebhookPayload"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Sonarr Webhook",
-        "tags": [
-          "webhooks"
-        ]
-      }
-    },
-    "/api/webhooks/subgen": {
-      "post": {
-        "description": "Subgen completion callback (design §24.4) — an optimization, not the SoT.\n\nThe generation worker reconciles via the filesystem regardless; this just\nrecords the callback so we have an audit trail and can surface it.",
-        "operationId": "subgen_callback_api_webhooks_subgen_post",
-        "parameters": [
-          {
-            "in": "query",
-            "name": "token",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Token"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "additionalProperties": true,
-                "title": "Payload",
-                "type": "object"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Subgen Callback",
-        "tags": [
-          "webhooks"
         ]
       }
     },

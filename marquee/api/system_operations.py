@@ -28,6 +28,47 @@ class OperationsWorkers(BaseModel):
     queued: int
     supervisor_available: bool
     listener_healthy: bool
+    runtime_instances: OperationsRuntimeInstances
+
+
+class OperationsRuntimeInstance(BaseModel):
+    role: Literal["worker", "scheduler"]
+    node_label: str
+    build: str
+    readiness: Literal["starting", "ready", "not_ready", "stopped"]
+    heartbeat_fresh: bool
+    last_heartbeat_at: datetime
+    entrypoints: list[str] = Field(default_factory=list)
+    containment: dict[str, str | bool] = Field(default_factory=dict)
+    capability_availability: dict[str, bool] = Field(default_factory=dict)
+
+
+class OperationsRuntimeInstances(BaseModel):
+    active: int
+    stale: int
+    stopped: int
+    roles: dict[str, int] = Field(default_factory=dict)
+    last_heartbeat_at: datetime | None = None
+    scheduler_present: bool
+    capability_mismatches: list[str] = Field(default_factory=list)
+    instances: list[OperationsRuntimeInstance] = Field(default_factory=list)
+    truncated: bool = False
+
+
+class OperationsScheduleState(BaseModel):
+    key: str
+    registered: bool
+    individually_activated: bool
+    configured: bool
+    effectively_enabled: bool
+    disabled_reason: str | None = None
+
+
+class OperationsSchedules(BaseModel):
+    production_schedules_enabled: bool
+    scheduler_present: bool
+    effectively_enabled: int
+    schedules: list[OperationsScheduleState] = Field(default_factory=list)
 
 
 class OperationsTransport(BaseModel):
@@ -82,6 +123,7 @@ class OperationsSnapshot(BaseModel):
     database: OperationsDatabase
     events: OperationsEvents
     storage: OperationsStorage
+    schedules: OperationsSchedules
     contracts: list[OperationsSchemaContract] = Field(default_factory=list)
 
 

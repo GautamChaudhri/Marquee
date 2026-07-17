@@ -14,6 +14,7 @@ from sqlalchemy import func, select
 
 import marquee.core.jobs.submission as submission_module
 from marquee.config import settings
+from marquee.core.jobs import readiness
 from marquee.core.jobs.contracts import TriggerKind
 from marquee.core.jobs.definitions import JobDefinitionRegistry
 from marquee.core.jobs.manifest import JOB_DEFINITION_REGISTRY
@@ -95,8 +96,8 @@ async def test_production_catalog_is_registered_but_occurrences_are_code_disable
         "poster-heal",
         "audio-subs-deep-scan",
     ]
-    # library-sync is activated per-schedule in JMC4B B2, independent of the global test flag.
-    assert definitions["library-sync"].enabled_predicate(
+    # Every production predicate requires the explicit restart-owned master gate.
+    assert not definitions["library-sync"].enabled_predicate(
         _configuration(production=False, interval=15)
     )
     assert definitions["library-sync"].enabled_predicate(
@@ -109,7 +110,7 @@ async def test_production_catalog_is_registered_but_occurrences_are_code_disable
     assert not definitions["audio-subs-deep-scan"].enabled_predicate(
         _configuration(enabled=False, production=True)
     )
-    assert definitions["audio-subs-deep-scan"].enabled_predicate(
+    assert not definitions["audio-subs-deep-scan"].enabled_predicate(
         _configuration(enabled=True, production=False)
     )
     async with _get_engine().connect() as connection:
@@ -123,6 +124,81 @@ async def test_production_catalog_is_registered_but_occurrences_are_code_disable
         ("schedule_poster_heal", "* * * * *"),
         ("schedule_audio_subs_deep_scan", "0 * * * *"),
     }
+
+
+def test_schedule_diagnostics_report_truthful_effective_state() -> None:
+    report = readiness.schedule_catalog_report()
+
+    assert report["production_schedules_enabled"] is False
+    assert [item["registered"] for item in report["schedules"]] == [True, True, True]
+    assert [item["effectively_enabled"] for item in report["schedules"]] == [
+        False,
+        False,
+        False,
+    ]
+    assert all(item["disabled_reason"] for item in report["schedules"])
+
+
+@pytest.mark.asyncio
+async def test_production_master_gate_toggle_coalesces_without_backlog_burst(db) -> None:
+    definition = next(
+        item for item in PRODUCTION_SCHEDULE_CATALOG if item.key == "library-sync"
+    )
+    due = _schedule(datetime(2026, 7, 13, 12, 7, tzinfo=UTC))
+    enabled = {"value": False}
+
+    def configuration() -> ScheduleConfiguration:
+        return _configuration(production=enabled["value"], interval=15)
+
+    diagnostics = ScheduleDiagnostics()
+    factory = _get_session_factory()
+    assert (
+        await submit_schedule_occurrence(
+            definition,
+            due,
+            configuration_loader=configuration,
+            diagnostics=diagnostics,
+            session_factory=factory,
+        )
+        is None
+    )
+    enabled["value"] = True
+    created = await submit_schedule_occurrence(
+        definition,
+        due,
+        configuration_loader=configuration,
+        diagnostics=diagnostics,
+        session_factory=factory,
+    )
+    enabled["value"] = False
+    assert (
+        await submit_schedule_occurrence(
+            definition,
+            due,
+            configuration_loader=configuration,
+            diagnostics=diagnostics,
+            session_factory=factory,
+        )
+        is None
+    )
+    enabled["value"] = True
+    reused = await submit_schedule_occurrence(
+        definition,
+        due,
+        configuration_loader=configuration,
+        diagnostics=diagnostics,
+        session_factory=factory,
+    )
+    assert created is not None and created.disposition == "created"
+    assert reused is not None and reused.disposition == "reused"
+    assert await db.scalar(select(func.count()).select_from(Job)) == 1
+    assert [item.disposition for item in diagnostics.snapshot()] == [
+        "disabled",
+        "created",
+        "disabled",
+        "reused",
+    ]
+    assert diagnostics.snapshot()[0].reason == "production schedule master gate disabled"
 
 
 @pytest.mark.asyncio

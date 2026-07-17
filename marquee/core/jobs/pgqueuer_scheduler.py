@@ -13,6 +13,7 @@ from pgqueuer import PgQueuer
 
 from marquee.config import settings
 from marquee.core.configuration_cache import configuration_provider
+from marquee.core.jobs.runtime_instances import RuntimeInstanceHandle
 from marquee.core.jobs.schedules import (
     PRODUCTION_SCHEDULE_CATALOG,
     ScheduleCatalog,
@@ -61,11 +62,27 @@ async def run() -> None:
         asyncpg_dsn(),
         server_settings={"application_name": "marquee:scheduler:pgqueuer"},
     )
+    runtime: RuntimeInstanceHandle | None = None
     try:
         await verify_runtime_schema(connection)
         await configuration_provider.start(role="scheduler")
+        runtime = RuntimeInstanceHandle(
+            role="scheduler",
+            node_label=settings.JOB_WORKER_NODE_ID,
+            advertised_entrypoints=(
+                definition.entrypoint for definition in PRODUCTION_SCHEDULE_CATALOG
+            ),
+            capabilities={
+                "schedule_entrypoints": sorted(
+                    definition.entrypoint for definition in PRODUCTION_SCHEDULE_CATALOG
+                ),
+                "transport": "pgqueuer",
+            },
+        )
+        await runtime.start()
         app = create_scheduler(connection)
         _install_shutdown_handlers(app)
+        await runtime.ready()
         monitor = asyncio.create_task(
             monitor_until_shutdown(
                 app.shutdown,
@@ -79,6 +96,8 @@ async def run() -> None:
             with contextlib.suppress(asyncio.CancelledError):
                 await monitor
     finally:
+        if runtime is not None:
+            await runtime.stop()
         await configuration_provider.stop()
         await connection.close()
 

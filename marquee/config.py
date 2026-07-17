@@ -132,6 +132,14 @@ class Settings(BaseSettings):
     JOB_PGQUEUER_BATCH_SIZE: int = Field(default=2, ge=1, le=16)
     JOB_PGQUEUER_HEARTBEAT_SECONDS: float = Field(default=60.0, ge=1.0, le=3600.0)
     JOB_PGQUEUER_DEQUEUE_SECONDS: float = Field(default=10.0, ge=0.05, le=300.0)
+    JOB_RUNTIME_HEARTBEAT_SECONDS: float = Field(default=10.0, ge=1.0, le=300.0)
+    JOB_RUNTIME_EXPIRY_SECONDS: float = Field(default=30.0, ge=3.0, le=900.0)
+    JOB_RUNTIME_QUERY_LIMIT: int = Field(default=100, ge=1, le=500)
+    JOB_PRODUCTION_SCHEDULES_ENABLED: bool = False
+    JOB_WORKER_ENTRYPOINTS: str = Field(
+        default="control,network,cpu,media_read,media_write,gpu,maintenance",
+        description="Comma-separated PgQueuer execution classes this worker may advertise.",
+    )
     JOB_POLL_SECONDS: float = Field(default=0.5, ge=0.05, le=30.0)
     JOB_ADMISSION_TIMEOUT_SECONDS: float = Field(default=30.0, ge=0.1, le=3600.0)
     JOB_PROCESS_COOPERATIVE_SECONDS: float = Field(default=2.0, ge=0.05, le=300.0)
