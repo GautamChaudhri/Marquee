@@ -30,9 +30,6 @@ from marquee.models import Job
 logger = logging.getLogger(__name__)
 
 MAX_SCHEDULE_DIAGNOSTICS = 100
-# Global default for the fixed test schedule only; production schedules are activated
-# individually through ACTIVATED_SCHEDULE_KEYS as each handler family is certified.
-PRODUCTION_SCHEDULE_OCCURRENCES_ENABLED = False
 # Production schedule keys that are certified to produce real occurrences. Grows one entry
 # per JMC4B family: `library-sync` activated in B2; `audio-subs-deep-scan` follows in B3.
 ACTIVATED_SCHEDULE_KEYS: frozenset[str] = frozenset(
@@ -62,7 +59,7 @@ class ScheduleConfiguration:
     audio_subs_deep_scan_batch: int
     poster_heal_enabled: bool = True
     poster_heal_interval_minutes: int = 30
-    production_occurrences_enabled: bool = PRODUCTION_SCHEDULE_OCCURRENCES_ENABLED
+    production_occurrences_enabled: bool = False
 
 
 EnabledPredicate = Callable[[ScheduleConfiguration], bool]
@@ -83,12 +80,13 @@ class ScheduleDefinition:
     produced_job_type: str
     trigger: TriggerKind
     initiator: Initiator | None
-    enabled_predicate: EnabledPredicate
+    configured_predicate: EnabledPredicate
     occurrence_policy: OccurrencePolicy
     request_builder: RequestBuilder
     subject_builder: SubjectBuilder
     batch_producer: BatchProducer | None = None
     interval_source: Literal["sync", "poster_heal"] = "sync"
+    production: bool = True
 
     def __post_init__(self) -> None:
         if not _KEY.fullmatch(self.key):
@@ -97,6 +95,53 @@ class ScheduleDefinition:
             raise ValueError("schedule entrypoint is invalid")
         if not self.expression or len(self.expression) > 80:
             raise ValueError("schedule expression is invalid")
+
+    def enabled_predicate(self, configuration: ScheduleConfiguration) -> bool:
+        return schedule_effective_state(self, configuration).effectively_enabled
+
+
+@dataclass(frozen=True, slots=True)
+class ScheduleEffectiveState:
+    registered: bool
+    individually_activated: bool
+    configured: bool
+    effectively_enabled: bool
+    disabled_reason: str | None
+
+
+def schedule_effective_state(
+    definition: ScheduleDefinition,
+    configuration: ScheduleConfiguration,
+    *,
+    registered: bool = True,
+) -> ScheduleEffectiveState:
+    """Return the one effective state consumed by callbacks and diagnostics."""
+    individually_activated = (
+        definition.key in ACTIVATED_SCHEDULE_KEYS if definition.production else True
+    )
+    configured = bool(definition.configured_predicate(configuration))
+    master_enabled = (
+        configuration.production_occurrences_enabled if definition.production else True
+    )
+    effectively_enabled = bool(
+        registered and master_enabled and individually_activated and configured
+    )
+    disabled_reason = None
+    if not registered:
+        disabled_reason = "not registered"
+    elif not master_enabled:
+        disabled_reason = "production schedule master gate disabled"
+    elif not individually_activated:
+        disabled_reason = "schedule is not individually activated"
+    elif not configured:
+        disabled_reason = "schedule configuration disabled"
+    return ScheduleEffectiveState(
+        registered=registered,
+        individually_activated=individually_activated,
+        configured=configured,
+        effectively_enabled=effectively_enabled,
+        disabled_reason=disabled_reason,
+    )
 
 
 class ScheduleCatalog:
@@ -183,6 +228,7 @@ def load_schedule_configuration() -> ScheduleConfiguration:
         audio_subs_deep_scan_batch=int(subtitle["AUDIO_SUBS_DEEP_SCAN_BATCH"]),
         poster_heal_enabled=settings.HEAL_ENABLED,
         poster_heal_interval_minutes=settings.HEAL_INTERVAL_MINUTES,
+        production_occurrences_enabled=settings.JOB_PRODUCTION_SCHEDULES_ENABLED,
     )
 
 
@@ -243,12 +289,13 @@ async def submit_schedule_occurrence(
             reason="outside occurrence window",
         )
         return None
-    if not definition.enabled_predicate(configuration):
+    effective = schedule_effective_state(definition, configuration)
+    if not effective.effectively_enabled:
         diagnostics.record(
             definition,
             due=due,
             disposition="disabled",
-            reason="catalog predicate disabled",
+            reason=effective.disabled_reason or "schedule disabled",
         )
         return None
     factory = session_factory or _get_session_factory()
@@ -387,9 +434,7 @@ PRODUCTION_SCHEDULE_CATALOG = ScheduleCatalog(
             produced_job_type="library_sync",
             trigger=TriggerKind.SCHEDULE,
             initiator=_SCHEDULER_INITIATOR,
-            enabled_predicate=lambda config: (
-                "library-sync" in ACTIVATED_SCHEDULE_KEYS and config.sync_interval_minutes > 0
-            ),
+            configured_predicate=lambda config: config.sync_interval_minutes > 0,
             occurrence_policy=OccurrencePolicy.INTERVAL_BUCKET,
             request_builder=lambda _config, _due: {"source": "schedule"},
             subject_builder=lambda _config, _due: SubjectLocator(
@@ -403,10 +448,8 @@ PRODUCTION_SCHEDULE_CATALOG = ScheduleCatalog(
             produced_job_type="poster_heal",
             trigger=TriggerKind.SCHEDULE,
             initiator=_SCHEDULER_INITIATOR,
-            enabled_predicate=lambda config: (
-                "poster-heal" in ACTIVATED_SCHEDULE_KEYS
-                and config.poster_heal_enabled
-                and config.poster_heal_interval_minutes > 0
+            configured_predicate=lambda config: (
+                config.poster_heal_enabled and config.poster_heal_interval_minutes > 0
             ),
             occurrence_policy=OccurrencePolicy.INTERVAL_BUCKET,
             interval_source="poster_heal",
@@ -427,10 +470,7 @@ PRODUCTION_SCHEDULE_CATALOG = ScheduleCatalog(
             produced_job_type="audio_subs_deep_scan",
             trigger=TriggerKind.SCHEDULE,
             initiator=_SCHEDULER_INITIATOR,
-            enabled_predicate=lambda config: (
-                "audio-subs-deep-scan" in ACTIVATED_SCHEDULE_KEYS
-                and config.audio_subs_deep_scan_enabled
-            ),
+            configured_predicate=lambda config: config.audio_subs_deep_scan_enabled,
             occurrence_policy=OccurrencePolicy.HOURLY_WINDOW,
             request_builder=lambda _config, _due: {"scope": "all"},
             subject_builder=lambda _config, _due: SubjectLocator(
@@ -451,12 +491,13 @@ FIXED_TEST_SCHEDULE_CATALOG = ScheduleCatalog(
             produced_job_type="system_noop",
             trigger=TriggerKind.SCHEDULE,
             initiator=Initiator(kind="system", identifier="fixed-noop"),
-            enabled_predicate=lambda config: config.production_occurrences_enabled,
+            configured_predicate=lambda config: config.production_occurrences_enabled,
             occurrence_policy=OccurrencePolicy.EXACT_SECOND,
             request_builder=lambda _config, due: {"echo": {"due": due.isoformat()}},
             subject_builder=lambda _config, _due: SubjectLocator(
                 kind="system_work", reference="system_noop"
             ),
+            production=False,
         ),
     )
 )

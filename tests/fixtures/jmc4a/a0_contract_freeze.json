@@ -73,6 +73,7 @@
       "transport_attempt",
       "worker_node_id",
       "worker_build",
+      "runtime_instance_id",
       "phase",
       "outcome",
       "failure_class",

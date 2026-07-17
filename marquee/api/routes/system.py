@@ -13,13 +13,16 @@ from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.api.job_submission import JobSubmissionResponse, submission_response
-from marquee.api.routes.webhooks import webhook_state
 from marquee.api.system_operations import (
     OperationsConnectionBudget,
     OperationsDatabase,
     OperationsEvents,
     OperationsHistoryResponse,
     OperationsNode,
+    OperationsRuntimeInstance,
+    OperationsRuntimeInstances,
+    OperationsSchedules,
+    OperationsScheduleState,
     OperationsSnapshot,
     OperationsStorage,
     OperationsTransport,
@@ -31,16 +34,17 @@ from marquee.core.configuration_cache import configuration_provider
 from marquee.core.heal import latest_heal_summary
 from marquee.core.jobs.contracts import TriggerKind
 from marquee.core.jobs.labels import humanize_job_type
+from marquee.core.jobs.manifest import JOB_DEFINITION_REGISTRY
 from marquee.core.jobs.pgqueuer_gateway import pgqueuer_gateway
 from marquee.core.jobs.poster_parents import create_poster_parent
-from marquee.core.jobs.readiness import connection_budget_report
+from marquee.core.jobs.readiness import connection_budget_report, schedule_catalog_report
 from marquee.core.jobs.submission import Initiator, SubmissionError
 from marquee.core.letterbox_heal import letterbox_heal_state
 from marquee.core.pipeline_config import pipeline_settings
 from marquee.database import get_db, pool_stats, reset_database
 from marquee.media import binaries
 from marquee.ml.hardware import effective_ocr_workers
-from marquee.models import Job, SchemaContract, SystemMetricsSample
+from marquee.models import Job, RuntimeInstance, SchemaContract, SystemMetricsSample
 from marquee.pipeline.ocr_filter import active_worker_status, paddle_cuda_available
 
 logger = logging.getLogger(__name__)
@@ -79,7 +83,6 @@ async def system_status(request: Request, db: Annotated[AsyncSession, Depends(ge
         "configuration": configuration_provider.health(),
         "heal": await latest_heal_summary(db),
         "letterbox_heal": letterbox_heal_state,
-        "webhook": webhook_state,
         "tools": binaries.availability(),
         "media_jobs": {},
         "jobs": dict(job_rows),
@@ -96,6 +99,101 @@ async def _worker_counts(db: AsyncSession) -> dict[str, int]:
         "active": sum(counts.get(phase, 0) for phase in ("running", "stopping")),
         "queued": counts.get("queued", 0),
     }
+
+
+def _sanitized_runtime_instance(
+    instance: RuntimeInstance, *, now: datetime
+) -> OperationsRuntimeInstance:
+    capabilities = instance.capabilities if isinstance(instance.capabilities, dict) else {}
+    containment_raw = capabilities.get("containment", {})
+    containment_items = containment_raw.items() if isinstance(containment_raw, dict) else ()
+    containment = {
+        str(key)[:50]: value
+        for key, value in containment_items
+        if isinstance(value, (str, bool))
+    }
+    availability: dict[str, bool] = {}
+    media_tools = capabilities.get("media_tools", {})
+    if isinstance(media_tools, dict):
+        for name, facts in sorted(media_tools.items())[:16]:
+            if isinstance(facts, dict):
+                availability[str(name)[:50]] = bool(facts.get("available"))
+    gpu = capabilities.get("gpu")
+    if isinstance(gpu, dict):
+        availability["gpu"] = bool(gpu.get("available"))
+    return OperationsRuntimeInstance(
+        role=instance.role,
+        node_label=instance.node_label[:100],
+        build=instance.build[:64],
+        readiness=instance.readiness,
+        heartbeat_fresh=instance.stopped_at is None and instance.heartbeat_expires_at > now,
+        last_heartbeat_at=instance.last_heartbeat_at,
+        entrypoints=sorted(set(instance.advertised_entrypoints))[:32],
+        containment=containment,
+        capability_availability=availability,
+    )
+
+
+async def _runtime_instance_summary(
+    db: AsyncSession, *, now: datetime
+) -> OperationsRuntimeInstances:
+    active_condition = (
+        RuntimeInstance.stopped_at.is_(None)
+        & (RuntimeInstance.readiness != "stopped")
+        & (RuntimeInstance.heartbeat_expires_at > now)
+    )
+    stale_condition = (
+        RuntimeInstance.stopped_at.is_(None)
+        & (RuntimeInstance.readiness != "stopped")
+        & (RuntimeInstance.heartbeat_expires_at <= now)
+    )
+    stopped_condition = (RuntimeInstance.stopped_at.is_not(None)) | (
+        RuntimeInstance.readiness == "stopped"
+    )
+    active = int(await db.scalar(select(func.count()).where(active_condition)) or 0)
+    stale = int(await db.scalar(select(func.count()).where(stale_condition)) or 0)
+    stopped = int(await db.scalar(select(func.count()).where(stopped_condition)) or 0)
+    last_heartbeat_at = await db.scalar(select(func.max(RuntimeInstance.last_heartbeat_at)))
+    role_rows = (
+        await db.execute(
+            select(RuntimeInstance.role, func.count())
+            .where(active_condition)
+            .group_by(RuntimeInstance.role)
+        )
+    ).all()
+    roles = {str(role): int(count) for role, count in role_rows}
+    limit = settings.JOB_RUNTIME_QUERY_LIMIT
+    rows = list(
+        await db.scalars(
+            select(RuntimeInstance)
+            .order_by(RuntimeInstance.last_heartbeat_at.desc(), RuntimeInstance.id)
+            .limit(limit + 1)
+        )
+    )
+    instances = [_sanitized_runtime_instance(item, now=now) for item in rows[:limit]]
+    capable_entrypoints = {
+        entrypoint
+        for item in rows
+        if item.role == "worker"
+        and item.readiness == "ready"
+        and item.stopped_at is None
+        and item.heartbeat_expires_at > now
+        for entrypoint in item.advertised_entrypoints
+    }
+    required_entrypoints = {
+        definition.entrypoint for definition in JOB_DEFINITION_REGISTRY if definition.enabled
+    }
+    return OperationsRuntimeInstances(
+        active=active,
+        stale=stale,
+        stopped=stopped,
+        roles=roles,
+        last_heartbeat_at=last_heartbeat_at,
+        scheduler_present=roles.get("scheduler", 0) > 0,
+        capability_mismatches=sorted(required_entrypoints - capable_entrypoints),
+        instances=instances,
+        truncated=len(rows) > limit,
+    )
 
 
 def _counter_rate(
@@ -318,16 +416,8 @@ async def job_transport_diagnostics(
         row.application_name: row.count for row in connection_rows if row.application_name
     }
 
-    supervisor = getattr(request.app.state, "worker_supervisor", None)
-    supervisor_status = supervisor.status() if supervisor is not None else None
-    workers = [] if supervisor_status is None else [
-        child
-        for child in supervisor_status["children"]
-        if child["name"] == "scheduler" or child["name"].startswith("worker-")
-    ]
-    listener_healthy = bool(workers) and all(
-        child["running"] and not child["degraded"] for child in workers
-    )
+    runtime_instances = await _runtime_instance_summary(db, now=now)
+    listener_healthy = runtime_instances.active > 0
     return {
         "queue": queue,
         "oldest_eligible_age_seconds": (
@@ -337,9 +427,10 @@ async def job_transport_diagnostics(
         "held_failed": held_failed,
         "listener": {
             "healthy": listener_healthy,
-            "last_observed_event_at": None,
-            "source": "embedded_supervisor" if supervisor is not None else "external",
+            "last_observed_event_at": runtime_instances.last_heartbeat_at,
+            "source": "runtime_instances",
         },
+        "runtime_instances": runtime_instances,
         "contracts": [
             {
                 "component": contract.component,
@@ -370,6 +461,8 @@ async def operations_snapshot(
     listener = transport["listener"]
     connections = transport["connections"]
     budget = connections["budget"]
+    runtime_instances = transport["runtime_instances"]
+    schedule_report = schedule_catalog_report()
     pool = pool_stats()
     cache = _cache_stats()
     cpu = metrics["cpu"]
@@ -399,6 +492,7 @@ async def operations_snapshot(
             queued=worker_counts["queued"],
             supervisor_available=supervisor is not None,
             listener_healthy=bool(listener["healthy"]),
+            runtime_instances=runtime_instances,
         ),
         transport=OperationsTransport(
             picked=int(transport["picked"]),
@@ -429,6 +523,30 @@ async def operations_snapshot(
             disk_percent=disk.get("pct"),
             disk_used_bytes=disk.get("used"),
             disk_total_bytes=disk.get("total"),
+        ),
+        schedules=OperationsSchedules(
+            production_schedules_enabled=bool(
+                schedule_report["production_schedules_enabled"]
+            ),
+            scheduler_present=runtime_instances.scheduler_present,
+            effectively_enabled=sum(
+                bool(item["effectively_enabled"]) for item in schedule_report["schedules"]
+            ),
+            schedules=[
+                OperationsScheduleState(
+                    key=str(item["key"]),
+                    registered=bool(item["registered"]),
+                    individually_activated=bool(item["individually_activated"]),
+                    configured=bool(item["configured"]),
+                    effectively_enabled=bool(item["effectively_enabled"]),
+                    disabled_reason=(
+                        str(item["disabled_reason"])
+                        if item["disabled_reason"] is not None
+                        else None
+                    ),
+                )
+                for item in schedule_report["schedules"]
+            ],
         ),
         contracts=transport["contracts"],
     )

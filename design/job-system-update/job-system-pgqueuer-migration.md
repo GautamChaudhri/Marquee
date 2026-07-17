@@ -20,6 +20,9 @@ and [JMC4C poster, ML, and certification](jmc4c-poster-ml-and-certification.md)
 **Chunk 5 implementation plans:** [JMC5A mutation contracts, artwork, and maintenance](jmc5a-mutation-contracts-artwork-and-maintenance.md),
 [JMC5B audio and subtitle mutations](jmc5b-audio-subtitle-mutations.md), and
 [JMC5C letterbox, HDR, and runtime retirement](jmc5c-letterbox-hdr-and-runtime-retirement.md)
+**Post-certification hardening:** [JMC6D runtime recovery and activation safety](jmc6d-runtime-recovery-and-activation-safety.md),
+[JMC6E canonical seam and refresh closure](jmc6e-canonical-seam-and-refresh-closure.md), and
+[JMC6F legacy retirement and activation certification](jmc6f-legacy-retirement-and-activation-certification.md)
 
 ## Program decision
 
@@ -51,6 +54,11 @@ The companion miscellaneous-fixes program is part of these gates, not an optiona
 Browser authentication/authorization, replacement of the existing database-reset endpoint,
 Docker least-privilege hardening, and webhooks remain explicitly deferred. Deferred surfaces
 are not certified or represented as completed job families by this program.
+
+The required post-JMC6 owner audit found recovery, schedule-reporting, mounted-deferred-route,
+inline-execution, exact-refresh, external-Operations, and legacy-lifecycle gaps despite the first
+zero-green certification. JMC6D-F are corrective activation gates over the six-chunk result; they
+do not introduce a seventh architecture chunk or change PgQueuer/Marquee ownership.
 
 ## Destructive reset boundary
 

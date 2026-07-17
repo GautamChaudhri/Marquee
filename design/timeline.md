@@ -103,7 +103,7 @@ Completion is recorded by compact annotated tags `jmc5a-complete`, `jmc5b-comple
 passed/17 failed with two warnings, while frontend check has zero errors and 16 inherited warnings.
 Those retained failures and warnings are assigned to JMC6 rather than hidden or quarantined.
 
-## JMC6 — Activity, zero-green certification, and CI (planned)
+## JMC6 — Activity, zero-green certification, and CI (completed; hardening required)
 
 Chunk 6 is the final numbered job-manager program and is split into three independently gated
 plans:
@@ -133,6 +133,33 @@ JMC6 is the last implementation chunk. After `jmc6c-complete`, the owner still p
 whole-system once-over, authorizes the push, requires the new GitHub workflow to pass, and activates
 only capabilities whose required live smokes succeeded. That is a release/activation gate, not a
 seventh construction chunk.
+
+The owner once-over on 2026-07-17 found release-blocking gaps that the green JMC6C suite did not
+cover: worker/container-incarnation recovery can strand a canonical running job, production
+schedule diagnostics contradict effective callback predicates, deferred Subgen webhook execution
+is mounted permissively, external Operations health depends on the embedded supervisor, several
+subtitle/taste/model actions still execute outside canonical jobs, subject-detail recovery can lose
+work beyond the first feature-wide page, and duplicate legacy lifecycle code remains.
+
+These findings are addressed by a post-certification JMC6 hardening suite, not a new construction
+chunk:
+
+1. [`jmc6d-runtime-recovery-and-activation-safety.md`](job-system-update/jmc6d-runtime-recovery-and-activation-safety.md)
+   adds runtime-incarnation evidence, explicit safe redelivery/takeover outcomes, default-off
+   truthful schedule gating, unmounts deferred webhooks, and fixes external Operations health.
+2. [`jmc6e-canonical-seam-and-refresh-closure.md`](job-system-update/jmc6e-canonical-seam-and-refresh-closure.md)
+   migrates remaining inline subtitle/taste/model work, centralizes overlap policy, and makes every
+   initiating page recover exact subject-scoped active work.
+3. [`jmc6f-legacy-retirement-and-activation-certification.md`](job-system-update/jmc6f-legacy-retirement-and-activation-certification.md)
+   removes duplicate process-local runtimes and stale compatibility code, then repeats the full
+   activation certification with the newly discovered regression cases.
+
+They execute strictly JMC6D → JMC6E → JMC6F and share
+`design/job-system-update/jmc6-post-certification-hardening-timeline.md`; JMC6D creates it. Each
+implementer runs continuously, preserves phase commits until every gate succeeds, creates verified
+external recovery material, and compacts only its own unpushed range into one tree-identical
+completion commit/tag. All three plans require the God model tier and no implementer pushes or
+activates the system.
 
 ## Overview
 

@@ -345,9 +345,12 @@ class JobAttempt(Base):
     pgq_job_id: Mapped[int | None] = mapped_column(BigInteger)
     transport_attempt: Mapped[int | None] = mapped_column(Integer)
 
-    # Worker-node/build identity (worker_nodes rows arrive in Phase A2).
+    # Logical node/build identity plus the exact durable process incarnation.
     worker_node_id: Mapped[str | None] = mapped_column(String(100), index=True)
     worker_build: Mapped[str | None] = mapped_column(String(64))
+    runtime_instance_id: Mapped[str | None] = mapped_column(
+        ForeignKey("runtime_instances.id", ondelete="SET NULL"), index=True
+    )
 
     phase: Mapped[str] = mapped_column(
         String(16), default="admitted", server_default="admitted", nullable=False

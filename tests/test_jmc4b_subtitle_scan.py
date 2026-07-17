@@ -127,6 +127,7 @@ async def test_deep_scan_schedule_produces_no_change_batch(db) -> None:
         audio_subs_deep_scan_enabled=True,
         audio_subs_deep_scan_hour=3,
         audio_subs_deep_scan_batch=200,
+        production_occurrences_enabled=True,
     )
     schedule = SimpleNamespace(updated=datetime(2026, 7, 14, 3, 0, 0, tzinfo=UTC))
     result = await submit_schedule_occurrence(

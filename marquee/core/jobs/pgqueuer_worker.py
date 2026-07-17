@@ -15,8 +15,9 @@ from pgqueuer.models import Job as PgQueuerJob
 from marquee.config import settings
 from marquee.core.configuration_cache import configuration_provider
 from marquee.core.jobs.delivery import deliver_job
+from marquee.core.jobs.manifest import JOB_DEFINITION_REGISTRY
 from marquee.core.jobs.orphan_reconciliation import reconcile_startup_orphans
-from marquee.core.jobs.worker_nodes import record_worker_node
+from marquee.core.jobs.runtime_instances import RuntimeInstanceHandle, capability_snapshot
 from marquee.core.jobs.workspaces import reconcile_stale_workspaces
 from marquee.db_migration import asyncpg_dsn, verify_runtime_schema
 
@@ -24,8 +25,8 @@ logger = logging.getLogger(__name__)
 
 
 def entrypoint_concurrency_limits() -> dict[str, int]:
-    """Return explicit PgQueuer limits for every canonical execution class."""
-    return {
+    """Return configured, locally supported PgQueuer execution-class limits."""
+    limits = {
         "control": settings.JOB_CONTROL_CONCURRENCY,
         "network": settings.JOB_NETWORK_CONCURRENCY,
         "cpu": settings.JOB_CPU_CONCURRENCY,
@@ -34,21 +35,34 @@ def entrypoint_concurrency_limits() -> dict[str, int]:
         "gpu": settings.JOB_GPU_CONCURRENCY,
         "maintenance": settings.JOB_MAINTENANCE_CONCURRENCY,
     }
+    configured = {
+        value.strip() for value in settings.JOB_WORKER_ENTRYPOINTS.split(",") if value.strip()
+    }
+    unknown = configured - set(limits)
+    if unknown:
+        raise RuntimeError(f"unknown configured worker entrypoints: {sorted(unknown)}")
+    supported = {
+        definition.entrypoint for definition in JOB_DEFINITION_REGISTRY if definition.enabled
+    }
+    return {name: limit for name, limit in limits.items() if name in configured & supported}
 
 
-def _entrypoint_callback(expected_entrypoint: str):
+def _entrypoint_callback(expected_entrypoint: str, *, runtime_instance_id: str | None = None):
     async def callback(job: PgQueuerJob, context: Context) -> None:
         await deliver_job(
             job,
             context,
             expected_entrypoint=expected_entrypoint,
+            runtime_instance_id=runtime_instance_id,
         )
 
     callback.__name__ = expected_entrypoint
     return callback
 
 
-def create_worker(connection: asyncpg.Connection) -> PgQueuer:
+def create_worker(
+    connection: asyncpg.Connection, *, runtime_instance_id: str | None = None
+) -> PgQueuer:
     """Build one worker whose entrypoints all call the same fenced delivery kernel."""
     app = PgQueuer.from_asyncpg_connection(connection)
 
@@ -58,7 +72,7 @@ def create_worker(connection: asyncpg.Connection) -> PgQueuer:
             concurrency_limit=concurrency_limit,
             accepts_context=True,
             on_failure="hold",
-        )(_entrypoint_callback(entrypoint))
+        )(_entrypoint_callback(entrypoint, runtime_instance_id=runtime_instance_id))
 
     return app
 
@@ -78,12 +92,18 @@ async def run() -> None:
         asyncpg_dsn(),
         server_settings={"application_name": "marquee:worker:pgqueuer"},
     )
-    registered = False
+    runtime: RuntimeInstanceHandle | None = None
     try:
         await verify_runtime_schema(connection)
         await configuration_provider.start(role="worker")
-        await record_worker_node(settings.JOB_WORKER_NODE_ID, readiness="starting")
-        registered = True
+        entrypoints = entrypoint_concurrency_limits()
+        runtime = RuntimeInstanceHandle(
+            role="worker",
+            node_label=settings.JOB_WORKER_NODE_ID,
+            advertised_entrypoints=entrypoints,
+            capabilities=capability_snapshot(entrypoints),
+        )
+        await runtime.start()
         reconciliation = await reconcile_startup_orphans(
             worker_node=settings.JOB_WORKER_NODE_ID,
             cooperative_seconds=settings.JOB_PROCESS_COOPERATIVE_SECONDS,
@@ -109,8 +129,8 @@ async def run() -> None:
         artifacts = await reconcile_artifacts(data_dir=settings.DATA_DIR)
         if artifacts["missing"] or artifacts["untracked"]:
             logger.error("startup artifact reconciliation: %s", artifacts)
-        await record_worker_node(settings.JOB_WORKER_NODE_ID, readiness="ready")
-        app = create_worker(connection)
+        await runtime.ready()
+        app = create_worker(connection, runtime_instance_id=runtime.instance_id)
         _install_shutdown_handlers(app)
         await app.qm.run(
             dequeue_timeout=timedelta(seconds=settings.JOB_PGQUEUER_DEQUEUE_SECONDS),
@@ -122,8 +142,8 @@ async def run() -> None:
             ),
         )
     finally:
-        if registered:
-            await record_worker_node(settings.JOB_WORKER_NODE_ID, readiness="stopped")
+        if runtime is not None:
+            await runtime.stop()
         await configuration_provider.stop()
         await connection.close()
 

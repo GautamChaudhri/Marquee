@@ -5,7 +5,7 @@ presented three ways so any caller works:
 
   * ``Authorization: Bearer <key>``
   * ``X-Api-Key: <key>``  (the convention Radarr/Sonarr use)
-  * ``?apikey=<key>``     (lets webhook URLs and the browser carry it)
+  * ``?apikey=<key>``     (lets browser navigation carry it)
 
 Enforcement is wired as a global FastAPI dependency in :mod:`marquee.main`.
 Behaviour (evaluated in order):
@@ -34,11 +34,7 @@ from marquee.config import settings
 
 # Routes reachable without the global key:
 #   /health              — probes / load balancers can't send a key.
-#   /api/webhooks/subgen — authenticated by its own SUBGEN_CALLBACK_TOKEN instead
-#                          (audit-only, off by default; set that token when enabling Subgen).
-_EXEMPT_PATHS = frozenset(
-    {"/health", "/health/live", "/health/ready", "/api/webhooks/subgen"}
-)
+_EXEMPT_PATHS = frozenset({"/health", "/health/live", "/health/ready"})
 
 # Hosts treated as same-machine for the AUTH_ALLOW_LOCAL bypass. Tailscale
 # (100.64.0.0/10) and LAN addresses are deliberately NOT here.

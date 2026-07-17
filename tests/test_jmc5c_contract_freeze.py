@@ -236,8 +236,7 @@ def test_c3_artifact_decisions_have_only_canonical_route_and_handler_paths() -> 
 
 
 def test_deferred_surfaces_remain_non_executable() -> None:
-    webhook = (ROOT / "marquee/api/routes/webhooks.py").read_text()
-    assert "radarr_upgrade" not in webhook
+    assert not (ROOT / "marquee/api/routes/webhooks.py").exists()
     definition = JOB_DEFINITION_REGISTRY.find("radarr_upgrade")
     assert definition is not None
     assert definition.enabled is False

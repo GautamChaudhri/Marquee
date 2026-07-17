@@ -25,7 +25,8 @@ from marquee.core.jobs.schedules import (
     ACTIVATED_SCHEDULE_KEYS,
     MAX_SCHEDULE_DIAGNOSTICS,
     PRODUCTION_SCHEDULE_CATALOG,
-    PRODUCTION_SCHEDULE_OCCURRENCES_ENABLED,
+    load_schedule_configuration,
+    schedule_effective_state,
 )
 from marquee.database import _get_engine
 from marquee.db_migration import (
@@ -121,15 +122,27 @@ def worker_entrypoint_report() -> dict[str, Any]:
 
 def schedule_catalog_report() -> dict[str, Any]:
     definitions = tuple(PRODUCTION_SCHEDULE_CATALOG)
-    compatible = (
-        not PRODUCTION_SCHEDULE_OCCURRENCES_ENABLED
-        and all(
-            (job_definition := JOB_DEFINITION_REGISTRY.find(definition.produced_job_type))
-            is not None
-            and definition.trigger in job_definition.trigger_kinds
-            for definition in definitions
-        )
+    configuration = load_schedule_configuration()
+    compatible = all(
+        (job_definition := JOB_DEFINITION_REGISTRY.find(definition.produced_job_type))
+        is not None
+        and definition.trigger in job_definition.trigger_kinds
+        for definition in definitions
     )
+    schedules = []
+    for definition in definitions:
+        effective = schedule_effective_state(definition, configuration)
+        schedules.append(
+            {
+                "key": definition.key,
+                "entrypoint": definition.entrypoint,
+                "registered": effective.registered,
+                "individually_activated": effective.individually_activated,
+                "configured": effective.configured,
+                "effectively_enabled": effective.effectively_enabled,
+                "disabled_reason": effective.disabled_reason,
+            }
+        )
     return {
         "status": "ok" if compatible else "incompatible",
         "definition_count": len(definitions),
@@ -138,12 +151,13 @@ def schedule_catalog_report() -> dict[str, Any]:
         "occurrence_policies": sorted(
             {definition.occurrence_policy.value for definition in definitions}
         ),
-        "production_occurrences_enabled": PRODUCTION_SCHEDULE_OCCURRENCES_ENABLED,
+        "production_schedules_enabled": configuration.production_occurrences_enabled,
         "activated_keys": sorted(
             definition.key
             for definition in definitions
             if definition.key in ACTIVATED_SCHEDULE_KEYS
         ),
+        "schedules": schedules,
         "diagnostic_limit": MAX_SCHEDULE_DIAGNOSTICS,
     }
 

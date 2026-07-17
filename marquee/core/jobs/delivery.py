@@ -8,7 +8,7 @@ import json
 import logging
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Literal
@@ -21,6 +21,7 @@ from sqlalchemy import func, select, update
 from marquee.config import settings
 from marquee.core.jobs.artifact_service import register_virtual_artifact
 from marquee.core.jobs.batches import project_active_child
+from marquee.core.jobs.contracts import EffectSafety
 from marquee.core.jobs.definitions import JobDefinition
 from marquee.core.jobs.event_service import job_event_writer
 from marquee.core.jobs.fenced_writer import (
@@ -30,6 +31,7 @@ from marquee.core.jobs.fenced_writer import (
 )
 from marquee.core.jobs.log_capture import AttemptLogSink
 from marquee.core.jobs.manifest import JOB_DEFINITION_REGISTRY
+from marquee.core.jobs.orphan_reconciliation import assess_candidate, candidate_for_attempt
 from marquee.core.jobs.process_identity import read_boot_id
 from marquee.core.jobs.process_launcher import ProcessLauncher
 from marquee.core.jobs.progress import MeasurementMode, ProgressMeasurementUpdate
@@ -43,6 +45,7 @@ from marquee.core.jobs.safety_gates import (
 )
 from marquee.core.jobs.workspaces import AttemptWorkspace, AttemptWorkspaceManager
 from marquee.database import _get_session_factory
+from marquee.models import RuntimeInstance
 from marquee.models.job import Job, JobAttempt, JobDispatch
 
 TRANSPORT_KEYS = frozenset({"dispatch_generation", "job_id", "payload_version"})
@@ -191,6 +194,14 @@ async def _preflight(
             or job.outcome is not None
             or dispatch.disposition != "active"
         ):
+            if (
+                job.outcome == "unsafe"
+                and dispatch.disposition == "failed"
+                and int(transport_job.id) == dispatch.pgq_job_id
+            ):
+                raise DeliveryRejectedError(
+                    "unsafe canonical outcome is held for operator resolution"
+                )
             return None
         if (
             payload.dispatch_generation != job.dispatch_generation
@@ -317,6 +328,7 @@ async def _start_attempt(
     job: Job,
     transport_job: PgQueuerJob,
     preflight: PreflightDelivery,
+    runtime_instance_id: str | None,
 ) -> AdmittedDelivery:
     now = datetime.now(UTC)
     last_attempt = await session.scalar(
@@ -330,6 +342,7 @@ async def _start_attempt(
         pgq_job_id=int(transport_job.id),
         transport_attempt=transport_job.attempts,
         worker_node_id=settings.JOB_WORKER_NODE_ID,
+        runtime_instance_id=runtime_instance_id,
         host_boot_id=read_boot_id(),
         phase="running",
         admitted_at=now,
@@ -367,13 +380,141 @@ async def _start_attempt(
     )
 
 
+def _recovery_error(
+    definition: JobDefinition,
+    attempt: JobAttempt,
+    reason: str,
+) -> tuple[dict[str, Any], str, str]:
+    error_model = definition.error.models[definition.error.current_version]
+    payload: dict[str, Any] = {
+        "code": "worker_lost",
+        "summary": reason[:500],
+        "diagnostics": {},
+    }
+    outcome = "interrupted"
+    failure_class = "worker_lost"
+    if "atomicity" in error_model.model_fields:
+        payload.update(
+            code="retry_requested",
+            stage="retry_classification",
+            atomicity={
+                "group_id": f"job:{attempt.job_id}:attempt:{attempt.id}",
+                "boundary": "single_target",
+                "published": False,
+                "rollback_available": False,
+                "uncertain_state": False,
+            },
+        )
+        payload["diagnostics"] = {"delay_seconds": 0}
+        outcome = "retrying"
+        failure_class = "transient"
+    error = definition.error.validate(
+        payload,
+        version=definition.error.current_version,
+    ).model_dump(mode="json")
+    return error, outcome, failure_class
+
+
+async def _take_over_attempt(
+    transport_job: PgQueuerJob,
+    preflight: PreflightDelivery,
+    runtime_instance_id: str | None,
+    *,
+    attempt_id: int,
+    fence_token: int,
+    reason: str,
+) -> AdmittedDelivery | None:
+    """Atomically close one stale audit and admit its replay-safe replacement."""
+    factory = _get_session_factory()
+    async with factory() as session, session.begin():
+        job = await session.scalar(
+            select(Job).where(Job.id == preflight.delivery.canonical_job_id).with_for_update()
+        )
+        dispatch = await session.scalar(
+            select(JobDispatch)
+            .where(
+                JobDispatch.job_id == preflight.delivery.canonical_job_id,
+                JobDispatch.generation == preflight.delivery.dispatch_generation,
+            )
+            .with_for_update()
+        )
+        attempt = await session.scalar(
+            select(JobAttempt).where(JobAttempt.id == attempt_id).with_for_update()
+        )
+        if (
+            job is None
+            or dispatch is None
+            or attempt is None
+            or job.current_attempt_id != attempt_id
+            or job.fence_token != fence_token
+            or attempt.fence_token != fence_token
+            or job.phase not in {"running", "stopping"}
+            or attempt.phase not in {"running", "stopping"}
+            or job.desired_state != "run"
+            or job.outcome is not None
+            or dispatch.disposition != "active"
+            or dispatch.pgq_job_id != int(transport_job.id)
+        ):
+            return None
+        runtime = (
+            await session.scalar(
+                select(RuntimeInstance)
+                .where(RuntimeInstance.id == attempt.runtime_instance_id)
+                .with_for_update()
+            )
+            if attempt.runtime_instance_id is not None
+            else None
+        )
+        now = datetime.now(UTC)
+        if (
+            runtime is not None
+            and runtime.stopped_at is None
+            and runtime.readiness != "stopped"
+            and runtime.heartbeat_expires_at > now
+        ):
+            return None
+        if preflight.definition.effect_safety == EffectSafety.UNSAFE_MUTATION:
+            return None
+        error, outcome, failure_class = _recovery_error(
+            preflight.definition,
+            attempt,
+            reason,
+        )
+        attempt.phase = "finished"
+        attempt.outcome = outcome
+        attempt.failure_class = failure_class
+        attempt.finished_at = now
+        attempt.error = error
+        job.error = error
+        await job_event_writer.append(
+            session,
+            job_id=job.id,
+            attempt_id=attempt.id,
+            event_key="attempt.interrupted",
+            state="queued",
+            message=f"{preflight.definition.job_type} interrupted after worker loss",
+            detail=error,
+            canonical_version=fence_token,
+        )
+        return await _start_attempt(
+            session,
+            job,
+            transport_job,
+            preflight,
+            runtime_instance_id,
+        )
+
+
 async def _admit_delivery(
     transport_job: PgQueuerJob,
     payload: TransportPayload,
     preflight: PreflightDelivery,
+    runtime_instance_id: str | None,
 ) -> AdmittedDelivery | None:
     factory = _get_session_factory()
     rejection: DeliveryRejectedError | None = None
+    retry_reason: str | None = None
+    recovery_attempt_id: int | None = None
     admitted: AdmittedDelivery | None = None
     async with factory() as session, session.begin():
         job = await session.scalar(
@@ -424,14 +565,75 @@ async def _admit_delivery(
             # identity. Delivery never guesses that another worker/process is dead.
             if active_attempt is None:
                 rejection = DeliveryRejectedError("running job has no current attempt")
+            else:
+                runtime = (
+                    await session.get(RuntimeInstance, active_attempt.runtime_instance_id)
+                    if active_attempt.runtime_instance_id is not None
+                    else None
+                )
+                now = datetime.now(UTC)
+                if (
+                    runtime is not None
+                    and (
+                        runtime.stopped_at is not None
+                        or runtime.readiness == "stopped"
+                        or runtime.heartbeat_expires_at <= now
+                    )
+                ):
+                    recovery_attempt_id = active_attempt.id
+                else:
+                    retry_reason = "canonical job still has an active attempt"
         elif job.phase == "queued":
-            admitted = await _start_attempt(session, job, transport_job, preflight)
+            admitted = await _start_attempt(
+                session, job, transport_job, preflight, runtime_instance_id
+            )
         else:
             rejection = DeliveryRejectedError(
                 f"canonical job phase {job.phase!r} cannot be delivered"
             )
     if rejection is not None:
         raise rejection
+    if recovery_attempt_id is not None:
+        candidate = await candidate_for_attempt(recovery_attempt_id)
+        if candidate is None:
+            raise RetryRequested(reason="attempt ownership changed during recovery")
+        assessment = await assess_candidate(
+            candidate,
+            cooperative_seconds=settings.JOB_PROCESS_COOPERATIVE_SECONDS,
+            term_seconds=settings.JOB_PROCESS_TERM_SECONDS,
+        )
+        if assessment.disposition == "active":
+            raise RetryRequested(
+                timedelta(seconds=min(10.0, settings.JOB_RUNTIME_HEARTBEAT_SECONDS)),
+                assessment.reason,
+            )
+        if assessment.disposition == "unsafe":
+            disposition = await FencedWriter(
+                candidate.ownership,
+                preflight.definition,
+            ).unsafe(
+                assessment.reason,
+                code="mutation_recovery_not_safe",
+                stage="publication_reconciliation",
+            )
+            if disposition != WriteDisposition.APPLIED:
+                raise RetryRequested(reason="attempt ownership changed during recovery")
+            raise DeliveryRejectedError("unsafe stale attempt is held for operator resolution")
+        admitted = await _take_over_attempt(
+            transport_job,
+            preflight,
+            runtime_instance_id,
+            attempt_id=candidate.ownership.attempt_id,
+            fence_token=candidate.ownership.fence_token,
+            reason=assessment.reason,
+        )
+        if admitted is None:
+            raise RetryRequested(reason="attempt ownership changed during recovery")
+    if retry_reason is not None:
+        raise RetryRequested(
+            timedelta(seconds=min(10.0, settings.JOB_RUNTIME_HEARTBEAT_SECONDS)),
+            retry_reason,
+        )
     return admitted
 
 
@@ -531,6 +733,7 @@ async def deliver_job(
     *,
     expected_entrypoint: str,
     executor: LegacyNoopExecutor | None = None,
+    runtime_instance_id: str | None = None,
 ) -> None:
     """Gate, admit, execute, seal canonically, then allow PgQueuer acknowledgement."""
     if str(transport_job.entrypoint) != expected_entrypoint:
@@ -559,7 +762,9 @@ async def deliver_job(
 
     admitted: AdmittedDelivery | None = None
     try:
-        admitted = await _admit_delivery(transport_job, payload, preflight)
+        admitted = await _admit_delivery(
+            transport_job, payload, preflight, runtime_instance_id
+        )
         if admitted is None:
             await _apply_pre_admission_intent(payload)
             return
