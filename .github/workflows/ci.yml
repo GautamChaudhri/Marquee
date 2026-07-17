@@ -9,37 +9,65 @@ on:
       - main
   workflow_dispatch:
 
+# Least-required permissions: the workflow only reads the repository.
 permissions:
   contents: read
 
+# Cancel superseded runs on the same ref (PR pushes / branch pushes).
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  test:
-    name: Python ${{ matrix.python-version }}
+  backend:
+    name: Backend (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 45
 
     strategy:
       fail-fast: false
       matrix:
+        # The project supports both interpreters (pyproject target-version 3.12).
         python-version:
           - "3.12"
+          - "3.13"
+
+    # Health-checked PostgreSQL service with isolated, non-production credentials.
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: marquee_ci
+          POSTGRES_PASSWORD: marquee_ci_password
+          POSTGRES_DB: marquee_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U marquee_ci -d marquee_ci"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 12
 
     env:
       PIP_DISABLE_PIP_VERSION_CHECK: "1"
       PYTHONUNBUFFERED: "1"
+      # DEBUG bypasses the API-key gate exactly as the local suite does; auth is
+      # covered explicitly by test_auth.py. No production secret is present.
+      DEBUG: "true"
+      # Point every Marquee/Alembic/PgQueuer connection at the disposable CI
+      # service database. conftest provisions ephemeral `test_<uuid>` schemas
+      # inside it and drops them; no operator data can be reached.
+      DB_URL: postgresql+asyncpg://marquee_ci:marquee_ci_password@127.0.0.1:5432/marquee_ci
 
     steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
       - name: Install system libraries
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgl1 libglib2.0-0 libsm6 libxext6 libxrender1
-
-      - name: Check out repository
-        uses: actions/checkout@v6
+          sudo apt-get install -y --no-install-recommends \
+            ffmpeg mkvtoolnix libgl1 libglib2.0-0 libsm6 libxext6 libxrender1
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -51,19 +79,96 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e ".[dev,cpu]"
+          # CPU-only torch/torchvision so route registration and ML wrappers
+          # import without pulling GPU wheels the hosted runner cannot use.
+          python -m pip install "torch>=2.0" "torchvision>=0.15" \
+            --index-url https://download.pytorch.org/whl/cpu
+          # Full certified extras (dev + ml + viz + subtitles + subgen) plus the
+          # CPU ONNX Runtime. fastapi is pinned <0.137 in pyproject so
+          # include_router() keeps flattening routes for the ordering tests.
+          python -m pip install -e ".[all,cpu]"
 
       - name: Check installed dependencies
         run: python -m pip check
 
-      - name: Lint
+      - name: Ruff lint
         run: ruff check marquee tests scripts
 
-      - name: Test
-        run: pytest -q
+      - name: Marquee fresh schema + PgQueuer 1.1.1 durable install/verify
+        run: python -m marquee.db_migration
 
-      - name: Check OpenAPI schema is up to date
+      - name: Alembic model/migration equivalence
+        run: alembic check
+
+      - name: Backend tests
+        run: pytest -q -rsxX --junitxml=backend-junit.xml
+
+      - name: OpenAPI schema is current
+        run: python scripts/export_openapi.py --check
+
+      - name: Upload test report on failure
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-report-py${{ matrix.python-version }}
+          path: backend-junit.xml
+          retention-days: 7
+          if-no-files-found: ignore
+
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          # Pinned to the exact version the local certification used.
+          node-version: "22.22.2"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generated OpenAPI TypeScript client is current
         run: |
-          python scripts/export_openapi.py
-          git diff --exit-code design/api-schema.json || \
-            (echo "::error::design/api-schema.json is stale — run: python scripts/export_openapi.py" && exit 1)
+          npx openapi-typescript ../design/api-schema.json -o src/lib/api/generated/openapi.ts
+          npx prettier --write src/lib/api/generated/openapi.ts
+          git diff --exit-code -- src/lib/api/generated/openapi.ts
+
+      - name: svelte-check (zero errors and zero warnings)
+        run: |
+          npx svelte-kit sync
+          npx svelte-check --tsconfig ./tsconfig.json --fail-on-warnings
+
+      - name: Lint and format check
+        run: npm run lint
+
+      - name: Unit tests
+        run: npm run test:unit
+
+      - name: Production build
+        run: npm run build
+
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: End-to-end (Playwright + axe)
+        run: npm run test:e2e
+
+      - name: Upload Playwright report on failure
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: frontend/playwright-report
+          retention-days: 7
+          if-no-files-found: ignore

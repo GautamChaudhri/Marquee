@@ -217,22 +217,40 @@ def test_hardware_profile_resolves_tiers(monkeypatch: pytest.MonkeyPatch):
         hardware.detect_hardware.cache_clear()
 
 
-def test_effective_ocr_workers_caps_cuda_unless_gpu_forced(
+def test_effective_ocr_workers_honors_config_else_hardware_default(
     monkeypatch: pytest.MonkeyPatch,
 ):
+    """`effective_ocr_workers()` honors an explicit ``OCR_WORKERS`` (bounded to a
+    sane 16 ceiling) on every device/tier, and only falls back to the
+    hardware-tier default when unset. Deterministic via a fixed ``cpu_count``.
+
+    (Replaces the former ``caps_cuda_unless_gpu_forced`` test, which asserted a
+    device-conditional cap that the current policy does not implement and
+    compared against the host's live ``os.cpu_count()``.)"""
     from marquee.ml import hardware
 
     monkeypatch.setattr(
         "marquee.ml.hardware.ort.get_available_providers",
         lambda: ["CUDAExecutionProvider", "CPUExecutionProvider"],
     )
-    monkeypatch.setattr(hardware.pipeline_settings, "OCR_WORKERS", 10)
-    monkeypatch.setattr(hardware.pipeline_settings, "OCR_DEVICE", "cpu")
+    # Fix the core count so the CUDA auto default is deterministic:
+    # _auto_ocr_workers caps CUDA at min(3, cpu_count // 4) -> 3 for 16 cores.
+    monkeypatch.setattr("os.cpu_count", lambda: 16)
     hardware.detect_hardware.cache_clear()
     try:
-        assert hardware.effective_ocr_workers() == hardware.detect_hardware().ocr_workers
-        monkeypatch.setattr(hardware.pipeline_settings, "OCR_DEVICE", "gpu")
-        assert hardware.effective_ocr_workers() == 10
+        # An explicit worker count wins on every device and is capped at 16.
+        for device in ("cpu", "gpu"):
+            monkeypatch.setattr(hardware.pipeline_settings, "OCR_DEVICE", device)
+            monkeypatch.setattr(hardware.pipeline_settings, "OCR_WORKERS", 10)
+            assert hardware.effective_ocr_workers() == 10
+            monkeypatch.setattr(hardware.pipeline_settings, "OCR_WORKERS", 99)
+            assert hardware.effective_ocr_workers() == 16  # sane upper bound
+
+        # Unset (0) falls back to the CUDA hardware-tier default (min(3, 16 // 4)).
+        monkeypatch.setattr(hardware.pipeline_settings, "OCR_WORKERS", 0)
+        hardware.detect_hardware.cache_clear()
+        assert hardware.detect_hardware().ocr_workers == 3
+        assert hardware.effective_ocr_workers() == 3
     finally:
         hardware.detect_hardware.cache_clear()
 

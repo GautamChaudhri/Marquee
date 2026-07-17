@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from urllib.parse import quote
 
 import numpy as np
@@ -66,6 +67,18 @@ def managed_head(tmp_path, monkeypatch):
         trained_at=unicode_scalar("2026-07-03T00:00:00+00:00"),
     )
     monkeypatch.setattr(pipeline_settings, "LEARNED_HEAD_PATH", head_path)
+    # Isolate the feedback labels off the operator's data dir, and seed one
+    # label referencing a movie absent from the (empty) test library. The head
+    # backfill must link it durably (title snapshot, NULL movie_id) rather than
+    # insert a dangling artifact_snapshot_movies FK.
+    labels_path = tmp_path / "feedback" / "labels.jsonl"
+    labels_path.parent.mkdir(parents=True, exist_ok=True)
+    labels_path.write_text(
+        json.dumps({"movie_id": 4242, "title": "Retired Movie", "year": 2021, "label": "positive"})
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(pipeline_settings, "FEEDBACK_LABELS_PATH", labels_path)
 
 
 @pytest.mark.asyncio
@@ -96,7 +109,13 @@ async def test_heads_endpoint_backfills_active_head(client, db, managed_profile,
 
     detail = await client.get(f"/api/taste/heads/{head['id']}")
     assert detail.status_code == 200
-    assert detail.json()["summary"]["top_features"][0]["name"] == "knn_sim"
+    detail_body = detail.json()
+    assert detail_body["summary"]["top_features"][0]["name"] == "knn_sim"
+    # The seeded label references a movie absent from the library: the backfill
+    # links it durably by title snapshot with a NULL movie_id (no dangling FK).
+    retired = next(m for m in detail_body["movies"] if m["title"] == "Retired Movie")
+    assert retired["movie_id"] is None
+    assert retired["year"] == 2021
 
 
 @pytest.mark.asyncio
@@ -203,7 +222,9 @@ async def test_taste_status_normalizes_duplicate_active_profiles(client, db, man
         kind=artifact_registry.KIND_TASTE_PROFILE,
         status=artifact_registry.STATUS_ACTIVE,
         label="Duplicate active taste profile",
-        storage_path=existing["storage_path"],
+        # Distinct storage_path: (kind, storage_path) is uniquely constrained, so
+        # the second active row models the anomaly with its own storage key.
+        storage_path=existing["storage_path"] + ".duplicate",
         active_path=str(pipeline_settings.TASTE_PROFILE_PATH),
         model_name=existing["model_name"],
         sha256="duplicate-hash",
@@ -219,14 +240,15 @@ async def test_taste_status_normalizes_duplicate_active_profiles(client, db, man
     payload = resp.json()
     assert payload["active_profile"] is not None
 
-    active_rows = (
+    # Read the persisted status directly. A column query bypasses this session's
+    # identity map (expire_on_commit=False), so we observe the normalization the
+    # /status request committed from its own session rather than a stale cache.
+    statuses = (
         await db.execute(
-            select(ArtifactSnapshot).where(
+            select(ArtifactSnapshot.status).where(
                 ArtifactSnapshot.kind == artifact_registry.KIND_TASTE_PROFILE
             )
         )
     ).scalars().all()
-    active_count = sum(
-        1 for row in active_rows if row.status == artifact_registry.STATUS_ACTIVE
-    )
+    active_count = sum(1 for status in statuses if status == artifact_registry.STATUS_ACTIVE)
     assert active_count == 1

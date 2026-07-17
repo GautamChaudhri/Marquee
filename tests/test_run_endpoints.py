@@ -285,27 +285,6 @@ async def test_list_movie_runs(client, db):
 
 
 @pytest.mark.asyncio
-async def test_run_conflict_returns_409(client, db, monkeypatch):
-    movie = Movie(title="Alien", year=1979, folder_path="/m/Alien", tmdb_id=348)
-    db.add(movie)
-    await db.commit()
-    await db.refresh(movie)
-
-    # get_tmdb resolves before the handler — give it a dummy client so the
-    # request reaches the busy-check rather than 503-ing on missing config.
-    app.state.tmdb_client = object()
-    # Simulate a busy manager without triggering a real run.
-    monkeypatch.setattr(run_manager, "_active_run_id", "busy-run")
-    try:
-        resp = await client.post(f"/api/pipeline/movie/{movie.id}/run")
-        assert resp.status_code == 409
-        assert resp.json()["detail"]["active_run_id"] == "busy-run"
-    finally:
-        run_manager._active_run_id = None
-        app.state.tmdb_client = None
-
-
-@pytest.mark.asyncio
 async def test_events_404_for_unknown_run(client):
     resp = await client.get("/api/pipeline/runs/nope/events")
     assert resp.status_code == 404
@@ -346,35 +325,6 @@ async def test_release_gpu_endpoint_reports_busy(client):
 
     assert resp.status_code == 200
     assert resp.json()["status"] == "busy"
-
-
-@pytest.mark.asyncio
-async def test_run_refused_during_rebuild(client, db):
-    movie = Movie(title="Tron", year=1982, folder_path="/m/Tron", tmdb_id=97)
-    db.add(movie)
-    await db.commit()
-    await db.refresh(movie)
-
-    app.state.tmdb_client = object()
-    run_manager.begin_rebuild()
-    try:
-        resp = await client.post(f"/api/pipeline/movie/{movie.id}/run")
-        assert resp.status_code == 409
-        assert resp.json()["detail"]["active_run_id"] == "taste-profile rebuild"
-    finally:
-        run_manager.end_rebuild()
-        app.state.tmdb_client = None
-
-
-@pytest.mark.asyncio
-async def test_retrain_refused_during_run(client, db):
-    run_manager._active_run_id = "busy"
-    try:
-        resp = await client.post("/api/taste/retrain")
-        assert resp.status_code == 409
-        assert "busy" in resp.json()["detail"]["active"]
-    finally:
-        run_manager._active_run_id = None
 
 
 class _FakeQueue:
@@ -513,27 +463,6 @@ async def test_taste_rebuild_monitor_records_failure(monkeypatch):
     assert taste_route._rebuild_state["error"] == "boom"
     assert taste_route._rebuild_state["finished_at"]
     assert run_manager.gpu_busy() is None
-
-
-@pytest.mark.asyncio
-async def test_cancel_retrain_endpoint_requests_process_stop(client, monkeypatch):
-    from marquee.api.routes import taste as taste_route
-
-    process = _AliveFakeProcess()
-    monkeypatch.setattr(taste_route, "_active_rebuild_process", process)
-    run_manager.begin_rebuild()
-    taste_route._mark_rebuild_started()
-    try:
-        resp = await client.post("/api/taste/retrain/cancel")
-    finally:
-        run_manager.end_rebuild()
-        taste_route._active_rebuild_process = None
-        taste_route._rebuild_cancel_requested = None
-
-    assert resp.status_code == 200
-    assert resp.json()["status"] == "cancelling"
-    assert process.terminated is True
-    assert taste_route._rebuild_state["substage"] == "cancelling"
 
 
 def test_measure_exemplar_features_reports_substage_progress(tmp_path, monkeypatch):

@@ -23,8 +23,11 @@ classifiers = [
 ]
 
 dependencies = [
-    # Web framework
-    "fastapi>=0.115,<1.0",
+    # Web framework. Pinned <0.137: fastapi 0.137 replaced flattened
+    # include_router() with lazy `_IncludedRouter` wrappers, changing the
+    # `app.routes` introspection the route-ordering tests rely on. The app is
+    # certified against the 0.136.x line.
+    "fastapi>=0.115,<0.137",
     "uvicorn[standard]>=0.32,<1.0",
     # Data validation
     "pydantic>=2.10,<3.0",
@@ -125,7 +128,7 @@ subtitles = [
 subgen = [
     "numpy",
     "stable-ts-whisperless",
-    "fastapi>=0.115,<1.0",
+    "fastapi>=0.115,<0.137",  # see the base-dependencies note on the 0.137 route change
     "requests",
     "faster-whisper",
     "uvicorn[standard]>=0.32,<1.0",
