@@ -74,11 +74,14 @@ export function auditPolicy(
 ): Promise<JobSubmissionResponse> {
 	if (useMocks()) {
 		return Promise.resolve({
-			detail_url: `/api/jobs/job-mock-policy-audit-${id}`,
+			detail_url: `/projection-room/jobs/job-mock-policy-audit-${id}`,
 			disposition: 'created',
+			idempotent: false,
 			job_id: `job-mock-policy-audit-${id}`,
 			phase: 'queued',
-			snapshot_url: `/api/jobs/job-mock-policy-audit-${id}/snapshot`
+			snapshot_url: `/api/jobs/job-mock-policy-audit-${id}/snapshot`,
+			activity_url: `/projection-room?view=queue&job=job-mock-policy-audit-${id}`,
+			active_conflict: null
 		});
 	}
 	return apiSend<JobSubmissionResponse>(fetch, 'POST', `/subtitle-policies/${id}/audit`, {
@@ -93,11 +96,14 @@ export function applyPolicy(
 ): Promise<JobSubmissionResponse> {
 	if (useMocks()) {
 		return Promise.resolve({
-			detail_url: '/api/jobs/job-mock-policy',
+			detail_url: '/projection-room/jobs/job-mock-policy',
 			job_id: `job-mock-policy-${Date.now()}`,
 			disposition: 'created',
+			idempotent: false,
 			phase: 'queued',
-			snapshot_url: '/api/jobs/job-mock-policy/snapshot'
+			snapshot_url: '/api/jobs/job-mock-policy/snapshot',
+			activity_url: '/projection-room?view=queue&job=job-mock-policy',
+			active_conflict: null
 		});
 	}
 	return apiSend<JobSubmissionResponse>(

@@ -258,7 +258,7 @@ def test_readiness_is_sanitized_and_reports_locked_jmc4a_boundaries() -> None:
 
 
 def test_final_manifest_keeps_only_system_noop_enabled() -> None:
-    assert len(JOB_DEFINITION_REGISTRY) == 61
+    assert len(JOB_DEFINITION_REGISTRY) == 62
     assert JOB_DEFINITION_REGISTRY.enabled_types == {
         "subtitle_policy",
         "subtitle_restore",
@@ -300,6 +300,7 @@ def test_final_manifest_keeps_only_system_noop_enabled() -> None:
             "dovi_discard",
         "learned_head_train",
         "poster_rescan",
+        "taste_enrich",
         "taste_map",
         "taste_rebuild",
     }
@@ -346,6 +347,7 @@ def test_final_manifest_keeps_only_system_noop_enabled() -> None:
         ("subtitle_scan", "media_read"),
         ("system_metrics_purge", "maintenance"),
         ("system_noop", "control"),
+        ("taste_enrich", "cpu"),
         ("taste_map", "cpu"),
         ("taste_rebuild", "gpu"),
         ("track_remove", "media_write"),

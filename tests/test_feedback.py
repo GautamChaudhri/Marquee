@@ -21,6 +21,8 @@ from marquee.ml import feedback_store
 from marquee.ml.namespaces import get_namespace
 from marquee.models import Job, Movie, PipelineRun, Season, Series
 
+_REAL_SCHEDULE_LEARNED_HEAD_SUCCESSOR = feedback_route._schedule_learned_head_successor
+
 
 @pytest.fixture
 async def client():
@@ -36,11 +38,33 @@ def labels_to_tmp(tmp_path, monkeypatch):
     monkeypatch.setattr(pipeline_settings, "FEEDBACK_DEPLOY_DEFAULT", False)
     # Avoid all ML: stub the profile-add and head-retrain hooks.
     monkeypatch.setattr(feedback_route, "_add_to_profile", lambda *a, **k: "Die Hard (1988).jpg")
-    monkeypatch.setattr(
-        feedback_route, "_maybe_retrain_head", lambda *a, **k: {"retrained": False, "reason": "stub"}
-    )
+    async def no_head_successor(*_args, **_kwargs):
+        return {"scheduled": False, "reason": "stub", "job": None}
+
+    monkeypatch.setattr(feedback_route, "_schedule_learned_head_successor", no_head_successor)
     monkeypatch.setattr(feedback_route.run_manager, "reset_extractor", lambda: None)
     yield
+
+
+@pytest.mark.asyncio
+async def test_feedback_successor_preserves_exact_revision_lineage(
+    db, installed_pgqueuer, monkeypatch
+):
+    monkeypatch.setattr(pipeline_settings, "HEAD_AUTO_RETRAIN", True)
+    result = await _REAL_SCHEDULE_LEARNED_HEAD_SUCCESSOR(
+        db,
+        get_namespace("movies"),
+        feedback_revision="event-123",
+        mutation="apply",
+    )
+
+    assert result["scheduled"] is True
+    job = await db.get(Job, result["job"]["job_id"])
+    assert job is not None
+    assert job.type == "learned_head_train"
+    assert job.subject_reference == "learned_head:movies"
+    assert job.request["feedback_revision"] == "event-123"
+    assert job.request["mutation"] == "apply"
 
 
 def _archive(movie_id: int) -> dict:

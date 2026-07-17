@@ -366,6 +366,7 @@
 	let inspectedPoster = $state<CandidateView | null>(null);
 	let deploy = $state(true);
 	let busy = $state(false);
+	let scopeActive = $state(false);
 	let rejectOpen = $state(false);
 	let lastEventId = $state<string | null>(null);
 	let confirmingApprove = $state(false);
@@ -639,8 +640,13 @@
 		<h2>{results?.movie?.title ?? 'Pipeline run'}</h2>
 		<FeatureActivityPanel
 			scopeKey={`feature:pipeline:run:${data.runId}`}
-			query={{ feature_area: 'ai_posters' }}
+			query={{
+				feature_area: 'ai_posters',
+				types: ['poster_pipeline'],
+				correlation_id: data.runId
+			}}
 			jobIds={[data.runId]}
+			bind:active={scopeActive}
 			heading="Poster selection activity"
 			onSettled={reload}
 		/>

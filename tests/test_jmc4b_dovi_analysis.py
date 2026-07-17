@@ -190,7 +190,16 @@ async def test_dovi_route_submits_a_canonical_media_read_job(client, db, monkeyp
 
     assert response.status_code == 202
     body = response.json()
-    assert set(body) == {"job_id", "disposition", "phase", "snapshot_url", "detail_url"}
+    assert set(body) == {
+        "job_id",
+        "disposition",
+        "idempotent",
+        "phase",
+        "snapshot_url",
+        "detail_url",
+        "activity_url",
+        "active_conflict",
+    }
     job = await db.get(Job, body["job_id"])
     assert job is not None
     assert job.type == "dovi_analyze"

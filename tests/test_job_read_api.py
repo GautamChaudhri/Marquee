@@ -169,6 +169,43 @@ async def test_queue_filters_by_execution_class_and_worker(db, client):
     assert [item["job_id"] for item in response.json()["items"]] == [matching.id]
 
 
+
+@pytest.mark.asyncio
+async def test_queue_exact_scope_recovers_beyond_first_page(db, client) -> None:
+    unrelated = [
+        make_job(
+            job_id=f"unrelated{i:023d}",
+            phase="queued",
+            offset=i,
+        )
+        for i in range(25)
+    ]
+    for index, job in enumerate(unrelated):
+        job.subject_reference = f"media-file:{index}"
+    matching = make_job(
+        job_id="exactscope0000000000000000000001",
+        phase="queued",
+        offset=100,
+    )
+    matching.subject_reference = "media-file:target"
+    db.add_all([*unrelated, matching])
+    await db.commit()
+
+    response = await client.get(
+        "/api/jobs",
+        params=[
+            ("view", "queue"),
+            ("limit", "20"),
+            ("types", "system_noop"),
+            ("subject_reference", "media-file:target"),
+        ],
+    )
+
+    assert response.status_code == 200
+    assert [item["job_id"] for item in response.json()["items"]] == [matching.id]
+    assert response.json()["next_cursor"] is None
+
+
 @pytest.mark.asyncio
 async def test_snapshot_presentation_and_raw_documents_are_bounded(db, client):
     job = make_job(job_id="snapshot00000000000000000000001", phase="queued")

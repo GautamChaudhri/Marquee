@@ -18,13 +18,14 @@ def test_jmc3a_starts_from_certified_registry_and_transport_contract() -> None:
     contract = _contract()
     registry = contract["registry"]
     assert isinstance(registry, dict)
-    assert len(JOB_DEFINITION_REGISTRY) == registry["definition_count"] + 12
+    assert len(JOB_DEFINITION_REGISTRY) == registry["definition_count"] + 13
     assert JOB_DEFINITION_REGISTRY.enabled_types == set(registry["enabled_types"]) | {
         "subtitle_policy",
         "subtitle_restore",
         "subtitle_generate",
         "subtitle_extract",
         "subtitle_embed",
+        "taste_enrich",
         # JMC5B B2 track mutations.
         "audio_remove",
         "track_remove",

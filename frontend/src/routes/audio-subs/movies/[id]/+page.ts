@@ -7,11 +7,8 @@ export const load: PageLoad = async ({ fetch, params }) => {
 	const id = Number(params.id);
 	if (!id) return { movie: null, inspect: null, settings: null, error: 'Invalid movie ID' };
 	try {
-		const [movie, inspect, settings] = await Promise.all([
-			getMovie(fetch, id),
-			inspectMovie(fetch, id),
-			getSettings(fetch)
-		]);
+		const [movie, settings] = await Promise.all([getMovie(fetch, id), getSettings(fetch)]);
+		const inspect = await inspectMovie(fetch, id).catch(() => null);
 		return { movie, inspect, settings, error: null as string | null };
 	} catch (e) {
 		return {

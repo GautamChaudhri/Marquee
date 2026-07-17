@@ -196,7 +196,7 @@ async def audit_policy(
                 idempotency_key=f"subtitle_policy_audit:manual-{uuid4().hex}",
             )
         except IdempotencyConflictError as exc:
-            raise HTTPException(status_code=409, detail=exc.code) from exc
+            raise HTTPException(status_code=409, detail=exc.api_detail) from exc
         except SubmissionError as exc:
             raise HTTPException(status_code=422, detail=exc.code) from exc
     return submission_response(result)
@@ -295,6 +295,6 @@ async def apply_policy(
     except AudioSubtitlePlanError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except IdempotencyConflictError as exc:
-        raise HTTPException(status_code=409, detail=exc.code) from exc
+        raise HTTPException(status_code=409, detail=exc.api_detail) from exc
     except SubmissionError as exc:
         raise HTTPException(status_code=422, detail=exc.code) from exc

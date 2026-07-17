@@ -26,6 +26,7 @@
 	const series = $derived(data.series);
 	let running = $state(false);
 	let initiatedJobIds = $state<string[]>([]);
+	let scopeActive = $state(false);
 	let deleting = $state<string | null>(null);
 	let savingProfiles = $state(false);
 	// svelte-ignore state_referenced_locally
@@ -142,8 +143,14 @@
 	/>
 	<FeatureActivityPanel
 		scopeKey={`feature:television:posters:${series.id}`}
-		query={{ feature_area: 'ai_posters' }}
+		query={{
+			feature_area: 'ai_posters',
+			types: ['poster_pipeline', 'poster_deploy', 'poster_restore', 'poster_reset'],
+			subject_kind: 'series',
+			subject_reference: [String(series.id)]
+		}}
 		jobIds={initiatedJobIds}
+		bind:active={scopeActive}
 		heading="Television poster activity"
 		onSettled={handleJobSettled}
 	/>
@@ -180,14 +187,22 @@
 				</div>
 			</div>
 			<div class="actions">
-				<button class="btn-gold" onclick={() => startRun('all_missing')} disabled={running}>
+				<button
+					class="btn-gold"
+					onclick={() => startRun('all_missing')}
+					disabled={running || scopeActive}
+				>
 					Run all missing
 				</button>
-				<button class="btn-sec" onclick={() => startRun('show')} disabled={running}>
+				<button class="btn-sec" onclick={() => startRun('show')} disabled={running || scopeActive}>
 					Run show only
 				</button>
 				{#if series.poster.has_poster}
-					<button class="btn-danger" onclick={removeShowPoster} disabled={deleting === 'show'}>
+					<button
+						class="btn-danger"
+						onclick={removeShowPoster}
+						disabled={deleting === 'show' || scopeActive}
+					>
 						Delete show poster
 					</button>
 				{/if}
@@ -216,7 +231,7 @@
 								<button
 									class="btn-ghost"
 									onclick={() => startRun('seasons', [season.id])}
-									disabled={running}
+									disabled={running || scopeActive}
 								>
 									Run
 								</button>
@@ -224,7 +239,7 @@
 									<button
 										class="btn-danger small"
 										onclick={() => removeSeasonPoster(season.id)}
-										disabled={deleting === `season:${season.id}`}
+										disabled={deleting === `season:${season.id}` || scopeActive}
 									>
 										Delete
 									</button>

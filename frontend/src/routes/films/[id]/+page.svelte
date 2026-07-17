@@ -69,6 +69,8 @@
 	let pipeRunId = $state<string | null>(null);
 	let posterJobIds = $state<string[]>([]);
 	let letterboxJobIds = $state<string[]>([]);
+	let posterScopeActive = $state(false);
+	let letterboxScopeActive = $state(false);
 	let runs = $state<PipelineRunSummary[]>([]);
 	let latest = $state<RunResults | null>(null);
 	let posterLoaded = false;
@@ -393,7 +395,11 @@
 							</div>
 						</div>
 						{#if movie.tmdb_id}
-							<button class="btn-gold" onclick={startPipeline} disabled={pipeRunning}>
+							<button
+								class="btn-gold"
+								onclick={startPipeline}
+								disabled={pipeRunning || posterScopeActive}
+							>
 								{#if pipeRunning}
 									<span class="spin">⟳</span> Running…
 								{:else}
@@ -404,7 +410,11 @@
 							<div class="info-note">No TMDB ID — sync Radarr first</div>
 						{/if}
 						{#if movie.poster_status !== 'missing'}
-							<button class="btn-danger" onclick={handleDeletePoster} disabled={deletingPoster}>
+							<button
+								class="btn-danger"
+								onclick={handleDeletePoster}
+								disabled={deletingPoster || posterScopeActive}
+							>
 								{#if deletingPoster}
 									<span class="spin">⟳</span> Deleting…
 								{:else}
@@ -458,10 +468,12 @@
 						scopeKey={`feature:film:posters:${movie.id}`}
 						query={{
 							feature_area: 'ai_posters',
+							types: ['poster_pipeline', 'poster_deploy', 'poster_restore', 'poster_reset'],
 							subject_kind: 'movie',
-							subject_id: String(movie.id)
+							subject_reference: [String(movie.id)]
 						}}
 						jobIds={posterJobIds}
+						bind:active={posterScopeActive}
 						heading="Poster activity"
 						onSettled={handlePosterJobSettled}
 					/>
@@ -618,10 +630,17 @@
 						scopeKey={`feature:film:letterbox:${movie.id}`}
 						query={{
 							feature_area: 'letterbox',
+							types: [
+								'letterbox_detect',
+								'letterbox_apply',
+								'letterbox_remove',
+								'letterbox_reencode'
+							],
 							subject_kind: 'movie',
-							subject_id: String(movie.id)
+							subject_reference: [String(movie.id)]
 						}}
 						jobIds={letterboxJobIds}
+						bind:active={letterboxScopeActive}
 						heading="Letterbox activity"
 						onSettled={handleLetterboxJobSettled}
 					/>
@@ -657,22 +676,32 @@
 
 							<div class="lb-actions">
 								{#if status === 'none' || status === 'not_letterboxed' || !lbState}
-									<button class="btn-gold" onclick={lbDetect} disabled={lbLoading}>
+									<button
+										class="btn-gold"
+										onclick={lbDetect}
+										disabled={lbLoading || letterboxScopeActive}
+									>
 										{lbLoading ? '⟳ Detecting…' : 'Detect letterbox'}
 									</button>
 								{:else if status === 'candidate' || status === 'prefilter_candidate'}
-									<button class="btn-gold" onclick={() => lbAction('apply')} disabled={lbLoading}
-										>Apply crop tags</button
+									<button
+										class="btn-gold"
+										onclick={() => lbAction('apply')}
+										disabled={lbLoading || letterboxScopeActive}>Apply crop tags</button
 									>
-									<button class="btn-sec" onclick={() => lbAction('ignore')} disabled={lbLoading}
-										>Skip</button
+									<button
+										class="btn-sec"
+										onclick={() => lbAction('ignore')}
+										disabled={lbLoading || letterboxScopeActive}>Skip</button
 									>
 									<button class="btn-ghost" onclick={lbDetect} disabled={lbLoading}
 										>Re-detect</button
 									>
 								{:else if status === 'tagged'}
-									<button class="btn-sec" onclick={() => lbAction('remove')} disabled={lbLoading}
-										>Remove tags</button
+									<button
+										class="btn-sec"
+										onclick={() => lbAction('remove')}
+										disabled={lbLoading || letterboxScopeActive}>Remove tags</button
 									>
 									<button class="btn-ghost" onclick={lbDetect} disabled={lbLoading}
 										>Re-detect</button

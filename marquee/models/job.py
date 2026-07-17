@@ -98,6 +98,13 @@ class Job(Base):
         CheckConstraint("progress_sequence >= 0", name="ck_jobs_progress_sequence"),
         Index("ix_jobs_phase_eligible", "phase", "eligible_at", "priority", "created_at"),
         Index("ix_jobs_subject", "subject_kind", "subject_reference"),
+        Index(
+            "ix_jobs_active_overlap_scope",
+            "phase",
+            "type",
+            "subject_kind",
+            "subject_reference",
+        ),
         Index("ix_jobs_terminal_history", "phase", "terminal_at"),
     )
 

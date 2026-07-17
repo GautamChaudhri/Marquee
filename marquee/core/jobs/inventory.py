@@ -68,6 +68,7 @@ CANONICAL_READ_ONLY_TYPES = frozenset(
         "poster_rescan",
         "subtitle_policy_audit",
         "taste_map",
+        "taste_enrich",
         "taste_rebuild",
         "system_noop",
     }
@@ -148,8 +149,10 @@ ROUTE_CONSTRUCTED_TYPES = frozenset(
         "poster_reset",
         "subtitle_generate_batch",
         "subtitle_policy_audit",
+        "subtitle_scan",
         "subtitle_scan_all",
         "taste_map",
+        "taste_enrich",
         "taste_rebuild",
     }
 )

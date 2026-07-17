@@ -27,6 +27,14 @@ from marquee.models import SubtitleInventory, SubtitleTrack
 
 logger = logging.getLogger(__name__)
 
+
+class SubtitleInventoryMissingError(LookupError):
+    """A canonical scan must publish the first inventory before it can be read."""
+
+    def __init__(self, media_file_id: int) -> None:
+        super().__init__(f"media file {media_file_id} has no persisted subtitle inventory")
+        self.media_file_id = media_file_id
+
 _SUBTITLE_CODEC_LABELS = {
     "ass": "ASS",
     "dvb_subtitle": "DVB",
@@ -195,34 +203,19 @@ async def get_inventory_dict(
     db: AsyncSession,
     media_file_id: int,
     *,
-    force: bool = False,
     preferred_audio_languages: list[str] | None = None,
     preferred_subtitle_languages: list[str] | None = None,
 ) -> dict:
-    """Return the cached inventory when its signature still matches, else rescan.
-
-    Single-file detail requests refresh inline (expected to be fast); bulk
-    callers should prefer enqueuing a scan job instead.
-    """
+    """Return the persisted inventory without probing, scanning, or publishing."""
     resolved = await resolve_media_file(db, media_file_id)
     inventory = (
         await db.execute(
             select(SubtitleInventory).where(SubtitleInventory.media_file_id == media_file_id)
         )
     ).scalar_one_or_none()
+    if inventory is None:
+        raise SubtitleInventoryMissingError(media_file_id)
 
-    if not force and inventory is not None and inventory.file_signature == resolved.signature:
-        tracks = await _tracks_for(db, inventory.id)
-        result = inventory_to_dict(
-            inventory,
-            tracks,
-            preferred_audio_languages=preferred_audio_languages,
-            preferred_subtitle_languages=preferred_subtitle_languages,
-        )
-        result["stale"] = False
-        return result
-
-    inventory = await scan_inventory(db, resolved)
     tracks = await _tracks_for(db, inventory.id)
     result = inventory_to_dict(
         inventory,
@@ -230,7 +223,7 @@ async def get_inventory_dict(
         preferred_audio_languages=preferred_audio_languages,
         preferred_subtitle_languages=preferred_subtitle_languages,
     )
-    result["stale"] = False
+    result["stale"] = inventory.file_signature != resolved.signature or inventory.error is not None
     return result
 
 

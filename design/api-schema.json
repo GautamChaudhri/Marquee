@@ -1,6 +1,35 @@
 {
   "components": {
     "schemas": {
+      "ActiveJobConflict": {
+        "properties": {
+          "code": {
+            "const": "active_overlap_conflict",
+            "default": "active_overlap_conflict",
+            "title": "Code",
+            "type": "string"
+          },
+          "detail_url": {
+            "title": "Detail Url",
+            "type": "string"
+          },
+          "job_id": {
+            "title": "Job Id",
+            "type": "string"
+          },
+          "snapshot_url": {
+            "title": "Snapshot Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "job_id",
+          "snapshot_url",
+          "detail_url"
+        ],
+        "title": "ActiveJobConflict",
+        "type": "object"
+      },
       "ActivityAttentionResponse": {
         "additionalProperties": false,
         "properties": {
@@ -3593,6 +3622,20 @@
       "JobSubmissionResponse": {
         "description": "Bounded canonical submission handle (never a legacy or numeric transport id).",
         "properties": {
+          "active_conflict": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ActiveJobConflict"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "activity_url": {
+            "title": "Activity Url",
+            "type": "string"
+          },
           "detail_url": {
             "title": "Detail Url",
             "type": "string"
@@ -3604,6 +3647,10 @@
             ],
             "title": "Disposition",
             "type": "string"
+          },
+          "idempotent": {
+            "title": "Idempotent",
+            "type": "boolean"
           },
           "job_id": {
             "title": "Job Id",
@@ -3621,9 +3668,11 @@
         "required": [
           "job_id",
           "disposition",
+          "idempotent",
           "phase",
           "snapshot_url",
-          "detail_url"
+          "detail_url",
+          "activity_url"
         ],
         "title": "JobSubmissionResponse",
         "type": "object"
@@ -4955,6 +5004,20 @@
       "PlannedJobSubmissionResponse": {
         "description": "Canonical submission handle plus the bounded mutation-confirmation fence.",
         "properties": {
+          "active_conflict": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ActiveJobConflict"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "activity_url": {
+            "title": "Activity Url",
+            "type": "string"
+          },
           "configuration_version": {
             "title": "Configuration Version",
             "type": "integer"
@@ -4974,6 +5037,10 @@
           "expires_at": {
             "title": "Expires At",
             "type": "string"
+          },
+          "idempotent": {
+            "title": "Idempotent",
+            "type": "boolean"
           },
           "job_id": {
             "title": "Job Id",
@@ -5001,9 +5068,11 @@
         "required": [
           "job_id",
           "disposition",
+          "idempotent",
           "phase",
           "snapshot_url",
           "detail_url",
+          "activity_url",
           "plan_version",
           "configuration_version",
           "expires_at"
@@ -9439,6 +9508,25 @@
           },
           {
             "in": "query",
+            "name": "types",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Types"
+            }
+          },
+          {
+            "in": "query",
             "name": "subject_kind",
             "required": false,
             "schema": {
@@ -9468,6 +9556,25 @@
                 }
               ],
               "title": "Subject Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "subject_reference",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Subject Reference"
             }
           },
           {
@@ -13582,7 +13689,7 @@
     },
     "/api/media-files/{media_file_id}/subtitles": {
       "get": {
-        "description": "Inventory, coverage, capabilities, and per-track actions for a file.",
+        "description": "Read persisted inventory, coverage, capabilities, and track actions.",
         "operationId": "get_subtitles_api_media_files__media_file_id__subtitles_get",
         "parameters": [
           {
@@ -13592,16 +13699,6 @@
             "schema": {
               "title": "Media File Id",
               "type": "integer"
-            }
-          },
-          {
-            "in": "query",
-            "name": "force",
-            "required": false,
-            "schema": {
-              "default": false,
-              "title": "Force",
-              "type": "boolean"
             }
           }
         ],
@@ -13633,7 +13730,7 @@
     },
     "/api/media-files/{media_file_id}/subtitles/scan": {
       "post": {
-        "description": "Force a fresh inventory scan (inline for a single file).",
+        "description": "Submit one canonical subtitle inventory scan for a media file.",
         "operationId": "scan_subtitles_api_media_files__media_file_id__subtitles_scan_post",
         "parameters": [
           {
@@ -13644,13 +13741,33 @@
               "title": "Media File Id",
               "type": "integer"
             }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 200,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
           }
         ],
         "responses": {
-          "200": {
+          "202": {
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/JobSubmissionResponse"
+                }
               }
             },
             "description": "Successful Response"
@@ -13978,7 +14095,7 @@
     },
     "/api/movies/{movie_id}/subtitles/inspect": {
       "post": {
-        "description": "Resolve a movie's file, probe it, and return its full subtitle inventory.",
+        "description": "Resolve a movie's file and return its persisted subtitle inventory.",
         "operationId": "inspect_movie_subtitles_api_movies__movie_id__subtitles_inspect_post",
         "parameters": [
           {
@@ -16219,16 +16336,40 @@
     },
     "/api/taste/enrich": {
       "post": {
-        "description": "Run profile enrichment (genres, years, tmdb_ids) and rebuild the map.",
+        "description": "Submit immutable taste-profile enrichment publication.",
         "operationId": "enrich_profile_api_taste_enrich_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "library",
+            "required": false,
+            "schema": {
+              "default": "movies",
+              "title": "Library",
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
-          "200": {
+          "202": {
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/JobSubmissionResponse"
+                }
               }
             },
             "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "summary": "Enrich Profile",
@@ -16573,19 +16714,9 @@
     },
     "/api/taste/map": {
       "get": {
-        "description": "3D/2D projection of the taste profile, with clusters + outliers.",
+        "description": "Return the last published taste-map artifact without recomputation.",
         "operationId": "get_taste_map_api_taste_map_get",
         "parameters": [
-          {
-            "in": "query",
-            "name": "recompute",
-            "required": false,
-            "schema": {
-              "default": false,
-              "title": "Recompute",
-              "type": "boolean"
-            }
-          },
           {
             "in": "query",
             "name": "library",

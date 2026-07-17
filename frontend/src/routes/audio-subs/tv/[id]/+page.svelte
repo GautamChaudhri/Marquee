@@ -76,6 +76,7 @@
 	// Job tracking state
 	let jobBusy = $state(false);
 	let initiatedJobIds = $state<string[]>([]);
+	let scopeActive = $state(false);
 
 	function openGenerateModal(scope: 'series' | 'season' | 'episode', opts: any = {}) {
 		generateScope = scope;
@@ -184,7 +185,11 @@
 				</div>
 
 				<div class="header-actions">
-					<button class="btn secondary" onclick={() => runDeepScan(null)} disabled={jobBusy}>
+					<button
+						class="btn secondary"
+						onclick={() => runDeepScan(null)}
+						disabled={jobBusy || scopeActive}
+					>
 						🔍 Deep Scan All
 					</button>
 					<button
@@ -192,7 +197,7 @@
 						onclick={() =>
 							detail &&
 							openGenerateModal('series', { audioLanguages: detail.rollup.missing_languages })}
-						disabled={jobBusy}
+						disabled={jobBusy || scopeActive}
 					>
 						⚡ Generate All Subtitles
 					</button>
@@ -234,8 +239,25 @@
 
 		<FeatureActivityPanel
 			scopeKey={`feature:audio-subtitles:series:${detail.series.id}`}
-			query={{ feature_area: 'audio_subtitles' }}
+			query={{
+				feature_area: 'audio_subtitles',
+				types: [
+					'audio_remove',
+					'audio_reorder',
+					'subtitle_embed',
+					'subtitle_extract',
+					'subtitle_generate',
+					'subtitle_metadata',
+					'subtitle_policy',
+					'subtitle_remove',
+					'subtitle_restore',
+					'subtitle_scan'
+				],
+				subject_kind: 'series',
+				subject_reference: [String(detail.series.id)]
+			}}
 			jobIds={initiatedJobIds}
+			bind:active={scopeActive}
 			heading="Series audio and subtitle activity"
 			onSettled={handleJobSettled}
 		/>
@@ -294,7 +316,7 @@
 							<button
 								class="btn secondary btn-xs"
 								onclick={() => runDeepScan(season.season_number)}
-								disabled={jobBusy}
+								disabled={jobBusy || scopeActive}
 							>
 								🔍 Scan Season
 							</button>
@@ -305,7 +327,7 @@
 										seasonNumber: season.season_number,
 										audioLanguages: season.rollup.missing_languages
 									})}
-								disabled={jobBusy}
+								disabled={jobBusy || scopeActive}
 							>
 								⚡ Generate Subtitles
 							</button>
@@ -373,7 +395,7 @@
 													mediaFileId: ep.media_file_id,
 													audioLanguages: ep.audio_languages
 												})}
-											disabled={!ep.media_file_id || jobBusy}
+											disabled={!ep.media_file_id || jobBusy || scopeActive}
 											title="Generate Subtitles"
 										>
 											⚡

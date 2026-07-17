@@ -62,7 +62,16 @@ async def test_policy_audit_route_submits_snapshot_job_and_remains_read_only(
     assert response.status_code == 202
     body = response.json()
     assert body["disposition"] == "created"
-    assert set(body) == {"job_id", "disposition", "phase", "snapshot_url", "detail_url"}
+    assert set(body) == {
+        "job_id",
+        "disposition",
+        "idempotent",
+        "phase",
+        "snapshot_url",
+        "detail_url",
+        "activity_url",
+        "active_conflict",
+    }
 
     job = await db.get(Job, body["job_id"])
     assert job is not None

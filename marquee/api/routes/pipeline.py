@@ -220,7 +220,7 @@ async def run_pipeline(
                 priority=90,
             )
     except IdempotencyConflictError as exc:
-        raise HTTPException(status_code=409, detail=exc.code) from exc
+        raise HTTPException(status_code=409, detail=exc.api_detail) from exc
     except SubmissionError as exc:
         raise HTTPException(status_code=422, detail=exc.code) from exc
     return submission_response(result)
@@ -564,7 +564,7 @@ async def rescan_posters(
                 priority=35,
             )
     except IdempotencyConflictError as exc:
-        raise HTTPException(status_code=409, detail=exc.code) from exc
+        raise HTTPException(status_code=409, detail=exc.api_detail) from exc
     except SubmissionError as exc:
         raise HTTPException(status_code=422, detail=exc.code) from exc
     return submission_response(result)

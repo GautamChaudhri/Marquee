@@ -38,6 +38,7 @@ export function displayJobLabel(job: {
 	const library = job.payload?.library;
 	if (job.type === 'taste_rebuild' && library === 'tv') return 'Taste rebuild (TV)';
 	if (job.type === 'taste_map' && library === 'tv') return 'Taste map (TV)';
+	if (job.type === 'taste_enrich' && library === 'tv') return 'Taste enrichment (TV)';
 	if (job.type === 'learned_head_train' && library === 'tv') return 'Taste head train (TV)';
 	if (job.subject?.type === 'dovi_tv_batch') return 'DoVi analysis (TV)';
 

@@ -164,6 +164,13 @@ export interface ScopeView {
 	readonly nextCursor: string | null;
 }
 
+export interface ScopeActivityState {
+	readonly active: boolean;
+	/** Matching active work that makes a same-scope unsafe action conflict server-side. */
+	readonly conflicting: boolean;
+	readonly activeJobIds: readonly string[];
+}
+
 export class JobProgressStore {
 	connection = $state<ConnectionState>('initial');
 	lastSuccessAt = $state<number | null>(null);
@@ -224,6 +231,22 @@ export class JobProgressStore {
 		return view.jobIds
 			.map((jobId) => this.records.get(jobId))
 			.filter((record): record is JobRecord => record !== undefined);
+	}
+
+	/** Server-derived action authority for an exact scope plus newly submitted job ids. */
+	activityForScope(key: string, additionalJobIds: readonly string[] = []): ScopeActivityState {
+		const ids = new SvelteSet(this.scopeViews.get(key)?.jobIds ?? []);
+		for (const jobId of additionalJobIds) ids.add(jobId);
+		const activeJobIds = [...ids].filter((jobId) => {
+			const record = this.records.get(jobId);
+			const phase = record?.snapshot?.phase ?? record?.row?.status.phase;
+			return phase !== undefined && phase !== 'terminal';
+		});
+		return {
+			active: activeJobIds.length > 0,
+			conflicting: activeJobIds.length > 0,
+			activeJobIds
+		};
 	}
 
 	/** Load the next stable server cursor for a scope, if one exists. */

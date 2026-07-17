@@ -7,7 +7,7 @@ export const load: PageLoad = async ({ fetch, url }) => {
 	try {
 		const [status, mapData, profiles, heads] = await Promise.all([
 			getTasteStatus(fetch, library),
-			getTasteMap(fetch, false, library).catch(() => null as TasteMapData | null),
+			getTasteMap(fetch, library).catch(() => null as TasteMapData | null),
 			getTasteProfiles(fetch, library)
 				.then((value) => value.profiles)
 				.catch(() => [] as ManagedArtifactSummary[]),

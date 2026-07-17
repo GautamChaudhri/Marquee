@@ -61,6 +61,8 @@
 
 	let detecting = $state(false);
 	let initiatedJobIds = $state<string[]>([]);
+	let scopeActive = $state(false);
+	const actionBusy = $derived(busy || scopeActive);
 
 	function resetReencodeState() {
 		detecting = false;
@@ -425,8 +427,14 @@
 	{#if movieId != null}
 		<FeatureActivityPanel
 			scopeKey={`feature:letterbox:movie:${movieId}`}
-			query={{ feature_area: 'letterbox', subject_kind: 'movie', subject_id: String(movieId) }}
+			query={{
+				feature_area: 'letterbox',
+				types: ['letterbox_detect', 'letterbox_apply', 'letterbox_remove', 'letterbox_reencode'],
+				subject_kind: 'movie',
+				subject_reference: [String(movieId)]
+			}}
 			jobIds={initiatedJobIds}
+			bind:active={scopeActive}
 			heading="Movie letterbox activity"
 			onSettled={handleJobSettled}
 		/>
@@ -499,7 +507,7 @@
 					</div>
 					<button
 						class="btn-sec"
-						disabled={busy}
+						disabled={actionBusy}
 						onclick={() => run(() => restoreOriginal(fetch, a.id), 'Restore queued')}
 					>
 						Restore original →
@@ -588,7 +596,7 @@
 					{#if reencodeMode === null && method === 'quick'}
 						<button
 							class="btn-gold"
-							disabled={busy}
+							disabled={actionBusy}
 							onclick={() => run(() => applyLetterbox(fetch, id!), 'Crop tag applied')}
 						>
 							Apply crop tag →
@@ -635,10 +643,12 @@
 								{/if}
 							</dl>
 						</div>
-						<button class="btn-gold" disabled={busy} onclick={doReplace}>
+						<button class="btn-gold" disabled={actionBusy} onclick={doReplace}>
 							Replace original →
 						</button>
-						<button class="btn-ghost" disabled={busy} onclick={doDiscard}>Discard candidate</button>
+						<button class="btn-ghost" disabled={actionBusy} onclick={doDiscard}
+							>Discard candidate</button
+						>
 						<div class="note good">
 							The original is preserved under <span class="mono">.marquee/backups</span> after replacement
 							— reversible later.
@@ -681,7 +691,7 @@
 						{#each plan?.warnings ?? [] as w (w.code)}
 							<div class="note {w.requires_confirmation ? 'warn' : ''}">{w.message}</div>
 						{/each}
-						<button class="btn-gold" disabled={busy} onclick={startEncode}>
+						<button class="btn-gold" disabled={actionBusy} onclick={startEncode}>
 							Confirm & encode →
 						</button>
 						<div class="note">
@@ -829,7 +839,7 @@
 							<div class="note {w.requires_confirmation ? 'warn' : ''}">{w.message}</div>
 						{/each}
 
-						<button class="btn-gold" disabled={busy} onclick={startEncode}>
+						<button class="btn-gold" disabled={actionBusy} onclick={startEncode}>
 							Confirm & encode →
 						</button>
 						<button class="btn-ghost" onclick={() => selectMethod('quick')}>Cancel</button>
@@ -857,7 +867,7 @@
 					>
 						Remove tag · revert
 					</button>
-					<button class="btn-ghost" disabled={busy || detecting} onclick={startReprocess}>
+					<button class="btn-ghost" disabled={actionBusy || detecting} onclick={startReprocess}>
 						Reprocess with new settings
 					</button>
 					<div class="note good">
@@ -877,7 +887,7 @@
 					>
 						Remove tag
 					</button>
-					<button class="btn-ghost" disabled={busy || detecting} onclick={startReprocess}>
+					<button class="btn-ghost" disabled={actionBusy || detecting} onclick={startReprocess}>
 						Reprocess
 					</button>
 				{/if}
@@ -1043,7 +1053,7 @@
 					<button class="btn-gold" onclick={onAnalyzeAll} disabled={analyzing}>
 						<Icon name="refresh" size={15} /> Analyze all candidates
 					</button>
-					<button class="btn-sec" disabled={busy || detecting} onclick={startDetection}>
+					<button class="btn-sec" disabled={actionBusy || detecting} onclick={startDetection}>
 						{detecting ? 'Analyzing…' : 'Analyze this film only'}
 					</button>
 					<button
@@ -1070,14 +1080,18 @@
 							{#if detectedAtLabel}last analyzed {detectedAtLabel}{/if}
 						</div>
 					{/if}
-					<button class="btn-sec" disabled={busy || detecting} onclick={startDetection}>
+					<button class="btn-sec" disabled={actionBusy || detecting} onclick={startDetection}>
 						{detecting ? 'Analyzing…' : 'Re-detect'}
 					</button>
-					<button class="btn-gold" disabled={busy || detecting} onclick={startThoroughDetection}>
+					<button
+						class="btn-gold"
+						disabled={actionBusy || detecting}
+						onclick={startThoroughDetection}
+					>
 						{detecting ? 'Analyzing…' : 'Re-analyze (thorough)'}
 					</button>
 				{:else}
-					<button class="btn-sec" disabled={busy || detecting} onclick={startDetection}>
+					<button class="btn-sec" disabled={actionBusy || detecting} onclick={startDetection}>
 						{detecting ? 'Analyzing…' : 'Re-detect'}
 					</button>
 				{/if}

@@ -131,7 +131,7 @@ async def _submit_poster_reset(
         )
         await db.commit()
     except IdempotencyConflictError as exc:
-        raise HTTPException(status_code=409, detail=exc.code) from exc
+        raise HTTPException(status_code=409, detail=exc.api_detail) from exc
     except SubmissionError as exc:
         raise HTTPException(status_code=422, detail=exc.code) from exc
     return submission_response(result)

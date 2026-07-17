@@ -22,6 +22,7 @@
 	let analyzing = $state(false);
 	let converting = $state(false);
 	let initiatedJobIds = $state<string[]>([]);
+	let scopeActive = $state(false);
 
 	let conversionResult = $derived(detail?.conversion_candidate ?? null);
 
@@ -140,8 +141,14 @@
 	{:else}
 		<FeatureActivityPanel
 			scopeKey={`feature:hdr:movie:${movie.id}`}
-			query={{ feature_area: 'hdr', subject_kind: 'movie', subject_id: String(movie.id) }}
+			query={{
+				feature_area: 'hdr',
+				types: ['dovi_analyze', 'dovi_convert', 'dovi_publish', 'dovi_restore', 'dovi_discard'],
+				subject_kind: 'movie',
+				subject_reference: [String(movie.id)]
+			}}
 			jobIds={initiatedJobIds}
+			bind:active={scopeActive}
 			heading="Movie HDR activity"
 			onSettled={handleJobSettled}
 		/>
@@ -209,7 +216,7 @@
 				<div class="card-head">
 					<h2>Dolby Vision</h2>
 					{#if detail.binaries.ffprobe}
-						<button class="analyze" onclick={runAnalyze} disabled={analyzing}>
+						<button class="analyze" onclick={runAnalyze} disabled={analyzing || scopeActive}>
 							{dovi ? 'Re-analyze' : 'Analyze DoVi'}
 						</button>
 					{/if}
@@ -290,6 +297,7 @@
 							<button
 								class="convert"
 								disabled={converting ||
+									scopeActive ||
 									!detail.binaries.ffprobe ||
 									!detail.binaries.ffmpeg ||
 									!detail.binaries.dovi_tool}

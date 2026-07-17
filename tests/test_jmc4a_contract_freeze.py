@@ -79,13 +79,14 @@ def test_canonical_schema_registry_and_execution_inventory_is_frozen() -> None:
     assert {model.__tablename__: list(model.__table__.columns.keys()) for model in models} == frozen[
         "models"
     ]
-    assert len(JOB_DEFINITION_REGISTRY) == frozen["registry"]["definition_count"] + 12
+    assert len(JOB_DEFINITION_REGISTRY) == frozen["registry"]["definition_count"] + 13
     poster_leaves = {
         "subtitle_policy",
         "subtitle_restore",
         "subtitle_generate",
         "subtitle_extract",
         "subtitle_embed",
+        "taste_enrich",
         # JMC5B B2 track mutations.
         "audio_remove",
         "track_remove",

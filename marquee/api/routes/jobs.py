@@ -367,8 +367,10 @@ async def list_jobs(
     q: Annotated[str | None, Query(max_length=100)] = None,
     feature_area: FeatureArea | None = None,
     type: str | None = None,
+    types: Annotated[list[str] | None, Query()] = None,
     subject_kind: str | None = None,
     subject_id: Annotated[str | None, Query(max_length=64)] = None,
+    subject_reference: Annotated[list[str] | None, Query()] = None,
     phase: str | None = None,
     outcome: str | None = None,
     attention: AttentionLevel | None = None,
@@ -390,6 +392,30 @@ async def list_jobs(
         )
     if type is not None and type not in JOB_DEFINITION_REGISTRY.types:
         raise _error(422, ERROR_INVALID_FILTER, f"unknown job type {type!r}")
+    if type is not None and types:
+        raise _error(422, ERROR_INVALID_FILTER, "type and types cannot be combined")
+    if types:
+        if len(types) > 32 or len(set(types)) != len(types):
+            raise _error(422, ERROR_INVALID_FILTER, "types must contain 1..32 unique values")
+        unknown_types = sorted(set(types) - JOB_DEFINITION_REGISTRY.types)
+        if unknown_types:
+            raise _error(422, ERROR_INVALID_FILTER, f"unknown job type {unknown_types[0]!r}")
+    if subject_id is not None and subject_reference:
+        raise _error(
+            422,
+            ERROR_INVALID_FILTER,
+            "subject_id and subject_reference cannot be combined",
+        )
+    if subject_reference and (
+        len(subject_reference) > 32
+        or len(set(subject_reference)) != len(subject_reference)
+        or any(not value or len(value) > 64 for value in subject_reference)
+    ):
+        raise _error(
+            422,
+            ERROR_INVALID_FILTER,
+            "subject_reference must contain 1..32 unique bounded values",
+        )
     if phase is not None and (view == "history" or phase not in _QUEUE_PHASES):
         raise _error(422, ERROR_INVALID_FILTER, "phase filters apply to queue phases only")
     if outcome is not None:
@@ -405,8 +431,10 @@ async def list_jobs(
         "q": q,
         "feature_area": feature_area.value if feature_area else None,
         "type": type,
+        "types": sorted(types) if types else None,
         "subject_kind": subject_kind,
         "subject_id": subject_id,
+        "subject_reference": sorted(subject_reference) if subject_reference else None,
         "phase": phase,
         "outcome": outcome,
         "attention": attention.value if attention else None,
@@ -436,10 +464,14 @@ async def list_jobs(
         query = query.where(Job.feature_area == feature_area.value)
     if type:
         query = query.where(Job.type == type)
+    if types:
+        query = query.where(Job.type.in_(types))
     if subject_kind:
         query = query.where(Job.subject_kind == subject_kind)
     if subject_id:
         query = query.where(Job.subject_reference == subject_id)
+    if subject_reference:
+        query = query.where(Job.subject_reference.in_(subject_reference))
     if phase:
         query = query.where(Job.phase == phase)
     if outcome:

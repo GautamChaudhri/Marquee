@@ -88,13 +88,14 @@ def _legacy_bypass_calls() -> dict[str, int]:
 
 def test_registry_and_execution_handlers_match_freeze() -> None:
     frozen = _freeze()
-    assert len(JOB_DEFINITION_REGISTRY) == frozen["registry"]["definition_count"] + 12
+    assert len(JOB_DEFINITION_REGISTRY) == frozen["registry"]["definition_count"] + 13
     poster_leaves = {
         "subtitle_policy",
         "subtitle_restore",
         "subtitle_generate",
         "subtitle_extract",
         "subtitle_embed",
+        "taste_enrich",
         # JMC5B B2 track mutations.
         "audio_remove",
         "track_remove",

@@ -165,7 +165,7 @@ async def test_dynamic_open_append_retry_and_permanent_seal(
             child=_child("dynamic-lifecycle-0"),
         )
         assert first.disposition == "created"
-        assert repeated == replace(first, disposition="reused")
+        assert repeated == replace(first, disposition="reused", idempotent=True)
         with pytest.raises(IdempotencyConflictError, match="semantic intent"):
             await append_dynamic_child(
                 db,

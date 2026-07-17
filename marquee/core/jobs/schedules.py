@@ -396,6 +396,8 @@ async def _poster_heal_batch(
             phase=existing.phase,
             snapshot_link=f"/api/jobs/{existing.id}/snapshot",
             detail_link=f"/projection-room/jobs/{existing.id}",
+            activity_link=f"/projection-room?view=queue&job={existing.id}",
+            idempotent=True,
         )
     active = await session.scalar(
         select(Job)
@@ -411,6 +413,8 @@ async def _poster_heal_batch(
             phase=active.phase,
             snapshot_link=f"/api/jobs/{active.id}/snapshot",
             detail_link=f"/projection-room/jobs/{active.id}",
+            activity_link=f"/projection-room?view=queue&job={active.id}",
+            idempotent=True,
         )
     from marquee.core.jobs.poster_parents import create_poster_parent  # noqa: PLC0415
 

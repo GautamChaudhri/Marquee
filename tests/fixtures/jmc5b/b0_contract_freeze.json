@@ -122,6 +122,7 @@
       "subtitle_scan",
       "system_metrics_purge",
       "system_noop",
+      "taste_enrich",
       "taste_map",
       "taste_rebuild",
       "track_remove"
@@ -156,6 +157,7 @@
       "subtitle_scan",
       "system_metrics_purge",
       "system_noop",
+      "taste_enrich",
       "taste_map",
       "taste_rebuild",
       "track_remove"
@@ -203,7 +205,9 @@
       "radarr_upgrade",
       "subtitle_generate_batch",
       "subtitle_policy_audit",
+      "subtitle_scan",
       "subtitle_scan_all",
+      "taste_enrich",
       "taste_map",
       "taste_rebuild"
     ],

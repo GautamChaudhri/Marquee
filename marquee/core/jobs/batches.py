@@ -96,6 +96,8 @@ def _submission_result(
         phase=job.phase,
         snapshot_link=f"/api/jobs/{job.id}/snapshot",
         detail_link=f"/projection-room/jobs/{job.id}",
+        activity_link=f"/projection-room?view=queue&job={job.id}",
+        idempotent=disposition == "reused",
     )
 
 

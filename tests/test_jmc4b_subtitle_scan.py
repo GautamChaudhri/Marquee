@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 
 import pytest
 
 from marquee.core.jobs.handlers_subtitles import execute_subtitle_scan
 from marquee.core.jobs.manifest import JOB_DEFINITION_REGISTRY
+from marquee.core.subtitles import service
 from marquee.database import _get_session_factory
 from marquee.models import Job, MediaFile, SubtitleInventory
 
@@ -20,6 +22,66 @@ def test_subtitle_scan_definition_is_enabled_read_only_media_read() -> None:
     assert definition.progress_policy.strategy.value == "indeterminate"
     assert definition.progress_policy.stage_keys == {"probing", "inventorying"}
     assert JOB_DEFINITION_REGISTRY.for_dispatch("subtitle_scan", entrypoint="media_read").enabled
+
+
+@pytest.mark.asyncio
+async def test_single_file_scan_route_submits_canonical_job(db, monkeypatch) -> None:
+    async def fake_resolve(_db, media_file_id: int):
+        assert media_file_id == 42
+        return SimpleNamespace(media_file_id=42)
+
+    async def fake_submit(_db, **kwargs):
+        assert kwargs["job_type"] == "subtitle_scan"
+        assert kwargs["request"] == {"force": False}
+        assert kwargs["subject"].kind == "media_file"
+        assert kwargs["subject"].reference == "42"
+        return SimpleNamespace(
+            job_id="subtitle-scan-job",
+            disposition="created",
+            idempotent=False,
+            phase="queued",
+            snapshot_link="/api/jobs/subtitle-scan-job/snapshot",
+            detail_link="/projection-room/jobs/subtitle-scan-job",
+            activity_link="/projection-room?view=queue&job=subtitle-scan-job",
+        )
+
+    monkeypatch.setattr("marquee.api.routes.subtitles.resolve_media_file", fake_resolve)
+    monkeypatch.setattr("marquee.api.routes.subtitles.submit_job", fake_submit)
+    monkeypatch.setattr(
+        "marquee.core.subtitles.service.get_inventory_dict",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("scan route executed legacy inline inventory work")
+        ),
+    )
+
+    from marquee.api.routes.subtitles import scan_subtitles
+
+    response = await scan_subtitles(42, db, None)
+
+    assert response.job_id == "subtitle-scan-job"
+    assert response.idempotent is False
+
+
+@pytest.mark.asyncio
+async def test_equivalent_single_file_scan_requests_reuse_active_job(
+    db, installed_pgqueuer, monkeypatch
+) -> None:
+    media_file = MediaFile(source="radarr", source_key="mf-route-overlap", path="/media/z.mkv")
+    db.add(media_file)
+    await db.commit()
+
+    async def fake_resolve(_db, media_file_id: int):
+        return SimpleNamespace(media_file_id=media_file_id)
+
+    monkeypatch.setattr("marquee.api.routes.subtitles.resolve_media_file", fake_resolve)
+    from marquee.api.routes.subtitles import scan_subtitles
+
+    first = await scan_subtitles(media_file.id, db, None)
+    second = await scan_subtitles(media_file.id, db, None)
+
+    assert second.job_id == first.job_id
+    assert first.idempotent is False
+    assert second.idempotent is True
 
 
 @pytest.mark.asyncio
@@ -102,6 +164,87 @@ async def test_subtitle_scan_force_bypasses_no_change(
     )
     with pytest.raises(AssertionError, match="probe should have run"):
         await execute_subtitle_scan(context)  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_subtitle_scan_honors_cancellation_before_io() -> None:
+    context = SimpleNamespace(cancellation=SimpleNamespace(cancel_called=True))
+    with pytest.raises(asyncio.CancelledError):
+        await execute_subtitle_scan(context)  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_subtitle_scan_failure_preserves_prior_inventory(
+    db, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    media_file = MediaFile(source="radarr", source_key="mf-failure", path="/media/failure.mkv")
+    db.add(media_file)
+    await db.commit()
+    existing = SubtitleInventory(
+        media_file_id=media_file.id,
+        file_signature="known-good",
+        error=None,
+        container="matroska",
+    )
+    db.add(existing)
+    await db.commit()
+
+    async def fake_resolve(_session, _media_file_id):
+        return SimpleNamespace(path="/media/failure.mkv", signature="changed")
+
+    async def fake_tool(*_args, **_kwargs):
+        return None
+
+    async def fake_emit(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr("marquee.core.jobs.handlers_subtitles.resolve_media_file", fake_resolve)
+    monkeypatch.setattr("marquee.core.jobs.handlers_subtitles._run_tool_json", fake_tool)
+    monkeypatch.setattr("marquee.core.jobs.handlers_subtitles._emit", fake_emit)
+    context = SimpleNamespace(
+        cancellation=SimpleNamespace(cancel_called=False),
+        subject={"media_file_id": media_file.id},
+        request={"force": True},
+        session_factory=_get_session_factory(),
+    )
+
+    with pytest.raises(Exception, match="could not be probed"):
+        await execute_subtitle_scan(context)  # type: ignore[arg-type]
+
+    await db.refresh(existing)
+    assert existing.file_signature == "known-good"
+    assert existing.error is None
+
+
+@pytest.mark.asyncio
+async def test_inventory_read_never_scans_and_marks_signature_drift(
+    db, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    media_file = MediaFile(source="radarr", source_key="mf-read-only", path="/media/read.mkv")
+    db.add(media_file)
+    await db.commit()
+    db.add(
+        SubtitleInventory(
+            media_file_id=media_file.id,
+            file_signature="old-signature",
+            error=None,
+            container="matroska",
+        )
+    )
+    await db.commit()
+
+    async def fake_resolve(_db, _media_file_id):
+        return SimpleNamespace(signature="new-signature")
+
+    async def must_not_scan(*_args, **_kwargs):
+        raise AssertionError("inventory GET attempted inline scanning")
+
+    monkeypatch.setattr(service, "resolve_media_file", fake_resolve)
+    monkeypatch.setattr(service, "scan_inventory", must_not_scan)
+
+    payload = await service.get_inventory_dict(db, media_file.id)
+
+    assert payload["stale"] is True
 
 
 @pytest.mark.asyncio

@@ -11,13 +11,17 @@
 		query,
 		jobIds = [],
 		heading = 'Active work',
-		onSettled
+		onSettled,
+		active = $bindable(false),
+		conflicting = $bindable(false)
 	}: {
 		scopeKey: string;
 		query: ListJobsQuery;
 		jobIds?: string[];
 		heading?: string;
 		onSettled?: (snapshot: JobSnapshotResponse) => void | Promise<void>;
+		active?: boolean;
+		conflicting?: boolean;
 	} = $props();
 
 	const store = getJobProgressStore();
@@ -42,6 +46,12 @@
 					]
 				: []
 		);
+	});
+	const activityState = $derived(store.activityForScope(scopeKey, jobIds));
+
+	$effect(() => {
+		active = activityState.active;
+		conflicting = activityState.conflicting;
 	});
 
 	onMount(() => {
@@ -78,7 +88,12 @@
 </script>
 
 {#if records.length}
-	<section class="feature-activity" aria-label={heading}>
+	<section
+		class="feature-activity"
+		aria-label={heading}
+		data-active={active}
+		data-conflicting={conflicting}
+	>
 		<header>
 			<h2>{heading}</h2>
 			<a href="/projection-room">Open Activity</a>
