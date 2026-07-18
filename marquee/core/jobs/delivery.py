@@ -19,11 +19,19 @@ from pgqueuer.models import Job as PgQueuerJob
 from sqlalchemy import func, select, update
 
 from marquee.config import settings
-from marquee.core.jobs.artifact_service import register_virtual_artifact
+from marquee.core.jobs.artifact_service import (
+    artifact_boundary,
+    register_existing_physical_artifact,
+    register_physical_artifact,
+    register_validation_result_artifact,
+    register_virtual_artifact,
+)
 from marquee.core.jobs.batches import project_active_child
 from marquee.core.jobs.contracts import EffectSafety
 from marquee.core.jobs.definitions import JobDefinition
 from marquee.core.jobs.event_service import job_event_writer
+from marquee.core.jobs.execution_io import ExecutionIO
+from marquee.core.jobs.execution_progress import ExecutionProgress
 from marquee.core.jobs.fenced_writer import (
     AttemptOwnership,
     FencedWriter,
@@ -32,10 +40,9 @@ from marquee.core.jobs.fenced_writer import (
 from marquee.core.jobs.log_capture import AttemptLogSink
 from marquee.core.jobs.manifest import JOB_DEFINITION_REGISTRY
 from marquee.core.jobs.orphan_reconciliation import assess_candidate, candidate_for_attempt
+from marquee.core.jobs.policies import RetryClassification
 from marquee.core.jobs.process_identity import read_boot_id
 from marquee.core.jobs.process_launcher import ProcessLauncher
-from marquee.core.jobs.progress import MeasurementMode, ProgressMeasurementUpdate
-from marquee.core.jobs.progress_service import ProgressObservation, progress_writer
 from marquee.core.jobs.safety_gates import (
     SafetyGateCancelledError,
     SafetyGateHandle,
@@ -43,6 +50,7 @@ from marquee.core.jobs.safety_gates import (
     SafetyRequirements,
     requirements_for_policy,
 )
+from marquee.core.jobs.terminal_decision import TerminalDecision, WorkspaceDisposition
 from marquee.core.jobs.workspaces import AttemptWorkspace, AttemptWorkspaceManager
 from marquee.database import _get_session_factory
 from marquee.models import RuntimeInstance
@@ -54,6 +62,10 @@ logger = logging.getLogger(__name__)
 
 class DeliveryRejectedError(RuntimeError):
     """Raise to make PgQueuer hold malformed or unsafe work."""
+
+
+class HandlerExecutionTimeoutError(TimeoutError):
+    """The definition-owned handler execution deadline expired."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,6 +124,8 @@ class ExecutionContext:
     safety_gates: SafetyGateHandle
     workspace: AttemptWorkspace
     process_launcher: ProcessLauncher
+    progress: ExecutionProgress
+    io: ExecutionIO
     log_sink: AttemptLogSink | None
     writer: FencedWriter
     # Domain-projection session factory. Handlers open short, idempotent transactions to
@@ -640,21 +654,7 @@ async def execute_system_noop(context: ExecutionContext) -> dict[str, Any]:
     """The only production handler; it has no ORM, transport row, or path authority."""
     if context.cancellation.cancel_called:
         raise asyncio.CancelledError
-    await progress_writer.safe_write(
-        job_id=context.delivery.canonical_job_id,
-        attempt_id=context.attempt.attempt_id,
-        fence_token=context.attempt.fence_token,
-        observation=ProgressObservation(
-            stage_key="execute",
-            overall=ProgressMeasurementUpdate(
-                scope_id="system-noop:overall", mode=MeasurementMode.NONE
-            ),
-            current=ProgressMeasurementUpdate(
-                scope_id="system-noop:current", mode=MeasurementMode.NONE
-            ),
-            producer_ordinal=1,
-        ),
-    )
+    await context.progress.stage("execute")
     return {
         "outcome": "succeeded",
         "summary": {"echo": context.request.get("echo")},
@@ -684,19 +684,62 @@ async def _execute_delivery(execution: ExecutionContext) -> dict[str, Any]:
     handler = EXECUTION_HANDLERS.get(execution.definition.job_type)
     if handler is None:
         raise DeliveryRejectedError("enabled definition has no execution handler")
-    return await handler(execution)
+    try:
+        async with asyncio.timeout(execution.definition.timeout.seconds):
+            return await handler(execution)
+    except TimeoutError as exc:
+        raise HandlerExecutionTimeoutError(
+            f"{execution.definition.job_type} exceeded its execution timeout"
+        ) from exc
 
 
-async def _seal_attempt_log(log_sink: AttemptLogSink | None, *, outcome: str) -> None:
+async def _seal_attempt_log(
+    log_sink: AttemptLogSink | None,
+    *,
+    outcome: str,
+    attempt_outcome: str | None = None,
+    summary: str | None = None,
+) -> bool:
     if log_sink is None:
-        return
-    with contextlib.suppress(Exception):
+        return False
+    try:
         await log_sink.write(
             source="system",
             message="Attempt execution ended; sealing captured evidence.",
-            fields={"outcome": outcome},
+            fields={
+                "job_outcome": outcome,
+                "attempt_outcome": attempt_outcome or outcome,
+                "summary": summary,
+            },
         )
         await log_sink.seal()
+        return True
+    except Exception:
+        logger.error("Attempt log evidence could not be sealed", exc_info=True)
+        return False
+
+
+async def _record_evidence_degradation(
+    ownership: AttemptOwnership,
+    *,
+    event_key: Literal["artifact.failed", "log.truncated"],
+    source: str,
+) -> None:
+    with contextlib.suppress(Exception):
+        factory = _get_session_factory()
+        async with factory() as session, session.begin():
+            job = await session.get(Job, ownership.job_id)
+            if job is not None:
+                await job_event_writer.append(
+                    session,
+                    job_id=ownership.job_id,
+                    attempt_id=ownership.attempt_id,
+                    event_key=event_key,
+                    state=job.outcome or job.phase,
+                    message="Canonical terminal evidence requires bounded repair",
+                    detail={"source": source, "retryable": True},
+                    canonical_version=ownership.fence_token,
+                )
 
 
 async def _register_terminal_artifact(
@@ -713,6 +756,98 @@ async def _register_terminal_artifact(
         )
     except Exception:
         logger.error("Canonical %s artifact registration failed", source, exc_info=True)
+        await _record_evidence_degradation(
+            ownership, event_key="artifact.failed", source=source
+        )
+
+
+def _result_physical_evidence(value: Any):
+    if isinstance(value, dict):
+        checksum = value.get("checksum")
+        size_bytes = value.get("size_bytes")
+        if (
+            isinstance(value.get("artifact_key"), str)
+            and isinstance(checksum, str)
+            and isinstance(size_bytes, int)
+        ):
+            yield (
+                "product_backup",
+                value["artifact_key"],
+                checksum,
+                size_bytes,
+                "Recoverable product backup",
+            )
+        elif (
+            isinstance(value.get("managed_asset_id"), str)
+            and isinstance(value.get("storage_key"), str)
+            and isinstance(checksum, str)
+            and isinstance(size_bytes, int)
+        ):
+            yield (
+                "managed_sidecar",
+                value["storage_key"],
+                checksum,
+                size_bytes,
+                "Managed subtitle sidecar",
+            )
+        for child in value.values():
+            yield from _result_physical_evidence(child)
+    elif isinstance(value, list | tuple):
+        for child in value:
+            yield from _result_physical_evidence(child)
+
+
+async def _register_result_evidence(
+    ownership: AttemptOwnership, result: Mapping[str, Any]
+) -> None:
+    """Register post-terminal physical and validation evidence without rerunning product work."""
+    boundary = artifact_boundary(settings.DATA_DIR)
+    seen: set[str] = set()
+    for kind, key, checksum, size_bytes, name in _result_physical_evidence(result):
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            source = boundary.from_key("data", key)
+            if kind == "managed_sidecar":
+                await register_physical_artifact(
+                    job_id=ownership.job_id,
+                    attempt_id=ownership.attempt_id,
+                    fence_token=ownership.fence_token,
+                    source=source,
+                    kind=kind,
+                    name=name,
+                    content_type="application/x-subrip",
+                    retention_class="extended",
+                    metadata={"product_storage_key": key, "product_checksum": checksum},
+                )
+            else:
+                await register_existing_physical_artifact(
+                    job_id=ownership.job_id,
+                    attempt_id=ownership.attempt_id,
+                    fence_token=ownership.fence_token,
+                    source=source,
+                    kind=kind,
+                    name=name,
+                    checksum=checksum,
+                    size_bytes=size_bytes,
+                )
+        except Exception:
+            logger.error("Product evidence registration failed", exc_info=True)
+            await _record_evidence_degradation(
+                ownership, event_key="artifact.failed", source=kind
+            )
+    try:
+        await register_validation_result_artifact(
+            job_id=ownership.job_id,
+            attempt_id=ownership.attempt_id,
+            fence_token=ownership.fence_token,
+        )
+    except Exception:
+        logger.error("Validation evidence registration failed", exc_info=True)
+        await _record_evidence_degradation(
+            ownership, event_key="artifact.failed", source="validation"
+        )
 
 
 async def deliver_job(
@@ -795,6 +930,19 @@ async def deliver_job(
             pipe_sink=log_sink.feed_pipe if log_sink is not None else None,
             capture_limit=0 if log_sink is not None else 64 * 1024,
         )
+        execution_progress = ExecutionProgress.create(
+            job_id=admitted.delivery.canonical_job_id,
+            attempt_id=admitted.attempt.attempt_id,
+            fence_token=admitted.attempt.fence_token,
+            definition=admitted.definition,
+            subject=dict(admitted.subject),
+        )
+        session_factory = _get_session_factory()
+
+        async def owns_execution_fence() -> bool:
+            async with session_factory() as session:
+                return await writer.owns_current_attempt(session)
+
         execution = ExecutionContext(
             delivery=admitted.delivery,
             attempt=admitted.attempt,
@@ -806,29 +954,132 @@ async def deliver_job(
             safety_gates=gates,
             workspace=workspace,
             process_launcher=process_launcher,
+            progress=execution_progress,
+            io=ExecutionIO(
+                cancelled=lambda: bool(context.cancellation.cancel_called),
+                owns_fence=owns_execution_fence,
+                progress=execution_progress.io_bytes,
+            ),
             log_sink=log_sink,
             writer=writer,
-            session_factory=_get_session_factory(),
+            session_factory=session_factory,
         )
         try:
+            await execution.progress.stage(execution.definition.progress_policy.stages[0][0])
             if log_sink is None:
                 result = await _execute_delivery(execution)
             else:
                 async with log_sink.capture_python_logs():
                     result = await _execute_delivery(execution)
-        except RetryRequested as exc:
-            await asyncio.shield(
-                process_launcher.shutdown(
-                    cooperative_seconds=settings.JOB_PROCESS_COOPERATIVE_SECONDS,
-                    term_seconds=settings.JOB_PROCESS_TERM_SECONDS,
+        except Exception as exc:
+            reason = (
+                exc.reason or "retry requested"
+                if isinstance(exc, RetryRequested)
+                else str(exc)
+            )
+            try:
+                await asyncio.shield(
+                    process_launcher.shutdown(
+                        cooperative_seconds=settings.JOB_PROCESS_COOPERATIVE_SECONDS,
+                        term_seconds=settings.JOB_PROCESS_TERM_SECONDS,
+                    )
                 )
+            except Exception as shutdown_exc:
+                await writer.unsafe(
+                    "Owned process death could not be proven after execution failure",
+                    code="process_death_uncertain",
+                    stage="retry_classification",
+                )
+                await _seal_attempt_log(
+                    log_sink,
+                    outcome="unsafe",
+                    attempt_outcome="interrupted",
+                    summary="owned process death could not be proven",
+                )
+                workspace.quarantine(
+                    code="process_death_uncertain",
+                    summary="owned process death could not be proven",
+                )
+                raise DeliveryRejectedError("owned process death is uncertain") from shutdown_exc
+            failure_classification = execution.definition.failure_classifier(exc)
+            retry = execution.definition.retry_policy.classify(
+                failure_classification,
+                execution.attempt.number,
             )
-            await _seal_attempt_log(log_sink, outcome="retrying")
-            workspace.cleanup()
-            await writer.retry(
-                reason=exc.reason or "retry requested",
-                delay_seconds=exc.delay.total_seconds(),
+            if retry.delay_seconds is not None:
+                disposition = await writer.retry(
+                    reason=reason,
+                    delay_seconds=retry.delay_seconds,
+                )
+                if disposition != WriteDisposition.APPLIED:
+                    workspace.quarantine(
+                        code="retry_fence_conflict", summary="retry ownership changed"
+                    )
+                    raise DeliveryRejectedError(
+                        "canonical retry conflicted with current state"
+                    ) from exc
+                await _seal_attempt_log(
+                    log_sink,
+                    outcome="retrying",
+                    attempt_outcome="retrying",
+                    summary=reason,
+                )
+                workspace.cleanup()
+                raise RetryRequested(timedelta(seconds=retry.delay_seconds), reason) from exc
+            if retry.classification == RetryClassification.UNSAFE:
+                disposition = await writer.unsafe(
+                    reason or "execution safety is uncertain",
+                    code="execution_uncertain",
+                    stage="retry_classification",
+                )
+                if disposition == WriteDisposition.APPLIED:
+                    await _seal_attempt_log(
+                        log_sink,
+                        outcome="unsafe",
+                        attempt_outcome="interrupted",
+                        summary=reason or "execution safety is uncertain",
+                    )
+                    await _register_terminal_artifact(ownership, source="error")
+                workspace.quarantine(
+                    code="execution_uncertain",
+                    summary=reason or "execution safety is uncertain",
+                )
+                raise DeliveryRejectedError("execution safety is uncertain") from exc
+            if retry.classification == RetryClassification.CANCELLED:
+                disposition = await writer.fail(exc, cancelled=True)
+                if disposition == WriteDisposition.APPLIED:
+                    await _seal_attempt_log(
+                        log_sink,
+                        outcome="cancelled",
+                        attempt_outcome="cancelled",
+                        summary=reason or "execution cancelled",
+                    )
+                    await _register_terminal_artifact(ownership, source="error")
+                workspace.quarantine(
+                    code="cancelled", summary=reason or "execution cancelled"
+                )
+                raise DeliveryRejectedError("execution classified as cancelled") from exc
+            disposition = await writer.fail(exc)
+            exhausted = failure_classification == RetryClassification.TRANSIENT
+            terminal_summary = (
+                f"automatic retry exhausted: {reason}"
+                if exhausted
+                else f"execution failed: {reason}"
             )
+            if disposition == WriteDisposition.APPLIED:
+                await _seal_attempt_log(
+                    log_sink,
+                    outcome="failed",
+                    attempt_outcome="failed",
+                    summary=terminal_summary,
+                )
+                await _register_terminal_artifact(ownership, source="error")
+            workspace.quarantine(
+                code="retry_exhausted" if exhausted else "failed",
+                summary=terminal_summary,
+            )
+            if exhausted:
+                raise DeliveryRejectedError("automatic retry policy exhausted") from exc
             raise
         except asyncio.CancelledError as exc:
             await asyncio.shield(writer.stopping())
@@ -838,36 +1089,71 @@ async def deliver_job(
                     term_seconds=settings.JOB_PROCESS_TERM_SECONDS,
                 )
             )
-            await asyncio.shield(_seal_attempt_log(log_sink, outcome="cancelled"))
-            workspace.quarantine(code="cancelled", summary="attempt cancelled before publication")
-            await asyncio.shield(writer.fail(exc, cancelled=True))
-            await asyncio.shield(_register_terminal_artifact(ownership, source="error"))
-            raise
-        except Exception as exc:
-            await asyncio.shield(
-                process_launcher.shutdown(
-                    cooperative_seconds=settings.JOB_PROCESS_COOPERATIVE_SECONDS,
-                    term_seconds=settings.JOB_PROCESS_TERM_SECONDS,
+            disposition = await asyncio.shield(writer.fail(exc, cancelled=True))
+            if disposition == WriteDisposition.APPLIED:
+                await asyncio.shield(
+                    _seal_attempt_log(
+                        log_sink,
+                        outcome="cancelled",
+                        attempt_outcome="cancelled",
+                        summary="attempt cancelled before publication",
+                    )
                 )
-            )
-            await asyncio.shield(_seal_attempt_log(log_sink, outcome="failed"))
-            workspace.quarantine(code="failed", summary="attempt failed before safe cleanup")
-            await writer.fail(exc)
-            await _register_terminal_artifact(ownership, source="error")
+            await asyncio.shield(_register_terminal_artifact(ownership, source="error"))
+            workspace.quarantine(code="cancelled", summary="attempt cancelled before publication")
             raise
         await process_launcher.shutdown(
             cooperative_seconds=settings.JOB_PROCESS_COOPERATIVE_SECONDS,
             term_seconds=settings.JOB_PROCESS_TERM_SECONDS,
         )
-        await _seal_attempt_log(log_sink, outcome="succeeded")
-        disposition = await writer.succeed(result)
+        first_stage = execution.definition.progress_policy.stages[0][0]
+        final_stage = execution.definition.progress_policy.stages[-1][0]
+        if final_stage != first_stage:
+            await execution.progress.stage(final_stage)
+        try:
+            decision: TerminalDecision = writer.terminal_decision(result)
+            disposition = await writer.succeed(result, decision=decision)
+        except Exception as exc:
+            await _seal_attempt_log(
+                log_sink,
+                outcome="unsafe",
+                attempt_outcome="interrupted",
+                summary="terminal result mapping or persistence could not be proven durable",
+            )
+            workspace.quarantine(
+                code="terminal_uncertain",
+                summary="terminal result mapping or persistence could not be proven durable",
+            )
+            raise DeliveryRejectedError("canonical terminal durability is uncertain") from exc
         if disposition != WriteDisposition.APPLIED:
+            await _seal_attempt_log(
+                log_sink,
+                outcome="unsafe",
+                attempt_outcome="interrupted",
+                summary="terminal ownership changed before canonical durability",
+            )
             workspace.quarantine(code="stale_fence", summary="completion ownership changed")
-            if disposition == WriteDisposition.CONFLICT:
-                raise DeliveryRejectedError("canonical completion conflicted with current state")
-            return
+            raise DeliveryRejectedError("canonical completion conflicted with current state")
+        log_sealed = await _seal_attempt_log(
+            log_sink,
+            outcome=decision.job_outcome.value,
+            attempt_outcome=decision.attempt_outcome.value,
+            summary=decision.summary,
+        )
+        if not log_sealed:
+            await _record_evidence_degradation(
+                ownership, event_key="log.truncated", source="attempt_log"
+            )
+        await _register_result_evidence(ownership, result)
         await _register_terminal_artifact(ownership, source="result")
-        workspace.cleanup()
+        if decision.workspace == WorkspaceDisposition.CLEAN:
+            workspace.cleanup()
+        else:
+            workspace.quarantine(
+                code=f"domain_{decision.job_outcome.value}", summary=decision.summary
+            )
+        if not decision.acknowledge_transport:
+            raise DeliveryRejectedError("terminal decision forbids transport acknowledgement")
     finally:
         await asyncio.shield(gates.release())
 

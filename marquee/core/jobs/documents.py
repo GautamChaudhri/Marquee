@@ -337,7 +337,15 @@ class BuiltInIntentV1(StrictDocument):
 
 
 class BuiltInResultV1(StrictDocument):
-    outcome: str = Field(default="succeeded", pattern=r"^[a-z][a-z0-9_]*$", max_length=80)
+    outcome: Literal[
+        "succeeded",
+        "partially_succeeded",
+        "no_change",
+        "failed",
+        "cancelled",
+        "superseded",
+        "unsafe",
+    ] = "succeeded"
     message: str | None = Field(default=None, max_length=1000)
     summary: dict[str, JsonValue] = Field(default_factory=dict)
 

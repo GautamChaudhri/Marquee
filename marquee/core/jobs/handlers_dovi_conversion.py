@@ -16,8 +16,6 @@ from marquee.core.jobs.dovi_conversion_documents import (
     DoviProbeV1,
 )
 from marquee.core.jobs.media_mutation_support import load_media_file, physical
-from marquee.core.jobs.progress import MeasurementMode, ProgressMeasurementUpdate
-from marquee.core.jobs.progress_service import ProgressObservation, progress_writer
 
 
 class DoviConversionExecutionError(RuntimeError):
@@ -198,35 +196,14 @@ def _progress_sink(context: ExecutionContext, request: DoviConvertRequestV1):
             )
             if update is None:
                 continue
-            ordinal += 1
             duration = request.source_probe.duration_seconds
             completed = float(update.get("out_time_seconds") or 0)
-            measurement = (
-                ProgressMeasurementUpdate(
-                    scope_id=f"dovi-convert:{request.media_file_id}:encode",
-                    mode=MeasurementMode.DETERMINATE,
-                    unit="seconds",
-                    completed=min(completed, duration),
-                    total=duration,
-                    label="Encoding Dolby Vision base layer",
-                )
-                if duration
-                else ProgressMeasurementUpdate(
-                    scope_id=f"dovi-convert:{request.media_file_id}:encode",
-                    mode=MeasurementMode.INDETERMINATE,
-                    label="Encoding Dolby Vision base layer",
-                )
-            )
-            await progress_writer.safe_write(
-                job_id=context.delivery.canonical_job_id,
-                attempt_id=context.attempt.attempt_id,
-                fence_token=context.attempt.fence_token,
-                observation=ProgressObservation(
-                    stage_key="encoding",
-                    overall=measurement,
-                    current=measurement,
-                    producer_ordinal=ordinal,
-                ),
+            await context.progress.stage(
+                "encoding",
+                label="Encoding Dolby Vision base layer",
+                completed=min(completed, duration) if duration else None,
+                total=duration,
+                unit="seconds",
             )
 
     return sink

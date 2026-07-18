@@ -12,14 +12,14 @@ import json
 import os
 import statistics
 from collections.abc import Mapping
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
 
-from pgqueuer import RetryRequested
 from sqlalchemy import select
 
 from marquee.core.jobs.delivery import ExecutionContext, register_execution_handler
+from marquee.core.jobs.policies import ClassifiedExecutionError, RetryClassification
 from marquee.core.jobs.process_launcher import ProcessLaunchError
 from marquee.core.jobs.progress import MeasurementMode, ProgressMeasurementUpdate
 from marquee.core.jobs.progress_service import ProgressObservation, progress_writer
@@ -49,9 +49,11 @@ class LetterboxObservationError(RuntimeError):
     """Path-free permanent failure in read-only observation."""
 
 
-def _tool_retry(tool: str) -> RetryRequested:
-    """Use the definition retry budget for a missing or temporarily unavailable tool."""
-    return RetryRequested(timedelta(seconds=5), reason=f"{tool} is temporarily unavailable")
+def _tool_retry(tool: str) -> ClassifiedExecutionError:
+    """Classify tool availability; the definition owns attempts and delays."""
+    return ClassifiedExecutionError(
+        f"{tool} is temporarily unavailable", RetryClassification.TRANSIENT
+    )
 
 
 def _frozen_detection_config(context: ExecutionContext) -> SimpleNamespace:

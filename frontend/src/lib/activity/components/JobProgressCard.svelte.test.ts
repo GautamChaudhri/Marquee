@@ -82,6 +82,20 @@ describe('honest progress goldens', () => {
 		expect(screen.getByText('Now: Hello, Ms. Cobel')).toBeVisible();
 	});
 
+	it('renders server-reported execution I/O without estimating it', () => {
+		const row = makeRow();
+		row.progress = {
+			...row.progress,
+			metrics: {
+				bytes_processed: 2 * 1024 * 1024,
+				bytes_total: 4 * 1024 * 1024,
+				throughput: 512 * 1024
+			}
+		};
+		render(JobProgressCard, { props: { row } });
+		expect(screen.getByText('2.0 MiB of 4.0 MiB · 512 KiB/s')).toBeVisible();
+	});
+
 	it('renders an immediate operation with no progress bar', () => {
 		const row = makeRow({ progress: { sequence: 1, headline: 'Applying setting' } });
 		render(JobProgressCard, { props: { row } });

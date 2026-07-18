@@ -6,6 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+from marquee.core.configuration import CONFIGURATION_CATALOG
 from marquee.core.jobs.audio_subtitle_documents import (
     AudioReorderRequestV1,
     MediaTrackMutationResultV1,
@@ -106,10 +107,16 @@ from marquee.core.jobs.mutation_documents import (
     PosterRestoreRequestV1,
     RetentionPurgeRequestV1,
 )
-from marquee.core.jobs.policies import ActionPolicy, ParentAggregationPolicy, RetryPolicy
+from marquee.core.jobs.policies import (
+    ActionPolicy,
+    ParentAggregationPolicy,
+    RetryPolicy,
+    default_failure_classifier,
+)
 from marquee.core.jobs.progress import ProgressPolicy
 from marquee.core.jobs.safety_gates import SafetyPolicy
 from marquee.core.jobs.subjects import SUBJECT_SNAPSHOT_ADAPTER, SubjectSnapshot
+from marquee.core.jobs.terminal_decision import JobOutcome, TerminalDecisionPolicy
 
 
 @dataclass(frozen=True)
@@ -647,6 +654,27 @@ _NATIVE_MKVMERGE = frozenset(
     }
 )
 
+_PIPELINE_CONFIGURATION_KEYS = frozenset(
+    key
+    for key, entry in CONFIGURATION_CATALOG.items()
+    if entry.owner == "pipeline"
+    and entry.scope == "execution"
+    and entry.database_owned
+    and entry.sensitivity == "public"
+)
+_SUBTITLE_CONFIGURATION_KEYS = frozenset(
+    key
+    for key, entry in CONFIGURATION_CATALOG.items()
+    if entry.owner == "subtitle"
+    and entry.scope == "execution"
+    and entry.database_owned
+    and entry.sensitivity == "public"
+)
+_CONFIGURATION_KEYS_BY_TYPE = {
+    **dict.fromkeys({"poster_pipeline", "taste_rebuild", "taste_map", "taste_enrich", "learned_head_train"}, _PIPELINE_CONFIGURATION_KEYS),
+    **dict.fromkeys({"subtitle_scan", "subtitle_policy_audit", "audio_remove", "track_remove", "subtitle_remove", "subtitle_embed", "subtitle_metadata", "audio_reorder", "subtitle_extract", "subtitle_generate", "subtitle_policy", "subtitle_restore"}, _SUBTITLE_CONFIGURATION_KEYS),
+}
+
 
 def _triggers(job_type: str) -> frozenset[TriggerKind]:
     if job_type in WEBHOOK_RESERVED_TYPES:
@@ -738,6 +766,8 @@ def _definition(spec: _DefinitionSpec) -> JobDefinition:
     request_model = _REQUEST_MODELS.get(spec.job_type) or (
         SystemNoopRequestV1 if is_noop else BuiltInIntentV1
     )
+    result_model = _RESULT_MODELS.get(spec.job_type, BuiltInResultV1)
+    configuration_keys = _CONFIGURATION_KEYS_BY_TYPE.get(spec.job_type, frozenset())
     retry = RetryPolicy(
         max_attempts=1 if spec.safety == EffectSafety.UNSAFE_MUTATION else 3,
         transient_delays_seconds=() if spec.safety == EffectSafety.UNSAFE_MUTATION else (5, 30),
@@ -758,7 +788,7 @@ def _definition(spec: _DefinitionSpec) -> JobDefinition:
         ),
         disabled_reason=None if enabled else "execution migration is deferred beyond JMC2B",
         request=current_adapter(DocumentKind.REQUEST, request_model),
-        result=current_adapter(DocumentKind.RESULT, _RESULT_MODELS.get(spec.job_type, BuiltInResultV1)),
+        result=current_adapter(DocumentKind.RESULT, result_model),
         error=current_adapter(
             DocumentKind.ERROR, _ERROR_MODELS.get(spec.job_type, SafeJobErrorV1)
         ),
@@ -766,6 +796,16 @@ def _definition(spec: _DefinitionSpec) -> JobDefinition:
         entrypoint=spec.execution.value,
         timeout=TimeoutPolicy(seconds=30 if is_noop else 24 * 60 * 60),
         effect_safety=spec.safety,
+        terminal_policy=TerminalDecisionPolicy.for_result_model(
+            result_model,
+            aliases=(
+                {"review_required": JobOutcome.PARTIALLY_SUCCEEDED}
+                if result_model is PosterPipelineResultV1
+                else None
+            ),
+        ),
+        failure_classifier=default_failure_classifier,
+        configuration_audit="snapshot" if configuration_keys else "audited_empty",
         overlap_policy=_overlap_policy(spec),
         safety_policy=(
             SafetyPolicy(media_file=True, media_write=True)
@@ -774,17 +814,7 @@ def _definition(spec: _DefinitionSpec) -> JobDefinition:
             if spec.execution == ExecutionClass.MAINTENANCE and spec.safety == _U
             else SafetyPolicy()
         ),
-        configuration_keys=(
-            frozenset(
-                {
-                    "AUDIO_SUBS_DEEP_SCAN_ENABLED",
-                    "AUDIO_SUBS_DEEP_SCAN_HOUR",
-                    "AUDIO_SUBS_DEEP_SCAN_BATCH",
-                }
-            )
-            if spec.job_type == "audio_subs_deep_scan"
-            else frozenset()
-        ),
+        configuration_keys=configuration_keys,
         subject_builder=_subject_builder(spec.job_type, spec.subject_kinds),
         progress_policy=_PROGRESS_POLICIES.get(spec.job_type) or _progress(spec),
         retry_policy=retry,

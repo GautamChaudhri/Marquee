@@ -138,7 +138,11 @@ def _install(monkeypatch: pytest.MonkeyPatch, provider) -> None:
     """Force the stub; the live SUBGEN_URL is never reachable from here."""
     import marquee.core.subtitles.generation as generation
 
-    monkeypatch.setattr(generation, "get_generator", lambda _id: provider)
+    monkeypatch.setattr(
+        generation,
+        "get_generator",
+        lambda _id, *, configuration=None: provider,
+    )
 
 
 @pytest.mark.asyncio
@@ -203,6 +207,55 @@ async def test_generation_can_embed_with_backup_and_authoritative_rescan(
     assert (data_dir / result["sidecar"]["storage_key"]).read_bytes() == SRT
     assert context.request["publish"] == "embed"
     assert path.exists()
+
+
+@pytest.mark.asyncio
+async def test_requested_embed_failure_is_partial_not_unconditional_success(
+    db, tmp_path: Path, data_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _path, row = await _fixture(db, tmp_path)
+    output = tmp_path / "provider-partial.srt"
+    output.write_bytes(SRT)
+    provider = StubProvider([ProviderState(state="produced", output_path=str(output))])
+    _install(monkeypatch, provider)
+
+    async def failed_embed(_context):
+        return {
+            "outcome": "failed",
+            "message": "the container rejected the requested track",
+            "validation": {"verdict": "failed"},
+            "atomicity": {
+                "group_id": f"subtitle_embed:{row.id}",
+                "boundary": "single_target",
+                "published": False,
+                "rollback_available": False,
+                "uncertain_state": False,
+            },
+        }
+
+    monkeypatch.setattr(
+        "marquee.core.jobs.handlers_generation.execute_subtitle_embed", failed_embed
+    )
+    result = await execute_subtitle_generate(
+        await _context(
+            db,
+            tmp_path,
+            job_type="subtitle_generate",
+            request={"media_file_id": row.id, "language_tag": "eng", "publish": "embed"},
+        )
+    )
+
+    assert result["outcome"] == "partially_succeeded"
+    assert result["generated"] is True
+    assert result["embedded"] is False
+    assert [item["status"] for item in result["target_outcomes"]] == [
+        "succeeded",
+        "failed",
+    ]
+    assert [item["stage"] for item in result["target_outcomes"]] == ["sidecar", "embed"]
+    assert result["target_outcomes"][1]["reason_code"] == "embed_failed"
+    assert result["validation"]["verdict"] == "failed"
+    assert (data_dir / result["sidecar"]["storage_key"]).read_bytes() == SRT
 
 
 @pytest.mark.asyncio

@@ -1799,6 +1799,9 @@
             ],
             "title": "Headline"
           },
+          "metrics": {
+            "$ref": "#/components/schemas/ProgressMetrics"
+          },
           "overall": {
             "anyOf": [
               {
@@ -4130,6 +4133,43 @@
         "title": "OperationsEvents",
         "type": "object"
       },
+      "OperationsEvidenceRetention": {
+        "properties": {
+          "oldest_overdue_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Oldest Overdue At"
+          },
+          "overdue": {
+            "title": "Overdue",
+            "type": "boolean"
+          },
+          "overdue_artifacts": {
+            "minimum": 0.0,
+            "title": "Overdue Artifacts",
+            "type": "integer"
+          },
+          "overdue_logs": {
+            "minimum": 0.0,
+            "title": "Overdue Logs",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "overdue_artifacts",
+          "overdue_logs",
+          "overdue"
+        ],
+        "title": "OperationsEvidenceRetention",
+        "type": "object"
+      },
       "OperationsHistoryJob": {
         "properties": {
           "finished_at": {
@@ -4774,6 +4814,9 @@
           "events": {
             "$ref": "#/components/schemas/OperationsEvents"
           },
+          "evidence_retention": {
+            "$ref": "#/components/schemas/OperationsEvidenceRetention"
+          },
           "generated_at": {
             "format": "date-time",
             "title": "Generated At",
@@ -4809,7 +4852,8 @@
           "database",
           "events",
           "storage",
-          "schedules"
+          "schedules",
+          "evidence_retention"
         ],
         "title": "OperationsSnapshot",
         "type": "object"
@@ -5862,6 +5906,114 @@
           "mode"
         ],
         "title": "ProgressMeasurement",
+        "type": "object"
+      },
+      "ProgressMetrics": {
+        "additionalProperties": false,
+        "properties": {
+          "bytes_processed": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bytes Processed"
+          },
+          "bytes_total": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bytes Total"
+          },
+          "decoder": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decoder"
+          },
+          "elapsed_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Elapsed Seconds"
+          },
+          "encoder": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Encoder"
+          },
+          "eta_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Eta Seconds"
+          },
+          "fps": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fps"
+          },
+          "speed": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Speed"
+          },
+          "throughput": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Throughput"
+          }
+        },
+        "title": "ProgressMetrics",
         "type": "object"
       },
       "ProgressWait": {

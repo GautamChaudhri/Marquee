@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import hashlib
+from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from sqlalchemy import select
@@ -12,9 +12,12 @@ from marquee.core.jobs.audio_subtitle_documents import (
     SubtitleExtractRequestV1,
     SubtitleSidecarResultV1,
 )
-from marquee.core.jobs.delivery import ExecutionContext, register_execution_handler
-from marquee.core.jobs.media_backups import create_media_backup
-from marquee.core.jobs.media_mutation_support import TrackMutationError
+from marquee.core.jobs.media_backups import create_execution_media_backup
+from marquee.core.jobs.media_mutation_support import (
+    TrackMutationError,
+    bind_managed_subtitle,
+    persist_post_mutation_inventory,
+)
 from marquee.core.jobs.media_mutation_support import confined_boundary as _boundary
 from marquee.core.jobs.media_mutation_support import container_supported as _supported
 from marquee.core.jobs.media_mutation_support import current_signature as _signature
@@ -41,6 +44,9 @@ from marquee.core.jobs.remux_coordinator import (
 from marquee.core.jobs.track_selectors import TrackSelectorError, resolve_selector
 from marquee.core.media_files import MediaFileNotFoundError, MediaFileUnavailableError
 from marquee.models import ManagedSubtitleAsset
+
+if TYPE_CHECKING:
+    from marquee.core.jobs.delivery import ExecutionContext
 
 #: Confined content-addressed storage for managed sidecars.
 MANAGED_PREFIX = "jmc5/managed-subtitles"
@@ -79,6 +85,8 @@ async def _register_managed_asset(
     title: str | None,
     is_forced: bool,
     is_sdh: bool,
+    media_file_id: int,
+    source: str,
 ) -> str:
     """Record the managed asset row; the key, not a path, is the public handle."""
     async with context.session_factory() as session:
@@ -87,11 +95,9 @@ async def _register_managed_asset(
                 ManagedSubtitleAsset.content_sha256 == checksum
             )
         )
-        if existing is not None:
-            return existing.id
-        asset_id = uuid4().hex
-        session.add(
-            ManagedSubtitleAsset(
+        if existing is None:
+            asset_id = uuid4().hex
+            existing = ManagedSubtitleAsset(
                 id=asset_id,
                 cache_path=managed_key(checksum),
                 content_sha256=checksum,
@@ -100,15 +106,30 @@ async def _register_managed_asset(
                 kind="text",
                 is_forced=is_forced,
                 is_sdh=is_sdh,
+                source=source,
+                provenance_json={
+                    "job_id": context.delivery.canonical_job_id,
+                    "attempt_id": context.attempt.attempt_id,
+                    "fence_token": context.attempt.fence_token,
+                    "media_file_id": media_file_id,
+                },
                 active=True,
             )
-        )
+            session.add(existing)
+        else:
+            asset_id = existing.id
         await session.commit()
-        return asset_id
+    await bind_managed_subtitle(
+        context, asset_id=asset_id, media_file_id=media_file_id
+    )
+    return asset_id
 
 
-def _publish_managed(
-    boundary: FilesystemBoundary, staged: ClassifiedPath, checksum: str
+async def _publish_managed(
+    context: ExecutionContext,
+    boundary: FilesystemBoundary,
+    staged: ClassifiedPath,
+    checksum: str,
 ) -> ClassifiedPath:
     """Content-addressed publish: identical bytes are already correct."""
     directory = boundary.from_key("data", MANAGED_PREFIX)
@@ -116,7 +137,7 @@ def _publish_managed(
     destination = boundary.from_key("data", managed_key(checksum))
     target = _physical(destination)
     if target.exists():
-        if hashlib.sha256(target.read_bytes()).hexdigest() != checksum:
+        if (await context.io.checksum(target)).sha256 != checksum:
             raise SidecarError("a conflicting managed sidecar already owns this key")
         boundary.delete_file(staged, missing_ok=True)
         return destination
@@ -150,7 +171,7 @@ async def execute_subtitle_extract(context: ExecutionContext) -> dict[str, objec
         raise TrackMutationError("the media file is unavailable") from exc
 
     source_path = resolved_file.path
-    before = _inventory(source_path, resolved_file.signature)
+    before = await _inventory(context, source_path, resolved_file.signature)
     boundary, _source = _boundary(source_path)
 
     try:
@@ -176,14 +197,16 @@ async def execute_subtitle_extract(context: ExecutionContext) -> dict[str, objec
     boundary.create_directory(boundary.from_key("data", MANAGED_PREFIX), parents=True)
     args = (
         "ffmpeg", "-v", "error", "-y", "-i", str(source_path),
-        "-map", f"0:s:{ordinal}", "-c:s", "copy", str(_physical(staged)),
+        "-map", f"0:s:{ordinal}", "-c:s", "copy", "-progress", "pipe:1",
+        "-nostats", str(_physical(staged)),
     )
     try:
         await run_mkvmerge_plan(context, boundary=boundary, args=args, candidate=staged)
-        payload = _physical(staged).read_bytes()
+        read = await context.io.read(_physical(staged), maximum_bytes=MAX_SIDECAR_BYTES)
+        payload = read.payload
         validate_subtitle_bytes(payload)
-        checksum = hashlib.sha256(payload).hexdigest()
-        destination = _publish_managed(boundary, staged, checksum)
+        checksum = read.sha256
+        destination = await _publish_managed(context, boundary, staged, checksum)
     except (RemuxCancelledError, RemuxError, SidecarError, OSError) as exc:
         boundary.delete_file(staged, missing_ok=True)
         stage = getattr(exc, "stage", "sidecar")
@@ -197,6 +220,8 @@ async def execute_subtitle_extract(context: ExecutionContext) -> dict[str, objec
         title=entry.facts.title,
         is_forced=entry.facts.is_forced,
         is_sdh=entry.facts.is_hearing_impaired,
+        media_file_id=request.media_file_id,
+        source="extracted",
     )
     result = SubtitleSidecarResultV1(
         outcome=MutationJobOutcome.SUCCEEDED,
@@ -242,7 +267,7 @@ async def execute_subtitle_embed(context: ExecutionContext) -> dict[str, object]
         raise TrackMutationError("the media file is unavailable") from exc
 
     source_path = resolved_file.path
-    before = _inventory(source_path, resolved_file.signature)
+    before = await _inventory(context, source_path, resolved_file.signature)
     boundary, source = _boundary(source_path)
 
     target = MutationTargetV1(
@@ -274,9 +299,10 @@ async def execute_subtitle_embed(context: ExecutionContext) -> dict[str, object]
     sidecar = boundary.from_key("data", asset.cache_path)
     sidecar_path = _physical(sidecar)
     try:
-        payload = sidecar_path.read_bytes()
+        read = await context.io.read(sidecar_path, maximum_bytes=MAX_SIDECAR_BYTES)
+        payload = read.payload
         validate_subtitle_bytes(payload)
-        if hashlib.sha256(payload).hexdigest() != asset.content_sha256:
+        if read.sha256 != asset.content_sha256:
             raise SidecarError("the managed sidecar failed checksum verification")
     except (SidecarError, OSError) as exc:
         return _embed_failure(
@@ -301,10 +327,11 @@ async def execute_subtitle_embed(context: ExecutionContext) -> dict[str, object]
 
     try:
         await run_mkvmerge_plan(context, boundary=boundary, args=tuple(args), candidate=candidate)
-        from marquee.core.jobs.publication import file_signature
+        from marquee.core.jobs.publication import execution_file_signature
 
-        source_signature = file_signature(boundary, source)
-        backup = create_media_backup(
+        source_signature = await execution_file_signature(context.io, boundary, source)
+        backup = await create_execution_media_backup(
+            context.io,
             boundary,
             source=source,
             subject_key=f"media-file-{request.media_file_id}",
@@ -329,7 +356,10 @@ async def execute_subtitle_embed(context: ExecutionContext) -> dict[str, object]
             target, before, group_id, "publish", "publish_failed", str(exc)[:200]
         )
 
-    actual = _inventory(source_path, _signature(source_path))
+    actual = await _inventory(context, source_path, _signature(source_path))
+    await persist_post_mutation_inventory(
+        context, media_file_id=request.media_file_id, inventory=actual
+    )
     return MediaTrackMutationResultV1(
         outcome=MutationJobOutcome.SUCCEEDED,
         reason_code="embedded",
@@ -370,6 +400,8 @@ def _embed_failure(
         ).model_dump()
     ).model_dump(mode="json")
 
+
+from marquee.core.jobs.delivery import register_execution_handler  # noqa: E402
 
 register_execution_handler("subtitle_extract", execute_subtitle_extract)
 register_execution_handler("subtitle_embed", execute_subtitle_embed)

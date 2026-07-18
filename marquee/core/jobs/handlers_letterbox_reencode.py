@@ -16,12 +16,6 @@ from marquee.core.jobs.letterbox_reencode_documents import (
     ReencodeProbeV1,
 )
 from marquee.core.jobs.media_mutation_support import load_media_file, physical
-from marquee.core.jobs.progress import MeasurementMode, ProgressMeasurementUpdate
-from marquee.core.jobs.progress_service import (
-    ProgressMetricObservation,
-    ProgressObservation,
-    progress_writer,
-)
 
 
 class LetterboxReencodeError(RuntimeError):
@@ -184,43 +178,23 @@ def _progress_sink(
                 continue
             latest.clear()
             latest.update(update)
-            ordinal += 1
             completed = float(update.get("out_time_seconds") or 0)
             duration = request.source.duration_seconds
-            measurement = (
-                ProgressMeasurementUpdate(
-                    scope_id=f"letterbox-reencode:{request.media_file_id}:encode",
-                    mode=MeasurementMode.DETERMINATE,
-                    unit="seconds",
-                    completed=min(completed, duration),
-                    total=duration,
-                    label="Encoding candidate",
-                )
-                if duration
-                else ProgressMeasurementUpdate(
-                    scope_id=f"letterbox-reencode:{request.media_file_id}:encode",
-                    mode=MeasurementMode.INDETERMINATE,
-                    label="Encoding candidate",
-                )
-            )
-            await progress_writer.safe_write(
-                job_id=context.delivery.canonical_job_id,
-                attempt_id=context.attempt.attempt_id,
-                fence_token=context.attempt.fence_token,
-                observation=ProgressObservation(
-                    stage_key="encoding",
-                    overall=measurement,
-                    current=measurement,
-                    metrics=ProgressMetricObservation(
-                        speed=float(update["speed"])
-                        if isinstance(update.get("speed"), (int, float))
-                        else None,
-                        fps=float(update["fps"])
-                        if isinstance(update.get("fps"), (int, float))
-                        else None,
-                        encoder=request.encoder.encoder,
-                    ),
-                    producer_ordinal=ordinal,
+            await context.progress.stage(
+                "encoding",
+                label="Encoding candidate",
+                completed=min(completed, duration) if duration else None,
+                total=duration,
+                unit="seconds",
+                speed=(
+                    float(update["speed"])
+                    if isinstance(update.get("speed"), (int, float))
+                    else None
+                ),
+                fps=(
+                    float(update["fps"])
+                    if isinstance(update.get("fps"), (int, float))
+                    else None
                 ),
             )
 

@@ -5,9 +5,10 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+import shutil
 import signal
 import sys
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -35,7 +36,7 @@ PipeSink = Callable[[str, bytes, bool], Awaitable[None]]
 # paths are resolved through marquee.media.binaries (which honours the .env LETTERBOX_* paths,
 # e.g. the project-local bin/dovi_tool). No executable is ever taken from a request payload.
 TOOL_CATALOG = frozenset(
-    {"ffprobe", "ffmpeg", "mkvmerge", "mkvpropedit", "convert", "dovi_tool"}
+    {"ffprobe", "ffmpeg", "mkvmerge", "mkvpropedit", "convert", "dovi_tool", "pg_dump"}
 )
 # Bounded default in-memory capture for tool stdout that a handler parses (e.g. ffprobe JSON).
 DEFAULT_TOOL_STDOUT_LIMIT = 16 * 1024 * 1024
@@ -44,6 +45,11 @@ DEFAULT_TOOL_STDOUT_LIMIT = 16 * 1024 * 1024
 def _resolve_tool(tool: str) -> str:
     if tool not in TOOL_CATALOG:
         raise ProcessLaunchError(f"tool {tool!r} is not in the launcher catalog")
+    if tool == "pg_dump":
+        binary = shutil.which("pg_dump")
+        if binary is None:
+            raise ProcessLaunchError("tool 'pg_dump' is not available")
+        return binary
     from marquee.media.binaries import resolve  # noqa: PLC0415 - avoid settings import at load
 
     binary = resolve(tool)
@@ -392,6 +398,7 @@ class ProcessLauncher:
         *,
         stdout_limit: int = DEFAULT_TOOL_STDOUT_LIMIT,
         stdout_sink: PipeSink | None = None,
+        environment: Mapping[str, str] | None = None,
     ) -> TrackedProcess:
         """Launch one allowlisted read-only media tool as a tracked, contained process.
 
@@ -407,6 +414,13 @@ class ProcessLauncher:
             raise ProcessLaunchError("tool argument is invalid")
         if not 0 < stdout_limit <= 64 * 1024 * 1024:
             raise ProcessLaunchError("tool stdout capture limit is out of bounds")
+        environment_overrides = dict(environment or {})
+        if set(environment_overrides) - {"PGPASSFILE"}:
+            raise ProcessLaunchError("tool environment contains a non-allowlisted key")
+        if any("\0" in value or len(value) > 4096 for value in environment_overrides.values()):
+            raise ProcessLaunchError("tool environment value is invalid")
+        process_environment = _minimal_environment()
+        process_environment.update(environment_overrides)
         capabilities = containment_capabilities(cgroup_root=self._cgroup_root)
         if capabilities.tier == "unsupported":
             raise ProcessLaunchError("verified process-group containment is unavailable")
@@ -414,7 +428,7 @@ class ProcessLauncher:
         process = await asyncio.create_subprocess_exec(
             *command,
             cwd=self._cwd(),
-            env=_minimal_environment(),
+            env=process_environment,
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,

@@ -174,10 +174,16 @@ def test_enabled_chunk_four_is_read_only_and_parent_batches_are_ticketless() -> 
 
 def test_product_schedule_catalog_remains_exact_and_nonmutating() -> None:
     schedules = {definition.key: definition for definition in PRODUCTION_SCHEDULE_CATALOG}
-    assert list(schedules) == ["library-sync", "poster-heal", "audio-subs-deep-scan"]
+    assert list(schedules) == [
+        "library-sync",
+        "poster-heal",
+        "audio-subs-deep-scan",
+        "evidence-retention",
+    ]
     assert schedules["library-sync"].produced_job_type == "library_sync"
     assert schedules["audio-subs-deep-scan"].produced_job_type == "audio_subs_deep_scan"
     assert schedules["poster-heal"].produced_job_type == "poster_heal"
+    assert schedules["evidence-retention"].produced_job_type == "job_retention_purge"
     assert all(
         JOB_DEFINITION_REGISTRY.get(definition.produced_job_type).execution_class.value
         != "media_write"

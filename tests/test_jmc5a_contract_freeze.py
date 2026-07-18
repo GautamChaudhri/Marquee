@@ -187,7 +187,10 @@ def test_registry_surfaces_match_a0_freeze() -> None:
             "dovi_discard",
         }
     )
-    assert sorted(SCHEDULE_PRODUCED_TYPES) == frozen["registry"]["schedule_produced_types"]
+    assert sorted(SCHEDULE_PRODUCED_TYPES - {"job_retention_purge"}) == frozen["registry"][
+        "schedule_produced_types"
+    ]
+    assert "job_retention_purge" in SCHEDULE_PRODUCED_TYPES
 
 
 def test_target_and_deferred_states_match_a0_freeze() -> None:

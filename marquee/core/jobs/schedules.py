@@ -33,7 +33,7 @@ MAX_SCHEDULE_DIAGNOSTICS = 100
 # Production schedule keys that are certified to produce real occurrences. Grows one entry
 # per JMC4B family: `library-sync` activated in B2; `audio-subs-deep-scan` follows in B3.
 ACTIVATED_SCHEDULE_KEYS: frozenset[str] = frozenset(
-    {"library-sync", "audio-subs-deep-scan", "poster-heal"}
+    {"library-sync", "audio-subs-deep-scan", "poster-heal", "evidence-retention"}
 )
 _KEY = re.compile(r"^[a-z][a-z0-9-]{0,62}[a-z0-9]$")
 
@@ -481,6 +481,26 @@ PRODUCTION_SCHEDULE_CATALOG = ScheduleCatalog(
                 kind="maintenance_scope", reference="audio-subs-deep-scan"
             ),
             batch_producer=_audio_subs_deep_scan_batch,
+        ),
+        ScheduleDefinition(
+            key="evidence-retention",
+            entrypoint="schedule_evidence_retention",
+            expression="17 3 * * *",
+            produced_job_type="job_retention_purge",
+            trigger=TriggerKind.SCHEDULE,
+            initiator=_SCHEDULER_INITIATOR,
+            configured_predicate=lambda _config: True,
+            occurrence_policy=OccurrencePolicy.HOURLY_WINDOW,
+            request_builder=lambda _config, _due: {
+                "retention_days": 30,
+                "evidence_only": True,
+                "dry_run": True,
+                "max_records": 10_000,
+                "batch_size": 100,
+            },
+            subject_builder=lambda _config, _due: SubjectLocator(
+                kind="maintenance_scope", reference="evidence-retention"
+            ),
         ),
     )
 )

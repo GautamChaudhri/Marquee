@@ -17,13 +17,16 @@ from marquee.core.jobs.artifact_service import (
     ArtifactError,
     artifact_boundary,
     expire_artifacts,
+    expire_logs,
     materialize_virtual_artifact,
     reconcile_artifacts,
+    register_existing_physical_artifact,
     register_physical_artifact,
+    register_validation_result_artifact,
     register_virtual_artifact,
 )
 from marquee.main import app
-from marquee.models import Job, JobArtifact, JobAttempt, JobEvent
+from marquee.models import Job, JobArtifact, JobAttempt, JobEvent, JobLog
 
 
 async def _attempt(db, label: str):
@@ -140,6 +143,38 @@ async def test_physical_artifact_is_confined_immutable_and_downloadable(db) -> N
         ).status_code == 404
 
 
+async def test_existing_product_and_validation_evidence_are_registered_without_copy(db) -> None:
+    job, attempt = await _attempt(db, "product-evidence")
+    source = _source("managed.srt", b"1\n00:00:00,000 --> 00:00:01,000\ntext\n")
+    payload = (settings.data_dir_path / source.key.value).read_bytes()
+    checksum = hashlib.sha256(payload).hexdigest()
+    row = await register_existing_physical_artifact(
+        job_id=job.id,
+        attempt_id=attempt.id,
+        fence_token=1,
+        source=source,
+        kind="managed_sidecar",
+        name="Managed subtitle sidecar",
+        checksum=checksum,
+        size_bytes=len(payload),
+    )
+    assert row.storage_key == source.key.value
+    assert row.artifact_metadata["subject_reference"] == "system_noop"
+
+    job.result = {
+        "version": 1,
+        "outcome": "succeeded",
+        "validation": {"verdict": "passed"},
+    }
+    await db.commit()
+    validation = await register_validation_result_artifact(
+        job_id=job.id, attempt_id=attempt.id, fence_token=1
+    )
+    assert validation is not None
+    materialized = json.loads(await materialize_virtual_artifact(validation))
+    assert materialized["value"] == {"validation": {"verdict": "passed"}}
+
+
 async def test_virtual_artifact_is_deterministic_bounded_and_redacted(db) -> None:
     job, attempt = await _attempt(db, "virtual")
     row = await register_virtual_artifact(
@@ -221,8 +256,20 @@ async def test_artifact_expiration_and_reconciliation_are_idempotent(db) -> None
     await db.commit()
     first = await expire_artifacts(data_dir=settings.DATA_DIR)
     second = await expire_artifacts(data_dir=settings.DATA_DIR)
-    assert first == {"expired": 1, "deleted": 1}
-    assert second == {"expired": 0, "deleted": 0}
+    assert first == {
+        "claimed": 1,
+        "expired": 1,
+        "deleted": 1,
+        "missing": 0,
+        "failed": 0,
+    }
+    assert second == {
+        "claimed": 0,
+        "expired": 0,
+        "deleted": 0,
+        "missing": 0,
+        "failed": 0,
+    }
     db.expire_all()
     assert (await db.get(JobArtifact, row_id)).status == "expired"
     expired = (
@@ -239,12 +286,81 @@ async def test_artifact_expiration_and_reconciliation_are_idempotent(db) -> None
     managed = settings.data_dir_path / "jmc3" / "evidence" / "artifacts" / "orphan"
     managed.mkdir(parents=True)
     orphan_path = managed / "artifact-orphan"
-    orphan_path.write_bytes(
-        (settings.data_dir_path / orphan.key.value).read_bytes()
-    )
+    orphan_path.write_bytes((settings.data_dir_path / orphan.key.value).read_bytes())
     counts = await reconcile_artifacts(data_dir=settings.DATA_DIR)
     assert counts["untracked"] >= 1
     assert orphan_path.exists()
+
+
+async def test_log_retention_deletes_before_metadata_expiration(db) -> None:
+    job, attempt = await _attempt(db, "log-expiry")
+    boundary = artifact_boundary(settings.DATA_DIR)
+    key = f"jmc3/evidence/logs/{job.id}/{attempt.id}/segment-0.log"
+    target = boundary.from_key("data", key)
+    boundary.create_directory(
+        boundary.from_key("data", f"jmc3/evidence/logs/{job.id}/{attempt.id}"),
+        parents=True,
+    )
+    fd = boundary.create_file(target)
+    try:
+        os.write(fd, b"sealed log\n")
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    row = JobLog(
+        job_id=job.id,
+        attempt_id=attempt.id,
+        segment=0,
+        storage_key=key,
+        seal_status="sealed",
+        expires_at=datetime.now(UTC) - timedelta(seconds=1),
+    )
+    db.add(row)
+    await db.commit()
+
+    result = await expire_logs(data_dir=settings.DATA_DIR)
+    await db.refresh(row)
+    assert result["expired"] == 1
+    assert result["deleted"] == 1
+    assert result["failed"] == 0
+    assert row.seal_status == "expired"
+    assert not (settings.data_dir_path / key).exists()
+
+
+async def test_physical_expiration_failure_remains_retryable(
+    db, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    job, attempt = await _attempt(db, "expiry-retry")
+    row = await register_physical_artifact(
+        job_id=job.id,
+        attempt_id=attempt.id,
+        fence_token=1,
+        source=_source("retry.txt", b"retry"),
+        kind="diagnostic_text",
+        name="Retry diagnostics.txt",
+        content_type="text/plain",
+        retention_class="ephemeral",
+        data_dir=settings.DATA_DIR,
+    )
+    row_id = row.id
+    await db.execute(
+        update(JobArtifact)
+        .where(JobArtifact.id == row_id)
+        .values(expires_at=datetime.now(UTC) - timedelta(seconds=1))
+    )
+    await db.commit()
+
+    monkeypatch.setattr(
+        "marquee.core.jobs.artifact_service.FilesystemBoundary.delete_file",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("storage unavailable")),
+    )
+    result = await expire_artifacts(data_dir=settings.DATA_DIR)
+    await db.rollback()
+    row = await db.get(JobArtifact, row_id)
+    assert row is not None
+    assert result["failed"] == 1
+    assert row.status == "available"
+    assert row.artifact_metadata["expiration_failure"] == "OSError"
 
 
 async def test_artifact_rejects_unclassified_paths_and_unsafe_names(db) -> None:

@@ -432,6 +432,7 @@ def present_compact_progress(ctx: PresenterContext) -> CompactProgress | None:
             if progress.current_subject is not None
             else None
         ),
+        metrics=progress.metrics,
         freshness=progress.freshness,
         wait=progress.wait,
         updated_at=progress.updated_at,

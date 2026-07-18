@@ -59,11 +59,15 @@ def _context(request: dict[str, object], *, current_job_id: str = "maintenance-c
     async def owns_current_attempt(_session):
         return True
 
+    async def progress_stage(*_args, **_kwargs):
+        return None
+
     return SimpleNamespace(
         request=request,
         delivery=SimpleNamespace(canonical_job_id=current_job_id),
         attempt=SimpleNamespace(attempt_id=1, fence_token=1),
         cancellation=SimpleNamespace(cancel_called=False),
+        progress=SimpleNamespace(stage=progress_stage),
         writer=SimpleNamespace(owns_current_attempt=owns_current_attempt),
         session_factory=_get_session_factory(),
     )
@@ -82,7 +86,7 @@ def test_canonical_maintenance_definitions_are_exclusive_single_attempt_handlers
 
 @pytest.mark.asyncio
 async def test_metrics_purge_is_bounded_confirmed_and_cancellable(
-    db: AsyncSession, monkeypatch: pytest.MonkeyPatch
+    db: AsyncSession,
 ) -> None:
     now = datetime.now(UTC)
     old = SystemMetricsSample(
@@ -96,10 +100,6 @@ async def test_metrics_purge_is_bounded_confirmed_and_cancellable(
     await db.refresh(old)
     await db.refresh(recent)
 
-    async def ignore_progress(**_kwargs):
-        return None
-
-    monkeypatch.setattr(handlers_maintenance.progress_writer, "safe_write", ignore_progress)
     context = _context(
         {"dry_run": True, "retention_days": 30, "max_records": 10, "batch_size": 1}
     )
@@ -129,7 +129,7 @@ async def test_metrics_purge_is_bounded_confirmed_and_cancellable(
 
 @pytest.mark.asyncio
 async def test_job_retention_preserves_active_dependencies(
-    db: AsyncSession, monkeypatch: pytest.MonkeyPatch
+    db: AsyncSession,
 ) -> None:
     old = datetime.now(UTC) - timedelta(days=60)
     eligible = _job("retention-eligible", phase="terminal", when=old)
@@ -140,10 +140,6 @@ async def test_job_retention_preserves_active_dependencies(
     db.add_all([eligible, protected, child])
     await db.commit()
 
-    async def ignore_progress(**_kwargs):
-        return None
-
-    monkeypatch.setattr(handlers_maintenance.progress_writer, "safe_write", ignore_progress)
     context = _context(
         {"dry_run": True, "retention_days": 30, "max_records": 10, "batch_size": 1}
     )
@@ -171,3 +167,33 @@ async def test_job_retention_preserves_active_dependencies(
             ).all()
         )
     assert remaining == {protected.id, child.id}
+
+
+@pytest.mark.asyncio
+async def test_evidence_only_retention_is_bounded_and_does_not_require_delete_confirmation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    async def artifacts(**_kwargs):
+        calls.append("artifacts")
+        return {"claimed": 2, "expired": 1, "deleted": 1, "missing": 0, "failed": 1}
+
+    async def logs(**_kwargs):
+        calls.append("logs")
+        return {"claimed": 1, "expired": 1, "deleted": 0, "missing": 1, "failed": 0}
+
+    monkeypatch.setattr(handlers_maintenance, "expire_artifacts", artifacts)
+    monkeypatch.setattr(handlers_maintenance, "expire_logs", logs)
+    result = await handlers_maintenance.execute_job_retention_purge(
+        _context({"retention_days": 30, "evidence_only": True})
+    )
+    assert calls == ["artifacts", "logs"]
+    assert result["planned_count"] == 3
+    assert result["processed_count"] == 2
+    assert result["counts"] == {
+        "artifacts": 1,
+        "logs": 1,
+        "missing": 1,
+        "failed": 1,
+    }

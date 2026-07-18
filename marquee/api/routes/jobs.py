@@ -113,6 +113,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_LIMIT = 50
 MAX_LIMIT = 200
+QUEUE_RANK_LIMIT = 1000
 _QUEUE_PHASES = ("planned", "queued", "running", "stopping")
 _QUEUE_SORTS = ("default",)
 _HISTORY_SORTS = ("default", "created", "-created")
@@ -533,7 +534,7 @@ async def list_jobs(
         items.append(presenter.present_row(load_context(job, definition)))
 
     if view == "queue":
-        _attach_queue_ranks(items, rows)
+        await _attach_queue_ranks(db, items, rows)
 
     next_cursor = None
     if has_more and rows:
@@ -599,31 +600,35 @@ async def activity_attention(
     )
 
 
-def _attach_queue_ranks(items: list[JobRow], rows: list[Job]) -> None:
-    """Approximate class-local rank for queued rows; never a global promise."""
+async def _attach_queue_ranks(
+    db: AsyncSession, items: list[JobRow], rows: list[Job]
+) -> None:
+    """Attach exact class-local rank when it is inside the bounded active window."""
     queued = [job for job in rows if job.phase == "queued"]
     if not queued:
         return
-    by_class: dict[str, list[str]] = {}
+    by_class: dict[str, set[str]] = {}
     for job in queued:
         definition = _definition_for(job.type)
-        by_class.setdefault(definition.execution_class, []).append(job.id)
+        by_class.setdefault(definition.execution_class, set()).add(job.id)
     ranks: dict[str, int] = {}
-    for execution_class in by_class:
+    for execution_class, visible_ids in by_class.items():
         class_types = [
             definition.job_type
             for definition in JOB_DEFINITION_REGISTRY
             if definition.execution_class == execution_class
         ]
-        ordered = [
-            job.id
-            for job in queued
-            if job.type in class_types
-        ]
-        # Rank inside the page's own queued set; a full-table rank would scan
-        # unbounded history for a number the UI labels approximate anyway.
-        for position, job_id in enumerate(ordered, start=1):
-            ranks[job_id] = position
+        ordered = list(
+            await db.scalars(
+                select(Job.id)
+                .where(Job.phase == "queued", Job.type.in_(class_types))
+                .order_by(Job.eligible_at, Job.created_at, Job.id)
+                .limit(QUEUE_RANK_LIMIT + 1)
+            )
+        )
+        for position, job_id in enumerate(ordered[:QUEUE_RANK_LIMIT], start=1):
+            if job_id in visible_ids:
+                ranks[job_id] = position
     for index, item in enumerate(items):
         if item.job_id in ranks:
             items[index] = item.model_copy(update={"queue_rank": ranks[item.job_id]})

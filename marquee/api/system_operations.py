@@ -71,6 +71,13 @@ class OperationsSchedules(BaseModel):
     schedules: list[OperationsScheduleState] = Field(default_factory=list)
 
 
+class OperationsEvidenceRetention(BaseModel):
+    overdue_artifacts: int = Field(ge=0)
+    overdue_logs: int = Field(ge=0)
+    oldest_overdue_at: datetime | None = None
+    overdue: bool
+
+
 class OperationsTransport(BaseModel):
     picked: int
     held_failed: int
@@ -124,6 +131,7 @@ class OperationsSnapshot(BaseModel):
     events: OperationsEvents
     storage: OperationsStorage
     schedules: OperationsSchedules
+    evidence_retention: OperationsEvidenceRetention
     contracts: list[OperationsSchemaContract] = Field(default_factory=list)
 
 

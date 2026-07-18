@@ -26,7 +26,7 @@ from marquee.core.jobs.media_mutation_support import (
     current_signature,
     load_media_file,
 )
-from marquee.core.jobs.publication import file_signature
+from marquee.core.jobs.publication import execution_file_signature
 from marquee.core.jobs.remux_coordinator import publish_media_candidate
 from marquee.models import EpisodeMediaFile, JobArtifact, LetterboxEvent, LetterboxState, MediaFile
 
@@ -125,6 +125,7 @@ def _candidate_matches_request(
 
 
 async def _copy_artifact_to_stage(
+    context: ExecutionContext,
     artifact: JobArtifact,
     *,
     boundary,
@@ -134,8 +135,7 @@ async def _copy_artifact_to_stage(
     if artifact.storage_key is None:
         raise ArtifactError("physical artifact has no storage key")
     source = boundary.from_key("data", artifact.storage_key)
-    boundary.copy_file(source, staged)
-    boundary.fsync_parent(staged)
+    await context.io.confined_copy(boundary, source, staged)
 
 
 async def _persist_publish(
@@ -318,7 +318,7 @@ async def execute_letterbox_reencode_publish(context: ExecutionContext) -> dict[
             candidate_artifact_id=request.candidate_artifact_id,
         )
     boundary, destination = confined_boundary(resolved.path)
-    before_file = file_signature(boundary, destination)
+    before_file = await execution_file_signature(context.io, boundary, destination)
     backup = await _backup_for_job(context)
     already_published = before_file.sha256 == request.candidate_checksum
     if resolved.signature != request.expected_source_signature and not already_published:
@@ -382,8 +382,8 @@ async def execute_letterbox_reencode_publish(context: ExecutionContext) -> dict[
         "media", f".marquee-publish-{context.attempt.attempt_id}-{destination.key.value}"
     )
     try:
-        await _copy_artifact_to_stage(candidate, boundary=boundary, staged=staged)
-        staged_signature = file_signature(boundary, staged)
+        await _copy_artifact_to_stage(context, candidate, boundary=boundary, staged=staged)
+        staged_signature = await execution_file_signature(context.io, boundary, staged)
         if staged_signature.sha256 != request.candidate_checksum:
             raise ArtifactError("destination-local candidate copy failed checksum validation")
         staged_probe = await _probe(context, resolved.path.parent / staged.key.value)
@@ -425,7 +425,7 @@ async def execute_letterbox_reencode_publish(context: ExecutionContext) -> dict[
             backup_artifact_id=backup.id if backup else None,
             before_signature=resolved.signature,
         )
-    actual_file = file_signature(boundary, destination)
+    actual_file = await execution_file_signature(context.io, boundary, destination)
     actual_probe = await _probe(context, resolved.path)
     if actual_file.sha256 != request.candidate_checksum or not _probe_matches(
         actual_probe, request.candidate_probe
@@ -500,7 +500,7 @@ async def execute_letterbox_reencode_restore(context: ExecutionContext) -> dict[
             backup_artifact_id=request.backup_artifact_id,
         )
     boundary, destination = confined_boundary(resolved.path)
-    before_file = file_signature(boundary, destination)
+    before_file = await execution_file_signature(context.io, boundary, destination)
     already_restored = before_file.sha256 == request.backup_checksum
     if resolved.signature != request.expected_destination_signature and not already_restored:
         return _result(
@@ -529,8 +529,10 @@ async def execute_letterbox_reencode_restore(context: ExecutionContext) -> dict[
             "media", f".marquee-restore-{context.attempt.attempt_id}-{destination.key.value}"
         )
         try:
-            await _copy_artifact_to_stage(backup, boundary=boundary, staged=staged)
-            if file_signature(boundary, staged).sha256 != request.backup_checksum:
+            await _copy_artifact_to_stage(context, backup, boundary=boundary, staged=staged)
+            if (
+                await execution_file_signature(context.io, boundary, staged)
+            ).sha256 != request.backup_checksum:
                 raise ArtifactError("destination-local restore copy failed checksum validation")
             await publish_media_candidate(
                 context,
@@ -551,7 +553,7 @@ async def execute_letterbox_reencode_restore(context: ExecutionContext) -> dict[
                 backup_artifact_id=request.backup_artifact_id,
                 before_signature=resolved.signature,
             )
-    actual_file = file_signature(boundary, destination)
+    actual_file = await execution_file_signature(context.io, boundary, destination)
     if actual_file.sha256 != request.backup_checksum:
         return _result(
             operation="restore",

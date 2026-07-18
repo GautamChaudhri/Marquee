@@ -25,7 +25,7 @@ from marquee.core.jobs.media_mutation_support import (
     current_signature,
     load_media_file,
 )
-from marquee.core.jobs.publication import file_signature
+from marquee.core.jobs.publication import execution_file_signature
 from marquee.core.jobs.remux_coordinator import publish_media_candidate
 from marquee.models import DoviState, JobArtifact, MediaFile, Movie
 
@@ -116,13 +116,14 @@ def _probe_matches(actual: DoviProbeV1, expected: DoviProbeV1) -> bool:
     return actual.duration_seconds == expected.duration_seconds
 
 
-async def _copy_to_stage(artifact: JobArtifact, *, boundary, staged) -> None:
+async def _copy_to_stage(
+    context: ExecutionContext, artifact: JobArtifact, *, boundary, staged
+) -> None:
     await verify_physical_artifact(artifact)
     if artifact.storage_key is None:
         raise ArtifactError("physical artifact has no storage key")
     source = boundary.from_key("data", artifact.storage_key)
-    boundary.copy_file(source, staged)
-    boundary.fsync_parent(staged)
+    await context.io.confined_copy(boundary, source, staged)
 
 
 async def _persist_publish(
@@ -221,7 +222,7 @@ async def execute_dovi_publish(context: ExecutionContext) -> dict[str, object]:
     if resolved.path.suffix.lower() != ".mkv":
         return _result(operation="publish", outcome="failed", reason="unsupported_container", message="only Matroska publication is certified", request=request)
     boundary, destination = confined_boundary(resolved.path)
-    before_file = file_signature(boundary, destination)
+    before_file = await execution_file_signature(context.io, boundary, destination)
     backup = await _backup_for_job(context)
     already_published = before_file.sha256 == request.candidate_checksum
     if resolved.signature != request.expected_source_signature and not already_published:
@@ -237,8 +238,10 @@ async def execute_dovi_publish(context: ExecutionContext) -> dict[str, object]:
         return _result(operation="publish", outcome="succeeded", reason="publish_reconciled", message="a prior atomic publication was reconciled and rescanned", request=request, backup_artifact_id=backup.id, actual_signature=actual_signature, actual_checksum=before_file.sha256, actual_probe=actual_probe, rescanned=True, reconciled=True)
     staged = boundary.from_key("media", f".marquee-dovi-publish-{context.attempt.attempt_id}-{destination.key.value}")
     try:
-        await _copy_to_stage(candidate, boundary=boundary, staged=staged)
-        if file_signature(boundary, staged).sha256 != request.candidate_checksum:
+        await _copy_to_stage(context, candidate, boundary=boundary, staged=staged)
+        if (
+            await execution_file_signature(context.io, boundary, staged)
+        ).sha256 != request.candidate_checksum:
             raise ArtifactError("destination-local candidate checksum mismatch")
         staged_probe = await _probe(context, resolved.path.parent / staged.key.value)
         if not _probe_matches(staged_probe, request.candidate_probe):
@@ -259,7 +262,7 @@ async def execute_dovi_publish(context: ExecutionContext) -> dict[str, object]:
     except Exception as exc:  # noqa: BLE001
         boundary.delete_file(staged, missing_ok=True)
         return _result(operation="publish", outcome="failed", reason="publish_failed", message=str(exc)[:500], request=request, backup_artifact_id=backup.id if backup else None, before_signature=resolved.signature)
-    actual_file = file_signature(boundary, destination)
+    actual_file = await execution_file_signature(context.io, boundary, destination)
     actual_probe = await _probe(context, resolved.path)
     if actual_file.sha256 != request.candidate_checksum or not _probe_matches(actual_probe, request.candidate_probe):
         return _result(operation="publish", outcome="unsafe", reason="post_publish_validation_failed", message="published destination failed checksum or Dolby Vision rescan", request=request, backup_artifact_id=backup.id, actual_checksum=actual_file.sha256, actual_probe=actual_probe)
@@ -280,7 +283,7 @@ async def execute_dovi_restore(context: ExecutionContext) -> dict[str, object]:
     except Exception as exc:  # noqa: BLE001
         return _result(operation="restore", outcome="failed", reason="restore_preflight_failed", message=str(exc)[:500], request=request, backup_artifact_id=request.backup_artifact_id)
     boundary, destination = confined_boundary(resolved.path)
-    before_file = file_signature(boundary, destination)
+    before_file = await execution_file_signature(context.io, boundary, destination)
     already_restored = before_file.sha256 == request.backup_checksum
     if resolved.signature != request.expected_destination_signature and not already_restored:
         return _result(operation="restore", outcome="failed", reason="destination_changed", message="the destination changed after confirmation", request=request, backup_artifact_id=request.backup_artifact_id)
@@ -289,14 +292,16 @@ async def execute_dovi_restore(context: ExecutionContext) -> dict[str, object]:
     if not already_restored:
         staged = boundary.from_key("media", f".marquee-dovi-restore-{context.attempt.attempt_id}-{destination.key.value}")
         try:
-            await _copy_to_stage(backup, boundary=boundary, staged=staged)
-            if file_signature(boundary, staged).sha256 != request.backup_checksum:
+            await _copy_to_stage(context, backup, boundary=boundary, staged=staged)
+            if (
+                await execution_file_signature(context.io, boundary, staged)
+            ).sha256 != request.backup_checksum:
                 raise ArtifactError("destination-local restore checksum mismatch")
             await publish_media_candidate(context, boundary=boundary, candidate=staged, destination=destination, expected_destination=before_file)
         except Exception as exc:  # noqa: BLE001
             boundary.delete_file(staged, missing_ok=True)
             return _result(operation="restore", outcome="failed", reason="restore_failed", message=str(exc)[:500], request=request, backup_artifact_id=request.backup_artifact_id)
-    actual_file = file_signature(boundary, destination)
+    actual_file = await execution_file_signature(context.io, boundary, destination)
     if actual_file.sha256 != request.backup_checksum:
         return _result(operation="restore", outcome="unsafe", reason="post_restore_validation_failed", message="restored destination failed checksum validation", request=request, backup_artifact_id=request.backup_artifact_id, actual_checksum=actual_file.sha256)
     actual_probe = await _probe(context, resolved.path)

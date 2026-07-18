@@ -49,6 +49,9 @@ class SubtitleInventory(Base):
     attachments_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     coverage_json: Mapped[str | None] = mapped_column(JSON, nullable=True)
     probe_tool_versions_json: Mapped[str | None] = mapped_column(JSON, nullable=True)
+    source_job_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    source_attempt_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    source_fence_token: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     scanned_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

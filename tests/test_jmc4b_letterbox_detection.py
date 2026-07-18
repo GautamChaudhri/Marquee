@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
-from pgqueuer import Queries, RetryRequested
+from pgqueuer import Queries
 
 from marquee.api.routes.letterbox import detect_batch, detect_one, detect_tv_batch, detect_tv_series
 from marquee.core.jobs.handlers_letterbox import (
@@ -19,6 +19,7 @@ from marquee.core.jobs.handlers_letterbox import (
     execute_letterbox_detect_tv_scope,
 )
 from marquee.core.jobs.manifest import JOB_DEFINITION_REGISTRY
+from marquee.core.jobs.policies import ClassifiedExecutionError, RetryClassification
 from marquee.database import _get_engine
 from marquee.main import app
 from marquee.models import Job, Movie
@@ -148,10 +149,11 @@ async def test_unavailable_probe_requests_definition_retry() -> None:
 
             raise ProcessLaunchError("ffprobe is unavailable")
 
-    with pytest.raises(RetryRequested) as raised:
+    with pytest.raises(ClassifiedExecutionError) as raised:
         await _launch_json(SimpleNamespace(process_launcher=UnavailableLauncher()), "ffprobe", [])
 
-    assert raised.value.reason == "ffprobe is temporarily unavailable"
+    assert str(raised.value) == "ffprobe is temporarily unavailable"
+    assert raised.value.classification == RetryClassification.TRANSIENT
 
 
 @pytest.mark.asyncio

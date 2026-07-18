@@ -4275,6 +4275,7 @@ export interface components {
 			freshness?: components['schemas']['ProgressFreshness'] | null;
 			/** Headline */
 			headline?: string | null;
+			metrics?: components['schemas']['ProgressMetrics'];
 			overall?: components['schemas']['ProgressMeasurement'] | null;
 			/** Sequence */
 			sequence?: number | null;
@@ -4984,6 +4985,17 @@ export interface components {
 			/** Source */
 			source: string;
 		};
+		/** OperationsEvidenceRetention */
+		OperationsEvidenceRetention: {
+			/** Oldest Overdue At */
+			oldest_overdue_at?: string | null;
+			/** Overdue */
+			overdue: boolean;
+			/** Overdue Artifacts */
+			overdue_artifacts: number;
+			/** Overdue Logs */
+			overdue_logs: number;
+		};
 		/** OperationsHistoryJob */
 		OperationsHistoryJob: {
 			/** Finished At */
@@ -5185,6 +5197,7 @@ export interface components {
 			contracts?: components['schemas']['OperationsSchemaContract'][];
 			database: components['schemas']['OperationsDatabase'];
 			events: components['schemas']['OperationsEvents'];
+			evidence_retention: components['schemas']['OperationsEvidenceRetention'];
 			/**
 			 * Generated At
 			 * Format: date-time
@@ -5596,6 +5609,27 @@ export interface components {
 			total?: number | null;
 			/** Unit */
 			unit?: string | null;
+		};
+		/** ProgressMetrics */
+		ProgressMetrics: {
+			/** Bytes Processed */
+			bytes_processed?: number | null;
+			/** Bytes Total */
+			bytes_total?: number | null;
+			/** Decoder */
+			decoder?: string | null;
+			/** Elapsed Seconds */
+			elapsed_seconds?: number | null;
+			/** Encoder */
+			encoder?: string | null;
+			/** Eta Seconds */
+			eta_seconds?: number | null;
+			/** Fps */
+			fps?: number | null;
+			/** Speed */
+			speed?: number | null;
+			/** Throughput */
+			throughput?: number | null;
 		};
 		/** ProgressWait */
 		ProgressWait: {

@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import tempfile
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -34,19 +35,32 @@ from marquee.vendor.subgen.language_code import LanguageCode
 logger = logging.getLogger(__name__)
 
 
-def translate_local_to_remote(local_path: str) -> str:
+def _configured(
+    configuration: Mapping[str, Any] | None,
+    key: str,
+) -> Any:
+    if configuration is not None and key in configuration:
+        return configuration[key]
+    return getattr(subtitle_settings, key)
+
+
+def translate_local_to_remote(
+    local_path: str, configuration: Mapping[str, Any] | None = None
+) -> str:
     """Map a Marquee-local path into Subgen's namespace via configured prefixes."""
-    local_prefix = subtitle_settings.SUBGEN_LOCAL_PATH_PREFIX
-    remote_prefix = subtitle_settings.SUBGEN_REMOTE_PATH_PREFIX
+    local_prefix = _configured(configuration, "SUBGEN_LOCAL_PATH_PREFIX")
+    remote_prefix = _configured(configuration, "SUBGEN_REMOTE_PATH_PREFIX")
     if local_prefix and remote_prefix and local_path.startswith(local_prefix):
         return remote_prefix + local_path[len(local_prefix) :]
     return local_path
 
 
-def translate_remote_to_local(remote_path: str) -> str:
+def translate_remote_to_local(
+    remote_path: str, configuration: Mapping[str, Any] | None = None
+) -> str:
     """Inverse mapping for paths reported in Subgen's completion callback."""
-    local_prefix = subtitle_settings.SUBGEN_LOCAL_PATH_PREFIX
-    remote_prefix = subtitle_settings.SUBGEN_REMOTE_PATH_PREFIX
+    local_prefix = _configured(configuration, "SUBGEN_LOCAL_PATH_PREFIX")
+    remote_prefix = _configured(configuration, "SUBGEN_REMOTE_PATH_PREFIX")
     if local_prefix and remote_prefix and remote_path.startswith(remote_prefix):
         return local_prefix + remote_path[len(remote_prefix) :]
     return remote_path
@@ -58,9 +72,11 @@ def _language_code_for_subgen(language_tag: str | None) -> LanguageCode:
     return LanguageCode.from_string(language_tag)
 
 
-def _subtitle_language_token(language_tag: str | None) -> str:
+def _subtitle_language_token(
+    language_tag: str | None, configuration: Mapping[str, Any] | None = None
+) -> str:
     language = _language_code_for_subgen(language_tag)
-    naming = subtitle_settings.SUBGEN_NAMING_TYPE
+    naming = _configured(configuration, "SUBGEN_NAMING_TYPE")
     if language is LanguageCode.NONE:
         return "und"
     if naming == "ISO_639_1":
@@ -74,18 +90,23 @@ def _subtitle_language_token(language_tag: str | None) -> str:
     return language.to_iso_639_2_b() or "und"
 
 
-def expected_output_srt(local_media_path: str, language_tag: str | None, model_label: str) -> Path:
+def expected_output_srt(
+    local_media_path: str,
+    language_tag: str | None,
+    model_label: str,
+    configuration: Mapping[str, Any] | None = None,
+) -> Path:
     """Predict Subgen's real output filename.
 
     Upstream naming is ``{base}[.subgen][.model].{lang}.srt``.
     """
     media = Path(local_media_path)
     suffixes = []
-    if subtitle_settings.SUBGEN_NAME_INCLUDES_SUBGEN:
+    if _configured(configuration, "SUBGEN_NAME_INCLUDES_SUBGEN"):
         suffixes.append("subgen")
-    if subtitle_settings.SUBGEN_NAME_INCLUDES_MODEL and model_label:
+    if _configured(configuration, "SUBGEN_NAME_INCLUDES_MODEL") and model_label:
         suffixes.append(model_label)
-    suffixes.append(_subtitle_language_token(language_tag))
+    suffixes.append(_subtitle_language_token(language_tag, configuration))
     return media.with_suffix("." + ".".join(suffixes) + ".srt")
 
 
@@ -127,13 +148,19 @@ def _health_dict(body: dict[str, Any]) -> dict[str, Any]:
 class SubgenPathGenerator:
     id = "subgen-default"
 
+    def __init__(self, configuration: Mapping[str, Any] | None = None) -> None:
+        self.configuration = dict(configuration) if configuration is not None else None
+
+    def _value(self, key: str) -> Any:
+        return _configured(self.configuration, key)
+
     def capabilities(self) -> GeneratorCapabilities:
         return GeneratorCapabilities(
             id=self.id,
-            name=subtitle_settings.SUBGEN_PROFILE_NAME,
+            name=self._value("SUBGEN_PROFILE_NAME"),
             provider="subgen",
-            mode=subtitle_settings.SUBGEN_MODE,
-            model_label=subtitle_settings.SUBGEN_MODEL_LABEL,
+            mode=self._value("SUBGEN_MODE"),
+            model_label=self._value("SUBGEN_MODEL_LABEL"),
             supports_language_hint=True,
             supports_per_request_model=False,
             supports_percent_progress=False,
@@ -141,11 +168,12 @@ class SubgenPathGenerator:
         )
 
     async def health(self) -> GeneratorHealth:
-        if not subtitle_settings.subgen_url:
+        subgen_url = self._value("SUBGEN_URL")
+        if not subgen_url:
             return GeneratorHealth(healthy=False, detail="Subgen is disabled")
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
-                resp = await client.get(f"{subtitle_settings.subgen_url.rstrip('/')}/status")
+                resp = await client.get(f"{subgen_url.rstrip('/')}/status")
                 resp.raise_for_status()
                 body = (
                     resp.json()
@@ -161,30 +189,31 @@ class SubgenPathGenerator:
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "SUBGEN | Connection health check failed to URL %s: %s",
-                subtitle_settings.subgen_url,
+                subgen_url,
                 str(exc),
                 exc_info=True,
             )
             return GeneratorHealth(healthy=False, detail=str(exc))
 
     async def submit(self, request: GenerationRequest) -> ProviderSubmission:
-        if not subtitle_settings.subgen_url:
+        subgen_url = self._value("SUBGEN_URL")
+        if not subgen_url:
             return ProviderSubmission(accepted=False, submitted_at="", detail="Subgen is disabled")
-        remote = translate_local_to_remote(request.local_media_path)
+        remote = translate_local_to_remote(request.local_media_path, self.configuration)
         params: dict[str, str] = {"directory": remote}
         if request.language_hint:
             params["forceLanguage"] = request.language_hint
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 resp = await client.post(
-                    f"{subtitle_settings.subgen_url.rstrip('/')}/batch",
+                    f"{subgen_url.rstrip('/')}/batch",
                     params=params,
                 )
                 resp.raise_for_status()
         except Exception as exc:  # noqa: BLE001
             logger.error(
                 "SUBGEN | Submission failed to URL %s for file %s: %s",
-                subtitle_settings.subgen_url,
+                subgen_url,
                 request.local_media_path,
                 str(exc),
                 exc_info=True,
@@ -203,7 +232,8 @@ class SubgenPathGenerator:
         audio_path: str,
         output_path: str,
     ) -> ProviderSubmission:
-        if not subtitle_settings.subgen_url:
+        subgen_url = self._value("SUBGEN_URL")
+        if not subgen_url:
             return ProviderSubmission(accepted=False, submitted_at="", detail="Subgen is disabled")
         params = {
             "task": request.task,
@@ -216,7 +246,7 @@ class SubgenPathGenerator:
             async with httpx.AsyncClient(timeout=subtitle_settings.SUBGEN_TIMEOUT_MINUTES * 60) as client:
                 with Path(audio_path).open("rb") as handle:
                     resp = await client.post(
-                        f"{subtitle_settings.subgen_url.rstrip('/')}/asr",
+                        f"{subgen_url.rstrip('/')}/asr",
                         params=params,
                         files={"audio_file": (Path(audio_path).name, handle, "audio/wav")},
                     )
@@ -232,12 +262,13 @@ class SubgenPathGenerator:
         )
 
     async def detect_language(self, sample_path: str) -> dict[str, Any]:
-        if not subtitle_settings.subgen_url:
+        subgen_url = self._value("SUBGEN_URL")
+        if not subgen_url:
             raise RuntimeError("Subgen is disabled")
         async with httpx.AsyncClient(timeout=30.0) as client:
             with Path(sample_path).open("rb") as handle:
                 resp = await client.post(
-                    f"{subtitle_settings.subgen_url.rstrip('/')}/detect-language",
+                    f"{subgen_url.rstrip('/')}/detect-language",
                     files={"audio_file": (Path(sample_path).name, handle, "audio/mpeg")},
                 )
             resp.raise_for_status()
@@ -248,7 +279,8 @@ class SubgenPathGenerator:
         expected = expected_output_srt(
             request.local_media_path,
             request.language_hint,
-            subtitle_settings.SUBGEN_WHISPER_MODEL or subtitle_settings.SUBGEN_MODEL_LABEL,
+            subtitle_settings.SUBGEN_WHISPER_MODEL or self._value("SUBGEN_MODEL_LABEL"),
+            self.configuration,
         )
         if expected.is_file():
             return ProviderState(state="produced", output_path=str(expected))

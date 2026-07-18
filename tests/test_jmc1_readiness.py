@@ -56,7 +56,12 @@ async def test_healthy_readiness_checks_every_component(db, monkeypatch):
     sqlalchemy_connection, pg_connection = await _install_fake_connection(monkeypatch)
     report = await readiness.check_readiness()
 
-    assert report["status"] == "ready"
+    failed = {
+        key: value
+        for key, value in report["components"].items()
+        if value["status"] != "ok"
+    }
+    assert report["status"] == "ready", failed
     assert {result["status"] for result in report["components"].values()} == {"ok"}
     assert sqlalchemy_connection.closed
     assert pg_connection.unlocked

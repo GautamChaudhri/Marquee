@@ -113,6 +113,59 @@ async def test_queue_history_are_partitioned_and_cursor_bound(db, client):
 
 
 @pytest.mark.asyncio
+async def test_queue_rank_is_class_local_and_does_not_restart_on_next_page(db, client):
+    jobs = [
+        make_job(job_id=f"rank{i:028d}", phase="queued", offset=i)
+        for i in range(25)
+    ]
+    db.add_all(jobs)
+    await db.commit()
+
+    first = await client.get("/api/jobs", params={"view": "queue", "limit": 10})
+    assert first.status_code == 200
+    second = await client.get(
+        "/api/jobs",
+        params={
+            "view": "queue",
+            "limit": 10,
+            "cursor": first.json()["next_cursor"],
+        },
+    )
+
+    assert second.status_code == 200
+    assert [item["queue_rank"] for item in first.json()["items"]] == list(range(1, 11))
+    assert [item["queue_rank"] for item in second.json()["items"]] == list(range(11, 21))
+
+
+@pytest.mark.asyncio
+async def test_queue_rank_is_omitted_beyond_bounded_class_window(db, client):
+    ahead = [
+        make_job(job_id=f"bound{i:027d}", phase="queued", offset=i)
+        for i in range(1001)
+    ]
+    target = make_job(
+        job_id="boundedranktarget000000000000001",
+        phase="queued",
+        offset=1001,
+    )
+    target.subject_reference = "system:bounded-rank-target"
+    db.add_all([*ahead, target])
+    await db.commit()
+
+    response = await client.get(
+        "/api/jobs",
+        params={
+            "view": "queue",
+            "subject_reference": target.subject_reference,
+        },
+    )
+
+    assert response.status_code == 200
+    assert [item["job_id"] for item in response.json()["items"]] == [target.id]
+    assert response.json()["items"][0]["queue_rank"] is None
+
+
+@pytest.mark.asyncio
 async def test_activity_attention_is_one_bounded_server_aggregate(db, client):
     running = make_job(job_id="attention-running-000000000001", phase="running")
     warning = make_job(job_id="attention-warning-000000000001", phase="running", offset=1)
@@ -249,7 +302,7 @@ async def test_read_query_budgets_hold_at_maximum_page_size(db, client):
         response = await client.get("/api/jobs", params={"view": "queue", "limit": 200})
     assert response.status_code == 200
     assert len(response.json()["items"]) == 200
-    assert list_queries[0] == 1
+    assert list_queries[0] == 2
 
     job_id = jobs[0].id
     with count_queries() as presentation_queries:

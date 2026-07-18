@@ -9,13 +9,17 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from sqlalchemy import delete, exists, or_, select
+from sqlalchemy import delete, exists, func, or_, select
 from sqlalchemy.orm import aliased
 
 from marquee.config import settings
 from marquee.core.backup import backup_service
 from marquee.core.filesystem import ClassifiedPath, FilesystemBoundary, RootSpec
-from marquee.core.jobs.artifact_service import register_physical_artifact
+from marquee.core.jobs.artifact_service import (
+    expire_artifacts,
+    expire_logs,
+    register_physical_artifact,
+)
 from marquee.core.jobs.delivery import ExecutionContext, register_execution_handler
 from marquee.core.jobs.mutation_documents import (
     BackupCreateRequestV1,
@@ -24,11 +28,6 @@ from marquee.core.jobs.mutation_documents import (
     PosterMaintenanceRequestV1,
     RetentionPurgeRequestV1,
 )
-from marquee.core.jobs.progress import (
-    MeasurementMode,
-    ProgressMeasurementUpdate,
-)
-from marquee.core.jobs.progress_service import ProgressObservation, progress_writer
 from marquee.core.pipeline_config import pipeline_settings
 from marquee.models import (
     Job,
@@ -143,10 +142,16 @@ async def execute_backup_create(context: ExecutionContext) -> dict[str, object]:
     BackupCreateRequestV1.model_validate(context.request)
     if context.cancellation.cancel_called:
         raise MaintenanceOperationError("backup cancelled before consistency point")
-    await _emit_progress(
-        context, operation="backup_create", completed=0, total=1, ordinal=1
+    await context.progress.stage(
+        "execute",
+        label="Creating database and managed-data backup",
+        wait_kind="external_process",
+        wait_label_key="backup.pg_dump",
     )
-    result = await backup_service.create_backup_with_maintenance_held()
+    result = await backup_service.create_backup_with_maintenance_held(
+        process_launcher=context.process_launcher,
+        cancelled=lambda: bool(context.cancellation.cancel_called),
+    )
     evidence = await asyncio.to_thread(_backup_evidence, result)
     boundary = FilesystemBoundary(
         {
@@ -173,8 +178,12 @@ async def execute_backup_create(context: ExecutionContext) -> dict[str, object]:
         metadata={"backup_id": result.backup_id},
     )
     plan_checksum = _checksum({"backup_id": evidence["backup_id"], "manifest": evidence})
-    await _emit_progress(
-        context, operation="backup_create", completed=1, total=1, ordinal=2
+    await context.progress.stage(
+        "finalize",
+        label="Registering backup evidence",
+        completed=1,
+        total=1,
+        unit="backups",
     )
     return _result(
         operation="backup_create",
@@ -267,31 +276,14 @@ async def _emit_progress(
     operation: str,
     completed: int,
     total: int,
-    ordinal: int,
 ) -> None:
-    """Persist best-effort determinate progress at maintenance batch boundaries."""
-    await progress_writer.safe_write(
-        job_id=context.delivery.canonical_job_id,
-        attempt_id=context.attempt.attempt_id,
-        fence_token=context.attempt.fence_token,
-        observation=ProgressObservation(
-            stage_key="execute",
-            overall=ProgressMeasurementUpdate(
-                scope_id=f"{operation}:items",
-                mode=MeasurementMode.DETERMINATE,
-                unit="items",
-                completed=completed,
-                total=total,
-            ),
-            current=ProgressMeasurementUpdate(
-                scope_id=f"{operation}:current",
-                mode=MeasurementMode.DETERMINATE,
-                unit="items",
-                completed=completed,
-                total=total,
-            ),
-            producer_ordinal=max(1, ordinal),
-        ),
+    """Persist subject-aware determinate progress at maintenance batch boundaries."""
+    await context.progress.stage(
+        "execute",
+        label=f"{operation.replace('_', ' ').title()} items",
+        completed=completed,
+        total=total,
+        unit="items",
     )
 
 async def _delete_file_plan(
@@ -303,10 +295,8 @@ async def _delete_file_plan(
 ) -> tuple[int, int, dict[str, int], bool]:
     processed = deleted = 0
     counts: dict[str, int] = {}
-    await _emit_progress(
-        context, operation=operation, completed=0, total=len(plan), ordinal=1
-    )
-    for batch_ordinal, offset in enumerate(range(0, len(plan), batch_size), start=2):
+    await _emit_progress(context, operation=operation, completed=0, total=len(plan))
+    for offset in range(0, len(plan), batch_size):
         if context.cancellation.cancel_called:
             return processed, deleted, counts, True
         async with context.session_factory() as session:
@@ -324,7 +314,6 @@ async def _delete_file_plan(
             operation=operation,
             completed=processed,
             total=len(plan),
-            ordinal=batch_ordinal,
         )
     return processed, deleted, counts, False
 
@@ -470,10 +459,8 @@ async def _delete_rows(
     batch_size: int,
 ) -> tuple[int, bool]:
     deleted_count = 0
-    await _emit_progress(
-        context, operation=operation, completed=0, total=len(ids), ordinal=1
-    )
-    for batch_ordinal, offset in enumerate(range(0, len(ids), batch_size), start=2):
+    await _emit_progress(context, operation=operation, completed=0, total=len(ids))
+    for offset in range(0, len(ids), batch_size):
         if context.cancellation.cancel_called:
             return deleted_count, True
         batch = ids[offset : offset + batch_size]
@@ -487,13 +474,42 @@ async def _delete_rows(
             operation=operation,
             completed=min(offset + len(batch), len(ids)),
             total=len(ids),
-            ordinal=batch_ordinal,
         )
     return deleted_count, False
 
 
+async def _expire_evidence_batches() -> tuple[dict[str, int], dict[str, int]]:
+    artifact_totals = dict.fromkeys(("claimed", "expired", "deleted", "missing", "failed"), 0)
+    log_totals = artifact_totals.copy()
+    for _ in range(max(1, MAX_MAINTENANCE_ITEMS // 100)):
+        artifact_cleanup = await expire_artifacts(data_dir=settings.DATA_DIR, limit=100)
+        log_cleanup = await expire_logs(data_dir=settings.DATA_DIR, limit=100)
+        for key in artifact_totals:
+            artifact_totals[key] += artifact_cleanup[key]
+            log_totals[key] += log_cleanup[key]
+        if artifact_cleanup["claimed"] < 100 and log_cleanup["claimed"] < 100:
+            return artifact_totals, log_totals
+    raise MaintenanceOperationError("evidence retention scope exceeds configured bound")
+
+
 async def execute_job_retention_purge(context: ExecutionContext) -> dict[str, object]:
     request = RetentionPurgeRequestV1.model_validate(context.request)
+    if request.evidence_only:
+        artifacts, logs = await _expire_evidence_batches()
+        processed = artifacts["expired"] + logs["expired"]
+        return _result(
+            operation="job_retention_purge",
+            plan_checksum=_checksum(()),
+            planned=artifacts["claimed"] + logs["claimed"],
+            processed=processed,
+            deleted=artifacts["deleted"] + logs["deleted"],
+            counts={
+                "artifacts": artifacts["expired"],
+                "logs": logs["expired"],
+                "missing": artifacts["missing"] + logs["missing"],
+                "failed": artifacts["failed"] + logs["failed"],
+            },
+        )
     now = datetime.now(UTC)
     cutoff = now - timedelta(days=request.retention_days)
     live_artifact = exists().where(
@@ -551,6 +567,28 @@ async def execute_job_retention_purge(context: ExecutionContext) -> dict[str, ob
             counts={"jobs": len(ids)},
             dry_run=True,
         )
+    await _expire_evidence_batches()
+
+    if ids:
+        async with context.session_factory() as session:
+            artifact_blockers = await session.scalar(
+                select(func.count())
+                .select_from(JobArtifact)
+                .where(
+                    JobArtifact.job_id.in_(ids),
+                    JobArtifact.storage_key.is_not(None),
+                    JobArtifact.status != "expired",
+                )
+            )
+            log_blockers = await session.scalar(
+                select(func.count())
+                .select_from(JobLog)
+                .where(JobLog.job_id.in_(ids), JobLog.seal_status != "expired")
+            )
+        if artifact_blockers or log_blockers:
+            raise MaintenanceOperationError(
+                "physical evidence cleanup is incomplete; job rows were retained"
+            )
     deleted_count, cancelled = await _delete_rows(
         context,
         operation="job_retention_purge",

@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from marquee.core.jobs.contracts import EffectSafety
 from marquee.core.jobs.fenced_writer import AttemptOwnership, FencedWriter
@@ -127,6 +127,12 @@ async def _bounded_candidates(worker_node: str, *, limit: int) -> tuple[OrphanCa
                 .where(
                     Job.phase.in_(("running", "stopping")),
                     JobAttempt.phase.in_(("running", "stopping")),
+                    or_(
+                        RuntimeInstance.id.is_(None),
+                        RuntimeInstance.stopped_at.is_not(None),
+                        RuntimeInstance.readiness == "stopped",
+                        RuntimeInstance.heartbeat_expires_at <= now,
+                    ),
                 )
                 .order_by(JobAttempt.id)
                 .limit(limit)

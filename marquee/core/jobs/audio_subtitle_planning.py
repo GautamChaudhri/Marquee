@@ -7,10 +7,12 @@ documents, and delegates lifecycle ownership to :mod:`mutation_planning`.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping, Sequence
 from typing import Any
 
 from pydantic import BaseModel
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.core.jobs.audio_subtitle_documents import (
@@ -23,10 +25,10 @@ from marquee.core.jobs.audio_subtitle_documents import (
     SubtitleRestoreRequestV1,
     TrackRemoveRequestV1,
 )
-from marquee.core.jobs.media_mutation_support import probe_inventory
 from marquee.core.jobs.mutation_documents import MutationTargetV1
 from marquee.core.jobs.mutation_planning import MutationPlan, plan_mutation
 from marquee.core.jobs.submission import Initiator, SubjectLocator, SubmissionResult
+from marquee.core.jobs.track_inventory_adapter import inventory_from_probe
 from marquee.core.jobs.track_selectors import (
     TrackInventoryV1,
     TrackSelectorV1,
@@ -34,6 +36,7 @@ from marquee.core.jobs.track_selectors import (
     selector_for,
 )
 from marquee.core.media_files import ResolvedMediaFile, resolve_media_file
+from marquee.models import SubtitleInventory, SubtitleTrack
 
 REQUEST_MODELS: dict[str, type[BaseModel]] = {
     "audio_remove": TrackRemoveRequestV1,
@@ -173,7 +176,58 @@ async def load_before_inventory(
     session: AsyncSession, media_file_id: int
 ) -> tuple[ResolvedMediaFile, TrackInventoryV1]:
     resolved = await resolve_media_file(session, media_file_id)
-    return resolved, probe_inventory(resolved.path, resolved.signature)
+    inventory = await session.scalar(
+        select(SubtitleInventory).where(
+            SubtitleInventory.media_file_id == media_file_id
+        )
+    )
+    if (
+        inventory is None
+        or inventory.error is not None
+        or inventory.file_signature != resolved.signature
+    ):
+        raise AudioSubtitlePlanError(
+            "the subtitle inventory is missing or stale; scan the media file first"
+        )
+    audio = inventory.audio_streams_json or []
+    if isinstance(audio, str):
+        audio = json.loads(audio)
+    if not isinstance(audio, list):
+        raise AudioSubtitlePlanError("the stored audio inventory is invalid")
+
+    audio = [stream for stream in audio if isinstance(stream, dict)]
+    tracks = (
+        await session.scalars(
+            select(SubtitleTrack)
+            .where(SubtitleTrack.inventory_id == inventory.id)
+            .order_by(SubtitleTrack.stream_index, SubtitleTrack.id)
+        )
+    ).all()
+    subtitles: list[dict[str, object | None]] = []
+    for track in tracks:
+        managed_key = track.external_path
+        if managed_key and (managed_key.startswith("/") or ".." in managed_key):
+            managed_key = None
+        subtitles.append(
+            {
+                "source": track.source,
+                "language_tag": track.language_tag,
+                "codec": track.codec,
+                "title": track.title,
+                "is_default": track.is_default,
+                "is_forced": track.is_forced,
+                "is_sdh": track.is_sdh,
+                "managed_key": managed_key,
+                "stream_index": track.stream_index,
+                "tool_track_id": track.tool_track_id,
+            }
+        )
+    return resolved, inventory_from_probe(
+        signature=inventory.file_signature,
+        container=inventory.container,
+        audio_streams=audio,
+        subtitles=subtitles,
+    )
 
 
 async def plan_audio_subtitle_mutation(

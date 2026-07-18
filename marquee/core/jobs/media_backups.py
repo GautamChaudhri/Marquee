@@ -12,7 +12,8 @@ closed rather than being silently overwritten.
 
 from __future__ import annotations
 
-from marquee.core.filesystem import ClassifiedPath, FilesystemBoundary
+from marquee.core.filesystem import ClassifiedPath, FilesystemBoundary, FilesystemBoundaryError
+from marquee.core.jobs.execution_io import ExecutionIO
 from marquee.core.jobs.mutation_documents import MutationBackupV1
 from marquee.core.jobs.publication import FileSignature, _optional_signature, file_signature
 
@@ -79,6 +80,47 @@ def create_media_backup(
     )
 
 
+async def create_execution_media_backup(
+    execution_io: ExecutionIO,
+    boundary: FilesystemBoundary,
+    *,
+    source: ClassifiedPath,
+    subject_key: str,
+    signature: FileSignature,
+    suffix: str,
+    retention: str = DEFAULT_RETENTION,
+) -> MutationBackupV1:
+    """Create a media backup through cancellation-aware, fenced chunked I/O."""
+    key = backup_key(subject_key, signature, suffix=suffix)
+    directory = boundary.from_key(BACKUP_ROOT, f"{BACKUP_PREFIX}/{subject_key}")
+    boundary.create_directory(directory, parents=True)
+    destination = boundary.from_key(BACKUP_ROOT, key)
+    try:
+        existing_value = await execution_io.confined_signature(boundary, destination)
+    except FilesystemBoundaryError:
+        existing_value = None
+    if existing_value is not None:
+        if existing_value.sha256 != signature.sha256:
+            raise BackupArtifactError("recorded backup key conflicts with existing bytes")
+        checksum = existing_value.sha256
+        size = existing_value.size
+    else:
+        stored = await execution_io.confined_copy(boundary, source, destination)
+        if stored.sha256 != signature.sha256:
+            boundary.delete_file(destination, missing_ok=True)
+            raise BackupArtifactError("backup copy did not match its source digest")
+        checksum = stored.sha256
+        size = stored.size
+    return MutationBackupV1(
+        artifact_key=key,
+        checksum=checksum,
+        size_bytes=size,
+        source_signature=signature_text(signature),
+        retention=retention,
+        restore_eligible=True,
+    )
+
+
 def verify_media_backup(
     boundary: FilesystemBoundary, backup: MutationBackupV1
 ) -> ClassifiedPath:
@@ -89,6 +131,24 @@ def verify_media_backup(
     stored = _optional_signature(boundary, destination)
     if stored is None:
         raise BackupArtifactError("recorded backup artifact is missing")
+    if stored.sha256 != backup.checksum or stored.size != backup.size_bytes:
+        raise BackupArtifactError("recorded backup artifact failed checksum verification")
+    return destination
+
+
+async def verify_execution_media_backup(
+    execution_io: ExecutionIO,
+    boundary: FilesystemBoundary,
+    backup: MutationBackupV1,
+) -> ClassifiedPath:
+    """Verify a canonical backup through fenced chunked execution I/O."""
+    if not backup.restore_eligible:
+        raise BackupArtifactError("backup is not eligible for restore")
+    destination = boundary.from_key(BACKUP_ROOT, backup.artifact_key)
+    try:
+        stored = await execution_io.confined_signature(boundary, destination)
+    except FilesystemBoundaryError as exc:
+        raise BackupArtifactError("recorded backup artifact is missing") from exc
     if stored.sha256 != backup.checksum or stored.size != backup.size_bytes:
         raise BackupArtifactError("recorded backup artifact failed checksum verification")
     return destination

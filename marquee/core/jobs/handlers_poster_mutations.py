@@ -212,22 +212,6 @@ def _optional_signature(
         return None
 
 
-def _copy_to_fd(boundary: FilesystemBoundary, source: ClassifiedPath, destination_fd: int) -> None:
-    source_fd = boundary.open_read(source)
-    try:
-        while chunk := os.read(source_fd, 1024 * 1024):
-            view = memoryview(chunk)
-            while view:
-                written = os.write(destination_fd, view)
-                if written <= 0:
-                    raise OSError("poster staging write made no progress")
-                view = view[written:]
-        os.fsync(destination_fd)
-    finally:
-        os.close(source_fd)
-        os.close(destination_fd)
-
-
 def _decode_image(boundary: FilesystemBoundary, source: ClassifiedPath) -> tuple[int, int]:
     fd = boundary.open_read(source)
     try:
@@ -356,8 +340,12 @@ async def _publish_copy(
             destination.root.name, prefix=".marquee-poster-"
         )
     try:
-        await asyncio.to_thread(_copy_to_fd, boundary, source, fd)
-        return await PublicationCoordinator(boundary, maximum_bytes=32 * 1024 * 1024).publish(
+        await context.io.confined_copy_to_fd(boundary, source, fd)
+        return await PublicationCoordinator(
+            boundary,
+            maximum_bytes=32 * 1024 * 1024,
+            execution_io=context.io,
+        ).publish(
             staged=staged,
             destination=destination,
             expected_destination=expected,
@@ -782,7 +770,7 @@ async def execute_poster_reset(context: ExecutionContext) -> dict[str, object]:
             == before_signature
         ),
     )
-    await PublicationCoordinator(boundary).delete(
+    await PublicationCoordinator(boundary, execution_io=context.io).delete(
         destination=destination,
         expected_destination=before_signature,
         fence=context.writer,
