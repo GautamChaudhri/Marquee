@@ -161,6 +161,29 @@ external recovery material, and compacts only its own unpushed range into one tr
 completion commit/tag. All three plans require the God model tier and no implementer pushes or
 activates the system.
 
+A deeper product-effect audit after JMC6F found that the D–F green suite proved architecture,
+contracts, and synthetic fixtures but did not consistently prove the real operation and downstream
+consumer for every enabled definition. Shared terminal outcome mapping, retry/timeout enforcement,
+configuration snapshots, progress, blocking I/O, evidence retention, the canonical poster
+pipeline, and native ML publication/consumption therefore require one final two-part closure:
+
+1. [`jmc6g-execution-truth-progress-and-evidence-closure.md`](job-system-update/jmc6g-execution-truth-progress-and-evidence-closure.md)
+   corrects terminal/attempt/dispatch truth, bounded retry and timeout, execution configuration,
+   long-job progress, tracked processes and cancellation-aware I/O, subtitle/media evidence,
+   retention, and bounded recovery/Operations defects.
+2. [`jmc6h-product-convergence-retirement-and-final-certification.md`](job-system-update/jmc6h-product-convergence-retirement-and-final-certification.md)
+   replaces poster/ML placeholders with real contained product execution, converges artifacts and
+   their actual consumers, removes remaining legacy lifecycle code, and certifies every enabled
+   definition from producer through refreshed product effect.
+
+They execute strictly JMC6G → JMC6H and share
+`design/job-system-update/jmc6-final-closure-timeline.md`; JMC6G creates it. Both require the God
+model tier, continuous internal-phase execution, complete zero-green gates, verified external
+recovery material, and final-only tree-identical compaction. JMC6H is the terminal implementation
+plan: an in-scope issue found during its final certification is fixed within JMC6H rather than
+creating another post-plan. Browser-agent acceptance is designed only after an independent
+post-JMC6H once-over succeeds.
+
 ## Overview
 
 This timeline preserves the existing phase structure from `design/todos.md`

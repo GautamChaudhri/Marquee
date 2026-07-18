@@ -353,6 +353,12 @@ The target API carries typed progress in:
 
 ## Completion criteria
 
+The final handler-level progress closure is implemented and behaviorally certified by
+[JMC6G](jmc6g-execution-truth-progress-and-evidence-closure.md). In particular, native progress must
+stream while tools run, and provider/copy/hash/backup/validation/publication phases must remain
+visible. [JMC6H](jmc6h-product-convergence-retirement-and-final-certification.md) then applies the
+same contract to the real poster and ML implementations.
+
 This work is complete when every active operation is rediscoverable from the server, every
 long-running definition declares its measurement semantics, batch overall/current progress
 cannot be confused, feature pages and Projection Room share one renderer/store, and no

@@ -803,6 +803,12 @@ boundary and first-release implications in detail.
 
 ## Completion criteria
 
+The post-JMC6 product-effect audit found that green structural/contract tests did not prove every
+enabled handler's real domain effect or downstream consumer. Final completion is therefore gated by
+[JMC6G execution truth and evidence closure](jmc6g-execution-truth-progress-and-evidence-closure.md)
+followed by [JMC6H product convergence and certification](jmc6h-product-convergence-retirement-and-final-certification.md).
+These are corrective closure plans within Chunk 6, not a seventh migration chunk.
+
 The program is complete when:
 
 - a fresh reset creates only the target Marquee and PgQueuer schemas;
