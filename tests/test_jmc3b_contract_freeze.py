@@ -196,8 +196,14 @@ def test_obsolete_helpers_have_an_explicit_removal_or_replacement_plan() -> None
     assert isinstance(plans, list)
     paths = [plan["path"] for plan in plans]
     assert paths == sorted(set(paths))
+    # Helpers whose removal disposition has been executed (progress_bridge in
+    # JMC3B4; run_manager retired in JMC6F F03) must no longer exist.
+    removed = {
+        "marquee/pipeline/progress_bridge.py",
+        "marquee/pipeline/run_manager.py",
+    }
     for plan in plans:
-        if plan["path"] == "marquee/pipeline/progress_bridge.py":
+        if plan["path"] in removed:
             assert not (ROOT / plan["path"]).exists()
             continue
         assert (ROOT / plan["path"]).is_file()

@@ -653,3 +653,478 @@ only active plan. No push, production activation, or JMC6E work is authorized.
   recovery refs and an external bundle at that clean tip; squash only the linear JMC6E range; prove
   parent and tree identity; create annotated `jmc6e-complete`; make no later timeline edit.
 - **Pending operator actions:** do not push, activate, delete recovery material, or start JMC6F.
+
+## JMC6F Phase F0 — verify JMC6E and freeze retirement manifest
+
+### Exact starting state
+
+- JMC6F starts from annotated `jmc6e-complete`, resolving to compact commit
+  `b46766bb4cca229db087e2dd35a389d952e6115e`, tree `5a13909b381c4f632bac29e7be0c773c938a64a3`,
+  with sole parent `jmc6d-complete` (`cbc976bae52ff62078d965cadf915fc5ec5d6a8f`). `HEAD` and
+  `job-manager` are exactly at that compact commit; the worktree was clean at start.
+- `origin/job-manager` remains at `jmc6a-complete` (`a0355e07515c8cfee77ed7a2e31fc38d340eb445`); the
+  local branch is ahead by exactly the compact JMC6B, JMC6C, JMC6D, and JMC6E commits. No remote ref
+  contains `jmc6e-complete`. Repository author is Gautam Chaudhri
+  `<gautam.chaudhri@gmail.com>` and is the only permitted JMC6F identity.
+- Serena, ByteRover MCP, and RTK are operational and in use. Required instructions and plans were
+  read in full: `AGENTS.md`, `CLAUDE.md`, plan workflow README, plan 04 §0 (backend ground rules),
+  plan 05 §2 (frontend ground rules), JMC6F, JMC6E, JMC6D, this shared timeline, JMC5C, JMC6C
+  zero-green certification, JMC6C activation audit, and the JMC6 former-test dispositions.
+
+### Verified predecessor evidence (JMC6E complete, matches Git)
+
+- Annotated `jmc6e-complete` is a tag object (tagger Gautam Chaudhri) → compact commit `b46766b`,
+  tree `5a13909b`, parent `jmc6d-complete`. Configured author/committer only.
+- Tree identity of the JMC6E squash holds: pre-squash tip `fb8b68197b667d4ca2af82e0319b68dc226be853`
+  (`record jmc6e compaction handoff`) has tree `5a13909b`, byte-identical to the compact tree. The
+  linear JMC6E-only range rooted at `jmc6d-complete` is E0 `882fd5c`, E1 `29f48c6`, E2 `a1990a5`,
+  E3 `8685cba`, E4 `0f4e622`, E5 `ae63f7d`, ledger `fb8b681`.
+- Recovery branch `recovery/jmc6e-20260717T215326Z` and annotated tag
+  `recovery/jmc6e-pre-squash-20260717T215326Z` (→ tag object `941e850`) both resolve to the certified
+  pre-squash tip. External bundle `/tmp/marquee-jmc6e-20260717T215326Z.bundle` verifies as complete
+  SHA-1 history containing those recovery refs plus `jmc6d-complete`. Prior JMC6B/C/D bundles and the
+  `~/backups/Marquee/` pre-squash bundles remain intact.
+- Single Alembic head `0008_jmc6e`. The official `marquee.db_migration` service applied
+  `0001_jmc1`→`0008_jmc6e` and installed/verified PgQueuer 1.1.1 durable on the owned disposable
+  target.
+
+### Baseline gates (complete green baseline)
+
+- Owned disposable target is a fresh JMC6F PostgreSQL 18.3 cluster at `127.0.0.1:55452/marquee_test`,
+  data root `/tmp/marquee-jmc6f-pg`, role `marquee` (superuser/CREATEDB). The sandbox cannot see host
+  loopback, so all database gates run outside the network sandbox against this explicit target. Port
+  5432 (the live operator database) was never targeted.
+- Authoritative pre-change backend baseline after applying the official migration service:
+  **1314 passed, 0 failed, 0 skipped, 0 xfail/xpass in 91.23s**. (A first run before the migration
+  service showed the documented 7 provisioning failures — six `test_backup.py` and one
+  `test_jmc1_readiness` case that read the base database rather than the ephemeral test schema; they
+  pass once `marquee_test` receives the official migration service. That is environment provisioning,
+  not a retained failure.)
+- Ruff over `marquee tests scripts` passes. `export_openapi.py --check` is current at 199 paths;
+  `design/api-schema.json` SHA-256 is `b840054960e2770292a8438625f49883ae2fbb0ce2bf435f8681984dcf27c1b6`
+  (unchanged from JMC6E). `git diff --check` passes.
+- Frontend: generated-client regeneration produces no diff; `svelte-check` 0 errors/0 warnings;
+  Prettier/ESLint clean; 10 Vitest files / 111 tests pass. Production build and Playwright/axe were
+  not re-run in F0 because no frontend source changed; they are certified in F4/F5.
+- Definition manifest: 62 built-in definitions, 43 enabled types, 18 parent-only types; production
+  schedule keys `audio_subs_deep_scan`, `library_sync`, `poster_heal`; webhook-reserved
+  `radarr_upgrade`. (JMC6C's 61/42 plus JMC6E's added `taste_enrich`.)
+
+### Retirement inventory (Serena reference/import analysis)
+
+Confirmed against current source that the plan's retirement premises hold — the detached lifecycles
+are already unreachable from production, so retirement removes dead runtime, not live capability:
+
+- **RunManager (`marquee/pipeline/run_manager.py`, F03).** Lifecycle is dead in production: 0 prod
+  refs to `run_manager.start`/`get_state`/`active_run_id`, `RunState`, `RunInProgressError`, and the
+  `begin_rebuild`/`end_rebuild` flags (JMC6E E3 removed the inline taste-rebuild caller). Live
+  helpers to **extract** into a neutral service: `load_archive` (8 prod call sites in
+  `pipeline.py`/`taste.py`/`pipeline_tv.py`/`feedback.py`), `release_gpu_resources`, `gpu_busy`
+  (`system.py`), `reset_extractor` (`feedback.py`), `_ensure_extractor`
+  (`feedback.py`/`onboarding/build_taste_test.py`).
+- **LetterboxManager (`marquee/media/letterbox_manager.py`, F02).** The detached batch lifecycle
+  (`JobState`, `BatchInProgressError`, `start_batch`, `_execute_batch`, `active_job_id`, `get_state`,
+  `_active_job_id`/`_jobs` state, `_emit_child_progress` bridge) has 0 prod and 0 test references.
+  Canonical letterbox detection runs through `marquee.media.letterbox_detect` +
+  `handlers_letterbox.py`, not this manager; the manager's `detect_*_and_store`/grouping methods have
+  0 prod refs and are test-only (extract-vs-remove resolved in F1 against `letterbox_detect`
+  coverage).
+- **batch_runner (`marquee/pipeline/batch_runner.py`, F03).** Zero production importers (only a
+  docstring mention in `runner.py:222` and 13 test refs). The canonical `execute_poster_pipeline`
+  handler is a self-contained analysis stub that imports nothing from `marquee.pipeline`. Pure
+  algorithms with valuable tests (`apply_official_pick`, ranking/OCR/detail helpers) are extracted to
+  a neutral module in F1; the detached `run_batch`/`run_batch_assets` engine + `_BatchMovie`/
+  `AssetSpec` wrappers are deleted.
+- **taste rebuild (`marquee/api/routes/taste.py`, F04).** Already canonical after JMC6E E3:
+  `_canonical_rebuild_status` queries the `Job` table; no multiprocessing/monitor/cancel-flag
+  residue remains in the route. Remaining residue is the dead `run_manager` rebuild flags (removed
+  with F1).
+- **delivery executor (`marquee/core/jobs/delivery.py`, F05).** `LegacyNoopExecutor` injection is
+  threaded (`executor` param) through `_execute_delivery`/`_deliver`, default `None`; no production
+  caller supplies it. Deletion target.
+- **frontend DTOs (F05).** The handwritten `MediaJob`/`active_job`/`MediaJobSnapshot` seam is already
+  gone (JMC6E E2); the remaining `active_jobs` hits are an unrelated metrics count. `job-labels.ts`
+  `displayMediaJobLabel` usage is re-checked in F2.
+- **startup migrations (F10).** `main.py` lifespan calls `migrate_legacy_runtime_state` and
+  `migrate_live_artifacts`; both are evaluated in F3 for obsolete-unreleased deletion vs bounded
+  retention.
+- **stale docs (F09).** Design/handoff docs referencing `/api/activity`, custom workers, inline media
+  jobs, or `MediaJob` are updated/superseded in F2.
+
+### F0 red contracts and gates
+
+- Added `tests/test_jmc6f_retirement.py`: five intentional RED static-absence contracts (retired
+  poster-run lifecycle, retired batch poster engine, retired letterbox batch lifecycle, no route
+  importing a process-local pipeline lifecycle, retired delivery executor injection) plus two GREEN
+  canonical-replacement guards (canonical letterbox detection on `letterbox_detect`; single canonical
+  `execute_poster_pipeline`).
+- Focused run: exactly 5 failed, 2 passed. Full backend inventory:
+  **1316 passed, exactly 5 intentional F1-F3 absence failures in 88.13s** (1314 baseline + 2 green
+  guards). Ruff over `marquee tests scripts` and `git diff --check` pass. The five failures are the
+  static-absence contracts and are intentional evidence required before deletion, not a green gate.
+
+### Current phase and next steps
+
+- **Current phase:** F0 — verify JMC6E and freeze retirement manifest (complete pending the
+  configured-author phase commit).
+- **Exact next steps:** commit F0; append its hash; then F1 — create the neutral extractor/archive/GPU
+  service and migrate its callers, extract the pure poster-ranking/official-pick and letterbox
+  detection/grouping algorithms behind neutral modules, delete the RunManager/LetterboxManager batch
+  lifecycles and `batch_runner`, rewrite/remove the lifecycle tests with named canonical replacements,
+  and turn the F0 absence contracts green; run focused + full + Ruff + schema + generated + diff gates
+  and commit F1.
+- **Deviations:** none. F0 intentionally commits red static-absence contracts as the plan requires
+  failing absence tests before deletion; the failure membership is exact and the predecessor baseline
+  is separately certified at 1314.
+- **Pending operator actions:** do not push, activate, touch operator media/database state, or delete
+  any JMC6B/C/D/E recovery material. Production schedules remain default-off. Dolby Vision Profile 5/7
+  remains readiness-disabled; browser auth, public reset replacement, Docker hardening, webhook
+  implementation, and `radarr_upgrade` remain deferred owner work.
+
+### F0 phase commit
+
+- **Completed work and commit:** `862e4fe731c80ce56dc36afcdb1315b32af8dc25` (`freeze legacy
+  retirement manifest`) records the JMC6F starting state, verified JMC6E predecessor evidence, the
+  complete green baseline, the Serena-derived retirement inventory, and `tests/test_jmc6f_retirement.py`
+  with five intentional RED static-absence contracts + two GREEN canonical-replacement guards.
+- **Verification:** configured author only, no attribution trailer; focused 5 failed/2 passed; full
+  inventory 1316 passed / exactly 5 intentional absence failures; Ruff and `git diff --check` clean.
+
+### F1 phase completion — letterbox and poster lifecycle extraction/removal
+
+- **Completed work:** extracted the still-live pipeline-runtime helpers out of the retired
+  `RunManager` into a neutral `marquee/pipeline/extractor_runtime.py` (`extractor_runtime` singleton:
+  `ensure_extractor`, `reset_extractor`, `release_gpu_resources`, `load_archive`) and migrated all
+  eight production call sites (`pipeline.py`, `pipeline_tv.py`, `taste.py`, `feedback.py`,
+  `system.py`, `handlers_poster_mutations.py`, `ocr_label_capture.py`, `onboarding/build_taste_test.py`).
+  Deleted `marquee/pipeline/run_manager.py` (detached `start`/`_execute`/`_run_stages_blocking`/
+  `_finalize_db`/`RunState`/`RunInProgressError`/active-run + `begin_rebuild`/`end_rebuild` GPU
+  flags). The `/api/system/release-gpu` route drops the always-`None` in-process busy gate (canonical
+  job resource reservations coordinate GPU work) and always releases.
+- Extracted the pure TMDB official-pick poster-ranking algorithm (`apply_official_pick`, D8) into a
+  neutral `marquee/pipeline/official_pick.py` and deleted the detached
+  `marquee/pipeline/batch_runner.py` engine (`run_batch`/`run_batch_assets`/`_download_phase`/
+  `_finalize`/`_persist_running`/`_BatchMovie`/`AssetSpec`) — it had zero production importers; the
+  canonical `execute_poster_pipeline` handler is the sole poster-analysis path. Fixed the stale
+  `batch_runner._ocr_batch` docstring reference in `runner.py`.
+- Deleted the detached letterbox batch lifecycle from `marquee/media/letterbox_manager.py`
+  (`JobState`, `BatchInProgressError`, `start_batch`, `_execute_batch`, `active_job_id`, `get_state`,
+  `_active_job_id`/`_jobs` state, `_max_parallel`, `_SENTINEL`, unused `uuid4`/`contextlib`/`field`/
+  `_get_session_factory` imports). Retained the pure detection/storage/grouping algorithms
+  (`detect_*`, `group_episode_items_by_media_file`, `select_season_sample_episodes`,
+  `EpisodeBatchItem`) and the no-op `_emit_child_progress` canonical seam. Canonical letterbox
+  detection remains on `marquee.media.letterbox_detect` + `handlers_letterbox.py`.
+- **Removed-test disposition (F06 — canonical replacement named):**
+  - `tests/test_batch_runner.py` (removed): batch-engine isolation tests → canonical coverage in
+    `test_jmc4a_batch_coordination.py` (batch parent/child), `test_jmc4c_poster_pipeline.py` /
+    `test_jmc4c_poster_workspace.py` (canonical poster handler), and the stage-algorithm suites
+    (OCR/scorer/gate/dedup) in `test_pipeline_revised.py`. The pure `apply_official_pick` algorithm
+    and its seven tests are preserved in the new `tests/test_official_pick.py`.
+  - `tests/test_poster_pipeline_backend.py`: removed `test_batch_ocr_fallback_is_isolated_per_movie`,
+    `test_run_batch_finalizes_rows_when_exception_escapes`,
+    `test_run_batch_assets_creates_tv_pipeline_runs_with_subject_fks` → canonical one-subject-per-job
+    isolation + fenced failure handling (`test_jmc4c_poster_pipeline.py`, `test_jmc3a_*`) + subject
+    snapshot tests. The OCR-token, results-grouping, cache-safety, and handler-registration tests are
+    retained unchanged.
+  - `tests/test_run_endpoints.py`: removed the three `RunState` buffer/replay/finish tests → canonical
+    progress/SSE (`progress_service`, Projection Room, `test_pgqueuer_delivery.py`); removed
+    `test_gpu_busy_reports_run_and_rebuild` and `test_release_gpu_endpoint_reports_busy` → canonical
+    GPU coordination via job resource reservations. `test_release_gpu_resources_clears_cached_extractor`
+    is migrated to `extractor_runtime` and a new `test_release_gpu_endpoint_releases_without_in_process_busy_gate`
+    asserts the simplified route.
+  - `tests/fixtures/jmc3b/b0_contract_freeze.json` + `test_jmc3b_contract_freeze.py`: the
+    `run_manager.py` obsolete-helper disposition is marked executed (joins `progress_bridge.py` in the
+    must-not-exist set); the `letterbox_manager.py` disposition notes the batch subscriber-queue
+    removal with retained detection algorithms.
+- **Verification before commit:** four of the five F0 absence contracts are now green (retired poster
+  run lifecycle, retired batch engine, retired letterbox batch lifecycle, no route importing a
+  process-local pipeline lifecycle). Full backend inventory: **1306 passed, exactly 1 intentional
+  failure** (`test_legacy_delivery_executor_injection_is_retired`, assigned to F2) in 90.04s. Ruff
+  over `marquee tests scripts` and `git diff --check` pass. OpenAPI is unchanged and current at 199
+  paths, SHA-256 `b840054960e2770292a8438625f49883ae2fbb0ce2bf435f8681984dcf27c1b6`; migration head
+  unchanged at `0008_jmc6e` (no model/migration change). No frontend source changed in F1, so the
+  frontend baseline (svelte-check 0/0, 111 unit, generated-client no-drift) is unaffected; build/E2E
+  are certified in F4/F5.
+- **Current phase:** F2 — taste, delivery, frontend, and compatibility cleanup.
+- **Exact next steps:** delete the legacy `LegacyNoopExecutor` delivery-executor injection from
+  `marquee/core/jobs/delivery.py` and migrate any test suppliers (turns the last F0 absence contract
+  green); remove residual process-local taste compatibility and any unused frontend `MediaJob`/label/
+  SSE helpers; update/supersede stale `/api/activity`/custom-worker/inline-media-job design docs;
+  regenerate OpenAPI/TypeScript if any contract shifts; run focused + full + Ruff + schema + frontend
+  gates and commit F2.
+- **Deviations:** none. The single remaining red is the intentional F2-assigned delivery-executor
+  absence contract, consistent with the incremental red-to-green pattern used in D0-D4/E0-E4. No
+  product/architecture deviation; the retired engines had zero production importers and the canonical
+  poster/letterbox paths are unchanged.
+- **Pending operator actions:** unchanged — no push, activation, operator media/database access, or
+  recovery-material deletion.
+
+### F2 phase completion — delivery, frontend, and compatibility cleanup
+
+- **F1 phase commit:** `b4fb11b42013cefbb6f30a5bd822f0a73512901f` (`extract pipeline runtime and
+  retire detached engines`).
+- **Completed work:** removed the legacy `LegacyNoopExecutor` delivery-executor injection from
+  `marquee/core/jobs/delivery.py` — `_execute_delivery(execution)` now always resolves the canonical
+  `EXECUTION_HANDLERS` handler (no `executor`/`transport_context` params, no legacy result wrapper),
+  and `deliver_job`/`deliver_control_job` drop the `executor` kwarg. The ten test suppliers of that
+  seam (`test_pgqueuer_delivery.py` ×9 + `test_jmc6d_runtime_instances.py` ×1) are rewritten to swap
+  the real handler via `monkeypatch.setitem(delivery._EXECUTION_HANDLERS, "system_noop", handler)` —
+  a pure-test technique that exercises the identical production delivery path with no production
+  test-seam. Every retry/hold/cancellation/fence/quarantine/duplicate-delivery assertion is preserved
+  verbatim; the cancellation blocker uses `execution.cancellation` (the same object as the transport
+  `context.cancellation`, delivery.py:805).
+- Removed the dead handwritten `displayMediaJobLabel` export (last `MediaJob.operation` consumer) from
+  `frontend/src/lib/job-labels.ts`; the `active_job`/`MediaJob`/`MediaJobSnapshot` DTO seam was already
+  removed in JMC6E E2. Updated the active `design/poster-pipeline.md` architecture reference from the
+  deleted `marquee/pipeline/run_manager.py` to `marquee/pipeline/extractor_runtime.py`. Historical
+  timelines and executed plans (02/03/04) that mention the retired engines are left intact as
+  point-in-time records (F09 permits historical documents). The only `/api/activity` reference in an
+  active doc is the JMC6B decision to remove it, which is correct.
+- Process-local taste rebuild machinery (F04) was already retired in JMC6E E3; the retained
+  `test_taste_rebuild_has_no_process_local_execution_state` guard passes, and F1 removed the last dead
+  `run_manager` rebuild flags.
+- **Verification:** the safety-critical `test_pgqueuer_delivery.py` + `test_jmc6d_runtime_instances.py`
+  focused suite is **49 passed** (matching the JMC6D D2 certification count). All five F0 static
+  absence contracts are now green (7/7 in `test_jmc6f_retirement.py`). Full backend inventory:
+  **1307 passed, 0 failed, 0 skipped/xfail/xpass in 88.63s**. Ruff over `marquee tests scripts`,
+  `export_openapi.py --check` (199 paths, unchanged), generated-client no-drift, and
+  `git diff --check` pass. Frontend: `svelte-check` 0 errors/0 warnings, Prettier/ESLint clean, 111
+  Vitest tests, production build succeeds. Playwright/axe deferred to F4/F5 (only a dead unused label
+  helper changed; no rendered behavior).
+- **Current phase:** F3 — startup/schema/static retirement certification.
+- **Exact next steps:** audit the `main.py` startup migration helpers (`migrate_legacy_runtime_state`,
+  `migrate_live_artifacts`) for obsolete-unreleased deletion vs bounded/idempotent/tested retention
+  (F10); prove fresh-schema and forward-upgrade equivalence from the `jmc6c-complete` schema, one
+  executor per enabled definition, no legacy lifecycle imports/startup hooks; strengthen static
+  absence coverage; run all gates and commit F3.
+- **Deviations:** none. The delivery-test rewrite is a faithful canonical replacement (same
+  `_execute_delivery` → handler path, same assertions); no safety contract was weakened.
+- **Pending operator actions:** unchanged — no push, activation, operator media/database access, or
+  recovery-material deletion.
+
+### F3 phase completion — startup/schema/static retirement certification
+
+- **F2 phase commit:** `7632c40a0350633180432cb0014ad9ef54fff930` (`retire delivery executor
+  injection and stale compat`).
+- **F10 startup-migration decision — RETAIN (bounded/idempotent/observable/tested):** both
+  `main.py` startup helpers are kept because they satisfy every F10 retention criterion.
+  `pipeline_config.migrate_legacy_runtime_state` moves pre-`data/` mutable state into the canonical
+  `data/` layout over a fixed six-entry list, skips absent legacy paths, raises on a genuine
+  path-conflict, and logs each move; `ml.migrate_artifacts.migrate_live_artifacts` upgrades live ML
+  `.npz` artifacts to the safe codec format over a bounded target list. They are tested
+  (`migrate_legacy_runtime_state` ×6 in `test_jmc1_readiness.py`; `migrate_live_artifacts`/
+  `ensure_safe_artifact` ×9 across `test_artifact_codec.py`/`test_backup.py`). `migrate_live_artifacts`
+  is a real first-release artifact-format-safety need; deleting either would strand a pre-existing
+  operator layout with no benefit, so neither is an obsolete-unreleased deletion candidate.
+- **Schema equivalence (JMC6F changed no model or migration):** `alembic check` reports
+  `No new upgrade operations detected`; the sole head remains `0008_jmc6e`. A fresh database migrated
+  `0001_jmc1`→`0008_jmc6e` and a forward-upgraded database (applied to the `jmc6c-complete` schema
+  `0006_jmc4c`, then upgraded by the official migration service to `0008_jmc6e`) produce an identical
+  schema: column fingerprint `5696b90d283f77e77a8239c59cdb13c4` and index fingerprint
+  `5570599ca32f71ee49eabe65932b8845` match each other and the certification baseline (48 public
+  tables). Temporary rehearsal databases were dropped.
+- **One executor per enabled definition:** the registry reports 43 enabled leaves and exactly 43
+  canonical `EXECUTION_HANDLERS` entries — `enabled − handlers = ∅` and `handlers − enabled = ∅`.
+  `main.py`, `pgqueuer_worker.py`, `pgqueuer_scheduler.py`, and `supervisor.py` import no retired
+  `run_manager`/`batch_runner`/`job_manager`/`media_job_manager`/`cancel_registry`/`builtin_handlers`
+  symbol — startup is canonical-only.
+- **Strengthened static absence (§4):** added
+  `test_extracted_neutral_modules_have_no_lifecycle_coupling` — asserts `run_manager.py` is absent and
+  that `extractor_runtime.py`/`official_pick.py` import no API route, PgQueuer transport, canonical
+  `Job` mutation, delivery entry, `job_manager`, or `register_execution_handler`.
+- **Verification:** full backend inventory **1308 passed, 0 failed, 0 skipped/xfail/xpass in 87.73s**
+  (F2's 1307 plus the new static guard). Ruff over `marquee tests scripts`, `alembic check`, and
+  `git diff --check` pass. OpenAPI unchanged at 199 paths; no schema/model/contract change in F3, so
+  generated contracts are unaffected and the frontend baseline is unchanged.
+- **Current phase:** F4 — production-like activation certification.
+- **Exact next steps:** run the §5 activation matrix on owned disposable infrastructure — real
+  worker-process recreation with a changed incarnation, schedule master gate off/on without a
+  catch-up storm, external worker/scheduler Operations health and missing-entrypoint behavior,
+  equivalent/conflicting concurrent submissions, exact feature-page recovery beyond 20 unrelated jobs
+  with dropped SSE/snapshot repair, webhook-absence, and product/media evidence across the four
+  primary feature areas; record every manual/tool/hardware exception honestly (Dolby Vision Profile
+  5/7 stays readiness-disabled without a real `dovi_tool` smoke). Run all gates and commit F4.
+- **Deviations:** the first fresh-vs-forward comparison used `pg_dump | grep`, which filtered to empty
+  output and produced a spurious empty-string SHA match; it was discarded and redone with an
+  `information_schema` column+index fingerprint that yields the real matching digests recorded above.
+  No product, schema, or migration change resulted.
+- **Pending operator actions:** unchanged — no push, activation, operator media/database access, or
+  recovery-material deletion. Production schedule master gate remains default-off.
+
+### F4 phase completion — production-like activation certification
+
+- **F3 phase commit:** `b8c9a90818f697ef738c83de8a1b487015a0f411` (`certify startup schema
+  and static retirement`).
+- **Actual worker-process recreation:** on the owned PostgreSQL 18.3 target at
+  `127.0.0.1:55452/marquee_test`, an external `pgqueuer_worker` process registered incarnation
+  `2bbb5861-8f21-45c9-bd5e-76a5eb07d7ac`, became ready with all seven configured execution-class
+  entrypoints, and stopped cleanly on `SIGINT`. Recreating the same logical node label produced
+  distinct incarnation `ac8beefd-b92c-4490-b583-d599dd405ec3` with a different PID/start identity;
+  the first row remained stopped and the second ready. The final updated-code smoke registered a
+  third distinct worker incarnation `f4059961-687b-4da0-a217-aef18830d933`; all owned processes
+  stopped cleanly after evidence capture.
+- **External topology and schedule gate:** a separate real scheduler process registered
+  `7740c0a9-78b1-4a4b-8005-0047045a25a2` (and final updated-code incarnation
+  `e204e185-3732-44b6-b344-f2bdf845957b`). With `JOB_EMBEDDED_WORKERS=false`, the live Operations
+  response reported no embedded supervisor, one fresh worker + one fresh scheduler, zero stale,
+  scheduler present, no capability mismatch, zero picked/held/queued work, and 9 observed database
+  connections within the configured 28 / maximum 32 budget. The real scheduler logged disabled
+  `library-sync` and `poster-heal` occurrences for seven consecutive minutes with the production
+  master gate false and created no transport row. Gate-on/off, disable/re-enable, two-scheduler
+  reuse, occurrence coalescing, and no catch-up burst remain deterministically exercised by the
+  green `test_jmc4a_schedules.py` suite; the real external scheduler was deliberately never started
+  gate-on because this plan forbids activation and its production callbacks may contact configured
+  integrations.
+- **Activation defect found and corrected:** the first real `GET /api/system/operations` returned
+  500 because `OperationsSchemaContract` incorrectly required integer schema versions and non-null
+  durability while real `schema_contracts` rows contain string versions (`0008_jmc6e`, `1.1.1`)
+  and nullable Marquee durability. The model now matches the canonical ORM/schema contract; a
+  real-row regression was added; OpenAPI/TypeScript were regenerated; and the repeated live request
+  returned 200 with both contract markers and external topology evidence.
+- **Dolby Vision readiness:** the project-local binary exists as `dovi_tool 17ebb13`, but no
+  owner-approved Profile 5/7 fixture smoke was available or performed. Added restart-owned
+  `JOB_DOVI_CONVERSION_CERTIFIED=false`; the conversion route now returns typed 503
+  `dovi_conversion_not_certified` before planning, and runtime Operations distinguishes binary
+  availability (`dovi_tool=true`) from certified conversion readiness
+  (`dovi_conversion_certified=false`). The live route returned 503. Existing deterministic mock /
+  generated-fixture contracts remain green but do not certify Profile 5/7 conversion.
+- **Overlap, refresh, recovery, webhook, and media matrix:** focused F4 suite is **223 passed in
+  18.42s**, covering the F0-F3 retirement guards, JMC6E no-inline/page manifest, exact recovery
+  beyond 20 unrelated jobs, concurrent equivalent coalescing and unsafe conflict, terminal scope
+  release, schedule master behavior, external Operations/missing-entrypoint reporting, PgQueuer
+  delivery/retry/hold/cancellation/fencing, canonical commands, webhook absence, poster,
+  letterbox, audio/subtitle documents, and Dolby Vision readiness. The literal full backend suite
+  is **1309 passed, 0 failed, 0 skipped/xfail/xpass in 87.25s**. Generated/confined media fixtures
+  ran through the retained suite; no operator library, provider state, normal `DATA_DIR`, or
+  owner media fixture was used, and no new live publish/restore/hardware encode smoke is claimed.
+- **Schema/static/generated/frontend gates:** Ruff over `marquee tests scripts`; Alembic current,
+  sole head, offline SQL, and model check; idempotent official migration/PgQueuer verification;
+  static legacy/webhook/no-inline guards; and `git diff --check` pass. Schema remains 48 public
+  tables at sole head `0008_jmc6e`; PgQueuer remains 1.1.1 durable. OpenAPI remains 199 paths at
+  SHA-256 `4f70e9e7c5cbd90e5359fc8fadde37ad48272756e203a4a1f899b67459f9c7a4`; generated
+  TypeScript SHA-256 is `96eedda857b02f9e54ae402bac3da5ea01c55438816e210e3eb8c4c73aa36d89`.
+  Frontend: Svelte check 0 errors/0 warnings; Prettier/ESLint clean; 10 Vitest files / 111 tests;
+  production build; and fresh-server Playwright/axe 11/11 pass. Local actionlint 1.7.7 passes from
+  the retained JMC6C scratch binary; the ordinary PATH lacks `actionlint`. Build output retains only
+  the recorded chunk-size/plugin-timing notices.
+- **Definition/capability manifest:** 62 definitions / 43 enabled leaves / 19 ticketless or
+  reserved types / exactly 43 canonical execution handlers. Production schedule keys remain
+  `library-sync`, `poster-heal`, and `audio-subs-deep-scan`; `radarr_upgrade` remains reserved and
+  all webhook routes remain absent. Runtime tools observed: Python 3.13.14, pytest 9.0.3, Ruff
+  0.15.17, Node 22.22.2, npm 10.9.7, PostgreSQL 18.3, PgQueuer 1.1.1, and `dovi_tool 17ebb13`.
+- **Current phase:** F5 — audit handoff, complete gates, and final-only compaction.
+- **Exact next steps:** commit F4 with the configured author; append its hash; update the activation
+  audit with corrected JMC6F authority, manifests, exceptions, and owner checklist; repeat the final
+  complete backend/frontend/schema/PgQueuer/OpenAPI/client/static/actionlint/diff gates; record the
+  full phase ledger, certified tree, intended tag, and operator work; then perform final-only
+  recovery/bundle/squash/tag only if ownership, ancestry, concurrency, clean-tree, and tree-identity
+  checks remain exact.
+- **Deviations and reasons:** the first focused command named a nonexistent audio test module and
+  collected nothing; it was discarded and rerun with `test_jmc5b_audio_subtitle_documents.py`.
+  Sandboxed database attempts were blocked before test execution and were rerun with approved access
+  to the owned loopback target. Ordinary `actionlint` PATH lookup failed; the verified 1.7.7 binary
+  retained by JMC6C was located and passed. The Operations 500 and uncertified-DoVi readiness gap
+  were real activation defects fixed without weakening any gate.
+- **Pending operator actions:** do not push or activate. Preserve all JMC6B/C/D/E recovery material.
+  Owner-approved Profile 5/7 fixture certification remains required before setting
+  `JOB_DOVI_CONVERSION_CERTIFIED=true`. Browser authentication, public reset replacement, Docker
+  hardening/version alignment, webhook implementation, `radarr_upgrade`, hosted CI, and final
+  deployment/schedule/capability approval remain deferred.
+
+### F5 integrated certification and activation handoff
+
+- **F4 phase commit:** `5a7123fe98502d0e60654e51edaef5f987233795` (`recertify external
+  activation topology`).
+- **Completed work:** updated `jmc6c-activation-audit.md` with the corrected JMC6F activation
+  candidate, exact definition/route/page/schema/generated-contract manifests, external topology,
+  schedule/webhook disposition, capability exceptions, deferred risks, and owner checklist. Added
+  the JMC6F legacy-retirement addendum to `jmc6-former-test-dispositions.md`, naming canonical
+  replacement coverage for every removed or rewritten lifecycle test and recording the retained
+  pure algorithm suites. No implementation, schema, or generated-contract content changed in F5.
+- **Backend/static verification:** the literal full backend suite on the explicitly selected owned
+  PostgreSQL 18.3 target at `127.0.0.1:55452/marquee_test` is **1309 passed, 0 failed, 0 skipped,
+  0 xfail/xpass in 87.02s**. The focused JMC6F retirement + JMC6E seam freeze is **14 passed**.
+  Ruff over `marquee tests scripts`, actionlint 1.7.7, static absence/no-inline/webhook contracts,
+  and `git diff --check` pass. The manifest remains exactly 62 definitions / 43 enabled leaves / 19
+  disabled parent-only or reserved types / 43 canonical delivery handlers.
+- **Schema/PgQueuer/generated verification:** Alembic current and sole head are `0008_jmc6e`;
+  offline SQL renders; `alembic check` reports no new upgrade operations; and the official migration
+  service repeats idempotently while installing/upgrading/configuring/verifying PgQueuer 1.1.1
+  durable and refreshing both schema-contract markers. The schema remains 48 public tables with
+  column fingerprint `5696b90d283f77e77a8239c59cdb13c4`, index fingerprint
+  `5570599ca32f71ee49eabe65932b8845`, and PgQueuer contract fingerprint
+  `19377622f52c906a7a5cb6e68b4db6d30e7cc9534aac933c156c33666f4eb21a`. OpenAPI is current at
+  199 paths, SHA-256 `4f70e9e7c5cbd90e5359fc8fadde37ad48272756e203a4a1f899b67459f9c7a4`;
+  regenerated TypeScript is byte-clean at SHA-256
+  `96eedda857b02f9e54ae402bac3da5ea01c55438816e210e3eb8c4c73aa36d89`.
+- **Frontend/browser verification:** generated-client drift passes; Svelte check is 0 errors / 0
+  warnings; Prettier/ESLint pass; all 10 Vitest files / 111 tests pass; production build passes with
+  only the previously recorded chunk-size/plugin-timing notices; and fresh-server Chromium
+  Playwright/axe is 11/11. The sandbox-denied first Playwright server bind was discarded and the
+  approved loopback run passed.
+- **Capability and activation disposition:** the real F4 worker-recreation, external scheduler /
+  Operations, exact refresh beyond 20 unrelated jobs, overlap-race, schedule-gate-off, and webhook
+  absence evidence remains the activation authority. `JOB_PRODUCTION_SCHEDULES_ENABLED=false` and
+  `JOB_DOVI_CONVERSION_CERTIFIED=false` remain the safe defaults. No operator media publish/restore,
+  hardware encode, schedule activation, push, or Profile 5/7 `dovi_tool` certification occurred.
+- **Current phase:** final-only recovery and exact-tree compaction.
+- **Exact next steps:** commit F5 with the configured repository author; append the Git-derived
+  phase ledger and certified F5 product tree; verify the clean, linear, JMC6F-only, unpushed range and
+  absence of competing branch/worktree ownership; create timestamped recovery refs and a verified
+  external bundle; re-check ownership/ancestry/tree identity; squash exactly the JMC6F range to
+  `jmc6f: retire legacy runtimes and recertify activation`; prove sole-parent and exact pre/post tree
+  identity; create annotated `jmc6f-complete`; make no later timeline edit and do not push or activate.
+- **Deviations and reasons:** the first F5 backend invocation set the unconsumed variable
+  `DATABASE_URL` instead of the repository-owned `DB_URL`, so settings inherited `.env` and the run
+  reached the default PostgreSQL target. It stopped with 1292 passes, six backup failures from a
+  missing contract table, and eleven migration setup errors from insufficient `CREATEDB`; the test
+  harness uses isolated schemas and teardown completed, but this was an unintended operator-database
+  access and no durable operator-state assertion is claimed. The result was discarded. The unchanged
+  suite was immediately rerun with explicit `DB_URL` pointing at the owned `:55452` target and passed
+  1309/1309. A first focused static command named two nonexistent test modules, then a second lacked
+  approved loopback access; both collected no valid product result and were discarded before the
+  correctly pinned 14/14 run. No code or contract was weakened in response.
+- **Pending operator actions:** preserve all recovery material; do not push or activate. Require
+  hosted CI, review the compact hash/tree/tag and audit, keep both schedule and Dolby Vision gates
+  false until separately authorized/certified, and decide the deferred browser-auth, public reset,
+  Docker, webhook, `radarr_upgrade`, and deployment risks.
+
+### JMC6F certified phase ledger and compaction handoff
+
+- **Verified linear phase range after `jmc6e-complete`:** F0
+  `862e4fe731c80ce56dc36afcdb1315b32af8dc25`; F1
+  `b4fb11b42013cefbb6f30a5bd822f0a73512901f`; F2
+  `7632c40a0350633180432cb0014ad9ef54fff930`; F3
+  `b8c9a90818f697ef738c83de8a1b487015a0f411`; F4
+  `5a7123fe98502d0e60654e51edaef5f987233795`; F5
+  `0fecf8512d4c433353b1fdfdaadc9b93b5285390`.
+- **Certified F5 product tree:** `3176af23fd2f822e8e17b90a50bdd1ddae5cf19e`. The only subsequent
+  pre-compaction content change is this Git-derived timeline ledger. Recovery refs, the external
+  bundle, and the compact commit must preserve the ledger-bearing pre-compaction tree exactly; its
+  hash is captured by terminal verification and reported to the owner.
+- **Ownership, ancestry, concurrency, and publication:** the six phase commits form a single-parent
+  linear range rooted directly at annotated compact `jmc6e-complete`; every author and committer is
+  configured repository identity Gautam Chaudhri `<gautam.chaudhri@gmail.com>`. `job-manager` has
+  exactly one worktree, no Git lock is present, the worktree was clean after F5, no remote-tracking
+  ref contains the JMC6F tip, and `origin/job-manager` remains at `jmc6a-complete`. The range is
+  local-only and unpushed.
+- **Final manifests and dispositions:** 62 definitions / 43 enabled leaves / 19 disabled parent-only
+  or reserved types / 43 canonical handlers; three default-off production schedule keys; five
+  canonical seam route successors and the frozen 9-detail/14-overview page set; 199 OpenAPI paths;
+  one Alembic head at `0008_jmc6e`; PgQueuer 1.1.1 durable. Deleted lifecycle wrappers and their
+  tests have named canonical replacement coverage in the updated former-test ledger; retained pure
+  letterbox, poster-ranking/OCR, archive, taste, and media-validation algorithms remain covered.
+- **Intended compact identity:** exact message
+  `jmc6f: retire legacy runtimes and recertify activation`, sole parent
+  `b46766bb4cca229db087e2dd35a389d952e6115e`, and annotated tag `jmc6f-complete`. No push,
+  activation, force-push, recovery deletion, or post-compaction timeline edit is authorized.
+- **Current phase:** commit this final pre-compaction ledger, create and verify recovery material,
+  then perform final-only exact-tree compaction and tagging.
+- **Exact next steps:** record the ledger commit/tree in a timestamped recovery branch and annotated
+  recovery tag; create and verify a complete external bundle; re-prove clean ownership, single-parent
+  ancestry, one-worktree/no-lock concurrency, and unpushed status; soft-squash exactly
+  `jmc6e-complete^{}..HEAD`; prove the compact tree is byte-identical to the recovery tip and the
+  parent is exactly `jmc6e-complete^{}`; create annotated `jmc6f-complete`; make no further edit.
+- **Pending operator actions:** preserve all JMC6 recovery material and review the final report.
+  Only the owner may authorize the non-rewriting branch/tag push after hosted CI and then make the
+  separate production activation/schedule/capability decision.

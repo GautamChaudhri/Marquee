@@ -10,7 +10,7 @@ import math
 import numpy as np
 import pytest
 
-from marquee.pipeline.run_manager import run_manager
+from marquee.pipeline.extractor_runtime import extractor_runtime
 from marquee.pipeline.runner import write_run_json
 
 
@@ -51,7 +51,7 @@ def test_load_archive_tolerates_legacy_nan_literals(tmp_path):
     legacy = tmp_path / "legacy-run.json"
     legacy.write_text('{"score": NaN, "bound": Infinity, "ok": 3.5}', encoding="utf-8")
 
-    data = run_manager.load_archive("legacy-run", archive_path=str(legacy))
+    data = extractor_runtime.load_archive("legacy-run", archive_path=str(legacy))
     assert data is not None
     assert data["score"] is None
     assert data["bound"] is None
@@ -61,7 +61,7 @@ def test_load_archive_tolerates_legacy_nan_literals(tmp_path):
 def test_load_archive_roundtrip_has_no_nan(tmp_path):
     path = tmp_path / "roundtrip.json"
     write_run_json(path, {"candidates": [{"raw_features": {"title_area": np.nan}}]})
-    data = run_manager.load_archive("roundtrip", archive_path=str(path))
+    data = extractor_runtime.load_archive("roundtrip", archive_path=str(path))
     assert data is not None
     value = data["candidates"][0]["raw_features"]["title_area"]
     assert value is None or math.isfinite(value)

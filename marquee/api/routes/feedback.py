@@ -49,8 +49,8 @@ from marquee.database import get_db
 from marquee.ml import feedback_store, profile_updater
 from marquee.ml.namespaces import TasteNamespace, get_namespace
 from marquee.models import MlActivePublication, Movie, PipelineRun, Season, Series
+from marquee.pipeline.extractor_runtime import extractor_runtime
 from marquee.pipeline.features import load_cached_embedding
-from marquee.pipeline.run_manager import run_manager
 from marquee.pipeline.types import find_auto_pick_candidate
 
 logger = logging.getLogger(__name__)
@@ -269,7 +269,7 @@ async def _retro_features(
         title = subject.series.title
 
     def _compute():
-        extractor = run_manager._ensure_extractor()
+        extractor = extractor_runtime.ensure_extractor()
         return compute_full_features(
             image_path=originals,
             candidate=poster_candidate,
@@ -417,7 +417,7 @@ async def _load_feedback_run(
     if run is None:
         raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
 
-    archive = run_manager.load_archive(run_id, run.archive_path)
+    archive = extractor_runtime.load_archive(run_id, run.archive_path)
     if archive is None:
         raise HTTPException(status_code=404, detail="Run archive unavailable")
 
@@ -706,7 +706,7 @@ async def apply_feedback_request(
 
     # Profile changed → next pipeline run must reload the taste store.
     if exemplar_added is not None:
-        run_manager.reset_extractor()
+        extractor_runtime.reset_extractor()
 
     # Deploy the chosen poster to the media folder (approve/override only).
     deployment_job = None
@@ -821,7 +821,7 @@ async def undo_feedback(
                 removed_negatives.append(negative)
 
     if removed_exemplars:
-        run_manager.reset_extractor()
+        extractor_runtime.reset_extractor()
 
     # Clear the reviewed marker on any run that pointed at this event.
     for run in runs:

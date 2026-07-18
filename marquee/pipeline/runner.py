@@ -218,8 +218,8 @@ def _attach_ocr_diagnostics(record: CandidateScore, result: OCRCandidateResult) 
     """Persist what OCR actually read onto the record so the diagnostics live in
     the immutable per-run archive instead of only the volatile pipeline.log.
 
-    Shared by both sync-stage engines (``run_sync_stages`` here and
-    ``batch_runner._ocr_batch``) so they cannot drift on this again.
+    Used by the ``run_sync_stages`` engine so the OCR diagnostics live in the
+    immutable per-run archive, not only the volatile pipeline.log.
 
     The full structured trace (``result.diagnostics``) is only persisted on
     DEBUG runs — it is several KB per poster and only the OCR-label tooling

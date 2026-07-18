@@ -109,8 +109,8 @@ class OperationsStorage(BaseModel):
 
 class OperationsSchemaContract(BaseModel):
     component: str
-    expected_version: int
-    durability: str
+    expected_version: str
+    durability: str | None = None
     catalog_fingerprint: str | None = None
 
 

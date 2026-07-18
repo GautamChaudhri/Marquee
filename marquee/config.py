@@ -136,6 +136,11 @@ class Settings(BaseSettings):
     JOB_RUNTIME_EXPIRY_SECONDS: float = Field(default=30.0, ge=3.0, le=900.0)
     JOB_RUNTIME_QUERY_LIMIT: int = Field(default=100, ge=1, le=500)
     JOB_PRODUCTION_SCHEDULES_ENABLED: bool = False
+    JOB_DOVI_CONVERSION_CERTIFIED: bool = Field(
+        default=False,
+        description="Enable Dolby Vision conversion only after an owner-approved real dovi_tool "
+        "fixture smoke certifies the deployed tool and media path.",
+    )
     JOB_WORKER_ENTRYPOINTS: str = Field(
         default="control,network,cpu,media_read,media_write,gpu,maintenance",
         description="Comma-separated PgQueuer execution classes this worker may advertise.",

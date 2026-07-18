@@ -52,7 +52,3 @@ export function displayJobLabel(job: {
 
 	return job.label || humanizeJobType(job.type);
 }
-
-export function displayMediaJobLabel(job: { label?: string | null; operation: string }): string {
-	return job.label || humanizeJobType(job.operation);
-}

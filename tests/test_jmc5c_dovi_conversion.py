@@ -6,8 +6,10 @@ import os
 from pathlib import Path
 
 import pytest
+from fastapi import HTTPException
 
 from marquee.api.routes.hdr import DoviConvertRequest, convert_movie_dovi
+from marquee.config import settings
 from marquee.core.jobs.artifact_service import register_physical_artifact
 from marquee.core.jobs.dovi_conversion_documents import DoviConvertRequestV1, DoviProbeV1
 from marquee.core.jobs.handlers_dovi_conversion import _validation_problems
@@ -97,6 +99,7 @@ async def test_convert_route_creates_confirmable_path_free_canonical_plan(
         )
     )
     await db.commit()
+    monkeypatch.setattr(settings, "JOB_DOVI_CONVERSION_CERTIFIED", True)
     monkeypatch.setattr("marquee.api.routes.hdr.binaries.resolve", lambda name: f"/bin/{name}")
 
     document = await convert_movie_dovi(movie.id, DoviConvertRequest(kind="p5_to_p81"), db)
@@ -116,6 +119,19 @@ async def test_convert_route_creates_confirmable_path_free_canonical_plan(
     await db.commit()
     await db.refresh(job)
     assert job.phase == "queued"
+
+
+@pytest.mark.asyncio
+async def test_convert_route_is_disabled_without_real_fixture_certification(
+    db, monkeypatch
+) -> None:
+    monkeypatch.setattr(settings, "JOB_DOVI_CONVERSION_CERTIFIED", False)
+
+    with pytest.raises(HTTPException) as captured:
+        await convert_movie_dovi(1, DoviConvertRequest(kind="p5_to_p81"), db)
+
+    assert getattr(captured.value, "status_code", None) == 503
+    assert getattr(captured.value, "detail", {}).get("code") == "dovi_conversion_not_certified"
 
 
 async def _publication_fixture(db, tmp_path: Path):

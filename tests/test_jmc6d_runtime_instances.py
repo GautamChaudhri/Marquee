@@ -13,6 +13,8 @@ from pgqueuer.models import Context
 from pgqueuer.models import Job as PgQueuerJob
 from sqlalchemy import select
 
+from marquee.config import settings
+from marquee.core.jobs import delivery
 from marquee.core.jobs.commands import create_system_noop
 from marquee.core.jobs.delivery import deliver_job
 from marquee.core.jobs.pgqueuer_worker import entrypoint_concurrency_limits
@@ -149,7 +151,16 @@ def test_capability_advertisement_is_bounded_and_sanitized() -> None:
     snapshot = capability_snapshot(configured)
 
     assert snapshot["entrypoints"] == sorted(configured)
-    assert set(snapshot) == {"entrypoints", "containment", "media_tools", "gpu"}
+    assert set(snapshot) == {
+        "entrypoints",
+        "containment",
+        "media_tools",
+        "gpu",
+        "certifications",
+    }
+    assert snapshot["certifications"] == {
+        "dovi_conversion": settings.JOB_DOVI_CONVERSION_CERTIFIED
+    }
     serialized = str(snapshot).lower()
     for forbidden in ("password", "token", "api_key", "payload", "environment", "/dev/"):
         assert forbidden not in serialized
@@ -157,7 +168,7 @@ def test_capability_advertisement_is_bounded_and_sanitized() -> None:
 
 
 @pytest.mark.asyncio
-async def test_admitted_attempt_records_exact_runtime_incarnation(db) -> None:
+async def test_admitted_attempt_records_exact_runtime_incarnation(db, monkeypatch) -> None:
     runtime = RuntimeInstanceHandle(
         role="worker",
         node_label="attempt-node",
@@ -182,14 +193,14 @@ async def test_admitted_attempt_records_exact_runtime_incarnation(db) -> None:
     ticket_id = dispatch.pgq_job_id
     await db.rollback()
 
-    async def execute(payload, _context):
-        return payload
+    async def handler(execution):
+        return {"outcome": "succeeded", "summary": {}}
 
+    monkeypatch.setitem(delivery._EXECUTION_HANDLERS, "system_noop", handler)
     await deliver_job(
         _transport_job(job_id, ticket_id),
         _context(),
         expected_entrypoint="control",
-        executor=execute,
         runtime_instance_id=runtime.instance_id,
     )
     await runtime.stop()

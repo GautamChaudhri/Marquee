@@ -144,8 +144,8 @@ candidate, so optional features can drop out without breaking the score range.
 
 `marquee/pipeline/output.py` copies ranked survivors into the run directory,
 names them with rank and score metadata, and re-downloads top-ranked designs at
-TMDB original resolution. `marquee/pipeline/run_manager.py` and the durable job
-system keep run archives available for:
+TMDB original resolution. `marquee/pipeline/extractor_runtime.py` (archived-run
+reads) and the durable job system keep run archives available for:
 
 - `GET /api/pipeline/runs/{run_id}`
 - `POST /api/pipeline/runs/{run_id}/rescore`

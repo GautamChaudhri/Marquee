@@ -13,7 +13,7 @@ from typing import Literal
 from marquee.api.results import find_candidate
 from marquee.config import settings
 from marquee.models import PipelineRun
-from marquee.pipeline.run_manager import run_manager
+from marquee.pipeline.extractor_runtime import extractor_runtime
 from marquee.pipeline.runner import _sanitise_filename
 
 LabelKind = Literal["false_rejection", "false_acceptance"]
@@ -104,7 +104,7 @@ def _json_safe(obj: object) -> object:
 
 
 def capture_ocr_label(run: PipelineRun, orig_filename: str, label_kind: LabelKind) -> CaptureResult:
-    archive = run_manager.load_archive(run.run_id, run.archive_path)
+    archive = extractor_runtime.load_archive(run.run_id, run.archive_path)
     if archive is None:
         raise OcrLabelCaptureError(
             f"Run {run.run_id} archive is missing or unreadable",

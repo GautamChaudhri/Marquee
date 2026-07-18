@@ -1,6 +1,5 @@
 """Tests for the run machinery that don't require ML extras:
 
-- ``RunState`` event buffering / replay / finish
 - ``build_results_payload`` shaping from a fabricated archive
 - ``explanations`` helpers
 - the run GET endpoints (results, posters, history) against a seeded DB +
@@ -25,7 +24,7 @@ from marquee.api.explanations import (
 from marquee.api.results import build_results_payload, categorize_rejection
 from marquee.main import app
 from marquee.models import Movie, PipelineRun
-from marquee.pipeline.run_manager import _SENTINEL, RunState, run_manager
+from marquee.pipeline.extractor_runtime import extractor_runtime
 
 
 @pytest.fixture
@@ -33,43 +32,6 @@ async def client():
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         yield ac
-
-
-# ---------------------------------------------------------------------------
-# RunState
-# ---------------------------------------------------------------------------
-
-
-def test_runstate_replays_history_for_late_subscriber():
-    state = RunState(run_id="r1")
-    state.publish({"stage": "fetch", "state": "start"})
-    state.publish({"stage": "fetch", "state": "end"})
-
-    queue = state.subscribe()  # joins late — should still get both events
-    assert queue.get_nowait()["stage"] == "fetch"
-    assert queue.get_nowait()["state"] == "end"
-
-
-def test_runstate_finish_sends_sentinel_to_all():
-    state = RunState(run_id="r2")
-    q1 = state.subscribe()
-    state.publish({"stage": "rank", "state": "end"})
-    q2 = state.subscribe()  # late joiner gets the buffered event...
-    state.finish()
-    # q1 sees the live event then sentinel
-    assert q1.get_nowait()["stage"] == "rank"
-    assert q1.get_nowait() is _SENTINEL
-    # q2 sees the replayed event then sentinel
-    assert q2.get_nowait()["stage"] == "rank"
-    assert q2.get_nowait() is _SENTINEL
-
-
-def test_runstate_unsubscribe_stops_delivery():
-    state = RunState(run_id="r3")
-    queue = state.subscribe()
-    state.unsubscribe(queue)
-    state.publish({"stage": "ocr", "state": "start"})
-    assert queue.empty()
 
 
 # ---------------------------------------------------------------------------
@@ -290,41 +252,23 @@ async def test_events_404_for_unknown_run(client):
     assert resp.status_code == 404
 
 
-def test_gpu_busy_reports_run_and_rebuild():
-    assert run_manager.gpu_busy() is None
-    run_manager._active_run_id = "run-9"
-    try:
-        assert "run-9" in run_manager.gpu_busy()
-    finally:
-        run_manager._active_run_id = None
-    run_manager.begin_rebuild()
-    try:
-        assert run_manager.gpu_busy() == "taste-profile rebuild"
-    finally:
-        run_manager.end_rebuild()
-    assert run_manager.gpu_busy() is None
-
-
 def test_release_gpu_resources_clears_cached_extractor():
-    run_manager._extractor = object()
-    result = run_manager.release_gpu_resources()
-    assert run_manager._extractor is None
+    extractor_runtime._extractor = object()
+    result = extractor_runtime.release_gpu_resources()
+    assert extractor_runtime._extractor is None
     assert result["extractor_cleared"] is True
 
-    result = run_manager.release_gpu_resources()
+    result = extractor_runtime.release_gpu_resources()
     assert result["extractor_cleared"] is False
 
 
 @pytest.mark.asyncio
-async def test_release_gpu_endpoint_reports_busy(client):
-    run_manager.begin_rebuild()
-    try:
-        resp = await client.post("/api/system/release-gpu")
-    finally:
-        run_manager.end_rebuild()
-
+async def test_release_gpu_endpoint_releases_without_in_process_busy_gate(client):
+    # In-process GPU busy-tracking is retired; the canonical job resource
+    # reservations coordinate GPU work, so the endpoint always releases.
+    resp = await client.post("/api/system/release-gpu")
     assert resp.status_code == 200
-    assert resp.json()["status"] == "busy"
+    assert resp.json()["status"] == "released"
 
 
 def test_taste_rebuild_has_no_process_local_execution_state():

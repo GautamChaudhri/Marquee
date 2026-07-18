@@ -121,7 +121,6 @@ class ExecutionContext:
 
 
 KernelHandler = Callable[[ExecutionContext], Awaitable[dict[str, Any]]]
-LegacyNoopExecutor = Callable[[dict[str, Any], Context], Awaitable[dict[str, Any]]]
 
 
 def _strict_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -681,22 +680,11 @@ def register_execution_handler(job_type: str, handler: KernelHandler) -> None:
 _SAFETY_GATES = SafetyGateService()
 
 
-async def _execute_delivery(
-    execution: ExecutionContext,
-    transport_context: Context,
-    executor: LegacyNoopExecutor | None,
-) -> dict[str, Any]:
-    if executor is None:
-        handler = EXECUTION_HANDLERS.get(execution.definition.job_type)
-        if handler is None:
-            raise DeliveryRejectedError("enabled definition has no execution handler")
-        return await handler(execution)
-    legacy = await executor(dict(execution.request), transport_context)
-    return (
-        legacy
-        if set(legacy) >= {"outcome", "summary"}
-        else {"outcome": "succeeded", "summary": {"echo": legacy}}
-    )
+async def _execute_delivery(execution: ExecutionContext) -> dict[str, Any]:
+    handler = EXECUTION_HANDLERS.get(execution.definition.job_type)
+    if handler is None:
+        raise DeliveryRejectedError("enabled definition has no execution handler")
+    return await handler(execution)
 
 
 async def _seal_attempt_log(log_sink: AttemptLogSink | None, *, outcome: str) -> None:
@@ -732,7 +720,6 @@ async def deliver_job(
     context: Context,
     *,
     expected_entrypoint: str,
-    executor: LegacyNoopExecutor | None = None,
     runtime_instance_id: str | None = None,
 ) -> None:
     """Gate, admit, execute, seal canonically, then allow PgQueuer acknowledgement."""
@@ -825,10 +812,10 @@ async def deliver_job(
         )
         try:
             if log_sink is None:
-                result = await _execute_delivery(execution, context, executor)
+                result = await _execute_delivery(execution)
             else:
                 async with log_sink.capture_python_logs():
-                    result = await _execute_delivery(execution, context, executor)
+                    result = await _execute_delivery(execution)
         except RetryRequested as exc:
             await asyncio.shield(
                 process_launcher.shutdown(
@@ -888,15 +875,12 @@ async def deliver_job(
 async def deliver_control_job(
     transport_job: PgQueuerJob,
     context: Context,
-    *,
-    executor: LegacyNoopExecutor | None = None,
 ) -> None:
     """Retained typed control caller for the sole production-enabled definition."""
     await deliver_job(
         transport_job,
         context,
         expected_entrypoint="control",
-        executor=executor,
     )
 
 
