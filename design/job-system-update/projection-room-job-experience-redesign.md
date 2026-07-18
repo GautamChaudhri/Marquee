@@ -1008,6 +1008,12 @@ row and the full detail presentation. Supporting job families also require typed
 
 ## Completion criteria
 
+Projection Room's final data correctness depends on
+[JMC6G](jmc6g-execution-truth-progress-and-evidence-closure.md) for canonical outcome/progress/
+evidence truth and [JMC6H](jmc6h-product-convergence-retirement-and-final-certification.md) for real
+poster/ML projections and consumer linkage. Presenter goldens cannot substitute for the underlying
+product operation.
+
 Projection Room is complete when:
 
 - Queue and History are the only primary Activity views and running jobs appear in Queue;

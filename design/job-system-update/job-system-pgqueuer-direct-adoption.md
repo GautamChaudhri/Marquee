@@ -556,6 +556,13 @@ safe values for the deployed worker count.
 
 ## Acceptance criteria
 
+Implementation of this architecture is finally revalidated by
+[JMC6G](jmc6g-execution-truth-progress-and-evidence-closure.md), which proves terminal/retry/
+timeout/progress/evidence behavior through delivery, and
+[JMC6H](jmc6h-product-convergence-retirement-and-final-certification.md), which proves real poster/
+ML effects and every enabled definition's downstream consumer. Schema-valid handler output alone
+is not acceptance evidence.
+
 The architecture is implemented only when:
 
 - new jobs and PgQueuer tickets commit or roll back together;
