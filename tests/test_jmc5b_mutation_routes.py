@@ -10,10 +10,13 @@ from httpx import ASGITransport, AsyncClient
 from pgqueuer import Queries
 from sqlalchemy import func, select
 
+from marquee.core.jobs.audio_subtitle_planning import load_before_inventory
+from marquee.core.media_files import resolve_media_file
+from marquee.core.subtitles.service import scan_inventory
 from marquee.database import _get_engine
 from marquee.main import app
 from marquee.models import Job, JobDispatch, Movie, SubtitlePolicy
-from tests.support.jmc5b_harness import inventory_of, media_file_row
+from tests.support.jmc5b_harness import media_file_row
 from tests.support.media_fixtures import DEFAULT_AUDIO, DEFAULT_SUBTITLES, build_mkv
 
 
@@ -38,6 +41,13 @@ async def client() -> AsyncClient:
         yield value
 
 
+async def _inventoried_media(db, source: Path):
+    media_file = await media_file_row(db, source)
+    await db.commit()
+    await scan_inventory(db, await resolve_media_file(db, media_file.id))
+    return media_file
+
+
 @pytest.mark.asyncio
 async def test_route_plans_without_ticket_then_confirms_exactly_once(
     db,
@@ -48,9 +58,8 @@ async def test_route_plans_without_ticket_then_confirms_exactly_once(
     source = build_mkv(
         tmp_path, "route-plan.mkv", audio=DEFAULT_AUDIO, subtitles=DEFAULT_SUBTITLES
     )
-    media_file = await media_file_row(db, source)
-    await db.commit()
-    inventory = inventory_of(source)
+    media_file = await _inventoried_media(db, source)
+    _, inventory = await load_before_inventory(db, media_file.id)
     subtitle = next(entry for entry in inventory.entries if entry.facts.kind == "subtitle")
     selector = {
         "track_key": subtitle.track_key,
@@ -112,9 +121,8 @@ async def test_confirmation_rejects_source_changed_after_plan(
     source = build_mkv(
         tmp_path, "route-stale.mkv", audio=DEFAULT_AUDIO, subtitles=DEFAULT_SUBTITLES
     )
-    media_file = await media_file_row(db, source)
-    await db.commit()
-    inventory = inventory_of(source)
+    media_file = await _inventoried_media(db, source)
+    _, inventory = await load_before_inventory(db, media_file.id)
     subtitle = next(entry for entry in inventory.entries if entry.facts.kind == "subtitle")
     response = await client.post(
         f"/api/media-files/{media_file.id}/subtitle-plans",
@@ -165,8 +173,7 @@ async def test_generation_route_freezes_embed_request_without_contacting_provide
     source = build_mkv(
         tmp_path, "route-generate.mkv", audio=DEFAULT_AUDIO, subtitles=DEFAULT_SUBTITLES
     )
-    media_file = await media_file_row(db, source)
-    await db.commit()
+    media_file = await _inventoried_media(db, source)
     monkeypatch.setattr(
         "marquee.api.routes.subtitle_generators.generation.validate_generation_request",
         lambda *_args: None,
@@ -216,7 +223,7 @@ async def test_policy_apply_route_seals_frozen_typed_child_plan(
     )
     db.add_all((movie, policy))
     await db.flush()
-    media_file = await media_file_row(db, source)
+    media_file = await _inventoried_media(db, source)
     media_file.movie_id = movie.id
     policy_revision = policy.revision
     await db.commit()

@@ -12,6 +12,7 @@ import re
 import shutil
 import subprocess
 import tarfile
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -42,12 +43,24 @@ class OfflineRestoreError(RuntimeError):
     """An offline restore guard or certification check failed."""
 
 
+class BackupCancelledError(asyncio.CancelledError):
+    """Cancellation interrupted a managed-data archive between bounded reads."""
+
+
 class _DigestReader:
-    def __init__(self, stream, digest: hashlib._Hash) -> None:
+    def __init__(
+        self,
+        stream,
+        digest: hashlib._Hash,
+        cancelled: Callable[[], bool] | None = None,
+    ) -> None:
         self._stream = stream
         self._digest = digest
+        self._cancelled = cancelled
 
     def read(self, size: int = -1) -> bytes:
+        if self._cancelled is not None and self._cancelled():
+            raise BackupCancelledError("managed-data backup cancelled")
         chunk = self._stream.read(size)
         self._digest.update(chunk)
         return chunk
@@ -91,10 +104,39 @@ class BackupService:
         ):
             return await self._create_backup_with_lock_held()
 
-    async def create_backup_with_maintenance_held(self) -> BackupResult:
+    async def create_backup_with_maintenance_held(
+        self,
+        *,
+        process_launcher=None,
+        cancelled: Callable[[], bool] | None = None,
+    ) -> BackupResult:
         """Create a backup when the canonical attempt already owns the exclusive barrier."""
         async with self._operation_lock:
-            return await self._create_backup_with_lock_held()
+            if process_launcher is None:
+                return await self._create_backup_with_lock_held()
+            identity = await self._backup_identity()
+            backup_id, temp_root, backup_root = await asyncio.to_thread(
+                self._allocate_backup, identity
+            )
+            try:
+                await self._snapshot_db_tracked(
+                    temp_root / _DB_FILENAME, process_launcher
+                )
+                result = await asyncio.to_thread(
+                    self._complete_backup_sync,
+                    identity,
+                    backup_id,
+                    temp_root,
+                    backup_root,
+                    cancelled,
+                )
+            except BaseException:
+                await asyncio.to_thread(shutil.rmtree, temp_root, ignore_errors=True)
+                raise
+            await asyncio.to_thread(
+                self._rotate_backups_sync, settings.BACKUP_RETENTION_DAYS
+            )
+            return result
 
     async def _create_backup_with_lock_held(self) -> BackupResult:
         identity = await self._backup_identity()
@@ -252,7 +294,9 @@ class BackupService:
             "configuration": {} if configuration is None else dict(configuration),
         }
 
-    def _create_backup_sync(self, identity: dict[str, object] | None = None) -> BackupResult:
+    def _allocate_backup(
+        self, identity: dict[str, object] | None = None
+    ) -> tuple[str, Path, Path]:
         backup_id = self._timestamp()
         self.backup_dir.mkdir(parents=True, exist_ok=True)
         (self.backup_dir / _TMP_DIR_NAME).mkdir(parents=True, exist_ok=True)
@@ -260,14 +304,37 @@ class BackupService:
         backup_root = self._backup_root(backup_id)
         if backup_root.exists() or temp_root.exists():
             raise RuntimeError(f"Backup id collision: {backup_id}")
-
         temp_root.mkdir(parents=True, exist_ok=False)
+        return backup_id, temp_root, backup_root
+
+    def _create_backup_sync(self, identity: dict[str, object] | None = None) -> BackupResult:
+        backup_id, temp_root, backup_root = self._allocate_backup(identity)
         try:
             db_path = temp_root / _DB_FILENAME
             self._snapshot_db(db_path)
+            return self._complete_backup_sync(
+                identity, backup_id, temp_root, backup_root
+            )
+        except Exception:
+            shutil.rmtree(temp_root, ignore_errors=True)
+            raise
 
+    def _complete_backup_sync(
+        self,
+        identity: dict[str, object] | None,
+        backup_id: str,
+        temp_root: Path,
+        backup_root: Path,
+        cancelled: Callable[[], bool] | None = None,
+    ) -> BackupResult:
+        try:
+            db_path = temp_root / _DB_FILENAME
             state_path = temp_root / _STATE_FILENAME
-            manifest = self._build_state_archive(state_path, backup_id)
+            manifest = self._build_state_archive(
+                state_path,
+                backup_id,
+                cancelled=cancelled,
+            )
             if identity is not None:
                 manifest.update(identity)
             manifest["database"] = self._component_metadata(db_path, "postgresql-custom")
@@ -308,6 +375,36 @@ class BackupService:
             result.state_size,
         )
         return result
+
+    async def _snapshot_db_tracked(self, db_backup_path: Path, process_launcher) -> None:
+        await asyncio.to_thread(db_backup_path.parent.mkdir, parents=True, exist_ok=True)
+        url = self._database_url()
+        pgpass = db_backup_path.parent / ".pgpass"
+        try:
+            await asyncio.to_thread(self._write_pgpass, pgpass, url)
+            process = await process_launcher.launch(
+                "pg_dump",
+                [
+                    "--format=custom",
+                    "--no-owner",
+                    "--file",
+                    str(db_backup_path),
+                    "--host",
+                    url.host or "",
+                    "--port",
+                    str(url.port or 5432),
+                    "--username",
+                    url.username or "",
+                    url.database or "",
+                ],
+                environment={"PGPASSFILE": str(pgpass)},
+            )
+            summary = await process.wait()
+            if summary.exit_code != 0 or summary.exit_signal is not None:
+                stderr = summary.stderr.captured.decode("utf-8", errors="replace")
+                raise RuntimeError(f"pg_dump failed: {self._bounded_stderr(stderr)}")
+        finally:
+            await asyncio.to_thread(pgpass.unlink, missing_ok=True)
 
     def _snapshot_db(self, db_backup_path: Path) -> None:
         db_backup_path.parent.mkdir(parents=True, exist_ok=True)
@@ -499,7 +596,13 @@ class BackupService:
             verified.append(classified.root.resolved() / classified.key.value)
         return sorted(set(verified), key=lambda path: path.relative_to(self.data_dir).as_posix())
 
-    def _build_state_archive(self, state_path: Path, backup_id: str) -> dict:
+    def _build_state_archive(
+        self,
+        state_path: Path,
+        backup_id: str,
+        *,
+        cancelled: Callable[[], bool] | None = None,
+    ) -> dict:
         members: list[dict[str, object]] = []
         state_path.parent.mkdir(parents=True, exist_ok=True)
         with (
@@ -518,7 +621,7 @@ class BackupService:
                     info.mode = 0o600
                     info.mtime = 0
                     with source.open("rb") as stream:
-                        archive.addfile(info, _DigestReader(stream, digest))
+                        archive.addfile(info, _DigestReader(stream, digest, cancelled))
                     after = source.stat(follow_symlinks=False)
                     if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) != (
                         after.st_dev,

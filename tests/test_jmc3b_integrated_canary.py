@@ -87,7 +87,7 @@ async def test_fixed_canary_integrates_progress_logs_artifacts_events_and_apis(d
 
     assert canonical is not None
     assert (canonical.phase, canonical.outcome) == ("terminal", "succeeded")
-    assert canonical.progress_sequence == 2
+    assert canonical.progress_sequence == 3
     assert canonical.progress["freshness"] == "terminal"
     assert (attempt.phase, attempt.outcome) == ("finished", "succeeded")
     assert log.seal_status == "sealed" and log.compression == "gzip" and log.checksum
@@ -95,7 +95,7 @@ async def test_fixed_canary_integrates_progress_logs_artifacts_events_and_apis(d
     assert artifact.virtual_source == {"document": "result", "version": 1}
     assert [event.id for event in events] == sorted({event.id for event in events})
     keys = [event.event_key for event in events]
-    assert keys.count("progress.updated") == 2
+    assert keys.count("progress.updated") == 3
     assert {"attempt.started", "job.succeeded", "log.available", "artifact.available"} <= set(
         keys
     )

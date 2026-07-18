@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from typing import Literal
 
 import pytest
 from pydantic import ValidationError
@@ -29,6 +30,8 @@ from marquee.core.jobs.documents import (
     UnsupportedDocumentVersionError,
     current_adapter,
 )
+from marquee.core.jobs.policies import default_failure_classifier
+from marquee.core.jobs.terminal_decision import TerminalDecisionPolicy
 
 
 class RequestV1(StrictDocument):
@@ -39,9 +42,13 @@ class RequestV2(StrictDocument):
     display_name: str
 
 
+class ResultV1(StrictDocument):
+    outcome: Literal["succeeded"] = "succeeded"
+
+
 def _definition(**updates) -> JobDefinition:
     empty_request = current_adapter(DocumentKind.REQUEST, EmptyDocumentV1)
-    empty_result = current_adapter(DocumentKind.RESULT, EmptyDocumentV1)
+    empty_result = current_adapter(DocumentKind.RESULT, ResultV1)
     safe_error = current_adapter(DocumentKind.ERROR, SafeJobErrorV1)
     definition = JobDefinition(
         job_type="system_noop",
@@ -59,6 +66,9 @@ def _definition(**updates) -> JobDefinition:
         entrypoint="control",
         timeout=TimeoutPolicy(seconds=30),
         effect_safety=EffectSafety.READ_ONLY,
+        terminal_policy=TerminalDecisionPolicy.for_result_model(ResultV1),
+        failure_classifier=default_failure_classifier,
+        configuration_audit="audited_empty",
     )
     return replace(definition, **updates)
 

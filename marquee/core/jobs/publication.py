@@ -9,6 +9,7 @@ from dataclasses import asdict, dataclass
 from typing import Any, Protocol
 
 from marquee.core.filesystem import ClassifiedPath, FilesystemBoundary, FilesystemBoundaryError
+from marquee.core.jobs.execution_io import ExecutionIO
 from marquee.core.jobs.fenced_writer import WriteDisposition
 
 
@@ -55,6 +56,21 @@ def file_signature(boundary: FilesystemBoundary, path: ClassifiedPath) -> FileSi
         os.close(fd)
 
 
+async def execution_file_signature(
+    execution_io: ExecutionIO,
+    boundary: FilesystemBoundary,
+    path: ClassifiedPath,
+) -> FileSignature:
+    value = await execution_io.confined_signature(boundary, path)
+    return FileSignature(
+        device=value.device,
+        inode=value.inode,
+        size=value.size,
+        modified_ns=value.modified_ns,
+        sha256=value.sha256,
+    )
+
+
 def _optional_signature(
     boundary: FilesystemBoundary, path: ClassifiedPath
 ) -> FileSignature | None:
@@ -64,12 +80,55 @@ def _optional_signature(
         return None
 
 
+def _matches_identity(
+    boundary: FilesystemBoundary,
+    path: ClassifiedPath,
+    expected: FileSignature | None,
+) -> bool:
+    try:
+        fd = boundary.open_read(path)
+    except FilesystemBoundaryError:
+        return expected is None
+    try:
+        metadata = os.fstat(fd)
+        if expected is None:
+            return False
+        return (
+            stat.S_ISREG(metadata.st_mode)
+            and metadata.st_nlink == 1
+            and metadata.st_dev == expected.device
+            and metadata.st_ino == expected.inode
+            and metadata.st_size == expected.size
+            and metadata.st_mtime_ns == expected.modified_ns
+        )
+    finally:
+        os.close(fd)
+
+
 class PublicationCoordinator:
-    def __init__(self, boundary: FilesystemBoundary, *, maximum_bytes: int = 64 * 1024 * 1024):
+    def __init__(
+        self,
+        boundary: FilesystemBoundary,
+        *,
+        maximum_bytes: int = 64 * 1024 * 1024,
+        execution_io: ExecutionIO | None = None,
+    ):
         if maximum_bytes < 1 or maximum_bytes > 16 * 1024 * 1024 * 1024 * 1024:
             raise ValueError("publication size bound is invalid")
         self.boundary = boundary
         self.maximum_bytes = maximum_bytes
+        self.execution_io = execution_io
+
+    async def _signature(self, path: ClassifiedPath) -> FileSignature:
+        if self.execution_io is None:
+            return file_signature(self.boundary, path)
+        return await execution_file_signature(self.execution_io, self.boundary, path)
+
+    async def _optional_signature(self, path: ClassifiedPath) -> FileSignature | None:
+        try:
+            return await self._signature(path)
+        except FilesystemBoundaryError:
+            return None
 
     async def publish(
         self,
@@ -83,10 +142,10 @@ class PublicationCoordinator:
             raise PublicationError("publication cannot cross classified roots")
         if staged.key.parts[:-1] != destination.key.parts[:-1]:
             raise PublicationError("staging must be in the destination directory")
-        output = file_signature(self.boundary, staged)
+        output = await self._signature(staged)
         if output.size > self.maximum_bytes:
             raise PublicationError("staged output exceeds the fixed size limit")
-        current_destination = _optional_signature(self.boundary, destination)
+        current_destination = await self._optional_signature(destination)
         if current_destination != expected_destination:
             raise PublicationError("destination identity changed before publication")
         intent = {
@@ -100,11 +159,9 @@ class PublicationCoordinator:
             raise PublicationError("stale ownership rejected publication intent")
 
         def replace() -> None:
-            current = file_signature(self.boundary, staged)
-            if current != output:
+            if not _matches_identity(self.boundary, staged, output):
                 raise PublicationError("staged output changed after validation")
-            destination_now = _optional_signature(self.boundary, destination)
-            if destination_now != expected_destination:
+            if not _matches_identity(self.boundary, destination, expected_destination):
                 raise PublicationError("destination changed at publication boundary")
             fd = self.boundary.open_read(staged)
             try:
@@ -127,7 +184,7 @@ class PublicationCoordinator:
         fence: PublicationFence,
     ) -> None:
         """Fence and fsync one confined deletion with the same publication authority."""
-        current = _optional_signature(self.boundary, destination)
+        current = await self._optional_signature(destination)
         if current != expected_destination:
             raise PublicationError("destination identity changed before deletion")
         intent = {
@@ -139,8 +196,7 @@ class PublicationCoordinator:
             raise PublicationError("stale ownership rejected deletion intent")
 
         def remove() -> None:
-            destination_now = _optional_signature(self.boundary, destination)
-            if destination_now != expected_destination:
+            if not _matches_identity(self.boundary, destination, expected_destination):
                 raise PublicationError("destination changed at deletion boundary")
             if not self.boundary.delete_file(destination, missing_ok=False):
                 raise PublicationError("destination disappeared at deletion boundary")

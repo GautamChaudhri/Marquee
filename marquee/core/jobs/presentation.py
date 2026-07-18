@@ -25,6 +25,7 @@ from marquee.core.jobs.documents import StrictDocument
 from marquee.core.jobs.progress import (
     ProgressFreshness,
     ProgressMeasurement,
+    ProgressMetrics,
     ProgressWait,
 )
 
@@ -390,6 +391,7 @@ class CompactProgress(StrictDocument):
     overall: ProgressMeasurement | None = None
     current: ProgressMeasurement | None = None
     current_subject: PresentationSubject | None = None
+    metrics: ProgressMetrics = Field(default_factory=ProgressMetrics)
     freshness: ProgressFreshness | None = None
     wait: ProgressWait | None = None
     updated_at: datetime | None = None

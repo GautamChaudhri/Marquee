@@ -9,8 +9,11 @@ from marquee.core.jobs.audio_subtitle_documents import (
     TrackRemoveRequestV1,
 )
 from marquee.core.jobs.delivery import ExecutionContext, register_execution_handler
-from marquee.core.jobs.media_backups import create_media_backup
-from marquee.core.jobs.media_mutation_support import TrackMutationError
+from marquee.core.jobs.media_backups import create_execution_media_backup
+from marquee.core.jobs.media_mutation_support import (
+    TrackMutationError,
+    persist_post_mutation_inventory,
+)
 from marquee.core.jobs.media_mutation_support import confined_boundary as _boundary
 from marquee.core.jobs.media_mutation_support import container_supported as _supported
 from marquee.core.jobs.media_mutation_support import current_signature as _signature
@@ -30,7 +33,7 @@ from marquee.core.jobs.mutation_documents import (
     MutationTargetV1,
     MutationValidationV1,
 )
-from marquee.core.jobs.publication import file_signature
+from marquee.core.jobs.publication import execution_file_signature
 from marquee.core.jobs.remux_coordinator import (
     RemuxCancelledError,
     RemuxError,
@@ -101,7 +104,7 @@ async def _run_remux(
         raise TrackMutationError("the media file is unavailable") from exc
 
     source_path = resolved_file.path
-    before = _inventory(source_path, resolved_file.signature)
+    before = await _inventory(context, source_path, resolved_file.signature)
     boundary, source = _boundary(source_path)
 
     try:
@@ -175,12 +178,13 @@ async def _run_remux(
         ).model_dump(mode="json")
 
     try:
-        after_candidate = _inventory(_physical(candidate), "sha256:candidate")
+        after_candidate = await _inventory(context, _physical(candidate), "sha256:candidate")
         if not _supported(after_candidate):
             raise TrackMutationError("the candidate lost its container model")
 
-        source_signature = file_signature(boundary, source)
-        backup = create_media_backup(
+        source_signature = await execution_file_signature(context.io, boundary, source)
+        backup = await create_execution_media_backup(
+            context.io,
             boundary,
             source=source,
             subject_key=f"media-file-{media_file_id}",
@@ -206,7 +210,10 @@ async def _run_remux(
         ).model_dump(mode="json")
 
     # B13: the post-operation probe is authoritative for what actually changed.
-    actual = _inventory(source_path, _signature(source_path))
+    actual = await _inventory(context, source_path, _signature(source_path))
+    await persist_post_mutation_inventory(
+        context, media_file_id=media_file_id, inventory=actual
+    )
     result = MediaTrackMutationResultV1(
         outcome=MutationJobOutcome.SUCCEEDED,
         reason_code="applied",
@@ -285,7 +292,7 @@ async def execute_subtitle_metadata(context: ExecutionContext) -> dict[str, obje
         raise TrackMutationError("the media file is unavailable") from exc
 
     source_path = resolved_file.path
-    before = _inventory(source_path, resolved_file.signature)
+    before = await _inventory(context, source_path, resolved_file.signature)
     boundary, source = _boundary(source_path)
 
     selectors = [edit.selector for edit in request.edits]
@@ -345,18 +352,21 @@ async def execute_subtitle_metadata(context: ExecutionContext) -> dict[str, obje
         "media", f".marquee-{context.attempt.attempt_id}-{source.key.value}"
     )
     try:
-        source_signature = file_signature(boundary, source)
-        boundary.copy_file(source, candidate)
+        source_signature = await execution_file_signature(context.io, boundary, source)
+        await context.io.confined_copy(boundary, source, candidate)
         args = build_metadata_args(
             source=str(_physical(candidate)), inventory=before, edits=pending
         )
         await run_mkvpropedit_plan(
             context, boundary=boundary, args=args, candidate=candidate
         )
-        candidate_inventory = _inventory(_physical(candidate), "candidate:metadata")
+        candidate_inventory = await _inventory(
+            context, _physical(candidate), "candidate:metadata"
+        )
         if not _supported(candidate_inventory):
             raise TrackMutationError("the metadata candidate lost its container model")
-        backup = create_media_backup(
+        backup = await create_execution_media_backup(
+            context.io,
             boundary,
             source=source,
             subject_key=f"media-file-{media_file_id}",
@@ -411,7 +421,10 @@ async def execute_subtitle_metadata(context: ExecutionContext) -> dict[str, obje
             group_id=group_id,
         ).model_dump(mode="json")
 
-    actual = _inventory(source_path, _signature(source_path))
+    actual = await _inventory(context, source_path, _signature(source_path))
+    await persist_post_mutation_inventory(
+        context, media_file_id=request.media_file_id, inventory=actual
+    )
     changed_keys = {entry.track_key for entry, _ in pending}
     outcomes = tuple(
         MutationTargetOutcomeV1(

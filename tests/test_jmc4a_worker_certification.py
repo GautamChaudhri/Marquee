@@ -204,16 +204,27 @@ def test_readiness_is_sanitized_and_reports_locked_jmc4a_boundaries() -> None:
     assert worker["media_write_product_available"] is True
     assert schedule == {
         "status": "ok",
-        "definition_count": 3,
-        "keys": ["audio-subs-deep-scan", "library-sync", "poster-heal"],
+        "definition_count": 4,
+        "keys": [
+            "audio-subs-deep-scan",
+            "evidence-retention",
+            "library-sync",
+            "poster-heal",
+        ],
         "entrypoints": [
             "schedule_audio_subs_deep_scan",
+            "schedule_evidence_retention",
             "schedule_library_sync",
             "schedule_poster_heal",
         ],
         "occurrence_policies": ["hourly_window", "interval_bucket"],
         "production_schedules_enabled": False,
-        "activated_keys": ["audio-subs-deep-scan", "library-sync", "poster-heal"],
+        "activated_keys": [
+            "audio-subs-deep-scan",
+            "evidence-retention",
+            "library-sync",
+            "poster-heal",
+        ],
         "schedules": [
             {
                 "key": "library-sync",
@@ -239,6 +250,15 @@ def test_readiness_is_sanitized_and_reports_locked_jmc4a_boundaries() -> None:
                 "registered": True,
                 "individually_activated": True,
                 "configured": False,
+                "effectively_enabled": False,
+                "disabled_reason": "production schedule master gate disabled",
+            },
+            {
+                "key": "evidence-retention",
+                "entrypoint": "schedule_evidence_retention",
+                "registered": True,
+                "individually_activated": True,
+                "configured": True,
                 "effectively_enabled": False,
                 "disabled_reason": "production schedule master gate disabled",
             },

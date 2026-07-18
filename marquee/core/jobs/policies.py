@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -15,6 +16,14 @@ class RetryClassification(StrEnum):
     UNSAFE = "unsafe"
 
 
+class ClassifiedExecutionError(RuntimeError):
+    """A domain execution failure with a definition-consumable classification."""
+
+    def __init__(self, message: str, classification: RetryClassification) -> None:
+        super().__init__(message)
+        self.classification = classification
+
+
 @dataclass(frozen=True)
 class RetryDecision:
     classification: RetryClassification
@@ -26,6 +35,19 @@ class RetryDecision:
                 raise ValueError("transient retries require a positive delay")
         elif self.delay_seconds is not None:
             raise ValueError("only transient retries carry a delay")
+
+
+def default_failure_classifier(exc: BaseException) -> RetryClassification:
+    """Bounded definition classifier for execution-kernel failures."""
+    from pgqueuer import RetryRequested  # noqa: PLC0415
+
+    if isinstance(exc, ClassifiedExecutionError):
+        return exc.classification
+    if isinstance(exc, (RetryRequested, TimeoutError)):
+        return RetryClassification.TRANSIENT
+    if isinstance(exc, asyncio.CancelledError):
+        return RetryClassification.CANCELLED
+    return RetryClassification.PERMANENT
 
 
 @dataclass(frozen=True)

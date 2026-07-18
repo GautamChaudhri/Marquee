@@ -155,11 +155,15 @@ async def test_tv_maintenance_prunes_only_orphan_cache(db: AsyncSession, tmp_pat
     async def owns_current_attempt(_session):
         return True
 
+    async def stage(*_args, **_kwargs):
+        return None
+
     context = SimpleNamespace(
         request={"dry_run": True, "max_items": 10, "batch_size": 1},
         delivery=SimpleNamespace(canonical_job_id="job-maint"),
         attempt=SimpleNamespace(attempt_id=1, fence_token=1),
         cancellation=SimpleNamespace(cancel_called=False),
+        progress=SimpleNamespace(stage=stage),
         writer=SimpleNamespace(owns_current_attempt=owns_current_attempt),
         session_factory=_get_session_factory(),
     )

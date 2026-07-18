@@ -336,6 +336,7 @@ class PipelineCacheClearRequestV1(StrictDocument):
 
 class RetentionPurgeRequestV1(StrictDocument):
     retention_days: int = Field(ge=1, le=3650)
+    evidence_only: bool = False
     dry_run: bool = True
     confirmed_plan_checksum: Checksum | None = None
     max_records: int = Field(default=10_000, ge=1, le=10_000)

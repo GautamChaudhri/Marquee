@@ -7,7 +7,9 @@ import asyncio
 import json
 from pathlib import Path
 
+from marquee.config import settings
 from marquee.core.backup import backup_service
+from marquee.core.jobs.artifact_service import expire_artifacts, expire_logs
 
 
 async def _backup() -> dict[str, object]:
@@ -40,6 +42,13 @@ async def _restore(args: argparse.Namespace) -> dict[str, object]:
     )
 
 
+async def _retention(limit: int) -> dict[str, object]:
+    return {
+        "artifacts": await expire_artifacts(data_dir=settings.DATA_DIR, limit=limit),
+        "logs": await expire_logs(data_dir=settings.DATA_DIR, limit=limit),
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="python -m marquee.maintenance")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -52,13 +61,17 @@ def main() -> None:
     restore.add_argument("--confirm-database-name", required=True)
     restore.add_argument("--target-data-dir", required=True, type=Path)
     restore.add_argument("--allow-data-loss-or-create-target", action="store_true")
+    retention = commands.add_parser("expire-job-evidence")
+    retention.add_argument("--limit", type=int, choices=range(1, 101), default=50)
     args = parser.parse_args()
     if args.command == "backup":
         payload = asyncio.run(_backup())
     elif args.command == "verify-backup":
         payload = asyncio.run(_verify(args.backup_id))
-    else:
+    elif args.command == "restore-backup":
         payload = asyncio.run(_restore(args))
+    else:
+        payload = asyncio.run(_retention(args.limit))
     print(json.dumps(payload, sort_keys=True))
 
 

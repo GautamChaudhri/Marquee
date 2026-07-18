@@ -183,6 +183,12 @@ async def test_operations_snapshot_is_typed_bounded_and_payload_free(
     body = response.json()
     assert body["version"] == 1
     assert body["node"]["cpu_model"] == "Synthetic CPU"
+    assert body["evidence_retention"] == {
+        "overdue_artifacts": 0,
+        "overdue_logs": 0,
+        "oldest_overdue_at": None,
+        "overdue": False,
+    }
     assert body["contracts"] == [
         {
             "component": "marquee",
@@ -206,8 +212,9 @@ async def test_operations_snapshot_is_typed_bounded_and_payload_free(
         "database",
         "events",
         "storage",
-        "schedules",
-        "contracts",
+            "schedules",
+            "evidence_retention",
+            "contracts",
     }
     serialized = response.text.lower()
     assert "payload" not in serialized
@@ -255,6 +262,45 @@ async def test_operations_health_uses_fresh_external_runtime_evidence(
     assert body["workers"]["listener_healthy"] is True
     assert body["workers"]["runtime_instances"]["active"] == 1
     assert body["workers"]["runtime_instances"]["roles"] == {"worker": 1}
+
+
+@pytest.mark.asyncio
+async def test_operations_listener_health_rejects_scheduler_only_topology(
+    db, client: AsyncClient, monkeypatch
+):
+    app.state.worker_supervisor = None
+    now = datetime.now(UTC)
+    db.add(
+        RuntimeInstance(
+            id="00000000-0000-4000-8000-000000000002",
+            role="scheduler",
+            node_label="scheduler-only",
+            build="jmc6g-test",
+            host_boot_id="boot-test",
+            process_id=4243,
+            process_start_ticks=102,
+            process_group_id=4243,
+            advertised_entrypoints=[],
+            capabilities={},
+            readiness="ready",
+            started_at=now,
+            last_heartbeat_at=now,
+            heartbeat_expires_at=now + timedelta(seconds=30),
+        )
+    )
+    await db.commit()
+
+    async def queue_statistics(_db):
+        return []
+
+    monkeypatch.setattr(pgqueuer_gateway, "queue_statistics", queue_statistics)
+    body = (await client.get("/api/system/operations")).json()
+
+    assert body["workers"]["runtime_instances"]["active"] == 1
+    assert body["workers"]["runtime_instances"]["scheduler_present"] is True
+    assert body["workers"]["listener_healthy"] is False
+    assert body["events"]["listener_healthy"] is False
+    assert body["events"]["source"] == "runtime_instances.worker"
 
 
 @pytest.mark.asyncio

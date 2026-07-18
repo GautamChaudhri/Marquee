@@ -51,6 +51,16 @@
 		activityCallout(status, attention, progress, connection, recordFreshness)
 	);
 	const metrics = $derived(metricCards(presentation));
+	const ioSummary = $derived.by(() => {
+		const values = progress?.metrics;
+		if (values?.bytes_processed == null) return null;
+		const processed = formatBytes(values.bytes_processed);
+		const total = values.bytes_total == null ? null : formatBytes(values.bytes_total);
+		const throughput = values.throughput == null ? null : `${formatBytes(values.throughput)}/s`;
+		return [total == null ? processed : `${processed} of ${total}`, throughput]
+			.filter(Boolean)
+			.join(' · ');
+	});
 	const detailHref = $derived(presentation?.links.detail ?? row.links.detail);
 	const logsHref = $derived(presentation?.links.attempts ?? null);
 	const artifactsHref = $derived(presentation?.links.artifacts ?? null);
@@ -69,6 +79,18 @@
 		} finally {
 			sendingCancel = false;
 		}
+	}
+
+	function formatBytes(value: number): string {
+		if (value < 1024) return `${Math.round(value)} B`;
+		const units = ['KiB', 'MiB', 'GiB', 'TiB'];
+		let scaled = value / 1024;
+		let index = 0;
+		while (scaled >= 1024 && index < units.length - 1) {
+			scaled /= 1024;
+			index += 1;
+		}
+		return `${scaled.toFixed(scaled >= 10 ? 0 : 1)} ${units[index]}`;
 	}
 </script>
 
@@ -95,6 +117,7 @@
 			<ProgressMeasure measurement={progress.current} fallbackLabel="Current work" />
 		</div>
 	{/if}
+	{#if ioSummary}<span class="io-summary">{ioSummary}</span>{/if}
 
 	{#if callout}<ActivityCallout {callout} />{/if}
 
@@ -130,6 +153,12 @@
 		background: var(--panel);
 		box-shadow: 0 8px 28px color-mix(in srgb, var(--shadow) 18%, transparent);
 		--tone-color: var(--muted);
+	}
+
+	.io-summary {
+		color: var(--muted);
+		font-size: 12px;
+		font-variant-numeric: tabular-nums;
 	}
 	.card[data-tone='active'] {
 		--tone-color: var(--info);

@@ -11,13 +11,13 @@ import asyncio
 import json
 import re
 from collections.abc import Mapping
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Any
 
-from pgqueuer import RetryRequested
 from sqlalchemy import select
 
 from marquee.core.jobs.delivery import ExecutionContext, register_execution_handler
+from marquee.core.jobs.policies import ClassifiedExecutionError, RetryClassification
 from marquee.core.jobs.process_launcher import ProcessLaunchError
 from marquee.core.jobs.progress import MeasurementMode, ProgressMeasurementUpdate
 from marquee.core.jobs.progress_service import ProgressObservation, progress_writer
@@ -45,8 +45,10 @@ class DoviAnalysisError(RuntimeError):
     """Permanent, path-free failure for an invalid Dolby Vision observation."""
 
 
-def _tool_retry(tool: str) -> RetryRequested:
-    return RetryRequested(timedelta(seconds=5), reason=f"{tool} is temporarily unavailable")
+def _tool_retry(tool: str) -> ClassifiedExecutionError:
+    return ClassifiedExecutionError(
+        f"{tool} is temporarily unavailable", RetryClassification.TRANSIENT
+    )
 
 
 async def _progress(context: ExecutionContext, stage: str, ordinal: int) -> None:

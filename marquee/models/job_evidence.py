@@ -46,7 +46,7 @@ class JobLog(Base):
             name="ck_job_logs_compression",
         ),
         CheckConstraint(
-            "seal_status IN ('open', 'recovering', 'sealed', 'failed', 'expired')",
+            "seal_status IN ('open', 'recovering', 'sealed', 'failed', 'expiring', 'expired')",
             name="ck_job_logs_seal_status",
         ),
     )
@@ -100,7 +100,7 @@ class JobArtifact(Base):
             name="ck_job_artifacts_confined_storage_key",
         ),
         CheckConstraint(
-            "status IN ('pending', 'available', 'failed', 'expired')",
+            "status IN ('pending', 'available', 'failed', 'expiring', 'expired')",
             name="ck_job_artifacts_status",
         ),
         CheckConstraint("size_bytes IS NULL OR size_bytes >= 0", name="ck_job_artifacts_size"),

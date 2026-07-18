@@ -146,6 +146,8 @@
       "safety_gates",
       "workspace",
       "process_launcher",
+      "progress",
+      "io",
       "log_sink",
       "writer",
       "session_factory"
@@ -161,6 +163,7 @@
       "retry",
       "stopping",
       "succeed",
+      "terminal_decision",
       "unsafe"
     ],
     "process_launcher_methods": [

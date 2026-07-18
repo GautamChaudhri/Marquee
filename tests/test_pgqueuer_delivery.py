@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from uuid import uuid4
 
 import anyio
@@ -14,8 +16,14 @@ from pgqueuer.models import Job as PgQueuerJob
 from pgqueuer.types import QueueExecutionMode
 from sqlalchemy import select
 
-from marquee.core.jobs import delivery
+from marquee.core.configuration_cache import (
+    ExecutionConfigurationSnapshot,
+    configuration_provider,
+)
+from marquee.core.jobs import delivery, submission
+from marquee.core.jobs.artifact_service import repair_terminal_virtual_artifacts
 from marquee.core.jobs.commands import create_system_noop
+from marquee.core.jobs.definitions import JobDefinitionRegistry, TimeoutPolicy
 from marquee.core.jobs.delivery import (
     DeliveryRejectedError,
     deliver_control_job,
@@ -35,12 +43,17 @@ from marquee.core.jobs.orphan_reconciliation import (
 from marquee.core.jobs.pgqueuer_gateway import pgqueuer_gateway
 from marquee.core.jobs.pgqueuer_scheduler import create_scheduler
 from marquee.core.jobs.pgqueuer_worker import create_worker
+from marquee.core.jobs.policies import (
+    ClassifiedExecutionError,
+    RetryClassification,
+    RetryPolicy,
+)
 from marquee.core.jobs.process_identity import IdentityStatus, read_boot_id
 from marquee.core.jobs.progress_service import progress_writer
 from marquee.core.jobs.safety_gates import SafetyGateService, SafetyRequirements
 from marquee.database import _get_engine
 from marquee.main import app
-from marquee.models import RuntimeInstance
+from marquee.models import JobArtifact, RuntimeInstance
 from marquee.models.job import Job, JobAttempt, JobDispatch, JobEvent
 
 
@@ -143,9 +156,50 @@ async def test_delivery_commits_canonical_success_before_return(db):
     )
     assert len(attempts) == 1
     assert (attempts[0].phase, attempts[0].outcome) == ("finished", "succeeded")
-    assert job.progress_sequence == 2
+    assert job.progress_sequence == 3
     assert job.progress["freshness"] == "terminal"
-    assert [event.detail["progress_sequence"] for event in progress_events] == [1, 2]
+    assert [event.detail["progress_sequence"] for event in progress_events] == [1, 2, 3]
+
+
+async def test_canonical_delivery_streams_execution_io_to_presenter(
+    db,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    job_id, ticket_id = await _canonical_ticket(db)
+    source = tmp_path / "source.bin"
+    destination = tmp_path / "destination.bin"
+    source.write_bytes(b"progress" * (256 * 1024))
+    copied = asyncio.Event()
+    release = asyncio.Event()
+
+    async def handler(execution):
+        await execution.io.copy(source, destination)
+        copied.set()
+        await release.wait()
+        return {"outcome": "succeeded", "summary": {"echo": "io"}}
+
+    monkeypatch.setitem(delivery._EXECUTION_HANDLERS, "system_noop", handler)
+    task = asyncio.create_task(
+        deliver_control_job(_transport_job(job_id, ticket_id), _context())
+    )
+    await copied.wait()
+    release.set()
+    await task
+    await db.rollback()
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://testserver",
+    ) as client:
+        response = await client.get(f"/api/jobs/{job_id}/presentation")
+    assert response.status_code == 200
+    progress = response.json()["progress"]
+    assert progress["metrics"]["bytes_processed"] == source.stat().st_size
+    assert progress["metrics"]["bytes_total"] == source.stat().st_size
+    assert progress["current_subject"]["kind"] == "system_work"
+
+    assert destination.read_bytes() == source.read_bytes()
 
 
 async def test_progress_failure_does_not_change_successful_media_effect(db, monkeypatch):
@@ -254,7 +308,8 @@ async def test_fenced_writer_rejects_stale_attempt_ownership(db, monkeypatch):
     assert disposition == WriteDisposition.STALE
 
     release.set()
-    await task
+    with pytest.raises(DeliveryRejectedError):
+        await task
     await db.rollback()
     job = await db.get(Job, job_id)
     assert job is not None and (job.phase, job.outcome) == ("running", None)
@@ -438,6 +493,7 @@ async def _attach_runtime_attempt(
     job_type: str = "system_noop",
     metrics: dict | None = None,
     with_process_identity: bool = False,
+    process_id: int = 42420,
 ) -> tuple[str, int, int]:
     job_id, ticket_id = await _canonical_ticket(db)
     now = datetime.now(UTC)
@@ -448,9 +504,9 @@ async def _attach_runtime_attempt(
         node_label="remote-runtime",
         build="jmc6d-test",
         host_boot_id=read_boot_id() if with_process_identity else "remote-boot",
-        process_id=42420,
+        process_id=process_id,
         process_start_ticks=202,
-        process_group_id=42420,
+        process_group_id=process_id,
         advertised_entrypoints=["control"],
         capabilities={"entrypoints": ["control"]},
         readiness="ready",
@@ -471,8 +527,8 @@ async def _attach_runtime_attempt(
         transport_attempt=0,
         worker_node_id="remote-runtime",
         runtime_instance_id=runtime_id,
-        process_id=42420 if with_process_identity else None,
-        process_group_id=42420 if with_process_identity else None,
+        process_id=process_id if with_process_identity else None,
+        process_group_id=process_id if with_process_identity else None,
         host_boot_id=read_boot_id() if with_process_identity else None,
         metrics=(
             {**attempt_metrics, "process_start_ticks": 202}
@@ -501,12 +557,25 @@ async def test_fresh_runtime_attempt_is_never_superseded(db):
         term_seconds=0.01,
     )
 
-    assert counts == {"active": 1, "interrupted": 0, "unsafe": 0, "stale": 0}
+    assert counts == {"active": 0, "interrupted": 0, "unsafe": 0, "stale": 0}
     await db.rollback()
     job = await db.get(Job, job_id)
     attempt = await db.get(JobAttempt, attempt_id)
     assert job is not None and attempt is not None
     assert (job.phase, attempt.phase) == ("running", "running")
+
+
+async def test_stale_orphan_selection_is_bounded_after_freshness_filter(db):
+    for offset in range(3):
+        await _attach_runtime_attempt(db, fresh=True, process_id=42420 + offset)
+    _job_id, _ticket_id, stale_attempt_id = await _attach_runtime_attempt(
+        db, fresh=False, process_id=42423
+    )
+
+    candidates = await _bounded_candidates("replacement-container", limit=1)
+
+    assert [candidate.ownership.attempt_id for candidate in candidates] == [stale_attempt_id]
+    assert candidates[0].runtime_fresh is False
 
 
 async def test_expired_remote_read_only_attempt_is_policy_superseded(db):
@@ -659,6 +728,19 @@ async def test_real_queue_manager_owns_retry_delay_and_second_attempt(
         completed.set()
         return {"outcome": "succeeded", "summary": {"echo": "done"}}
 
+    definitions = [
+        replace(
+            definition,
+            retry_policy=RetryPolicy(
+                max_attempts=3,
+                transient_delays_seconds=(0.05, 0.1),
+            ),
+        )
+        if definition.job_type == "system_noop"
+        else definition
+        for definition in JOB_DEFINITION_REGISTRY
+    ]
+    monkeypatch.setattr(delivery, "JOB_DEFINITION_REGISTRY", JobDefinitionRegistry(definitions))
     monkeypatch.setitem(delivery._EXECUTION_HANDLERS, "system_noop", retry_once)
     async with _get_engine().connect() as connection:
         raw = await connection.get_raw_connection()
@@ -958,3 +1040,350 @@ async def test_transport_diagnostics_are_bounded_aggregates(db):
     assert "pgq_job_id" not in serialized
     assert "do-not-expose" not in serialized
     assert "payload" not in serialized.lower()
+
+
+async def test_non_mutation_no_change_survives_delivery_and_presentation(db, monkeypatch):
+    job_id, ticket_id = await _canonical_ticket(db)
+
+    async def handler(execution):
+        return {"outcome": "no_change", "summary": {"reason": "already current"}}
+
+    monkeypatch.setitem(delivery._EXECUTION_HANDLERS, "system_noop", handler)
+    await deliver_control_job(_transport_job(job_id, ticket_id), _context())
+
+    await db.rollback()
+    job = await db.get(Job, job_id)
+    attempt = await db.scalar(select(JobAttempt).where(JobAttempt.job_id == job_id))
+    dispatch = await db.scalar(select(JobDispatch).where(JobDispatch.job_id == job_id))
+    assert job is not None and attempt is not None and dispatch is not None
+    assert (job.outcome, attempt.outcome, dispatch.disposition) == (
+        "no_change",
+        "succeeded",
+        "succeeded",
+    )
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get(f"/api/jobs/{job_id}/presentation")
+    assert response.status_code == 200
+    assert response.json()["status"]["outcome"] == "no_change"
+
+
+@pytest.mark.parametrize(
+    ("domain_outcome", "attempt_outcome", "dispatch_disposition"),
+    (
+        ("succeeded", "succeeded", "succeeded"),
+        ("partially_succeeded", "succeeded", "succeeded"),
+        ("failed", "succeeded", "succeeded"),
+        ("cancelled", "cancelled", "cancelled"),
+        ("superseded", "succeeded", "superseded"),
+        ("unsafe", "succeeded", "succeeded"),
+    ),
+)
+async def test_returned_domain_outcomes_use_separate_terminal_vocabularies(
+    db,
+    monkeypatch,
+    domain_outcome,
+    attempt_outcome,
+    dispatch_disposition,
+):
+    job_id, ticket_id = await _canonical_ticket(db)
+
+    async def handler(execution):
+        return {"outcome": domain_outcome, "message": f"domain {domain_outcome}"}
+
+    monkeypatch.setitem(delivery._EXECUTION_HANDLERS, "system_noop", handler)
+    await deliver_control_job(_transport_job(job_id, ticket_id), _context())
+
+    await db.rollback()
+    job = await db.get(Job, job_id)
+    attempt = await db.scalar(select(JobAttempt).where(JobAttempt.job_id == job_id))
+    dispatch = await db.scalar(select(JobDispatch).where(JobDispatch.job_id == job_id))
+    assert job is not None and attempt is not None and dispatch is not None
+    assert (job.outcome, attempt.outcome, dispatch.disposition) == (
+        domain_outcome,
+        attempt_outcome,
+        dispatch_disposition,
+    )
+    expected_attention = {
+        "partially_succeeded": ("warning", "failed"),
+        "failed": ("error", "failed"),
+        "unsafe": ("error", "unsafe"),
+    }.get(domain_outcome, ("normal", "none"))
+    assert job.attention is not None
+    assert (job.attention["level"], job.attention["reason"]) == expected_attention
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get(f"/api/jobs/{job_id}/presentation")
+    assert response.status_code == 200
+    assert response.json()["status"]["outcome"] == domain_outcome
+    assert (
+        response.json()["attention"]["level"],
+        response.json()["attention"]["reason"],
+    ) == expected_attention
+
+
+async def test_terminal_conflict_is_held_without_success_log_or_acknowledgement(db, monkeypatch):
+    job_id, ticket_id = await _canonical_ticket(db)
+    seals: list[tuple[str, str | None]] = []
+
+    async def handler(execution):
+        return {"outcome": "succeeded", "summary": {}}
+
+    async def conflict(self, result, *, decision=None):
+        return WriteDisposition.CONFLICT
+
+    async def record_seal(log_sink, *, outcome, attempt_outcome=None, summary=None):
+        seals.append((outcome, attempt_outcome))
+
+    monkeypatch.setitem(delivery._EXECUTION_HANDLERS, "system_noop", handler)
+    monkeypatch.setattr(FencedWriter, "succeed", conflict)
+    monkeypatch.setattr(delivery, "_seal_attempt_log", record_seal)
+
+    with pytest.raises(DeliveryRejectedError):
+        await deliver_control_job(_transport_job(job_id, ticket_id), _context())
+    assert seals == [("unsafe", "interrupted")]
+    await db.rollback()
+    job = await db.get(Job, job_id)
+    attempt = await db.scalar(select(JobAttempt).where(JobAttempt.job_id == job_id))
+    dispatch = await db.scalar(select(JobDispatch).where(JobDispatch.job_id == job_id))
+    assert job is not None and attempt is not None and dispatch is not None
+    assert (job.phase, job.outcome, attempt.phase, dispatch.disposition) == (
+        "running",
+        None,
+        "running",
+        "active",
+    )
+
+
+async def test_terminal_evidence_failure_is_repaired_without_rerunning_work(db, monkeypatch):
+    job_id, ticket_id = await _canonical_ticket(db)
+    executions = 0
+
+    async def handler(execution):
+        nonlocal executions
+        executions += 1
+        return {"outcome": "succeeded", "summary": {}}
+
+    async def fail_registration(**kwargs):
+        raise OSError("synthetic evidence outage")
+
+    monkeypatch.setitem(delivery._EXECUTION_HANDLERS, "system_noop", handler)
+    monkeypatch.setattr(delivery, "register_virtual_artifact", fail_registration)
+    await deliver_control_job(_transport_job(job_id, ticket_id), _context())
+
+    await db.rollback()
+    job = await db.get(Job, job_id)
+    degradation = await db.scalar(
+        select(JobEvent).where(
+            JobEvent.job_id == job_id,
+            JobEvent.event_key == "artifact.failed",
+        )
+    )
+    assert job is not None and (job.phase, job.outcome) == ("terminal", "succeeded")
+    assert degradation is not None and degradation.detail["retryable"] is True
+
+    repaired = await repair_terminal_virtual_artifacts(limit=10)
+    assert repaired == {"examined": 1, "repaired": 1, "failed": 0}
+    await db.rollback()
+    artifact = await db.scalar(
+        select(JobArtifact).where(
+            JobArtifact.job_id == job_id,
+            JobArtifact.kind == "canonical_result",
+        )
+    )
+    assert artifact is not None and artifact.status == "available"
+    assert executions == 1
+
+
+async def test_log_seal_failure_records_degradation_without_rerunning_work(db, monkeypatch):
+    job_id, ticket_id = await _canonical_ticket(db)
+    executions = 0
+
+    async def handler(execution):
+        nonlocal executions
+        executions += 1
+        return {"outcome": "succeeded", "summary": {}}
+
+    async def fail_seal(log_sink, *, outcome, attempt_outcome=None, summary=None):
+        return False
+
+    monkeypatch.setitem(delivery._EXECUTION_HANDLERS, "system_noop", handler)
+    monkeypatch.setattr(delivery, "_seal_attempt_log", fail_seal)
+    await deliver_control_job(_transport_job(job_id, ticket_id), _context())
+
+    await db.rollback()
+    job = await db.get(Job, job_id)
+    degradation = await db.scalar(
+        select(JobEvent).where(
+            JobEvent.job_id == job_id,
+            JobEvent.event_key == "log.truncated",
+        )
+    )
+    assert job is not None and (job.phase, job.outcome) == ("terminal", "succeeded")
+    assert degradation is not None and degradation.detail == {
+        "source": "attempt_log",
+        "retryable": True,
+        "_canonical_version": 1,
+    }
+    assert executions == 1
+
+
+async def test_terminal_durability_precedes_success_log_seal(db, monkeypatch):
+    job_id, ticket_id = await _canonical_ticket(db)
+    order: list[str] = []
+    original_succeed = FencedWriter.succeed
+
+    async def handler(execution):
+        return {"outcome": "succeeded", "summary": {"echo": "ordered"}}
+
+    async def record_terminal(self, result, *, decision=None):
+        order.append("terminal")
+        return await original_succeed(self, result, decision=decision)
+
+    async def record_seal(log_sink, *, outcome, attempt_outcome=None, summary=None):
+        order.append(f"seal:{outcome}")
+
+    monkeypatch.setitem(delivery._EXECUTION_HANDLERS, "system_noop", handler)
+    monkeypatch.setattr(FencedWriter, "succeed", record_terminal)
+    monkeypatch.setattr(delivery, "_seal_attempt_log", record_seal)
+
+    await deliver_control_job(_transport_job(job_id, ticket_id), _context())
+    assert order == ["terminal", "seal:succeeded"]
+
+
+async def test_definition_retry_budget_and_delays_bound_handler_hint(db, monkeypatch):
+    job_id, ticket_id = await _canonical_ticket(db)
+
+    async def handler(execution):
+        raise RetryRequested(timedelta(seconds=999), "provider unavailable")
+
+    monkeypatch.setitem(delivery._EXECUTION_HANDLERS, "system_noop", handler)
+    for attempt_number, expected_delay in enumerate((5, 30)):
+        with pytest.raises(RetryRequested) as caught:
+            await deliver_control_job(
+                _transport_job(job_id, ticket_id, attempts=attempt_number), _context()
+            )
+        assert caught.value.delay == timedelta(seconds=expected_delay)
+
+    with pytest.raises(Exception) as exhausted:
+        await deliver_control_job(_transport_job(job_id, ticket_id, attempts=2), _context())
+    assert not isinstance(exhausted.value, RetryRequested)
+    await db.rollback()
+    job = await db.get(Job, job_id)
+    attempts = list(
+        await db.scalars(
+            select(JobAttempt).where(JobAttempt.job_id == job_id).order_by(JobAttempt.id)
+        )
+    )
+    assert job is not None
+    assert (job.phase, job.outcome) == ("terminal", "failed")
+    assert [attempt.outcome for attempt in attempts] == ["retrying", "retrying", "failed"]
+
+
+async def test_definition_timeout_wraps_handler_execution(db, monkeypatch):
+    job_id, ticket_id = await _canonical_ticket(db)
+    definitions = [
+        replace(definition, timeout=TimeoutPolicy(seconds=1))
+        if definition.job_type == "system_noop"
+        else definition
+        for definition in JOB_DEFINITION_REGISTRY
+    ]
+
+    async def handler(execution):
+        await asyncio.sleep(60)
+        return {"outcome": "succeeded", "summary": {}}
+
+    monkeypatch.setattr(delivery, "JOB_DEFINITION_REGISTRY", JobDefinitionRegistry(definitions))
+    monkeypatch.setitem(delivery._EXECUTION_HANDLERS, "system_noop", handler)
+    with pytest.raises(RetryRequested) as caught:
+        await asyncio.wait_for(
+            deliver_control_job(_transport_job(job_id, ticket_id), _context()), timeout=1.5
+        )
+    assert caught.value.delay == timedelta(seconds=5)
+    await db.rollback()
+    job = await db.get(Job, job_id)
+    attempt = await db.scalar(select(JobAttempt).where(JobAttempt.job_id == job_id))
+    assert job is not None and attempt is not None
+    assert (job.phase, job.outcome, attempt.outcome) == ("queued", None, "retrying")
+
+
+async def test_retry_execution_reuses_enqueue_time_configuration_snapshot(db, monkeypatch):
+    definitions = [
+        replace(
+            definition,
+            configuration_keys=frozenset({"K_NEIGHBORS"}),
+            configuration_audit="snapshot",
+            retry_policy=RetryPolicy(
+                max_attempts=2,
+                transient_delays_seconds=(0.01,),
+                idempotency_proof="read-only noop",
+            ),
+        )
+        if definition.job_type == "system_noop"
+        else definition
+        for definition in JOB_DEFINITION_REGISTRY
+    ]
+    registry = JobDefinitionRegistry(definitions)
+    monkeypatch.setattr(submission, "JOB_DEFINITION_REGISTRY", registry)
+    monkeypatch.setattr(delivery, "JOB_DEFINITION_REGISTRY", registry)
+    snapshot_version = configuration_provider.state.version
+    monkeypatch.setattr(
+        configuration_provider,
+        "snapshot_for",
+        lambda _keys: ExecutionConfigurationSnapshot(
+            version=snapshot_version, values={"K_NEIGHBORS": 7}
+        ),
+    )
+    job_id, ticket_id = await _canonical_ticket(db)
+    monkeypatch.setattr(
+        configuration_provider,
+        "snapshot_for",
+        lambda _keys: ExecutionConfigurationSnapshot(
+            version=snapshot_version, values={"K_NEIGHBORS": 99}
+        ),
+    )
+    observed: list[dict[str, object]] = []
+
+    async def handler(execution):
+        observed.append(dict(execution.configuration))
+        if len(observed) == 1:
+            raise RetryRequested(timedelta(seconds=999), "transient")
+        return {"outcome": "succeeded", "summary": {}}
+
+    monkeypatch.setitem(delivery._EXECUTION_HANDLERS, "system_noop", handler)
+    with pytest.raises(RetryRequested):
+        await deliver_control_job(_transport_job(job_id, ticket_id), _context())
+    await deliver_control_job(_transport_job(job_id, ticket_id, attempts=1), _context())
+
+    await db.rollback()
+    job = await db.get(Job, job_id)
+    assert job is not None
+    assert observed == [{"K_NEIGHBORS": 7}, {"K_NEIGHBORS": 7}]
+    assert (job.configuration_version, job.configuration_snapshot) == (
+        snapshot_version,
+        {"K_NEIGHBORS": 7},
+    )
+
+
+async def test_kernel_uncertainty_is_held_with_interrupted_attempt(db, monkeypatch):
+    job_id, ticket_id = await _canonical_ticket(db)
+
+    async def handler(_execution):
+        raise ClassifiedExecutionError(
+            "mutation publication is uncertain", RetryClassification.UNSAFE
+        )
+
+    monkeypatch.setitem(delivery._EXECUTION_HANDLERS, "system_noop", handler)
+    with pytest.raises(DeliveryRejectedError, match="execution safety is uncertain"):
+        await deliver_control_job(_transport_job(job_id, ticket_id), _context())
+
+    await db.rollback()
+    job = await db.get(Job, job_id)
+    attempt = await db.scalar(select(JobAttempt).where(JobAttempt.job_id == job_id))
+    dispatch = await db.scalar(select(JobDispatch).where(JobDispatch.job_id == job_id))
+    assert job is not None and attempt is not None and dispatch is not None
+    assert (job.phase, job.outcome, attempt.outcome, dispatch.disposition) == (
+        "terminal",
+        "unsafe",
+        "interrupted",
+        "failed",
+    )

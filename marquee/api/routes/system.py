@@ -17,6 +17,7 @@ from marquee.api.system_operations import (
     OperationsConnectionBudget,
     OperationsDatabase,
     OperationsEvents,
+    OperationsEvidenceRetention,
     OperationsHistoryResponse,
     OperationsNode,
     OperationsRuntimeInstance,
@@ -44,7 +45,14 @@ from marquee.core.pipeline_config import pipeline_settings
 from marquee.database import get_db, pool_stats, reset_database
 from marquee.media import binaries
 from marquee.ml.hardware import effective_ocr_workers
-from marquee.models import Job, RuntimeInstance, SchemaContract, SystemMetricsSample
+from marquee.models import (
+    Job,
+    JobArtifact,
+    JobLog,
+    RuntimeInstance,
+    SchemaContract,
+    SystemMetricsSample,
+)
 from marquee.pipeline.ocr_filter import active_worker_status, paddle_cuda_available
 
 logger = logging.getLogger(__name__)
@@ -422,7 +430,15 @@ async def job_transport_diagnostics(
     }
 
     runtime_instances = await _runtime_instance_summary(db, now=now)
-    listener_healthy = runtime_instances.active > 0
+    listener_last_heartbeat_at = await db.scalar(
+        select(func.max(RuntimeInstance.last_heartbeat_at)).where(
+            RuntimeInstance.role == "worker",
+            RuntimeInstance.readiness == "ready",
+            RuntimeInstance.stopped_at.is_(None),
+            RuntimeInstance.heartbeat_expires_at > now,
+        )
+    )
+    listener_healthy = listener_last_heartbeat_at is not None
     return {
         "queue": queue,
         "oldest_eligible_age_seconds": (
@@ -432,8 +448,8 @@ async def job_transport_diagnostics(
         "held_failed": held_failed,
         "listener": {
             "healthy": listener_healthy,
-            "last_observed_event_at": runtime_instances.last_heartbeat_at,
-            "source": "runtime_instances",
+            "last_observed_event_at": listener_last_heartbeat_at,
+            "source": "runtime_instances.worker",
         },
         "runtime_instances": runtime_instances,
         "contracts": [
@@ -475,6 +491,22 @@ async def operations_snapshot(
     gpu = metrics["gpu"]
     disk = metrics["disk"]
     network = metrics["net"]
+    now = datetime.now(UTC)
+    artifact_overdue, artifact_oldest = (
+        await db.execute(
+            select(func.count(), func.min(JobArtifact.expires_at)).where(
+                JobArtifact.status == "available", JobArtifact.expires_at <= now
+            )
+        )
+    ).one()
+    log_overdue, log_oldest = (
+        await db.execute(
+            select(func.count(), func.min(JobLog.expires_at)).where(
+                JobLog.seal_status == "sealed", JobLog.expires_at <= now
+            )
+        )
+    ).one()
+    overdue_times = [value for value in (artifact_oldest, log_oldest) if value is not None]
 
     return OperationsSnapshot(
         generated_at=datetime.now(UTC),
@@ -552,6 +584,12 @@ async def operations_snapshot(
                 )
                 for item in schedule_report["schedules"]
             ],
+        ),
+        evidence_retention=OperationsEvidenceRetention(
+            overdue_artifacts=int(artifact_overdue),
+            overdue_logs=int(log_overdue),
+            oldest_overdue_at=min(overdue_times) if overdue_times else None,
+            overdue=bool(artifact_overdue or log_overdue),
         ),
         contracts=transport["contracts"],
     )

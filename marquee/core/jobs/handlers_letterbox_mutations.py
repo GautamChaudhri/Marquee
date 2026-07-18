@@ -16,7 +16,7 @@ from marquee.core.jobs.letterbox_mutation_documents import (
     LetterboxProbeV1,
     LetterboxRemoveRequestV1,
 )
-from marquee.core.jobs.media_backups import create_media_backup
+from marquee.core.jobs.media_backups import create_execution_media_backup
 from marquee.core.jobs.media_mutation_support import (
     confined_boundary,
     current_signature,
@@ -34,7 +34,7 @@ from marquee.core.jobs.mutation_documents import (
 from marquee.core.jobs.process_launcher import ProcessLaunchError
 from marquee.core.jobs.progress import MeasurementMode, ProgressMeasurementUpdate
 from marquee.core.jobs.progress_service import ProgressObservation, progress_writer
-from marquee.core.jobs.publication import file_signature
+from marquee.core.jobs.publication import execution_file_signature
 from marquee.core.jobs.remux_coordinator import (
     RemuxCancelledError,
     atomicity,
@@ -395,7 +395,7 @@ async def _execute(context: ExecutionContext, *, operation: str) -> dict[str, ob
     )
     try:
         await _progress(context, "staging", 3, request.media_file_id)
-        boundary.copy_file(source, candidate)
+        await context.io.confined_copy(boundary, source, candidate)
         args = ["mkvpropedit", str(physical(candidate)), "--edit", "track:v1"]
         if operation == "apply":
             args.extend(
@@ -432,9 +432,10 @@ async def _execute(context: ExecutionContext, *, operation: str) -> dict[str, ob
             and (candidate_probe.crop_left != 0 or candidate_probe.crop_right != 0)
         ):
             raise LetterboxMutationError("candidate crop tags did not match the requested state")
-        source_signature = file_signature(boundary, source)
+        source_signature = await execution_file_signature(context.io, boundary, source)
         await _progress(context, "backing_up", 6, request.media_file_id)
-        backup = create_media_backup(
+        backup = await create_execution_media_backup(
+            context.io,
             boundary,
             source=source,
             subject_key=f"media-file-{request.media_file_id}",

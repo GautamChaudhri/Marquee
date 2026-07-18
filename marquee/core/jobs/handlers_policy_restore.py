@@ -6,8 +6,11 @@ from marquee.core.jobs.audio_subtitle_documents import (
     SubtitleRestoreRequestV1,
 )
 from marquee.core.jobs.delivery import ExecutionContext, register_execution_handler
-from marquee.core.jobs.media_backups import BackupArtifactError, verify_media_backup
-from marquee.core.jobs.media_mutation_support import TrackMutationError
+from marquee.core.jobs.media_backups import BackupArtifactError, verify_execution_media_backup
+from marquee.core.jobs.media_mutation_support import (
+    TrackMutationError,
+    persist_post_mutation_inventory,
+)
 from marquee.core.jobs.media_mutation_support import confined_boundary as _boundary
 from marquee.core.jobs.media_mutation_support import current_signature as _signature
 from marquee.core.jobs.media_mutation_support import load_media_file as _load
@@ -22,7 +25,7 @@ from marquee.core.jobs.mutation_documents import (
     MutationTargetV1,
     MutationValidationV1,
 )
-from marquee.core.jobs.publication import file_signature
+from marquee.core.jobs.publication import execution_file_signature
 from marquee.core.jobs.remux_coordinator import (
     atomicity,
     failed_result,
@@ -51,7 +54,7 @@ async def execute_subtitle_policy(context: ExecutionContext) -> dict[str, object
             resolved_file = await _load(context, request.media_file_id)
         except (MediaFileNotFoundError, MediaFileUnavailableError) as exc:
             raise TrackMutationError("the media file is unavailable") from exc
-        before = _inventory(resolved_file.path, resolved_file.signature)
+        before = await _inventory(context, resolved_file.path, resolved_file.signature)
         target = MutationTargetV1(
             key=f"policy:{request.policy_id}:{request.media_file_id}",
             kind="track",
@@ -96,7 +99,7 @@ async def execute_subtitle_restore(context: ExecutionContext) -> dict[str, objec
         raise TrackMutationError("the media file is unavailable") from exc
 
     source_path = resolved_file.path
-    before = _inventory(source_path, resolved_file.signature)
+    before = await _inventory(context, source_path, resolved_file.signature)
     boundary, destination = _boundary(source_path)
     target = MutationTargetV1(
         key=f"restore:{request.media_file_id}",
@@ -133,14 +136,20 @@ async def execute_subtitle_restore(context: ExecutionContext) -> dict[str, objec
         restore_eligible=True,
     )
     try:
-        verified = verify_media_backup(boundary, backup.model_copy(update={"size_bytes": _size(boundary, request)}))
+        verified = await verify_execution_media_backup(
+            context.io,
+            boundary,
+            backup.model_copy(update={"size_bytes": _size(boundary, request)}),
+        )
     except BackupArtifactError as exc:
         return _fail("validate", "backup_invalid", str(exc)[:200])
 
     # Restoring identical bytes changes nothing.  This compares the destination's
     # actual content digest with the backup's, because the media-file signature
     # and the backup's source signature use different schemes and never compare.
-    if file_signature(boundary, destination).sha256 == request.checksum:
+    if (
+        await execution_file_signature(context.io, boundary, destination)
+    ).sha256 == request.checksum:
         return MediaTrackMutationResultV1(
             **no_change_result(
                 targets=[target],
@@ -154,10 +163,11 @@ async def execute_subtitle_restore(context: ExecutionContext) -> dict[str, objec
         "media", f".marquee-restore-{context.attempt.attempt_id}-{destination.key.value}"
     )
     try:
-        expected_destination = file_signature(boundary, destination)
-        boundary.copy_file(verified, staged)
-        boundary.fsync_parent(staged)
-        if file_signature(boundary, staged).sha256 != request.checksum:
+        expected_destination = await execution_file_signature(context.io, boundary, destination)
+        await context.io.confined_copy(boundary, verified, staged)
+        if (
+            await execution_file_signature(context.io, boundary, staged)
+        ).sha256 != request.checksum:
             raise BackupArtifactError("the staged restore did not match the backup checksum")
         # The backup is never consumed: it is copied, then the copy is published.
         await publish_media_candidate(
@@ -171,7 +181,10 @@ async def execute_subtitle_restore(context: ExecutionContext) -> dict[str, objec
         boundary.delete_file(staged, missing_ok=True)
         return _fail("publish", "restore_failed", str(exc)[:200])
 
-    actual = _inventory(source_path, _signature(source_path))
+    actual = await _inventory(context, source_path, _signature(source_path))
+    await persist_post_mutation_inventory(
+        context, media_file_id=request.media_file_id, inventory=actual
+    )
     return MediaTrackMutationResultV1(
         outcome=MutationJobOutcome.SUCCEEDED,
         reason_code="restored",

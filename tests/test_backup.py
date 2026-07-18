@@ -14,7 +14,12 @@ from httpx import ASGITransport, AsyncClient
 from marquee.api.results import BackupInfo
 from marquee.config import settings
 from marquee.core import pipeline_config as pipeline_config_module
-from marquee.core.backup import BackupVerificationError, OfflineRestoreError, backup_service
+from marquee.core.backup import (
+    BackupCancelledError,
+    BackupVerificationError,
+    OfflineRestoreError,
+    backup_service,
+)
 from marquee.core.jobs.definitions import DisabledJobDefinitionError
 from marquee.core.jobs.delivery import EXECUTION_HANDLERS
 from marquee.core.jobs.manifest import JOB_DEFINITION_REGISTRY
@@ -87,6 +92,71 @@ def _seed_managed_state(data_dir: Path) -> None:
 
     (data_dir / "staging").mkdir(parents=True, exist_ok=True)
     (data_dir / "staging" / "scratch.bin").write_bytes(b"scratch")
+
+
+@pytest.mark.asyncio
+async def test_canonical_backup_routes_pg_dump_through_tracked_launcher(
+    backup_paths: tuple[Path, Path],
+) -> None:
+    data_dir, _backup_dir = backup_paths
+    _seed_managed_state(data_dir)
+    launches: list[tuple[str, list[str], dict[str, str]]] = []
+
+    class Process:
+        async def wait(self):
+            return SimpleNamespace(
+                exit_code=0,
+                exit_signal=None,
+                stderr=SimpleNamespace(captured=b""),
+            )
+
+    class Launcher:
+        async def launch(self, tool, args, *, environment):
+            launches.append((tool, args, dict(environment)))
+            output = Path(args[args.index("--file") + 1])
+            output.write_bytes(b"tracked-pg-dump")
+            return Process()
+
+    result = await backup_service.create_backup_with_maintenance_held(
+        process_launcher=Launcher()
+    )
+
+    assert Path(result.db_path).read_bytes() == b"tracked-pg-dump"
+    assert len(launches) == 1
+    assert launches[0][0] == "pg_dump"
+    assert set(launches[0][2]) == {"PGPASSFILE"}
+    assert not Path(launches[0][2]["PGPASSFILE"]).exists()
+
+
+@pytest.mark.asyncio
+async def test_canonical_backup_cancels_between_managed_data_chunks(
+    backup_paths: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data_dir, backup_dir = backup_paths
+    managed = data_dir / "cache" / "posters" / "large.bin"
+    managed.parent.mkdir(parents=True)
+    managed.write_bytes(b"x" * (2 * 1024 * 1024))
+
+    async def snapshot(path: Path, _launcher) -> None:
+        path.write_bytes(b"tracked-pg-dump")
+
+    monkeypatch.setattr(backup_service, "_snapshot_db_tracked", snapshot)
+    checks = 0
+
+    def cancelled() -> bool:
+        nonlocal checks
+        checks += 1
+        return checks > 1
+
+    with pytest.raises(BackupCancelledError):
+        await backup_service.create_backup_with_maintenance_held(
+            process_launcher=object(),
+            cancelled=cancelled,
+        )
+
+    assert checks > 1
+    assert not any((backup_dir / ".tmp").iterdir())
 
 
 def _make_backup_dir(root: Path, backup_id: str) -> None:

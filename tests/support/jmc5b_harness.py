@@ -14,6 +14,7 @@ from uuid import uuid4
 import pytest
 
 from marquee.core.filesystem import FilesystemBoundary, RootSpec
+from marquee.core.jobs.execution_io import ExecutionIO
 from marquee.core.jobs.manifest import JOB_DEFINITION_REGISTRY
 from marquee.core.jobs.process_launcher import ProcessLauncher
 from marquee.core.jobs.track_inventory_adapter import inventory_from_probe
@@ -121,14 +122,25 @@ async def execution_context(db, tmp_path: Path, *, job_type: str, request: dict)
         attempt_id=attempt.id,
         fence_token=7,
     )
+    fence = Fence()
+
+    async def owns_fence() -> bool:
+        return await fence.owns_current_attempt(None)
+
+    async def progress_stage(*_args, **_kwargs) -> None:
+        return None
+
     return SimpleNamespace(
         delivery=SimpleNamespace(canonical_job_id=job_id),
         attempt=SimpleNamespace(attempt_id=attempt.id, fence_token=7),
         request=request,
+        configuration={},
         definition=JOB_DEFINITION_REGISTRY.get(job_type),
         cancellation=SimpleNamespace(is_cancelled=lambda: False),
-        writer=Fence(),
+        writer=fence,
         process_launcher=launcher_for(tmp_path),
+        progress=SimpleNamespace(stage=progress_stage),
+        io=ExecutionIO(cancelled=lambda: False, owns_fence=owns_fence),
         workspace=workspace,
         session_factory=_get_session_factory(),
     )

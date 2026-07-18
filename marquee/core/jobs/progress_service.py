@@ -206,7 +206,11 @@ class ProgressWriter:
                 updated_at=datetime.now(UTC),
                 headline=stage_label,
                 stage=ProgressStage(key=observation.stage_key, label_key=stage_label),
-                current_subject=observation.current_subject,
+                current_subject=(
+                    observation.current_subject
+                    if observation.current_subject is not None
+                    else previous.current_subject if previous is not None else None
+                ),
                 overall=overall,
                 current=current,
                 metrics=metrics,

@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
-from pgqueuer import Queries, RetryRequested
+from pgqueuer import Queries
 
 from marquee.api.routes import hdr
 from marquee.api.routes.hdr import (
@@ -23,6 +23,7 @@ from marquee.core.jobs.handlers_dovi import (
     execute_dovi_analyze,
 )
 from marquee.core.jobs.manifest import JOB_DEFINITION_REGISTRY
+from marquee.core.jobs.policies import ClassifiedExecutionError, RetryClassification
 from marquee.database import _get_engine
 from marquee.main import app
 from marquee.models import Job, Movie
@@ -125,10 +126,11 @@ async def test_deep_tool_unavailability_uses_definition_retry() -> None:
 
             raise ProcessLaunchError("dovi_tool is unavailable")
 
-    with pytest.raises(RetryRequested) as raised:
+    with pytest.raises(ClassifiedExecutionError) as raised:
         await _dovi_tool_summary(SimpleNamespace(process_launcher=UnavailableLauncher()), "/media/test.hevc")
 
-    assert raised.value.reason == "dovi_tool is temporarily unavailable"
+    assert str(raised.value) == "dovi_tool is temporarily unavailable"
+    assert raised.value.classification == RetryClassification.TRANSIENT
 
 
 @pytest.mark.asyncio

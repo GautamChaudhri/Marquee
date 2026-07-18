@@ -17,7 +17,9 @@ from marquee.core.jobs.contracts import (
     TriggerKind,
 )
 from marquee.core.jobs.documents import DocumentAdapter
+from marquee.core.jobs.policies import RetryClassification
 from marquee.core.jobs.safety_gates import SafetyPolicy
+from marquee.core.jobs.terminal_decision import TerminalDecisionPolicy
 
 _JOB_TYPE = re.compile(r"^[a-z][a-z0-9_]{0,79}$")
 _POLICY_KEY = re.compile(r"^[a-z][a-z0-9_.-]{0,99}$")
@@ -84,6 +86,9 @@ class JobDefinition:
     entrypoint: str
     timeout: TimeoutPolicy
     effect_safety: EffectSafety
+    terminal_policy: TerminalDecisionPolicy
+    failure_classifier: Callable[[BaseException], RetryClassification]
+    configuration_audit: str
     overlap_policy: ActiveOverlapPolicy = field(
         default_factory=lambda: ActiveOverlapPolicy(ActiveOverlapMode.COALESCE_EQUIVALENT)
     )
@@ -138,6 +143,22 @@ class JobDefinitionRegistry:
                 raise InvalidJobDefinitionError(
                     "dispatch-enabled definitions require the ENABLED migration state"
                 )
+            result_model = definition.result.models[definition.result.current_version]
+            if definition.effect_safety == EffectSafety.UNSAFE_MUTATION:
+                request_model = definition.request.models[definition.request.current_version]
+                if (
+                    request_model.__name__ == "BuiltInIntentV1"
+                    or result_model.__name__ == "BuiltInResultV1"
+                ):
+                    raise InvalidJobDefinitionError(
+                        "enabled mutations require family-specific request and result documents"
+                    )
+            if definition.terminal_policy.result_outcomes != (
+                TerminalDecisionPolicy.result_outcomes_for_model(result_model)
+            ):
+                raise InvalidJobDefinitionError(
+                    "terminal policy must exactly cover the current result outcome contract"
+                )
             if definition.effect_safety == EffectSafety.UNSAFE_MUTATION:
                 request_model = definition.request.models[definition.request.current_version]
                 result_model = definition.result.models[definition.result.current_version]
@@ -180,6 +201,12 @@ class JobDefinitionRegistry:
             raise InvalidJobDefinitionError("configuration dependency set is unbounded")
         if any(not key or len(key) > 100 for key in definition.configuration_keys):
             raise InvalidJobDefinitionError("invalid configuration dependency key")
+        if definition.configuration_audit not in {"snapshot", "audited_empty"}:
+            raise InvalidJobDefinitionError("configuration ownership audit is missing")
+        if bool(definition.configuration_keys) != (
+            definition.configuration_audit == "snapshot"
+        ):
+            raise InvalidJobDefinitionError("configuration audit disagrees with dependency keys")
 
     def get(self, job_type: str) -> JobDefinition:
         try:

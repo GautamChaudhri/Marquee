@@ -13,6 +13,7 @@ from datetime import datetime
 
 from sqlalchemy import (
     JSON,
+    BigInteger,
     Boolean,
     DateTime,
     ForeignKey,
@@ -71,7 +72,7 @@ class ManagedSubtitleAsset(Base):
 
 
 class ManagedSubtitleBinding(Base):
-    """Binds a managed asset to a logical owner (movie or episode).
+    """Binds a managed asset to its media, producing job, and logical owner.
 
     A single asset may bind to multiple Episode rows for a multi-episode file.
     Owner existence is validated in application code (polymorphic FK).
@@ -85,9 +86,15 @@ class ManagedSubtitleBinding(Base):
         index=True,
         nullable=False,
     )
-    # movie | episode
-    owner_type: Mapped[str] = mapped_column(String(10), nullable=False)
-    owner_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    media_file_id: Mapped[int | None] = mapped_column(
+        ForeignKey("media_files.id", ondelete="SET NULL"), index=True, nullable=True
+    )
+    source_job_id: Mapped[str | None] = mapped_column(String(32), index=True, nullable=True)
+    source_attempt_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    source_fence_token: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    # movie | episode; legacy assets may retain only this logical binding.
+    owner_type: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    owner_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
 
     def __repr__(self) -> str:
         return (

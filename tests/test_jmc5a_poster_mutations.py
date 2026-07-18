@@ -8,6 +8,7 @@ import pytest
 from PIL import Image
 
 from marquee.config import settings
+from marquee.core.jobs.execution_io import ExecutionIO
 from marquee.core.jobs.handlers_poster_mutations import (
     PosterMutationError,
     _boundary,
@@ -74,12 +75,16 @@ async def _context(db, *, job_type: str, request: dict):
         )
     )
     await db.commit()
+    async def owns_fence() -> bool:
+        return True
+
     return SimpleNamespace(
         delivery=SimpleNamespace(canonical_job_id=job_id),
         attempt=SimpleNamespace(attempt_id=1, fence_token=7),
         request=request,
         definition=JOB_DEFINITION_REGISTRY.get(job_type),
         cancellation=SimpleNamespace(cancel_called=False),
+        io=ExecutionIO(cancelled=lambda: False, owns_fence=owns_fence),
         writer=_Fence(),
         session_factory=_get_session_factory(),
     )

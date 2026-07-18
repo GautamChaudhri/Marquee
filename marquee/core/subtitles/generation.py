@@ -27,7 +27,10 @@ _GENERATORS = {SubgenPathGenerator.id: SubgenPathGenerator()}
 _WEBHOOK_COMPLETIONS: dict[str, dict] = {}
 
 
-def get_generator(generator_id: str | None):
+def get_generator(generator_id: str | None, *, configuration=None):
+    if configuration is not None:
+        generator = SubgenPathGenerator(configuration=configuration)
+        return generator if generator_id in {None, generator.id} else None
     if generator_id is None:
         return next(iter(_GENERATORS.values()), None)
     return _GENERATORS.get(generator_id)

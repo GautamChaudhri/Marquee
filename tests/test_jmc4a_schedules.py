@@ -95,6 +95,7 @@ async def test_production_catalog_is_registered_but_occurrences_are_code_disable
         "library-sync",
         "poster-heal",
         "audio-subs-deep-scan",
+        "evidence-retention",
     ]
     # Every production predicate requires the explicit restart-owned master gate.
     assert not definitions["library-sync"].enabled_predicate(
@@ -113,6 +114,12 @@ async def test_production_catalog_is_registered_but_occurrences_are_code_disable
     assert not definitions["audio-subs-deep-scan"].enabled_predicate(
         _configuration(enabled=True, production=False)
     )
+    assert not definitions["evidence-retention"].enabled_predicate(
+        _configuration(production=False)
+    )
+    assert definitions["evidence-retention"].enabled_predicate(
+        _configuration(production=True)
+    )
     async with _get_engine().connect() as connection:
         raw = await connection.get_raw_connection()
         app = create_scheduler(
@@ -123,6 +130,7 @@ async def test_production_catalog_is_registered_but_occurrences_are_code_disable
         ("schedule_library_sync", "* * * * *"),
         ("schedule_poster_heal", "* * * * *"),
         ("schedule_audio_subs_deep_scan", "0 * * * *"),
+        ("schedule_evidence_retention", "17 3 * * *"),
     }
 
 
@@ -130,8 +138,9 @@ def test_schedule_diagnostics_report_truthful_effective_state() -> None:
     report = readiness.schedule_catalog_report()
 
     assert report["production_schedules_enabled"] is False
-    assert [item["registered"] for item in report["schedules"]] == [True, True, True]
+    assert [item["registered"] for item in report["schedules"]] == [True, True, True, True]
     assert [item["effectively_enabled"] for item in report["schedules"]] == [
+        False,
         False,
         False,
         False,

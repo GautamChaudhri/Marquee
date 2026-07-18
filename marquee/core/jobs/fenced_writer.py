@@ -16,6 +16,7 @@ from marquee.core.jobs.event_service import job_event_writer
 from marquee.core.jobs.process_identity import ProcessIdentity
 from marquee.core.jobs.process_launcher import ExecutionSummary
 from marquee.core.jobs.progress_service import progress_writer
+from marquee.core.jobs.terminal_decision import TerminalDecision
 from marquee.database import _get_session_factory
 from marquee.models.job import Job, JobAttempt, JobDispatch
 
@@ -64,34 +65,39 @@ class FencedWriter:
             )
         ) is not None
 
-    async def succeed(self, result: dict[str, Any]) -> WriteDisposition:
+    def terminal_decision(self, result: dict[str, Any]) -> TerminalDecision:
         document = self.definition.result.validate(
             result, version=self.definition.result.current_version
         )
-        validated = document.model_dump(mode="json")
-        from marquee.core.jobs.mutation_documents import (  # noqa: PLC0415
-            MutationResultV1,
+        return self.definition.terminal_policy.decide(
+            document,
+            job_type=self.definition.job_type,
         )
 
-        if isinstance(document, MutationResultV1):
-            outcome = document.outcome.value
-            return await self._terminal(
-                outcome=outcome,
-                dispatch_disposition=(
-                    "succeeded"
-                    if outcome in {"succeeded", "no_change", "partially_succeeded"}
-                    else outcome
-                ),
-                result=validated,
-                error=None,
-                expected_desired_states=("run",),
-            )
+    async def succeed(
+        self,
+        result: dict[str, Any],
+        *,
+        decision: TerminalDecision | None = None,
+    ) -> WriteDisposition:
+        document = self.definition.result.validate(
+            result, version=self.definition.result.current_version
+        )
+        derived = self.definition.terminal_policy.decide(
+            document,
+            job_type=self.definition.job_type,
+        )
+        if decision is not None and decision != derived:
+            raise ValueError("terminal decision changed between validation and persistence")
+        decision = derived
         return await self._terminal(
-            outcome="succeeded",
-            dispatch_disposition="succeeded",
-            result=validated,
+            outcome=decision.job_outcome.value,
+            dispatch_disposition=decision.dispatch_disposition.value,
+            result=document.model_dump(mode="json"),
             error=None,
             expected_desired_states=("run",),
+            attempt_outcome=decision.attempt_outcome.value,
+            attention=decision.attention_document(),
         )
 
     async def fail(
@@ -497,6 +503,7 @@ class FencedWriter:
         error: dict[str, Any] | None,
         expected_desired_states: tuple[str, ...],
         attempt_outcome: str | None = None,
+        attention: dict[str, Any] | None = None,
     ) -> WriteDisposition:
         owner = self.ownership
         now = datetime.now(UTC)
@@ -512,6 +519,7 @@ class FencedWriter:
                     "outcome": outcome,
                     "result": result,
                     "error": error,
+                    "attention": attention,
                     "terminal_at": now,
                 },
             )

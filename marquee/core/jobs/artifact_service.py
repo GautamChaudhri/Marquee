@@ -26,7 +26,7 @@ from marquee.core.filesystem import (
 from marquee.core.jobs.event_service import job_event_writer
 from marquee.core.jobs.log_capture import CentralRedactor
 from marquee.database import _get_session_factory
-from marquee.models import Job, JobArtifact, JobAttempt, JobEvent
+from marquee.models import Job, JobArtifact, JobAttempt, JobEvent, JobLog
 
 _IDENTITY = re.compile(r"^[a-f0-9]{32}$")
 _SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._()-]{0,159}$")
@@ -51,6 +51,9 @@ class ArtifactPolicy:
 
 
 ARTIFACT_POLICIES: dict[str, ArtifactPolicy] = {
+    "managed_sidecar": ArtifactPolicy(
+        ".srt", frozenset({"application/x-subrip"}), 64 * 1024 * 1024
+    ),
     "taste_profile": ArtifactPolicy(
         ".json", frozenset({"application/json"}), 1024 * 1024
     ),
@@ -81,6 +84,99 @@ ARTIFACT_POLICIES: dict[str, ArtifactPolicy] = {
         ".mkv", frozenset({"video/x-matroska"}), 8 * 1024 * 1024 * 1024 * 1024
     ),
 }
+
+
+async def register_existing_physical_artifact(
+    *,
+    job_id: str,
+    attempt_id: int,
+    fence_token: int,
+    source: ClassifiedPath,
+    kind: Literal["managed_sidecar", "product_backup"],
+    name: str,
+    checksum: str,
+    size_bytes: int,
+    retention_class: str = "extended",
+) -> JobArtifact:
+    """Register an already-confined immutable product file without duplicating it."""
+    if (
+        not isinstance(source, ClassifiedPath)
+        or source.root.name != "data"
+        or not _IDENTITY.fullmatch(job_id)
+        or attempt_id < 1
+        or fence_token < 1
+        or kind not in {"managed_sidecar", "product_backup"}
+        or not _SAFE_NAME.fullmatch(name)
+        or not _CHECKSUM.fullmatch(checksum)
+        or size_bytes < 0
+        or retention_class not in {"standard", "extended", "ephemeral"}
+    ):
+        raise ArtifactError("existing artifact contract is invalid")
+    fd = await asyncio.to_thread(FilesystemBoundary({"data": source.root}).open_read, source)
+    try:
+        actual_size = (await asyncio.to_thread(os.fstat, fd)).st_size
+    finally:
+        os.close(fd)
+    if actual_size != size_bytes:
+        raise ArtifactError("existing artifact size does not match its evidence")
+
+    factory = _get_session_factory()
+    async with factory() as session, session.begin():
+        job = await session.scalar(select(Job).where(Job.id == job_id).with_for_update())
+        attempt = await session.scalar(
+            select(JobAttempt).where(
+                JobAttempt.id == attempt_id,
+                JobAttempt.job_id == job_id,
+                JobAttempt.fence_token == fence_token,
+            )
+        )
+        if job is None or attempt is None:
+            raise ArtifactError("existing artifact attempt ownership is stale")
+        existing = await session.scalar(
+            select(JobArtifact).where(
+                JobArtifact.job_id == job_id,
+                JobArtifact.attempt_id == attempt_id,
+                JobArtifact.kind == kind,
+                JobArtifact.storage_key == source.key.value,
+            )
+        )
+        if existing is not None:
+            return existing
+        row = JobArtifact(
+            job_id=job_id,
+            attempt_id=attempt_id,
+            kind=kind,
+            name=name,
+            status="available",
+            storage_key=source.key.value,
+            content_type=(
+                "application/x-subrip"
+                if kind == "managed_sidecar"
+                else "application/octet-stream"
+            ),
+            size_bytes=size_bytes,
+            checksum=checksum,
+            artifact_metadata={
+                "subject_kind": job.subject_kind,
+                "subject_reference": job.subject_reference,
+                "source": "canonical_result",
+            },
+            retention_class=retention_class,
+            expires_at=datetime.now(UTC) + _retention_delta(retention_class),
+        )
+        session.add(row)
+        await session.flush((row,))
+        await job_event_writer.append(
+            session,
+            job_id=job_id,
+            attempt_id=attempt_id,
+            event_key="artifact.available",
+            state=job.phase,
+            message="Job product evidence available",
+            detail={"artifact_id": row.id, "kind": kind, "name": name},
+            canonical_version=job.fence_token,
+        )
+        return row
 
 
 def artifact_boundary(data_dir: str | Path) -> FilesystemBoundary:
@@ -322,6 +418,16 @@ async def register_virtual_artifact(
             )
             if attempt is None:
                 raise ArtifactError("artifact attempt ownership is stale")
+        existing = await session.scalar(
+            select(JobArtifact).where(
+                JobArtifact.job_id == job_id,
+                JobArtifact.attempt_id == attempt_id,
+                JobArtifact.kind == f"canonical_{source}",
+                JobArtifact.status == "available",
+            )
+        )
+        if existing is not None:
+            return existing
         document = await _virtual_document(session, job, source)
         encoded = _encode_virtual(document)
         through_cursor = (
@@ -362,6 +468,121 @@ async def register_virtual_artifact(
         return row
 
 
+async def register_validation_result_artifact(
+    *, job_id: str, attempt_id: int, fence_token: int
+) -> JobArtifact | None:
+    """Expose typed mutation validation as a named result-backed JobArtifact."""
+    factory = _get_session_factory()
+    async with factory() as session, session.begin():
+        job = await session.scalar(select(Job).where(Job.id == job_id).with_for_update())
+        attempt = await session.scalar(
+            select(JobAttempt).where(
+                JobAttempt.id == attempt_id,
+                JobAttempt.job_id == job_id,
+                JobAttempt.fence_token == fence_token,
+            )
+        )
+        if job is None or attempt is None:
+            raise ArtifactError("validation artifact attempt ownership is stale")
+        if not isinstance(job.result, dict) or "validation" not in job.result:
+            return None
+        existing = await session.scalar(
+            select(JobArtifact).where(
+                JobArtifact.job_id == job_id,
+                JobArtifact.attempt_id == attempt_id,
+                JobArtifact.kind == "validation_report",
+                JobArtifact.status == "available",
+            )
+        )
+        if existing is not None:
+            return existing
+        document = {
+            "version": 1,
+            "job_id": job_id,
+            "document": "result",
+            "value": {"validation": job.result["validation"]},
+        }
+        encoded = _encode_virtual(document)
+        row = JobArtifact(
+            job_id=job_id,
+            attempt_id=attempt_id,
+            kind="validation_report",
+            name="Mutation validation evidence",
+            status="available",
+            virtual_source={"version": 1, "document": "result", "pointer": "/validation"},
+            content_type="application/json",
+            size_bytes=len(encoded),
+            checksum=hashlib.sha256(encoded).hexdigest(),
+            artifact_metadata={"result_pointer": "/validation"},
+            retention_class="standard",
+            expires_at=datetime.now(UTC) + _retention_delta("standard"),
+        )
+        session.add(row)
+        await session.flush((row,))
+        await job_event_writer.append(
+            session,
+            job_id=job_id,
+            attempt_id=attempt_id,
+            event_key="artifact.available",
+            state=job.phase,
+            message="Mutation validation evidence available",
+            detail={"artifact_id": row.id, "kind": row.kind, "name": row.name},
+            canonical_version=job.fence_token,
+        )
+        return row
+
+
+async def repair_terminal_virtual_artifacts(*, limit: int = 100) -> dict[str, int]:
+    """Boundedly restore missing canonical result/error evidence without rerunning work."""
+    if not 1 <= limit <= 200:
+        raise ArtifactError("terminal artifact repair limit is invalid")
+    factory = _get_session_factory()
+    async with factory() as session:
+        jobs = list(
+            await session.scalars(
+                select(Job)
+                .where(Job.phase == "terminal")
+                .order_by(Job.terminal_at, Job.id)
+                .limit(limit * 2)
+            )
+        )
+        candidates: list[tuple[str, int | None, int, Literal["result", "error"]]] = []
+        for job in jobs:
+            source: Literal["result", "error"] | None = (
+                "result" if job.result is not None else "error" if job.error is not None else None
+            )
+            if source is None:
+                continue
+            exists = await session.scalar(
+                select(JobArtifact.id).where(
+                    JobArtifact.job_id == job.id,
+                    JobArtifact.attempt_id == job.current_attempt_id,
+                    JobArtifact.kind == f"canonical_{source}",
+                    JobArtifact.status == "available",
+                )
+            )
+            if exists is None:
+                candidates.append((job.id, job.current_attempt_id, job.fence_token, source))
+            if len(candidates) >= limit:
+                break
+
+    repaired = failed = 0
+    for job_id, attempt_id, fence_token, source in candidates:
+        try:
+            await register_virtual_artifact(
+                job_id=job_id,
+                attempt_id=attempt_id,
+                fence_token=fence_token,
+                source=source,
+                name=f"Canonical {source}",
+                retention_class="standard",
+            )
+            repaired += 1
+        except Exception:
+            failed += 1
+    return {"examined": len(candidates), "repaired": repaired, "failed": failed}
+
+
 async def materialize_virtual_artifact(row: JobArtifact) -> bytes:
     source = (row.virtual_source or {}).get("document")
     if source not in VIRTUAL_SOURCES:
@@ -374,6 +595,16 @@ async def materialize_virtual_artifact(row: JobArtifact) -> bytes:
         document = await _virtual_document(
             session, job, source, through_cursor=(row.virtual_source or {}).get("through_cursor")
         )
+        if (row.virtual_source or {}).get("pointer") == "/validation":
+            value = document.get("value") if isinstance(document, dict) else None
+            if not isinstance(value, dict) or "validation" not in value:
+                raise ArtifactError("validation artifact source is unavailable")
+            document = {
+                "version": 1,
+                "job_id": row.job_id,
+                "document": "result",
+                "value": {"validation": value["validation"]},
+            }
     encoded = _encode_virtual(document)
     if row.size_bytes != len(encoded) or row.checksum != hashlib.sha256(encoded).hexdigest():
         raise ArtifactError("virtual artifact canonical document changed")
@@ -498,6 +729,7 @@ async def verify_physical_artifact(row: JobArtifact) -> tuple[FilesystemBoundary
 
 
 async def expire_artifacts(*, data_dir: str | Path, limit: int = 50) -> dict[str, int]:
+    """Claim, physically remove, verify, then expire artifact metadata."""
     if not 1 <= limit <= 100:
         raise ArtifactError("artifact cleanup limit is invalid")
     factory = _get_session_factory()
@@ -514,29 +746,158 @@ async def expire_artifacts(*, data_dir: str | Path, limit: int = 50) -> dict[str
             )
         ).all()
         for row in rows:
-            row.status = "expired"
+            row.status = "expiring"
             claimed.append((row.id, row.storage_key))
-            job = await session.scalar(select(Job).where(Job.id == row.job_id))
-            if job is not None and job.current_attempt_id == row.attempt_id:
-                await job_event_writer.append(
-                    session,
-                    job_id=row.job_id,
-                    attempt_id=row.attempt_id,
-                    event_key="artifact.expired",
-                    state=job.phase,
-                    message="Job artifact expired",
-                    detail={"artifact_id": row.id, "kind": row.kind, "name": row.name},
-                    canonical_version=job.fence_token,
-                )
+
     boundary = artifact_boundary(data_dir)
-    deleted = 0
-    for _, key in claimed:
-        if key is not None:
-            with contextlib.suppress(FileNotFoundError):
+    deleted = missing = failed = 0
+    for artifact_id, key in claimed:
+        disposition = "virtual"
+        try:
+            if key is not None:
                 classified = boundary.from_key("data", key)
-                await asyncio.to_thread(boundary.delete_file, classified, missing_ok=True)
-                deleted += 1
-    return {"expired": len(claimed), "deleted": deleted}
+                removed = await asyncio.to_thread(
+                    boundary.delete_file, classified, missing_ok=True
+                )
+                disposition = "deleted" if removed else "missing"
+                try:
+                    fd = await asyncio.to_thread(boundary.open_read, classified)
+                except (FileNotFoundError, FilesystemBoundaryError):
+                    pass
+                else:
+                    os.close(fd)
+                    raise ArtifactError("artifact remained after physical expiration")
+            async with factory() as session, session.begin():
+                row = await session.scalar(
+                    select(JobArtifact)
+                    .where(
+                        JobArtifact.id == artifact_id,
+                        JobArtifact.status == "expiring",
+                    )
+                    .with_for_update()
+                )
+                if row is None:
+                    raise ArtifactError("artifact expiration claim was lost")
+                row.status = "expired"
+                row.artifact_metadata = {
+                    **(row.artifact_metadata or {}),
+                    "expiration_disposition": disposition,
+                    "expired_at": now.isoformat(),
+                }
+                job = await session.get(Job, row.job_id)
+                if job is not None:
+                    await job_event_writer.append(
+                        session,
+                        job_id=row.job_id,
+                        attempt_id=row.attempt_id,
+                        event_key="artifact.expired",
+                        state=job.phase,
+                        message="Job artifact expired",
+                        detail={
+                            "artifact_id": row.id,
+                            "kind": row.kind,
+                            "name": row.name,
+                            "disposition": disposition,
+                        },
+                        canonical_version=job.fence_token,
+                    )
+            deleted += disposition == "deleted"
+            missing += disposition == "missing"
+        except Exception as exc:
+            failed += 1
+            async with factory() as session, session.begin():
+                row = await session.scalar(
+                    select(JobArtifact)
+                    .where(
+                        JobArtifact.id == artifact_id,
+                        JobArtifact.status == "expiring",
+                    )
+                    .with_for_update()
+                )
+                if row is not None:
+                    row.status = "available"
+                    row.artifact_metadata = {
+                        **(row.artifact_metadata or {}),
+                        "expiration_failure": type(exc).__name__[:40],
+                    }
+    return {
+        "claimed": len(claimed),
+        "expired": len(claimed) - failed,
+        "deleted": deleted,
+        "missing": missing,
+        "failed": failed,
+    }
+
+
+async def expire_logs(*, data_dir: str | Path, limit: int = 50) -> dict[str, int]:
+    """Expire sealed physical logs before their owning job rows become eligible."""
+    if not 1 <= limit <= 100:
+        raise ArtifactError("log cleanup limit is invalid")
+    factory = _get_session_factory()
+    now = datetime.now(UTC)
+    claimed: list[tuple[int, str]] = []
+    async with factory() as session, session.begin():
+        rows = (
+            await session.scalars(
+                select(JobLog)
+                .where(JobLog.seal_status == "sealed", JobLog.expires_at <= now)
+                .order_by(JobLog.id)
+                .limit(limit)
+                .with_for_update(skip_locked=True)
+            )
+        ).all()
+        for row in rows:
+            row.seal_status = "expiring"
+            claimed.append((row.id, row.storage_key))
+
+    boundary = artifact_boundary(data_dir)
+    deleted = missing = failed = 0
+    for log_id, key in claimed:
+        try:
+            classified = boundary.from_key("data", key)
+            removed = await asyncio.to_thread(
+                boundary.delete_file, classified, missing_ok=True
+            )
+            disposition = "deleted" if removed else "missing"
+            try:
+                fd = await asyncio.to_thread(boundary.open_read, classified)
+            except (FileNotFoundError, FilesystemBoundaryError):
+                pass
+            else:
+                os.close(fd)
+                raise ArtifactError("log remained after physical expiration")
+            async with factory() as session, session.begin():
+                row = await session.scalar(
+                    select(JobLog)
+                    .where(JobLog.id == log_id, JobLog.seal_status == "expiring")
+                    .with_for_update()
+                )
+                if row is None:
+                    raise ArtifactError("log expiration claim was lost")
+                row.seal_status = "expired"
+                row.failure_code = (
+                    "retention_source_missing" if disposition == "missing" else None
+                )
+            deleted += disposition == "deleted"
+            missing += disposition == "missing"
+        except Exception as exc:
+            failed += 1
+            async with factory() as session, session.begin():
+                row = await session.scalar(
+                    select(JobLog)
+                    .where(JobLog.id == log_id, JobLog.seal_status == "expiring")
+                    .with_for_update()
+                )
+                if row is not None:
+                    row.seal_status = "sealed"
+                    row.failure_code = f"retention_{type(exc).__name__}"[:40]
+    return {
+        "claimed": len(claimed),
+        "expired": len(claimed) - failed,
+        "deleted": deleted,
+        "missing": missing,
+        "failed": failed,
+    }
 
 
 async def reconcile_artifacts(*, data_dir: str | Path, limit: int = 100) -> dict[str, int]:

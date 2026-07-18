@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import copy
-import hashlib
 from dataclasses import dataclass, is_dataclass, replace
 from datetime import UTC, datetime
+from pathlib import Path
 
 from marquee.core.jobs.audio_subtitle_documents import (
     ManagedSidecarV1,
@@ -14,6 +14,7 @@ from marquee.core.jobs.audio_subtitle_documents import (
 )
 from marquee.core.jobs.delivery import ExecutionContext, register_execution_handler
 from marquee.core.jobs.handlers_sidecars import (
+    MAX_SIDECAR_BYTES,
     SidecarError,
     _publish_managed,
     _register_managed_asset,
@@ -106,6 +107,14 @@ async def wait_for_provider(
             raise GenerationError(
                 "wait", "provider_timeout", "the provider did not finish within the deadline"
             )
+        progress = getattr(context, "progress", None)
+        if progress is not None:
+            await progress.stage(
+                "execute",
+                label="Waiting for subtitle provider",
+                wait_kind="provider",
+                wait_label_key="subtitle.provider",
+            )
         state = await generator.reconcile(request)
         polls += 1
         if state.state in TERMINAL_PROVIDER_STATES:
@@ -183,10 +192,10 @@ async def execute_subtitle_generate(context: ExecutionContext) -> dict[str, obje
         raise TrackMutationError("the media file is unavailable") from exc
 
     source_path = resolved_file.path
-    before = _inventory(source_path, resolved_file.signature)
+    before = await _inventory(context, source_path, resolved_file.signature)
     boundary, _source = _boundary(source_path)
 
-    generator = get_generator(request.provider_id)
+    generator = get_generator(request.provider_id, configuration=context.configuration)
     provider = getattr(generator, "id", "subgen") if generator else "unavailable"
     if generator is None:
         return _failure(
@@ -216,7 +225,8 @@ async def execute_subtitle_generate(context: ExecutionContext) -> dict[str, obje
             raise GenerationError(
                 "download", "provider_output_missing", "the provider reported no output"
             )
-        payload = _read_provider_output(outcome.output_path)
+        read = await context.io.read(Path(outcome.output_path), maximum_bytes=MAX_SIDECAR_BYTES)
+        payload = read.payload
         validate_subtitle_bytes(payload)
     except GenerationError as exc:
         return _failure(
@@ -238,12 +248,12 @@ async def execute_subtitle_generate(context: ExecutionContext) -> dict[str, obje
             provider=provider, generated=True,
         )
 
-    checksum = hashlib.sha256(payload).hexdigest()
+    checksum = read.sha256
     staged = boundary.from_key("data", f"jmc5/managed-subtitles/.staging-{checksum}.srt")
     boundary.create_directory(boundary.from_key("data", "jmc5/managed-subtitles"), parents=True)
-    _physical(staged).write_bytes(payload)
+    await context.io.write(payload, _physical(staged))
     try:
-        _publish_managed(boundary, staged, checksum)
+        await _publish_managed(context, boundary, staged, checksum)
     except SidecarError as exc:
         boundary.delete_file(staged, missing_ok=True)
         return _failure(
@@ -258,6 +268,8 @@ async def execute_subtitle_generate(context: ExecutionContext) -> dict[str, obje
         title=None,
         is_forced=False,
         is_sdh=False,
+        media_file_id=request.media_file_id,
+        source="generated",
     )
     sidecar = ManagedSidecarV1(
         managed_asset_id=asset_id,
@@ -311,26 +323,55 @@ async def execute_subtitle_generate(context: ExecutionContext) -> dict[str, obje
                 embedded=True,
             ).model_dump(mode="json")
 
+        generated_target = target.model_copy(
+            update={
+                "key": f"{target.key}:sidecar",
+                "label": f"{target.label} sidecar",
+                "selector_facts": {
+                    **target.selector_facts,
+                    "source": "external",
+                },
+            }
+        )
+        embed_target = target.model_copy(
+            update={
+                "key": f"{target.key}:embed",
+                "label": f"Embed {request.language_tag} subtitles",
+                "operation": "subtitle_embed",
+            }
+        )
         return SubtitleGenerationResultV1(
-            outcome=MutationJobOutcome.SUCCEEDED,
+            outcome=MutationJobOutcome.PARTIALLY_SUCCEEDED,
             reason_code="generated_not_embedded",
             message=(
                 "subtitles were generated as a managed sidecar, but embedding was not applied: "
                 f"{embed_result['message']}"
             ),
-            requested_targets=(target,),
+            requested_targets=(generated_target, embed_target),
             target_outcomes=(
                 MutationTargetOutcomeV1(
-                    target=target,
+                    target=generated_target,
                     status=MutationTargetStatus.SUCCEEDED,
                     stage="sidecar",
                     reason_code="generated_not_embedded",
-                    message="the managed sidecar remains available; embedding was not applied",
+                    message="generation was validated and published as a managed sidecar",
                     bytes_changed=True,
                     product_state_changed=True,
                 ),
+                MutationTargetOutcomeV1(
+                    target=embed_target,
+                    status=MutationTargetStatus.FAILED,
+                    stage="embed",
+                    reason_code="embed_failed",
+                    message=(
+                        "generation was published, but the requested embedding failed: "
+                        f"{embed_result['message']}"
+                    ),
+                    bytes_changed=False,
+                    product_state_changed=False,
+                ),
             ),
-            validation=MutationValidationV1(verdict="passed"),
+            validation=MutationValidationV1.model_validate(embed_result["validation"]),
             atomicity=atomicity(group_id, published=True),
             generation_atomicity=atomicity(
                 f"subtitle_generate:{request.media_file_id}:generation", published=True
@@ -386,12 +427,6 @@ def _source_label(request: SubtitleGenerateRequestV1) -> str | None:
     if facts.channels:
         bits.append(f"{facts.channels}ch")
     return " ".join(bits)
-
-
-def _read_provider_output(path: str) -> bytes:
-    from pathlib import Path
-
-    return Path(path).read_bytes()
 
 
 register_execution_handler("subtitle_generate", execute_subtitle_generate)

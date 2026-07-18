@@ -20,10 +20,10 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from marquee.core.filesystem import ClassifiedPath, FilesystemBoundary
 from marquee.core.jobs.audio_subtitle_documents import MediaTrackMutationResultV1
-from marquee.core.jobs.delivery import ExecutionContext
 from marquee.core.jobs.mkvmerge_plan import MkvmergePlanError
 from marquee.core.jobs.mutation_documents import (
     MutationAtomicityV1,
@@ -34,9 +34,12 @@ from marquee.core.jobs.mutation_documents import (
     MutationValidationV1,
 )
 from marquee.core.jobs.process_launcher import ProcessLaunchError
-from marquee.core.jobs.progress_adapters import MkvmergeProgressAdapter
-from marquee.core.jobs.publication import FileSignature, PublicationCoordinator, file_signature
+from marquee.core.jobs.progress_adapters import FFmpegProgressAdapter, MkvmergeProgressAdapter
+from marquee.core.jobs.publication import FileSignature, PublicationCoordinator
 from marquee.core.jobs.track_selectors import TrackEntryV1, TrackInventoryV1
+
+if TYPE_CHECKING:
+    from marquee.core.jobs.delivery import ExecutionContext
 
 MutationStage = str
 
@@ -72,9 +75,20 @@ async def publish_media_candidate(
     expected_destination: FileSignature,
 ) -> FileSignature:
     """Publish source-changing output only through the fenced coordinator."""
-    candidate_signature = file_signature(boundary, candidate)
+    candidate_value = await context.io.confined_signature(boundary, candidate)
+    candidate_signature = FileSignature(
+        device=candidate_value.device,
+        inode=candidate_value.inode,
+        size=candidate_value.size,
+        modified_ns=candidate_value.modified_ns,
+        sha256=candidate_value.sha256,
+    )
     maximum_bytes = max(expected_destination.size * 2, candidate_signature.size, 64 * 1024 * 1024)
-    return await PublicationCoordinator(boundary, maximum_bytes=maximum_bytes).publish(
+    return await PublicationCoordinator(
+        boundary,
+        maximum_bytes=maximum_bytes,
+        execution_io=context.io,
+    ).publish(
         staged=candidate,
         destination=destination,
         expected_destination=expected_destination,
@@ -211,15 +225,34 @@ async def run_mkvmerge_plan(
     """
     if _cancelled(context):
         raise RemuxCancelledError("remux", "cancelled", "cancelled before the tool was launched")
+    adapter = (
+        FFmpegProgressAdapter(duration_seconds=None)
+        if args[0] == "ffmpeg"
+        else MkvmergeProgressAdapter()
+    )
+    samples = 0
+
+    async def progress_sink(_source: str, chunk: bytes, _final: bool) -> None:
+        nonlocal samples
+        for sample in adapter.feed(chunk):
+            samples += 1
+            await context.progress.stage(
+                "execute",
+                label="Remuxing media tracks",
+                completed=sample.completed,
+                total=sample.total,
+                unit="percent",
+            )
+
     try:
         # args[0] is the tool name; the launcher resolves and allowlists it.
-        process = await context.process_launcher.launch(args[0], list(args[1:]))
+        process = await context.process_launcher.launch(
+            args[0], list(args[1:]), stdout_sink=progress_sink
+        )
     except ProcessLaunchError as exc:
         raise RemuxError("remux", "tool_unavailable", "the remux tool could not be launched") from exc
 
     summary = await process.wait()
-    adapter = MkvmergeProgressAdapter()
-    samples = adapter.feed(summary.stdout.captured)
     if summary.exit_signal is not None:
         raise RemuxError("remux", "tool_signalled", "the remux tool terminated on a signal")
     # mkvmerge exit 1 is "completed with warnings"; anything else is a failure.
@@ -229,7 +262,7 @@ async def run_mkvmerge_plan(
         raise RemuxCancelledError("remux", "cancelled", "cancelled before validation")
 
     try:
-        candidate_signature = file_signature(boundary, candidate)
+        candidate_signature = await context.io.confined_signature(boundary, candidate)
     except Exception as exc:  # noqa: BLE001 - classified as a validation failure
         raise RemuxError(
             "validate", "candidate_missing", "the remux produced no readable candidate"
@@ -239,7 +272,7 @@ async def run_mkvmerge_plan(
     return RemuxOutcome(
         candidate=candidate,
         candidate_signature=candidate_signature,
-        progress_samples=len(samples),
+        progress_samples=samples,
     )
 
 
@@ -265,7 +298,7 @@ async def run_mkvpropedit_plan(
     if _cancelled(context):
         raise RemuxCancelledError("remux", "cancelled", "cancelled before validation")
     try:
-        candidate_signature = file_signature(boundary, candidate)
+        candidate_signature = await context.io.confined_signature(boundary, candidate)
     except Exception as exc:  # noqa: BLE001 - classified as a validation failure
         raise RemuxError(
             "validate", "candidate_missing", "the metadata edit produced no readable candidate"
