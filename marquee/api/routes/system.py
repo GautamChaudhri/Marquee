@@ -121,6 +121,11 @@ def _sanitized_runtime_instance(
     gpu = capabilities.get("gpu")
     if isinstance(gpu, dict):
         availability["gpu"] = bool(gpu.get("available"))
+    certifications = capabilities.get("certifications")
+    if isinstance(certifications, dict):
+        availability["dovi_conversion_certified"] = bool(
+            certifications.get("dovi_conversion")
+        )
     return OperationsRuntimeInstance(
         role=instance.role,
         node_label=instance.node_label[:100],
@@ -587,12 +592,9 @@ async def trigger_heal(
 @router.post("/release-gpu")
 async def release_gpu_resources():
     """Drop Marquee's process-local ML caches before another GPU workload."""
-    from marquee.pipeline.run_manager import run_manager  # noqa: PLC0415
+    from marquee.pipeline.extractor_runtime import extractor_runtime  # noqa: PLC0415
 
-    busy = run_manager.gpu_busy()
-    if busy is not None:
-        return {"status": "busy", "active": busy}
-    return {"status": "released", **run_manager.release_gpu_resources()}
+    return {"status": "released", **extractor_runtime.release_gpu_resources()}
 
 
 @router.post("/reset-db")

@@ -8,6 +8,97 @@
 > [JMC6F legacy retirement and activation certification](jmc6f-legacy-retirement-and-activation-certification.md)
 > before repeating the owner activation decision.
 
+## JMC6F corrected activation candidate (2026-07-17)
+
+This section supersedes the historical JMC6C activation recommendation below. It becomes the local
+activation authority only when the final-only JMC6F compaction preserves the certified tree and the
+annotated `jmc6f-complete` tag is created. It still does not authorize a push or activation.
+
+- **Base and history:** exact base is annotated `jmc6e-complete` at
+  `b46766bb4cca229db087e2dd35a389d952e6115e`, tree
+  `5a13909b381c4f632bac29e7be0c773c938a64a3`. The configured-author JMC6F phase range is linear,
+  local-only, unpushed, and records F0 `862e4fe`, F1 `b4fb11b`, F2 `7632c40`, F3 `b8c9a90`, and
+  F4 `5a7123f`; the final compact hash/tree and F5 hash are frozen in the shared timeline before
+  recovery creation and exact-tree squashing.
+- **Single lifecycle:** production source contains one execution lifecycle: typed canonical
+  submission → PgQueuer 1.1.1 durable delivery → fenced execution kernel → canonical evidence and
+  presentation. Detached `RunManager`, batch-poster execution, letterbox batch state, taste rebuild
+  process state, and delivery-executor injection are absent. Neutral retained helpers are
+  `extractor_runtime`, `official_pick`, and the pure detection/grouping portion of
+  `letterbox_manager`; static tests prohibit lifecycle coupling.
+- **Definitions and execution:** 62 built-in definitions: exactly 43 enabled leaves and 43 canonical
+  delivery handlers. The 19 ticketless/reserved types are `audio_subs_deep_scan`,
+  `dovi_analyze_batch`, `letterbox_apply_batch`, `letterbox_apply_tv_scope`,
+  `letterbox_detect_batch`, `letterbox_detect_tv_batch`, `letterbox_heal`,
+  `letterbox_reencode_publish_batch`, `letterbox_reencode_tv_batch`,
+  `letterbox_revert_tv_scope`, `poster_backup_all`, `poster_deploy_reset`, `poster_heal`,
+  `poster_pipeline_batch`, `poster_pipeline_tv_batch`, `radarr_upgrade`,
+  `subtitle_generate_batch`, `subtitle_policy_batch`, and `subtitle_scan_all`.
+- **Enabled leaves:** `audio_remove`, `audio_reorder`, `backup_create`, `dovi_analyze`,
+  `dovi_convert`, `dovi_discard`, `dovi_publish`, `dovi_restore`, `job_retention_purge`,
+  `learned_head_train`, `letterbox_apply`, `letterbox_detect`, `letterbox_detect_episode`,
+  `letterbox_detect_tv_scope`, `letterbox_reencode`, `letterbox_reencode_discard`,
+  `letterbox_reencode_publish`, `letterbox_reencode_restore`, `letterbox_remove`, `library_sync`,
+  `pipeline_cache_clear`, `poster_backup_subject`, `poster_deploy`, `poster_maintenance`,
+  `poster_pipeline`, `poster_rescan`, `poster_reset`, `poster_restore`, `subtitle_embed`,
+  `subtitle_extract`, `subtitle_generate`, `subtitle_metadata`, `subtitle_policy`,
+  `subtitle_policy_audit`, `subtitle_remove`, `subtitle_restore`, `subtitle_scan`,
+  `system_metrics_purge`, `system_noop`, `taste_enrich`, `taste_map`, `taste_rebuild`, and
+  `track_remove`.
+- **Routes/pages and recovery:** the five canonical seam routes/successors and 9 detail + 14 overview
+  Activity consumers are frozen in `tests/fixtures/jmc6e/route_page_manifest.json`. Exact
+  subject/correlation filters recover matching work beyond 20 unrelated jobs; shared-store tests
+  cover empty storage, dropped/late SSE, snapshot repair, hidden tabs, navigation, two tabs, and
+  terminal action recovery. Concurrent equivalent requests coalesce; conflicting unsafe requests
+  return the active canonical job; terminal work releases overlap scope.
+- **External topology:** an actual worker process was stopped and recreated under the same logical
+  node label with distinct incarnation/PID-start identities. A separate real external scheduler and
+  worker appeared healthy in Operations while the API had no embedded supervisor. Operations
+  reported one worker, one scheduler, zero stale instances, no entrypoint mismatch, zero queued /
+  picked / held work, and 9 observed database connections within the 28 configured / 32 maximum
+  budget. A real-row defect in schema-contract presentation was corrected and is regression-tested.
+- **Schedules and webhooks:** production schedule keys are exactly `library-sync`, `poster-heal`, and
+  `audio-subs-deep-scan`. The master gate remains default-off; a real scheduler logged disabled
+  occurrences without creating work, while deterministic tests certify explicit-on behavior,
+  disable/re-enable, two schedulers, coalescing, and no catch-up storm. Radarr/Sonarr/Subgen webhook
+  routes, auth exemptions, OpenAPI paths, and tests remain absent; `radarr_upgrade` is reserved.
+- **Schema/contracts:** sole Alembic head `0008_jmc6e`, 48 public tables, fresh/forward column
+  fingerprint `5696b90d283f77e77a8239c59cdb13c4`, index fingerprint
+  `5570599ca32f71ee49eabe65932b8845`. PgQueuer contract fingerprint remains
+  `19377622f52c906a7a5cb6e68b4db6d30e7cc9534aac933c156c33666f4eb21a`. OpenAPI remains 199
+  paths at SHA-256 `4f70e9e7c5cbd90e5359fc8fadde37ad48272756e203a4a1f899b67459f9c7a4`; generated TypeScript
+  SHA-256 is `96eedda857b02f9e54ae402bac3da5ea01c55438816e210e3eb8c4c73aa36d89`.
+- **Current local gates:** 1309 backend tests pass with zero failure/skip/xfail/xpass; Ruff,
+  Alembic current/head/offline/check, official migration + PgQueuer verify, deterministic generated
+  contracts, static absence, `git diff --check`, and actionlint pass. Frontend Svelte check is 0
+  errors/0 warnings; Prettier/ESLint, 111 Vitest tests, production build, and 11 Chromium
+  Playwright/axe tests pass. F5 repeats the complete set and freezes its final counts in the shared
+  timeline.
+- **Capability disposition:** generated/confined poster, audio/subtitle, letterbox, HDR,
+  backup/restore, progress/evidence, cancellation/process-death, and publication fixtures are green.
+  A project-local `dovi_tool 17ebb13` is present, but no owner-approved real Profile 5/7 fixture
+  smoke ran. Restart-owned `JOB_DOVI_CONVERSION_CERTIFIED` therefore defaults false, the live
+  conversion route returns typed 503, and Operations reports binary availability separately from
+  `dovi_conversion_certified=false`. No new operator-library publish/restore or hardware encode
+  smoke is claimed.
+- **Still deferred:** browser authentication/authorization/sessions/CSRF, public reset replacement,
+  Docker hardening/version alignment, webhook implementation, `radarr_upgrade`, hosted CI, and any
+  Profile 5/7 conversion certification.
+
+### Current owner checklist
+
+- [ ] Review the final compact hash/tree/base, annotated `jmc6f-complete`, phase ledger, test
+  dispositions, recovery refs, and verified external bundle.
+- [ ] Authorize a non-rewriting push of the compact branch/tag; preserve all JMC6 recovery material.
+- [ ] Require GitHub-hosted Python 3.12/3.13 matrix jobs and the frontend job to pass. Local
+  actionlint is not hosted CI success.
+- [ ] Keep `JOB_PRODUCTION_SCHEDULES_ENABLED=false` until an explicit deployment/schedule review;
+  approve only required entrypoints and certified capabilities for the target host.
+- [ ] Keep `JOB_DOVI_CONVERSION_CERTIFIED=false` unless a witnessed, approved Profile 5/7 fixture
+  smoke validates the real tool, RPU/profile/color/playback metadata, publish, and restore path.
+- [ ] Decide the deferred browser-auth, reset, Docker, webhook, and `radarr_upgrade` risks, then make
+  one final owner activation decision.
+
 Owner checklist for the compact `jmc6c-complete` candidate. This record freezes the locally
 verified first-release contracts and does not authorize a push, production activation, or an
 uncertified media capability.

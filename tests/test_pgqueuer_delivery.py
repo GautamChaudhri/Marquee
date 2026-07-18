@@ -14,6 +14,7 @@ from pgqueuer.models import Job as PgQueuerJob
 from pgqueuer.types import QueueExecutionMode
 from sqlalchemy import select
 
+from marquee.core.jobs import delivery
 from marquee.core.jobs.commands import create_system_noop
 from marquee.core.jobs.delivery import (
     DeliveryRejectedError,
@@ -164,30 +165,25 @@ async def test_progress_failure_does_not_change_successful_media_effect(db, monk
     assert job.progress is None
 
 
-async def test_duplicate_delivery_performs_effect_once(db):
+async def test_duplicate_delivery_performs_effect_once(db, monkeypatch):
     job_id, ticket_id = await _canonical_ticket(db)
     calls = 0
     admitted = asyncio.Event()
     release = asyncio.Event()
 
-    async def executor(payload, context):
+    async def handler(execution):
         nonlocal calls
         calls += 1
         admitted.set()
         await release.wait()
-        return payload
+        return {"outcome": "succeeded", "summary": {"echo": "held"}}
 
+    monkeypatch.setitem(delivery._EXECUTION_HANDLERS, "system_noop", handler)
     transport_job = _transport_job(job_id, ticket_id)
-    first = asyncio.create_task(
-        deliver_control_job(transport_job, _context(), executor=executor)
-    )
+    first = asyncio.create_task(deliver_control_job(transport_job, _context()))
     await admitted.wait()
     with pytest.raises(RetryRequested, match="active attempt"):
-        await deliver_control_job(
-            transport_job,
-            _context(),
-            executor=executor,
-        )
+        await deliver_control_job(transport_job, _context())
     release.set()
     await first
     assert calls == 1
@@ -224,20 +220,19 @@ async def test_safety_wait_cancellation_creates_no_attempt(db):
     assert attempts == []
 
 
-async def test_fenced_writer_rejects_stale_attempt_ownership(db):
+async def test_fenced_writer_rejects_stale_attempt_ownership(db, monkeypatch):
     job_id, ticket_id = await _canonical_ticket(db)
     admitted = asyncio.Event()
     release = asyncio.Event()
 
-    async def executor(payload, context):
+    async def handler(execution):
         admitted.set()
         await release.wait()
-        return payload
+        return {"outcome": "succeeded", "summary": {"echo": "held"}}
 
+    monkeypatch.setitem(delivery._EXECUTION_HANDLERS, "system_noop", handler)
     task = asyncio.create_task(
-        deliver_control_job(
-            _transport_job(job_id, ticket_id), _context(), executor=executor
-        )
+        deliver_control_job(_transport_job(job_id, ticket_id), _context())
     )
     await admitted.wait()
     await db.rollback()
@@ -266,18 +261,21 @@ async def test_fenced_writer_rejects_stale_attempt_ownership(db):
 
 
 @pytest.mark.parametrize("terminal_action", ["fail", "retry"])
-async def test_mutation_publish_intent_is_quarantined_instead_of_retried(db, terminal_action):
+async def test_mutation_publish_intent_is_quarantined_instead_of_retried(
+    db, terminal_action, monkeypatch
+):
     job_id, ticket_id = await _canonical_ticket(db)
     admitted = asyncio.Event()
     release = asyncio.Event()
 
-    async def executor(payload, context):
+    async def handler(execution):
         admitted.set()
         await release.wait()
-        return payload
+        return {"outcome": "succeeded", "summary": {"echo": "held"}}
 
+    monkeypatch.setitem(delivery._EXECUTION_HANDLERS, "system_noop", handler)
     task = asyncio.create_task(
-        deliver_control_job(_transport_job(job_id, ticket_id), _context(), executor=executor)
+        deliver_control_job(_transport_job(job_id, ticket_id), _context())
     )
     await admitted.wait()
     await db.rollback()
@@ -362,22 +360,19 @@ async def test_dispatch_disabled_registry_definition_is_held(db):
     assert attempts == []
 
 
-async def test_duplicate_delivery_never_guesses_running_attempt_is_abandoned(db):
+async def test_duplicate_delivery_never_guesses_running_attempt_is_abandoned(db, monkeypatch):
     job_id, ticket_id = await _canonical_ticket(db)
     admitted = asyncio.Event()
     release = asyncio.Event()
 
-    async def abandoned(payload, context):
+    async def handler(execution):
         admitted.set()
         await release.wait()
-        return payload
+        return {"outcome": "succeeded", "summary": {"echo": "held"}}
 
+    monkeypatch.setitem(delivery._EXECUTION_HANDLERS, "system_noop", handler)
     first = asyncio.create_task(
-        deliver_control_job(
-            _transport_job(job_id, ticket_id),
-            _context(),
-            executor=abandoned,
-        )
+        deliver_control_job(_transport_job(job_id, ticket_id), _context())
     )
     await admitted.wait()
     retry: RetryRequested | None = None
@@ -628,18 +623,15 @@ async def test_recovery_rejects_stale_fence_without_changing_new_owner(db):
     assert job is not None and (job.phase, job.outcome, job.fence_token) == ("running", None, 2)
 
 
-async def test_retry_is_persisted_before_pgqueuer_signal_is_rethrown(db):
+async def test_retry_is_persisted_before_pgqueuer_signal_is_rethrown(db, monkeypatch):
     job_id, ticket_id = await _canonical_ticket(db)
 
-    async def retry(payload, context):
+    async def handler(execution):
         raise RetryRequested(timedelta(seconds=3), "transient")
 
+    monkeypatch.setitem(delivery._EXECUTION_HANDLERS, "system_noop", handler)
     with pytest.raises(RetryRequested):
-        await deliver_control_job(
-            _transport_job(job_id, ticket_id),
-            _context(),
-            executor=retry,
-        )
+        await deliver_control_job(_transport_job(job_id, ticket_id), _context())
     await db.rollback()
     job = await db.get(Job, job_id)
     attempt = await db.scalar(select(JobAttempt).where(JobAttempt.job_id == job_id))
@@ -652,25 +644,29 @@ async def test_retry_is_persisted_before_pgqueuer_signal_is_rethrown(db):
     )
 
 
-async def test_real_queue_manager_owns_retry_delay_and_second_attempt(db, installed_pgqueuer):
+async def test_real_queue_manager_owns_retry_delay_and_second_attempt(
+    db, installed_pgqueuer, monkeypatch
+):
     job_id, ticket_id = await _canonical_ticket(db)
     calls = 0
     completed = asyncio.Event()
+
+    async def retry_once(execution):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RetryRequested(timedelta(milliseconds=50), "transient")
+        completed.set()
+        return {"outcome": "succeeded", "summary": {"echo": "done"}}
+
+    monkeypatch.setitem(delivery._EXECUTION_HANDLERS, "system_noop", retry_once)
     async with _get_engine().connect() as connection:
         raw = await connection.get_raw_connection()
         app = PgQueuer.from_asyncpg_connection(raw.driver_connection)
 
         @app.entrypoint("control", accepts_context=True, on_failure="hold")
         async def control(transport_job, context):
-            async def retry_once(payload, delivery_context):
-                nonlocal calls
-                calls += 1
-                if calls == 1:
-                    raise RetryRequested(timedelta(milliseconds=50), "transient")
-                completed.set()
-                return {"echo": payload}
-
-            await deliver_control_job(transport_job, context, executor=retry_once)
+            await deliver_control_job(transport_job, context)
 
         manager = asyncio.create_task(
             app.qm.run(
@@ -703,18 +699,15 @@ async def test_real_queue_manager_owns_retry_delay_and_second_attempt(db, instal
     assert await installed_pgqueuer.job_status([ticket_id]) == [(ticket_id, "successful")]
 
 
-async def test_failure_is_terminalized_before_exception_is_rethrown(db):
+async def test_failure_is_terminalized_before_exception_is_rethrown(db, monkeypatch):
     job_id, ticket_id = await _canonical_ticket(db)
 
-    async def fail(payload, context):
+    async def handler(execution):
         raise RuntimeError("bounded failure")
 
+    monkeypatch.setitem(delivery._EXECUTION_HANDLERS, "system_noop", handler)
     with pytest.raises(RuntimeError, match="bounded failure"):
-        await deliver_control_job(
-            _transport_job(job_id, ticket_id),
-            _context(),
-            executor=fail,
-        )
+        await deliver_control_job(_transport_job(job_id, ticket_id), _context())
     await db.rollback()
     job = await db.get(Job, job_id)
     assert job is not None
@@ -725,7 +718,7 @@ async def test_failure_is_terminalized_before_exception_is_rethrown(db):
     )
 
 
-async def test_stale_ticket_and_cancelled_job_do_not_execute(db):
+async def test_stale_ticket_and_cancelled_job_do_not_execute(db, monkeypatch):
     job_id, ticket_id = await _canonical_ticket(db)
     job = await db.get(Job, job_id)
     assert job is not None
@@ -734,16 +727,13 @@ async def test_stale_ticket_and_cancelled_job_do_not_execute(db):
 
     called = False
 
-    async def executor(payload, context):
+    async def handler(execution):
         nonlocal called
         called = True
-        return payload
+        return {"outcome": "succeeded", "summary": {}}
 
-    await deliver_control_job(
-        _transport_job(job_id, ticket_id),
-        _context(),
-        executor=executor,
-    )
+    monkeypatch.setitem(delivery._EXECUTION_HANDLERS, "system_noop", handler)
+    await deliver_control_job(_transport_job(job_id, ticket_id), _context())
     await db.rollback()
     db.expire_all()
     job = await db.get(Job, job_id)
@@ -752,22 +742,24 @@ async def test_stale_ticket_and_cancelled_job_do_not_execute(db):
     assert (job.phase, job.outcome) == ("terminal", "cancelled")
 
 
-async def test_picked_cancellation_reaches_test_blocker(db, installed_pgqueuer):
+async def test_picked_cancellation_reaches_test_blocker(db, installed_pgqueuer, monkeypatch):
     job_id, ticket_id = await _canonical_ticket(db)
     started = asyncio.Event()
+
+    async def blocker(execution):
+        started.set()
+        while not execution.cancellation.cancel_called:
+            await asyncio.sleep(0.01)
+        raise asyncio.CancelledError
+
+    monkeypatch.setitem(delivery._EXECUTION_HANDLERS, "system_noop", blocker)
     async with _get_engine().connect() as connection:
         raw = await connection.get_raw_connection()
         app = PgQueuer.from_asyncpg_connection(raw.driver_connection)
 
         @app.entrypoint("control", accepts_context=True, on_failure="hold")
         async def control(transport_job, context):
-            async def blocker(payload, delivery_context):
-                started.set()
-                while not delivery_context.cancellation.cancel_called:
-                    await asyncio.sleep(0.01)
-                raise asyncio.CancelledError
-
-            await deliver_control_job(transport_job, context, executor=blocker)
+            await deliver_control_job(transport_job, context)
 
         manager = asyncio.create_task(
             app.qm.run(

@@ -4737,18 +4737,24 @@
             "type": "string"
           },
           "durability": {
-            "title": "Durability",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Durability"
           },
           "expected_version": {
             "title": "Expected Version",
-            "type": "integer"
+            "type": "string"
           }
         },
         "required": [
           "component",
-          "expected_version",
-          "durability"
+          "expected_version"
         ],
         "title": "OperationsSchemaContract",
         "type": "object"

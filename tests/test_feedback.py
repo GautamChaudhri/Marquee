@@ -42,7 +42,7 @@ def labels_to_tmp(tmp_path, monkeypatch):
         return {"scheduled": False, "reason": "stub", "job": None}
 
     monkeypatch.setattr(feedback_route, "_schedule_learned_head_successor", no_head_successor)
-    monkeypatch.setattr(feedback_route.run_manager, "reset_extractor", lambda: None)
+    monkeypatch.setattr(feedback_route.extractor_runtime, "reset_extractor", lambda: None)
     yield
 
 

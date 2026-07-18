@@ -57,8 +57,8 @@ from marquee.models import (
     Movie,
     PipelineRun,
 )
+from marquee.pipeline.extractor_runtime import extractor_runtime
 from marquee.pipeline.gate import PosterGate
-from marquee.pipeline.run_manager import run_manager
 from marquee.pipeline.scorer import WeightedScorer
 
 logger = logging.getLogger(__name__)
@@ -252,7 +252,7 @@ async def get_run_results(
             "status_url": f"/api/jobs/{run_id}/snapshot",
         }
 
-    archive = run_manager.load_archive(run_id, run.archive_path)
+    archive = extractor_runtime.load_archive(run_id, run.archive_path)
     if archive is None:
         raise HTTPException(
             status_code=404, detail=f"Run {run_id} archive is missing or unreadable"
@@ -274,7 +274,7 @@ async def get_run_poster(
 ):
     """Serve a candidate's image file from inside the run's working dir."""
     run = await _load_run(db, run_id)
-    archive = run_manager.load_archive(run_id, run.archive_path)
+    archive = extractor_runtime.load_archive(run_id, run.archive_path)
     if archive is None:
         raise HTTPException(status_code=404, detail="Run archive unavailable")
 
@@ -338,7 +338,7 @@ async def rescore_run(
     inference. This is the engine behind live knob sliders in the UI.
     """
     run = await _load_run(db, run_id)
-    archive = run_manager.load_archive(run_id, run.archive_path)
+    archive = extractor_runtime.load_archive(run_id, run.archive_path)
     if archive is None:
         raise HTTPException(status_code=404, detail="Run archive unavailable")
 

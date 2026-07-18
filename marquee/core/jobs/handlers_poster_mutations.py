@@ -46,7 +46,7 @@ from marquee.core.path_utils import safe_translate_and_validate
 from marquee.core.poster_service import tmdb_original_url
 from marquee.core.poster_subjects import PosterSubject
 from marquee.models import ArtworkEvent, MediaOperationDetail, Movie, PipelineRun, Season, Series
-from marquee.pipeline.run_manager import run_manager
+from marquee.pipeline.extractor_runtime import extractor_runtime
 
 SubjectKind = Literal["movie", "series", "season"]
 
@@ -254,7 +254,7 @@ def _candidate_from_archive(
         f"pipeline-runs/{selection.run_id}/{selection.candidate_reference}"
     ):
         raise PosterMutationError("candidate storage identity is inconsistent")
-    archive = run_manager.load_archive(run.run_id, run.archive_path)
+    archive = extractor_runtime.load_archive(run.run_id, run.archive_path)
     if not isinstance(archive, dict):
         raise PosterMutationError("candidate archive is unavailable")
     candidate = next(

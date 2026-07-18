@@ -21,6 +21,7 @@ from marquee.api.job_submission import (
 )
 from marquee.api.library_serializers import enrich_movie, resolution_label
 from marquee.api.routes.library import _coverage_by_media_file
+from marquee.config import settings
 from marquee.core.dovi_eligibility import conversion_eligibility
 from marquee.core.hdr_rollups import EpisodeHdr, episode_status, season_rollup, show_rollup
 from marquee.core.jobs.batches import BatchScope, create_fixed_batch
@@ -1596,6 +1597,17 @@ async def convert_movie_dovi(
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict[str, object]:
     """Enqueue a supported Dolby Vision Profile 8.1 remediation job."""
+    if not settings.JOB_DOVI_CONVERSION_CERTIFIED:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "dovi_conversion_not_certified",
+                "message": (
+                    "Dolby Vision conversion is readiness-disabled until an owner-approved "
+                    "real dovi_tool fixture smoke is recorded."
+                ),
+            },
+        )
     missing = [
         name for name in ("ffmpeg", "ffprobe", "dovi_tool") if binaries.resolve(name) is None
     ]

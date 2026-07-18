@@ -5175,9 +5175,9 @@ export interface components {
 			/** Component */
 			component: string;
 			/** Durability */
-			durability: string;
+			durability?: string | null;
 			/** Expected Version */
-			expected_version: number;
+			expected_version: string;
 		};
 		/** OperationsSnapshot */
 		OperationsSnapshot: {

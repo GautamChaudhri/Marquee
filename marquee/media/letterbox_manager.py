@@ -1,32 +1,23 @@
-"""LetterboxManager — batch detection jobs with live SSE progress.
+"""LetterboxManager — shared letterbox detection/storage routines.
 
 One process-wide singleton (``letterbox_manager``). Detection is CPU-bound
-(ffmpeg decode), so this runs a bounded worker pool *independent of the poster
-pipeline's GPU lock* — letterbox work and a GPU run can proceed at once; the
-pool size (``LETTERBOX_MAX_PARALLEL``) caps CPU/disk pressure.
-
-Mirrors ``RunManager``'s event model: a per-job buffer with history replay for
-late SSE subscribers and a sentinel on completion. A single batch runs at a
-time (a second ``start_batch`` raises) — detection of the whole library is one
-job, not many.
-
-``detect_movie`` is the shared single-file routine used by the batch loop, the
-single-movie endpoint, and the upgrade webhook.
+(ffmpeg decode). These routines are the pure media detection/storage algorithms;
+the durable job lifecycle (batch execution, progress, cancellation) belongs to
+the canonical PgQueuer job platform (``marquee.core.jobs``) and its letterbox
+handlers, not to this module.
 """
 
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import logging
 import os
 import re
 import subprocess
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from uuid import uuid4
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -40,7 +31,6 @@ from marquee.core.letterbox_prefilter import (
 )
 from marquee.core.letterbox_service import letterbox_service
 from marquee.core.media_files import MediaFileUnavailableError, resolve_media_file
-from marquee.database import _get_session_factory
 from marquee.media import binaries, letterbox_detect, letterbox_preview, probe
 from marquee.media.concurrency import gated
 from marquee.models import (
@@ -104,7 +94,6 @@ def _schedule_clear_preview_warm(
     )
 
 
-_SENTINEL = object()
 _V1_VERTICAL_CROP_RE = re.compile(r"Vertical crop amount \(per-file\):\s*(\d+)")
 _V1_NOT_LETTERBOXED_RE = re.compile(r"\bis not letterboxed\b", re.IGNORECASE)
 _V1_RECOMMENDED_RE = re.compile(r"Recommended crop for .*?:\s*(\d+)x(\d+)\+(-?\d+)\+(-?\d+)")
@@ -113,74 +102,6 @@ _V1_RECOMMENDED_RE = re.compile(r"Recommended crop for .*?:\s*(\d+)x(\d+)\+(-?\d
 async def _emit_child_progress(db: AsyncSession, parent_job_id: str | None, detail: dict) -> None:
     """Compatibility callback; canonical parent progress derives from durable child state."""
     del db, parent_job_id, detail
-
-
-class BatchInProgressError(Exception):
-    """Raised when a batch detect is requested while one is active."""
-
-    def __init__(self, active_job_id: str):
-        self.active_job_id = active_job_id
-        super().__init__(f"A letterbox batch is already running: {active_job_id}")
-
-
-@dataclass
-class JobState:
-    job_id: str
-    total: int
-    detector: str = "v2"
-    events: list[dict] = field(default_factory=list)
-    subscribers: list[asyncio.Queue] = field(default_factory=list)
-    done: bool = False
-    candidate_count: int = 0
-    not_letterboxed_count: int = 0
-    variable_count: int = 0
-
-    def publish(self, event: dict) -> None:
-        self.events.append(event)
-        for queue in self.subscribers:
-            queue.put_nowait(event)
-
-    def finish(self) -> None:
-        self.done = True
-        for queue in self.subscribers:
-            queue.put_nowait(_SENTINEL)
-
-    def subscribe(self) -> asyncio.Queue:
-        queue: asyncio.Queue = asyncio.Queue()
-        for event in self.events:
-            queue.put_nowait(event)
-        if self.done:
-            queue.put_nowait(_SENTINEL)
-        self.subscribers.append(queue)
-        return queue
-
-    def unsubscribe(self, queue: asyncio.Queue) -> None:
-        with contextlib.suppress(ValueError):
-            self.subscribers.remove(queue)
-
-    def record_status(self, status: str) -> None:
-        if status == "candidate":
-            self.candidate_count += 1
-        elif status == "not_letterboxed":
-            self.not_letterboxed_count += 1
-        elif status == "variable_unsafe":
-            self.variable_count += 1
-
-    def summary(self, *, completed: int | None = None) -> dict:
-        return {
-            "candidate": self.candidate_count,
-            "not_letterboxed": self.not_letterboxed_count,
-            "variable": self.variable_count,
-            "total": self.total,
-            "completed": self.total if completed is None else completed,
-        }
-
-
-def _max_parallel() -> int:
-    configured = settings.LETTERBOX_MAX_PARALLEL
-    if configured and configured > 0:
-        return configured
-    return max(1, (os.cpu_count() or 2) - 1)
 
 
 @dataclass(frozen=True)
@@ -248,10 +169,6 @@ def _episode_result_has_real_bar(state: LetterboxState) -> bool:
 
 
 class LetterboxManager:
-    def __init__(self) -> None:
-        self._active_job_id: str | None = None
-        self._jobs: dict[str, JobState] = {}
-
     # ------------------------------------------------------------------
     # Single-file detection (shared by batch / single / webhook)
     # ------------------------------------------------------------------
@@ -1046,80 +963,6 @@ class LetterboxManager:
             )
 
         return touched_states
-
-    # ------------------------------------------------------------------
-    # Batch lifecycle
-    # ------------------------------------------------------------------
-
-    @property
-    def active_job_id(self) -> str | None:
-        return self._active_job_id
-
-    def get_state(self, job_id: str) -> JobState | None:
-        return self._jobs.get(job_id)
-
-    async def start_batch(self, movie_ids: list[int], *, detector: str = "v2") -> str:
-        if self._active_job_id is not None:
-            raise BatchInProgressError(self._active_job_id)
-        job_id = uuid4().hex
-        self._active_job_id = job_id
-        self._jobs[job_id] = JobState(job_id=job_id, total=len(movie_ids), detector=detector)
-        asyncio.create_task(self._execute_batch(job_id, movie_ids))
-        return job_id
-
-    async def _execute_batch(self, job_id: str, movie_ids: list[int]) -> None:
-        state = self._jobs[job_id]
-        semaphore = asyncio.Semaphore(_max_parallel())
-        completed = 0
-        lock = asyncio.Lock()
-        factory = _get_session_factory()
-
-        async def worker(movie_id: int) -> None:
-            nonlocal completed
-            async with semaphore:
-                try:
-                    async with factory() as db:
-                        movie = (
-                            await db.execute(select(Movie).where(Movie.id == movie_id))
-                        ).scalar_one_or_none()
-                        if movie is None:
-                            result_status = "missing"
-                        else:
-                            stored = await self.detect_and_store(db, movie, detector=state.detector)
-                            result_status = stored.status
-                except Exception as exc:  # noqa: BLE001 — one bad file mustn't kill the batch
-                    logger.exception("letterbox detect failed for movie %s", movie_id)
-                    result_status = f"error: {exc}"
-                async with lock:
-                    completed += 1
-                    state.record_status(result_status)
-                    state.publish(
-                        {
-                            "job_id": job_id,
-                            "movie_id": movie_id,
-                            "completed": completed,
-                            "total": state.total,
-                            "status": result_status,
-                            "detector": state.detector,
-                        }
-                    )
-
-        try:
-            await asyncio.gather(*(worker(mid) for mid in movie_ids))
-        finally:
-            state.publish(
-                {
-                    "job_id": job_id,
-                    "state": "done",
-                    "completed": completed,
-                    "total": state.total,
-                    "detector": state.detector,
-                    "summary": state.summary(completed=completed),
-                }
-            )
-            state.finish()
-            self._active_job_id = None
-            logger.info("LETTERBOX BATCH | job=%s | done %d/%d", job_id, completed, state.total)
 
 
 letterbox_manager = LetterboxManager()

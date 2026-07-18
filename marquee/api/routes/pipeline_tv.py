@@ -51,7 +51,7 @@ from marquee.core.rate_limit import RateLimiter
 from marquee.core.tv_queries import season_downloaded, series_visible
 from marquee.database import get_db
 from marquee.models import ArtworkEvent, Job, PipelineRun, Season, Series
-from marquee.pipeline.run_manager import run_manager
+from marquee.pipeline.extractor_runtime import extractor_runtime
 
 logger = logging.getLogger(__name__)
 
@@ -588,7 +588,7 @@ async def tv_review_queue(
             season = season_by_id.get(season_id)
             if season is None:
                 continue
-            archive = run_manager.load_archive(run.run_id, run.archive_path)
+            archive = extractor_runtime.load_archive(run.run_id, run.archive_path)
             official_pick = archive.get("official_pick") if archive is not None else None
             season_entries.append(
                 {

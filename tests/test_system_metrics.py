@@ -13,7 +13,7 @@ from marquee.core import system_metrics
 from marquee.core.jobs.manifest import JOB_DEFINITION_REGISTRY
 from marquee.core.jobs.pgqueuer_gateway import pgqueuer_gateway
 from marquee.main import app
-from marquee.models import Job, RuntimeInstance, SystemMetricsSample
+from marquee.models import Job, RuntimeInstance, SchemaContract, SystemMetricsSample
 
 
 @pytest_asyncio.fixture
@@ -156,11 +156,47 @@ async def test_operations_snapshot_is_typed_bounded_and_payload_free(
 
     monkeypatch.setattr(pgqueuer_gateway, "queue_statistics", queue_statistics)
 
+    db.add_all(
+        [
+            SchemaContract(
+                component="marquee",
+                expected_version="0008_jmc6e",
+                durability=None,
+                catalog_fingerprint="marquee-fingerprint",
+                verified_at=datetime.now(UTC),
+                verifier_build="test",
+            ),
+            SchemaContract(
+                component="pgqueuer",
+                expected_version="1.1.1",
+                durability="durable",
+                catalog_fingerprint="pgqueuer-fingerprint",
+                verified_at=datetime.now(UTC),
+                verifier_build="test",
+            ),
+        ]
+    )
+    await db.commit()
+
     response = await client.get("/api/system/operations")
     assert response.status_code == 200
     body = response.json()
     assert body["version"] == 1
     assert body["node"]["cpu_model"] == "Synthetic CPU"
+    assert body["contracts"] == [
+        {
+            "component": "marquee",
+            "expected_version": "0008_jmc6e",
+            "durability": None,
+            "catalog_fingerprint": "marquee-fingerprint",
+        },
+        {
+            "component": "pgqueuer",
+            "expected_version": "1.1.1",
+            "durability": "durable",
+            "catalog_fingerprint": "pgqueuer-fingerprint",
+        },
+    ]
     assert set(body) == {
         "version",
         "generated_at",

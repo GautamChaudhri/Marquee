@@ -80,6 +80,9 @@ def capability_snapshot(entrypoints: Iterable[str]) -> dict[str, Any]:
         "containment": containment_capabilities().public(),
         "media_tools": tools,
         "gpu": gpu_facts,
+        "certifications": {
+            "dovi_conversion": settings.JOB_DOVI_CONVERSION_CERTIFIED,
+        },
     }
 
 

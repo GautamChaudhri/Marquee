@@ -572,15 +572,15 @@ async def overlay_candidates(
     """Project a run's ranked candidates into the taste-map space."""
     from marquee.ml.taste_map import project  # noqa: PLC0415
     from marquee.models import PipelineRun  # noqa: PLC0415
+    from marquee.pipeline.extractor_runtime import extractor_runtime  # noqa: PLC0415
     from marquee.pipeline.features import load_cached_embedding  # noqa: PLC0415
-    from marquee.pipeline.run_manager import run_manager  # noqa: PLC0415
 
     run = (
         await db.execute(select(PipelineRun).where(PipelineRun.run_id == body.run_id))
     ).scalar_one_or_none()
     if run is None:
         raise HTTPException(status_code=404, detail=f"Run {body.run_id} not found")
-    archive = run_manager.load_archive(body.run_id, run.archive_path)
+    archive = extractor_runtime.load_archive(body.run_id, run.archive_path)
     if archive is None:
         raise HTTPException(status_code=404, detail="Run archive unavailable")
 

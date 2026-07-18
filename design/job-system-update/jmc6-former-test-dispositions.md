@@ -252,3 +252,33 @@ recorded for removed/rewritten behavior.
 - The guarded fresh reset, PgQueuer durable verification, Alembic/model equivalence, OpenAPI/type
   drift, Ruff, frontend unit/check/lint/build, Playwright/axe, workflow lint, and static absence
   gates pass. The disposition ledger is final for `jmc6c-complete`.
+
+## JMC6F legacy-retirement addendum (2026-07-17)
+
+JMC6F removed only tests whose implementation owner was deleted, with named canonical replacement
+coverage. Pure media/ML invariants were retained or extracted:
+
+- Removed `tests/test_batch_runner.py`: detached multi-subject batch-engine lifecycle → canonical
+  parent/child coverage in `test_jmc4a_batch_coordination.py`, canonical poster execution/workspace
+  coverage in `test_jmc4c_poster_pipeline.py` and `test_jmc4c_poster_workspace.py`, and retained
+  stage algorithm suites. The pure official-pick algorithm moved to `official_pick.py` with all
+  seven behavior cases in `tests/test_official_pick.py`.
+- Removed three `run_batch*` tests from `tests/test_poster_pipeline_backend.py`: legacy finalize /
+  per-batch isolation / TV-run persistence → canonical one-subject-per-job, fenced failure, and
+  subject-snapshot coverage in the JMC3/JMC4 suites. OCR token, archive grouping, cache safety, and
+  handler registration coverage remains.
+- Removed three `RunState` buffering/replay tests from `tests/test_run_endpoints.py`: process-local
+  subscription state → canonical progress, multiplexed SSE, snapshot repair, and Projection Room
+  coverage. Removed two process-local GPU-busy tests → canonical execution-class/resource
+  reservation coverage; extractor release and the simplified release endpoint remain tested.
+- Rewrote ten delivery tests that supplied `LegacyNoopExecutor`: tests now replace the canonical
+  `system_noop` execution handler in the registry and exercise the identical production delivery
+  path. Retry, hold, cancellation, quarantine, fence, and duplicate-delivery assertions are
+  unchanged.
+- Updated the JMC3B freeze to require `run_manager.py` absent and record removal of the letterbox
+  subscriber queue while retaining detection/storage/grouping algorithms. New JMC6F static guards
+  require the detached managers/engines/executor seam absent and prohibit lifecycle coupling from
+  `extractor_runtime.py` and `official_pick.py`.
+
+JMC6F full-suite certification ends with zero failure, skip, xfail, or xpass; no dead manager or DTO
+was retained to satisfy a historical test.
