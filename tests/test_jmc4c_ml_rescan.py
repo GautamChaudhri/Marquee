@@ -56,13 +56,11 @@ async def installed_pgqueuer(db) -> Queries:
 
 
 @pytest.mark.asyncio
-async def test_ml_routes_submit_generation_snapshots_and_reject_manual_activation(
-    client, db
-) -> None:
+async def test_ml_routes_submit_generation_snapshots_without_manual_activation(client, db) -> None:
     routes = (
         ("/api/taste/retrain", "taste_rebuild", "taste_profile", "gpu"),
         ("/api/taste/map/rebuild", "taste_map", "taste_map", "cpu"),
-        ("/api/taste/enrich", "taste_enrich", "taste_enrichment", "cpu"),
+        ("/api/taste/enrich", "taste_enrich", "taste_profile", "cpu"),
         ("/api/taste/head/retrain", "learned_head_train", "learned_head", "cpu"),
     )
     for route, job_type, family, entrypoint in routes:
@@ -76,15 +74,15 @@ async def test_ml_routes_submit_generation_snapshots_and_reject_manual_activatio
         assert job.subject_kind == "model_profile_training"
         assert job.request["expected_generation"] == 0
         assert job.request["seed"] == 0
-        assert await db.scalar(
-            select(MlActivePublication).where(
-                MlActivePublication.family == f"{family}:movies"
+        assert (
+            await db.scalar(
+                select(MlActivePublication).where(MlActivePublication.family == f"{family}:movies")
             )
-        ) is None
+            is None
+        )
 
     activation = await client.post("/api/taste/profiles/untrusted/activate")
-    assert activation.status_code == 409
-    assert activation.json()["detail"] == "activation_is_job_owned"
+    assert activation.status_code == 404
 
 
 @pytest.mark.asyncio
@@ -137,9 +135,7 @@ def test_c4_has_one_executor_and_no_legacy_publication_bypass() -> None:
     rescan_source = Path("marquee/core/jobs/handlers_rescan.py").read_text()
     tree = ast.parse(rescan_source)
     calls = {
-        getattr(node.func, "attr", None)
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
+        getattr(node.func, "attr", None) for node in ast.walk(tree) if isinstance(node, ast.Call)
     }
     assert not {"unlink", "replace", "remove", "heal", "deploy"} & calls
 
@@ -270,7 +266,13 @@ async def test_ml_activation_rejects_stale_writer_before_pointer_change(db) -> N
 
 
 @pytest.mark.asyncio
-async def test_ml_handler_registers_loadable_immutable_artifact_then_activates(db) -> None:
+async def test_ml_handler_registers_loadable_immutable_artifact_then_activates(
+    db, monkeypatch
+) -> None:
+    import numpy as np
+
+    from marquee.core.jobs.internal_runner_host import RunnerFile, RunnerOutcome
+
     job, attempt, _artifacts = await _publication_attempt(db, "handler")
 
     class Writer:
@@ -282,6 +284,30 @@ async def test_ml_handler_registers_loadable_immutable_artifact_then_activates(d
         attempt_id=attempt.id,
         fence_token=1,
     )
+    workspace_dir = workspace.directory.root.resolved() / workspace.directory.key.value
+
+    async def _fake_run(launcher, *, operation, manifest, **kwargs):
+        emb = np.zeros((2, 512), dtype=np.float32)
+        emb[0, 0], emb[1, 0] = 0.1, 0.2
+        np.savez(
+            workspace_dir / "profile.npz",
+            model_name="clip-vit-b-32",
+            dino_model_name="dinov2-vits14",
+            embeddings=emb,
+            centroid_emb=emb.mean(axis=0),
+            poster_names=np.array(["a.jpg", "b.jpg"]),
+            asset_kinds=np.array(["movie", "movie"]),
+        )
+        return RunnerOutcome(
+            outcome="succeeded",
+            summary={"family": "taste_profile", "library": "movies", "exemplars": 2},
+            files=(RunnerFile("profile.npz", "0" * 64, 1),),
+            ready=True,
+            exit_code=0,
+        )
+
+    monkeypatch.setattr("marquee.core.jobs.internal_runner_host.run_internal_operation", _fake_run)
+
     context = SimpleNamespace(
         cancellation=SimpleNamespace(cancel_called=False),
         delivery=SimpleNamespace(canonical_job_id=job.id),
@@ -289,6 +315,7 @@ async def test_ml_handler_registers_loadable_immutable_artifact_then_activates(d
         session_factory=_get_session_factory(),
         writer=Writer(),
         workspace=workspace,
+        process_launcher=None,
         request={
             "source": "training_dir",
             "library": "movies",

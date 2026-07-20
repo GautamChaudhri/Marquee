@@ -1,4 +1,3 @@
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -8,8 +7,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.config import settings
 from marquee.core.jobs import handlers_maintenance
-from marquee.core.poster_service import poster_service
-from marquee.core.poster_subjects import PosterSubject
 from marquee.database import _get_session_factory
 from marquee.models import Season, Series
 
@@ -30,11 +27,6 @@ def cache_to_tmp(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(
         type(settings),
-        "poster_backup_path",
-        property(lambda self: tmp_path / "backups" / "posters"),
-    )
-    monkeypatch.setattr(
-        type(settings),
         "runs_work_path",
         property(lambda self: tmp_path / "runs" / "work"),
     )
@@ -49,74 +41,6 @@ def cache_to_tmp(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "RADARR_PATH_PREFIX", None)
     monkeypatch.setattr(settings, "MEDIA_ROOTS", [])
     yield
-
-
-@pytest.mark.asyncio
-async def test_tv_deploy_and_restore_series_and_season(db: AsyncSession, tmp_path):
-    # Create Series
-    series_folder = tmp_path / "Breaking Bad"
-    series_folder.mkdir(parents=True)
-    series = Series(
-        title="Breaking Bad",
-        year=2008,
-        series_path=str(series_folder),
-        tmdb_id=1396,
-        sonarr_id=10,
-    )
-    db.add(series)
-    await db.flush()
-
-    # Create Season
-    season = Season(
-        series_id=series.id,
-        season_number=1,
-        episode_count=7,
-        episode_file_count=7,
-    )
-    db.add(season)
-    await db.flush()
-
-    source = _make_image(tmp_path / "src.jpg")
-
-    # 1. Deploy Series
-    subject_series = PosterSubject.from_series(series)
-    result_series = await poster_service.deploy(
-        db,
-        subject_series,
-        source,
-        source="feedback",
-        poster_source_url="https://image.tmdb.org/t/p/original/bb_show.jpg",
-    )
-    assert (series_folder / "show.jpg").is_file()
-    assert result_series.backup_path == str(tmp_path / "backups" / "posters" / f"series-{series.id}.jpg")
-    assert Path(result_series.backup_path).is_file()
-    assert (tmp_path / "cache" / "posters" / "tv" / "1396.jpg").is_file()
-
-    # 2. Deploy Season
-    subject_season = PosterSubject.from_season(season, series)
-    result_season = await poster_service.deploy(
-        db,
-        subject_season,
-        source,
-        source="feedback",
-        poster_source_url="https://image.tmdb.org/t/p/original/bb_s1.jpg",
-    )
-    assert (series_folder / "season01.jpg").is_file()
-    assert result_season.backup_path == str(tmp_path / "backups" / "posters" / f"season-{season.id}.jpg")
-    assert Path(result_season.backup_path).is_file()
-    assert (tmp_path / "cache" / "posters" / "tv" / "1396-s01.jpg").is_file()
-
-    # 3. Restore Series (delete file first)
-    (series_folder / "show.jpg").unlink()
-    restore_res = await poster_service.restore(db, subject_series, source="heal")
-    assert restore_res.restored is True
-    assert (series_folder / "show.jpg").is_file()
-
-    # 4. Restore Season (delete file first)
-    (series_folder / "season01.jpg").unlink()
-    restore_res = await poster_service.restore(db, subject_season, source="heal")
-    assert restore_res.restored is True
-    assert (series_folder / "season01.jpg").is_file()
 
 
 @pytest.mark.asyncio
@@ -143,13 +67,10 @@ async def test_tv_maintenance_prunes_only_orphan_cache(db: AsyncSession, tmp_pat
     db.add(season)
     await db.flush()
 
-    source = _make_image(tmp_path / "src.jpg")
-    subject = PosterSubject.from_series(series)
-    await poster_service.deploy(db, subject, source)
+    referenced = _make_image(settings.poster_cache_path / "tv" / "1396.jpg")
 
     await db.commit()
     orphan = _make_image(settings.poster_cache_path / "tv" / "9999.jpg")
-    referenced = settings.poster_cache_path / "tv" / "1396.jpg"
     assert referenced.exists()
 
     async def owns_current_attempt(_session):

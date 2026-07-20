@@ -1,188 +1,446 @@
-"""Confined, non-mutating poster-analysis execution primitives.
+"""Canonical single-subject poster analysis (JMC6H H2).
 
-This module deliberately owns no transport acknowledgement, canonical job mutation,
-run-manager state, shared progress bridge, or active artwork pointer.  Its only
-filesystem writes are short-lived files inside the attempt workspace; immutable
-evidence is copied through the JMC3 artifact service.
+Runs the *real* Marquee poster pipeline inside the contained internal runner, then
+projects the outcome into a canonical ``PipelineRun`` and registered artifacts.
+
+This module owns no transport acknowledgement, canonical job mutation, shared
+progress bridge, or active-artwork pointer. It never deploys, resets, or restores
+library artwork — analysis only. Heavy provider/OCR/model work happens inside the
+attempt-owned runner process; here we only fence, register confined evidence, and
+write the durable projection.
 """
 
 from __future__ import annotations
 
 import asyncio
-import hashlib
+import contextlib
 import json
-import os
-from collections import Counter
+import uuid
+from datetime import UTC, datetime
 from typing import Any
 
-from marquee.core.jobs.artifact_service import register_physical_artifact
+from marquee.core.jobs.artifact_service import ArtifactError, register_physical_artifact
 from marquee.core.jobs.delivery import ExecutionContext
 from marquee.core.jobs.documents import (
     PosterCandidateSummaryV1,
     PosterPipelineRequestV1,
     PosterPipelineResultV1,
 )
-from marquee.core.jobs.progress import MeasurementMode, ProgressMeasurementUpdate
-from marquee.core.jobs.progress_service import ProgressObservation, progress_writer
+from marquee.core.jobs.ml_publication import MlPublicationError, resolve_active_publication
+from marquee.models import Job, PipelineRun
+
+# Runner pipeline stage -> the definition's declared poster progress vocabulary.
+_STAGE_MAP = {
+    "fetch": "downloading",
+    "sha256": "deduplicating",
+    "gate-resolution": "validating",
+    "style-features": "extracting",
+    "gate-style": "validating",
+    "ocr": "validating",
+    "phash": "deduplicating",
+    "detail-features": "extracting",
+    "rank": "scoring",
+    "output": "rendering",
+}
+_MAX_COUNT = 100
+_REJECTION_KEYS = ("metadata_gated", "resolution_gated", "style_gated", "gated")
 
 
-async def _stage(
-    context: ExecutionContext,
-    *,
-    stage_key: str,
-    ordinal: int,
-    candidate_total: int | None = None,
-    candidate_completed: int | None = None,
-) -> None:
-    """Emit an honest phase or candidate count without a guessed percentage."""
-    if candidate_total is None:
-        current = ProgressMeasurementUpdate(
-            scope_id=f"poster:{stage_key}", mode=MeasurementMode.INDETERMINATE, unit="stage"
-        )
-    else:
-        current = ProgressMeasurementUpdate(
-            scope_id=f"poster:{stage_key}:candidates",
-            mode=MeasurementMode.DETERMINATE,
-            unit="candidates",
-            completed=candidate_completed or 0,
-            total=candidate_total,
-        )
-    await progress_writer.safe_write(
-        job_id=context.delivery.canonical_job_id,
-        attempt_id=context.attempt.attempt_id,
-        fence_token=context.attempt.fence_token,
-        observation=ProgressObservation(
-            stage_key=stage_key,
-            overall=ProgressMeasurementUpdate(
-                scope_id="poster:overall", mode=MeasurementMode.INDETERMINATE, unit="stages"
-            ),
-            current=current,
-            producer_ordinal=ordinal,
-        ),
-    )
+def _media_type(request: PosterPipelineRequestV1) -> str:
+    if request.series_id is not None:
+        return "series"
+    if request.season_id is not None:
+        return "season"
+    return "movie"
 
 
-async def _still_current(context: ExecutionContext) -> bool:
-    """Fence artifact publication without granting a handler lifecycle authority."""
+def _subject_params(request: PosterPipelineRequestV1) -> dict[str, Any]:
+    return {
+        "title": request.title,
+        "media_type": _media_type(request),
+        "movie_id": request.movie_id,
+        "tmdb_id": request.tmdb_id,
+        "series_id": request.series_id,
+        "season_id": request.season_id,
+    }
+
+
+def _workspace_dir(context: ExecutionContext):
+    directory = context.workspace.directory
+    return directory.root.resolved() / directory.key.value
+
+
+async def _owns_fence(context: ExecutionContext) -> bool:
     async with context.session_factory() as session:
         return await context.writer.owns_current_attempt(session)
 
 
-async def _register_report(
-    context: ExecutionContext, report: dict[str, Any]
-) -> tuple[int, ...]:
-    """Persist one bounded report from the confined workspace as immutable evidence."""
-    if not await _still_current(context):
-        context.workspace.quarantine(code="stale_fence", summary="poster report publication fenced")
-        return ()
-    source, fd = context.workspace.staging_file("poster-analysis-report.json")
-    encoded = json.dumps(report, allow_nan=False, separators=(",", ":"), sort_keys=True).encode()
+async def _register_archive(context: ExecutionContext, workspace_dir) -> Any:
+    """Copy the confined run.json into immutable managed storage as evidence."""
+    path = workspace_dir / "run.json"
+    if not path.is_file():
+        return None
     try:
-        await asyncio.to_thread(os.write, fd, encoded)
-        await asyncio.to_thread(os.fsync, fd)
-    finally:
-        os.close(fd)
-    if not await _still_current(context):
-        context.workspace.quarantine(code="stale_fence", summary="poster evidence became stale")
-        return ()
-    artifact = await register_physical_artifact(
-        job_id=context.delivery.canonical_job_id,
-        attempt_id=context.attempt.attempt_id,
-        fence_token=context.attempt.fence_token,
-        source=source,
-        kind="command_report",
-        name="poster-analysis-report.json",
-        content_type="application/json",
-        retention_class="standard",
-        metadata={"family": "poster_pipeline", "stage": "analysis"},
-    )
-    return (artifact.id,)
+        source = context.workspace.boundary.classify(path, require_exists=True)
+        return await register_physical_artifact(
+            job_id=context.delivery.canonical_job_id,
+            attempt_id=context.attempt.attempt_id,
+            fence_token=context.attempt.fence_token,
+            source=source,
+            kind="command_report",
+            name="run.json",
+            content_type="application/json",
+            retention_class="extended",
+            metadata={"family": "poster_pipeline", "stage": "archive"},
+        )
+    except ArtifactError:
+        return None
 
 
-def _candidate(request: PosterPipelineRequestV1, *, provider: str, reference: str) -> PosterCandidateSummaryV1:
-    """Produce a bounded candidate identity; retrieval adapters own bytes separately.
+async def _register_selected(
+    context: ExecutionContext, workspace_dir, recommendation: dict[str, Any]
+) -> Any:
+    """Register the selected candidate image (best-effort, jpeg only)."""
+    filename = recommendation.get("orig_filename")
+    if not isinstance(filename, str) or not filename.lower().endswith((".jpg", ".jpeg")):
+        return None
+    path = workspace_dir / filename
+    if not path.is_file():
+        return None
+    try:
+        source = context.workspace.boundary.classify(path, require_exists=True)
+        return await register_physical_artifact(
+            job_id=context.delivery.canonical_job_id,
+            attempt_id=context.attempt.attempt_id,
+            fence_token=context.attempt.fence_token,
+            source=source,
+            kind="evidence_image",
+            name="selected.jpg",
+            content_type="image/jpeg",
+            retention_class="extended",
+            metadata={"family": "poster_pipeline", "role": "selected_candidate"},
+        )
+    except ArtifactError:
+        return None
 
-    C1 intentionally only establishes the immutable context and evidence contract.
-    The C2 provider adapter can turn this server-owned descriptor into a confined
-    download without allowing a caller to pass a URL, path, or artifact key.
-    """
-    digest = hashlib.sha256(f"{request.title}:{provider}:{reference}".encode()).hexdigest()[:24]
+
+async def _register_candidate_files(
+    context: ExecutionContext, workspace_dir, summary: dict[str, Any]
+) -> dict[str, Any]:
+    """Register every bounded review candidate announced by the contained runner."""
+    raw = summary.get("candidate_files")
+    if not isinstance(raw, dict):
+        return {}
+    artifacts: dict[str, Any] = {}
+    for reference, key in list(raw.items())[:100]:
+        if not isinstance(reference, str) or not isinstance(key, str) or not key.endswith(".jpg"):
+            continue
+        path = workspace_dir / key
+        if not path.is_file():
+            continue
+        try:
+            artifact = await register_physical_artifact(
+                job_id=context.delivery.canonical_job_id,
+                attempt_id=context.attempt.attempt_id,
+                fence_token=context.attempt.fence_token,
+                source=context.workspace.boundary.classify(path, require_exists=True),
+                kind="evidence_image",
+                name=key,
+                content_type="image/jpeg",
+                retention_class="extended",
+                metadata={
+                    "family": "poster_pipeline",
+                    "role": "review_candidate",
+                    "candidate_reference": reference,
+                },
+            )
+        except ArtifactError:
+            continue
+        artifacts[reference] = artifact
+    return artifacts
+
+
+def _attach_candidate_artifacts(workspace_dir, artifacts: dict[str, Any]) -> None:
+    """Freeze canonical artifact identity into the immutable run archive."""
+    path = workspace_dir / "run.json"
+    if not path.is_file() or path.stat().st_size > 1024 * 1024:
+        return
+    try:
+        document = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return
+    candidates = document.get("candidates") if isinstance(document, dict) else None
+    if not isinstance(candidates, list):
+        return
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        artifact = artifacts.get(candidate.get("orig_filename"))
+        if artifact is None:
+            continue
+        candidate["artifact_id"] = artifact.id
+        candidate["artifact_checksum"] = artifact.checksum
+        candidate["artifact_storage_key"] = artifact.storage_key
+    path.write_text(json.dumps(document, allow_nan=False, separators=(",", ":"), sort_keys=True))
+
+
+def _rejections(counts: dict[str, Any]) -> dict[str, int]:
+    rejections = {}
+    for key in _REJECTION_KEYS:
+        value = counts.get(key)
+        if isinstance(value, int) and value > 0:
+            rejections[key] = value
+    return rejections
+
+
+def _candidate_summary(
+    recommendation: dict[str, Any] | None, selected_artifact: Any
+) -> PosterCandidateSummaryV1 | None:
+    if recommendation is None:
+        return None
+    filename = recommendation.get("orig_filename")
+    if not isinstance(filename, str):
+        return None
+    score = recommendation.get("final_score")
+    clamped = None
+    if isinstance(score, int | float):
+        clamped = max(0.0, min(1.0, float(score)))
     return PosterCandidateSummaryV1(
-        candidate_id=f"{provider}:{digest}", source=provider, decision="accepted", score=0.5
+        candidate_id=filename[:80],
+        source="tmdb",
+        decision="recommended",
+        score=clamped,
+        artifact_key=(
+            f"artifact:{selected_artifact.id}" if selected_artifact is not None else None
+        ),
     )
+
+
+def _map_outcome(
+    pipeline_status: str, recommendation: dict[str, Any] | None, candidate_count: int
+) -> tuple[str, str, str | None]:
+    if recommendation is not None:
+        return (
+            "succeeded",
+            "Poster analysis recommended a candidate without changing library artwork.",
+            None,
+        )
+    if candidate_count == 0:
+        return (
+            "no_change",
+            "Poster analysis completed without a viable recommendation.",
+            "No configured candidate source produced a viable poster.",
+        )
+    return (
+        "review_required",
+        "Poster analysis completed; no candidate passed the gates.",
+        "No candidate passed the configured gates — manual review required.",
+    )
+
+
+async def _write_pipeline_run(
+    context: ExecutionContext,
+    request: PosterPipelineRequestV1,
+    *,
+    run_id: str,
+    status: str,
+    counts: dict[str, Any],
+    summary: dict[str, Any],
+    recommendation: dict[str, Any] | None,
+    selected_artifact: Any,
+    archive_artifact: Any,
+) -> None:
+    duration = summary.get("counts", {})
+    async with context.session_factory() as session, session.begin():
+        if not await context.writer.owns_current_attempt(session):
+            raise RuntimeError("poster pipeline attempt lost its fence before projection")
+        job = await session.get(Job, context.delivery.canonical_job_id)
+        if job is None:
+            raise RuntimeError("poster pipeline canonical job disappeared before projection")
+        session.add(
+            PipelineRun(
+                run_id=run_id,
+                job_id=context.delivery.canonical_job_id,
+                attempt_id=context.attempt.attempt_id,
+                fence_token=context.attempt.fence_token,
+                movie_id=request.movie_id,
+                series_id=request.series_id,
+                season_id=request.season_id,
+                media_type=_media_type(request),
+                subject_snapshot=dict(context.subject) if context.subject else {},
+                status=status,
+                scorer_name=(summary.get("scorer_name") or None),
+                counts_json=json.dumps(counts, sort_keys=True),
+                duration_seconds=(
+                    float(duration.get("total"))
+                    if isinstance(duration, dict) and isinstance(duration.get("total"), int | float)
+                    else None
+                ),
+                batch_id=job.parent_id,
+                correlation_id=job.correlation_id,
+                selected_artifact_id=(
+                    selected_artifact.id if selected_artifact is not None else None
+                ),
+                archive_artifact_id=(archive_artifact.id if archive_artifact is not None else None),
+                auto_pick_filename=(
+                    recommendation.get("orig_filename") if recommendation else None
+                ),
+                completed_at=datetime.now(UTC),
+            )
+        )
 
 
 async def execute_poster_pipeline(
     context: ExecutionContext, request: PosterPipelineRequestV1
 ) -> dict[str, Any]:
-    """Analyze server-described candidates and return a recommendation, never deployment.
+    """Run the real pipeline via the contained runner; project, never deploy."""
+    # Deferred so importing this handler module stays free of the runner/process
+    # subsystem (and any module-level import cycle through the handler registry).
+    from marquee.core.jobs.internal_runner_host import (
+        OUTCOME_CANCELLED,
+        OUTCOME_SUCCEEDED,
+        run_internal_operation,
+    )
+    from marquee.core.jobs.runner_protocol import RunnerOperation
 
-    All candidate descriptors are frozen in the request.  No route or caller can
-    select a filesystem path, model path, execution class, artifact destination,
-    GPU allocation, retry policy, or active-poster operation.
-    """
     if context.cancellation.cancel_called:
         raise asyncio.CancelledError
-    ordinal = 0
-    for stage in ("resolving", "enumerating"):
-        ordinal += 1
-        await _stage(context, stage_key=stage, ordinal=ordinal)
-    candidates = [
-        _candidate(request, provider=source.provider, reference=source.reference)
-        for source in request.source_descriptors
-    ]
-    for stage in ("downloading", "validating", "deduplicating", "extracting", "scoring"):
-        if context.cancellation.cancel_called:
-            raise asyncio.CancelledError
-        ordinal += 1
-        await _stage(
-            context,
-            stage_key=stage,
-            ordinal=ordinal,
-            candidate_total=len(candidates),
-            candidate_completed=len(candidates),
-        )
-    recommendation = candidates[0] if candidates else None
-    rejected = Counter[str]()
-    outcome = "succeeded" if recommendation else "no_change"
-    review_reason = None if recommendation else "No configured candidate source produced a viable poster."
-    report = {
-        "accepted_count": len(candidates),
-        "candidate_count": len(candidates),
-        "outcome": outcome,
-        "profile_version": request.profile_version,
-        "recommendation": recommendation.model_dump(mode="json") if recommendation else None,
-        "subject": request.title,
+
+    run_id = uuid.uuid4().hex
+    manifest = {
+        "params": {
+            "subject": _subject_params(request),
+            "source": {"mode": "tmdb"},
+            "run_id": run_id,
+        }
     }
-    ordinal += 1
-    await _stage(context, stage_key="rendering", ordinal=ordinal)
-    artifact_ids = await _register_report(context, report)
-    ordinal += 1
-    await _stage(context, stage_key="finalizing", ordinal=ordinal)
+    workspace_dir = _workspace_dir(context)
+    library = "movies" if _media_type(request) == "movie" else "tv"
+    try:
+        async with context.session_factory() as session:
+            active_head = await resolve_active_publication(
+                session, family=f"learned_head:{library}"
+            )
+    except MlPublicationError:
+        active_head = None
+    if active_head is not None:
+        copied = await context.io.copy(active_head.path, workspace_dir / "head.npz")
+        if copied.sha256 != active_head.checksum:
+            (workspace_dir / "head.npz").unlink(missing_ok=True)
+            raise RuntimeError("active learned-head checksum changed while staging")
+        manifest["params"]["learned_head"] = {
+            "generation": active_head.generation,
+            "version": active_head.version,
+            "checksum": active_head.checksum,
+        }
+    try:
+        async with context.session_factory() as session:
+            active_profile = await resolve_active_publication(
+                session, family=f"taste_profile:{library}"
+            )
+    except MlPublicationError:
+        active_profile = None
+    if active_profile is not None:
+        copied = await context.io.copy(active_profile.path, workspace_dir / "profile.npz")
+        if copied.sha256 != active_profile.checksum:
+            (workspace_dir / "profile.npz").unlink(missing_ok=True)
+            raise RuntimeError("active taste-profile checksum changed while staging")
+        manifest["params"]["taste_profile"] = {
+            "generation": active_profile.generation,
+            "version": active_profile.version,
+            "checksum": active_profile.checksum,
+        }
+
+    async def on_progress(frame: dict[str, Any]) -> None:
+        progress = getattr(context, "progress", None)
+        stage = _STAGE_MAP.get(frame.get("stage"))
+        if progress is not None and stage and frame.get("state") == "start":
+            with contextlib.suppress(Exception):
+                await progress.stage(stage)
+
+    def should_stop() -> bool:
+        return bool(getattr(context.cancellation, "cancel_called", False))
+
+    def resolve(key: str):
+        return workspace_dir / key
+
+    outcome = await run_internal_operation(
+        context.process_launcher,
+        operation=RunnerOperation.POSTER_SINGLE,
+        manifest=manifest,
+        on_progress=on_progress,
+        should_stop=should_stop,
+        resolve_output=resolve,
+    )
+
+    if outcome.outcome == OUTCOME_CANCELLED:
+        raise asyncio.CancelledError
+    if outcome.outcome != OUTCOME_SUCCEEDED:
+        raise RuntimeError(
+            f"poster pipeline runner did not succeed: {outcome.error or outcome.outcome}"
+        )
+
+    summary = outcome.summary if isinstance(outcome.summary, dict) else {}
+    pipeline_status = str(summary.get("pipeline_status") or "completed")
+    counts = summary.get("counts") if isinstance(summary.get("counts"), dict) else {}
+    recommendation = (
+        summary.get("recommendation") if isinstance(summary.get("recommendation"), dict) else None
+    )
+    run_id = str(summary.get("run_id") or run_id)
+    candidate_count = min(int(summary.get("candidate_count") or 0), _MAX_COUNT)
+
+    if not await _owns_fence(context):
+        context.workspace.quarantine(code="stale_fence", summary="poster projection fenced")
+        raise RuntimeError("poster pipeline attempt lost its fence before projection")
+
+    candidate_artifacts = await _register_candidate_files(context, workspace_dir, summary)
+    selected_artifact = (
+        candidate_artifacts.get(recommendation.get("orig_filename"))
+        if recommendation is not None
+        else None
+    )
+    if selected_artifact is None and recommendation is not None:
+        selected_artifact = await _register_selected(context, workspace_dir, recommendation)
+    _attach_candidate_artifacts(workspace_dir, candidate_artifacts)
+    archive_artifact = await _register_archive(context, workspace_dir)
+    await _write_pipeline_run(
+        context,
+        request,
+        run_id=run_id,
+        status=pipeline_status,
+        counts=counts,
+        summary=summary,
+        recommendation=recommendation,
+        selected_artifact=selected_artifact,
+        archive_artifact=archive_artifact,
+    )
+
+    artifact_ids = tuple(
+        artifact.id for artifact in (archive_artifact, selected_artifact) if artifact is not None
+    )
+    poster_outcome, message, review_reason = _map_outcome(
+        pipeline_status, recommendation, candidate_count
+    )
     return PosterPipelineResultV1(
-        outcome=outcome,
-        message=(
-            "Poster analysis produced a recommendation without changing library artwork."
-            if recommendation
-            else "Poster analysis completed without a viable recommendation."
-        ),
+        outcome=poster_outcome,
+        message=message,
         summary={
-            "candidate_count": len(candidates),
-            "source_count": len(request.source_descriptors),
-            "accepted_count": len(candidates),
-            "profile_version": request.profile_version,
-            "model_version": request.model_version,
+            "run_id": run_id,
+            "pipeline_status": pipeline_status,
+            "counts": {key: int(value) for key, value in counts.items() if isinstance(value, int)},
+            "scorer_name": summary.get("scorer_name"),
             "review_reason": review_reason,
         },
         subject_label=request.title,
-        source_count=len(request.source_descriptors),
-        candidate_count=len(candidates),
-        accepted_count=len(candidates),
-        rejected_by_gate=dict(rejected),
-        recommendation=recommendation,
+        source_count=min(int(summary.get("source_count") or 0), _MAX_COUNT),
+        candidate_count=candidate_count,
+        accepted_count=min(int(counts.get("ranked", 0) or 0), _MAX_COUNT),
+        rejected_by_gate=_rejections(counts),
+        recommendation=_candidate_summary(recommendation, selected_artifact),
         profile_version=request.profile_version,
         model_version=request.model_version,
         prior_poster_checksum=request.prior_poster_checksum,
         review_reason=review_reason,
+        warnings=outcome.warnings[:20],
         artifact_ids=artifact_ids,
     ).model_dump(mode="json")

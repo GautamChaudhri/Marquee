@@ -32,15 +32,14 @@ from marquee.api.system_operations import (
 from marquee.config import settings
 from marquee.core import system_metrics
 from marquee.core.configuration_cache import configuration_provider
-from marquee.core.heal import latest_heal_summary
 from marquee.core.jobs.contracts import TriggerKind
 from marquee.core.jobs.labels import humanize_job_type
 from marquee.core.jobs.manifest import JOB_DEFINITION_REGISTRY
 from marquee.core.jobs.pgqueuer_gateway import pgqueuer_gateway
 from marquee.core.jobs.poster_parents import create_poster_parent
+from marquee.core.jobs.poster_summary import latest_poster_heal_summary
 from marquee.core.jobs.readiness import connection_budget_report, schedule_catalog_report
 from marquee.core.jobs.submission import Initiator, SubmissionError
-from marquee.core.letterbox_heal import letterbox_heal_state
 from marquee.core.pipeline_config import pipeline_settings
 from marquee.database import get_db, pool_stats, reset_database
 from marquee.media import binaries
@@ -89,8 +88,7 @@ async def system_status(request: Request, db: Annotated[AsyncSession, Depends(ge
     return {
         "cache": _cache_stats(),
         "configuration": configuration_provider.health(),
-        "heal": await latest_heal_summary(db),
-        "letterbox_heal": letterbox_heal_state,
+        "heal": await latest_poster_heal_summary(db),
         "tools": binaries.availability(),
         "media_jobs": {},
         "jobs": dict(job_rows),
@@ -116,9 +114,7 @@ def _sanitized_runtime_instance(
     containment_raw = capabilities.get("containment", {})
     containment_items = containment_raw.items() if isinstance(containment_raw, dict) else ()
     containment = {
-        str(key)[:50]: value
-        for key, value in containment_items
-        if isinstance(value, (str, bool))
+        str(key)[:50]: value for key, value in containment_items if isinstance(value, (str, bool))
     }
     availability: dict[str, bool] = {}
     media_tools = capabilities.get("media_tools", {})
@@ -131,9 +127,7 @@ def _sanitized_runtime_instance(
         availability["gpu"] = bool(gpu.get("available"))
     certifications = capabilities.get("certifications")
     if isinstance(certifications, dict):
-        availability["dovi_conversion_certified"] = bool(
-            certifications.get("dovi_conversion")
-        )
+        availability["dovi_conversion_certified"] = bool(certifications.get("dovi_conversion"))
     return OperationsRuntimeInstance(
         role=instance.role,
         node_label=instance.node_label[:100],
@@ -562,9 +556,7 @@ async def operations_snapshot(
             disk_total_bytes=disk.get("total"),
         ),
         schedules=OperationsSchedules(
-            production_schedules_enabled=bool(
-                schedule_report["production_schedules_enabled"]
-            ),
+            production_schedules_enabled=bool(schedule_report["production_schedules_enabled"]),
             scheduler_present=runtime_instances.scheduler_present,
             effectively_enabled=sum(
                 bool(item["effectively_enabled"]) for item in schedule_report["schedules"]
@@ -625,14 +617,6 @@ async def trigger_heal(
     except (SubmissionError, ValueError) as exc:
         raise HTTPException(status_code=422, detail="poster_heal_scope_invalid") from exc
     return submission_response(result.parent)
-
-
-@router.post("/release-gpu")
-async def release_gpu_resources():
-    """Drop Marquee's process-local ML caches before another GPU workload."""
-    from marquee.pipeline.extractor_runtime import extractor_runtime  # noqa: PLC0415
-
-    return {"status": "released", **extractor_runtime.release_gpu_resources()}
 
 
 @router.post("/reset-db")

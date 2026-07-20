@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from marquee.core import letterbox_reencode as lr
+from marquee.core import letterbox_transcode as lr
 from marquee.core.media_files import ResolvedMediaFile, compute_signature
 
 
@@ -219,24 +219,6 @@ def _encode_source_info() -> lr.SourceVideo:
     )
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 def test_inspect_source_extracts_dovi_details(monkeypatch):
     monkeypatch.setattr(
         lr,
@@ -362,7 +344,3 @@ async def test_build_plan_rejects_non_mkv(tmp_path):
     with pytest.raises(lr.ReencodePlanError) as exc:
         await lr.build_plan(None, resolved, top=10, bottom=10)
     assert exc.value.code == "not_mkv"
-
-
-
-

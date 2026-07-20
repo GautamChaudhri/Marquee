@@ -76,7 +76,7 @@ ENABLED_TYPES = {
     "track_remove",
 }
 
-DIRECT_LAUNCHES = {"marquee/core/letterbox_reencode.py": {}}
+DIRECT_LAUNCHES: dict[str, dict[str, int]] = {}
 
 
 def _scope(node: ast.AST, parents: dict[ast.AST, ast.AST]) -> str:
@@ -88,11 +88,7 @@ def _scope(node: ast.AST, parents: dict[ast.AST, ast.AST]) -> str:
 
 def _direct_launches(relative: str) -> dict[str, int]:
     tree = ast.parse((ROOT / relative).read_text())
-    parents = {
-        child: parent
-        for parent in ast.walk(tree)
-        for child in ast.iter_child_nodes(parent)
-    }
+    parents = {child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
     result: dict[str, int] = {}
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
@@ -158,24 +154,22 @@ def test_jmc5c_definition_and_executor_baseline_is_exact() -> None:
 
 
 def test_jmc5c_direct_child_launch_inventory_is_exact() -> None:
-    assert {
-        relative: _direct_launches(relative)
-        for relative in DIRECT_LAUNCHES
-    } == DIRECT_LAUNCHES
+    assert {relative: _direct_launches(relative) for relative in DIRECT_LAUNCHES} == DIRECT_LAUNCHES
 
 
 def test_c1_letterbox_mutations_have_one_canonical_writer_path() -> None:
     route = (ROOT / "marquee/api/routes/letterbox.py").read_text()
-    canonical_handlers = (
-        ROOT / "marquee/core/jobs/handlers_letterbox_mutations.py"
-    ).read_text()
+    canonical_handlers = (ROOT / "marquee/core/jobs/handlers_letterbox_mutations.py").read_text()
     assert "job_manager.create_and_run" not in route
     assert "letterbox_service.apply_episode_group" not in route
     assert "letterbox_service.remove_episode_group" not in route
     for job_type in ("letterbox_apply", "letterbox_remove"):
-        assert canonical_handlers.count(
-            f'register_execution_handler("{job_type}", execute_{job_type})'
-        ) == 1
+        assert (
+            canonical_handlers.count(
+                f'register_execution_handler("{job_type}", execute_{job_type})'
+            )
+            == 1
+        )
 
 
 def test_c2_parallel_reencode_runtime_authority_is_retired() -> None:
@@ -189,7 +183,6 @@ def test_c2_parallel_reencode_runtime_authority_is_retired() -> None:
     assert "LetterboxReencodeArtifact" not in exports
     for relative in (
         "marquee/api/routes/letterbox.py",
-        "marquee/core/letterbox_reencode.py",
         "marquee/core/sync_service.py",
     ):
         assert "LetterboxReencodeArtifact" not in (ROOT / relative).read_text()
@@ -206,22 +199,12 @@ def test_remaining_legacy_runtime_authority_is_retired() -> None:
     ):
         assert not (ROOT / relative).exists()
 
-    production = "\n".join(
-        path.read_text() for path in (ROOT / "marquee").rglob("*.py")
-    )
+    production = "\n".join(path.read_text() for path in (ROOT / "marquee").rglob("*.py"))
     for token in ("job_manager", "media_job_manager", "cancel_registry"):
         assert token not in production
     assert "WorkerSupervisor" in (ROOT / "marquee/main.py").read_text()
 
-    reencode = (ROOT / "marquee/core/letterbox_reencode.py").read_text()
-    for retired in (
-        "create_subprocess_exec",
-        "LetterboxReencodeArtifact",
-        "async def replace_original",
-        "async def restore_original",
-        "async def delete_artifact_files",
-    ):
-        assert retired not in reencode
+    assert not (ROOT / "marquee/core/letterbox_reencode.py").exists()
 
 
 def test_c3_artifact_decisions_have_only_canonical_route_and_handler_paths() -> None:
@@ -229,9 +212,7 @@ def test_c3_artifact_decisions_have_only_canonical_route_and_handler_paths() -> 
     handler = (ROOT / "marquee/core/jobs/handlers_letterbox_publication.py").read_text()
     for operation in ("publish", "restore", "discard"):
         assert f"letterbox_reencode.{operation}:" not in route
-        assert handler.count(
-            f'register_execution_handler("letterbox_reencode_{operation}", '
-        ) == 1
+        assert handler.count(f'register_execution_handler("letterbox_reencode_{operation}", ') == 1
     for token in ("os.replace", ".unlink(", "shutil.move"):
         assert token not in route
 

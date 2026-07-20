@@ -263,7 +263,7 @@ class LearnedHeadTrainRequestV1(StrictDocument):
 
 class MlPublicationResultV1(StrictDocument):
     outcome: Literal["succeeded", "no_change", "superseded"] = "succeeded"
-    family: Literal["taste_profile", "taste_map", "taste_enrichment", "learned_head"]
+    family: Literal["taste_profile", "taste_map", "learned_head"]
     version: str = Field(min_length=1, max_length=128)
     checksum: str = Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]+$")
     expected_generation: int = Field(ge=0)

@@ -56,14 +56,14 @@ def test_jmc3b_starts_from_the_certified_production_registry() -> None:
         "system_metrics_purge",
         "letterbox_apply",
         "letterbox_remove",
-            "letterbox_reencode",
-            "letterbox_reencode_publish",
-            "letterbox_reencode_restore",
-            "letterbox_reencode_discard",
-            "dovi_convert",
-            "dovi_publish",
-            "dovi_restore",
-            "dovi_discard",
+        "letterbox_reencode",
+        "letterbox_reencode_publish",
+        "letterbox_reencode_restore",
+        "letterbox_reencode_discard",
+        "dovi_convert",
+        "dovi_publish",
+        "dovi_restore",
+        "dovi_discard",
     }
     assert JOB_DEFINITION_REGISTRY.enabled_types == {
         "subtitle_policy",
@@ -84,32 +84,32 @@ def test_jmc3b_starts_from_the_certified_production_registry() -> None:
         "letterbox_detect_tv_scope",
         "subtitle_scan",
         "subtitle_policy_audit",
-            "dovi_analyze",
-            "dovi_convert",
-            "dovi_publish",
-            "dovi_restore",
-            "dovi_discard",
-            "learned_head_train",
-            "poster_rescan",
+        "dovi_analyze",
+        "dovi_convert",
+        "dovi_publish",
+        "dovi_restore",
+        "dovi_discard",
+        "learned_head_train",
+        "poster_rescan",
         "taste_map",
         "taste_enrich",
         "taste_rebuild",
-            "poster_deploy",
-            "poster_restore",
-            "poster_reset",
-            "poster_backup_subject",
-            "backup_create",
-            "poster_maintenance",
-            "pipeline_cache_clear",
-            "job_retention_purge",
-            "system_metrics_purge",
-            "letterbox_apply",
+        "poster_deploy",
+        "poster_restore",
+        "poster_reset",
+        "poster_backup_subject",
+        "backup_create",
+        "poster_maintenance",
+        "pipeline_cache_clear",
+        "job_retention_purge",
+        "system_metrics_purge",
+        "letterbox_apply",
         "letterbox_remove",
-            "letterbox_reencode",
-            "letterbox_reencode_publish",
-            "letterbox_reencode_restore",
-            "letterbox_reencode_discard",
-            }
+        "letterbox_reencode",
+        "letterbox_reencode_publish",
+        "letterbox_reencode_restore",
+        "letterbox_reencode_discard",
+    }
 
 
 def test_jmc2_contract_tests_are_explicit_inputs_to_jmc3b() -> None:
@@ -196,9 +196,9 @@ def test_obsolete_helpers_have_an_explicit_removal_or_replacement_plan() -> None
     assert isinstance(plans, list)
     paths = [plan["path"] for plan in plans]
     assert paths == sorted(set(paths))
-    # Helpers whose removal disposition has been executed (progress_bridge in
-    # JMC3B4; run_manager retired in JMC6F F03) must no longer exist.
+    # Helpers whose removal disposition has been executed must no longer exist.
     removed = {
+        "marquee/media/letterbox_manager.py",
         "marquee/pipeline/progress_bridge.py",
         "marquee/pipeline/run_manager.py",
     }

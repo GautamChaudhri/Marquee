@@ -4,21 +4,18 @@ Every submission maps to the scenarios in design 09 §3–6:
 
   - approve     → 1 positive label for the auto-pick (scenario A)
   - override    → negative for the auto-pick + positive for the user's pick
-                  (scenarios B/C); retro features + gate snapshot if the pick
-                  was rejected before its features were computed
+                  (scenarios B/C), using the immutable candidate snapshot
   - reject_all  → 1 ``explicit_reject`` negative for the auto-pick (scenario D)
 
 A single ``event_id`` ties together all rows a submission writes, so undo is
-exact. Approve/override append the chosen poster to the taste profile and
-(when thresholds are met) retrain the learned head.
+exact. Feedback schedules a canonical learned-head successor; it never mutates
+configured exemplar folders or active publications in the API process.
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Annotated
 from uuid import uuid4
 
@@ -30,9 +27,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from marquee.api.job_submission import submission_response
 from marquee.core.jobs.contracts import TriggerKind
 from marquee.core.jobs.mutation_documents import PosterCandidateSelectionV1
+from marquee.core.jobs.pipeline_archives import load_pipeline_archive
 from marquee.core.jobs.poster_submission import (
     PosterSelectionError,
     pipeline_candidate_selection,
+    poster_child_idempotency_key,
     submit_poster_leaf,
 )
 from marquee.core.jobs.submission import (
@@ -46,11 +45,9 @@ from marquee.core.jobs.submission import (
 from marquee.core.pipeline_config import pipeline_settings
 from marquee.core.poster_subjects import MEDIA_TYPE_MOVIE, MEDIA_TYPE_SEASON, PosterSubject
 from marquee.database import get_db
-from marquee.ml import feedback_store, profile_updater
+from marquee.ml import feedback_store
 from marquee.ml.namespaces import TasteNamespace, get_namespace
 from marquee.models import MlActivePublication, Movie, PipelineRun, Season, Series
-from marquee.pipeline.extractor_runtime import extractor_runtime
-from marquee.pipeline.features import load_cached_embedding
 from marquee.pipeline.types import find_auto_pick_candidate
 
 logger = logging.getLogger(__name__)
@@ -211,102 +208,10 @@ def _resolve_pick(by_name: dict, name: str) -> dict | None:
     return candidate
 
 
-async def _normalized_for(
-    request: Request, run: PipelineRun, candidate: dict, subject: PosterSubject | None
-) -> dict | None:
-    """Normalized features for a candidate, backfilled via retro features when
-    it was rejected before the style stage (same as the override path)."""
+def _normalized_for(candidate: dict) -> dict | None:
+    """Return only features frozen by the contained poster execution."""
     _, normalized, _ = _archive_features(candidate)
-    if normalized is None:
-        _, normalized, _ = await _retro_features(
-            request=request, run=run, candidate=candidate, subject=subject
-        )
     return normalized
-
-
-async def _retro_features(
-    *,
-    request: Request,
-    run: PipelineRun,
-    candidate: dict,
-    subject: PosterSubject | None,
-) -> tuple[dict | None, dict | None, dict | None]:
-    """Backfill features for a pick that was rejected before detail features."""
-    orig = candidate["orig_filename"]
-    originals = Path(run.output_dir or "") / "0-originals" / orig
-    if not originals.is_file():
-        logger.warning("RETRO | no source image for %s — label written without features", orig)
-        return None, None, None
-
-    from marquee.core.poster_sources.tmdb import PosterCandidate  # noqa: PLC0415
-    from marquee.pipeline.retro_features import (  # noqa: PLC0415
-        candidate_from_image,
-        compute_full_features,
-    )
-
-    movie = subject.movie if subject and subject.media_type == MEDIA_TYPE_MOVIE else None
-    poster_candidate: PosterCandidate | None = None
-    tmdb = getattr(request.app.state, "tmdb_client", None)
-    if tmdb is not None and movie is not None and movie.tmdb_id is not None:
-        try:
-            images = await tmdb.get_movie_images(movie.tmdb_id)
-            poster_candidate = next(
-                (c for c in images if c.file_path.lstrip("/").split("/")[-1] == orig),
-                None,
-            )
-        except Exception as exc:  # noqa: BLE001 — fall back to image-only metadata
-            logger.warning("RETRO | TMDB lookup failed (%s) — using image dims", exc)
-    if poster_candidate is None:
-        poster_candidate = candidate_from_image(originals)
-
-    # OCR title tokens use the bare series title for TV (no season suffix),
-    # matching how the batch runner feeds title tokens for TV assets (§9.2).
-    if subject is None:
-        title = ""
-    elif subject.media_type == MEDIA_TYPE_MOVIE:
-        title = subject.movie.title
-    else:
-        title = subject.series.title
-
-    def _compute():
-        extractor = extractor_runtime.ensure_extractor()
-        return compute_full_features(
-            image_path=originals,
-            candidate=poster_candidate,
-            movie_title=title,
-            extractor=extractor,
-        )
-
-    features = await asyncio.to_thread(_compute)
-    return features.raw_values(), features.normalized, features.extended
-
-
-def _add_to_profile(
-    orig_filename: str,
-    image_path: Path,
-    subject: PosterSubject | None,
-    namespace: TasteNamespace,
-    asset_kind: str,
-) -> str | None:
-    """Append the pick to the taste profile; returns the exemplar filename."""
-    embedding = load_cached_embedding(orig_filename)
-    if embedding is None:
-        logger.warning(
-            "PROFILE | no cached embedding for %s — skipping exemplar add", orig_filename
-        )
-        return None
-    source = image_path if image_path.is_file() else None
-    if source is None:
-        logger.warning("PROFILE | no source image for %s — skipping exemplar add", orig_filename)
-        return None
-    return profile_updater.add_exemplar(
-        source_image=source,
-        title=subject.title if subject else orig_filename,
-        year=_subject_year(subject),
-        clip_embedding=embedding,
-        namespace=namespace,
-        asset_kind=asset_kind,
-    )
 
 
 async def _schedule_learned_head_successor(
@@ -374,7 +279,9 @@ async def _deploy_pick(
             "ai_selected": True,
             "user_approved": True,
         },
-        idempotency_key=idempotency_key,
+        idempotency_key=poster_child_idempotency_key(
+            idempotency_key, f"{subject.media_type}:{subject.id}"
+        ),
         initiator="feedback-selection",
     )
 
@@ -384,7 +291,9 @@ async def _load_feedback_subject(
     run: PipelineRun,
 ) -> PosterSubject:
     if run.media_type == MEDIA_TYPE_MOVIE:
-        movie = (await db.execute(select(Movie).where(Movie.id == run.movie_id))).scalar_one_or_none()
+        movie = (
+            await db.execute(select(Movie).where(Movie.id == run.movie_id))
+        ).scalar_one_or_none()
         if movie is None:
             raise HTTPException(status_code=404, detail=f"Movie for run {run.run_id} not found")
         return PosterSubject.from_movie(movie)
@@ -402,7 +311,9 @@ async def _load_feedback_subject(
             raise HTTPException(status_code=404, detail=f"Series for run {run.run_id} not found")
         return PosterSubject.from_season(season, series)
 
-    series = (await db.execute(select(Series).where(Series.id == run.series_id))).scalar_one_or_none()
+    series = (
+        await db.execute(select(Series).where(Series.id == run.series_id))
+    ).scalar_one_or_none()
     if series is None:
         raise HTTPException(status_code=404, detail=f"Series for run {run.run_id} not found")
     return PosterSubject.from_series(series)
@@ -417,7 +328,7 @@ async def _load_feedback_run(
     if run is None:
         raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
 
-    archive = extractor_runtime.load_archive(run_id, run.archive_path)
+    archive = await load_pipeline_archive(db, run)
     if archive is None:
         raise HTTPException(status_code=404, detail="Run archive unavailable")
 
@@ -431,11 +342,11 @@ async def _load_feedback_run(
 
 async def apply_feedback_request(
     body: FeedbackRequest,
-    request: Request,
+    _request: Request,
     db: AsyncSession,
 ) -> dict:
     run, archive, subject, by_name, auto = await _load_feedback_run(db, body.run_id)
-    namespace, asset_kind = _namespace_and_kind(run.media_type)
+    namespace, _ = _namespace_and_kind(run.media_type)
     deploy_requested = (
         pipeline_settings.FEEDBACK_DEPLOY_DEFAULT if body.deploy is None else body.deploy
     )
@@ -533,24 +444,9 @@ async def apply_feedback_request(
                 )
             )
 
-        # Positive for the pick — backfill features if it was rejected early.
+        # Positive for the pick. Only execution-frozen features are trainable;
+        # an early rejection remains a truthful label without a feature vector.
         raw, norm, ext = _archive_features(pick)
-        if norm is None:
-            raw, norm, ext = await _retro_features(
-                request=request, run=run, candidate=pick, subject=subject
-            )
-
-        # Add to the taste profile (source = the recorded image, original-res
-        # for ranked picks).
-        image_path = Path(pick.get("image_path") or "")
-        exemplar_added = await asyncio.to_thread(
-            _add_to_profile,
-            pick["orig_filename"],
-            image_path,
-            subject,
-            namespace,
-            asset_kind,
-        )
 
         records.append(
             _label_record(
@@ -568,14 +464,6 @@ async def apply_feedback_request(
                 exemplar_filename=exemplar_added,
             )
         )
-
-        # Optional: the overridden auto-pick joins the negative exemplars.
-        if (
-            body.action == "override"
-            and pipeline_settings.FEEDBACK_NEGATIVES_FROM_OVERRIDES
-            and auto is not None
-        ):
-            await asyncio.to_thread(_copy_negative, auto, namespace)
 
     elif body.action == "rank":
         # Dedup while preserving order — the frontend's orderable/hate-pile
@@ -637,10 +525,10 @@ async def apply_feedback_request(
             except PosterSelectionError as exc:
                 raise HTTPException(status_code=422, detail="poster_selection_invalid") from exc
 
-        # Embed each candidate with its (backfilled) normalized features and
+        # Embed each candidate with its execution-frozen normalized features and
         # baseline (pipeline) rank, for the trainer's inversion math.
         async def _entry(candidate: dict) -> dict | None:
-            normalized = await _normalized_for(request, run, candidate, subject)
+            normalized = _normalized_for(candidate)
             if not normalized:
                 return None  # nothing trainable — skip (still staged below)
             return {
@@ -662,29 +550,6 @@ async def apply_feedback_request(
             if entry is not None:
                 hated_entries.append(entry)
 
-        # Channel 1 (positive exemplars): top slice of the final order.
-        n_pos = feedback_store.positive_exemplar_count(len(order_cands))
-        for candidate in order_cands[:n_pos]:
-            added = await asyncio.to_thread(
-                _add_to_profile,
-                candidate["orig_filename"],
-                Path(candidate.get("image_path") or ""),
-                subject,
-                namespace,
-                asset_kind,
-            )
-            if added:
-                favorites_exemplars.append(added)
-
-        # Channel 1 (hard negatives): hated posters the pipeline ranked high.
-        rank_max = pipeline_settings.FEEDBACK_HARD_NEGATIVE_RANK_MAX
-        for candidate in hated_cands:
-            rank = candidate.get("rank")
-            if rank is not None and rank <= rank_max:
-                added = await asyncio.to_thread(_copy_negative, candidate, namespace)
-                if added:
-                    negatives_added.append(added)
-
         records.append(
             _ranking_record_v4(
                 event_id=event_id,
@@ -703,10 +568,6 @@ async def apply_feedback_request(
         raise HTTPException(status_code=400, detail=f"Unknown action {body.action!r}")
 
     feedback_store.append_labels(records, namespace)
-
-    # Profile changed → next pipeline run must reload the taste store.
-    if exemplar_added is not None:
-        extractor_runtime.reset_extractor()
 
     # Deploy the chosen poster to the media folder (approve/override only).
     deployment_job = None
@@ -805,24 +666,6 @@ async def undo_feedback(
     if not removed:
         raise HTTPException(status_code=404, detail=f"No labels for event {body.event_id}")
 
-    removed_exemplars: list[str] = []
-    removed_negatives: list[str] = []
-    for row in removed:
-        # v2 approve/override carry one exemplar; v3 ranking events carry lists
-        # of added positive exemplars + hard-negative files.
-        exemplar_names = [row.get("exemplar_filename"), *(row.get("favorites_exemplars") or [])]
-        for exemplar in exemplar_names:
-            if exemplar and await asyncio.to_thread(
-                profile_updater.remove_exemplar, exemplar, namespace
-            ):
-                removed_exemplars.append(exemplar)
-        for negative in row.get("negatives_added") or []:
-            if await asyncio.to_thread(_remove_negative, negative, namespace):
-                removed_negatives.append(negative)
-
-    if removed_exemplars:
-        extractor_runtime.reset_extractor()
-
     # Clear the reviewed marker on any run that pointed at this event.
     for run in runs:
         run.feedback_event_id = None
@@ -842,8 +685,8 @@ async def undo_feedback(
         response.status_code = 202
     return {
         "removed_labels": len(removed),
-        "exemplars_removed": removed_exemplars,
-        "negatives_removed": removed_negatives,
+        "exemplars_removed": [],
+        "negatives_removed": [],
         "head": head_info,
     }
 
@@ -858,55 +701,3 @@ def _gate_override_for(pick: dict, namespace: TasteNamespace) -> dict | None:
         "reason": reason,
         "count_at_current_threshold": alert["overrides"] if alert else 1,
     }
-
-
-def _copy_negative(candidate: dict, namespace: TasteNamespace) -> str | None:
-    """Copy a disliked poster into NEGATIVE_DATA_DIR. Returns the filename
-    added (for undo), or None if the source was missing or already present."""
-    from marquee.config import settings  # noqa: PLC0415
-    from marquee.core.filesystem import (  # noqa: PLC0415
-        FilesystemBoundary,
-        FilesystemBoundaryError,
-        RootSpec,
-    )
-
-    source = Path(candidate.get("image_path") or "")
-    dest_dir = namespace.negative_dir
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    dest = dest_dir / source.name
-    if dest.exists():
-        return None
-    roots = {
-        "runs": RootSpec("runs", settings.runs_work_path, "pipeline-run"),
-        "negative": RootSpec("negative", dest_dir, "negative-exemplar", access="read_write"),
-    }
-    boundary = FilesystemBoundary(roots)
-    try:
-        source_file = boundary.classify(source, roots=("runs",), require_file=True)
-        destination = boundary.classify(
-            dest, roots=("negative",), require_exists=False, write=True
-        )
-        boundary.copy_file(source_file, destination)
-    except FilesystemBoundaryError:
-        return None
-    logger.info("NEGATIVE | added %s to negative exemplars", source.name)
-    return dest.name
-
-
-def _remove_negative(filename: str, namespace: TasteNamespace | None) -> bool:
-    """Remove a negative exemplar file added by a ranking event (undo)."""
-    if namespace is None:
-        return False
-    from marquee.core.filesystem import FilesystemBoundaryError, boundary_for_roots  # noqa: PLC0415
-
-    boundary = boundary_for_roots(
-        {"negative": namespace.negative_dir}, access="read_write", purpose="negative-exemplar"
-    )
-    target = namespace.negative_dir / filename
-    try:
-        classified = boundary.classify(target, require_file=True, write=True)
-        boundary.delete_file(classified, missing_ok=False)
-        logger.info("NEGATIVE | removed %s", filename)
-        return True
-    except (FilesystemBoundaryError, FileNotFoundError):
-        return False

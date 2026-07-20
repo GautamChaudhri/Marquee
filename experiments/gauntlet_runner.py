@@ -79,29 +79,213 @@ EXPECTED_MUTATION_TABLES = {
 # Lab movie fixtures. These mirror the curated gauntlet set: mixed age,
 # resolution directory, container, subtitle sidecar coverage, and genres.
 MOVIES: dict[int, dict[str, Any]] = {
-    1: {"title": "2001: A Space Odyssey", "year": 1968, "tmdb_id": 62, "radarr_id": 519, "media_file_id": 1, "container": "mkv", "dir": "4K"},
-    2: {"title": "A Quiet Place: Day One", "year": 2024, "tmdb_id": 762441, "radarr_id": 520, "media_file_id": 2, "container": "mkv", "dir": "4K"},
-    3: {"title": "Alien: Romulus", "year": 2024, "tmdb_id": 945961, "radarr_id": 521, "media_file_id": 3, "container": "mkv", "dir": "4K"},
-    5: {"title": "Arrival", "year": 2016, "tmdb_id": 329865, "radarr_id": 523, "media_file_id": 5, "container": "mkv", "dir": "4K"},
-    12: {"title": "Captain America: Brave New World", "year": 2025, "tmdb_id": 822119, "radarr_id": 530, "media_file_id": 12, "container": "mkv", "dir": "4K"},
-    15: {"title": "Color Out of Space", "year": 2020, "tmdb_id": 548473, "radarr_id": 533, "media_file_id": 15, "container": "mp4", "dir": "4K"},
-    25: {"title": "Dune: Part Two", "year": 2024, "tmdb_id": 693134, "radarr_id": 543, "media_file_id": 25, "container": "mkv", "dir": "4K"},
-    31: {"title": "Furiosa: A Mad Max Saga", "year": 2024, "tmdb_id": 786892, "radarr_id": 549, "media_file_id": 31, "container": "mkv", "dir": "4K"},
-    36: {"title": "Hot Fuzz", "year": 2007, "tmdb_id": 4638, "radarr_id": 554, "media_file_id": 36, "container": "mkv", "dir": "4K"},
-    52: {"title": "Moana 2", "year": 2024, "tmdb_id": 1241982, "radarr_id": 571, "media_file_id": 52, "container": "mkv", "dir": "4K"},
-    61: {"title": "Reservoir Dogs", "year": 1992, "tmdb_id": 500, "radarr_id": 580, "media_file_id": 61, "container": "mp4", "dir": "4K"},
-    73: {"title": "The Cabin in the Woods", "year": 2012, "tmdb_id": 22970, "radarr_id": 596, "media_file_id": 73, "container": "mp4", "dir": "4K"},
-    148: {"title": "In the Mouth of Madness", "year": 1995, "tmdb_id": 2654, "radarr_id": 681, "media_file_id": 148, "container": "mp4", "dir": "1080p"},
-    155: {"title": "Leave No Trace", "year": 2018, "tmdb_id": 443463, "radarr_id": 688, "media_file_id": 155, "container": "mkv", "dir": "1080p"},
-    204: {"title": "The Game", "year": 1997, "tmdb_id": 2649, "radarr_id": 739, "media_file_id": 204, "container": "mkv", "dir": "1080p"},
-    219: {"title": "The Sixth Sense", "year": 1999, "tmdb_id": 745, "radarr_id": 756, "media_file_id": 219, "container": "mp4", "dir": "4K"},
-    224: {"title": "The Zone of Interest", "year": 2023, "tmdb_id": 467244, "radarr_id": 762, "media_file_id": 224, "container": "mkv", "dir": "1080p"},
-    314: {"title": "Knives Out", "year": 2019, "tmdb_id": 546554, "radarr_id": 881, "media_file_id": 314, "container": "mp4", "dir": "4K"},
-    338: {"title": "Catch Me If You Can", "year": 2002, "tmdb_id": 640, "radarr_id": 911, "media_file_id": 338, "container": "mkv", "dir": "1080p"},
-    434: {"title": "Exit 8", "year": 2025, "tmdb_id": 1408208, "radarr_id": 1031, "media_file_id": 431, "container": "mkv", "dir": "1080p"},
-    435: {"title": "Lincoln", "year": 2012, "tmdb_id": 72976, "radarr_id": 1032, "media_file_id": 432, "container": "mkv", "dir": "1080p"},
-    439: {"title": "Burning", "year": 2018, "tmdb_id": 491584, "radarr_id": 1036, "media_file_id": 436, "container": "mkv", "dir": "1080p"},
-    443: {"title": "The Borderlands", "year": 2014, "tmdb_id": 207774, "radarr_id": 1040, "media_file_id": 440, "container": "mkv", "dir": "1080p"},
+    1: {
+        "title": "2001: A Space Odyssey",
+        "year": 1968,
+        "tmdb_id": 62,
+        "radarr_id": 519,
+        "media_file_id": 1,
+        "container": "mkv",
+        "dir": "4K",
+    },
+    2: {
+        "title": "A Quiet Place: Day One",
+        "year": 2024,
+        "tmdb_id": 762441,
+        "radarr_id": 520,
+        "media_file_id": 2,
+        "container": "mkv",
+        "dir": "4K",
+    },
+    3: {
+        "title": "Alien: Romulus",
+        "year": 2024,
+        "tmdb_id": 945961,
+        "radarr_id": 521,
+        "media_file_id": 3,
+        "container": "mkv",
+        "dir": "4K",
+    },
+    5: {
+        "title": "Arrival",
+        "year": 2016,
+        "tmdb_id": 329865,
+        "radarr_id": 523,
+        "media_file_id": 5,
+        "container": "mkv",
+        "dir": "4K",
+    },
+    12: {
+        "title": "Captain America: Brave New World",
+        "year": 2025,
+        "tmdb_id": 822119,
+        "radarr_id": 530,
+        "media_file_id": 12,
+        "container": "mkv",
+        "dir": "4K",
+    },
+    15: {
+        "title": "Color Out of Space",
+        "year": 2020,
+        "tmdb_id": 548473,
+        "radarr_id": 533,
+        "media_file_id": 15,
+        "container": "mp4",
+        "dir": "4K",
+    },
+    25: {
+        "title": "Dune: Part Two",
+        "year": 2024,
+        "tmdb_id": 693134,
+        "radarr_id": 543,
+        "media_file_id": 25,
+        "container": "mkv",
+        "dir": "4K",
+    },
+    31: {
+        "title": "Furiosa: A Mad Max Saga",
+        "year": 2024,
+        "tmdb_id": 786892,
+        "radarr_id": 549,
+        "media_file_id": 31,
+        "container": "mkv",
+        "dir": "4K",
+    },
+    36: {
+        "title": "Hot Fuzz",
+        "year": 2007,
+        "tmdb_id": 4638,
+        "radarr_id": 554,
+        "media_file_id": 36,
+        "container": "mkv",
+        "dir": "4K",
+    },
+    52: {
+        "title": "Moana 2",
+        "year": 2024,
+        "tmdb_id": 1241982,
+        "radarr_id": 571,
+        "media_file_id": 52,
+        "container": "mkv",
+        "dir": "4K",
+    },
+    61: {
+        "title": "Reservoir Dogs",
+        "year": 1992,
+        "tmdb_id": 500,
+        "radarr_id": 580,
+        "media_file_id": 61,
+        "container": "mp4",
+        "dir": "4K",
+    },
+    73: {
+        "title": "The Cabin in the Woods",
+        "year": 2012,
+        "tmdb_id": 22970,
+        "radarr_id": 596,
+        "media_file_id": 73,
+        "container": "mp4",
+        "dir": "4K",
+    },
+    148: {
+        "title": "In the Mouth of Madness",
+        "year": 1995,
+        "tmdb_id": 2654,
+        "radarr_id": 681,
+        "media_file_id": 148,
+        "container": "mp4",
+        "dir": "1080p",
+    },
+    155: {
+        "title": "Leave No Trace",
+        "year": 2018,
+        "tmdb_id": 443463,
+        "radarr_id": 688,
+        "media_file_id": 155,
+        "container": "mkv",
+        "dir": "1080p",
+    },
+    204: {
+        "title": "The Game",
+        "year": 1997,
+        "tmdb_id": 2649,
+        "radarr_id": 739,
+        "media_file_id": 204,
+        "container": "mkv",
+        "dir": "1080p",
+    },
+    219: {
+        "title": "The Sixth Sense",
+        "year": 1999,
+        "tmdb_id": 745,
+        "radarr_id": 756,
+        "media_file_id": 219,
+        "container": "mp4",
+        "dir": "4K",
+    },
+    224: {
+        "title": "The Zone of Interest",
+        "year": 2023,
+        "tmdb_id": 467244,
+        "radarr_id": 762,
+        "media_file_id": 224,
+        "container": "mkv",
+        "dir": "1080p",
+    },
+    314: {
+        "title": "Knives Out",
+        "year": 2019,
+        "tmdb_id": 546554,
+        "radarr_id": 881,
+        "media_file_id": 314,
+        "container": "mp4",
+        "dir": "4K",
+    },
+    338: {
+        "title": "Catch Me If You Can",
+        "year": 2002,
+        "tmdb_id": 640,
+        "radarr_id": 911,
+        "media_file_id": 338,
+        "container": "mkv",
+        "dir": "1080p",
+    },
+    434: {
+        "title": "Exit 8",
+        "year": 2025,
+        "tmdb_id": 1408208,
+        "radarr_id": 1031,
+        "media_file_id": 431,
+        "container": "mkv",
+        "dir": "1080p",
+    },
+    435: {
+        "title": "Lincoln",
+        "year": 2012,
+        "tmdb_id": 72976,
+        "radarr_id": 1032,
+        "media_file_id": 432,
+        "container": "mkv",
+        "dir": "1080p",
+    },
+    439: {
+        "title": "Burning",
+        "year": 2018,
+        "tmdb_id": 491584,
+        "radarr_id": 1036,
+        "media_file_id": 436,
+        "container": "mkv",
+        "dir": "1080p",
+    },
+    443: {
+        "title": "The Borderlands",
+        "year": 2014,
+        "tmdb_id": 207774,
+        "radarr_id": 1040,
+        "media_file_id": 440,
+        "container": "mkv",
+        "dir": "1080p",
+    },
 }
 
 MOVIES_WITH_SRT = [439, 148, 435, 15, 314, 61, 73]
@@ -170,7 +354,9 @@ class Gauntlet:
             method, url, payload, headers, timeout, binary=binary
         )
         expected_ok = self._expected(status, error, expected)
-        self._log(method, url, status, body, elapsed, error, label, expected_ok, is_binary, expected)
+        self._log(
+            method, url, status, body, elapsed, error, label, expected_ok, is_binary, expected
+        )
         self._print_result(method, path_or_url, status, elapsed, label, expected_ok, error, body)
         return APIResult(method, url, status, body, elapsed, error, label, expected_ok, is_binary)
 
@@ -190,11 +376,23 @@ class Gauntlet:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 raw = resp.read()
                 elapsed = time.monotonic() - start
-                return resp.status, self._decode_body(raw, resp.headers.get("content-type"), binary), elapsed, None, self._is_binary(resp.headers.get("content-type"), binary)
+                return (
+                    resp.status,
+                    self._decode_body(raw, resp.headers.get("content-type"), binary),
+                    elapsed,
+                    None,
+                    self._is_binary(resp.headers.get("content-type"), binary),
+                )
         except urllib.error.HTTPError as exc:
             raw = exc.read()
             elapsed = time.monotonic() - start
-            return exc.code, self._decode_body(raw, exc.headers.get("content-type"), binary), elapsed, None, self._is_binary(exc.headers.get("content-type"), binary)
+            return (
+                exc.code,
+                self._decode_body(raw, exc.headers.get("content-type"), binary),
+                elapsed,
+                None,
+                self._is_binary(exc.headers.get("content-type"), binary),
+            )
         except (OSError, TimeoutError, urllib.error.URLError) as exc:
             elapsed = time.monotonic() - start
             return 0, "", elapsed, str(exc), False
@@ -301,7 +499,11 @@ class Gauntlet:
         if error:
             print(f"       ERROR: {error}")
         elif not expected_ok or (status >= 400 and label):
-            preview = json.dumps(body, ensure_ascii=False) if isinstance(body, (dict, list)) else str(body)
+            preview = (
+                json.dumps(body, ensure_ascii=False)
+                if isinstance(body, (dict, list))
+                else str(body)
+            )
             print(f"       BODY: {preview[:300]}")
 
     # ------------------------------------------------------------------
@@ -325,7 +527,14 @@ class Gauntlet:
 
     @staticmethod
     def terminal_job_status(status: str | None) -> bool:
-        return status in {"complete", "completed", "succeeded", "failed", "cancelled", "interrupted"}
+        return status in {
+            "complete",
+            "completed",
+            "succeeded",
+            "failed",
+            "cancelled",
+            "interrupted",
+        }
 
     def pipeline_targets(self) -> list[int]:
         if PIPELINE_SCOPE == "all":
@@ -390,16 +599,17 @@ class Gauntlet:
             if "/forge/Marquee" in app or "marquee" in app.lower() or "uvicorn" in app.lower()
         ]
 
-    def release_marquee_gpu_resources(self, label: str) -> APIResult:
-        return self.request("POST", "/api/system/release-gpu", label=f"release-gpu-{label}")
-
     def ensure_gpu_free_for_external_phase(self, label: str, *, timeout: int = 120) -> bool:
-        snapshot = self.record_gpu_snapshot(f"{label}-before-release")
+        snapshot = self.record_gpu_snapshot(f"{label}-before-check")
         if not snapshot.get("available"):
             return True
 
         if self.marquee_gpu_apps(snapshot):
-            self.release_marquee_gpu_resources(label)
+            self._manual_failure(
+                f"{label}-marquee-gpu-still-owned",
+                "A Marquee process still owns GPU resources after its canonical job boundary",
+            )
+            return False
 
         deadline = time.monotonic() + timeout
         last_apps = self.gpu_compute_apps(snapshot)
@@ -411,7 +621,9 @@ class Gauntlet:
                 return True
             time.sleep(5)
 
-        self._manual_failure(f"{label}-gpu-not-free", f"GPU compute processes still active: {last_apps}")
+        self._manual_failure(
+            f"{label}-gpu-not-free", f"GPU compute processes still active: {last_apps}"
+        )
         return False
 
     @staticmethod
@@ -469,7 +681,9 @@ class Gauntlet:
                 "after": after,
                 "delta": delta,
                 "expected": expected,
-                "reason": self.db_delta_reason(table, delta) if expected else "Table is not part of the gauntlet's expected mutation set.",
+                "reason": self.db_delta_reason(table, delta)
+                if expected
+                else "Table is not part of the gauntlet's expected mutation set.",
             }
             report["tables"].append(entry)
             if not expected:
@@ -514,7 +728,9 @@ class Gauntlet:
                 for method in sorted(methods):
                     endpoints.append({"method": method.upper(), "path": path})
             self.save_json(ENDPOINTS_FILE, {"count": len(endpoints), "endpoints": endpoints})
-            print(f"  Endpoint inventory: {len(endpoints)} operations saved to {ENDPOINTS_FILE.name}")
+            print(
+                f"  Endpoint inventory: {len(endpoints)} operations saved to {ENDPOINTS_FILE.name}"
+            )
         self.request("GET", "/api/system/status", label="system-status")
         self.request("GET", "/api/system/status/generators", label="generator-status")
         self.request("GET", "/api/config/pipeline", label="pipeline-config")
@@ -522,7 +738,11 @@ class Gauntlet:
     def pass_library(self) -> None:
         self.section("PASS 2: LIBRARY MATRIX")
         for page, size in [(1, 1), (1, 10), (2, 10), (1, 50), (1, 200), (999, 100)]:
-            self.request("GET", f"/api/library/movies?page={page}&page_size={size}", label=f"movies-page-{page}-{size}")
+            self.request(
+                "GET",
+                f"/api/library/movies?page={page}&page_size={size}",
+                label=f"movies-page-{page}-{size}",
+            )
         for page, size in [(0, 10), (-1, 10), (1, 0), (1, -1), (1, 201)]:
             self.request(
                 "GET",
@@ -532,12 +752,19 @@ class Gauntlet:
             )
         for movie_id in MOVIES:
             self.request("GET", f"/api/library/movies/{movie_id}", label=f"movie-{movie_id}")
-        self.request("GET", f"/api/library/movies/{NONEXISTENT_MOVIE_ID}", expected={404}, label="movie-404")
+        self.request(
+            "GET", f"/api/library/movies/{NONEXISTENT_MOVIE_ID}", expected={404}, label="movie-404"
+        )
 
         series = self.request("GET", "/api/library/series?page=1&page_size=25", label="series-page")
         series_items = series.json().get("items", [])
         for page, size in [(0, 10), (1, 0), (1, 201)]:
-            self.request("GET", f"/api/library/series?page={page}&page_size={size}", expected={422}, label=f"series-invalid-{page}-{size}")
+            self.request(
+                "GET",
+                f"/api/library/series?page={page}&page_size={size}",
+                expected={422},
+                label=f"series-invalid-{page}-{size}",
+            )
         if series_items:
             series_id = series_items[0]["id"]
             self.request("GET", f"/api/library/series/{series_id}", label="series-detail")
@@ -549,14 +776,21 @@ class Gauntlet:
     def pass_sync_webhooks(self) -> None:
         self.section("PASS 3: SYNC AND WEBHOOKS")
         if RUN_SYNC:
-            self.request("POST", "/api/sync/all", expected={200, 429}, timeout=600, label="sync-all")
-            self.request("POST", "/api/sync/all", expected={429}, timeout=60, label="sync-all-rate-limit")
+            self.request(
+                "POST", "/api/sync/all", expected={200, 429}, timeout=600, label="sync-all"
+            )
+            self.request(
+                "POST", "/api/sync/all", expected={429}, timeout=60, label="sync-all-rate-limit"
+            )
         else:
             print("  Sync skipped (GAUNTLET_RUN_SYNC=0)")
 
         radarr_test = {"eventType": "Test"}
         sonarr_test = {"eventType": "Test"}
-        ignored = {"eventType": "MovieFileDelete", "movie": {"id": 519, "title": "2001: A Space Odyssey", "tmdbId": 62}}
+        ignored = {
+            "eventType": "MovieFileDelete",
+            "movie": {"id": 519, "title": "2001: A Space Odyssey", "tmdbId": 62},
+        }
         rename = {
             "eventType": "Rename",
             "movie": {
@@ -566,26 +800,66 @@ class Gauntlet:
                 "folderPath": "/mnt/lab/movies/4K/2001 - A Space Odyssey (1968)",
             },
         }
-        self.request("POST", "/api/webhooks/radarr", data=radarr_test, expected={200}, label="webhook-radarr-test")
-        self.request("POST", "/api/webhooks/radarr", data=ignored, expected={200}, label="webhook-radarr-ignored")
-        self.request("POST", "/api/webhooks/radarr", data=rename, expected={200}, label="webhook-radarr-rename")
+        self.request(
+            "POST",
+            "/api/webhooks/radarr",
+            data=radarr_test,
+            expected={200},
+            label="webhook-radarr-test",
+        )
+        self.request(
+            "POST",
+            "/api/webhooks/radarr",
+            data=ignored,
+            expected={200},
+            label="webhook-radarr-ignored",
+        )
+        self.request(
+            "POST",
+            "/api/webhooks/radarr",
+            data=rename,
+            expected={200},
+            label="webhook-radarr-rename",
+        )
         if RUN_WEBHOOK_DOWNLOAD:
             download = {**rename, "eventType": "Download", "isUpgrade": True}
-            self.request("POST", "/api/webhooks/radarr", data=download, expected={200}, label="webhook-radarr-download")
+            self.request(
+                "POST",
+                "/api/webhooks/radarr",
+                data=download,
+                expected={200},
+                label="webhook-radarr-download",
+            )
         else:
             print("  Radarr Download webhook skipped (GAUNTLET_WEBHOOK_DOWNLOAD=0)")
-        self.request("POST", "/api/webhooks/sonarr", data=sonarr_test, expected={200}, label="webhook-sonarr-test")
-        self.request("POST", "/api/webhooks/subgen", data={"status": "complete", "path": "gauntlet"}, expected={200}, label="webhook-subgen-callback")
+        self.request(
+            "POST",
+            "/api/webhooks/sonarr",
+            data=sonarr_test,
+            expected={200},
+            label="webhook-sonarr-test",
+        )
+        self.request(
+            "POST",
+            "/api/webhooks/subgen",
+            data={"status": "complete", "path": "gauntlet"},
+            expected={200},
+            label="webhook-subgen-callback",
+        )
 
     def pass_pipeline(self) -> None:
         self.section("PASS 4: POSTER PIPELINE, RESULTS, RESCORE")
         targets = self.pipeline_targets()
-        print(f"  Pipeline scope: {PIPELINE_SCOPE}; targets: {targets}; timeout/run: {PIPELINE_TIMEOUT}s")
+        print(
+            f"  Pipeline scope: {PIPELINE_SCOPE}; targets: {targets}; timeout/run: {PIPELINE_TIMEOUT}s"
+        )
         self.record_gpu_snapshot("before-poster-pipeline")
 
         for index, movie_id in enumerate(targets):
             title = self.movie_name(movie_id)
-            run = self.request("POST", f"/api/pipeline/movie/{movie_id}/run", label=f"pipeline-start-{movie_id}")
+            run = self.request(
+                "POST", f"/api/pipeline/movie/{movie_id}/run", label=f"pipeline-start-{movie_id}"
+            )
             if run.status == 409:
                 active = run.json().get("detail", {}).get("active_run_id")
                 if isinstance(active, str) and active != "taste-profile rebuild":
@@ -617,9 +891,21 @@ class Gauntlet:
             else:
                 self.failed_runs.append(run_id)
 
-        self.request("POST", f"/api/pipeline/movie/{NONEXISTENT_MOVIE_ID}/run", data={}, expected={404}, label="pipeline-movie-404")
+        self.request(
+            "POST",
+            f"/api/pipeline/movie/{NONEXISTENT_MOVIE_ID}/run",
+            data={},
+            expected={404},
+            label="pipeline-movie-404",
+        )
         if targets:
-            self.request("POST", f"/api/test/pipeline/movie/{targets[0]}", expected={200, 409}, timeout=PIPELINE_TIMEOUT, label="legacy-test-pipeline")
+            self.request(
+                "POST",
+                f"/api/test/pipeline/movie/{targets[0]}",
+                expected={200, 409},
+                timeout=PIPELINE_TIMEOUT,
+                label="legacy-test-pipeline",
+            )
         self.record_gpu_snapshot("after-poster-pipeline")
 
     def poll_run(self, run_id: str, *, movie_id: int | None, label_prefix: str) -> str | None:
@@ -627,7 +913,9 @@ class Gauntlet:
         attempt = 0
         last_status: str | None = None
         while time.monotonic() < deadline:
-            result = self.request("GET", f"/api/pipeline/runs/{run_id}", label=f"{label_prefix}-status-{attempt}")
+            result = self.request(
+                "GET", f"/api/pipeline/runs/{run_id}", label=f"{label_prefix}-status-{attempt}"
+            )
             if result.status == 200:
                 body = result.json()
                 last_status = body.get("status")
@@ -636,13 +924,20 @@ class Gauntlet:
                     return last_status
             attempt += 1
             time.sleep(min(5 + attempt * 2, 30))
-        self._manual_failure("pipeline-timeout", f"Run {run_id} did not finish within {PIPELINE_TIMEOUT}s; last={last_status}")
+        self._manual_failure(
+            "pipeline-timeout",
+            f"Run {run_id} did not finish within {PIPELINE_TIMEOUT}s; last={last_status}",
+        )
         if movie_id is not None:
-            self.request("GET", f"/api/movies/{movie_id}/runs", label=f"movie-runs-timeout-{movie_id}")
+            self.request(
+                "GET", f"/api/movies/{movie_id}/runs", label=f"movie-runs-timeout-{movie_id}"
+            )
         return last_status
 
     def inspect_completed_run(self, run_id: str, movie_id: int) -> None:
-        results = self.request("GET", f"/api/pipeline/runs/{run_id}", label=f"pipeline-results-{run_id[:8]}")
+        results = self.request(
+            "GET", f"/api/pipeline/runs/{run_id}", label=f"pipeline-results-{run_id[:8]}"
+        )
         ranked = results.json().get("ranked") or []
         if ranked:
             first = ranked[0].get("orig_filename")
@@ -653,79 +948,168 @@ class Gauntlet:
                     binary=True,
                     label="pipeline-top-poster",
                 )
-        self.request("POST", f"/api/pipeline/runs/{run_id}/rescore", data={"weights": {"knn_sim": 0.35, "aesthetic": 0.1}, "gates": {"GATE_MIN_AESTHETIC": 4.0}}, label="pipeline-rescore")
-        self.request("POST", f"/api/pipeline/runs/{run_id}/rescore", data={"weights": {"knn_sim": -1}}, expected={400}, label="pipeline-rescore-invalid")
+        self.request(
+            "POST",
+            f"/api/pipeline/runs/{run_id}/rescore",
+            data={
+                "weights": {"knn_sim": 0.35, "aesthetic": 0.1},
+                "gates": {"GATE_MIN_AESTHETIC": 4.0},
+            },
+            label="pipeline-rescore",
+        )
+        self.request(
+            "POST",
+            f"/api/pipeline/runs/{run_id}/rescore",
+            data={"weights": {"knn_sim": -1}},
+            expected={400},
+            label="pipeline-rescore-invalid",
+        )
         self.request("GET", f"/api/movies/{movie_id}/runs", label=f"movie-runs-{movie_id}")
-        self.request("GET", f"/api/movies/{movie_id}/artwork-events", label=f"artwork-events-{movie_id}")
+        self.request(
+            "GET", f"/api/movies/{movie_id}/artwork-events", label=f"artwork-events-{movie_id}"
+        )
 
     def pass_feedback(self) -> None:
         self.section("PASS 5: FEEDBACK APPROVE, OVERRIDE, REJECT, UNDO")
         run_id = self.primary_run_id
         if not run_id:
-            self._manual_failure("feedback-skipped", "No completed pipeline run available for feedback tests")
+            self._manual_failure(
+                "feedback-skipped", "No completed pipeline run available for feedback tests"
+            )
             return
 
         results = self.request("GET", f"/api/pipeline/runs/{run_id}", label="feedback-run-results")
         ranked = results.json().get("ranked") or []
         override_filename = ranked[1]["orig_filename"] if len(ranked) > 1 else None
 
-        reject = self.request("POST", "/api/feedback", data={"run_id": run_id, "action": "reject_all", "deploy": False}, label="feedback-reject-all")
+        reject = self.request(
+            "POST",
+            "/api/feedback",
+            data={"run_id": run_id, "action": "reject_all", "deploy": False},
+            label="feedback-reject-all",
+        )
         self._remember_and_undo_feedback(reject, "reject-all")
 
-        approve = self.request("POST", "/api/feedback", data={"run_id": run_id, "action": "approve", "deploy": False}, label="feedback-approve")
+        approve = self.request(
+            "POST",
+            "/api/feedback",
+            data={"run_id": run_id, "action": "approve", "deploy": False},
+            label="feedback-approve",
+        )
         self._remember_and_undo_feedback(approve, "approve")
 
         if override_filename:
             override = self.request(
                 "POST",
                 "/api/feedback",
-                data={"run_id": run_id, "action": "override", "selected_filename": override_filename, "deploy": False},
+                data={
+                    "run_id": run_id,
+                    "action": "override",
+                    "selected_filename": override_filename,
+                    "deploy": False,
+                },
                 label="feedback-override",
             )
             self._remember_and_undo_feedback(override, "override")
         else:
-            self._manual_failure("feedback-override-skipped", f"Run {run_id} did not have a second ranked candidate")
+            self._manual_failure(
+                "feedback-override-skipped", f"Run {run_id} did not have a second ranked candidate"
+            )
 
-        self.request("POST", "/api/feedback", data={"run_id": "does-not-exist", "action": "approve"}, expected={404}, label="feedback-run-404")
-        self.request("POST", "/api/feedback", data={"run_id": run_id, "action": "override"}, expected={400}, label="feedback-override-missing-file")
-        self.request("POST", "/api/feedback", data={"run_id": run_id, "action": "bogus"}, expected={400}, label="feedback-action-invalid")
-        self.request("POST", "/api/feedback", data={}, expected={422}, label="feedback-body-invalid")
-        self.request("POST", "/api/feedback/undo", data={"event_id": "does-not-exist"}, expected={404}, label="feedback-undo-404")
+        self.request(
+            "POST",
+            "/api/feedback",
+            data={"run_id": "does-not-exist", "action": "approve"},
+            expected={404},
+            label="feedback-run-404",
+        )
+        self.request(
+            "POST",
+            "/api/feedback",
+            data={"run_id": run_id, "action": "override"},
+            expected={400},
+            label="feedback-override-missing-file",
+        )
+        self.request(
+            "POST",
+            "/api/feedback",
+            data={"run_id": run_id, "action": "bogus"},
+            expected={400},
+            label="feedback-action-invalid",
+        )
+        self.request(
+            "POST", "/api/feedback", data={}, expected={422}, label="feedback-body-invalid"
+        )
+        self.request(
+            "POST",
+            "/api/feedback/undo",
+            data={"event_id": "does-not-exist"},
+            expected={404},
+            label="feedback-undo-404",
+        )
 
     def _remember_and_undo_feedback(self, result: APIResult, suffix: str) -> None:
         event_id = result.json().get("event_id")
         if not event_id:
             return
         self.feedback_events.append(event_id)
-        self.request("POST", "/api/feedback/undo", data={"event_id": event_id}, label=f"feedback-undo-{suffix}")
+        self.request(
+            "POST",
+            "/api/feedback/undo",
+            data={"event_id": event_id},
+            label=f"feedback-undo-{suffix}",
+        )
 
     def pass_taste(self) -> None:
-        self.section("PASS 6: TASTE STATUS, MAP, CANDIDATES, RETRAIN")
+        self.section("PASS 6: TASTE STATUS, ACTIVE MAP, RETRAIN")
         self.request("GET", "/api/taste/status", label="taste-status")
         self.request("GET", "/api/taste/map", expected={200, 404}, label="taste-map")
-        if self.primary_run_id:
-            self.request("POST", "/api/taste/map/candidates", data={"run_id": self.primary_run_id}, expected={200, 404}, label="taste-map-candidates")
-        self.request("POST", "/api/taste/map/candidates", data={"run_id": "does-not-exist"}, expected={404}, label="taste-map-candidates-404")
         taste_retrain_enabled = RUN_TASTE_RETRAIN and TASTE_RETRAIN_MODE != "skip"
         if taste_retrain_enabled and TASTE_RETRAIN_MODE == "wait":
             print("  Taste map rebuild skipped before full retrain soak")
         else:
-            self.request("POST", "/api/taste/map/rebuild", expected={202}, label="taste-map-rebuild")
+            self.request(
+                "POST", "/api/taste/map/rebuild", expected={202}, label="taste-map-rebuild"
+            )
         if not taste_retrain_enabled:
             print("  Taste retrain skipped (set GAUNTLET_RUN_TASTE_RETRAIN=1 to enable)")
-            self.request("GET", "/api/taste/exemplars/default/image", expected={200, 404}, binary=True, label="taste-exemplar-image")
-            self.request("GET", "/api/taste/exemplars/default/neighbors", expected={200, 404}, label="taste-exemplar-neighbors")
+            self.request(
+                "GET",
+                "/api/taste/exemplars/default/image",
+                expected={200, 404},
+                binary=True,
+                label="taste-exemplar-image",
+            )
+            self.request(
+                "GET",
+                "/api/taste/exemplars/default/neighbors",
+                expected={200, 404},
+                label="taste-exemplar-neighbors",
+            )
             return
         self.release_marquee_gpu_resources("before-taste-retrain")
-        retrain = self.request("POST", "/api/taste/retrain", expected={202, 409}, label="taste-retrain")
+        retrain = self.request(
+            "POST", "/api/taste/retrain", expected={202, 409}, label="taste-retrain"
+        )
         if retrain.status == 202:
             if TASTE_RETRAIN_MODE == "start-only":
                 self.request("GET", "/api/taste/status", label="taste-rebuild-started-status")
                 self.cancel_taste_rebuild("taste-rebuild-start-only")
             else:
                 self.poll_taste_rebuild()
-        self.request("GET", "/api/taste/exemplars/default/image", expected={200, 404}, binary=True, label="taste-exemplar-image")
-        self.request("GET", "/api/taste/exemplars/default/neighbors", expected={200, 404}, label="taste-exemplar-neighbors")
+        self.request(
+            "GET",
+            "/api/taste/exemplars/default/image",
+            expected={200, 404},
+            binary=True,
+            label="taste-exemplar-image",
+        )
+        self.request(
+            "GET",
+            "/api/taste/exemplars/default/neighbors",
+            expected={200, 404},
+            label="taste-exemplar-neighbors",
+        )
 
     @staticmethod
     def taste_liveness_marker(rebuild: dict[str, Any]) -> tuple[Any, ...]:
@@ -780,7 +1164,10 @@ class Gauntlet:
             snapshots = snapshots[-5:]
             rebuild_status = rebuild.get("status")
             if rebuild_status in {"failed", "timeout", "cancelled"}:
-                self._manual_failure("taste-rebuild-failed", f"Taste rebuild ended with {rebuild_status}: {rebuild.get('error')}")
+                self._manual_failure(
+                    "taste-rebuild-failed",
+                    f"Taste rebuild ended with {rebuild_status}: {rebuild.get('error')}",
+                )
                 self.abort_remaining = True
                 return
             if not rebuild.get("running"):
@@ -808,28 +1195,67 @@ class Gauntlet:
         self.section("PASS 7: SUBTITLE INVENTORY, PREVIEW, DOWNLOAD")
         for movie_id, movie in MOVIES.items():
             media_file_id = movie["media_file_id"]
-            inventory = self.request("GET", f"/api/media-files/{media_file_id}/subtitles", expected={200, 422, 404}, label=f"subtitles-{movie_id}")
+            inventory = self.request(
+                "GET",
+                f"/api/media-files/{media_file_id}/subtitles",
+                expected={200, 422, 404},
+                label=f"subtitles-{movie_id}",
+            )
             if inventory.status == 200 and isinstance(inventory.body, dict):
                 self.inventories[media_file_id] = inventory.body
 
         for movie_id in MOVIES_WITH_SRT[:5]:
             media_file_id = MOVIES[movie_id]["media_file_id"]
-            scan = self.request("POST", f"/api/media-files/{media_file_id}/subtitles/scan", expected={200, 422}, label=f"subtitle-force-scan-{movie_id}")
+            scan = self.request(
+                "POST",
+                f"/api/media-files/{media_file_id}/subtitles/scan",
+                expected={200, 422},
+                label=f"subtitle-force-scan-{movie_id}",
+            )
             if scan.status == 200 and isinstance(scan.body, dict):
                 self.inventories[media_file_id] = scan.body
 
         external_tracks, embedded_tracks = self.current_subtitle_tracks()
         for media_file_id, track_id in external_tracks[:8]:
-            self.request("GET", f"/api/media-files/{media_file_id}/subtitles/{track_id}/preview", label=f"subtitle-preview-{track_id}")
-            self.request("GET", f"/api/media-files/{media_file_id}/subtitles/{track_id}/download", expected={200, 404}, label=f"subtitle-download-{track_id}")
+            self.request(
+                "GET",
+                f"/api/media-files/{media_file_id}/subtitles/{track_id}/preview",
+                label=f"subtitle-preview-{track_id}",
+            )
+            self.request(
+                "GET",
+                f"/api/media-files/{media_file_id}/subtitles/{track_id}/download",
+                expected={200, 404},
+                label=f"subtitle-download-{track_id}",
+            )
         for media_file_id, track_id in embedded_tracks[:5]:
-            self.request("GET", f"/api/media-files/{media_file_id}/subtitles/{track_id}/preview", expected={200, 404}, label=f"subtitle-embedded-preview-{track_id}")
+            self.request(
+                "GET",
+                f"/api/media-files/{media_file_id}/subtitles/{track_id}/preview",
+                expected={200, 404},
+                label=f"subtitle-embedded-preview-{track_id}",
+            )
 
         first_media = next(iter(self.inventories), 1)
-        self.request("GET", f"/api/media-files/{first_media}/subtitles/not-a-track/preview", expected={404}, label="subtitle-preview-404")
-        self.request("GET", f"/api/media-files/{first_media}/subtitles/not-a-track/download", expected={404}, label="subtitle-download-404")
+        self.request(
+            "GET",
+            f"/api/media-files/{first_media}/subtitles/not-a-track/preview",
+            expected={404},
+            label="subtitle-preview-404",
+        )
+        self.request(
+            "GET",
+            f"/api/media-files/{first_media}/subtitles/not-a-track/download",
+            expected={404},
+            label="subtitle-download-404",
+        )
         for movie_id in MOVIES_WITH_SRT[:3]:
-            self.request("POST", f"/api/movies/{movie_id}/subtitles/inspect", expected={200, 422}, label=f"movie-subtitle-inspect-{movie_id}")
+            self.request(
+                "POST",
+                f"/api/movies/{movie_id}/subtitles/inspect",
+                expected={200, 422},
+                label=f"movie-subtitle-inspect-{movie_id}",
+            )
 
     def current_subtitle_tracks(self) -> tuple[list[tuple[int, str]], list[tuple[int, str]]]:
         external_tracks: list[tuple[int, str]] = []
@@ -864,7 +1290,9 @@ class Gauntlet:
             metadata_media_file_id, metadata_inventory = self._inventory_with_tracks()
 
         if remove_media_file_id is None or remove_inventory is None:
-            self._manual_failure("subtitle-plans-skipped", "No subtitle inventory with tracks available")
+            self._manual_failure(
+                "subtitle-plans-skipped", "No subtitle inventory with tracks available"
+            )
             return
         tracks = remove_inventory.get("tracks", [])
         any_track = tracks[0] if tracks else None
@@ -873,20 +1301,37 @@ class Gauntlet:
             remove = self.request(
                 "POST",
                 f"/api/media-files/{remove_media_file_id}/subtitle-plans",
-                data={"operation": "subtitle_remove", "track_ids": [any_track["id"]], "backup": False, "allow_break": False},
+                data={
+                    "operation": "subtitle_remove",
+                    "track_ids": [any_track["id"]],
+                    "backup": False,
+                    "allow_break": False,
+                },
                 expected={201, 422},
                 label="subtitle-plan-remove",
             )
             self._inspect_or_cancel_job(remove)
         if embed_media_file_id is not None and embed_inventory is not None:
-            external = next((track for track in embed_inventory.get("tracks", []) if track.get("source") == "external"), None)
+            external = next(
+                (
+                    track
+                    for track in embed_inventory.get("tracks", [])
+                    if track.get("source") == "external"
+                ),
+                None,
+            )
         else:
             external = None
         if embed_media_file_id is not None and external:
             embed = self.request(
                 "POST",
                 f"/api/media-files/{embed_media_file_id}/subtitle-plans",
-                data={"operation": "subtitle_embed", "track_ids": [external["id"]], "backup": False, "allow_break": False},
+                data={
+                    "operation": "subtitle_embed",
+                    "track_ids": [external["id"]],
+                    "backup": False,
+                    "allow_break": False,
+                },
                 expected={201, 422},
                 label="subtitle-plan-embed",
             )
@@ -895,7 +1340,12 @@ class Gauntlet:
         metadata = self.request(
             "POST",
             f"/api/media-files/{media_file_id}/subtitle-plans",
-            data={"operation": "subtitle_metadata", "edits": [], "backup": False, "allow_break": False},
+            data={
+                "operation": "subtitle_metadata",
+                "edits": [],
+                "backup": False,
+                "allow_break": False,
+            },
             expected={201, 422},
             label="subtitle-plan-metadata",
         )
@@ -933,7 +1383,9 @@ class Gauntlet:
     def _inventory_with_external_track(self) -> tuple[int | None, dict[str, Any] | None]:
         for movie_id in MOVIES_WITH_SRT:
             media_file_id, inventory = self._inventory_for_movie(movie_id)
-            if inventory and any(track.get("source") == "external" for track in inventory.get("tracks", [])):
+            if inventory and any(
+                track.get("source") == "external" for track in inventory.get("tracks", [])
+            ):
                 return media_file_id, inventory
         for media_file_id, inventory in self.inventories.items():
             if any(track.get("source") == "external" for track in inventory.get("tracks", [])):
@@ -946,20 +1398,60 @@ class Gauntlet:
             return
         self.request("GET", f"/api/media-jobs/{job_id}", label=f"media-job-{job_id[:8]}")
         if CONFIRM_SUBTITLE_MUTATIONS:
-            self.request("POST", f"/api/media-jobs/{job_id}/confirm", expected={200, 409, 422}, label=f"media-job-confirm-{job_id[:8]}")
+            self.request(
+                "POST",
+                f"/api/media-jobs/{job_id}/confirm",
+                expected={200, 409, 422},
+                label=f"media-job-confirm-{job_id[:8]}",
+            )
             self.poll_media_job(job_id, timeout=300)
         else:
-            self.request("POST", f"/api/media-jobs/{job_id}/cancel", label=f"media-job-cancel-{job_id[:8]}")
+            self.request(
+                "POST", f"/api/media-jobs/{job_id}/cancel", label=f"media-job-cancel-{job_id[:8]}"
+            )
 
     def exercise_media_jobs(self) -> None:
-        for query in ["", "?status=planned", "?status=queued", "?status=failed", "?operation=subtitle_remove", "?operation=subtitle_generate", "?limit=5"]:
+        for query in [
+            "",
+            "?status=planned",
+            "?status=queued",
+            "?status=failed",
+            "?operation=subtitle_remove",
+            "?operation=subtitle_generate",
+            "?limit=5",
+        ]:
             self.request("GET", f"/api/media-jobs{query}", label=f"media-jobs{query or '-all'}")
         self.request("GET", "/api/media-jobs/does-not-exist", expected={404}, label="media-job-404")
-        self.request("GET", "/api/media-jobs/does-not-exist/events", expected={404}, label="media-job-events-404")
-        self.request("POST", "/api/media-jobs/does-not-exist/confirm", expected={404}, label="media-job-confirm-404")
-        self.request("POST", "/api/media-jobs/does-not-exist/cancel", expected={404}, label="media-job-cancel-404")
-        self.request("POST", "/api/media-jobs/does-not-exist/restore", expected={404}, label="media-job-restore-404")
-        self.request("DELETE", "/api/media-jobs/does-not-exist/backup", expected={404}, label="media-job-delete-backup-404")
+        self.request(
+            "GET",
+            "/api/media-jobs/does-not-exist/events",
+            expected={404},
+            label="media-job-events-404",
+        )
+        self.request(
+            "POST",
+            "/api/media-jobs/does-not-exist/confirm",
+            expected={404},
+            label="media-job-confirm-404",
+        )
+        self.request(
+            "POST",
+            "/api/media-jobs/does-not-exist/cancel",
+            expected={404},
+            label="media-job-cancel-404",
+        )
+        self.request(
+            "POST",
+            "/api/media-jobs/does-not-exist/restore",
+            expected={404},
+            label="media-job-restore-404",
+        )
+        self.request(
+            "DELETE",
+            "/api/media-jobs/does-not-exist/backup",
+            expected={404},
+            label="media-job-delete-backup-404",
+        )
 
     def exercise_subtitle_policies(self) -> None:
         self.request("GET", "/api/subtitle-policies", label="policies-list")
@@ -978,18 +1470,44 @@ class Gauntlet:
             "hardlink_action": "block",
             "backup_mode": "none",
         }
-        created = self.request("POST", "/api/subtitle-policies", data=body, expected={201}, label="policy-create")
+        created = self.request(
+            "POST", "/api/subtitle-policies", data=body, expected={201}, label="policy-create"
+        )
         policy_id = created.json().get("id")
         if policy_id:
             self.request("GET", f"/api/subtitle-policies/{policy_id}", label="policy-get")
             updated = {**body, "name": body["name"] + "-updated", "languages": [], "enabled": False}
-            self.request("PUT", f"/api/subtitle-policies/{policy_id}", data=updated, label="policy-update")
+            self.request(
+                "PUT", f"/api/subtitle-policies/{policy_id}", data=updated, label="policy-update"
+            )
             policy_movie_ids = [2, 338]
-            self.request("POST", f"/api/subtitle-policies/{policy_id}/audit", data={"movie_ids": policy_movie_ids}, label="policy-audit")
-            self.request("POST", f"/api/subtitle-policies/{policy_id}/apply", data={"movie_ids": policy_movie_ids}, expected={202}, label="policy-apply")
+            self.request(
+                "POST",
+                f"/api/subtitle-policies/{policy_id}/audit",
+                data={"movie_ids": policy_movie_ids},
+                label="policy-audit",
+            )
+            self.request(
+                "POST",
+                f"/api/subtitle-policies/{policy_id}/apply",
+                data={"movie_ids": policy_movie_ids},
+                expected={202},
+                label="policy-apply",
+            )
             self.request("DELETE", f"/api/subtitle-policies/{policy_id}", label="policy-delete")
-            self.request("GET", f"/api/subtitle-policies/{policy_id}", expected={404}, label="policy-get-after-delete")
-        self.request("POST", "/api/subtitle-policies", data={"languages": ["en"]}, expected={422}, label="policy-create-invalid")
+            self.request(
+                "GET",
+                f"/api/subtitle-policies/{policy_id}",
+                expected={404},
+                label="policy-get-after-delete",
+            )
+        self.request(
+            "POST",
+            "/api/subtitle-policies",
+            data={"languages": ["en"]},
+            expected={422},
+            label="policy-create-invalid",
+        )
         self.request("GET", "/api/subtitle-policies/999999", expected={404}, label="policy-404")
 
     def pass_subtitle_generation(self) -> None:
@@ -1002,13 +1520,30 @@ class Gauntlet:
             if status in {"queued", "running"} and count
         }
         if active_jobs:
-            self._manual_failure("subgen-media-jobs-not-idle", f"Media jobs active before Subgen: {active_jobs}")
-        self.request("GET", f"{SUBGEN_URL}/status", expected={200, 404}, timeout=15, label="subgen-direct-status", external=True)
+            self._manual_failure(
+                "subgen-media-jobs-not-idle", f"Media jobs active before Subgen: {active_jobs}"
+            )
+        self.request(
+            "GET",
+            f"{SUBGEN_URL}/status",
+            expected={200, 404},
+            timeout=15,
+            label="subgen-direct-status",
+            external=True,
+        )
         self.request("GET", "/api/subtitle-generators", label="subtitle-generators")
-        health = self.request("GET", "/api/system/status/generators", label="generator-health-before-generation")
+        health = self.request(
+            "GET", "/api/system/status/generators", label="generator-health-before-generation"
+        )
         healthy = any(g.get("healthy") for g in health.json().get("generators", []))
         if not healthy:
-            self.request("POST", "/api/media-files/1/subtitle-generations", data={"language_hint": "en", "output": "external"}, expected={503}, label="generation-disabled-shape")
+            self.request(
+                "POST",
+                "/api/media-files/1/subtitle-generations",
+                data={"language_hint": "en", "output": "external"},
+                expected={503},
+                label="generation-disabled-shape",
+            )
             self.record_gpu_snapshot("after-subgen-skipped")
             return
 
@@ -1030,7 +1565,13 @@ class Gauntlet:
         job_id = job.json().get("job_id")
         if job_id:
             self.poll_media_job(job_id, timeout=SUBGEN_TIMEOUT)
-        self.request("POST", f"/api/movies/{NONEXISTENT_MOVIE_ID}/subtitle-generations", data={"language_hint": "en", "output": "external"}, expected={404}, label="movie-generation-404")
+        self.request(
+            "POST",
+            f"/api/movies/{NONEXISTENT_MOVIE_ID}/subtitle-generations",
+            data={"language_hint": "en", "output": "external"},
+            expected={404},
+            label="movie-generation-404",
+        )
         self.record_gpu_snapshot("after-subgen")
 
     def _generation_candidate(self) -> int | None:
@@ -1053,17 +1594,32 @@ class Gauntlet:
         attempt = 0
         last_status: str | None = None
         while time.monotonic() < deadline:
-            result = self.request("GET", f"/api/media-jobs/{job_id}", expected={200, 404}, label=f"media-job-poll-{job_id[:8]}-{attempt}")
+            result = self.request(
+                "GET",
+                f"/api/media-jobs/{job_id}",
+                expected={200, 404},
+                label=f"media-job-poll-{job_id[:8]}-{attempt}",
+            )
             if result.status == 200:
                 last_status = result.json().get("status")
                 if self.terminal_job_status(last_status):
-                    self.request("GET", f"/api/media-jobs/{job_id}/events", expected={200, 404}, label=f"media-job-events-{job_id[:8]}")
+                    self.request(
+                        "GET",
+                        f"/api/media-jobs/{job_id}/events",
+                        expected={200, 404},
+                        label=f"media-job-events-{job_id[:8]}",
+                    )
                     if last_status in {"failed", "cancelled", "interrupted"}:
-                        self._manual_failure("media-job-terminal", f"Job {job_id} ended with status {last_status}")
+                        self._manual_failure(
+                            "media-job-terminal", f"Job {job_id} ended with status {last_status}"
+                        )
                     return last_status
             attempt += 1
             time.sleep(min(10 + attempt * 5, 30))
-        self._manual_failure("media-job-timeout", f"Job {job_id} did not finish within {timeout}s; last={last_status}")
+        self._manual_failure(
+            "media-job-timeout",
+            f"Job {job_id} did not finish within {timeout}s; last={last_status}",
+        )
         return last_status
 
     def pass_letterbox(self) -> None:
@@ -1073,33 +1629,105 @@ class Gauntlet:
         for include_skipped in (False, True):
             for include_analyzed in (False, True):
                 query = f"include_skipped={str(include_skipped).lower()}&include_analyzed={str(include_analyzed).lower()}"
-                self.request("GET", f"/api/letterbox/movies/find-candidates?{query}", label=f"letterbox-find-{query}")
+                self.request(
+                    "GET",
+                    f"/api/letterbox/movies/find-candidates?{query}",
+                    label=f"letterbox-find-{query}",
+                )
 
         for movie_id in MOVIES:
-            self.request("POST", f"/api/letterbox/movies/{movie_id}/detect", expected={200, 422, 404}, timeout=180, label=f"letterbox-detect-{movie_id}")
+            self.request(
+                "POST",
+                f"/api/letterbox/movies/{movie_id}/detect",
+                expected={200, 422, 404},
+                timeout=180,
+                label=f"letterbox-detect-{movie_id}",
+            )
 
         preview_targets = [25, 36, 5, 1, 443, 15]
         for movie_id in preview_targets:
-            self.request("GET", f"/api/letterbox/movies/{movie_id}", expected={200, 404}, label=f"letterbox-state-{movie_id}")
+            self.request(
+                "GET",
+                f"/api/letterbox/movies/{movie_id}",
+                expected={200, 404},
+                label=f"letterbox-state-{movie_id}",
+            )
             for mode in ("before", "after"):
-                self.request("GET", f"/api/letterbox/movies/{movie_id}/preview?mode={mode}&minute=5", expected={200, 404, 422}, binary=True, timeout=120, label=f"letterbox-preview-{movie_id}-{mode}")
+                self.request(
+                    "GET",
+                    f"/api/letterbox/movies/{movie_id}/preview?mode={mode}&minute=5",
+                    expected={200, 404, 422},
+                    binary=True,
+                    timeout=120,
+                    label=f"letterbox-preview-{movie_id}-{mode}",
+                )
 
         if APPLY_LETTERBOX and MKV_MOVIES:
             for movie_id in [435, 5, 12, 25, 36]:
-                result = self.request("POST", f"/api/letterbox/movies/{movie_id}/apply", data={}, expected={200, 422}, label=f"letterbox-apply-{movie_id}")
+                result = self.request(
+                    "POST",
+                    f"/api/letterbox/movies/{movie_id}/apply",
+                    data={},
+                    expected={200, 422},
+                    label=f"letterbox-apply-{movie_id}",
+                )
                 if result.status == 200:
-                    self.request("POST", f"/api/letterbox/movies/{movie_id}/remove", expected={200, 422}, label=f"letterbox-remove-{movie_id}")
+                    self.request(
+                        "POST",
+                        f"/api/letterbox/movies/{movie_id}/remove",
+                        expected={200, 422},
+                        label=f"letterbox-remove-{movie_id}",
+                    )
                     break
         if MP4_MOVIES:
-            self.request("POST", f"/api/letterbox/movies/{MP4_MOVIES[0]}/apply", data={}, expected={422}, label="letterbox-apply-mp4")
-        self.request("POST", "/api/letterbox/detect", data={"movie_ids": MKV_MOVIES[:2]}, expected={202, 409}, label="letterbox-batch-detect")
-        self.request("POST", "/api/letterbox/apply", data={"movie_ids": MKV_MOVIES[:2], "only_high": True}, expected={200}, label="letterbox-batch-apply")
+            self.request(
+                "POST",
+                f"/api/letterbox/movies/{MP4_MOVIES[0]}/apply",
+                data={},
+                expected={422},
+                label="letterbox-apply-mp4",
+            )
+        self.request(
+            "POST",
+            "/api/letterbox/detect",
+            data={"movie_ids": MKV_MOVIES[:2]},
+            expected={202, 409},
+            label="letterbox-batch-detect",
+        )
+        self.request(
+            "POST",
+            "/api/letterbox/apply",
+            data={"movie_ids": MKV_MOVIES[:2], "only_high": True},
+            expected={200},
+            label="letterbox-batch-apply",
+        )
         if MKV_MOVIES:
-            self.request("POST", f"/api/letterbox/movies/{MKV_MOVIES[-1]}/ignore", expected={200}, label="letterbox-ignore")
+            self.request(
+                "POST",
+                f"/api/letterbox/movies/{MKV_MOVIES[-1]}/ignore",
+                expected={200},
+                label="letterbox-ignore",
+            )
         self.request("POST", "/api/letterbox/heal", label="letterbox-heal")
-        self.request("POST", f"/api/letterbox/movies/{NONEXISTENT_MOVIE_ID}/detect", expected={404}, label="letterbox-detect-404")
-        self.request("POST", f"/api/letterbox/movies/{NONEXISTENT_MOVIE_ID}/apply", data={}, expected={404}, label="letterbox-apply-404")
-        self.request("GET", f"/api/letterbox/movies/{NONEXISTENT_MOVIE_ID}/preview", expected={404}, label="letterbox-preview-404")
+        self.request(
+            "POST",
+            f"/api/letterbox/movies/{NONEXISTENT_MOVIE_ID}/detect",
+            expected={404},
+            label="letterbox-detect-404",
+        )
+        self.request(
+            "POST",
+            f"/api/letterbox/movies/{NONEXISTENT_MOVIE_ID}/apply",
+            data={},
+            expected={404},
+            label="letterbox-apply-404",
+        )
+        self.request(
+            "GET",
+            f"/api/letterbox/movies/{NONEXISTENT_MOVIE_ID}/preview",
+            expected={404},
+            label="letterbox-preview-404",
+        )
 
     def pass_system_config(self) -> None:
         self.section("PASS 11: SYSTEM HEAL AND CONFIG ROUND TRIP")
@@ -1110,13 +1738,43 @@ class Gauntlet:
         values = config.json().get("values", {})
         original = values.get("GATE_MIN_AESTHETIC", 4.5)
         new_value = 4.25 if original != 4.25 else 4.5
-        self.request("PUT", "/api/config/pipeline", data={"values": {"GATE_MIN_AESTHETIC": new_value}}, label="config-update-live-safe")
-        self.request("PUT", "/api/config/pipeline", data={"values": {"GATE_MIN_AESTHETIC": original}}, label="config-restore-live-safe")
-        self.request("PUT", "/api/config/pipeline", data={"values": {}}, expected={400}, label="config-empty")
-        self.request("PUT", "/api/config/pipeline", data={"values": {"NOT_A_REAL_KEY": 1}}, expected={400}, label="config-unknown-key")
-        self.request("PUT", "/api/config/pipeline", data={"values": {"OCR_DEVICE": "bogus"}}, expected={400}, label="config-invalid-value")
+        self.request(
+            "PUT",
+            "/api/config/pipeline",
+            data={"values": {"GATE_MIN_AESTHETIC": new_value}},
+            label="config-update-live-safe",
+        )
+        self.request(
+            "PUT",
+            "/api/config/pipeline",
+            data={"values": {"GATE_MIN_AESTHETIC": original}},
+            label="config-restore-live-safe",
+        )
+        self.request(
+            "PUT", "/api/config/pipeline", data={"values": {}}, expected={400}, label="config-empty"
+        )
+        self.request(
+            "PUT",
+            "/api/config/pipeline",
+            data={"values": {"NOT_A_REAL_KEY": 1}},
+            expected={400},
+            label="config-unknown-key",
+        )
+        self.request(
+            "PUT",
+            "/api/config/pipeline",
+            data={"values": {"OCR_DEVICE": "bogus"}},
+            expected={400},
+            label="config-invalid-value",
+        )
         if "AI_MODEL" in values:
-            self.request("PUT", "/api/config/pipeline", data={"values": {"AI_MODEL": values["AI_MODEL"]}}, expected={400}, label="config-restart-required")
+            self.request(
+                "PUT",
+                "/api/config/pipeline",
+                data={"values": {"AI_MODEL": values["AI_MODEL"]}},
+                expected={400},
+                label="config-restart-required",
+            )
         self.request("GET", "/health", label="health-final")
         self.record_gpu_snapshot("final")
 
@@ -1160,7 +1818,9 @@ class Gauntlet:
             f"{'enabled' if RUN_TASTE_RETRAIN else 'disabled'} "
             f"(mode={TASTE_RETRAIN_MODE}, no-update={TASTE_NO_UPDATE_SECONDS}s)"
         )
-        print(f"  Lab movies: {len(MOVIES)} (MKV={len(MKV_MOVIES)}, MP4={len(MP4_MOVIES)}, sidecar-set={len(MOVIES_WITH_SRT)})")
+        print(
+            f"  Lab movies: {len(MOVIES)} (MKV={len(MKV_MOVIES)}, MP4={len(MP4_MOVIES)}, sidecar-set={len(MOVIES_WITH_SRT)})"
+        )
         print(f"  Output: {OUTPUT_DIR}")
 
         self.section("BASELINE DB SNAPSHOT")
@@ -1190,14 +1850,18 @@ class Gauntlet:
                 fn()
             except Exception as exc:  # noqa: BLE001 - gauntlet continues
                 traceback.print_exc()
-                self._manual_failure(f"pass-{pass_name}", f"Unhandled exception: {exc}\n{traceback.format_exc()}")
+                self._manual_failure(
+                    f"pass-{pass_name}", f"Unhandled exception: {exc}\n{traceback.format_exc()}"
+                )
             elapsed = time.monotonic() - started
             self.pass_results[pass_name] = {
                 "calls": self.call_count - before_calls,
                 "unexpected_errors": self.unexpected_errors - before_errors,
                 "elapsed_s": round(elapsed, 1),
             }
-            print(f"\n  Pass done: {pass_name} - {self.call_count - before_calls} calls, {elapsed:.1f}s")
+            print(
+                f"\n  Pass done: {pass_name} - {self.call_count - before_calls} calls, {elapsed:.1f}s"
+            )
             if self.abort_remaining:
                 print("  Aborting remaining passes after unrecovered taste rebuild soak failure")
                 break

@@ -364,10 +364,8 @@
     "marquee/core/jobs/builtin_handlers.py:_phase_progress:cancel_registry.raise_if_cancelled": 1,
     "marquee/core/jobs/builtin_handlers.py:_update_progress:job_manager.emit": 1,
     "marquee/core/jobs/builtin_handlers.py:library_sync:cancel_registry.get": 1,
-    "marquee/core/letterbox_reencode.py:_raise_if_cancel_requested:cancel_registry.get": 1,
     "marquee/core/subtitles/generation.py:run_generation_job:cancel_registry.get": 1,
     "marquee/core/subtitles/mutation.py:_raise_if_cancel_requested:cancel_registry.get": 1,
-    "marquee/media/letterbox_manager.py:_emit_child_progress:job_manager.emit": 1,
     "marquee/pipeline/progress_bridge.py:_persist:job_manager.emit": 1
   }
 }

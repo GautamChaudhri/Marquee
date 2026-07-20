@@ -119,14 +119,21 @@ def _tmdb_lookup(title: str, year: int | None) -> tuple[list[str], int | None] |
         return None
 
 
-def enrich(*, use_tmdb: bool = True) -> Path:
-    profile_path = Path(pipeline_settings.TASTE_PROFILE_PATH)
+def enrich(
+    *,
+    use_tmdb: bool = True,
+    profile_path: Path | None = None,
+    output: Path | None = None,
+    cache_path: Path | None = None,
+) -> Path:
+    profile_path = profile_path or Path(pipeline_settings.TASTE_PROFILE_PATH)
+    output = output or profile_path
     ensure_safe_artifact(profile_path, "taste_profile")
     with load_npz_safe(profile_path) as data:
         payload = {key: data[key] for key in data.files}
     names = decode_unicode_list(payload["poster_names"])
 
-    cache_path = Path(pipeline_settings.TRAINING_DATA_DIR) / ".genre_cache.json"
+    cache_path = cache_path or Path(pipeline_settings.TRAINING_DATA_DIR) / ".genre_cache.json"
     cache = {}
     if cache_path.exists():
         try:
@@ -166,7 +173,7 @@ def enrich(*, use_tmdb: bool = True) -> Path:
     payload["years"] = np.asarray(years_out, dtype=np.int64)
     payload["tmdb_ids"] = np.asarray(tmdb_out, dtype=np.int64)
     payload.pop("genres", None)
-    save_npz_atomic(profile_path, payload)
+    save_npz_atomic(output, payload)
 
     resolved = sum(1 for g in genres_out if g)
     logger.info(
@@ -175,7 +182,7 @@ def enrich(*, use_tmdb: bool = True) -> Path:
         resolved,
         tmdb_calls,
     )
-    return profile_path
+    return output
 
 
 def main() -> None:

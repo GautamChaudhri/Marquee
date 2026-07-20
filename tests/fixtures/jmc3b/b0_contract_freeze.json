@@ -169,6 +169,7 @@
     "process_launcher_methods": [
       "launch",
       "launch_canary",
+      "launch_internal_runner",
       "shutdown"
     ]
   },
@@ -213,7 +214,7 @@
     {
       "path": "marquee/media/letterbox_manager.py",
       "contract": "process-local unbounded subscriber queues",
-      "disposition": "batch subscriber-queue lifecycle removed in JMC6F (F02); pure detection/storage algorithms retained"
+      "disposition": "removed in JMC6H (H5); pure eligibility and scope algorithms live in bounded modules"
     },
     {
       "path": "marquee/pipeline/progress_bridge.py",
@@ -223,7 +224,7 @@
     {
       "path": "marquee/pipeline/run_manager.py",
       "contract": "process-local unbounded subscriber queues",
-      "disposition": "removed in JMC6F (F03); archive/GPU/extractor helpers extracted to marquee/pipeline/extractor_runtime.py"
+      "disposition": "removed in JMC6F (F03); remaining extractor singleton compatibility retired in JMC6H (H5)"
     }
   ],
   "logging_surfaces": [
@@ -234,7 +235,7 @@
   ],
   "artifact_surfaces": [
     "marquee/core/filesystem.py",
-    "marquee/ml/artifact_registry.py",
+    "marquee/ml/publication_catalog.py",
     "marquee/models/job_evidence.py"
   ],
   "redaction": {

@@ -11,7 +11,8 @@ from marquee.core.poster_subjects import (
     MEDIA_TYPE_SERIES,
     PosterSubject,
 )
-from marquee.models import Movie, PipelineRun, Season, Series
+from marquee.models import Movie, Season, Series
+from tests.support.canonical_poster import seed_canonical_pipeline_run
 
 
 @pytest.mark.asyncio
@@ -22,7 +23,7 @@ async def test_poster_subject_creation_and_properties():
         title="Inception",
         tmdb_id=27205,
         folder_path="/movies/Inception (2010)",
-        movie_file_path="/movies/Inception (2010)/Inception.mkv"
+        movie_file_path="/movies/Inception (2010)/Inception.mkv",
     )
     subj_movie = PosterSubject.from_movie(movie)
     assert subj_movie.media_type == MEDIA_TYPE_MOVIE
@@ -34,12 +35,7 @@ async def test_poster_subject_creation_and_properties():
     assert subj_movie.path_source == "radarr"
 
     # 2. Series Subject
-    series = Series(
-        id=20,
-        title="Breaking Bad",
-        tmdb_id=1396,
-        series_path="/tv/Breaking Bad"
-    )
+    series = Series(id=20, title="Breaking Bad", tmdb_id=1396, series_path="/tv/Breaking Bad")
     subj_series = PosterSubject.from_series(series)
     assert subj_series.media_type == MEDIA_TYPE_SERIES
     assert subj_series.entity == series
@@ -50,12 +46,7 @@ async def test_poster_subject_creation_and_properties():
     assert subj_series.path_source == "sonarr"
 
     # 3. Season Subject
-    season = Season(
-        id=30,
-        series_id=20,
-        season_number=1,
-        tmdb_id=3572
-    )
+    season = Season(id=30, series_id=20, season_number=1, tmdb_id=3572)
     subj_season = PosterSubject.from_season(season, series)
     assert subj_season.media_type == MEDIA_TYPE_SEASON
     assert subj_season.entity == season
@@ -66,12 +57,7 @@ async def test_poster_subject_creation_and_properties():
     assert subj_season.path_source == "sonarr"
 
     # Special season 0 (specials)
-    season_0 = Season(
-        id=31,
-        series_id=20,
-        season_number=0,
-        tmdb_id=3571
-    )
+    season_0 = Season(id=31, series_id=20, season_number=0, tmdb_id=3571)
     subj_season_0 = PosterSubject.from_season(season_0, series)
     assert subj_season_0.title == "Breaking Bad - Season 00"
 
@@ -83,10 +69,7 @@ async def test_poster_subject_creation_and_properties():
 @pytest.mark.asyncio
 async def test_poster_subject_filename_rendering():
     # Movie rendering with {movie_basename}
-    movie = Movie(
-        title="Inception",
-        movie_file_path="/movies/Inception/inception-1080p.mkv"
-    )
+    movie = Movie(title="Inception", movie_file_path="/movies/Inception/inception-1080p.mkv")
     subj_movie = PosterSubject.from_movie(movie)
 
     original_movie_format = settings.MOVIE_POSTER_FORMAT
@@ -130,7 +113,7 @@ async def test_poster_subject_cache_and_backup_paths():
     subj_movie = PosterSubject.from_movie(movie)
     assert subj_movie.cache_paths() == (
         settings.poster_cache_path / "movies" / "101.jpg",
-        settings.poster_cache_path / "movies" / "101.meta.json"
+        settings.poster_cache_path / "movies" / "101.meta.json",
     )
     assert subj_movie.backup_file() == settings.poster_backup_path / "1.jpg"
 
@@ -143,7 +126,7 @@ async def test_poster_subject_cache_and_backup_paths():
     subj_series = PosterSubject.from_series(series)
     assert subj_series.cache_paths() == (
         settings.poster_cache_path / "tv" / "202.jpg",
-        settings.poster_cache_path / "tv" / "202.meta.json"
+        settings.poster_cache_path / "tv" / "202.meta.json",
     )
     assert subj_series.backup_file() == settings.poster_backup_path / "series-2.jpg"
 
@@ -155,7 +138,7 @@ async def test_poster_subject_cache_and_backup_paths():
     subj_season = PosterSubject.from_season(season, series)
     assert subj_season.cache_paths() == (
         settings.poster_cache_path / "tv" / "202-s04.jpg",
-        settings.poster_cache_path / "tv" / "202-s04.meta.json"
+        settings.poster_cache_path / "tv" / "202-s04.meta.json",
     )
     assert subj_season.backup_file() == settings.poster_backup_path / "season-3.jpg"
 
@@ -173,28 +156,30 @@ async def test_poster_subject_fk_kwargs():
         "media_type": "movie",
         "movie_id": 5,
         "series_id": None,
-        "season_id": None
+        "season_id": None,
     }
 
     assert PosterSubject.from_series(series).event_fk_kwargs() == {
         "media_type": "series",
         "movie_id": None,
         "series_id": 6,
-        "season_id": None
+        "season_id": None,
     }
 
     assert PosterSubject.from_season(season, series).event_fk_kwargs() == {
         "media_type": "season",
         "movie_id": None,
         "series_id": 6,
-        "season_id": 7
+        "season_id": 7,
     }
 
 
 @pytest.mark.asyncio
 async def test_orm_smoke_and_constraints(db):
     # Setup rows
-    movie = Movie(title="Test Movie", folder_path="/movies/test", movie_file_path="/movies/test/test.mkv")
+    movie = Movie(
+        title="Test Movie", folder_path="/movies/test", movie_file_path="/movies/test/test.mkv"
+    )
     series = Series(title="Test Series", series_path="/tv/test")
     db.add_all([movie, series])
     await db.flush()
@@ -203,37 +188,39 @@ async def test_orm_smoke_and_constraints(db):
     db.add(season)
     await db.flush()
 
-    # Create run for movie
-    run_movie = PipelineRun(
+    await seed_canonical_pipeline_run(
+        db,
         run_id="runmovie000000000000000000000001",
-        media_type="movie",
         movie_id=movie.id,
+        archive={"run_id": "runmovie000000000000000000000001", "candidates": []},
     )
-    # Create run for series
-    run_series = PipelineRun(
+    await seed_canonical_pipeline_run(
+        db,
         run_id="runseries00000000000000000000001",
+        archive={"run_id": "runseries00000000000000000000001", "candidates": []},
         media_type="series",
         series_id=series.id,
     )
-    # Create run for season
-    run_season = PipelineRun(
+    await seed_canonical_pipeline_run(
+        db,
         run_id="runseason00000000000000000000001",
+        archive={"run_id": "runseason00000000000000000000001", "candidates": []},
         media_type="season",
+        series_id=series.id,
         season_id=season.id,
     )
-
-    db.add_all([run_movie, run_series, run_season])
     await db.flush()
 
     # Verify they were saved and check constraint works
     # Check constraint: movie run without movie_id should raise IntegrityError
-    invalid_run = PipelineRun(
+    invalid_run = await seed_canonical_pipeline_run(
+        db,
         run_id="runinvalid0000000000000000000001",
-        media_type="movie",
-        movie_id=None,
-        series_id=series.id
+        archive={"run_id": "runinvalid0000000000000000000001", "candidates": []},
+        movie_id=movie.id,
     )
-    db.add(invalid_run)
+    invalid_run.movie_id = None
+    invalid_run.series_id = series.id
     with pytest.raises(IntegrityError):
         await db.flush()
     await db.rollback()

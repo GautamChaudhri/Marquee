@@ -8,7 +8,10 @@ snapshot, and undo round-trip are exercised directly.
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
+from hashlib import sha256
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -19,7 +22,8 @@ from marquee.core.pipeline_config import pipeline_settings
 from marquee.main import app
 from marquee.ml import feedback_store
 from marquee.ml.namespaces import get_namespace
-from marquee.models import Job, Movie, PipelineRun, Season, Series
+from marquee.models import Job, JobArtifact, Movie, PipelineRun, Season, Series
+from marquee.models.job import JobAttempt
 
 _REAL_SCHEDULE_LEARNED_HEAD_SUCCESSOR = feedback_route._schedule_learned_head_successor
 
@@ -36,13 +40,12 @@ def labels_to_tmp(tmp_path, monkeypatch):
     """Redirect the labels file to a temp path for every test."""
     monkeypatch.setattr(pipeline_settings, "FEEDBACK_LABELS_PATH", tmp_path / "labels.jsonl")
     monkeypatch.setattr(pipeline_settings, "FEEDBACK_DEPLOY_DEFAULT", False)
-    # Avoid all ML: stub the profile-add and head-retrain hooks.
-    monkeypatch.setattr(feedback_route, "_add_to_profile", lambda *a, **k: "Die Hard (1988).jpg")
+
+    # Avoid scheduling ML work in endpoint behavior tests.
     async def no_head_successor(*_args, **_kwargs):
         return {"scheduled": False, "reason": "stub", "job": None}
 
     monkeypatch.setattr(feedback_route, "_schedule_learned_head_successor", no_head_successor)
-    monkeypatch.setattr(feedback_route.extractor_runtime, "reset_extractor", lambda: None)
     yield
 
 
@@ -117,15 +120,106 @@ def _archive(movie_id: int) -> dict:
     }
 
 
+async def _register_archive(db, document: dict, *, run_id: str, subject_kind: str) -> tuple:
+    job_id = uuid4().hex
+    fence_token = 1
+    job = Job(
+        id=job_id,
+        type="poster_pipeline",
+        payload_version=1,
+        request={},
+        phase="terminal",
+        outcome="succeeded",
+        desired_state="run",
+        fence_token=fence_token,
+        root_id=job_id,
+        trigger_kind="manual",
+        feature_area="posters",
+        presentation_family="posters",
+        subject_kind=subject_kind,
+        subject_reference=run_id,
+        subject_snapshot={"version": 1, "kind": subject_kind},
+        terminal_at=datetime.now(UTC),
+    )
+    db.add(job)
+    await db.flush()
+    attempt = JobAttempt(
+        job_id=job_id,
+        number=1,
+        fence_token=fence_token,
+        phase="finished",
+        outcome="succeeded",
+        started_at=datetime.now(UTC),
+        finished_at=datetime.now(UTC),
+    )
+    db.add(attempt)
+    await db.flush()
+    job.current_attempt_id = attempt.id
+
+    selected_artifact = None
+    for index, candidate in enumerate(document.get("candidates", [])):
+        filename = str(candidate.get("orig_filename") or f"candidate-{index}.jpg")
+        candidate_bytes = f"candidate:{run_id}:{filename}".encode()
+        candidate_key = f"test-artifacts/{job_id}/candidate-{index}.jpg"
+        candidate_file = Path(settings.DATA_DIR) / candidate_key
+        candidate_file.parent.mkdir(parents=True, exist_ok=True)
+        candidate_file.write_bytes(candidate_bytes)
+        candidate_artifact = JobArtifact(
+            job_id=job_id,
+            attempt_id=attempt.id,
+            kind="evidence_image",
+            name=filename,
+            status="available",
+            storage_key=candidate_key,
+            content_type="image/jpeg",
+            size_bytes=len(candidate_bytes),
+            checksum=sha256(candidate_bytes).hexdigest(),
+            artifact_metadata={
+                "family": "poster_pipeline_candidate",
+                "run_id": run_id,
+                "orig_filename": filename,
+            },
+        )
+        db.add(candidate_artifact)
+        await db.flush()
+        candidate["artifact_id"] = candidate_artifact.id
+        candidate["artifact_storage_key"] = candidate_key
+        candidate["artifact_checksum"] = candidate_artifact.checksum
+        if candidate.get("rank") == 1:
+            selected_artifact = candidate_artifact
+
+    payload = json.dumps(document, allow_nan=False).encode()
+    storage_key = f"test-artifacts/{job_id}/pipeline-run.json"
+    archive_file = Path(settings.DATA_DIR) / storage_key
+    archive_file.parent.mkdir(parents=True, exist_ok=True)
+    archive_file.write_bytes(payload)
+    artifact = JobArtifact(
+        job_id=job_id,
+        attempt_id=attempt.id,
+        kind="command_report",
+        name="pipeline-run.json",
+        status="available",
+        storage_key=storage_key,
+        content_type="application/json",
+        size_bytes=len(payload),
+        checksum=sha256(payload).hexdigest(),
+        artifact_metadata={"family": "poster_pipeline", "run_id": run_id},
+    )
+    db.add(artifact)
+    await db.flush()
+    return job, attempt, artifact, selected_artifact
+
+
 async def _seed(db, tmp_path, run_id="r1") -> Movie:
     movie = Movie(title="Die Hard", year=1988, folder_path="/m/Die Hard", tmdb_id=562)
     db.add(movie)
     await db.commit()
     await db.refresh(movie)
 
-    archive_file = tmp_path / f"{run_id}.json"
     archive = _archive(movie.id)
-    archive_file.write_text(json.dumps(archive))
+    job, attempt, artifact, selected = await _register_archive(
+        db, archive, run_id=run_id, subject_kind="movie"
+    )
 
     db.add(
         PipelineRun(
@@ -133,15 +227,20 @@ async def _seed(db, tmp_path, run_id="r1") -> Movie:
             movie_id=movie.id,
             status="completed",
             scorer_name="weighted",
-            archive_path=str(archive_file),
-            output_dir=str(tmp_path),
+            job_id=job.id,
+            attempt_id=attempt.id,
+            fence_token=attempt.fence_token,
+            archive_artifact_id=artifact.id,
+            selected_artifact_id=selected.id if selected is not None else None,
         )
     )
     await db.commit()
     return movie
 
 
-def _tv_archive(series_id: int, season_id: int | None = None, season_number: int | None = None) -> dict:
+def _tv_archive(
+    series_id: int, season_id: int | None = None, season_number: int | None = None
+) -> dict:
     subject = {"series_id": series_id, "title": "Breaking Bad"}
     if season_id is not None:
         subject["season_id"] = season_id
@@ -150,7 +249,9 @@ def _tv_archive(series_id: int, season_id: int | None = None, season_number: int
     return {
         "media_type": "season" if season_id is not None else "series",
         "subject": subject,
-        "title": "Breaking Bad" if season_id is None else f"Breaking Bad - Season {season_number:02d}",
+        "title": "Breaking Bad"
+        if season_id is None
+        else f"Breaking Bad - Season {season_number:02d}",
         "tmdb_id": 1396,
         "candidates": [
             {
@@ -202,15 +303,13 @@ async def _seed_tv_run(db, tmp_path, *, run_id="tv-r1", media_type="series"):
         db.add(season)
         await db.flush()
 
-    archive_file = tmp_path / f"{run_id}.json"
-    archive_file.write_text(
-        json.dumps(
-            _tv_archive(
-                series.id,
-                season.id if season is not None else None,
-                season.season_number if season is not None else None,
-            )
-        )
+    archive = _tv_archive(
+        series.id,
+        season.id if season is not None else None,
+        season.season_number if season is not None else None,
+    )
+    job, attempt, artifact, selected = await _register_archive(
+        db, archive, run_id=run_id, subject_kind=media_type
     )
 
     db.add(
@@ -221,8 +320,11 @@ async def _seed_tv_run(db, tmp_path, *, run_id="tv-r1", media_type="series"):
             season_id=season.id if season is not None else None,
             status="completed",
             scorer_name="weighted",
-            archive_path=str(archive_file),
-            output_dir=str(tmp_path),
+            job_id=job.id,
+            attempt_id=attempt.id,
+            fence_token=attempt.fence_token,
+            archive_artifact_id=artifact.id,
+            selected_artifact_id=selected.id if selected is not None else None,
             auto_pick_filename="auto.jpg",
         )
     )
@@ -341,17 +443,21 @@ async def test_bulk_auto_approve_reviews_entire_queue(client, db, tmp_path, monk
         db.add(movie)
         await db.flush()
 
-        archive_file = tmp_path / f"bulk-{i}.json"
         archive = _archive(movie.id)
-        archive_file.write_text(json.dumps(archive))
+        job, attempt, artifact, selected = await _register_archive(
+            db, archive, run_id=f"bulk-{i}", subject_kind="movie"
+        )
         db.add(
             PipelineRun(
                 run_id=f"bulk-{i}",
                 movie_id=movie.id,
                 status="completed",
                 scorer_name="weighted",
-                archive_path=str(archive_file),
-                output_dir=str(tmp_path),
+                job_id=job.id,
+                attempt_id=attempt.id,
+                fence_token=attempt.fence_token,
+                archive_artifact_id=artifact.id,
+                selected_artifact_id=selected.id if selected is not None else None,
                 auto_pick_filename="auto.jpg",
             )
         )
@@ -366,9 +472,9 @@ async def test_bulk_auto_approve_reviews_entire_queue(client, db, tmp_path, monk
     )
     db.add(manual_movie)
     await db.flush()
-    manual_archive = tmp_path / "manual.json"
-    manual_archive.write_text(
-        json.dumps({"movie_id": manual_movie.id, "title": "Manual", "candidates": []})
+    manual_document = {"movie_id": manual_movie.id, "title": "Manual", "candidates": []}
+    job, attempt, artifact, selected = await _register_archive(
+        db, manual_document, run_id="manual-run", subject_kind="movie"
     )
     db.add(
         PipelineRun(
@@ -376,8 +482,11 @@ async def test_bulk_auto_approve_reviews_entire_queue(client, db, tmp_path, monk
             movie_id=manual_movie.id,
             status="flagged_manual",
             scorer_name=None,
-            archive_path=str(manual_archive),
-            output_dir=str(tmp_path),
+            job_id=job.id,
+            attempt_id=attempt.id,
+            fence_token=attempt.fence_token,
+            archive_artifact_id=artifact.id,
+            selected_artifact_id=selected.id if selected is not None else None,
             auto_pick_filename=None,
         )
     )
@@ -412,17 +521,10 @@ async def test_bulk_auto_approve_reviews_entire_queue(client, db, tmp_path, monk
 
 
 @pytest.mark.asyncio
-async def test_undo_round_trip(client, db, tmp_path, monkeypatch):
+async def test_undo_round_trip(client, db, tmp_path):
     from sqlalchemy import select
 
     await _seed(db, tmp_path)
-    removed_calls = []
-    monkeypatch.setattr(
-        feedback_route.profile_updater,
-        "remove_exemplar",
-        lambda name, namespace=None: removed_calls.append(name) or True,
-    )
-
     resp = await client.post("/api/feedback", json={"run_id": "r1", "action": "approve"})
     event_id = resp.json()["event_id"]
     assert len(feedback_store.read_all()) == 1
@@ -431,7 +533,7 @@ async def test_undo_round_trip(client, db, tmp_path, monkeypatch):
     assert undo.status_code == 200
     assert undo.json()["removed_labels"] == 1
     assert feedback_store.read_all() == []
-    assert removed_calls == ["Die Hard (1988).jpg"]
+    assert undo.json()["exemplars_removed"] == []
 
     run = (await db.execute(select(PipelineRun).where(PipelineRun.run_id == "r1"))).scalar_one()
     await db.refresh(run)
@@ -464,8 +566,7 @@ async def test_rank_writes_v4_ranking_event(client, db, tmp_path):
     assert resp.status_code == 200
     data = resp.json()
     assert data["labels_written"] == 1
-    # positive_exemplar_count(2) == 1 -> only the top of the order is staged.
-    assert data["favorites_exemplars"] == ["Die Hard (1988).jpg"]
+    assert data["favorites_exemplars"] == []
 
     rows = feedback_store.read_all()
     assert len(rows) == 1
@@ -478,14 +579,10 @@ async def test_rank_writes_v4_ranking_event(client, db, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_rank_mines_hard_negatives_by_rank(client, db, tmp_path, monkeypatch):
+async def test_rank_records_hated_candidates_without_mutating_profile_folders(
+    client, db, tmp_path, monkeypatch
+):
     await _seed(db, tmp_path)
-    copied = []
-    monkeypatch.setattr(
-        feedback_route,
-        "_copy_negative",
-        lambda c, namespace: copied.append(c["orig_filename"]) or c["orig_filename"],
-    )
     monkeypatch.setattr(pipeline_settings, "FEEDBACK_HARD_NEGATIVE_RANK_MAX", 10)
     resp = await client.post(
         "/api/feedback",
@@ -497,29 +594,17 @@ async def test_rank_mines_hard_negatives_by_rank(client, db, tmp_path, monkeypat
         },
     )
     assert resp.status_code == 200
-    # alt.jpg ranked #4 (≤10) is a hard negative; ocrreject was never ranked.
-    assert copied == ["alt.jpg"]
-    assert resp.json()["negatives_added"] == ["alt.jpg"]
+    assert resp.json()["negatives_added"] == []
+    row = feedback_store.read_all()[0]
+    assert [candidate["orig_filename"] for candidate in row["hated"]] == [
+        "alt.jpg",
+        "ocrreject.jpg",
+    ]
 
 
 @pytest.mark.asyncio
-async def test_rank_undo_removes_exemplars_and_negatives(client, db, tmp_path, monkeypatch):
+async def test_rank_undo_removes_only_immutable_feedback_event(client, db, tmp_path):
     await _seed(db, tmp_path)
-    removed_ex: list[str] = []
-    removed_neg: list[str] = []
-    monkeypatch.setattr(
-        feedback_route, "_copy_negative", lambda c, namespace: c["orig_filename"]
-    )
-    monkeypatch.setattr(
-        feedback_route.profile_updater,
-        "remove_exemplar",
-        lambda name, namespace=None: removed_ex.append(name) or True,
-    )
-    monkeypatch.setattr(
-        feedback_route,
-        "_remove_negative",
-        lambda name, namespace=None: removed_neg.append(name) or True,
-    )
     resp = await client.post(
         "/api/feedback",
         json={
@@ -534,8 +619,8 @@ async def test_rank_undo_removes_exemplars_and_negatives(client, db, tmp_path, m
     undo = await client.post("/api/feedback/undo", json={"event_id": event_id})
     assert undo.status_code == 200
     assert undo.json()["removed_labels"] == 1
-    assert removed_ex == ["Die Hard (1988).jpg"]
-    assert removed_neg == ["alt.jpg"]
+    assert undo.json()["exemplars_removed"] == []
+    assert undo.json()["negatives_removed"] == []
     assert feedback_store.read_all() == []
 
 
@@ -679,11 +764,8 @@ async def test_tv_series_feedback_writes_to_tv_namespace(client, db, tmp_path):
 async def test_tv_season_feedback_uses_series_root_and_season_filename(
     client, db, tmp_path, monkeypatch, installed_pgqueuer
 ):
-    series, season = await _seed_tv_run(db, tmp_path, run_id="tv-season", media_type="season")
-    originals = tmp_path / "0-originals"
-    originals.mkdir()
-    (originals / "auto.jpg").write_bytes(b"server-owned-candidate")
     monkeypatch.setattr(settings, "DATA_DIR", tmp_path)
+    series, season = await _seed_tv_run(db, tmp_path, run_id="tv-season", media_type="season")
 
     resp = await client.post(
         "/api/feedback",
@@ -711,14 +793,8 @@ async def test_tv_season_feedback_uses_series_root_and_season_filename(
 
 
 @pytest.mark.asyncio
-async def test_tv_feedback_undo_uses_tv_namespace(client, db, tmp_path, monkeypatch):
+async def test_tv_feedback_undo_uses_tv_namespace(client, db, tmp_path):
     await _seed_tv_run(db, tmp_path, run_id="tv-undo", media_type="season")
-    removed_calls = []
-    monkeypatch.setattr(
-        feedback_route.profile_updater,
-        "remove_exemplar",
-        lambda name, namespace=None: removed_calls.append((name, namespace.library)) or True,
-    )
 
     resp = await client.post("/api/feedback", json={"run_id": "tv-undo", "action": "approve"})
     event_id = resp.json()["event_id"]
@@ -727,4 +803,4 @@ async def test_tv_feedback_undo_uses_tv_namespace(client, db, tmp_path, monkeypa
     undo = await client.post("/api/feedback/undo", json={"event_id": event_id})
     assert undo.status_code == 200
     assert feedback_store.read_all(get_namespace("tv")) == []
-    assert removed_calls == [("Die Hard (1988).jpg", "tv")]
+    assert undo.json()["exemplars_removed"] == []

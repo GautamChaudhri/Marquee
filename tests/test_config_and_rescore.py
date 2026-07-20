@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import json
-
 import pytest
 from httpx import ASGITransport, AsyncClient
 
 from marquee.core.pipeline_config import pipeline_settings
 from marquee.main import app
-from marquee.models import Movie, PipelineRun
+from marquee.models import Movie
+from tests.support.canonical_poster import seed_canonical_pipeline_run
 
 
 @pytest.fixture
@@ -17,9 +16,6 @@ async def client(db):
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         yield ac
-
-
-
 
 
 # ---------------------------------------------------------------------------
@@ -192,16 +188,12 @@ async def _seed_rescore(db, tmp_path) -> str:
     db.add(movie)
     await db.commit()
     await db.refresh(movie)
-    archive_file = tmp_path / "rs.json"
     archive = _rescore_archive(movie.id)
-    archive_file.write_text(json.dumps(archive))
-    db.add(
-        PipelineRun(
-            run_id="rs1",
-            movie_id=movie.id,
-            status="completed",
-            archive_path=str(archive_file),
-        )
+    await seed_canonical_pipeline_run(
+        db,
+        run_id="rs1",
+        movie_id=movie.id,
+        archive=archive,
     )
     await db.commit()
     return "rs1"

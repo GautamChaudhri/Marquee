@@ -5,12 +5,10 @@ that replays the archive (/api/pipeline/runs/{id}, /rescore, feedback)."""
 from __future__ import annotations
 
 import json
-import math
 
 import numpy as np
 import pytest
 
-from marquee.pipeline.extractor_runtime import extractor_runtime
 from marquee.pipeline.runner import write_run_json
 
 
@@ -45,23 +43,3 @@ def test_write_run_json_strips_nonfinite(tmp_path):
     assert data["nested"]["deep"][1] == 2.0
     assert data["fine"] == 1.25
     assert data["text"] == "NaN"
-
-
-def test_load_archive_tolerates_legacy_nan_literals(tmp_path):
-    legacy = tmp_path / "legacy-run.json"
-    legacy.write_text('{"score": NaN, "bound": Infinity, "ok": 3.5}', encoding="utf-8")
-
-    data = extractor_runtime.load_archive("legacy-run", archive_path=str(legacy))
-    assert data is not None
-    assert data["score"] is None
-    assert data["bound"] is None
-    assert data["ok"] == 3.5
-
-
-def test_load_archive_roundtrip_has_no_nan(tmp_path):
-    path = tmp_path / "roundtrip.json"
-    write_run_json(path, {"candidates": [{"raw_features": {"title_area": np.nan}}]})
-    data = extractor_runtime.load_archive("roundtrip", archive_path=str(path))
-    assert data is not None
-    value = data["candidates"][0]["raw_features"]["title_area"]
-    assert value is None or math.isfinite(value)

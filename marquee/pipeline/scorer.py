@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
+from pathlib import Path
 
 from marquee.core.pipeline_config import PipelineSettings, pipeline_settings
 from marquee.ml.learned_head import LogisticHead
@@ -100,6 +101,7 @@ class LearnedScorer(PosterScorer):
 def select_scorer(
     config: PipelineSettings = pipeline_settings,
     namespace: TasteNamespace | None = None,
+    artifact_path: Path | None = None,
 ) -> PosterScorer:
     """Resolve SCORER=auto|weighted|learned, logging the decision.
 
@@ -108,7 +110,9 @@ def select_scorer(
     caller passes an explicit namespace to score against the TV head instead.
     """
     mode = config.SCORER
-    head_path = namespace.head_path if namespace is not None else None
+    head_path = artifact_path if artifact_path is not None else (
+        namespace.head_path if namespace is not None else None
+    )
     library = namespace.library if namespace is not None else "movies"
     if mode == "weighted":
         logger.info("SCORER | weighted (forced) for library %s", library)

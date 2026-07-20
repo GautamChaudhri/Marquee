@@ -30,15 +30,16 @@ from marquee.api.routes.pipeline import (
     aggregate_run_metrics,
 )
 from marquee.config import settings
-from marquee.core.heal import latest_heal_summary
 from marquee.core.jobs.batches import BatchScope, create_fixed_batch
 from marquee.core.jobs.contracts import TriggerKind
+from marquee.core.jobs.pipeline_archives import load_pipeline_archive
 from marquee.core.jobs.poster_submission import (
     PosterSelectionError,
     poster_child_idempotency_key,
     subject_artwork_selection,
     submit_poster_leaf,
 )
+from marquee.core.jobs.poster_summary import latest_poster_heal_summary
 from marquee.core.jobs.submission import (
     IdempotencyConflictError,
     Initiator,
@@ -51,7 +52,6 @@ from marquee.core.rate_limit import RateLimiter
 from marquee.core.tv_queries import season_downloaded, series_visible
 from marquee.database import get_db
 from marquee.models import ArtworkEvent, Job, PipelineRun, Season, Series
-from marquee.pipeline.extractor_runtime import extractor_runtime
 
 logger = logging.getLogger(__name__)
 
@@ -195,7 +195,7 @@ async def tv_pipeline_summary(db: Annotated[AsyncSession, Depends(get_db)]):
         "shows_fully_covered": shows_fully_covered,
         "shows_in_review": shows_in_review,
         "running_jobs": running_jobs,
-        "last_heal": await latest_heal_summary(db),
+        "last_heal": await latest_poster_heal_summary(db),
         "heal_schedule": heal_schedule,
         "backups": _backup_stats(),
     }
@@ -282,7 +282,9 @@ class TVBatchRunRequest(BaseModel):
     series_ids: list[int] | None = None
 
 
-def _expand_assets(series_rows: list[Series], seasons_by_series: dict[int, list[Season]], scope: str) -> list[dict]:
+def _expand_assets(
+    series_rows: list[Series], seasons_by_series: dict[int, list[Season]], scope: str
+) -> list[dict]:
     assets: list[dict] = []
     for series in series_rows:
         downloaded_seasons = seasons_by_series.get(series.id, [])
@@ -301,7 +303,6 @@ def _expand_assets(series_rows: list[Series], seasons_by_series: dict[int, list[
                     {"media_type": "season", "series_id": series.id, "season_id": season.id}
                 )
     return assets
-
 
 
 def _poster_child_intents(
@@ -490,9 +491,7 @@ async def run_series_pipeline(
         for season in target_seasons:
             if body.include == "all_missing" and season.poster_path is not None:
                 continue
-            assets.append(
-                {"media_type": "season", "series_id": series.id, "season_id": season.id}
-            )
+            assets.append({"media_type": "season", "series_id": series.id, "season_id": season.id})
     if not assets:
         raise HTTPException(status_code=400, detail="no assets to run")
 
@@ -588,7 +587,7 @@ async def tv_review_queue(
             season = season_by_id.get(season_id)
             if season is None:
                 continue
-            archive = extractor_runtime.load_archive(run.run_id, run.archive_path)
+            archive = await load_pipeline_archive(db, run)
             official_pick = archive.get("official_pick") if archive is not None else None
             season_entries.append(
                 {
@@ -808,9 +807,7 @@ async def use_show_poster_for_season(
     ):
         raise HTTPException(status_code=400, detail="Season has no downloaded episodes")
 
-    series = (
-        await db.execute(select(Series).where(Series.id == season.series_id))
-    ).scalar_one()
+    series = (await db.execute(select(Series).where(Series.id == season.series_id))).scalar_one()
     if series.poster_path is None:
         raise HTTPException(
             status_code=409, detail=f"Series {series.title!r} has no deployed show poster"
@@ -930,9 +927,7 @@ async def list_series_artwork_events(
 ):
     """Deploy/restore history for a series and its seasons, newest first."""
     season_ids = (
-        (await db.execute(select(Season.id).where(Season.series_id == series_id)))
-        .scalars()
-        .all()
+        (await db.execute(select(Season.id).where(Season.series_id == series_id))).scalars().all()
     )
     conditions = [ArtworkEvent.series_id == series_id]
     if season_ids:

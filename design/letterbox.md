@@ -30,15 +30,14 @@ Not implemented:
 
 - `marquee/media/letterbox_detect.py` performs crop detection using ffmpeg
   `cropdetect` and the ImageMagick `trim` fallback path.
-- `marquee/media/letterbox_manager.py` coordinates single and batch detection,
-  progress publishing, and state storage.
+- `marquee/core/letterbox_eligibility.py` and
+  `marquee/core/letterbox_scope.py` hold pure eligibility and scope algorithms.
 - `marquee/media/letterbox_preview.py` generates preview frames and caches them
   under `settings.letterbox_preview_path`.
-- `marquee/core/letterbox_service.py` resolves media files, checks
-  eligibility, and applies or removes crop tags safely.
-- `marquee/core/letterbox_heal.py` scans for tag drift.
-- `marquee/core/letterbox_reencode.py` builds and runs permanent re-encode
-  plans, including Dolby Vision preservation logic.
+- Canonical handlers in `marquee/core/jobs/` resolve media, store detection
+  projections, apply/remove tags, scan drift, and publish mutations.
+- `marquee/core/letterbox_transcode.py` contains the reusable transcode and
+  Dolby Vision algorithms invoked by the tracked handlers.
 
 ## Detection Model
 
@@ -78,17 +77,17 @@ run as queued jobs and expose progress through the job APIs described in
 
 ## Apply, Remove, And Heal
 
-Tag application is handled by `LetterboxService.apply()` and removal by
-`LetterboxService.remove()`. The service uses per-file locking, validates the
-resolved media path, and writes audit events before returning success.
+Tag application and removal are canonical fenced mutation jobs. Their handlers
+validate the resolved media path, hold advisory gates, register evidence, and
+write projections and audit events before terminal success.
 
-`marquee/core/letterbox_heal.py` periodically checks for drift between stored
-state and the actual file metadata when `LETTERBOX_HEAL_ENABLED=true`.
+The `letterbox_heal` definition checks drift between stored state and actual
+file metadata when `LETTERBOX_HEAL_ENABLED=true`.
 
 ## Permanent Re-encode
 
 Some users want a physical re-encode rather than MKV crop tags alone.
-`marquee/core/letterbox_reencode.py` supports:
+`marquee/core/letterbox_transcode.py` and the canonical re-encode handlers support:
 
 - source inspection with ffprobe
 - encoder selection and hardware-aware planning

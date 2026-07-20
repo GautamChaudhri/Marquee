@@ -204,7 +204,6 @@
     "marquee/core/dovi_conversion.py:_emit:job_manager.emit": 1,
     "marquee/core/jobs/builtin_handlers.py:_emit_stage:job_manager.emit": 1,
     "marquee/core/jobs/builtin_handlers.py:_update_progress:job_manager.emit": 1,
-    "marquee/media/letterbox_manager.py:_emit_child_progress:job_manager.emit": 1,
     "marquee/pipeline/progress_bridge.py:_persist:job_manager.emit": 1
   }
 }

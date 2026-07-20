@@ -2,7 +2,6 @@
 
 - ``Movie.genres`` JSON round-trip
 - ``Movie`` artwork deploy columns
-- ``PipelineRun`` insert + status lifecycle
 - ``ArtworkEvent`` append-only audit rows
 """
 
@@ -11,7 +10,7 @@ from __future__ import annotations
 import pytest
 from sqlalchemy import select
 
-from marquee.models import ArtworkEvent, Movie, PipelineRun
+from marquee.models import ArtworkEvent, Movie
 
 
 async def _make_movie(db, **kwargs) -> Movie:
@@ -47,29 +46,6 @@ async def test_movie_artwork_deploy_columns_default(db):
     assert movie.poster_user_approved is False
     assert movie.poster_deployed_filename is None
     assert movie.poster_deployed_at is None
-
-
-@pytest.mark.asyncio
-async def test_pipeline_run_insert(db):
-    movie = await _make_movie(db)
-    run = PipelineRun(
-        run_id="abc123",
-        movie_id=movie.id,
-        status="running",
-        scorer_name="weighted",
-        output_dir="/tmp/runs/Die Hard",
-    )
-    db.add(run)
-    await db.commit()
-
-    fetched = (
-        await db.execute(select(PipelineRun).where(PipelineRun.run_id == "abc123"))
-    ).scalar_one()
-    assert fetched.movie_id == movie.id
-    assert fetched.status == "running"
-    assert fetched.started_at is not None
-    assert fetched.completed_at is None
-    assert fetched.feedback_event_id is None
 
 
 @pytest.mark.asyncio

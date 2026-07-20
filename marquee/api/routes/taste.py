@@ -5,11 +5,10 @@ The taste-map endpoints (design 11) are added to this same router later.
 
 from __future__ import annotations
 
-import hashlib
+import asyncio
 import logging
 import time
 from collections import Counter
-from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -23,6 +22,7 @@ from marquee.api.routes.jobs import job_summary
 from marquee.config import settings
 from marquee.core.jobs import control as job_control
 from marquee.core.jobs.contracts import TriggerKind
+from marquee.core.jobs.ml_publication import MlPublicationError, resolve_active_publication
 from marquee.core.jobs.submission import (
     IdempotencyConflictError,
     Initiator,
@@ -33,7 +33,7 @@ from marquee.core.jobs.submission import (
 from marquee.core.pipeline_config import pipeline_settings
 from marquee.core.rate_limit import RateLimiter
 from marquee.database import get_db
-from marquee.ml import artifact_registry, feedback_store
+from marquee.ml import feedback_store, publication_catalog
 from marquee.ml.namespaces import TasteNamespace, get_namespace
 from marquee.models import Job, MlActivePublication, Movie
 
@@ -41,9 +41,8 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/taste", tags=["taste"])
 
+
 def _artifact_error(exc: Exception) -> HTTPException:
-    if isinstance(exc, artifact_registry.ArtifactRegistryUnavailableError):
-        return HTTPException(status_code=503, detail=str(exc))
     if isinstance(exc, FileNotFoundError):
         return HTTPException(status_code=404, detail=str(exc))
     if isinstance(exc, RuntimeError):
@@ -51,49 +50,35 @@ def _artifact_error(exc: Exception) -> HTTPException:
     return HTTPException(status_code=400, detail=str(exc))
 
 
-def _exemplar_stats(ns: TasteNamespace | None = None) -> dict:
-    from marquee.ml.taste_store import NumpyTasteStore  # noqa: PLC0415
-
-    ns = ns or get_namespace("movies")
-    path = ns.profile_path
-    stats: dict = {
-        "count": 0,
-        "negatives": 0,
-        "last_rebuild": None,
-        "profile_present": path.exists(),
+def _exemplar_stats(active_profile: dict[str, object] | None) -> dict[str, object]:
+    summary = active_profile.get("summary", {}) if isinstance(active_profile, dict) else {}
+    if not isinstance(summary, dict):
+        summary = {}
+    return {
+        "count": int(summary.get("exemplars", 0)),
+        "negatives": int(summary.get("negative_exemplars", 0)),
+        "last_rebuild": (
+            active_profile.get("activated_at") if isinstance(active_profile, dict) else None
+        ),
+        "profile_present": active_profile is not None,
+        "unique_movies": int(summary.get("unique_movies", 0)),
+        "duplicate_groups": int(summary.get("duplicate_groups", 0)),
+        "by_kind": summary.get("by_kind", {}),
     }
-    if path.exists():
-        stats["last_rebuild"] = datetime.fromtimestamp(path.stat().st_mtime, tz=UTC).isoformat()
-        try:
-            store = NumpyTasteStore(path)
-            stats["count"] = store.size
-            stats["negatives"] = store.negative_size
-            # For TV, add per-kind counts
-            if ns.library == "tv":
-                kind_counts: Counter[str] = Counter()
-                for meta in store.metadata:
-                    kind_counts[meta.get("asset_kind", "unknown")] += 1
-                stats["by_kind"] = dict(kind_counts)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("taste status: could not load profile (%s)", exc)
-    return stats
 
 
-def _head_status(ns: TasteNamespace | None = None) -> dict:
+def _head_status(ns: TasteNamespace, *, active: bool) -> dict:
     """Activation progress for the learned head, in whichever training mode is
     active. Keeps a stable shape (``n_samples`` + ``activation.{movies,labels}``)
     so the UI is mode-agnostic; ``mode`` tells it whether the unit is pairs or
     labels. In pairwise mode ``n_samples``/``labels`` carry the derived
     within-movie preference-pair counts."""
     from marquee.ml.head_trainer import (  # noqa: PLC0415
-        _LEGACY_RUNS_DIRS,
         build_inversion_training_data,
         build_training_data,
     )
 
-    ns = ns or get_namespace("movies")
     rows = feedback_store.read_all(ns)
-    active = ns.head_path.exists()
 
     if pipeline_settings.HEAD_TRAIN_MODE == "pairwise":
         _d, _w, _names, n_movies, n_pairs = build_inversion_training_data(rows)
@@ -107,9 +92,7 @@ def _head_status(ns: TasteNamespace | None = None) -> dict:
             },
         }
 
-    _x, targets, _names, n_movies = build_training_data(
-        rows, (settings.runs_work_path, *_LEGACY_RUNS_DIRS)
-    )
+    _x, targets, _names, n_movies = build_training_data(rows)
     n_samples = int(len(targets))
     return {
         "active": active,
@@ -128,7 +111,10 @@ def _validate_library(library: str) -> TasteNamespace:
         return get_namespace(library)
     except ValueError as exc:
         from fastapi import HTTPException  # noqa: PLC0415
-        raise HTTPException(status_code=400, detail=f"Unknown library {library!r}; must be 'movies' or 'tv'") from exc
+
+        raise HTTPException(
+            status_code=400, detail=f"Unknown library {library!r}; must be 'movies' or 'tv'"
+        ) from exc
 
 
 async def _canonical_rebuild_status(db: AsyncSession, library: str) -> dict[str, object]:
@@ -140,7 +126,6 @@ async def _canonical_rebuild_status(db: AsyncSession, library: str) -> dict[str,
                 (
                     f"taste_profile:{library}",
                     f"taste_map:{library}",
-                    f"taste_enrichment:{library}",
                 )
             ),
         )
@@ -157,13 +142,20 @@ async def _canonical_rebuild_status(db: AsyncSession, library: str) -> dict[str,
         "detail_url": f"/projection-room/jobs/{job.id}",
     }
 
+
+async def _publication_summaries(
+    db: AsyncSession, *, kind: str, library: str
+) -> list[dict[str, object]]:
+    entries = await publication_catalog.list_entries(db, kind=kind, library=library)
+    return [await publication_catalog.artifact_summary(entry) for entry in entries]
+
+
 @router.get("/status")
 async def taste_status(
     db: Annotated[AsyncSession, Depends(get_db)],
     library: str = "movies",
 ):
     ns = _validate_library(library)
-    registry_state = await artifact_registry.ensure_registry(db)
     summary = feedback_store.summary(ns)
 
     # Genre spread over labeled movies (v2 rows carry movie_id).
@@ -177,17 +169,11 @@ async def taste_status(
             for genre in movie_genres or []:
                 genres[genre] += 1
 
-    active_profile = await artifact_registry.active_artifact_summary(
-        db, ns.artifact_kind_profile
-    )
-    active_head = await artifact_registry.active_artifact_summary(
-        db, ns.artifact_kind_head
-    )
-    exemplars = _exemplar_stats(ns)
-    if active_profile is not None:
-        profile_summary = active_profile.get("summary") or {}
-        exemplars["unique_movies"] = profile_summary.get("unique_movies", 0)
-        exemplars["duplicate_groups"] = profile_summary.get("duplicate_groups", 0)
+    profiles = await _publication_summaries(db, kind="taste_profile", library=library)
+    heads = await _publication_summaries(db, kind="learned_head", library=library)
+    active_profile = next((item for item in profiles if item["status"] == "active"), None)
+    active_head = next((item for item in heads if item["status"] == "active"), None)
+    exemplars = _exemplar_stats(active_profile)
 
     return {
         "library": library,
@@ -199,10 +185,10 @@ async def taste_status(
             "genres": dict(genres.most_common()),
         },
         "exemplars": exemplars,
-        "learned_head": _head_status(ns),
+        "learned_head": _head_status(ns, active=active_head is not None),
         "active_profile": active_profile,
         "active_head": active_head,
-        "artifact_registry": registry_state,
+        "publication_authority": publication_catalog.CATALOG_STATUS,
         "gate_alerts": feedback_store.gate_override_alerts(ns),
         "rebuild": await _canonical_rebuild_status(db, library),
     }
@@ -351,13 +337,11 @@ async def list_taste_profiles(
     db: Annotated[AsyncSession, Depends(get_db)],
     library: str = "movies",
 ):
-    ns = _validate_library(library)
-    registry_state = await artifact_registry.registry_status(db)
-    rows = await artifact_registry.list_artifacts(db, ns.artifact_kind_profile)
+    _validate_library(library)
     return {
         "library": library,
-        "profiles": [artifact_registry.artifact_to_summary(row) for row in rows],
-        "artifact_registry": registry_state,
+        "profiles": await _publication_summaries(db, kind="taste_profile", library=library),
+        "publication_authority": publication_catalog.CATALOG_STATUS,
     }
 
 
@@ -367,48 +351,12 @@ async def get_taste_profile(
     db: Annotated[AsyncSession, Depends(get_db)],
     library: str = "movies",
 ):
-    ns = _validate_library(library)
+    _validate_library(library)
     try:
-        return await artifact_registry.artifact_detail(
-            db, ns.artifact_kind_profile, artifact_id
+        entry = await publication_catalog.get_entry(
+            db, kind="taste_profile", library=library, artifact_id=artifact_id
         )
-    except Exception as exc:  # noqa: BLE001
-        raise _artifact_error(exc) from exc
-
-
-@router.post("/profiles/{artifact_id}/activate")
-async def activate_taste_profile(
-    artifact_id: str,
-    db: Annotated[AsyncSession, Depends(get_db)],
-    library: str = "movies",
-):
-    """Reject manual pointer mutation; publication belongs to the owning job."""
-    del artifact_id, db, library
-    raise HTTPException(status_code=409, detail="activation_is_job_owned")
-
-
-@router.post("/profiles/{artifact_id}/archive")
-async def archive_taste_profile(
-    artifact_id: str,
-    db: Annotated[AsyncSession, Depends(get_db)],
-):
-    try:
-        row = await artifact_registry.archive_artifact(
-            db, artifact_registry.KIND_TASTE_PROFILE, artifact_id
-        )
-        return {"profile": artifact_registry.artifact_to_summary(row)}
-    except Exception as exc:  # noqa: BLE001
-        raise _artifact_error(exc) from exc
-
-
-@router.delete("/profiles/{artifact_id}")
-async def delete_taste_profile(
-    artifact_id: str,
-    db: Annotated[AsyncSession, Depends(get_db)],
-):
-    try:
-        await artifact_registry.delete_artifact(db, artifact_registry.KIND_TASTE_PROFILE, artifact_id)
-        return {"deleted": artifact_id}
+        return await publication_catalog.artifact_detail(entry)
     except Exception as exc:  # noqa: BLE001
         raise _artifact_error(exc) from exc
 
@@ -417,56 +365,27 @@ async def delete_taste_profile(
 async def list_taste_profile_exemplars(
     artifact_id: str,
     db: Annotated[AsyncSession, Depends(get_db)],
+    library: str = "movies",
 ):
     try:
-        return {"exemplars": await artifact_registry.profile_exemplars(db, artifact_id)}
-    except Exception as exc:  # noqa: BLE001
-        raise _artifact_error(exc) from exc
-
-
-@router.delete("/profiles/{artifact_id}/exemplars/{name}")
-async def delete_taste_profile_exemplar(
-    artifact_id: str,
-    name: str,
-    db: Annotated[AsyncSession, Depends(get_db)],
-):
-    try:
-        name = _safe_exemplar_name(name)
-        row = await artifact_registry.delete_profile_exemplar(db, artifact_id, name)
-        successor = await _submit_ml_publication(
-            db,
-            job_type="taste_map",
-            family="taste_map",
-            library="movies",
-            request={
-                "library": "movies",
-                "profile_revision": artifact_id,
-                "trigger_reference": f"exemplar_deleted:{name}",
-            },
-            idempotency_key=(
-                "taste_map:exemplar-delete:"
-                f"{artifact_id}:{hashlib.sha256(name.encode()).hexdigest()[:16]}"
-            ),
-            priority=50,
+        _validate_library(library)
+        entry = await publication_catalog.get_entry(
+            db, kind="taste_profile", library=library, artifact_id=artifact_id
         )
-        return {
-            "profile": artifact_registry.artifact_to_summary(row),
-            "removed": name,
-            "successor_job": successor.model_dump(mode="json"),
-        }
-    except HTTPException:
-        raise
+        return {"exemplars": await publication_catalog.profile_exemplars(entry)}
     except Exception as exc:  # noqa: BLE001
         raise _artifact_error(exc) from exc
 
 
 @router.get("/heads")
-async def list_learned_heads(db: Annotated[AsyncSession, Depends(get_db)]):
-    registry_state = await artifact_registry.registry_status(db)
-    rows = await artifact_registry.list_artifacts(db, artifact_registry.KIND_LEARNED_HEAD)
+async def list_learned_heads(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    library: str = "movies",
+):
+    _validate_library(library)
     return {
-        "heads": [artifact_registry.artifact_to_summary(row) for row in rows],
-        "artifact_registry": registry_state,
+        "heads": await _publication_summaries(db, kind="learned_head", library=library),
+        "publication_authority": publication_catalog.CATALOG_STATUS,
     }
 
 
@@ -474,47 +393,14 @@ async def list_learned_heads(db: Annotated[AsyncSession, Depends(get_db)]):
 async def get_learned_head(
     artifact_id: str,
     db: Annotated[AsyncSession, Depends(get_db)],
+    library: str = "movies",
 ):
     try:
-        return await artifact_registry.artifact_detail(
-            db, artifact_registry.KIND_LEARNED_HEAD, artifact_id
+        _validate_library(library)
+        entry = await publication_catalog.get_entry(
+            db, kind="learned_head", library=library, artifact_id=artifact_id
         )
-    except Exception as exc:  # noqa: BLE001
-        raise _artifact_error(exc) from exc
-
-
-@router.post("/heads/{artifact_id}/activate")
-async def activate_learned_head(
-    artifact_id: str,
-    db: Annotated[AsyncSession, Depends(get_db)],
-):
-    """Reject manual pointer mutation; publication belongs to the owning job."""
-    del artifact_id, db
-    raise HTTPException(status_code=409, detail="activation_is_job_owned")
-
-
-@router.post("/heads/{artifact_id}/archive")
-async def archive_learned_head(
-    artifact_id: str,
-    db: Annotated[AsyncSession, Depends(get_db)],
-):
-    try:
-        row = await artifact_registry.archive_artifact(
-            db, artifact_registry.KIND_LEARNED_HEAD, artifact_id
-        )
-        return {"head": artifact_registry.artifact_to_summary(row)}
-    except Exception as exc:  # noqa: BLE001
-        raise _artifact_error(exc) from exc
-
-
-@router.delete("/heads/{artifact_id}")
-async def delete_learned_head(
-    artifact_id: str,
-    db: Annotated[AsyncSession, Depends(get_db)],
-):
-    try:
-        await artifact_registry.delete_artifact(db, artifact_registry.KIND_LEARNED_HEAD, artifact_id)
-        return {"deleted": artifact_id}
+        return await publication_catalog.artifact_detail(entry)
     except Exception as exc:  # noqa: BLE001
         raise _artifact_error(exc) from exc
 
@@ -524,19 +410,19 @@ async def delete_learned_head(
 # ---------------------------------------------------------------------------
 
 
-class CandidateOverlayRequest(BaseModel):
-    run_id: str
-
-
 @router.get("/map")
-async def get_taste_map(library: str = "movies"):
+async def get_taste_map(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    library: str = "movies",
+):
     """Return the last published taste-map artifact without recomputation."""
     from marquee.ml.taste_map import load_map  # noqa: PLC0415
 
     ns = _validate_library(library)
     try:
-        return load_map(False, namespace=ns)
-    except FileNotFoundError as exc:
+        active = await resolve_active_publication(db, family=f"taste_map:{library}")
+        return load_map(False, namespace=ns, path=active.path)
+    except (FileNotFoundError, MlPublicationError) as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
@@ -557,64 +443,10 @@ async def rebuild_map(
         library=library,
         request={"library": library},
         idempotency_key=(
-            f"taste_map:{library}:"
-            f"{int(time.time() // settings.RATE_TASTE_MAP_REBUILD_SECONDS)}"
+            f"taste_map:{library}:{int(time.time() // settings.RATE_TASTE_MAP_REBUILD_SECONDS)}"
         ),
         priority=50,
     )
-
-
-@router.post("/map/candidates")
-async def overlay_candidates(
-    body: CandidateOverlayRequest,
-    db: Annotated[AsyncSession, Depends(get_db)],
-):
-    """Project a run's ranked candidates into the taste-map space."""
-    from marquee.ml.taste_map import project  # noqa: PLC0415
-    from marquee.models import PipelineRun  # noqa: PLC0415
-    from marquee.pipeline.extractor_runtime import extractor_runtime  # noqa: PLC0415
-    from marquee.pipeline.features import load_cached_embedding  # noqa: PLC0415
-
-    run = (
-        await db.execute(select(PipelineRun).where(PipelineRun.run_id == body.run_id))
-    ).scalar_one_or_none()
-    if run is None:
-        raise HTTPException(status_code=404, detail=f"Run {body.run_id} not found")
-    archive = extractor_runtime.load_archive(body.run_id, run.archive_path)
-    if archive is None:
-        raise HTTPException(status_code=404, detail="Run archive unavailable")
-
-    ranked = sorted(
-        (c for c in archive.get("candidates", []) if c.get("rank") is not None),
-        key=lambda c: c["rank"],
-    )
-    items = []
-    embeddings = []
-    for candidate in ranked:
-        emb = load_cached_embedding(candidate["orig_filename"])
-        if emb is None:
-            continue
-        items.append(candidate)
-        embeddings.append(emb)
-
-    if not embeddings:
-        return {"run_id": body.run_id, "candidates": []}
-
-    import numpy as np  # noqa: PLC0415
-
-    projections = project(np.stack(embeddings))
-    return {
-        "run_id": body.run_id,
-        "candidates": [
-            {
-                "orig_filename": candidate["orig_filename"],
-                "rank": candidate.get("rank"),
-                "final_score": candidate.get("final_score"),
-                **projection,
-            }
-            for candidate, projection in zip(items, projections, strict=True)
-        ],
-    }
 
 
 @router.post("/enrich", status_code=202)
@@ -630,12 +462,11 @@ async def enrich_profile(
     return await _submit_ml_publication(
         db,
         job_type="taste_enrich",
-        family="taste_enrichment",
+        family="taste_profile",
         library=library,
         request={"library": library},
         idempotency_key=(
-            f"taste_enrich:{library}:"
-            f"{int(time.time() // settings.RATE_TASTE_ENRICH_SECONDS)}"
+            f"taste_enrich:{library}:{int(time.time() // settings.RATE_TASTE_ENRICH_SECONDS)}"
         ),
         priority=50,
     )
@@ -647,33 +478,27 @@ def _safe_exemplar_name(name: str) -> str:
     return name
 
 
-@router.get("/exemplars/{name}/image")
-async def exemplar_image(name: str, size: str = "thumb", library: str = "movies"):
-    """Serve an exemplar's thumbnail (webp) or full-size training image."""
-    from marquee.ml.taste_map import exemplar_source, thumbnail_path  # noqa: PLC0415
-
-    ns = _validate_library(library)
-    name = _safe_exemplar_name(name)
-    path = thumbnail_path(name, namespace=ns) if size == "thumb" else exemplar_source(name, namespace=ns)
-    if path is None:
-        # Fall back to full-size if the thumbnail hasn't been generated.
-        path = exemplar_source(name, namespace=ns)
-    if path is None:
-        raise HTTPException(status_code=404, detail=f"No image for exemplar {name!r}")
-    from marquee.core.filesystem import boundary_for_roots  # noqa: PLC0415
-
-    boundary = boundary_for_roots({"exemplar": path.parent}, purpose="taste-exemplar")
-    return boundary.response(boundary.classify(path, require_file=True))
-
-
 @router.get("/exemplars/{name}/neighbors")
-async def exemplar_neighbors(name: str, library: str = "movies"):
+async def exemplar_neighbors(
+    name: str,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    library: str = "movies",
+):
     """The k nearest exemplars to this one (click-to-explore)."""
     from marquee.ml.taste_map import neighbors_of  # noqa: PLC0415
 
     ns = _validate_library(library)
     name = _safe_exemplar_name(name)
-    result = neighbors_of(name, namespace=ns)
+    try:
+        active = await resolve_active_publication(db, family=f"taste_profile:{library}")
+    except (FileNotFoundError, MlPublicationError) as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    result = await asyncio.to_thread(
+        neighbors_of,
+        name,
+        namespace=ns,
+        profile_path=active.path,
+    )
     if result is None:
         raise HTTPException(status_code=404, detail=f"Exemplar {name!r} not in profile")
     return {"name": name, "neighbors": result}

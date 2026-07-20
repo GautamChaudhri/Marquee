@@ -142,30 +142,30 @@ Key knobs:
 candidate, so optional features can drop out without breaking the score range.
 `LearnedScorer` returns the head’s estimated pick probability.
 
-`marquee/pipeline/output.py` copies ranked survivors into the run directory,
+`marquee/pipeline/output.py` copies ranked survivors into the attempt workspace,
 names them with rank and score metadata, and re-downloads top-ranked designs at
-TMDB original resolution. `marquee/pipeline/extractor_runtime.py` (archived-run
-reads) and the durable job system keep run archives available for:
+TMDB original resolution. Canonical `JobArtifact` ownership and `PipelineRun`
+projections keep immutable run archives available for:
 
 - `GET /api/pipeline/runs/{run_id}`
 - `POST /api/pipeline/runs/{run_id}/rescore`
 - `GET /api/pipeline/review-queue`
 - `GET /api/pipeline/metrics`
 
-Batch runs use `poster_pipeline_batch` in
-`marquee/core/jobs/builtin_handlers.py`, which lets OCR and DINO-heavy work run
-once across many movies instead of once per movie.
+Batch runs use canonical parent/child definitions and the fixed internal runner
+boundary, which lets OCR and DINO-heavy work share a bounded batch process while
+preserving child identity and fencing.
 
 ## Feedback Loop
 
-`marquee/api/routes/feedback.py` records approve, override, reject, and undo
-actions. Feedback is stored in `FEEDBACK_LABELS_PATH`, can add positive
-exemplars to `TRAINING_DATA_DIR`, and can optionally promote strong mistakes
-into the negative-exemplar set under `NEGATIVE_DATA_DIR`.
+`marquee/api/routes/feedback.py` records immutable approve, override, reject,
+and undo events linked to canonical runs and candidate artifacts. Successor ML
+jobs consume frozen feedback features; request handlers do not mutate live
+training folders.
 
 The feedback system feeds both ranking and operations:
 
-- Deploys or restores posters through `marquee/core/poster_service.py`
+- Submits deploy or reset through canonical poster mutation jobs
 - Marks a run as reviewed in the `PipelineRun` record
 - Supplies labels for future learned-head training
 

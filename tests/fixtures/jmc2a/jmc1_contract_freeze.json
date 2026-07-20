@@ -1,7 +1,5 @@
 {
   "deployment_tables": [
-    "artifact_snapshot_movies",
-    "artifact_snapshots",
     "artwork_events",
     "configuration_current",
     "configuration_revisions",

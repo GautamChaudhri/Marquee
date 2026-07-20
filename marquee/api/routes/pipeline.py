@@ -29,15 +29,17 @@ from marquee.api.results import (
 from marquee.api.routes.jobs import job_summary
 from marquee.api.routes.library import _coverage_by_media_file
 from marquee.config import settings
-from marquee.core.heal import latest_heal_summary
+from marquee.core.jobs.artifact_service import verify_physical_artifact
 from marquee.core.jobs.batches import BatchScope, create_fixed_batch
 from marquee.core.jobs.contracts import TriggerKind
 from marquee.core.jobs.mutation_documents import (
     PipelineCacheClearRequestV1,
     PosterMaintenanceRequestV1,
 )
+from marquee.core.jobs.pipeline_archives import load_pipeline_archive
 from marquee.core.jobs.poster_parents import create_poster_parent
 from marquee.core.jobs.poster_submission import poster_child_idempotency_key
+from marquee.core.jobs.poster_summary import latest_poster_heal_summary
 from marquee.core.jobs.submission import (
     IdempotencyConflictError,
     Initiator,
@@ -52,12 +54,12 @@ from marquee.database import get_db
 from marquee.models import (
     ArtworkEvent,
     Job,
+    JobArtifact,
     LetterboxState,
     MediaFile,
     Movie,
     PipelineRun,
 )
-from marquee.pipeline.extractor_runtime import extractor_runtime
 from marquee.pipeline.gate import PosterGate
 from marquee.pipeline.scorer import WeightedScorer
 
@@ -226,9 +228,6 @@ async def run_pipeline(
     return submission_response(result)
 
 
-
-
-
 async def _load_run(db: AsyncSession, run_id: str) -> PipelineRun:
     run = (
         await db.execute(select(PipelineRun).where(PipelineRun.run_id == run_id))
@@ -252,7 +251,7 @@ async def get_run_results(
             "status_url": f"/api/jobs/{run_id}/snapshot",
         }
 
-    archive = extractor_runtime.load_archive(run_id, run.archive_path)
+    archive = await load_pipeline_archive(db, run)
     if archive is None:
         raise HTTPException(
             status_code=404, detail=f"Run {run_id} archive is missing or unreadable"
@@ -274,7 +273,7 @@ async def get_run_poster(
 ):
     """Serve a candidate's image file from inside the run's working dir."""
     run = await _load_run(db, run_id)
-    archive = extractor_runtime.load_archive(run_id, run.archive_path)
+    archive = await load_pipeline_archive(db, run)
     if archive is None:
         raise HTTPException(status_code=404, detail="Run archive unavailable")
 
@@ -283,6 +282,24 @@ async def get_run_poster(
         raise HTTPException(
             status_code=404, detail=f"No candidate {orig_filename!r} in run {run_id}"
         )
+
+    artifact_id = candidate.get("artifact_id")
+    if isinstance(artifact_id, int):
+        artifact = await db.get(JobArtifact, artifact_id)
+        metadata = (
+            artifact.artifact_metadata
+            if artifact is not None and isinstance(artifact.artifact_metadata, dict)
+            else {}
+        )
+        if (
+            artifact is None
+            or artifact.job_id != run.job_id
+            or artifact.checksum != candidate.get("artifact_checksum")
+            or metadata.get("candidate_reference") != orig_filename
+        ):
+            raise HTTPException(status_code=404, detail="Candidate artifact unavailable")
+        boundary, classified = await verify_physical_artifact(artifact)
+        return boundary.response(classified)
 
     from marquee.core.filesystem import (  # noqa: PLC0415
         FilesystemBoundaryError,
@@ -338,7 +355,7 @@ async def rescore_run(
     inference. This is the engine behind live knob sliders in the UI.
     """
     run = await _load_run(db, run_id)
-    archive = extractor_runtime.load_archive(run_id, run.archive_path)
+    archive = await load_pipeline_archive(db, run)
     if archive is None:
         raise HTTPException(status_code=404, detail="Run archive unavailable")
 
@@ -444,9 +461,7 @@ async def run_pipeline_batch(
                 "movie_id": movie.id,
                 "tmdb_id": movie.tmdb_id,
                 "title": movie.title,
-                "source_descriptors": [
-                    {"provider": "tmdb", "reference": f"movie:{movie.tmdb_id}"}
-                ],
+                "source_descriptors": [{"provider": "tmdb", "reference": f"movie:{movie.tmdb_id}"}],
             },
             subject=SubjectLocator(kind="movie", reference=str(movie.id)),
             trigger=TriggerKind.BATCH,
@@ -538,7 +553,7 @@ async def pipeline_summary(db: Annotated[AsyncSession, Depends(get_db)]):
         "movies_in_review": movies_in_review or 0,
         "movies_in_run": movies_in_run or 0,
         "running_jobs": running_jobs,
-        "last_heal": await latest_heal_summary(db),
+        "last_heal": await latest_poster_heal_summary(db),
         "heal_schedule": heal_schedule,
         "backups": _backup_stats(),
     }
@@ -606,9 +621,7 @@ async def poster_maintenance(
                 db,
                 job_type="poster_maintenance",
                 request=body.model_dump(mode="json"),
-                subject=SubjectLocator(
-                    kind="maintenance_scope", reference="poster-maintenance"
-                ),
+                subject=SubjectLocator(kind="maintenance_scope", reference="poster-maintenance"),
                 trigger=TriggerKind.MANUAL,
                 initiator=Initiator(kind="system", identifier="pipeline-api"),
                 idempotency_key=idempotency_key,
@@ -626,10 +639,25 @@ async def poster_maintenance(
 
 @router.get("/cache")
 async def get_pipeline_cache():
-    """On-disk size of each poster-pipeline cache (for the Clear button)."""
-    from marquee.core.pipeline_cache import cache_sizes  # noqa: PLC0415
+    """Read-only size projection for the canonical cache-clear job."""
 
-    return cache_sizes()
+    def directory_size(path: Path) -> int:
+        if not path.exists():
+            return 0
+        return sum(item.stat().st_size for item in path.rglob("*") if item.is_file())
+
+    sizes = {
+        "runs_work": directory_size(settings.runs_work_path),
+        "staging": directory_size(settings.poster_staging_path),
+        "embeddings": directory_size(Path(pipeline_settings.EMBEDDING_CACHE_DIR)),
+        "archives": directory_size(settings.runs_archive_path),
+    }
+    clearable = sizes["runs_work"] + sizes["staging"] + sizes["embeddings"]
+    return {
+        "sizes_bytes": sizes,
+        "clearable_bytes": clearable,
+        "total_bytes": sum(sizes.values()),
+    }
 
 
 class ReviewQueueApproveAutoRequest(BaseModel):
@@ -651,9 +679,7 @@ async def clear_pipeline_cache(
                 db,
                 job_type="pipeline_cache_clear",
                 request=body.model_dump(mode="json"),
-                subject=SubjectLocator(
-                    kind="maintenance_scope", reference="pipeline-cache"
-                ),
+                subject=SubjectLocator(kind="maintenance_scope", reference="pipeline-cache"),
                 trigger=TriggerKind.MANUAL,
                 initiator=Initiator(kind="system", identifier="pipeline-api"),
                 idempotency_key=idempotency_key,
@@ -970,10 +996,12 @@ async def approve_review_queue_auto(
 async def reset_review_queue(
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    """Reset all movies in the review queue back to the run stage.
+    """Reset the review queue's disposition only (JMC6H H19).
 
-    Clears poster DB state AND marks review-queue PipelineRuns so they
-    disappear from the Review tab. Does NOT delete poster files from disk.
+    Marks review-queue PipelineRuns as reviewed so they leave the Review tab. It
+    does NOT touch deployed artwork or poster DB state: clearing or removing a
+    deployed poster is a separately authorized canonical ``poster_reset`` job, so
+    the database and the on-disk poster can never be left disagreeing here.
     """
     # Find all PipelineRuns currently in the review queue.
     result = await db.execute(
@@ -988,8 +1016,7 @@ async def reset_review_queue(
     if not review_runs:
         return {"reset": 0}
 
-    # Collect unique movie IDs and mark their PipelineRuns as reviewed.
-    movie_ids = list({run.movie_id for run in review_runs})
+    # Mark the review-queue runs as reviewed (review disposition only).
     reset_key = f"review_reset_{int(time.time())}"
 
     for run in review_runs:
@@ -1003,42 +1030,15 @@ async def reset_review_queue(
             )
         )
 
-    # Also clear poster state for any of these movies that have a poster deployed.
-    movies_with_poster = (
-        (
-            await db.execute(
-                select(Movie).where(
-                    Movie.id.in_(movie_ids),
-                    Movie.poster_path.isnot(None),
-                )
-            )
-        )
-        .scalars()
-        .all()
-    )
-
-    for movie in movies_with_poster:
-        movie.poster_path = None
-        movie.poster_source = None
-        movie.poster_source_url = None
-        movie.poster_ai_selected = False
-        movie.poster_embedding = None
-        movie.poster_sha256 = None
-        movie.poster_phash = None
-        movie.poster_user_approved = False
-        movie.poster_deployed_filename = None
-        movie.poster_deployed_at = None
-
+    # H19: this route never nulls poster DB state. Clearing or removing deployed
+    # artwork is the separately authorized canonical poster_reset job, so the
+    # database and the on-disk poster cannot be left disagreeing.
     await db.commit()
-    logger.info(
-        "REVIEW RESET | runs_cleared=%d | posters_reset=%d",
-        len(review_runs),
-        len(movies_with_poster),
-    )
+    logger.info("REVIEW RESET | runs_cleared=%d | posters_reset=0", len(review_runs))
     return {
         "reset": len(review_runs),
         "runs_cleared": len(review_runs),
-        "posters_reset": len(movies_with_poster),
+        "posters_reset": 0,
     }
 
 

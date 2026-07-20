@@ -412,7 +412,6 @@ async def _resolve_subject(
             if family not in {
                 "taste_profile",
                 "taste_map",
-                "taste_enrichment",
                 "learned_head",
             }:
                 raise ValueError
@@ -421,7 +420,6 @@ async def _resolve_subject(
             labels = {
                 "taste_profile": "Taste profile",
                 "taste_map": "Taste map",
-                "taste_enrichment": "Taste profile enrichment",
                 "learned_head": "Learned ranking head",
             }
             return ModelProfileTrainingSnapshot(

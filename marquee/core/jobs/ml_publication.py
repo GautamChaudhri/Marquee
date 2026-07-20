@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from pathlib import Path
 
 from sqlalchemy import select, text
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from marquee.core.jobs.artifact_service import physical_artifact_file, verify_physical_artifact
 from marquee.core.jobs.delivery import ExecutionContext
 from marquee.core.jobs.event_service import job_event_writer
 from marquee.models import Job, JobArtifact, MlActivePublication
@@ -22,6 +25,47 @@ class ActivationResult:
     generation: int
     version: str
     checksum: str
+
+
+@dataclass(frozen=True, slots=True)
+class ActivePublication:
+    family: str
+    generation: int
+    version: str
+    checksum: str
+    artifact_id: int
+    path: Path
+
+
+async def resolve_active_publication(
+    session: AsyncSession,
+    *,
+    family: str,
+) -> ActivePublication:
+    """Resolve and verify the sole active artifact for one typed family namespace."""
+    active = await session.scalar(
+        select(MlActivePublication).where(MlActivePublication.family == family)
+    )
+    if active is None:
+        raise MlPublicationError(f"active ML publication is unavailable: {family}")
+    artifact = await session.get(JobArtifact, active.artifact_id)
+    if (
+        artifact is None
+        or artifact.status != "available"
+        or artifact.checksum != active.checksum
+        or artifact.kind != family.partition(":")[0]
+    ):
+        raise MlPublicationError(f"active ML publication evidence is invalid: {family}")
+    await verify_physical_artifact(artifact)
+    _boundary, stored = physical_artifact_file(artifact)
+    return ActivePublication(
+        family=family,
+        generation=active.generation,
+        version=active.version,
+        checksum=active.checksum,
+        artifact_id=artifact.id,
+        path=stored.root.resolved() / stored.key.value,
+    )
 
 
 async def activate_immutable_artifact(

@@ -13,7 +13,6 @@ from typing import Literal
 from marquee.api.results import find_candidate
 from marquee.config import settings
 from marquee.models import PipelineRun
-from marquee.pipeline.extractor_runtime import extractor_runtime
 from marquee.pipeline.runner import _sanitise_filename
 
 LabelKind = Literal["false_rejection", "false_acceptance"]
@@ -103,13 +102,13 @@ def _json_safe(obj: object) -> object:
     return obj
 
 
-def capture_ocr_label(run: PipelineRun, orig_filename: str, label_kind: LabelKind) -> CaptureResult:
-    archive = extractor_runtime.load_archive(run.run_id, run.archive_path)
-    if archive is None:
-        raise OcrLabelCaptureError(
-            f"Run {run.run_id} archive is missing or unreadable",
-            status_code=404,
-        )
+def capture_ocr_label(
+    run: PipelineRun,
+    archive: dict[str, object],
+    candidate_image: Path | None,
+    orig_filename: str,
+    label_kind: LabelKind,
+) -> CaptureResult:
     missing_snapshot_keys = missing_ocr_snapshot_keys(archive)
     if missing_snapshot_keys:
         joined = ", ".join(missing_snapshot_keys)
@@ -127,15 +126,9 @@ def capture_ocr_label(run: PipelineRun, orig_filename: str, label_kind: LabelKin
         )
 
     title = str(archive.get("title") or f"movie-{run.movie_id}")
-    work_dir, work_dir_source = _resolve_work_dir(run, archive)
-    image_source, image_source_kind = _resolve_image_source(work_dir, candidate, orig_filename)
-    log_source, _ = _resolve_log_source(work_dir)
+    image_source = candidate_image if candidate_image and candidate_image.is_file() else None
     log_lines, log_missing_artifacts, log_source_kind = _extract_log_lines(
-        log_source,
-        archive,
-        candidate,
-        orig_filename,
-        run.run_id,
+        archive, candidate, orig_filename
     )
 
     capture_dir = (
@@ -175,8 +168,7 @@ def capture_ocr_label(run: PipelineRun, orig_filename: str, label_kind: LabelKin
             "run": {
                 "run_id": run.run_id,
                 "status": run.status,
-                "archive_path": run.archive_path,
-                "output_dir": run.output_dir,
+                "archive_artifact_id": run.archive_artifact_id,
             },
             # The durable OCR read, hoisted from the archived candidate so the
             # downstream tooling reads text / title_bbox / residual_boxes
@@ -186,11 +178,9 @@ def capture_ocr_label(run: PipelineRun, orig_filename: str, label_kind: LabelKin
             "config_snapshot": archive.get("config", {}),
             "stage_timings_seconds": archive.get("stage_timings_seconds", {}),
             "source_resolution": {
-                "work_dir": str(work_dir) if work_dir is not None else None,
-                "work_dir_source": work_dir_source,
                 "image_source": str(image_source) if image_source is not None else None,
-                "image_source_kind": image_source_kind,
-                "log_source": str(log_source) if log_source is not None else None,
+                "image_source_kind": "job_artifact" if image_source is not None else "missing",
+                "log_source": None,
                 "log_source_kind": log_source_kind,
                 "log_line_count": len(log_lines),
             },
@@ -255,88 +245,12 @@ def list_ocr_labels(run_id: str) -> dict[str, object]:
     }
 
 
-def _resolve_work_dir(
-    run: PipelineRun,
-    archive: dict[str, object],
-) -> tuple[Path | None, str]:
-    if run.output_dir:
-        return Path(run.output_dir).resolve(), "pipeline_run.output_dir"
-    title = archive.get("title")
-    if isinstance(title, str) and title:
-        return (settings.runs_work_path / _sanitise_filename(title)).resolve(), "title_fallback"
-    return None, "missing"
-
-
-def _resolve_image_source(
-    work_dir: Path | None,
-    candidate: dict[str, object],
-    orig_filename: str,
-) -> tuple[Path | None, str]:
-    if work_dir is not None:
-        original_path = (work_dir / "0-originals" / orig_filename).resolve()
-        if original_path.is_file():
-            return original_path, "originals"
-
-    image_path = candidate.get("image_path")
-    if isinstance(image_path, str):
-        archived_path = Path(image_path).resolve()
-        if archived_path.is_file():
-            return archived_path, "archived_image_path"
-    return None, "missing"
-
-
-def _resolve_log_source(work_dir: Path | None) -> tuple[Path | None, str]:
-    """The work-dir ``pipeline.log`` if present, else nothing.
-
-    The log is only ever a *supplementary* source now — the authoritative OCR
-    read lives in the run archive (see ``_ocr_diagnostics``). The work dir is
-    keyed by movie title and reused across runs, so a found ``pipeline.log`` may
-    belong to a later run; ``_extract_log_lines`` guards on the run_id.
-    """
-    if work_dir is None:
-        return None, "missing"
-    pipeline_log = work_dir / "pipeline.log"
-    if pipeline_log.is_file():
-        return pipeline_log, "pipeline.log"
-    return None, "missing"
-
-
-def _log_belongs_to_run(log_text: str, run_id: str) -> bool:
-    """True when this ``pipeline.log`` was written by ``run_id``.
-
-    The runner emits ``RUN START | run_id=<hex> | ...`` once per run and the log
-    is recreated fresh each run (``_clear_generated_outputs`` deletes it first),
-    so a single run_id stamp identifies the owning run.
-    """
-    return f"run_id={run_id}" in log_text
-
-
 def _extract_log_lines(
-    log_source: Path | None,
     archive: dict[str, object],
     candidate: dict[str, object],
     orig_filename: str,
-    run_id: str,
 ) -> tuple[list[str], list[str], str]:
-    """Return (log lines, missing-artifact flags, source kind).
-
-    Prefer this run's real per-poster log lines; fall back to an honest
-    synthesis from the immutable archive (which now carries the real OCR read).
-    """
-    if log_source is not None and log_source.is_file():
-        text = log_source.read_text(encoding="utf-8", errors="replace")
-        if _log_belongs_to_run(text, run_id):
-            lines = [
-                line.rstrip("\n") for line in text.splitlines() if f"file={orig_filename}" in line
-            ]
-            if lines:
-                return lines, [], "pipeline.log"
-
-    # No authentic per-run log — reconstruct from the immutable archive. When
-    # the archive carries real OCR data this is authoritative ("archive"); only
-    # flag a missing diagnostic when the candidate reached OCR yet has no read
-    # (a stale pre-fix archive — the signal to re-run). Candidates rejected
-    # before OCR legitimately have no OCR data and are not flagged.
+    """Render bounded diagnostics from the immutable canonical archive."""
     reconstructed = _synthesise_log_lines(archive, candidate, orig_filename)
     if _has_ocr_diagnostics(candidate):
         return reconstructed, [], "archive"

@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from marquee.core import letterbox_reencode
+from marquee.core import letterbox_transcode
 from marquee.core.jobs.artifact_service import register_physical_artifact
 from marquee.core.jobs.delivery import ExecutionContext, register_execution_handler
 from marquee.core.jobs.dovi_conversion_documents import (
@@ -191,7 +191,7 @@ def _progress_sink(context: ExecutionContext, request: DoviConvertRequestV1):
         else:
             pending = ""
         for line in lines:
-            update = letterbox_reencode._parse_progress(
+            update = letterbox_transcode._parse_progress(
                 line, request.source_probe.duration_seconds, values
             )
             if update is None:
@@ -299,7 +299,7 @@ async def execute_dovi_convert(context: ExecutionContext) -> dict[str, object]:
             await _run(
                 context,
                 "ffmpeg",
-                letterbox_reencode.build_dovi_remux_args(resolved.path, converted, candidate),
+                letterbox_transcode.build_dovi_remux_args(resolved.path, converted, candidate),
             )
         else:
             rpu = physical(staging("RPU.bin"))
@@ -336,7 +336,7 @@ async def execute_dovi_convert(context: ExecutionContext) -> dict[str, object]:
             await _run(
                 context,
                 "ffmpeg",
-                letterbox_reencode.build_dovi_remux_args(encoded_mkv, injected, candidate),
+                letterbox_transcode.build_dovi_remux_args(encoded_mkv, injected, candidate),
             )
         output_probe = await _probe(context, candidate)
     except Exception as exc:  # noqa: BLE001

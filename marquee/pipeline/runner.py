@@ -625,6 +625,7 @@ def run_sync_stages(
     progress: ProgressCallback | None = None,
     should_cancel: ShouldCancel | None = None,
     ocr_gate: OcrGateContext | None = None,
+    learned_head_path: Path | None = None,
 ) -> SyncOutcome:
     """All CPU/GPU-bound stages, run off the event loop via asyncio.to_thread."""
 
@@ -859,7 +860,7 @@ def run_sync_stages(
 
     # Stage 4b: detail features + the remaining hard gate.
     stage_started = _stage_start("detail-features", total=len(ocr_survivors), progress=progress)
-    diagnostic_scorer = select_scorer()
+    diagnostic_scorer = select_scorer(artifact_path=learned_head_path)
     passed: list[CandidateScore] = []
     detail_items = [(records[r.image_path.name].features, r) for r in ocr_survivors]
     # The stacker reuses the DINOv2 vectors computed here as its grouping

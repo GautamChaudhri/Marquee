@@ -27,6 +27,16 @@ from marquee.core.jobs.process_identity import (
     process_group_exists,
     verify_process_identity,
 )
+from marquee.core.jobs.runner_protocol import (
+    CONTROL_FD_ENV,
+    MAX_FRAME_BYTES,
+    MAX_MANIFEST_BYTES,
+    RunnerOperation,
+)
+
+# The internal runner is a fixed, code-owned module; its name is never taken from a
+# caller. Only the closed RunnerOperation vocabulary selects what it does.
+INTERNAL_RUNNER_MODULE = "marquee.core.jobs.internal_runner"
 
 IdentityRecorder = Callable[[ProcessIdentity], Awaitable[object]]
 ExitRecorder = Callable[["ExecutionSummary"], Awaitable[object]]
@@ -498,6 +508,137 @@ class ProcessLauncher:
         )
         self._active.add(tracked)
         return tracked
+
+    async def launch_internal_runner(
+        self,
+        operation: RunnerOperation | str,
+        *,
+        manifest: bytes,
+    ) -> tuple[TrackedProcess, asyncio.StreamReader]:
+        """Launch the fixed internal runner for one closed operation, contained.
+
+        The runner module and its operation vocabulary are code-owned; no path,
+        module name, or command fragment ever comes from a caller. The bounded,
+        versioned manifest is written to the child's stdin, and structured
+        control/progress/result frames return on a dedicated inherited pipe whose
+        StreamReader is returned to the coordinator. stdout/stderr still tee into
+        the redacted attempt log so large data never crosses the frame channel.
+        """
+        resolved = (
+            operation if isinstance(operation, RunnerOperation) else RunnerOperation(operation)
+        )
+        if not isinstance(manifest, bytes | bytearray):
+            raise ProcessLaunchError("internal runner manifest must be bytes")
+        if not 4 <= len(manifest) <= MAX_MANIFEST_BYTES + 4:
+            raise ProcessLaunchError("internal runner manifest is out of bounds")
+        capabilities = containment_capabilities(cgroup_root=self._cgroup_root)
+        if capabilities.tier == "unsupported":
+            raise ProcessLaunchError("verified process-group containment is unavailable")
+        command = (sys.executable, "-m", INTERNAL_RUNNER_MODULE, resolved.value)
+        environment = _minimal_environment()
+        control_read, control_write = os.pipe()
+        started_at = datetime.now(UTC)
+        try:
+            environment[CONTROL_FD_ENV] = str(control_write)
+            process = await asyncio.create_subprocess_exec(
+                *command,
+                cwd=self._cwd(),
+                env=environment,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                start_new_session=True,
+                pass_fds=(control_write,),
+            )
+        except BaseException:
+            os.close(control_read)
+            os.close(control_write)
+            raise
+        os.close(control_write)
+        assert process.stdin is not None
+        assert process.stdout is not None
+        assert process.stderr is not None
+        stdout_task: asyncio.Task[StreamSummary] | None = None
+        stderr_task: asyncio.Task[StreamSummary] | None = None
+        cgroup: CgroupV2Handle | None = None
+        pipe_file: object | None = None
+        control_transport: asyncio.ReadTransport | None = None
+        try:
+            identity = capture_process_identity(process.pid, worker_node=self._worker_node)
+            if identity.process_group_id != process.pid:
+                raise ProcessIdentityError("child did not become a process-group leader")
+            cgroup = create_attempt_cgroup(
+                process.pid,
+                process_start_ticks=identity.process_start_ticks,
+                cgroup_root=self._cgroup_root,
+            )
+            if cgroup is not None:
+                identity = replace(identity, cgroup_path=str(cgroup.path))
+            if self._record_identity is not None:
+                recorded = await self._record_identity(identity)
+                if recorded is not True and recorded != "applied":
+                    raise ProcessLaunchError("durable process identity ownership was rejected")
+            loop = asyncio.get_running_loop()
+            control_reader = asyncio.StreamReader(limit=2 * MAX_FRAME_BYTES)
+            pipe_file = os.fdopen(control_read, "rb", 0)
+            control_transport, _ = await loop.connect_read_pipe(
+                lambda: asyncio.StreamReaderProtocol(control_reader), pipe_file
+            )
+            stdout_task = asyncio.create_task(
+                _drain(
+                    process.stdout,
+                    capture_limit=self._capture_limit,
+                    source="stdout",
+                    sink=self._pipe_sink,
+                )
+            )
+            stderr_task = asyncio.create_task(
+                _drain(
+                    process.stderr,
+                    capture_limit=self._capture_limit,
+                    source="stderr",
+                    sink=self._pipe_sink,
+                )
+            )
+            process.stdin.write(bytes(manifest))
+            await process.stdin.drain()
+            process.stdin.close()
+            with contextlib.suppress(BrokenPipeError, ConnectionResetError):
+                await process.stdin.wait_closed()
+        except BaseException:
+            if control_transport is not None:
+                control_transport.close()
+            elif pipe_file is not None:
+                pipe_file.close()  # type: ignore[attr-defined]
+            else:
+                os.close(control_read)
+            if cgroup is not None:
+                with contextlib.suppress(ProcessIdentityError):
+                    cgroup.kill()
+            else:
+                with contextlib.suppress(ProcessLookupError):
+                    os.killpg(process.pid, signal.SIGKILL)
+            await process.wait()
+            tasks = tuple(task for task in (stdout_task, stderr_task) if task is not None)
+            if tasks:
+                await asyncio.gather(*tasks)
+            if cgroup is not None:
+                with contextlib.suppress(ProcessIdentityError):
+                    cgroup.cleanup()
+            raise
+        assert stdout_task is not None and stderr_task is not None
+        tracked = TrackedProcess(
+            process=process,
+            identity=identity,
+            stdout_task=stdout_task,
+            stderr_task=stderr_task,
+            started_at=started_at,
+            record_exit=self._record_exit,
+            on_finished=self._active.discard,
+            cgroup=cgroup,
+        )
+        self._active.add(tracked)
+        return tracked, control_reader
 
     async def shutdown(
         self,

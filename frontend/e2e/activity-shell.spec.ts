@@ -14,6 +14,10 @@ test('keeps the canonical Activity shell visually intentional', async ({ page })
 	await page.goto('/projection-room');
 	await expect(page.getByRole('heading', { name: 'Activity', exact: true })).toBeVisible();
 	await expect(page.getByRole('link', { name: 'Activity' })).toHaveCount(1);
+	// The shell renders before the initial queue request settles. Anchor the
+	// visual assertion to the fixture's terminal empty state so a loading-to-data
+	// layout transition cannot race the full-page capture.
+	await expect(page.getByText('Nothing is waiting.')).toBeVisible();
 	await expect(page).toHaveScreenshot('projection-room-shell.png', {
 		animations: 'disabled',
 		fullPage: true

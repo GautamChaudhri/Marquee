@@ -72,8 +72,6 @@
     "marquee/api/routes/pipeline.py:run_pipeline_batch": [],
     "marquee/api/routes/pipeline_tv.py:run_series_pipeline": [],
     "marquee/api/routes/pipeline_tv.py:run_tv_pipeline_batch": [],
-    "marquee/api/routes/taste.py:activate_learned_head": [],
-    "marquee/api/routes/taste.py:activate_taste_profile": [],
     "marquee/api/routes/taste.py:cancel_retrain_taste": [],
     "marquee/api/routes/taste.py:rebuild_map": [],
     "marquee/api/routes/taste.py:retrain_learned_head": [],

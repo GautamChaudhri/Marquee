@@ -1,6 +1,5 @@
 """SQLAlchemy ORM models — Movie, Series, Season, Episode, runs + events."""
 
-from marquee.models.artifact_snapshot import ArtifactSnapshot, ArtifactSnapshotMovie
 from marquee.models.artwork_event import ArtworkEvent
 from marquee.models.base import ArtworkMixin, TimestampMixin
 from marquee.models.configuration import ConfigurationCurrent, ConfigurationRevision
@@ -53,8 +52,6 @@ __all__ = [
     "ArtworkEvent",
     "ConfigurationCurrent",
     "ConfigurationRevision",
-    "ArtifactSnapshot",
-    "ArtifactSnapshotMovie",
     "ArtworkMixin",
     "TimestampMixin",
     "DoviState",

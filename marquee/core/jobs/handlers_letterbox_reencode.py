@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from marquee.core import letterbox_reencode
+from marquee.core import letterbox_transcode
 from marquee.core.jobs.artifact_service import register_physical_artifact
 from marquee.core.jobs.delivery import ExecutionContext, register_execution_handler
 from marquee.core.jobs.letterbox_reencode_documents import (
@@ -171,7 +171,7 @@ def _progress_sink(
         else:
             pending = ""
         for line in lines:
-            update = letterbox_reencode._parse_progress(
+            update = letterbox_transcode._parse_progress(
                 line, request.source.duration_seconds, values
             )
             if update is None:
@@ -191,11 +191,7 @@ def _progress_sink(
                     if isinstance(update.get("speed"), (int, float))
                     else None
                 ),
-                fps=(
-                    float(update["fps"])
-                    if isinstance(update.get("fps"), (int, float))
-                    else None
-                ),
+                fps=(float(update["fps"]) if isinstance(update.get("fps"), (int, float)) else None),
             )
 
     return sink, latest
@@ -230,7 +226,7 @@ async def execute_letterbox_reencode(context: ExecutionContext) -> dict[str, obj
     os.close(fd)
     candidate_path = physical(candidate)
     plan = _plan_document(request)
-    args = letterbox_reencode.build_ffmpeg_args(resolved.path, candidate_path, plan)
+    args = letterbox_transcode.build_ffmpeg_args(resolved.path, candidate_path, plan)
     stdout_sink, latest = _progress_sink(context, request)
     try:
         process = await context.process_launcher.launch(

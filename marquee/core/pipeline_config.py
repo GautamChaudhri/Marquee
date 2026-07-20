@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import shutil
 from pathlib import Path
 
 from pydantic import model_validator
@@ -15,7 +14,6 @@ _DATA_DIR = _PROJECT_ROOT / "data"
 _DATA_ML_DIR = _DATA_DIR / "ml"
 _DATA_FEEDBACK_DIR = _DATA_DIR / "feedback"
 _DATA_TRAINING_DIR = _DATA_DIR / "training"
-_LEGACY_EXPERIMENTS_DIR = _PROJECT_ROOT / "experiments"
 # Shipped (tracked) onboarding resources: the bundled taste test + starter
 # profile seed. Distinct from data/ (gitignored runtime state).
 _ONBOARDING_DIR = _PROJECT_ROOT / "marquee" / "onboarding"
@@ -627,54 +625,3 @@ class PipelineSettings(BaseSettings):
 
 
 pipeline_settings = PipelineSettings()
-
-
-def _legacy_training_path(name: str) -> Path:
-    return _LEGACY_EXPERIMENTS_DIR / name
-
-
-def migrate_legacy_runtime_state() -> list[str]:
-    """Move legacy mutable state into ``data/`` when the new path is empty.
-
-    Returns human-readable messages describing any performed migration.
-    Raises RuntimeError on path conflicts that need manual operator attention.
-    """
-    migrations: list[tuple[Path, Path]] = [
-        (
-            _legacy_training_path("feedback") / "labels.jsonl",
-            Path(pipeline_settings.FEEDBACK_LABELS_PATH),
-        ),
-        (
-            _legacy_training_path("training_data"),
-            Path(pipeline_settings.TRAINING_DATA_DIR),
-        ),
-        (
-            _legacy_training_path("negative_data"),
-            Path(pipeline_settings.NEGATIVE_DATA_DIR),
-        ),
-        (
-            _ML_DIR / f"taste_profile.{pipeline_settings.AI_MODEL}.npz",
-            Path(pipeline_settings.TASTE_PROFILE_PATH),
-        ),
-        (
-            _ML_DIR / f"zeroshot_axes.{pipeline_settings.AI_MODEL}.npz",
-            Path(pipeline_settings.ZEROSHOT_AXES_PATH),
-        ),
-        (
-            _MODELS_DIR / f"learned_head.{pipeline_settings.AI_MODEL}.npz",
-            Path(pipeline_settings.LEARNED_HEAD_PATH),
-        ),
-    ]
-    messages: list[str] = []
-    for legacy, current in migrations:
-        if not legacy.exists():
-            continue
-        if current.exists():
-            raise RuntimeError(
-                "Legacy runtime-state migration conflict: both paths exist "
-                f"({legacy} and {current}). Resolve manually, then restart Marquee."
-            )
-        current.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(legacy), str(current))
-        messages.append(f"{legacy} -> {current}")
-    return messages

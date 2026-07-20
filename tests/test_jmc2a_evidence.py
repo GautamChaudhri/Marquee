@@ -25,6 +25,7 @@ from marquee.models import (
     Series,
     WorkerNode,
 )
+from tests.support.canonical_poster import seed_canonical_pipeline_run
 
 
 def _job(job_id: str = "evidence-job") -> Job:
@@ -170,17 +171,20 @@ async def test_tv_history_survives_series_season_and_episode_deletion(db):
     db.add_all([season, episode])
     await db.flush()
     snapshot = {"kind": "series", "title": series.title, "season": 1, "episode": 1}
-    series_run = PipelineRun(
+    await seed_canonical_pipeline_run(
+        db,
         run_id="history-series",
+        archive={"run_id": "history-series", "title": series.title, "candidates": []},
         media_type="series",
         series_id=series.id,
-        subject_snapshot=snapshot,
     )
-    season_run = PipelineRun(
+    await seed_canonical_pipeline_run(
+        db,
         run_id="history-season",
+        archive={"run_id": "history-season", "title": series.title, "candidates": []},
         media_type="season",
+        series_id=series.id,
         season_id=season.id,
-        subject_snapshot=snapshot,
     )
     episode_event = LetterboxEvent(
         media_type="episode",
@@ -189,7 +193,7 @@ async def test_tv_history_survives_series_season_and_episode_deletion(db):
         action="detect",
         source="api",
     )
-    db.add_all([series_run, season_run, episode_event])
+    db.add(episode_event)
     await db.commit()
     episode_event_id = episode_event.id
 

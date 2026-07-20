@@ -92,21 +92,21 @@ def _call_inventory() -> dict[str, list[str]]:
             "retrain_learned_head",
             "rebuild_map",
             "cancel_retrain_taste",
-            "activate_taste_profile",
-            "activate_learned_head",
         },
     }
     owners = {
         "job_manager",
         "media_job_manager",
         "cancel_registry",
-        "artifact_registry",
         "run_manager",
     }
     for relative, functions in targets.items():
         tree = ast.parse((ROOT / relative).read_text())
         for node in ast.walk(tree):
-            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) or node.name not in functions:
+            if (
+                not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                or node.name not in functions
+            ):
                 continue
             calls: list[str] = []
             for child in ast.walk(node):
@@ -148,15 +148,16 @@ def test_registry_and_handlers_match_c0_freeze() -> None:
         "letterbox_reencode",
         "letterbox_reencode_publish",
         "letterbox_reencode_restore",
-            "letterbox_reencode_discard",
-            "dovi_convert",
-            "dovi_publish",
-            "dovi_restore",
-            "dovi_discard",
+        "letterbox_reencode_discard",
+        "dovi_convert",
+        "dovi_publish",
+        "dovi_restore",
+        "dovi_discard",
     }
-    assert set(JOB_DEFINITION_REGISTRY.enabled_types) == set(
-        frozen["registry"]["enabled_types"]
-    ) | additions
+    assert (
+        set(JOB_DEFINITION_REGISTRY.enabled_types)
+        == set(frozen["registry"]["enabled_types"]) | additions
+    )
     assert set(EXECUTION_HANDLERS) == set(frozen["execution_handlers"]) | additions
 
 
@@ -204,8 +205,8 @@ def test_deferred_mutation_never_dispatches() -> None:
         "system_metrics_purge",
         "letterbox_apply",
         "letterbox_remove",
-            "letterbox_reencode",
-            "dovi_convert",
+        "letterbox_reencode",
+        "dovi_convert",
     }
     deferred = set(DEFERRED_MUTATING_TYPES) - enabled_maintenance
     for enabled in enabled_maintenance:

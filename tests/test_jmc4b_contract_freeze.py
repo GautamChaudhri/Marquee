@@ -113,16 +113,19 @@ def test_registry_and_execution_handlers_match_freeze() -> None:
         "system_metrics_purge",
         "letterbox_apply",
         "letterbox_remove",
-            "letterbox_reencode",
-            "dovi_convert",
+        "letterbox_reencode",
+        "dovi_convert",
         "letterbox_reencode_publish",
         "letterbox_reencode_restore",
-            "letterbox_reencode_discard",
-            "dovi_publish",
-            "dovi_restore",
-            "dovi_discard",
+        "letterbox_reencode_discard",
+        "dovi_publish",
+        "dovi_restore",
+        "dovi_discard",
     }
-    assert JOB_DEFINITION_REGISTRY.enabled_types == set(frozen["registry"]["enabled_types"]) | poster_leaves
+    assert (
+        JOB_DEFINITION_REGISTRY.enabled_types
+        == set(frozen["registry"]["enabled_types"]) | poster_leaves
+    )
     assert set(EXECUTION_HANDLERS) == set(frozen["execution_handlers"]) | poster_leaves
 
 
@@ -169,8 +172,8 @@ def test_deferred_destructive_types_stay_present_and_disabled() -> None:
         "system_metrics_purge",
         "letterbox_apply",
         "letterbox_remove",
-            "letterbox_reencode",
-            "dovi_convert",
+        "letterbox_reencode",
+        "dovi_convert",
     ):
         frozen.pop(enabled)
     assert {job_type: _state(job_type) for job_type in frozen} == frozen
@@ -197,15 +200,14 @@ def test_legacy_bypass_call_graph_matches_freeze() -> None:
         "marquee/api/routes/subtitle_generators.py:generate_for_media_file:media_job_manager.create_job",
         "marquee/api/routes/subtitle_generators.py:generate_for_movie:media_job_manager.create_job",
         "marquee/core/subtitles/generation.py:run_generation_job:cancel_registry.get",
-            "marquee/core/subtitles/mutation.py:_raise_if_cancel_requested:cancel_registry.get",
-            "marquee/api/routes/letterbox.py:apply_batch:job_manager.create",
-            "marquee/api/routes/letterbox.py:apply_one:job_manager.create_and_run",
-            "marquee/api/routes/letterbox.py:apply_tv_scope:job_manager.create",
-            "marquee/api/routes/letterbox.py:letterbox_heal:job_manager.create",
-            "marquee/api/routes/letterbox.py:remove_one:job_manager.create_and_run",
-            "marquee/api/routes/letterbox.py:revert_tv_scope:job_manager.create",
-                "marquee/core/letterbox_reencode.py:_raise_if_cancel_requested:cancel_registry.get",
-                "marquee/api/routes/hdr.py:convert_movie_dovi:job_manager.create",
+        "marquee/core/subtitles/mutation.py:_raise_if_cancel_requested:cancel_registry.get",
+        "marquee/api/routes/letterbox.py:apply_batch:job_manager.create",
+        "marquee/api/routes/letterbox.py:apply_one:job_manager.create_and_run",
+        "marquee/api/routes/letterbox.py:apply_tv_scope:job_manager.create",
+        "marquee/api/routes/letterbox.py:letterbox_heal:job_manager.create",
+        "marquee/api/routes/letterbox.py:remove_one:job_manager.create_and_run",
+        "marquee/api/routes/letterbox.py:revert_tv_scope:job_manager.create",
+        "marquee/api/routes/hdr.py:convert_movie_dovi:job_manager.create",
     ):
         frozen.pop(retired)
     assert frozen
