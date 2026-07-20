@@ -1198,9 +1198,9 @@ export interface RankItem {
 }
 
 // ── Taste / Key Art Engine status (GET /taste/status) ───────────────────────
-export interface ArtifactRegistryStatus {
+export interface PublicationAuthorityStatus {
 	available: boolean;
-	reason?: 'missing_schema';
+	authority: 'ml_active_publications';
 }
 
 export interface TasteStatus {
@@ -1232,7 +1232,7 @@ export interface TasteStatus {
 	};
 	active_profile?: ManagedArtifactSummary | null;
 	active_head?: ManagedArtifactSummary | null;
-	artifact_registry?: ArtifactRegistryStatus;
+	publication_authority?: PublicationAuthorityStatus;
 	gate_alerts: { gate: string; overrides: number; threshold?: number | string }[];
 	rebuild?: Record<string, unknown>;
 }
@@ -1259,7 +1259,7 @@ export interface TasteMapPoint {
 	year: number | null;
 	aesthetic: number | null;
 	colorfulness: number | null;
-	thumb_url: string;
+	thumb_url: string | null;
 }
 
 export interface TasteMapCluster {
@@ -1281,22 +1281,6 @@ export interface TasteMapData {
 	outliers: string[];
 	clustering: TasteMapCluster[] | null;
 	note: string | null;
-}
-
-export interface TasteMapCandidate {
-	orig_filename: string;
-	rank: number | null;
-	final_score: number | null;
-	x: number;
-	y: number;
-	z: number;
-	knn_sim: number;
-	neighbors: { name: string; similarity: number }[];
-}
-
-export interface TasteMapCandidateOverlay {
-	run_id: string;
-	candidates: TasteMapCandidate[];
 }
 
 export interface TasteNeighbor {
@@ -1356,12 +1340,12 @@ export interface ManagedHeadDetail extends ManagedArtifactSummary {
 
 export interface ManagedProfilesResponse {
 	profiles: ManagedArtifactSummary[];
-	artifact_registry?: ArtifactRegistryStatus;
+	publication_authority?: PublicationAuthorityStatus;
 }
 
 export interface ManagedHeadsResponse {
 	heads: ManagedArtifactSummary[];
-	artifact_registry?: ArtifactRegistryStatus;
+	publication_authority?: PublicationAuthorityStatus;
 }
 
 export interface ManagedExemplarRow {
@@ -1374,7 +1358,7 @@ export interface ManagedExemplarRow {
 	is_duplicate: boolean;
 	duplicate_count: number;
 	exists_in_training_dir: boolean;
-	thumb_url: string;
+	thumb_url: string | null;
 }
 
 // ── Subtitle Inventory ──

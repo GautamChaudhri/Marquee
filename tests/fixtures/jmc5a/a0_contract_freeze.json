@@ -428,22 +428,13 @@
     "tests/test_jmc5a_poster_mutations.py",
     "tests/test_jmc5a_poster_parents.py",
     "tests/test_jmc5b_media_backups.py",
+    "tests/test_jmc6h_poster_live_smoke.py",
     "tests/test_poster_jobs.py",
     "tests/test_poster_pipeline_backend.py",
-    "tests/test_poster_service.py",
     "tests/test_poster_subjects.py",
     "tests/test_tv_maintenance.py"
   ],
   "writer_inventory": {
-    "marquee/api/routes/feedback.py:_remove_negative": [
-      "boundary.delete_file"
-    ],
-    "marquee/api/routes/webhooks.py:_restore_after_upgrade": [
-      "poster_service.restore"
-    ],
-    "marquee/api/routes/webhooks.py:radarr_webhook": [
-      "job_manager.create"
-    ],
     "marquee/maintenance.py:_backup": [
       "backup_service.create_backup"
     ]

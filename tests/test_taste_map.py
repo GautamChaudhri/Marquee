@@ -129,7 +129,18 @@ def test_staleness_triggers_rebuild(synthetic_profile, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_map_endpoint(client, synthetic_profile):
+async def test_map_endpoint_consumes_active_publication(client, synthetic_profile, monkeypatch):
+    from types import SimpleNamespace
+
+    from marquee.ml.taste_map import _map_path, build_map
+
+    build_map()
+
+    async def active(_db, *, family: str):
+        assert family == "taste_map:movies"
+        return SimpleNamespace(path=_map_path())
+
+    monkeypatch.setattr("marquee.api.routes.taste.resolve_active_publication", active)
     resp = await client.get("/api/taste/map")
     assert resp.status_code == 200
     data = resp.json()
@@ -139,13 +150,9 @@ async def test_map_endpoint(client, synthetic_profile):
 
 @pytest.mark.asyncio
 async def test_exemplar_neighbors_endpoint(client, synthetic_profile):
-    from marquee.ml.taste_map import build_map
-
-    build_map()
     _embeddings, names = synthetic_profile
     resp = await client.get(f"/api/taste/exemplars/{names[0]}/neighbors")
-    assert resp.status_code == 200
-    assert len(resp.json()["neighbors"]) > 0
+    assert resp.status_code == 404
 
 
 @pytest.mark.asyncio

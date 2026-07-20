@@ -1,11 +1,7 @@
 """Train the Phase-1 learned head from the labels file.
 
-Labels v2 (written by the feedback endpoint) embed the full normalized
-feature vector per row, so training is a direct read — no dependency on a
-run's working directory surviving a re-run. Legacy v1 rows
-(``{title, orig_filename, label}``) are still supported via the original
-join against ``data/runs/work/*/pipeline_run.json`` and the historical
-``experiments/runs/*/pipeline_run.json`` trees.
+Feedback rows embed the full normalized feature vector, so training is a
+direct read with no dependency on mutable run workspaces.
 
 Semantics (design 04 §5): 1 = approved/selected; 0 = overrode/rejected.
 
@@ -22,62 +18,21 @@ directly after each event when HEAD_AUTO_RETRAIN is on.
 from __future__ import annotations
 
 import argparse
-import json
 import threading
 from math import log2
 from pathlib import Path
 
 import numpy as np
 
-from marquee.config import settings
 from marquee.core.cancellation import raise_if_cancelled
 from marquee.core.pipeline_config import pipeline_settings
 from marquee.ml import feedback_store
 from marquee.ml.learned_head import LogisticHead, fit_scale_bias
 from marquee.ml.namespaces import TasteNamespace, get_namespace
 
-_RUNS_DIR = settings.runs_work_path
-_LEGACY_RUNS_DIRS = (
-    Path(__file__).resolve().parents[2] / "experiments" / "runs",
-    Path(__file__).resolve().parents[1] / "experiments" / "runs",
-)
 
-
-def collect_v1_samples(
-    runs_dirs: tuple[Path, ...],
-    labels: dict[tuple[str, str], int],
-) -> list[tuple[dict[str, float], int]]:
-    """Join v1 labels against the recorded normalized features of every run."""
-    samples: list[tuple[dict[str, float], int]] = []
-    if not labels:
-        return samples
-    for runs_dir in runs_dirs:
-        if not runs_dir.exists():
-            continue
-        for run_json in sorted(runs_dir.glob("*/pipeline_run.json")):
-            try:
-                payload = json.loads(run_json.read_text())
-            except (OSError, json.JSONDecodeError) as exc:
-                print(f"[WARN] Skipping unreadable {run_json}: {exc}")
-                continue
-            title = payload.get("title", "")
-            if payload.get("model_name") != pipeline_settings.AI_MODEL:
-                continue
-            for candidate in payload.get("candidates", []):
-                key = (title, candidate.get("orig_filename", ""))
-                if key not in labels:
-                    continue
-                normalized = candidate.get("normalized_features")
-                if normalized:
-                    samples.append((normalized, labels[key]))
-    return samples
-
-
-def build_training_data(
-    rows: list[dict],
-    runs_dirs: tuple[Path, ...],
-) -> tuple[np.ndarray, np.ndarray, list[str], int]:
-    """Combine v2 (embedded features) + v1 (run-join) rows into a matrix.
+def build_training_data(rows: list[dict]) -> tuple[np.ndarray, np.ndarray, list[str], int]:
+    """Build pointwise training data from immutable embedded features.
 
     Returns (X, y, feature_names, n_distinct_movies). Uses the features
     present in *every* sample so the head never trains on a feature that
@@ -85,24 +40,14 @@ def build_training_data(
     """
     samples: list[tuple[dict[str, float], int]] = []
     movies: set[object] = set()
-    v1_labels: dict[tuple[str, str], int] = {}
-
     for row in rows:
         label = row.get("label")
         if label is None:
             continue
         movies.add(row.get("movie_id") if row.get("movie_id") is not None else row.get("title"))
-        if row.get("v") == 2:
-            normalized = row.get("normalized_features")
-            if normalized:
-                samples.append((normalized, int(label)))
-        else:
-            try:
-                v1_labels[(row["title"], row["orig_filename"])] = int(label)
-            except (KeyError, ValueError, TypeError):
-                continue
-
-    samples.extend(collect_v1_samples(runs_dirs, v1_labels))
+        normalized = row.get("normalized_features")
+        if normalized:
+            samples.append((normalized, int(label)))
 
     if not samples:
         return np.empty((0, 0)), np.empty(0), [], len(movies)
@@ -297,7 +242,8 @@ def build_pointwise_pseudo_labels(
 
 def train_from_labels(
     *,
-    runs_dir: Path | None = None,
+    rows: list[dict] | None = None,
+    output: Path | None = None,
     min_labels: int | None = None,
     min_movies: int | None = None,
     min_pairs: int | None = None,
@@ -310,15 +256,14 @@ def train_from_labels(
     """Train + (optionally) save the head. Returns (head|None, info).
 
     ``mode`` selects the trainer (defaults to ``HEAD_TRAIN_MODE``): "pairwise"
-    learns a RankNet head from v4 ranking events (rank-inversion pairs —
-    design/30); "pointwise" is the legacy logistic regression over v1/v2
-    approve/override labels.
+    learns a RankNet head from ranking events; "pointwise" uses embedded
+    approve/override features.
     """
     ns = namespace or get_namespace("movies")
     mode = pipeline_settings.HEAD_TRAIN_MODE if mode is None else mode
     min_movies = pipeline_settings.HEAD_MIN_MOVIES if min_movies is None else min_movies
     raise_if_cancelled(cancel_event, "learned head training cancelled")
-    rows = feedback_store.read_all(ns)
+    rows = feedback_store.read_all(ns) if rows is None else rows
     raise_if_cancelled(cancel_event, "learned head training cancelled")
 
     if mode == "pairwise":
@@ -361,15 +306,12 @@ def train_from_labels(
         info["features"] = names
         info["reason"] = "trained"
         if save:
-            head.save(ns.head_path)
+            head.save(output or ns.head_path)
         return head, info
 
-    # Legacy pointwise path (v1/v2 approve/override labels).
+    # Pointwise approve/override labels.
     min_labels = pipeline_settings.HEAD_MIN_LABELS if min_labels is None else min_labels
-    current_runs_dir = runs_dir or _RUNS_DIR
-    runs_dirs = (current_runs_dir, *_LEGACY_RUNS_DIRS)
-
-    features, targets, names, n_movies = build_training_data(rows, runs_dirs)
+    features, targets, names, n_movies = build_training_data(rows)
     raise_if_cancelled(cancel_event, "learned head training cancelled")
     n_samples = int(len(targets))
     info = {
@@ -399,13 +341,12 @@ def train_from_labels(
     info["features"] = names
     info["reason"] = "trained"
     if save:
-        head.save(ns.head_path)
+        head.save(output or ns.head_path)
     return head, info
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--runs-dir", type=Path, default=None)
     parser.add_argument(
         "--mode", choices=("pairwise", "pointwise"), default=pipeline_settings.HEAD_TRAIN_MODE
     )
@@ -416,7 +357,6 @@ def main() -> None:
     args = parser.parse_args()
 
     head, info = train_from_labels(
-        runs_dir=args.runs_dir or settings.runs_work_path,
         mode=args.mode,
         min_labels=args.min_labels,
         min_pairs=args.min_pairs,

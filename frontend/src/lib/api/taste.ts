@@ -2,12 +2,10 @@ import { apiGet, apiSend, type Fetch } from './client';
 import type { components } from './generated/openapi';
 import type {
 	ManagedHeadsResponse,
-	ManagedArtifactSummary,
 	ManagedExemplarRow,
 	ManagedHeadDetail,
 	ManagedProfilesResponse,
 	ManagedProfileDetail,
-	TasteMapCandidateOverlay,
 	TasteMapData,
 	TasteNeighbor,
 	TasteSource,
@@ -68,18 +66,6 @@ export function rebuildTasteMap(
 	return apiSend<JobSubmissionResponse>(fetchFn, 'POST', `/taste/map/rebuild?library=${library}`);
 }
 
-/** Project a pipeline run's ranked candidates into the taste-map space. */
-export function overlayCandidates(
-	fetchFn: Fetch,
-	runId: string,
-	library: TasteLibrary = 'movies'
-): Promise<TasteMapCandidateOverlay> {
-	void library;
-	return apiSend<TasteMapCandidateOverlay>(fetchFn, 'POST', '/taste/map/candidates', {
-		run_id: runId
-	});
-}
-
 /** Publish enriched profile metadata through the canonical job system. */
 export function enrichProfile(
 	fetchFn: Fetch,
@@ -116,55 +102,19 @@ export function getTasteProfileDetail(
 	return apiGet(fetchFn, `/taste/profiles/${artifactId}`, { library });
 }
 
-export function activateTasteProfile(
-	fetchFn: Fetch,
-	artifactId: string,
-	library: TasteLibrary = 'movies'
-): Promise<{ profile: ManagedArtifactSummary; map_rebuilt: boolean }> {
-	return apiSend(
-		fetchFn,
-		'POST',
-		`/taste/profiles/${artifactId}/activate${library === 'movies' ? '' : `?library=${library}`}`
-	);
-}
-
-export function archiveTasteProfile(
-	fetchFn: Fetch,
-	artifactId: string
-): Promise<{ profile: ManagedArtifactSummary }> {
-	return apiSend(fetchFn, 'POST', `/taste/profiles/${artifactId}/archive`);
-}
-
-export function deleteTasteProfile(
-	fetchFn: Fetch,
-	artifactId: string
-): Promise<{ deleted: string }> {
-	return apiSend(fetchFn, 'DELETE', `/taste/profiles/${artifactId}`);
-}
-
 export function getTasteProfileExemplars(
 	fetchFn: Fetch,
 	artifactId: string,
 	library: TasteLibrary = 'movies'
 ): Promise<{ exemplars: ManagedExemplarRow[] }> {
-	void library;
-	return apiGet(fetchFn, `/taste/profiles/${artifactId}/exemplars`);
+	return apiGet(fetchFn, `/taste/profiles/${artifactId}/exemplars`, { library });
 }
 
-export function deleteTasteProfileExemplar(
+export function getLearnedHeads(
 	fetchFn: Fetch,
-	artifactId: string,
-	name: string
-): Promise<{ profile: ManagedArtifactSummary; removed: string }> {
-	return apiSend(
-		fetchFn,
-		'DELETE',
-		`/taste/profiles/${artifactId}/exemplars/${encodeURIComponent(name)}`
-	);
-}
-
-export function getLearnedHeads(fetchFn: Fetch): Promise<ManagedHeadsResponse> {
-	return apiGet(fetchFn, '/taste/heads');
+	library: TasteLibrary = 'movies'
+): Promise<ManagedHeadsResponse> {
+	return apiGet(fetchFn, '/taste/heads', { library });
 }
 
 export function getLearnedHeadDetail(
@@ -172,27 +122,5 @@ export function getLearnedHeadDetail(
 	artifactId: string,
 	library: TasteLibrary = 'movies'
 ): Promise<ManagedHeadDetail> {
-	void library;
-	return apiGet(fetchFn, `/taste/heads/${artifactId}`);
-}
-
-export function activateLearnedHead(
-	fetchFn: Fetch,
-	artifactId: string
-): Promise<{ head: ManagedArtifactSummary }> {
-	return apiSend(fetchFn, 'POST', `/taste/heads/${artifactId}/activate`);
-}
-
-export function archiveLearnedHead(
-	fetchFn: Fetch,
-	artifactId: string
-): Promise<{ head: ManagedArtifactSummary }> {
-	return apiSend(fetchFn, 'POST', `/taste/heads/${artifactId}/archive`);
-}
-
-export function deleteLearnedHead(
-	fetchFn: Fetch,
-	artifactId: string
-): Promise<{ deleted: string }> {
-	return apiSend(fetchFn, 'DELETE', `/taste/heads/${artifactId}`);
+	return apiGet(fetchFn, `/taste/heads/${artifactId}`, { library });
 }

@@ -1,0 +1,510 @@
+"""Fixed, code-owned internal-runner child entrypoint (JMC6H H1).
+
+Invoked only as ``python -m marquee.core.jobs.internal_runner <operation>`` by the
+tracked process launcher, inside the attempt's process group/cgroup. It reads one
+bounded manifest from stdin, streams bounded control frames on the inherited
+control pipe, writes any large output into confined workspace files (its cwd is the
+attempt workspace), and returns a final result frame.
+
+The module is intentionally light: importing it must not pull in the poster/ML
+stack. Real poster/ML operations import their implementations lazily as their
+family gates pass (H2/H4); until then only ``NOOP`` is registered, which exists to
+certify the transport, containment, cancellation, and output-confinement behavior.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import hashlib
+import os
+import signal
+import sys
+import time
+from collections.abc import Callable
+from typing import Any
+
+from marquee.core.jobs.runner_protocol import (
+    CONTROL_FD_ENV,
+    PROTOCOL_VERSION,
+    ControlWriter,
+    ProtocolError,
+    RunnerOperation,
+    read_manifest_from_stdin,
+)
+
+# Exit codes distinct from any real handler signal exit.
+_EXIT_BAD_INVOCATION = 64
+_EXIT_NO_CONTROL = 65
+_EXIT_OPERATION_FAILED = 1
+
+OperationHandler = Callable[[dict[str, Any], ControlWriter], dict[str, Any]]
+
+
+class RunnerOperationNotEnabledError(RuntimeError):
+    """A closed-vocabulary operation exists but is not yet wired to real behavior."""
+
+
+def _safe_output_name(name: object) -> str:
+    """Confine a produced-file name to a single safe component under the workspace."""
+    if not isinstance(name, str) or not name:
+        raise ProtocolError("produced file name is invalid")
+    if len(name) > 200 or name != os.path.basename(name):
+        raise ProtocolError("produced file name is not a confined basename")
+    if name in {".", ".."} or name.startswith(".") or "\0" in name:
+        raise ProtocolError("produced file name is not a confined basename")
+    return name
+
+
+def _write_confined_output(name: str, content: bytes, control: ControlWriter) -> dict[str, Any]:
+    """Write one confined output into the workspace cwd and announce it by frame."""
+    safe = _safe_output_name(name)
+    with open(safe, "xb") as handle:
+        handle.write(content)
+        handle.flush()
+        os.fsync(handle.fileno())
+    checksum = hashlib.sha256(content).hexdigest()
+    descriptor = {"key": safe, "checksum": checksum, "size": len(content)}
+    control.emit({"v": PROTOCOL_VERSION, "type": "file", **descriptor})
+    return descriptor
+
+
+def _run_noop(manifest: dict[str, Any], control: ControlWriter) -> dict[str, Any]:
+    """Transport-certification operation: progress, optional file, optional hold."""
+    params = manifest.get("params")
+    params = params if isinstance(params, dict) else {}
+    stages = params.get("stages", 1)
+    stages = max(0, min(int(stages) if isinstance(stages, int) else 1, 100))
+    for ordinal in range(1, stages + 1):
+        control.emit(
+            {
+                "v": PROTOCOL_VERSION,
+                "type": "progress",
+                "stage": "working",
+                "ordinal": ordinal,
+                "overall": {"completed": ordinal, "total": stages, "unit": "steps"},
+            }
+        )
+
+    files: list[dict[str, Any]] = []
+    produce = params.get("produce_file")
+    if isinstance(produce, dict):
+        content = produce.get("content", "")
+        content_bytes = content.encode("utf-8") if isinstance(content, str) else b""
+        files.append(_write_confined_output(produce.get("name"), content_bytes, control))
+
+    hold = params.get("hold", "none")
+    if hold == "cooperative":
+        _cooperative_hold()
+    elif hold == "ignore":
+        _ignore_until_kill()
+
+    return {"outcome": "succeeded", "summary": {"echo": params.get("echo")}, "files": files}
+
+
+def _announce_file(name: str, control: ControlWriter) -> dict[str, Any]:
+    """Emit a produced-file frame for a file already written into the workspace."""
+    safe = _safe_output_name(name)
+    digest = hashlib.sha256()
+    size = 0
+    with open(safe, "rb") as handle:
+        while chunk := handle.read(1 << 20):
+            size += len(chunk)
+            digest.update(chunk)
+    descriptor = {"key": safe, "checksum": digest.hexdigest(), "size": size}
+    control.emit({"v": PROTOCOL_VERSION, "type": "file", **descriptor})
+    return descriptor
+
+
+def _run_poster_single(manifest: dict[str, Any], control: ControlWriter) -> dict[str, Any]:
+    """Run the real single-subject poster pipeline confined to the workspace.
+
+    Heavy pipeline/ML imports are deferred to this handler so importing the runner
+    module stays cheap. Candidate bytes, features, and outputs live only in the
+    workspace cwd; run.json and the selected candidate are announced as produced
+    files for the coordinator to validate and the handler to register.
+    """
+    import asyncio  # noqa: PLC0415
+    import shutil  # noqa: PLC0415
+    from pathlib import Path  # noqa: PLC0415
+
+    from marquee.ml.taste_store import NumpyTasteStore  # noqa: PLC0415
+    from marquee.pipeline.features import FeatureExtractor  # noqa: PLC0415
+    from marquee.pipeline.orchestrator import (  # noqa: PLC0415
+        PosterSourceInput,
+        PosterSubjectInput,
+        run_poster_pipeline,
+    )
+    from marquee.pipeline.runner import ProgressEvent, write_run_json  # noqa: PLC0415
+
+    params = manifest.get("params")
+    params = params if isinstance(params, dict) else {}
+    subject_params = params.get("subject") if isinstance(params.get("subject"), dict) else {}
+    source_params = params.get("source") if isinstance(params.get("source"), dict) else {}
+    if not isinstance(subject_params.get("title"), str) or not subject_params["title"]:
+        raise ProtocolError("poster_single manifest is missing a subject title")
+
+    subject = PosterSubjectInput(
+        title=subject_params["title"],
+        media_type=subject_params.get("media_type", "movie"),
+        movie_id=subject_params.get("movie_id"),
+        tmdb_id=subject_params.get("tmdb_id"),
+        series_id=subject_params.get("series_id"),
+        season_id=subject_params.get("season_id"),
+    )
+    source = PosterSourceInput(mode=source_params.get("mode", "tmdb"))
+    run_id = params.get("run_id") if isinstance(params.get("run_id"), str) else None
+    learned_head_path = Path("head.npz")
+
+    def _emit_progress(event: ProgressEvent) -> None:
+        frame: dict[str, Any] = {
+            "v": PROTOCOL_VERSION,
+            "type": "progress",
+            "stage": event.stage,
+            "state": event.state,
+        }
+        if event.total is not None:
+            frame["total"] = event.total
+        if event.done is not None:
+            frame["done"] = event.done
+        if event.survivors is not None:
+            frame["survivors"] = event.survivors
+        with contextlib.suppress(Exception):
+            control.emit(frame)
+
+    extractor = FeatureExtractor(taste_store=NumpyTasteStore(Path("profile.npz")))
+    extractor.preflight()
+    output = asyncio.run(
+        run_poster_pipeline(
+            subject=subject,
+            source=source,
+            out_dir=Path.cwd(),
+            feature_extractor=extractor,
+            progress=_emit_progress,
+            run_id=run_id,
+            learned_head_path=learned_head_path,
+        )
+    )
+
+    candidate_files: dict[str, str] = {}
+    candidates = output.payload.get("candidates")
+    if isinstance(candidates, list):
+        for index, candidate in enumerate(candidates[:100]):
+            if not isinstance(candidate, dict):
+                continue
+            reference = candidate.get("orig_filename")
+            image_path = candidate.get("image_path")
+            if not isinstance(reference, str) or not isinstance(image_path, str):
+                continue
+            source_path = Path(image_path).resolve()
+            if not source_path.is_file() or not source_path.is_relative_to(Path.cwd().resolve()):
+                continue
+            key = f"candidate-{index:03d}.jpg"
+            shutil.copyfile(source_path, key)
+            candidate_files[reference] = key
+            candidate["artifact_key"] = key
+
+    write_run_json(Path("run.json"), output.payload)
+    files = [_announce_file("run.json", control)]
+    files.extend(_announce_file(key, control) for key in candidate_files.values())
+
+    return {
+        "outcome": "succeeded",
+        "summary": {
+            "pipeline_status": output.status,
+            "run_id": output.run_id,
+            "counts": output.counts,
+            "recommendation": output.recommendation,
+            "ranked": output.ranked[:20],
+            "source_count": output.source_count,
+            "candidate_count": output.candidate_count,
+            "scorer_name": output.scorer_name,
+            "candidate_files": candidate_files,
+        },
+        "files": files,
+    }
+
+
+def _run_taste_profile(manifest: dict[str, Any], control: ControlWriter) -> dict[str, Any]:
+    """Run the real taste-profile trainer confined to the workspace (native .npz).
+
+    ``source.mode`` selects the exemplar source: ``fixture`` uses posters staged in
+    ``training/`` under the workspace cwd; ``library`` uses the configured training
+    directory. Output is written only to ``profile.npz`` in the workspace — never the
+    configured live taste-profile path.
+    """
+    from pathlib import Path  # noqa: PLC0415
+
+    import numpy as np  # noqa: PLC0415
+
+    from marquee.ml.namespaces import get_namespace  # noqa: PLC0415
+    from marquee.ml.taste_trainer import rebuild_profile  # noqa: PLC0415
+
+    params = manifest.get("params")
+    params = params if isinstance(params, dict) else {}
+    library = params.get("library", "movies")
+    source = params.get("source") if isinstance(params.get("source"), dict) else {}
+    source_mode = source.get("mode", "library")
+    namespace = get_namespace(library)
+    training = Path("training")
+    training_dir = training if source_mode == "fixture" and training.is_dir() else None
+    output = Path("profile.npz")
+
+    def _progress(event: object) -> None:
+        stage = event.get("stage") if isinstance(event, dict) else None
+        with contextlib.suppress(Exception):
+            control.emit(
+                {"v": PROTOCOL_VERSION, "type": "progress", "stage": str(stage or "training")}
+            )
+
+    rebuild_profile(
+        training_dir=training_dir,
+        output=output,
+        skip_ocr=bool(params.get("skip_ocr", True)),
+        skip_dino=bool(params.get("skip_dino", True)),
+        progress_callback=_progress,
+        namespace=namespace,
+    )
+
+    files = [_announce_file("profile.npz", control)]
+    exemplars = 0
+    with np.load(output, allow_pickle=False) as data:
+        if "embeddings" in data.files:
+            exemplars = int(np.asarray(data["embeddings"]).shape[0])
+    return {
+        "outcome": "succeeded",
+        "summary": {"family": "taste_profile", "library": library, "exemplars": exemplars},
+        "files": files,
+    }
+
+
+def _run_taste_map(manifest: dict[str, Any], control: ControlWriter) -> dict[str, Any]:
+    """Build a native map from the profile staged by the coordinator."""
+    from pathlib import Path  # noqa: PLC0415
+
+    from marquee.ml.namespaces import get_namespace  # noqa: PLC0415
+    from marquee.ml.taste_map import build_map  # noqa: PLC0415
+
+    params = manifest.get("params")
+    params = params if isinstance(params, dict) else {}
+    library = params.get("library", "movies")
+    namespace = get_namespace(library)
+    profile = Path("profile.npz")
+    output = Path("map.npz")
+    if not profile.is_file():
+        raise FileNotFoundError("staged active taste profile is missing")
+
+    def _progress(event: object) -> None:
+        stage = event.get("stage") if isinstance(event, dict) else None
+        with contextlib.suppress(Exception):
+            control.emit(
+                {"v": PROTOCOL_VERSION, "type": "progress", "stage": str(stage or "project")}
+            )
+
+    result = build_map(
+        progress_callback=_progress,
+        namespace=namespace,
+        output=output,
+        profile_path=profile,
+        generate_thumbnails=False,
+    )
+    files = [_announce_file("map.npz", control)]
+    summary = result.get("summary") if isinstance(result, dict) else {}
+    projection = result.get("projection") if isinstance(result, dict) else {}
+    return {
+        "outcome": "succeeded",
+        "summary": {
+            "family": "taste_map",
+            "library": library,
+            "exemplars": int(summary.get("exemplars", 0) or 0),
+            "projection_method": str(projection.get("method", "unknown")),
+        },
+        "files": files,
+    }
+
+
+def _run_enrichment(manifest: dict[str, Any], control: ControlWriter) -> dict[str, Any]:
+    """Enrich a staged active profile and emit a native successor profile."""
+    from pathlib import Path  # noqa: PLC0415
+
+    import numpy as np  # noqa: PLC0415
+
+    from marquee.ml.artifact_codec import GENRES_JSON_KEY  # noqa: PLC0415
+    from marquee.ml.profile_enrich import enrich  # noqa: PLC0415
+
+    params = manifest.get("params")
+    params = params if isinstance(params, dict) else {}
+    library = params.get("library", "movies")
+    source = Path("source-profile.npz")
+    output = Path("profile.npz")
+    if not source.is_file():
+        raise FileNotFoundError("staged active taste profile is missing")
+    control.emit({"v": PROTOCOL_VERSION, "type": "progress", "stage": "enriching"})
+    enrich(
+        use_tmdb=bool(params.get("use_tmdb", False)),
+        profile_path=source,
+        output=output,
+        cache_path=Path("genre-cache.json"),
+    )
+    resolved = 0
+    exemplars = 0
+    with np.load(output, allow_pickle=False) as data:
+        exemplars = int(np.asarray(data["embeddings"]).shape[0])
+        if GENRES_JSON_KEY in data.files:
+            resolved = sum(1 for value in data[GENRES_JSON_KEY].tolist() if str(value) != "[]")
+    files = [_announce_file("profile.npz", control)]
+    return {
+        "outcome": "succeeded",
+        "summary": {
+            "family": "taste_profile",
+            "operation": "enrichment",
+            "library": library,
+            "exemplars": exemplars,
+            "resolved": resolved,
+        },
+        "files": files,
+    }
+
+
+def _run_learned_head(manifest: dict[str, Any], control: ControlWriter) -> dict[str, Any]:
+    """Train a native learned-head artifact from the coordinator's frozen feedback snapshot."""
+    import json  # noqa: PLC0415
+    from pathlib import Path  # noqa: PLC0415
+
+    from marquee.ml.head_trainer import train_from_labels  # noqa: PLC0415
+
+    params = manifest.get("params")
+    params = params if isinstance(params, dict) else {}
+    snapshot = Path("feedback.jsonl")
+    rows: list[dict[str, Any]] = []
+    if snapshot.is_file():
+        if snapshot.stat().st_size > 64 * 1024 * 1024:
+            raise ProtocolError("feedback snapshot exceeds the runner limit")
+        for line_number, line in enumerate(snapshot.read_text().splitlines(), 1):
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ProtocolError(f"feedback snapshot line {line_number} is invalid") from exc
+            if not isinstance(row, dict):
+                raise ProtocolError(f"feedback snapshot line {line_number} is not an object")
+            rows.append(row)
+            if len(rows) > 100_000:
+                raise ProtocolError("feedback snapshot contains too many rows")
+
+    control.emit({"v": PROTOCOL_VERSION, "type": "progress", "stage": "training"})
+    head, info = train_from_labels(
+        rows=rows,
+        output=Path("head.npz"),
+        min_labels=params.get("min_labels"),
+        min_movies=params.get("min_movies"),
+        min_pairs=params.get("min_pairs"),
+        mode=params.get("mode"),
+        l2=float(params.get("l2", 1.0)),
+    )
+    summary = {
+        "family": "learned_head",
+        "library": params.get("library", "movies"),
+        "feedback_rows": len(rows),
+        **info,
+    }
+    if head is None:
+        return {"outcome": "no_change", "summary": summary, "files": []}
+    return {
+        "outcome": "succeeded",
+        "summary": summary,
+        "files": [_announce_file("head.npz", control)],
+    }
+
+
+def _cooperative_hold() -> None:
+    """Block until SIGINT/SIGTERM, then exit abruptly with no result frame."""
+
+    def _exit(*_: object) -> None:
+        os._exit(0)
+
+    signal.signal(signal.SIGINT, _exit)
+    signal.signal(signal.SIGTERM, _exit)
+    while True:
+        time.sleep(0.02)
+
+
+def _ignore_until_kill() -> None:
+    """Ignore cooperative/term signals; only SIGKILL stops this tree."""
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    while True:
+        time.sleep(0.02)
+
+
+_OPERATIONS: dict[RunnerOperation, OperationHandler] = {
+    RunnerOperation.NOOP: _run_noop,
+    RunnerOperation.POSTER_SINGLE: _run_poster_single,
+    RunnerOperation.TASTE_PROFILE: _run_taste_profile,
+    RunnerOperation.TASTE_MAP: _run_taste_map,
+    RunnerOperation.ENRICHMENT: _run_enrichment,
+    RunnerOperation.LEARNED_HEAD: _run_learned_head,
+}
+
+
+def _emit_result(control: ControlWriter, result: dict[str, Any]) -> None:
+    control.emit(
+        {
+            "v": PROTOCOL_VERSION,
+            "type": "result",
+            "outcome": result.get("outcome", "failed"),
+            "summary": result.get("summary", {}),
+            "files": result.get("files", []),
+        }
+    )
+
+
+def _emit_error(control: ControlWriter, exc: BaseException) -> None:
+    with contextlib.suppress(Exception):
+        control.emit(
+            {
+                "v": PROTOCOL_VERSION,
+                "type": "result",
+                "outcome": "failed",
+                "error": {"code": type(exc).__name__, "message": str(exc)[:500]},
+            }
+        )
+
+
+def run(operation: RunnerOperation, control: ControlWriter) -> int:
+    """Emit the ready barrier, read the manifest, dispatch, and return an exit code."""
+    control.emit({"v": PROTOCOL_VERSION, "type": "ready", "operation": operation.value})
+    manifest = read_manifest_from_stdin(0)
+    if manifest.get("operation") != operation.value:
+        raise ProtocolError("manifest operation does not match the invocation")
+    handler = _OPERATIONS.get(operation)
+    if handler is None:
+        raise RunnerOperationNotEnabledError(operation.value)
+    result = handler(manifest, control)
+    _emit_result(control, result)
+    return 0
+
+
+def main() -> int:
+    if len(sys.argv) != 2:
+        return _EXIT_BAD_INVOCATION
+    try:
+        operation = RunnerOperation(sys.argv[1])
+    except ValueError:
+        return _EXIT_BAD_INVOCATION
+    raw_fd = os.environ.get(CONTROL_FD_ENV)
+    if raw_fd is None or not raw_fd.isdigit():
+        return _EXIT_NO_CONTROL
+    control = ControlWriter(int(raw_fd))
+    try:
+        return run(operation, control)
+    except BaseException as exc:  # noqa: BLE001 - report every failure as a frame
+        _emit_error(control, exc)
+        return _EXIT_OPERATION_FAILED
+    finally:
+        with contextlib.suppress(Exception):
+            control.close()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

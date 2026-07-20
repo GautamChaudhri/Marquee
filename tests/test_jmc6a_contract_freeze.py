@@ -73,7 +73,8 @@ def _current_consumers() -> dict[str, set[str]]:
 
 def test_jmc6a_openapi_version_and_path_count_are_frozen() -> None:
     assert _SCHEMA["openapi"] == _CLIENT_FREEZE["openapi"]
-    # JMC6A may add narrow backend/OpenAPI fixes (A15); it may not shrink the surface.
+    # H5 intentionally removes retired, unconsumed APIs; the regenerated floor
+    # freezes the converged public surface while preserving all Activity paths.
     assert len(_SCHEMA["paths"]) >= _CLIENT_FREEZE["path_count"]
 
 

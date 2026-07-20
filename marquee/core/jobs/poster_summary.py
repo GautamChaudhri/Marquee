@@ -1,26 +1,12 @@
-"""Self-heal scan — verify deployed posters still exist, restore if missing.
-
-Catches everything webhooks can't see: deletions while Marquee was down,
-Plex/Jellyfin agent overwrites, manual cleanup. Walks movies whose
-``poster_path`` is set, stats the file, and on a miss calls
-``PosterService.restore``. Exposed on demand (``POST /api/system/heal``) and
-run periodically from the app lifespan.
-"""
-
-from __future__ import annotations
-
-import logging
+"""Canonical poster-parent projections used by operational APIs."""
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.models import Job, JobBatch
 
-logger = logging.getLogger(__name__)
 
-
-async def latest_heal_summary(db: AsyncSession) -> dict | None:
-    """Return the latest terminal canonical heal parent projection."""
+async def latest_poster_heal_summary(db: AsyncSession) -> dict[str, object] | None:
     row = (
         await db.execute(
             select(Job, JobBatch)
@@ -42,9 +28,7 @@ async def latest_heal_summary(db: AsyncSession) -> dict | None:
         "checked": selected + unchanged + unsupported,
         "restored": projection.succeeded_total,
         "failed": (
-            projection.failed_total
-            + projection.dead_letter_total
-            + projection.unsafe_total
+            projection.failed_total + projection.dead_letter_total + projection.unsafe_total
         ),
         "unchanged": unchanged,
         "unsupported": unsupported,

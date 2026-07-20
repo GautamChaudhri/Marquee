@@ -10,13 +10,6 @@
 	import Icon from '$lib/components/Icon.svelte';
 	import TasteMap from '$lib/components/TasteMap.svelte';
 	import {
-		activateLearnedHead,
-		activateTasteProfile,
-		archiveLearnedHead,
-		archiveTasteProfile,
-		deleteLearnedHead,
-		deleteTasteProfile,
-		deleteTasteProfileExemplar,
 		enrichProfile,
 		getLearnedHeadDetail,
 		getLearnedHeads,
@@ -66,8 +59,6 @@
 	let profileDetail = $state<ManagedProfileDetail | null>(null);
 	let headDetail = $state<ManagedHeadDetail | null>(null);
 	let profileExemplars = $state<ManagedExemplarRow[]>([]);
-	const artifactRegistry = $derived(status?.artifact_registry ?? { available: true });
-	const registryUnavailable = $derived(artifactRegistry.available === false);
 
 	function preferredArtifactId(
 		rows: ManagedArtifactSummary[],
@@ -83,7 +74,7 @@
 				getTasteStatus(fetch, library),
 				getTasteMap(fetch, library).catch(() => mapData),
 				getTasteProfiles(fetch, library).then((value) => value.profiles),
-				getLearnedHeads(fetch).then((value) => value.heads)
+				getLearnedHeads(fetch, library).then((value) => value.heads)
 			]);
 			status = nextStatus;
 			mapData = nextMap;
@@ -222,71 +213,11 @@
 		selectedHeadId = artifactId;
 		detailLoading = true;
 		try {
-			headDetail = await getLearnedHeadDetail(fetch, artifactId);
+			headDetail = await getLearnedHeadDetail(fetch, artifactId, library);
 		} catch (e) {
 			toast(e instanceof Error ? e.message : 'Could not load head details', 'bad');
 		} finally {
 			detailLoading = false;
-		}
-	}
-
-	async function manageProfile(action: 'activate' | 'archive' | 'delete', artifactId: string) {
-		try {
-			if (action === 'activate') {
-				await activateTasteProfile(fetch, artifactId, library);
-				toast('Taste profile activated', 'good');
-			} else if (action === 'archive') {
-				await archiveTasteProfile(fetch, artifactId);
-				toast('Taste profile archived', 'good');
-			} else {
-				if (!globalThis.confirm('Delete this archived taste profile permanently?')) return;
-				await deleteTasteProfile(fetch, artifactId);
-				if (selectedProfileId === artifactId) {
-					selectedProfileId = null;
-					profileDetail = null;
-					profileExemplars = [];
-				}
-				toast('Taste profile deleted', 'good');
-			}
-			await refresh();
-		} catch (e) {
-			toast(e instanceof Error ? e.message : 'Profile action failed', 'bad');
-		}
-	}
-
-	async function manageHead(action: 'activate' | 'archive' | 'delete', artifactId: string) {
-		try {
-			if (action === 'activate') {
-				await activateLearnedHead(fetch, artifactId);
-				toast('Learned head activated', 'good');
-			} else if (action === 'archive') {
-				await archiveLearnedHead(fetch, artifactId);
-				toast('Learned head archived', 'good');
-			} else {
-				if (!globalThis.confirm('Delete this learned head permanently?')) return;
-				await deleteLearnedHead(fetch, artifactId);
-				if (selectedHeadId === artifactId) {
-					selectedHeadId = null;
-					headDetail = null;
-				}
-				toast('Learned head deleted', 'good');
-			}
-			await refresh();
-		} catch (e) {
-			toast(e instanceof Error ? e.message : 'Head action failed', 'bad');
-		}
-	}
-
-	async function removeExemplar(name: string) {
-		if (!profileDetail || profileDetail.status !== 'active') return;
-		if (!globalThis.confirm(`Remove ${name} from the active taste profile?`)) return;
-		try {
-			await deleteTasteProfileExemplar(fetch, profileDetail.id, name);
-			toast('Exemplar removed', 'good');
-			mapData = await getTasteMap(fetch, library);
-			await refresh();
-		} catch (e) {
-			toast(e instanceof Error ? e.message : 'Could not remove exemplar', 'bad');
 		}
 	}
 
@@ -352,16 +283,6 @@
 		<span>{data.error ?? 'Could not reach the taste service.'}</span>
 	</div>
 {:else}
-	{#if registryUnavailable}
-		<div class="registry-warning">
-			<strong>Artifact management unavailable</strong>
-			<span
-				>Run <code>alembic upgrade head</code> and restart Marquee to enable taste profile and learned
-				head management.</span
-			>
-		</div>
-	{/if}
-
 	<div class="stat-grid">
 		<StatCard
 			label="Labels"
@@ -479,7 +400,7 @@
 			<div class="panel-head">
 				<div>
 					<h3>Taste profiles</h3>
-					<p>Inspect snapshots, activate older profiles, and clean up duplicate exemplars.</p>
+					<p>Inspect immutable native profiles and their canonical producer generations.</p>
 				</div>
 			</div>
 			<div class="artifact-list">
@@ -507,40 +428,10 @@
 							</div>
 							<div class="artifact-date">Updated {fmtDate(profile.updated_at)}</div>
 						</div>
-						<div class="artifact-actions">
-							<button
-								class="mini-btn"
-								onclick={(event) => {
-									event.stopPropagation();
-									manageProfile('activate', profile.id);
-								}}
-								disabled={profile.status === 'active'}>Activate</button
-							>
-							<button
-								class="mini-btn"
-								onclick={(event) => {
-									event.stopPropagation();
-									manageProfile('archive', profile.id);
-								}}
-								disabled={profile.status !== 'active'}>Archive</button
-							>
-							<button
-								class="mini-btn danger"
-								onclick={(event) => {
-									event.stopPropagation();
-									manageProfile('delete', profile.id);
-								}}
-								disabled={profile.status === 'active'}>Delete</button
-							>
-						</div>
 					</div>
 				{/each}
 				{#if profiles.length === 0}
-					<div class="detail-empty">
-						{registryUnavailable
-							? 'Artifact registry is waiting for the database migration.'
-							: 'No managed taste profiles yet.'}
-					</div>
+					<div class="detail-empty">No canonical taste profiles yet.</div>
 				{/if}
 			</div>
 
@@ -596,7 +487,7 @@
 						</div>
 					</div>
 					<div>
-						<h5>Exemplar cleanup</h5>
+						<h5>Immutable exemplars</h5>
 						<div class="detail-list exemplars">
 							{#each profileExemplars as exemplar (exemplar.name)}
 								<div class="detail-row exemplar-row">
@@ -606,11 +497,6 @@
 											: ''}{exemplar.is_duplicate
 											? ` · dup x${exemplar.duplicate_count}`
 											: ''}</span
-									>
-									<button
-										class="mini-btn danger"
-										onclick={() => removeExemplar(exemplar.name)}
-										disabled={profileDetail.status !== 'active'}>Remove</button
 									>
 								</div>
 							{/each}
@@ -624,7 +510,7 @@
 			<div class="panel-head">
 				<div>
 					<h3>Learned heads</h3>
-					<p>View training snapshots, top features, and switch the active learned ranker.</p>
+					<p>View immutable native heads, producer generations, and top learned features.</p>
 				</div>
 			</div>
 			<div class="artifact-list">
@@ -651,39 +537,10 @@
 							</div>
 							<div class="artifact-date">Trained {fmtDate(managedHead.trained_at)}</div>
 						</div>
-						<div class="artifact-actions">
-							<button
-								class="mini-btn"
-								onclick={(event) => {
-									event.stopPropagation();
-									manageHead('activate', managedHead.id);
-								}}
-								disabled={managedHead.status === 'active'}>Activate</button
-							>
-							<button
-								class="mini-btn"
-								onclick={(event) => {
-									event.stopPropagation();
-									manageHead('archive', managedHead.id);
-								}}
-								disabled={managedHead.status !== 'active'}>Archive</button
-							>
-							<button
-								class="mini-btn danger"
-								onclick={(event) => {
-									event.stopPropagation();
-									manageHead('delete', managedHead.id);
-								}}>Delete</button
-							>
-						</div>
 					</div>
 				{/each}
 				{#if heads.length === 0}
-					<div class="detail-empty">
-						{registryUnavailable
-							? 'Artifact registry is waiting for the database migration.'
-							: 'No managed learned heads yet.'}
-					</div>
+					<div class="detail-empty">No canonical learned heads yet.</div>
 				{/if}
 			</div>
 
@@ -830,21 +687,10 @@
 	.card,
 	.train-card,
 	.manager-card,
-	.alert-panel,
-	.registry-warning {
+	.alert-panel {
 		background: var(--panel);
 		border: 1px solid var(--line);
 		border-radius: var(--radius);
-	}
-	.registry-warning {
-		display: flex;
-		flex-direction: column;
-		gap: 6px;
-		padding: 12px 14px;
-		margin-bottom: 16px;
-		border-color: color-mix(in srgb, var(--warn) 28%, var(--line));
-		background: color-mix(in srgb, var(--warn) 8%, var(--panel));
-		color: var(--muted);
 	}
 	.card {
 		padding: 14px 16px;
@@ -931,8 +777,7 @@
 		flex-direction: column;
 		gap: 12px;
 	}
-	.scope-row,
-	.artifact-actions {
+	.scope-row {
 		display: flex;
 		gap: 8px;
 		flex-wrap: wrap;
@@ -971,8 +816,7 @@
 		padding: 8px 11px;
 	}
 	.btn-gold,
-	.map-rebuild-btn,
-	.mini-btn {
+	.map-rebuild-btn {
 		border: 1px solid var(--line2);
 		background: var(--panel2);
 		color: var(--text);
@@ -984,13 +828,6 @@
 		background: var(--gold-soft);
 		border-color: var(--gold-deep);
 		color: var(--gold);
-	}
-	.mini-btn {
-		padding: 6px 10px;
-		font-size: 12px;
-	}
-	.mini-btn.danger {
-		color: var(--bad);
 	}
 	.artifact-list,
 	.detail-list {
@@ -1043,9 +880,6 @@
 		color: var(--faint);
 		font-size: 12px;
 		padding: 8px 0;
-	}
-	.exemplar-row button {
-		flex-shrink: 0;
 	}
 	.alert-panel {
 		padding: 14px 16px;

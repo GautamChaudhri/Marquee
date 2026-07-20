@@ -85,16 +85,22 @@ class PosterSubject:
         raise ValueError(f"Unknown media type: {self.media_type}")
 
     def render_filename(self) -> str:
-        from marquee.core.poster_service import sanitize_poster_filename
+        from marquee.core.poster_files import sanitize_poster_filename
 
         if self.media_type == MEDIA_TYPE_MOVIE:
             fmt = settings.MOVIE_POSTER_FORMAT
             if "{movie_basename}" in fmt:
-                basename = Path(self.movie.movie_file_path).stem if self.movie.movie_file_path else "poster"
+                basename = (
+                    Path(self.movie.movie_file_path).stem
+                    if self.movie.movie_file_path
+                    else "poster"
+                )
                 try:
                     rendered = fmt.format(movie_basename=basename)
                 except (KeyError, IndexError, ValueError) as exc:
-                    raise PathValidationError(f"Invalid MOVIE_POSTER_FORMAT {fmt!r}: {exc}") from exc
+                    raise PathValidationError(
+                        f"Invalid MOVIE_POSTER_FORMAT {fmt!r}: {exc}"
+                    ) from exc
             else:
                 rendered = fmt
         elif self.media_type == MEDIA_TYPE_SERIES:
@@ -120,7 +126,10 @@ class PosterSubject:
         elif self.media_type == MEDIA_TYPE_SERIES:
             return base_tv / f"{self.tmdb_id}.jpg", base_tv / f"{self.tmdb_id}.meta.json"
         elif self.media_type == MEDIA_TYPE_SEASON:
-            return base_tv / f"{self.tmdb_id}-s{self.season.season_number:02d}.jpg", base_tv / f"{self.tmdb_id}-s{self.season.season_number:02d}.meta.json"
+            return (
+                base_tv / f"{self.tmdb_id}-s{self.season.season_number:02d}.jpg",
+                base_tv / f"{self.tmdb_id}-s{self.season.season_number:02d}.meta.json",
+            )
         raise ValueError(f"Unknown media type: {self.media_type}")
 
     def backup_file(self) -> Path:

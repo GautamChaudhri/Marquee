@@ -24,7 +24,7 @@ from marquee import __version__
 from marquee.config import settings
 from marquee.models.deployment import EXCLUDED_DEPLOYMENT_TABLES, get_deployment_metadata
 
-ALEMBIC_HEAD = "0009_jmc6g"
+ALEMBIC_HEAD = "0012_jmc6h"
 PGQUEUER_VERSION = "1.1.1"
 PGQUEUER_DURABILITY = "durable"
 MIGRATION_ADVISORY_LOCK_ID = 0x4D4152514A4D4331
@@ -309,9 +309,7 @@ async def verify_pgqueuer_catalog(connection: asyncpg.Connection) -> str:
     """Verify pinned 1.1.1 catalog facts without reproducing package DDL."""
     installed_version = importlib.metadata.version("pgqueuer")
     if installed_version != PGQUEUER_VERSION:
-        raise MigrationError(
-            f"expected pgqueuer {PGQUEUER_VERSION}, installed {installed_version}"
-        )
+        raise MigrationError(f"expected pgqueuer {PGQUEUER_VERSION}, installed {installed_version}")
     if await pgqueuer_install_state(connection) != "present":
         raise MigrationError("PgQueuer is not installed")
 
@@ -420,10 +418,14 @@ async def verify_runtime_schema(connection: asyncpg.Connection) -> None:
     }
     for component, values in expected.items():
         marker = contracts.get(component)
-        actual = None if marker is None else (
-            marker["expected_version"],
-            marker["durability"],
-            marker["catalog_fingerprint"],
+        actual = (
+            None
+            if marker is None
+            else (
+                marker["expected_version"],
+                marker["durability"],
+                marker["catalog_fingerprint"],
+            )
         )
         if actual != values:
             raise MigrationError(

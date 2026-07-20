@@ -17,7 +17,7 @@ from marquee.core.configuration import (
 )
 from marquee.core.configuration_cache import configuration_provider
 from marquee.core.path_utils import PathValidationError
-from marquee.core.poster_service import sanitize_poster_filename
+from marquee.core.poster_files import sanitize_poster_filename
 from marquee.core.subtitles.config import SubtitleSettings
 from marquee.database import get_db
 
@@ -83,9 +83,7 @@ async def get_settings(db: Annotated[AsyncSession, Depends(get_db)]):
             "subgen": {
                 "configured": subtitle_settings.generation_enabled,
                 "url_configured": _configured(subtitle_settings.SUBGEN_URL),
-                "callback_token_configured": _configured(
-                    subtitle_settings.SUBGEN_CALLBACK_TOKEN
-                ),
+                "callback_token_configured": _configured(subtitle_settings.SUBGEN_CALLBACK_TOKEN),
                 "deployment": subtitle_settings.subgen_deployment,
                 "url": subtitle_settings.subgen_url,
                 "profile_name": subtitle_settings.SUBGEN_PROFILE_NAME,
@@ -98,9 +96,7 @@ async def get_settings(db: Annotated[AsyncSession, Depends(get_db)]):
                 "transcribe_device": subtitle_settings.SUBGEN_TRANSCRIBE_DEVICE,
                 "gpu_index": subtitle_settings.SUBGEN_GPU_INDEX,
                 "compute_type": subtitle_settings.SUBGEN_COMPUTE_TYPE,
-                "concurrent_transcriptions": (
-                    subtitle_settings.SUBGEN_CONCURRENT_TRANSCRIPTIONS
-                ),
+                "concurrent_transcriptions": (subtitle_settings.SUBGEN_CONCURRENT_TRANSCRIPTIONS),
                 "whisper_threads": subtitle_settings.SUBGEN_WHISPER_THREADS,
                 "model_path": subtitle_settings.SUBGEN_MODEL_PATH,
                 "naming_type": subtitle_settings.SUBGEN_NAMING_TYPE,
@@ -145,9 +141,7 @@ async def get_settings(db: Annotated[AsyncSession, Depends(get_db)]):
             "mutation_concurrency": subtitle_settings.SUBTITLE_MUTATION_CONCURRENCY,
             "generation_concurrency": subtitle_settings.SUBTITLE_GENERATION_CONCURRENCY,
             "preferred_languages": subtitle_settings.SUBTITLE_PREFERRED_LANGUAGES,
-            "preferred_audio_languages": (
-                subtitle_settings.SUBTITLE_PREFERRED_AUDIO_LANGUAGES
-            ),
+            "preferred_audio_languages": (subtitle_settings.SUBTITLE_PREFERRED_AUDIO_LANGUAGES),
             "preferred_subtitle_languages": (
                 subtitle_settings.SUBTITLE_PREFERRED_SUBTITLE_LANGUAGES
             ),
@@ -159,14 +153,10 @@ async def get_settings(db: Annotated[AsyncSession, Depends(get_db)]):
             ),
             "unknown_language_action": subtitle_settings.SUBTITLE_UNKNOWN_LANGUAGE_ACTION,
             "protect_forced": subtitle_settings.SUBTITLE_PROTECT_FORCED,
-            "protect_last_full_dialogue": (
-                subtitle_settings.SUBTITLE_PROTECT_LAST_FULL_DIALOGUE
-            ),
+            "protect_last_full_dialogue": (subtitle_settings.SUBTITLE_PROTECT_LAST_FULL_DIALOGUE),
             "backup_mode": subtitle_settings.SUBTITLE_BACKUP_MODE,
             "external_delete_mode": subtitle_settings.SUBTITLE_EXTERNAL_DELETE_MODE,
-            "audio_subs_deep_scan_enabled": (
-                subtitle_settings.AUDIO_SUBS_DEEP_SCAN_ENABLED
-            ),
+            "audio_subs_deep_scan_enabled": (subtitle_settings.AUDIO_SUBS_DEEP_SCAN_ENABLED),
             "audio_subs_deep_scan_hour": subtitle_settings.AUDIO_SUBS_DEEP_SCAN_HOUR,
             "audio_subs_deep_scan_batch": subtitle_settings.AUDIO_SUBS_DEEP_SCAN_BATCH,
         },
@@ -252,23 +242,19 @@ def _validate_series_poster_format(value: str) -> str:
     if "{" in value or "}" in value:
         raise HTTPException(
             status_code=400,
-            detail="TV series poster format must not contain template placeholders."
+            detail="TV series poster format must not contain template placeholders.",
         )
     try:
         sanitize_poster_filename(value)
     except (PathValidationError, ValueError) as exc:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid series poster format: {exc}"
-        ) from exc
+        raise HTTPException(status_code=400, detail=f"Invalid series poster format: {exc}") from exc
     return value
 
 
 def _validate_season_poster_format(value: str) -> str:
     if "{season" not in value:
         raise HTTPException(
-            status_code=400,
-            detail="Season poster format must contain a '{season' placeholder."
+            status_code=400, detail="Season poster format must contain a '{season' placeholder."
         )
     try:
         r1 = value.format(season=1)
@@ -276,10 +262,7 @@ def _validate_season_poster_format(value: str) -> str:
         sanitize_poster_filename(r1)
         sanitize_poster_filename(r0)
     except (IndexError, KeyError, PathValidationError, ValueError) as exc:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid season poster format: {exc}"
-        ) from exc
+        raise HTTPException(status_code=400, detail=f"Invalid season poster format: {exc}") from exc
     return value
 
 
@@ -302,7 +285,9 @@ async def put_settings(
     updates: dict[str, object] = {}
     if payload.subtitles:
         for key, value in payload.subtitles.model_dump(exclude_unset=True).items():
-            setting_key = key.upper() if key.startswith("audio_subs_") else f"SUBTITLE_{key.upper()}"
+            setting_key = (
+                key.upper() if key.startswith("audio_subs_") else f"SUBTITLE_{key.upper()}"
+            )
             updates[setting_key] = value
     if payload.subgen:
         for key, value in payload.subgen.model_dump(exclude_unset=True).items():

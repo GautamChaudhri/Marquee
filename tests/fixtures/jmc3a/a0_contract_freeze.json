@@ -28,20 +28,18 @@
     "marquee/core/backup.py",
     "marquee/core/dovi_conversion.py",
     "marquee/core/jobs/supervisor.py",
-    "marquee/core/letterbox_reencode.py",
+    "marquee/core/letterbox_transcode.py",
     "marquee/core/subtitles/generation.py",
     "marquee/core/subtitles/mutation.py",
     "marquee/db_migration.py",
     "marquee/media/binaries.py",
-    "marquee/media/letterbox_manager.py",
     "marquee/vendor/subgen/subgen.py"
   ],
   "security_prefix_hotspots": [
     "marquee/api/routes/letterbox.py",
     "marquee/api/routes/pipeline.py",
     "marquee/core/jobs/builtin_handlers.py",
-    "marquee/core/letterbox_reencode.py",
-    "marquee/core/letterbox_service.py",
+    "marquee/core/letterbox_transcode.py",
     "marquee/core/path_utils.py",
     "marquee/core/subtitles/mutation.py",
     "marquee/onboarding/service.py"

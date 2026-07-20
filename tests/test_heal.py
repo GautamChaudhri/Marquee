@@ -1,9 +1,4 @@
-"""Heal scan behavior — recent-deploy grace window and restore accounting.
-
-The scan runs in the worker process while deploys happen in the API process,
-so a time window on ``poster_deployed_at`` (not a lock) is what prevents the
-scan from clobbering a poster deployed moments ago.
-"""
+"""Canonical poster-heal parent projection tests."""
 
 from __future__ import annotations
 
@@ -13,11 +8,11 @@ import pytest
 
 
 @pytest.mark.asyncio
-async def test_latest_heal_summary_reads_parent_projection(db):
-    from marquee.core.heal import latest_heal_summary
+async def test_latest_poster_heal_summary_reads_parent_projection(db):
+    from marquee.core.jobs.poster_summary import latest_poster_heal_summary
     from marquee.models import Job, JobBatch
 
-    assert await latest_heal_summary(db) is None
+    assert await latest_poster_heal_summary(db) is None
     terminal_at = datetime.now(UTC) - timedelta(minutes=5)
     db.add(
         Job(
@@ -61,7 +56,7 @@ async def test_latest_heal_summary_reads_parent_projection(db):
     )
     await db.commit()
 
-    summary = await latest_heal_summary(db)
+    summary = await latest_poster_heal_summary(db)
     assert summary == {
         "last_run": terminal_at.isoformat(),
         "checked": 12,

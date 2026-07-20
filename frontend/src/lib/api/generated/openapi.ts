@@ -2218,7 +2218,7 @@ export interface paths {
 		};
 		/**
 		 * Get Pipeline Cache
-		 * @description On-disk size of each poster-pipeline cache (for the Clear button).
+		 * @description Read-only size projection for the canonical cache-clear job.
 		 */
 		get: operations['get_pipeline_cache_api_pipeline_cache_get'];
 		put?: never;
@@ -2397,10 +2397,12 @@ export interface paths {
 		put?: never;
 		/**
 		 * Reset Review Queue
-		 * @description Reset all movies in the review queue back to the run stage.
+		 * @description Reset the review queue's disposition only (JMC6H H19).
 		 *
-		 *     Clears poster DB state AND marks review-queue PipelineRuns so they
-		 *     disappear from the Review tab. Does NOT delete poster files from disk.
+		 *     Marks review-queue PipelineRuns as reviewed so they leave the Review tab. It
+		 *     does NOT touch deployed artwork or poster DB state: clearing or removing a
+		 *     deployed poster is a separately authorized canonical ``poster_reset`` job, so
+		 *     the database and the on-disk poster can never be left disagreeing here.
 		 */
 		post: operations['reset_review_queue_api_pipeline_review_reset_post'];
 		delete?: never;
@@ -3086,26 +3088,6 @@ export interface paths {
 		patch?: never;
 		trace?: never;
 	};
-	'/api/system/release-gpu': {
-		parameters: {
-			query?: never;
-			header?: never;
-			path?: never;
-			cookie?: never;
-		};
-		get?: never;
-		put?: never;
-		/**
-		 * Release Gpu Resources
-		 * @description Drop Marquee's process-local ML caches before another GPU workload.
-		 */
-		post: operations['release_gpu_resources_api_system_release_gpu_post'];
-		delete?: never;
-		options?: never;
-		head?: never;
-		patch?: never;
-		trace?: never;
-	};
 	'/api/system/reset-db': {
 		parameters: {
 			query?: never;
@@ -3183,26 +3165,6 @@ export interface paths {
 		patch?: never;
 		trace?: never;
 	};
-	'/api/taste/exemplars/{name}/image': {
-		parameters: {
-			query?: never;
-			header?: never;
-			path?: never;
-			cookie?: never;
-		};
-		/**
-		 * Exemplar Image
-		 * @description Serve an exemplar's thumbnail (webp) or full-size training image.
-		 */
-		get: operations['exemplar_image_api_taste_exemplars__name__image_get'];
-		put?: never;
-		post?: never;
-		delete?: never;
-		options?: never;
-		head?: never;
-		patch?: never;
-		trace?: never;
-	};
 	'/api/taste/exemplars/{name}/neighbors': {
 		parameters: {
 			query?: never;
@@ -3271,44 +3233,6 @@ export interface paths {
 		get: operations['get_learned_head_api_taste_heads__artifact_id__get'];
 		put?: never;
 		post?: never;
-		/** Delete Learned Head */
-		delete: operations['delete_learned_head_api_taste_heads__artifact_id__delete'];
-		options?: never;
-		head?: never;
-		patch?: never;
-		trace?: never;
-	};
-	'/api/taste/heads/{artifact_id}/activate': {
-		parameters: {
-			query?: never;
-			header?: never;
-			path?: never;
-			cookie?: never;
-		};
-		get?: never;
-		put?: never;
-		/**
-		 * Activate Learned Head
-		 * @description Reject manual pointer mutation; publication belongs to the owning job.
-		 */
-		post: operations['activate_learned_head_api_taste_heads__artifact_id__activate_post'];
-		delete?: never;
-		options?: never;
-		head?: never;
-		patch?: never;
-		trace?: never;
-	};
-	'/api/taste/heads/{artifact_id}/archive': {
-		parameters: {
-			query?: never;
-			header?: never;
-			path?: never;
-			cookie?: never;
-		};
-		get?: never;
-		put?: never;
-		/** Archive Learned Head */
-		post: operations['archive_learned_head_api_taste_heads__artifact_id__archive_post'];
 		delete?: never;
 		options?: never;
 		head?: never;
@@ -3329,26 +3253,6 @@ export interface paths {
 		get: operations['get_taste_map_api_taste_map_get'];
 		put?: never;
 		post?: never;
-		delete?: never;
-		options?: never;
-		head?: never;
-		patch?: never;
-		trace?: never;
-	};
-	'/api/taste/map/candidates': {
-		parameters: {
-			query?: never;
-			header?: never;
-			path?: never;
-			cookie?: never;
-		};
-		get?: never;
-		put?: never;
-		/**
-		 * Overlay Candidates
-		 * @description Project a run's ranked candidates into the taste-map space.
-		 */
-		post: operations['overlay_candidates_api_taste_map_candidates_post'];
 		delete?: never;
 		options?: never;
 		head?: never;
@@ -3403,44 +3307,6 @@ export interface paths {
 		get: operations['get_taste_profile_api_taste_profiles__artifact_id__get'];
 		put?: never;
 		post?: never;
-		/** Delete Taste Profile */
-		delete: operations['delete_taste_profile_api_taste_profiles__artifact_id__delete'];
-		options?: never;
-		head?: never;
-		patch?: never;
-		trace?: never;
-	};
-	'/api/taste/profiles/{artifact_id}/activate': {
-		parameters: {
-			query?: never;
-			header?: never;
-			path?: never;
-			cookie?: never;
-		};
-		get?: never;
-		put?: never;
-		/**
-		 * Activate Taste Profile
-		 * @description Reject manual pointer mutation; publication belongs to the owning job.
-		 */
-		post: operations['activate_taste_profile_api_taste_profiles__artifact_id__activate_post'];
-		delete?: never;
-		options?: never;
-		head?: never;
-		patch?: never;
-		trace?: never;
-	};
-	'/api/taste/profiles/{artifact_id}/archive': {
-		parameters: {
-			query?: never;
-			header?: never;
-			path?: never;
-			cookie?: never;
-		};
-		get?: never;
-		put?: never;
-		/** Archive Taste Profile */
-		post: operations['archive_taste_profile_api_taste_profiles__artifact_id__archive_post'];
 		delete?: never;
 		options?: never;
 		head?: never;
@@ -3459,23 +3325,6 @@ export interface paths {
 		put?: never;
 		post?: never;
 		delete?: never;
-		options?: never;
-		head?: never;
-		patch?: never;
-		trace?: never;
-	};
-	'/api/taste/profiles/{artifact_id}/exemplars/{name}': {
-		parameters: {
-			query?: never;
-			header?: never;
-			path?: never;
-			cookie?: never;
-		};
-		get?: never;
-		put?: never;
-		post?: never;
-		/** Delete Taste Profile Exemplar */
-		delete: operations['delete_taste_profile_exemplar_api_taste_profiles__artifact_id__exemplars__name__delete'];
 		options?: never;
 		head?: never;
 		patch?: never;
@@ -4158,11 +4007,6 @@ export interface components {
 			 * @enum {string}
 			 */
 			type: 'bytes';
-		};
-		/** CandidateOverlayRequest */
-		CandidateOverlayRequest: {
-			/** Run Id */
-			run_id: string;
 		};
 		/** ChangeItem */
 		ChangeItem: {
@@ -11560,26 +11404,6 @@ export interface operations {
 			};
 		};
 	};
-	release_gpu_resources_api_system_release_gpu_post: {
-		parameters: {
-			query?: never;
-			header?: never;
-			path?: never;
-			cookie?: never;
-		};
-		requestBody?: never;
-		responses: {
-			/** @description Successful Response */
-			200: {
-				headers: {
-					[name: string]: unknown;
-				};
-				content: {
-					'application/json': unknown;
-				};
-			};
-		};
-	};
 	reset_database_endpoint_api_system_reset_db_post: {
 		parameters: {
 			query?: never;
@@ -11671,40 +11495,6 @@ export interface operations {
 			};
 		};
 	};
-	exemplar_image_api_taste_exemplars__name__image_get: {
-		parameters: {
-			query?: {
-				size?: string;
-				library?: string;
-			};
-			header?: never;
-			path: {
-				name: string;
-			};
-			cookie?: never;
-		};
-		requestBody?: never;
-		responses: {
-			/** @description Successful Response */
-			200: {
-				headers: {
-					[name: string]: unknown;
-				};
-				content: {
-					'application/json': unknown;
-				};
-			};
-			/** @description Validation Error */
-			422: {
-				headers: {
-					[name: string]: unknown;
-				};
-				content: {
-					'application/json': components['schemas']['HTTPValidationError'];
-				};
-			};
-		};
-	};
 	exemplar_neighbors_api_taste_exemplars__name__neighbors_get: {
 		parameters: {
 			query?: {
@@ -11771,7 +11561,9 @@ export interface operations {
 	};
 	list_learned_heads_api_taste_heads_get: {
 		parameters: {
-			query?: never;
+			query?: {
+				library?: string;
+			};
 			header?: never;
 			path?: never;
 			cookie?: never;
@@ -11787,104 +11579,22 @@ export interface operations {
 					'application/json': unknown;
 				};
 			};
+			/** @description Validation Error */
+			422: {
+				headers: {
+					[name: string]: unknown;
+				};
+				content: {
+					'application/json': components['schemas']['HTTPValidationError'];
+				};
+			};
 		};
 	};
 	get_learned_head_api_taste_heads__artifact_id__get: {
 		parameters: {
-			query?: never;
-			header?: never;
-			path: {
-				artifact_id: string;
+			query?: {
+				library?: string;
 			};
-			cookie?: never;
-		};
-		requestBody?: never;
-		responses: {
-			/** @description Successful Response */
-			200: {
-				headers: {
-					[name: string]: unknown;
-				};
-				content: {
-					'application/json': unknown;
-				};
-			};
-			/** @description Validation Error */
-			422: {
-				headers: {
-					[name: string]: unknown;
-				};
-				content: {
-					'application/json': components['schemas']['HTTPValidationError'];
-				};
-			};
-		};
-	};
-	delete_learned_head_api_taste_heads__artifact_id__delete: {
-		parameters: {
-			query?: never;
-			header?: never;
-			path: {
-				artifact_id: string;
-			};
-			cookie?: never;
-		};
-		requestBody?: never;
-		responses: {
-			/** @description Successful Response */
-			200: {
-				headers: {
-					[name: string]: unknown;
-				};
-				content: {
-					'application/json': unknown;
-				};
-			};
-			/** @description Validation Error */
-			422: {
-				headers: {
-					[name: string]: unknown;
-				};
-				content: {
-					'application/json': components['schemas']['HTTPValidationError'];
-				};
-			};
-		};
-	};
-	activate_learned_head_api_taste_heads__artifact_id__activate_post: {
-		parameters: {
-			query?: never;
-			header?: never;
-			path: {
-				artifact_id: string;
-			};
-			cookie?: never;
-		};
-		requestBody?: never;
-		responses: {
-			/** @description Successful Response */
-			200: {
-				headers: {
-					[name: string]: unknown;
-				};
-				content: {
-					'application/json': unknown;
-				};
-			};
-			/** @description Validation Error */
-			422: {
-				headers: {
-					[name: string]: unknown;
-				};
-				content: {
-					'application/json': components['schemas']['HTTPValidationError'];
-				};
-			};
-		};
-	};
-	archive_learned_head_api_taste_heads__artifact_id__archive_post: {
-		parameters: {
-			query?: never;
 			header?: never;
 			path: {
 				artifact_id: string;
@@ -11923,39 +11633,6 @@ export interface operations {
 			cookie?: never;
 		};
 		requestBody?: never;
-		responses: {
-			/** @description Successful Response */
-			200: {
-				headers: {
-					[name: string]: unknown;
-				};
-				content: {
-					'application/json': unknown;
-				};
-			};
-			/** @description Validation Error */
-			422: {
-				headers: {
-					[name: string]: unknown;
-				};
-				content: {
-					'application/json': components['schemas']['HTTPValidationError'];
-				};
-			};
-		};
-	};
-	overlay_candidates_api_taste_map_candidates_post: {
-		parameters: {
-			query?: never;
-			header?: never;
-			path?: never;
-			cookie?: never;
-		};
-		requestBody: {
-			content: {
-				'application/json': components['schemas']['CandidateOverlayRequest'];
-			};
-		};
 		responses: {
 			/** @description Successful Response */
 			200: {
@@ -12072,38 +11749,7 @@ export interface operations {
 			};
 		};
 	};
-	delete_taste_profile_api_taste_profiles__artifact_id__delete: {
-		parameters: {
-			query?: never;
-			header?: never;
-			path: {
-				artifact_id: string;
-			};
-			cookie?: never;
-		};
-		requestBody?: never;
-		responses: {
-			/** @description Successful Response */
-			200: {
-				headers: {
-					[name: string]: unknown;
-				};
-				content: {
-					'application/json': unknown;
-				};
-			};
-			/** @description Validation Error */
-			422: {
-				headers: {
-					[name: string]: unknown;
-				};
-				content: {
-					'application/json': components['schemas']['HTTPValidationError'];
-				};
-			};
-		};
-	};
-	activate_taste_profile_api_taste_profiles__artifact_id__activate_post: {
+	list_taste_profile_exemplars_api_taste_profiles__artifact_id__exemplars_get: {
 		parameters: {
 			query?: {
 				library?: string;
@@ -12111,100 +11757,6 @@ export interface operations {
 			header?: never;
 			path: {
 				artifact_id: string;
-			};
-			cookie?: never;
-		};
-		requestBody?: never;
-		responses: {
-			/** @description Successful Response */
-			200: {
-				headers: {
-					[name: string]: unknown;
-				};
-				content: {
-					'application/json': unknown;
-				};
-			};
-			/** @description Validation Error */
-			422: {
-				headers: {
-					[name: string]: unknown;
-				};
-				content: {
-					'application/json': components['schemas']['HTTPValidationError'];
-				};
-			};
-		};
-	};
-	archive_taste_profile_api_taste_profiles__artifact_id__archive_post: {
-		parameters: {
-			query?: never;
-			header?: never;
-			path: {
-				artifact_id: string;
-			};
-			cookie?: never;
-		};
-		requestBody?: never;
-		responses: {
-			/** @description Successful Response */
-			200: {
-				headers: {
-					[name: string]: unknown;
-				};
-				content: {
-					'application/json': unknown;
-				};
-			};
-			/** @description Validation Error */
-			422: {
-				headers: {
-					[name: string]: unknown;
-				};
-				content: {
-					'application/json': components['schemas']['HTTPValidationError'];
-				};
-			};
-		};
-	};
-	list_taste_profile_exemplars_api_taste_profiles__artifact_id__exemplars_get: {
-		parameters: {
-			query?: never;
-			header?: never;
-			path: {
-				artifact_id: string;
-			};
-			cookie?: never;
-		};
-		requestBody?: never;
-		responses: {
-			/** @description Successful Response */
-			200: {
-				headers: {
-					[name: string]: unknown;
-				};
-				content: {
-					'application/json': unknown;
-				};
-			};
-			/** @description Validation Error */
-			422: {
-				headers: {
-					[name: string]: unknown;
-				};
-				content: {
-					'application/json': components['schemas']['HTTPValidationError'];
-				};
-			};
-		};
-	};
-	delete_taste_profile_exemplar_api_taste_profiles__artifact_id__exemplars__name__delete: {
-		parameters: {
-			query?: never;
-			header?: never;
-			path: {
-				artifact_id: string;
-				name: string;
 			};
 			cookie?: never;
 		};

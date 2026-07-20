@@ -65,7 +65,7 @@
     ]
   },
   "openapi": "3.1.0",
-  "path_count": 199,
+  "path_count": 191,
   "schemas": {
     "ArtifactListResponse": {
       "props": [

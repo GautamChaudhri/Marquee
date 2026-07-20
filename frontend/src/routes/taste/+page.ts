@@ -11,7 +11,7 @@ export const load: PageLoad = async ({ fetch, url }) => {
 			getTasteProfiles(fetch, library)
 				.then((value) => value.profiles)
 				.catch(() => [] as ManagedArtifactSummary[]),
-			getLearnedHeads(fetch)
+			getLearnedHeads(fetch, library)
 				.then((value) => value.heads)
 				.catch(() => [] as ManagedArtifactSummary[])
 		]);

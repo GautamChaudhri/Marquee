@@ -13,7 +13,6 @@ from httpx import ASGITransport, AsyncClient
 
 from marquee.api.results import BackupInfo
 from marquee.config import settings
-from marquee.core import pipeline_config as pipeline_config_module
 from marquee.core.backup import (
     BackupCancelledError,
     BackupVerificationError,
@@ -23,11 +22,7 @@ from marquee.core.backup import (
 from marquee.core.jobs.definitions import DisabledJobDefinitionError
 from marquee.core.jobs.delivery import EXECUTION_HANDLERS
 from marquee.core.jobs.manifest import JOB_DEFINITION_REGISTRY
-from marquee.core.pipeline_config import (
-    PipelineSettings,
-    migrate_legacy_runtime_state,
-    pipeline_settings,
-)
+from marquee.core.pipeline_config import PipelineSettings
 from marquee.main import app
 
 
@@ -89,7 +84,6 @@ def _seed_managed_state(data_dir: Path) -> None:
     archive_dir.mkdir(parents=True, exist_ok=True)
     (archive_dir / "run.json").write_text("{}", encoding="utf-8")
 
-
     (data_dir / "staging").mkdir(parents=True, exist_ok=True)
     (data_dir / "staging" / "scratch.bin").write_bytes(b"scratch")
 
@@ -117,9 +111,7 @@ async def test_canonical_backup_routes_pg_dump_through_tracked_launcher(
             output.write_bytes(b"tracked-pg-dump")
             return Process()
 
-    result = await backup_service.create_backup_with_maintenance_held(
-        process_launcher=Launcher()
-    )
+    result = await backup_service.create_backup_with_maintenance_held(process_launcher=Launcher())
 
     assert Path(result.db_path).read_bytes() == b"tracked-pg-dump"
     assert len(launches) == 1
@@ -206,54 +198,6 @@ def test_pipeline_settings_default_runtime_state_paths_are_under_data():
     assert str(cfg.TASTE_PROFILE_PATH).endswith("data/ml/taste_profile.siglip-so400m.npz")
     assert str(cfg.LEARNED_HEAD_PATH).endswith("data/ml/learned_head.siglip-so400m.npz")
     assert str(cfg.ZEROSHOT_AXES_PATH).endswith("data/ml/zeroshot_axes.siglip-so400m.npz")
-
-
-def test_migrate_legacy_runtime_state_moves_feedback_and_training(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    legacy_root = tmp_path / "experiments"
-    monkeypatch.setattr(pipeline_config_module, "_LEGACY_EXPERIMENTS_DIR", legacy_root)
-    monkeypatch.setattr(
-        pipeline_settings, "FEEDBACK_LABELS_PATH", tmp_path / "data" / "feedback" / "labels.jsonl"
-    )
-    monkeypatch.setattr(
-        pipeline_settings, "TRAINING_DATA_DIR", tmp_path / "data" / "training" / "positive"
-    )
-    monkeypatch.setattr(
-        pipeline_settings, "NEGATIVE_DATA_DIR", tmp_path / "data" / "training" / "negative"
-    )
-
-    (legacy_root / "feedback").mkdir(parents=True, exist_ok=True)
-    (legacy_root / "feedback" / "labels.jsonl").write_text('{"label": 1}\n', encoding="utf-8")
-    (legacy_root / "training_data").mkdir(parents=True, exist_ok=True)
-    (legacy_root / "training_data" / "poster.jpg").write_bytes(b"poster")
-    (legacy_root / "negative_data").mkdir(parents=True, exist_ok=True)
-    (legacy_root / "negative_data" / "reject.jpg").write_bytes(b"reject")
-
-    messages = migrate_legacy_runtime_state()
-
-    assert len(messages) == 3
-    assert (tmp_path / "data" / "feedback" / "labels.jsonl").exists()
-    assert (tmp_path / "data" / "training" / "positive" / "poster.jpg").exists()
-    assert (tmp_path / "data" / "training" / "negative" / "reject.jpg").exists()
-    assert not (legacy_root / "training_data").exists()
-
-
-def test_migrate_legacy_runtime_state_conflict_raises_clear_error(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    legacy_root = tmp_path / "experiments"
-    current_labels = tmp_path / "data" / "feedback" / "labels.jsonl"
-    monkeypatch.setattr(pipeline_config_module, "_LEGACY_EXPERIMENTS_DIR", legacy_root)
-    monkeypatch.setattr(pipeline_settings, "FEEDBACK_LABELS_PATH", current_labels)
-
-    (legacy_root / "feedback").mkdir(parents=True, exist_ok=True)
-    (legacy_root / "feedback" / "labels.jsonl").write_text("legacy\n", encoding="utf-8")
-    current_labels.parent.mkdir(parents=True, exist_ok=True)
-    current_labels.write_text("current\n", encoding="utf-8")
-
-    with pytest.raises(RuntimeError, match="Resolve manually, then restart Marquee"):
-        migrate_legacy_runtime_state()
 
 
 @pytest.mark.asyncio
@@ -400,10 +344,10 @@ def test_only_system_noop_is_dispatch_enabled_and_executable() -> None:
         "dovi_restore",
         "dovi_discard",
         "learned_head_train",
-            "poster_rescan",
-            "taste_map",
-            "taste_enrich",
-            "taste_rebuild",
+        "poster_rescan",
+        "taste_map",
+        "taste_enrich",
+        "taste_rebuild",
         "poster_deploy",
         "poster_restore",
         "poster_reset",
@@ -473,7 +417,9 @@ def test_pg_dump_uses_pgpass_without_putting_password_in_argv(
 ):
     _data_dir, backup_dir = backup_paths
     secret = "unsafe-password"
-    monkeypatch.setattr(settings, "DB_URL", f"postgresql+asyncpg://marquee:{secret}@db.example:5544/test")
+    monkeypatch.setattr(
+        settings, "DB_URL", f"postgresql+asyncpg://marquee:{secret}@db.example:5544/test"
+    )
     captured: dict[str, object] = {}
 
     class Result:
@@ -574,7 +520,9 @@ async def test_offline_restore_certifies_fresh_disposable_targets(
             allow_create_target=True,
         )
         assert result["restored"] is True
-        assert (target_data_dir / "feedback" / "labels.jsonl").read_text(encoding="utf-8") == '{"label": 1}\n'
+        assert (target_data_dir / "feedback" / "labels.jsonl").read_text(
+            encoding="utf-8"
+        ) == '{"label": 1}\n'
     finally:
         await backup_service._drop_owned_database(target_database)
         shutil.rmtree(target_data_dir, ignore_errors=True)
@@ -644,7 +592,9 @@ async def test_backup_api_endpoints(client, monkeypatch: pytest.MonkeyPatch):
     assert list_response.status_code == 200
     assert list_response.json()[0]["backup_id"] == "20260617-120000"
 
-    restore_response = await client.post("/api/system/restore", params={"backup_id": "20260617-120000"})
+    restore_response = await client.post(
+        "/api/system/restore", params={"backup_id": "20260617-120000"}
+    )
     assert restore_response.status_code == 404
 
     delete_response = await client.delete("/api/system/backups/20260617-120000")

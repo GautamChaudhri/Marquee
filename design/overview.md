@@ -39,8 +39,9 @@ See `hdr-overlay.md`.
 The letterbox feature detects black bars, stores review state, generates
 preview frames, applies or removes MKV crop tags, and can prepare or run
 permanent re-encodes. The main modules are `marquee/media/letterbox_detect.py`,
-`marquee/media/letterbox_manager.py`, `marquee/core/letterbox_service.py`, and
-`marquee/api/routes/letterbox.py`. See `letterbox.md`.
+`marquee/core/letterbox_eligibility.py`, `marquee/core/letterbox_scope.py`,
+`marquee/core/letterbox_transcode.py`, the canonical handlers under
+`marquee/core/jobs/`, and `marquee/api/routes/letterbox.py`. See `letterbox.md`.
 
 ### Audio and subtitles
 
@@ -55,8 +56,9 @@ is under `marquee/core/subtitles/`, with related APIs in
 
 The library layer stores movie records, syncs from Radarr, serves browse and
 detail APIs, and manages poster deployment and restoration. The main modules
-are `marquee/core/sync_service.py`, `marquee/core/poster_service.py`,
-`marquee/api/routes/library.py`, and `marquee/api/routes/webhooks.py`. See
+are `marquee/core/sync_service.py`,
+`marquee/core/jobs/handlers_poster_mutations.py`,
+`marquee/api/routes/library.py`, and the canonical poster job producers. See
 `library.md`.
 
 ### Durable jobs
@@ -83,7 +85,7 @@ Marquee is organized in a few stable layers:
   review, HDR, letterbox, subtitles, settings, onboarding, and job views.
 
 `marquee/main.py` wires startup and shutdown. On startup it configures logging,
-migrates legacy runtime artifacts, initializes the database, connects Radarr,
+initializes the already-migrated database, connects Radarr,
 Sonarr, and TMDB clients when configured, bootstraps job resources, optionally
 spawns embedded worker processes, and starts the system-metrics sampler.
 
@@ -99,8 +101,9 @@ spawns embedded worker processes, and starts the system-metrics sampler.
 - Path translation is centralized. `settings.translate_radarr_path()` and
   `settings.translate_sonarr_path()` are the only supported way to map *arr
   container paths to host-visible media paths.
-- Poster writes have a single write path. `marquee/core/poster_service.py`
-  handles deploy and restore operations, including caching and audit history.
+- Poster writes have one canonical fenced path through
+  `marquee/core/jobs/handlers_poster_mutations.py`, including backup,
+  validation, publication, projection updates, and audit history.
 
 ## Configuration Families
 

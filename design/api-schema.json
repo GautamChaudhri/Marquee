@@ -1479,19 +1479,6 @@
         "title": "BytesValue",
         "type": "object"
       },
-      "CandidateOverlayRequest": {
-        "properties": {
-          "run_id": {
-            "title": "Run Id",
-            "type": "string"
-          }
-        },
-        "required": [
-          "run_id"
-        ],
-        "title": "CandidateOverlayRequest",
-        "type": "object"
-      },
       "ChangeItem": {
         "additionalProperties": false,
         "properties": {
@@ -14611,7 +14598,7 @@
     },
     "/api/pipeline/cache": {
       "get": {
-        "description": "On-disk size of each poster-pipeline cache (for the Clear button).",
+        "description": "Read-only size projection for the canonical cache-clear job.",
         "operationId": "get_pipeline_cache_api_pipeline_cache_get",
         "responses": {
           "200": {
@@ -14996,7 +14983,7 @@
     },
     "/api/pipeline/review/reset": {
       "post": {
-        "description": "Reset all movies in the review queue back to the run stage.\n\nClears poster DB state AND marks review-queue PipelineRuns so they\ndisappear from the Review tab. Does NOT delete poster files from disk.",
+        "description": "Reset the review queue's disposition only (JMC6H H19).\n\nMarks review-queue PipelineRuns as reviewed so they leave the Review tab. It\ndoes NOT touch deployed artwork or poster DB state: clearing or removing a\ndeployed poster is a separately authorized canonical ``poster_reset`` job, so\nthe database and the on-disk poster can never be left disagreeing here.",
         "operationId": "reset_review_queue_api_pipeline_review_reset_post",
         "responses": {
           "200": {
@@ -16413,26 +16400,6 @@
         ]
       }
     },
-    "/api/system/release-gpu": {
-      "post": {
-        "description": "Drop Marquee's process-local ML caches before another GPU workload.",
-        "operationId": "release_gpu_resources_api_system_release_gpu_post",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Release Gpu Resources",
-        "tags": [
-          "system"
-        ]
-      }
-    },
     "/api/system/reset-db": {
       "post": {
         "description": "Delete all application data while keeping the current schema in place.",
@@ -16536,67 +16503,6 @@
         ]
       }
     },
-    "/api/taste/exemplars/{name}/image": {
-      "get": {
-        "description": "Serve an exemplar's thumbnail (webp) or full-size training image.",
-        "operationId": "exemplar_image_api_taste_exemplars__name__image_get",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "name",
-            "required": true,
-            "schema": {
-              "title": "Name",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "size",
-            "required": false,
-            "schema": {
-              "default": "thumb",
-              "title": "Size",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "library",
-            "required": false,
-            "schema": {
-              "default": "movies",
-              "title": "Library",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Exemplar Image",
-        "tags": [
-          "taste"
-        ]
-      }
-    },
     "/api/taste/exemplars/{name}/neighbors": {
       "get": {
         "description": "The k nearest exemplars to this one (click-to-explore).",
@@ -16695,32 +16601,14 @@
     "/api/taste/heads": {
       "get": {
         "operationId": "list_learned_heads_api_taste_heads_get",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "List Learned Heads",
-        "tags": [
-          "taste"
-        ]
-      }
-    },
-    "/api/taste/heads/{artifact_id}": {
-      "delete": {
-        "operationId": "delete_learned_head_api_taste_heads__artifact_id__delete",
         "parameters": [
           {
-            "in": "path",
-            "name": "artifact_id",
-            "required": true,
+            "in": "query",
+            "name": "library",
+            "required": false,
             "schema": {
-              "title": "Artifact Id",
+              "default": "movies",
+              "title": "Library",
               "type": "string"
             }
           }
@@ -16745,11 +16633,13 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Delete Learned Head",
+        "summary": "List Learned Heads",
         "tags": [
           "taste"
         ]
-      },
+      }
+    },
+    "/api/taste/heads/{artifact_id}": {
       "get": {
         "operationId": "get_learned_head_api_taste_heads__artifact_id__get",
         "parameters": [
@@ -16759,6 +16649,16 @@
             "required": true,
             "schema": {
               "title": "Artifact Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "library",
+            "required": false,
+            "schema": {
+              "default": "movies",
+              "title": "Library",
               "type": "string"
             }
           }
@@ -16784,87 +16684,6 @@
           }
         },
         "summary": "Get Learned Head",
-        "tags": [
-          "taste"
-        ]
-      }
-    },
-    "/api/taste/heads/{artifact_id}/activate": {
-      "post": {
-        "description": "Reject manual pointer mutation; publication belongs to the owning job.",
-        "operationId": "activate_learned_head_api_taste_heads__artifact_id__activate_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "artifact_id",
-            "required": true,
-            "schema": {
-              "title": "Artifact Id",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Activate Learned Head",
-        "tags": [
-          "taste"
-        ]
-      }
-    },
-    "/api/taste/heads/{artifact_id}/archive": {
-      "post": {
-        "operationId": "archive_learned_head_api_taste_heads__artifact_id__archive_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "artifact_id",
-            "required": true,
-            "schema": {
-              "title": "Artifact Id",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Archive Learned Head",
         "tags": [
           "taste"
         ]
@@ -16907,46 +16726,6 @@
           }
         },
         "summary": "Get Taste Map",
-        "tags": [
-          "taste"
-        ]
-      }
-    },
-    "/api/taste/map/candidates": {
-      "post": {
-        "description": "Project a run's ranked candidates into the taste-map space.",
-        "operationId": "overlay_candidates_api_taste_map_candidates_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CandidateOverlayRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Overlay Candidates",
         "tags": [
           "taste"
         ]
@@ -17038,44 +16817,6 @@
       }
     },
     "/api/taste/profiles/{artifact_id}": {
-      "delete": {
-        "operationId": "delete_taste_profile_api_taste_profiles__artifact_id__delete",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "artifact_id",
-            "required": true,
-            "schema": {
-              "title": "Artifact Id",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Delete Taste Profile",
-        "tags": [
-          "taste"
-        ]
-      },
       "get": {
         "operationId": "get_taste_profile_api_taste_profiles__artifact_id__get",
         "parameters": [
@@ -17125,10 +16866,9 @@
         ]
       }
     },
-    "/api/taste/profiles/{artifact_id}/activate": {
-      "post": {
-        "description": "Reject manual pointer mutation; publication belongs to the owning job.",
-        "operationId": "activate_taste_profile_api_taste_profiles__artifact_id__activate_post",
+    "/api/taste/profiles/{artifact_id}/exemplars": {
+      "get": {
+        "operationId": "list_taste_profile_exemplars_api_taste_profiles__artifact_id__exemplars_get",
         "parameters": [
           {
             "in": "path",
@@ -17170,136 +16910,7 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Activate Taste Profile",
-        "tags": [
-          "taste"
-        ]
-      }
-    },
-    "/api/taste/profiles/{artifact_id}/archive": {
-      "post": {
-        "operationId": "archive_taste_profile_api_taste_profiles__artifact_id__archive_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "artifact_id",
-            "required": true,
-            "schema": {
-              "title": "Artifact Id",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Archive Taste Profile",
-        "tags": [
-          "taste"
-        ]
-      }
-    },
-    "/api/taste/profiles/{artifact_id}/exemplars": {
-      "get": {
-        "operationId": "list_taste_profile_exemplars_api_taste_profiles__artifact_id__exemplars_get",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "artifact_id",
-            "required": true,
-            "schema": {
-              "title": "Artifact Id",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
         "summary": "List Taste Profile Exemplars",
-        "tags": [
-          "taste"
-        ]
-      }
-    },
-    "/api/taste/profiles/{artifact_id}/exemplars/{name}": {
-      "delete": {
-        "operationId": "delete_taste_profile_exemplar_api_taste_profiles__artifact_id__exemplars__name__delete",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "artifact_id",
-            "required": true,
-            "schema": {
-              "title": "Artifact Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "path",
-            "name": "name",
-            "required": true,
-            "schema": {
-              "title": "Name",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Delete Taste Profile Exemplar",
         "tags": [
           "taste"
         ]

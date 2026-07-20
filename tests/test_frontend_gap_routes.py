@@ -17,11 +17,11 @@ from marquee.main import app
 from marquee.models import (
     DoviState,
     Movie,
-    PipelineRun,
     RadarrCustomFormat,
     RadarrProfileFormatItem,
     RadarrQualityProfile,
 )
+from tests.support.canonical_poster import seed_canonical_pipeline_run
 
 
 @pytest_asyncio.fixture
@@ -55,29 +55,21 @@ async def test_review_queue_latest_unreviewed_run_per_movie(
     )
     db.add_all([alpha, bravo])
     await db.flush()
-    db.add_all(
-        [
-            PipelineRun(
-                run_id="old-alpha",
-                movie_id=alpha.id,
-                status="completed",
-                started_at=now - timedelta(hours=2),
-            ),
-            PipelineRun(
-                run_id="new-alpha-reviewed",
-                movie_id=alpha.id,
-                status="completed",
-                started_at=now - timedelta(hours=1),
-                feedback_event_id="event1",
-            ),
-            PipelineRun(
-                run_id="bravo-running",
-                movie_id=bravo.id,
-                status="running",
-                started_at=now,
-            ),
-        ]
+    old = await seed_canonical_pipeline_run(
+        db,
+        run_id="old-alpha",
+        movie_id=alpha.id,
+        archive={"run_id": "old-alpha", "movie_id": alpha.id, "candidates": []},
     )
+    old.started_at = now - timedelta(hours=2)
+    reviewed = await seed_canonical_pipeline_run(
+        db,
+        run_id="new-alpha-reviewed",
+        movie_id=alpha.id,
+        archive={"run_id": "new-alpha-reviewed", "movie_id": alpha.id, "candidates": []},
+        feedback_event_id="event1",
+    )
+    reviewed.started_at = now - timedelta(hours=1)
     await db.commit()
 
     resp = await client.get("/api/pipeline/review-queue")
@@ -112,15 +104,14 @@ async def test_library_missing_filter_can_exclude_review_queue_movies(
     )
     db.add_all([review, missing])
     await db.flush()
-    db.add(
-        PipelineRun(
-            run_id="review-run",
-            movie_id=review.id,
-            status="completed",
-            started_at=now,
-            auto_pick_filename="auto.jpg",
-        )
+    run = await seed_canonical_pipeline_run(
+        db,
+        run_id="review-run",
+        movie_id=review.id,
+        archive={"run_id": "review-run", "movie_id": review.id, "candidates": []},
+        auto_pick_filename="auto.jpg",
     )
+    run.started_at = now
     await db.commit()
 
     resp = await client.get("/api/library/movies?poster_status=missing&exclude_in_review=true")
@@ -129,9 +120,6 @@ async def test_library_missing_filter_can_exclude_review_queue_movies(
     body = resp.json()
     assert body["total"] == 1
     assert [item["title"] for item in body["items"]] == ["Still Missing"]
-
-
-
 
 
 @pytest.mark.asyncio
@@ -366,9 +354,7 @@ async def test_put_settings_stale_version_returns_current_metadata(
 
 
 @pytest.mark.asyncio
-async def test_audio_subs_preferences_uses_version_contract(
-    db: AsyncSession, client: AsyncClient
-):
+async def test_audio_subs_preferences_uses_version_contract(db: AsyncSession, client: AsyncClient):
     winner = await client.put(
         "/api/audio-subs/preferences",
         json={"expected_version": 1, "preferred_languages": ["en", "es"]},
@@ -444,11 +430,8 @@ async def test_put_settings_persists_poster_and_heal_overrides(
     assert data["settings"]["sync"]["heal_interval_minutes"] == 15
 
 
-
 @pytest.mark.asyncio
-async def test_put_settings_rejects_invalid_poster_format(
-    db: AsyncSession, client: AsyncClient
-):
+async def test_put_settings_rejects_invalid_poster_format(db: AsyncSession, client: AsyncClient):
     resp = await client.put(
         "/api/settings",
         json={
@@ -463,9 +446,7 @@ async def test_put_settings_rejects_invalid_poster_format(
 
 
 @pytest.mark.asyncio
-async def test_put_settings_validation_failure(
-    db: AsyncSession, client: AsyncClient
-):
+async def test_put_settings_validation_failure(db: AsyncSession, client: AsyncClient):
     payload = {
         "expected_version": 1,
         "subtitles": {"scan_concurrency": "not-an-int"},

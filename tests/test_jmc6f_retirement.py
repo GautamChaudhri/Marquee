@@ -24,11 +24,7 @@ def _src(relative: str) -> str:
 
 
 def _production_paths() -> list[Path]:
-    return [
-        path
-        for path in (ROOT / "marquee").rglob("*.py")
-        if "__pycache__" not in path.parts
-    ]
+    return [path for path in (ROOT / "marquee").rglob("*.py") if "__pycache__" not in path.parts]
 
 
 def _production_sources() -> str:
@@ -121,10 +117,8 @@ def test_extracted_neutral_modules_have_no_lifecycle_coupling() -> None:
     """§4: the pure services extracted from retired managers import no API route,
     global job lifecycle, canonical Job mutation, or PgQueuer transport."""
     assert not (ROOT / "marquee/pipeline/run_manager.py").exists()
-    for relative in (
-        "marquee/pipeline/extractor_runtime.py",
-        "marquee/pipeline/official_pick.py",
-    ):
+    assert not (ROOT / "marquee/pipeline/extractor_runtime.py").exists()
+    for relative in ("marquee/pipeline/official_pick.py",):
         source = _src(relative)
         for token in (
             "marquee.api.routes",

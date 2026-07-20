@@ -47,7 +47,7 @@ def main() -> None:
         )
 
     # Heavy ML imports are lazy so importing this module stays cheap.
-    from marquee.pipeline.extractor_runtime import extractor_runtime  # noqa: PLC0415
+    from marquee.pipeline.features import FeatureExtractor  # noqa: PLC0415
     from marquee.pipeline.retro_features import (  # noqa: PLC0415
         candidate_from_image,
         compute_full_features,
@@ -58,7 +58,7 @@ def main() -> None:
     if genres_file.exists():
         genres_map = json.loads(genres_file.read_text())
 
-    extractor = extractor_runtime.ensure_extractor()
+    extractor = FeatureExtractor()
     images.mkdir(parents=True, exist_ok=True)
 
     movies: list[dict] = []

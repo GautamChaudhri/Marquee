@@ -14,8 +14,10 @@ movie workflow that is authoritative today.
 - `marquee/database.py` owns the async SQLAlchemy engine and session factory.
 - `marquee/core/sync_service.py` pulls movie metadata from Radarr and writes it
   into the local database.
-- `marquee/core/poster_service.py` is the single write path for poster deploy
-  and restore operations.
+- `marquee/core/jobs/handlers_poster_mutations.py` is the canonical fenced
+  write path for poster deploy, reset, backup, and restore operations.
+- `marquee/core/poster_files.py` contains reusable pure filename and hash
+  helpers used by those jobs and read routes.
 - `marquee/api/routes/library.py` serves browse and detail APIs.
 - `marquee/api/library_serializers.py` enriches raw ORM rows with derived
   fields for the frontend.
@@ -75,10 +77,10 @@ schema and library sync rather than as first-class feature parity.
 
 ## Poster Deployment And Restore
 
-`marquee/core/poster_service.py` is the authoritative write path for movie
-posters.
+Canonical poster mutation jobs are the authoritative write path for movie and
+TV artwork.
 
-It handles:
+Their handlers handle:
 
 - filename rendering via `MOVIE_POSTER_FORMAT`
 - atomic copies and cached poster bytes under `data/cache/posters`
@@ -86,9 +88,9 @@ It handles:
 - `ArtworkEvent` audit rows
 - restore from cache or source URL after upgrades or missing-file heal scans
 
-Radarr webhook handling uses this service to restore posters after media-file
-changes. Older design notes mention additional restore endpoints, but the live
-behavior is centered on webhook- and service-driven restoration.
+Every mutation is planned, fenced, backed up, validated, projected, and
+presented through the durable job lifecycle. Analysis and feedback submit work;
+they never write an operator library directly.
 
 ## Background Maintenance
 

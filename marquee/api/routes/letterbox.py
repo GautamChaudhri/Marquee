@@ -26,7 +26,7 @@ from sqlalchemy.orm import aliased
 from marquee.api.deps import enforce_rate_limit, get_rate_limiter
 from marquee.api.job_submission import JobSubmissionResponse, submission_response
 from marquee.config import settings
-from marquee.core import letterbox_reencode
+from marquee.core import letterbox_transcode
 from marquee.core.jobs.batches import BatchScope, create_fixed_batch
 from marquee.core.jobs.contracts import TriggerKind
 from marquee.core.jobs.letterbox_reencode_documents import (
@@ -50,6 +50,7 @@ from marquee.core.jobs.submission import (
     SubmissionIntent,
     submit_job,
 )
+from marquee.core.letterbox_eligibility import check_movie_eligibility
 from marquee.core.letterbox_prefilter import (
     prefilter_category,
     refresh_letterbox_prefilter_for_movie,
@@ -62,8 +63,7 @@ from marquee.core.letterbox_rollups import (
     season_rollup,
     show_rollup,
 )
-from marquee.core.letterbox_service import letterbox_service
-from marquee.core.letterbox_tv_scope import normalize_confidence_levels
+from marquee.core.letterbox_scope import normalize_confidence_levels
 from marquee.core.media_files import (
     MediaFileNotFoundError,
     MediaFileUnavailableError,
@@ -228,7 +228,9 @@ async def _submit_tv_mutation_parent(
         initiator=initiator,
     )
     if not children:
-        raise HTTPException(status_code=400, detail="No eligible TV media files in the sealed scope")
+        raise HTTPException(
+            status_code=400, detail="No eligible TV media files in the sealed scope"
+        )
     if db.in_transaction():
         await db.commit()
     parent_type = (
@@ -633,26 +635,29 @@ def _workflow_funnel_from_status_rows(rows: list[tuple[str | None, bool]]) -> di
             if status in {"prefilter_candidate", "prefilter_unknown"}
         ),
         "staging": sum(1 for status, _reviewed in rows if status == "candidate"),
-        "preview": sum(
-            1 for status, reviewed in rows if status == "tagged" and not reviewed
-        ),
-        "processed": sum(
-            1 for status, reviewed in rows if status == "tagged" and reviewed
-        ),
+        "preview": sum(1 for status, reviewed in rows if status == "tagged" and not reviewed),
+        "processed": sum(1 for status, reviewed in rows if status == "tagged" and reviewed),
     }
 
 
 def _workflow_funnel_from_states(states: list[LetterboxState | None]) -> dict[str, int]:
     return _workflow_funnel_from_status_rows(
         [
-            (state.status if state is not None else None, bool(state.reviewed) if state is not None else False)
+            (
+                state.status if state is not None else None,
+                bool(state.reviewed) if state is not None else False,
+            )
             for state in states
         ]
     )
 
 
 def _verdict_breakdown_key(state: LetterboxState | None) -> str:
-    if state is None or state.status in {"prefilter_candidate", "prefilter_unknown", "prefilter_skipped"}:
+    if state is None or state.status in {
+        "prefilter_candidate",
+        "prefilter_unknown",
+        "prefilter_skipped",
+    }:
         return "unanalyzed"
     if state.status == "not_letterboxed":
         return "clear"
@@ -713,7 +718,9 @@ def _episode_letterbox_row(
     status = state.status if state is not None else None
     aspect_label = _episode_display_aspect_label(state)
     dimension_class = tv_dimension_class(episode.video_width, episode.video_height)
-    bucket_override = dimension_class if dimension_class and not _state_has_detector_truth(state) else None
+    bucket_override = (
+        dimension_class if dimension_class and not _state_has_detector_truth(state) else None
+    )
     if bucket_override:
         aspect_label = letterbox_detect.aspect_label(episode.video_width, episode.video_height)
     item = EpisodeLetterbox(
@@ -1032,16 +1039,20 @@ async def letterbox_summary(db: Annotated[AsyncSession, Depends(get_db)]):
 
     movie_breakdown = _aggregate_verdict_breakdown(movie_states)
     movie_artifacts = (
-        await db.execute(
-            select(JobArtifact)
-            .join(Job, Job.id == JobArtifact.job_id)
-            .where(
-                JobArtifact.kind == "media_candidate",
-                Job.type == "letterbox_reencode",
-                Job.subject_kind == "movie",
+        (
+            await db.execute(
+                select(JobArtifact)
+                .join(Job, Job.id == JobArtifact.job_id)
+                .where(
+                    JobArtifact.kind == "media_candidate",
+                    Job.type == "letterbox_reencode",
+                    Job.subject_kind == "movie",
+                )
             )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     movie_reencode = {
         "count": len(movie_artifacts),
         "space_reclaimed_bytes": 0,
@@ -1085,7 +1096,11 @@ async def letterbox_summary(db: Annotated[AsyncSession, Depends(get_db)]):
                 "analyzed": len(movie_states) - movie_breakdown["unanalyzed"],
                 "total": len(movie_states),
                 "percent": round(
-                    (100.0 * (len(movie_states) - movie_breakdown["unanalyzed"]) / len(movie_states)),
+                    (
+                        100.0
+                        * (len(movie_states) - movie_breakdown["unanalyzed"])
+                        / len(movie_states)
+                    ),
                     2,
                 )
                 if movie_states
@@ -1117,7 +1132,9 @@ async def letterbox_summary(db: Annotated[AsyncSession, Depends(get_db)]):
                 "analyzed": sum(1 for item in tv_items if item.bucket != "unanalyzed"),
                 "total": len(tv_items),
                 "percent": round(
-                    100.0 * sum(1 for item in tv_items if item.bucket != "unanalyzed") / len(tv_items),
+                    100.0
+                    * sum(1 for item in tv_items if item.bucket != "unanalyzed")
+                    / len(tv_items),
                     2,
                 )
                 if tv_items
@@ -1201,9 +1218,6 @@ class TvLibraryDetectRequest(BaseModel):
     force: bool = False
 
 
-
-
-
 @router.post("/tv/detect", status_code=202)
 async def detect_tv_batch(
     body: TvLibraryDetectRequest,
@@ -1226,13 +1240,13 @@ async def detect_tv_batch(
             initiator = Initiator(kind="system", identifier="letterbox-api")
             children = [
                 SubmissionIntent(
-                job_type="letterbox_detect_tv_scope",
-                request={
-                    "series_id": series.id,
-                    "exhaustive": body.exhaustive,
-                    "force": body.force,
-                    "detection_config": _letterbox_detection_config_snapshot(),
-                },
+                    job_type="letterbox_detect_tv_scope",
+                    request={
+                        "series_id": series.id,
+                        "exhaustive": body.exhaustive,
+                        "force": body.force,
+                        "detection_config": _letterbox_detection_config_snapshot(),
+                    },
                     subject=SubjectLocator(kind="series", reference=str(series.id)),
                     trigger=TriggerKind.BATCH,
                     initiator=initiator,
@@ -1373,7 +1387,9 @@ async def get_movie_detail(movie_id: int, db: Annotated[AsyncSession, Depends(ge
     detail["preview_minute"] = preview_minute
     detail["sample_previews"] = _sample_preview_entries(
         samples,
-        url_for=lambda minute: f"/api/letterbox/movies/{movie_id}/preview?mode=before&minute={minute}",
+        url_for=lambda minute: (
+            f"/api/letterbox/movies/{movie_id}/preview?mode=before&minute={minute}"
+        ),
     )
     if not _preview_blocked(state):
         detail["preview_urls"] = {
@@ -1615,9 +1631,6 @@ async def detect_tv_series(
     return submission_response(result.parent)
 
 
-
-
-
 # ---------------------------------------------------------------------------
 # Preview frames
 # ---------------------------------------------------------------------------
@@ -1637,7 +1650,7 @@ async def movie_preview(
         raise HTTPException(status_code=404, detail="Preview unavailable after confirmation")
     _require_ffmpeg()
     # check_eligibility shells out to mkvmerge — offload off the event loop.
-    eligibility = await asyncio.to_thread(letterbox_service.check_eligibility, movie)
+    eligibility = await asyncio.to_thread(check_movie_eligibility, movie)
     if eligibility.path is None:
         raise HTTPException(status_code=404, detail="Media file unavailable for preview")
 
@@ -1702,9 +1715,7 @@ async def tv_episode_preview(
     try:
         resolved_media = await resolve_media_file(db, media_file_id)
     except (MediaFileNotFoundError, MediaFileUnavailableError) as exc:
-        raise HTTPException(
-            status_code=404, detail="Media file unavailable for preview"
-        ) from exc
+        raise HTTPException(status_code=404, detail="Media file unavailable for preview") from exc
 
     samples = json.loads(state.samples_json) if state.samples_json else []
     candidate_minutes = [s["minute"] for s in samples if s.get("ok")]
@@ -2011,7 +2022,7 @@ async def confirm_one(movie_id: int, db: Annotated[AsyncSession, Depends(get_db)
     return response
 
 
-def _map_reencode_error(exc: letterbox_reencode.ReencodePlanError) -> HTTPException:
+def _map_reencode_error(exc: letterbox_transcode.ReencodePlanError) -> HTTPException:
     return HTTPException(
         status_code=422,
         detail={"code": exc.code, "message": str(exc), "warnings": exc.warnings},
@@ -2050,7 +2061,9 @@ def _artifact_subject(artifact: JobArtifact) -> tuple[str, int, int]:
         subject_kind = str(metadata["subject_kind"])
         subject_id = int(metadata["subject_id"])
     except (KeyError, TypeError, ValueError) as exc:
-        raise HTTPException(status_code=409, detail="Candidate ownership evidence is incomplete") from exc
+        raise HTTPException(
+            status_code=409, detail="Candidate ownership evidence is incomplete"
+        ) from exc
     if subject_kind not in {"movie", "episode"} or media_file_id < 1 or subject_id < 1:
         raise HTTPException(status_code=409, detail="Candidate ownership evidence is invalid")
     return subject_kind, subject_id, media_file_id
@@ -2064,7 +2077,9 @@ def _candidate_probes(artifact: JobArtifact) -> tuple[ReencodeProbeV1, ReencodeP
             ReencodeProbeV1.model_validate(metadata["output_probe"]),
         )
     except (KeyError, TypeError, ValueError) as exc:
-        raise HTTPException(status_code=409, detail="Candidate probe evidence is incomplete") from exc
+        raise HTTPException(
+            status_code=409, detail="Candidate probe evidence is incomplete"
+        ) from exc
 
 
 async def _plan_reencode_decision(
@@ -2228,7 +2243,7 @@ async def _create_reencode_plan_job(
     top = body.top if body.top is not None else state.recommended_crop_top or 0
     bottom = body.bottom if body.bottom is not None else state.recommended_crop_bottom or 0
     try:
-        plan = await letterbox_reencode.build_plan(
+        plan = await letterbox_transcode.build_plan(
             db,
             resolved,
             top=top,
@@ -2248,7 +2263,7 @@ async def _create_reencode_plan_job(
             subject=SubjectLocator(kind="movie", reference=str(movie.id)),
             idempotency_key=f"letterbox-reencode-plan:{movie.id}:{uuid4().hex}",
         )
-    except letterbox_reencode.ReencodePlanError as exc:
+    except letterbox_transcode.ReencodePlanError as exc:
         raise _map_reencode_error(exc) from exc
     job = await db.get(Job, result.job_id)
     detail = await db.get(MediaOperationDetail, result.job_id)
@@ -2277,7 +2292,7 @@ async def _create_tv_reencode_plan_job(
     top = body.top if body.top is not None else state.recommended_crop_top or 0
     bottom = body.bottom if body.bottom is not None else state.recommended_crop_bottom or 0
     try:
-        plan = await letterbox_reencode.build_plan(
+        plan = await letterbox_transcode.build_plan(
             db,
             resolved,
             top=top,
@@ -2300,7 +2315,7 @@ async def _create_tv_reencode_plan_job(
             subject=SubjectLocator(kind="episode", reference=str(episode.id)),
             idempotency_key=f"letterbox-reencode-plan:{episode.id}:{uuid4().hex}",
         )
-    except letterbox_reencode.ReencodePlanError as exc:
+    except letterbox_transcode.ReencodePlanError as exc:
         raise _map_reencode_error(exc) from exc
     job = await db.get(Job, result.job_id)
     detail = await db.get(MediaOperationDetail, result.job_id)
@@ -2481,7 +2496,7 @@ async def tv_batch_reencode(
                 if plan_body.bottom is not None
                 else state.recommended_crop_bottom or 0
             )
-            plan = await letterbox_reencode.build_plan(
+            plan = await letterbox_transcode.build_plan(
                 db,
                 resolved,
                 top=top,
@@ -2509,9 +2524,11 @@ async def tv_batch_reencode(
                     priority=70,
                 )
             )
-        except (HTTPException, letterbox_reencode.ReencodePlanError) as exc:
+        except (HTTPException, letterbox_transcode.ReencodePlanError) as exc:
             detail_value = exc.detail if isinstance(exc, HTTPException) else str(exc)
-            detail = detail_value if isinstance(detail_value, dict) else {"message": str(detail_value)}
+            detail = (
+                detail_value if isinstance(detail_value, dict) else {"message": str(detail_value)}
+            )
             skipped.append(
                 {
                     "episode_id": episode.id,
@@ -2572,9 +2589,7 @@ async def list_reencode_artifacts(
     if status:
         query = query.where(JobArtifact.status == status)
     if movie_id is not None:
-        query = query.where(
-            Job.subject_kind == "movie", Job.subject_reference == str(movie_id)
-        )
+        query = query.where(Job.subject_kind == "movie", Job.subject_reference == str(movie_id))
     if series_id is not None or season_number is not None:
         query = query.join(
             Episode,

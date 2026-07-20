@@ -239,6 +239,7 @@ class MutationEvidenceV1(StrictDocument):
 class PosterCandidateSelectionV1(StrictDocument):
     source: Literal["pipeline_run", "subject_artwork"]
     storage_key: str
+    artifact_id: int | None = Field(default=None, ge=1)
     run_id: str | None = Field(default=None, min_length=1, max_length=80)
     candidate_reference: str | None = Field(
         default=None, min_length=1, max_length=160, pattern=r"^[A-Za-z0-9._-]+$"

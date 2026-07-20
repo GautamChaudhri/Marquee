@@ -39,40 +39,27 @@ def pipeline_candidate_selection(
     reference = candidate.get("orig_filename")
     if not isinstance(reference, str) or not reference:
         raise PosterSelectionError("candidate identity is missing")
-    boundary = FilesystemBoundary(
-        {
-            "data": RootSpec(
-                name="data",
-                path=Path(settings.DATA_DIR),
-                purpose="poster pipeline candidate snapshot",
-                allow_symlinks=False,
-            )
-        }
-    )
-    choices: list[Path] = []
-    raw = candidate.get("image_path")
-    if isinstance(raw, str) and raw:
-        choices.append(Path(raw))
-    if run.output_dir:
-        choices.append(Path(run.output_dir) / "0-originals" / reference)
-    source = None
-    for choice in choices:
-        try:
-            source = boundary.classify(choice, roots=("data",), require_file=True)
-            break
-        except ValueError:
-            continue
-    if source is None:
-        raise PosterSelectionError("selected candidate bytes are unavailable")
-    signature = file_signature(boundary, source)
-    return PosterCandidateSelectionV1(
-        source="pipeline_run",
-        storage_key=f"pipeline-runs/{run.run_id}/{reference}",
-        run_id=run.run_id,
-        candidate_reference=reference,
-        expected_checksum=signature.sha256,
-        selection_facts=selection_facts or {},
-    )
+    artifact_id = candidate.get("artifact_id")
+    artifact_key = candidate.get("artifact_storage_key")
+    artifact_checksum = candidate.get("artifact_checksum")
+    if (
+        isinstance(artifact_id, int)
+        and artifact_id > 0
+        and isinstance(artifact_key, str)
+        and artifact_key
+        and isinstance(artifact_checksum, str)
+        and len(artifact_checksum) == 64
+    ):
+        return PosterCandidateSelectionV1(
+            source="pipeline_run",
+            storage_key=artifact_key,
+            artifact_id=artifact_id,
+            run_id=run.run_id,
+            candidate_reference=reference,
+            expected_checksum=artifact_checksum,
+            selection_facts=selection_facts or {},
+        )
+    raise PosterSelectionError("selected candidate is missing canonical artifact identity")
 
 
 def subject_artwork_selection(

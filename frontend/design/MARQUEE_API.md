@@ -36,13 +36,13 @@ Grouped by router. ✅ = usable as-is · ⚠️ = shape differs from mockup · �
 
 ### System & ops — `/api/system`
 
-| Method | Path                                                                                                                    | Returns / notes                                                                                                                                                |
-| ------ | ----------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| GET    | `/api/system/status`                                                                                                    | ⚠️ `{ cache{posters,bytes}, heal, letterbox_heal, webhook, tools, media_jobs{status:count}, ocr }` — **operational** state, **NOT** cpu/gpu/ram/disk telemetry |
-| GET    | `/api/system/status/generators`                                                                                         | subtitle-provider health                                                                                                                                       |
-| POST   | `/api/system/heal` · `/api/system/release-gpu`                                                                          | trigger heal scan / drop GPU caches                                                                                                                            |
-| POST   | `/api/system/backup` · GET `/api/system/backups` · POST `/api/system/restore` (202) · DELETE `/api/system/backups/{id}` | DB backups                                                                                                                                                     |
-| ❌     | `cpu / gpu / ram / disk / uptime / workers` live metrics                                                                | **No backend source exists** (see Gap G1)                                                                                                                      |
+| Method | Path                                                                                                                    | Returns / notes                                                                                                                                                                    |
+| ------ | ----------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| GET    | `/api/system/status`                                                                                                    | ⚠️ `{ cache{posters,bytes}, configuration, heal, tools, jobs{phase:count}, ocr, worker_supervisor }` — operational state; detailed telemetry is under `/metrics` and `/operations` |
+| GET    | `/api/system/status/generators`                                                                                         | subtitle-provider health                                                                                                                                                           |
+| POST   | `/api/system/heal`                                                                                                      | submit a canonical poster-heal batch; attempt-owned processes release GPU resources at their tracked boundary                                                                      |
+| POST   | `/api/system/backup` · GET `/api/system/backups` · POST `/api/system/restore` (202) · DELETE `/api/system/backups/{id}` | DB backups                                                                                                                                                                         |
+| ❌     | `cpu / gpu / ram / disk / uptime / workers` live metrics                                                                | **No backend source exists** (see Gap G1)                                                                                                                                          |
 
 ### Library — `/api/library`
 
@@ -69,7 +69,7 @@ Candidate view shape (in `ranked[]` / `auto_pick`): `{ orig_filename, rank, scor
 
 ### Taste — `/api/taste`
 
-| GET `/status` · POST `/retrain` (202) · POST `/retrain/cancel` · GET `/map` · POST `/map/rebuild` (202) · POST `/map/candidates` · GET `/exemplars/{name}/image` · GET `/exemplars/{name}/neighbors` |
+| GET `/status` · POST `/retrain` (202) · POST `/retrain/cancel` · GET `/map` · POST `/map/rebuild` (202) · GET `/exemplars/{name}/neighbors` |
 
 ### Letterbox — `/api/letterbox`
 
@@ -127,7 +127,7 @@ Mockup verbs `analyze/fix/confirm/skip` → real verbs `detect/apply/remove/igno
 | **Review overlay**              | survivors/rejected + approve/reject      | `/runs/{id}` (`ranked`/`rejected`) + `/api/feedback`                            | ⚠️ **G3**                |
 | Rejected grouping               | `OCR / Style / pHash`                    | real buckets `gate / ocr / dedup / errored`                                     | ⚠️                       |
 | **Pipeline queue**              | `GET /api/pipeline` pending/decided      | no such list; runs are per-movie                                                | ❌ **G4**                |
-| **Taste map**                   | `/api/taste` exemplars+candidates        | `/api/taste/map` (+ `/map/candidates`)                                          | ✅ verify shape          |
+| **Taste map**                   | `/api/taste` active publication          | `/api/taste/map` + active-profile exemplar neighbors                            | ✅ canonical authority   |
 | **HDR page**                    | `/api/hdr` + distribution                | **does not exist**; HDR not in any read model                                   | ❌ **G5**                |
 | **Subtitles** (4 tabs)          | `/api/subtitles/*`                       | media-file + policies + generators routes                                       | ⚠️ remap                 |
 | **Letterbox** (5 trays)         | 5 endpoints                              | `/letterbox/candidates` + `/status.counts`                                      | ⚠️                       |

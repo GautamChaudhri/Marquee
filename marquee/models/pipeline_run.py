@@ -10,7 +10,18 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import JSON, CheckConstraint, DateTime, Float, ForeignKey, String, Text, func
+from sqlalchemy import (
+    JSON,
+    BigInteger,
+    CheckConstraint,
+    DateTime,
+    Float,
+    ForeignKey,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from marquee.database import Base
@@ -22,10 +33,13 @@ class PipelineRun(Base):
     __tablename__ = "pipeline_runs"
 
     __table_args__ = (
+        UniqueConstraint("job_id", name="uq_pipeline_runs_job_id"),
         CheckConstraint(
-            "(media_type = 'movie' AND movie_id IS NOT NULL) OR "
-            "(media_type = 'series' AND series_id IS NOT NULL) OR "
-            "(media_type = 'season' AND season_id IS NOT NULL) OR "
+            "(media_type = 'movie' AND movie_id IS NOT NULL "
+            "AND series_id IS NULL AND season_id IS NULL) OR "
+            "(media_type = 'series' AND movie_id IS NULL "
+            "AND series_id IS NOT NULL AND season_id IS NULL) OR "
+            "(media_type = 'season' AND movie_id IS NULL AND season_id IS NOT NULL) OR "
             "(movie_id IS NULL AND series_id IS NULL AND season_id IS NULL)",
             name="ck_pipeline_runs_subject",
         ),
@@ -88,16 +102,27 @@ class PipelineRun(Base):
     # lets the UI group every movie that moved through one batch together.
     batch_id: Mapped[str | None] = mapped_column(String(32), index=True, nullable=True)
 
-    # data/runs/archive/{run_id}.json — survives re-runs of the same movie.
-    archive_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Canonical job linkage (JMC6H H10). Every row is the product projection of
+    # exactly one canonical poster-analysis attempt and immutable archive.
+    job_id: Mapped[str] = mapped_column(
+        ForeignKey("jobs.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    attempt_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("job_attempts.id", ondelete="CASCADE"), nullable=False
+    )
+    fence_token: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    selected_artifact_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("job_artifacts.id", ondelete="SET NULL"), nullable=True
+    )
+    archive_artifact_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("job_artifacts.id", ondelete="RESTRICT"), nullable=False
+    )
+    correlation_id: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
 
     # orig_filename of the run's auto-pick ("1A") — denormalized at finalize so
     # the Review queue can show the chosen poster without opening every archive.
     # Null for runs predating this column or with no rankable candidate.
     auto_pick_filename: Mapped[str | None] = mapped_column(Text, nullable=True)
-
-    # Working directory under data/runs/work/<title>/.
-    output_dir: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Set once feedback is submitted for this run — the UI shows reviewed state.
     feedback_event_id: Mapped[str | None] = mapped_column(String(32), nullable=True)

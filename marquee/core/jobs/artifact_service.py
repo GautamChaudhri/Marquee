@@ -55,11 +55,13 @@ ARTIFACT_POLICIES: dict[str, ArtifactPolicy] = {
         ".srt", frozenset({"application/x-subrip"}), 64 * 1024 * 1024
     ),
     "taste_profile": ArtifactPolicy(
-        ".json", frozenset({"application/json"}), 1024 * 1024
+        ".npz", frozenset({"application/octet-stream"}), 256 * 1024 * 1024
     ),
-    "taste_map": ArtifactPolicy(".json", frozenset({"application/json"}), 1024 * 1024),
+    "taste_map": ArtifactPolicy(
+        ".npz", frozenset({"application/octet-stream"}), 256 * 1024 * 1024
+    ),
     "learned_head": ArtifactPolicy(
-        ".json", frozenset({"application/json"}), 1024 * 1024
+        ".npz", frozenset({"application/octet-stream"}), 16 * 1024 * 1024
     ),
     "command_report": ArtifactPolicy(".json", frozenset({"application/json"}), 1024 * 1024),
     "validation_report": ArtifactPolicy(

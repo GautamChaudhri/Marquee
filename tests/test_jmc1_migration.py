@@ -84,7 +84,7 @@ def test_clean_baseline_is_one_root_and_excludes_other_schema_owners() -> None:
     scripts = ScriptDirectory.from_config(Config(str(root / "alembic.ini")))
     assert scripts.get_heads() == [ALEMBIC_HEAD]
     head = scripts.get_revision(ALEMBIC_HEAD)
-    assert head is not None and head.down_revision == "0008_jmc6e"
+    assert head is not None and head.down_revision == "0011_jmc6h"
     baseline = scripts.get_revision("0001_jmc1")
     assert baseline is not None and baseline.down_revision is None
 
@@ -198,9 +198,7 @@ async def test_reset_refuses_held_migration_lock(
     owned_jmc1_database: _OwnedDatabase,
 ) -> None:
     locker = await owned_jmc1_database.connect()
-    await locker.fetchval(
-        "SELECT pg_advisory_lock($1)", migration.MIGRATION_ADVISORY_LOCK_ID
-    )
+    await locker.fetchval("SELECT pg_advisory_lock($1)", migration.MIGRATION_ADVISORY_LOCK_ID)
     try:
         with pytest.raises(MigrationError, match="already held"):
             await reset_development_database(
@@ -208,9 +206,7 @@ async def test_reset_refuses_held_migration_lock(
                 confirm_database=owned_jmc1_database.name,
             )
     finally:
-        await locker.fetchval(
-            "SELECT pg_advisory_unlock($1)", migration.MIGRATION_ADVISORY_LOCK_ID
-        )
+        await locker.fetchval("SELECT pg_advisory_unlock($1)", migration.MIGRATION_ADVISORY_LOCK_ID)
         await locker.close()
 
 
@@ -238,7 +234,7 @@ async def test_pgqueuer_presence_is_scoped_to_target_schema(
 @pytest.mark.parametrize(
     "mutation",
     [
-        "UPDATE alembic_version SET version_num = \'wrong_head\'",
+        "UPDATE alembic_version SET version_num = 'wrong_head'",
         """
         UPDATE schema_contracts
         SET catalog_fingerprint = \'wrong-fingerprint\'

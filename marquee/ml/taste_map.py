@@ -233,9 +233,13 @@ def _self_knn(embeddings: np.ndarray, k: int) -> np.ndarray:
 # ---------------------------------------------------------------------------
 
 
-def _load_profile_arrays(ns: TasteNamespace | None = None) -> dict:
+def _load_profile_arrays(
+    ns: TasteNamespace | None = None,
+    *,
+    profile_path: Path | None = None,
+) -> dict:
     ns = ns or get_namespace("movies")
-    path = ns.profile_path
+    path = profile_path or ns.profile_path
     if not path.exists():
         raise FileNotFoundError(f"Taste profile not found: {path}")
     ensure_safe_artifact(path, ns.artifact_kind_profile)
@@ -275,6 +279,9 @@ def build_map(
     progress_callback=None,
     cancel_event: threading.Event | None = None,
     namespace: TasteNamespace | None = None,
+    output: Path | None = None,
+    profile_path: Path | None = None,
+    generate_thumbnails: bool = True,
 ) -> dict:
     """Project the profile, cluster, generate thumbnails, save atomically.
 
@@ -290,7 +297,7 @@ def build_map(
             progress_callback({"stage": stage, "state": "start", "message": message})
 
     _phase("load", "Loading taste profile…")
-    profile = _load_profile_arrays(ns)
+    profile = _load_profile_arrays(ns, profile_path=profile_path)
     embeddings = profile["embeddings"]
     poster_names = profile["poster_names"]
 
@@ -303,7 +310,14 @@ def build_map(
             profile["poster_names"] = poster_names
             if "genres" in profile:
                 profile["genres"] = [profile["genres"][i] for i in keep]
-            for key in ("years", "tmdb_ids", "movie_ids", "movie_titles", "aesthetic", "global_colorfulness"):
+            for key in (
+                "years",
+                "tmdb_ids",
+                "movie_ids",
+                "movie_titles",
+                "aesthetic",
+                "global_colorfulness",
+            ):
                 if key in profile:
                     profile[key] = [profile[key][i] for i in keep]
 
@@ -327,9 +341,10 @@ def build_map(
     duplicate_group_count = sum(1 for count in grouped.values() if count > 1)
     noise_count = int(sum(1 for label in labels if int(label) == -1)) if labels is not None else 0
 
-    # Archive the previous map before overwriting.
-    map_path = _map_path(ns)
-    if map_path.exists():
+    # Explicit outputs are attempt-workspace artifacts and must not mutate live
+    # history. Legacy/operator calls retain the configured-path archive behavior.
+    map_path = output or _map_path(ns)
+    if output is None and map_path.exists():
         history = _history_dir(ns)
         history.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
@@ -373,10 +388,11 @@ def build_map(
     save_npz_atomic(map_path, payload)
     raise_if_cancelled(cancel_event, "taste map build cancelled")
 
-    _phase("thumbnails", "Generating exemplar thumbnails…")
-    _generate_thumbnails(profile["poster_names"], ns)
+    if generate_thumbnails:
+        _phase("thumbnails", "Generating exemplar thumbnails…")
+        _generate_thumbnails(profile["poster_names"], ns)
     logger.info("TASTE MAP | built %d points (%s), %d clusters", n, method, len(names_map))
-    return load_map(namespace=ns)
+    return load_map(namespace=ns, path=map_path)
 
 
 def _is_stale(ns: TasteNamespace | None = None) -> bool:
@@ -401,13 +417,18 @@ def _is_stale(ns: TasteNamespace | None = None) -> bool:
     return profile_path.exists() and profile_path.stat().st_mtime > map_mtime + 1e-6
 
 
-def load_map(recompute: bool = False, namespace: TasteNamespace | None = None) -> dict:
+def load_map(
+    recompute: bool = False,
+    namespace: TasteNamespace | None = None,
+    *,
+    path: Path | None = None,
+) -> dict:
     """Return the cached map as a JSON-ready dict, rebuilding if stale."""
     ns = namespace or get_namespace("movies")
-    if recompute or _is_stale(ns):
+    if path is None and (recompute or _is_stale(ns)):
         return build_map(namespace=ns)
 
-    map_path = _map_path(ns)
+    map_path = path or _map_path(ns)
     ensure_safe_artifact(map_path, "taste_map")
     with load_npz_safe(map_path) as data:
         names = decode_unicode_list(data["poster_names"])
@@ -426,7 +447,9 @@ def load_map(recompute: bool = False, namespace: TasteNamespace | None = None) -
         years = data["years"].tolist() if "years" in data.files else None
         tmdb_ids = data["tmdb_ids"].tolist() if "tmdb_ids" in data.files else None
         movie_ids = data["movie_ids"].tolist() if "movie_ids" in data.files else None
-        movie_titles = decode_unicode_list(data["movie_titles"]) if "movie_titles" in data.files else None
+        movie_titles = (
+            decode_unicode_list(data["movie_titles"]) if "movie_titles" in data.files else None
+        )
         aesthetic = data["aesthetic"].tolist() if "aesthetic" in data.files else None
         colorfulness = (
             data["global_colorfulness"].tolist() if "global_colorfulness" in data.files else None
@@ -444,9 +467,7 @@ def load_map(recompute: bool = False, namespace: TasteNamespace | None = None) -
             else None
         )
         noise_count = (
-            int(np.asarray(data["noise_count"]).item())
-            if "noise_count" in data.files
-            else None
+            int(np.asarray(data["noise_count"]).item()) if "noise_count" in data.files else None
         )
 
     points = []
@@ -471,7 +492,7 @@ def load_map(recompute: bool = False, namespace: TasteNamespace | None = None) -
                 "aesthetic": aesthetic[i] if aesthetic is not None else None,
                 "colorfulness": colorfulness[i] if colorfulness is not None else None,
                 "tmdb_id": tmdb_ids[i] if tmdb_ids is not None and tmdb_ids[i] else None,
-                "thumb_url": f"/api/taste/exemplars/{name}/image?size=thumb",
+                "thumb_url": None,
             }
         )
 
@@ -585,11 +606,13 @@ def neighbors_of(
     poster_name: str,
     k: int | None = None,
     namespace: TasteNamespace | None = None,
+    *,
+    profile_path: Path | None = None,
 ) -> list[dict] | None:
     """The k nearest exemplars to a given exemplar (click-to-explore)."""
     k = k or pipeline_settings.K_NEIGHBORS
     ns = namespace or get_namespace("movies")
-    profile = _load_profile_arrays(ns)
+    profile = _load_profile_arrays(ns, profile_path=profile_path)
     names = profile["poster_names"]
     if poster_name not in names:
         return None

@@ -1,8 +1,7 @@
-"""Pure permanent letterbox re-encode planning and validation helpers."""
+"""Pure planning, probing, and command-building helpers for letterbox transcodes."""
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import json
 import logging
@@ -16,13 +15,8 @@ from marquee.config import settings
 from marquee.core.media_files import ResolvedMediaFile
 from marquee.media import binaries
 from marquee.media.concurrency import gated
-from marquee.models import MediaFile
 
 logger = logging.getLogger(__name__)
-
-_STDERR_TAIL_MAX_LINES = 200
-_STDERR_TAIL_MAX_BYTES = 64 * 1024
-_PROCESS_TERMINATE_GRACE_SECONDS = 5.0
 
 
 class ReencodePlanError(Exception):
@@ -32,15 +26,6 @@ class ReencodePlanError(Exception):
         self.code = code
         self.warnings = warnings or []
         super().__init__(message)
-
-
-
-
-
-
-
-
-
 
 
 @dataclass
@@ -393,64 +378,6 @@ def choose_encoder(
     )
 
 
-def _source_key(db_row: MediaFile | None, resolved: ResolvedMediaFile) -> str:
-    raw = db_row.source_key if db_row else f"file-{resolved.media_file_id}"
-    return raw.replace(":", "_").replace("/", "_").replace("\\", "_")
-
-
-def _managed_root(source: Path) -> Path:
-    resolved = source.resolve()
-    for candidate in settings.effective_media_roots:
-        candidate = Path(candidate).resolve()
-        if resolved.is_relative_to(candidate):
-            return candidate / ".marquee"
-    return source.parent.parent / ".marquee"
-
-
-
-
-
-
-
-
-async def _mkdir_with_retry(
-    path: Path, *, boundary: Path, attempts: int = 3, delay_s: float = 0.3
-) -> None:
-    """Create a directory tree under ``boundary``, tolerating cross-account ownership.
-
-    The candidates/backups tree lives on the same mount as the source media
-    (often a mergerfs union of multiple disks) so the final commit can be a
-    same-filesystem rename instead of a multi-GB copy, and it can be written
-    to by more than one OS account that share a common group (e.g. a human
-    dev account and an automation account). The retry loop covers genuinely
-    transient OSErrors (NFS hiccups, disk contention); it does *not* help
-    when a directory is owned by the other account with no group-write bit,
-    so on success we best-effort chmod every level we just touched, up to
-    ``boundary``, to setgid + group-write. We can only chmod directories we
-    own — pre-existing ones owned by the other account are left alone here
-    and need a one-time manual fix (chmod/chgrp) outside the app.
-    """
-    for attempt in range(1, attempts + 1):
-        try:
-            path.mkdir(parents=True, exist_ok=True)
-            break
-        except (PermissionError, OSError):
-            if attempt == attempts:
-                raise ReencodePlanError(
-                    "candidate_dir_unavailable",
-                    f"could not create working directory {path} "
-                    "(storage mount issue — check media volume permissions/mounts)",
-                ) from None
-            await asyncio.sleep(delay_s)
-    current = path
-    while True:
-        with contextlib.suppress(PermissionError, FileNotFoundError):
-            current.chmod(0o2775)
-        if current == boundary or current.parent == current:
-            break
-        current = current.parent
-
-
 def dovi_info(source: SourceVideo | None) -> dict:
     if source is None:
         return {
@@ -795,59 +722,6 @@ def _parse_progress(line: str, duration_s: float | None, values: dict[str, str])
         with contextlib.suppress(ValueError):
             progress["speed"] = round(float(values["speed"].removesuffix("x")), 3)
     return progress
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-async def _run_checked(
-    binary_name: str,
-    args: list[str],
-    *,
-    db: AsyncSession | None = None,
-    job: object | None = None,
-    timeout: float | None = 3600,
-) -> None:
-    raise RuntimeError("legacy re-encode process execution is retired")
-
-
-async def _piped_ffmpeg_to_dovi(
-    ffmpeg_args: list[str],
-    dovi_args: list[str],
-    *,
-    timeout: float = 3600,
-) -> None:
-    raise RuntimeError("legacy re-encode Dolby Vision piping is retired")
-
-
-async def _extract_rpu_piped(
-    source_mkv: Path, rpu_out: Path, *, timeout: float = 3600
-) -> None:
-    raise RuntimeError("legacy re-encode RPU extraction is retired")
-
-
-
-
-
-
 
 
 def validate_candidate(

@@ -15,6 +15,7 @@ from sqlalchemy import select
 
 from marquee.config import settings
 from marquee.core.filesystem import ClassifiedPath, FilesystemBoundary, RootSpec
+from marquee.core.jobs.artifact_service import verify_physical_artifact
 from marquee.core.jobs.delivery import ExecutionContext, register_execution_handler
 from marquee.core.jobs.mutation_documents import (
     MutationAtomicityV1,
@@ -43,10 +44,17 @@ from marquee.core.jobs.publication import (
     file_signature,
 )
 from marquee.core.path_utils import safe_translate_and_validate
-from marquee.core.poster_service import tmdb_original_url
+from marquee.core.poster_files import tmdb_original_url
 from marquee.core.poster_subjects import PosterSubject
-from marquee.models import ArtworkEvent, MediaOperationDetail, Movie, PipelineRun, Season, Series
-from marquee.pipeline.extractor_runtime import extractor_runtime
+from marquee.models import (
+    ArtworkEvent,
+    JobArtifact,
+    MediaOperationDetail,
+    Movie,
+    PipelineRun,
+    Season,
+    Series,
+)
 
 SubjectKind = Literal["movie", "series", "season"]
 
@@ -229,39 +237,6 @@ def _decode_image(boundary: FilesystemBoundary, source: ClassifiedPath) -> tuple
         os.close(fd)
 
 
-def _candidate_from_archive(
-    boundary: FilesystemBoundary,
-    run: PipelineRun,
-    selection: PosterCandidateSelectionV1,
-) -> ClassifiedPath:
-    if selection.storage_key != (
-        f"pipeline-runs/{selection.run_id}/{selection.candidate_reference}"
-    ):
-        raise PosterMutationError("candidate storage identity is inconsistent")
-    archive = extractor_runtime.load_archive(run.run_id, run.archive_path)
-    if not isinstance(archive, dict):
-        raise PosterMutationError("candidate archive is unavailable")
-    candidate = next(
-        (
-            item
-            for item in archive.get("candidates", [])
-            if item.get("orig_filename") == selection.candidate_reference
-        ),
-        None,
-    )
-    paths: list[Path] = []
-    if isinstance(candidate, dict) and candidate.get("image_path"):
-        paths.append(Path(candidate["image_path"]))
-    if run.output_dir:
-        paths.append(Path(run.output_dir) / "0-originals" / selection.candidate_reference)
-    for path in paths:
-        try:
-            return boundary.classify(path, roots=("data",), require_file=True)
-        except ValueError:
-            continue
-    raise PosterMutationError("selected candidate bytes are unavailable")
-
-
 async def _resolve_deploy_candidate(
     context: ExecutionContext,
     subject: PosterSubject,
@@ -280,13 +255,42 @@ async def _resolve_deploy_candidate(
             }[subject.media_type]
             if expected_id != subject.id:
                 raise PosterMutationError("candidate selection belongs to another subject")
-            return _candidate_from_archive(boundary, run, selection)
+            if selection.artifact_id is not None:
+                artifact = await session.get(JobArtifact, selection.artifact_id)
+                metadata = (
+                    artifact.artifact_metadata
+                    if artifact is not None and isinstance(artifact.artifact_metadata, dict)
+                    else {}
+                )
+                if (
+                    artifact is None
+                    or artifact.status != "available"
+                    or artifact.kind != "evidence_image"
+                    or artifact.job_id != run.job_id
+                    or artifact.storage_key != selection.storage_key
+                    or artifact.checksum != selection.expected_checksum
+                    or metadata.get("candidate_reference") != selection.candidate_reference
+                ):
+                    raise PosterMutationError("candidate artifact identity is inconsistent")
+                _artifact_boundary, stored = await verify_physical_artifact(artifact)
+                stored_path = stored.root.resolved() / stored.key.value
+                workspace = (
+                    context.workspace.directory.root.resolved()
+                    / context.workspace.directory.key.value
+                    / "deploy-candidate.jpg"
+                )
+                copied = await context.io.copy(stored_path, workspace)
+                if copied.sha256 != selection.expected_checksum:
+                    raise PosterMutationError("candidate artifact changed while staging")
+                return boundary.classify(workspace, roots=("data",), require_file=True)
+            raise PosterMutationError("pipeline candidate is missing artifact identity")
 
-        if selection.storage_key != f"subject-artwork/{selection.source_kind}/{selection.source_id}":
+        if (
+            selection.storage_key
+            != f"subject-artwork/{selection.source_kind}/{selection.source_id}"
+        ):
             raise PosterMutationError("subject-artwork storage identity is inconsistent")
-        source_subject = await _load_subject(
-            session, selection.source_kind, selection.source_id
-        )
+        source_subject = await _load_subject(session, selection.source_kind, selection.source_id)
         choices = [source_subject.backup_file()]
         cache = source_subject.cache_paths()
         if cache is not None:
@@ -336,9 +340,7 @@ async def _publish_copy(
             boundary.create_directory(directory, parents=True)
         staged, fd = boundary.temporary_file(directory, prefix=".marquee-poster-")
     else:
-        staged, fd = boundary.temporary_root_file(
-            destination.root.name, prefix=".marquee-poster-"
-        )
+        staged, fd = boundary.temporary_root_file(destination.root.name, prefix=".marquee-poster-")
     try:
         await context.io.confined_copy_to_fd(boundary, source, fd)
         return await PublicationCoordinator(
@@ -366,16 +368,11 @@ async def _create_backup(
 ) -> MutationBackupV1 | None:
     if before is None:
         return None
-    key = (
-        f"jmc5/poster-backups/{subject.media_type}/{subject.id}/"
-        f"{before.sha256}.jpg"
-    )
+    key = f"jmc5/poster-backups/{subject.media_type}/{subject.id}/{before.sha256}.jpg"
     backup = boundary.from_key("data", key)
     existing = _optional_signature(boundary, backup)
     if existing is None:
-        copied = await _publish_copy(
-            context, boundary, destination, backup, expected=None
-        )
+        copied = await _publish_copy(context, boundary, destination, backup, expected=None)
     elif existing.sha256 == before.sha256:
         copied = existing
     else:
@@ -574,9 +571,7 @@ async def _execute_copy(
     before = _snapshot(subject, before_signature, exists=before_signature is not None)
     expected = _snapshot(subject, source_signature, exists=True)
     await _persist_before(context, subject, target, before, expected, source_signature)
-    validation = _validation(
-        source_signature, verdict="passed", width=width, height=height
-    )
+    validation = _validation(source_signature, verdict="passed", width=width, height=height)
     if before_signature is not None and before_signature.sha256 == source_signature.sha256:
         atomicity = _atomic(context)
         actual = _snapshot(subject, before_signature, exists=True)
@@ -613,9 +608,7 @@ async def _execute_copy(
             changed=False,
         )
 
-    backup = await _create_backup(
-        context, subject, boundary, destination, before_signature
-    )
+    backup = await _create_backup(context, subject, boundary, destination, before_signature)
     source_now = await asyncio.to_thread(file_signature, boundary, candidate)
     destination_now = await asyncio.to_thread(_optional_signature, boundary, destination)
     require_publication_preconditions(
@@ -695,9 +688,7 @@ async def execute_poster_deploy(context: ExecutionContext) -> dict[str, object]:
     async with context.session_factory() as session:
         subject = await _load_subject(session, request.target_kind, request.target_id)
     boundary, _destination = _boundary(subject)
-    candidate = await _resolve_deploy_candidate(
-        context, subject, boundary, request.candidate
-    )
+    candidate = await _resolve_deploy_candidate(context, subject, boundary, request.candidate)
     return await _execute_copy(context, request, candidate, request.candidate.source)
 
 
@@ -758,16 +749,13 @@ async def execute_poster_reset(context: ExecutionContext) -> dict[str, object]:
         )
     if before_signature is None:
         raise PosterMutationError("poster database state does not match the destination")
-    backup = await _create_backup(
-        context, subject, boundary, destination, before_signature
-    )
+    backup = await _create_backup(context, subject, boundary, destination, before_signature)
     require_publication_preconditions(
         fence_current=await _owns(context),
         cancellation_requested=context.cancellation.cancel_called,
         source_current=True,
         destination_confined=(
-            await asyncio.to_thread(_optional_signature, boundary, destination)
-            == before_signature
+            await asyncio.to_thread(_optional_signature, boundary, destination) == before_signature
         ),
     )
     await PublicationCoordinator(boundary, execution_io=context.io).delete(
@@ -871,8 +859,7 @@ async def execute_poster_backup_subject(context: ExecutionContext) -> dict[str, 
         )
 
     backup_key = (
-        f"jmc5/poster-backups/{subject.media_type}/{subject.id}/"
-        f"{before_signature.sha256}.jpg"
+        f"jmc5/poster-backups/{subject.media_type}/{subject.id}/{before_signature.sha256}.jpg"
     )
     backup_destination = boundary.from_key("data", backup_key)
     existed = await asyncio.to_thread(_optional_signature, boundary, backup_destination)

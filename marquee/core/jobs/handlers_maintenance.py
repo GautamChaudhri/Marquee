@@ -34,7 +34,6 @@ from marquee.models import (
     JobArtifact,
     JobLog,
     Movie,
-    PipelineRun,
     Season,
     Series,
     SystemMetricsSample,
@@ -163,9 +162,7 @@ async def execute_backup_create(context: ExecutionContext) -> dict[str, object]:
             )
         }
     )
-    manifest = boundary.classify(
-        Path(result.manifest_path), roots=("backup",), require_file=True
-    )
+    manifest = boundary.classify(Path(result.manifest_path), roots=("backup",), require_file=True)
     await register_physical_artifact(
         job_id=context.delivery.canonical_job_id,
         attempt_id=context.attempt.attempt_id,
@@ -234,16 +231,8 @@ def _walk_files(category: str, root: Path, *, limit: int) -> list[PlannedFile]:
     return sorted(files, key=lambda item: (item.category, item.relative))
 
 
-def _is_protected(path: Path, protected: tuple[Path, ...]) -> bool:
-    resolved = path.resolve(strict=False)
-    return any(resolved == item or item in resolved.parents for item in protected)
-
-
-async def _pipeline_references(context: ExecutionContext) -> tuple[tuple[Path, ...], bool]:
+async def _pipeline_activity(context: ExecutionContext) -> bool:
     async with context.session_factory() as session:
-        rows = (
-            await session.execute(select(PipelineRun.archive_path, PipelineRun.output_dir))
-        ).all()
         active = bool(
             await session.scalar(
                 select(
@@ -254,13 +243,7 @@ async def _pipeline_references(context: ExecutionContext) -> tuple[tuple[Path, .
                 )
             )
         )
-    protected = tuple(
-        Path(value).resolve(strict=False)
-        for row in rows
-        for value in row
-        if value
-    )
-    return protected, active
+    return active
 
 
 def _planned_counts(plan: tuple[PlannedFile, ...]) -> dict[str, int]:
@@ -286,6 +269,7 @@ async def _emit_progress(
         unit="items",
     )
 
+
 async def _delete_file_plan(
     context: ExecutionContext,
     plan: tuple[PlannedFile, ...],
@@ -303,9 +287,7 @@ async def _delete_file_plan(
             if not await context.writer.owns_current_attempt(session):
                 raise MaintenanceOperationError("maintenance attempt ownership is stale")
         for item in plan[offset : offset + batch_size]:
-            if await asyncio.to_thread(
-                item.boundary.delete_file, item.classified, missing_ok=True
-            ):
+            if await asyncio.to_thread(item.boundary.delete_file, item.classified, missing_ok=True):
                 deleted += 1
                 counts[item.category] = counts.get(item.category, 0) + 1
             processed += 1
@@ -328,13 +310,13 @@ async def execute_pipeline_cache_clear(context: ExecutionContext) -> dict[str, o
         roots["embeddings"] = Path(pipeline_settings.EMBEDDING_CACHE_DIR)
     if request.include_archives:
         roots["archives"] = settings.runs_archive_path
-    protected, active = await _pipeline_references(context)
+    active = await _pipeline_activity(context)
     plan: list[PlannedFile] = []
     for category, root in roots.items():
         candidates = _walk_files(category, root, limit=request.max_items - len(plan))
         if active and category in {"runs_work", "staging", "archives"}:
             continue
-        plan.extend(item for item in candidates if not _is_protected(item.path, protected))
+        plan.extend(candidates)
     sealed = tuple(plan)
     checksum = _checksum([(item.category, item.relative, item.size) for item in sealed])
     _validate_confirmed_plan(
@@ -370,10 +352,16 @@ async def execute_pipeline_cache_clear(context: ExecutionContext) -> dict[str, o
     )
 
 
-async def _poster_cache_references(context: ExecutionContext) -> tuple[set[int], set[int], set[tuple[int, int]]]:
+async def _poster_cache_references(
+    context: ExecutionContext,
+) -> tuple[set[int], set[int], set[tuple[int, int]]]:
     async with context.session_factory() as session:
-        movie_tmdb = set((await session.scalars(select(Movie.tmdb_id).where(Movie.tmdb_id.is_not(None)))).all())
-        series_tmdb = set((await session.scalars(select(Series.tmdb_id).where(Series.tmdb_id.is_not(None)))).all())
+        movie_tmdb = set(
+            (await session.scalars(select(Movie.tmdb_id).where(Movie.tmdb_id.is_not(None)))).all()
+        )
+        series_tmdb = set(
+            (await session.scalars(select(Series.tmdb_id).where(Series.tmdb_id.is_not(None)))).all()
+        )
         seasons = set(
             (
                 await session.execute(
@@ -398,10 +386,15 @@ def _poster_cache_referenced(
         return int(stem) in movie_tmdb
     if "tv" in parts and "-s" in stem:
         value = stem.split("-s", 1)
-        return len(value) == 2 and all(part.isdigit() for part in value) and (
-            int(value[0]),
-            int(value[1]),
-        ) in seasons
+        return (
+            len(value) == 2
+            and all(part.isdigit() for part in value)
+            and (
+                int(value[0]),
+                int(value[1]),
+            )
+            in seasons
+        )
     if "tv" in parts and stem.isdigit():
         return int(stem) in series_tmdb
     return True

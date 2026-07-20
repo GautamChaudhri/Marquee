@@ -476,7 +476,7 @@ def test_all_documents_are_strict_current_v1_and_policy_is_not_client_input() ->
             "activated": True,
         },
         "taste_enrich": {
-            "family": "taste_enrichment",
+            "family": "taste_profile",
             "version": "v1-test",
             "checksum": "a" * 64,
             "expected_generation": 0,

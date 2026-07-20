@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -16,6 +15,7 @@ from marquee.config import settings
 from marquee.database import _get_engine
 from marquee.main import app
 from marquee.models import Job, JobBatch, Movie, PipelineRun, Season, Series
+from tests.support.canonical_poster import seed_canonical_pipeline_run
 
 
 @pytest_asyncio.fixture
@@ -91,8 +91,12 @@ async def _seed_series(
     return series, created
 
 
-def _archive_for(series: Series, *, season: Season | None = None, status: str = "completed") -> dict:
-    title = series.title if season is None else f"{series.title} - Season {season.season_number:02d}"
+def _archive_for(
+    series: Series, *, season: Season | None = None, status: str = "completed"
+) -> dict:
+    title = (
+        series.title if season is None else f"{series.title} - Season {season.season_number:02d}"
+    )
     subject = {"series_id": series.id, "title": title}
     media_type = "series"
     if season is not None:
@@ -139,21 +143,18 @@ async def _seed_run(
     status: str = "completed",
     reviewed: bool = False,
 ) -> PipelineRun:
-    archive_path = tmp_path / f"{run_id}.json"
-    archive_path.write_text(json.dumps(_archive_for(series, season=season, status=status)))
-    run = PipelineRun(
+    run = await seed_canonical_pipeline_run(
+        db,
         run_id=run_id,
+        archive=_archive_for(series, season=season, status=status),
         media_type="season" if season is not None else "series",
         series_id=series.id,
         season_id=season.id if season is not None else None,
         status=status,
         scorer_name="weighted" if status == "completed" else None,
-        archive_path=str(archive_path),
-        output_dir=str(tmp_path / run_id),
         auto_pick_filename="auto.jpg" if status == "completed" else None,
         feedback_event_id="done" if reviewed else None,
     )
-    db.add(run)
     await db.commit()
     await db.refresh(run)
     return run
@@ -276,17 +277,19 @@ async def test_tv_review_queue_grouping_and_movie_guard(
     )
     db.add(movie)
     await db.flush()
-    db.add(
-        PipelineRun(
-            run_id="movie-review",
-            movie_id=movie.id,
-            media_type="movie",
-            status="completed",
-            scorer_name="weighted",
-            auto_pick_filename="auto.jpg",
-            started_at=datetime.now(UTC),
-        )
+    movie_run = await seed_canonical_pipeline_run(
+        db,
+        run_id="movie-review",
+        movie_id=movie.id,
+        archive={
+            "run_id": "movie-review",
+            "movie_id": movie.id,
+            "title": movie.title,
+            "candidates": [{"orig_filename": "auto.jpg", "rank": 1}],
+        },
+        auto_pick_filename="auto.jpg",
     )
+    movie_run.started_at = datetime.now(UTC)
     await db.commit()
 
     alpha, alpha_seasons = await _seed_series(

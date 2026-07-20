@@ -269,8 +269,6 @@ async def test_api_startup_fails_closed_before_serving(db, monkeypatch):
         raise RuntimeError("JMC1 startup readiness failed: schema")
 
     monkeypatch.setattr(main_module, "init_db", init_database)
-    monkeypatch.setattr(main_module, "migrate_legacy_runtime_state", lambda: [])
-    monkeypatch.setattr(main_module, "migrate_live_artifacts", lambda: [])
     monkeypatch.setattr(readiness, "require_startup_readiness", incompatible_startup)
     monkeypatch.setattr(settings, "RADARR_URL", "")
     monkeypatch.setattr(settings, "RADARR_API_KEY", "")

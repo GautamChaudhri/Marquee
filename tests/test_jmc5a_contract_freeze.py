@@ -47,8 +47,8 @@ DEFERRED_TYPES = (
     "letterbox_apply",
     "letterbox_remove",
     "letterbox_apply_tv_scope",
-            "letterbox_revert_tv_scope",
-            "dovi_convert",
+    "letterbox_revert_tv_scope",
+    "dovi_convert",
     "letterbox_reencode",
     "audio_remove",
     "track_remove",
@@ -68,8 +68,6 @@ WRITER_CALLS = {
     "boundary.delete_file",
     "job_manager.create",
     "job_manager.create_and_run",
-    "poster_service.deploy",
-    "poster_service.restore",
 }
 
 INVENTORY_FILES = (
@@ -80,7 +78,6 @@ INVENTORY_FILES = (
     "marquee/api/routes/pipeline_tv.py",
     "marquee/api/routes/system.py",
     "marquee/core/backup.py",
-    "marquee/core/heal.py",
     "marquee/maintenance.py",
 )
 
@@ -187,9 +184,10 @@ def test_registry_surfaces_match_a0_freeze() -> None:
             "dovi_discard",
         }
     )
-    assert sorted(SCHEDULE_PRODUCED_TYPES - {"job_retention_purge"}) == frozen["registry"][
-        "schedule_produced_types"
-    ]
+    assert (
+        sorted(SCHEDULE_PRODUCED_TYPES - {"job_retention_purge"})
+        == frozen["registry"]["schedule_produced_types"]
+    )
     assert "job_retention_purge" in SCHEDULE_PRODUCED_TYPES
 
 
@@ -213,18 +211,14 @@ def test_target_and_deferred_states_match_a0_freeze() -> None:
             continue
         if definition.effect_safety.value == "unsafe_mutation" and not definition.enabled:
             with pytest.raises(DisabledJobDefinitionError):
-                JOB_DEFINITION_REGISTRY.for_dispatch(
-                    job_type, entrypoint=definition.entrypoint
-                )
+                JOB_DEFINITION_REGISTRY.for_dispatch(job_type, entrypoint=definition.entrypoint)
 
 
 def test_direct_writer_inventory_matches_a0_freeze() -> None:
     frozen = _freeze()["writer_inventory"]
     assert frozen
     assert all(
-        "job_manager" not in call
-        for calls in _writer_inventory().values()
-        for call in calls
+        "job_manager" not in call for calls in _writer_inventory().values() for call in calls
     )
 
 

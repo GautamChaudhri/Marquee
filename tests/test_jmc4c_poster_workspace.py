@@ -58,7 +58,9 @@ def test_c1_execution_module_has_no_legacy_or_artwork_writer_bridge() -> None:
         "cancel_registry",
     )
     assert all(token not in source for token in forbidden)
+    # The real handler runs the pipeline inside the contained internal runner, so it
+    # imports no pipeline/ML stack directly and owns no legacy run/artwork bridge.
     assert "from marquee.pipeline" not in source
     assert "artifact_registry" not in source
     assert "register_physical_artifact" in source
-    assert "workspace.staging_file" in source
+    assert "run_internal_operation" in source

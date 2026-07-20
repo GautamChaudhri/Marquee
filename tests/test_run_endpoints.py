@@ -9,7 +9,10 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
+from hashlib import sha256
 from pathlib import Path
+from uuid import uuid4
 
 import numpy as np
 import pytest
@@ -22,9 +25,10 @@ from marquee.api.explanations import (
     suggest_for_summary,
 )
 from marquee.api.results import build_results_payload, categorize_rejection
+from marquee.config import settings
 from marquee.main import app
-from marquee.models import Movie, PipelineRun
-from marquee.pipeline.extractor_runtime import extractor_runtime
+from marquee.models import Job, JobArtifact, Movie, PipelineRun
+from marquee.models.job import JobAttempt
 
 
 @pytest.fixture
@@ -32,6 +36,74 @@ async def client():
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         yield ac
+
+
+async def _canonical_run(db, *, run_id: str, movie_id: int, archive: dict) -> PipelineRun:
+    job_id = uuid4().hex
+    now = datetime.now(UTC)
+    job = Job(
+        id=job_id,
+        type="poster_pipeline",
+        payload_version=1,
+        request={},
+        phase="terminal",
+        outcome="succeeded",
+        desired_state="run",
+        fence_token=1,
+        root_id=job_id,
+        trigger_kind="manual",
+        feature_area="posters",
+        presentation_family="posters",
+        subject_kind="movie",
+        subject_reference=str(movie_id),
+        subject_snapshot={"version": 1, "kind": "movie", "id": movie_id},
+        terminal_at=now,
+    )
+    db.add(job)
+    await db.flush()
+    attempt = JobAttempt(
+        job_id=job_id,
+        number=1,
+        fence_token=1,
+        phase="finished",
+        outcome="succeeded",
+        started_at=now,
+        finished_at=now,
+    )
+    db.add(attempt)
+    await db.flush()
+    job.current_attempt_id = attempt.id
+    payload = json.dumps(archive, allow_nan=False).encode()
+    storage_key = f"test-artifacts/{job_id}/pipeline-run.json"
+    path = Path(settings.DATA_DIR) / storage_key
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(payload)
+    artifact = JobArtifact(
+        job_id=job_id,
+        attempt_id=attempt.id,
+        kind="command_report",
+        name="pipeline-run.json",
+        status="available",
+        storage_key=storage_key,
+        content_type="application/json",
+        size_bytes=len(payload),
+        checksum=sha256(payload).hexdigest(),
+        artifact_metadata={"family": "poster_pipeline", "run_id": run_id},
+    )
+    db.add(artifact)
+    await db.flush()
+    run = PipelineRun(
+        run_id=run_id,
+        movie_id=movie_id,
+        status="completed",
+        scorer_name="weighted",
+        job_id=job_id,
+        attempt_id=attempt.id,
+        fence_token=attempt.fence_token,
+        archive_artifact_id=artifact.id,
+    )
+    db.add(run)
+    return run
 
 
 # ---------------------------------------------------------------------------
@@ -204,20 +276,9 @@ async def test_get_run_results_from_archive(client, db, tmp_path):
     await db.commit()
     await db.refresh(movie)
 
-    archive_file = tmp_path / "run-xyz.json"
     archive = _fake_archive()
     archive["movie_id"] = movie.id
-    archive_file.write_text(json.dumps(archive))
-
-    db.add(
-        PipelineRun(
-            run_id="run-xyz",
-            movie_id=movie.id,
-            status="completed",
-            scorer_name="weighted",
-            archive_path=str(archive_file),
-        )
-    )
+    await _canonical_run(db, run_id="run-xyz", movie_id=movie.id, archive=archive)
     await db.commit()
 
     resp = await client.get("/api/pipeline/runs/run-xyz")
@@ -235,7 +296,9 @@ async def test_list_movie_runs(client, db):
     db.add(movie)
     await db.commit()
     await db.refresh(movie)
-    db.add(PipelineRun(run_id="h1", movie_id=movie.id, status="completed"))
+    archive = _fake_archive()
+    archive["movie_id"] = movie.id
+    await _canonical_run(db, run_id="h1", movie_id=movie.id, archive=archive)
     await db.commit()
 
     resp = await client.get(f"/api/movies/{movie.id}/runs")
@@ -250,25 +313,6 @@ async def test_list_movie_runs(client, db):
 async def test_events_404_for_unknown_run(client):
     resp = await client.get("/api/pipeline/runs/nope/events")
     assert resp.status_code == 404
-
-
-def test_release_gpu_resources_clears_cached_extractor():
-    extractor_runtime._extractor = object()
-    result = extractor_runtime.release_gpu_resources()
-    assert extractor_runtime._extractor is None
-    assert result["extractor_cleared"] is True
-
-    result = extractor_runtime.release_gpu_resources()
-    assert result["extractor_cleared"] is False
-
-
-@pytest.mark.asyncio
-async def test_release_gpu_endpoint_releases_without_in_process_busy_gate(client):
-    # In-process GPU busy-tracking is retired; the canonical job resource
-    # reservations coordinate GPU work, so the endpoint always releases.
-    resp = await client.post("/api/system/release-gpu")
-    assert resp.status_code == 200
-    assert resp.json()["status"] == "released"
 
 
 def test_taste_rebuild_has_no_process_local_execution_state():

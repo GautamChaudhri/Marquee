@@ -3,7 +3,6 @@
 Covers the new, ML-free units:
   * OCR per-task title tokens (one pool can serve many movies)
   * per-stage rejection grouping in the results payload
-  * pipeline cache-clear path safety
   * library-poster gathering for taste rebuild
   * new job handlers are registered
 """
@@ -16,8 +15,6 @@ import pytest
 from PIL import Image
 
 from marquee.api.results import build_results_payload
-from marquee.config import settings
-from marquee.core import pipeline_cache as pc
 from marquee.pipeline import ocr_filter
 
 # ---------------------------------------------------------------------------
@@ -121,38 +118,6 @@ def test_rejected_by_stage_groups_each_reason():
     assert len(payload["ranked"]) == 1
     # Stages render in pipeline order for the UI tabs.
     assert [g["stage"] for g in payload["rejected_by_stage"]][:2] == ["sha256", "resolution"]
-
-
-# ---------------------------------------------------------------------------
-# Pipeline cache — clearing is path-safe
-# ---------------------------------------------------------------------------
-
-
-def test_assert_clearable_rejects_protected_and_allows_work():
-    # The deployed-poster cache holds live artwork — must never be clearable.
-    with pytest.raises(ValueError):
-        pc._assert_clearable(settings.poster_cache_path)
-    # The working tree is the actual poster-download cache — allowed.
-    assert pc._assert_clearable(settings.runs_work_path) == settings.runs_work_path.resolve()
-
-
-def test_clear_pipeline_cache_spares_protected(tmp_path_factory):
-    work = settings.runs_work_path
-    staging = settings.poster_staging_path
-    posters = settings.poster_cache_path / "movies"
-    for directory in (work, staging, posters):
-        directory.mkdir(parents=True, exist_ok=True)
-    (work / "MovieA").mkdir(exist_ok=True)
-    (work / "MovieA" / "poster.jpg").write_bytes(b"x" * 100)
-    (staging / "tmp.jpg").write_bytes(b"y" * 50)
-    (posters / "5.jpg").write_bytes(b"z" * 30)
-
-    result = pc.clear_pipeline_cache(include_embeddings=False, include_archives=False)
-
-    assert list(work.iterdir()) == []  # working tree contents removed
-    assert list(staging.iterdir()) == []  # staging cleared
-    assert (posters / "5.jpg").exists()  # deployed-poster cache untouched
-    assert result["total_freed_bytes"] >= 150
 
 
 # ---------------------------------------------------------------------------
