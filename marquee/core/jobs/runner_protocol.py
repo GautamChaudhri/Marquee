@@ -20,7 +20,9 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import struct
+from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
@@ -37,6 +39,46 @@ MAX_FRAMES = 100_000
 # Fixed environment key that names the inherited control-pipe file descriptor.
 # It carries a small integer only; no path, module, or command ever crosses it.
 CONTROL_FD_ENV = "MARQUEE_RUNNER_CONTROL_FD"
+
+_PROVIDER = re.compile(r"^[A-Za-z0-9_.:-]{1,80}$")
+_CUDA_VISIBLE = re.compile(r"^(?:-1|[0-9]+(?:,[0-9]+)*)?$")
+
+
+@dataclass(frozen=True, slots=True)
+class RunnerRuntimeOptions:
+    """Closed, bounded deployment options for a contained internal runner."""
+
+    ocr_device: str = "auto"
+    ocr_workers: int = 0
+    execution_provider: str = "auto"
+    cuda_visible_devices: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.ocr_device not in {"auto", "cpu", "gpu"}:
+            raise ProtocolError("runner OCR device is invalid")
+        if (
+            not isinstance(self.ocr_workers, int)
+            or isinstance(self.ocr_workers, bool)
+            or not 0 <= self.ocr_workers <= 16
+        ):
+            raise ProtocolError("runner OCR worker count is invalid")
+        if not _PROVIDER.fullmatch(self.execution_provider):
+            raise ProtocolError("runner execution provider is invalid")
+        if self.cuda_visible_devices is not None and (
+            len(self.cuda_visible_devices) > 80
+            or not _CUDA_VISIBLE.fullmatch(self.cuda_visible_devices)
+        ):
+            raise ProtocolError("runner CUDA visibility is invalid")
+
+    def environment(self) -> dict[str, str]:
+        environment = {
+            "OCR_DEVICE": self.ocr_device,
+            "OCR_WORKERS": str(self.ocr_workers),
+            "EXECUTION_PROVIDER": self.execution_provider,
+        }
+        if self.cuda_visible_devices is not None:
+            environment["CUDA_VISIBLE_DEVICES"] = self.cuda_visible_devices
+        return environment
 
 _HEADER = struct.Struct(">I")
 

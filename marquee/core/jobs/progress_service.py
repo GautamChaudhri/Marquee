@@ -47,6 +47,7 @@ class ProgressMetricObservation(StrictDocument):
     throughput: float | None = None
     encoder: str | None = Field(default=None, max_length=100)
     decoder: str | None = Field(default=None, max_length=100)
+    items_survived: int | None = Field(default=None, ge=0)
 
 
 class ProgressObservation(StrictDocument):

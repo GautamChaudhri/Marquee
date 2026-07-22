@@ -5470,6 +5470,8 @@ export interface components {
 			eta_seconds?: number | null;
 			/** Fps */
 			fps?: number | null;
+			/** Items Survived */
+			items_survived?: number | null;
 			/** Speed */
 			speed?: number | null;
 			/** Throughput */

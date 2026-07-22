@@ -1252,7 +1252,7 @@
       "producer": "POST /api/pipeline/movies/{id}/run (routes.pipeline.run_pipeline) and poster_pipeline_batch children",
       "consumer": "review/run/metrics/taste APIs load the archive artifact; feedback snapshots a candidate artifact; poster_deploy consumes that exact artifact; library detail refreshes deployed state; Projection Room jobs.poster_pipeline",
       "real_product_effect": "run_sync_stages over downloaded TMDB candidate bytes: dedupe, resolution/style/OCR/fan-junk gates, CLIP+DINO+face/person+CV features, scorer/rank, registered candidate artifacts, canonical PipelineRun projection linked to job/attempt/subject",
-      "certification_test": "test_jmc6h_product_effect.py::test_poster_pipeline_writes_canonical_pipeline_run_projection"
+      "certification_test": "test_jmc6i_executable_certification.py::test_poster_pipeline_scenario_producer_to_consumer"
     },
     {
       "job_type": "poster_rescan",
@@ -1943,7 +1943,7 @@
       "producer": "canonical submission via system producers on entrypoint control",
       "consumer": "Projection Room jobs.system_noop and canonical job only readers",
       "real_product_effect": "canonical job only",
-      "certification_test": "test_pgqueuer_delivery"
+      "certification_test": "test_jmc6i_executable_certification.py::test_noop_scenario_producer_to_consumer"
     },
     {
       "job_type": "taste_enrich",
@@ -1997,7 +1997,7 @@
       "producer": "POST /api/taste/enrich (routes.taste)",
       "consumer": "pipeline.features.NumpyTasteStore through the staged active taste profile; Projection Room jobs.taste_enrich",
       "real_product_effect": "ml.profile_enrich emits a native enriched taste-profile successor validated by NumpyTasteStore before activation",
-      "certification_test": "test_jmc6h_product_effect.py::test_taste_enrichment_advances_the_consumed_profile_authority"
+      "certification_test": "test_jmc6i_executable_certification.py::test_taste_enrich_scenario_producer_to_consumer"
     },
     {
       "job_type": "taste_map",
@@ -2051,7 +2051,7 @@
       "producer": "POST /api/taste/map (routes.taste) and scheduler",
       "consumer": "ml.taste_map loader; GET /api/taste map endpoints; Projection Room jobs.taste_map",
       "real_product_effect": "ml.taste_map builder emits a native loadable taste-map artifact validated by its production reader before activation",
-      "certification_test": "test_jmc6h_product_effect.py::test_taste_map_consumes_active_profile_and_publishes_native_map"
+      "certification_test": "test_jmc6i_executable_certification.py::test_taste_map_scenario_producer_to_consumer"
     },
     {
       "job_type": "taste_rebuild",
@@ -2105,7 +2105,7 @@
       "producer": "POST /api/taste/rebuild (routes.taste) and scheduler",
       "consumer": "TasteStore/NumpyTasteStore scorer loader; GET /api/taste; Projection Room jobs.taste_rebuild",
       "real_product_effect": "handler runs taste_trainer.rebuild_profile in the contained taste_profile runner (real CLIP embeddings), validates the native .npz via the production loader (NumpyTasteStore), registers it as a native octet-stream artifact, and fenced-CAS activates MlActivePublication taste_profile:{library}",
-      "certification_test": "test_jmc6h_product_effect.py::test_taste_rebuild_publishes_native_loadable_profile_artifact + test_jmc6h_taste_live_smoke.py::test_real_taste_profile_trains_on_fixture_posters (MARQUEE_LIVE_SMOKE=1)"
+      "certification_test": "test_jmc6i_executable_certification.py::test_taste_rebuild_scenario_producer_to_consumer"
     },
     {
       "job_type": "track_remove",

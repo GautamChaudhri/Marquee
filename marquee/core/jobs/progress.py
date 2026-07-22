@@ -154,6 +154,9 @@ class ProgressMetrics(StrictDocument):
     throughput: float | None = None
     encoder: str | None = Field(default=None, max_length=100)
     decoder: str | None = Field(default=None, max_length=100)
+    # Bounded survivor count from real gate/dedup stages (JMC6I §6.1); never a
+    # percentage input, purely an observed measurement.
+    items_survived: int | None = None
 
     @field_validator(
         "elapsed_seconds", "eta_seconds", "speed", "fps", "throughput"
@@ -164,7 +167,7 @@ class ProgressMetrics(StrictDocument):
             raise ValueError("progress metrics must be finite and non-negative")
         return value
 
-    @field_validator("bytes_processed", "bytes_total")
+    @field_validator("bytes_processed", "bytes_total", "items_survived")
     @classmethod
     def bytes_nonnegative(cls, value: int | None) -> int | None:
         if value is not None and value < 0:
