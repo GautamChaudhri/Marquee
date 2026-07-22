@@ -32,6 +32,7 @@ from marquee.core.jobs.runner_protocol import (
     MAX_FRAME_BYTES,
     MAX_MANIFEST_BYTES,
     RunnerOperation,
+    RunnerRuntimeOptions,
 )
 
 # The internal runner is a fixed, code-owned module; its name is never taken from a
@@ -216,11 +217,24 @@ class TrackedProcess:
                 raise ProcessLaunchError("process-tree death could not be confirmed")
             await asyncio.sleep(0.02)
 
+    async def wait_bounded(self, timeout: float) -> ExecutionSummary | None:
+        """Wait for natural exit up to ``timeout``; ``None`` if still running.
+
+        Side-effect free while the process lives, so a caller may escalate to
+        :meth:`cancel` afterwards without racing a half-finished :meth:`wait`.
+        """
+        if self._summary is not None:
+            return self._summary
+        if not await self._wait_for_exit(timeout):
+            return None
+        return await self.wait()
+
     async def cancel(
         self,
         *,
         cooperative_seconds: float = 0.25,
         term_seconds: float = 0.25,
+        kill_seconds: float = 5.0,
     ) -> ExecutionSummary:
         if self._summary is not None:
             return self._summary
@@ -234,7 +248,11 @@ class TrackedProcess:
             if not await self._wait_for_exit(term_seconds):
                 if self._signal(signal.SIGKILL):
                     self._stage = TerminationStage.KILL
-                await self._process.wait()
+                # SIGKILL cannot be ignored; a bounded wait still guards against an
+                # unkillable (kernel-stuck) child so cancellation can never block
+                # forever. Failure here is death-confirmation failure, not success.
+                if not await self._wait_for_exit(kill_seconds):
+                    raise ProcessLaunchError("process-tree death could not be confirmed")
         await self._confirm_tree_dead()
         return await self.wait()
 
@@ -514,6 +532,7 @@ class ProcessLauncher:
         operation: RunnerOperation | str,
         *,
         manifest: bytes,
+        runtime_options: RunnerRuntimeOptions | None = None,
     ) -> tuple[TrackedProcess, asyncio.StreamReader]:
         """Launch the fixed internal runner for one closed operation, contained.
 
@@ -536,6 +555,8 @@ class ProcessLauncher:
             raise ProcessLaunchError("verified process-group containment is unavailable")
         command = (sys.executable, "-m", INTERNAL_RUNNER_MODULE, resolved.value)
         environment = _minimal_environment()
+        if runtime_options is not None:
+            environment.update(runtime_options.environment())
         control_read, control_write = os.pipe()
         started_at = datetime.now(UTC)
         try:

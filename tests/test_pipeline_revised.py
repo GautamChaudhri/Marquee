@@ -749,7 +749,12 @@ def test_load_ocr_respects_cpu_device_when_paddle_cuda_exists(
             created.update(kwargs)
 
     fake_paddle = types.SimpleNamespace(
-        device=types.SimpleNamespace(is_compiled_with_cuda=lambda: True)
+        device=types.SimpleNamespace(
+            is_compiled_with_cuda=lambda: True,
+            cuda=types.SimpleNamespace(device_count=lambda: 1, synchronize=lambda: None),
+        ),
+        CUDAPlace=lambda index: index,
+        zeros=lambda *_args, **_kwargs: None,
     )
     fake_paddleocr = types.SimpleNamespace(PaddleOCR=FakePaddleOCR)
     monkeypatch.setitem(sys.modules, "paddle", fake_paddle)
@@ -771,7 +776,12 @@ def test_load_ocr_auto_uses_gpu_when_paddle_cuda_exists(
             created.update(kwargs)
 
     fake_paddle = types.SimpleNamespace(
-        device=types.SimpleNamespace(is_compiled_with_cuda=lambda: True)
+        device=types.SimpleNamespace(
+            is_compiled_with_cuda=lambda: True,
+            cuda=types.SimpleNamespace(device_count=lambda: 1, synchronize=lambda: None),
+        ),
+        CUDAPlace=lambda index: index,
+        zeros=lambda *_args, **_kwargs: None,
     )
     fake_paddleocr = types.SimpleNamespace(PaddleOCR=FakePaddleOCR)
     monkeypatch.setitem(sys.modules, "paddle", fake_paddle)
@@ -780,7 +790,32 @@ def test_load_ocr_auto_uses_gpu_when_paddle_cuda_exists(
 
     ocr_filter._load_ocr()
 
-    assert created["device"] == "gpu"
+    assert created["device"] == "gpu:0"
+
+
+def test_load_ocr_auto_falls_back_to_cpu_when_cuda_wheel_has_zero_devices(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+):
+    created: dict[str, object] = {}
+
+    class FakePaddleOCR:
+        def __init__(self, **kwargs):
+            created.update(kwargs)
+
+    fake_paddle = types.SimpleNamespace(
+        device=types.SimpleNamespace(
+            is_compiled_with_cuda=lambda: True,
+            cuda=types.SimpleNamespace(device_count=lambda: 0),
+        )
+    )
+    monkeypatch.setitem(sys.modules, "paddle", fake_paddle)
+    monkeypatch.setitem(sys.modules, "paddleocr", types.SimpleNamespace(PaddleOCR=FakePaddleOCR))
+    monkeypatch.setattr(ocr_filter.pipeline_settings, "OCR_DEVICE", "auto")
+
+    ocr_filter._load_ocr()
+
+    assert created["device"] == "cpu"
+    assert "zero usable CUDA devices" in caplog.text
 
 
 def test_load_ocr_rejects_forced_gpu_without_paddle_cuda(
@@ -798,7 +833,24 @@ def test_load_ocr_rejects_forced_gpu_without_paddle_cuda(
     monkeypatch.setitem(sys.modules, "paddleocr", fake_paddleocr)
     monkeypatch.setattr(ocr_filter.pipeline_settings, "OCR_DEVICE", "gpu")
 
-    with pytest.raises(RuntimeError, match="Paddle CUDA is unavailable"):
+    with pytest.raises(RuntimeError, match="Paddle CUDA is unusable"):
+        ocr_filter._load_ocr()
+
+
+def test_load_ocr_rejects_forced_gpu_when_cuda_wheel_has_zero_devices(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    fake_paddle = types.SimpleNamespace(
+        device=types.SimpleNamespace(
+            is_compiled_with_cuda=lambda: True,
+            cuda=types.SimpleNamespace(device_count=lambda: 0),
+        )
+    )
+    monkeypatch.setitem(sys.modules, "paddle", fake_paddle)
+    monkeypatch.setitem(sys.modules, "paddleocr", types.SimpleNamespace(PaddleOCR=object))
+    monkeypatch.setattr(ocr_filter.pipeline_settings, "OCR_DEVICE", "gpu")
+
+    with pytest.raises(RuntimeError, match="zero usable CUDA devices"):
         ocr_filter._load_ocr()
 
 

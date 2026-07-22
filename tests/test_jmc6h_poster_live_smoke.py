@@ -24,7 +24,7 @@ from PIL import Image
 from marquee.core.filesystem import FilesystemBoundary, RootSpec
 from marquee.core.jobs.internal_runner_host import OUTCOME_SUCCEEDED, run_internal_operation
 from marquee.core.jobs.process_launcher import ProcessLauncher
-from marquee.core.jobs.runner_protocol import RunnerOperation
+from marquee.core.jobs.runner_protocol import RunnerOperation, RunnerRuntimeOptions
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("MARQUEE_LIVE_SMOKE") != "1",
@@ -77,6 +77,12 @@ async def test_real_poster_single_runs_on_fixture_candidates(tmp_path: Path) -> 
         manifest=manifest,
         resolve_output=lambda key: work / key,
         timeout_seconds=600.0,
+        runtime_options=RunnerRuntimeOptions(
+            ocr_device="cpu",
+            ocr_workers=1,
+            execution_provider="cpu",
+            cuda_visible_devices="-1",
+        ),
     )
 
     assert outcome.outcome == OUTCOME_SUCCEEDED, outcome.error

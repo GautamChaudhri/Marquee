@@ -92,13 +92,75 @@ def _run_noop(manifest: dict[str, Any], control: ControlWriter) -> dict[str, Any
         content_bytes = content.encode("utf-8") if isinstance(content, str) else b""
         files.append(_write_confined_output(produce.get("name"), content_bytes, control))
 
+    summary: dict[str, Any] = {"echo": params.get("echo")}
+    if params.get("report_runtime_options") is True:
+        # Test-only transport observation: the closed runner contract exposes
+        # only its four non-secret runtime keys, never arbitrary environment.
+        summary["runtime_options"] = {
+            key: os.environ.get(key)
+            for key in ("OCR_DEVICE", "OCR_WORKERS", "EXECUTION_PROVIDER", "CUDA_VISIBLE_DEVICES")
+        }
+    result = {"outcome": "succeeded", "summary": summary, "files": files}
     hold = params.get("hold", "none")
     if hold == "cooperative":
         _cooperative_hold()
     elif hold == "ignore":
         _ignore_until_kill()
+    elif hold == "result_then_cooperative":
+        # Certify the result/exit race: a valid result frame, then a child that
+        # lingers but still honors cooperative shutdown.
+        _emit_result(control, result)
+        _cooperative_hold()
+    elif hold == "result_then_ignore":
+        # A valid result frame, then a child that resists TERM until SIGKILL.
+        _emit_result(control, result)
+        _ignore_until_kill()
+    elif hold == "close_control_then_hold":
+        # A clean control-channel EOF at a frame boundary with no result frame.
+        control.close()
+        _cooperative_hold()
 
-    return {"outcome": "succeeded", "summary": {"echo": params.get("echo")}, "files": files}
+    return result
+
+
+def _trainer_progress_forwarder(control: ControlWriter):
+    """Forward real trainer callback payloads as bounded typed progress frames.
+
+    Only allowlisted, bounded fields cross the control channel; the host-side
+    bridge validates and maps them onto the registered stage vocabulary. Frame
+    emission is best-effort — a full pipe can never fail the training work.
+    """
+    cursor = 0
+
+    def _forward(event: object) -> None:
+        nonlocal cursor
+        if not isinstance(event, dict):
+            return
+        stage = event.get("stage")
+        frame: dict[str, Any] = {
+            "v": PROTOCOL_VERSION,
+            "type": "progress",
+            "stage": str(stage)[:200] if stage else "training",
+            "state": str(event.get("state") or "progress")[:20],
+        }
+        processed = event.get("processed")
+        total = event.get("total")
+        if isinstance(processed, int) and not isinstance(processed, bool) and processed >= 0:
+            frame["done"] = processed
+        if isinstance(total, int) and not isinstance(total, bool) and total > 0:
+            frame["total"] = total
+        item = event.get("current_item")
+        if isinstance(item, str) and item:
+            frame["subject"] = item[:200]
+        message = event.get("message")
+        if isinstance(message, str) and message:
+            frame["message"] = message[:200]
+        cursor += 1
+        frame["cursor"] = cursor
+        with contextlib.suppress(Exception):
+            control.emit(frame)
+
+    return _forward
 
 
 def _announce_file(name: str, control: ControlWriter) -> dict[str, Any]:
@@ -249,19 +311,12 @@ def _run_taste_profile(manifest: dict[str, Any], control: ControlWriter) -> dict
     training_dir = training if source_mode == "fixture" and training.is_dir() else None
     output = Path("profile.npz")
 
-    def _progress(event: object) -> None:
-        stage = event.get("stage") if isinstance(event, dict) else None
-        with contextlib.suppress(Exception):
-            control.emit(
-                {"v": PROTOCOL_VERSION, "type": "progress", "stage": str(stage or "training")}
-            )
-
     rebuild_profile(
         training_dir=training_dir,
         output=output,
         skip_ocr=bool(params.get("skip_ocr", True)),
         skip_dino=bool(params.get("skip_dino", True)),
-        progress_callback=_progress,
+        progress_callback=_trainer_progress_forwarder(control),
         namespace=namespace,
     )
 
@@ -293,15 +348,8 @@ def _run_taste_map(manifest: dict[str, Any], control: ControlWriter) -> dict[str
     if not profile.is_file():
         raise FileNotFoundError("staged active taste profile is missing")
 
-    def _progress(event: object) -> None:
-        stage = event.get("stage") if isinstance(event, dict) else None
-        with contextlib.suppress(Exception):
-            control.emit(
-                {"v": PROTOCOL_VERSION, "type": "progress", "stage": str(stage or "project")}
-            )
-
     result = build_map(
-        progress_callback=_progress,
+        progress_callback=_trainer_progress_forwarder(control),
         namespace=namespace,
         output=output,
         profile_path=profile,
@@ -344,6 +392,7 @@ def _run_enrichment(manifest: dict[str, Any], control: ControlWriter) -> dict[st
         profile_path=source,
         output=output,
         cache_path=Path("genre-cache.json"),
+        progress_callback=_trainer_progress_forwarder(control),
     )
     resolved = 0
     exemplars = 0

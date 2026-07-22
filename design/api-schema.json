@@ -5977,6 +5977,17 @@
             ],
             "title": "Fps"
           },
+          "items_survived": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Items Survived"
+          },
           "speed": {
             "anyOf": [
               {

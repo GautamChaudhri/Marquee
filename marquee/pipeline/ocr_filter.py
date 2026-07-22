@@ -520,26 +520,43 @@ def _add_digit_words(tokens: set[str]) -> None:
             tokens.add(digit)
 
 
-def _resolve_ocr_device(*, paddle_cuda_available: bool) -> str:
+def _resolve_ocr_device(
+    *, paddle_cuda_available: bool, cuda_diagnostic: str = "no usable CUDA device or driver"
+) -> str:
     requested = pipeline_settings.OCR_DEVICE
     if requested == "cpu":
         return "cpu"
     if requested == "gpu":
         if not paddle_cuda_available:
-            raise RuntimeError("OCR_DEVICE=gpu requested but Paddle CUDA is unavailable")
-        return "gpu"
-    return "gpu" if paddle_cuda_available else "cpu"
+            raise RuntimeError(
+                "OCR_DEVICE=gpu requested but Paddle CUDA is unusable: " + cuda_diagnostic
+            )
+        return "gpu:0"
+    return "gpu:0" if paddle_cuda_available else "cpu"
 
 
-def paddle_cuda_available(*, allow_import: bool = False) -> bool:
+def _paddle_cuda_probe(*, allow_import: bool = False) -> tuple[bool, str]:
     if not allow_import and "paddle" not in sys.modules:
-        return False
+        return False, "Paddle is not imported in this process"
     try:
         import paddle
 
-        return bool(paddle.device.is_compiled_with_cuda())
-    except Exception:
-        return False
+        if not paddle.device.is_compiled_with_cuda():
+            return False, "Paddle is not compiled with CUDA"
+        device_count = paddle.device.cuda.device_count()
+        if device_count <= 0:
+            return False, "Paddle reports zero usable CUDA devices (driver unavailable or hidden)"
+        # A CUDA-enabled wheel is not enough: deployed drivers can be absent or
+        # unusable. This isolated worker probe is intentionally tiny.
+        paddle.zeros([1], dtype="float32", place=paddle.CUDAPlace(0))
+        paddle.device.cuda.synchronize()
+    except Exception as exc:
+        return False, f"Paddle CUDA probe failed: {type(exc).__name__}: {exc}"
+    return True, f"Paddle CUDA device 0 is usable ({device_count} detected)"
+
+
+def paddle_cuda_available(*, allow_import: bool = False) -> bool:
+    return _paddle_cuda_probe(allow_import=allow_import)[0]
 
 
 def active_worker_status() -> dict:
@@ -596,7 +613,12 @@ def _load_ocr() -> object:
     # model is ~15× slower in dynamic mode on CPU with no meaningful accuracy improvement
     # for the title-detection task. On GPU the difference is smaller but mobile is still
     # the better choice for throughput across many workers.
-    device = _resolve_ocr_device(paddle_cuda_available=paddle_cuda_available(allow_import=True))
+    cuda_available, cuda_diagnostic = _paddle_cuda_probe(allow_import=True)
+    device = _resolve_ocr_device(
+        paddle_cuda_available=cuda_available, cuda_diagnostic=cuda_diagnostic
+    )
+    if pipeline_settings.OCR_DEVICE == "auto" and not cuda_available:
+        logger.warning("Paddle CUDA auto probe failed; falling back to CPU: %s", cuda_diagnostic)
     logger.info("Loading PaddleOCR on device=%s", device)
     return PaddleOCR(
         use_textline_orientation=True,

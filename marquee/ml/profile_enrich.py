@@ -125,6 +125,7 @@ def enrich(
     profile_path: Path | None = None,
     output: Path | None = None,
     cache_path: Path | None = None,
+    progress_callback=None,
 ) -> Path:
     profile_path = profile_path or Path(pipeline_settings.TASTE_PROFILE_PATH)
     output = output or profile_path
@@ -147,7 +148,16 @@ def enrich(
     tmdb_out: list[int | None] = []
     tmdb_calls = 0
 
-    for name in names:
+    for index, name in enumerate(names):
+        if progress_callback is not None:
+            progress_callback(
+                {
+                    "stage": "resolve",
+                    "processed": index,
+                    "total": len(names),
+                    "current_item": name,
+                }
+            )
         title, year = _parse_name(name)
         key = f"{title.lower()}|{year}"
         if key in cache:
@@ -166,6 +176,8 @@ def enrich(
         years_out.append(entry["year"] if entry["year"] is not None else 0)
         tmdb_out.append(entry["tmdb_id"] if entry["tmdb_id"] is not None else 0)
 
+    if progress_callback is not None and names:
+        progress_callback({"stage": "resolve", "processed": len(names), "total": len(names)})
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     cache_path.write_text(json.dumps(cache, indent=2), encoding="utf-8")
 

@@ -15,12 +15,52 @@ from marquee.core.jobs.documents import (
     TasteMapRequestV1,
     TasteRebuildRequestV1,
 )
+from marquee.core.jobs.execution_progress import ExecutionProgress
 from marquee.core.jobs.ml_publication import (
     ActivePublication,
     MlPublicationError,
     activate_immutable_artifact,
     resolve_active_publication,
 )
+from marquee.core.jobs.runner_progress import RunnerProgressBridge
+
+# Runner-native trainer stages -> the registered ML progress vocabulary (JMC6I
+# §6.2). The learned-head operation deliberately has no bridge here: its progress
+# and behavior are reserved to JMC6J.
+_TASTE_PROFILE_STAGE_MAP = {
+    "starting": "collecting",
+    "clip": "features",
+    "clip-negatives": "features",
+    "dino": "features",
+    "dino-negatives": "features",
+    "calibration": "evaluating",
+    "saving": "training",
+    "completed": "validating",
+}
+_TASTE_MAP_STAGE_MAP = {
+    "load": "loading",
+    "project": "features",
+    "cluster": "evaluating",
+    "save": "training",
+}
+_ENRICHMENT_STAGE_MAP = {
+    "enriching": "features",
+    "resolve": "features",
+}
+
+
+def _runner_bridge(
+    context: ExecutionContext, stage_map: dict[str, str]
+) -> RunnerProgressBridge | None:
+    progress = getattr(context, "progress", None)
+    if not isinstance(progress, ExecutionProgress):
+        return None
+    return RunnerProgressBridge(progress, stage_map=stage_map)
+
+
+async def _bridge_stage(bridge: RunnerProgressBridge | None, stage_key: str) -> None:
+    if bridge is not None:
+        await bridge.stage(stage_key)
 
 
 def _ml_workspace_dir(context: ExecutionContext) -> Path:
@@ -73,18 +113,25 @@ async def _publish_native_taste_profile(
     def resolve(key: str) -> Path:
         return workspace_dir / key
 
-    outcome = await run_internal_operation(
-        context.process_launcher,
-        operation=RunnerOperation.TASTE_PROFILE,
-        manifest=manifest,
-        should_stop=should_stop,
-        resolve_output=resolve,
-    )
+    bridge = _runner_bridge(context, _TASTE_PROFILE_STAGE_MAP)
+    try:
+        outcome = await run_internal_operation(
+            context.process_launcher,
+            operation=RunnerOperation.TASTE_PROFILE,
+            manifest=manifest,
+            on_progress=bridge.on_frame if bridge is not None else None,
+            should_stop=should_stop,
+            resolve_output=resolve,
+        )
+    finally:
+        if bridge is not None:
+            await bridge.close()
     if outcome.outcome == OUTCOME_CANCELLED:
         raise asyncio.CancelledError
     if outcome.outcome != OUTCOME_SUCCEEDED:
         raise RuntimeError(f"taste profile runner did not succeed: {outcome.error or outcome.outcome}")
 
+    await _bridge_stage(bridge, "validating")
     profile_path = workspace_dir / "profile.npz"
     _validate_taste_profile(profile_path)
 
@@ -92,6 +139,7 @@ async def _publish_native_taste_profile(
         context.workspace.quarantine(code="stale_fence", summary="taste profile publication fenced")
         raise RuntimeError("taste profile attempt lost its fence before publication")
 
+    await _bridge_stage(bridge, "registering")
     source = context.workspace.boundary.classify(profile_path, require_exists=True)
     artifact = await register_physical_artifact(
         job_id=context.delivery.canonical_job_id,
@@ -107,6 +155,7 @@ async def _publish_native_taste_profile(
     if context.cancellation.cancel_called:
         raise asyncio.CancelledError
 
+    await _bridge_stage(bridge, "publishing")
     checksum = artifact.checksum or ""
     activation = await activate_immutable_artifact(
         context,
@@ -167,25 +216,32 @@ async def _publish_native_taste_map(
         destination=workspace_dir / "profile.npz",
     )
 
-    outcome = await run_internal_operation(
-        context.process_launcher,
-        operation=RunnerOperation.TASTE_MAP,
-        manifest={
-            "params": {
-                "library": library,
-                "seed": seed,
-                "profile_generation": active_profile.generation,
-                "profile_checksum": active_profile.checksum,
-            }
-        },
-        should_stop=lambda: bool(context.cancellation.cancel_called),
-        resolve_output=lambda key: workspace_dir / key,
-    )
+    bridge = _runner_bridge(context, _TASTE_MAP_STAGE_MAP)
+    try:
+        outcome = await run_internal_operation(
+            context.process_launcher,
+            operation=RunnerOperation.TASTE_MAP,
+            manifest={
+                "params": {
+                    "library": library,
+                    "seed": seed,
+                    "profile_generation": active_profile.generation,
+                    "profile_checksum": active_profile.checksum,
+                }
+            },
+            on_progress=bridge.on_frame if bridge is not None else None,
+            should_stop=lambda: bool(context.cancellation.cancel_called),
+            resolve_output=lambda key: workspace_dir / key,
+        )
+    finally:
+        if bridge is not None:
+            await bridge.close()
     if outcome.outcome == OUTCOME_CANCELLED:
         raise asyncio.CancelledError
     if outcome.outcome != OUTCOME_SUCCEEDED:
         raise RuntimeError(f"taste map runner did not succeed: {outcome.error or outcome.outcome}")
 
+    await _bridge_stage(bridge, "validating")
     map_path = workspace_dir / "map.npz"
     loaded = load_map(namespace=get_namespace(library), path=map_path)
     if not loaded.get("points"):
@@ -194,6 +250,7 @@ async def _publish_native_taste_map(
         context.workspace.quarantine(code="stale_fence", summary="taste map publication fenced")
         raise RuntimeError("taste map attempt lost its fence before publication")
 
+    await _bridge_stage(bridge, "registering")
     artifact = await register_physical_artifact(
         job_id=context.delivery.canonical_job_id,
         attempt_id=context.attempt.attempt_id,
@@ -211,6 +268,7 @@ async def _publish_native_taste_map(
             "profile_checksum": active_profile.checksum,
         },
     )
+    await _bridge_stage(bridge, "publishing")
     activation = await activate_immutable_artifact(
         context,
         family=f"taste_map:{library}",
@@ -267,31 +325,39 @@ async def _publish_native_enrichment(
             metrics={"seed": seed},
         ).model_dump(mode="json")
 
-    outcome = await run_internal_operation(
-        context.process_launcher,
-        operation=RunnerOperation.ENRICHMENT,
-        manifest={
-            "params": {
-                "library": library,
-                "seed": seed,
-                "profile_generation": active_profile.generation,
-                "profile_checksum": active_profile.checksum,
-                "use_tmdb": False,
-            }
-        },
-        should_stop=lambda: bool(context.cancellation.cancel_called),
-        resolve_output=lambda key: workspace_dir / key,
-    )
+    bridge = _runner_bridge(context, _ENRICHMENT_STAGE_MAP)
+    try:
+        outcome = await run_internal_operation(
+            context.process_launcher,
+            operation=RunnerOperation.ENRICHMENT,
+            manifest={
+                "params": {
+                    "library": library,
+                    "seed": seed,
+                    "profile_generation": active_profile.generation,
+                    "profile_checksum": active_profile.checksum,
+                    "use_tmdb": False,
+                }
+            },
+            on_progress=bridge.on_frame if bridge is not None else None,
+            should_stop=lambda: bool(context.cancellation.cancel_called),
+            resolve_output=lambda key: workspace_dir / key,
+        )
+    finally:
+        if bridge is not None:
+            await bridge.close()
     if outcome.outcome == OUTCOME_CANCELLED:
         raise asyncio.CancelledError
     if outcome.outcome != OUTCOME_SUCCEEDED:
         raise RuntimeError(f"taste enrichment runner failed: {outcome.error or outcome.outcome}")
 
+    await _bridge_stage(bridge, "validating")
     profile_path = workspace_dir / "profile.npz"
     _validate_taste_profile(profile_path)
     if not await _ml_owns_fence(context):
         context.workspace.quarantine(code="stale_fence", summary="taste enrichment fenced")
         raise RuntimeError("taste enrichment attempt lost its fence before publication")
+    await _bridge_stage(bridge, "registering")
     artifact = await register_physical_artifact(
         job_id=context.delivery.canonical_job_id,
         attempt_id=context.attempt.attempt_id,
@@ -310,6 +376,7 @@ async def _publish_native_enrichment(
             "base_checksum": active_profile.checksum,
         },
     )
+    await _bridge_stage(bridge, "publishing")
     activation = await activate_immutable_artifact(
         context,
         family=f"taste_profile:{library}",

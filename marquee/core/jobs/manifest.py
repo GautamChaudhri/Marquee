@@ -501,7 +501,7 @@ _ML_PUBLICATION_PROGRESS = ProgressPolicy(
     strategy=ProgressStrategy.HYBRID,
     overall_unit="stages",
     denominator_source="registered_stages",
-    current_unit="stage",
+    current_unit="items",
     aggregation_strategy="current_scope",
     stages=(
         ("loading", "jobs.ml.progress.loading"),

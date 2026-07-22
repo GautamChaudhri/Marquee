@@ -26,7 +26,11 @@ from marquee.core.jobs.documents import (
     PosterPipelineRequestV1,
     PosterPipelineResultV1,
 )
+from marquee.core.jobs.execution_progress import ExecutionProgress
 from marquee.core.jobs.ml_publication import MlPublicationError, resolve_active_publication
+from marquee.core.jobs.runner_progress import RunnerProgressBridge
+from marquee.core.jobs.runner_protocol import RunnerRuntimeOptions
+from marquee.core.jobs.runner_runtime import poster_runner_runtime_options
 from marquee.models import Job, PipelineRun
 
 # Runner pipeline stage -> the definition's declared poster progress vocabulary.
@@ -68,6 +72,10 @@ def _subject_params(request: PosterPipelineRequestV1) -> dict[str, Any]:
 def _workspace_dir(context: ExecutionContext):
     directory = context.workspace.directory
     return directory.root.resolved() / directory.key.value
+
+
+def _runner_runtime_options(context: ExecutionContext) -> RunnerRuntimeOptions:
+    return poster_runner_runtime_options(context.configuration)
 
 
 async def _owns_fence(context: ExecutionContext) -> bool:
@@ -351,12 +359,16 @@ async def execute_poster_pipeline(
             "checksum": active_profile.checksum,
         }
 
-    async def on_progress(frame: dict[str, Any]) -> None:
-        progress = getattr(context, "progress", None)
-        stage = _STAGE_MAP.get(frame.get("stage"))
-        if progress is not None and stage and frame.get("state") == "start":
-            with contextlib.suppress(Exception):
-                await progress.stage(stage)
+    # The typed bridge maps runner stages/counts onto the registered progress
+    # vocabulary (JMC6I §6.1): real done/total become the determinate current
+    # scope, survivors ride as bounded metrics, and the overall scope tracks the
+    # furthest registered stage monotonically.
+    progress = getattr(context, "progress", None)
+    bridge = (
+        RunnerProgressBridge(progress, stage_map=_STAGE_MAP)
+        if isinstance(progress, ExecutionProgress)
+        else None
+    )
 
     def should_stop() -> bool:
         return bool(getattr(context.cancellation, "cancel_called", False))
@@ -364,14 +376,20 @@ async def execute_poster_pipeline(
     def resolve(key: str):
         return workspace_dir / key
 
-    outcome = await run_internal_operation(
-        context.process_launcher,
-        operation=RunnerOperation.POSTER_SINGLE,
-        manifest=manifest,
-        on_progress=on_progress,
-        should_stop=should_stop,
-        resolve_output=resolve,
-    )
+    try:
+        outcome = await run_internal_operation(
+            context.process_launcher,
+            operation=RunnerOperation.POSTER_SINGLE,
+            manifest=manifest,
+            on_progress=bridge.on_frame if bridge is not None else None,
+            should_stop=should_stop,
+            resolve_output=resolve,
+            runtime_options=_runner_runtime_options(context),
+        )
+    finally:
+        if bridge is not None:
+            with contextlib.suppress(Exception):
+                await bridge.close()
 
     if outcome.outcome == OUTCOME_CANCELLED:
         raise asyncio.CancelledError

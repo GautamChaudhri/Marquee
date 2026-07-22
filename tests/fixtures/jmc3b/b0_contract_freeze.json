@@ -102,7 +102,8 @@
       "bytes_total",
       "throughput",
       "encoder",
-      "decoder"
+      "decoder",
+      "items_survived"
     ],
     "ProgressWait": [
       "kind",
