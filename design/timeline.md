@@ -184,6 +184,30 @@ plan: an in-scope issue found during its final certification is fixed within JMC
 creating another post-plan. Browser-agent acceptance is designed only after an independent
 post-JMC6H once-over succeeds.
 
+The independent post-JMC6H source recheck found one shared process-lifecycle defect, numerical
+progress lost at the fixed-runner boundary, declarative closure checks that could overstate runtime
+proof, and a separate conflict between cold-start onboarding, taste-profile authority, and learned
+scoring. These are intentionally split into two final readiness plans so process/progress hardening
+cannot accidentally redesign personalization:
+
+1. [`jmc6i-runner-progress-and-certification-closure.md`](job-system-update/jmc6i-runner-progress-and-certification-closure.md)
+   makes outer cancellation/timeout terminate and confirm internal-runner death, carries real poster
+   and non-head ML measurements into typed durable progress, and replaces manifest-by-assertion with
+   executed producer-to-consumer certification. It is forbidden from changing onboarding or
+   learned-head product behavior.
+2. [`jmc6j-taste-onboarding-and-residual-learning.md`](job-system-update/jmc6j-taste-onboarding-and-residual-learning.md)
+   replaces starter/taste-test/filesystem onboarding with a 50/75/100 guided canonical exemplar
+   workflow, adds an honest profile-free candidate-curation mode, continuously rebuilds immutable
+   taste profiles, and changes the learned head into a held-out-validated bounded residual over the
+   weighted baseline.
+
+They execute strictly JMC6I → JMC6J and share
+`design/job-system-update/jmc6-runtime-and-personalization-timeline.md`; JMC6I creates it. Both use
+the God model tier, run continuously through internal checkpoints, compact only after complete
+zero-green certification with verified external recovery material, and do not push or activate the
+system. JMC6J is the terminal construction plan; its independent once-over leads directly to
+browser-agent acceptance and operator activation gates rather than another post-plan.
+
 ## Overview
 
 This timeline preserves the existing phase structure from `design/todos.md`

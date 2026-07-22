@@ -118,6 +118,16 @@ The current default keeps automatic retraining off:
 `HEAD_AUTO_RETRAIN=false`. Feedback accumulates labels and exemplars, and the
 actual head retraining is queued through `/api/taste/head/retrain`.
 
+This describes the implementation at `jmc6h-complete`, not the locked target architecture. The
+post-certification source audit found that the current head replaces the weighted scorer and learns
+mostly from baseline inversions, while cold-start onboarding uses conflicting filesystem and
+publication authorities. The approved implementation plan
+[`jmc6j-taste-onboarding-and-residual-learning.md`](job-system-update/jmc6j-taste-onboarding-and-residual-learning.md)
+keeps the taste-aware weighted score as the permanent baseline, applies only a bounded
+held-out-validated residual correction, and replaces starter/taste-test onboarding with explicit
+real-library poster selection. Until JMC6J is implemented, the current behavior above remains the
+code-authoritative description.
+
 ## OCR
 
 `marquee/pipeline/ocr_filter.py` uses a multi-process PaddleOCR pool and a
@@ -195,3 +205,7 @@ Representative pipeline knobs in `marquee/core/pipeline_config.py`:
 - `library.md` for deployment, restore, and sync interactions
 - `job-platform.md` for how poster pipeline runs and retraining are queued
 - `timeline.md` for remaining tuning and deferred poster-pipeline work
+- `job-system-update/jmc6i-runner-progress-and-certification-closure.md` for fixed-runner cancellation
+  and progress closure
+- `job-system-update/jmc6j-taste-onboarding-and-residual-learning.md` for the approved cold-start,
+  continuous taste, and residual-ranking target

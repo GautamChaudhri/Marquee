@@ -1,5 +1,11 @@
 # JMC6H — Product Convergence, Retirement, and Final Certification
 
+> **Post-certification note:** JMC6H remains the completed historical implementation record. The
+> later independent source recheck found shared runner/progress/certification defects and a separate
+> onboarding/learned-ranking redesign. Their authoritative successor plans are
+> [`JMC6I`](jmc6i-runner-progress-and-certification-closure.md) and
+> [`JMC6J`](jmc6j-taste-onboarding-and-residual-learning.md).
+
 > **Implementer:** Read this document in full before changing code. Decisions are locked.
 > Execute every internal phase continuously; phase boundaries are verification checkpoints, not
 > stopping points. Stop only for a condition in

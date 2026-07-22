@@ -1,5 +1,11 @@
 # Marquee Job Progress and Loading Experience
 
+> **Implementation follow-up:** The post-JMC6H audit found that fixed-runner numerical measurements
+> are still collapsed to stage labels and that outer runner-host cancellation can bypass bounded
+> termination. [`JMC6I`](jmc6i-runner-progress-and-certification-closure.md) is the authoritative
+> closure plan for those defects. Onboarding and residual-ranking progress remain exclusively owned
+> by [`JMC6J`](jmc6j-taste-onboarding-and-residual-learning.md).
+
 **Decided:** 2026-07-12
 **Status:** Target semantic-progress architecture
 **Runtime context:** [direct PgQueuer adoption](job-system-pgqueuer-direct-adoption.md)
