@@ -1681,6 +1681,57 @@
         "title": "ChildrenSection",
         "type": "object"
       },
+      "ChoosePosterRequest": {
+        "properties": {
+          "artifact_id": {
+            "minimum": 1.0,
+            "title": "Artifact Id",
+            "type": "integer"
+          },
+          "candidate_reference": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Candidate Reference",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Idempotency Key",
+            "type": "string"
+          },
+          "movie_id": {
+            "minimum": 1.0,
+            "title": "Movie Id",
+            "type": "integer"
+          },
+          "presentation_order": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 100,
+            "minItems": 1,
+            "title": "Presentation Order",
+            "type": "array"
+          },
+          "run_id": {
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Run Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "movie_id",
+          "artifact_id",
+          "run_id",
+          "candidate_reference",
+          "presentation_order",
+          "idempotency_key"
+        ],
+        "title": "ChoosePosterRequest",
+        "type": "object"
+      },
       "CommandRequest": {
         "additionalProperties": false,
         "properties": {
@@ -6360,19 +6411,7 @@
         "type": "object"
       },
       "StartRequest": {
-        "properties": {
-          "path": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Path"
-          }
-        },
+        "properties": {},
         "title": "StartRequest",
         "type": "object"
       },
@@ -7251,47 +7290,6 @@
           }
         },
         "title": "TasteRetrainRequest",
-        "type": "object"
-      },
-      "TasteTestRankRequest": {
-        "properties": {
-          "hated": {
-            "anyOf": [
-              {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Hated"
-          },
-          "movie_id": {
-            "title": "Movie Id",
-            "type": "string"
-          },
-          "order": {
-            "anyOf": [
-              {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Order"
-          }
-        },
-        "required": [
-          "movie_id"
-        ],
-        "title": "TasteTestRankRequest",
         "type": "object"
       },
       "TextValue": {
@@ -14341,6 +14339,45 @@
         ]
       }
     },
+    "/api/onboarding/choose": {
+      "post": {
+        "operationId": "onboarding_choose_api_onboarding_choose_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChoosePosterRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Onboarding Choose",
+        "tags": [
+          "onboarding"
+        ]
+      }
+    },
     "/api/onboarding/complete": {
       "post": {
         "operationId": "onboarding_complete_api_onboarding_complete_post",
@@ -14420,104 +14457,6 @@
           }
         },
         "summary": "Onboarding Status",
-        "tags": [
-          "onboarding"
-        ]
-      }
-    },
-    "/api/onboarding/taste-test/movies": {
-      "get": {
-        "operationId": "taste_test_movies_api_onboarding_taste_test_movies_get",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Taste Test Movies",
-        "tags": [
-          "onboarding"
-        ]
-      }
-    },
-    "/api/onboarding/taste-test/posters/{file}": {
-      "get": {
-        "operationId": "taste_test_poster_api_onboarding_taste_test_posters__file__get",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "file",
-            "required": true,
-            "schema": {
-              "title": "File",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Taste Test Poster",
-        "tags": [
-          "onboarding"
-        ]
-      }
-    },
-    "/api/onboarding/taste-test/rank": {
-      "post": {
-        "operationId": "taste_test_rank_api_onboarding_taste_test_rank_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/TasteTestRankRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Taste Test Rank",
         "tags": [
           "onboarding"
         ]
@@ -16565,141 +16504,6 @@
         ]
       }
     },
-    "/api/taste/head/retrain": {
-      "post": {
-        "description": "Submit an immutable learned-head publication job.",
-        "operationId": "retrain_learned_head_api_taste_head_retrain_post",
-        "parameters": [
-          {
-            "in": "query",
-            "name": "library",
-            "required": false,
-            "schema": {
-              "default": "movies",
-              "title": "Library",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "202": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JobSubmissionResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Retrain Learned Head",
-        "tags": [
-          "taste"
-        ]
-      }
-    },
-    "/api/taste/heads": {
-      "get": {
-        "operationId": "list_learned_heads_api_taste_heads_get",
-        "parameters": [
-          {
-            "in": "query",
-            "name": "library",
-            "required": false,
-            "schema": {
-              "default": "movies",
-              "title": "Library",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "List Learned Heads",
-        "tags": [
-          "taste"
-        ]
-      }
-    },
-    "/api/taste/heads/{artifact_id}": {
-      "get": {
-        "operationId": "get_learned_head_api_taste_heads__artifact_id__get",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "artifact_id",
-            "required": true,
-            "schema": {
-              "title": "Artifact Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "library",
-            "required": false,
-            "schema": {
-              "default": "movies",
-              "title": "Library",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Get Learned Head",
-        "tags": [
-          "taste"
-        ]
-      }
-    },
     "/api/taste/map": {
       "get": {
         "description": "Return the last published taste-map artifact without recomputation.",
@@ -16922,6 +16726,141 @@
           }
         },
         "summary": "List Taste Profile Exemplars",
+        "tags": [
+          "taste"
+        ]
+      }
+    },
+    "/api/taste/residual/retrain": {
+      "post": {
+        "description": "Submit held-out evaluation of an immutable bounded residual candidate.",
+        "operationId": "retrain_ranking_residual_api_taste_residual_retrain_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "library",
+            "required": false,
+            "schema": {
+              "default": "movies",
+              "title": "Library",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobSubmissionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Retrain Ranking Residual",
+        "tags": [
+          "taste"
+        ]
+      }
+    },
+    "/api/taste/residuals": {
+      "get": {
+        "operationId": "list_ranking_residuals_api_taste_residuals_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "library",
+            "required": false,
+            "schema": {
+              "default": "movies",
+              "title": "Library",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Ranking Residuals",
+        "tags": [
+          "taste"
+        ]
+      }
+    },
+    "/api/taste/residuals/{artifact_id}": {
+      "get": {
+        "operationId": "get_ranking_residual_api_taste_residuals__artifact_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "artifact_id",
+            "required": true,
+            "schema": {
+              "title": "Artifact Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "library",
+            "required": false,
+            "schema": {
+              "default": "movies",
+              "title": "Library",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Ranking Residual",
         "tags": [
           "taste"
         ]

@@ -18,10 +18,10 @@ from sqlalchemy import select
 from marquee.config import settings
 from marquee.core.jobs.delivery import EXECUTION_HANDLERS
 from marquee.core.jobs.documents import (
-    LearnedHeadTrainRequestV1,
     MlPublicationResultV1,
     PosterRescanRequestV1,
     PosterRescanResultV1,
+    RankingResidualTrainRequestV1,
     TasteEnrichRequestV1,
     TasteMapRequestV1,
     TasteRebuildRequestV1,
@@ -61,7 +61,12 @@ async def test_ml_routes_submit_generation_snapshots_without_manual_activation(c
         ("/api/taste/retrain", "taste_rebuild", "taste_profile", "gpu"),
         ("/api/taste/map/rebuild", "taste_map", "taste_map", "cpu"),
         ("/api/taste/enrich", "taste_enrich", "taste_profile", "cpu"),
-        ("/api/taste/head/retrain", "learned_head_train", "learned_head", "cpu"),
+        (
+            "/api/taste/residual/retrain",
+            "ranking_residual_train",
+            "ranking_residual",
+            "cpu",
+        ),
     )
     for route, job_type, family, entrypoint in routes:
         response = await client.post(route)
@@ -102,7 +107,7 @@ def test_c4_documents_are_strict_bounded_and_nonmutating() -> None:
     assert TasteRebuildRequestV1().expected_generation == 0
     assert TasteMapRequestV1().seed == 0
     assert TasteEnrichRequestV1().library == "movies"
-    assert LearnedHeadTrainRequestV1().library == "movies"
+    assert RankingResidualTrainRequestV1().library == "movies"
     assert PosterRescanRequestV1(scope="movie", movie_id=1).movie_id == 1
     assert not {
         "deploy",
@@ -121,7 +126,7 @@ def test_c4_has_one_executor_and_no_legacy_publication_bypass() -> None:
         "taste_rebuild",
         "taste_map",
         "taste_enrich",
-        "learned_head_train",
+        "ranking_residual_train",
         "poster_rescan",
     }
     assert expected <= set(EXECUTION_HANDLERS)

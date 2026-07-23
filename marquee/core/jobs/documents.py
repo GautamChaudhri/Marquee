@@ -232,10 +232,17 @@ class PosterPipelineResultV1(StrictDocument):
 
 
 class TasteRebuildRequestV1(StrictDocument):
-    source: Literal["training_dir", "library"] = "training_dir"
+    source: Literal["training_dir", "library", "canonical_revision"] = "training_dir"
     library: Literal["movies", "tv"] = "movies"
+    revision: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
     expected_generation: int = Field(default=0, ge=0)
     seed: int = Field(default=0, ge=0, le=2**31 - 1)
+
+    @model_validator(mode="after")
+    def require_canonical_revision(self) -> TasteRebuildRequestV1:
+        if (self.source == "canonical_revision") != (self.revision is not None):
+            raise ValueError("canonical taste rebuild source requires exactly one revision digest")
+        return self
 
 
 class TasteMapRequestV1(StrictDocument):
@@ -253,17 +260,17 @@ class TasteEnrichRequestV1(StrictDocument):
     profile_revision: str | None = Field(default=None, min_length=1, max_length=128)
 
 
-class LearnedHeadTrainRequestV1(StrictDocument):
+class RankingResidualTrainRequestV1(StrictDocument):
     library: Literal["movies", "tv"] = "movies"
     expected_generation: int = Field(default=0, ge=0)
     seed: int = Field(default=0, ge=0, le=2**31 - 1)
-    feedback_revision: str = Field(default="manual:unspecified", min_length=1, max_length=128)
+    evidence_revision: str = Field(default="manual:unspecified", min_length=1, max_length=128)
     mutation: Literal["apply", "undo", "manual"] = "manual"
 
 
 class MlPublicationResultV1(StrictDocument):
     outcome: Literal["succeeded", "no_change", "superseded"] = "succeeded"
-    family: Literal["taste_profile", "taste_map", "learned_head"]
+    family: Literal["taste_profile", "taste_map", "ranking_residual"]
     version: str = Field(min_length=1, max_length=128)
     checksum: str = Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]+$")
     expected_generation: int = Field(ge=0)

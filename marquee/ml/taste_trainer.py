@@ -73,7 +73,6 @@ from marquee.ml.zeroshot import ZeroShotAxes
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 logger = logging.getLogger(__name__)
 
-_DEFAULT_TRAINING_DIR = Path(pipeline_settings.TRAINING_DATA_DIR)
 _IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff"}
 _YEAR_SUFFIX = re.compile(r"\s*\(\d{4}\)\s*$")
 _HASH_ARRAY_KEY = "poster_sha256s"
@@ -493,8 +492,9 @@ def main() -> None:
 def _run_build(args) -> Path:
     ns = getattr(args, "namespace", None) or get_namespace("movies")
     negative_dir = args.negative_dir
-    if negative_dir is None:
-        negative_dir = ns.negative_dir
+    if args.training_dir is None:
+        raise ValueError("canonical profile builds require an explicit frozen training directory")
+    asset_kinds = ("movie",) if ns.library == "movies" else ("show", "season")
 
     started = time.perf_counter()
     progress_callback = getattr(args, "progress_callback", None)
@@ -513,29 +513,19 @@ def _run_build(args) -> Path:
 
     path_to_kind: dict[Path, str] = {}
     paths = []
-    if args.training_dir is not None:
-        subdirs_found = False
-        for kind in ns.training_dirs:
-            subdir = args.training_dir / kind
-            if subdir.is_dir():
-                subdirs_found = True
-                kpaths = scan_images(subdir)
-                paths.extend(kpaths)
-                for p in kpaths:
-                    path_to_kind[p] = kind
-        if not subdirs_found:
-            paths = scan_images(args.training_dir)
-            for p in paths:
-                kind = next(iter(ns.training_dirs.keys())) if ns.training_dirs else "movie"
+    subdirs_found = False
+    for kind in asset_kinds:
+        subdir = args.training_dir / kind
+        if subdir.is_dir():
+            subdirs_found = True
+            kpaths = scan_images(subdir)
+            paths.extend(kpaths)
+            for p in kpaths:
                 path_to_kind[p] = kind
-    else:
-        paths = []
-        for kind, tdir in ns.training_dirs.items():
-            if tdir.is_dir():
-                kpaths = scan_images(tdir)
-                paths.extend(kpaths)
-                for p in kpaths:
-                    path_to_kind[p] = kind
+    if not subdirs_found:
+        paths = scan_images(args.training_dir)
+        for p in paths:
+            path_to_kind[p] = asset_kinds[0]
 
     embeddings, kept_paths = extract_embeddings(
         paths,

@@ -326,20 +326,20 @@ async def execute_poster_pipeline(
     library = "movies" if _media_type(request) == "movie" else "tv"
     try:
         async with context.session_factory() as session:
-            active_head = await resolve_active_publication(
-                session, family=f"learned_head:{library}"
+            active_residual = await resolve_active_publication(
+                session, family=f"ranking_residual:{library}"
             )
     except MlPublicationError:
-        active_head = None
-    if active_head is not None:
-        copied = await context.io.copy(active_head.path, workspace_dir / "head.npz")
-        if copied.sha256 != active_head.checksum:
-            (workspace_dir / "head.npz").unlink(missing_ok=True)
-            raise RuntimeError("active learned-head checksum changed while staging")
-        manifest["params"]["learned_head"] = {
-            "generation": active_head.generation,
-            "version": active_head.version,
-            "checksum": active_head.checksum,
+        active_residual = None
+    if active_residual is not None:
+        copied = await context.io.copy(active_residual.path, workspace_dir / "residual.npz")
+        if copied.sha256 != active_residual.checksum:
+            (workspace_dir / "residual.npz").unlink(missing_ok=True)
+            raise RuntimeError("active residual checksum changed while staging")
+        manifest["params"]["ranking_residual"] = {
+            "generation": active_residual.generation,
+            "version": active_residual.version,
+            "checksum": active_residual.checksum,
         }
     try:
         async with context.session_factory() as session:
@@ -358,6 +358,11 @@ async def execute_poster_pipeline(
             "version": active_profile.version,
             "checksum": active_profile.checksum,
         }
+    personalization_mode = "personalized" if active_profile is not None else "collecting"
+    manifest["params"]["personalization_mode"] = personalization_mode
+    if personalization_mode == "collecting":
+        (workspace_dir / "residual.npz").unlink(missing_ok=True)
+        manifest["params"].pop("ranking_residual", None)
 
     # The typed bridge maps runner stages/counts onto the registered progress
     # vocabulary (JMC6I §6.1): real done/total become the determinate current
@@ -404,6 +409,10 @@ async def execute_poster_pipeline(
     recommendation = (
         summary.get("recommendation") if isinstance(summary.get("recommendation"), dict) else None
     )
+    result_personalization_mode = str(
+        summary.get("personalization_mode")
+        or ("personalized" if recommendation is not None else personalization_mode)
+    )
     run_id = str(summary.get("run_id") or run_id)
     candidate_count = min(int(summary.get("candidate_count") or 0), _MAX_COUNT)
 
@@ -439,6 +448,13 @@ async def execute_poster_pipeline(
     poster_outcome, message, review_reason = _map_outcome(
         pipeline_status, recommendation, candidate_count
     )
+    if result_personalization_mode == "collecting" and int(counts.get("ranked", 0) or 0) > 0:
+        poster_outcome = "review_required"
+        message = str(
+            summary.get("message")
+            or "Marquee filtered unusable posters, but has not learned your preferences yet."
+        )
+        review_reason = "Choose a poster explicitly to teach Marquee your visual preferences."
     return PosterPipelineResultV1(
         outcome=poster_outcome,
         message=message,
@@ -447,6 +463,7 @@ async def execute_poster_pipeline(
             "pipeline_status": pipeline_status,
             "counts": {key: int(value) for key, value in counts.items() if isinstance(value, int)},
             "scorer_name": summary.get("scorer_name"),
+            "personalization_mode": result_personalization_mode,
             "review_reason": review_reason,
         },
         subject_label=request.title,

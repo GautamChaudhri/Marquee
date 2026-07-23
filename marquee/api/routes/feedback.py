@@ -14,6 +14,8 @@ configured exemplar folders or active publications in the API process.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 from datetime import UTC, datetime
 from typing import Annotated
@@ -44,15 +46,47 @@ from marquee.core.jobs.submission import (
 )
 from marquee.core.pipeline_config import pipeline_settings
 from marquee.core.poster_subjects import MEDIA_TYPE_MOVIE, MEDIA_TYPE_SEASON, PosterSubject
+from marquee.core.taste_preferences import (
+    activate_exemplar,
+    append_preference_event,
+    create_pending_exemplar,
+    pin_candidate_artifact,
+    revoke_exemplar,
+    schedule_profile_builds,
+)
 from marquee.database import get_db
-from marquee.ml import feedback_store
 from marquee.ml.namespaces import TasteNamespace, get_namespace
-from marquee.models import MlActivePublication, Movie, PipelineRun, Season, Series
+from marquee.ml.residual import build_residual_pairs
+from marquee.models import (
+    JobArtifact,
+    MlActivePublication,
+    Movie,
+    PipelineRun,
+    PosterPreferenceEvent,
+    Season,
+    Series,
+    TasteExemplar,
+)
 from marquee.pipeline.types import find_auto_pick_candidate
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/feedback", tags=["feedback"])
+
+GATE_REASON_KNOBS: dict[str, str] = {
+    "ocr_text_heavy": "OCR_MAX_RESIDUAL_BOXES",
+    "style_aesthetic_floor": "GATE_MIN_AESTHETIC",
+    "off_style_floor": "GATE_MIN_KNN_SIM",
+    "resolution_floor": "GATE_MIN_WIDTH",
+    "no_title": "OCR_REQUIRE_TITLE",
+    "no_text": "OCR_ACCEPT_NO_TEXT",
+}
+
+
+def _gate_snapshot() -> dict[str, object]:
+    return {
+        knob: getattr(pipeline_settings, knob) for knob in sorted(set(GATE_REASON_KNOBS.values()))
+    }
 
 
 class FeedbackRequest(BaseModel):
@@ -132,7 +166,7 @@ def _label_record(
         "rejection_reason": candidate.get("rejection_reason"),
         "scorer_name": run.scorer_name,
         "model_name": pipeline_settings.AI_MODEL,
-        "gate_snapshot": feedback_store.gate_snapshot(),
+        "gate_snapshot": _gate_snapshot(),
         "raw_features": raw,
         "normalized_features": normalized,
         "extended_features": extended,
@@ -185,7 +219,7 @@ def _ranking_record_v4(
         "negatives_added": negatives_added,
         "scorer_name": run.scorer_name,
         "model_name": pipeline_settings.AI_MODEL,
-        "gate_snapshot": feedback_store.gate_snapshot(),
+        "gate_snapshot": _gate_snapshot(),
         "media_type": run.media_type,
         "library": "movies" if run.media_type == MEDIA_TYPE_MOVIE else "tv",
         "series_id": run.series_id,
@@ -214,47 +248,66 @@ def _normalized_for(candidate: dict) -> dict | None:
     return normalized
 
 
-async def _schedule_learned_head_successor(
+async def _schedule_residual_successor(
     db: AsyncSession,
     namespace: TasteNamespace,
     *,
-    feedback_revision: str,
+    evidence_revision: str,
     mutation: str,
 ) -> dict:
-    if not pipeline_settings.HEAD_AUTO_RETRAIN:
-        return {"scheduled": False, "reason": "auto-retrain disabled", "job": None}
-    generation = await db.scalar(
-        select(MlActivePublication.generation).where(
-            MlActivePublication.family == f"learned_head:{namespace.library}"
-        )
+    events = list(
+        (
+            await db.scalars(
+                select(PosterPreferenceEvent)
+                .where(PosterPreferenceEvent.namespace == namespace.library)
+                .order_by(PosterPreferenceEvent.created_at, PosterPreferenceEvent.id)
+                .limit(100_000)
+            )
+        ).all()
     )
+    pairs = build_residual_pairs(events)
+    subjects = {pair.subject for pair in pairs}
+    if (
+        len(subjects) < pipeline_settings.RESIDUAL_MIN_SUBJECTS
+        or len(pairs) < pipeline_settings.RESIDUAL_MIN_PAIRS
+    ):
+        return {"scheduled": False, "reason": "residual evidence is below eligibility", "job": None}
+    publication = await db.get(MlActivePublication, f"ranking_residual:{namespace.library}")
+    generation = publication.generation if publication is not None else 0
+    if publication is not None:
+        artifact = await db.get(JobArtifact, publication.artifact_id)
+        metadata = artifact.artifact_metadata if artifact is not None else None
+        prior_subjects = int((metadata or {}).get("subject_count", 0))
+        prior_pairs = int((metadata or {}).get("pair_count", 0))
+        if len(subjects) - prior_subjects < 10 and len(pairs) - prior_pairs < 100:
+            return {"scheduled": False, "reason": "residual changes are coalescing", "job": None}
     if db.in_transaction():
         await db.commit()
     async with db.begin():
         result = await submit_job(
             db,
-            job_type="learned_head_train",
+            job_type="ranking_residual_train",
             request={
                 "library": namespace.library,
                 "expected_generation": int(generation or 0),
                 "seed": 0,
-                "feedback_revision": feedback_revision,
+                "evidence_revision": evidence_revision,
                 "mutation": mutation,
             },
             subject=SubjectLocator(
                 kind="model_profile_training",
-                reference=f"learned_head:{namespace.library}",
+                reference=f"ranking_residual:{namespace.library}",
             ),
             trigger=TriggerKind.MANUAL,
             initiator=Initiator(kind="system", identifier="feedback-api"),
             idempotency_key=(
-                f"learned_head_train:{namespace.library}:{mutation}:{feedback_revision}"
+                f"ranking_residual_train:{namespace.library}:{mutation}:{evidence_revision}"
             ),
             priority=50,
         )
     return {
         "scheduled": True,
-        "reason": "feedback revision committed",
+        "reason": "coalesced residual evidence revision committed",
         "job": submission_response(result).model_dump(mode="json"),
     }
 
@@ -340,6 +393,164 @@ async def _load_feedback_run(
     return run, archive, subject, by_name, auto
 
 
+def _canonical_subject(subject: PosterSubject) -> tuple[str, str, dict]:
+    reference = str(subject.id)
+    snapshot = {
+        "version": 1,
+        "kind": subject.media_type,
+        "id": subject.id,
+        "title": subject.title,
+        "tmdb_id": subject.tmdb_id,
+        "year": _subject_year(subject),
+    }
+    if subject.season is not None:
+        snapshot["series_id"] = subject.season.series_id
+        snapshot["season_number"] = subject.season.season_number
+    return subject.media_type, reference, snapshot
+
+
+def _canonical_exposure(archive: dict) -> tuple[list[dict], list[str]]:
+    exposed = []
+    for candidate in archive.get("candidates", [])[:100]:
+        identity = candidate.get("orig_filename")
+        if not isinstance(identity, str) or not identity:
+            continue
+        exposed.append(
+            {
+                "candidate_id": identity,
+                "artifact_id": candidate.get("artifact_id"),
+                "artifact_checksum": candidate.get("artifact_checksum"),
+                "baseline_rank": candidate.get("rank"),
+                "baseline_score": candidate.get("final_score"),
+                "normalized_features": candidate.get("normalized_features"),
+                "stage_reached": candidate.get("stage_reached"),
+                "rejection_reason": candidate.get("rejection_reason"),
+            }
+        )
+    return exposed, [row["candidate_id"] for row in exposed]
+
+
+def _canonical_feedback_key(body: FeedbackRequest) -> str:
+    if body.idempotency_key:
+        return f"feedback:{body.idempotency_key}"
+    payload = json.dumps(body.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
+    return f"feedback:{hashlib.sha256(payload.encode()).hexdigest()}"
+
+
+async def _append_canonical_feedback(
+    db: AsyncSession,
+    *,
+    body: FeedbackRequest,
+    run: PipelineRun,
+    archive: dict,
+    subject: PosterSubject,
+    pick: dict | None,
+    hated: list[dict],
+    deployment_job_id: str | None,
+) -> tuple[str, list[str]]:
+    """Persist explicit feedback in the canonical event/exemplar authority."""
+    namespace = "movies" if run.media_type == MEDIA_TYPE_MOVIE else "tv"
+    subject_kind, subject_reference, snapshot = _canonical_subject(subject)
+    exposed, presentation_order = _canonical_exposure(archive)
+    selected_id = pick.get("artifact_id") if pick is not None else None
+    action = {
+        "approve": "approval",
+        "override": "override",
+        "reject_all": "hate",
+        "rank": "rank",
+    }[body.action]
+    key = _canonical_feedback_key(body)
+    context = {
+        "version": 1,
+        "neutral_onboarding": False,
+        "selected_candidate": pick.get("orig_filename") if pick is not None else None,
+        "order": body.order or [],
+        "hated": [candidate.get("orig_filename") for candidate in hated],
+        "scorer": run.scorer_name,
+        "selected_features": _normalized_for(pick) if pick is not None else None,
+    }
+    event = await append_preference_event(
+        db,
+        idempotency_key=key,
+        namespace=namespace,
+        subject_kind=subject_kind,
+        subject_reference=subject_reference,
+        subject_snapshot=snapshot,
+        action=action,
+        exposed_candidates=exposed,
+        presentation_order=presentation_order,
+        training_context=context,
+        confidence="strong" if body.action in {"override", "rank", "reject_all"} else "weak",
+        initiator={"kind": "api", "identifier": "feedback"},
+        pipeline_run_id=run.run_id,
+        candidate_artifact_id=selected_id if isinstance(selected_id, int) else None,
+        supersedes_event_id=run.feedback_event_id,
+    )
+    exemplar_ids: list[str] = []
+    if pick is not None and deployment_job_id is not None and isinstance(selected_id, int):
+        exemplar = await create_pending_exemplar(
+            db,
+            event=event,
+            polarity="positive",
+            evidence_source="explicit_feedback",
+            evidence_weight=1.0 if body.action in {"override", "rank"} else 0.75,
+            deployment_job_id=deployment_job_id,
+        )
+        exemplar_ids.append(exemplar.id)
+
+    for index, candidate in enumerate(hated):
+        artifact_id = candidate.get("artifact_id")
+        if not isinstance(artifact_id, int):
+            continue
+        source = await db.get(JobArtifact, artifact_id)
+        if source is None or run.job_id is None or run.attempt_id is None or run.fence_token is None:
+            continue
+        hate_event = await append_preference_event(
+            db,
+            idempotency_key=f"{key}:hate:{index}:{candidate.get('orig_filename', '')}"[:160],
+            namespace=namespace,
+            subject_kind=subject_kind,
+            subject_reference=subject_reference,
+            subject_snapshot=snapshot,
+            action="hate",
+            exposed_candidates=exposed,
+            presentation_order=presentation_order,
+            training_context={**context, "hated_candidate": candidate.get("orig_filename")},
+            confidence="explicit",
+            initiator={"kind": "api", "identifier": "feedback"},
+            pipeline_run_id=run.run_id,
+            candidate_artifact_id=artifact_id,
+        )
+        negative = await create_pending_exemplar(
+            db,
+            event=hate_event,
+            polarity="negative",
+            evidence_source="explicit_hate",
+            evidence_weight=1.0,
+            deployment_job_id=run.job_id,
+        )
+        pinned = await pin_candidate_artifact(
+            source,
+            deployment_job_id=run.job_id,
+            deployment_attempt_id=run.attempt_id,
+            deployment_fence_token=run.fence_token,
+        )
+        await activate_exemplar(
+            db,
+            exemplar_id=negative.id,
+            retained_artifact_id=pinned.id,
+            deployment_result={"outcome": "succeeded", "validated": True, "source": "explicit_hate"},
+        )
+        exemplar_ids.append(negative.id)
+    if hated:
+        await schedule_profile_builds(
+            db,
+            namespaces=(namespace,),
+            initiator_identifier="feedback-api",
+        )
+    return event.id, exemplar_ids
+
+
 async def apply_feedback_request(
     body: FeedbackRequest,
     _request: Request,
@@ -365,6 +576,7 @@ async def apply_feedback_request(
     pick: dict | None = None
     favorites_exemplars: list[str] = []
     negatives_added: list[str] = []
+    canonical_hated: list[dict] = []
     deployment_candidate: PosterCandidateSelectionV1 | None = None
 
     if body.action == "reject_all":
@@ -386,6 +598,7 @@ async def apply_feedback_request(
                 extended=ext,
             )
         )
+        canonical_hated = [auto]
 
     elif body.action in ("approve", "override"):
         if body.action == "approve":
@@ -493,6 +706,7 @@ async def apply_feedback_request(
 
         order_cands = _resolve_all(order_in)
         hated_cands = _resolve_all(hated_in)
+        canonical_hated = hated_cands
 
         # order ∪ hated must cover every ranked candidate — there's no third
         # "indifferent" bucket anymore; an untouched candidate just sits in
@@ -567,8 +781,6 @@ async def apply_feedback_request(
     else:
         raise HTTPException(status_code=400, detail=f"Unknown action {body.action!r}")
 
-    feedback_store.append_labels(records, namespace)
-
     # Deploy the chosen poster to the media folder (approve/override only).
     deployment_job = None
     if deploy_requested and pick is not None:
@@ -588,28 +800,39 @@ async def apply_feedback_request(
         except SubmissionError as exc:
             raise HTTPException(status_code=422, detail=exc.code) from exc
 
-    # Mark the run reviewed.
-    run.feedback_event_id = event_id
+    canonical_event_id, canonical_exemplars = await _append_canonical_feedback(
+        db,
+        body=body,
+        run=run,
+        archive=archive,
+        subject=subject,
+        pick=pick,
+        hated=canonical_hated,
+        deployment_job_id=deployment_job.job_id if deployment_job is not None else None,
+    )
+
+    # Mark the run reviewed by its append-only canonical event.
+    run.feedback_event_id = canonical_event_id
     await db.commit()
 
-    head_info = await _schedule_learned_head_successor(
+    residual_info = await _schedule_residual_successor(
         db,
         namespace,
-        feedback_revision=event_id,
+        evidence_revision=canonical_event_id,
         mutation="apply",
     )
 
     gate_override = _gate_override_for(pick, namespace) if pick is not None else None
 
     return {
-        "event_id": event_id,
+        "event_id": canonical_event_id,
         "labels_written": len(records),
-        "exemplar_added": exemplar_added,
+        "exemplar_added": canonical_exemplars[0] if canonical_exemplars else exemplar_added,
         "favorites_exemplars": favorites_exemplars,
         "negatives_added": negatives_added,
         "remapped_to": remapped_to,
         "gate_override": gate_override,
-        "head": head_info,
+        "residual": residual_info,
         "deployment_job": (
             submission_response(deployment_job).model_dump(mode="json")
             if deployment_job is not None
@@ -631,7 +854,7 @@ async def submit_feedback(
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
     result = await apply_feedback_request(body, request, db)
-    if result["deployment_job"] is not None or result["head"]["job"] is not None:
+    if result["deployment_job"] is not None or result["residual"]["job"] is not None:
         response.status_code = 202
     return result
 
@@ -642,6 +865,7 @@ async def undo_feedback(
     response: Response,
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
+    source = await db.get(PosterPreferenceEvent, body.event_id)
     runs = (
         (
             await db.execute(
@@ -651,53 +875,93 @@ async def undo_feedback(
         .scalars()
         .all()
     )
-    namespace = None
-    if runs:
-        namespace, _ = _namespace_and_kind(runs[0].media_type)
-        removed = feedback_store.remove_event(body.event_id, namespace)
-    else:
-        removed = []
-        for library in ("movies", "tv"):
-            probe_namespace = get_namespace(library)
-            removed = feedback_store.remove_event(body.event_id, probe_namespace)
-            if removed:
-                namespace = probe_namespace
-                break
-    if not removed:
-        raise HTTPException(status_code=404, detail=f"No labels for event {body.event_id}")
+    namespace = get_namespace(source.namespace) if source is not None else None
+    if source is None:
+        raise HTTPException(status_code=404, detail=f"No canonical feedback event {body.event_id}")
+
+    revoked: list[str] = []
+    if source is not None:
+        child_events = list(
+            (
+                await db.scalars(
+                    select(PosterPreferenceEvent).where(
+                        PosterPreferenceEvent.idempotency_key.like(
+                            f"{source.idempotency_key}:hate:%"
+                        )
+                    )
+                )
+            ).all()
+        )
+        for revoked_source in [source, *child_events]:
+            undo = await append_preference_event(
+                db,
+                idempotency_key=f"feedback-undo:{revoked_source.id}",
+                namespace=revoked_source.namespace,
+                subject_kind=revoked_source.subject_kind,
+                subject_reference=revoked_source.subject_reference,
+                subject_snapshot=revoked_source.subject_snapshot,
+                action="undo",
+                exposed_candidates=revoked_source.exposed_candidates,
+                presentation_order=revoked_source.presentation_order,
+                training_context={"version": 1, "undo_event_id": revoked_source.id},
+                confidence="explicit",
+                initiator={"kind": "api", "identifier": "feedback-undo"},
+                pipeline_run_id=revoked_source.pipeline_run_id,
+                candidate_artifact_id=revoked_source.candidate_artifact_id,
+                supersedes_event_id=revoked_source.id,
+            )
+            revoked_source.revoked_event_id = undo.id
+            exemplars = list(
+                (
+                    await db.scalars(
+                        select(TasteExemplar).where(
+                            TasteExemplar.preference_event_id == revoked_source.id
+                        )
+                    )
+                ).all()
+            )
+            for exemplar in exemplars:
+                await revoke_exemplar(
+                    db, exemplar_id=exemplar.id, event=undo, reason="explicit undo"
+                )
+                revoked.append(exemplar.id)
 
     # Clear the reviewed marker on any run that pointed at this event.
     for run in runs:
         run.feedback_event_id = None
+    if source is not None and source.namespace in {"movies", "tv"}:
+        await schedule_profile_builds(
+            db,
+            namespaces=(source.namespace,),
+            initiator_identifier="feedback-undo-api",
+        )
     await db.commit()
 
-    head_info = (
-        await _schedule_learned_head_successor(
+    residual_info = (
+        await _schedule_residual_successor(
             db,
             namespace,
-            feedback_revision=body.event_id,
+            evidence_revision=body.event_id,
             mutation="undo",
         )
         if namespace is not None
         else {"scheduled": False, "reason": "namespace not resolved", "job": None}
     )
-    if head_info["job"] is not None:
+    if residual_info["job"] is not None:
         response.status_code = 202
     return {
-        "removed_labels": len(removed),
-        "exemplars_removed": [],
+        "removed_labels": 0,
+        "exemplars_removed": revoked,
         "negatives_removed": [],
-        "head": head_info,
+        "residual": residual_info,
     }
 
 
 def _gate_override_for(pick: dict, namespace: TasteNamespace) -> dict | None:
     reason = (pick.get("rejection_reason") or "").split(":", 1)[0]
-    if reason not in feedback_store.GATE_REASON_KNOBS:
+    if reason not in GATE_REASON_KNOBS:
         return None
-    alerts = {a["gate"]: a for a in feedback_store.gate_override_alerts(namespace)}
-    alert = alerts.get(reason)
     return {
         "reason": reason,
-        "count_at_current_threshold": alert["overrides"] if alert else 1,
+        "count_at_current_threshold": 1,
     }

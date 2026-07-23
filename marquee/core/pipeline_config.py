@@ -12,11 +12,6 @@ _ML_DIR = _PROJECT_ROOT / "marquee" / "ml"
 _MODELS_DIR = _ML_DIR / "models"
 _DATA_DIR = _PROJECT_ROOT / "data"
 _DATA_ML_DIR = _DATA_DIR / "ml"
-_DATA_FEEDBACK_DIR = _DATA_DIR / "feedback"
-_DATA_TRAINING_DIR = _DATA_DIR / "training"
-# Shipped (tracked) onboarding resources: the bundled taste test + starter
-# profile seed. Distinct from data/ (gitignored runtime state).
-_ONBOARDING_DIR = _PROJECT_ROOT / "marquee" / "onboarding"
 
 _TMDB_SIZES = {"w92", "w154", "w185", "w342", "w500", "w780", "original"}
 
@@ -90,74 +85,19 @@ class PipelineSettings(BaseSettings):
     # Zero-shot CLIP axes artifact (text-prompt directions). Built once via
     # `python -m marquee.ml.zeroshot`; skipped with a warning if absent.
     ZEROSHOT_AXES_PATH: Path = _DATA_ML_DIR / "zeroshot_axes.clip-vit-b-32.npz"
-    # Scorer selection: "auto" uses the learned head when a trained artifact
-    # exists, otherwise the Phase-0 weighted scorer. "weighted"/"learned" force.
+    # Residual artifacts are supplied only through immutable publication staging.
     SCORER: str = "auto"
-    LEARNED_HEAD_PATH: Path = _DATA_ML_DIR / "learned_head.clip-vit-b-32.npz"
-    LEARNED_HEAD_TV_PATH: Path = _DATA_ML_DIR / "learned_head.tv.clip-vit-b-32.npz"
 
     # ── Feedback loop (design 09) ─────────────────────────────────────
-    # JSONL of self-contained labels written by the feedback endpoint. The
-    # single training source of truth (append-only, hand-editable).
-    FEEDBACK_LABELS_PATH: Path = _DATA_FEEDBACK_DIR / "labels.jsonl"
-    # Directory of disliked exemplars (negative taste). Copied into here when
-    # FEEDBACK_NEGATIVES_FROM_OVERRIDES is on.
-    NEGATIVE_DATA_DIR: Path = _DATA_TRAINING_DIR / "negative"
-    NEGATIVE_DATA_TV_DIR: Path = _DATA_TRAINING_DIR / "negative_tv"
-    # Source-of-truth folder for positive exemplars (the 430 hand-picked +
-    # any approved/overridden posters appended by the feedback loop).
-    TRAINING_DATA_DIR: Path = _DATA_DIR / "taste_seeding" / "movies"
-    TV_TRAINING_SHOW_DIR: Path = _DATA_DIR / "taste_seeding" / "shows"
-    TV_TRAINING_SEASON_DIR: Path = _DATA_DIR / "taste_seeding" / "seasons"
-    # After this many overrides of the same gate (at the current threshold),
-    # the taste status surfaces a tuning suggestion.
     FEEDBACK_GATE_ALERT_THRESHOLD: int = 5
-    # When on, the rank-1 poster the user overrode is copied to NEGATIVE_DATA_DIR.
-    FEEDBACK_NEGATIVES_FROM_OVERRIDES: bool = False
-    # Approve/override deploys the selected poster to the media folder by default.
     FEEDBACK_DEPLOY_DEFAULT: bool = True
-    # Learned-head activation thresholds (design 09 §10). HEAD_MIN_MOVIES must
-    # stay <= ONBOARDING_RANK_TEST_MIN so a completed rank test always activates.
-    HEAD_MIN_LABELS: int = 150
-    HEAD_MIN_MOVIES: int = 10
-    # When True, every approve/override retrains the learned head inline. Default
-    # False: a pick only *accumulates* into the label/exemplar storage; the head
-    # is (re)trained on demand via the "Key Art Engine → Train" button, which
-    # enqueues the learned_head_train job through the job manager.
-    HEAD_AUTO_RETRAIN: bool = False
-    # How the learned head is trained from the labels file:
-    #   "pairwise"  — RankNet on within-movie preference pairs derived from v3
-    #                 ranking events (Favorites/Hate/Indifferent). The default:
-    #                 it matches the task (rank within a movie) and removes the
-    #                 cross-movie scale confound of pointwise 0/1 labels.
-    #   "pointwise" — legacy logistic regression over v1/v2 approve/override
-    #                 labels (kept for backward-compat / debugging).
-    HEAD_TRAIN_MODE: str = "pairwise"
-    # Pairwise-mode activation floor: minimum derived preference pairs (paired
-    # with HEAD_MIN_MOVIES) before the head trains/activates.
-    HEAD_MIN_PAIRS: int = 200
-    # Weight applied to *implicit* preference pairs (favorite↔indifferent and
-    # indifferent↔hate) relative to explicit favorite↔hate / between-tier pairs
-    # (weight 1.0). The user actively stated favorites and hates; "indifferent"
-    # is only inferred from what they left untouched, so it counts for less.
-    FEEDBACK_INDIFF_HATE_PAIR_WEIGHT: float = 0.3
+    RESIDUAL_MIN_SUBJECTS: int = 25
+    RESIDUAL_MIN_PAIRS: int = 200
     # A hated poster becomes a *negative exemplar* (taste-profile Channel 1) only
     # when the pipeline ranked it this high or better — i.e. a hard negative the
     # model was confidently wrong about. Easy negatives (ranked worse, or never
     # ranked) feed only the pairwise order, never the negative exemplar set.
     FEEDBACK_HARD_NEGATIVE_RANK_MAX: int = 10
-
-    # ── Cold-start onboarding (design 20) ─────────────────────────────
-    # Runtime onboarding state (progress + complete flag). data/ is gitignored.
-    ONBOARDING_STATE_PATH: Path = _DATA_DIR / "onboarding" / "state.json"
-    # Shipped resources: bundled taste test + tiny starter profile seed.
-    ONBOARDING_TASTE_TEST_DIR: Path = _ONBOARDING_DIR / "taste_test"
-    ONBOARDING_SEED_PROFILE_PATH: Path = _ONBOARDING_DIR / "seed" / "taste_profile.seed.npz"
-    # The "Rank Test": min to mark complete + activate, the encouraged goal, and
-    # the hard cap past which no more movies are offered.
-    ONBOARDING_RANK_TEST_MIN: int = 15
-    ONBOARDING_RANK_TEST_GOAL: int = 25
-    ONBOARDING_RANK_TEST_MAX: int = 40
 
     # ── Batch poster pipeline ─────────────────────────────────────────
     # Upper bound on movies admitted to a single cross-movie batch run, so an
@@ -415,10 +355,6 @@ class PipelineSettings(BaseSettings):
             self.TASTE_PROFILE_TV_PATH = _DATA_ML_DIR / f"taste_profile.tv.{self.AI_MODEL}.npz"
         if self.ZEROSHOT_AXES_PATH == _DATA_ML_DIR / "zeroshot_axes.clip-vit-b-32.npz":
             self.ZEROSHOT_AXES_PATH = _DATA_ML_DIR / f"zeroshot_axes.{self.AI_MODEL}.npz"
-        if self.LEARNED_HEAD_PATH == _DATA_ML_DIR / "learned_head.clip-vit-b-32.npz":
-            self.LEARNED_HEAD_PATH = _DATA_ML_DIR / f"learned_head.{self.AI_MODEL}.npz"
-        if self.LEARNED_HEAD_TV_PATH == _DATA_ML_DIR / "learned_head.tv.clip-vit-b-32.npz":
-            self.LEARNED_HEAD_TV_PATH = _DATA_ML_DIR / f"learned_head.tv.{self.AI_MODEL}.npz"
         for field_name in (
             "CLIP_MODEL_PATH",
             "AESTHETIC_MODEL_PATH",
@@ -426,33 +362,12 @@ class PipelineSettings(BaseSettings):
             "TASTE_PROFILE_PATH",
             "TASTE_PROFILE_TV_PATH",
             "ZEROSHOT_AXES_PATH",
-            "LEARNED_HEAD_PATH",
-            "LEARNED_HEAD_TV_PATH",
-            "FEEDBACK_LABELS_PATH",
-            "NEGATIVE_DATA_DIR",
-            "NEGATIVE_DATA_TV_DIR",
-            "TRAINING_DATA_DIR",
-            "TV_TRAINING_SHOW_DIR",
-            "TV_TRAINING_SEASON_DIR",
             "EMBEDDING_CACHE_DIR",
         ):
             path = getattr(self, field_name)
             if not path.is_absolute():
                 setattr(self, field_name, (_PROJECT_ROOT / path).resolve())
 
-        # Ensure training and negative directories exist, including writing .gitkeep
-        for dir_field in (
-            "TRAINING_DATA_DIR",
-            "TV_TRAINING_SHOW_DIR",
-            "TV_TRAINING_SEASON_DIR",
-            "NEGATIVE_DATA_DIR",
-            "NEGATIVE_DATA_TV_DIR",
-        ):
-            p = getattr(self, dir_field)
-            p.mkdir(parents=True, exist_ok=True)
-            gitkeep = p / ".gitkeep"
-            if not gitkeep.exists():
-                gitkeep.touch()
         if self.K_NEIGHBORS < 1:
             raise ValueError("K_NEIGHBORS must be at least 1")
         if self.KNN_WEIGHTING not in ("mean", "softmax"):
@@ -485,28 +400,14 @@ class PipelineSettings(BaseSettings):
             raise ValueError("OFFICIAL_PICK_FALLBACK must be 'ranked' or 'largest_stack'")
         if self.DINO_ENABLED not in ("auto", "on", "off"):
             raise ValueError("DINO_ENABLED must be 'auto', 'on', or 'off'")
-        if self.SCORER not in ("auto", "weighted", "learned"):
-            raise ValueError("SCORER must be 'auto', 'weighted', or 'learned'")
-        if self.HEAD_TRAIN_MODE not in ("pairwise", "pointwise"):
-            raise ValueError("HEAD_TRAIN_MODE must be 'pairwise' or 'pointwise'")
-        if self.HEAD_MIN_PAIRS < 1:
-            raise ValueError("HEAD_MIN_PAIRS must be at least 1")
-        if not 0.0 <= self.FEEDBACK_INDIFF_HATE_PAIR_WEIGHT <= 1.0:
-            raise ValueError("FEEDBACK_INDIFF_HATE_PAIR_WEIGHT must be in [0, 1]")
+        if self.SCORER not in ("auto", "weighted", "residual"):
+            raise ValueError("SCORER must be 'auto', 'weighted', or 'residual'")
+        if self.RESIDUAL_MIN_SUBJECTS < 1:
+            raise ValueError("RESIDUAL_MIN_SUBJECTS must be at least 1")
+        if self.RESIDUAL_MIN_PAIRS < 1:
+            raise ValueError("RESIDUAL_MIN_PAIRS must be at least 1")
         if self.FEEDBACK_HARD_NEGATIVE_RANK_MAX < 0:
             raise ValueError("FEEDBACK_HARD_NEGATIVE_RANK_MAX cannot be negative")
-        if not (
-            0
-            < self.ONBOARDING_RANK_TEST_MIN
-            <= self.ONBOARDING_RANK_TEST_GOAL
-            <= self.ONBOARDING_RANK_TEST_MAX
-        ):
-            raise ValueError("ONBOARDING_RANK_TEST_MIN <= GOAL <= MAX must hold (all > 0)")
-        if self.HEAD_MIN_MOVIES > self.ONBOARDING_RANK_TEST_MIN:
-            raise ValueError(
-                "HEAD_MIN_MOVIES must be <= ONBOARDING_RANK_TEST_MIN so a completed "
-                "rank test always activates the head"
-            )
         if self.CALIBRATION_BANDWIDTH_SCALE <= 0:
             raise ValueError("CALIBRATION_BANDWIDTH_SCALE must be positive")
         if self.CALIBRATION_MIN_SAMPLES < 2:

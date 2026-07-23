@@ -42,7 +42,7 @@ from marquee.core.jobs.runner_protocol import (
     decode_payload,
     encode_frame,
 )
-from marquee.ml.learned_head import LogisticHead
+from marquee.ml.residual import ResidualArtifact
 
 
 def _launcher(tmp_path: Path, **kwargs: object) -> tuple[ProcessLauncher, Path]:
@@ -170,50 +170,60 @@ async def test_runner_records_identity_and_is_process_group_leader(tmp_path: Pat
 
 
 @pytest.mark.asyncio
-async def test_learned_head_trains_native_artifact_from_feedback_snapshot(tmp_path: Path) -> None:
+async def test_ranking_residual_trains_from_canonical_event_snapshot(tmp_path: Path) -> None:
     launcher, work = _launcher(tmp_path)
-    rows = []
-    for movie_id, winner_value in ((1, 1.0), (2, 2.0)):
-        rows.append(
-            {
-                "v": 4,
-                "type": "ranking",
-                "movie_id": movie_id,
-                "order": [
-                    {
-                        "orig_filename": f"winner-{movie_id}.jpg",
-                        "baseline_rank": 2,
-                        "normalized_features": {"x": winner_value},
-                    },
-                    {
-                        "orig_filename": f"loser-{movie_id}.jpg",
-                        "baseline_rank": 1,
-                        "normalized_features": {"x": 0.0},
-                    },
-                ],
+    rows = [
+        {
+            "action": "approval",
+            "subject_kind": "movie",
+            "subject_reference": str(subject),
+            "revoked_event_id": None,
+            "exposed_candidates": [
+                {
+                    "candidate_id": "winner",
+                    "baseline_rank": 1,
+                    "baseline_score": 0.3,
+                    "normalized_features": {"x": 1.0},
+                },
+                {
+                    "candidate_id": "loser",
+                    "baseline_rank": 2,
+                    "baseline_score": 0.5,
+                    "normalized_features": {"x": 0.0},
+                },
+            ],
+            "training_context": {
+                "neutral_onboarding": False,
+                "selected_candidate": "winner",
+                "order": [],
                 "hated": [],
-            }
-        )
-    (work / "feedback.jsonl").write_text("".join(f"{json.dumps(row)}\n" for row in rows))
+            },
+        }
+        for subject in range(30)
+        for _pair in range(10)
+    ]
+    (work / "preference-events.json").write_text(json.dumps(rows))
 
     outcome = await run_internal_operation(
         launcher,
-        operation=RunnerOperation.LEARNED_HEAD,
+        operation=RunnerOperation.RANKING_RESIDUAL,
         manifest={
             "params": {
                 "library": "movies",
-                "mode": "pairwise",
-                "min_movies": 2,
-                "min_pairs": 2,
+                "baseline_signature": "baseline-v1",
+                "profile_checksum": "a" * 64,
+                "evidence_revision": "b" * 64,
+                "min_subjects": 25,
+                "min_pairs": 200,
             }
         },
         resolve_output=lambda key: work / key,
     )
 
     assert outcome.outcome == OUTCOME_SUCCEEDED, outcome.error
-    assert outcome.summary["feedback_rows"] == 2
-    assert outcome.summary["n_pairs"] == 2
-    assert LogisticHead.load(work / "head.npz").feature_names == ["x"]
+    assert outcome.summary["event_rows"] == 300
+    assert outcome.summary["pairs"] == 300
+    assert ResidualArtifact.load(work / "residual.npz").feature_names == ["x"]
 
 
 @pytest.mark.asyncio

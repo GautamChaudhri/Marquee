@@ -18,7 +18,7 @@ import numpy as np
 
 ArtifactKind = Literal[
     "taste_profile", "taste_profile_tv",
-    "learned_head", "learned_head_tv",
+    "ranking_residual",
     "zeroshot_axes", "taste_map"
 ]
 
@@ -40,8 +40,7 @@ class ArtifactMigrationResult:
 _STRING_LIST_KEYS: dict[ArtifactKind, set[str]] = {
     "taste_profile": {"poster_names", "neg_poster_names", CALIB_NAMES_KEY, "asset_kinds"},
     "taste_profile_tv": {"poster_names", "neg_poster_names", CALIB_NAMES_KEY, "asset_kinds"},
-    "learned_head": {"feature_names"},
-    "learned_head_tv": {"feature_names"},
+    "ranking_residual": {"feature_names"},
     "zeroshot_axes": {"axis_names"},
     "taste_map": {"poster_names", "cluster_names"},
 }
@@ -49,8 +48,14 @@ _STRING_LIST_KEYS: dict[ArtifactKind, set[str]] = {
 _SCALAR_STRING_KEYS: dict[ArtifactKind, set[str]] = {
     "taste_profile": {"model_name", "dino_model_name"},
     "taste_profile_tv": {"model_name", "dino_model_name"},
-    "learned_head": {"model_name", "trained_at"},
-    "learned_head_tv": {"model_name", "trained_at"},
+    "ranking_residual": {
+        "namespace",
+        "baseline_signature",
+        "profile_checksum",
+        "evidence_revision",
+        "evaluation_json",
+        "trained_at",
+    },
     "zeroshot_axes": {"model_name"},
     "taste_map": {"projection_method", "computed_at"},
 }
@@ -58,8 +63,7 @@ _SCALAR_STRING_KEYS: dict[ArtifactKind, set[str]] = {
 _JSON_STRING_ARRAY_KEYS: dict[ArtifactKind, set[str]] = {
     "taste_profile": {"genres"},
     "taste_profile_tv": {"genres"},
-    "learned_head": set(),
-    "learned_head_tv": set(),
+    "ranking_residual": set(),
     "zeroshot_axes": set(),
     "taste_map": {"genres"},
 }
@@ -67,22 +71,18 @@ _JSON_STRING_ARRAY_KEYS: dict[ArtifactKind, set[str]] = {
 _REQUIRED_KEYS: dict[ArtifactKind, set[str]] = {
     "taste_profile": {"embeddings", "poster_names", "centroid_emb", "model_name"},
     "taste_profile_tv": {"embeddings", "poster_names", "centroid_emb", "model_name"},
-    "learned_head": {
+    "ranking_residual": {
+        "namespace",
         "feature_names",
         "weights",
         "bias",
-        "model_name",
-        "n_samples",
-        "train_accuracy",
-        "trained_at",
-    },
-    "learned_head_tv": {
-        "feature_names",
-        "weights",
-        "bias",
-        "model_name",
-        "n_samples",
-        "train_accuracy",
+        "alpha",
+        "delta_max",
+        "baseline_signature",
+        "profile_checksum",
+        "evidence_revision",
+        "seed",
+        "evaluation_json",
         "trained_at",
     },
     "zeroshot_axes": {"axis_names", "directions", "model_name"},
@@ -92,8 +92,7 @@ _REQUIRED_KEYS: dict[ArtifactKind, set[str]] = {
 _REBUILD_HINTS: dict[ArtifactKind, str] = {
     "taste_profile": "Rebuild it with `python -m marquee.ml.taste_trainer`.",
     "taste_profile_tv": "Rebuild it with `python -m marquee.ml.taste_trainer`.",
-    "learned_head": "Retrain it with `python -m marquee.ml.head_trainer`.",
-    "learned_head_tv": "Retrain it with `python -m marquee.ml.head_trainer`.",
+    "ranking_residual": "Retrain it with the canonical ranking_residual_train job.",
     "zeroshot_axes": "Rebuild it with `python -m marquee.ml.zeroshot`.",
     "taste_map": "Rebuild it by reloading the taste map endpoint or on the next app start.",
 }
@@ -246,11 +245,11 @@ def validate_payload(kind: ArtifactKind, payload: dict[str, np.ndarray]) -> None
                 raise ArtifactMigrationError(
                     "dino_embeddings count does not match CLIP exemplar count"
                 )
-    elif kind == "learned_head":
+    elif kind == "ranking_residual":
         feature_names = decode_unicode_list(payload["feature_names"])
         weights = np.asarray(payload["weights"], dtype=np.float64)
         if weights.ndim != 1:
-            raise ArtifactMigrationError(f"Invalid learned-head weight shape: {weights.shape}")
+            raise ArtifactMigrationError(f"Invalid ranking weight shape: {weights.shape}")
         if len(feature_names) != weights.shape[0]:
             raise ArtifactMigrationError("feature_names length does not match weights")
     elif kind == "zeroshot_axes":

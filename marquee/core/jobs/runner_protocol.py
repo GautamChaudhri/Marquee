@@ -97,7 +97,7 @@ class RunnerOperation(StrEnum):
     TASTE_PROFILE = "taste_profile"
     TASTE_MAP = "taste_map"
     ENRICHMENT = "enrichment"
-    LEARNED_HEAD = "learned_head"
+    RANKING_RESIDUAL = "ranking_residual"
 
 
 class ProtocolError(RuntimeError):

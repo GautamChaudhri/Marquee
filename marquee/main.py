@@ -73,9 +73,6 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("API-key authentication enabled.")
 
-    # Legacy artifact conversion is an explicit operator action via
-    # `python -m marquee.ml.migrate_artifacts`; startup never rewrites artifacts.
-
     # Radarr
     if settings.radarr_configured:
         from marquee.core.arr_clients.radarr_client import RadarrClient

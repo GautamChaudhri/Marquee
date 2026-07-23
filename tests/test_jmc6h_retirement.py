@@ -70,7 +70,7 @@ def test_retired_runtime_routes_and_startup_hooks_are_absent() -> None:
     )
     assert "migrate_legacy_runtime_state" not in startup
     assert "migrate_live_artifacts(" not in startup
-    assert (ROOT / "marquee/ml/migrate_artifacts.py").is_file()
+    assert not (ROOT / "marquee/ml/migrate_artifacts.py").exists()
 
 
 def test_surviving_algorithms_live_in_pure_purpose_named_modules() -> None:

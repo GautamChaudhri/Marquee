@@ -4,13 +4,20 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 from pathlib import Path
 
-from marquee.core.jobs.artifact_service import register_physical_artifact
+from sqlalchemy import select
+
+from marquee.core.jobs.artifact_service import (
+    physical_artifact_file,
+    register_physical_artifact,
+    verify_physical_artifact,
+)
 from marquee.core.jobs.delivery import ExecutionContext, register_execution_handler
 from marquee.core.jobs.documents import (
-    LearnedHeadTrainRequestV1,
     MlPublicationResultV1,
+    RankingResidualTrainRequestV1,
     TasteEnrichRequestV1,
     TasteMapRequestV1,
     TasteRebuildRequestV1,
@@ -23,6 +30,14 @@ from marquee.core.jobs.ml_publication import (
     resolve_active_publication,
 )
 from marquee.core.jobs.runner_progress import RunnerProgressBridge
+from marquee.core.pipeline_config import pipeline_settings
+from marquee.ml.residual import ResidualArtifact, baseline_signature
+from marquee.models import (
+    JobArtifact,
+    PosterPreferenceEvent,
+    TasteExemplar,
+    TasteProfileRevision,
+)
 
 # Runner-native trainer stages -> the registered ML progress vocabulary (JMC6I
 # §6.2). The learned-head operation deliberately has no bridge here: its progress
@@ -81,7 +96,12 @@ def _validate_taste_profile(path: Path) -> None:
 
 
 async def _publish_native_taste_profile(
-    context: ExecutionContext, *, library: str, expected_generation: int, seed: int
+    context: ExecutionContext,
+    *,
+    library: str,
+    expected_generation: int,
+    seed: int,
+    revision_digest: str | None = None,
 ) -> dict[str, object]:
     """Run the real taste trainer in the contained runner, then validate/register/activate."""
     from marquee.core.jobs.internal_runner_host import (  # noqa: PLC0415
@@ -96,12 +116,62 @@ async def _publish_native_taste_profile(
 
     family = "taste_profile"
     workspace_dir = _ml_workspace_dir(context)
+    source_mode = "library"
+    if revision_digest is not None:
+        async with context.session_factory() as session:
+            revision = await session.get(TasteProfileRevision, revision_digest)
+            if revision is None or revision.positive_subjects < 50:
+                raise RuntimeError("canonical taste revision is unavailable or below threshold")
+            frozen = list(
+                (
+                    await session.scalars(
+                        select(TasteExemplar).where(
+                            TasteExemplar.id.in_(revision.exemplar_ids),
+                        )
+                    )
+                ).all()
+            )
+            by_id = {row.id: row for row in frozen}
+            if len(by_id) != len(revision.exemplar_ids) or any(
+                by_id.get(exemplar_id) is None
+                or by_id[exemplar_id].checksum != checksum
+                for exemplar_id, checksum in zip(
+                    revision.exemplar_ids, revision.exemplar_checksums, strict=True
+                )
+            ):
+                raise RuntimeError("canonical taste revision no longer matches frozen evidence")
+            exemplars = [
+                row
+                for row in frozen
+                if row.namespace in {"global", library} and row.polarity == "positive"
+            ]
+            artifacts = {
+                row.id: await session.get(JobArtifact, row.retained_artifact_id)
+                for row in exemplars
+                if row.retained_artifact_id is not None
+            }
+        if len({(row.subject_kind, row.subject_reference) for row in exemplars}) < 50:
+            raise RuntimeError("canonical taste revision lacks enough applicable positive subjects")
+        training_dir = workspace_dir / "training"
+        training_dir.mkdir(parents=True, exist_ok=True)
+        for exemplar in sorted(exemplars, key=lambda row: row.id):
+            retained = artifacts.get(exemplar.id)
+            if retained is None or retained.checksum != exemplar.checksum:
+                raise RuntimeError("canonical taste exemplar artifact lineage is invalid")
+            await verify_physical_artifact(retained)
+            _boundary, classified = physical_artifact_file(retained)
+            source_path = classified.root.resolved().joinpath(*classified.key.parts)
+            copied = await context.io.copy(source_path, training_dir / f"{exemplar.id}.jpg")
+            if copied.sha256 != exemplar.checksum:
+                raise RuntimeError("canonical taste exemplar changed while staging")
+        source_mode = "fixture"
     manifest = {
         "params": {
             "family": family,
             "library": library,
             "seed": seed,
-            "source": {"mode": "library"},
+            "source": {"mode": source_mode},
+            "revision": revision_digest,
             "skip_ocr": True,
             "skip_dino": True,
         }
@@ -150,7 +220,12 @@ async def _publish_native_taste_profile(
         name="profile.npz",
         content_type="application/octet-stream",
         retention_class="extended",
-        metadata={"family": family, "library": library, "seed": seed},
+        metadata={
+            "family": family,
+            "library": library,
+            "seed": seed,
+            "revision": revision_digest,
+        },
     )
     if context.cancellation.cancel_called:
         raise asyncio.CancelledError
@@ -164,6 +239,44 @@ async def _publish_native_taste_profile(
         version=f"v1-{checksum[:16]}",
         artifact=artifact,
     )
+    _validate_taste_profile(profile_path)
+    if revision_digest is not None and not activation.activated:
+        async with context.session_factory() as session:
+            revision = await session.get(TasteProfileRevision, revision_digest, with_for_update=True)
+            if revision is not None:
+                revision.state = "failed"
+                revision.failure = {
+                    "reason": "publication_conflict",
+                    "library": library,
+                    "job_id": context.delivery.canonical_job_id,
+                }
+                await session.commit()
+    if revision_digest is not None and activation.activated:
+        async with context.session_factory() as session:
+            revision = await session.get(TasteProfileRevision, revision_digest, with_for_update=True)
+            if revision is None:
+                raise RuntimeError("canonical taste revision disappeared during publication")
+            if library == "movies":
+                revision.movie_generation = activation.generation
+                revision.movie_checksum = activation.checksum
+            else:
+                revision.tv_generation = activation.generation
+                revision.tv_checksum = activation.checksum
+            reloads = dict(revision.consumer_reload)
+            reloads[library] = activation.checksum
+            revision.consumer_reload = reloads
+            fully_reloaded = bool(
+                revision.movie_checksum
+                and revision.tv_checksum
+                and reloads.get("movies") == revision.movie_checksum
+                and reloads.get("tv") == revision.tv_checksum
+            )
+            if fully_reloaded:
+                revision.state = "personalized"
+                revision.failure = None
+            elif revision.state != "failed":
+                revision.state = "published"
+            await session.commit()
     summary = outcome.summary if isinstance(outcome.summary, dict) else {}
     return MlPublicationResultV1(
         outcome="succeeded" if activation.activated else "superseded",
@@ -402,39 +515,51 @@ async def _publish_native_enrichment(
     ).model_dump(mode="json")
 
 
-async def _publish_native_learned_head(
+async def _publish_native_ranking_residual(
     context: ExecutionContext,
     *,
     library: str,
     expected_generation: int,
     seed: int,
-    feedback_revision: str,
+    evidence_revision: str,
 ) -> dict[str, object]:
-    """Train, validate, register, and atomically activate a native learned head."""
+    """Train, evaluate, register, and atomically activate a bounded residual."""
     from marquee.core.jobs.internal_runner_host import (  # noqa: PLC0415
         OUTCOME_CANCELLED,
         OUTCOME_SUCCEEDED,
         run_internal_operation,
     )
     from marquee.core.jobs.runner_protocol import RunnerOperation  # noqa: PLC0415
-    from marquee.ml import feedback_store  # noqa: PLC0415
-    from marquee.ml.learned_head import LogisticHead  # noqa: PLC0415
-    from marquee.ml.namespaces import get_namespace  # noqa: PLC0415
-
     if context.cancellation.cancel_called:
         raise asyncio.CancelledError
-    try:
-        async with context.session_factory() as session:
+    async with context.session_factory() as session:
+        try:
             current = await resolve_active_publication(
-                session, family=f"learned_head:{library}"
+                session, family=f"ranking_residual:{library}"
             )
-    except MlPublicationError:
-        current = None
+        except MlPublicationError:
+            current = None
+        try:
+            profile = await resolve_active_publication(
+                session, family=f"taste_profile:{library}"
+            )
+        except MlPublicationError:
+            return MlPublicationResultV1(
+                outcome="no_change",
+                family="ranking_residual",
+                version="unpublished",
+                checksum="0" * 64,
+                expected_generation=expected_generation,
+                active_generation=0,
+                activated=False,
+                artifact_ids=(),
+                metrics={"seed": seed, "events": 0},
+            ).model_dump(mode="json")
     current_generation = current.generation if current is not None else 0
     if current_generation != expected_generation:
         return MlPublicationResultV1(
             outcome="superseded",
-            family="learned_head",
+            family="ranking_residual",
             version=current.version if current is not None else "unpublished",
             checksum=current.checksum if current is not None else "0" * 64,
             expected_generation=expected_generation,
@@ -444,29 +569,83 @@ async def _publish_native_learned_head(
             metrics={"seed": seed},
         ).model_dump(mode="json")
     workspace_dir = _ml_workspace_dir(context)
-    snapshot_path = workspace_dir / "feedback.jsonl"
-    source_path = feedback_store.labels_path(get_namespace(library))
-    feedback_checksum = hashlib.sha256(b"").hexdigest()
-    if source_path.is_file():
-        if source_path.stat().st_size > 64 * 1024 * 1024:
-            raise RuntimeError("feedback source exceeds the learned-head snapshot limit")
-        copied = await context.io.copy(source_path, snapshot_path)
-        feedback_checksum = copied.sha256
+    snapshot_path = workspace_dir / "preference-events.json"
+    async with context.session_factory() as session:
+        events = list(
+            (
+                await session.scalars(
+                    select(PosterPreferenceEvent)
+                    .where(PosterPreferenceEvent.namespace == library)
+                    .order_by(PosterPreferenceEvent.created_at, PosterPreferenceEvent.id)
+                    .limit(100_000)
+                )
+            ).all()
+        )
+    rows = [
+        {
+            "action": event.action,
+            "subject_kind": event.subject_kind,
+            "subject_reference": event.subject_reference,
+            "revoked_event_id": event.revoked_event_id,
+            "exposed_candidates": event.exposed_candidates,
+            "training_context": event.training_context,
+        }
+        for event in events
+    ]
+    encoded = json.dumps(rows, allow_nan=False, separators=(",", ":"), sort_keys=True).encode()
+    if len(encoded) > 64 * 1024 * 1024:
+        raise RuntimeError("canonical preference snapshot exceeds the residual runner limit")
+    await asyncio.to_thread(snapshot_path.write_text, encoded.decode("utf-8"), encoding="utf-8")
+    snapshot_checksum = hashlib.sha256(encoded).hexdigest()
+    actual_revision = hashlib.sha256(
+        json.dumps([event.id for event in events], separators=(",", ":")).encode()
+    ).hexdigest()
+    if not evidence_revision.startswith("manual:") and evidence_revision != actual_revision:
+        return MlPublicationResultV1(
+            outcome="superseded",
+            family="ranking_residual",
+            version=current.version if current is not None else "unpublished",
+            checksum=current.checksum if current is not None else "0" * 64,
+            expected_generation=expected_generation,
+            active_generation=current_generation,
+            activated=False,
+            artifact_ids=(),
+            metrics={"seed": seed, "events": len(events)},
+        ).model_dump(mode="json")
 
     configuration = context.configuration
+    weights = {
+        name: float(configuration.get(key, getattr(pipeline_settings, key)))
+        for name, key in {
+            "knn_sim": "WEIGHT_KNN_SIM",
+            "aesthetic": "WEIGHT_AESTHETIC",
+            "title_colorfulness": "WEIGHT_TITLE_COLORFULNESS",
+            "face_area": "WEIGHT_FACE_AREA",
+            "text_residual": "WEIGHT_TEXT_RESIDUAL",
+            "provenance": "WEIGHT_PROVENANCE",
+            "sharpness": "WEIGHT_SHARPNESS",
+            "resolution": "WEIGHT_RESOLUTION",
+            "lang_match": "WEIGHT_LANG_MATCH",
+            "dino_knn": "WEIGHT_DINO_KNN",
+            "taste_typicality": "WEIGHT_TASTE_TYPICALITY",
+            "quality_artifacts": "WEIGHT_QUALITY_ARTIFACTS",
+            "official_family": "WEIGHT_OFFICIAL_FAMILY",
+        }.items()
+    }
     outcome = await run_internal_operation(
         context.process_launcher,
-        operation=RunnerOperation.LEARNED_HEAD,
+        operation=RunnerOperation.RANKING_RESIDUAL,
         manifest={
             "params": {
                 "library": library,
                 "seed": seed,
-                "feedback_revision": feedback_revision,
-                "feedback_checksum": feedback_checksum,
-                "mode": configuration.get("HEAD_TRAIN_MODE"),
-                "min_labels": configuration.get("HEAD_MIN_LABELS"),
-                "min_movies": configuration.get("HEAD_MIN_MOVIES"),
-                "min_pairs": configuration.get("HEAD_MIN_PAIRS"),
+                "evidence_revision": actual_revision,
+                "snapshot_checksum": snapshot_checksum,
+                "baseline_signature": baseline_signature(weights),
+                "profile_checksum": profile.checksum,
+                "min_subjects": configuration.get("RESIDUAL_MIN_SUBJECTS", 25),
+                "min_pairs": configuration.get("RESIDUAL_MIN_PAIRS", 200),
+                "min_improvement": 0.02,
             }
         },
         should_stop=lambda: bool(context.cancellation.cancel_called),
@@ -478,7 +657,7 @@ async def _publish_native_learned_head(
     if outcome.outcome == "no_change":
         return MlPublicationResultV1(
             outcome="no_change",
-            family="learned_head",
+            family="ranking_residual",
             version=current.version if current is not None else "unpublished",
             checksum=current.checksum if current is not None else "0" * 64,
             expected_generation=expected_generation,
@@ -486,45 +665,53 @@ async def _publish_native_learned_head(
             activated=False,
             artifact_ids=(),
             metrics={
-                "feedback_rows": int(summary.get("feedback_rows", 0) or 0),
+                "events": int(summary.get("event_rows", 0) or 0),
+                "pairs": int(summary.get("pairs", 0) or 0),
                 "seed": seed,
             },
         ).model_dump(mode="json")
     if outcome.outcome != OUTCOME_SUCCEEDED:
-        raise RuntimeError(f"learned-head runner failed: {outcome.error or outcome.outcome}")
+        raise RuntimeError(f"residual runner failed: {outcome.error or outcome.outcome}")
 
-    head_path = workspace_dir / "head.npz"
-    LogisticHead.load(head_path)
+    residual_path = workspace_dir / "residual.npz"
+    residual = ResidualArtifact.load(residual_path)
+    if residual.evidence_revision != actual_revision or residual.profile_checksum != profile.checksum:
+        raise RuntimeError("residual artifact lineage does not match its frozen inputs")
     if not await _ml_owns_fence(context):
-        context.workspace.quarantine(code="stale_fence", summary="learned head fenced")
-        raise RuntimeError("learned-head attempt lost its fence before publication")
+        context.workspace.quarantine(code="stale_fence", summary="ranking residual fenced")
+        raise RuntimeError("residual attempt lost its fence before publication")
     artifact = await register_physical_artifact(
         job_id=context.delivery.canonical_job_id,
         attempt_id=context.attempt.attempt_id,
         fence_token=context.attempt.fence_token,
-        source=context.workspace.boundary.classify(head_path, require_exists=True),
-        kind="learned_head",
-        name="head.npz",
+        source=context.workspace.boundary.classify(residual_path, require_exists=True),
+        kind="ranking_residual",
+        name="residual.npz",
         content_type="application/octet-stream",
         retention_class="extended",
         metadata={
-            "family": "learned_head",
+            "family": "ranking_residual",
             "library": library,
             "seed": seed,
-            "feedback_revision": feedback_revision,
-            "feedback_checksum": feedback_checksum,
+            "evidence_revision": actual_revision,
+            "snapshot_checksum": snapshot_checksum,
+            "baseline_signature": residual.baseline_signature,
+            "profile_checksum": residual.profile_checksum,
+            "evaluation": summary.get("evaluation"),
+            "subject_count": int(summary.get("subjects", 0) or 0),
+            "pair_count": int(summary.get("pairs", 0) or 0),
         },
     )
     activation = await activate_immutable_artifact(
         context,
-        family=f"learned_head:{library}",
+        family=f"ranking_residual:{library}",
         expected_generation=expected_generation,
         version=f"v1-{(artifact.checksum or '')[:16]}",
         artifact=artifact,
     )
     return MlPublicationResultV1(
         outcome="succeeded" if activation.activated else "superseded",
-        family="learned_head",
+        family="ranking_residual",
         version=activation.version,
         checksum=activation.checksum,
         expected_generation=expected_generation,
@@ -532,9 +719,11 @@ async def _publish_native_learned_head(
         activated=activation.activated,
         artifact_ids=(artifact.id,),
         metrics={
-            "feedback_rows": int(summary.get("feedback_rows", 0) or 0),
-            "n_movies": int(summary.get("n_movies", 0) or 0),
-            "n_pairs": int(summary.get("n_pairs", 0) or 0),
+            "events": int(summary.get("event_rows", 0) or 0),
+            "pairs": int(summary.get("pairs", 0) or 0),
+            "improvement": float(
+                (summary.get("evaluation") or {}).get("improvement", 0.0)
+            ),
             "seed": seed,
         },
     ).model_dump(mode="json")
@@ -542,12 +731,32 @@ async def _publish_native_learned_head(
 
 async def execute_taste_rebuild(context: ExecutionContext) -> dict[str, object]:
     request = TasteRebuildRequestV1.model_validate(context.request)
-    return await _publish_native_taste_profile(
-        context,
-        library=request.library,
-        expected_generation=request.expected_generation,
-        seed=request.seed,
-    )
+    try:
+        return await _publish_native_taste_profile(
+            context,
+            library=request.library,
+            expected_generation=request.expected_generation,
+            seed=request.seed,
+            revision_digest=request.revision,
+        )
+    except BaseException as exc:
+        if request.revision is not None:
+            async with context.session_factory() as session:
+                revision = await session.get(
+                    TasteProfileRevision, request.revision, with_for_update=True
+                )
+                if revision is not None and revision.state != "personalized":
+                    revision.state = "failed"
+                    revision.failure = {
+                        "reason": "cancelled"
+                        if isinstance(exc, asyncio.CancelledError)
+                        else "build_failed",
+                        "library": request.library,
+                        "error_type": type(exc).__name__,
+                        "job_id": context.delivery.canonical_job_id,
+                    }
+                    await session.commit()
+        raise
 
 
 async def execute_taste_map(context: ExecutionContext) -> dict[str, object]:
@@ -570,18 +779,18 @@ async def execute_taste_enrich(context: ExecutionContext) -> dict[str, object]:
     )
 
 
-async def execute_learned_head(context: ExecutionContext) -> dict[str, object]:
-    request = LearnedHeadTrainRequestV1.model_validate(context.request)
-    return await _publish_native_learned_head(
+async def execute_ranking_residual(context: ExecutionContext) -> dict[str, object]:
+    request = RankingResidualTrainRequestV1.model_validate(context.request)
+    return await _publish_native_ranking_residual(
         context,
         library=request.library,
         expected_generation=request.expected_generation,
         seed=request.seed,
-        feedback_revision=request.feedback_revision,
+        evidence_revision=request.evidence_revision,
     )
 
 
 register_execution_handler("taste_rebuild", execute_taste_rebuild)
 register_execution_handler("taste_map", execute_taste_map)
 register_execution_handler("taste_enrich", execute_taste_enrich)
-register_execution_handler("learned_head_train", execute_learned_head)
+register_execution_handler("ranking_residual_train", execute_ranking_residual)

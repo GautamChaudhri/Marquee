@@ -33,7 +33,7 @@ _FOCUS_DEFINITIONS = _FOCUS_PLACEHOLDER_LEAVES | {
     "taste_map",
     "taste_rebuild",
     "taste_enrich",
-    "learned_head_train",
+    "ranking_residual_train",
 }
 
 _REQUIRED_FIELDS = {

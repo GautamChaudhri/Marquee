@@ -30,12 +30,11 @@ from marquee.core.jobs.submission import (
     SubmissionError,
     submit_job,
 )
-from marquee.core.pipeline_config import pipeline_settings
 from marquee.core.rate_limit import RateLimiter
 from marquee.database import get_db
-from marquee.ml import feedback_store, publication_catalog
+from marquee.ml import publication_catalog
 from marquee.ml.namespaces import TasteNamespace, get_namespace
-from marquee.models import Job, MlActivePublication, Movie
+from marquee.models import Job, MlActivePublication, Movie, PosterPreferenceEvent
 
 logger = logging.getLogger(__name__)
 
@@ -67,40 +66,31 @@ def _exemplar_stats(active_profile: dict[str, object] | None) -> dict[str, objec
     }
 
 
-def _head_status(ns: TasteNamespace, *, active: bool) -> dict:
-    """Activation progress for the learned head, in whichever training mode is
-    active. Keeps a stable shape (``n_samples`` + ``activation.{movies,labels}``)
-    so the UI is mode-agnostic; ``mode`` tells it whether the unit is pairs or
-    labels. In pairwise mode ``n_samples``/``labels`` carry the derived
-    within-movie preference-pair counts."""
-    from marquee.ml.head_trainer import (  # noqa: PLC0415
-        build_inversion_training_data,
-        build_training_data,
+async def _residual_status(db: AsyncSession, *, library: str, active: bool) -> dict:
+    """Derive bounded residual eligibility from canonical database events."""
+    from marquee.ml.residual import build_residual_pairs  # noqa: PLC0415
+    from marquee.models import PosterPreferenceEvent  # noqa: PLC0415
+
+    events = list(
+        (
+            await db.scalars(
+                select(PosterPreferenceEvent)
+                .where(PosterPreferenceEvent.namespace == library)
+                .order_by(PosterPreferenceEvent.created_at, PosterPreferenceEvent.id)
+                .limit(100_000)
+            )
+        ).all()
     )
-
-    rows = feedback_store.read_all(ns)
-
-    if pipeline_settings.HEAD_TRAIN_MODE == "pairwise":
-        _d, _w, _names, n_movies, n_pairs = build_inversion_training_data(rows)
-        return {
-            "active": active,
-            "mode": "pairwise",
-            "n_samples": n_pairs,
-            "activation": {
-                "movies": {"have": n_movies, "need": pipeline_settings.HEAD_MIN_MOVIES},
-                "labels": {"have": n_pairs, "need": pipeline_settings.HEAD_MIN_PAIRS},
-            },
-        }
-
-    _x, targets, _names, n_movies = build_training_data(rows)
-    n_samples = int(len(targets))
+    pairs = build_residual_pairs(events)
+    subjects = {pair.subject for pair in pairs}
     return {
         "active": active,
-        "mode": "pointwise",
-        "n_samples": n_samples,
+        "mode": "bounded_residual",
+        "subjects": len(subjects),
+        "pairs": len(pairs),
         "activation": {
-            "movies": {"have": n_movies, "need": pipeline_settings.HEAD_MIN_MOVIES},
-            "labels": {"have": n_samples, "need": pipeline_settings.HEAD_MIN_LABELS},
+            "subjects": {"have": len(subjects), "need": 25},
+            "pairs": {"have": len(pairs), "need": 200},
         },
     }
 
@@ -155,11 +145,28 @@ async def taste_status(
     db: Annotated[AsyncSession, Depends(get_db)],
     library: str = "movies",
 ):
-    ns = _validate_library(library)
-    summary = feedback_store.summary(ns)
+    _validate_library(library)
+    events = list(
+        (
+            await db.scalars(
+                select(PosterPreferenceEvent)
+                .where(PosterPreferenceEvent.namespace == library)
+                .order_by(PosterPreferenceEvent.created_at, PosterPreferenceEvent.id)
+                .limit(100_000)
+            )
+        ).all()
+    )
+    revoked = {event.revoked_event_id for event in events if event.revoked_event_id}
+    active_events = [event for event in events if event.id not in revoked and event.action != "undo"]
+    subject_references = {event.subject_reference for event in active_events}
+    positives = sum(
+        event.action in {"approval", "selection", "override", "rank"}
+        for event in active_events
+    )
+    negatives = sum(event.action in {"hate", "reject", "reject_all"} for event in active_events)
 
     # Genre spread over labeled movies (v2 rows carry movie_id).
-    movie_ids = [int(key) for key in summary["movie_keys"] if key.lstrip("-").isdigit()]
+    movie_ids = [int(key) for key in subject_references if key.lstrip("-").isdigit()]
     genres: Counter[str] = Counter()
     if movie_ids:
         rows = (
@@ -170,26 +177,28 @@ async def taste_status(
                 genres[genre] += 1
 
     profiles = await _publication_summaries(db, kind="taste_profile", library=library)
-    heads = await _publication_summaries(db, kind="learned_head", library=library)
+    residuals = await _publication_summaries(db, kind="ranking_residual", library=library)
     active_profile = next((item for item in profiles if item["status"] == "active"), None)
-    active_head = next((item for item in heads if item["status"] == "active"), None)
+    active_residual = next((item for item in residuals if item["status"] == "active"), None)
     exemplars = _exemplar_stats(active_profile)
 
     return {
         "library": library,
         "labels": {
-            "total": summary["total"],
-            "movies": summary["movies"],
-            "positives": summary["positives"],
-            "negatives": summary["negatives"],
+            "total": positives + negatives,
+            "movies": len(subject_references),
+            "positives": positives,
+            "negatives": negatives,
             "genres": dict(genres.most_common()),
         },
         "exemplars": exemplars,
-        "learned_head": _head_status(ns, active=active_head is not None),
+        "ranking_residual": await _residual_status(
+            db, library=library, active=active_residual is not None
+        ),
         "active_profile": active_profile,
-        "active_head": active_head,
+        "active_residual": active_residual,
         "publication_authority": publication_catalog.CATALOG_STATUS,
-        "gate_alerts": feedback_store.gate_override_alerts(ns),
+        "gate_alerts": [],
         "rebuild": await _canonical_rebuild_status(db, library),
     }
 
@@ -270,30 +279,30 @@ async def retrain_taste(
     )
 
 
-@router.post("/head/retrain", status_code=202)
-async def retrain_learned_head(
+@router.post("/residual/retrain", status_code=202)
+async def retrain_ranking_residual(
     limiter: Annotated[RateLimiter, Depends(get_rate_limiter)],
     db: Annotated[AsyncSession, Depends(get_db)],
     library: str = "movies",
 ) -> JobSubmissionResponse:
-    """Submit an immutable learned-head publication job."""
+    """Submit held-out evaluation of an immutable bounded residual candidate."""
     _validate_library(library)
-    enforce_rate_limit(limiter, "head_retrain", settings.RATE_TASTE_RETRAIN_SECONDS)
-    limiter.record("head_retrain")
+    enforce_rate_limit(limiter, "residual_retrain", settings.RATE_TASTE_RETRAIN_SECONDS)
+    limiter.record("residual_retrain")
     return await _submit_ml_publication(
         db,
-        job_type="learned_head_train",
-        family="learned_head",
+        job_type="ranking_residual_train",
+        family="ranking_residual",
         library=library,
         request={
             "library": library,
-            "feedback_revision": (
+            "evidence_revision": (
                 f"manual:{int(time.time() // settings.RATE_TASTE_RETRAIN_SECONDS)}"
             ),
             "mutation": "manual",
         },
         idempotency_key=(
-            f"learned_head_train:{library}:"
+            f"ranking_residual_train:{library}:"
             f"{int(time.time() // settings.RATE_TASTE_RETRAIN_SECONDS)}"
         ),
         priority=70,
@@ -377,20 +386,22 @@ async def list_taste_profile_exemplars(
         raise _artifact_error(exc) from exc
 
 
-@router.get("/heads")
-async def list_learned_heads(
+@router.get("/residuals")
+async def list_ranking_residuals(
     db: Annotated[AsyncSession, Depends(get_db)],
     library: str = "movies",
 ):
     _validate_library(library)
     return {
-        "heads": await _publication_summaries(db, kind="learned_head", library=library),
+        "residuals": await _publication_summaries(
+            db, kind="ranking_residual", library=library
+        ),
         "publication_authority": publication_catalog.CATALOG_STATUS,
     }
 
 
-@router.get("/heads/{artifact_id}")
-async def get_learned_head(
+@router.get("/residuals/{artifact_id}")
+async def get_ranking_residual(
     artifact_id: str,
     db: Annotated[AsyncSession, Depends(get_db)],
     library: str = "movies",
@@ -398,7 +409,7 @@ async def get_learned_head(
     try:
         _validate_library(library)
         entry = await publication_catalog.get_entry(
-            db, kind="learned_head", library=library, artifact_id=artifact_id
+            db, kind="ranking_residual", library=library, artifact_id=artifact_id
         )
         return await publication_catalog.artifact_detail(entry)
     except Exception as exc:  # noqa: BLE001

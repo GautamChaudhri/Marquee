@@ -60,7 +60,7 @@ ARTIFACT_POLICIES: dict[str, ArtifactPolicy] = {
     "taste_map": ArtifactPolicy(
         ".npz", frozenset({"application/octet-stream"}), 256 * 1024 * 1024
     ),
-    "learned_head": ArtifactPolicy(
+    "ranking_residual": ArtifactPolicy(
         ".npz", frozenset({"application/octet-stream"}), 16 * 1024 * 1024
     ),
     "command_report": ArtifactPolicy(".json", frozenset({"application/json"}), 1024 * 1024),
@@ -75,6 +75,9 @@ ARTIFACT_POLICIES: dict[str, ArtifactPolicy] = {
     ),
     "evidence_image": ArtifactPolicy(
         ".jpg", frozenset({"image/jpeg"}), 10 * 1024 * 1024
+    ),
+    "taste_exemplar": ArtifactPolicy(
+        ".jpg", frozenset({"image/jpeg"}), 25 * 1024 * 1024
     ),
     "evidence_frame": ArtifactPolicy(
         ".png", frozenset({"image/png"}), 10 * 1024 * 1024
@@ -219,8 +222,10 @@ def _validate_common(
         raise ArtifactError("artifact display name is unsafe")
     if content_type not in policy.content_types:
         raise ArtifactError("artifact content type conflicts with kind policy")
-    if retention_class not in {"standard", "extended", "ephemeral"}:
+    if retention_class not in {"standard", "extended", "ephemeral", "pinned"}:
         raise ArtifactError("artifact retention class is invalid")
+    if retention_class == "pinned" and kind != "taste_exemplar":
+        raise ArtifactError("only canonical taste exemplars may use pinned retention")
     encoded = json.dumps(metadata, sort_keys=True, separators=(",", ":"), allow_nan=False)
     if len(metadata) > 32 or len(encoded.encode()) > 8192:
         raise ArtifactError("artifact metadata exceeds its bound")
@@ -332,7 +337,8 @@ async def register_physical_artifact(
         )
         await asyncio.to_thread(boundary.atomic_replace, staged, destination)
         checksum = digest.hexdigest()
-        expires_at = datetime.now(UTC) + _retention_delta(retention_class)
+        retention_delta = _retention_delta(retention_class)
+        expires_at = datetime.now(UTC) + retention_delta if retention_delta is not None else None
         async with factory() as session, session.begin():
             row = await session.scalar(
                 select(JobArtifact).where(JobArtifact.id == artifact_id).with_for_update()
@@ -696,7 +702,9 @@ def _sanitize(value: Any, redactor: CentralRedactor, *, depth: int) -> Any:
     raise ArtifactError("canonical artifact value type is invalid")
 
 
-def _retention_delta(retention_class: str) -> timedelta:
+def _retention_delta(retention_class: str) -> timedelta | None:
+    if retention_class == "pinned":
+        return None
     return timedelta(
         days={"ephemeral": 7, "standard": 30, "extended": 365}[retention_class]
     )

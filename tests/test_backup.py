@@ -48,21 +48,10 @@ def _write_dump(path: Path, payload: bytes = b"pg_dump") -> None:
 
 
 def _seed_managed_state(data_dir: Path) -> None:
-    (data_dir / "feedback").mkdir(parents=True, exist_ok=True)
-    (data_dir / "feedback" / "labels.jsonl").write_text('{"label": 1}\n', encoding="utf-8")
-
-    positive_dir = data_dir / "training" / "positive"
-    positive_dir.mkdir(parents=True, exist_ok=True)
-    (positive_dir / "approved.jpg").write_bytes(b"jpg")
-
-    negative_dir = data_dir / "training" / "negative"
-    negative_dir.mkdir(parents=True, exist_ok=True)
-    (negative_dir / "rejected.jpg").write_bytes(b"jpg")
-
     ml_dir = data_dir / "ml"
     ml_dir.mkdir(parents=True, exist_ok=True)
     (ml_dir / "taste_profile.clip-vit-b-32.npz").write_bytes(b"profile")
-    (ml_dir / "learned_head.clip-vit-b-32.npz").write_bytes(b"head")
+    (ml_dir / "ranking_residual.movies.npz").write_bytes(b"residual")
     (ml_dir / "zeroshot_axes.clip-vit-b-32.npz").write_bytes(b"axes")
 
     posters_dir = data_dir / "cache" / "posters"
@@ -189,15 +178,14 @@ def _make_backup_dir(root: Path, backup_id: str) -> None:
     )
 
 
-def test_pipeline_settings_default_runtime_state_paths_are_under_data():
+def test_pipeline_settings_exposes_only_current_immutable_model_paths():
     cfg = PipelineSettings(AI_MODEL="siglip-so400m")
 
-    assert str(cfg.FEEDBACK_LABELS_PATH).endswith("data/feedback/labels.jsonl")
-    assert str(cfg.TRAINING_DATA_DIR).endswith("data/taste_seeding/movies")
-    assert str(cfg.NEGATIVE_DATA_DIR).endswith("data/training/negative")
     assert str(cfg.TASTE_PROFILE_PATH).endswith("data/ml/taste_profile.siglip-so400m.npz")
-    assert str(cfg.LEARNED_HEAD_PATH).endswith("data/ml/learned_head.siglip-so400m.npz")
     assert str(cfg.ZEROSHOT_AXES_PATH).endswith("data/ml/zeroshot_axes.siglip-so400m.npz")
+    assert not hasattr(cfg, "FEEDBACK_LABELS_PATH")
+    assert not hasattr(cfg, "TRAINING_DATA_DIR")
+    assert not hasattr(cfg, "LEARNED_HEAD_PATH")
 
 
 @pytest.mark.asyncio
@@ -219,9 +207,8 @@ async def test_create_backup_creates_directory_and_excludes_transient_files(
     with tarfile.open(backup_root / "state.tar.gz", "r:gz") as archive:
         members = archive.getnames()
 
-    assert "feedback/labels.jsonl" in members
-    assert "training/positive/approved.jpg" in members
     assert "ml/taste_profile.clip-vit-b-32.npz" in members
+    assert "ml/ranking_residual.movies.npz" in members
     assert "cache/posters/poster.jpg" in members
     assert "cache/embeddings/clip-vit-b-32/candidate.npz" in members
     assert "cache/taste_map.clip-vit-b-32.npz" in members
@@ -298,7 +285,7 @@ def test_only_system_noop_is_dispatch_enabled_and_executable() -> None:
         "dovi_publish",
         "dovi_restore",
         "dovi_discard",
-        "learned_head_train",
+        "ranking_residual_train",
         "poster_rescan",
         "taste_map",
         "taste_enrich",
@@ -343,7 +330,7 @@ def test_only_system_noop_is_dispatch_enabled_and_executable() -> None:
         "dovi_publish",
         "dovi_restore",
         "dovi_discard",
-        "learned_head_train",
+        "ranking_residual_train",
         "poster_rescan",
         "taste_map",
         "taste_enrich",
@@ -520,9 +507,7 @@ async def test_offline_restore_certifies_fresh_disposable_targets(
             allow_create_target=True,
         )
         assert result["restored"] is True
-        assert (target_data_dir / "feedback" / "labels.jsonl").read_text(
-            encoding="utf-8"
-        ) == '{"label": 1}\n'
+        assert (target_data_dir / "ml" / "ranking_residual.movies.npz").read_bytes() == b"residual"
     finally:
         await backup_service._drop_owned_database(target_database)
         shutil.rmtree(target_data_dir, ignore_errors=True)

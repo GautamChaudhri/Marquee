@@ -14,6 +14,7 @@ from marquee.core.jobs.manifest import JOB_DEFINITION_REGISTRY
 from marquee.core.jobs.pgqueuer_gateway import PgQueuerGateway
 from marquee.core.jobs.pgqueuer_worker import entrypoint_concurrency_limits
 from marquee.models import Job, JobAttempt, JobDispatch, JobEvent
+from tests.support.jmc6j import current_job_types
 
 ROOT = Path(__file__).parents[1]
 FREEZE_PATH = ROOT / "tests/fixtures/jmc4a/a0_contract_freeze.json"
@@ -113,8 +114,10 @@ def test_canonical_schema_registry_and_execution_inventory_is_frozen() -> None:
             "dovi_restore",
             "dovi_discard",
     }
-    assert JOB_DEFINITION_REGISTRY.enabled_types == set(frozen["registry"]["enabled_types"]) | poster_leaves
-    assert set(EXECUTION_HANDLERS) == set(frozen["execution_handlers"]) | poster_leaves
+    assert JOB_DEFINITION_REGISTRY.enabled_types == current_job_types(
+        frozen["registry"]["enabled_types"]
+    ) | poster_leaves
+    assert set(EXECUTION_HANDLERS) == current_job_types(frozen["execution_handlers"]) | poster_leaves
 
 
 def test_gateway_commands_parent_worker_scheduler_and_routes_are_frozen() -> None:

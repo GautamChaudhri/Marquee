@@ -69,6 +69,8 @@ class PosterPipelineOutput:
     source_count: int = 0
     candidate_count: int = 0
     scorer_name: str | None = None
+    personalization_mode: str = "personalized"
+    message: str | None = None
 
 
 def _movie_of(subject: PosterSubjectInput) -> Movie:
@@ -123,14 +125,22 @@ async def run_poster_pipeline(
     progress: ProgressCallback | None = None,
     should_cancel: ShouldCancel | None = None,
     run_id: str | None = None,
-    learned_head_path: Path | None = None,
+    residual_path: Path | None = None,
+    personalization_mode: str = "personalized",
 ) -> PosterPipelineOutput:
     """Run the real pipeline for one subject inside ``out_dir`` and summarize it."""
+    if personalization_mode not in {"collecting", "personalized"}:
+        raise ValueError(f"Unsupported personalization mode: {personalization_mode}")
     run_id = run_id or uuid.uuid4().hex
     movie = _movie_of(subject)
     started_at = datetime.now(UTC).isoformat()
     timings: dict[str, float] = {}
     primary_name: str | None = None
+    message = (
+        "Marquee filtered unusable posters, but has not learned your preferences yet."
+        if personalization_mode == "collecting"
+        else None
+    )
 
     if source.mode == "fixture":
         candidate_map, records, resolution_by_name, all_files = _fixture_fetch(out_dir)
@@ -169,6 +179,12 @@ async def run_poster_pipeline(
             run_id=run_id,
             media_type=subject.media_type,
         )
+        payload.update(
+            personalization_mode=personalization_mode,
+            recommendation=None,
+            scorer=None,
+            message=message,
+        )
         return PosterPipelineOutput(
             run_id=run_id,
             status="flagged_manual",
@@ -176,6 +192,8 @@ async def run_poster_pipeline(
             payload=payload,
             source_count=source_count,
             candidate_count=source_count,
+            personalization_mode=personalization_mode,
+            message=message,
         )
 
     sync_started = datetime.now(UTC)
@@ -192,10 +210,11 @@ async def run_poster_pipeline(
         progress=progress,
         should_cancel=should_cancel,
         ocr_gate=ocr_gate,
-        learned_head_path=learned_head_path,
+        residual_path=residual_path,
+        personalization_mode=personalization_mode,
     )
 
-    if sync.ranked:
+    if sync.ranked and personalization_mode == "personalized":
         await place_outputs(
             sync.ranked,
             candidate_map=candidate_map,
@@ -216,7 +235,13 @@ async def run_poster_pipeline(
         media_type=subject.media_type,
     )
     counts = {**fetch_counts, **sync.counts}
-    recommendation = _recommendation(sync.ranked)
+    recommendation = (
+        _recommendation(sync.ranked) if personalization_mode == "personalized" else None
+    )
+    payload["personalization_mode"] = personalization_mode
+    payload["recommendation"] = recommendation
+    payload["scorer"] = None if personalization_mode == "collecting" else "weighted"
+    payload["message"] = message
     ranked_summary = [
         {
             "rank": record.rank,
@@ -236,8 +261,12 @@ async def run_poster_pipeline(
         source_count=source_count,
         candidate_count=source_count,
         scorer_name=(
-            select_scorer(artifact_path=learned_head_path).name if sync.ranked else None
+            select_scorer(artifact_path=residual_path).name
+            if sync.ranked and personalization_mode == "personalized"
+            else None
         ),
+        personalization_mode=personalization_mode,
+        message=message,
     )
 
 

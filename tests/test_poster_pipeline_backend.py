@@ -129,7 +129,7 @@ def test_canonical_poster_and_maintenance_handlers_registered():
     from marquee.core.jobs.delivery import EXECUTION_HANDLERS
 
     assert {
-        "learned_head_train",
+        "ranking_residual_train",
         "poster_rescan",
         "poster_backup_subject",
         "pipeline_cache_clear",

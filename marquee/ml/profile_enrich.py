@@ -134,7 +134,7 @@ def enrich(
         payload = {key: data[key] for key in data.files}
     names = decode_unicode_list(payload["poster_names"])
 
-    cache_path = cache_path or Path(pipeline_settings.TRAINING_DATA_DIR) / ".genre_cache.json"
+    cache_path = cache_path or output.with_name("genre-cache.json")
     cache = {}
     if cache_path.exists():
         try:

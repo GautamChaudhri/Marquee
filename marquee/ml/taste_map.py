@@ -632,31 +632,8 @@ def neighbors_of(
 
 
 def _generate_thumbnails(poster_names: list[str], ns: TasteNamespace | None = None) -> None:
-    ns = ns or get_namespace("movies")
-    from PIL import Image  # noqa: PLC0415
-
-    thumbs = _thumbs_dir(ns)
-    thumbs.mkdir(parents=True, exist_ok=True)
-    for name in poster_names:
-        thumb = thumbs / f"{name}.webp"
-        if thumb.exists():
-            continue
-        source = None
-        for training_dir in ns.training_dirs.values():
-            candidate = training_dir / name
-            if candidate.is_file():
-                source = candidate
-                break
-        if source is None:
-            continue
-        try:
-            with Image.open(source) as image:
-                image = image.convert("RGB")
-                ratio = 192 / image.height
-                image = image.resize((max(1, int(image.width * ratio)), 192))
-                image.save(thumb, "WEBP", quality=80)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("thumb failed for %s: %s", name, exc)
+    # Canonical profiles no longer expose mutable training folders as an asset source.
+    return None
 
 
 def thumbnail_path(poster_name: str, namespace: TasteNamespace | None = None) -> Path | None:
@@ -666,9 +643,4 @@ def thumbnail_path(poster_name: str, namespace: TasteNamespace | None = None) ->
 
 
 def exemplar_source(poster_name: str, namespace: TasteNamespace | None = None) -> Path | None:
-    ns = namespace or get_namespace("movies")
-    for training_dir in ns.training_dirs.values():
-        source = training_dir / poster_name
-        if source.is_file():
-            return source
     return None

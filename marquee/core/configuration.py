@@ -76,11 +76,7 @@ PIPELINE_RESTART_KEYS = frozenset(
         "DINO_MODEL_PATH",
         "PERSON_MODEL_PATH",
         "ZEROSHOT_AXES_PATH",
-        "LEARNED_HEAD_PATH",
         "EMBEDDING_CACHE_DIR",
-        "FEEDBACK_LABELS_PATH",
-        "NEGATIVE_DATA_DIR",
-        "TRAINING_DATA_DIR",
     }
 ) | frozenset(
     key

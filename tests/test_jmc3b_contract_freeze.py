@@ -20,6 +20,7 @@ from marquee.core.jobs.progress import (
 )
 from marquee.models.job import JobEvent
 from marquee.models.job_evidence import JobArtifact, JobLog
+from tests.support.jmc6j import current_job_types
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = ROOT / "tests" / "fixtures" / "jmc3b" / "b0_contract_freeze.json"
@@ -32,7 +33,7 @@ def _contract() -> dict[str, object]:
 def test_jmc3b_starts_from_the_certified_production_registry() -> None:
     registry = _contract()["registry"]
     assert isinstance(registry, dict)
-    assert JOB_DEFINITION_REGISTRY.enabled_types == set(registry["enabled_types"]) | {
+    assert JOB_DEFINITION_REGISTRY.enabled_types == current_job_types(registry["enabled_types"]) | {
         "subtitle_policy",
         "subtitle_restore",
         "subtitle_generate",
@@ -89,7 +90,7 @@ def test_jmc3b_starts_from_the_certified_production_registry() -> None:
         "dovi_publish",
         "dovi_restore",
         "dovi_discard",
-        "learned_head_train",
+        "ranking_residual_train",
         "poster_rescan",
         "taste_map",
         "taste_enrich",

@@ -19,6 +19,7 @@ import pytest
 from marquee.core.jobs.definitions import DisabledJobDefinitionError
 from marquee.core.jobs.delivery import EXECUTION_HANDLERS
 from marquee.core.jobs.manifest import JOB_DEFINITION_REGISTRY
+from tests.support.jmc6j import current_job_types
 
 ROOT = Path(__file__).parents[1]
 FREEZE_PATH = ROOT / "tests/fixtures/jmc4b/b0_contract_freeze.json"
@@ -124,9 +125,9 @@ def test_registry_and_execution_handlers_match_freeze() -> None:
     }
     assert (
         JOB_DEFINITION_REGISTRY.enabled_types
-        == set(frozen["registry"]["enabled_types"]) | poster_leaves
+        == current_job_types(frozen["registry"]["enabled_types"]) | poster_leaves
     )
-    assert set(EXECUTION_HANDLERS) == set(frozen["execution_handlers"]) | poster_leaves
+    assert set(EXECUTION_HANDLERS) == current_job_types(frozen["execution_handlers"]) | poster_leaves
 
 
 def test_jmc4b_target_type_states_match_freeze() -> None:

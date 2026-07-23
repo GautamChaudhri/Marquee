@@ -1,28 +1,15 @@
-"""Stage 6 pluggable poster ranking heads.
-
-Two interchangeable implementations behind ``PosterScorer``:
-
-  - ``WeightedScorer`` — Phase-0 hand weights. Renormalizes over the
-    features each candidate actually has, so optional features (dino on
-    CPU tiers, quality pack toggled off) drop out cleanly without skewing
-    the [0,1] score range.
-  - ``LearnedScorer`` — Phase-1 logistic head trained on the user's own
-    approvals/overrides (see ``marquee/ml/head_trainer.py``).
-
-``select_scorer()`` resolves the SCORER config: "auto" prefers the learned
-head when a valid trained artifact exists and logs which head is active —
-the choice is part of every run's provenance.
-"""
+"""Hand-weighted baseline ranking with an optional bounded residual correction."""
 
 from __future__ import annotations
 
 import logging
+import math
 from abc import ABC, abstractmethod
 from pathlib import Path
 
 from marquee.core.pipeline_config import PipelineSettings, pipeline_settings
-from marquee.ml.learned_head import LogisticHead
 from marquee.ml.namespaces import TasteNamespace
+from marquee.ml.residual import ResidualArtifact, baseline_signature
 from marquee.pipeline.types import CandidateScore, FeatureVector
 
 logger = logging.getLogger(__name__)
@@ -86,16 +73,37 @@ class WeightedScorer(PosterScorer):
         return final_score, contributions
 
 
-class LearnedScorer(PosterScorer):
-    """Phase-1 logistic head: score = P(user would pick this poster)."""
+class ResidualScorer(PosterScorer):
+    """Apply a bounded logit correction without bypassing the weighted baseline."""
 
-    name = "learned"
+    name = "residual"
 
-    def __init__(self, head: LogisticHead):
-        self.head = head
+    def __init__(self, baseline: WeightedScorer, artifact: ResidualArtifact):
+        compatible, reason = artifact.compatible(
+            namespace=artifact.namespace,
+            baseline=baseline_signature(baseline.config.scorer_weights),
+        )
+        if not compatible:
+            raise RuntimeError(f"Residual artifact is dormant: {reason}")
+        self.baseline = baseline
+        self.artifact = artifact
 
     def score(self, features: FeatureVector) -> tuple[float, dict[str, float]]:
-        return self.head.score(features.normalized)
+        baseline_score, baseline_contributions = self.baseline.score(features)
+        epsilon = 1e-6
+        bounded = max(epsilon, min(baseline_score, 1.0 - epsilon))
+        baseline_logit = math.log(bounded / (1.0 - bounded))
+        delta, residual_contributions = self.artifact.delta(features.normalized)
+        final_logit = baseline_logit + self.artifact.alpha * delta
+        final_score = 1.0 / (1.0 + math.exp(-max(-30.0, min(final_logit, 30.0))))
+        contributions = {f"baseline:{name}": value for name, value in baseline_contributions.items()}
+        contributions.update(
+            {f"residual:{name}": self.artifact.alpha * value for name, value in residual_contributions.items()}
+        )
+        contributions["baseline_score"] = baseline_score
+        contributions["residual_delta"] = delta
+        contributions["final_score"] = final_score
+        return final_score, contributions
 
 
 def select_scorer(
@@ -103,46 +111,34 @@ def select_scorer(
     namespace: TasteNamespace | None = None,
     artifact_path: Path | None = None,
 ) -> PosterScorer:
-    """Resolve SCORER=auto|weighted|learned, logging the decision.
-
-    ``namespace=None`` (movie default) lets ``LogisticHead.load()`` resolve its
-    own head path dynamically, matching pre-namespace behavior exactly; a TV
-    caller passes an explicit namespace to score against the TV head instead.
-    """
+    """Resolve weighted baseline or a compatible bounded residual artifact."""
     mode = config.SCORER
-    head_path = artifact_path if artifact_path is not None else (
-        namespace.head_path if namespace is not None else None
-    )
+    residual_path = artifact_path
     library = namespace.library if namespace is not None else "movies"
+    baseline = WeightedScorer(config)
     if mode == "weighted":
         logger.info("SCORER | weighted (forced) for library %s", library)
-        return WeightedScorer(config)
-    if mode == "learned":
-        head = LogisticHead.load(head_path)  # missing/mismatched artifact raises loudly
-        logger.info(
-            "SCORER | learned (forced) for library %s | n_samples=%d acc=%.3f trained_at=%s",
-            library,
-            head.n_samples,
-            head.train_accuracy,
-            head.trained_at,
-        )
-        return LearnedScorer(head)
-
-    # auto: learned head when a valid artifact exists, else hand weights.
+        return baseline
     try:
-        head = LogisticHead.load(head_path)
+        if residual_path is None:
+            raise FileNotFoundError("no residual artifact configured")
+        artifact = ResidualArtifact.load(residual_path)
+        scorer = ResidualScorer(baseline, artifact)
     except FileNotFoundError:
-        logger.info("SCORER | weighted (auto: no learned head artifact) for library %s", library)
-        return WeightedScorer(config)
+        if mode == "residual":
+            raise
+        logger.info("SCORER | weighted (auto: no residual artifact) for library %s", library)
+        return baseline
     except RuntimeError as exc:
-        logger.warning("SCORER | weighted (auto: learned head rejected: %s) for library %s", exc, library)
-        return WeightedScorer(config)
+        if mode == "residual":
+            raise
+        logger.warning("SCORER | weighted (auto: residual dormant: %s) for library %s", exc, library)
+        return baseline
     logger.info(
-        "SCORER | learned (auto) for library %s | n_samples=%d acc=%.3f trained_at=%s | features=%s",
+        "SCORER | residual (%s) for library %s | revision=%s features=%s",
+        mode,
         library,
-        head.n_samples,
-        head.train_accuracy,
-        head.trained_at,
-        head.feature_names,
+        artifact.evidence_revision,
+        artifact.feature_names,
     )
-    return LearnedScorer(head)
+    return scorer
