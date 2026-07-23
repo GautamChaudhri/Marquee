@@ -499,7 +499,7 @@
         "model artifact hash/copy"
       ],
       "projection": "MlActivePublication ranking_residual namespace",
-      "artifacts": "native loadable head.npz",
+      "artifacts": "native loadable residual.npz",
       "presenter": "jobs.ranking_residual_train",
       "tests": [
         "test_jmc4c_ml_jobs",
@@ -508,10 +508,10 @@
       "feature_area": "ml_taste",
       "execution_class": "cpu",
       "product_state": "real",
-      "producer": "POST /api/taste/head/retrain (routes.taste)",
+      "producer": "POST /api/taste/residual/retrain (routes.taste)",
       "consumer": "ml.residual.ResidualArtifact via pipeline.scorer.select_scorer; Projection Room jobs.ranking_residual_train",
-      "real_product_effect": "ml.head_trainer trains a logistic head, validates it loads via learned_head, then activates",
-      "certification_test": "test_jmc6h_product_effect.py::test_learned_head_publishes_native_loadable_artifact"
+      "real_product_effect": "ml.residual trains a bounded residual, validates the production loader, then activates",
+      "certification_test": "test_jmc6h_product_effect.py::test_ranking_residual_publishes_native_loadable_artifact"
     },
     {
       "job_type": "letterbox_apply",

@@ -31,6 +31,8 @@ from marquee.core.jobs.ml_publication import MlPublicationError, resolve_active_
 from marquee.core.jobs.runner_progress import RunnerProgressBridge
 from marquee.core.jobs.runner_protocol import RunnerRuntimeOptions
 from marquee.core.jobs.runner_runtime import poster_runner_runtime_options
+from marquee.core.pipeline_config import pipeline_settings
+from marquee.ml.residual import baseline_signature
 from marquee.models import Job, PipelineRun
 
 # Runner pipeline stage -> the definition's declared poster progress vocabulary.
@@ -320,6 +322,7 @@ async def execute_poster_pipeline(
             "subject": _subject_params(request),
             "source": {"mode": "tmdb"},
             "run_id": run_id,
+            "baseline_signature": baseline_signature(pipeline_settings.scorer_weights),
         }
     }
     workspace_dir = _workspace_dir(context)
@@ -337,6 +340,7 @@ async def execute_poster_pipeline(
             (workspace_dir / "residual.npz").unlink(missing_ok=True)
             raise RuntimeError("active residual checksum changed while staging")
         manifest["params"]["ranking_residual"] = {
+            "artifact_id": active_residual.artifact_id,
             "generation": active_residual.generation,
             "version": active_residual.version,
             "checksum": active_residual.checksum,

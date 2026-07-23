@@ -153,7 +153,6 @@ ROUTE_CONSTRUCTED_TYPES = frozenset(
         "subtitle_scan_all",
         "taste_map",
         "taste_enrich",
-        "taste_rebuild",
     }
 )
 

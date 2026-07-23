@@ -9,7 +9,7 @@ import asyncio
 import logging
 import time
 from collections import Counter
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -31,6 +31,11 @@ from marquee.core.jobs.submission import (
     submit_job,
 )
 from marquee.core.rate_limit import RateLimiter
+from marquee.core.taste_preferences import (
+    TastePreferenceError,
+    derive_readiness,
+    schedule_profile_builds,
+)
 from marquee.database import get_db
 from marquee.ml import publication_catalog
 from marquee.ml.namespaces import TasteNamespace, get_namespace
@@ -108,28 +113,22 @@ def _validate_library(library: str) -> TasteNamespace:
 
 
 async def _canonical_rebuild_status(db: AsyncSession, library: str) -> dict[str, object]:
-    job = await db.scalar(
-        select(Job)
-        .where(
-            Job.type.in_(("taste_rebuild", "taste_map", "taste_enrich")),
-            Job.subject_reference.in_(
-                (
-                    f"taste_profile:{library}",
-                    f"taste_map:{library}",
-                )
-            ),
-        )
-        .order_by(Job.created_at.desc())
-        .limit(1)
-    )
-    if job is None:
-        return {"status": "idle", "running": False, "job_id": None}
+    readiness = (await derive_readiness(db)).to_dict()
+    status = readiness["libraries"][library]
+    build = status["build"]
+    job_id = build["job_id"]
     return {
-        "status": job.outcome or job.phase,
-        "running": job.phase != "terminal",
-        "job_id": job.id,
-        "snapshot_url": f"/api/jobs/{job.id}/snapshot",
-        "detail_url": f"/projection-room/jobs/{job.id}",
+        "status": build["state"] or "idle",
+        "running": build["state"] in {"queued", "running"},
+        "job_id": job_id,
+        "snapshot_url": f"/api/jobs/{job_id}/snapshot" if job_id is not None else None,
+        "detail_url": f"/projection-room/jobs/{job_id}" if job_id is not None else None,
+        "active": status["active"],
+        "desired_revision": status["desired_revision"],
+        "desired_generation": status["desired_generation"],
+        "reload_state": status["reload_state"],
+        "rebuild_due": status["rebuild_due"],
+        "update_attention": status["update_attention"],
     }
 
 
@@ -204,9 +203,10 @@ async def taste_status(
 
 
 class TasteRetrainRequest(BaseModel):
-    # "training_dir" (curated folder, default) | "library" (deployed posters).
-    source: str = "training_dir"
-    library: str = "movies"
+    """Manually request the canonical evidence coordinator for one library."""
+
+    source: Literal["canonical_revision"] = "canonical_revision"
+    library: Literal["movies", "tv"] = "movies"
 
 
 async def _submit_ml_publication(
@@ -257,26 +257,29 @@ async def retrain_taste(
     db: Annotated[AsyncSession, Depends(get_db)],
     body: TasteRetrainRequest | None = None,
 ) -> JobSubmissionResponse:
-    """Submit an immutable taste-profile publication job."""
-    source = (body.source if body else None) or "training_dir"
-    library = (body.library if body else None) or "movies"
-    if source not in ("training_dir", "library"):
-        raise HTTPException(status_code=400, detail=f"unknown source {source!r}")
+    """Submit the coordinator-owned canonical taste profile rebuild, if one is due."""
+    library = body.library if body else "movies"
     _validate_library(library)
     enforce_rate_limit(limiter, "taste_retrain", settings.RATE_TASTE_RETRAIN_SECONDS)
     limiter.record("taste_retrain")
-    return await _submit_ml_publication(
-        db,
-        job_type="taste_rebuild",
-        family="taste_profile",
-        library=library,
-        request={"source": source, "library": library},
-        idempotency_key=(
-            f"taste_rebuild:{library}:{source}:"
-            f"{int(time.time() // settings.RATE_TASTE_RETRAIN_SECONDS)}"
-        ),
-        priority=90,
-    )
+    try:
+        submissions = await schedule_profile_builds(
+            db,
+            namespaces=(library,),
+            initiator_identifier="taste-api-manual",
+            force=True,
+            coalesce_threshold=1,
+        )
+        await db.commit()
+    except TastePreferenceError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if not submissions:
+        raise HTTPException(
+            status_code=409,
+            detail="canonical taste evidence is not due for a new profile build",
+        )
+    return submission_response(submissions[0])
 
 
 @router.post("/residual/retrain", status_code=202)

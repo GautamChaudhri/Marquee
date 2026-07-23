@@ -182,7 +182,7 @@ async def test_ranking_residual_trains_from_canonical_event_snapshot(tmp_path: P
                 {
                     "candidate_id": "winner",
                     "baseline_rank": 1,
-                    "baseline_score": 0.3,
+                    "baseline_score": 0.45,
                     "normalized_features": {"x": 1.0},
                 },
                 {

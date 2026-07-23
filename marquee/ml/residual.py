@@ -31,6 +31,8 @@ class ResidualPair:
     baseline_margin: float
     weight: float
     confidence: str
+    winner_baseline_probability: float | None = None
+    loser_baseline_probability: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,6 +44,64 @@ class ResidualEvaluation:
     held_out_pairs: int
     mean_abs_adjustment: float
     max_abs_adjustment: float
+
+
+@dataclass(frozen=True, slots=True)
+class ResidualCandidateScore:
+    """Exact bounded residual transformation for one runtime candidate."""
+
+    baseline_probability: float
+    baseline_logit: float
+    raw_delta: float
+    delta: float
+    final_logit: float
+    final_score: float
+    contributions: dict[str, float]
+
+
+def score_residual_candidate(
+    *,
+    baseline_probability: float,
+    normalized_features: dict[str, float],
+    weights: dict[str, float],
+    bias: float,
+    alpha: float,
+    delta_max: float,
+) -> ResidualCandidateScore:
+    """Apply the deployed residual math to exactly one candidate.
+
+    The per-candidate delta clamp deliberately precedes alpha application.  Runtime
+    scoring and held-out activation evaluation both call this function.
+    """
+    if not math.isfinite(baseline_probability):
+        raise RuntimeError("Residual baseline probability is not finite")
+    if not 0 <= alpha <= 1 or not 0 < delta_max <= 2:
+        raise RuntimeError("Residual scoring bounds are invalid")
+    if not math.isfinite(bias) or not all(math.isfinite(weight) for weight in weights.values()):
+        raise RuntimeError("Residual scoring parameters are not finite")
+    missing = [name for name in weights if name not in normalized_features]
+    if missing:
+        raise RuntimeError(f"Residual expects unavailable features: {missing}")
+    values = {name: float(normalized_features[name]) for name in weights}
+    if not all(math.isfinite(value) for value in values.values()):
+        raise RuntimeError("Residual received non-finite features")
+    epsilon = 1e-6
+    bounded_baseline = max(epsilon, min(baseline_probability, 1.0 - epsilon))
+    baseline_logit = math.log(bounded_baseline / (1.0 - bounded_baseline))
+    contributions = {name: weight * values[name] for name, weight in weights.items()}
+    raw_delta = sum(contributions.values()) + bias
+    delta = max(-delta_max, min(raw_delta, delta_max))
+    final_logit = baseline_logit + alpha * delta
+    final_score = 1.0 / (1.0 + math.exp(-max(-30.0, min(final_logit, 30.0))))
+    return ResidualCandidateScore(
+        baseline_probability=baseline_probability,
+        baseline_logit=baseline_logit,
+        raw_delta=raw_delta,
+        delta=delta,
+        final_logit=final_logit,
+        final_score=final_score,
+        contributions=contributions,
+    )
 
 
 def _finite_features(value: Any) -> dict[str, float] | None:
@@ -124,6 +184,8 @@ def build_residual_pairs(events: Iterable[Any]) -> list[ResidualPair]:
                 and isinstance(loser_score, (int, float))
                 else 0.0
             )
+            winner_probability = float(winner_score) if isinstance(winner_score, (int, float)) else None
+            loser_probability = float(loser_score) if isinstance(loser_score, (int, float)) else None
             pairs.append(
                 ResidualPair(
                     subject=subject,
@@ -132,6 +194,8 @@ def build_residual_pairs(events: Iterable[Any]) -> list[ResidualPair]:
                     baseline_margin=baseline_margin,
                     weight=weight / total,
                     confidence=confidence,
+                    winner_baseline_probability=winner_probability,
+                    loser_baseline_probability=loser_probability,
                 )
             )
     return pairs
@@ -139,12 +203,31 @@ def build_residual_pairs(events: Iterable[Any]) -> list[ResidualPair]:
 
 def subject_split(subjects: Iterable[str], *, seed: int) -> dict[str, str]:
     """Assign whole subjects deterministically to train/validation/test."""
-    result = {}
-    for subject in sorted(set(subjects)):
-        digest = hashlib.sha256(f"{seed}:{subject}".encode()).digest()
-        bucket = int.from_bytes(digest[:8], "big") % 10
-        result[subject] = "train" if bucket < 7 else ("validation" if bucket < 9 else "test")
-    return result
+    ordered = sorted(
+        set(subjects), key=lambda subject: (hashlib.sha256(f"{seed}:{subject}".encode()).digest(), subject)
+    )
+    if len(ordered) < 3:
+        return dict.fromkeys(ordered, "train")
+    validation_count = max(1, round(len(ordered) * 0.2))
+    test_count = max(1, round(len(ordered) * 0.1))
+    train_count = max(1, len(ordered) - validation_count - test_count)
+    while train_count + validation_count + test_count > len(ordered):
+        if validation_count > test_count and validation_count > 1:
+            validation_count -= 1
+        elif test_count > 1:
+            test_count -= 1
+        else:
+            train_count -= 1
+    return {
+        subject: (
+            "train"
+            if index < train_count
+            else "validation"
+            if index < train_count + validation_count
+            else "test"
+        )
+        for index, subject in enumerate(ordered)
+    }
 
 
 def baseline_signature(weights: dict[str, float]) -> str:
@@ -166,6 +249,7 @@ class ResidualArtifact:
     seed: int
     evaluation: ResidualEvaluation
     trained_at: str
+    profile_generation: int = 0
 
     def delta(self, normalized: dict[str, float]) -> tuple[float, dict[str, float]]:
         missing = [name for name in self.feature_names if name not in normalized]
@@ -182,7 +266,12 @@ class ResidualArtifact:
         return max(-self.delta_max, min(raw, self.delta_max)), contributions
 
     def compatible(
-        self, *, namespace: str, baseline: str, profile_checksum: str | None = None
+        self,
+        *,
+        namespace: str,
+        baseline: str,
+        profile_checksum: str | None = None,
+        profile_generation: int | None = None,
     ) -> tuple[bool, str | None]:
         if namespace != self.namespace:
             return False, "namespace mismatch"
@@ -190,6 +279,8 @@ class ResidualArtifact:
             return False, "baseline configuration mismatch"
         if profile_checksum is not None and profile_checksum != self.profile_checksum:
             return False, "taste profile mismatch"
+        if profile_generation is not None and profile_generation != self.profile_generation:
+            return False, "taste profile generation mismatch"
         return True, None
 
     def save(self, path: Path) -> Path:
@@ -208,6 +299,7 @@ class ResidualArtifact:
                 "seed": np.int64(self.seed),
                 "evaluation_json": unicode_scalar(json.dumps(asdict(self.evaluation))),
                 "trained_at": unicode_scalar(self.trained_at),
+                "profile_generation": np.int64(self.profile_generation),
             },
         )
         return path
@@ -224,6 +316,11 @@ class ResidualArtifact:
             delta_max = float(data["delta_max"])
             if not (0 <= alpha <= 1 and 0 < delta_max <= 2):
                 raise RuntimeError("Residual artifact bounds are invalid")
+            if "profile_generation" not in data.files:
+                raise RuntimeError("Residual artifact profile generation is missing")
+            profile_generation = int(data["profile_generation"])
+            if profile_generation < 0:
+                raise RuntimeError("Residual artifact profile generation is invalid")
             return cls(
                 namespace=decode_unicode_scalar(data["namespace"]),
                 feature_names=names,
@@ -237,6 +334,7 @@ class ResidualArtifact:
                 seed=int(data["seed"]),
                 evaluation=evaluation,
                 trained_at=decode_unicode_scalar(data["trained_at"]),
+                profile_generation=profile_generation,
             )
 
 
@@ -247,6 +345,7 @@ def train_residual(
     baseline: str,
     profile_checksum: str,
     evidence_revision: str,
+    profile_generation: int = 0,
     seed: int = 0,
     alpha: float = 0.5,
     delta_max: float = 0.75,
@@ -263,14 +362,15 @@ def train_residual(
         return None, {"outcome": "no_change", "reason": "no_common_features"}
     split = subject_split(subjects, seed=seed)
     train = [pair for pair in pairs if split[pair.subject] == "train"]
-    held_out = [pair for pair in pairs if split[pair.subject] in {"validation", "test"}]
-    if not train or not held_out:
+    validation = [pair for pair in pairs if split[pair.subject] == "validation"]
+    test = [pair for pair in pairs if split[pair.subject] == "test"]
+    if not train or not validation or not test:
         return None, {"outcome": "no_change", "reason": "insufficient_held_out_subjects"}
     diffs = np.asarray(
         [[pair.winner[name] - pair.loser[name] for name in common] for pair in train],
         dtype=np.float64,
     )
-    margins = np.asarray([pair.baseline_margin for pair in train], dtype=np.float64)
+    margins = np.asarray([_baseline_logit_margin(pair) for pair in train], dtype=np.float64)
     sample_weights = np.asarray([pair.weight for pair in train], dtype=np.float64)
     coefficients = np.zeros(len(common), dtype=np.float64)
     weight_total = float(sample_weights.sum()) or 1.0
@@ -284,26 +384,28 @@ def train_residual(
         coefficients -= step
         if float(np.linalg.norm(step)) < 1e-8:
             break
-    held_diffs = np.asarray(
-        [[pair.winner[name] - pair.loser[name] for name in common] for pair in held_out],
-        dtype=np.float64,
-    )
-    held_margins = np.asarray([pair.baseline_margin for pair in held_out], dtype=np.float64)
-    held_weights = np.asarray([pair.weight for pair in held_out], dtype=np.float64)
-    corrections = alpha * np.clip(held_diffs @ coefficients, -delta_max, delta_max)
-    denominator = float(held_weights.sum()) or 1.0
-    baseline_accuracy = float(np.sum(held_weights * (held_margins > 0)) / denominator)
-    candidate_accuracy = float(np.sum(held_weights * ((held_margins + corrections) > 0)) / denominator)
+    weights = {name: float(weight) for name, weight in zip(common, coefficients, strict=True)}
+    validation_metrics = _evaluate_partition(validation, weights, alpha=alpha, delta_max=delta_max)
+    test_metrics = _evaluate_partition(test, weights, alpha=alpha, delta_max=delta_max)
     evaluation = ResidualEvaluation(
-        baseline_accuracy=baseline_accuracy,
-        candidate_accuracy=candidate_accuracy,
-        improvement=candidate_accuracy - baseline_accuracy,
-        held_out_subjects=len({pair.subject for pair in held_out}),
-        held_out_pairs=len(held_out),
-        mean_abs_adjustment=float(np.mean(np.abs(corrections))),
-        max_abs_adjustment=float(np.max(np.abs(corrections))),
+        baseline_accuracy=validation_metrics["baseline_accuracy"],
+        candidate_accuracy=validation_metrics["candidate_accuracy"],
+        improvement=validation_metrics["improvement"],
+        held_out_subjects=validation_metrics["subjects"],
+        held_out_pairs=validation_metrics["pairs"],
+        mean_abs_adjustment=validation_metrics["mean_abs_adjustment"],
+        max_abs_adjustment=validation_metrics["max_abs_adjustment"],
     )
-    report = {"outcome": "candidate", "evaluation": asdict(evaluation), "feature_names": common}
+    report = {
+        "outcome": "candidate",
+        "evaluation": asdict(evaluation),
+        "feature_names": common,
+        "partitions": {
+            "train": {"subjects": len({pair.subject for pair in train}), "pairs": len(train)},
+            "validation": validation_metrics,
+            "test": test_metrics,
+        },
+    }
     if evaluation.improvement < min_improvement:
         return None, {**report, "outcome": "no_change", "reason": "no_held_out_improvement"}
     return (
@@ -320,6 +422,77 @@ def train_residual(
             seed=seed,
             evaluation=evaluation,
             trained_at=datetime.now(UTC).isoformat(),
+            profile_generation=profile_generation,
         ),
         {**report, "outcome": "activate"},
     )
+
+
+def _pair_baseline_probabilities(pair: ResidualPair) -> tuple[float, float]:
+    if pair.winner_baseline_probability is not None and pair.loser_baseline_probability is not None:
+        return pair.winner_baseline_probability, pair.loser_baseline_probability
+    return 0.5 + pair.baseline_margin / 2.0, 0.5 - pair.baseline_margin / 2.0
+
+
+def _baseline_logit_margin(pair: ResidualPair) -> float:
+    winner, loser = _pair_baseline_probabilities(pair)
+    winner_score = score_residual_candidate(
+        baseline_probability=winner,
+        normalized_features={},
+        weights={},
+        bias=0.0,
+        alpha=0.0,
+        delta_max=1.0,
+    )
+    loser_score = score_residual_candidate(
+        baseline_probability=loser,
+        normalized_features={},
+        weights={},
+        bias=0.0,
+        alpha=0.0,
+        delta_max=1.0,
+    )
+    return winner_score.baseline_logit - loser_score.baseline_logit
+
+
+def _evaluate_partition(
+    pairs: list[ResidualPair], weights: dict[str, float], *, alpha: float, delta_max: float
+) -> dict[str, float | int]:
+    weighted_baseline = 0.0
+    weighted_candidate = 0.0
+    total_weight = 0.0
+    adjustments: list[float] = []
+    for pair in pairs:
+        winner_probability, loser_probability = _pair_baseline_probabilities(pair)
+        winner = score_residual_candidate(
+            baseline_probability=winner_probability,
+            normalized_features={name: pair.winner[name] for name in weights},
+            weights=weights,
+            bias=0.0,
+            alpha=alpha,
+            delta_max=delta_max,
+        )
+        loser = score_residual_candidate(
+            baseline_probability=loser_probability,
+            normalized_features={name: pair.loser[name] for name in weights},
+            weights=weights,
+            bias=0.0,
+            alpha=alpha,
+            delta_max=delta_max,
+        )
+        total_weight += pair.weight
+        weighted_baseline += pair.weight * float(winner.baseline_logit > loser.baseline_logit)
+        weighted_candidate += pair.weight * float(winner.final_logit > loser.final_logit)
+        adjustments.extend((winner.delta * alpha, loser.delta * alpha))
+    denominator = total_weight or 1.0
+    baseline_accuracy = weighted_baseline / denominator
+    candidate_accuracy = weighted_candidate / denominator
+    return {
+        "subjects": len({pair.subject for pair in pairs}),
+        "pairs": len(pairs),
+        "baseline_accuracy": baseline_accuracy,
+        "candidate_accuracy": candidate_accuracy,
+        "improvement": candidate_accuracy - baseline_accuracy,
+        "mean_abs_adjustment": float(np.mean(np.abs(adjustments))),
+        "max_abs_adjustment": float(np.max(np.abs(adjustments))),
+    }

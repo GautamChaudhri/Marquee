@@ -208,6 +208,23 @@ zero-green certification with verified external recovery material, and do not pu
 system. JMC6J is the terminal construction plan; its independent once-over leads directly to
 browser-agent acceptance and operator activation gates rather than another post-plan.
 
+The independent post-JMC6J once-over found that the intended architecture was present but four
+connected correctness paths were not complete: the mandatory onboarding page could not present or
+submit canonical candidate choices, generation-two-and-later taste builds lacked correct
+coordination/retry lineage, readiness confused current evidence with active publications, and the
+residual trainer's held-out approximation did not match deployed per-candidate logit scoring. The
+current green suites also lacked the browser and route coverage needed to reveal those defects.
+
+[`jmc6k-personalization-and-onboarding-correctness-closure.md`](job-system-update/jmc6k-personalization-and-onboarding-correctness-closure.md)
+is the single final corrective plan. It binds selection evidence to archived pipeline runs,
+implements the recoverable candidate-choice UI, serializes movie/TV build generations with
+retry-as-successor, separates evidence/build/publication readiness, and makes residual evaluation
+call the exact production scorer. JMC6K uses the God model tier, runs continuously through internal
+phases, creates its own implementer timeline, requires a fresh end-to-end 49→50→profiles→residual
+lifecycle, and compacts only after full zero-green plus explicit live-smoke certification. After a
+clean independent once-over, the next step is browser-agent acceptance; no additional construction
+plan is expected.
+
 ## Overview
 
 This timeline preserves the existing phase structure from `design/todos.md`

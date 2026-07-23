@@ -7,6 +7,8 @@ import { createServer } from 'node:http';
 
 const PORT = Number(process.env.SYNTHETIC_BACKEND_PORT ?? 3199);
 const DETAIL_JOB_ID = 'detail00000000000000000000000001';
+const ONBOARDING_JOB_ID = 'onboarding00000000000000000001';
+const ONBOARDING_RUN_ID = 'onboardingreview000000000000001';
 const now = '2026-07-16T12:00:00Z';
 
 const presentation = {
@@ -126,13 +128,161 @@ function json(res, status, body) {
 	res.end(JSON.stringify(body));
 }
 
+const onboardingStatus = () => ({
+	state: 'collecting',
+	active_positive_subjects: 12,
+	active_negative_subjects: 3,
+	pending_positive_subjects: 0,
+	revision: 'a'.repeat(64),
+	thresholds: { required: 50, encouraged: 75, strong_target: 100 },
+	build_revision: null,
+	build_job_id: null,
+	profile_generations: {},
+	consumer_reloaded: false,
+	next_action: 'choose another poster',
+	failure: null,
+	libraries: {
+		movies: {
+			active: { generation: null, checksum: null, revision: null, compatible: false },
+			desired_revision: null,
+			desired_generation: null,
+			build: {
+				id: null,
+				job_id: null,
+				state: null,
+				revision: null,
+				expected_generation: null,
+				retry_of: null,
+				failure: null
+			},
+			reload_state: { expected_checksum: null, observed_checksum: null, ready: false },
+			residual: { active: false, compatible: false, dormant: false },
+			rebuild_due: false,
+			update_attention: false
+		},
+		tv: {
+			active: {
+				generation: 2,
+				checksum: 'b'.repeat(64),
+				revision: 'c'.repeat(64),
+				compatible: true
+			},
+			desired_revision: 'c'.repeat(64),
+			desired_generation: 2,
+			build: {
+				id: 'fixture-tv-build',
+				job_id: 'fixturetvbuild000000000000000001',
+				state: 'succeeded',
+				revision: 'c'.repeat(64),
+				expected_generation: 2,
+				retry_of: null,
+				failure: null
+			},
+			reload_state: {
+				expected_checksum: 'b'.repeat(64),
+				observed_checksum: 'b'.repeat(64),
+				ready: true
+			},
+			residual: { active: false, compatible: false, dormant: false },
+			rebuild_due: false,
+			update_attention: false
+		}
+	},
+	initial_profiles_ready: false,
+	personalized_scoring_available: false,
+	rebuild_due: false,
+	residual_dormant: false,
+	active_jobs: [],
+	review: {
+		run_id: ONBOARDING_RUN_ID,
+		analysis_job_id: ONBOARDING_JOB_ID,
+		url: `/onboarding?review=${ONBOARDING_RUN_ID}`
+	}
+});
+
+const onboardingReview = () => ({
+	version: 1,
+	run_id: ONBOARDING_RUN_ID,
+	analysis_job_id: ONBOARDING_JOB_ID,
+	status: 'completed',
+	subject: { kind: 'movie', title: 'Synthetic First Movie', year: 2026 },
+	review_revision: 'd'.repeat(64),
+	candidates: [
+		{
+			candidate_id: 'e'.repeat(32),
+			image_url: `/api/pipeline/runs/${ONBOARDING_RUN_ID}/posters/synthetic-choice.svg`,
+			source: 'Synthetic archive',
+			eligibility: {
+				status: 'survived_objective_filters',
+				ocr: { summary: 'Title text verified.' }
+			},
+			facts: { width: 1000, height: 1500, language: 'en' }
+		}
+	],
+	rejections: { available: true },
+	allowed_actions: { choose: true, hate: true },
+	links: {
+		activity: `/projection-room?view=queue&job=${ONBOARDING_JOB_ID}`,
+		detail: `/projection-room/jobs/${ONBOARDING_JOB_ID}`,
+		run: `/api/pipeline/runs/${ONBOARDING_RUN_ID}`
+	}
+});
+
 const server = createServer((req, res) => {
+	const url = new URL(req.url ?? '/', `http://127.0.0.1:${PORT}`);
+	const path = url.pathname;
+	if (
+		req.method === 'POST' &&
+		(path === '/api/onboarding/choose' || path === '/api/onboarding/hate')
+	) {
+		const decision = path.endsWith('/choose') ? 'choose' : 'hate';
+		json(res, 200, {
+			decision,
+			event_id: `synthetic-${decision}-event`,
+			exemplar_id: `synthetic-${decision}-exemplar`,
+			deployment_job_id: decision === 'choose' ? 'syntheticdeployment000000000000001' : null,
+			disposition: 'created',
+			status: onboardingStatus()
+		});
+		return;
+	}
+	if (req.method === 'POST' && path === '/api/onboarding/start') {
+		json(res, 200, {
+			subject: { kind: 'movie', id: 42, title: 'Synthetic First Movie', year: 2026 },
+			analysis_job: {
+				job_id: ONBOARDING_JOB_ID,
+				disposition: 'created',
+				phase: 'queued',
+				snapshot_url: `/api/jobs/${ONBOARDING_JOB_ID}/snapshot`,
+				detail_url: `/projection-room/jobs/${ONBOARDING_JOB_ID}`
+			},
+			status: onboardingStatus()
+		});
+		return;
+	}
+	if (req.method === 'POST' && path === '/api/onboarding/complete') {
+		json(res, 200, { revision: 'a'.repeat(64), build_jobs: [], status: onboardingStatus() });
+		return;
+	}
 	if (req.method !== 'GET') {
 		json(res, 200, {});
 		return;
 	}
-	const url = new URL(req.url ?? '/', `http://127.0.0.1:${PORT}`);
-	const path = url.pathname;
+	if (path === '/api/onboarding/status') {
+		json(res, 200, onboardingStatus());
+		return;
+	}
+	if (path === `/api/onboarding/runs/${ONBOARDING_RUN_ID}/review`) {
+		json(res, 200, onboardingReview());
+		return;
+	}
+	if (path === `/api/pipeline/runs/${ONBOARDING_RUN_ID}/posters/synthetic-choice.svg`) {
+		res.writeHead(200, { 'content-type': 'image/svg+xml' });
+		res.end(
+			'<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="1500"><rect width="100%" height="100%" fill="#263248"/><text x="500" y="750" text-anchor="middle" fill="#f5c96c" font-size="56">Synthetic poster</text></svg>'
+		);
+		return;
+	}
 
 	if (path === '/api/jobs') {
 		const view = url.searchParams.get('view') ?? 'queue';

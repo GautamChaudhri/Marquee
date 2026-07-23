@@ -221,7 +221,7 @@ def test_all_documents_are_strict_current_v1_and_policy_is_not_client_input() ->
         "poster_pipeline": {"movie_id": 1, "title": "Example"},
         "poster_pipeline_batch": {"scope": "selected", "selection_count": 1},
         "poster_pipeline_tv_batch": {"scope": "series", "selection_count": 1},
-        "taste_rebuild": {},
+        "taste_rebuild": {"expected_generation": 0},
         "taste_map": {},
         "taste_enrich": {},
         "ranking_residual_train": {},

@@ -26,7 +26,12 @@ from marquee.ml.visual_features import (
     standardize_width,
     title_geometry,
 )
-from marquee.pipeline.scorer import ResidualScorer, WeightedScorer, select_scorer
+from marquee.pipeline.scorer import (
+    ResidualRuntimeContext,
+    ResidualScorer,
+    WeightedScorer,
+    select_scorer,
+)
 from marquee.pipeline.types import FeatureVector
 
 
@@ -275,9 +280,20 @@ def _residual(config: PipelineSettings, feature_names: list[str]) -> ResidualArt
     )
 
 
+def _residual_context(config: PipelineSettings) -> ResidualRuntimeContext:
+    return ResidualRuntimeContext(
+        library="movies",
+        baseline_signature=baseline_signature(config.scorer_weights),
+        profile_checksum="a" * 64,
+        profile_generation=0,
+    )
+
+
 def test_residual_refuses_missing_features():
     config = PipelineSettings()
-    scorer = ResidualScorer(WeightedScorer(config), _residual(config, ["dino_knn"]))
+    scorer = ResidualScorer(
+        WeightedScorer(config), _residual(config, ["dino_knn"]), _residual_context(config)
+    )
     features = _features()
     normalize_features(features)  # dino absent
     with pytest.raises(RuntimeError, match="dino_knn"):
@@ -296,7 +312,7 @@ def test_select_scorer_auto_prefers_valid_residual(tmp_path: Path):
     path = tmp_path / "residual.npz"
     config = PipelineSettings(SCORER="auto")
     _residual(config, ["knn_sim"]).save(path)
-    scorer = select_scorer(config, artifact_path=path)
+    scorer = select_scorer(config, artifact_path=path, context=_residual_context(config))
     assert scorer.name == "residual"
 
 

@@ -17,6 +17,14 @@
 
 **Recommended model tier:** **God**
 
+> **Post-implementation correction:** The independent once-over after `jmc6j-complete` found that
+> the product UI did not complete the candidate-choice journey, profile generations after the first
+> were not coordinated correctly, readiness conflated evidence with publication lineage, and
+> residual activation evaluated different math from production scoring. These defects are closed by
+> [JMC6K personalization and onboarding correctness](jmc6k-personalization-and-onboarding-correctness-closure.md).
+> This document remains the originating design and historical implementation record; JMC6K is
+> authoritative where the two differ.
+
 ## 1. Objective
 
 Replace Marquee's conflicting cold-start/onboarding authorities with one durable, canonical taste

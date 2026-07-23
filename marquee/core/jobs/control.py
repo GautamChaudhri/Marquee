@@ -257,6 +257,18 @@ async def retry(
         _check_expected(original, expected_fence_token)
         _require_action(original, JobAction.RETRY)
         definition = JOB_DEFINITION_REGISTRY.get(original.type)
+        if original.type == "taste_rebuild":
+            from marquee.core.taste_preferences import (  # noqa: PLC0415
+                TastePreferenceError,
+                assert_profile_build_retryable,
+            )
+
+            try:
+                await assert_profile_build_retryable(session, job_id=original.id)
+            except TastePreferenceError as exc:
+                raise _conflict(
+                    original, "action_not_allowed", str(exc), action="retry"
+                ) from exc
         batch = await session.get(JobBatch, original.id)
         if batch is not None:
             from marquee.core.jobs.batches import retry_batch
@@ -288,7 +300,7 @@ async def retry(
                 original_job_id=original.id,
                 replacement_job_id=replacement.id,
             )
-        elif original.type != "system_noop":
+        elif original.type not in {"system_noop", "taste_rebuild"}:
             raise _conflict(
                 original,
                 "unmigrated_job_command",
@@ -298,11 +310,17 @@ async def retry(
             request = definition.request.validate(
                 original.request, version=original.payload_version
             ).model_dump(mode="json", exclude_none=True)
+            successor_profile_build_id = uuid4().hex if original.type == "taste_rebuild" else None
+            if successor_profile_build_id is not None:
+                request["profile_build_id"] = successor_profile_build_id
             now = datetime.now(UTC)
             replacement_id = uuid4().hex
             generation = 1
             priority = original.priority
             dedupe_key = f"marquee:{replacement_id}:{generation}"
+            retry_entrypoint = (
+                definition.entrypoint if original.type == "taste_rebuild" else ENTRYPOINT_CONTROL
+            )
             configuration = configuration_provider.snapshot_for(definition.configuration_keys)
             replacement = Job(
                 id=replacement_id,
@@ -314,7 +332,7 @@ async def retry(
                 dispatch_generation=generation,
                 priority=priority,
                 eligible_at=now,
-                idempotency_key=f"system_noop:retry-{original.id}-{expected_fence_token}",
+                idempotency_key=f"{original.type}:retry-{original.id}-{expected_fence_token}",
                 configuration_version=configuration.version,
                 configuration_snapshot=configuration.values,
                 parent_id=original.parent_id,
@@ -334,13 +352,32 @@ async def retry(
                 job_id=replacement_id,
                 generation=generation,
                 pgq_job_id=None,
-                entrypoint=ENTRYPOINT_CONTROL,
+                entrypoint=retry_entrypoint,
                 dedupe_key=dedupe_key,
                 priority=priority,
                 eligible_at=now,
                 disposition="active",
             )
             session.add_all([replacement, dispatch])
+            if original.type == "taste_rebuild":
+                from marquee.core.taste_preferences import (  # noqa: PLC0415
+                    TastePreferenceError,
+                    record_profile_build_retry_successor,
+                )
+
+                try:
+                    if successor_profile_build_id is None:
+                        raise TastePreferenceError("profile retry successor identity is unavailable")
+                    await record_profile_build_retry_successor(
+                        session,
+                        original_job_id=original.id,
+                        successor_job_id=replacement_id,
+                        successor_build_id=successor_profile_build_id,
+                    )
+                except TastePreferenceError as exc:
+                    raise _conflict(
+                        original, "action_not_allowed", str(exc), action="retry"
+                    ) from exc
             await job_event_writer.append(
                 session,
                 job_id=replacement_id,
@@ -352,7 +389,7 @@ async def retry(
             await pgqueuer_gateway.enqueue(
                 session,
                 job_id=replacement_id,
-                entrypoint=ENTRYPOINT_CONTROL,
+                entrypoint=retry_entrypoint,
                 payload_version=PAYLOAD_VERSION,
                 dispatch_generation=generation,
                 priority=priority,

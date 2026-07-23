@@ -1156,6 +1156,46 @@ export interface FeedbackResult {
 }
 
 // ── Onboarding (canonical taste collection) ──────────────────────────────────
+export interface OnboardingProfileLibrary {
+	active: {
+		generation: number | null;
+		checksum: string | null;
+		revision: string | null;
+		compatible: boolean;
+	};
+	desired_revision: string | null;
+	desired_generation: number | null;
+	build: {
+		id: string | null;
+		job_id: string | null;
+		state:
+			| 'queued'
+			| 'running'
+			| 'succeeded'
+			| 'no_change'
+			| 'superseded'
+			| 'failed'
+			| 'cancelled'
+			| null;
+		revision: string | null;
+		expected_generation: number | null;
+		retry_of: string | null;
+		failure: Record<string, unknown> | null;
+	};
+	reload_state: {
+		expected_checksum: string | null;
+		observed_checksum: string | null;
+		ready: boolean;
+	};
+	residual: {
+		active: boolean;
+		compatible: boolean;
+		dormant: boolean;
+	};
+	rebuild_due: boolean;
+	update_attention: boolean;
+}
+
 export interface OnboardingStatus {
 	state: 'collecting' | 'eligible' | 'building' | 'personalized' | 'degraded';
 	active_positive_subjects: number;
@@ -1169,6 +1209,11 @@ export interface OnboardingStatus {
 	consumer_reloaded: boolean;
 	next_action: string;
 	failure: Record<string, unknown> | null;
+	libraries: Record<'movies' | 'tv', OnboardingProfileLibrary>;
+	initial_profiles_ready: boolean;
+	personalized_scoring_available: boolean;
+	rebuild_due: boolean;
+	residual_dormant: boolean;
 	active_jobs: Array<{
 		job_id: string;
 		job_type: string;
@@ -1177,6 +1222,40 @@ export interface OnboardingStatus {
 		subject_reference: string | null;
 		activity_link: string;
 	}>;
+	review: {
+		run_id: string;
+		analysis_job_id: string;
+		url: string;
+	} | null;
+}
+
+/** Neutral, server-owned candidate review reconstructed from one pipeline archive. */
+export interface OnboardingReview {
+	version: number;
+	run_id: string;
+	analysis_job_id: string;
+	status: string;
+	subject: Record<string, unknown>;
+	review_revision: string;
+	candidates: Array<{
+		candidate_id: string;
+		image_url: string;
+		source: string;
+		eligibility: { status: string; ocr: unknown };
+		facts: Record<string, string | number | boolean>;
+	}>;
+	rejections: { available: boolean };
+	allowed_actions: { choose: boolean; hate: boolean };
+	links: { activity: string; detail: string; run: string };
+}
+
+export interface OnboardingDecision {
+	decision: 'choose' | 'hate';
+	event_id: string;
+	exemplar_id: string | null;
+	deployment_job_id: string | null;
+	disposition: string;
+	status: OnboardingStatus;
 }
 
 /** One rankable unit in the sortable ranking list — a whole design stack (its

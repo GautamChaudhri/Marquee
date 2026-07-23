@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
+from hashlib import sha256
 from pathlib import Path
 from uuid import uuid4
 
@@ -41,7 +42,14 @@ from marquee.core.jobs.delivery import deliver_job
 from marquee.core.jobs.progress import JobProgress
 from marquee.database import _get_session_factory
 from marquee.main import app
-from marquee.models import Job, Movie, PipelineRun
+from marquee.models import (
+    Job,
+    JobArtifact,
+    Movie,
+    PipelineRun,
+    PosterPreferenceEvent,
+    TasteExemplar,
+)
 from marquee.models.job import JobDispatch
 from marquee.models.ml_publication import MlActivePublication
 from tests.support.jmc6i_certification import (
@@ -103,6 +111,89 @@ async def _terminal_job(job_id: str) -> Job:
         job = await session.scalar(select(Job).where(Job.id == job_id))
         assert job is not None
         return job
+
+
+async def _seed_canonical_taste_evidence(db, data_dir: Path, *, count: int = 50) -> None:
+    """Create the minimum trusted preference evidence required by the rebuild route."""
+    job_id = uuid4().hex
+    source_job = Job(
+        id=job_id,
+        type="poster_deploy",
+        payload_version=1,
+        request={},
+        phase="running",
+        desired_state="run",
+        fence_token=1,
+        root_id=job_id,
+        trigger_kind="manual",
+        feature_area="posters",
+        presentation_family="posters",
+        subject_kind="movie",
+        subject_reference="jmc6i-taste-evidence",
+        subject_snapshot={"version": 1, "kind": "movie", "title": "JMC6I taste evidence"},
+    )
+    db.add(source_job)
+    await db.flush()
+    for index in range(count):
+        payload = f"jmc6i canonical taste evidence {index}".encode()
+        digest = sha256(payload).hexdigest()
+        storage_key = f"jmc6i/taste-evidence/{index}.jpg"
+        physical_artifact = data_dir / storage_key
+        physical_artifact.parent.mkdir(parents=True, exist_ok=True)
+        physical_artifact.write_bytes(payload)
+        artifact = JobArtifact(
+            job_id=source_job.id,
+            kind="taste_exemplar",
+            name=f"example-{index}.jpg",
+            status="available",
+            storage_key=storage_key,
+            content_type="image/jpeg",
+            size_bytes=len(payload),
+            checksum=digest,
+            retention_class="pinned",
+            artifact_metadata={"fixture": "jmc6i"},
+        )
+        db.add(artifact)
+        await db.flush()
+        event = PosterPreferenceEvent(
+            id=uuid4().hex,
+            version=1,
+            idempotency_key=f"jmc6i:taste-evidence:{index}",
+            namespace="global",
+            subject_kind="movie",
+            subject_reference=f"movie-{index}",
+            subject_snapshot={"id": index, "title": f"Movie {index}"},
+            action="selection",
+            exposed_candidates=[{"candidate_id": f"candidate-{index}"}],
+            presentation_order=[f"candidate-{index}"],
+            training_context={"fixture": "jmc6i"},
+            confidence="explicit",
+            initiator={"kind": "test"},
+        )
+        db.add(event)
+        db.add(
+            TasteExemplar(
+                id=uuid4().hex,
+                version=1,
+                namespace="global",
+                polarity="positive",
+                evidence_weight=1.0,
+                evidence_source="explicit_selection",
+                subject_kind="movie",
+                subject_reference=f"movie-{index}",
+                subject_snapshot={"id": index, "title": f"Movie {index}"},
+                retained_artifact_id=artifact.id,
+                preference_event_id=event.id,
+                deployment_job_id=source_job.id,
+                initiator={"kind": "test"},
+                asset_key=artifact.storage_key,
+                checksum=digest,
+                content_type="image/jpeg",
+                status="active",
+                activated_at=datetime.now(UTC),
+            )
+        )
+    await db.commit()
 
 
 def _write_valid_taste_profile(path: Path) -> None:
@@ -361,8 +452,9 @@ async def test_poster_pipeline_scenario_producer_to_consumer(
     assert progress["overall"]["percent"] is not None
 
 
-async def _activate_profile_via_route(db, monkeypatch) -> None:
+async def _activate_profile_via_route(db, data_dir: Path, monkeypatch) -> None:
     """Producer→delivery for taste_rebuild used as a staged prerequisite."""
+    await _seed_canonical_taste_evidence(db, data_dir)
     captured = _controlled_runner(
         monkeypatch,
         stage_files=lambda workspace: _write_valid_taste_profile(workspace / "profile.npz"),
@@ -385,6 +477,7 @@ async def test_taste_rebuild_scenario_producer_to_consumer(
 ) -> None:
     """taste_rebuild: route producer → GPU delivery → native artifact → fenced
     activation → taste profile API consumer observes the active publication."""
+    await _seed_canonical_taste_evidence(db, data_dir)
     captured = _controlled_runner(
         monkeypatch,
         stage_files=lambda workspace: _write_valid_taste_profile(workspace / "profile.npz"),
@@ -428,7 +521,7 @@ async def test_taste_map_scenario_producer_to_consumer(
 ) -> None:
     """taste_map: consumes the active profile, publishes a native map, and the
     map API consumer loads the activated generation."""
-    await _activate_profile_via_route(db, monkeypatch)
+    await _activate_profile_via_route(db, data_dir, monkeypatch)
 
     def stage_map(workspace: Path) -> None:
         assert (workspace / "profile.npz").is_file(), (
@@ -472,7 +565,7 @@ async def test_taste_enrich_scenario_producer_to_consumer(
 ) -> None:
     """taste_enrich: consumes the active profile and advances the same
     taste_profile authority; the profiles API observes the successor."""
-    await _activate_profile_via_route(db, monkeypatch)
+    await _activate_profile_via_route(db, data_dir, monkeypatch)
 
     def stage_enriched(workspace: Path) -> None:
         assert (workspace / "source-profile.npz").is_file()

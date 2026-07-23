@@ -8,7 +8,7 @@ Every submission maps to the scenarios in design 09 §3–6:
   - reject_all  → 1 ``explicit_reject`` negative for the auto-pick (scenario D)
 
 A single ``event_id`` ties together all rows a submission writes, so undo is
-exact. Feedback schedules a canonical learned-head successor; it never mutates
+exact. Feedback schedules a canonical ranking-residual successor; it never mutates
 configured exemplar folders or active publications in the API process.
 """
 
@@ -150,7 +150,7 @@ def _label_record(
         "ts": ts,
         "run_id": run.run_id,
         # These four keep their v1/v2 names and movie-only semantics — the
-        # head trainer parses them by name; do not rename. TV runs fill the
+        # canonical residual evidence builder preserves them by name. TV runs fill the
         # analogous identity via the additive media_type/library/series_id/
         # season_id fields below instead.
         "movie_id": run.movie_id,

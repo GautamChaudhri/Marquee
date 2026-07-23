@@ -2104,6 +2104,43 @@ export interface paths {
 		patch?: never;
 		trace?: never;
 	};
+	'/api/onboarding/hate': {
+		parameters: {
+			query?: never;
+			header?: never;
+			path?: never;
+			cookie?: never;
+		};
+		get?: never;
+		put?: never;
+		/** Onboarding Hate */
+		post: operations['onboarding_hate_api_onboarding_hate_post'];
+		delete?: never;
+		options?: never;
+		head?: never;
+		patch?: never;
+		trace?: never;
+	};
+	'/api/onboarding/runs/{run_id}/review': {
+		parameters: {
+			query?: never;
+			header?: never;
+			path?: never;
+			cookie?: never;
+		};
+		/**
+		 * Onboarding Review
+		 * @description Render neutral choice cards from the verified terminal run archive.
+		 */
+		get: operations['onboarding_review_api_onboarding_runs__run_id__review_get'];
+		put?: never;
+		post?: never;
+		delete?: never;
+		options?: never;
+		head?: never;
+		patch?: never;
+		trace?: never;
+	};
 	'/api/onboarding/start': {
 		parameters: {
 			query?: never;
@@ -3307,7 +3344,7 @@ export interface paths {
 		put?: never;
 		/**
 		 * Retrain Taste
-		 * @description Submit an immutable taste-profile publication job.
+		 * @description Submit the coordinator-owned canonical taste profile rebuild, if one is due.
 		 */
 		post: operations['retrain_taste_api_taste_retrain_post'];
 		delete?: never;
@@ -4061,16 +4098,12 @@ export interface components {
 		};
 		/** ChoosePosterRequest */
 		ChoosePosterRequest: {
-			/** Artifact Id */
-			artifact_id: number;
-			/** Candidate Reference */
-			candidate_reference: string;
+			/** Candidate Id */
+			candidate_id: string;
 			/** Idempotency Key */
 			idempotency_key: string;
-			/** Movie Id */
-			movie_id: number;
-			/** Presentation Order */
-			presentation_order: string[];
+			/** Review Revision */
+			review_revision: string;
 			/** Run Id */
 			run_id: string;
 		};
@@ -4349,6 +4382,17 @@ export interface components {
 		HTTPValidationError: {
 			/** Detail */
 			detail?: components['schemas']['ValidationError'][];
+		};
+		/** HatePosterRequest */
+		HatePosterRequest: {
+			/** Candidate Id */
+			candidate_id: string;
+			/** Idempotency Key */
+			idempotency_key: string;
+			/** Review Revision */
+			review_revision: string;
+			/** Run Id */
+			run_id: string;
 		};
 		/** HealSettingsUpdate */
 		HealSettingsUpdate: {
@@ -5736,18 +5780,23 @@ export interface components {
 			/** Series Id */
 			series_id?: number | null;
 		};
-		/** TasteRetrainRequest */
+		/**
+		 * TasteRetrainRequest
+		 * @description Manually request the canonical evidence coordinator for one library.
+		 */
 		TasteRetrainRequest: {
 			/**
 			 * Library
 			 * @default movies
+			 * @enum {string}
 			 */
-			library: string;
+			library: 'movies' | 'tv';
 			/**
 			 * Source
-			 * @default training_dir
+			 * @default canonical_revision
+			 * @constant
 			 */
-			source: string;
+			source: 'canonical_revision';
 		};
 		/** TextValue */
 		TextValue: {
@@ -9828,6 +9877,70 @@ export interface operations {
 				};
 				content: {
 					'application/json': unknown;
+				};
+			};
+		};
+	};
+	onboarding_hate_api_onboarding_hate_post: {
+		parameters: {
+			query?: never;
+			header?: never;
+			path?: never;
+			cookie?: never;
+		};
+		requestBody: {
+			content: {
+				'application/json': components['schemas']['HatePosterRequest'];
+			};
+		};
+		responses: {
+			/** @description Successful Response */
+			200: {
+				headers: {
+					[name: string]: unknown;
+				};
+				content: {
+					'application/json': unknown;
+				};
+			};
+			/** @description Validation Error */
+			422: {
+				headers: {
+					[name: string]: unknown;
+				};
+				content: {
+					'application/json': components['schemas']['HTTPValidationError'];
+				};
+			};
+		};
+	};
+	onboarding_review_api_onboarding_runs__run_id__review_get: {
+		parameters: {
+			query?: never;
+			header?: never;
+			path: {
+				run_id: string;
+			};
+			cookie?: never;
+		};
+		requestBody?: never;
+		responses: {
+			/** @description Successful Response */
+			200: {
+				headers: {
+					[name: string]: unknown;
+				};
+				content: {
+					'application/json': unknown;
+				};
+			};
+			/** @description Validation Error */
+			422: {
+				headers: {
+					[name: string]: unknown;
+				};
+				content: {
+					'application/json': components['schemas']['HTTPValidationError'];
 				};
 			};
 		};

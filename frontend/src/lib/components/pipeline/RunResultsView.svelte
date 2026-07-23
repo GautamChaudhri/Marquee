@@ -586,7 +586,7 @@
 		return error instanceof Error ? error.message : fallback;
 	}
 
-	// ── Bucket ranking (Favorites/Hate/Neutral → pairwise learned head) ──────────
+	// ── Feedback buckets (Favorites/Hate/Neutral → canonical residual evidence) ──
 	let rankMode = $state(false);
 
 	/** Rankable units: one per design stack (members move together) when stacks

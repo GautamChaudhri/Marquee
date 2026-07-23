@@ -17,7 +17,12 @@ from marquee.ml.residual import (
     subject_split,
     train_residual,
 )
-from marquee.pipeline.scorer import ResidualScorer, WeightedScorer, select_scorer
+from marquee.pipeline.scorer import (
+    ResidualRuntimeContext,
+    ResidualScorer,
+    WeightedScorer,
+    select_scorer,
+)
 from marquee.pipeline.types import FeatureVector
 
 
@@ -98,7 +103,7 @@ def _pairs(*, baseline_margin: float) -> list[ResidualPair]:
 
 def test_training_requires_held_out_improvement_and_preserves_no_change():
     artifact, report = train_residual(
-        _pairs(baseline_margin=-0.2),
+        _pairs(baseline_margin=-0.05),
         namespace="movies",
         baseline="baseline-v1",
         profile_checksum="a" * 64,
@@ -144,7 +149,16 @@ def test_residual_scorer_is_bounded_and_missing_artifact_is_baseline_identical(t
         evaluation=ResidualEvaluation(0.5, 0.6, 0.1, 5, 20, 0.05, 0.1),
         trained_at="2026-07-22T00:00:00+00:00",
     )
-    scorer = ResidualScorer(baseline, artifact)
+    scorer = ResidualScorer(
+        baseline,
+        artifact,
+        ResidualRuntimeContext(
+            library="movies",
+            baseline_signature=baseline_signature(config.scorer_weights),
+            profile_checksum="a" * 64,
+            profile_generation=0,
+        ),
+    )
     final, explanation = scorer.score(features)
     baseline_score = expected[0]
     baseline_logit = np.log(baseline_score / (1 - baseline_score))

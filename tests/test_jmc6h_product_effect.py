@@ -48,7 +48,7 @@ from marquee.ml.residual import ResidualArtifact, ResidualEvaluation
 from marquee.models import Job, JobArtifact, Movie, PipelineRun
 from marquee.models.job import JobAttempt
 from marquee.models.ml_publication import MlActivePublication
-from marquee.pipeline.scorer import ResidualScorer, WeightedScorer
+from marquee.pipeline.scorer import ResidualRuntimeContext, ResidualScorer, WeightedScorer
 from tests.support.jmc5b_harness import Fence
 
 _FENCE = 7
@@ -622,7 +622,7 @@ async def test_ranking_residual_publishes_native_loadable_artifact(db, data_dir,
 
     async def fake_resolve(_session, *, family):
         if family == "taste_profile:movies":
-            return SimpleNamespace(checksum=profile_checksum)
+            return SimpleNamespace(checksum=profile_checksum, generation=1)
         return None
 
     monkeypatch.setattr(
@@ -645,6 +645,7 @@ async def test_ranking_residual_publishes_native_loadable_artifact(db, data_dir,
             seed=0,
             evaluation=ResidualEvaluation(0.5, 0.75, 0.25, 5, 20, 0.1, 0.2),
             trained_at=datetime.now(UTC).isoformat(),
+            profile_generation=params["profile_generation"],
         )
         residual.save(workspace / "residual.npz")
         return RunnerOutcome(
@@ -679,7 +680,16 @@ async def test_ranking_residual_publishes_native_loadable_artifact(db, data_dir,
     artifact_path = classified.root.resolved() / classified.key.value
     loaded = ResidualArtifact.load(artifact_path)
     assert loaded.feature_names == ["knn_sim"]
-    scorer = ResidualScorer(WeightedScorer(pipeline_settings), loaded)
+    scorer = ResidualScorer(
+        WeightedScorer(pipeline_settings),
+        loaded,
+        ResidualRuntimeContext(
+            library="movies",
+            baseline_signature=loaded.baseline_signature,
+            profile_checksum=profile_checksum,
+            profile_generation=1,
+        ),
+    )
     score, _ = scorer.score(SimpleNamespace(normalized={"knn_sim": 1.0}))
     assert 0.0 < score < 1.0
 
@@ -693,3 +703,4 @@ async def test_ranking_residual_publishes_native_loadable_artifact(db, data_dir,
         assert detail.status_code == 200, detail.text
         assert detail.json()["summary"]["top_features"][0]["name"] == "knn_sim"
         assert detail.json()["summary"]["evaluation"]["improvement"] == 0.25
+        assert detail.json()["summary"]["profile_generation"] == 1

@@ -2,7 +2,7 @@
 
 When a user overrides the auto-pick with a poster that was rejected *before*
 its detail features were computed (resolution gate, or any earlier stop), the
-learned head still wants a full feature vector for that label. Computing it
+bounded residual trainer still needs a full feature vector for that label. Computing it
 at feedback time is a rare, one-off cost — far cheaper than computing detail
 features for every rejected poster on every run.
 
