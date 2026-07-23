@@ -33,7 +33,7 @@ from marquee.pipeline.runner import (
     place_outputs,
     run_sync_stages,
 )
-from marquee.pipeline.scorer import select_scorer
+from marquee.pipeline.scorer import ResidualRuntimeContext, select_scorer
 from marquee.pipeline.types import CandidateScore
 
 _FIXTURE_SUBDIR = "candidates"
@@ -126,6 +126,7 @@ async def run_poster_pipeline(
     should_cancel: ShouldCancel | None = None,
     run_id: str | None = None,
     residual_path: Path | None = None,
+    residual_context: ResidualRuntimeContext | None = None,
     personalization_mode: str = "personalized",
 ) -> PosterPipelineOutput:
     """Run the real pipeline for one subject inside ``out_dir`` and summarize it."""
@@ -211,6 +212,7 @@ async def run_poster_pipeline(
         should_cancel=should_cancel,
         ocr_gate=ocr_gate,
         residual_path=residual_path,
+        residual_context=residual_context,
         personalization_mode=personalization_mode,
     )
 
@@ -261,7 +263,7 @@ async def run_poster_pipeline(
         source_count=source_count,
         candidate_count=source_count,
         scorer_name=(
-            select_scorer(artifact_path=residual_path).name
+            select_scorer(artifact_path=residual_path, context=residual_context).name
             if sync.ranked and personalization_mode == "personalized"
             else None
         ),

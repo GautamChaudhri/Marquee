@@ -50,6 +50,8 @@ from marquee.models.system_metrics import SystemMetricsSample
 from marquee.models.taste_preference import (
     PosterPreferenceEvent,
     TasteExemplar,
+    TasteProfileBuild,
+    TasteProfileCoordinator,
     TasteProfileRevision,
 )
 
@@ -85,6 +87,8 @@ __all__ = [
     "SystemMetricsSample",
     "PosterPreferenceEvent",
     "TasteExemplar",
+    "TasteProfileBuild",
+    "TasteProfileCoordinator",
     "TasteProfileRevision",
     "Movie",
     "PipelineRun",

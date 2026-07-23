@@ -1,7 +1,7 @@
 {
   "version": 1,
   "plan": "jmc6i",
-  "note": "JMC6I-owned executable certification scope. Each scenario node executes the declared producer through PgQueuer delivery, the execution kernel, the fixed-runner boundary, durable typed progress, the terminal decision, and the declared API consumer in the current pytest session. Live-capability nodes are opt-in real-model smokes; when not selected they are reported unavailable, never passed. Learned-head training, learned scoring, feedback semantics, and onboarding are deferred to JMC6J and may not be certified here.",
+  "note": "Historical JMC6I executable-certification scope. Each scenario node executes the declared producer through PgQueuer delivery, the execution kernel, the fixed-runner boundary, durable typed progress, the terminal decision, and the declared API consumer in the current pytest session. Live-capability nodes are opt-in real-model smokes; when not selected they are reported unavailable, never passed. The former deferred JMC6J scope is superseded by the JMC6K current-contract and browser certification; this historical manifest is not a personalization closure authority.",
   "in_scope": {
     "system_noop": {
       "scenarios": [
@@ -42,9 +42,7 @@
     }
   },
   "deferred_jmc6j": [
-    "learned_head_train product behavior, training inputs, activation, and progress",
-    "learned scorer selection and scoring behavior (marquee/pipeline/scorer.py, marquee/ml/learned_head.py, marquee/ml/head_trainer.py)",
-    "onboarding product behavior (marquee/api/routes/onboarding.py, marquee/onboarding/**, onboarding frontend)",
-    "feedback semantics and personalization activation"
+    "historical pre-JMC6J residual-training and scorer scope; superseded by JMC6K",
+    "historical pre-JMC6J onboarding and feedback scope; superseded by JMC6K"
   ]
 }

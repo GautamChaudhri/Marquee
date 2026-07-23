@@ -244,7 +244,10 @@ def test_registry_surfaces_match_b0_freeze() -> None:
     )
     assert not REGISTERED_HANDLER_TYPES
     assert sorted(ROUTE_CONSTRUCTED_TYPES) == sorted(
-        (current_job_types(frozen["registry"]["route_constructed_types"]) - {"radarr_upgrade"})
+        (
+            current_job_types(frozen["registry"]["route_constructed_types"])
+            - {"radarr_upgrade", "taste_rebuild"}
+        )
         | {
             "letterbox_reencode",
             "letterbox_reencode_publish",

@@ -31,6 +31,7 @@ from marquee.core.jobs.ml_publication import (
 )
 from marquee.core.jobs.runner_progress import RunnerProgressBridge
 from marquee.core.pipeline_config import pipeline_settings
+from marquee.core.taste_preferences import mark_profile_build_running, record_profile_build_terminal
 from marquee.ml.residual import ResidualArtifact, baseline_signature
 from marquee.models import (
     JobArtifact,
@@ -40,8 +41,7 @@ from marquee.models import (
 )
 
 # Runner-native trainer stages -> the registered ML progress vocabulary (JMC6I
-# §6.2). The learned-head operation deliberately has no bridge here: its progress
-# and behavior are reserved to JMC6J.
+# §6.2). Each active ML publication below has an explicit bridge.
 _TASTE_PROFILE_STAGE_MAP = {
     "starting": "collecting",
     "clip": "features",
@@ -102,6 +102,7 @@ async def _publish_native_taste_profile(
     expected_generation: int,
     seed: int,
     revision_digest: str | None = None,
+    profile_build_id: str | None = None,
 ) -> dict[str, object]:
     """Run the real taste trainer in the contained runner, then validate/register/activate."""
     from marquee.core.jobs.internal_runner_host import (  # noqa: PLC0415
@@ -276,6 +277,18 @@ async def _publish_native_taste_profile(
                 revision.failure = None
             elif revision.state != "failed":
                 revision.state = "published"
+            await session.commit()
+    if profile_build_id is not None:
+        async with context.session_factory() as session:
+            await record_profile_build_terminal(
+                session,
+                build_id=profile_build_id,
+                job_id=context.delivery.canonical_job_id,
+                state="succeeded" if activation.activated else "superseded",
+                result_generation=activation.generation,
+                result_checksum=activation.checksum,
+                consumer_reload_checksum=activation.checksum if activation.activated else None,
+            )
             await session.commit()
     summary = outcome.summary if isinstance(outcome.summary, dict) else {}
     return MlPublicationResultV1(
@@ -643,6 +656,7 @@ async def _publish_native_ranking_residual(
                 "snapshot_checksum": snapshot_checksum,
                 "baseline_signature": baseline_signature(weights),
                 "profile_checksum": profile.checksum,
+                "profile_generation": profile.generation,
                 "min_subjects": configuration.get("RESIDUAL_MIN_SUBJECTS", 25),
                 "min_pairs": configuration.get("RESIDUAL_MIN_PAIRS", 200),
                 "min_improvement": 0.02,
@@ -675,7 +689,11 @@ async def _publish_native_ranking_residual(
 
     residual_path = workspace_dir / "residual.npz"
     residual = ResidualArtifact.load(residual_path)
-    if residual.evidence_revision != actual_revision or residual.profile_checksum != profile.checksum:
+    if (
+        residual.evidence_revision != actual_revision
+        or residual.profile_checksum != profile.checksum
+        or residual.profile_generation != profile.generation
+    ):
         raise RuntimeError("residual artifact lineage does not match its frozen inputs")
     if not await _ml_owns_fence(context):
         context.workspace.quarantine(code="stale_fence", summary="ranking residual fenced")
@@ -697,6 +715,7 @@ async def _publish_native_ranking_residual(
             "snapshot_checksum": snapshot_checksum,
             "baseline_signature": residual.baseline_signature,
             "profile_checksum": residual.profile_checksum,
+            "profile_generation": residual.profile_generation,
             "evaluation": summary.get("evaluation"),
             "subject_count": int(summary.get("subjects", 0) or 0),
             "pair_count": int(summary.get("pairs", 0) or 0),
@@ -732,12 +751,21 @@ async def _publish_native_ranking_residual(
 async def execute_taste_rebuild(context: ExecutionContext) -> dict[str, object]:
     request = TasteRebuildRequestV1.model_validate(context.request)
     try:
+        if request.profile_build_id is not None:
+            async with context.session_factory() as session:
+                await mark_profile_build_running(
+                    session,
+                    build_id=request.profile_build_id,
+                    job_id=context.delivery.canonical_job_id,
+                )
+                await session.commit()
         return await _publish_native_taste_profile(
             context,
             library=request.library,
             expected_generation=request.expected_generation,
             seed=request.seed,
             revision_digest=request.revision,
+            profile_build_id=request.profile_build_id,
         )
     except BaseException as exc:
         if request.revision is not None:
@@ -756,6 +784,22 @@ async def execute_taste_rebuild(context: ExecutionContext) -> dict[str, object]:
                         "job_id": context.delivery.canonical_job_id,
                     }
                     await session.commit()
+        if request.profile_build_id is not None:
+            async with context.session_factory() as session:
+                await record_profile_build_terminal(
+                    session,
+                    build_id=request.profile_build_id,
+                    job_id=context.delivery.canonical_job_id,
+                    state="cancelled" if isinstance(exc, asyncio.CancelledError) else "failed",
+                    failure={
+                        "reason": "cancelled"
+                        if isinstance(exc, asyncio.CancelledError)
+                        else "build_failed",
+                        "error_type": type(exc).__name__,
+                        "job_id": context.delivery.canonical_job_id,
+                    },
+                )
+                await session.commit()
         raise
 
 

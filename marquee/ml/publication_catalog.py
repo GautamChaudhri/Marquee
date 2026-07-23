@@ -198,6 +198,7 @@ def _residual_payload(path: Path) -> dict[str, Any]:
         "namespace": residual.namespace,
         "evidence_revision": residual.evidence_revision,
         "profile_checksum": residual.profile_checksum,
+        "profile_generation": residual.profile_generation,
         "baseline_signature": residual.baseline_signature,
         "alpha": residual.alpha,
         "delta_max": residual.delta_max,

@@ -642,7 +642,7 @@ class Settings(BaseSettings):
         default=300, description="Cooldown between batch letterbox detections."
     )
     RATE_TASTE_RETRAIN_SECONDS: int = Field(
-        default=60, description="Cooldown between learned-head retrains."
+        default=60, description="Cooldown between ranking-residual retrains."
     )
     RATE_TASTE_MAP_REBUILD_SECONDS: int = Field(
         default=300, description="Cooldown between taste-map rebuilds."

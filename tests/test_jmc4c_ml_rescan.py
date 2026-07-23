@@ -58,7 +58,6 @@ async def installed_pgqueuer(db) -> Queries:
 @pytest.mark.asyncio
 async def test_ml_routes_submit_generation_snapshots_without_manual_activation(client, db) -> None:
     routes = (
-        ("/api/taste/retrain", "taste_rebuild", "taste_profile", "gpu"),
         ("/api/taste/map/rebuild", "taste_map", "taste_map", "cpu"),
         ("/api/taste/enrich", "taste_enrich", "taste_profile", "cpu"),
         (
@@ -89,6 +88,10 @@ async def test_ml_routes_submit_generation_snapshots_without_manual_activation(c
     activation = await client.post("/api/taste/profiles/untrusted/activate")
     assert activation.status_code == 404
 
+    canonical_only = await client.post("/api/taste/retrain")
+    assert canonical_only.status_code == 409
+    assert "canonical taste evidence" in canonical_only.json()["detail"]
+
 
 @pytest.mark.asyncio
 async def test_rescan_route_is_canonical_media_read_submission(client, db) -> None:
@@ -104,7 +107,7 @@ async def test_rescan_route_is_canonical_media_read_submission(client, db) -> No
 
 
 def test_c4_documents_are_strict_bounded_and_nonmutating() -> None:
-    assert TasteRebuildRequestV1().expected_generation == 0
+    assert TasteRebuildRequestV1(expected_generation=0).expected_generation == 0
     assert TasteMapRequestV1().seed == 0
     assert TasteEnrichRequestV1().library == "movies"
     assert RankingResidualTrainRequestV1().library == "movies"

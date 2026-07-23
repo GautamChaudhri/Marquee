@@ -54,7 +54,12 @@ from marquee.pipeline.features import FeatureExtractor, load_cached_embedding
 from marquee.pipeline.gate import PosterGate
 from marquee.pipeline.ocr_filter import PosterTextFilter
 from marquee.pipeline.output import OutputResult, place_gated, place_ranked
-from marquee.pipeline.scorer import select_scorer
+from marquee.pipeline.scorer import (
+    ResidualCompatibilityError,
+    ResidualRuntimeContext,
+    WeightedScorer,
+    select_scorer,
+)
 from marquee.pipeline.stacker import assign_stacks
 from marquee.pipeline.types import (
     BoundingBox,
@@ -658,6 +663,7 @@ def run_sync_stages(
     should_cancel: ShouldCancel | None = None,
     ocr_gate: OcrGateContext | None = None,
     residual_path: Path | None = None,
+    residual_context: ResidualRuntimeContext | None = None,
     personalization_mode: str = "personalized",
 ) -> SyncOutcome:
     """All CPU/GPU-bound stages, run off the event loop via asyncio.to_thread."""
@@ -900,7 +906,7 @@ def run_sync_stages(
     # Stage 4b: detail features + the remaining hard gate.
     stage_started = _stage_start("detail-features", total=len(ocr_survivors), progress=progress)
     diagnostic_scorer = (
-        select_scorer(artifact_path=residual_path)
+        select_scorer(artifact_path=residual_path, context=residual_context)
         if personalization_mode == "personalized"
         else None
     )
@@ -929,7 +935,16 @@ def run_sync_stages(
             continue
         record.features = detail_result
         if diagnostic_scorer is not None:
-            _, record.contributions = diagnostic_scorer.score(record.features)
+            try:
+                _, record.contributions = diagnostic_scorer.score(record.features)
+            except RuntimeError as exc:
+                if pipeline_settings.SCORER == "residual":
+                    raise ResidualCompatibilityError(
+                        f"forced residual cannot score this feature schema: {exc}"
+                    ) from exc
+                logger.warning("SCORER | weighted (auto: residual dormant: %s)", exc)
+                diagnostic_scorer = WeightedScorer()
+                _, record.contributions = diagnostic_scorer.score(record.features)
         _log_detail_features(feature_extractor, record)
 
         record.stage_reached = "gate"

@@ -16,6 +16,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
     text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
@@ -200,6 +201,98 @@ class TasteProfileRevision(Base):
     failure: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class TasteProfileBuild(Base):
+    """One immutable movie or TV profile-build lineage owned by its coordinator."""
+
+    __tablename__ = "taste_profile_builds"
+    __table_args__ = (
+        UniqueConstraint("job_id", name="uq_taste_profile_builds_job"),
+        CheckConstraint(
+            "library IN ('movies', 'tv')", name="ck_taste_profile_builds_library"
+        ),
+        CheckConstraint(
+            "state IN ('queued', 'running', 'succeeded', 'no_change', 'superseded', 'failed', 'cancelled')",
+            name="ck_taste_profile_builds_state",
+        ),
+        CheckConstraint(
+            "expected_generation >= 0", name="ck_taste_profile_builds_expected_generation"
+        ),
+        CheckConstraint(
+            "result_generation IS NULL OR result_generation >= 0",
+            name="ck_taste_profile_builds_result_generation",
+        ),
+        CheckConstraint(
+            "result_checksum IS NULL OR length(result_checksum) = 64",
+            name="ck_taste_profile_builds_result_checksum",
+        ),
+        CheckConstraint(
+            "consumer_reload_checksum IS NULL OR length(consumer_reload_checksum) = 64",
+            name="ck_taste_profile_builds_reload_checksum",
+        ),
+        Index("ix_taste_profile_builds_library_created", "library", "created_at"),
+        Index("ix_taste_profile_builds_revision", "revision_digest"),
+        Index(
+            "uq_taste_profile_builds_inflight_library",
+            "library",
+            unique=True,
+            postgresql_where=text("state IN ('queued', 'running')"),
+            sqlite_where=text("state IN ('queued', 'running')"),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    revision_digest: Mapped[str] = mapped_column(
+        ForeignKey("taste_profile_revisions.digest", ondelete="RESTRICT"), nullable=False
+    )
+    library: Mapped[str] = mapped_column(String(8), nullable=False)
+    expected_generation: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    job_id: Mapped[str] = mapped_column(
+        ForeignKey("jobs.id", ondelete="RESTRICT"), nullable=False
+    )
+    state: Mapped[str] = mapped_column(String(16), nullable=False)
+    result_generation: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    result_checksum: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    consumer_reload_checksum: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    failure: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    supersedes_build_id: Mapped[str | None] = mapped_column(
+        ForeignKey("taste_profile_builds.id", ondelete="RESTRICT"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class TasteProfileCoordinator(Base):
+    """The durable desired-revision and in-flight cursor for one native library."""
+
+    __tablename__ = "taste_profile_coordinators"
+    __table_args__ = (
+        CheckConstraint(
+            "library IN ('movies', 'tv')", name="ck_taste_profile_coordinators_library"
+        ),
+        CheckConstraint(
+            "desired_generation IS NULL OR desired_generation >= 0",
+            name="ck_taste_profile_coordinators_desired_generation",
+        ),
+    )
+
+    library: Mapped[str] = mapped_column(String(8), primary_key=True)
+    desired_revision_digest: Mapped[str | None] = mapped_column(
+        ForeignKey("taste_profile_revisions.digest", ondelete="RESTRICT"), nullable=True
+    )
+    desired_generation: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    inflight_build_id: Mapped[str | None] = mapped_column(
+        ForeignKey("taste_profile_builds.id", ondelete="RESTRICT"), nullable=True
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()

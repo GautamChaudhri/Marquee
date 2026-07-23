@@ -216,6 +216,7 @@ def _run_poster_single(manifest: dict[str, Any], control: ControlWriter) -> dict
         run_poster_pipeline,
     )
     from marquee.pipeline.runner import ProgressEvent, write_run_json  # noqa: PLC0415
+    from marquee.pipeline.scorer import ResidualRuntimeContext  # noqa: PLC0415
 
     params = manifest.get("params")
     params = params if isinstance(params, dict) else {}
@@ -237,6 +238,32 @@ def _run_poster_single(manifest: dict[str, Any], control: ControlWriter) -> dict
     personalization_mode = params.get("personalization_mode", "collecting")
     if personalization_mode not in {"collecting", "personalized"}:
         raise ProtocolError("poster_single manifest has an invalid personalization mode")
+    profile = params.get("taste_profile") if isinstance(params.get("taste_profile"), dict) else {}
+    residual = (
+        params.get("ranking_residual") if isinstance(params.get("ranking_residual"), dict) else {}
+    )
+    runtime_context = None
+    if personalization_mode == "personalized" and residual:
+        checksum = profile.get("checksum")
+        generation = profile.get("generation")
+        residual_checksum = residual.get("checksum")
+        baseline = params.get("baseline_signature")
+        if (
+            isinstance(checksum, str)
+            and isinstance(generation, int)
+            and isinstance(residual_checksum, str)
+            and isinstance(baseline, str)
+        ):
+            runtime_context = ResidualRuntimeContext(
+                library="movies" if subject.media_type == "movie" else "tv",
+                baseline_signature=baseline,
+                profile_checksum=checksum,
+                profile_generation=generation,
+                artifact_id=residual.get("artifact_id")
+                if isinstance(residual.get("artifact_id"), int)
+                else None,
+                artifact_checksum=residual_checksum,
+            )
 
     def _emit_progress(event: ProgressEvent) -> None:
         frame: dict[str, Any] = {
@@ -265,6 +292,7 @@ def _run_poster_single(manifest: dict[str, Any], control: ControlWriter) -> dict
             progress=_emit_progress,
             run_id=run_id,
             residual_path=residual_path,
+            residual_context=runtime_context,
             personalization_mode=personalization_mode,
         )
     )
@@ -469,6 +497,7 @@ def _run_ranking_residual(manifest: dict[str, Any], control: ControlWriter) -> d
         namespace=str(params.get("library", "movies")),
         baseline=str(params.get("baseline_signature", "")),
         profile_checksum=str(params.get("profile_checksum", "")),
+        profile_generation=int(params.get("profile_generation", 0)),
         evidence_revision=str(params.get("evidence_revision", "")),
         seed=int(params.get("seed", 0)),
         min_subjects=int(params.get("min_subjects", 25)),

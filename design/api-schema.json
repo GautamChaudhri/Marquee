@@ -1683,15 +1683,11 @@
       },
       "ChoosePosterRequest": {
         "properties": {
-          "artifact_id": {
-            "minimum": 1.0,
-            "title": "Artifact Id",
-            "type": "integer"
-          },
-          "candidate_reference": {
-            "maxLength": 160,
+          "candidate_id": {
+            "maxLength": 64,
             "minLength": 1,
-            "title": "Candidate Reference",
+            "pattern": "^[a-f0-9]+$",
+            "title": "Candidate Id",
             "type": "string"
           },
           "idempotency_key": {
@@ -1700,19 +1696,12 @@
             "title": "Idempotency Key",
             "type": "string"
           },
-          "movie_id": {
-            "minimum": 1.0,
-            "title": "Movie Id",
-            "type": "integer"
-          },
-          "presentation_order": {
-            "items": {
-              "type": "string"
-            },
-            "maxItems": 100,
-            "minItems": 1,
-            "title": "Presentation Order",
-            "type": "array"
+          "review_revision": {
+            "maxLength": 64,
+            "minLength": 64,
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Review Revision",
+            "type": "string"
           },
           "run_id": {
             "maxLength": 80,
@@ -1722,11 +1711,9 @@
           }
         },
         "required": [
-          "movie_id",
-          "artifact_id",
           "run_id",
-          "candidate_reference",
-          "presentation_order",
+          "candidate_id",
+          "review_revision",
           "idempotency_key"
         ],
         "title": "ChoosePosterRequest",
@@ -2661,6 +2648,44 @@
           }
         },
         "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "HatePosterRequest": {
+        "properties": {
+          "candidate_id": {
+            "maxLength": 64,
+            "minLength": 1,
+            "pattern": "^[a-f0-9]+$",
+            "title": "Candidate Id",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Idempotency Key",
+            "type": "string"
+          },
+          "review_revision": {
+            "maxLength": 64,
+            "minLength": 64,
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Review Revision",
+            "type": "string"
+          },
+          "run_id": {
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Run Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id",
+          "candidate_id",
+          "review_revision",
+          "idempotency_key"
+        ],
+        "title": "HatePosterRequest",
         "type": "object"
       },
       "HealSettingsUpdate": {
@@ -7277,14 +7302,20 @@
         "type": "object"
       },
       "TasteRetrainRequest": {
+        "description": "Manually request the canonical evidence coordinator for one library.",
         "properties": {
           "library": {
             "default": "movies",
+            "enum": [
+              "movies",
+              "tv"
+            ],
             "title": "Library",
             "type": "string"
           },
           "source": {
-            "default": "training_dir",
+            "const": "canonical_revision",
+            "default": "canonical_revision",
             "title": "Source",
             "type": "string"
           }
@@ -14397,6 +14428,86 @@
         ]
       }
     },
+    "/api/onboarding/hate": {
+      "post": {
+        "operationId": "onboarding_hate_api_onboarding_hate_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HatePosterRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Onboarding Hate",
+        "tags": [
+          "onboarding"
+        ]
+      }
+    },
+    "/api/onboarding/runs/{run_id}/review": {
+      "get": {
+        "description": "Render neutral choice cards from the verified terminal run archive.",
+        "operationId": "onboarding_review_api_onboarding_runs__run_id__review_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Onboarding Review",
+        "tags": [
+          "onboarding"
+        ]
+      }
+    },
     "/api/onboarding/start": {
       "post": {
         "operationId": "onboarding_start_api_onboarding_start_post",
@@ -16868,7 +16979,7 @@
     },
     "/api/taste/retrain": {
       "post": {
-        "description": "Submit an immutable taste-profile publication job.",
+        "description": "Submit the coordinator-owned canonical taste profile rebuild, if one is due.",
         "operationId": "retrain_taste_api_taste_retrain_post",
         "requestBody": {
           "content": {

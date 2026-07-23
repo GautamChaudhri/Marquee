@@ -235,13 +235,16 @@ class TasteRebuildRequestV1(StrictDocument):
     source: Literal["training_dir", "library", "canonical_revision"] = "training_dir"
     library: Literal["movies", "tv"] = "movies"
     revision: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
-    expected_generation: int = Field(default=0, ge=0)
+    profile_build_id: str | None = Field(default=None, pattern=r"^[a-f0-9]{32}$")
+    expected_generation: int = Field(ge=0)
     seed: int = Field(default=0, ge=0, le=2**31 - 1)
 
     @model_validator(mode="after")
     def require_canonical_revision(self) -> TasteRebuildRequestV1:
         if (self.source == "canonical_revision") != (self.revision is not None):
             raise ValueError("canonical taste rebuild source requires exactly one revision digest")
+        if (self.source == "canonical_revision") != (self.profile_build_id is not None):
+            raise ValueError("canonical taste rebuild source requires one profile build lineage")
         return self
 
 

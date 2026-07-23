@@ -43,6 +43,8 @@
     "subtitle_tracks",
     "system_metrics_samples",
     "taste_exemplars",
+    "taste_profile_builds",
+    "taste_profile_coordinators",
     "taste_profile_revisions",
     "worker_nodes"
   ],
