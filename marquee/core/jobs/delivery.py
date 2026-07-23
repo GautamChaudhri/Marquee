@@ -45,8 +45,10 @@ from marquee.core.jobs.process_identity import read_boot_id
 from marquee.core.jobs.process_launcher import ProcessLauncher
 from marquee.core.jobs.safety_gates import (
     SafetyGateCancelledError,
+    SafetyGateConnectionLostError,
     SafetyGateHandle,
     SafetyGateService,
+    SafetyGateTimeoutError,
     SafetyRequirements,
     requirements_for_policy,
 )
@@ -271,6 +273,117 @@ async def _publish_wait(job_id: str, generation: int, reason: str) -> None:
         )
 
 
+def _admission_deferral_delay(defer_count: int) -> timedelta | None:
+    """Bound gate contention before it becomes a canonical operational failure."""
+    delays = (timedelta(seconds=1), timedelta(seconds=5), timedelta(seconds=30))
+    if defer_count < 1 or defer_count > len(delays):
+        return None
+    return delays[defer_count - 1]
+
+
+async def _defer_pre_admission(
+    payload: TransportPayload,
+    preflight: PreflightDelivery,
+    transport_job: PgQueuerJob,
+    *,
+    cause: str,
+) -> timedelta | None:
+    """Persist a pending deferral without creating or fencing an attempt.
+
+    PgQueuer owns the ensuing retry transaction. The pending canonical event is
+    deliberately recoverable: the transport-intent monitor either observes the
+    queued retry or uses the supported PgQueuer retry primitive on the same
+    ticket lineage if a callback dies between these two durability boundaries.
+    """
+    factory = _get_session_factory()
+    exhausted = False
+    async with factory() as session, session.begin():
+        job = await session.scalar(
+            select(Job).where(Job.id == payload.job_id).with_for_update()
+        )
+        dispatch = await session.scalar(
+            select(JobDispatch)
+            .where(
+                JobDispatch.job_id == payload.job_id,
+                JobDispatch.generation == payload.dispatch_generation,
+            )
+            .with_for_update()
+        )
+        if (
+            job is None
+            or dispatch is None
+            or job.phase != "queued"
+            or job.desired_state != "run"
+            or job.dispatch_generation != payload.dispatch_generation
+            or job.pgq_job_id != int(transport_job.id)
+            or dispatch.pgq_job_id != int(transport_job.id)
+            or dispatch.disposition != "active"
+        ):
+            return None
+        existing = job.attention or {}
+        previous_count = (
+            int(existing.get("defer_count", 0))
+            if existing.get("code") == "admission_deferral_pending"
+            else 0
+        )
+        defer_count = previous_count + 1
+        delay = _admission_deferral_delay(defer_count)
+        now = datetime.now(UTC)
+        if delay is None:
+            error = preflight.definition.error.validate(
+                {
+                    "code": "admission_deferral_exhausted",
+                    "summary": "Safety-gate admission exhausted its bounded deferral budget.",
+                    "diagnostics": {"defer_count": defer_count, "cause": cause},
+                },
+                version=preflight.definition.error.current_version,
+            ).model_dump(mode="json")
+            job.phase = "terminal"
+            job.outcome = "failed"
+            job.error = error
+            job.terminal_at = now
+            job.attention = None
+            dispatch.disposition = "failed"
+            dispatch.ended_at = now
+            await job_event_writer.append(
+                session,
+                job_id=job.id,
+                event_key="job.failed",
+                state="failed",
+                message="Safety-gate admission deferral budget exhausted",
+                detail=error,
+            )
+            exhausted = True
+        else:
+            next_eligible_at = now + delay
+            job.eligible_at = next_eligible_at
+            dispatch.eligible_at = next_eligible_at
+            job.attention = {
+                "code": "admission_deferral_pending",
+                "summary": "Safety-gate admission will be deferred by PgQueuer",
+                "cause": cause,
+                "defer_count": defer_count,
+                "delay_seconds": delay.total_seconds(),
+                "next_eligible_at": next_eligible_at.isoformat(),
+            }
+            await job_event_writer.append(
+                session,
+                job_id=job.id,
+                event_key="job.admission_deferral_requested",
+                state="queued",
+                message="Safety-gate admission requested bounded PgQueuer deferral",
+                detail={
+                    "cause": cause,
+                    "defer_count": defer_count,
+                    "delay_seconds": delay.total_seconds(),
+                },
+            )
+            return delay
+    if exhausted:
+        raise DeliveryRejectedError("safety-gate admission deferral budget exhausted")
+    return None
+
+
 async def _admission_cancelled(
     payload: TransportPayload, context: Context
 ) -> bool:
@@ -291,6 +404,27 @@ async def _admission_cancelled(
         or row.phase == "terminal"
         or row.desired_state != "run"
     )
+
+
+async def _cancellation_intent_won(ownership: AttemptOwnership) -> bool:
+    """Confirm this exact active writer lost completion to durable cancellation intent."""
+    factory = _get_session_factory()
+    async with factory() as session:
+        return (
+            await session.scalar(
+                select(Job.id)
+                .where(
+                    Job.id == ownership.job_id,
+                    Job.current_attempt_id == ownership.attempt_id,
+                    Job.fence_token == ownership.fence_token,
+                    Job.dispatch_generation == ownership.dispatch_generation,
+                    Job.phase.in_(("running", "stopping")),
+                    Job.desired_state == "cancel",
+                    Job.outcome.is_(None),
+                )
+                .limit(1)
+            )
+        ) is not None
 
 
 async def _apply_pre_admission_intent(payload: TransportPayload) -> None:
@@ -881,6 +1015,29 @@ async def deliver_job(
         if context.cancellation.cancel_called:
             raise asyncio.CancelledError from None
         return
+    except (SafetyGateTimeoutError, SafetyGateConnectionLostError) as exc:
+        delay = await _defer_pre_admission(
+            payload,
+            preflight,
+            transport_job,
+            cause=(
+                "safety_gate_timeout"
+                if isinstance(exc, SafetyGateTimeoutError)
+                else "safety_gate_connection_lost"
+            ),
+        )
+        if delay is None:
+            await _apply_pre_admission_intent(payload)
+            return
+        # The deferral record is durable before PgQueuer receives RetryRequested.
+        # If cancellation wins inside that narrow callback window, terminalize the
+        # queued intent instead of reviving it through the retry primitive.
+        if await _admission_cancelled(payload, context):
+            await _apply_pre_admission_intent(payload)
+            if context.cancellation.cancel_called:
+                raise asyncio.CancelledError from None
+            return
+        raise RetryRequested(delay, "safety-gate admission deferred") from exc
 
     admitted: AdmittedDelivery | None = None
     try:
@@ -1126,6 +1283,28 @@ async def deliver_job(
             )
             raise DeliveryRejectedError("canonical terminal durability is uncertain") from exc
         if disposition != WriteDisposition.APPLIED:
+            # A public cancellation may have won after the handler completed but
+            # before this fenced success write. This delivery still owns process
+            # death proof, so it seals the cancellation with its current fence
+            # rather than leaving a stopping attempt for recovery.
+            if await _cancellation_intent_won(ownership):
+                cancelled = await writer.fail(
+                    asyncio.CancelledError("cancellation won before terminal publication"),
+                    cancelled=True,
+                )
+                if cancelled == WriteDisposition.APPLIED:
+                    await _seal_attempt_log(
+                        log_sink,
+                        outcome="cancelled",
+                        attempt_outcome="cancelled",
+                        summary="cancellation won before terminal publication",
+                    )
+                    await _register_terminal_artifact(ownership, source="error")
+                    workspace.quarantine(
+                        code="cancelled",
+                        summary="cancellation won before terminal publication",
+                    )
+                    return
             await _seal_attempt_log(
                 log_sink,
                 outcome="unsafe",

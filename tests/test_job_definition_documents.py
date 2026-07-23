@@ -25,6 +25,7 @@ from marquee.core.jobs.documents import (
     DocumentAdapter,
     DocumentKind,
     EmptyDocumentV1,
+    LetterboxPreviewRequestV1,
     SafeJobErrorV1,
     StrictDocument,
     UnsupportedDocumentVersionError,
@@ -194,3 +195,30 @@ def test_clients_have_no_fields_for_server_execution_policy() -> None:
         "progress_policy",
         "actions",
     }
+
+
+def test_letterbox_preview_request_has_one_bounded_subject_and_crop() -> None:
+    request = LetterboxPreviewRequestV1(
+        media_file_id=1,
+        movie_id=2,
+        minute=600,
+        candidate_minutes=(5, 15, 25),
+        crop_top=100,
+        crop_bottom=100,
+        source_width=3840,
+        source_height=2160,
+    )
+    assert request.candidate_minutes == (5, 15, 25)
+
+    with pytest.raises(ValidationError):
+        LetterboxPreviewRequestV1(media_file_id=1, movie_id=2, episode_id=3)
+    with pytest.raises(ValidationError):
+        LetterboxPreviewRequestV1(media_file_id=1, movie_id=2, candidate_minutes=(1, 1))
+    with pytest.raises(ValidationError):
+        LetterboxPreviewRequestV1(
+            media_file_id=1,
+            movie_id=2,
+            source_height=100,
+            crop_top=50,
+            crop_bottom=50,
+        )

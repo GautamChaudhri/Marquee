@@ -5,6 +5,8 @@
 	import { aspectRatio, bytesH, confidenceTone } from '$lib/display';
 	import { toast } from '$lib/toast';
 	import FeatureActivityPanel from '$lib/activity/components/FeatureActivityPanel.svelte';
+	import { listArtifacts } from '$lib/activity/client';
+	import type { JobSnapshotResponse } from '$lib/activity/types';
 	import {
 		getLetterboxTvDetail,
 		getLetterboxTvEpisodeDetail,
@@ -19,7 +21,8 @@
 		replaceOriginal,
 		restoreOriginal,
 		deleteArtifact,
-		replaceReadyTvArtifacts
+		replaceReadyTvArtifacts,
+		submitTvEpisodePreview
 	} from '$lib/api/letterbox';
 	import SectionHeader from '$lib/components/SectionHeader.svelte';
 	import EpisodeHeatmap from '$lib/components/subtitles/EpisodeHeatmap.svelte';
@@ -48,19 +51,18 @@
 	// Everything else (widescreen/sampled_widescreen/variable/reencoded/etc.) is settled,
 	// so its detail view shows exactly one confirmation frame.
 	const PAIR_PREVIEW_BUCKETS = new Set(['candidate', 'tagged']);
-	// Buckets whose preview frame(s) are worth warming ahead of expand — settled
-	// Widescreen buckets only need their single before frame.
-	const PREFETCH_BUCKETS = new Set(['candidate', 'tagged', 'widescreen', 'sampled_widescreen']);
-
 	const expandedEpisodeIds = new SvelteSet<number>();
 	const episodeDetails = new SvelteMap<number, LetterboxEpisodeDetail>();
 	const episodeDetailErrors = new SvelteMap<number, string>();
 	const episodePreviewMinutes = new SvelteMap<number, number>();
+	type PreviewMode = 'before' | 'after';
+	const episodePreviewUrls = new SvelteMap<number, Record<PreviewMode, string | null>>();
+	const previewJobTargets = new SvelteMap<string, { episodeId: number; mode: PreviewMode }>();
+	const previewLoadingKeys = new SvelteSet<string>();
 	const expandedConfidenceEpisodes = new SvelteMap<number, boolean>();
 	const loadingEpisodeIds = new SvelteSet<number>();
 	const collapsedSeasons = new SvelteSet<number>();
 	let collapseStateInitialized = $state(false);
-	let prefetchGeneration = 0;
 
 	async function toggleEpisodeExpand(episodeId: number) {
 		if (expandedEpisodeIds.has(episodeId)) {
@@ -94,12 +96,6 @@
 		episodePreviewMinutes.set(episodeId, minute);
 	}
 
-	function warmPreview(url?: string | null) {
-		if (!url || typeof Image === 'undefined') return;
-		const img = new Image();
-		img.src = url;
-	}
-
 	let { data } = $props();
 
 	let detail = $state(untrack(() => data.detail));
@@ -116,15 +112,6 @@
 		}
 		collapseStateInitialized = true;
 	});
-
-	function episodePreviewUrl(
-		episodeId: number,
-		mode: 'before' | 'after',
-		minute: number,
-		exact = false
-	) {
-		return `/api/letterbox/tv/${seriesId}/episodes/${episodeId}/preview?mode=${mode}&minute=${minute}${exact ? '&exact=true' : ''}`;
-	}
 
 	function toggleSeasonCollapse(seasonNumber: number) {
 		if (collapsedSeasons.has(seasonNumber)) {
@@ -173,54 +160,72 @@
 		}
 	}
 
-	async function runPrefetchPass() {
-		if (!detail) return;
-		const episodes = detail.seasons.flatMap((season: LetterboxTvSeason) =>
-			season.episodes.filter((ep: LetterboxTvEpisode) => PREFETCH_BUCKETS.has(ep.bucket))
-		);
-		if (episodes.length === 0) return;
-
-		const runId = ++prefetchGeneration;
-		let nextIndex = 0;
-		const workerCount = Math.min(4, episodes.length);
-
-		const loadNext = async () => {
-			while (runId === prefetchGeneration && nextIndex < episodes.length) {
-				const episode = episodes[nextIndex++];
-				if (!episode || episodeDetails.has(episode.episode_id)) continue;
-				try {
-					const detailRow = await getLetterboxTvEpisodeDetail(fetch, seriesId, episode.episode_id);
-					if (runId !== prefetchGeneration) return;
-					episodeDetails.set(episode.episode_id, detailRow);
-					warmPreview(detailRow.preview_urls?.before);
-					if (PAIR_PREVIEW_BUCKETS.has(episode.bucket)) {
-						warmPreview(detailRow.preview_urls?.after);
-					}
-				} catch {
-					if (runId !== prefetchGeneration) return;
-				}
-			}
-		};
-
-		await Promise.all(Array.from({ length: workerCount }, () => loadNext()));
-	}
-
 	onMount(() => {
-		void runPrefetchPass();
 		void loadReencodeArtifacts();
-
-		return () => {
-			prefetchGeneration += 1;
-		};
 	});
 
-	function handleJobSettled() {
-		prefetchGeneration += 1;
+	function previewKey(episodeId: number, mode: PreviewMode) {
+		return `${episodeId}:${mode}`;
+	}
+
+	function previewLoading(episodeId: number, mode: PreviewMode) {
+		return previewLoadingKeys.has(previewKey(episodeId, mode));
+	}
+
+	async function requestEpisodePreview(
+		episodeId: number,
+		mode: PreviewMode,
+		minute: number,
+		exact: boolean
+	) {
+		const key = previewKey(episodeId, mode);
+		if (previewLoadingKeys.has(key)) return;
+		previewLoadingKeys.add(key);
+		try {
+			const result = await submitTvEpisodePreview(fetch, seriesId, episodeId, {
+				mode,
+				minute,
+				exact
+			});
+			previewJobTargets.set(result.job_id, { episodeId, mode });
+			bindResult(result);
+			toast(`${mode === 'before' ? 'Before' : 'After'} preview queued`, 'info');
+		} catch (e) {
+			previewLoadingKeys.delete(key);
+			toast(e instanceof Error ? e.message : 'Could not queue preview', 'bad');
+		}
+	}
+
+	async function handleJobSettled(snapshot: JobSnapshotResponse) {
+		const previewTarget = previewJobTargets.get(snapshot.job_id);
+		if (previewTarget) {
+			previewLoadingKeys.delete(previewKey(previewTarget.episodeId, previewTarget.mode));
+			if (snapshot.status.outcome === 'succeeded') {
+				try {
+					const artifacts = await listArtifacts(fetch, snapshot.job_id);
+					const artifact = artifacts.items.find(
+						(item) => item.kind === 'preview_image' && item.available && item.download_url
+					);
+					if (artifact?.download_url) {
+						const current = episodePreviewUrls.get(previewTarget.episodeId) ?? {
+							before: null,
+							after: null
+						};
+						episodePreviewUrls.set(previewTarget.episodeId, {
+							...current,
+							[previewTarget.mode]: artifact.download_url
+						});
+					}
+				} catch (e) {
+					toast(e instanceof Error ? e.message : 'Could not load preview artifact', 'bad');
+				}
+			}
+			return;
+		}
 		episodeDetails.clear();
 		episodeDetailErrors.clear();
 		void (async () => {
 			await refreshDetail();
-			await runPrefetchPass();
 			await loadReencodeArtifacts();
 		})();
 	}
@@ -703,7 +708,8 @@
 					'letterbox_reencode',
 					'letterbox_reencode_publish',
 					'letterbox_reencode_restore',
-					'letterbox_reencode_discard'
+					'letterbox_reencode_discard',
+					'letterbox_preview'
 				],
 				subject_kind: 'series',
 				subject_reference: [String(seriesId)]
@@ -1053,53 +1059,88 @@
 																							0
 																						)
 																					: null}
-																			{@const beforeUrl = exactPreview
-																				? episodePreviewUrl(
-																						ep.episode_id,
-																						'before',
-																						previewMinute,
-																						true
-																					)
-																				: (epDetail.preview_urls?.before ??
-																					episodePreviewUrl(
-																						ep.episode_id,
-																						'before',
-																						previewMinute
-																					))}
-																			{@const afterUrl = exactPreview
-																				? episodePreviewUrl(
-																						ep.episode_id,
-																						'after',
-																						previewMinute,
-																						true
-																					)
-																				: (epDetail.preview_urls?.after ??
-																					episodePreviewUrl(ep.episode_id, 'after', previewMinute))}
+																			{@const previewUrls = episodePreviewUrls.get(ep.episode_id)}
+																			{@const beforeUrl = previewUrls?.before ?? null}
+																			{@const afterUrl = previewUrls?.after ?? null}
 																			{@const confidenceExpanded =
 																				expandedConfidenceEpisodes.get(ep.episode_id) ?? false}
 																			{@const epArtifact = artifactForEpisode(ep.episode_id)}
 																			<div class="expand-content">
 																				{#if PAIR_PREVIEW_BUCKETS.has(ep.bucket)}
 																					<div class="expand-frames pair">
-																						<LetterboxFrame
-																							src={beforeUrl}
-																							alt="before crop"
-																							placeholder="No preview available"
-																						/>
-																						<LetterboxFrame
-																							src={afterUrl}
-																							alt="after crop"
-																							tone="after"
-																							placeholder="No preview available"
-																						/>
+																						<div class="preview-frame">
+																							<LetterboxFrame
+																								src={beforeUrl}
+																								alt="before crop"
+																								placeholder="No preview available"
+																							/>
+																							<button
+																								class="btn btn-outline btn-xs"
+																								disabled={previewLoading(ep.episode_id, 'before') ||
+																									scopeActive}
+																								onclick={() =>
+																									requestEpisodePreview(
+																										ep.episode_id,
+																										'before',
+																										previewMinute,
+																										exactPreview
+																									)}
+																							>
+																								{previewLoading(ep.episode_id, 'before')
+																									? 'Rendering…'
+																									: 'Render before'}
+																							</button>
+																						</div>
+																						<div class="preview-frame">
+																							<LetterboxFrame
+																								src={afterUrl}
+																								alt="after crop"
+																								tone="after"
+																								placeholder="No preview available"
+																							/>
+																							<button
+																								class="btn btn-outline btn-xs"
+																								disabled={previewLoading(ep.episode_id, 'after') ||
+																									scopeActive}
+																								onclick={() =>
+																									requestEpisodePreview(
+																										ep.episode_id,
+																										'after',
+																										previewMinute,
+																										exactPreview
+																									)}
+																							>
+																								{previewLoading(ep.episode_id, 'after')
+																									? 'Rendering…'
+																									: 'Render after'}
+																							</button>
+																						</div>
 																					</div>
 																				{:else}
 																					<div class="expand-frames single">
-																						<LetterboxFrame
-																							src={beforeUrl}
-																							alt="episode frame"
-																							placeholder="No preview available"
-																						/>
+																						<div class="preview-frame">
+																							<LetterboxFrame
+																								src={beforeUrl}
+																								alt="episode frame"
+																								placeholder="No preview available"
+																							/>
+																							<button
+																								class="btn btn-outline btn-xs"
+																								disabled={previewLoading(ep.episode_id, 'before') ||
+																									scopeActive}
+																								onclick={() =>
+																									requestEpisodePreview(
+																										ep.episode_id,
+																										'before',
+																										previewMinute,
+																										exactPreview
+																									)}
+																							>
+																								{previewLoading(ep.episode_id, 'before')
+																									? 'Rendering…'
+																									: 'Render preview'}
+																							</button>
+																						</div>
 																					</div>
 																				{/if}
 
@@ -1271,11 +1312,26 @@
 																											class:active={previewMinute ===
 																												sample.minute && exactPreview}
 																											type="button"
-																											onclick={() =>
+																											onclick={() => {
 																												setEpisodePreviewMinute(
 																													ep.episode_id,
 																													sample.minute
-																												)}
+																												);
+																												void requestEpisodePreview(
+																													ep.episode_id,
+																													'before',
+																													sample.minute,
+																													true
+																												);
+																												if (PAIR_PREVIEW_BUCKETS.has(ep.bucket)) {
+																													void requestEpisodePreview(
+																														ep.episode_id,
+																														'after',
+																														sample.minute,
+																														true
+																													);
+																												}
+																											}}
 																										>
 																											<span class="mono sample-minute">
 																												{sample.minute}m
@@ -1786,6 +1842,11 @@
 	}
 	.expand-frames.single {
 		max-width: 360px;
+	}
+	.preview-frame {
+		display: grid;
+		gap: 8px;
+		justify-items: start;
 	}
 	.expand-meta {
 		display: flex;

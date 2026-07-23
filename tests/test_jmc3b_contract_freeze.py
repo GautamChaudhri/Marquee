@@ -57,6 +57,7 @@ def test_jmc3b_starts_from_the_certified_production_registry() -> None:
         "system_metrics_purge",
         "letterbox_apply",
         "letterbox_remove",
+        "letterbox_preview",
         "letterbox_reencode",
         "letterbox_reencode_publish",
         "letterbox_reencode_restore",
@@ -83,6 +84,7 @@ def test_jmc3b_starts_from_the_certified_production_registry() -> None:
         "letterbox_detect",
         "letterbox_detect_episode",
         "letterbox_detect_tv_scope",
+        "letterbox_preview",
         "subtitle_scan",
         "subtitle_policy_audit",
         "dovi_analyze",
@@ -158,7 +160,7 @@ def test_jmc3a_evidence_extension_points_are_frozen() -> None:
             for name, value in inspect.getmembers(FencedWriter, predicate=inspect.isfunction)
             if not name.startswith("_")
         )
-        == extension_points["fenced_writer_methods"]
+        == sorted([*extension_points["fenced_writer_methods"], "recover_cancelled"])
     )
     assert (
         sorted(

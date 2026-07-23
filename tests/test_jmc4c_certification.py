@@ -27,6 +27,7 @@ ENABLED_LEAVES = {
     "letterbox_detect",
     "letterbox_detect_episode",
     "letterbox_detect_tv_scope",
+    "letterbox_preview",
     "library_sync",
     "poster_pipeline",
     "poster_deploy",

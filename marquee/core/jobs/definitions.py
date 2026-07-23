@@ -17,7 +17,7 @@ from marquee.core.jobs.contracts import (
     TriggerKind,
 )
 from marquee.core.jobs.documents import DocumentAdapter
-from marquee.core.jobs.policies import RetryClassification
+from marquee.core.jobs.policies import RetryClassification, RetryMode
 from marquee.core.jobs.safety_gates import SafetyPolicy
 from marquee.core.jobs.terminal_decision import TerminalDecisionPolicy
 
@@ -99,6 +99,7 @@ class JobDefinition:
     subject_builder: Callable[..., Any] | None = None
     progress_policy: Any = None
     retry_policy: Any = None
+    retry_mode: RetryMode = RetryMode.UNSUPPORTED
     action_policy: Any = None
     parent_policy: Any = None
     trigger_kinds: frozenset[TriggerKind] = field(default_factory=frozenset)
@@ -191,6 +192,23 @@ class JobDefinitionRegistry:
             raise InvalidJobDefinitionError("disabled definitions require a reason")
         if definition.migration_state == MigrationState.PARENT_ONLY and definition.enabled:
             raise InvalidJobDefinitionError("parent-only definitions cannot dispatch")
+        if definition.retry_mode == RetryMode.GENERIC:
+            if not definition.action_policy or not definition.action_policy.retry:
+                raise InvalidJobDefinitionError("generic retry definitions must expose retry policy")
+            if definition.effect_safety == EffectSafety.UNSAFE_MUTATION:
+                raise InvalidJobDefinitionError(
+                    "generic retry definitions require replay-safe effects"
+                )
+            if definition.parent_policy is not None:
+                raise InvalidJobDefinitionError(
+                    "batch parents require domain-coordinated retry"
+                )
+        elif definition.retry_mode == RetryMode.DOMAIN_COORDINATED and (
+            not definition.action_policy or not definition.action_policy.retry
+        ):
+            raise InvalidJobDefinitionError(
+                "domain-coordinated retry definitions must expose retry policy"
+            )
         if not 0 <= definition.default_priority <= 100:
             raise InvalidJobDefinitionError("definition priority must be between zero and 100")
         if not 0 <= definition.default_eligibility_delay_seconds <= 365 * 24 * 60 * 60:

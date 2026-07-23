@@ -146,6 +146,7 @@ def test_registry_and_handlers_match_c0_freeze() -> None:
         "system_metrics_purge",
         "letterbox_apply",
         "letterbox_remove",
+        "letterbox_preview",
         "letterbox_reencode",
         "letterbox_reencode_publish",
         "letterbox_reencode_restore",

@@ -74,7 +74,7 @@ def test_source_inventory_matches_freeze() -> None:
     assert route_types == set(ROUTE_CONSTRUCTED_TYPES)
     assert len(MEDIA_OPERATION_TYPES) == 19
     assert len(PARENT_ONLY_TYPES) == 18  # +C3 fixed letterbox publish parent
-    assert len(BUILTIN_JOB_TYPES) == 62  # +JMC6E dedicated taste enrichment
+    assert len(BUILTIN_JOB_TYPES) == 63  # +JMC7A canonical letterbox preview
 
 
 def test_stable_taxonomy_values() -> None:

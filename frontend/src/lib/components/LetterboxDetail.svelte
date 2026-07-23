@@ -1,6 +1,6 @@
 <script lang="ts">
 	import FeatureActivityPanel from '$lib/activity/components/FeatureActivityPanel.svelte';
-	import { confirmMutation } from '$lib/activity/client';
+	import { confirmMutation, listArtifacts } from '$lib/activity/client';
 	import type { JobSnapshotResponse } from '$lib/activity/types';
 	import { aspectRatio, confidenceTone, letterboxMeta, toneVar } from '$lib/display';
 	import { toast } from '$lib/toast';
@@ -17,7 +17,8 @@
 		listReencodeArtifacts,
 		replaceOriginal,
 		restoreOriginal,
-		deleteArtifact
+		deleteArtifact,
+		submitMoviePreview
 	} from '$lib/api/letterbox';
 	import {
 		CPU_PRESETS,
@@ -58,6 +59,10 @@
 	let loadError = $state<string | null>(null);
 	let showConf = $state(false);
 	let previewMinute = $state<number | null>(null);
+	type PreviewMode = 'before' | 'after';
+	let previewUrls = $state<Record<PreviewMode, string | null>>({ before: null, after: null });
+	let previewJobs = $state<Record<string, PreviewMode>>({});
+	let previewLoading = $state<Record<PreviewMode, boolean>>({ before: false, after: false });
 
 	let detecting = $state(false);
 	let initiatedJobIds = $state<string[]>([]);
@@ -92,6 +97,9 @@
 		loadError = null;
 		showConf = false;
 		previewMinute = null;
+		previewUrls = { before: null, after: null };
+		previewJobs = {};
+		previewLoading = { before: false, after: false };
 		resetReencodeState();
 		if (movieId == null) return;
 		loading = true;
@@ -160,23 +168,11 @@
 		return unique.length >= 2 ? unique.join(' / ') : (afterAR ?? null);
 	});
 
-	// Override preview URLs when the user clicks a sample frame row. A clicked
-	// row requests the *exact* minute (no brightness substitution) so it always
-	// shows the frame the user actually selected — see preview_path() in
-	// letterbox_preview.py for why the cache keys must stay separate.
+	// Clicking a sample submits its exact minute to the canonical preview job.
 	const activeMinute = $derived(previewMinute ?? detail?.preview_minute ?? 5);
 	const exactPreview = $derived(previewMinute != null);
-	const previewSuffix = $derived(exactPreview ? '&exact=true' : '');
-	const beforeUrl = $derived(
-		detail && movieId != null
-			? `/api/letterbox/movies/${movieId}/preview?mode=before&minute=${activeMinute}${previewSuffix}`
-			: null
-	);
-	const afterUrl = $derived(
-		detail && movieId != null
-			? `/api/letterbox/movies/${movieId}/preview?mode=after&minute=${activeMinute}${previewSuffix}`
-			: null
-	);
+	const beforeUrl = $derived(previewUrls.before);
+	const afterUrl = $derived(previewUrls.after);
 
 	function bindJob(result: unknown) {
 		if (typeof result !== 'object' || result === null || !('job_id' in result)) return false;
@@ -188,6 +184,24 @@
 		return true;
 	}
 
+	async function requestPreview(mode: PreviewMode, minute = activeMinute, exact = exactPreview) {
+		if (movieId == null || previewLoading[mode] || stage === 'processed') return;
+		previewLoading = { ...previewLoading, [mode]: true };
+		try {
+			const result = await submitMoviePreview(fetch, movieId, {
+				mode,
+				minute,
+				exact
+			});
+			previewJobs = { ...previewJobs, [result.job_id]: mode };
+			bindJob(result);
+			toast(`${mode === 'before' ? 'Before' : 'After'} preview queued`, 'info');
+		} catch (e) {
+			toast(e instanceof Error ? e.message : 'Could not queue preview', 'bad');
+			previewLoading = { ...previewLoading, [mode]: false };
+		}
+	}
+
 	async function handleJobSettled(snapshot: JobSnapshotResponse) {
 		detecting = false;
 		encoding = false;
@@ -196,6 +210,19 @@
 			const list = await listReencodeArtifacts(fetch, { movie_id: id });
 			artifact =
 				list.items.find((a) => a.status === 'candidate_ready' || a.status === 'kept') ?? null;
+		}
+		const previewMode = previewJobs[snapshot.job_id];
+		if (previewMode) {
+			previewLoading = { ...previewLoading, [previewMode]: false };
+			if (snapshot.status.outcome === 'succeeded') {
+				const artifacts = await listArtifacts(fetch, snapshot.job_id);
+				const preview = artifacts.items.find(
+					(item) => item.kind === 'preview_image' && item.available && item.download_url
+				);
+				if (preview?.download_url) {
+					previewUrls = { ...previewUrls, [previewMode]: preview.download_url };
+				}
+			}
 		}
 		toast(
 			`${snapshot.label} ${snapshot.status.label.toLowerCase()}`,
@@ -429,7 +456,13 @@
 			scopeKey={`feature:letterbox:movie:${movieId}`}
 			query={{
 				feature_area: 'letterbox',
-				types: ['letterbox_detect', 'letterbox_apply', 'letterbox_remove', 'letterbox_reencode'],
+				types: [
+					'letterbox_detect',
+					'letterbox_apply',
+					'letterbox_remove',
+					'letterbox_reencode',
+					'letterbox_preview'
+				],
 				subject_kind: 'movie',
 				subject_reference: [String(movieId)]
 			}}
@@ -559,6 +592,13 @@
 					/>
 				{:else}
 					<LetterboxFrame src={beforeUrl} alt="before crop" placeholder="No preview" />
+					<button
+						class="btn-sec preview-request"
+						disabled={previewLoading.before || scopeActive}
+						onclick={() => requestPreview('before')}
+					>
+						{previewLoading.before ? 'Rendering preview…' : 'Render before preview'}
+					</button>
 				{/if}
 			</div>
 
@@ -948,7 +988,11 @@
 								<button
 									class="ce-row"
 									class:ce-active={isActive}
-									onclick={() => (previewMinute = s.minute)}
+									onclick={() => {
+										previewMinute = s.minute;
+										void requestPreview('before', s.minute, true);
+										void requestPreview('after', s.minute, true);
+									}}
 									title="Preview frame at {s.minute} min"
 								>
 									<span class="mono ce-min">{s.minute}min</span>
@@ -985,6 +1029,13 @@
 					/>
 				{:else}
 					<LetterboxFrame src={afterUrl} alt="after crop" tone="after" placeholder="No preview" />
+					<button
+						class="btn-sec preview-request"
+						disabled={previewLoading.after || scopeActive}
+						onclick={() => requestPreview('after')}
+					>
+						{previewLoading.after ? 'Rendering preview…' : 'Render after preview'}
+					</button>
 				{/if}
 			</div>
 		</div>
@@ -1039,11 +1090,22 @@
 						label="Cleared — sample frame"
 						placeholder="No preview available"
 					/>
-				{:else if detail.preview_urls}
-					<img class="frame" src={detail.preview_urls.before} alt="before crop" loading="lazy" />
-					<img class="frame good" src={detail.preview_urls.after} alt="after crop" loading="lazy" />
+					<button
+						class="btn-sec preview-request"
+						disabled={previewLoading.before || scopeActive}
+						onclick={() => requestPreview('before')}
+					>
+						{previewLoading.before ? 'Rendering preview…' : 'Render sample preview'}
+					</button>
 				{:else}
-					<div class="frame unanalyzed"><span class="ph">No preview available</span></div>
+					<LetterboxFrame src={beforeUrl} alt="sample frame" placeholder="No preview available" />
+					<button
+						class="btn-sec preview-request"
+						disabled={previewLoading.before || scopeActive}
+						onclick={() => requestPreview('before')}
+					>
+						{previewLoading.before ? 'Rendering preview…' : 'Render preview'}
+					</button>
 				{/if}
 			</div>
 
@@ -1334,13 +1396,6 @@
 		border-radius: var(--radius-sm);
 		border: 1px solid var(--line2);
 		background: linear-gradient(150deg, #1a1410, #0a0806);
-	}
-	.frame.good {
-		border-color: color-mix(in srgb, var(--good) 50%, var(--line2));
-		/* After-crop image has a wider AR than 16:9 — let its natural height show */
-		aspect-ratio: auto;
-		height: auto;
-		object-fit: initial;
 	}
 	.frame.unanalyzed {
 		display: flex;

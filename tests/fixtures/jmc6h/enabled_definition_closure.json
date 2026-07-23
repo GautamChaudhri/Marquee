@@ -726,6 +726,57 @@
       "certification_test": "test_jmc4b_letterbox_detection.py"
     },
     {
+      "job_type": "letterbox_preview",
+      "handler": "handlers_letterbox.execute_letterbox_preview",
+      "result_model": "BuiltInResultV1",
+      "allowed_outcomes": [
+        "succeeded",
+        "partially_succeeded",
+        "no_change",
+        "failed",
+        "cancelled",
+        "superseded",
+        "unsafe"
+      ],
+      "retry": {
+        "max_attempts": 3,
+        "delays": [
+          5,
+          30
+        ]
+      },
+      "timeout_seconds": 86400,
+      "configuration_keys": [],
+      "progress": {
+        "strategy": "hybrid",
+        "stages": [
+          "prepare",
+          "execute",
+          "finalize"
+        ]
+      },
+      "external_tools": [
+        "ffmpeg"
+      ],
+      "large_file_io": [
+        "bounded preview frame"
+      ],
+      "projection": "canonical JobArtifact evidence",
+      "artifacts": "bounded preview artifact registered",
+      "presenter": "jobs.letterbox_preview",
+      "tests": [
+        "test_letterbox",
+        "test_pgqueuer_delivery"
+      ],
+      "feature_area": "letterbox",
+      "execution_class": "media_read",
+      "product_state": "real",
+      "producer": "canonical POST preview submission via letterbox routes on entrypoint media_read",
+      "consumer": "Projection Room jobs.letterbox_preview and canonical JobArtifact readers",
+      "real_product_effect": "bounded preview JobArtifact evidence",
+      "certification_test": "test_letterbox.py"
+    },
+    {
       "job_type": "letterbox_reencode",
       "handler": "handlers_letterbox_reencode.execute_letterbox_reencode",
       "result_model": "LetterboxReencodeResultV1",

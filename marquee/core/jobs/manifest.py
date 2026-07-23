@@ -44,6 +44,7 @@ from marquee.core.jobs.documents import (
     LetterboxDetectEpisodeRequestV1,
     LetterboxDetectRequestV1,
     LetterboxDetectTvScopeRequestV1,
+    LetterboxPreviewRequestV1,
     LibrarySyncRequestV1,
     MlPublicationResultV1,
     PosterBatchRequestV1,
@@ -110,6 +111,7 @@ from marquee.core.jobs.mutation_documents import (
 from marquee.core.jobs.policies import (
     ActionPolicy,
     ParentAggregationPolicy,
+    RetryMode,
     RetryPolicy,
     default_failure_classifier,
 )
@@ -160,6 +162,7 @@ _SPECS = (
     _spec("letterbox_detect", FeatureArea.LETTERBOX, ExecutionClass.MEDIA_READ, _R, "movie", "media_file"),
     _spec("letterbox_detect_episode", FeatureArea.LETTERBOX, ExecutionClass.MEDIA_READ, _R, "episode", "media_file"),
     _spec("letterbox_detect_tv_scope", FeatureArea.LETTERBOX, ExecutionClass.MEDIA_READ, _R, "series", "season", "episode"),
+    _spec("letterbox_preview", FeatureArea.LETTERBOX, ExecutionClass.MEDIA_READ, _R, "movie", "episode", "media_file"),
     _spec("letterbox_apply", FeatureArea.LETTERBOX, ExecutionClass.MEDIA_WRITE, _U, "movie", "media_file"),
     _spec("letterbox_remove", FeatureArea.LETTERBOX, ExecutionClass.MEDIA_WRITE, _U, "movie", "media_file"),
     _spec("letterbox_apply_tv_scope", FeatureArea.LETTERBOX, ExecutionClass.CONTROL, _R, "aggregate_batch", progress=ProgressStrategy.DETERMINATE, children=("letterbox_apply",)),
@@ -234,6 +237,7 @@ ENABLED_JOB_TYPES: frozenset[str] = frozenset(
         "letterbox_detect",
         "letterbox_detect_episode",
         "letterbox_detect_tv_scope",
+        "letterbox_preview",
         "letterbox_apply",
         "letterbox_remove",
         "letterbox_reencode",
@@ -293,6 +297,7 @@ _REQUEST_MODELS: dict[str, type[StrictDocument]] = {
     "letterbox_detect": LetterboxDetectRequestV1,
     "letterbox_detect_episode": LetterboxDetectEpisodeRequestV1,
     "letterbox_detect_tv_scope": LetterboxDetectTvScopeRequestV1,
+    "letterbox_preview": LetterboxPreviewRequestV1,
     "letterbox_apply": LetterboxApplyRequestV1,
     "letterbox_remove": LetterboxRemoveRequestV1,
     "letterbox_heal": LetterboxParentRequestV1,
@@ -759,6 +764,15 @@ def _overlap_policy(spec: _DefinitionSpec) -> ActiveOverlapPolicy:
     return ActiveOverlapPolicy(mode=mode)
 
 
+def _retry_mode(spec: _DefinitionSpec) -> RetryMode:
+    """Every registry definition declares one user-retry contract at build time."""
+    if spec.job_type == "system_noop":
+        return RetryMode.GENERIC
+    if spec.job_type == "taste_rebuild" or spec.job_type in PARENT_ONLY_TYPES:
+        return RetryMode.DOMAIN_COORDINATED
+    return RetryMode.UNSUPPORTED
+
+
 def _definition(spec: _DefinitionSpec) -> JobDefinition:
     enabled = spec.job_type in ENABLED_JOB_TYPES
     is_noop = spec.job_type == "system_noop"
@@ -810,6 +824,8 @@ def _definition(spec: _DefinitionSpec) -> JobDefinition:
         safety_policy=(
             SafetyPolicy(media_file=True, media_write=True)
             if spec.execution == ExecutionClass.MEDIA_WRITE
+            else SafetyPolicy(media_file=True)
+            if spec.job_type == "letterbox_preview"
             else SafetyPolicy(exclusive_maintenance=True)
             if spec.execution == ExecutionClass.MAINTENANCE and spec.safety == _U
             else SafetyPolicy()
@@ -818,6 +834,7 @@ def _definition(spec: _DefinitionSpec) -> JobDefinition:
         subject_builder=_subject_builder(spec.job_type, spec.subject_kinds),
         progress_policy=_PROGRESS_POLICIES.get(spec.job_type) or _progress(spec),
         retry_policy=retry,
+        retry_mode=_retry_mode(spec),
         action_policy=ActionPolicy(
             pause=False,
             logs=spec.execution != ExecutionClass.CONTROL,

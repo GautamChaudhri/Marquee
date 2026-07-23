@@ -338,6 +338,7 @@ async def bind_onboarding_decision(
             deployment_job_id=run.job_id,
             deployment_attempt_id=run.attempt_id,
             deployment_fence_token=run.fence_token,
+            session=session,
         )
         exemplar = await create_active_negative_exemplar(
             session,

@@ -342,6 +342,7 @@ async def pin_candidate_artifact(
     deployment_job_id: str,
     deployment_attempt_id: int,
     deployment_fence_token: int,
+    session: AsyncSession | None = None,
 ) -> JobArtifact:
     """Copy selected bytes through the canonical artifact boundary into pinned retention."""
     if source.status != "available" or not source.checksum or source.storage_key is None:
@@ -358,6 +359,7 @@ async def pin_candidate_artifact(
         content_type="image/jpeg",
         retention_class="pinned",
         metadata={"source_artifact_id": source.id, "source_checksum": source.checksum},
+        session=session,
     )
     if pinned.checksum != source.checksum or pinned.expires_at is not None:
         raise ArtifactError("pinned exemplar promotion changed bytes or retention")

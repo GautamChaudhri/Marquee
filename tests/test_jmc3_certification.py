@@ -63,6 +63,7 @@ def test_only_system_noop_remains_production_enabled() -> None:
         "letterbox_detect",
         "letterbox_detect_episode",
         "letterbox_detect_tv_scope",
+        "letterbox_preview",
         "subtitle_scan",
         "subtitle_policy_audit",
         "dovi_analyze",

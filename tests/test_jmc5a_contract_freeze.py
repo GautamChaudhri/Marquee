@@ -155,6 +155,7 @@ def test_registry_surfaces_match_a0_freeze() -> None:
     c1_leaves = {
         "letterbox_apply",
         "letterbox_remove",
+        "letterbox_preview",
         "letterbox_reencode",
         "letterbox_reencode_publish",
         "letterbox_reencode_restore",
@@ -177,6 +178,7 @@ def test_registry_surfaces_match_a0_freeze() -> None:
             - {"radarr_upgrade", "taste_rebuild"}
         )
         | {
+            "letterbox_preview",
             "letterbox_reencode",
             "letterbox_reencode_publish",
             "letterbox_reencode_restore",

@@ -9,6 +9,14 @@ from enum import StrEnum
 from marquee.core.jobs.contracts import EffectSafety, JobAction
 
 
+class RetryMode(StrEnum):
+    """Definition-owned user retry contract."""
+
+    UNSUPPORTED = "unsupported"
+    GENERIC = "generic"
+    DOMAIN_COORDINATED = "domain_coordinated"
+
+
 class RetryClassification(StrEnum):
     PERMANENT = "permanent"
     TRANSIENT = "transient"

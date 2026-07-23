@@ -89,7 +89,7 @@ def _legacy_bypass_calls() -> dict[str, int]:
 
 def test_registry_and_execution_handlers_match_freeze() -> None:
     frozen = _freeze()
-    assert len(JOB_DEFINITION_REGISTRY) == frozen["registry"]["definition_count"] + 13
+    assert len(JOB_DEFINITION_REGISTRY) == frozen["registry"]["definition_count"] + 14
     poster_leaves = {
         "subtitle_policy",
         "subtitle_restore",
@@ -114,6 +114,7 @@ def test_registry_and_execution_handlers_match_freeze() -> None:
         "system_metrics_purge",
         "letterbox_apply",
         "letterbox_remove",
+        "letterbox_preview",
         "letterbox_reencode",
         "dovi_convert",
         "letterbox_reencode_publish",

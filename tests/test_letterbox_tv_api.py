@@ -13,11 +13,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.config import settings
 from marquee.main import app
-from marquee.media import letterbox_preview
 from marquee.models import (
     Episode,
     EpisodeMediaFile,
     Job,
+    JobDispatch,
     LetterboxEvent,
     LetterboxState,
     MediaFile,
@@ -34,6 +34,59 @@ async def test_tv_feature_payloads_do_not_aggregate_active_jobs(client: AsyncCli
 
     detail = (await client.get(f"/api/letterbox/tv/{tv_library['mixed_show'].id}")).json()
     assert "active_job_ids" not in detail
+
+
+@pytest.mark.asyncio
+async def test_tv_preview_submission_uses_canonical_job(
+    client: AsyncClient,
+    db: AsyncSession,
+    installed_pgqueuer,
+) -> None:
+    series = Series(
+        title="Preview show",
+        year=2026,
+        series_path="/tv/preview",
+        sonarr_id=90_000_001,
+    )
+    db.add(series)
+    await db.flush()
+    db.add(Season(series_id=series.id, season_number=1, episode_file_count=1))
+    await db.flush()
+    episode = await _seed_episode_with_state(
+        db,
+        series=series,
+        season_number=1,
+        episode_number=1,
+        path="/tv/preview/s01e01.mkv",
+        state_status="candidate",
+        recommended_crop=8,
+        video_width=64,
+        video_height=48,
+    )
+    await db.commit()
+    episode_id = episode.id
+    media_file_id = await db.scalar(
+        select(EpisodeMediaFile.media_file_id).where(EpisodeMediaFile.episode_id == episode_id)
+    )
+    assert media_file_id is not None
+
+    response = await client.post(
+        f"/api/letterbox/tv/{series.id}/episodes/{episode_id}/preview"
+        "?mode=after&minute=0&exact=true"
+    )
+    assert response.status_code == 202, response.text
+    job_id = response.json()["job_id"]
+
+    await db.rollback()
+    db.expire_all()
+    job = await db.get(Job, job_id)
+    dispatch = await db.scalar(select(JobDispatch).where(JobDispatch.job_id == job_id))
+    assert job is not None and dispatch is not None
+    assert job.type == "letterbox_preview"
+    assert (job.subject_kind, job.subject_reference) == ("media_file", str(media_file_id))
+    assert job.request["episode_id"] == episode_id
+    assert job.request["candidate_minutes"] == []
+    assert dispatch.entrypoint == "media_read"
 
 
 @pytest_asyncio.fixture
@@ -588,7 +641,8 @@ async def test_tv_dev_reset_all_deletes_episode_rows_and_previews_only(
     client: AsyncClient, tv_library, db: AsyncSession, tmp_path, monkeypatch
 ):
     monkeypatch.setattr(settings, "DATA_DIR", str(tmp_path / "data"))
-    settings.letterbox_preview_path.mkdir(parents=True, exist_ok=True)
+    preview_root = settings.letterbox_preview_path
+    preview_root.mkdir(parents=True, exist_ok=True)
     episode = tv_library["ep1"]
     movie = Movie(
         title="Movie Kept",
@@ -623,17 +677,10 @@ async def test_tv_dev_reset_all_deletes_episode_rows_and_previews_only(
     )
     await db.commit()
 
-    episode_preview = letterbox_preview.preview_path(
-        letterbox_preview.episode_subject_key(episode.id), "before", 5
-    )
-    movie_preview = letterbox_preview.preview_path(
-        letterbox_preview.movie_subject_key(movie.id), "before", 5
-    )
+    episode_preview = preview_root / f"episode-{episode.id}_before_5_bright_v3.webp"
+    movie_preview = preview_root / f"movie-{movie.id}_before_5_bright_v3.webp"
     episode_preview.write_bytes(b"episode")
     movie_preview.write_bytes(b"movie")
-    letterbox_preview._bright_minute_cache.clear()
-    letterbox_preview._bright_minute_cache[(letterbox_preview.episode_subject_key(episode.id), 5)] = 5
-    letterbox_preview._bright_minute_cache[(letterbox_preview.movie_subject_key(movie.id), 5)] = 5
 
     episode_states = (
         await db.execute(select(LetterboxState).where(LetterboxState.media_type == "episode"))
@@ -669,10 +716,6 @@ async def test_tv_dev_reset_all_deletes_episode_rows_and_previews_only(
     ).scalar_one().movie_id == movie.id
     assert not episode_preview.exists()
     assert movie_preview.exists()
-    assert (letterbox_preview.episode_subject_key(episode.id), 5) not in (
-        letterbox_preview._bright_minute_cache
-    )
-    assert (letterbox_preview.movie_subject_key(movie.id), 5) in letterbox_preview._bright_minute_cache
 
 
 @pytest.mark.asyncio

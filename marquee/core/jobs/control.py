@@ -15,14 +15,14 @@ from marquee.core.jobs.contracts import JobAction
 from marquee.core.jobs.event_service import job_event_writer
 from marquee.core.jobs.manifest import JOB_DEFINITION_REGISTRY
 from marquee.core.jobs.pgqueuer_gateway import (
-    ENTRYPOINT_CONTROL,
     MAX_PRIORITY,
     MIN_PRIORITY,
     PAYLOAD_VERSION,
     PgQueuerGatewayError,
     pgqueuer_gateway,
 )
-from marquee.core.jobs.policies import ActionContext, allowed_actions
+from marquee.core.jobs.policies import ActionContext, RetryMode, allowed_actions
+from marquee.core.jobs.retry_capability import resolve_retry_capability
 from marquee.models.job import Job, JobBatch, JobDispatch
 
 
@@ -92,7 +92,7 @@ def _available_actions(job: Job) -> frozenset[JobAction]:
         desired_state=job.desired_state,
         outcome=job.outcome,
         active_attempt=job.current_attempt_id is not None,
-        retryable=definition.enabled or definition.parent_policy is not None,
+        retryable=resolve_retry_capability(job, definition).available,
         logs_available=False,
         artifacts_available=False,
     )
@@ -117,42 +117,47 @@ async def cancel(
 ) -> JobControlResult:
     async with session.begin():
         job = await _lock_job(session, job_id)
-        _check_expected(job, expected_fence_token)
-        _require_action(job, JobAction.CANCEL)
-        batch = await session.get(JobBatch, job.id)
         definition = JOB_DEFINITION_REGISTRY.get(job.type)
-        if batch is not None:
-            from marquee.core.jobs.batches import cancel_batch_descendants
+        # Cancellation is idempotent: an already terminal winner is returned as
+        # the current canonical state and is never reopened or re-signalled.
+        if job.phase != "terminal":
+            _check_expected(job, expected_fence_token)
+            _require_action(job, JobAction.CANCEL)
+            batch = await session.get(JobBatch, job.id)
+            if batch is not None:
+                from marquee.core.jobs.batches import cancel_batch_descendants
 
-            job.fence_token += 1
-            try:
-                await cancel_batch_descendants(session, parent=job)
-            except (ValueError, RuntimeError) as exc:
+                job.fence_token += 1
+                try:
+                    await cancel_batch_descendants(session, parent=job)
+                except (ValueError, RuntimeError) as exc:
+                    raise _conflict(
+                        job, "action_not_allowed", str(exc), action="cancel"
+                    ) from exc
+                await job_event_writer.append(
+                    session,
+                    job_id=job.id,
+                    event_key=(
+                        "job.cancelled" if job.phase == "terminal" else "job.stopping"
+                    ),
+                    state=job.outcome or job.phase,
+                    message="Batch parent cancellation requested",
+                )
+                await session.flush()
+            elif job.pgq_job_id is None:
                 raise _conflict(
-                    job, "action_not_allowed", str(exc), action="cancel"
-                ) from exc
-            await job_event_writer.append(
-                session,
-                job_id=job.id,
-                event_key=(
-                    "job.cancelled" if job.phase == "terminal" else "job.stopping"
-                ),
-                state=job.outcome or job.phase,
-                message="Batch parent cancellation requested",
-            )
-            await session.flush()
-        elif job.pgq_job_id is None:
-            raise _conflict(
-                job,
-                "unmigrated_job_command",
-                "This job has no canonical transport ticket to cancel.",
-            )
-        else:
-            job.fence_token += 1
-            try:
+                    job,
+                    "unmigrated_job_command",
+                    "This job has no canonical transport ticket to cancel.",
+                )
+            else:
+                # A picked delivery retains its current fence through process cleanup,
+                # evidence sealing, and the one canonical terminal write.
                 await pgqueuer_gateway.cancel_known_ticket(session, job_id=job.id)
-            except PgQueuerGatewayError as exc:
-                raise _conflict(job, "action_not_allowed", str(exc), action="cancel") from exc
+                if job.phase == "terminal":
+                    # Queued work has no admitted attempt to fence out; retain the
+                    # canonical revision behavior only after durable terminal proof.
+                    job.fence_token += 1
     await session.refresh(job)
     return JobControlResult(JobAction.CANCEL, job, definition.execution_class.value)
 
@@ -255,8 +260,15 @@ async def retry(
     async with session.begin():
         original = await _lock_job(session, job_id)
         _check_expected(original, expected_fence_token)
-        _require_action(original, JobAction.RETRY)
         definition = JOB_DEFINITION_REGISTRY.get(original.type)
+        retry_capability = resolve_retry_capability(original, definition)
+        if not retry_capability.available:
+            raise _conflict(
+                original,
+                "action_not_allowed",
+                retry_capability.reason or "definition_retry_unsupported",
+                action="retry",
+            )
         if original.type == "taste_rebuild":
             from marquee.core.taste_preferences import (  # noqa: PLC0415
                 TastePreferenceError,
@@ -300,11 +312,12 @@ async def retry(
                 original_job_id=original.id,
                 replacement_job_id=replacement.id,
             )
-        elif original.type not in {"system_noop", "taste_rebuild"}:
+        elif retry_capability.mode not in {RetryMode.GENERIC, RetryMode.DOMAIN_COORDINATED}:
             raise _conflict(
                 original,
-                "unmigrated_job_command",
-                "Retry dispatch is not enabled for this job definition.",
+                "action_not_allowed",
+                retry_capability.reason or "definition_retry_unsupported",
+                action="retry",
             )
         else:
             request = definition.request.validate(
@@ -318,9 +331,7 @@ async def retry(
             generation = 1
             priority = original.priority
             dedupe_key = f"marquee:{replacement_id}:{generation}"
-            retry_entrypoint = (
-                definition.entrypoint if original.type == "taste_rebuild" else ENTRYPOINT_CONTROL
-            )
+            retry_entrypoint = definition.entrypoint
             configuration = configuration_provider.snapshot_for(definition.configuration_keys)
             replacement = Job(
                 id=replacement_id,

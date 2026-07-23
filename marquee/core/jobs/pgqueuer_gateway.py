@@ -47,6 +47,18 @@ class EnqueueIntent:
     dedupe_key: str
 
 
+@dataclass(frozen=True, slots=True)
+class AdmissionDeferral:
+    """Durable pre-admission recovery result for one canonical dispatch."""
+
+    job_id: str
+    dispatch_generation: int
+    pgq_job_id: int
+    cause: str
+    defer_count: int
+    next_eligible_at: datetime
+
+
 class PgQueuerGatewayError(RuntimeError):
     """Raised when the supported gateway preconditions are not met."""
 
@@ -146,6 +158,40 @@ class PgQueuerGateway:
         finally:
             with self._active_lock:
                 self._active_raw_connections.discard(key)
+
+
+    async def _live_ticket_statuses(
+        self,
+        session: AsyncSession,
+        *,
+        ticket_ids: Sequence[int],
+        for_update: bool = False,
+    ) -> dict[int, str]:
+        """Read current PgQueuer rows, never historical queue-log state.
+
+        PgQueuer 1.1.1 Queries.job_status reads the append-only log table. The
+        installed settings expose the validated queue relation, and this
+        enlisted read establishes whether a transport ticket still physically
+        exists before a documented Queries mutation is attempted.
+        """
+        ids = tuple(int(ticket_id) for ticket_id in ticket_ids)
+        if not 1 <= len(ids) <= MAX_STATUS_IDS or len(set(ids)) != len(ids):
+            raise PgQueuerGatewayError("ticket_ids must be 1..100 unique numeric IDs")
+        async with self._queries(session) as queries:
+            queue_table = queries.qbq.settings.queue_table
+            if (
+                not queue_table
+                or not (queue_table[0].isalpha() or queue_table[0] == "_")
+                or not all(character.isalnum() or character == "_" for character in queue_table)
+            ):
+                raise PgQueuerInvariantError("configured PgQueuer queue relation is unsafe")
+            statement = text(
+                f"SELECT id, status::text AS status FROM {queue_table} "
+                "WHERE id = ANY(:ticket_ids)"
+                + (" FOR UPDATE" if for_update else "")
+            )
+            rows = (await session.execute(statement, {"ticket_ids": list(ids)})).all()
+        return {int(row.id): str(row.status) for row in rows}
 
     async def enqueue(
         self,
@@ -372,11 +418,15 @@ class PgQueuerGateway:
         if dispatch is None or dispatch.pgq_job_id != job.pgq_job_id:
             raise PgQueuerInvariantError("canonical current dispatch is missing or mismatched")
 
+        statuses = await self._live_ticket_statuses(
+            session,
+            ticket_ids=(job.pgq_job_id,),
+            for_update=True,
+        )
+        transport_status = statuses.get(job.pgq_job_id)
+        if transport_status is None:
+            raise PgQueuerInvariantError("known PgQueuer ticket is absent")
         async with self._queries(session) as queries:
-            rows = await queries.job_status([job.pgq_job_id])
-            if len(rows) != 1 or int(rows[0][0]) != job.pgq_job_id:
-                raise PgQueuerInvariantError("known PgQueuer ticket status is unavailable")
-            transport_status = rows[0][1]
             await queries.mark_job_as_cancelled([job.pgq_job_id])
 
         now = datetime.now(UTC)
@@ -412,6 +462,123 @@ class PgQueuerGateway:
                 f"transport status {transport_status!r} cannot accept cancellation"
             )
 
+
+    async def recover_admission_deferral(
+        self,
+        session: AsyncSession,
+        *,
+        job_id: str,
+        delay: timedelta,
+        cause: str,
+        defer_count: int,
+    ) -> AdmissionDeferral:
+        """Repair one held or absent pre-admission ticket without creating an attempt."""
+        if delay <= timedelta(0) or delay > MAX_DEFER:
+            raise PgQueuerGatewayError("admission deferral delay is out of bounds")
+        if defer_count < 1 or defer_count > 10:
+            raise PgQueuerGatewayError("admission deferral count is out of bounds")
+
+        job = await session.scalar(select(Job).where(Job.id == job_id).with_for_update())
+        if job is None or job.pgq_job_id is None:
+            raise PgQueuerGatewayError("canonical job has no current PgQueuer ticket")
+        dispatch = await session.scalar(
+            select(JobDispatch)
+            .where(
+                JobDispatch.job_id == job.id,
+                JobDispatch.generation == job.dispatch_generation,
+            )
+            .with_for_update()
+        )
+        if (
+            dispatch is None
+            or dispatch.disposition != "active"
+            or dispatch.pgq_job_id != job.pgq_job_id
+            or job.phase != "queued"
+            or job.desired_state != "run"
+        ):
+            raise PgQueuerInvariantError("canonical dispatch is not recoverable for admission")
+
+        prior_ticket_id = job.pgq_job_id
+        recreated = False
+        status = (
+            await self._live_ticket_statuses(
+                session,
+                ticket_ids=(prior_ticket_id,),
+                for_update=True,
+            )
+        ).get(prior_ticket_id)
+        if status is None:
+            async with self._queries(session) as queries:
+                try:
+                    ids = await queries.enqueue(
+                        dispatch.entrypoint,
+                        self._transport_payload(
+                            job_id=job.id,
+                            payload_version=job.payload_version,
+                            dispatch_generation=job.dispatch_generation,
+                        ),
+                        priority=dispatch.priority,
+                        execute_after=delay,
+                        dedupe_key=dispatch.dedupe_key,
+                    )
+                except DuplicateJobError as exc:
+                    raise PgQueuerInvariantError(
+                        "absent admission ticket conflicts with its canonical dedupe key"
+                    ) from exc
+                if len(ids) != 1 or not isinstance(ids[0], int):
+                    raise PgQueuerInvariantError(
+                        "admission recovery enqueue must return exactly one numeric ID"
+                    )
+                job.pgq_job_id = int(ids[0])
+                dispatch.pgq_job_id = int(ids[0])
+                recreated = True
+        elif status in {"picked", "failed"}:
+            # PgQueuer 1.1.1 exposes requeue through Queries.retry_job(); its
+            # enlisted transaction atomically records the delayed queued state.
+            from pgqueuer.models import Job as PgQueuerJob
+
+            async with self._queries(session) as queries:
+                await queries.retry_job(
+                    PgQueuerJob.model_construct(id=prior_ticket_id), delay, None
+                )
+        elif status != "queued":
+            raise PgQueuerInvariantError(
+                f"transport status {status!r} cannot recover admission deferral"
+            )
+
+        now = datetime.now(UTC)
+        next_eligible_at = now + delay
+        job.eligible_at = next_eligible_at
+        dispatch.eligible_at = next_eligible_at
+        job.attention = {
+            "code": "admission_deferred",
+            "summary": "Safety-gate admission was durably deferred for recovery",
+            "cause": cause,
+            "defer_count": defer_count,
+            "next_eligible_at": next_eligible_at.isoformat(),
+        }
+        await job_event_writer.append(
+            session,
+            job_id=job.id,
+            event_key="job.admission_recovered",
+            state="queued",
+            message="Recovered pre-admission PgQueuer deferral",
+            detail={
+                "cause": cause,
+                "defer_count": defer_count,
+                "prior_pgq_job_id": prior_ticket_id,
+                "transport_recreated": recreated,
+            },
+        )
+        return AdmissionDeferral(
+            job_id=job.id,
+            dispatch_generation=job.dispatch_generation,
+            pgq_job_id=job.pgq_job_id,
+            cause=cause,
+            defer_count=defer_count,
+            next_eligible_at=next_eligible_at,
+        )
+
     async def reprioritize_known_ticket(
         self,
         session: AsyncSession,
@@ -444,12 +611,14 @@ class PgQueuerGateway:
         if dispatch is None or dispatch.pgq_job_id != job.pgq_job_id:
             raise PgQueuerInvariantError("canonical current dispatch is missing or mismatched")
 
+        statuses = await self._live_ticket_statuses(
+            session,
+            ticket_ids=(job.pgq_job_id,),
+            for_update=True,
+        )
+        if statuses.get(job.pgq_job_id) != "queued":
+            raise PgQueuerGatewayError("only queued transport work can change priority")
         async with self._queries(session) as queries:
-            rows = await queries.job_status([job.pgq_job_id])
-            if len(rows) != 1 or int(rows[0][0]) != job.pgq_job_id:
-                raise PgQueuerInvariantError("known PgQueuer ticket status is unavailable")
-            if rows[0][1] != "queued":
-                raise PgQueuerGatewayError("only queued transport work can change priority")
             await queries.mark_job_as_cancelled([job.pgq_job_id])
 
         now = datetime.now(UTC)
@@ -515,9 +684,7 @@ class PgQueuerGateway:
         tickets = [job.pgq_job_id for job in jobs if job.pgq_job_id is not None]
         if not tickets:
             return {}
-        async with self._queries(session) as queries:
-            rows = await queries.job_status(tickets)
-        by_ticket = {int(ticket): status for ticket, status in rows}
+        by_ticket = await self._live_ticket_statuses(session, ticket_ids=tickets)
         return {
             job.id: by_ticket[job.pgq_job_id]
             for job in jobs

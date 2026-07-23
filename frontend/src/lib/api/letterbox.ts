@@ -45,6 +45,28 @@ export function detectLetterbox(
 	);
 }
 
+export interface LetterboxPreviewOptions {
+	mode?: 'before' | 'after';
+	minute?: number;
+	exact?: boolean;
+}
+
+/** Submit one canonical preview render; image bytes remain job artifacts. */
+export function submitMoviePreview(
+	fetchFn: Fetch,
+	movieId: number,
+	options: LetterboxPreviewOptions = {}
+): Promise<JobSubmissionResponse> {
+	const mode = options.mode ?? 'before';
+	const minute = options.minute ?? 5;
+	const exact = options.exact ?? false;
+	return apiSend<JobSubmissionResponse>(
+		fetchFn,
+		'POST',
+		`/letterbox/movies/${movieId}/preview?mode=${mode}&minute=${minute}&exact=${exact}`
+	);
+}
+
 export function applyLetterbox(fetchFn: Fetch, movieId: number): Promise<unknown> {
 	// Empty body — backend applies the stored recommended_crop values.
 	return apiSend(fetchFn, 'POST', `/letterbox/movies/${movieId}/apply`, {});
@@ -254,6 +276,23 @@ export function getLetterboxTvEpisodeDetail(
 	episodeId: number
 ): Promise<LetterboxEpisodeDetail> {
 	return apiGet<LetterboxEpisodeDetail>(fetchFn, `/letterbox/tv/${seriesId}/episodes/${episodeId}`);
+}
+
+/** Submit one canonical episode preview render; retrieve its artifact from Activity. */
+export function submitTvEpisodePreview(
+	fetchFn: Fetch,
+	seriesId: number,
+	episodeId: number,
+	options: LetterboxPreviewOptions = {}
+): Promise<JobSubmissionResponse> {
+	const mode = options.mode ?? 'before';
+	const minute = options.minute ?? 5;
+	const exact = options.exact ?? false;
+	return apiSend<JobSubmissionResponse>(
+		fetchFn,
+		'POST',
+		`/letterbox/tv/${seriesId}/episodes/${episodeId}/preview?mode=${mode}&minute=${minute}&exact=${exact}`
+	);
 }
 
 export function detectLetterboxTv(

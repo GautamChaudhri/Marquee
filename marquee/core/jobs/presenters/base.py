@@ -57,6 +57,7 @@ from marquee.core.jobs.presentation import (
     WarningItem,
 )
 from marquee.core.jobs.progress import JobProgress
+from marquee.core.jobs.retry_capability import resolve_retry_capability
 from marquee.core.jobs.subjects import SUBJECT_SNAPSHOT_ADAPTER, SubjectSnapshot
 
 if TYPE_CHECKING:
@@ -410,7 +411,7 @@ def present_actions(
         desired_state=job.desired_state,
         outcome=job.outcome,
         active_attempt=job.current_attempt_id is not None,
-        retryable=definition.enabled,
+        retryable=resolve_retry_capability(job, definition).available,
         logs_available=logs_available,
         artifacts_available=artifacts_available,
     )

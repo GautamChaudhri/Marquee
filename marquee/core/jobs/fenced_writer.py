@@ -141,6 +141,98 @@ class FencedWriter:
             attempt_outcome="interrupted" if outcome == "unsafe" else None,
         )
 
+    async def recover_cancelled(self, reason: str) -> WriteDisposition:
+        """Take terminal cancellation ownership only after orphan recovery proved it safe."""
+        owner = self.ownership
+        error_payload: dict[str, Any] = {
+            "code": "cancelled",
+            "summary": (reason or "recovered cancellation")[:500],
+        }
+        error_model = self.definition.error.models[self.definition.error.current_version]
+        if "atomicity" in error_model.model_fields:
+            error_payload["atomicity"] = self._atomicity_evidence(
+                published=False,
+                uncertain=False,
+            )
+        if "stage" in error_model.model_fields:
+            error_payload["stage"] = "publication_reconciliation"
+        error = self.definition.error.validate(
+            error_payload,
+            version=self.definition.error.current_version,
+        ).model_dump(mode="json")
+        now = datetime.now(UTC)
+        takeover_fence_token = owner.fence_token + 1
+        factory = _get_session_factory()
+        async with factory() as session, session.begin():
+            disposition = await _claim_job(
+                session,
+                owner,
+                expected_phases=("running", "stopping"),
+                expected_desired_states=("cancel",),
+                values={
+                    "fence_token": takeover_fence_token,
+                    "phase": "terminal",
+                    "outcome": "cancelled",
+                    "result": None,
+                    "error": error,
+                    "attention": None,
+                    "terminal_at": now,
+                },
+            )
+            if disposition != WriteDisposition.APPLIED:
+                return disposition
+            job = await session.scalar(
+                select(Job).where(Job.id == owner.job_id).with_for_update()
+            )
+            if job is None:
+                raise RuntimeError("fenced recovery job disappeared")
+            await progress_writer.terminalize(
+                session, job, outcome="cancelled", occurred_at=now
+            )
+            attempt_result = await session.execute(
+                update(JobAttempt)
+                .where(
+                    JobAttempt.id == owner.attempt_id,
+                    JobAttempt.job_id == owner.job_id,
+                    JobAttempt.fence_token == owner.fence_token,
+                    JobAttempt.phase.in_(("running", "stopping")),
+                )
+                .values(
+                    phase="finished",
+                    outcome="cancelled",
+                    finished_at=now,
+                    error=error,
+                )
+            )
+            dispatch_result = await session.execute(
+                update(JobDispatch)
+                .where(
+                    JobDispatch.job_id == owner.job_id,
+                    JobDispatch.generation == owner.dispatch_generation,
+                    JobDispatch.disposition == "active",
+                )
+                .values(disposition="cancelled", ended_at=now)
+            )
+            if attempt_result.rowcount != 1 or dispatch_result.rowcount != 1:
+                raise RuntimeError("fenced recovery audit changed during terminal transaction")
+            await job_event_writer.append(
+                session,
+                job_id=owner.job_id,
+                attempt_id=owner.attempt_id,
+                event_key="job.cancelled",
+                state="cancelled",
+                message=f"{self.definition.job_type} cancellation recovered after writer loss",
+                detail={
+                    "reason": reason[:500],
+                    "recovery_fence_version": takeover_fence_token,
+                },
+                canonical_version=takeover_fence_token,
+            )
+            from marquee.core.jobs.batches import project_terminal_child
+
+            await project_terminal_child(session, job)
+        return WriteDisposition.APPLIED
+
     async def retry(self, *, reason: str, delay_seconds: float) -> WriteDisposition:
         error_model = self.definition.error.models[self.definition.error.current_version]
         error_payload: dict[str, Any] = {

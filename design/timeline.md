@@ -225,6 +225,38 @@ lifecycle, and compacts only after full zero-green plus explicit live-smoke cert
 clean independent once-over, the next step is browser-agent acceptance; no additional construction
 plan is expected.
 
+The final independent readiness audit after `jmc6k-complete` did not reach that acceptance gate.
+It found shared runtime failures in picked cancellation and safety-gate contention, false retry
+capabilities, one remaining inline heavy preview path, survivor/effect/publication defects in the
+personalization lifecycle, Activity reconciliation races, and contract/browser evidence that did
+not execute the claimed real lifecycle. The backend and most frontend gates were green, but the
+defects were release-blocking and the Activity visual suite retained one deterministic failure.
+
+## JMC7 — Release-readiness recovery (planned)
+
+JMC7 is limited to three independently gated plans, the smallest split that preserves runtime,
+personalization, and final-certification boundaries:
+
+1. [`jmc7a-runtime-control-and-execution-safety.md`](job-system-update/jmc7a-runtime-control-and-execution-safety.md)
+   repairs cancellation ownership, contention-safe admission/recovery, definition-owned retry
+   truth, and canonical contained letterbox preview execution.
+2. [`jmc7b-onboarding-publication-and-learning-integrity.md`](job-system-update/jmc7b-onboarding-publication-and-learning-integrity.md)
+   restricts onboarding to ordered objective survivors, makes decisions/deployments recoverable,
+   carries negative evidence into native profiles, aligns residual scheduling/evaluation with the
+   deployed replacement scorer, and requires real consumer publication acknowledgement.
+3. [`jmc7c-activity-contracts-and-release-certification.md`](job-system-update/jmc7c-activity-contracts-and-release-certification.md)
+   fixes bounded Activity reconciliation, replaces handwritten onboarding wire shapes with
+   generated contracts, executes the real stateful browser lifecycle and all 43 definition
+   closures, retires residual dead/stale paths, and repeats the final zero-green audit.
+
+They execute strictly JMC7A → JMC7B → JMC7C and share
+`design/job-system-update/jmc7-readiness-recovery-timeline.md`, created with the architecture
+package to preserve the independent-audit evidence. Each plan runs continuously through its
+internal checkpoints, creates verified repository-external recovery material, compacts only its
+own range into a tree-identical completion commit/tag, and neither pushes nor activates. Browser
+and operator acceptance is authorized only after a clean independent audit of `jmc7c-complete`
+returns Outcome B.
+
 ## Overview
 
 This timeline preserves the existing phase structure from `design/todos.md`

@@ -145,6 +145,42 @@ class LetterboxDetectTvScopeRequestV1(StrictDocument):
     detection_config: LetterboxDetectionConfigV1 = Field(default_factory=LetterboxDetectionConfigV1)
 
 
+class LetterboxPreviewRequestV1(StrictDocument):
+    """One bounded, read-only preview render request for a resolved media file."""
+
+    media_file_id: int = Field(ge=1)
+    movie_id: int | None = Field(default=None, ge=1)
+    episode_id: int | None = Field(default=None, ge=1)
+    minute: int = Field(default=5, ge=0, le=600)
+    mode: Literal["before", "after"] = "before"
+    exact: bool = False
+    crop_top: int = Field(default=0, ge=0, le=4096)
+    crop_bottom: int = Field(default=0, ge=0, le=4096)
+    source_width: int | None = Field(default=None, ge=1, le=16384)
+    source_height: int | None = Field(default=None, ge=1, le=16384)
+    candidate_minutes: tuple[int, ...] = Field(default=(), max_length=3)
+
+    @field_validator("candidate_minutes")
+    @classmethod
+    def bound_candidate_minutes(cls, values: tuple[int, ...]) -> tuple[int, ...]:
+        if any(isinstance(value, bool) or not 0 <= value <= 600 for value in values):
+            raise ValueError("preview candidate minutes are out of bounds")
+        if len(set(values)) != len(values):
+            raise ValueError("preview candidate minutes must be unique")
+        return values
+
+    @model_validator(mode="after")
+    def has_one_subject(self) -> LetterboxPreviewRequestV1:
+        if (self.movie_id is None) == (self.episode_id is None):
+            raise ValueError("preview requires exactly one movie or episode subject")
+        if (
+            self.source_height is not None
+            and self.crop_top + self.crop_bottom >= self.source_height
+        ):
+            raise ValueError("preview crop removes the entire source frame")
+        return self
+
+
 class DoviAnalyzeRequestV1(StrictDocument):
     """Immutable read-only Dolby Vision probe intent for one physical file."""
 

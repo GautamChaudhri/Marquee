@@ -81,7 +81,7 @@ def _subjects():
 
 
 def test_manifest_has_exactly_one_definition_for_every_inventory_source() -> None:
-    assert len(JOB_DEFINITION_REGISTRY) == 62  # +JMC6E dedicated taste enrichment
+    assert len(JOB_DEFINITION_REGISTRY) == 63  # +JMC7A canonical letterbox preview
     assert JOB_DEFINITION_REGISTRY.types == BUILTIN_JOB_TYPES
     for inventory in (
         REGISTERED_HANDLER_TYPES,
@@ -118,6 +118,7 @@ def test_only_noop_is_enabled_and_webhook_stays_reserved_disabled() -> None:
         "letterbox_detect",
         "letterbox_detect_episode",
         "letterbox_detect_tv_scope",
+        "letterbox_preview",
         "subtitle_scan",
         "subtitle_policy_audit",
         "dovi_analyze",
@@ -163,7 +164,8 @@ def test_all_documents_are_strict_current_v1_and_policy_is_not_client_input() ->
             "policy_snapshot": {},
             "scope": "all",
         },
-        "letterbox_detect": {"movie_id": 1, "media_file_id": 1},
+            "letterbox_detect": {"movie_id": 1, "media_file_id": 1},
+            "letterbox_preview": {"media_file_id": 1, "movie_id": 1},
         "letterbox_detect_episode": {"media_file_id": 1, "episode_ids": [1]},
             "letterbox_detect_tv_scope": {"series_id": 1},
             "dovi_analyze": {
