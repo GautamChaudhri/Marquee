@@ -33,6 +33,7 @@ from marquee.models.job import Job, JobAttempt
 class OrphanCandidate:
     ownership: AttemptOwnership
     job_type: str
+    desired_state: str
     identity: ProcessIdentity | None
     partial_identity: bool
     runtime_instance_id: str | None
@@ -42,7 +43,7 @@ class OrphanCandidate:
     publication_started: bool
 
 
-RecoveryDisposition = Literal["active", "interrupted", "unsafe", "stale"]
+RecoveryDisposition = Literal["active", "cancelled", "interrupted", "unsafe", "stale"]
 RecoveryAssessment = Literal["active", "recoverable", "unsafe"]
 
 
@@ -91,6 +92,7 @@ def _candidate_from_row(
             dispatch_generation=job.dispatch_generation,
         ),
         job_type=job.type,
+        desired_state=job.desired_state,
         identity=identity,
         partial_identity=any(present) and not all(present),
         runtime_instance_id=attempt.runtime_instance_id,
@@ -196,6 +198,12 @@ async def reconcile_candidate(
             stage="publication_reconciliation",
         )
         return "unsafe" if disposition.value == "applied" else "stale"
+    if candidate.desired_state == "cancel":
+        # The expired runtime plus identity assessment above prove the old writer
+        # cannot publish. The recovery writer moves the fence once as it seals
+        # the cancellation so a late callback stays stale.
+        disposition = await writer.recover_cancelled(assessment.reason)
+        return "cancelled" if disposition.value == "applied" else "stale"
     if definition.effect_safety == EffectSafety.STAGED_IDEMPOTENT:
         disposition = await writer.retry(reason=assessment.reason, delay_seconds=0)
     else:
@@ -353,6 +361,9 @@ async def reconcile_startup_orphans(
 ) -> dict[str, int]:
     if limit < 1 or limit > 500:
         raise ValueError("orphan reconciliation limit is outside the bound")
+    # Keep the long-standing bounded monitor metric shape; a recovered
+    # cancellation is an interrupted attempt for aggregate accounting even
+    # though its canonical outcome is terminal cancelled.
     counts = {"active": 0, "interrupted": 0, "unsafe": 0, "stale": 0}
     for candidate in await _bounded_candidates(worker_node, limit=limit):
         disposition = await reconcile_candidate(
@@ -360,5 +371,5 @@ async def reconcile_startup_orphans(
             cooperative_seconds=cooperative_seconds,
             term_seconds=term_seconds,
         )
-        counts[disposition] += 1
+        counts["interrupted" if disposition == "cancelled" else disposition] += 1
     return counts

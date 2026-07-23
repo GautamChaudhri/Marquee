@@ -278,7 +278,7 @@ def test_readiness_is_sanitized_and_reports_locked_jmc4a_boundaries() -> None:
 
 
 def test_final_manifest_keeps_only_system_noop_enabled() -> None:
-    assert len(JOB_DEFINITION_REGISTRY) == 62
+    assert len(JOB_DEFINITION_REGISTRY) == 63
     assert JOB_DEFINITION_REGISTRY.enabled_types == {
         "subtitle_policy",
         "subtitle_restore",
@@ -311,6 +311,7 @@ def test_final_manifest_keeps_only_system_noop_enabled() -> None:
         "letterbox_detect",
         "letterbox_detect_episode",
         "letterbox_detect_tv_scope",
+        "letterbox_preview",
         "subtitle_scan",
         "subtitle_policy_audit",
             "dovi_analyze",
@@ -341,6 +342,7 @@ def test_final_manifest_keeps_only_system_noop_enabled() -> None:
         ("letterbox_detect", "media_read"),
         ("letterbox_detect_episode", "media_read"),
         ("letterbox_detect_tv_scope", "media_read"),
+        ("letterbox_preview", "media_read"),
                 ("letterbox_reencode", "media_write"),
                 ("letterbox_reencode_discard", "media_write"),
                 ("letterbox_reencode_publish", "media_write"),

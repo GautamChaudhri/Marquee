@@ -44,6 +44,7 @@ ENABLED_TYPES = {
     "letterbox_detect",
     "letterbox_detect_episode",
     "letterbox_detect_tv_scope",
+    "letterbox_preview",
     "letterbox_apply",
     "letterbox_remove",
     "letterbox_reencode",

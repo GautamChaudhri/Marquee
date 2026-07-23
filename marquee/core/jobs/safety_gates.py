@@ -219,6 +219,20 @@ class SafetyGateHandle:
         await self.release()
 
 
+def _is_transient_connection_error(exc: BaseException) -> bool:
+    """Keep admission deferral limited to actual PostgreSQL transport loss."""
+    return isinstance(
+        exc,
+        (
+            OSError,
+            asyncpg.InterfaceError,
+            asyncpg.CannotConnectNowError,
+            asyncpg.ConnectionDoesNotExistError,
+            asyncpg.ConnectionFailureError,
+        ),
+    )
+
+
 class SafetyGateService:
     def __init__(
         self,
@@ -249,7 +263,14 @@ class SafetyGateService:
         requirements = SafetyRequirements.validate(requirements.gates)
         if deadline_seconds <= 0:
             raise SafetyGateTimeoutError("safety-gate admission deadline elapsed")
-        connection = await self._connection_factory()
+        try:
+            connection = await self._connection_factory()
+        except (OSError, asyncpg.PostgresError) as exc:
+            if _is_transient_connection_error(exc):
+                raise SafetyGateConnectionLostError(
+                    "safety-gate connection was lost before admission"
+                ) from exc
+            raise
         acquired: list[GateRequirement] = []
         deadline = time.monotonic() + deadline_seconds
         try:
@@ -270,9 +291,11 @@ class SafetyGateService:
                             await connection.fetchval(query, advisory_key(requirement))
                         )
                     except (OSError, asyncpg.PostgresError) as exc:
-                        raise SafetyGateConnectionLostError(
-                            "safety-gate connection was lost during admission"
-                        ) from exc
+                        if _is_transient_connection_error(exc):
+                            raise SafetyGateConnectionLostError(
+                                "safety-gate connection was lost during admission"
+                            ) from exc
+                        raise
                     if locked:
                         acquired.append(requirement)
                         break

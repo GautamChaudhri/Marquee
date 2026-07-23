@@ -80,7 +80,7 @@ def test_canonical_schema_registry_and_execution_inventory_is_frozen() -> None:
     assert {model.__tablename__: list(model.__table__.columns.keys()) for model in models} == frozen[
         "models"
     ]
-    assert len(JOB_DEFINITION_REGISTRY) == frozen["registry"]["definition_count"] + 13
+    assert len(JOB_DEFINITION_REGISTRY) == frozen["registry"]["definition_count"] + 14
     poster_leaves = {
         "subtitle_policy",
         "subtitle_restore",
@@ -105,6 +105,7 @@ def test_canonical_schema_registry_and_execution_inventory_is_frozen() -> None:
         "system_metrics_purge",
         "letterbox_apply",
         "letterbox_remove",
+        "letterbox_preview",
         "letterbox_reencode",
         "letterbox_reencode_publish",
         "letterbox_reencode_restore",
@@ -132,7 +133,7 @@ def test_gateway_commands_parent_worker_scheduler_and_routes_are_frozen() -> Non
         for route in job_routes.router.routes
     )
 
-    assert gateway_methods == frozen["gateway_methods"]
+    assert gateway_methods == sorted([*frozen["gateway_methods"], "recover_admission_deferral"])
     assert _top_level_functions("marquee/core/jobs/commands.py") == frozen["command_functions"]
     assert _top_level_functions("marquee/core/jobs/parent_progress.py") == frozen[
         "parent_progress_functions"

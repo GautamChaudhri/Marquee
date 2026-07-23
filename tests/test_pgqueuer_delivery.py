@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import os
+import shutil
+import threading
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
 
 import anyio
+import asyncpg
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
@@ -14,8 +19,9 @@ from pgqueuer import PgQueuer, Queries, RetryRequested
 from pgqueuer.models import Context
 from pgqueuer.models import Job as PgQueuerJob
 from pgqueuer.types import QueueExecutionMode
-from sqlalchemy import select
+from sqlalchemy import func, select, text
 
+from marquee.config import settings
 from marquee.core.configuration_cache import (
     ExecutionConfigurationSnapshot,
     configuration_provider,
@@ -27,6 +33,7 @@ from marquee.core.jobs.definitions import JobDefinitionRegistry, TimeoutPolicy
 from marquee.core.jobs.delivery import (
     DeliveryRejectedError,
     deliver_control_job,
+    deliver_job,
     parse_transport_payload,
 )
 from marquee.core.jobs.fenced_writer import (
@@ -40,7 +47,6 @@ from marquee.core.jobs.orphan_reconciliation import (
     reconcile_candidate,
     reconcile_startup_orphans,
 )
-from marquee.core.jobs.pgqueuer_gateway import pgqueuer_gateway
 from marquee.core.jobs.pgqueuer_scheduler import create_scheduler
 from marquee.core.jobs.pgqueuer_worker import create_worker
 from marquee.core.jobs.policies import (
@@ -50,10 +56,15 @@ from marquee.core.jobs.policies import (
 )
 from marquee.core.jobs.process_identity import IdentityStatus, read_boot_id
 from marquee.core.jobs.progress_service import progress_writer
-from marquee.core.jobs.safety_gates import SafetyGateService, SafetyRequirements
+from marquee.core.jobs.safety_gates import (
+    SafetyGateService,
+    SafetyGateTimeoutError,
+    SafetyRequirements,
+)
+from marquee.core.jobs.transport_intent_monitor import TransportIntentMonitor
 from marquee.database import _get_engine
 from marquee.main import app
-from marquee.models import JobArtifact, RuntimeInstance
+from marquee.models import JobArtifact, LetterboxState, Movie, RuntimeInstance
 from marquee.models.job import Job, JobAttempt, JobDispatch, JobEvent
 
 
@@ -90,7 +101,9 @@ async def _canonical_ticket(db, *, payload: dict | None = None) -> tuple[str, in
     return values[0], values[1]
 
 
-def _transport_job(job_id: str, pgq_job_id: int, *, attempts: int = 0) -> PgQueuerJob:
+def _transport_job(
+    job_id: str, pgq_job_id: int, *, attempts: int = 0, entrypoint: str = "control"
+) -> PgQueuerJob:
     now = datetime.now(UTC)
     return PgQueuerJob(
         id=pgq_job_id,
@@ -100,7 +113,7 @@ def _transport_job(job_id: str, pgq_job_id: int, *, attempts: int = 0) -> PgQueu
         heartbeat=now,
         execute_after=now,
         status="picked",
-        entrypoint="control",
+        entrypoint=entrypoint,
         payload=(
             f'{{"dispatch_generation":1,"job_id":"{job_id}","payload_version":1}}'.encode()
         ),
@@ -600,6 +613,49 @@ async def test_expired_remote_read_only_attempt_is_policy_superseded(db):
     )
 
 
+async def test_expired_cancelled_attempt_is_terminalized_by_one_recovery_fence(db):
+    """A dead cancelling writer is recovered only after liveness proof, once."""
+    job_id, _ticket_id, attempt_id = await _attach_runtime_attempt(db, fresh=False)
+    job = await db.get(Job, job_id)
+    attempt = await db.get(JobAttempt, attempt_id)
+    assert job is not None and attempt is not None
+    job.desired_state = "cancel"
+    job.phase = "stopping"
+    attempt.phase = "stopping"
+    await db.commit()
+
+    candidate = (await _bounded_candidates("replacement-container", limit=10))[0]
+    assert (
+        await reconcile_candidate(candidate, cooperative_seconds=0.01, term_seconds=0.01)
+        == "cancelled"
+    )
+
+    await db.rollback()
+    db.expire_all()
+    job = await db.get(Job, job_id)
+    attempt = await db.get(JobAttempt, attempt_id)
+    assert job is not None and attempt is not None
+    assert (job.desired_state, job.phase, job.outcome, job.fence_token) == (
+        "cancel",
+        "terminal",
+        "cancelled",
+        2,
+    )
+    assert (attempt.phase, attempt.outcome, attempt.fence_token) == (
+        "finished",
+        "cancelled",
+        1,
+    )
+    event = await db.scalar(
+        select(JobEvent)
+        .where(JobEvent.job_id == job_id, JobEvent.event_key == "job.cancelled")
+        .order_by(JobEvent.id.desc())
+    )
+    assert event is not None
+    assert event.detail["_canonical_version"] == 2
+    assert event.detail["recovery_fence_version"] == 2
+
+
 async def test_redelivery_atomically_supersedes_expired_replay_safe_attempt(db):
     job_id, ticket_id, attempt_id = await _attach_runtime_attempt(db, fresh=False)
 
@@ -837,6 +893,72 @@ async def test_picked_cancellation_reaches_test_blocker(db, installed_pgqueuer, 
     monkeypatch.setitem(delivery._EXECUTION_HANDLERS, "system_noop", blocker)
     async with _get_engine().connect() as connection:
         raw = await connection.get_raw_connection()
+        queue_app = PgQueuer.from_asyncpg_connection(raw.driver_connection)
+
+        @queue_app.entrypoint("control", accepts_context=True, on_failure="hold")
+        async def control(transport_job, context):
+            await deliver_control_job(transport_job, context)
+
+        manager = asyncio.create_task(
+            queue_app.qm.run(
+                dequeue_timeout=timedelta(milliseconds=50),
+                batch_size=1,
+                max_concurrent_tasks=2,
+                heartbeat_timeout=timedelta(seconds=1),
+            )
+        )
+        await asyncio.wait_for(started.wait(), timeout=5)
+        await db.rollback()
+        db.expire_all()
+        job = await db.get(Job, job_id)
+        assert job is not None
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+        ) as client:
+            response = await client.post(
+                f"/api/jobs/{job_id}/cancel",
+                json={"expected_fence_token": job.fence_token},
+            )
+        assert response.status_code == 200, response.text
+
+        for _ in range(100):
+            await db.rollback()
+            db.expire_all()
+            job = await db.get(Job, job_id)
+            if job is not None and job.phase == "terminal":
+                break
+            await asyncio.sleep(0.02)
+        queue_app.shutdown.set()
+        await asyncio.wait_for(manager, timeout=5)
+
+    assert job is not None
+    assert (job.desired_state, job.phase, job.outcome) == (
+        "cancel",
+        "terminal",
+        "cancelled",
+    )
+    assert await installed_pgqueuer.job_status([ticket_id]) == [(ticket_id, "canceled")]
+
+
+async def test_public_cancel_keeps_active_delivery_fence_until_terminalization(
+    db, installed_pgqueuer, monkeypatch
+):
+    """The public command may request cancellation, but delivery owns the terminal write."""
+    from marquee.core.jobs.control import cancel
+
+    job_id, ticket_id = await _canonical_ticket(db)
+    started = asyncio.Event()
+
+    async def blocker(execution):
+        started.set()
+        while not execution.cancellation.cancel_called:
+            await asyncio.sleep(0.01)
+        raise asyncio.CancelledError
+
+    monkeypatch.setitem(delivery._EXECUTION_HANDLERS, "system_noop", blocker)
+    async with _get_engine().connect() as connection:
+        raw = await connection.get_raw_connection()
         app = PgQueuer.from_asyncpg_connection(raw.driver_connection)
 
         @app.entrypoint("control", accepts_context=True, on_failure="hold")
@@ -852,8 +974,11 @@ async def test_picked_cancellation_reaches_test_blocker(db, installed_pgqueuer, 
             )
         )
         await asyncio.wait_for(started.wait(), timeout=5)
-        async with db.begin():
-            await pgqueuer_gateway.cancel_known_ticket(db, job_id=job_id)
+        job = await db.get(Job, job_id)
+        assert job is not None
+        expected_fence_token = job.fence_token
+        await db.rollback()
+        await cancel(db, job_id=job_id, expected_fence_token=expected_fence_token)
 
         for _ in range(100):
             await db.rollback()
@@ -866,12 +991,285 @@ async def test_picked_cancellation_reaches_test_blocker(db, installed_pgqueuer, 
         await asyncio.wait_for(manager, timeout=5)
 
     assert job is not None
+    assert (job.desired_state, job.phase, job.outcome, job.fence_token) == (
+        "cancel",
+        "terminal",
+        "cancelled",
+        expected_fence_token,
+    )
+    attempt = await db.scalar(select(JobAttempt).where(JobAttempt.job_id == job_id))
+    assert attempt is not None
+    assert (attempt.phase, attempt.outcome, attempt.fence_token) == (
+        "finished",
+        "cancelled",
+        expected_fence_token,
+    )
+    assert await installed_pgqueuer.job_status([ticket_id]) == [(ticket_id, "canceled")]
+
+
+async def test_real_gate_contention_defers_without_attempt_then_executes_once(
+    db, installed_pgqueuer, monkeypatch
+):
+    """A PgQueuer delivery defers gate contention before creating an attempt."""
+    from marquee.config import settings
+
+    job_id, _ticket_id = await _canonical_ticket(db)
+    monkeypatch.setattr(settings, "JOB_ADMISSION_TIMEOUT_SECONDS", 0.05)
+    blocker = await SafetyGateService().acquire(
+        SafetyRequirements.exclusive_maintenance(),
+        cancelled=lambda: False,
+        deadline_seconds=1,
+    )
+    async with _get_engine().connect() as connection:
+        raw = await connection.get_raw_connection()
+        app = PgQueuer.from_asyncpg_connection(raw.driver_connection)
+
+        @app.entrypoint("control", accepts_context=True, on_failure="hold")
+        async def control(transport_job, context):
+            await deliver_control_job(transport_job, context)
+
+        manager = asyncio.create_task(
+            app.qm.run(
+                dequeue_timeout=timedelta(milliseconds=25),
+                batch_size=1,
+                max_concurrent_tasks=2,
+                heartbeat_timeout=timedelta(seconds=1),
+            )
+        )
+        try:
+            for _ in range(100):
+                await db.rollback()
+                job = await db.get(Job, job_id)
+                if job is not None and (job.attention or {}).get("code") == "admission_deferral_pending":
+                    break
+                await asyncio.sleep(0.02)
+            assert job is not None
+            assert job.phase == "queued"
+            attempts = list(
+                await db.scalars(select(JobAttempt).where(JobAttempt.job_id == job_id))
+            )
+            assert attempts == []
+            assert (job.attention or {}).get("defer_count") == 1
+        finally:
+            await blocker.release()
+
+        for _ in range(200):
+            await db.rollback()
+            job = await db.get(Job, job_id)
+            if job is not None and job.phase == "terminal":
+                break
+            await asyncio.sleep(0.02)
+        app.shutdown.set()
+        await asyncio.wait_for(manager, timeout=5)
+
+    assert job is not None
+    assert (job.phase, job.outcome) == ("terminal", "succeeded")
+    attempts = list(await db.scalars(select(JobAttempt).where(JobAttempt.job_id == job_id)))
+    assert len(attempts) == 1
+
+
+async def test_public_cancel_during_gate_wait_creates_no_attempt(
+    db,
+    installed_pgqueuer,
+) -> None:
+    """Public cancellation resolves a picked gate waiter without giving it execution ownership."""
+    job_id, ticket_id = await _canonical_ticket(db)
+    blocker = await SafetyGateService().acquire(
+        SafetyRequirements.exclusive_maintenance(),
+        cancelled=lambda: False,
+        deadline_seconds=1,
+    )
+    async with _get_engine().connect() as connection:
+        raw = await connection.get_raw_connection()
+        queue_app = PgQueuer.from_asyncpg_connection(raw.driver_connection)
+
+        @queue_app.entrypoint("control", accepts_context=True, on_failure="hold")
+        async def control(transport_job, context):
+            await deliver_control_job(transport_job, context)
+
+        manager = asyncio.create_task(
+            queue_app.qm.run(
+                dequeue_timeout=timedelta(milliseconds=25),
+                batch_size=1,
+                max_concurrent_tasks=2,
+                heartbeat_timeout=timedelta(seconds=1),
+            )
+        )
+        try:
+            for _ in range(100):
+                await db.rollback()
+                db.expire_all()
+                job = await db.get(Job, job_id)
+                if job is not None and (job.attention or {}).get("code") == "safety_wait":
+                    break
+                await asyncio.sleep(0.02)
+            assert job is not None
+            assert list(
+                await db.scalars(select(JobAttempt).where(JobAttempt.job_id == job_id))
+            ) == []
+
+            async with AsyncClient(
+                transport=ASGITransport(app=app),
+                base_url="http://test",
+            ) as client:
+                cancelled = await client.post(
+                    f"/api/jobs/{job_id}/cancel",
+                    json={"expected_fence_token": job.fence_token},
+                )
+            assert cancelled.status_code == 200, cancelled.text
+
+            for _ in range(100):
+                await db.rollback()
+                db.expire_all()
+                job = await db.get(Job, job_id)
+                if job is not None and job.phase == "terminal":
+                    break
+                await asyncio.sleep(0.02)
+            assert job is not None and job.phase == "terminal"
+        finally:
+            await blocker.release()
+            queue_app.shutdown.set()
+            await asyncio.wait_for(manager, timeout=5)
+
     assert (job.desired_state, job.phase, job.outcome) == (
         "cancel",
         "terminal",
         "cancelled",
     )
+    assert list(await db.scalars(select(JobAttempt).where(JobAttempt.job_id == job_id))) == []
     assert await installed_pgqueuer.job_status([ticket_id]) == [(ticket_id, "canceled")]
+
+
+async def test_monitor_recovers_an_absent_deferred_ticket_on_the_same_dispatch(
+    db, installed_pgqueuer
+):
+    """A callback crash may lose its PgQueuer row but not the canonical deferral."""
+    job_id, ticket_id = await _canonical_ticket(db)
+    now = datetime.now(UTC)
+    job = await db.get(Job, job_id)
+    dispatch = await db.scalar(
+        select(JobDispatch).where(
+            JobDispatch.job_id == job_id,
+            JobDispatch.generation == 1,
+        )
+    )
+    assert job is not None and dispatch is not None
+    job.eligible_at = now + timedelta(seconds=1)
+    dispatch.eligible_at = job.eligible_at
+    job.attention = {
+        "code": "admission_deferral_pending",
+        "summary": "synthetic callback interruption",
+        "cause": "safety_gate_timeout",
+        "defer_count": 1,
+        "delay_seconds": 1.0,
+        "next_eligible_at": job.eligible_at.isoformat(),
+    }
+    await db.commit()
+
+    # Simulate only the documented crash window: canonical intent committed,
+    # transport row absent. Recovery still travels through the public gateway.
+    await db.execute(text("DELETE FROM pgqueuer WHERE id = :ticket_id"), {"ticket_id": ticket_id})
+    await db.commit()
+
+    assert await TransportIntentMonitor(batch_size=10).run_once() == {
+        "cancelled": 0,
+        "retried": 1,
+        "attention": 0,
+    }
+    await db.rollback()
+    db.expire_all()
+    job = await db.get(Job, job_id)
+    dispatch = await db.scalar(
+        select(JobDispatch).where(
+            JobDispatch.job_id == job_id,
+            JobDispatch.generation == 1,
+        )
+    )
+    assert job is not None and dispatch is not None
+    assert job.pgq_job_id is not None and job.pgq_job_id != ticket_id
+    assert dispatch.pgq_job_id == job.pgq_job_id
+    assert (job.attention or {}).get("code") == "admission_deferred"
+    assert await installed_pgqueuer.job_status([job.pgq_job_id]) == [(job.pgq_job_id, "queued")]
+    assert list(await db.scalars(select(JobAttempt).where(JobAttempt.job_id == job_id))) == []
+
+
+async def test_transient_gate_connection_loss_defers_before_attempt(db, monkeypatch):
+    job_id, ticket_id = await _canonical_ticket(db)
+
+    async def lost_connection():
+        raise asyncpg.ConnectionDoesNotExistError("synthetic lost gate connection")
+
+    monkeypatch.setattr(
+        delivery,
+        "_SAFETY_GATES",
+        SafetyGateService(connection_factory=lost_connection),
+    )
+    with pytest.raises(RetryRequested, match="safety-gate admission deferred"):
+        await deliver_control_job(_transport_job(job_id, ticket_id), _context())
+
+    await db.rollback()
+    job = await db.get(Job, job_id)
+    assert job is not None
+    assert (job.phase, job.attention["code"], job.attention["cause"]) == (
+        "queued",
+        "admission_deferral_pending",
+        "safety_gate_connection_lost",
+    )
+    assert list(await db.scalars(select(JobAttempt).where(JobAttempt.job_id == job_id))) == []
+
+
+async def test_hard_gate_connection_error_is_held_without_admission_deferral(db, monkeypatch):
+    job_id, ticket_id = await _canonical_ticket(db)
+
+    async def invalid_connection():
+        raise asyncpg.InvalidAuthorizationSpecificationError("synthetic invalid credentials")
+
+    monkeypatch.setattr(
+        delivery,
+        "_SAFETY_GATES",
+        SafetyGateService(connection_factory=invalid_connection),
+    )
+    with pytest.raises(asyncpg.InvalidAuthorizationSpecificationError):
+        await deliver_control_job(_transport_job(job_id, ticket_id), _context())
+
+    await db.rollback()
+    job = await db.get(Job, job_id)
+    assert job is not None
+    assert job.phase == "queued"
+    assert job.attention is None
+    assert list(await db.scalars(select(JobAttempt).where(JobAttempt.job_id == job_id))) == []
+
+
+async def test_gate_deferral_exhaustion_is_terminal_without_a_phantom_attempt(db, monkeypatch):
+    job_id, ticket_id = await _canonical_ticket(db)
+
+    class TimedOutGate:
+        async def acquire(self, *_args, **_kwargs):
+            raise SafetyGateTimeoutError("synthetic gate contention")
+
+    monkeypatch.setattr(delivery, "_SAFETY_GATES", TimedOutGate())
+    for _ in range(3):
+        with pytest.raises(RetryRequested, match="safety-gate admission deferred"):
+            await deliver_control_job(_transport_job(job_id, ticket_id), _context())
+    with pytest.raises(DeliveryRejectedError, match="deferral budget exhausted"):
+        await deliver_control_job(_transport_job(job_id, ticket_id), _context())
+
+    await db.rollback()
+    job = await db.get(Job, job_id)
+    dispatch = await db.scalar(
+        select(JobDispatch).where(
+            JobDispatch.job_id == job_id,
+            JobDispatch.generation == 1,
+        )
+    )
+    assert job is not None and dispatch is not None
+    assert (job.phase, job.outcome, job.error["code"], dispatch.disposition) == (
+        "terminal",
+        "failed",
+        "admission_deferral_exhausted",
+        "failed",
+    )
+    assert list(await db.scalars(select(JobAttempt).where(JobAttempt.job_id == job_id))) == []
 
 
 async def test_unknown_canonical_job_is_held_without_legacy_resolution():
@@ -1387,3 +1785,477 @@ async def test_kernel_uncertainty_is_held_with_interrupted_attempt(db, monkeypat
         "interrupted",
         "failed",
     )
+
+
+async def test_public_preview_uses_pgqueuer_delivery_process_and_artifact(
+    db,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if shutil.which("ffmpeg") is None:
+        pytest.skip("preview execution requires ffmpeg")
+
+    media_directory = tmp_path / "preview-media"
+    media_directory.mkdir()
+    monkeypatch.setattr(settings, "MEDIA_ROOTS", [str(media_directory)])
+    source = media_directory / "preview.mkv"
+    process = await asyncio.create_subprocess_exec(
+        "ffmpeg",
+        "-y",
+        "-v",
+        "error",
+        "-f",
+        "lavfi",
+        "-i",
+        "testsrc=size=64x48:rate=1:duration=1",
+        "-c:v",
+        "libx264",
+        "-pix_fmt",
+        "yuv420p",
+        str(source),
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    _stdout, stderr = await process.communicate()
+    assert process.returncode == 0, stderr.decode(errors="replace")
+
+    movie = Movie(
+        title="Preview",
+        year=2026,
+        folder_path=str(media_directory),
+        movie_file_path=source.name,
+        tmdb_id=9_100_001,
+    )
+    db.add(movie)
+    await db.commit()
+    await db.refresh(movie)
+    movie_id = movie.id
+    db.add(
+        LetterboxState(
+            movie_id=movie_id,
+            status="candidate",
+            confidence="high",
+            source_width=64,
+            source_height=48,
+            recommended_crop_top=4,
+            recommended_crop_bottom=4,
+            samples_json='[{"minute": 0, "ok": true}]',
+        )
+    )
+    await db.commit()
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        response = await client.post(
+            f"/api/letterbox/movies/{movie_id}/preview?mode=after&minute=0&exact=true"
+        )
+        assert response.status_code == 202, response.text
+        job_id = response.json()["job_id"]
+
+    await db.rollback()
+    job = await db.get(Job, job_id)
+    dispatch = await db.scalar(select(JobDispatch).where(JobDispatch.job_id == job_id))
+    assert job is not None and dispatch is not None and dispatch.pgq_job_id is not None
+    assert job.type == "letterbox_preview"
+    assert job.request["candidate_minutes"] == [0]
+
+    await deliver_job(
+        _transport_job(job_id, dispatch.pgq_job_id, entrypoint="media_read"),
+        _context(),
+        expected_entrypoint="media_read",
+    )
+
+    await db.rollback()
+    db.expire_all()
+    job = await db.get(Job, job_id)
+    attempt = await db.scalar(select(JobAttempt).where(JobAttempt.job_id == job_id))
+    artifact = await db.scalar(
+        select(JobArtifact).where(
+            JobArtifact.job_id == job_id,
+            JobArtifact.kind == "preview_image",
+            JobArtifact.status == "available",
+        )
+    )
+    assert job is not None and attempt is not None and artifact is not None
+    assert (job.phase, job.outcome, attempt.fence_token) == ("terminal", "succeeded", 1)
+    assert artifact.attempt_id == attempt.id
+    assert artifact.content_type == "image/webp"
+    assert artifact.size_bytes is not None and 0 < artifact.size_bytes <= 8 * 1024 * 1024
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        listing = await client.get(f"/api/jobs/{job_id}/artifacts")
+        assert listing.status_code == 200
+        item = next(entry for entry in listing.json()["items"] if entry["id"] == artifact.id)
+        assert item["download_url"] is not None
+        download = await client.get(item["download_url"])
+    assert download.status_code == 200
+    assert download.headers["content-type"].startswith("image/webp")
+    assert download.content
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        reused = await client.post(
+            f"/api/letterbox/movies/{movie_id}/preview?mode=after&minute=0&exact=true"
+        )
+    assert reused.status_code == 202, reused.text
+    assert reused.json()["job_id"] == job_id
+    assert reused.json()["disposition"] == "reused"
+    assert reused.json()["idempotent"] is True
+    assert await db.scalar(
+        select(func.count())
+        .select_from(JobArtifact)
+        .where(
+            JobArtifact.job_id == job_id,
+            JobArtifact.kind == "preview_image",
+            JobArtifact.status == "available",
+        )
+    ) == 1
+
+async def test_public_preview_cancellation_terminates_owned_process_before_artifact(
+    db,
+    installed_pgqueuer,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if shutil.which("ffmpeg") is None or not hasattr(os, "mkfifo"):
+        pytest.skip("preview cancellation requires ffmpeg and a FIFO-capable platform")
+
+    media_directory = tmp_path / "preview-cancel-media"
+    media_directory.mkdir()
+    monkeypatch.setattr(settings, "MEDIA_ROOTS", [str(media_directory)])
+    source = media_directory / "preview.mkv"
+    os.mkfifo(source)
+
+    movie = Movie(
+        title="Preview cancellation",
+        year=2026,
+        folder_path=str(media_directory),
+        movie_file_path=source.name,
+        tmdb_id=9_100_002,
+    )
+    db.add(movie)
+    await db.commit()
+    await db.refresh(movie)
+    db.add(
+        LetterboxState(
+            movie_id=movie.id,
+            status="candidate",
+            confidence="high",
+            source_width=64,
+            source_height=48,
+            recommended_crop_top=4,
+            recommended_crop_bottom=4,
+            samples_json='[{"minute": 0, "ok": true}]',
+        )
+    )
+    await db.commit()
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        submitted = await client.post(
+            f"/api/letterbox/movies/{movie.id}/preview?mode=after&minute=0&exact=true"
+        )
+        assert submitted.status_code == 202, submitted.text
+        job_id = submitted.json()["job_id"]
+
+    def seed_fifo_signature() -> None:
+        with source.open("wb", buffering=0) as handle:
+            handle.write(b"signature-seed")
+
+    signature_thread = threading.Thread(target=seed_fifo_signature, daemon=True)
+    signature_thread.start()
+
+    async with _get_engine().connect() as connection:
+        raw = await connection.get_raw_connection()
+        queue_app = PgQueuer.from_asyncpg_connection(raw.driver_connection)
+
+        @queue_app.entrypoint("media_read", accepts_context=True, on_failure="hold")
+        async def media_read(transport_job, context):
+            await deliver_job(
+                transport_job,
+                context,
+                expected_entrypoint="media_read",
+            )
+
+        manager = asyncio.create_task(
+            queue_app.qm.run(
+                dequeue_timeout=timedelta(milliseconds=50),
+                batch_size=1,
+                max_concurrent_tasks=2,
+                heartbeat_timeout=timedelta(seconds=1),
+            )
+        )
+        try:
+            attempt: JobAttempt | None = None
+            for _ in range(100):
+                await db.rollback()
+                db.expire_all()
+                attempt = await db.scalar(select(JobAttempt).where(JobAttempt.job_id == job_id))
+                if attempt is not None and attempt.process_id is not None:
+                    break
+                await asyncio.sleep(0.02)
+            assert attempt is not None and attempt.process_id is not None
+            await asyncio.to_thread(signature_thread.join, 5)
+            assert not signature_thread.is_alive()
+
+            await db.rollback()
+            db.expire_all()
+            job = await db.get(Job, job_id)
+            assert job is not None
+            expected_fence_token = job.fence_token
+            async with AsyncClient(
+                transport=ASGITransport(app=app),
+                base_url="http://test",
+            ) as client:
+                cancelled = await client.post(
+                    f"/api/jobs/{job_id}/cancel",
+                    json={"expected_fence_token": expected_fence_token},
+                )
+            assert cancelled.status_code == 200, cancelled.text
+
+            for _ in range(1_000):
+                await db.rollback()
+                db.expire_all()
+                job = await db.get(Job, job_id)
+                if job is not None and job.phase == "terminal":
+                    break
+                await asyncio.sleep(0.02)
+            assert job is not None and job.phase == "terminal"
+        finally:
+            queue_app.shutdown.set()
+            if not manager.done():
+                manager.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await asyncio.wait_for(manager, timeout=15)
+
+    assert job is not None
+    assert (job.desired_state, job.phase, job.outcome, job.fence_token) == (
+        "cancel",
+        "terminal",
+        "cancelled",
+        expected_fence_token,
+    )
+    attempt = await db.scalar(select(JobAttempt).where(JobAttempt.job_id == job_id))
+    assert attempt is not None
+    assert attempt.process_id is not None
+    assert attempt.finished_at is not None
+    assert attempt.exit_code is not None or attempt.exit_signal is not None
+    assert await installed_pgqueuer.job_status([attempt.pgq_job_id]) == [
+        (attempt.pgq_job_id, "canceled")
+    ]
+    preview_artifacts = list(
+        (
+            await db.scalars(
+                select(JobArtifact).where(
+                    JobArtifact.job_id == job_id,
+                    JobArtifact.kind == "preview_image",
+                    JobArtifact.status == "available",
+                )
+            )
+        ).all()
+    )
+    assert preview_artifacts == []
+
+
+async def test_public_preview_timeout_confirms_owned_process_death_before_retry(
+    db,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if shutil.which("ffmpeg") is None or not hasattr(os, "mkfifo"):
+        pytest.skip("preview timeout requires ffmpeg and a FIFO-capable platform")
+
+    media_directory = tmp_path / "preview-timeout-media"
+    media_directory.mkdir()
+    monkeypatch.setattr(settings, "MEDIA_ROOTS", [str(media_directory)])
+    source = media_directory / "preview.mkv"
+    os.mkfifo(source)
+
+    movie = Movie(
+        title="Preview timeout",
+        year=2026,
+        folder_path=str(media_directory),
+        movie_file_path=source.name,
+        tmdb_id=9_100_003,
+    )
+    db.add(movie)
+    await db.commit()
+    await db.refresh(movie)
+    movie_id = movie.id
+    db.add(
+        LetterboxState(
+            movie_id=movie_id,
+            status="candidate",
+            confidence="high",
+            source_width=64,
+            source_height=48,
+            recommended_crop_top=4,
+            recommended_crop_bottom=4,
+            samples_json='[{"minute": 0, "ok": true}]',
+        )
+    )
+    await db.commit()
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        submitted = await client.post(
+            f"/api/letterbox/movies/{movie_id}/preview?mode=after&minute=0&exact=true"
+        )
+        assert submitted.status_code == 202, submitted.text
+        job_id = submitted.json()["job_id"]
+
+    def seed_fifo_signature() -> None:
+        with source.open("wb", buffering=0) as handle:
+            handle.write(b"signature-seed")
+
+    signature_thread = threading.Thread(target=seed_fifo_signature, daemon=True)
+    signature_thread.start()
+    definitions = [
+        replace(definition, timeout=TimeoutPolicy(seconds=1))
+        if definition.job_type == "letterbox_preview"
+        else definition
+        for definition in JOB_DEFINITION_REGISTRY
+    ]
+    monkeypatch.setattr(delivery, "JOB_DEFINITION_REGISTRY", JobDefinitionRegistry(definitions))
+
+    await db.rollback()
+    job = await db.get(Job, job_id)
+    dispatch = await db.scalar(select(JobDispatch).where(JobDispatch.job_id == job_id))
+    assert job is not None and dispatch is not None and dispatch.pgq_job_id is not None
+    with pytest.raises(RetryRequested):
+        await deliver_job(
+            _transport_job(job_id, dispatch.pgq_job_id, entrypoint="media_read"),
+            _context(),
+            expected_entrypoint="media_read",
+        )
+    await asyncio.to_thread(signature_thread.join, 5)
+    assert not signature_thread.is_alive()
+
+    await db.rollback()
+    db.expire_all()
+    job = await db.get(Job, job_id)
+    attempt = await db.scalar(select(JobAttempt).where(JobAttempt.job_id == job_id))
+    assert job is not None and attempt is not None
+    assert (job.phase, job.outcome, attempt.phase, attempt.outcome) == (
+        "queued",
+        None,
+        "finished",
+        "retrying",
+    )
+    assert attempt.process_id is not None
+    assert attempt.finished_at is not None
+    assert attempt.exit_code is not None or attempt.exit_signal is not None
+    assert await db.scalar(
+        select(func.count())
+        .select_from(JobArtifact)
+        .where(
+            JobArtifact.job_id == job_id,
+            JobArtifact.kind == "preview_image",
+            JobArtifact.status == "available",
+        )
+    ) == 0
+
+
+@pytest.mark.parametrize("outcome", ["failed", "cancelled"])
+async def test_public_retry_uses_definition_entrypoint_and_rejects_stale_replay(
+    db,
+    outcome: str,
+) -> None:
+    job_id, _ticket_id = await _canonical_ticket(db)
+    job = await db.get(Job, job_id)
+    assert job is not None
+    job.phase = "terminal"
+    job.outcome = outcome
+    job.terminal_at = datetime.now(UTC)
+    original_fence = job.fence_token
+    await db.commit()
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        active = await client.post(
+            f"/api/jobs/{job_id}/retry",
+            json={"expected_fence_token": original_fence},
+        )
+        assert active.status_code == 200, active.text
+        payload = active.json()
+        assert payload["action"] == "retry"
+        successor_id = payload["replacement_job_id"]
+        assert successor_id and successor_id != job_id
+
+        stale = await client.post(
+            f"/api/jobs/{job_id}/retry",
+            json={"expected_fence_token": original_fence},
+        )
+        assert stale.status_code == 409
+        assert stale.json()["detail"]["code"] == "stale_job_version"
+
+    await db.rollback()
+    db.expire_all()
+    original = await db.get(Job, job_id)
+    successor = await db.get(Job, successor_id)
+    successor_dispatch = await db.scalar(
+        select(JobDispatch).where(JobDispatch.job_id == successor_id)
+    )
+    assert original is not None and successor is not None and successor_dispatch is not None
+    assert original.fence_token == original_fence + 1
+    assert successor.retry_of_job_id == original.id
+    assert successor_dispatch.entrypoint == JOB_DEFINITION_REGISTRY.get(successor.type).entrypoint
+    assert successor_dispatch.pgq_job_id is not None
+
+
+async def test_public_retry_rejects_active_job_without_a_successor(db) -> None:
+    job_id, _ticket_id = await _canonical_ticket(db)
+    job = await db.get(Job, job_id)
+    assert job is not None
+    before_count = await db.scalar(select(func.count()).select_from(Job))
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        response = await client.post(
+            f"/api/jobs/{job_id}/retry",
+            json={"expected_fence_token": job.fence_token},
+        )
+    assert response.status_code == 409, response.text
+
+    await db.rollback()
+    assert await db.scalar(select(func.count()).select_from(Job)) == before_count
+
+
+async def test_public_retry_rejects_missing_subject_without_a_successor(db) -> None:
+    job_id, _ticket_id = await _canonical_ticket(db)
+    job = await db.get(Job, job_id)
+    assert job is not None
+    job.phase = "terminal"
+    job.outcome = "failed"
+    job.terminal_at = datetime.now(UTC)
+    job.subject_reference = None
+    await db.commit()
+    before_count = await db.scalar(select(func.count()).select_from(Job))
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        response = await client.post(
+            f"/api/jobs/{job_id}/retry",
+            json={"expected_fence_token": job.fence_token},
+        )
+    assert response.status_code == 409, response.text
+
+    await db.rollback()
+    assert await db.scalar(select(func.count()).select_from(Job)) == before_count

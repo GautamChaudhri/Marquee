@@ -534,6 +534,7 @@ async def _append_canonical_feedback(
             deployment_job_id=run.job_id,
             deployment_attempt_id=run.attempt_id,
             deployment_fence_token=run.fence_token,
+            session=db,
         )
         await activate_exemplar(
             db,

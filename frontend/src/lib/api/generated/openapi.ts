@@ -1238,10 +1238,13 @@ export interface paths {
 			path?: never;
 			cookie?: never;
 		};
-		/** Movie Preview */
-		get: operations['movie_preview_api_letterbox_movies__movie_id__preview_get'];
+		get?: never;
 		put?: never;
-		post?: never;
+		/**
+		 * Movie Preview
+		 * @description Submit or reuse one canonical movie preview; this route never runs ffmpeg.
+		 */
+		post: operations['movie_preview_api_letterbox_movies__movie_id__preview_post'];
 		delete?: never;
 		options?: never;
 		head?: never;
@@ -1570,10 +1573,13 @@ export interface paths {
 			path?: never;
 			cookie?: never;
 		};
-		/** Tv Episode Preview */
-		get: operations['tv_episode_preview_api_letterbox_tv__series_id__episodes__episode_id__preview_get'];
+		get?: never;
 		put?: never;
-		post?: never;
+		/**
+		 * Tv Episode Preview
+		 * @description Submit or reuse one canonical episode preview; retrieval uses job artifacts.
+		 */
+		post: operations['tv_episode_preview_api_letterbox_tv__series_id__episodes__episode_id__preview_post'];
 		delete?: never;
 		options?: never;
 		head?: never;
@@ -8238,7 +8244,7 @@ export interface operations {
 			};
 		};
 	};
-	movie_preview_api_letterbox_movies__movie_id__preview_get: {
+	movie_preview_api_letterbox_movies__movie_id__preview_post: {
 		parameters: {
 			query?: {
 				mode?: string;
@@ -8254,12 +8260,12 @@ export interface operations {
 		requestBody?: never;
 		responses: {
 			/** @description Successful Response */
-			200: {
+			202: {
 				headers: {
 					[name: string]: unknown;
 				};
 				content: {
-					'application/json': unknown;
+					'application/json': components['schemas']['JobSubmissionResponse'];
 				};
 			};
 			/** @description Validation Error */
@@ -8822,7 +8828,7 @@ export interface operations {
 			};
 		};
 	};
-	tv_episode_preview_api_letterbox_tv__series_id__episodes__episode_id__preview_get: {
+	tv_episode_preview_api_letterbox_tv__series_id__episodes__episode_id__preview_post: {
 		parameters: {
 			query?: {
 				mode?: string;
@@ -8839,12 +8845,12 @@ export interface operations {
 		requestBody?: never;
 		responses: {
 			/** @description Successful Response */
-			200: {
+			202: {
 				headers: {
 					[name: string]: unknown;
 				};
 				content: {
-					'application/json': unknown;
+					'application/json': components['schemas']['JobSubmissionResponse'];
 				};
 			};
 			/** @description Validation Error */

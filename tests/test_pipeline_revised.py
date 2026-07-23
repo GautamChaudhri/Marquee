@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
+from marquee.config import Settings
 from marquee.core.pipeline_config import PipelineSettings
 from marquee.core.poster_sources.tmdb import PosterCandidate
 from marquee.ml.artifact_codec import unicode_array, unicode_scalar
@@ -306,8 +307,7 @@ def test_repeat_run_cleanup_retains_flat_downloads(tmp_path: Path):
 
 
 def test_pipeline_run_root_is_inside_data():
-    project_root = Path(__file__).resolve().parents[1]
-    assert project_root / "data" / "runs" / "work" == _RUNS_WORK_DATA
+    assert Settings().runs_work_path == _RUNS_WORK_DATA
 
 
 def test_dedup_tiebreak_uses_original_tmdb_resolution(tmp_path: Path):

@@ -11843,8 +11843,9 @@
       }
     },
     "/api/letterbox/movies/{movie_id}/preview": {
-      "get": {
-        "operationId": "movie_preview_api_letterbox_movies__movie_id__preview_get",
+      "post": {
+        "description": "Submit or reuse one canonical movie preview; this route never runs ffmpeg.",
+        "operationId": "movie_preview_api_letterbox_movies__movie_id__preview_post",
         "parameters": [
           {
             "in": "path",
@@ -11887,10 +11888,12 @@
           }
         ],
         "responses": {
-          "200": {
+          "202": {
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/JobSubmissionResponse"
+                }
               }
             },
             "description": "Successful Response"
@@ -12759,8 +12762,9 @@
       }
     },
     "/api/letterbox/tv/{series_id}/episodes/{episode_id}/preview": {
-      "get": {
-        "operationId": "tv_episode_preview_api_letterbox_tv__series_id__episodes__episode_id__preview_get",
+      "post": {
+        "description": "Submit or reuse one canonical episode preview; retrieval uses job artifacts.",
+        "operationId": "tv_episode_preview_api_letterbox_tv__series_id__episodes__episode_id__preview_post",
         "parameters": [
           {
             "in": "path",
@@ -12812,10 +12816,12 @@
           }
         ],
         "responses": {
-          "200": {
+          "202": {
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/JobSubmissionResponse"
+                }
               }
             },
             "description": "Successful Response"

@@ -14,7 +14,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
 
-from sqlalchemy import select
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.config import settings
 from marquee.core.filesystem import (
@@ -48,6 +49,7 @@ class ArtifactPolicy:
     content_types: frozenset[str]
     max_bytes: int
     attempt_required: bool = True
+    max_active_per_job: int | None = None
 
 
 ARTIFACT_POLICIES: dict[str, ArtifactPolicy] = {
@@ -75,6 +77,9 @@ ARTIFACT_POLICIES: dict[str, ArtifactPolicy] = {
     ),
     "evidence_image": ArtifactPolicy(
         ".jpg", frozenset({"image/jpeg"}), 10 * 1024 * 1024
+    ),
+    "preview_image": ArtifactPolicy(
+        ".webp", frozenset({"image/webp"}), 8 * 1024 * 1024, max_active_per_job=1
     ),
     "taste_exemplar": ArtifactPolicy(
         ".jpg", frozenset({"image/jpeg"}), 25 * 1024 * 1024
@@ -244,6 +249,7 @@ async def register_physical_artifact(
     retention_class: str = "standard",
     metadata: Mapping[str, Any] | None = None,
     data_dir: str | Path | None = None,
+    session: AsyncSession | None = None,
 ) -> JobArtifact:
     """Copy one already-classified source into immutable managed storage."""
     if not isinstance(source, ClassifiedPath):
@@ -275,17 +281,33 @@ async def register_physical_artifact(
         roots[source.root.name] = source.root
     boundary = FilesystemBoundary(roots)
     factory = _get_session_factory()
-    async with factory() as session, session.begin():
-        attempt = await session.scalar(
+
+    async def reserve(database_session: AsyncSession) -> int:
+        attempt = await database_session.scalar(
             select(JobAttempt).where(
                 JobAttempt.id == attempt_id,
                 JobAttempt.job_id == job_id,
                 JobAttempt.fence_token == fence_token,
-            )
+            ).with_for_update()
         )
-        job = await session.scalar(select(Job).where(Job.id == job_id))
-        if attempt is None or job is None:
+        job = await database_session.scalar(select(Job).where(Job.id == job_id).with_for_update())
+        if (
+            attempt is None
+            or job is None
+            or job.current_attempt_id != attempt_id
+            or job.fence_token != fence_token
+        ):
             raise ArtifactError("artifact attempt ownership is stale")
+        if policy.max_active_per_job is not None:
+            active_count = await database_session.scalar(
+                select(func.count(JobArtifact.id)).where(
+                    JobArtifact.job_id == job_id,
+                    JobArtifact.kind == kind,
+                    JobArtifact.status.in_(("pending", "available")),
+                )
+            )
+            if active_count is not None and active_count >= policy.max_active_per_job:
+                raise ArtifactError("artifact kind count exceeds policy")
         row = JobArtifact(
             job_id=job_id,
             attempt_id=attempt_id,
@@ -297,12 +319,79 @@ async def register_physical_artifact(
             artifact_metadata=safe_metadata,
             retention_class=retention_class,
         )
-        session.add(row)
-        await session.flush((row,))
+        database_session.add(row)
+        await database_session.flush((row,))
         row.storage_key = (
             f"jmc3/evidence/artifacts/{job_id}/{row.id}/artifact-{row.id}{policy.extension}"
         )
-        artifact_id = row.id
+        return row.id
+
+    async def publish(
+        database_session: AsyncSession,
+        *,
+        artifact_id: int,
+        size: int,
+        checksum: str,
+        expires_at: datetime | None,
+    ) -> JobArtifact:
+        row = await database_session.scalar(
+            select(JobArtifact).where(JobArtifact.id == artifact_id).with_for_update()
+        )
+        job = await database_session.scalar(select(Job).where(Job.id == job_id))
+        if row is None or row.status != "pending" or job is None:
+            raise ArtifactError("artifact publication metadata is stale")
+        row.status = "available"
+        row.size_bytes = size
+        row.checksum = checksum
+        row.expires_at = expires_at
+        if job.current_attempt_id == attempt_id and job.fence_token == fence_token:
+            await job_event_writer.append(
+                database_session,
+                job_id=job_id,
+                attempt_id=attempt_id,
+                event_key="artifact.available",
+                state=job.phase,
+                message="Job artifact available",
+                detail={"artifact_id": artifact_id, "kind": kind, "name": name},
+                canonical_version=fence_token,
+            )
+        return row
+
+    async def fail(database_session: AsyncSession, *, artifact_id: int, exc: Exception) -> None:
+        row = await database_session.scalar(
+            select(JobArtifact)
+            .where(JobArtifact.id == artifact_id, JobArtifact.status == "pending")
+            .with_for_update()
+        )
+        job = await database_session.scalar(select(Job).where(Job.id == job_id))
+        if row is None:
+            return
+        row.status = "failed"
+        row.artifact_metadata = {
+            **safe_metadata,
+            "failure_code": type(exc).__name__[:40],
+        }
+        if (
+            job is not None
+            and job.current_attempt_id == attempt_id
+            and job.fence_token == fence_token
+        ):
+            await job_event_writer.append(
+                database_session,
+                job_id=job_id,
+                attempt_id=attempt_id,
+                event_key="artifact.failed",
+                state=job.phase,
+                message="Job artifact failed",
+                detail={"artifact_id": artifact_id, "kind": kind, "name": name},
+                canonical_version=fence_token,
+            )
+
+    if session is None:
+        async with factory() as artifact_session, artifact_session.begin():
+            artifact_id = await reserve(artifact_session)
+    else:
+        artifact_id = await reserve(session)
 
     directory = boundary.from_key("data", f"jmc3/evidence/artifacts/{job_id}/{artifact_id}")
     staged: ClassifiedPath | None = None
@@ -339,62 +428,31 @@ async def register_physical_artifact(
         checksum = digest.hexdigest()
         retention_delta = _retention_delta(retention_class)
         expires_at = datetime.now(UTC) + retention_delta if retention_delta is not None else None
-        async with factory() as session, session.begin():
-            row = await session.scalar(
-                select(JobArtifact).where(JobArtifact.id == artifact_id).with_for_update()
-            )
-            job = await session.scalar(select(Job).where(Job.id == job_id))
-            if row is None or row.status != "pending" or job is None:
-                raise ArtifactError("artifact publication metadata is stale")
-            row.status = "available"
-            row.size_bytes = size
-            row.checksum = checksum
-            row.expires_at = expires_at
-            if job.current_attempt_id == attempt_id and job.fence_token == fence_token:
-                await job_event_writer.append(
-                    session,
-                    job_id=job_id,
-                    attempt_id=attempt_id,
-                    event_key="artifact.available",
-                    state=job.phase,
-                    message="Job artifact available",
-                    detail={"artifact_id": artifact_id, "kind": kind, "name": name},
-                    canonical_version=fence_token,
+        if session is None:
+            async with factory() as artifact_session, artifact_session.begin():
+                return await publish(
+                    artifact_session,
+                    artifact_id=artifact_id,
+                    size=size,
+                    checksum=checksum,
+                    expires_at=expires_at,
                 )
-            result = row
-        return result
+        return await publish(
+            session,
+            artifact_id=artifact_id,
+            size=size,
+            checksum=checksum,
+            expires_at=expires_at,
+        )
     except Exception as exc:
         if staged is not None:
             with contextlib.suppress(Exception):
                 boundary.delete_file(staged, missing_ok=True)
-        async with factory() as session, session.begin():
-            row = await session.scalar(
-                select(JobArtifact)
-                .where(JobArtifact.id == artifact_id, JobArtifact.status == "pending")
-                .with_for_update()
-            )
-            job = await session.scalar(select(Job).where(Job.id == job_id))
-            if row is not None:
-                row.status = "failed"
-                row.artifact_metadata = {
-                    **safe_metadata,
-                    "failure_code": type(exc).__name__[:40],
-                }
-                if (
-                    job is not None
-                    and job.current_attempt_id == attempt_id
-                    and job.fence_token == fence_token
-                ):
-                    await job_event_writer.append(
-                        session,
-                        job_id=job_id,
-                        attempt_id=attempt_id,
-                        event_key="artifact.failed",
-                        state=job.phase,
-                        message="Job artifact failed",
-                        detail={"artifact_id": artifact_id, "kind": kind, "name": name},
-                        canonical_version=fence_token,
-                    )
+        if session is None:
+            async with factory() as artifact_session, artifact_session.begin():
+                await fail(artifact_session, artifact_id=artifact_id, exc=exc)
+        else:
+            await fail(session, artifact_id=artifact_id, exc=exc)
         raise
 
 

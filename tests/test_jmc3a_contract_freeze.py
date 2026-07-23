@@ -19,7 +19,7 @@ def test_jmc3a_starts_from_certified_registry_and_transport_contract() -> None:
     contract = _contract()
     registry = contract["registry"]
     assert isinstance(registry, dict)
-    assert len(JOB_DEFINITION_REGISTRY) == registry["definition_count"] + 13
+    assert len(JOB_DEFINITION_REGISTRY) == registry["definition_count"] + 14
     assert JOB_DEFINITION_REGISTRY.enabled_types == current_job_types(registry["enabled_types"]) | {
         "subtitle_policy",
         "subtitle_restore",
@@ -44,6 +44,7 @@ def test_jmc3a_starts_from_certified_registry_and_transport_contract() -> None:
         "system_metrics_purge",
         "letterbox_apply",
         "letterbox_remove",
+        "letterbox_preview",
             "letterbox_reencode",
             "letterbox_reencode_publish",
             "letterbox_reencode_restore",

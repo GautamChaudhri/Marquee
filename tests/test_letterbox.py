@@ -12,7 +12,6 @@ import asyncio
 import json
 import time
 from datetime import UTC, datetime
-from pathlib import Path
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -430,6 +429,39 @@ def _preview_root(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "DATA_DIR", str(tmp_path / "data"))
     return settings.letterbox_preview_path
 
+def test_retired_preview_cache_cleanup_is_subject_scoped(tmp_path, monkeypatch):
+    preview_root = _preview_root(tmp_path, monkeypatch)
+    preview_root.mkdir(parents=True, exist_ok=True)
+    movie_cache = preview_root / "movie-7_before_5_bright_v3.webp"
+    legacy_cache = preview_root / "7_before_5_bright_v3.webp"
+    episode_cache = preview_root / "episode-7_before_5_bright_v3.webp"
+    for path in (movie_cache, legacy_cache, episode_cache):
+        path.write_bytes(b"retired")
+
+    assert letterbox_preview.purge_movie_previews(7) == 2
+    assert not movie_cache.exists()
+    assert not legacy_cache.exists()
+    assert episode_cache.exists()
+
+
+def test_retired_episode_cache_cleanup_keeps_movie_entries(tmp_path, monkeypatch):
+    preview_root = _preview_root(tmp_path, monkeypatch)
+    preview_root.mkdir(parents=True, exist_ok=True)
+    episode_cache = preview_root / "episode-7_before_5_bright_v3.webp"
+    movie_cache = preview_root / "movie-7_before_5_bright_v3.webp"
+    episode_cache.write_bytes(b"retired")
+    movie_cache.write_bytes(b"retired")
+
+    assert letterbox_preview.purge_all_episode_previews() == 1
+    assert not episode_cache.exists()
+    assert movie_cache.exists()
+
+
+def test_retired_preview_module_exposes_no_execution_helpers():
+    assert not hasattr(letterbox_preview, "generate_preview")
+    assert not hasattr(letterbox_preview, "warm_previews")
+    assert not hasattr(letterbox_preview, "preview_path")
+
 
 def _reencode_plan(job_id: str = "job1") -> dict:
     return {
@@ -578,267 +610,34 @@ async def test_movie_detail_uses_cached_dolby_vision_state(client, db, tmp_path)
 # ---------------------------------------------------------------------------
 
 
-def test_warm_movie_previews_renders_every_ok_sample(tmp_path, monkeypatch):
-    preview_root = _preview_root(tmp_path, monkeypatch)
-    stale = preview_root / "7_before_99_legacy.webp"
-    stale.parent.mkdir(parents=True, exist_ok=True)
-    stale.write_bytes(b"stale")
-
-    monkeypatch.setattr(binaries, "resolve", lambda name: "/usr/bin/ffmpeg")
-    calls = []
-
-    def fake_generate_preview(
-        source,
-        *,
-        movie_id,
-        minute,
-        mode,
-        crop_top,
-        crop_bottom,
-        height=None,
-        candidate_minutes=None,
-        exact=False,
-        force=False,
-    ):
-        calls.append(
-            {
-                "source": source,
-                "movie_id": movie_id,
-                "minute": minute,
-                "mode": mode,
-                "crop_top": crop_top,
-                "crop_bottom": crop_bottom,
-                "height": height,
-                "candidate_minutes": list(candidate_minutes or []),
-                "exact": exact,
-                "force": force,
-            }
-        )
-        out = letterbox_preview.preview_path(movie_id, mode, minute, exact=exact)
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_bytes(f"{minute}:{mode}".encode())
-        return out
-
-    monkeypatch.setattr(letterbox_preview, "generate_preview", fake_generate_preview)
-    samples = [
-        {"minute": 5, "ok": True},
-        {"minute": 10, "ok": True},
-        {"minute": 15, "ok": False},
-    ]
-
-    outputs = letterbox_preview.warm_movie_previews(
-        "/movie.mkv",
-        movie_id=7,
-        samples=samples,
-        crop_top=140,
-        crop_bottom=140,
-        height=2160,
-    )
-
-    assert stale.exists() is False
-    assert len(calls) == 8
-    assert {call["minute"] for call in calls} == {5, 10}
-    assert {call["mode"] for call in calls} == {"before", "after"}
-    assert all(call["candidate_minutes"] == [5, 10] for call in calls)
-    assert {call["exact"] for call in calls} == {True, False}
-    assert all(call["force"] is True for call in calls)
-    assert len(outputs) == 8
-    assert all(path.exists() for path in outputs)
 
 
-def test_warm_clear_preview_renders_one_bright_before_frame(tmp_path, monkeypatch):
-    preview_root = _preview_root(tmp_path, monkeypatch)
-    stale = preview_root / "episode-7_before_99_legacy.webp"
-    stale.parent.mkdir(parents=True, exist_ok=True)
-    stale.write_bytes(b"stale")
-
-    monkeypatch.setattr(binaries, "resolve", lambda name: "/usr/bin/ffmpeg")
-    calls = []
-
-    def fake_generate_preview(
-        source,
-        *,
-        subject_key,
-        minute,
-        mode,
-        crop_top,
-        crop_bottom,
-        candidate_minutes=None,
-        exact=False,
-        force=False,
-        **_kwargs,
-    ):
-        calls.append(
-            {
-                "source": source,
-                "subject_key": subject_key,
-                "minute": minute,
-                "mode": mode,
-                "crop_top": crop_top,
-                "crop_bottom": crop_bottom,
-                "candidate_minutes": list(candidate_minutes or []),
-                "exact": exact,
-                "force": force,
-            }
-        )
-        out = letterbox_preview.preview_path(subject_key, mode, minute, exact=exact)
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_bytes(b"preview")
-        return out
-
-    monkeypatch.setattr(letterbox_preview, "generate_preview", fake_generate_preview)
-
-    outputs = letterbox_preview.warm_clear_preview(
-        "/episode.mkv",
-        subject_key=letterbox_preview.episode_subject_key(7),
-        minute=15,
-        candidate_minutes=[15, 20],
-    )
-
-    assert stale.exists() is False
-    assert calls == [
-        {
-            "source": "/episode.mkv",
-            "subject_key": "episode-7",
-            "minute": 15,
-            "mode": "before",
-            "crop_top": 0,
-            "crop_bottom": 0,
-            "candidate_minutes": [15, 20],
-            "exact": False,
-            "force": True,
-        }
-    ]
-    assert len(outputs) == 1
-    assert outputs[0].exists()
 
 
-def test_preview_cache_key_separates_exact_and_bright(tmp_path, monkeypatch):
-    _preview_root(tmp_path, monkeypatch)
-    bright = letterbox_preview.preview_path(7, "before", 10)
-    exact = letterbox_preview.preview_path(7, "before", 10, exact=True)
-
-    assert bright != exact
-    assert "_bright_" in bright.name
-    assert "_exact_" in exact.name
 
 
-def test_exact_preview_uses_requested_minute_without_substitution(tmp_path, monkeypatch):
-    """Regression: a too-dark minute=10 frame must not silently render minute=5's
-    content into the minute=10 cache slot — that's what made Lincoln/Borderlands
-    sample clicks keep showing the wrong frame."""
-    _preview_root(tmp_path, monkeypatch)
-    monkeypatch.setattr(binaries, "resolve", lambda name: "/usr/bin/ffmpeg")
-    monkeypatch.setattr(letterbox_preview, "_pick_bright_minute", lambda *a, **k: 5)
-    timestamps = []
-
-    def fake_run(name, args, timeout=None):
-        timestamps.append(args[args.index("-ss") + 1])
-        out = Path(args[-1])
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_bytes(b"webp")
-        return type("Result", (), {"ok": True, "stderr": ""})()
-
-    monkeypatch.setattr(binaries, "run", fake_run)
-
-    out = letterbox_preview.generate_preview(
-        "/movie.mkv",
-        movie_id=7,
-        minute=10,
-        mode="before",
-        crop_top=140,
-        crop_bottom=140,
-        height=1080,
-        candidate_minutes=[5, 10],
-        exact=True,
-    )
-
-    assert out is not None
-    assert timestamps == ["00:10:00"]
 
 
-def test_measure_luma_returns_none_on_binary_error(monkeypatch):
-    """A slow/timed-out probe must degrade to None, not raise — otherwise it
-    bubbles out of generate_preview and 500s the whole preview request."""
-    monkeypatch.setattr(binaries, "resolve", lambda name: "/usr/bin/ffmpeg")
-
-    def boom(name, args, timeout=None):
-        raise binaries.BinaryError(f"{name} timed out after {timeout}s")
-
-    monkeypatch.setattr(binaries, "run", boom)
-    assert letterbox_preview._measure_luma("/movie.mkv", 5) is None
 
 
-def test_pick_bright_minute_falls_back_when_probes_fail(monkeypatch):
-    """When every luma probe fails, fall back to the requested minute."""
-    letterbox_preview._bright_minute_cache.clear()
-    monkeypatch.setattr(letterbox_preview, "_measure_luma", lambda *a, **k: None)
-    chosen = letterbox_preview._pick_bright_minute("/m.mkv", 7, [3, 11, 19], movie_id=42)
-    assert chosen == 7
 
 
-def test_pick_bright_minute_caps_probe_count(monkeypatch):
-    """At most _MAX_BRIGHT_PROBES decodes run for one pick, no matter how many
-    candidate minutes are offered (each decode is expensive on 4K)."""
-    letterbox_preview._bright_minute_cache.clear()
-    probed: list[int] = []
-
-    def fake_measure(source, minute):
-        probed.append(minute)
-        return 0.0  # always too dark, forcing the candidate sweep
-
-    monkeypatch.setattr(letterbox_preview, "_measure_luma", fake_measure)
-    letterbox_preview._pick_bright_minute("/m.mkv", 5, [10, 15, 20, 25, 30, 35, 40], movie_id=1)
-    assert len(probed) <= letterbox_preview._MAX_BRIGHT_PROBES
 
 
-def test_pick_bright_minute_caches_decision(monkeypatch):
-    """The before/after pair (same movie + minute) must not each re-probe."""
-    letterbox_preview._bright_minute_cache.clear()
-    calls = {"n": 0}
-
-    def fake_measure(source, minute):
-        calls["n"] += 1
-        return 200.0  # bright enough, keeps the requested minute
-
-    monkeypatch.setattr(letterbox_preview, "_measure_luma", fake_measure)
-    first = letterbox_preview._pick_bright_minute("/m.mkv", 5, [10], movie_id=9)
-    second = letterbox_preview._pick_bright_minute("/m.mkv", 5, [10], movie_id=9)
-    assert first == second == 5
-    assert calls["n"] == 1  # second call served from cache
 
 
-def test_purge_clears_bright_minute_cache(tmp_path, monkeypatch):
-    _preview_root(tmp_path, monkeypatch)
-    letterbox_preview._bright_minute_cache[(3, 5)] = 5
-    letterbox_preview._bright_minute_cache[(4, 5)] = 5
-    letterbox_preview.purge_movie_previews(3)
-    assert (3, 5) not in letterbox_preview._bright_minute_cache
-    assert (4, 5) in letterbox_preview._bright_minute_cache  # other movie untouched
 
 
-def test_purge_all_episode_previews_only_removes_episode_cache(tmp_path, monkeypatch):
-    preview_root = _preview_root(tmp_path, monkeypatch)
-    preview_root.mkdir(parents=True, exist_ok=True)
-    episode_preview = preview_root / "episode-7_before_5_bright_v3.webp"
-    movie_preview = preview_root / "movie-7_before_5_bright_v3.webp"
-    legacy_movie_preview = preview_root / "7_before_5_bright_v3.webp"
-    episode_preview.write_bytes(b"episode")
-    movie_preview.write_bytes(b"movie")
-    legacy_movie_preview.write_bytes(b"legacy")
-    letterbox_preview._bright_minute_cache.clear()
-    letterbox_preview._bright_minute_cache[("episode-7", 5)] = 5
-    letterbox_preview._bright_minute_cache[("movie-7", 5)] = 5
-    letterbox_preview._bright_minute_cache[(7, 5)] = 5
 
-    assert letterbox_preview.purge_all_episode_previews() == 1
 
-    assert not episode_preview.exists()
-    assert movie_preview.exists()
-    assert legacy_movie_preview.exists()
-    assert ("episode-7", 5) not in letterbox_preview._bright_minute_cache
-    assert ("movie-7", 5) in letterbox_preview._bright_minute_cache
-    assert (7, 5) in letterbox_preview._bright_minute_cache
+
+  # second call served from cache
+
+
+  # other movie untouched
+
+
+
 
 
 @pytest.mark.asyncio
@@ -1678,12 +1477,8 @@ async def test_movie_detail_includes_sample_previews_even_when_reviewed(client, 
     body = resp.json()
     assert "preview_urls" not in body
     assert body["sample_previews"] == [
-        {
-            "minute": 5,
-            "ok": True,
-            "url": f"/api/letterbox/movies/{movie.id}/preview?mode=before&minute=5",
-        },
-        {"minute": 10, "ok": False, "url": None},
+        {"minute": 5, "ok": True},
+        {"minute": 10, "ok": False},
     ]
 
 
@@ -1839,8 +1634,8 @@ async def test_confirm_purges_previews_and_marks_reviewed(client, db):
     )
     await db.commit()
 
-    before = letterbox_preview.preview_path(movie.id, "before", 5)
-    after = letterbox_preview.preview_path(movie.id, "after", 5)
+    before = preview_root / f"movie-{movie.id}_before_5_bright_v3.webp"
+    after = preview_root / f"{movie.id}_after_5_bright_v3.webp"
     before.parent.mkdir(parents=True, exist_ok=True)
     before.write_bytes(b"before")
     after.write_bytes(b"after")
@@ -1848,9 +1643,8 @@ async def test_confirm_purges_previews_and_marks_reviewed(client, db):
     resp = await client.post(f"/api/letterbox/movies/{movie.id}/confirm")
     assert resp.status_code == 200
     assert resp.json()["reviewed"] is True
-    assert before.exists() is False
-    assert after.exists() is False
-    assert list(preview_root.glob(f"{movie.id}_*.webp")) == []
+    assert not before.exists()
+    assert not after.exists()
 
 
 @pytest.mark.asyncio
@@ -1870,8 +1664,8 @@ async def test_ignore_purges_previews(client, db):
     )
     await db.commit()
 
-    before = letterbox_preview.preview_path(movie.id, "before", 10)
-    after = letterbox_preview.preview_path(movie.id, "after", 10)
+    before = preview_root / f"movie-{movie.id}_before_10_bright_v3.webp"
+    after = preview_root / f"{movie.id}_after_10_bright_v3.webp"
     before.parent.mkdir(parents=True, exist_ok=True)
     before.write_bytes(b"before")
     after.write_bytes(b"after")
@@ -1880,14 +1674,12 @@ async def test_ignore_purges_previews(client, db):
     assert resp.status_code == 200
     assert resp.json()["status"] == "skipped"
     assert resp.json()["reviewed"] is True
-    assert before.exists() is False
-    assert after.exists() is False
-    assert list(preview_root.glob(f"{movie.id}_*.webp")) == []
+    assert not before.exists()
+    assert not after.exists()
 
 
 @pytest.mark.asyncio
-async def test_preview_route_does_not_regenerate_for_reviewed_movie(client, db, monkeypatch):
-    preview_root = settings.letterbox_preview_path
+async def test_preview_submission_blocks_reviewed_movie(client, db):
     movie = Movie(title="Reviewed", year=2000, folder_path="/m/rev", tmdb_id=10)
     db.add(movie)
     await db.commit()
@@ -1902,31 +1694,12 @@ async def test_preview_route_does_not_regenerate_for_reviewed_movie(client, db, 
             applied_crop_top=140,
             applied_crop_bottom=140,
             reviewed=True,
-            samples_json=json.dumps(
-                [
-                    {"minute": 5, "ok": True},
-                    {"minute": 10, "ok": True},
-                ]
-            ),
         )
     )
     await db.commit()
 
-    letterbox_preview.purge_movie_previews(movie.id)
-    assert list(preview_root.glob(f"{movie.id}_*.webp")) == []
-
-    called = False
-
-    def fail_generate(*args, **kwargs):
-        nonlocal called
-        called = True
-        raise AssertionError("preview generation should not run for reviewed movies")
-
-    monkeypatch.setattr(letterbox_preview, "generate_preview", fail_generate)
-
-    resp = await client.get(f"/api/letterbox/movies/{movie.id}/preview?mode=before&minute=5")
+    resp = await client.post(f"/api/letterbox/movies/{movie.id}/preview?mode=before&minute=5")
     assert resp.status_code == 404
-    assert called is False
 
 
 @pytest.mark.asyncio

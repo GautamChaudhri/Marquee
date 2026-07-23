@@ -7,6 +7,7 @@ from hashlib import sha256
 from uuid import uuid4
 
 import pytest
+from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
@@ -16,6 +17,7 @@ from marquee.core.taste_preferences import (
     schedule_initial_profile_build,
     schedule_profile_builds,
 )
+from marquee.main import app
 from marquee.models import (
     Job,
     JobArtifact,
@@ -275,6 +277,7 @@ async def test_failed_profile_build_stays_terminal_until_canonical_retry(db, ins
     failed = await db.get(TasteProfileBuild, build.id)
     assert failed is not None
     assert failed.state == "failed"
+    failed_id = failed.id
     readiness = (await derive_readiness(db)).to_dict()
     assert readiness["libraries"][failed.library]["build"]["state"] == "failed"
 
@@ -283,15 +286,24 @@ async def test_failed_profile_build_stays_terminal_until_canonical_retry(db, ins
     job.phase = "terminal"
     job.outcome = "failed"
     job.terminal_at = datetime.now(UTC)
+    expected_fence_token = job.fence_token
     await db.commit()
-    from marquee.core.jobs.control import retry  # noqa: PLC0415
 
-    retried = await retry(db, job_id=job.id, expected_fence_token=job.fence_token)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            f"/api/jobs/{job.id}/retry",
+            json={"expected_fence_token": expected_fence_token},
+        )
+    assert response.status_code == 200, response.text
+    replacement_job_id = response.json()["replacement_job_id"]
+    assert replacement_job_id
+    await db.rollback()
+    db.expire_all()
     successor = await db.scalar(
-        select(TasteProfileBuild).where(TasteProfileBuild.job_id == retried.replacement_job_id)
+        select(TasteProfileBuild).where(TasteProfileBuild.job_id == replacement_job_id)
     )
     assert successor is not None
-    assert successor.supersedes_build_id == failed.id
+    assert successor.supersedes_build_id == failed_id
     assert successor.state == "queued"
     replacement = await db.get(Job, successor.job_id)
     assert replacement is not None

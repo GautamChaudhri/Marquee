@@ -161,6 +161,32 @@ async def test_cancel_returns_new_snapshot(db, client, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_terminal_cancel_is_idempotent_without_reopening_work(db, client):
+    job = make_job(
+        "cancelterminal000000000000000001",
+        phase="terminal",
+        outcome="cancelled",
+    )
+    job.desired_state = "cancel"
+    job.fence_token = 4
+    db.add(job)
+    await db.commit()
+
+    response = await client.post(
+        f"/api/jobs/{job.id}/cancel",
+        json={"expected_fence_token": 0},
+    )
+
+    assert response.status_code == 200
+    snapshot = response.json()["snapshot"]
+    assert (snapshot["phase"], snapshot["outcome"], snapshot["fence_token"]) == (
+        "terminal",
+        "cancelled",
+        4,
+    )
+
+
+@pytest.mark.asyncio
 async def test_retry_creates_successor_with_lineage(db, client, monkeypatch):
     original = make_job(
         "retry00000000000000000000000001", phase="terminal", outcome="failed"

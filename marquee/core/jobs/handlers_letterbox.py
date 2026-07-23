@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import statistics
 from collections.abc import Mapping
 from datetime import UTC, datetime
@@ -18,6 +19,7 @@ from typing import Any
 
 from sqlalchemy import select
 
+from marquee.core.jobs.artifact_service import register_physical_artifact
 from marquee.core.jobs.delivery import ExecutionContext, register_execution_handler
 from marquee.core.jobs.policies import ClassifiedExecutionError, RetryClassification
 from marquee.core.jobs.process_launcher import ProcessLaunchError
@@ -33,7 +35,7 @@ from marquee.media.letterbox_detect import (
     parse_cropdetect,
     parse_trim,
 )
-from marquee.models import Episode, EpisodeMediaFile, LetterboxEvent, LetterboxState
+from marquee.models import Episode, EpisodeMediaFile, JobArtifact, LetterboxEvent, LetterboxState
 
 _FFPROBE_ARGS = (
     "-v",
@@ -114,7 +116,11 @@ async def _launch_json(context: ExecutionContext, tool: str, args: list[str]) ->
         process = await context.process_launcher.launch(tool, args)
     except ProcessLaunchError as exc:
         raise _tool_retry(tool) from exc
-    result = await process.wait()
+    result = None
+    while result is None:
+        if context.cancellation.cancel_called:
+            raise asyncio.CancelledError
+        result = await process.wait_bounded(0.1)
     if result.exit_code != 0:
         raise LetterboxObservationError("letterbox media probe failed")
     try:
@@ -593,6 +599,237 @@ async def execute_letterbox_detect_tv_scope(context: ExecutionContext) -> dict[s
     }
 
 
+_PREVIEW_LUMA_RE = re.compile(r"YAVG=([0-9.]+)")
+_PREVIEW_MIN_LUMA = 60.0
+_PREVIEW_MAX_WIDTH = 1920
+_PREVIEW_MAX_HEIGHT = 1080
+
+
+def _preview_seek_seconds(minute: int) -> str:
+    return str(minute * 60)
+
+
+def _preview_filter(
+    *,
+    mode: str,
+    crop_top: int,
+    crop_bottom: int,
+    source_height: int | None,
+) -> str:
+    filters: list[str] = []
+    if mode == "after" and (crop_top or crop_bottom):
+        filters.append(f"crop=iw:ih-{crop_top + crop_bottom}:0:{crop_top}")
+    elif crop_top or crop_bottom:
+        thickness = max(2, round((source_height or 1080) / 270))
+        if crop_top:
+            filters.append(f"drawbox=0:{crop_top}:iw:{thickness}:color=red@0.9:t=fill")
+        if crop_bottom:
+            filters.append(
+                f"drawbox=0:ih-{crop_bottom}-{thickness}:iw:{thickness}:color=red@0.9:t=fill"
+            )
+    filters.append(
+        f"scale={_PREVIEW_MAX_WIDTH}:{_PREVIEW_MAX_HEIGHT}:force_original_aspect_ratio=decrease"
+    )
+    return ",".join(filters)
+
+
+async def _preview_luma(
+    context: ExecutionContext,
+    *,
+    media_path: str,
+    minute: int,
+) -> float | None:
+    """Measure one bounded candidate through the same tracked launcher."""
+    try:
+        process = await context.process_launcher.launch(
+            "ffmpeg",
+            [
+                "-hide_banner",
+                "-loglevel",
+                "info",
+                "-nostats",
+                "-ss",
+                _preview_seek_seconds(minute),
+                "-i",
+                media_path,
+                "-frames:v",
+                "1",
+                "-vf",
+                "signalstats,metadata=print",
+                "-f",
+                "null",
+                "-",
+            ],
+            stdout_limit=1024,
+        )
+    except ProcessLaunchError as exc:
+        raise _tool_retry("ffmpeg") from exc
+    result = await process.wait()
+    if result.exit_code != 0:
+        return None
+    match = _PREVIEW_LUMA_RE.search(result.stderr.captured.decode("utf-8", "replace"))
+    return float(match.group(1)) if match else None
+
+
+async def _preview_source_minute(
+    context: ExecutionContext,
+    *,
+    media_path: str,
+    minute: int,
+    exact: bool,
+    candidates: tuple[int, ...],
+) -> int:
+    """Retain brightness selection without returning to a route-owned probe."""
+    if exact:
+        return minute
+    options = tuple(dict.fromkeys((minute, *candidates)))[:3]
+    best_minute = minute
+    best_luma = -1.0
+    for candidate in options:
+        luma = await _preview_luma(context, media_path=media_path, minute=candidate)
+        if luma is not None and luma > best_luma:
+            best_minute = candidate
+            best_luma = luma
+        if candidate == minute and luma is not None and luma >= _PREVIEW_MIN_LUMA:
+            return minute
+    return best_minute
+
+
+async def execute_letterbox_preview(context: ExecutionContext) -> dict[str, Any]:
+    """Render one bounded preview through the canonical process/artifact boundary."""
+    if context.cancellation.cancel_called:
+        raise asyncio.CancelledError
+    await _progress(context, "prepare", 1, "preview")
+    request = context.request
+    try:
+        async with context.session_factory() as session:
+            existing = await session.scalar(
+                select(JobArtifact)
+                .where(
+                    JobArtifact.job_id == context.delivery.canonical_job_id,
+                    JobArtifact.kind == "preview_image",
+                    JobArtifact.status == "available",
+                )
+                .order_by(JobArtifact.id.desc())
+            )
+            if existing is not None:
+                await _progress(context, "finalize", 3, "preview")
+                return {
+                    "message": "Letterbox preview already rendered",
+                    "summary": {
+                        "artifact_id": existing.id,
+                        "mode": request["mode"],
+                        "minute": request["minute"],
+                        "source_minute": existing.artifact_metadata.get("source_minute"),
+                    },
+                }
+            media = await resolve_media_file(session, int(request["media_file_id"]))
+    except (KeyError, ValueError, MediaFileUnavailableError) as exc:
+        raise LetterboxObservationError("preview media is unavailable") from exc
+
+    minute = int(request["minute"])
+    crop_top = int(request["crop_top"])
+    crop_bottom = int(request["crop_bottom"])
+    mode = str(request["mode"])
+    exact = bool(request["exact"])
+    source_height = (
+        int(request["source_height"]) if request.get("source_height") is not None else None
+    )
+    source_width = (
+        int(request["source_width"]) if request.get("source_width") is not None else None
+    )
+    candidates = tuple(int(value) for value in request.get("candidate_minutes", ()))
+    source_minute = await _preview_source_minute(
+        context,
+        media_path=str(media.path),
+        minute=minute,
+        exact=exact,
+        candidates=candidates,
+    )
+    if context.cancellation.cancel_called:
+        raise asyncio.CancelledError
+
+    output, output_fd = context.workspace.staging_file("preview.webp")
+    os.close(output_fd)
+    output_path = _workspace_file_path(output)
+    await _progress(context, "execute", 2, "preview")
+    try:
+        process = await context.process_launcher.launch(
+            "ffmpeg",
+            [
+                "-y",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-ss",
+                _preview_seek_seconds(source_minute),
+                "-i",
+                str(media.path),
+                "-map",
+                "0:v:0",
+                "-an",
+                "-sn",
+                "-dn",
+                "-frames:v",
+                "1",
+                "-vf",
+                _preview_filter(
+                    mode=mode,
+                    crop_top=crop_top,
+                    crop_bottom=crop_bottom,
+                    source_height=source_height,
+                ),
+                "-quality",
+                "95",
+                output_path,
+            ],
+        )
+    except ProcessLaunchError as exc:
+        raise _tool_retry("ffmpeg") from exc
+    result = None
+    while result is None:
+        if context.cancellation.cancel_called:
+            raise asyncio.CancelledError
+        result = await process.wait_bounded(0.1)
+    if result.exit_code != 0 or not os.path.isfile(output_path):
+        raise LetterboxObservationError("preview render failed")
+    if context.cancellation.cancel_called:
+        raise asyncio.CancelledError
+    artifact = await register_physical_artifact(
+        job_id=context.delivery.canonical_job_id,
+        attempt_id=context.attempt.attempt_id,
+        fence_token=context.attempt.fence_token,
+        source=output,
+        kind="preview_image",
+        name="letterbox-preview.webp",
+        content_type="image/webp",
+        retention_class="ephemeral",
+        metadata={
+            "mode": mode,
+            "requested_minute": minute,
+            "source_minute": source_minute,
+            "exact": exact,
+            "crop_top": crop_top,
+            "crop_bottom": crop_bottom,
+            "source_width": source_width,
+            "source_height": source_height,
+            "max_width": _PREVIEW_MAX_WIDTH,
+            "max_height": _PREVIEW_MAX_HEIGHT,
+        },
+    )
+    await _progress(context, "finalize", 3, "preview")
+    return {
+        "message": "Letterbox preview rendered",
+        "summary": {
+            "artifact_id": artifact.id,
+            "mode": mode,
+            "minute": minute,
+            "source_minute": source_minute,
+        },
+    }
+
+
 register_execution_handler("letterbox_detect", execute_letterbox_detect)
 register_execution_handler("letterbox_detect_episode", execute_letterbox_detect_episode)
 register_execution_handler("letterbox_detect_tv_scope", execute_letterbox_detect_tv_scope)
+register_execution_handler("letterbox_preview", execute_letterbox_preview)

@@ -5,9 +5,9 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import or_, select
+from sqlalchemy import select
 
 from marquee.config import settings
 from marquee.core.jobs.event_service import job_event_writer
@@ -35,7 +35,6 @@ class TransportIntentMonitor:
                     .where(
                         Job.phase != "terminal",
                         Job.phase.in_(("queued", "running", "stopping")),
-                        or_(Job.desired_state != "run", Job.pgq_job_id.is_(None)),
                     )
                     .order_by(Job.updated_at.nullsfirst(), Job.id)
                     .limit(self.batch_size)
@@ -62,6 +61,66 @@ class TransportIntentMonitor:
                     and dispatch.disposition == "active"
                     and dispatch.pgq_job_id == job.pgq_job_id
                 )
+                attention = job.attention or {}
+                if (
+                    job.phase == "queued"
+                    and job.desired_state == "run"
+                    and attention.get("code") == "admission_deferral_pending"
+                ):
+                    if not linked:
+                        job.attention = {
+                            "code": "transport_link_attention",
+                            "summary": "Current canonical transport linkage is missing or mismatched",
+                        }
+                        counts["attention"] += 1
+                        continue
+                    try:
+                        defer_count = int(attention["defer_count"])
+                        delay = timedelta(seconds=float(attention["delay_seconds"]))
+                        cause = str(attention["cause"])
+                    except (KeyError, TypeError, ValueError):
+                        job.attention = {
+                            "code": "admission_deferral_attention",
+                            "summary": "Admission deferral metadata is malformed",
+                        }
+                        counts["attention"] += 1
+                        continue
+                    if status == "queued":
+                        job.attention = {
+                            "code": "admission_deferred",
+                            "summary": "Safety-gate admission was durably deferred",
+                            "cause": cause,
+                            "defer_count": defer_count,
+                            "next_eligible_at": attention.get("next_eligible_at"),
+                        }
+                        await job_event_writer.append(
+                            session,
+                            job_id=job.id,
+                            event_key="job.admission_deferred",
+                            state="queued",
+                            message="Observed durable PgQueuer admission deferral",
+                            detail={"cause": cause, "defer_count": defer_count},
+                        )
+                        counts["retried"] += 1
+                        continue
+                    if status in {"picked", "failed", None}:
+                        await self.gateway.recover_admission_deferral(
+                            session,
+                            job_id=job.id,
+                            delay=delay,
+                            cause=cause,
+                            defer_count=defer_count,
+                        )
+                        counts["retried"] += 1
+                        continue
+                    job.attention = {
+                        "code": "admission_deferral_attention",
+                        "summary": "Admission deferral transport status is not recoverable",
+                        "transport_status": status,
+                    }
+                    counts["attention"] += 1
+                    continue
+
                 if not linked or status is None:
                     job.attention = {
                         "code": "transport_link_attention",
@@ -73,7 +132,7 @@ class TransportIntentMonitor:
                     await self.gateway.cancel_known_ticket(session, job_id=job.id)
                     counts["retried"] += 1
                     continue
-                if job.desired_state == "cancel" and status == "cancelled":
+                if job.desired_state == "cancel" and status == "canceled":
                     if job.phase == "queued":
                         now = datetime.now(UTC)
                         job.phase = "terminal"

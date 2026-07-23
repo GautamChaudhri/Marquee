@@ -500,7 +500,6 @@ export interface LetterboxDetail {
 	samples?: LetterboxSample[];
 	sample_previews?: LetterboxSamplePreview[];
 	preview_minute?: number;
-	preview_urls?: { before: string; after: string };
 	reencode?: {
 		artifact: ReencodeArtifact | null;
 	} | null;
@@ -520,7 +519,6 @@ export interface LetterboxSample {
 export interface LetterboxSamplePreview {
 	minute: number;
 	ok: boolean;
-	url: string | null;
 }
 
 /** One row in a kanban column (from GET /letterbox/candidates items). */
@@ -2003,7 +2001,6 @@ export interface LetterboxEpisodeDetail {
 	samples?: LetterboxSample[];
 	sample_previews?: LetterboxSamplePreview[];
 	preview_minute?: number;
-	preview_urls?: { before: string; after: string };
 }
 
 export interface LetterboxSummarySection {
