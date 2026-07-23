@@ -73,9 +73,13 @@ def _current_consumers() -> dict[str, set[str]]:
 
 def test_jmc6a_openapi_version_and_path_count_are_frozen() -> None:
     assert _SCHEMA["openapi"] == _CLIENT_FREEZE["openapi"]
-    # H5 intentionally removes retired, unconsumed APIs; the regenerated floor
-    # freezes the converged public surface while preserving all Activity paths.
-    assert len(_SCHEMA["paths"]) >= _CLIENT_FREEZE["path_count"]
+    retired = {
+        "/api/onboarding/taste-test/movies",
+        "/api/onboarding/taste-test/posters/{file}",
+        "/api/onboarding/taste-test/rank",
+    }
+    assert retired.isdisjoint(_SCHEMA["paths"])
+    assert len(_SCHEMA["paths"]) + len(retired) >= _CLIENT_FREEZE["path_count"]
 
 
 def test_jmc6a_job_wire_paths_remain_present() -> None:

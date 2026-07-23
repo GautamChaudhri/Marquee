@@ -43,12 +43,14 @@ class PosterGate:
             )
         return _PASS
 
-    def evaluate_style(self, features: FeatureVector) -> GateResult:
+    def evaluate_style(
+        self, features: FeatureVector, *, personalization_mode: str = "personalized"
+    ) -> GateResult:
         if features.aesthetic < self.config.GATE_MIN_AESTHETIC:
             # High knn_sim means the taste profile validates this poster — relax the
             # aesthetic floor for stylized/graphic designs that score low on a
             # photographic-quality model but are on-brand.
-            rescued = (
+            rescued = personalization_mode == "personalized" and (
                 features.knn_sim >= self.config.GATE_AESTHETIC_RESCUE_KNN
                 and features.aesthetic >= self.config.GATE_MIN_AESTHETIC_RESCUED
             )
@@ -58,7 +60,10 @@ class PosterGate:
                     "aesthetic_floor",
                     f"aesthetic={features.aesthetic:.4f} < {self.config.GATE_MIN_AESTHETIC:.4f}",
                 )
-        if features.knn_sim < self.config.GATE_MIN_KNN_SIM:
+        if (
+            personalization_mode == "personalized"
+            and features.knn_sim < self.config.GATE_MIN_KNN_SIM
+        ):
             return GateResult(
                 False,
                 "off_style_floor",

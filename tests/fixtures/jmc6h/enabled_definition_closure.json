@@ -19,7 +19,7 @@
     }
   },
   "focus_definitions": [
-    "learned_head_train",
+    "ranking_residual_train",
     "poster_pipeline",
     "poster_rescan",
     "taste_enrich",
@@ -460,8 +460,8 @@
       "certification_test": "test_jmc5a_maintenance"
     },
     {
-      "job_type": "learned_head_train",
-      "handler": "handlers_ml.execute_learned_head",
+      "job_type": "ranking_residual_train",
+      "handler": "handlers_ml.execute_ranking_residual",
       "result_model": "MlPublicationResultV1",
       "allowed_outcomes": [
         "succeeded",
@@ -498,9 +498,9 @@
       "large_file_io": [
         "model artifact hash/copy"
       ],
-      "projection": "MlActivePublication learned_head namespace",
+      "projection": "MlActivePublication ranking_residual namespace",
       "artifacts": "native loadable head.npz",
-      "presenter": "jobs.learned_head_train",
+      "presenter": "jobs.ranking_residual_train",
       "tests": [
         "test_jmc4c_ml_jobs",
         "test_jmc6e_canonical_seams"
@@ -509,7 +509,7 @@
       "execution_class": "cpu",
       "product_state": "real",
       "producer": "POST /api/taste/head/retrain (routes.taste)",
-      "consumer": "ml.learned_head.LearnedScorer via pipeline.scorer.select_scorer; Projection Room jobs.learned_head_train",
+      "consumer": "ml.residual.ResidualArtifact via pipeline.scorer.select_scorer; Projection Room jobs.ranking_residual_train",
       "real_product_effect": "ml.head_trainer trains a logistic head, validates it loads via learned_head, then activates",
       "certification_test": "test_jmc6h_product_effect.py::test_learned_head_publishes_native_loadable_artifact"
     },

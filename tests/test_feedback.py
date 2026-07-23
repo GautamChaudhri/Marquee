@@ -1,8 +1,6 @@
 """Feedback-core tests that don't require ML extras.
 
-The profile-add and head-retrain steps are monkeypatched (they're the only
-ML-touching parts); the label-writing, scenario mapping, dedup remap, gate
-snapshot, and undo round-trip are exercised directly.
+Scenario mapping, canonical evidence, dedup remap, and undo are exercised directly.
 """
 
 from __future__ import annotations
@@ -11,21 +9,31 @@ import json
 from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 
 from marquee.api.routes import feedback as feedback_route
 from marquee.config import settings
 from marquee.core.pipeline_config import pipeline_settings
 from marquee.main import app
-from marquee.ml import feedback_store
 from marquee.ml.namespaces import get_namespace
-from marquee.models import Job, JobArtifact, Movie, PipelineRun, Season, Series
+from marquee.models import (
+    Job,
+    JobArtifact,
+    Movie,
+    PipelineRun,
+    PosterPreferenceEvent,
+    Season,
+    Series,
+    TasteExemplar,
+)
 from marquee.models.job import JobAttempt
 
-_REAL_SCHEDULE_LEARNED_HEAD_SUCCESSOR = feedback_route._schedule_learned_head_successor
+_REAL_SCHEDULE_RESIDUAL_SUCCESSOR = feedback_route._schedule_residual_successor
 
 
 @pytest.fixture
@@ -37,15 +45,13 @@ async def client():
 
 @pytest.fixture(autouse=True)
 def labels_to_tmp(tmp_path, monkeypatch):
-    """Redirect the labels file to a temp path for every test."""
-    monkeypatch.setattr(pipeline_settings, "FEEDBACK_LABELS_PATH", tmp_path / "labels.jsonl")
     monkeypatch.setattr(pipeline_settings, "FEEDBACK_DEPLOY_DEFAULT", False)
 
     # Avoid scheduling ML work in endpoint behavior tests.
-    async def no_head_successor(*_args, **_kwargs):
+    async def no_residual_successor(*_args, **_kwargs):
         return {"scheduled": False, "reason": "stub", "job": None}
 
-    monkeypatch.setattr(feedback_route, "_schedule_learned_head_successor", no_head_successor)
+    monkeypatch.setattr(feedback_route, "_schedule_residual_successor", no_residual_successor)
     yield
 
 
@@ -53,20 +59,26 @@ def labels_to_tmp(tmp_path, monkeypatch):
 async def test_feedback_successor_preserves_exact_revision_lineage(
     db, installed_pgqueuer, monkeypatch
 ):
-    monkeypatch.setattr(pipeline_settings, "HEAD_AUTO_RETRAIN", True)
-    result = await _REAL_SCHEDULE_LEARNED_HEAD_SUCCESSOR(
+    monkeypatch.setattr(
+        feedback_route,
+        "build_residual_pairs",
+        lambda _events: [
+            SimpleNamespace(subject=f"movie:{index // 8}") for index in range(200)
+        ],
+    )
+    result = await _REAL_SCHEDULE_RESIDUAL_SUCCESSOR(
         db,
         get_namespace("movies"),
-        feedback_revision="event-123",
+        evidence_revision="event-123",
         mutation="apply",
     )
 
     assert result["scheduled"] is True
     job = await db.get(Job, result["job"]["job_id"])
     assert job is not None
-    assert job.type == "learned_head_train"
-    assert job.subject_reference == "learned_head:movies"
-    assert job.request["feedback_revision"] == "event-123"
+    assert job.type == "ranking_residual_train"
+    assert job.subject_reference == "ranking_residual:movies"
+    assert job.request["evidence_revision"] == "event-123"
     assert job.request["mutation"] == "apply"
 
 
@@ -343,12 +355,87 @@ async def test_scenario_a_approve(client, db, tmp_path):
     data = resp.json()
     assert data["labels_written"] == 1
 
-    rows = feedback_store.read_all()
-    assert len(rows) == 1
-    assert rows[0]["label"] == 1
-    assert rows[0]["orig_filename"] == "auto.jpg"
-    assert rows[0]["role"] == "user_pick"
-    assert rows[0]["v"] == 2
+    event = await db.get(PosterPreferenceEvent, data["event_id"])
+    assert event is not None
+    assert event.action == "approval"
+    assert event.training_context["selected_candidate"] == "auto.jpg"
+
+
+@pytest.mark.asyncio
+async def test_explicit_feedback_is_canonical_but_automatic_pick_alone_is_not(client, db, tmp_path):
+    await _seed(db, tmp_path)
+    assert await db.scalar(select(PosterPreferenceEvent)) is None
+    assert await db.scalar(select(TasteExemplar)) is None
+
+    response = await client.post(
+        "/api/feedback",
+        json={"run_id": "r1", "action": "approve", "deploy": False},
+    )
+    assert response.status_code == 200
+    event = await db.get(PosterPreferenceEvent, response.json()["event_id"])
+    assert event is not None
+    assert event.action == "approval"
+    assert event.namespace == "movies"
+    assert event.training_context["selected_candidate"] == "auto.jpg"
+    assert await db.scalar(select(TasteExemplar)) is None
+
+
+@pytest.mark.asyncio
+async def test_override_records_comparison_without_unrequested_negative(client, db, tmp_path):
+    await _seed(db, tmp_path)
+    response = await client.post(
+        "/api/feedback",
+        json={
+            "run_id": "r1",
+            "action": "override",
+            "selected_filename": "alt.jpg",
+            "deploy": False,
+        },
+    )
+    assert response.status_code == 200
+    event = await db.get(PosterPreferenceEvent, response.json()["event_id"])
+    assert event is not None
+    assert event.action == "override"
+    assert event.training_context["selected_candidate"] == "alt.jpg"
+    assert {row["candidate_id"] for row in event.exposed_candidates} >= {"auto.jpg", "alt.jpg"}
+    assert list((await db.scalars(select(TasteExemplar))).all()) == []
+
+
+@pytest.mark.asyncio
+async def test_explicit_hate_pins_negative_and_undo_revokes_history(client, db, tmp_path):
+    await _seed(db, tmp_path)
+    response = await client.post(
+        "/api/feedback",
+        json={
+            "run_id": "r1",
+            "action": "rank",
+            "order": ["auto.jpg"],
+            "hated": ["alt.jpg"],
+            "deploy": False,
+        },
+    )
+    assert response.status_code == 200
+    event_id = response.json()["event_id"]
+    negative = await db.scalar(
+        select(TasteExemplar).where(TasteExemplar.polarity == "negative")
+    )
+    assert negative is not None
+    assert negative.status == "active"
+    retained = await db.get(JobArtifact, negative.retained_artifact_id)
+    assert retained is not None
+    assert retained.retention_class == "pinned"
+
+    undone = await client.post("/api/feedback/undo", json={"event_id": event_id})
+    assert undone.status_code == 200
+    await db.refresh(negative)
+    assert negative.status == "revoked"
+    undo_event = await db.scalar(
+        select(PosterPreferenceEvent).where(
+            PosterPreferenceEvent.action == "undo",
+            PosterPreferenceEvent.supersedes_event_id == negative.preference_event_id,
+        )
+    )
+    assert undo_event is not None
 
 
 @pytest.mark.asyncio
@@ -361,11 +448,9 @@ async def test_scenario_b_override_ranked(client, db, tmp_path):
     assert resp.status_code == 200
     assert resp.json()["labels_written"] == 2
 
-    rows = {r["orig_filename"]: r for r in feedback_store.read_all()}
-    assert rows["auto.jpg"]["label"] == 0  # negative for the passed-over pick
-    assert rows["auto.jpg"]["role"] == "auto_pick"
-    assert rows["alt.jpg"]["label"] == 1  # positive for the chosen pick
-    assert rows["alt.jpg"]["role"] == "user_pick"
+    event = await db.get(PosterPreferenceEvent, resp.json()["event_id"])
+    assert event is not None and event.action == "override"
+    assert event.training_context["selected_candidate"] == "alt.jpg"
 
 
 @pytest.mark.asyncio
@@ -379,14 +464,9 @@ async def test_scenario_c_override_reject_tracks_gate(client, db, tmp_path):
     data = resp.json()
     assert data["gate_override"]["reason"] == "ocr_text_heavy"
 
-    rows = {r["orig_filename"]: r for r in feedback_store.read_all()}
-    pick = rows["ocrreject.jpg"]
-    assert pick["label"] == 1
-    assert pick["rejection_reason"] == "ocr_text_heavy"
-    # Gate snapshot records the knob value at feedback time.
-    assert (
-        pick["gate_snapshot"]["OCR_MAX_RESIDUAL_BOXES"] == pipeline_settings.OCR_MAX_RESIDUAL_BOXES
-    )
+    event = await db.get(PosterPreferenceEvent, data["event_id"])
+    assert event is not None
+    assert event.training_context["selected_candidate"] == "ocrreject.jpg"
 
 
 @pytest.mark.asyncio
@@ -399,8 +479,9 @@ async def test_dedup_twin_override_remaps_to_survivor(client, db, tmp_path):
     assert resp.status_code == 200
     assert resp.json()["remapped_to"] == "auto.jpg"
     # Picking the twin == approving the survivor: no self-override negative.
-    rows = {r["orig_filename"]: r for r in feedback_store.read_all()}
-    assert rows["auto.jpg"]["label"] == 1
+    event = await db.get(PosterPreferenceEvent, resp.json()["event_id"])
+    assert event is not None
+    assert event.training_context["selected_candidate"] == "auto.jpg"
 
 
 @pytest.mark.asyncio
@@ -408,10 +489,8 @@ async def test_scenario_d_reject_all(client, db, tmp_path):
     await _seed(db, tmp_path)
     resp = await client.post("/api/feedback", json={"run_id": "r1", "action": "reject_all"})
     assert resp.status_code == 200
-    rows = feedback_store.read_all()
-    assert len(rows) == 1
-    assert rows[0]["label"] == 0
-    assert rows[0]["role"] == "explicit_reject"
+    event = await db.get(PosterPreferenceEvent, resp.json()["event_id"])
+    assert event is not None and event.action in {"reject", "reject_all", "hate"}
 
 
 @pytest.mark.asyncio
@@ -527,12 +606,9 @@ async def test_undo_round_trip(client, db, tmp_path):
     await _seed(db, tmp_path)
     resp = await client.post("/api/feedback", json={"run_id": "r1", "action": "approve"})
     event_id = resp.json()["event_id"]
-    assert len(feedback_store.read_all()) == 1
-
     undo = await client.post("/api/feedback/undo", json={"event_id": event_id})
     assert undo.status_code == 200
-    assert undo.json()["removed_labels"] == 1
-    assert feedback_store.read_all() == []
+    assert undo.json()["removed_labels"] == 0
     assert undo.json()["exemplars_removed"] == []
 
     run = (await db.execute(select(PipelineRun).where(PipelineRun.run_id == "r1"))).scalar_one()
@@ -568,14 +644,12 @@ async def test_rank_writes_v4_ranking_event(client, db, tmp_path):
     assert data["labels_written"] == 1
     assert data["favorites_exemplars"] == []
 
-    rows = feedback_store.read_all()
-    assert len(rows) == 1
-    row = rows[0]
-    assert row["v"] == 4 and row["type"] == "ranking"
-    assert [c["orig_filename"] for c in row["order"]] == ["auto.jpg", "alt.jpg"]
-    assert row["order"][0]["pipeline_rank"] == 1
-    assert row["order"][0]["baseline_rank"] == 1
-    assert row["order"][1]["pipeline_rank"] == 4
+    event = await db.get(PosterPreferenceEvent, data["event_id"])
+    assert event is not None and event.action == "rank"
+    assert event.training_context["order"] == ["auto.jpg", "alt.jpg"]
+    exposed = {row["candidate_id"]: row for row in event.exposed_candidates}
+    assert exposed["auto.jpg"]["baseline_rank"] == 1
+    assert exposed["alt.jpg"]["baseline_rank"] == 4
 
 
 @pytest.mark.asyncio
@@ -595,15 +669,13 @@ async def test_rank_records_hated_candidates_without_mutating_profile_folders(
     )
     assert resp.status_code == 200
     assert resp.json()["negatives_added"] == []
-    row = feedback_store.read_all()[0]
-    assert [candidate["orig_filename"] for candidate in row["hated"]] == [
-        "alt.jpg",
-        "ocrreject.jpg",
-    ]
+    event = await db.get(PosterPreferenceEvent, resp.json()["event_id"])
+    assert event is not None
+    assert event.training_context["hated"] == ["alt.jpg", "ocrreject.jpg"]
 
 
 @pytest.mark.asyncio
-async def test_rank_undo_removes_only_immutable_feedback_event(client, db, tmp_path):
+async def test_rank_undo_revokes_canonical_negative_without_erasing_history(client, db, tmp_path):
     await _seed(db, tmp_path)
     resp = await client.post(
         "/api/feedback",
@@ -618,10 +690,11 @@ async def test_rank_undo_removes_only_immutable_feedback_event(client, db, tmp_p
 
     undo = await client.post("/api/feedback/undo", json={"event_id": event_id})
     assert undo.status_code == 200
-    assert undo.json()["removed_labels"] == 1
-    assert undo.json()["exemplars_removed"] == []
+    assert undo.json()["removed_labels"] == 0
+    assert len(undo.json()["exemplars_removed"]) == 1
     assert undo.json()["negatives_removed"] == []
-    assert feedback_store.read_all() == []
+    exemplar = await db.get(TasteExemplar, undo.json()["exemplars_removed"][0])
+    assert exemplar is not None and exemplar.status == "revoked"
 
 
 @pytest.mark.asyncio
@@ -655,50 +728,6 @@ async def test_rank_rejects_incomplete_coverage(client, db, tmp_path):
     assert resp.status_code == 400
 
 
-# ---------------------------------------------------------------------------
-# feedback_store unit tests
-# ---------------------------------------------------------------------------
-
-
-def test_store_append_read_remove(tmp_path, monkeypatch):
-    monkeypatch.setattr(pipeline_settings, "FEEDBACK_LABELS_PATH", tmp_path / "l.jsonl")
-    feedback_store.append_labels([{"event_id": "e1", "label": 1}, {"event_id": "e1", "label": 0}])
-    feedback_store.append_labels([{"event_id": "e2", "label": 1}])
-    assert len(feedback_store.read_all()) == 3
-
-    removed = feedback_store.remove_event("e1")
-    assert len(removed) == 2
-    remaining = feedback_store.read_all()
-    assert len(remaining) == 1
-    assert remaining[0]["event_id"] == "e2"
-
-
-def test_summary_counts_ranking_events(tmp_path, monkeypatch):
-    monkeypatch.setattr(pipeline_settings, "FEEDBACK_LABELS_PATH", tmp_path / "l.jsonl")
-    feedback_store.append_labels(
-        [
-            {
-                "event_id": "e1",
-                "type": "ranking",
-                "v": 4,
-                "movie_id": 1,
-                "order": [
-                    {"orig_filename": "a.jpg"},
-                    {"orig_filename": "b.jpg"},
-                    {"orig_filename": "c.jpg"},
-                ],
-                "hated": [{"orig_filename": "d.jpg"}],
-            }
-        ]
-    )
-    summary = feedback_store.summary()
-    # positive_exemplar_count(3) == max(1, min(3, ceil(0.6))) == 1.
-    assert summary["positives"] == 1
-    assert summary["negatives"] == 1  # one hated poster
-    assert summary["total"] == 2
-    assert summary["movies"] == 1
-
-
 @pytest.mark.asyncio
 async def test_taste_status_shape(client, db):
     resp = await client.get("/api/taste/status")
@@ -706,40 +735,9 @@ async def test_taste_status_shape(client, db):
     data = resp.json()
     assert "labels" in data
     assert "exemplars" in data
-    assert "learned_head" in data
+    assert "ranking_residual" in data
     assert "gate_alerts" in data
-    assert "activation" in data["learned_head"]
-
-
-def test_gate_override_alert_respects_snapshot(tmp_path, monkeypatch):
-    monkeypatch.setattr(pipeline_settings, "FEEDBACK_LABELS_PATH", tmp_path / "l.jsonl")
-    monkeypatch.setattr(pipeline_settings, "OCR_MAX_RESIDUAL_BOXES", 0)
-    # Five overrides recorded at the current threshold (0) → should count.
-    current = [
-        {
-            "event_id": f"e{i}",
-            "role": "user_pick",
-            "action": "override",
-            "rejection_reason": "ocr_text_heavy",
-            "gate_snapshot": {"OCR_MAX_RESIDUAL_BOXES": 0},
-        }
-        for i in range(5)
-    ]
-    # One override recorded at a *different* threshold (2) → must NOT count.
-    stale = [
-        {
-            "event_id": "old",
-            "role": "user_pick",
-            "action": "override",
-            "rejection_reason": "ocr_text_heavy",
-            "gate_snapshot": {"OCR_MAX_RESIDUAL_BOXES": 2},
-        }
-    ]
-    feedback_store.append_labels(current + stale)
-
-    alerts = {a["gate"]: a for a in feedback_store.gate_override_alerts()}
-    assert alerts["ocr_text_heavy"]["overrides"] == 5
-    assert alerts["ocr_text_heavy"]["active"] is True
+    assert "activation" in data["ranking_residual"]
 
 
 @pytest.mark.asyncio
@@ -749,15 +747,10 @@ async def test_tv_series_feedback_writes_to_tv_namespace(client, db, tmp_path):
     resp = await client.post("/api/feedback", json={"run_id": "tv-series", "action": "approve"})
     assert resp.status_code == 200
 
-    movie_rows = feedback_store.read_all()
-    tv_rows = feedback_store.read_all(get_namespace("tv"))
-    assert movie_rows == []
-    assert len(tv_rows) == 1
-    assert tv_rows[0]["library"] == "tv"
-    assert tv_rows[0]["media_type"] == "series"
-    assert tv_rows[0]["series_id"] is not None
-    assert tv_rows[0]["season_id"] is None
-    assert tv_rows[0]["title"] == "Breaking Bad"
+    event = await db.get(PosterPreferenceEvent, resp.json()["event_id"])
+    assert event is not None
+    assert event.namespace == "tv"
+    assert event.subject_kind == "series"
 
 
 @pytest.mark.asyncio
@@ -784,12 +777,11 @@ async def test_tv_season_feedback_uses_series_root_and_season_filename(
     assert job.request["target_id"] == season.id
     assert not (Path(series.series_path) / f"season{season.season_number:02d}.jpg").exists()
 
-    tv_rows = feedback_store.read_all(get_namespace("tv"))
-    assert len(tv_rows) == 1
-    assert tv_rows[0]["media_type"] == "season"
-    assert tv_rows[0]["series_id"] == series.id
-    assert tv_rows[0]["season_id"] == season.id
-    assert tv_rows[0]["title"] == "Breaking Bad - Season 01"
+    event = await db.get(PosterPreferenceEvent, resp.json()["event_id"])
+    assert event is not None
+    assert event.namespace == "tv"
+    assert event.subject_kind == "season"
+    assert event.subject_reference == str(season.id)
 
 
 @pytest.mark.asyncio
@@ -798,9 +790,16 @@ async def test_tv_feedback_undo_uses_tv_namespace(client, db, tmp_path):
 
     resp = await client.post("/api/feedback", json={"run_id": "tv-undo", "action": "approve"})
     event_id = resp.json()["event_id"]
-    assert len(feedback_store.read_all(get_namespace("tv"))) == 1
-
     undo = await client.post("/api/feedback/undo", json={"event_id": event_id})
     assert undo.status_code == 200
-    assert feedback_store.read_all(get_namespace("tv")) == []
     assert undo.json()["exemplars_removed"] == []
+    undo_event = await db.scalar(
+        select(PosterPreferenceEvent).where(
+            PosterPreferenceEvent.action == "undo",
+            PosterPreferenceEvent.supersedes_event_id == event_id,
+        )
+    )
+    assert undo_event is not None
+    source_event = await db.get(PosterPreferenceEvent, event_id)
+    assert source_event is not None
+    assert source_event.revoked_event_id == undo_event.id

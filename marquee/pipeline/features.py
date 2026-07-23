@@ -107,12 +107,20 @@ class FeatureExtractor:
         dino_encoder: DinoImageEncoder | None = None,
         person_detector: PersonDetector | None = None,
         zeroshot_axes: ZeroShotAxes | None = None,
+        personalization_mode: str = "personalized",
     ):
+        if personalization_mode not in {"collecting", "personalized"}:
+            raise ValueError(f"Unsupported personalization mode: {personalization_mode}")
         self.config = config
+        self.personalization_mode = personalization_mode
         self.encoder = encoder or CLIPImageEncoder()
         self.aesthetic = aesthetic or AestheticPredictor()
         self.face_detector = face_detector or FaceDetector()
-        self.taste_store = taste_store or NumpyTasteStore()
+        self.taste_store = (
+            taste_store
+            if taste_store is not None
+            else None if personalization_mode == "collecting" else NumpyTasteStore()
+        )
         self.dino_encoder = dino_encoder or DinoImageEncoder()
         self.person_detector = person_detector or PersonDetector()
         self._zeroshot = zeroshot_axes
@@ -125,6 +133,8 @@ class FeatureExtractor:
 
     def set_taste_namespace(self, ns: TasteNamespace) -> None:
         """Swap the taste store and calibration arrays without reloading ONNX sessions."""
+        if self.personalization_mode == "collecting":
+            raise RuntimeError("Collecting mode cannot load a taste namespace")
         self.taste_store = NumpyTasteStore(ns.profile_path, expected_model_name=self.config.AI_MODEL)
 
         calibration = getattr(self.taste_store, "calibration", None)
@@ -156,11 +166,29 @@ class FeatureExtractor:
                 f"Aesthetic model mismatch: head={self.aesthetic.model_name!r}, "
                 f"configured={self.config.AI_MODEL!r}"
             )
-        if self.taste_store.size <= 0:
+        if self.taste_store is not None and self.taste_store.size <= 0:
             raise RuntimeError("Taste store contains no exemplars")
         _ = self.encoder.session
         self.aesthetic.load()
         _ = self.face_detector.session
+
+        if self.personalization_mode == "collecting":
+            self._dino_on = False
+            self._calibration = None
+            self._dino_knn_range = None
+            self._zeroshot = None
+            self._zeroshot_loaded = True
+            self._quality_on = self.config.EXTRA_QUALITY_ENABLED
+            self._person_on = False
+            if self._quality_on and self.person_detector.available:
+                _ = self.person_detector.session
+                self._person_on = True
+            logger.info(
+                "PERSONALIZATION | collecting — taste k-NN, DINO k-NN, "
+                "typicality, and zero-shot style axes disabled"
+            )
+            return
+        assert self.taste_store is not None
 
         # ── DINOv2 (rec 4): hardware-tiered, model + profile must agree ──
         self._dino_on = False
@@ -344,9 +372,10 @@ class FeatureExtractor:
             self.config.PROV_CONFIDENCE / (vote_count + self.config.PROV_CONFIDENCE)
         ) * self.config.PROV_PRIOR_MEAN
         features = FeatureVector(
-            knn_sim=self.taste_store.style_score(
-                embedding,
-                k=self.config.K_NEIGHBORS,
+            knn_sim=(
+                self.taste_store.style_score(embedding, k=self.config.K_NEIGHBORS)
+                if self.taste_store is not None
+                else 0.0
             ),
             aesthetic=self.aesthetic.score(embedding),
             title_colorfulness=0.0,
@@ -387,6 +416,7 @@ class FeatureExtractor:
         """
         dino_scores: dict[int, float] = {}
         if self._dino_on and items:
+            assert self.taste_store is not None
             dino_indices: list[int] = []
             dino_pixels: list[np.ndarray] = []
             for index, (_features, ocr_result) in enumerate(items):
@@ -508,6 +538,7 @@ class FeatureExtractor:
         aggregate is the scorer-level taste_typicality. Features without a
         calibration band or without a measured value simply don't vote.
         """
+        assert self._calibration is not None
         detail: dict[str, float] = {}
         for name in self.config.TYPICALITY_FEATURES:
             value = features.aesthetic if name == "aesthetic" else features.extended.get(name)

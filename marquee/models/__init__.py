@@ -47,6 +47,11 @@ from marquee.models.subtitle_managed import (
 )
 from marquee.models.subtitle_policy import SubtitlePolicy, SubtitlePolicyBinding
 from marquee.models.system_metrics import SystemMetricsSample
+from marquee.models.taste_preference import (
+    PosterPreferenceEvent,
+    TasteExemplar,
+    TasteProfileRevision,
+)
 
 __all__ = [
     "ArtworkEvent",
@@ -78,6 +83,9 @@ __all__ = [
     "SubtitlePolicy",
     "SubtitlePolicyBinding",
     "SystemMetricsSample",
+    "PosterPreferenceEvent",
+    "TasteExemplar",
+    "TasteProfileRevision",
     "Movie",
     "PipelineRun",
     "RadarrCustomFormat",

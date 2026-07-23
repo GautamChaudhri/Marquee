@@ -5,6 +5,7 @@ from pathlib import Path
 
 from marquee.core.jobs.delivery import TRANSPORT_KEYS
 from marquee.core.jobs.manifest import JOB_DEFINITION_REGISTRY
+from tests.support.jmc6j import current_job_types
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = ROOT / "tests" / "fixtures" / "jmc3a" / "a0_contract_freeze.json"
@@ -19,7 +20,7 @@ def test_jmc3a_starts_from_certified_registry_and_transport_contract() -> None:
     registry = contract["registry"]
     assert isinstance(registry, dict)
     assert len(JOB_DEFINITION_REGISTRY) == registry["definition_count"] + 13
-    assert JOB_DEFINITION_REGISTRY.enabled_types == set(registry["enabled_types"]) | {
+    assert JOB_DEFINITION_REGISTRY.enabled_types == current_job_types(registry["enabled_types"]) | {
         "subtitle_policy",
         "subtitle_restore",
         "subtitle_generate",

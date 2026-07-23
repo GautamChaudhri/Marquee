@@ -17,6 +17,7 @@ import pytest
 from marquee.core.jobs.definitions import DisabledJobDefinitionError
 from marquee.core.jobs.delivery import EXECUTION_HANDLERS
 from marquee.core.jobs.manifest import JOB_DEFINITION_REGISTRY
+from tests.support.jmc6j import current_job_types
 
 ROOT = Path(__file__).parents[1]
 FREEZE_PATH = ROOT / "tests/fixtures/jmc4c/c0_contract_freeze.json"
@@ -27,7 +28,7 @@ TARGET_TYPES = (
     "poster_pipeline_tv_batch",
     "taste_rebuild",
     "taste_map",
-    "learned_head_train",
+    "ranking_residual_train",
     "poster_rescan",
 )
 
@@ -89,7 +90,7 @@ def _call_inventory() -> dict[str, list[str]]:
         "marquee/api/routes/pipeline_tv.py": {"run_series_pipeline", "run_tv_pipeline_batch"},
         "marquee/api/routes/taste.py": {
             "retrain_taste",
-            "retrain_learned_head",
+            "retrain_ranking_residual",
             "rebuild_map",
             "cancel_retrain_taste",
         },
@@ -156,13 +157,14 @@ def test_registry_and_handlers_match_c0_freeze() -> None:
     }
     assert (
         set(JOB_DEFINITION_REGISTRY.enabled_types)
-        == set(frozen["registry"]["enabled_types"]) | additions
+        == current_job_types(frozen["registry"]["enabled_types"]) | additions
     )
-    assert set(EXECUTION_HANDLERS) == set(frozen["execution_handlers"]) | additions
+    assert set(EXECUTION_HANDLERS) == current_job_types(frozen["execution_handlers"]) | additions
 
 
 def test_target_states_match_c0_freeze() -> None:
-    frozen = _freeze()["target_types"]
+    frozen = dict(_freeze()["target_types"])
+    frozen["ranking_residual_train"] = frozen.pop("learned_head_train")
     assert sorted(frozen) == sorted(TARGET_TYPES)
     assert {job_type: _state(job_type) for job_type in TARGET_TYPES} == frozen
 
@@ -226,4 +228,7 @@ def test_c_family_lifecycle_and_activation_inventory_matches_freeze() -> None:
         for key, value in _freeze()["call_inventory"].items()
         if not key.startswith("marquee/core/jobs/builtin_handlers.py:")
     }
+    old_route = "marquee/api/routes/taste.py:retrain_learned_head"
+    if old_route in frozen:
+        frozen["marquee/api/routes/taste.py:retrain_ranking_residual"] = frozen.pop(old_route)
     assert _call_inventory() == frozen

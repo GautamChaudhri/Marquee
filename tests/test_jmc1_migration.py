@@ -84,7 +84,7 @@ def test_clean_baseline_is_one_root_and_excludes_other_schema_owners() -> None:
     scripts = ScriptDirectory.from_config(Config(str(root / "alembic.ini")))
     assert scripts.get_heads() == [ALEMBIC_HEAD]
     head = scripts.get_revision(ALEMBIC_HEAD)
-    assert head is not None and head.down_revision == "0011_jmc6h"
+    assert head is not None and head.down_revision == "0012_jmc6h"
     baseline = scripts.get_revision("0001_jmc1")
     assert baseline is not None and baseline.down_revision is None
 

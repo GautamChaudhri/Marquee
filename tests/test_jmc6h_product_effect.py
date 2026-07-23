@@ -12,6 +12,7 @@ delivering the real product effect it asserts.
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import os
@@ -30,7 +31,7 @@ from sqlalchemy import select
 from marquee.core.jobs.artifact_service import physical_artifact_file
 from marquee.core.jobs.execution_io import ExecutionIO
 from marquee.core.jobs.handlers_ml import (
-    execute_learned_head,
+    execute_ranking_residual,
     execute_taste_enrich,
     execute_taste_map,
     execute_taste_rebuild,
@@ -40,13 +41,14 @@ from marquee.core.jobs.handlers_posters import execute_poster_analysis
 from marquee.core.jobs.manifest import JOB_DEFINITION_REGISTRY
 from marquee.core.jobs.pipeline_archives import load_pipeline_archive
 from marquee.core.jobs.workspaces import AttemptWorkspaceManager
+from marquee.core.pipeline_config import pipeline_settings
 from marquee.database import _get_session_factory
 from marquee.main import app
-from marquee.ml.learned_head import LogisticHead
+from marquee.ml.residual import ResidualArtifact, ResidualEvaluation
 from marquee.models import Job, JobArtifact, Movie, PipelineRun
 from marquee.models.job import JobAttempt
 from marquee.models.ml_publication import MlActivePublication
-from marquee.pipeline.scorer import select_scorer
+from marquee.pipeline.scorer import ResidualScorer, WeightedScorer
 from tests.support.jmc5b_harness import Fence
 
 _FENCE = 7
@@ -256,9 +258,6 @@ async def test_poster_pipeline_writes_canonical_pipeline_run_projection(
 
     from marquee.api.routes import feedback as feedback_route
 
-    labels_path = data_dir / "feedback.jsonl"
-    monkeypatch.setattr(feedback_route.pipeline_settings, "FEEDBACK_LABELS_PATH", labels_path)
-    monkeypatch.setattr(feedback_route.pipeline_settings, "HEAD_AUTO_RETRAIN", False)
     feedback = await feedback_route.apply_feedback_request(
         feedback_route.FeedbackRequest(
             run_id="fixturerun0001",
@@ -599,76 +598,98 @@ async def test_taste_enrichment_advances_the_consumed_profile_authority(db, data
 
 
 @pytest.mark.asyncio
-async def test_learned_head_publishes_native_loadable_artifact(db, data_dir, monkeypatch):
-    """H16/H18: learned-head training activates the exact native artifact the scorer loads."""
+async def test_ranking_residual_publishes_native_loadable_artifact(db, data_dir, monkeypatch):
+    """H16/H18: residual training activates the exact native artifact the scorer loads."""
     from marquee.core.jobs.internal_runner_host import RunnerFile, RunnerOutcome
 
-    feedback_path = data_dir / "feedback.jsonl"
-    feedback_path.write_text('{"v":4,"type":"ranking","movie_id":1}\n')
-    monkeypatch.setattr(
-        "marquee.ml.feedback_store.labels_path", lambda _namespace=None: feedback_path
-    )
     context = await _context(
         db,
         data_dir,
-        job_type="learned_head_train",
+        job_type="ranking_residual_train",
         request={
             "library": "movies",
             "expected_generation": 0,
             "seed": 0,
-            "feedback_revision": "test:1",
+            "evidence_revision": "manual:test",
             "mutation": "manual",
         },
         feature_area="ml_taste",
         subject_kind="model",
-        subject_reference="learned_head:movies",
+        subject_reference="ranking_residual:movies",
     )
     workspace = context.workspace.directory.root.resolved() / context.workspace.directory.key.value
+    profile_checksum = "a" * 64
 
-    async def fake_head(*_args, **_kwargs):
-        assert (workspace / "feedback.jsonl").read_bytes() == feedback_path.read_bytes()
-        head = LogisticHead.train_pairwise(
-            np.asarray([[1.0], [2.0]], dtype=np.float64),
-            np.ones(2, dtype=np.float64),
-            ["x"],
-            l2=0.1,
+    async def fake_resolve(_session, *, family):
+        if family == "taste_profile:movies":
+            return SimpleNamespace(checksum=profile_checksum)
+        return None
+
+    monkeypatch.setattr(
+        "marquee.core.jobs.handlers_ml.resolve_active_publication", fake_resolve
+    )
+
+    async def fake_residual(*_args, **kwargs):
+        assert json.loads((workspace / "preference-events.json").read_text()) == []
+        params = kwargs["manifest"]["params"]
+        residual = ResidualArtifact(
+            namespace="movies",
+            feature_names=["knn_sim"],
+            weights=np.asarray([0.2], dtype=np.float64),
+            bias=0.0,
+            alpha=0.5,
+            delta_max=1.0,
+            baseline_signature=params["baseline_signature"],
+            profile_checksum=profile_checksum,
+            evidence_revision=hashlib.sha256(b"[]").hexdigest(),
+            seed=0,
+            evaluation=ResidualEvaluation(0.5, 0.75, 0.25, 5, 20, 0.1, 0.2),
+            trained_at=datetime.now(UTC).isoformat(),
         )
-        head.save(workspace / "head.npz")
+        residual.save(workspace / "residual.npz")
         return RunnerOutcome(
             outcome="succeeded",
-            summary={"family": "learned_head", "feedback_rows": 1, "n_movies": 1, "n_pairs": 2},
-            files=(RunnerFile("head.npz", "0" * 64, 1),),
+            summary={
+                "family": "ranking_residual",
+                "event_rows": 0,
+                "subjects": 5,
+                "pairs": 20,
+                "evaluation": {"improvement": 0.25},
+            },
+            files=(RunnerFile("residual.npz", "0" * 64, 1),),
             ready=True,
             exit_code=0,
         )
 
-    monkeypatch.setattr("marquee.core.jobs.internal_runner_host.run_internal_operation", fake_head)
-    result = await execute_learned_head(context)
+    monkeypatch.setattr(
+        "marquee.core.jobs.internal_runner_host.run_internal_operation", fake_residual
+    )
+    result = await execute_ranking_residual(context)
     assert result["activated"] is True
     assert result["active_generation"] == 1
 
     async with _get_session_factory()() as session:
-        active = await session.get(MlActivePublication, "learned_head:movies")
+        active = await session.get(MlActivePublication, "ranking_residual:movies")
         assert active is not None
         artifact = await session.get(JobArtifact, active.artifact_id)
     assert artifact is not None
-    assert artifact.kind == "learned_head"
+    assert artifact.kind == "ranking_residual"
     assert artifact.content_type == "application/octet-stream"
     _, classified = physical_artifact_file(artifact)
     artifact_path = classified.root.resolved() / classified.key.value
-    assert LogisticHead.load(artifact_path).feature_names == ["x"]
-    scorer = select_scorer(SimpleNamespace(SCORER="learned"), artifact_path=artifact_path)
-    assert scorer.name == "learned"
-    score, _ = scorer.score(SimpleNamespace(normalized={"x": 1.0}))
-    assert 0.5 < score <= 1.0
+    loaded = ResidualArtifact.load(artifact_path)
+    assert loaded.feature_names == ["knn_sim"]
+    scorer = ResidualScorer(WeightedScorer(pipeline_settings), loaded)
+    score, _ = scorer.score(SimpleNamespace(normalized={"knn_sim": 1.0}))
+    assert 0.0 < score < 1.0
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        listing = await client.get("/api/taste/heads")
+        listing = await client.get("/api/taste/residuals")
         assert listing.status_code == 200, listing.text
-        heads = listing.json()["heads"]
-        assert [head["id"] for head in heads] == [str(artifact.id)]
-        assert heads[0]["status"] == "active"
-        detail = await client.get(f"/api/taste/heads/{artifact.id}")
+        residuals = listing.json()["residuals"]
+        assert [item["id"] for item in residuals] == [str(artifact.id)]
+        assert residuals[0]["status"] == "active"
+        detail = await client.get(f"/api/taste/residuals/{artifact.id}")
         assert detail.status_code == 200, detail.text
-        assert detail.json()["summary"]["top_features"][0]["name"] == "x"
-        assert detail.json()["summary"]["sample_count"] == 2
+        assert detail.json()["summary"]["top_features"][0]["name"] == "knn_sim"
+        assert detail.json()["summary"]["evaluation"]["improvement"] == 0.25

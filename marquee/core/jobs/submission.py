@@ -412,7 +412,7 @@ async def _resolve_subject(
             if family not in {
                 "taste_profile",
                 "taste_map",
-                "learned_head",
+                "ranking_residual",
             }:
                 raise ValueError
             if library not in {"movies", "tv"}:
@@ -420,7 +420,7 @@ async def _resolve_subject(
             labels = {
                 "taste_profile": "Taste profile",
                 "taste_map": "Taste map",
-                "learned_head": "Learned ranking head",
+                "ranking_residual": "Bounded ranking residual",
             }
             return ModelProfileTrainingSnapshot(
                 display_id=f"ml:{family}:{library}",

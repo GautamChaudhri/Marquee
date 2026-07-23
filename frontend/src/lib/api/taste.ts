@@ -1,9 +1,9 @@
 import { apiGet, apiSend, type Fetch } from './client';
 import type { components } from './generated/openapi';
 import type {
-	ManagedHeadsResponse,
+	ManagedResidualsResponse,
 	ManagedExemplarRow,
-	ManagedHeadDetail,
+	ManagedResidualDetail,
 	ManagedProfilesResponse,
 	ManagedProfileDetail,
 	TasteMapData,
@@ -16,7 +16,7 @@ type JobSubmissionResponse = components['schemas']['JobSubmissionResponse'];
 
 export type TasteLibrary = 'movies' | 'tv';
 
-/** Taste-profile + learned-head ("Key Art Engine") status, labels, exemplars. */
+/** Taste-profile + bounded-residual status, labels, and exemplars. */
 export function getTasteStatus(
 	fetchFn: Fetch,
 	library: TasteLibrary = 'movies'
@@ -34,14 +34,18 @@ export function retrainTaste(
 	return apiSend<JobSubmissionResponse>(fetchFn, 'POST', '/taste/retrain', { source, library });
 }
 
-/** Train the learned head (UI "Key Art Engine") from accumulated labels. */
-export function retrainHead(
+/** Train the bounded residual from canonical preference evidence. */
+export function retrainResidual(
 	fetchFn: Fetch,
 	library: TasteLibrary = 'movies'
 ): Promise<JobSubmissionResponse> {
 	if (library === 'movies')
-		return apiSend<JobSubmissionResponse>(fetchFn, 'POST', '/taste/head/retrain');
-	return apiSend<JobSubmissionResponse>(fetchFn, 'POST', `/taste/head/retrain?library=${library}`);
+		return apiSend<JobSubmissionResponse>(fetchFn, 'POST', '/taste/residual/retrain');
+	return apiSend<JobSubmissionResponse>(
+		fetchFn,
+		'POST',
+		`/taste/residual/retrain?library=${library}`
+	);
 }
 
 /** Request cancellation of a running taste-profile rebuild. */
@@ -110,17 +114,17 @@ export function getTasteProfileExemplars(
 	return apiGet(fetchFn, `/taste/profiles/${artifactId}/exemplars`, { library });
 }
 
-export function getLearnedHeads(
+export function getRankingResiduals(
 	fetchFn: Fetch,
 	library: TasteLibrary = 'movies'
-): Promise<ManagedHeadsResponse> {
-	return apiGet(fetchFn, '/taste/heads', { library });
+): Promise<ManagedResidualsResponse> {
+	return apiGet(fetchFn, '/taste/residuals', { library });
 }
 
-export function getLearnedHeadDetail(
+export function getRankingResidualDetail(
 	fetchFn: Fetch,
 	artifactId: string,
 	library: TasteLibrary = 'movies'
-): Promise<ManagedHeadDetail> {
-	return apiGet(fetchFn, `/taste/heads/${artifactId}`, { library });
+): Promise<ManagedResidualDetail> {
+	return apiGet(fetchFn, `/taste/residuals/${artifactId}`, { library });
 }

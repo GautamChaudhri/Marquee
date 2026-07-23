@@ -11,22 +11,22 @@
 	import TasteMap from '$lib/components/TasteMap.svelte';
 	import {
 		enrichProfile,
-		getLearnedHeadDetail,
-		getLearnedHeads,
+		getRankingResidualDetail,
+		getRankingResiduals,
 		getTasteMap,
 		rebuildTasteMap,
 		getTasteProfileDetail,
 		getTasteProfileExemplars,
 		getTasteProfiles,
 		getTasteStatus,
-		retrainHead,
+		retrainResidual,
 		retrainTaste
 	} from '$lib/api/taste';
 	import { toast } from '$lib/toast';
 	import type {
 		ManagedArtifactSummary,
 		ManagedExemplarRow,
-		ManagedHeadDetail,
+		ManagedResidualDetail,
 		ManagedProfileDetail,
 		TasteMapData,
 		TasteSource,
@@ -42,22 +42,22 @@
 	// svelte-ignore state_referenced_locally
 	const initialProfiles = data.profiles ?? [];
 	// svelte-ignore state_referenced_locally
-	const initialHeads = data.heads ?? [];
+	const initialResiduals = data.residuals ?? [];
 	// svelte-ignore state_referenced_locally
 	let library = $state<'movies' | 'tv'>(data.library ?? 'movies');
 
 	let status = $state<TasteStatus | null>(initialStatus);
 	let mapData = $state<TasteMapData | null>(initialMapData);
 	let profiles = $state<ManagedArtifactSummary[]>(initialProfiles);
-	let heads = $state<ManagedArtifactSummary[]>(initialHeads);
+	let residuals = $state<ManagedArtifactSummary[]>(initialResiduals);
 	let mapLoading = $state(false);
 	let mapError = $state<string | null>(null);
 	let detailLoading = $state(false);
 
 	let selectedProfileId = $state<string | null>(null);
-	let selectedHeadId = $state<string | null>(null);
+	let selectedResidualId = $state<string | null>(null);
 	let profileDetail = $state<ManagedProfileDetail | null>(null);
-	let headDetail = $state<ManagedHeadDetail | null>(null);
+	let residualDetail = $state<ManagedResidualDetail | null>(null);
 	let profileExemplars = $state<ManagedExemplarRow[]>([]);
 
 	function preferredArtifactId(
@@ -70,18 +70,18 @@
 
 	async function refresh() {
 		try {
-			const [nextStatus, nextMap, nextProfiles, nextHeads] = await Promise.all([
+			const [nextStatus, nextMap, nextProfiles, nextResiduals] = await Promise.all([
 				getTasteStatus(fetch, library),
 				getTasteMap(fetch, library).catch(() => mapData),
 				getTasteProfiles(fetch, library).then((value) => value.profiles),
-				getLearnedHeads(fetch, library).then((value) => value.heads)
+				getRankingResiduals(fetch, library).then((value) => value.residuals)
 			]);
 			status = nextStatus;
 			mapData = nextMap;
 			profiles = nextProfiles;
-			heads = nextHeads;
+			residuals = nextResiduals;
 			const nextProfileId = preferredArtifactId(nextProfiles, selectedProfileId);
-			const nextHeadId = preferredArtifactId(nextHeads, selectedHeadId);
+			const nextResidualId = preferredArtifactId(nextResiduals, selectedResidualId);
 			if (nextProfileId) {
 				await loadProfileDetail(nextProfileId);
 			} else {
@@ -89,11 +89,11 @@
 				profileDetail = null;
 				profileExemplars = [];
 			}
-			if (nextHeadId) {
-				await loadHeadDetail(nextHeadId);
+			if (nextResidualId) {
+				await loadResidualDetail(nextResidualId);
 			} else {
-				selectedHeadId = null;
-				headDetail = null;
+				selectedResidualId = null;
+				residualDetail = null;
 			}
 		} catch {
 			/* keep stale */
@@ -114,7 +114,7 @@
 	let source = $state<TasteSource>('training_dir');
 	let rebuilding = $state(false);
 	let rebuildJobId = $state<string | null>(null);
-	let headJobId = $state<string | null>(null);
+	let residualJobId = $state<string | null>(null);
 	let initiatedJobIds = $state<string[]>([]);
 
 	async function startRebuild() {
@@ -131,25 +131,24 @@
 		}
 	}
 
-	let headTraining = $state(false);
-	const head = $derived(status?.learned_head);
-	const headUnit = $derived(head?.mode === 'pairwise' ? 'pairs' : 'labels');
+	let residualTraining = $state(false);
+	const residual = $derived(status?.ranking_residual);
 	const ready = $derived(
-		!!head &&
-			head.activation.movies.have >= head.activation.movies.need &&
-			head.activation.labels.have >= head.activation.labels.need
+		!!residual &&
+			residual.activation.subjects.have >= residual.activation.subjects.need &&
+			residual.activation.pairs.have >= residual.activation.pairs.need
 	);
 
-	async function startHead() {
-		if (headTraining) return;
-		headTraining = true;
+	async function startResidual() {
+		if (residualTraining) return;
+		residualTraining = true;
 		try {
-			const job = await retrainHead(fetch, library);
-			headJobId = job.job_id;
+			const job = await retrainResidual(fetch, library);
+			residualJobId = job.job_id;
 			initiatedJobIds = [...new Set([...initiatedJobIds, job.job_id])];
-			toast('Key Art Engine training queued', 'info');
+			toast('Bounded residual training queued', 'info');
 		} catch (e) {
-			headTraining = false;
+			residualTraining = false;
 			toast(e instanceof Error ? e.message : 'Training failed to start', 'bad');
 		}
 	}
@@ -209,13 +208,13 @@
 		}
 	}
 
-	async function loadHeadDetail(artifactId: string) {
-		selectedHeadId = artifactId;
+	async function loadResidualDetail(artifactId: string) {
+		selectedResidualId = artifactId;
 		detailLoading = true;
 		try {
-			headDetail = await getLearnedHeadDetail(fetch, artifactId, library);
+			residualDetail = await getRankingResidualDetail(fetch, artifactId, library);
 		} catch (e) {
-			toast(e instanceof Error ? e.message : 'Could not load head details', 'bad');
+			toast(e instanceof Error ? e.message : 'Could not load residual details', 'bad');
 		} finally {
 			detailLoading = false;
 		}
@@ -246,7 +245,7 @@
 
 	async function handleJobSettled(snapshot: JobSnapshotResponse) {
 		if (snapshot.job_id === rebuildJobId) rebuilding = false;
-		if (snapshot.job_id === headJobId) headTraining = false;
+		if (snapshot.job_id === residualJobId) residualTraining = false;
 		toast(
 			`Taste work ${snapshot.status.label.toLowerCase()}`,
 			snapshot.status.outcome === 'succeeded' ? 'good' : 'bad'
@@ -263,13 +262,13 @@
 	});
 
 	$effect(() => {
-		if (!selectedHeadId && heads.length) {
-			void loadHeadDetail(preferredArtifactId(heads, null) ?? heads[0].id);
+		if (!selectedResidualId && residuals.length) {
+			void loadResidualDetail(preferredArtifactId(residuals, null) ?? residuals[0].id);
 		}
 	});
 </script>
 
-<SectionHeader title="Key Art Engine" subtitle="Taste profile & learned poster ranker" />
+<SectionHeader title="Key Art Engine" subtitle="Taste profile & bounded preference residual" />
 
 <div class="library-switch">
 	<button class:active={library === 'movies'} onclick={() => setLibrary('movies')}>Movies</button>
@@ -296,38 +295,42 @@
 			sub={`${status.exemplars.unique_movies ?? 0} movies · ${status.exemplars.duplicate_groups ?? 0} duplicate groups`}
 			tone="info"
 		/>
-		<div class="card engine" class:on={head?.active}>
+		<div class="card engine" class:on={residual?.active}>
 			<div class="engine-head">
 				<span class="label">Key Art Engine</span>
-				<span class="engine-state" style="--c:{head?.active ? 'var(--good)' : 'var(--faint)'}">
-					<StatusDot tone={head?.active ? 'good' : 'muted'} size={7} />
-					{head?.active ? 'Active' : 'Inactive'}
+				<span class="engine-state" style="--c:{residual?.active ? 'var(--good)' : 'var(--faint)'}">
+					<StatusDot tone={residual?.active ? 'good' : 'muted'} size={7} />
+					{residual?.active ? 'Active' : 'Inactive'}
 				</span>
 			</div>
-			<div class="engine-val mono">{head?.n_samples ?? 0}<span class="unit"> {headUnit}</span></div>
-			{#if head}
+			<div class="engine-val mono">{residual?.pairs ?? 0}<span class="unit"> pairs</span></div>
+			{#if residual}
 				<div class="gauges">
 					<div class="gauge">
 						<div class="gl">
-							<span>Movies</span><span class="mono"
-								>{head.activation.movies.have}/{head.activation.movies.need}</span
+							<span>Subjects</span><span class="mono"
+								>{residual.activation.subjects.have}/{residual.activation.subjects.need}</span
 							>
 						</div>
 						<ProgressBar
-							value={pct(head.activation.movies.have, head.activation.movies.need)}
-							tone={head.activation.movies.have >= head.activation.movies.need ? 'good' : 'gold'}
+							value={pct(residual.activation.subjects.have, residual.activation.subjects.need)}
+							tone={residual.activation.subjects.have >= residual.activation.subjects.need
+								? 'good'
+								: 'gold'}
 							height={5}
 						/>
 					</div>
 					<div class="gauge">
 						<div class="gl">
-							<span>{head.mode === 'pairwise' ? 'Pairs' : 'Labels'}</span><span class="mono"
-								>{head.activation.labels.have}/{head.activation.labels.need}</span
+							<span>Pairs</span><span class="mono"
+								>{residual.activation.pairs.have}/{residual.activation.pairs.need}</span
 							>
 						</div>
 						<ProgressBar
-							value={pct(head.activation.labels.have, head.activation.labels.need)}
-							tone={head.activation.labels.have >= head.activation.labels.need ? 'good' : 'gold'}
+							value={pct(residual.activation.pairs.have, residual.activation.pairs.need)}
+							tone={residual.activation.pairs.have >= residual.activation.pairs.need
+								? 'good'
+								: 'gold'}
 							height={5}
 						/>
 					</div>
@@ -379,18 +382,18 @@
 		</section>
 
 		<section class="train-card">
-			<h3>Train the Key Art Engine</h3>
+			<h3>Train the bounded residual</h3>
 			<p class="card-note">
-				Picks accumulate labels automatically. Train the learned ranker whenever you want to fold in
-				your latest choices.
+				Canonical approvals and overrides accumulate preference pairs. Training adds a bounded
+				correction to the weighted baseline only when held-out ranking improves.
 			</p>
 			{#if !ready}
 				<div class="hint">
 					Needs more data to activate. Keep approving posters to reach the thresholds above.
 				</div>
 			{/if}
-			<button class="btn-gold" onclick={startHead} disabled={headTraining || !ready}>
-				{headTraining ? 'Training…' : 'Train Key Art Engine'}
+			<button class="btn-gold" onclick={startResidual} disabled={residualTraining || !ready}>
+				{residualTraining ? 'Training…' : 'Train bounded residual'}
 			</button>
 		</section>
 	</div>
@@ -509,68 +512,72 @@
 		<section class="manager-card">
 			<div class="panel-head">
 				<div>
-					<h3>Learned heads</h3>
-					<p>View immutable native heads, producer generations, and top learned features.</p>
+					<h3>Ranking residuals</h3>
+					<p>View immutable bounded residuals, producer generations, and held-out gains.</p>
 				</div>
 			</div>
 			<div class="artifact-list">
-				{#each heads as managedHead (managedHead.id)}
+				{#each residuals as managedResidual (managedResidual.id)}
 					<div
 						class="artifact-row"
-						class:selected={selectedHeadId === managedHead.id}
-						onclick={() => loadHeadDetail(managedHead.id)}
-						onkeydown={(event) => event.key === 'Enter' && loadHeadDetail(managedHead.id)}
+						class:selected={selectedResidualId === managedResidual.id}
+						onclick={() => loadResidualDetail(managedResidual.id)}
+						onkeydown={(event) => event.key === 'Enter' && loadResidualDetail(managedResidual.id)}
 						tabindex="0"
 						role="button"
 					>
 						<div class="artifact-main">
 							<div class="artifact-title">
-								<strong>{managedHead.label}</strong>
-								<span class="badge" class:active={managedHead.status === 'active'}>
-									{managedHead.status}
+								<strong>{managedResidual.label}</strong>
+								<span class="badge" class:active={managedResidual.status === 'active'}>
+									{managedResidual.status}
 								</span>
 							</div>
 							<div class="artifact-meta">
-								<span>{managedHead.summary.sample_count ?? 0} samples</span>
-								<span>{managedHead.summary.unique_movies ?? 0} movies</span>
-								<span>{managedHead.summary.mode ?? 'unknown mode'}</span>
+								<span>{managedResidual.summary.evaluation?.pair_count ?? 0} pairs</span>
+								<span>{managedResidual.summary.evaluation?.subject_count ?? 0} subjects</span>
+								<span>{managedResidual.summary.mode ?? 'unknown mode'}</span>
 							</div>
-							<div class="artifact-date">Trained {fmtDate(managedHead.trained_at)}</div>
+							<div class="artifact-date">Trained {fmtDate(managedResidual.trained_at)}</div>
 						</div>
 					</div>
 				{/each}
-				{#if heads.length === 0}
-					<div class="detail-empty">No canonical learned heads yet.</div>
+				{#if residuals.length === 0}
+					<div class="detail-empty">No canonical ranking residuals yet.</div>
 				{/if}
 			</div>
 
-			{#if detailLoading && selectedHeadId}
-				<div class="detail-empty">Loading learned head details…</div>
-			{:else if headDetail}
+			{#if detailLoading && selectedResidualId}
+				<div class="detail-empty">Loading residual details…</div>
+			{:else if residualDetail}
 				<div class="detail-card">
 					<div class="detail-head">
 						<div>
-							<h4>{headDetail.label}</h4>
+							<h4>{residualDetail.label}</h4>
 							<div class="artifact-date">
-								Created {fmtDate(headDetail.created_at)} · Trained {fmtDate(headDetail.trained_at)}
+								Created {fmtDate(residualDetail.created_at)} · Trained {fmtDate(
+									residualDetail.trained_at
+								)}
 							</div>
 						</div>
-						<span class="badge" class:active={headDetail.status === 'active'}
-							>{headDetail.status}</span
+						<span class="badge" class:active={residualDetail.status === 'active'}
+							>{residualDetail.status}</span
 						>
 					</div>
 					<div class="detail-metrics">
-						<span>{headDetail.summary.sample_count ?? 0} samples</span>
-						<span>{headDetail.summary.unique_movies ?? 0} movies</span>
+						<span>{residualDetail.summary.evaluation?.pair_count ?? 0} held-out pairs</span>
+						<span>{residualDetail.summary.evaluation?.subject_count ?? 0} subjects</span>
 						<span
-							>{((headDetail.summary.train_accuracy as number | undefined) ?? 0).toFixed(3)} accuracy</span
+							>{(
+								(residualDetail.summary.evaluation?.improvement as number | undefined) ?? 0
+							).toFixed(3)} gain</span
 						>
 					</div>
 					<div class="detail-columns">
 						<div>
-							<h5>Top weighted features</h5>
+							<h5>Top residual features</h5>
 							<div class="detail-list">
-								{#each (headDetail.summary.top_features ?? []).slice(0, 10) as feature (feature.name)}
+								{#each (residualDetail.summary.top_features ?? []).slice(0, 10) as feature (feature.name)}
 									<div class="detail-row">
 										<span>{feature.name}</span>
 										<span class="mono">{feature.weight.toFixed(3)}</span>
@@ -579,14 +586,16 @@
 							</div>
 						</div>
 						<div>
-							<h5>Contributing movies</h5>
+							<h5>Bounded application</h5>
 							<div class="detail-list">
-								{#each headDetail.movies as movie (`${movie.movie_id}-${movie.title}`)}
-									<div class="detail-row">
-										<span>{movie.title}{movie.year ? ` (${movie.year})` : ''}</span>
-										<span class="mono">{movie.contribution_count}</span>
-									</div>
-								{/each}
+								<div class="detail-row">
+									<span>Alpha</span><span class="mono">{residualDetail.summary.alpha ?? 0}</span>
+								</div>
+								<div class="detail-row">
+									<span>Maximum delta</span><span class="mono"
+										>{residualDetail.summary.delta_max ?? 0}</span
+									>
+								</div>
 							</div>
 						</div>
 					</div>

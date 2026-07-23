@@ -25,6 +25,7 @@ from marquee.core.jobs.inventory import (
     SCHEDULE_PRODUCED_TYPES,
 )
 from marquee.core.jobs.manifest import JOB_DEFINITION_REGISTRY
+from tests.support.jmc6j import current_job_types
 
 ROOT = Path(__file__).parents[1]
 FREEZE_PATH = ROOT / "tests/fixtures/jmc5b/b0_contract_freeze.json"
@@ -236,14 +237,14 @@ def test_registry_surfaces_match_b0_freeze() -> None:
         "dovi_discard",
     }
     assert sorted(JOB_DEFINITION_REGISTRY.enabled_types) == sorted(
-        set(frozen["registry"]["enabled_types"]) | c1_leaves
+        current_job_types(frozen["registry"]["enabled_types"]) | c1_leaves
     )
     assert sorted(EXECUTION_HANDLERS) == sorted(
-        set(frozen["registry"]["execution_handlers"]) | c1_leaves
+        current_job_types(frozen["registry"]["execution_handlers"]) | c1_leaves
     )
     assert not REGISTERED_HANDLER_TYPES
     assert sorted(ROUTE_CONSTRUCTED_TYPES) == sorted(
-        (set(frozen["registry"]["route_constructed_types"]) - {"radarr_upgrade"})
+        (current_job_types(frozen["registry"]["route_constructed_types"]) - {"radarr_upgrade"})
         | {
             "letterbox_reencode",
             "letterbox_reencode_publish",

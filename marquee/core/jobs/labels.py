@@ -12,7 +12,7 @@ JOB_LABELS: dict[str, str] = {
     "dovi_analyze_batch": "Dolby Vision Analysis (Batch)",
     "dovi_convert": "Dolby Vision Conversion",
     "job_retention_purge": "Job Retention Cleanup",
-    "learned_head_train": "Learned Model Training",
+    "ranking_residual_train": "Residual Preference Training",
     "letterbox_apply": "Letterbox Crop Apply",
     "letterbox_apply_batch": "Letterbox Crop Apply (Batch)",
     "letterbox_apply_tv_scope": "TV Letterbox Crop Apply",

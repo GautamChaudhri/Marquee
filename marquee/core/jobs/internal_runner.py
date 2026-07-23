@@ -21,6 +21,7 @@ import signal
 import sys
 import time
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 from marquee.core.jobs.runner_protocol import (
@@ -177,6 +178,27 @@ def _announce_file(name: str, control: ControlWriter) -> dict[str, Any]:
     return descriptor
 
 
+def _poster_feature_runtime(personalization_mode: str) -> tuple[Any, Path | None]:
+    """Resolve staged personalization artifacts after the host selects the mode."""
+    from marquee.pipeline.features import FeatureExtractor  # noqa: PLC0415
+
+    if personalization_mode == "collecting":
+        return FeatureExtractor(personalization_mode="collecting"), None
+    from marquee.ml.taste_store import NumpyTasteStore  # noqa: PLC0415
+
+    profile_path = Path("profile.npz")
+    if not profile_path.is_file():
+        raise ProtocolError("personalized poster run is missing its staged taste profile")
+    residual_path = Path("residual.npz")
+    return (
+        FeatureExtractor(
+            taste_store=NumpyTasteStore(profile_path),
+            personalization_mode="personalized",
+        ),
+        residual_path if residual_path.is_file() else None,
+    )
+
+
 def _run_poster_single(manifest: dict[str, Any], control: ControlWriter) -> dict[str, Any]:
     """Run the real single-subject poster pipeline confined to the workspace.
 
@@ -187,10 +209,7 @@ def _run_poster_single(manifest: dict[str, Any], control: ControlWriter) -> dict
     """
     import asyncio  # noqa: PLC0415
     import shutil  # noqa: PLC0415
-    from pathlib import Path  # noqa: PLC0415
 
-    from marquee.ml.taste_store import NumpyTasteStore  # noqa: PLC0415
-    from marquee.pipeline.features import FeatureExtractor  # noqa: PLC0415
     from marquee.pipeline.orchestrator import (  # noqa: PLC0415
         PosterSourceInput,
         PosterSubjectInput,
@@ -215,7 +234,9 @@ def _run_poster_single(manifest: dict[str, Any], control: ControlWriter) -> dict
     )
     source = PosterSourceInput(mode=source_params.get("mode", "tmdb"))
     run_id = params.get("run_id") if isinstance(params.get("run_id"), str) else None
-    learned_head_path = Path("head.npz")
+    personalization_mode = params.get("personalization_mode", "collecting")
+    if personalization_mode not in {"collecting", "personalized"}:
+        raise ProtocolError("poster_single manifest has an invalid personalization mode")
 
     def _emit_progress(event: ProgressEvent) -> None:
         frame: dict[str, Any] = {
@@ -233,7 +254,7 @@ def _run_poster_single(manifest: dict[str, Any], control: ControlWriter) -> dict
         with contextlib.suppress(Exception):
             control.emit(frame)
 
-    extractor = FeatureExtractor(taste_store=NumpyTasteStore(Path("profile.npz")))
+    extractor, residual_path = _poster_feature_runtime(personalization_mode)
     extractor.preflight()
     output = asyncio.run(
         run_poster_pipeline(
@@ -243,7 +264,8 @@ def _run_poster_single(manifest: dict[str, Any], control: ControlWriter) -> dict
             feature_extractor=extractor,
             progress=_emit_progress,
             run_id=run_id,
-            learned_head_path=learned_head_path,
+            residual_path=residual_path,
+            personalization_mode=personalization_mode,
         )
     )
 
@@ -280,6 +302,8 @@ def _run_poster_single(manifest: dict[str, Any], control: ControlWriter) -> dict
             "source_count": output.source_count,
             "candidate_count": output.candidate_count,
             "scorer_name": output.scorer_name,
+            "personalization_mode": output.personalization_mode,
+            "message": output.message,
             "candidate_files": candidate_files,
         },
         "files": files,
@@ -414,55 +438,58 @@ def _run_enrichment(manifest: dict[str, Any], control: ControlWriter) -> dict[st
     }
 
 
-def _run_learned_head(manifest: dict[str, Any], control: ControlWriter) -> dict[str, Any]:
-    """Train a native learned-head artifact from the coordinator's frozen feedback snapshot."""
+def _run_ranking_residual(manifest: dict[str, Any], control: ControlWriter) -> dict[str, Any]:
+    """Train and evaluate a bounded residual from a frozen canonical event snapshot."""
     import json  # noqa: PLC0415
     from pathlib import Path  # noqa: PLC0415
+    from types import SimpleNamespace  # noqa: PLC0415
 
-    from marquee.ml.head_trainer import train_from_labels  # noqa: PLC0415
+    from marquee.ml.residual import build_residual_pairs, train_residual  # noqa: PLC0415
 
     params = manifest.get("params")
     params = params if isinstance(params, dict) else {}
-    snapshot = Path("feedback.jsonl")
+    snapshot = Path("preference-events.json")
     rows: list[dict[str, Any]] = []
     if snapshot.is_file():
         if snapshot.stat().st_size > 64 * 1024 * 1024:
-            raise ProtocolError("feedback snapshot exceeds the runner limit")
-        for line_number, line in enumerate(snapshot.read_text().splitlines(), 1):
-            if not line.strip():
-                continue
-            try:
-                row = json.loads(line)
-            except json.JSONDecodeError as exc:
-                raise ProtocolError(f"feedback snapshot line {line_number} is invalid") from exc
-            if not isinstance(row, dict):
-                raise ProtocolError(f"feedback snapshot line {line_number} is not an object")
-            rows.append(row)
-            if len(rows) > 100_000:
-                raise ProtocolError("feedback snapshot contains too many rows")
+            raise ProtocolError("preference snapshot exceeds the runner limit")
+        try:
+            loaded = json.loads(snapshot.read_text())
+        except json.JSONDecodeError as exc:
+            raise ProtocolError("preference snapshot is invalid") from exc
+        if not isinstance(loaded, list) or len(loaded) > 100_000:
+            raise ProtocolError("preference snapshot row count is invalid")
+        rows = [row for row in loaded if isinstance(row, dict)]
 
     control.emit({"v": PROTOCOL_VERSION, "type": "progress", "stage": "training"})
-    head, info = train_from_labels(
-        rows=rows,
-        output=Path("head.npz"),
-        min_labels=params.get("min_labels"),
-        min_movies=params.get("min_movies"),
-        min_pairs=params.get("min_pairs"),
-        mode=params.get("mode"),
-        l2=float(params.get("l2", 1.0)),
+    events = [SimpleNamespace(**row) for row in rows]
+    pairs = build_residual_pairs(events)
+    artifact, report = train_residual(
+        pairs,
+        namespace=str(params.get("library", "movies")),
+        baseline=str(params.get("baseline_signature", "")),
+        profile_checksum=str(params.get("profile_checksum", "")),
+        evidence_revision=str(params.get("evidence_revision", "")),
+        seed=int(params.get("seed", 0)),
+        min_subjects=int(params.get("min_subjects", 25)),
+        min_pairs=int(params.get("min_pairs", 200)),
+        min_improvement=float(params.get("min_improvement", 0.02)),
     )
     summary = {
-        "family": "learned_head",
+        "family": "ranking_residual",
         "library": params.get("library", "movies"),
-        "feedback_rows": len(rows),
-        **info,
+        "event_rows": len(rows),
+        "pairs": len(pairs),
+        "subjects": len({pair.subject for pair in pairs}),
+        **report,
     }
-    if head is None:
+    if artifact is None:
         return {"outcome": "no_change", "summary": summary, "files": []}
+    artifact.save(Path("residual.npz"))
     return {
         "outcome": "succeeded",
         "summary": summary,
-        "files": [_announce_file("head.npz", control)],
+        "files": [_announce_file("residual.npz", control)],
     }
 
 
@@ -492,7 +519,7 @@ _OPERATIONS: dict[RunnerOperation, OperationHandler] = {
     RunnerOperation.TASTE_PROFILE: _run_taste_profile,
     RunnerOperation.TASTE_MAP: _run_taste_map,
     RunnerOperation.ENRICHMENT: _run_enrichment,
-    RunnerOperation.LEARNED_HEAD: _run_learned_head,
+    RunnerOperation.RANKING_RESIDUAL: _run_ranking_residual,
 }
 
 

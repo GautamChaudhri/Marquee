@@ -11,8 +11,12 @@ from PIL import Image
 from marquee.core.pipeline_config import PipelineSettings
 from marquee.ml.artifact_codec import unicode_array
 from marquee.ml.calibration import TasteCalibration
-from marquee.ml.learned_head import LogisticHead
 from marquee.ml.normalize import normalize_features, quality_artifact_raw
+from marquee.ml.residual import (
+    ResidualArtifact,
+    ResidualEvaluation,
+    baseline_signature,
+)
 from marquee.ml.visual_features import (
     blockiness,
     composition_features,
@@ -22,7 +26,7 @@ from marquee.ml.visual_features import (
     standardize_width,
     title_geometry,
 )
-from marquee.pipeline.scorer import LearnedScorer, WeightedScorer, select_scorer
+from marquee.pipeline.scorer import ResidualScorer, WeightedScorer, select_scorer
 from marquee.pipeline.types import FeatureVector
 
 
@@ -235,7 +239,7 @@ def test_quality_artifacts_inverted_to_cleanliness():
 
 
 # ---------------------------------------------------------------------------
-# Scorer: weight redistribution + learned head
+# Scorer: weight redistribution + bounded residual
 # ---------------------------------------------------------------------------
 
 
@@ -254,38 +258,26 @@ def test_weighted_scorer_redistributes_absent_optional_features():
     assert contributions["taste_typicality"] > 0
 
 
-def test_logistic_head_learns_separable_data_and_roundtrips(tmp_path: Path):
-    rng = np.random.default_rng(5)
-    n = 200
-    good = np.column_stack([rng.uniform(0.7, 1.0, n), rng.uniform(0, 1, n)])
-    bad = np.column_stack([rng.uniform(0.0, 0.3, n), rng.uniform(0, 1, n)])
-    x = np.vstack([good, bad])
-    y = np.concatenate([np.ones(n), np.zeros(n)])
-
-    head = LogisticHead.train(x, y, ["knn_sim", "noise"], model_name="clip-vit-b-32")
-    assert head.train_accuracy > 0.95
-    assert abs(head.weights[0]) > abs(head.weights[1])  # signal beats noise
-
-    path = tmp_path / "head.npz"
-    head.save(path)
-    loaded = LogisticHead.load(path, expected_model_name="clip-vit-b-32")
-    assert loaded.feature_names == ["knn_sim", "noise"]
-    probability, contributions = loaded.score({"knn_sim": 0.9, "noise": 0.5})
-    assert probability > 0.8
-    assert "knn_sim" in contributions
-
-    with pytest.raises(RuntimeError, match="mismatch"):
-        LogisticHead.load(path, expected_model_name="clip-vit-l-14")
-
-
-def test_learned_head_refuses_missing_features(tmp_path: Path):
-    head = LogisticHead.train(
-        np.array([[0.1], [0.9], [0.2], [0.8]]),
-        np.array([0, 1, 0, 1]),
-        ["dino_knn"],
-        model_name="clip-vit-b-32",
+def _residual(config: PipelineSettings, feature_names: list[str]) -> ResidualArtifact:
+    return ResidualArtifact(
+        namespace="movies",
+        feature_names=feature_names,
+        weights=np.ones(len(feature_names)),
+        bias=0.0,
+        alpha=0.5,
+        delta_max=0.75,
+        baseline_signature=baseline_signature(config.scorer_weights),
+        profile_checksum="a" * 64,
+        evidence_revision="b" * 64,
+        seed=0,
+        evaluation=ResidualEvaluation(0.5, 0.6, 0.1, 5, 20, 0.05, 0.1),
+        trained_at="2026-07-22T00:00:00+00:00",
     )
-    scorer = LearnedScorer(head)
+
+
+def test_residual_refuses_missing_features():
+    config = PipelineSettings()
+    scorer = ResidualScorer(WeightedScorer(config), _residual(config, ["dino_knn"]))
     features = _features()
     normalize_features(features)  # dino absent
     with pytest.raises(RuntimeError, match="dino_knn"):
@@ -293,29 +285,19 @@ def test_learned_head_refuses_missing_features(tmp_path: Path):
 
 
 def test_select_scorer_auto_falls_back_without_artifact(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
 ):
-    config = PipelineSettings(SCORER="auto", LEARNED_HEAD_PATH=tmp_path / "missing.npz")
-    monkeypatch.setattr("marquee.ml.learned_head.pipeline_settings", config)
-    scorer = select_scorer(config)
+    config = PipelineSettings(SCORER="auto")
+    scorer = select_scorer(config, artifact_path=tmp_path / "missing.npz")
     assert scorer.name == "weighted"
 
 
-def test_select_scorer_auto_prefers_valid_learned_head(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    artifact = tmp_path / "head.npz"
-    head = LogisticHead.train(
-        np.array([[0.1], [0.9], [0.2], [0.8]]),
-        np.array([0, 1, 0, 1]),
-        ["knn_sim"],
-        model_name="clip-vit-b-32",
-    )
-    head.save(artifact)
-    config = PipelineSettings(SCORER="auto", LEARNED_HEAD_PATH=artifact)
-    monkeypatch.setattr("marquee.ml.learned_head.pipeline_settings", config)
-    scorer = select_scorer(config)
-    assert scorer.name == "learned"
+def test_select_scorer_auto_prefers_valid_residual(tmp_path: Path):
+    path = tmp_path / "residual.npz"
+    config = PipelineSettings(SCORER="auto")
+    _residual(config, ["knn_sim"]).save(path)
+    scorer = select_scorer(config, artifact_path=path)
+    assert scorer.name == "residual"
 
 
 # ---------------------------------------------------------------------------

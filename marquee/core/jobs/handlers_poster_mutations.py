@@ -46,6 +46,11 @@ from marquee.core.jobs.publication import (
 from marquee.core.path_utils import safe_translate_and_validate
 from marquee.core.poster_files import tmdb_original_url
 from marquee.core.poster_subjects import PosterSubject
+from marquee.core.taste_preferences import (
+    activate_exemplar,
+    pin_candidate_artifact,
+    schedule_profile_builds,
+)
 from marquee.models import (
     ArtworkEvent,
     JobArtifact,
@@ -54,6 +59,7 @@ from marquee.models import (
     PipelineRun,
     Season,
     Series,
+    TasteExemplar,
 )
 
 SubjectKind = Literal["movie", "series", "season"]
@@ -689,7 +695,55 @@ async def execute_poster_deploy(context: ExecutionContext) -> dict[str, object]:
         subject = await _load_subject(session, request.target_kind, request.target_id)
     boundary, _destination = _boundary(subject)
     candidate = await _resolve_deploy_candidate(context, subject, boundary, request.candidate)
-    return await _execute_copy(context, request, candidate, request.candidate.source)
+    result = await _execute_copy(context, request, candidate, request.candidate.source)
+    if result.get("outcome") != "succeeded":
+        return result
+    async with context.session_factory() as session:
+        exemplar = await session.scalar(
+            select(TasteExemplar).where(
+                TasteExemplar.deployment_job_id == context.delivery.canonical_job_id,
+                TasteExemplar.status == "pending_deploy",
+            )
+        )
+        source_artifact = (
+            await session.get(JobArtifact, exemplar.candidate_artifact_id)
+            if exemplar is not None and exemplar.candidate_artifact_id is not None
+            else None
+        )
+    if exemplar is None:
+        return result
+    if source_artifact is None:
+        raise PosterMutationError("pending taste exemplar lost its candidate artifact")
+    pinned = await pin_candidate_artifact(
+        source_artifact,
+        deployment_job_id=context.delivery.canonical_job_id,
+        deployment_attempt_id=context.attempt.attempt_id,
+        deployment_fence_token=context.attempt.fence_token,
+    )
+    async with context.session_factory() as session:
+        activated = await activate_exemplar(
+            session,
+            exemplar_id=exemplar.id,
+            retained_artifact_id=pinned.id,
+            deployment_result={
+                "outcome": "succeeded",
+                "validated": True,
+                "checksum": request.candidate.expected_checksum,
+                "attempt_id": context.attempt.attempt_id,
+                "fence_token": context.attempt.fence_token,
+            },
+        )
+        if activated.status == "active":
+            namespaces = (
+                ("movies", "tv") if activated.namespace == "global" else (activated.namespace,)
+            )
+            await schedule_profile_builds(
+                session,
+                namespaces=namespaces,
+                initiator_identifier="poster-deploy-post-effect",
+            )
+        await session.commit()
+    return result
 
 
 async def execute_poster_restore(context: ExecutionContext) -> dict[str, object]:

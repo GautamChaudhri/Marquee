@@ -26,7 +26,7 @@ SUPPORTING_JOB_TYPES = (
     "taste_rebuild",
     "taste_map",
     "taste_enrich",
-    "learned_head_train",
+    "ranking_residual_train",
     "backup_create",
     "pipeline_cache_clear",
     "job_retention_purge",
@@ -40,7 +40,7 @@ _HEADLINES = {
     "taste_rebuild": "Rebuild the taste profile",
     "taste_map": "Generate the taste map",
     "taste_enrich": "Enrich the taste profile",
-    "learned_head_train": "Train the learned ranking model",
+    "ranking_residual_train": "Train the bounded preference residual",
     "backup_create": "Create a backup",
     "pipeline_cache_clear": "Clear pipeline caches",
     "job_retention_purge": "Purge expired job history",
@@ -53,7 +53,7 @@ _EXPLANATIONS = {
     "taste_rebuild": "Re-embeds the training exemplars and rebuilds the k-NN taste profile.",
     "taste_map": "Projects the library and exemplars into a browsable 2-D taste map.",
     "taste_enrich": "Publishes enriched profile metadata as an immutable version.",
-    "learned_head_train": "Trains the learned ranking head from recorded feedback.",
+    "ranking_residual_train": "Evaluates a bounded correction against the weighted baseline.",
     "backup_create": "Writes a checksummed backup of the selected data.",
     "pipeline_cache_clear": "Removes cached embeddings and staged pipeline files.",
     "job_retention_purge": "Deletes job history past the configured retention window.",
@@ -117,7 +117,7 @@ class SupportingPresenter(JobPresenter):
             "taste_rebuild",
             "taste_map",
             "taste_enrich",
-            "learned_head_train",
+            "ranking_residual_train",
         }:
             for key, label in _ML_FACTS:
                 value = ctx.summary_value(key, str)

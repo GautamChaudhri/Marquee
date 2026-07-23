@@ -44,8 +44,6 @@ def synthetic_profile(tmp_path, monkeypatch):
     )
 
     monkeypatch.setattr(pipeline_settings, "TASTE_PROFILE_PATH", profile_path)
-    monkeypatch.setattr(pipeline_settings, "TRAINING_DATA_DIR", tmp_path / "training")
-
     from marquee.config import settings
 
     monkeypatch.setattr(

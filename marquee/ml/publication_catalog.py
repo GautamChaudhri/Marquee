@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import re
 from collections import Counter, defaultdict
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
@@ -13,7 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.core.jobs.artifact_service import physical_artifact_file, verify_physical_artifact
-from marquee.ml.learned_head import LogisticHead
+from marquee.ml.residual import ResidualArtifact
 from marquee.ml.taste_store import NumpyTasteStore
 from marquee.models import Job, JobArtifact, MlActivePublication
 
@@ -186,19 +186,23 @@ def _profile_payload(
     return summary, list(movies.values()), duplicate_groups
 
 
-def _head_payload(path: Path) -> dict[str, Any]:
-    head = LogisticHead.load(path)
+def _residual_payload(path: Path) -> dict[str, Any]:
+    residual = ResidualArtifact.load(path)
     top = sorted(
-        zip(head.feature_names, head.weights, strict=True),
+        zip(residual.feature_names, residual.weights, strict=True),
         key=lambda item: abs(float(item[1])),
         reverse=True,
     )[:10]
     return {
-        "model_name": head.model_name,
-        "mode": "pairwise" if head.bias == 0.0 else "pointwise",
-        "sample_count": head.n_samples,
-        "train_accuracy": head.train_accuracy,
-        "trained_at": head.trained_at,
+        "mode": "bounded_residual",
+        "namespace": residual.namespace,
+        "evidence_revision": residual.evidence_revision,
+        "profile_checksum": residual.profile_checksum,
+        "baseline_signature": residual.baseline_signature,
+        "alpha": residual.alpha,
+        "delta_max": residual.delta_max,
+        "evaluation": asdict(residual.evaluation),
+        "trained_at": residual.trained_at,
         "top_features": [{"name": name, "weight": float(weight)} for name, weight in top],
     }
 
@@ -207,8 +211,8 @@ async def artifact_summary(entry: CatalogEntry) -> dict[str, Any]:
     await verify_physical_artifact(entry.artifact)
     if entry.artifact.kind == "taste_profile":
         summary, _movies, _duplicates = await asyncio.to_thread(_profile_payload, entry.path)
-    elif entry.artifact.kind == "learned_head":
-        summary = await asyncio.to_thread(_head_payload, entry.path)
+    elif entry.artifact.kind == "ranking_residual":
+        summary = await asyncio.to_thread(_residual_payload, entry.path)
     else:
         raise PublicationCatalogError(f"unsupported ML artifact kind: {entry.artifact.kind}")
     return _base_summary(entry, summary=summary)
@@ -224,7 +228,7 @@ async def artifact_detail(entry: CatalogEntry) -> dict[str, Any]:
             "duplicate_groups": duplicates,
             "negative_exemplars": [],
         }
-    summary = await asyncio.to_thread(_head_payload, entry.path)
+    summary = await asyncio.to_thread(_residual_payload, entry.path)
     return {**_base_summary(entry, summary=summary), "movies": []}
 
 

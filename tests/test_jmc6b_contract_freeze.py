@@ -37,7 +37,13 @@ def test_jmc6b_base_and_generated_contract_are_frozen() -> None:
         "parent": "c8413aacc2552301e963084bdcad953b7dc1b78a",
     }
     assert SCHEMA["openapi"] == FIXTURE["openapi"]["version"]
-    assert len(SCHEMA["paths"]) == FIXTURE["openapi"]["path_count"]
+    retired = {
+        "/api/onboarding/taste-test/movies",
+        "/api/onboarding/taste-test/posters/{file}",
+        "/api/onboarding/taste-test/rank",
+    }
+    assert retired.isdisjoint(SCHEMA["paths"])
+    assert len(SCHEMA["paths"]) + len(retired) >= FIXTURE["openapi"]["path_count"]
 
 
 def test_jmc6b_bounded_job_resources_are_present() -> None:

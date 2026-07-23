@@ -3,6 +3,7 @@ import { expect, test } from '@playwright/test';
 
 test.describe('shared activity card', () => {
 	test('is keyboard operable and has no axe violations', async ({ page }, testInfo) => {
+		await page.emulateMedia({ reducedMotion: 'reduce' });
 		await page.goto('/__fixtures/activity-card');
 		const expanded = page.getByRole('region', { name: 'Expanded card fixture' });
 		await expect(expanded.getByRole('heading', { name: 'Dune: Part Two' })).toBeVisible();

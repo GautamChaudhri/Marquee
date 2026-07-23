@@ -41,7 +41,6 @@ from marquee.core.jobs.documents import (
     BuiltInResultV1,
     DocumentKind,
     DoviAnalyzeRequestV1,
-    LearnedHeadTrainRequestV1,
     LetterboxDetectEpisodeRequestV1,
     LetterboxDetectRequestV1,
     LetterboxDetectTvScopeRequestV1,
@@ -52,6 +51,7 @@ from marquee.core.jobs.documents import (
     PosterPipelineResultV1,
     PosterRescanRequestV1,
     PosterRescanResultV1,
+    RankingResidualTrainRequestV1,
     SafeJobErrorV1,
     StrictDocument,
     SubtitlePolicyAuditRequestV1,
@@ -179,7 +179,7 @@ _SPECS = (
     _spec("poster_backup_subject", FeatureArea.AI_POSTERS, ExecutionClass.MEDIA_WRITE, _U, "movie", "series", "season"),
     _spec("poster_pipeline_batch", FeatureArea.AI_POSTERS, ExecutionClass.CONTROL, _R, "aggregate_batch", progress=ProgressStrategy.DETERMINATE, children=("poster_pipeline",)),
     _spec("poster_pipeline_tv_batch", FeatureArea.AI_POSTERS, ExecutionClass.CONTROL, _R, "aggregate_batch", progress=ProgressStrategy.DETERMINATE, children=("poster_pipeline",)),
-    _spec("learned_head_train", FeatureArea.ML_TASTE, ExecutionClass.CPU, _R, "model_profile_training"),
+    _spec("ranking_residual_train", FeatureArea.ML_TASTE, ExecutionClass.CPU, _R, "model_profile_training"),
     _spec("pipeline_cache_clear", FeatureArea.MAINTENANCE, ExecutionClass.MAINTENANCE, _U, "maintenance_scope", progress=ProgressStrategy.DETERMINATE),
     _spec("poster_deploy_reset", FeatureArea.AI_POSTERS, ExecutionClass.CONTROL, _R, "aggregate_batch", progress=ProgressStrategy.DETERMINATE, children=("poster_reset",)),
     _spec("poster_rescan", FeatureArea.AI_POSTERS, ExecutionClass.MEDIA_READ, _R, "poster_candidate_set"),
@@ -259,7 +259,7 @@ ENABLED_JOB_TYPES: frozenset[str] = frozenset(
         "taste_rebuild",
         "taste_map",
         "taste_enrich",
-        "learned_head_train",
+        "ranking_residual_train",
         "audio_remove",
         "track_remove",
         "subtitle_remove",
@@ -314,7 +314,7 @@ _REQUEST_MODELS: dict[str, type[StrictDocument]] = {
     "taste_rebuild": TasteRebuildRequestV1,
     "taste_map": TasteMapRequestV1,
     "taste_enrich": TasteEnrichRequestV1,
-    "learned_head_train": LearnedHeadTrainRequestV1,
+    "ranking_residual_train": RankingResidualTrainRequestV1,
     "poster_rescan": PosterRescanRequestV1,
     "poster_deploy": PosterDeployRequestV1,
     "poster_restore": PosterRestoreRequestV1,
@@ -356,7 +356,7 @@ _RESULT_MODELS: dict[str, type[StrictDocument]] = {
     "taste_rebuild": MlPublicationResultV1,
     "taste_map": MlPublicationResultV1,
     "taste_enrich": MlPublicationResultV1,
-    "learned_head_train": MlPublicationResultV1,
+    "ranking_residual_train": MlPublicationResultV1,
     "poster_deploy": PosterMutationResultV1,
     "poster_restore": PosterMutationResultV1,
     "poster_reset": PosterMutationResultV1,
@@ -636,7 +636,7 @@ _PROGRESS_POLICIES: dict[str, ProgressPolicy] = {
     "taste_rebuild": _ML_PUBLICATION_PROGRESS,
     "taste_map": _ML_PUBLICATION_PROGRESS,
     "taste_enrich": _ML_PUBLICATION_PROGRESS,
-    "learned_head_train": _ML_PUBLICATION_PROGRESS,
+    "ranking_residual_train": _ML_PUBLICATION_PROGRESS,
 }
 
 _NATIVE_FFMPEG = frozenset({"dovi_convert", "letterbox_reencode"})
@@ -671,7 +671,7 @@ _SUBTITLE_CONFIGURATION_KEYS = frozenset(
     and entry.sensitivity == "public"
 )
 _CONFIGURATION_KEYS_BY_TYPE = {
-    **dict.fromkeys({"poster_pipeline", "taste_rebuild", "taste_map", "taste_enrich", "learned_head_train"}, _PIPELINE_CONFIGURATION_KEYS),
+    **dict.fromkeys({"poster_pipeline", "taste_rebuild", "taste_map", "taste_enrich", "ranking_residual_train"}, _PIPELINE_CONFIGURATION_KEYS),
     **dict.fromkeys({"subtitle_scan", "subtitle_policy_audit", "audio_remove", "track_remove", "subtitle_remove", "subtitle_embed", "subtitle_metadata", "audio_reorder", "subtitle_extract", "subtitle_generate", "subtitle_policy", "subtitle_restore"}, _SUBTITLE_CONFIGURATION_KEYS),
 }
 

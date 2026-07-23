@@ -2070,6 +2070,23 @@ export interface paths {
 		patch?: never;
 		trace?: never;
 	};
+	'/api/onboarding/choose': {
+		parameters: {
+			query?: never;
+			header?: never;
+			path?: never;
+			cookie?: never;
+		};
+		get?: never;
+		put?: never;
+		/** Onboarding Choose */
+		post: operations['onboarding_choose_api_onboarding_choose_post'];
+		delete?: never;
+		options?: never;
+		head?: never;
+		patch?: never;
+		trace?: never;
+	};
 	'/api/onboarding/complete': {
 		parameters: {
 			query?: never;
@@ -2115,57 +2132,6 @@ export interface paths {
 		get: operations['onboarding_status_api_onboarding_status_get'];
 		put?: never;
 		post?: never;
-		delete?: never;
-		options?: never;
-		head?: never;
-		patch?: never;
-		trace?: never;
-	};
-	'/api/onboarding/taste-test/movies': {
-		parameters: {
-			query?: never;
-			header?: never;
-			path?: never;
-			cookie?: never;
-		};
-		/** Taste Test Movies */
-		get: operations['taste_test_movies_api_onboarding_taste_test_movies_get'];
-		put?: never;
-		post?: never;
-		delete?: never;
-		options?: never;
-		head?: never;
-		patch?: never;
-		trace?: never;
-	};
-	'/api/onboarding/taste-test/posters/{file}': {
-		parameters: {
-			query?: never;
-			header?: never;
-			path?: never;
-			cookie?: never;
-		};
-		/** Taste Test Poster */
-		get: operations['taste_test_poster_api_onboarding_taste_test_posters__file__get'];
-		put?: never;
-		post?: never;
-		delete?: never;
-		options?: never;
-		head?: never;
-		patch?: never;
-		trace?: never;
-	};
-	'/api/onboarding/taste-test/rank': {
-		parameters: {
-			query?: never;
-			header?: never;
-			path?: never;
-			cookie?: never;
-		};
-		get?: never;
-		put?: never;
-		/** Taste Test Rank */
-		post: operations['taste_test_rank_api_onboarding_taste_test_rank_post'];
 		delete?: never;
 		options?: never;
 		head?: never;
@@ -3185,60 +3151,6 @@ export interface paths {
 		patch?: never;
 		trace?: never;
 	};
-	'/api/taste/head/retrain': {
-		parameters: {
-			query?: never;
-			header?: never;
-			path?: never;
-			cookie?: never;
-		};
-		get?: never;
-		put?: never;
-		/**
-		 * Retrain Learned Head
-		 * @description Submit an immutable learned-head publication job.
-		 */
-		post: operations['retrain_learned_head_api_taste_head_retrain_post'];
-		delete?: never;
-		options?: never;
-		head?: never;
-		patch?: never;
-		trace?: never;
-	};
-	'/api/taste/heads': {
-		parameters: {
-			query?: never;
-			header?: never;
-			path?: never;
-			cookie?: never;
-		};
-		/** List Learned Heads */
-		get: operations['list_learned_heads_api_taste_heads_get'];
-		put?: never;
-		post?: never;
-		delete?: never;
-		options?: never;
-		head?: never;
-		patch?: never;
-		trace?: never;
-	};
-	'/api/taste/heads/{artifact_id}': {
-		parameters: {
-			query?: never;
-			header?: never;
-			path?: never;
-			cookie?: never;
-		};
-		/** Get Learned Head */
-		get: operations['get_learned_head_api_taste_heads__artifact_id__get'];
-		put?: never;
-		post?: never;
-		delete?: never;
-		options?: never;
-		head?: never;
-		patch?: never;
-		trace?: never;
-	};
 	'/api/taste/map': {
 		parameters: {
 			query?: never;
@@ -3322,6 +3234,60 @@ export interface paths {
 		};
 		/** List Taste Profile Exemplars */
 		get: operations['list_taste_profile_exemplars_api_taste_profiles__artifact_id__exemplars_get'];
+		put?: never;
+		post?: never;
+		delete?: never;
+		options?: never;
+		head?: never;
+		patch?: never;
+		trace?: never;
+	};
+	'/api/taste/residual/retrain': {
+		parameters: {
+			query?: never;
+			header?: never;
+			path?: never;
+			cookie?: never;
+		};
+		get?: never;
+		put?: never;
+		/**
+		 * Retrain Ranking Residual
+		 * @description Submit held-out evaluation of an immutable bounded residual candidate.
+		 */
+		post: operations['retrain_ranking_residual_api_taste_residual_retrain_post'];
+		delete?: never;
+		options?: never;
+		head?: never;
+		patch?: never;
+		trace?: never;
+	};
+	'/api/taste/residuals': {
+		parameters: {
+			query?: never;
+			header?: never;
+			path?: never;
+			cookie?: never;
+		};
+		/** List Ranking Residuals */
+		get: operations['list_ranking_residuals_api_taste_residuals_get'];
+		put?: never;
+		post?: never;
+		delete?: never;
+		options?: never;
+		head?: never;
+		patch?: never;
+		trace?: never;
+	};
+	'/api/taste/residuals/{artifact_id}': {
+		parameters: {
+			query?: never;
+			header?: never;
+			path?: never;
+			cookie?: never;
+		};
+		/** Get Ranking Residual */
+		get: operations['get_ranking_residual_api_taste_residuals__artifact_id__get'];
 		put?: never;
 		post?: never;
 		delete?: never;
@@ -4092,6 +4058,21 @@ export interface components {
 			succeeded: number;
 			/** Total */
 			total: number;
+		};
+		/** ChoosePosterRequest */
+		ChoosePosterRequest: {
+			/** Artifact Id */
+			artifact_id: number;
+			/** Candidate Reference */
+			candidate_reference: string;
+			/** Idempotency Key */
+			idempotency_key: string;
+			/** Movie Id */
+			movie_id: number;
+			/** Presentation Order */
+			presentation_order: string[];
+			/** Run Id */
+			run_id: string;
 		};
 		/** CommandRequest */
 		CommandRequest: {
@@ -5570,10 +5551,7 @@ export interface components {
 			subtitles?: components['schemas']['SubtitlesSettingsUpdate'] | null;
 		};
 		/** StartRequest */
-		StartRequest: {
-			/** Path */
-			path?: string | null;
-		};
+		StartRequest: Record<string, never>;
 		/** Step */
 		Step: {
 			/** At */
@@ -5770,15 +5748,6 @@ export interface components {
 			 * @default training_dir
 			 */
 			source: string;
-		};
-		/** TasteTestRankRequest */
-		TasteTestRankRequest: {
-			/** Hated */
-			hated?: string[] | null;
-			/** Movie Id */
-			movie_id: string;
-			/** Order */
-			order?: string[] | null;
 		};
 		/** TextValue */
 		TextValue: {
@@ -9810,6 +9779,39 @@ export interface operations {
 			};
 		};
 	};
+	onboarding_choose_api_onboarding_choose_post: {
+		parameters: {
+			query?: never;
+			header?: never;
+			path?: never;
+			cookie?: never;
+		};
+		requestBody: {
+			content: {
+				'application/json': components['schemas']['ChoosePosterRequest'];
+			};
+		};
+		responses: {
+			/** @description Successful Response */
+			200: {
+				headers: {
+					[name: string]: unknown;
+				};
+				content: {
+					'application/json': unknown;
+				};
+			};
+			/** @description Validation Error */
+			422: {
+				headers: {
+					[name: string]: unknown;
+				};
+				content: {
+					'application/json': components['schemas']['HTTPValidationError'];
+				};
+			};
+		};
+	};
 	onboarding_complete_api_onboarding_complete_post: {
 		parameters: {
 			query?: never;
@@ -9879,90 +9881,6 @@ export interface operations {
 				};
 				content: {
 					'application/json': unknown;
-				};
-			};
-		};
-	};
-	taste_test_movies_api_onboarding_taste_test_movies_get: {
-		parameters: {
-			query?: never;
-			header?: never;
-			path?: never;
-			cookie?: never;
-		};
-		requestBody?: never;
-		responses: {
-			/** @description Successful Response */
-			200: {
-				headers: {
-					[name: string]: unknown;
-				};
-				content: {
-					'application/json': unknown;
-				};
-			};
-		};
-	};
-	taste_test_poster_api_onboarding_taste_test_posters__file__get: {
-		parameters: {
-			query?: never;
-			header?: never;
-			path: {
-				file: string;
-			};
-			cookie?: never;
-		};
-		requestBody?: never;
-		responses: {
-			/** @description Successful Response */
-			200: {
-				headers: {
-					[name: string]: unknown;
-				};
-				content: {
-					'application/json': unknown;
-				};
-			};
-			/** @description Validation Error */
-			422: {
-				headers: {
-					[name: string]: unknown;
-				};
-				content: {
-					'application/json': components['schemas']['HTTPValidationError'];
-				};
-			};
-		};
-	};
-	taste_test_rank_api_onboarding_taste_test_rank_post: {
-		parameters: {
-			query?: never;
-			header?: never;
-			path?: never;
-			cookie?: never;
-		};
-		requestBody: {
-			content: {
-				'application/json': components['schemas']['TasteTestRankRequest'];
-			};
-		};
-		responses: {
-			/** @description Successful Response */
-			200: {
-				headers: {
-					[name: string]: unknown;
-				};
-				content: {
-					'application/json': unknown;
-				};
-			};
-			/** @description Validation Error */
-			422: {
-				headers: {
-					[name: string]: unknown;
-				};
-				content: {
-					'application/json': components['schemas']['HTTPValidationError'];
 				};
 			};
 		};
@@ -11530,101 +11448,6 @@ export interface operations {
 			};
 		};
 	};
-	retrain_learned_head_api_taste_head_retrain_post: {
-		parameters: {
-			query?: {
-				library?: string;
-			};
-			header?: never;
-			path?: never;
-			cookie?: never;
-		};
-		requestBody?: never;
-		responses: {
-			/** @description Successful Response */
-			202: {
-				headers: {
-					[name: string]: unknown;
-				};
-				content: {
-					'application/json': components['schemas']['JobSubmissionResponse'];
-				};
-			};
-			/** @description Validation Error */
-			422: {
-				headers: {
-					[name: string]: unknown;
-				};
-				content: {
-					'application/json': components['schemas']['HTTPValidationError'];
-				};
-			};
-		};
-	};
-	list_learned_heads_api_taste_heads_get: {
-		parameters: {
-			query?: {
-				library?: string;
-			};
-			header?: never;
-			path?: never;
-			cookie?: never;
-		};
-		requestBody?: never;
-		responses: {
-			/** @description Successful Response */
-			200: {
-				headers: {
-					[name: string]: unknown;
-				};
-				content: {
-					'application/json': unknown;
-				};
-			};
-			/** @description Validation Error */
-			422: {
-				headers: {
-					[name: string]: unknown;
-				};
-				content: {
-					'application/json': components['schemas']['HTTPValidationError'];
-				};
-			};
-		};
-	};
-	get_learned_head_api_taste_heads__artifact_id__get: {
-		parameters: {
-			query?: {
-				library?: string;
-			};
-			header?: never;
-			path: {
-				artifact_id: string;
-			};
-			cookie?: never;
-		};
-		requestBody?: never;
-		responses: {
-			/** @description Successful Response */
-			200: {
-				headers: {
-					[name: string]: unknown;
-				};
-				content: {
-					'application/json': unknown;
-				};
-			};
-			/** @description Validation Error */
-			422: {
-				headers: {
-					[name: string]: unknown;
-				};
-				content: {
-					'application/json': components['schemas']['HTTPValidationError'];
-				};
-			};
-		};
-	};
 	get_taste_map_api_taste_map_get: {
 		parameters: {
 			query?: {
@@ -11752,6 +11575,101 @@ export interface operations {
 		};
 	};
 	list_taste_profile_exemplars_api_taste_profiles__artifact_id__exemplars_get: {
+		parameters: {
+			query?: {
+				library?: string;
+			};
+			header?: never;
+			path: {
+				artifact_id: string;
+			};
+			cookie?: never;
+		};
+		requestBody?: never;
+		responses: {
+			/** @description Successful Response */
+			200: {
+				headers: {
+					[name: string]: unknown;
+				};
+				content: {
+					'application/json': unknown;
+				};
+			};
+			/** @description Validation Error */
+			422: {
+				headers: {
+					[name: string]: unknown;
+				};
+				content: {
+					'application/json': components['schemas']['HTTPValidationError'];
+				};
+			};
+		};
+	};
+	retrain_ranking_residual_api_taste_residual_retrain_post: {
+		parameters: {
+			query?: {
+				library?: string;
+			};
+			header?: never;
+			path?: never;
+			cookie?: never;
+		};
+		requestBody?: never;
+		responses: {
+			/** @description Successful Response */
+			202: {
+				headers: {
+					[name: string]: unknown;
+				};
+				content: {
+					'application/json': components['schemas']['JobSubmissionResponse'];
+				};
+			};
+			/** @description Validation Error */
+			422: {
+				headers: {
+					[name: string]: unknown;
+				};
+				content: {
+					'application/json': components['schemas']['HTTPValidationError'];
+				};
+			};
+		};
+	};
+	list_ranking_residuals_api_taste_residuals_get: {
+		parameters: {
+			query?: {
+				library?: string;
+			};
+			header?: never;
+			path?: never;
+			cookie?: never;
+		};
+		requestBody?: never;
+		responses: {
+			/** @description Successful Response */
+			200: {
+				headers: {
+					[name: string]: unknown;
+				};
+				content: {
+					'application/json': unknown;
+				};
+			};
+			/** @description Validation Error */
+			422: {
+				headers: {
+					[name: string]: unknown;
+				};
+				content: {
+					'application/json': components['schemas']['HTTPValidationError'];
+				};
+			};
+		};
+	};
+	get_ranking_residual_api_taste_residuals__artifact_id__get: {
 		parameters: {
 			query?: {
 				library?: string;

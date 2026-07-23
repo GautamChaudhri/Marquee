@@ -1145,7 +1145,7 @@ export interface FeedbackResult {
 	negatives_added?: string[];
 	remapped_to: string | null;
 	gate_override: { reason: string; count_at_current_threshold: number } | null;
-	head: { retrained: boolean; reason?: string } & Record<string, unknown>;
+	residual: { retrained: boolean; reason?: string } & Record<string, unknown>;
 	deployment_job: {
 		job_id: string;
 		disposition: string;
@@ -1155,35 +1155,28 @@ export interface FeedbackResult {
 	} | null;
 }
 
-// ── Onboarding (cold-start "Rank Test") ─────────────────────────────────────
+// ── Onboarding (canonical taste collection) ──────────────────────────────────
 export interface OnboardingStatus {
-	profile_present: boolean;
-	head_active: boolean;
-	taste_test_available: boolean;
-	needs_onboarding: boolean;
-	ranked: number;
-	min: number;
-	goal: number;
-	max: number;
-	can_complete: boolean;
-	at_goal: boolean;
-	at_max: boolean;
-	complete: boolean;
-	path: 'library' | 'taste_test' | null;
-	started_at: string | null;
-}
-
-export interface TasteTestPoster {
-	file: string;
-	url: string;
-}
-
-export interface TasteTestMovie {
-	id: string;
-	title: string | null;
-	year: number | null;
-	genres: string[];
-	posters: TasteTestPoster[];
+	state: 'collecting' | 'eligible' | 'building' | 'personalized' | 'degraded';
+	active_positive_subjects: number;
+	active_negative_subjects: number;
+	pending_positive_subjects: number;
+	revision: string;
+	thresholds: { required: number; encouraged: number; strong_target: number };
+	build_revision: string | null;
+	build_job_id: string | null;
+	profile_generations: Record<string, number>;
+	consumer_reloaded: boolean;
+	next_action: string;
+	failure: Record<string, unknown> | null;
+	active_jobs: Array<{
+		job_id: string;
+		job_type: string;
+		phase: string;
+		subject_kind: string | null;
+		subject_reference: string | null;
+		activity_link: string;
+	}>;
 }
 
 /** One rankable unit in the sortable ranking list — a whole design stack (its
@@ -1197,7 +1190,7 @@ export interface RankItem {
 	filenames: string[];
 }
 
-// ── Taste / Key Art Engine status (GET /taste/status) ───────────────────────
+// ── Taste / bounded residual status (GET /taste/status) ─────────────────────
 export interface PublicationAuthorityStatus {
 	available: boolean;
 	authority: 'ml_active_publications';
@@ -1219,19 +1212,18 @@ export interface TasteStatus {
 		unique_movies?: number;
 		duplicate_groups?: number;
 	};
-	learned_head: {
+	ranking_residual: {
 		active: boolean;
-		/** Training mode: 'pairwise' counts within-movie preference pairs;
-		 *  'pointwise' counts approve/override labels. Drives the unit label. */
-		mode?: 'pairwise' | 'pointwise';
-		n_samples: number;
+		mode: 'bounded_residual';
+		subjects: number;
+		pairs: number;
 		activation: {
-			movies: { have: number; need: number };
-			labels: { have: number; need: number };
+			subjects: { have: number; need: number };
+			pairs: { have: number; need: number };
 		};
 	};
 	active_profile?: ManagedArtifactSummary | null;
-	active_head?: ManagedArtifactSummary | null;
+	active_residual?: ManagedArtifactSummary | null;
 	publication_authority?: PublicationAuthorityStatus;
 	gate_alerts: { gate: string; overrides: number; threshold?: number | string }[];
 	rebuild?: Record<string, unknown>;
@@ -1298,7 +1290,7 @@ export interface ManagedArtifactMovie {
 
 export interface ManagedArtifactSummary {
 	id: string;
-	kind: 'taste_profile' | 'learned_head';
+	kind: 'taste_profile' | 'ranking_residual';
 	status: 'active' | 'archived';
 	label: string;
 	model_name: string | null;
@@ -1320,6 +1312,15 @@ export interface ManagedArtifactSummary {
 		sample_count?: number;
 		train_accuracy?: number;
 		top_features?: { name: string; weight: number }[];
+		alpha?: number;
+		delta_max?: number;
+		evaluation?: {
+			baseline_accuracy: number;
+			residual_accuracy: number;
+			improvement: number;
+			pair_count: number;
+			subject_count: number;
+		};
 	};
 }
 
@@ -1334,7 +1335,7 @@ export interface ManagedProfileDetail extends ManagedArtifactSummary {
 	negative_exemplars: string[];
 }
 
-export interface ManagedHeadDetail extends ManagedArtifactSummary {
+export interface ManagedResidualDetail extends ManagedArtifactSummary {
 	movies: ManagedArtifactMovie[];
 }
 
@@ -1343,8 +1344,8 @@ export interface ManagedProfilesResponse {
 	publication_authority?: PublicationAuthorityStatus;
 }
 
-export interface ManagedHeadsResponse {
-	heads: ManagedArtifactSummary[];
+export interface ManagedResidualsResponse {
+	residuals: ManagedArtifactSummary[];
 	publication_authority?: PublicationAuthorityStatus;
 }
 

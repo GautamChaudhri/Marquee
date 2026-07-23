@@ -27,6 +27,7 @@ Stage order (cheapest signal first — see design 04 §2):
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import math
@@ -583,6 +584,37 @@ class SyncOutcome:
     counts: dict[str, int] = field(default_factory=dict)
 
 
+def _neutral_candidate_order(
+    records: list[CandidateScore],
+    *,
+    movie_title: str,
+    candidate_map: dict[str, PosterCandidate],
+) -> list[CandidateScore]:
+    """Stable, source-diverse ordering with no quality or taste score."""
+    groups: dict[str, list[CandidateScore]] = {}
+    for record in records:
+        candidate = candidate_map[record.orig_filename]
+        source_family = candidate.language or "language-neutral"
+        groups.setdefault(source_family, []).append(record)
+    for source_family, members in groups.items():
+        members.sort(
+            key=lambda record: hashlib.sha256(
+                f"{movie_title}\0{source_family}\0{record.orig_filename}".encode()
+            ).digest()
+        )
+    ordered: list[CandidateScore] = []
+    families = sorted(groups)
+    while any(groups.values()):
+        for family in families:
+            if groups[family]:
+                ordered.append(groups[family].pop(0))
+    for rank, record in enumerate(ordered, start=1):
+        record.rank = rank
+        record.final_score = None
+        record.contributions = {}
+    return ordered
+
+
 def _stack_signal_value(record: CandidateScore, image_path: Path, dino_vector):
     """The per-poster similarity value the stacker groups on (STACK_SIGNAL).
 
@@ -625,7 +657,8 @@ def run_sync_stages(
     progress: ProgressCallback | None = None,
     should_cancel: ShouldCancel | None = None,
     ocr_gate: OcrGateContext | None = None,
-    learned_head_path: Path | None = None,
+    residual_path: Path | None = None,
+    personalization_mode: str = "personalized",
 ) -> SyncOutcome:
     """All CPU/GPU-bound stages, run off the event loop via asyncio.to_thread."""
 
@@ -738,7 +771,9 @@ def run_sync_stages(
     for path in styled:
         check_cancelled()
         record = records[path.name]
-        decision = gate.evaluate_style(record.features)
+        decision = gate.evaluate_style(
+            record.features, personalization_mode=personalization_mode
+        )
         if decision.passed:
             style_survivors.append(path)
             continue
@@ -815,7 +850,7 @@ def run_sync_stages(
     # Stage 2b: perceptual dedup on OCR survivors. When STACK_ENABLED this
     # removal stage is replaced by the stack layer (same-design variants are
     # grouped and ranked, not deleted), so it is skipped entirely.
-    if pipeline_settings.STACK_ENABLED:
+    if pipeline_settings.STACK_ENABLED and personalization_mode == "personalized":
         outcome.counts["phash_survivors"] = len(ocr_survivors)
     else:
         stage_started = _stage_start("phash", total=len(ocr_survivors), progress=progress)
@@ -827,7 +862,11 @@ def run_sync_stages(
                 1 if r.title_bbox is not None else 0,
                 -len(r.residual_boxes),
                 1 if r.image_path.name == primary_name else 0,
-                records[r.image_path.name].features.knn_sim,
+                (
+                    records[r.image_path.name].features.knn_sim
+                    if personalization_mode == "personalized"
+                    else 0.0
+                ),
             )
             for r in ocr_survivors
             if records[r.image_path.name].features is not None
@@ -860,7 +899,11 @@ def run_sync_stages(
 
     # Stage 4b: detail features + the remaining hard gate.
     stage_started = _stage_start("detail-features", total=len(ocr_survivors), progress=progress)
-    diagnostic_scorer = select_scorer(artifact_path=learned_head_path)
+    diagnostic_scorer = (
+        select_scorer(artifact_path=residual_path)
+        if personalization_mode == "personalized"
+        else None
+    )
     passed: list[CandidateScore] = []
     detail_items = [(records[r.image_path.name].features, r) for r in ocr_survivors]
     # The stacker reuses the DINOv2 vectors computed here as its grouping
@@ -885,7 +928,8 @@ def run_sync_stages(
             logger.error("FEATURE ERROR | file=%s | error=%s", filename, detail_result)
             continue
         record.features = detail_result
-        _, record.contributions = diagnostic_scorer.score(record.features)
+        if diagnostic_scorer is not None:
+            _, record.contributions = diagnostic_scorer.score(record.features)
         _log_detail_features(feature_extractor, record)
 
         record.stage_reached = "gate"
@@ -893,7 +937,7 @@ def run_sync_stages(
         record.gate_decision = "passed" if decision.passed else "gated"
         record.gate_reason = decision.reason
         if decision.passed:
-            if pipeline_settings.STACK_ENABLED:
+            if pipeline_settings.STACK_ENABLED and personalization_mode == "personalized":
                 record.embedding = _stack_signal_value(
                     record, ocr_result.image_path, dino_vectors.get(index)
                 )
@@ -920,8 +964,24 @@ def run_sync_stages(
         logger.warning("RUN FLAGGED | all candidates removed before ranking")
         return outcome
 
+    if personalization_mode == "collecting":
+        stage_started = _stage_start("neutral-order", total=len(passed), progress=progress)
+        outcome.ranked = _neutral_candidate_order(
+            passed, movie_title=movie_title, candidate_map=candidate_map
+        )
+        outcome.counts["ranked"] = len(outcome.ranked)
+        _stage_done(
+            "neutral-order",
+            stage_started,
+            timings,
+            survivors=len(outcome.ranked),
+            progress=progress,
+        )
+        return outcome
+
     # Stage 6: within-movie ranking.
     stage_started = _stage_start("rank", total=len(passed), progress=progress)
+    assert diagnostic_scorer is not None
     logger.info("RANK | scorer=%s", diagnostic_scorer.name)
     check_cancelled()
     ranked = diagnostic_scorer.rank(passed)

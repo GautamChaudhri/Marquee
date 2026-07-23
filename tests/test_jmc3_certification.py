@@ -70,7 +70,7 @@ def test_only_system_noop_remains_production_enabled() -> None:
         "dovi_publish",
         "dovi_restore",
         "dovi_discard",
-        "learned_head_train",
+        "ranking_residual_train",
         "poster_rescan",
         "taste_map",
         "taste_enrich",

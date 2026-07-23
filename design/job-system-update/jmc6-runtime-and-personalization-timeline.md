@@ -515,3 +515,343 @@ a progress callback; only shared runner-host hardening may incidentally affect i
 - **Exact next action:** make timestamped local recovery branch/tag and verified repository-external bundle
   from this certified pre-squash history; then soft-reset through RTK to the exact base and create the one
   configured-author final commit. This is the final timeline edit before tagging.
+
+## JMC6J Phase J0 — predecessor verification and personalization freeze
+
+### Exact starting state
+
+- Annotated `jmc6i-complete` resolves to compact configured-author commit
+  `4b36853ba9d3acba21b5fca8076df02a55dc6b7f`, tree
+  `db5a52c33e0c28dfe8622dfe0ddcda3ce4cd8638`, with sole parent/plan base
+  `642c12a7b88b1f638fb998f4dc6789ddaf43ec26`. `HEAD`, local `job-manager`, and
+  `origin/job-manager` were identical and the worktree was clean; the JMC6J range was empty and
+  unpushed. Configured author/committer is Gautam Chaudhri
+  `<gautam.chaudhri@gmail.com>`.
+- Recovery branch/tag `recovery/jmc6i-20260722T214929Z` resolve to certified pre-squash commit
+  `17bfcdaf9708950e4d423a376e43e3a67875faab`, whose tree is byte-identical to the compact tree.
+  `/tmp/marquee-jmc6i-20260722T214929Z.bundle` verifies as complete SHA-1 history containing both
+  recovery refs. The compact commit is annotated by local tag `jmc6i-complete`.
+- The complete JMC6I handoff was reverified from this ledger and current source: the 58-test
+  process-death/progress/executable-certification matrix, real contained poster CPU smoke, two real
+  taste smokes, final enabled-definition executable report, and all eleven reserved JMC6J hashes.
+  Every reserved hash is still byte-identical to I0.
+- Required JMC6J documents were read in full. Serena MCP, ByteRover MCP, and RTK are operational.
+  The ByteRover CLI installation lacks the skill's optional `swarm query` subcommand; the required
+  ByteRover MCP query succeeded and supplied the repository context instead.
+
+### Owned baseline environment and gates
+
+- Owned disposable PostgreSQL 18.3 cluster is rooted at
+  `/tmp/marquee-jmc6j-pg.XBDwYR`, listening only on `127.0.0.1:55469` with its Unix socket confined
+  to that directory. Database `marquee_test` migrated cleanly from `0001_jmc1` through sole head
+  `0012_jmc6h`. No operator database, library, schedule, remote, or production service was touched.
+- Complete backend baseline: **1358 passed, 0 failed, 3 skipped** in 112.32s. The skips are exactly
+  the existing opt-in JMC6H live poster/taste smokes; no skip or xfail was added. Ruff is clean.
+  OpenAPI is current at 191 paths, SHA-256
+  `47045ef0e90aad976566c341bf3e817530bc533fe8756e978e11dbe92ff2be55`; generated TypeScript
+  regeneration is clean, SHA-256
+  `803b66976c4aa1f0fd6dd006c1f598a395a85bce510996a73d5975edad8a4983`.
+- Frontend baseline: Svelte check 0 errors/0 warnings; Prettier/ESLint clean; Vitest **112/112**;
+  production build green; hermetic Chromium Playwright/axe **11/11**. `git diff --check` was clean.
+
+### Frozen legacy authorities and intentional-red contracts
+
+- Fresh poster execution unconditionally constructs and preflights `NumpyTasteStore(profile.npz)`
+  and supplies `head.npz`; it cannot enter honest profile-independent collection mode.
+- `onboarding_start` copies a starter profile and races a taste rebuild with poster analysis.
+  `onboarding_complete` submits both taste rebuild and `learned_head_train`, then writes a mutable
+  JSON completion flag without waiting for publication or consumer reload.
+- `onboarding/service.py` and `pipeline_config.py` own JSON state, starter/taste-test files,
+  thresholds 15/25/40, filesystem profile/head readiness, mutable training directories, and taste
+  test JSONL writes. `feedback.py` writes JSONL labels and directly mutates exemplar directories.
+- `select_scorer()` chooses replacement `LearnedScorer` for `learned`/compatible `auto`; the v4
+  inversion builder deliberately emits no pair for baseline agreement. Movie and TV profile/head
+  namespaces use configured live paths despite canonical `MlActivePublication` availability.
+- Added five intentional-red contracts for fresh profile-free execution, onboarding build/head
+  race and mutable completion, replacement scorer retirement, agreement evidence, and publication-
+  derived readiness. Each must fail on its asserted legacy behavior before J1/J2/J5 makes it green.
+- Focused result: **5 failed**, exactly the five intentional reds. Complete comparison:
+  **1358 passed, 5 failed, 3 sanctioned opt-in live skips** in 110.04s; there are no other
+  regressions or harness failures. Focused Ruff and `git diff --check` are clean.
+- **Current phase:** J0 checkpoint ready for the configured-author commit. J1 will add the canonical
+  exemplar/event/readiness authority, retained-asset boundary, and forward migration.
+- **Exact next actions:** commit J0; define constrained immutable `TasteExemplar` and
+  `PosterPreferenceEvent` models plus revision/build/reload lineage; implement confined pinned-asset
+  promotion and database-derived readiness; certify concurrent selection, content/subject dedupe,
+  revocation/undo, retention, traversal/checksum rejection, and restart derivation.
+- **Deviation:** none in product scope. The expired JMC6I disposable database was unavailable, so a
+  new owned JMC6J cluster was created instead of touching an operator database.
+
+### J0 committed state
+
+- Configured-author phase commit `cb14b512824aa90a23a50a9f300b0cc9f01d1f06`
+  (`freeze personalization defects`), tree `f2e109aee93ff1c7c2e2d4dcba83f887a08cc66f`, sole parent
+  `jmc6i-complete` (`4b36853b…`). Worktree was clean after commit.
+- **Current phase:** J1 — canonical exemplar, preference-event, retention, and readiness authority.
+
+## Phase J1 checkpoint — canonical taste evidence and derived readiness
+
+- Added forward migration `0013_jmc6j` and typed `PosterPreferenceEvent`, `TasteExemplar`, and
+  `TasteProfileRevision` authorities. Events are append-only/idempotent and bound exposure,
+  presentation order, reproducible training context, confidence, initiator, and supersession.
+  Exemplars preserve subject snapshots independent of subject deletion and enforce bounded
+  namespace/polarity/lifecycle/weight vocabularies.
+- PostgreSQL partial unique indexes enforce one active positive per namespace/subject and reject
+  duplicate active positive content by checksum. Positive evidence cannot be created without a
+  canonical deployment job, and active evidence cannot exist without a retained artifact.
+- The existing confined artifact service remains the only byte boundary. It now has one registered
+  `taste_exemplar` image kind and a restricted `pinned` retention class that only that kind may use.
+  Promotion verifies the source artifact, copies and rehashes bytes through `FilesystemBoundary`,
+  requires checksum identity, stores only a confined key, and leaves `expires_at` null. Ordinary
+  artifact expiry therefore cannot claim active exemplar bytes.
+- `taste_preferences.py` implements bounded event append, pending positive creation, exact-byte
+  pinning, post-deploy activation, append-only undo/revocation, deterministic evidence revision
+  snapshots, 50/75/100 threshold validation, and readiness reconstructed from active evidence,
+  frozen profile revision, both canonical publications, and exact consumer-reload checksums. Count
+  alone yields `eligible`, never `personalized`.
+- Focused authority/artifact/model gate: **34 passed**; focused J1 authority suite **7/7** covers
+  fresh restart derivation, idempotency/exposure bounds, required deployment, exact pinned bytes,
+  failed deploy, active subject/content dedupe, and undo history. Schema/reset/backup correction set
+  is **18/18**; Alembic upgraded `0012_jmc6h` → `0013_jmc6j`, `alembic check` reports no operations,
+  and schema markers are Marquee
+  `a2695c191f2f0b65868c53904a835bc9268f0f693fb232d68eefc86fae17fe78` plus unchanged PgQueuer
+  `19377622f52c906a7a5cb6e68b4db6d30e7cc9534aac933c156c33666f4eb21a`.
+- Complete backend comparison: **1365 passed, exactly 5 J0 intentional reds, 3 sanctioned opt-in
+  live skips** in 110.00s. Ruff, OpenAPI 191-path check, generated TypeScript drift, frontend check,
+  lint, Vitest **112/112**, build, and `git diff --check` pass. Full hermetic Playwright/axe is
+  **11/11**.
+- A Playwright accessibility scan intermittently sampled the layout-wide 200ms entrance animation
+  at partial opacity, producing false contrast calculations despite a compliant final frame. The
+  test now selects reduced-motion before navigation and deterministically scans final-state colors;
+  focused **2/2** and full **11/11** pass. No visual styling or product behavior changed.
+- **Current phase:** J1 checkpoint ready for configured-author commit. J2 begins immediately with
+  server-derived collecting mode, profile-independent preflight/gates, and neutral ordering.
+- **Exact next actions:** commit J1; split feature extraction/gate capabilities; make contained
+  poster execution profile/head-independent in collecting mode; preserve objective validation,
+  dedupe, OCR/title and quality gates; emit no scorer/recommendation/auto-deploy; certify artifact
+  invariance, provider permutation, rejection/no-survivor, cancellation, timeout, and refresh.
+- **Pending operator work:** none. No operator data, schedule, remote, or production service changed.
+
+### J1 committed state
+
+- Configured-author phase commit `af7d1675e3020081e9a002ba656340dca40cc2a1`
+  (`add canonical taste authority`) is the sole child of J0. J2 began from that clean tree.
+
+## Phase J2 checkpoint — honest profile-independent collection
+
+- Configured-author phase commit `19b578558d825d6e1eb85eb4ccddaaa5f987dd2b`
+  (`add honest cold start`), tree `cf00b4c6395b2016e816a7b3102d79412f0563b1`, sole parent
+  `af7d1675e3020081e9a002ba656340dca40cc2a1`.
+- The coordinator now derives `collecting` versus `personalized` exclusively from the canonical
+  active taste-profile publication. In collecting mode it does not stage a learned head, and the
+  contained runner constructs a profile-free extractor. A personalized manifest without its
+  staged profile is an explicit readiness/protocol failure rather than silent fallback.
+- Feature preflight is capability-split. Collecting mode retains decode, CLIP aesthetic,
+  face/person/composition/quality, resolution, exact/perceptual dedupe, and OCR/title work while
+  disabling taste k-NN, DINO k-NN, taste typicality, zero-shot style axes, off-style gating, taste
+  rescue, scorer selection, stacking/ranking, recommendation, and ranked-output auto-selection.
+- Objective survivors receive deterministic SHA-256 subject/candidate ordering with round-robin
+  language/source-family interleaving. Their final score and contributions remain null/empty.
+  Payloads and runner summaries explicitly report `personalization_mode=collecting`, null
+  recommendation/scorer, and plain-language choice guidance, including the no-survivor path.
+- Focused J2 pipeline/runner gate: **103 passed**. New tests prove no taste store in collecting
+  mode, omission of the taste floor/rescue, provider permutation invariance, source-family
+  interleaving, and invariance to swapped taste-like features and prior scores. The first J0
+  contract is now green.
+- Complete backend comparison after the compatibility correction: **1367 passed**, exactly the
+  four intentional contracts assigned to J3/J5/J6 remain red, and the same **3** sanctioned
+  opt-in live capability tests are skipped; no other test failed. Ruff is clean. Alembic sole head
+  remains `0013_jmc6j` and autogenerate reports no operations. OpenAPI remains current at 191 paths
+  and generated TypeScript regeneration is clean.
+- Frontend gates: Svelte check 0/0, Prettier/ESLint clean, Vitest **112/112**, production build
+  green, and hermetic Chromium Playwright/axe **11/11**. `git diff --check` is clean.
+- Existing controlled-runner certification fixtures predate the mode field. The result consumer
+  treats a legacy fixture carrying a recommendation as personalized; real JMC6J runner summaries
+  always carry the server-derived mode. This preserves executable JMC6I evidence without allowing
+  a client to choose execution mode.
+- **Current phase:** J3 — canonical choose/deploy/exemplar transaction, database-backed readiness
+  APIs, guided 50/75/100 UI, and revision-keyed movie/TV profile activation.
+- **Exact next actions:** replace mutable onboarding completion with analyze/choose/deploy/build job
+  recovery; promote a pending exemplar only in the fenced successful deployment transaction;
+  expose bounded readiness/discovery/history commands; build and validate both profile namespaces
+  from the frozen revision and require real consumer reload before personalized readiness.
+- **Pending operator work:** none. No operator data, schedule, remote, or production service changed.
+
+### J3 committed state
+
+- Configured-author phase commit `30bf7183b240d3f4b4b4d1780512889ba7251327`
+  (`connect taste onboarding`), tree `868382270c5b0e80e8cfb388e2cd97436359d4fe`, sole parent
+  `19b578558d825d6e1eb85eb4ccddaaa5f987dd2b`.
+
+## Phase J3 checkpoint — canonical guided choice, deploy, and profile activation
+
+- Onboarding status is now reconstructed from canonical database evidence and bounded active jobs.
+  Start discovers one unconfirmed downloaded movie and submits a normal poster-analysis job; it no
+  longer creates starter profiles, mutable batches, or direct rebuilds.
+- `POST /api/onboarding/choose` validates the movie, canonical pipeline run, exposed candidate,
+  evidence artifact, presentation order, and idempotency key before appending the preference event,
+  creating a pending exemplar, and submitting the ordinary fenced poster-deploy job.
+- A successful deployment transaction pins the exact deployed candidate bytes, activates its
+  pending exemplar, derives readiness, and schedules revision-keyed movie and TV profile builds at
+  the 50-example threshold. Failed or superseded deployment never becomes taste evidence.
+- Profile builds consume the exact frozen revision, verify and stage its pinned bytes, publish via
+  the existing immutable/CAS authority, validate through the production loader, and record each
+  consumer reload checksum. Personalized readiness requires matching movie and TV publications and
+  reload evidence; partial completion remains explicitly building or degraded.
+- The guided UI now explains the 50/75/100 journey, presents explicit choice/deployment language,
+  links normal Activity jobs, and never claims personalization from a counter alone. The movies
+  pipeline banner consumes the same canonical readiness projection.
+- Focused onboarding/deploy/profile gate: **33 passed**. Complete backend comparison: **1372
+  passed**, exactly the three J5/J6 contract-freeze tests remain red, and **3** sanctioned opt-in
+  live capability tests are skipped. Ruff is clean; Alembic sole head is `0013_jmc6j` and
+  autogenerate reports no operations.
+- OpenAPI now contains 192 paths. Contract and generated TypeScript are deterministically stable at
+  SHA-256 `8a2ad1b50c54f863c3414f443160f68d2772f4f3d815bb7de288a5d9f83509eb` and
+  `cc2817da7650158c0bfbfe5417395ddd47d3150b797d4020a752f4b0c3f63f8c`. Svelte check 0/0,
+  Prettier/ESLint, Vitest **112/112**, production build, and Chromium Playwright/axe **11/11** pass.
+- The original disposable PostgreSQL process vanished while retaining an environment-owned SysV
+  shared-memory attachment. It was preserved; certification moved to fresh owned cluster
+  `/tmp/marquee-jmc6j-pg2.pKpFxC` on port 55471. Alembic plus the repository PgQueuer bootstrap
+  restored full certification; the isolated offline-restore test is green.
+- **Current phase:** J4 — canonical continuing feedback, namespace overlays, coalesced rebuilds,
+  and append-only undo.
+- **Exact next actions:** route normal explicit approvals/rejections through the canonical event and
+  exemplar services; exclude auto-picks; build global plus movie/TV overlays; coalesce rebuilds at
+  the configured threshold; preserve event history and revoke evidence on undo; certify restart,
+  overlap, deletion, retention, and concurrent feedback behavior.
+- **Pending operator work:** none. No operator data, schedule, remote, or production service changed.
+
+### J4 committed state
+
+- Configured-author phase commit `b1515cf85c120f7fd1eab3f5e5c0b946d77df940`
+  (`continue canonical taste learning`), tree `02c51725d6a71d354a0b1e4f6211a4994f510d57`, sole
+  parent `30bf7183b240d3f4b4b4d1780512889ba7251327`.
+
+## Phase J4 checkpoint — continuing canonical profile learning
+
+- Normal approve, override, rank, reject/hate, and undo flows now append bounded canonical
+  `PosterPreferenceEvent` evidence with exact exposure/order, baseline context, subject snapshot,
+  candidate artifact lineage, idempotency, confidence, and initiator. Merely producing an automatic
+  pick creates no event or exemplar.
+- Explicit deployed selections create positive namespace evidence only after ordinary fenced deploy
+  validation. Overrides preserve the passed-over baseline candidate as comparative event evidence
+  without fabricating a negative exemplar. Explicit hates pin exact candidate bytes immediately as
+  negative evidence; duplicate content and per-subject negative growth are bounded.
+- A later deployed selection atomically supersedes the prior active positive for that namespace and
+  subject. Duplicate positive content is marked invalid without converting a successful poster
+  deployment into a failed mutation.
+- Initial profile revisions remain global-only. Later immutable revisions contain all active
+  evidence, while each builder deterministically resolves `global + movies` or `global + tv` and
+  ignores the opposite overlay. Frozen revisions retain their exact bytes across later undo.
+- Rebuild scheduling uses revision-derived idempotency and a bounded symmetric-difference threshold,
+  so additions and revocations coalesce while an explicit force remains available. One active
+  publication survives candidate failure or insufficient change.
+- Undo appends canonical undo events for the interaction and explicit-hate children, revokes their
+  exemplars, clears the run review projection, and retains the immutable source history.
+- Focused feedback/profile/deploy gate: **60 passed**. Complete backend comparison: **1377 passed**,
+  exactly the three J5/J6 contract-freeze tests remain red, and **3** sanctioned live capability
+  tests are skipped. Ruff and `git diff --check` are clean; Alembic `0013_jmc6j` has no drift.
+- Frontend gates remain green: Svelte 0/0, Prettier/ESLint, Vitest **112/112**, production build,
+  and Chromium Playwright/axe **11/11**.
+- **Current phase:** J5 — replace the learned replacement scorer with namespace-specific bounded
+  residual evidence, training, held-out evaluation, immutable publication, and compatible scoring.
+- **Exact next actions:** retire `LearnedScorer`; derive natural pairwise evidence including baseline
+  agreement; implement subject-held-out candidate evaluation against the exact baseline; publish a
+  version-bound residual artifact only on improvement; apply bounded logit correction after hard
+  gates; expose explanations/no-change/rollback evidence and coalesced successor scheduling.
+- **Pending operator work:** none. No operator data, schedule, remote, or production service changed.
+
+### J5 committed state
+
+- Configured-author phase commit `a5cfbd074adcb5c261094813eb40ff4cf4176556`
+  (`replace learned ranking with residual`), tree `86aa019243e1a8bb0cb0fadd37caf3d217b3cc14`,
+  sole parent `b1515cf85c120f7fd1eab3f5e5c0b946d77df940`.
+
+## Phase J5 checkpoint — bounded residual preference learning
+
+- `WeightedScorer` remains the permanent baseline. The retired replacement scorer is absent from
+  selection; compatible artifacts apply `sigmoid(logit(baseline) + alpha * clip(delta))`, and any
+  missing/incompatible artifact yields the exact weighted baseline.
+- Canonical exposed-candidate events now produce subject-local natural pairs: rank and override are
+  strong, hate is explicit negative evidence, approval is weak agreement evidence, and neutral
+  onboarding, revoked, filtered, failed, unexposed, or feature-incomplete candidates contribute no
+  pair.
+- Training is deterministic and subject-held-out, requires at least 25 subjects and 200 pairs, and
+  publishes only when the candidate improves over the exact baseline/profile lineage. Insufficient
+  evidence or no improvement truthfully returns `no_change` and preserves the active artifact.
+- `ranking_residual_train` owns contained-runner cancellation/progress, frozen database evidence,
+  immutable artifact registration, fence validation, and CAS activation in
+  `ranking_residual:{library}`. Feedback coalesces successors at 10 subjects / 100 pairs.
+- Backend/API/UI job names, status, artifact catalogs, presenter copy, runner manifests, poster
+  staging, OpenAPI, and generated TypeScript now expose bounded residuals rather than learned heads.
+- Complete backend comparison: **1383 passed**, exactly the one J6 retirement contract remains red,
+  and the same **3** sanctioned opt-in live capability tests are skipped. Ruff, Alembic drift, and
+  `git diff --check` are clean.
+- OpenAPI remains 192 paths. Schema SHA-256 is
+  `86297f06f38679dc7e0b6c9e395e92fc4c2b4e6023c68042384e8da58ced9e2c`; generated TypeScript
+  SHA-256 is `30f2c9f687e4d68186f1900b1def1f60d62f46619f7a0dd9ff9b6a470d682d84`.
+  Svelte check is 0/0; Prettier/ESLint, Vitest **112/112**, production build, and Chromium
+  Playwright/axe **11/11** pass.
+- **Current phase:** J6 — retire every superseded file-backed authority and certify the complete
+  fresh-to-learned lifecycle, rollback, restart, retention, and backup/restore surface.
+- **Exact next actions:** remove JSON onboarding state, taste-test/starter-profile paths, JSONL
+  feedback and mutable training artifacts, replacement-head modules/settings/codecs; derive every
+  readiness projection from canonical database publications; add static reachability and complete
+  lifecycle certification; then run every final gate and perform the final-only squash protocol.
+- **Pending operator work:** none. No operator data, schedule, remote, or production service changed.
+
+### J6 committed state
+
+- Configured-author phase commit `615a64f214210947db41375c7eebaba9bb8198e2`
+  (`retire legacy taste authorities`), tree `7468407b75c205a739de081ac8683b3739ec1247`,
+  sole parent `a5cfbd074adcb5c261094813eb40ff4cf4176556`.
+
+## Phase J6 checkpoint — retired authorities and complete lifecycle certification
+
+- Removed the JSONL feedback store, mutable training/negative directories, learned replacement
+  head/trainer/evaluator/migration modules, seed-profile and bundled taste-test builders/resources,
+  their settings/codecs/routes/generated clients, and every live-path scorer fallback. Independent
+  production and frontend reachability scans are empty, and executable contract tests freeze the
+  absence of the retired modules, settings, API routes, and symbols.
+- Onboarding status and taste projections now derive only from canonical database events,
+  exemplars, immutable publications, and recorded consumer reloads. Undo remains append-only and
+  now marks source evidence revoked even when the source produced no exemplar row. Backups retain
+  canonical taste profiles and namespace residuals rather than mutable exemplar folders.
+- The fresh-to-learned executable matrix covers collecting-mode sync and neutral analysis, 49/50
+  readiness fencing, failed/duplicate deployment, exact-revision movie and TV profile builds,
+  validation/publication/reload, personalized consumption, ordinary positive/negative/rank/undo
+  evidence, separate movie/TV residual training, subject-held-out comparison, bounded activation,
+  no-change/incompatible preservation, rollback, cancellation, stale fencing, redelivery, SSE
+  reconnect/loss, API/worker/PostgreSQL recovery, retention, reset, and backup/offline restore.
+  The enabled-definition producer-to-consumer closure report is green.
+- Complete backend certification on the isolated disposable PostgreSQL 17 cluster and temporary
+  test data roots: **1353 passed**, with no failure or xfail. The only **3 skipped** nodes are the
+  unchanged operator-owned opt-in live taste/poster smokes requiring `MARQUEE_LIVE_SMOKE=1`; no
+  skip was added or hidden. Ruff and `git diff --check` are clean.
+- Alembic sole head/current is `0013_jmc6j`; autogenerate reports no operations. Migration SHA-256
+  is `a0963b5deaa412c63d692c797ed2a8ff915b49325b9dc3351ded380427b48815`.
+- Deterministic OpenAPI contains 189 paths after the three intentional taste-test retirements.
+  Schema SHA-256 is `9cce3b3dc8fe36c10dc17c00e20862c580e30e9a30e329483be55440e102fffe`;
+  generated TypeScript SHA-256 is
+  `d6624d4b17fc427bb7d83c7f6651ed17661510a8a4dcd56e7e2c3c2e85eb91ff`.
+- Frontend certification: Svelte check **0 errors/0 warnings**, Prettier/ESLint clean, production
+  build green, Vitest **112/112**, and hermetic Chromium Playwright/axe **11/11**.
+- Phase range after exact `jmc6i-complete` is linear, configured-author-only, merge-free, and not
+  contained by a remote branch: J0 `cb14b512824aa90a23a50a9f300b0cc9f01d1f06`, J1
+  `af7d1675e3020081e9a002ba656340dca40cc2a1`, J2
+  `19b578558d825d6e1eb85eb4ccddaaa5f987dd2b`, J3
+  `30bf7183b240d3f4b4b4d1780512889ba7251327`, J4
+  `b1515cf85c120f7fd1eab3f5e5c0b946d77df940`, J5
+  `a5cfbd074adcb5c261094813eb40ff4cf4176556`, and J6
+  `615a64f214210947db41375c7eebaba9bb8198e2`.
+- **Deviation:** three pre-existing live capability smokes remain unavailable because operator
+  media/model credentials and `MARQUEE_LIVE_SMOKE=1` are intentionally absent. All hermetic
+  substitutes and product-definition closure nodes pass; production activation was not attempted.
+- **Current phase:** final-only history compaction.
+- **Exact next actions:** commit this certification ledger; create timestamped recovery branch/tag
+  and repository-external verified bundle; record the resulting certified pre-squash tree; soft
+  reset to exact `jmc6i-complete`; create the mandated single commit; prove tree identity; annotate
+  `jmc6j-complete`; do not edit this timeline afterward and do not push.
+- **Pending operator work:** after independent once-over, run browser-agent acceptance and the
+  opt-in live movie/TV media/model/GPU smokes, then push and verify GitHub workflows before any
+  selective production activation.

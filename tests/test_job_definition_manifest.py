@@ -125,7 +125,7 @@ def test_only_noop_is_enabled_and_webhook_stays_reserved_disabled() -> None:
         "dovi_publish",
         "dovi_restore",
         "dovi_discard",
-        "learned_head_train",
+        "ranking_residual_train",
         "poster_rescan",
         "taste_map",
         "taste_enrich",
@@ -224,7 +224,7 @@ def test_all_documents_are_strict_current_v1_and_policy_is_not_client_input() ->
         "taste_rebuild": {},
         "taste_map": {},
         "taste_enrich": {},
-        "learned_head_train": {},
+        "ranking_residual_train": {},
         "poster_rescan": {},
         "poster_deploy": {
             "target_kind": "movie",
@@ -483,8 +483,8 @@ def test_all_documents_are_strict_current_v1_and_policy_is_not_client_input() ->
             "active_generation": 1,
             "activated": True,
         },
-        "learned_head_train": {
-            "family": "learned_head",
+        "ranking_residual_train": {
+            "family": "ranking_residual",
             "version": "v1-test",
             "checksum": "a" * 64,
             "expected_generation": 0,
@@ -677,7 +677,7 @@ def test_progress_policies_are_complete_and_native_adapters_are_truthful() -> No
         "taste_rebuild": "immutable_ml_publication",
         "taste_map": "immutable_ml_publication",
         "taste_enrich": "immutable_ml_publication",
-        "learned_head_train": "immutable_ml_publication",
+        "ranking_residual_train": "immutable_ml_publication",
     }
     for definition in JOB_DEFINITION_REGISTRY:
         policy = definition.progress_policy

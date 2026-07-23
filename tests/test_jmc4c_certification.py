@@ -23,7 +23,7 @@ ENABLED_LEAVES = {
     "dovi_publish",
     "dovi_restore",
     "dovi_discard",
-    "learned_head_train",
+    "ranking_residual_train",
     "letterbox_detect",
     "letterbox_detect_episode",
     "letterbox_detect_tv_scope",

@@ -19,7 +19,7 @@
 		items: RankItem[];
 		disabled?: boolean;
 		submitLabel?: string;
-		/** Custom submit (e.g. onboarding's taste-test endpoint). When given, it
+		/** Custom submit for an alternate evidence workflow. When given, it
 		 *  replaces the default `submitFeedback` call; the caller owns the toast. */
 		onSubmit?: (payload: { order: string[]; hated: string[] }) => Promise<void>;
 		onsubmitted?: (eventId: string) => void;
