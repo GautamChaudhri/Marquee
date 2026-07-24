@@ -78,7 +78,7 @@
       "producer": "canonical submission via audio_subtitles producers on entrypoint media_write",
       "consumer": "Projection Room jobs.audio_remove and post-mutation inventory registered readers",
       "real_product_effect": "post-mutation inventory registered",
-      "certification_test": "test_jmc5b_audio_subtitle_documents"
+      "certification_test": "tests/test_jmc5b_audio_subtitle_documents.py::test_remove_request_is_typed_bounded_and_policy_free"
     },
     {
       "job_type": "audio_reorder",
@@ -131,7 +131,7 @@
       "producer": "canonical submission via audio_subtitles producers on entrypoint media_write",
       "consumer": "Projection Room jobs.audio_reorder and post-mutation inventory registered readers",
       "real_product_effect": "post-mutation inventory registered",
-      "certification_test": "test_jmc5b_audio_subtitle_documents"
+      "certification_test": "tests/test_jmc5b_audio_subtitle_documents.py::test_remove_request_is_typed_bounded_and_policy_free"
     },
     {
       "job_type": "backup_create",
@@ -178,7 +178,7 @@
       "producer": "canonical submission via maintenance producers on entrypoint maintenance",
       "consumer": "Projection Room jobs.backup_create and backup manifest readers",
       "real_product_effect": "backup manifest",
-      "certification_test": "test_backup"
+      "certification_test": "tests/test_backup.py::test_canonical_backup_routes_pg_dump_through_tracked_launcher"
     },
     {
       "job_type": "dovi_analyze",
@@ -230,7 +230,7 @@
       "producer": "canonical submission via hdr producers on entrypoint media_read",
       "consumer": "Projection Room jobs.dovi_analyze and DoviState readers",
       "real_product_effect": "DoviState",
-      "certification_test": "test_jmc4b_dovi_analysis.py"
+      "certification_test": "tests/test_jmc4b_dovi_analysis.py::test_dovi_definition_is_enabled_read_only_with_ticketless_parent"
     },
     {
       "job_type": "dovi_convert",
@@ -276,7 +276,7 @@
       "producer": "canonical submission via hdr producers on entrypoint media_write",
       "consumer": "Projection Room jobs.dovi_convert and DoviState candidate readers",
       "real_product_effect": "DoviState candidate",
-      "certification_test": "test_jmc5c_dovi_conversion"
+      "certification_test": "tests/test_jmc5c_dovi_conversion.py::test_conversion_documents_and_validation_are_profile_strict"
     },
     {
       "job_type": "dovi_discard",
@@ -457,7 +457,7 @@
       "producer": "canonical submission via maintenance producers on entrypoint maintenance",
       "consumer": "Projection Room jobs.job_retention_purge and canonical retention readers",
       "real_product_effect": "canonical retention",
-      "certification_test": "test_jmc5a_maintenance"
+      "certification_test": "tests/test_jmc5a_maintenance.py::test_canonical_maintenance_definitions_are_exclusive_single_attempt_handlers"
     },
     {
       "job_type": "ranking_residual_train",
@@ -567,7 +567,7 @@
       "producer": "canonical submission via letterbox producers on entrypoint media_write",
       "consumer": "Projection Room jobs.letterbox_apply and LetterboxState/LetterboxEvent readers",
       "real_product_effect": "LetterboxState/LetterboxEvent",
-      "certification_test": "test_jmc5c_letterbox_mutations"
+      "certification_test": "tests/test_jmc5c_letterbox_mutations.py::test_tv_parent_planning_seals_one_child_per_shared_physical_file"
     },
     {
       "job_type": "letterbox_detect",
@@ -619,7 +619,7 @@
       "producer": "canonical submission via letterbox producers on entrypoint media_read",
       "consumer": "Projection Room jobs.letterbox_detect and LetterboxState/LetterboxEvent readers",
       "real_product_effect": "LetterboxState/LetterboxEvent",
-      "certification_test": "test_jmc4b_letterbox_detection.py"
+      "certification_test": "tests/test_jmc4b_letterbox_detection.py::test_letterbox_detection_definitions_are_enabled_read_only_and_ticketless_parents"
     },
     {
       "job_type": "letterbox_detect_episode",
@@ -671,7 +671,7 @@
       "producer": "canonical submission via letterbox producers on entrypoint media_read",
       "consumer": "Projection Room jobs.letterbox_detect_episode and LetterboxState/LetterboxEvent readers",
       "real_product_effect": "LetterboxState/LetterboxEvent",
-      "certification_test": "test_jmc4b_letterbox_detection.py"
+      "certification_test": "tests/test_jmc4b_letterbox_detection.py::test_letterbox_detection_definitions_are_enabled_read_only_and_ticketless_parents"
     },
     {
       "job_type": "letterbox_detect_tv_scope",
@@ -723,7 +723,7 @@
       "producer": "canonical submission via letterbox producers on entrypoint media_read",
       "consumer": "Projection Room jobs.letterbox_detect_tv_scope and LetterboxState/LetterboxEvent readers",
       "real_product_effect": "LetterboxState/LetterboxEvent",
-      "certification_test": "test_jmc4b_letterbox_detection.py"
+      "certification_test": "tests/test_jmc4b_letterbox_detection.py::test_letterbox_detection_definitions_are_enabled_read_only_and_ticketless_parents"
     },
     {
       "job_type": "letterbox_preview",
@@ -774,7 +774,7 @@
       "producer": "canonical POST preview submission via letterbox routes on entrypoint media_read",
       "consumer": "Projection Room jobs.letterbox_preview and canonical JobArtifact readers",
       "real_product_effect": "bounded preview JobArtifact evidence",
-      "certification_test": "test_letterbox.py"
+      "certification_test": "tests/test_letterbox.py::test_prefilter_bucket[1920-1080-candidate]"
     },
     {
       "job_type": "letterbox_reencode",
@@ -818,7 +818,7 @@
       "producer": "canonical submission via letterbox producers on entrypoint media_write",
       "consumer": "Projection Room jobs.letterbox_reencode and LetterboxState candidate readers",
       "real_product_effect": "LetterboxState candidate",
-      "certification_test": "test_jmc5c_letterbox_reencode"
+      "certification_test": "tests/test_jmc5c_letterbox_reencode.py::test_reencode_creates_verified_canonical_candidate_without_publishing_source"
     },
     {
       "job_type": "letterbox_reencode_discard",
@@ -861,7 +861,7 @@
       "producer": "canonical submission via letterbox producers on entrypoint media_write",
       "consumer": "Projection Room jobs.letterbox_reencode_discard and LetterboxState candidate readers",
       "real_product_effect": "LetterboxState candidate",
-      "certification_test": "test_jmc5c_letterbox_publication"
+      "certification_test": "tests/test_jmc5c_letterbox_publication.py::test_publish_route_creates_a_confirmable_path_free_plan"
     },
     {
       "job_type": "letterbox_reencode_publish",
@@ -908,7 +908,7 @@
       "producer": "canonical submission via letterbox producers on entrypoint media_write",
       "consumer": "Projection Room jobs.letterbox_reencode_publish and LetterboxState publication readers",
       "real_product_effect": "LetterboxState publication",
-      "certification_test": "test_jmc5c_letterbox_publication"
+      "certification_test": "tests/test_jmc5c_letterbox_publication.py::test_publish_route_creates_a_confirmable_path_free_plan"
     },
     {
       "job_type": "letterbox_reencode_restore",
@@ -955,7 +955,7 @@
       "producer": "canonical submission via letterbox producers on entrypoint media_write",
       "consumer": "Projection Room jobs.letterbox_reencode_restore and LetterboxState publication readers",
       "real_product_effect": "LetterboxState publication",
-      "certification_test": "test_jmc5c_letterbox_publication"
+      "certification_test": "tests/test_jmc5c_letterbox_publication.py::test_publish_route_creates_a_confirmable_path_free_plan"
     },
     {
       "job_type": "letterbox_remove",
@@ -1011,7 +1011,7 @@
       "producer": "canonical submission via letterbox producers on entrypoint media_write",
       "consumer": "Projection Room jobs.letterbox_remove and LetterboxState/LetterboxEvent readers",
       "real_product_effect": "LetterboxState/LetterboxEvent",
-      "certification_test": "test_jmc5c_letterbox_mutations"
+      "certification_test": "tests/test_jmc5c_letterbox_mutations.py::test_tv_parent_planning_seals_one_child_per_shared_physical_file"
     },
     {
       "job_type": "library_sync",
@@ -1063,7 +1063,7 @@
       "producer": "canonical submission via library_integrations producers on entrypoint network",
       "consumer": "Projection Room jobs.library_sync and Movie/Series/Season/Episode/MediaFile readers",
       "real_product_effect": "Movie/Series/Season/Episode/MediaFile",
-      "certification_test": "test_jmc4b_library_sync"
+      "certification_test": "tests/test_jmc4b_library_sync.py::test_library_sync_definition_is_enabled_read_only_network"
     },
     {
       "job_type": "pipeline_cache_clear",
@@ -1104,7 +1104,7 @@
       "producer": "canonical submission via maintenance producers on entrypoint maintenance",
       "consumer": "Projection Room jobs.pipeline_cache_clear and maintenance result readers",
       "real_product_effect": "maintenance result",
-      "certification_test": "test_jmc5a_maintenance"
+      "certification_test": "tests/test_jmc5a_maintenance.py::test_canonical_maintenance_definitions_are_exclusive_single_attempt_handlers"
     },
     {
       "job_type": "poster_backup_subject",
@@ -1153,7 +1153,7 @@
       "producer": "canonical submission via ai_posters producers on entrypoint media_write",
       "consumer": "Projection Room jobs.poster_backup_subject and poster backup metadata readers",
       "real_product_effect": "poster backup metadata",
-      "certification_test": "test_jmc5a_poster_mutations"
+      "certification_test": "tests/test_jmc5a_poster_mutations.py::test_poster_child_idempotency_key_is_deterministic_and_path_free"
     },
     {
       "job_type": "poster_deploy",
@@ -1204,7 +1204,7 @@
       "producer": "canonical submission via ai_posters producers on entrypoint media_write",
       "consumer": "Projection Room jobs.poster_deploy and Movie/Series/Season poster state + ArtworkEvent readers",
       "real_product_effect": "Movie/Series/Season poster state + ArtworkEvent",
-      "certification_test": "test_jmc5a_poster_mutations"
+      "certification_test": "tests/test_jmc5a_poster_mutations.py::test_poster_child_idempotency_key_is_deterministic_and_path_free"
     },
     {
       "job_type": "poster_maintenance",
@@ -1245,7 +1245,7 @@
       "producer": "canonical submission via ai_posters producers on entrypoint maintenance",
       "consumer": "Projection Room jobs.poster_maintenance and maintenance result readers",
       "real_product_effect": "maintenance result",
-      "certification_test": "test_jmc5a_maintenance"
+      "certification_test": "tests/test_jmc5a_maintenance.py::test_canonical_maintenance_definitions_are_exclusive_single_attempt_handlers"
     },
     {
       "job_type": "poster_pipeline",
@@ -1345,7 +1345,7 @@
       "producer": "POST /api/pipeline/rescan-posters (routes.pipeline.rescan_posters)",
       "consumer": "poster filesystem observation reader; Projection Room jobs.poster_rescan",
       "real_product_effect": "reconcile derived poster availability against confined poster/cache state (already real, JMC5A/JMC6G)",
-      "certification_test": "test_jmc4c_ml_rescan.py"
+      "certification_test": "tests/test_jmc4c_ml_rescan.py::test_ml_routes_submit_generation_snapshots_without_manual_activation"
     },
     {
       "job_type": "poster_reset",
@@ -1396,7 +1396,7 @@
       "producer": "canonical submission via ai_posters producers on entrypoint media_write",
       "consumer": "Projection Room jobs.poster_reset and Movie/Series/Season poster state + ArtworkEvent readers",
       "real_product_effect": "Movie/Series/Season poster state + ArtworkEvent",
-      "certification_test": "test_jmc5a_poster_mutations"
+      "certification_test": "tests/test_jmc5a_poster_mutations.py::test_poster_child_idempotency_key_is_deterministic_and_path_free"
     },
     {
       "job_type": "poster_restore",
@@ -1447,7 +1447,7 @@
       "producer": "canonical submission via ai_posters producers on entrypoint media_write",
       "consumer": "Projection Room jobs.poster_restore and Movie/Series/Season poster state + ArtworkEvent readers",
       "real_product_effect": "Movie/Series/Season poster state + ArtworkEvent",
-      "certification_test": "test_jmc5a_poster_mutations"
+      "certification_test": "tests/test_jmc5a_poster_mutations.py::test_poster_child_idempotency_key_is_deterministic_and_path_free"
     },
     {
       "job_type": "subtitle_embed",
@@ -1500,7 +1500,7 @@
       "producer": "canonical submission via audio_subtitles producers on entrypoint media_write",
       "consumer": "Projection Room jobs.subtitle_embed and post-mutation inventory/binding registered readers",
       "real_product_effect": "post-mutation inventory/binding registered",
-      "certification_test": "test_jmc5b_sidecar_handlers.py"
+      "certification_test": "tests/test_jmc5b_sidecar_handlers.py::test_subtitle_validation_rejects_empty_binary_and_untimed_output"
     },
     {
       "job_type": "subtitle_extract",
@@ -1548,7 +1548,7 @@
       "producer": "canonical submission via audio_subtitles producers on entrypoint media_write",
       "consumer": "Projection Room jobs.subtitle_extract and ManagedSubtitleAsset/Binding registered readers",
       "real_product_effect": "ManagedSubtitleAsset/Binding registered",
-      "certification_test": "test_jmc5b_sidecar_handlers.py"
+      "certification_test": "tests/test_jmc5b_sidecar_handlers.py::test_subtitle_validation_rejects_empty_binary_and_untimed_output"
     },
     {
       "job_type": "subtitle_generate",
@@ -1599,7 +1599,7 @@
       "producer": "canonical submission via audio_subtitles producers on entrypoint media_write",
       "consumer": "Projection Room jobs.subtitle_generate and ManagedSubtitleAsset/Binding and inventory registered readers",
       "real_product_effect": "ManagedSubtitleAsset/Binding and inventory registered",
-      "certification_test": "test_jmc5b_generation"
+      "certification_test": "tests/test_jmc5b_generation.py::test_polling_stops_at_produced_and_reports_output"
     },
     {
       "job_type": "subtitle_metadata",
@@ -1652,7 +1652,7 @@
       "producer": "canonical submission via audio_subtitles producers on entrypoint media_write",
       "consumer": "Projection Room jobs.subtitle_metadata and post-mutation inventory registered readers",
       "real_product_effect": "post-mutation inventory registered",
-      "certification_test": "test_jmc5b_audio_subtitle_documents"
+      "certification_test": "tests/test_jmc5b_audio_subtitle_documents.py::test_remove_request_is_typed_bounded_and_policy_free"
     },
     {
       "job_type": "subtitle_policy",
@@ -1704,7 +1704,7 @@
       "producer": "canonical submission via audio_subtitles producers on entrypoint media_write",
       "consumer": "Projection Room jobs.subtitle_policy and post-mutation inventory/bindings registered readers",
       "real_product_effect": "post-mutation inventory/bindings registered",
-      "certification_test": "test_jmc5b_policy_restore"
+      "certification_test": "tests/test_jmc5b_policy_restore.py::test_policy_executes_its_frozen_plan"
     },
     {
       "job_type": "subtitle_policy_audit",
@@ -1752,7 +1752,7 @@
       "producer": "canonical submission via audio_subtitles producers on entrypoint cpu",
       "consumer": "Projection Room jobs.subtitle_policy_audit and policy audit result readers",
       "real_product_effect": "policy audit result",
-      "certification_test": "test_jmc4b_subtitle_scan"
+      "certification_test": "tests/test_jmc4b_subtitle_scan.py::test_subtitle_scan_definition_is_enabled_read_only_media_read"
     },
     {
       "job_type": "subtitle_remove",
@@ -1806,7 +1806,7 @@
       "producer": "canonical submission via audio_subtitles producers on entrypoint media_write",
       "consumer": "Projection Room jobs.subtitle_remove and post-mutation inventory registered readers",
       "real_product_effect": "post-mutation inventory registered",
-      "certification_test": "test_jmc5b_audio_subtitle_documents"
+      "certification_test": "tests/test_jmc5b_audio_subtitle_documents.py::test_remove_request_is_typed_bounded_and_policy_free"
     },
     {
       "job_type": "subtitle_restore",
@@ -1857,7 +1857,7 @@
       "producer": "canonical submission via audio_subtitles producers on entrypoint media_write",
       "consumer": "Projection Room jobs.subtitle_restore and post-mutation inventory/bindings registered readers",
       "real_product_effect": "post-mutation inventory/bindings registered",
-      "certification_test": "test_jmc5b_policy_restore"
+      "certification_test": "tests/test_jmc5b_policy_restore.py::test_policy_executes_its_frozen_plan"
     },
     {
       "job_type": "subtitle_scan",
@@ -1910,7 +1910,7 @@
       "producer": "canonical submission via audio_subtitles producers on entrypoint media_read",
       "consumer": "Projection Room jobs.subtitle_scan and SubtitleInventory/SubtitleTrack readers",
       "real_product_effect": "SubtitleInventory/SubtitleTrack",
-      "certification_test": "test_jmc4b_subtitle_scan"
+      "certification_test": "tests/test_jmc4b_subtitle_scan.py::test_subtitle_scan_definition_is_enabled_read_only_media_read"
     },
     {
       "job_type": "system_metrics_purge",
@@ -1949,7 +1949,7 @@
       "producer": "canonical submission via maintenance producers on entrypoint maintenance",
       "consumer": "Projection Room jobs.system_metrics_purge and SystemMetricSample retention readers",
       "real_product_effect": "SystemMetricSample retention",
-      "certification_test": "test_jmc5a_maintenance"
+      "certification_test": "tests/test_jmc5a_maintenance.py::test_canonical_maintenance_definitions_are_exclusive_single_attempt_handlers"
     },
     {
       "job_type": "system_noop",
@@ -2209,7 +2209,7 @@
       "producer": "canonical submission via audio_subtitles producers on entrypoint media_write",
       "consumer": "Projection Room jobs.track_remove and post-mutation inventory registered readers",
       "real_product_effect": "post-mutation inventory registered",
-      "certification_test": "test_jmc5b_audio_subtitle_documents"
+      "certification_test": "tests/test_jmc5b_audio_subtitle_documents.py::test_remove_request_is_typed_bounded_and_policy_free"
     }
   ]
 }

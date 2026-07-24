@@ -6,6 +6,7 @@
 	"scripts": {
 		"dev": "vite dev",
 		"build": "vite build",
+		"bundle:check": "node scripts/check-bundle-budget.mjs",
 		"api:export": "cd .. && rtk .venv/bin/python scripts/export_openapi.py",
 		"api:check": "cd .. && rtk .venv/bin/python scripts/export_openapi.py --check",
 		"api:generate": "openapi-typescript ../design/api-schema.json -o src/lib/api/generated/openapi.ts && prettier --write src/lib/api/generated/openapi.ts",

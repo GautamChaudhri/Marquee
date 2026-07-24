@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from pathlib import Path
 
 from sqlalchemy import select
 
@@ -13,7 +14,6 @@ from marquee.core.jobs.artifact_service import (
     verify_physical_artifact,
 )
 from marquee.core.jobs.delivery import ExecutionContext, register_execution_handler
-from marquee.core.jobs.handlers_letterbox_reencode import _probe
 from marquee.core.jobs.letterbox_reencode_documents import (
     LetterboxReencodeDecisionResultV1,
     LetterboxReencodeDiscardRequestV1,
@@ -29,6 +29,18 @@ from marquee.core.jobs.media_mutation_support import (
 from marquee.core.jobs.publication import execution_file_signature
 from marquee.core.jobs.remux_coordinator import publish_media_candidate
 from marquee.models import EpisodeMediaFile, JobArtifact, LetterboxEvent, LetterboxState, MediaFile
+
+
+async def _probe(context: ExecutionContext, path: Path) -> ReencodeProbeV1:
+    """Resolve the shared probe after handler registration has completed.
+
+    The reencode handler imports the delivery kernel, whose registration module
+    also imports this publication handler. Deferring this sibling lookup keeps
+    direct handler collection from observing a partially initialized module.
+    """
+    from marquee.core.jobs.handlers_letterbox_reencode import _probe as reencode_probe
+
+    return await reencode_probe(context, path)
 
 
 async def _artifact(context: ExecutionContext, artifact_id: int) -> JobArtifact | None:

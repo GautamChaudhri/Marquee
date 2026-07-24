@@ -4824,6 +4824,361 @@ export interface components {
 			/** Run Id */
 			run_id: string;
 		};
+		/** OnboardingActiveJobResponse */
+		OnboardingActiveJobResponse: {
+			/** Activity Link */
+			activity_link: string;
+			/** Job Id */
+			job_id: string;
+			/** Job Type */
+			job_type: string;
+			/** Phase */
+			phase: string;
+			/** Subject Kind */
+			subject_kind: string | null;
+			/** Subject Reference */
+			subject_reference: string | null;
+		};
+		/** OnboardingActivePublicationResponse */
+		OnboardingActivePublicationResponse: {
+			/** Checksum */
+			checksum: string | null;
+			/** Compatible */
+			compatible: boolean;
+			/** Generation */
+			generation: number | null;
+			/** Revision */
+			revision: string | null;
+		};
+		/** OnboardingBuildResponse */
+		OnboardingBuildResponse: {
+			/** Expected Generation */
+			expected_generation: number | null;
+			/** Failure */
+			failure: string | null;
+			/** Id */
+			id: string | null;
+			/** Job Id */
+			job_id: string | null;
+			/** Retry Of */
+			retry_of: string | null;
+			/** Revision */
+			revision: string | null;
+			/** State */
+			state: string | null;
+		};
+		/** OnboardingCandidateEligibilityResponse */
+		OnboardingCandidateEligibilityResponse: {
+			/** Ocr Summary */
+			ocr_summary: string | null;
+			/**
+			 * Status
+			 * @constant
+			 */
+			status: 'survived_objective_filters';
+		};
+		/** OnboardingCandidateFactsResponse */
+		OnboardingCandidateFactsResponse: {
+			/** Height */
+			height: number | null;
+			/** Language */
+			language: string | null;
+			/** Width */
+			width: number | null;
+		};
+		/** OnboardingCompletionResponse */
+		OnboardingCompletionResponse: {
+			/** Build Jobs */
+			build_jobs: components['schemas']['JobSubmissionResponse'][];
+			/** Revision */
+			revision: string;
+			status: components['schemas']['OnboardingStatusResponse'];
+		};
+		/** OnboardingDecisionResponse */
+		OnboardingDecisionResponse: {
+			/**
+			 * Decision
+			 * @enum {string}
+			 */
+			decision: 'choose' | 'hate';
+			/** Deployment Job Id */
+			deployment_job_id: string | null;
+			/** Disposition */
+			disposition: string;
+			/** Event Id */
+			event_id: string;
+			/** Exemplar Id */
+			exemplar_id: string | null;
+			status: components['schemas']['OnboardingStatusResponse'];
+		};
+		/** OnboardingDeploymentLineageResponse */
+		OnboardingDeploymentLineageResponse: {
+			/** Activity Link */
+			activity_link: string;
+			/** Exemplar Id */
+			exemplar_id: string;
+			/** Fence Token */
+			fence_token: number;
+			/** Job Id */
+			job_id: string;
+			/** Ordinal */
+			ordinal: number;
+			/** Outcome */
+			outcome: string | null;
+			/** Phase */
+			phase: string;
+			post_effect_validation:
+				| components['schemas']['OnboardingPostEffectValidationResponse']
+				| null;
+			/** Predecessor Job Id */
+			predecessor_job_id: string | null;
+			/** Retryable */
+			retryable: boolean;
+			/** State */
+			state: string;
+		};
+		/** OnboardingJobLineageResponse */
+		OnboardingJobLineageResponse: {
+			/** Activity Link */
+			activity_link: string;
+			/** Fence Token */
+			fence_token: number;
+			/** Job Id */
+			job_id: string;
+			/** Outcome */
+			outcome: string | null;
+			/** Phase */
+			phase: string;
+			/** Predecessor Job Id */
+			predecessor_job_id: string | null;
+			/** Retryable */
+			retryable: boolean;
+		};
+		/** OnboardingLibrariesResponse */
+		OnboardingLibrariesResponse: {
+			movies: components['schemas']['OnboardingProfileLibraryResponse'];
+			tv: components['schemas']['OnboardingProfileLibraryResponse'];
+		};
+		/** OnboardingLineageResponse */
+		OnboardingLineageResponse: {
+			/** Analysis */
+			analysis: components['schemas']['OnboardingJobLineageResponse'][];
+			/** Deployment */
+			deployment: components['schemas']['OnboardingDeploymentLineageResponse'][];
+		};
+		/** OnboardingPostEffectValidationResponse */
+		OnboardingPostEffectValidationResponse: {
+			/** Actual Checksum */
+			actual_checksum: string;
+			/** Expected Checksum */
+			expected_checksum: string;
+			/**
+			 * Outcome
+			 * @enum {string}
+			 */
+			outcome: 'succeeded' | 'no_change';
+			/** Reason Code */
+			reason_code: string | null;
+			/**
+			 * Validated
+			 * @constant
+			 */
+			validated: true;
+		};
+		/** OnboardingProfileGenerationsResponse */
+		OnboardingProfileGenerationsResponse: {
+			/** Movies */
+			movies?: number | null;
+			/** Tv */
+			tv?: number | null;
+		};
+		/** OnboardingProfileLibraryResponse */
+		OnboardingProfileLibraryResponse: {
+			active: components['schemas']['OnboardingActivePublicationResponse'];
+			build: components['schemas']['OnboardingBuildResponse'];
+			/** Desired Generation */
+			desired_generation: number | null;
+			/** Desired Revision */
+			desired_revision: string | null;
+			/** Rebuild Due */
+			rebuild_due: boolean;
+			reload_state: components['schemas']['OnboardingReloadStateResponse'];
+			residual: components['schemas']['OnboardingResidualResponse'];
+			/** Update Attention */
+			update_attention: boolean;
+		};
+		/** OnboardingRejectionsResponse */
+		OnboardingRejectionsResponse: {
+			/** Archived */
+			archived: number | null;
+			/** Available */
+			available: boolean;
+			/** Eligible */
+			eligible: number | null;
+			/** Truncated */
+			truncated: number | null;
+		};
+		/** OnboardingReloadStateResponse */
+		OnboardingReloadStateResponse: {
+			/** Expected Checksum */
+			expected_checksum: string | null;
+			/** Instance Id */
+			instance_id: string | null;
+			/** Observed Checksum */
+			observed_checksum: string | null;
+			/** Ready */
+			ready: boolean;
+			/** Reason */
+			reason: string | null;
+		};
+		/** OnboardingResidualResponse */
+		OnboardingResidualResponse: {
+			/** Active */
+			active: boolean;
+			/** Compatible */
+			compatible: boolean;
+			/** Dormant */
+			dormant: boolean;
+			/** Reason */
+			reason: string | null;
+		};
+		/** OnboardingReviewActionsResponse */
+		OnboardingReviewActionsResponse: {
+			/** Choose */
+			choose: boolean;
+			/** Hate */
+			hate: boolean;
+		};
+		/** OnboardingReviewCandidateResponse */
+		OnboardingReviewCandidateResponse: {
+			/** Candidate Id */
+			candidate_id: string;
+			eligibility: components['schemas']['OnboardingCandidateEligibilityResponse'];
+			facts: components['schemas']['OnboardingCandidateFactsResponse'];
+			/** Image Url */
+			image_url: string;
+			/** Source */
+			source: string;
+		};
+		/** OnboardingReviewLinksResponse */
+		OnboardingReviewLinksResponse: {
+			/** Activity */
+			activity: string;
+			/** Detail */
+			detail: string;
+			/** Run */
+			run: string;
+		};
+		/** OnboardingReviewReferenceResponse */
+		OnboardingReviewReferenceResponse: {
+			/** Analysis Job Id */
+			analysis_job_id: string;
+			/** Run Id */
+			run_id: string;
+			/** Url */
+			url: string;
+		};
+		/** OnboardingReviewResponse */
+		OnboardingReviewResponse: {
+			allowed_actions: components['schemas']['OnboardingReviewActionsResponse'];
+			/** Analysis Job Id */
+			analysis_job_id: string;
+			/** Candidates */
+			candidates: components['schemas']['OnboardingReviewCandidateResponse'][];
+			links: components['schemas']['OnboardingReviewLinksResponse'];
+			rejections: components['schemas']['OnboardingRejectionsResponse'];
+			/** Review Revision */
+			review_revision: string;
+			/** Run Id */
+			run_id: string;
+			/** Status */
+			status: string;
+			subject: components['schemas']['OnboardingReviewSubjectResponse'];
+			/**
+			 * Version
+			 * @constant
+			 */
+			version: 1;
+		};
+		/** OnboardingReviewSubjectResponse */
+		OnboardingReviewSubjectResponse: {
+			/** Id */
+			id: number | null;
+			/** Kind */
+			kind: string;
+			/** Title */
+			title: string;
+		};
+		/** OnboardingStartResponse */
+		OnboardingStartResponse: {
+			analysis_job: components['schemas']['JobSubmissionResponse'];
+			status: components['schemas']['OnboardingStatusResponse'];
+			subject: components['schemas']['OnboardingSubjectResponse'];
+		};
+		/** OnboardingStatusResponse */
+		OnboardingStatusResponse: {
+			/** Active Jobs */
+			active_jobs: components['schemas']['OnboardingActiveJobResponse'][];
+			/** Active Negative Subjects */
+			active_negative_subjects: number;
+			/** Active Positive Subjects */
+			active_positive_subjects: number;
+			/** Build Job Id */
+			build_job_id: string | null;
+			/** Build Revision */
+			build_revision: string | null;
+			/** Consumer Reloaded */
+			consumer_reloaded: boolean;
+			/** Failure */
+			failure: string | null;
+			/** Initial Profiles Ready */
+			initial_profiles_ready: boolean;
+			libraries: components['schemas']['OnboardingLibrariesResponse'];
+			lineage: components['schemas']['OnboardingLineageResponse'];
+			/** Next Action */
+			next_action: string;
+			/** Pending Positive Subjects */
+			pending_positive_subjects: number;
+			/** Personalized Scoring Available */
+			personalized_scoring_available: boolean;
+			profile_generations: components['schemas']['OnboardingProfileGenerationsResponse'];
+			/** Rebuild Due */
+			rebuild_due: boolean;
+			/** Residual Dormant */
+			residual_dormant: boolean;
+			review: components['schemas']['OnboardingReviewReferenceResponse'] | null;
+			/** Revision */
+			revision: string;
+			/**
+			 * State
+			 * @enum {string}
+			 */
+			state: 'collecting' | 'eligible' | 'building' | 'personalized' | 'degraded';
+			thresholds: components['schemas']['OnboardingThresholdsResponse'];
+		};
+		/** OnboardingSubjectResponse */
+		OnboardingSubjectResponse: {
+			/** Id */
+			id: number;
+			/**
+			 * Kind
+			 * @constant
+			 */
+			kind: 'movie';
+			/** Title */
+			title: string;
+			/** Year */
+			year: number | null;
+		};
+		/** OnboardingThresholdsResponse */
+		OnboardingThresholdsResponse: {
+			/** Encouraged */
+			encouraged: number;
+			/** Required */
+			required: number;
+			/** Strong Target */
+			strong_target: number;
+		};
 		/** OperationsConnectionBudget */
 		OperationsConnectionBudget: {
 			/** Configured */
@@ -9853,7 +10208,7 @@ export interface operations {
 					[name: string]: unknown;
 				};
 				content: {
-					'application/json': unknown;
+					'application/json': components['schemas']['OnboardingDecisionResponse'];
 				};
 			};
 			/** @description Validation Error */
@@ -9882,7 +10237,7 @@ export interface operations {
 					[name: string]: unknown;
 				};
 				content: {
-					'application/json': unknown;
+					'application/json': components['schemas']['OnboardingCompletionResponse'];
 				};
 			};
 		};
@@ -9906,7 +10261,7 @@ export interface operations {
 					[name: string]: unknown;
 				};
 				content: {
-					'application/json': unknown;
+					'application/json': components['schemas']['OnboardingDecisionResponse'];
 				};
 			};
 			/** @description Validation Error */
@@ -9937,7 +10292,7 @@ export interface operations {
 					[name: string]: unknown;
 				};
 				content: {
-					'application/json': unknown;
+					'application/json': components['schemas']['OnboardingReviewResponse'];
 				};
 			};
 			/** @description Validation Error */
@@ -9970,7 +10325,7 @@ export interface operations {
 					[name: string]: unknown;
 				};
 				content: {
-					'application/json': unknown;
+					'application/json': components['schemas']['OnboardingStartResponse'];
 				};
 			};
 			/** @description Validation Error */
@@ -9999,7 +10354,7 @@ export interface operations {
 					[name: string]: unknown;
 				};
 				content: {
-					'application/json': unknown;
+					'application/json': components['schemas']['OnboardingStatusResponse'];
 				};
 			};
 		};

@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import importlib
 import json
+import subprocess
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -80,6 +82,74 @@ def resolve_node(nodeid: str) -> bool:
         if target is None:
             return False
     return callable(target)
+
+
+def collect_nodes(nodeids: list[str] | tuple[str, ...]) -> set[str]:
+    """Collect the exact declared nodes with pytest, rather than trusting source text."""
+    targets = sorted({normalize_node(node).split("::", 1)[0] for node in nodeids})
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", "--collect-only", "-q", *targets],
+        cwd=_TESTS_ROOT.parent,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            "declared certification nodes failed collection:\n"
+            f"stdout:\n{result.stdout}\n"
+            f"stderr:\n{result.stderr}"
+        )
+    return {
+        normalize_node(line)
+        for line in result.stdout.splitlines()
+        if line.startswith("tests/") and "::" in line
+    }
+
+
+def execute_nodes(nodeids: list[str] | tuple[str, ...]) -> set[str]:
+    """Run every declared test node and prove each reached a passing call.
+
+    Collection confirms that a manifest entry is not stale.  This companion is
+    deliberately stricter: it starts an isolated pytest subprocess with the
+    exact node IDs and rejects a missing, skipped, failed, or otherwise
+    unreported node.  The caller's test process remains the authoritative
+    gate, while the child process exercises the real producer/delivery/effect
+    scenarios named by the manifest.
+    """
+    targets = sorted({normalize_node(node) for node in nodeids})
+    if not targets:
+        raise ValueError("at least one executable certification node is required")
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", "-vv", "--tb=short", *targets],
+        cwd=_TESTS_ROOT.parent,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            "declared certification nodes did not pass:\n"
+            f"stdout:\n{result.stdout}\n"
+            f"stderr:\n{result.stderr}"
+        )
+
+    outcomes: dict[str, str] = {}
+    for line in result.stdout.splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[0].startswith("tests/") and "::" in parts[0]:
+            outcomes[normalize_node(parts[0])] = parts[1].lower()
+
+    missing = set(targets) - set(outcomes)
+    non_passing = {node: outcome for node, outcome in outcomes.items() if outcome != "passed"}
+    if missing or non_passing:
+        raise RuntimeError(
+            "declared certification nodes lack passing execution evidence: "
+            f"missing={sorted(missing)!r}, outcomes={non_passing!r}\n"
+            f"stdout:\n{result.stdout}\n"
+            f"stderr:\n{result.stderr}"
+        )
+    return set(outcomes)
 
 
 @dataclass(slots=True)

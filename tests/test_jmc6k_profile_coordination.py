@@ -314,7 +314,9 @@ async def test_initial_profile_builds_are_one_per_library_with_explicit_generati
 
 
 @pytest.mark.asyncio
-async def test_failed_profile_build_stays_terminal_until_canonical_retry(db, installed_pgqueuer) -> None:
+async def test_failed_profile_build_stays_terminal_until_canonical_retry(
+    db, installed_pgqueuer
+) -> None:
     await _seed_required_positive_subjects(db)
     submitted = await schedule_initial_profile_build(db, initiator_identifier="jmc6k-test")
     await db.commit()
@@ -370,13 +372,72 @@ async def test_failed_profile_build_stays_terminal_until_canonical_retry(db, ins
 
 
 @pytest.mark.asyncio
-async def test_newer_evidence_coalesces_then_reconciles_one_successor(db, installed_pgqueuer) -> None:
+async def test_queued_profile_build_cancellation_records_retryable_lineage(
+    db, installed_pgqueuer, monkeypatch
+) -> None:
+    await _seed_required_positive_subjects(db)
+    submitted = await schedule_profile_builds(
+        db,
+        namespaces=("tv",),
+        initiator_identifier="jmc6k-test",
+        force=True,
+    )
+    await db.commit()
+    assert len(submitted) == 1
+
+    job = await db.get(Job, submitted[0].job_id)
+    assert job is not None
+    original_id = job.id
+
+    async def fake_cancel(session, *, job_id: str) -> None:
+        stored = await session.get(Job, job_id)
+        assert stored is not None
+        stored.desired_state = "cancel"
+        stored.phase = "terminal"
+        stored.outcome = "cancelled"
+        stored.terminal_at = datetime.now(UTC)
+
+    monkeypatch.setattr(
+        "marquee.core.jobs.control.pgqueuer_gateway.cancel_known_ticket", fake_cancel
+    )
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        cancelled = await client.post(
+            f"/api/jobs/{original_id}/cancel",
+            json={"expected_fence_token": job.fence_token},
+        )
+        assert cancelled.status_code == 200, cancelled.text
+        retry = await client.post(
+            f"/api/jobs/{original_id}/retry",
+            json={"expected_fence_token": cancelled.json()["snapshot"]["fence_token"]},
+        )
+
+    assert retry.status_code == 200, retry.text
+    replacement_id = retry.json()["replacement_job_id"]
+    assert replacement_id
+
+    await db.rollback()
+    db.expire_all()
+    original = await db.scalar(
+        select(TasteProfileBuild).where(TasteProfileBuild.job_id == original_id)
+    )
+    successor = await db.scalar(
+        select(TasteProfileBuild).where(TasteProfileBuild.job_id == replacement_id)
+    )
+    assert original is not None
+    assert original.state == "cancelled"
+    assert successor is not None
+    assert successor.state == "queued"
+    assert successor.supersedes_build_id == original.id
+
+
+@pytest.mark.asyncio
+async def test_newer_evidence_coalesces_then_reconciles_one_successor(
+    db, installed_pgqueuer
+) -> None:
     await _seed_required_positive_subjects(db)
     await schedule_initial_profile_build(db, initiator_identifier="jmc6k-test")
     await db.commit()
-    first = await db.scalar(
-        select(TasteProfileBuild).where(TasteProfileBuild.library == "movies")
-    )
+    first = await db.scalar(select(TasteProfileBuild).where(TasteProfileBuild.library == "movies"))
     assert first is not None
 
     await _append_positive_subject(db, index=50)
@@ -392,9 +453,7 @@ async def test_newer_evidence_coalesces_then_reconciles_one_successor(db, instal
     await db.commit()
 
     before = list(
-        await db.scalars(
-            select(TasteProfileBuild).where(TasteProfileBuild.library == "movies")
-        )
+        await db.scalars(select(TasteProfileBuild).where(TasteProfileBuild.library == "movies"))
     )
     assert len(before) == 1
 

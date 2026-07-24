@@ -78,6 +78,10 @@ export interface StoreCadence {
 	backoffBaseMs: number;
 	backoffMaxMs: number;
 	staleAfterMs: number;
+	/** Keep completed Queue cards briefly, without retaining a session-long terminal union. */
+	terminalRetentionMs: number;
+	/** Safety bound for terminal cards retained by Queue scopes in one browser session. */
+	terminalRecordLimit: number;
 }
 
 export const DEFAULT_CADENCE: StoreCadence = {
@@ -86,7 +90,9 @@ export const DEFAULT_CADENCE: StoreCadence = {
 	debounceMs: 400,
 	backoffBaseMs: 1_000,
 	backoffMaxMs: 30_000,
-	staleAfterMs: 30_000
+	staleAfterMs: 30_000,
+	terminalRetentionMs: 5 * 60_000,
+	terminalRecordLimit: 100
 };
 
 const PROGRESS_EVENT = 'progress.updated';
@@ -451,6 +457,7 @@ export class JobProgressStore {
 			return;
 		}
 		if (frame.job_id === null) return;
+		if (!this.#isRelevantJob(frame.job_id)) return;
 		const record = this.records.get(frame.job_id);
 		if (
 			record?.fenceToken !== null &&
@@ -469,7 +476,14 @@ export class JobProgressStore {
 	#applyProgressFrame(jobId: string, frame: ReturnType<typeof parseJobEventFrame>): void {
 		const record = this.records.get(jobId);
 		const sequence = frame.delta.detail?.progress_sequence;
-		if (record && typeof sequence === 'number' && sequence <= record.progressSequence) {
+		const currentFence = record?.fenceToken ?? null;
+		if (
+			record &&
+			typeof sequence === 'number' &&
+			currentFence !== null &&
+			frame.canonical_version <= currentFence &&
+			sequence <= record.progressSequence
+		) {
 			return; // duplicate or late progress — reject (A09)
 		}
 		// The frame is only a hint; fetch the authoritative CompactProgress.
@@ -479,7 +493,7 @@ export class JobProgressStore {
 	// ---- snapshot repair ---------------------------------------------------
 
 	#scheduleRepair(jobId: string): void {
-		if (this.#stopped) return;
+		if (this.#stopped || !this.#isRelevantJob(jobId)) return;
 		let repair = this.#repairs.get(jobId);
 		if (!repair) {
 			repair = {
@@ -569,6 +583,7 @@ export class JobProgressStore {
 
 	#applySnapshot(snapshot: JobSnapshotResponse): void {
 		const existing = this.records.get(snapshot.job_id);
+		if (!existing && !this.#isRelevantJob(snapshot.job_id)) return;
 		const priorFence = existing?.fenceToken ?? null;
 		if (priorFence !== null && snapshot.fence_token < priorFence) {
 			return; // stale writer from a superseded attempt
@@ -596,6 +611,7 @@ export class JobProgressStore {
 			freshness: terminal ? 'terminal' : 'live',
 			updatedAt: this.#deps.now()
 		});
+		this.#pruneTerminalRecords();
 	}
 
 	#pruneUnreferencedRecords(): void {
@@ -611,6 +627,53 @@ export class JobProgressStore {
 				this.#repairs.delete(id);
 			}
 		}
+	}
+
+	/**
+	 * Queue discovery deliberately keeps a union so a bounded first page cannot
+	 * erase a live card. Once a terminal snapshot is authoritative, however,
+	 * that union must not become a session-long history cache. History scopes
+	 * remain server-bounded and retain their visible rows; Queue scopes keep only
+	 * a short, bounded terminal tail for completion feedback.
+	 */
+	#pruneTerminalRecords(): void {
+		const now = this.#deps.now();
+		const terminalQueueRecords = [...this.records.values()]
+			.filter(
+				(record) =>
+					record.partition === 'history' &&
+					[...this.#scopes.values()].some(
+						(scope) => scope.query.view === 'queue' && scope.jobIds.has(record.jobId)
+					)
+			)
+			.sort((left, right) => right.updatedAt - left.updatedAt);
+		const pruned = new SvelteSet<string>();
+		for (const [index, record] of terminalQueueRecords.entries()) {
+			if (
+				index < this.#cadence.terminalRecordLimit &&
+				now - record.updatedAt <= this.#cadence.terminalRetentionMs
+			) {
+				continue;
+			}
+			pruned.add(record.jobId);
+		}
+		if (pruned.size === 0) return;
+		for (const scope of this.#scopes.values()) {
+			if (scope.query.view !== 'queue') continue;
+			let changed = false;
+			for (const jobId of pruned) changed = scope.jobIds.delete(jobId) || changed;
+			if (changed) this.#publishScope(scope, {});
+		}
+		this.#pruneUnreferencedRecords();
+	}
+
+	/** A global SSE frame can only allocate work for an already relevant job. */
+	#isRelevantJob(jobId: string): boolean {
+		if (this.#trackedIds.has(jobId) || this.records.has(jobId)) return true;
+		for (const scope of this.#scopes.values()) {
+			if (scope.jobIds.has(jobId)) return true;
+		}
+		return false;
 	}
 
 	// ---- connection + freshness helpers ------------------------------------
@@ -647,6 +710,7 @@ export class JobProgressStore {
 			const freshness: RecordFreshness = stale ? 'stale' : 'live';
 			if (freshness !== record.freshness) this.records.set(id, { ...record, freshness });
 		}
+		this.#pruneTerminalRecords();
 	}
 
 	#onVisibilityChange(): void {

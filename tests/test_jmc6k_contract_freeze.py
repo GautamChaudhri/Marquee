@@ -10,11 +10,13 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 from hashlib import sha256
+from io import BytesIO
 from pathlib import Path
 
 import pytest
 from fastapi import HTTPException
 from httpx import ASGITransport, AsyncClient
+from PIL import Image
 from pydantic import ValidationError
 from sqlalchemy import select
 
@@ -33,6 +35,7 @@ from marquee.models import (
     JobAttempt,
     MlActivePublication,
     Movie,
+    OnboardingAnalysisSuccessor,
     PipelineRun,
     PosterPreferenceEvent,
     TasteExemplar,
@@ -58,18 +61,36 @@ def _active_job() -> Job:
     )
 
 
-async def _canonical_review_run(db) -> PipelineRun:
+async def _canonical_review_run(
+    db,
+    *,
+    run_id: str = "jmc6k-review-run",
+    job_id: str = "a" * 32,
+    title: str = "JMC6K Fixture",
+    tmdb_id: int = 6001,
+    deployable: bool = False,
+) -> PipelineRun:
+    candidate_bytes = b"jmc6k-review-candidate"
+    folder_path = "/jmc6k/fixture"
+    if deployable:
+        subject_folder = Path(settings.DATA_DIR) / "jmc7c-real-browser" / job_id
+        subject_folder.mkdir(parents=True, exist_ok=True)
+        folder_path = f"/jmc7c/{job_id}"
+        buffer = BytesIO()
+        Image.new("RGB", (8, 12), color=(20, 40, 60)).save(buffer, format="JPEG")
+        candidate_bytes = buffer.getvalue()
+
     movie = Movie(
-        title="JMC6K Fixture",
+        title=title,
         year=2026,
-        folder_path="/jmc6k/fixture",
+        folder_path=folder_path,
         movie_file_path="fixture.mkv",
-        tmdb_id=6001,
+        tmdb_id=tmdb_id,
     )
     db.add(movie)
     await db.flush()
     job = _active_job()
-    job.id = "a" * 32
+    job.id = job_id
     job.root_id = job.id
     db.add(job)
     await db.flush()
@@ -86,7 +107,6 @@ async def _canonical_review_run(db) -> PipelineRun:
     await db.flush()
     job.current_attempt_id = attempt.id
 
-    candidate_bytes = b"jmc6k-review-candidate"
     candidate_key = f"test-artifacts/{job.id}/candidate.jpg"
     candidate_path = Path(settings.DATA_DIR) / candidate_key
     candidate_path.parent.mkdir(parents=True, exist_ok=True)
@@ -111,9 +131,7 @@ async def _canonical_review_run(db) -> PipelineRun:
     await db.flush()
 
     survivor = {
-        "candidate_id": sha256(
-            b"jmc7b-review-v1\x00jmc6k-review-run\x00candidate.jpg"
-        ).hexdigest(),
+        "candidate_id": sha256(f"jmc7b-review-v1\x00{run_id}\x00candidate.jpg".encode()).hexdigest(),
         "reference": "candidate.jpg",
         "position": 0,
         "objective_eligible": True,
@@ -146,6 +164,9 @@ async def _canonical_review_run(db) -> PipelineRun:
             "candidates": [
                 {
                     "orig_filename": "candidate.jpg",
+                    "artifact_id": candidate.id,
+                    "artifact_storage_key": candidate.storage_key,
+                    "artifact_checksum": candidate.checksum,
                     "gate_decision": "passed",
                     "rejection_reason": None,
                     "raw_features": {"knn_sim": 0.5},
@@ -176,7 +197,7 @@ async def _canonical_review_run(db) -> PipelineRun:
     db.add(archive_artifact)
     await db.flush()
     run = PipelineRun(
-        run_id="jmc6k-review-run",
+        run_id=run_id,
         movie_id=movie.id,
         media_type="movie",
         subject_snapshot={"kind": "movie", "title": movie.title, "year": movie.year},
@@ -374,7 +395,16 @@ async def test_diagnostic_rejection_can_never_be_served_as_a_review_candidate(db
 @pytest.mark.asyncio
 async def test_onboarding_status_links_to_projection_room(db) -> None:
     """A recoverable onboarding snapshot must link to the canonical Activity destination."""
-    db.add(_active_job())
+    job = _active_job()
+    db.add(job)
+    await db.flush()
+    db.add(
+        OnboardingAnalysisSuccessor(
+            job_id=job.id,
+            subject_kind=job.subject_kind,
+            subject_reference=job.subject_reference,
+        )
+    )
     await db.commit()
 
     from marquee.api.routes.onboarding import onboarding_status

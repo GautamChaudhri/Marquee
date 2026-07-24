@@ -1,6 +1,14 @@
 import { apiGet, apiSend, type Fetch } from './client';
-import type { JobSubmissionResponse } from '$lib/activity/types';
-import type { OnboardingDecision, OnboardingReview, OnboardingStatus } from './types';
+import type { components } from './generated/openapi';
+
+type Schemas = components['schemas'];
+
+export type OnboardingStatus = Schemas['OnboardingStatusResponse'];
+export type OnboardingStartResult = Schemas['OnboardingStartResponse'];
+export type OnboardingReview = Schemas['OnboardingReviewResponse'];
+export type OnboardingDecision = Schemas['OnboardingDecisionResponse'];
+export type OnboardingCompletionResult = Schemas['OnboardingCompletionResponse'];
+export type OnboardingDecisionIntent = Schemas['ChoosePosterRequest'];
 
 /** Cold-start onboarding status: canonical evidence and profile-build progress. */
 export function getOnboardingStatus(
@@ -10,15 +18,9 @@ export function getOnboardingStatus(
 	return apiGet<OnboardingStatus>(fetchFn, '/onboarding/status', undefined, signal);
 }
 
-interface StartResult {
-	subject: { kind: 'movie'; id: number; title: string; year: number | null };
-	analysis_job: JobSubmissionResponse;
-	status: OnboardingStatus;
-}
-
 /** Submit profile-independent analysis for the next unconfirmed movie. */
-export function startOnboarding(fetchFn: Fetch): Promise<StartResult> {
-	return apiSend<StartResult>(fetchFn, 'POST', '/onboarding/start', {});
+export function startOnboarding(fetchFn: Fetch): Promise<OnboardingStartResult> {
+	return apiSend<OnboardingStartResult>(fetchFn, 'POST', '/onboarding/start', {});
 }
 
 /** Load a neutral candidate review whose membership and evidence stay server-owned. */
@@ -34,13 +36,6 @@ export function getOnboardingReview(
 		signal
 	);
 }
-
-type OnboardingDecisionIntent = {
-	run_id: string;
-	candidate_id: string;
-	review_revision: string;
-	idempotency_key: string;
-};
 
 /** Submit one canonical review choice; the browser contributes intent only. */
 export function chooseOnboardingCandidate(
@@ -59,10 +54,6 @@ export function hateOnboardingCandidate(
 }
 
 /** Build both native taste profiles from the exact eligible evidence revision. */
-export function completeOnboarding(fetchFn: Fetch): Promise<{
-	status: OnboardingStatus;
-	revision: string;
-	build_jobs: JobSubmissionResponse[];
-}> {
-	return apiSend(fetchFn, 'POST', '/onboarding/complete', {});
+export function completeOnboarding(fetchFn: Fetch): Promise<OnboardingCompletionResult> {
+	return apiSend<OnboardingCompletionResult>(fetchFn, 'POST', '/onboarding/complete', {});
 }

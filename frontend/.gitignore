@@ -24,6 +24,8 @@ vite.config.ts.timestamp-*
 
 # Test artifacts
 /test-results
+/test-results-real
 /playwright-report
+/playwright-real-report
 /playwright/.cache
 /coverage

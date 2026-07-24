@@ -32,6 +32,7 @@ from marquee.core.jobs.ml_publication import MlPublicationError, activate_immuta
 from marquee.core.jobs.workspaces import AttemptWorkspaceManager
 from marquee.database import _get_engine, _get_session_factory
 from marquee.main import app
+from marquee.ml.residual import freeze_residual_evidence
 from marquee.models import Job, JobArtifact, JobAttempt, MlActivePublication, Movie
 
 
@@ -78,6 +79,11 @@ async def test_ml_routes_submit_generation_snapshots_without_manual_activation(c
         assert job.subject_kind == "model_profile_training"
         assert job.request["expected_generation"] == 0
         assert job.request["seed"] == 0
+        if job_type == "ranking_residual_train":
+            # The worker recomputes this immutable revision before any residual
+            # evaluation. A wall-clock token would make every manual request
+            # stale at the execution boundary.
+            assert job.request["evidence_revision"] == freeze_residual_evidence([]).digest
         assert (
             await db.scalar(
                 select(MlActivePublication).where(MlActivePublication.family == f"{family}:movies")

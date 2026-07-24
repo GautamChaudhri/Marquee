@@ -791,3 +791,58 @@ async def test_ranking_residual_publishes_native_loadable_artifact(db, data_dir,
         assert detail.json()["summary"]["top_features"][0]["name"] == "knn_sim"
         assert detail.json()["summary"]["evaluation"]["improvement"] == 0.25
         assert detail.json()["summary"]["profile_generation"] == 1
+
+
+@pytest.mark.asyncio
+async def test_ranking_residual_records_a_verified_no_change_without_failing_delivery(
+    db, data_dir, monkeypatch
+):
+    """A held-out non-improvement is a valid ML decision, not runner failure."""
+    from marquee.core.jobs.internal_runner_host import RunnerOutcome
+
+    context = await _context(
+        db,
+        data_dir,
+        job_type="ranking_residual_train",
+        request={
+            "library": "movies",
+            "expected_generation": 0,
+            "seed": 0,
+            "evidence_revision": hashlib.sha256(b"[]").hexdigest(),
+        },
+        feature_area="ml_taste",
+        subject_kind="model",
+        subject_reference="ranking_residual:movies",
+    )
+
+    async def fake_resolve(_session, *, family):
+        if family == "taste_profile:movies":
+            return SimpleNamespace(checksum="a" * 64, generation=1)
+        return None
+
+    async def fake_residual(*_args, **_kwargs):
+        return RunnerOutcome(
+            outcome="succeeded",
+            summary={
+                "family": "ranking_residual",
+                "event_rows": 0,
+                "pairs": 0,
+                "publication_outcome": "no_change",
+            },
+            files=(),
+            ready=True,
+            exit_code=0,
+        )
+
+    monkeypatch.setattr(
+        "marquee.core.jobs.handlers_ml.resolve_active_publication", fake_resolve
+    )
+    monkeypatch.setattr(
+        "marquee.core.jobs.internal_runner_host.run_internal_operation", fake_residual
+    )
+
+    result = await execute_ranking_residual(context)
+
+    assert result["outcome"] == "no_change"
+    assert result["activated"] is False
+    assert result["metrics"] == {"events": 0, "pairs": 0, "seed": 0}

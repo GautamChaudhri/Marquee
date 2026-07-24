@@ -4074,6 +4074,1235 @@
         "title": "OcrLabelRequest",
         "type": "object"
       },
+      "OnboardingActiveJobResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "activity_link": {
+            "title": "Activity Link",
+            "type": "string"
+          },
+          "job_id": {
+            "title": "Job Id",
+            "type": "string"
+          },
+          "job_type": {
+            "title": "Job Type",
+            "type": "string"
+          },
+          "phase": {
+            "title": "Phase",
+            "type": "string"
+          },
+          "subject_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subject Kind"
+          },
+          "subject_reference": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subject Reference"
+          }
+        },
+        "required": [
+          "job_id",
+          "job_type",
+          "phase",
+          "subject_kind",
+          "subject_reference",
+          "activity_link"
+        ],
+        "title": "OnboardingActiveJobResponse",
+        "type": "object"
+      },
+      "OnboardingActivePublicationResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "checksum": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Checksum"
+          },
+          "compatible": {
+            "title": "Compatible",
+            "type": "boolean"
+          },
+          "generation": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Generation"
+          },
+          "revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision"
+          }
+        },
+        "required": [
+          "generation",
+          "checksum",
+          "revision",
+          "compatible"
+        ],
+        "title": "OnboardingActivePublicationResponse",
+        "type": "object"
+      },
+      "OnboardingBuildResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_generation": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Generation"
+          },
+          "failure": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure"
+          },
+          "id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id"
+          },
+          "job_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Job Id"
+          },
+          "retry_of": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Retry Of"
+          },
+          "revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision"
+          },
+          "state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "State"
+          }
+        },
+        "required": [
+          "id",
+          "job_id",
+          "state",
+          "revision",
+          "expected_generation",
+          "retry_of",
+          "failure"
+        ],
+        "title": "OnboardingBuildResponse",
+        "type": "object"
+      },
+      "OnboardingCandidateEligibilityResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "ocr_summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ocr Summary"
+          },
+          "status": {
+            "const": "survived_objective_filters",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "ocr_summary"
+        ],
+        "title": "OnboardingCandidateEligibilityResponse",
+        "type": "object"
+      },
+      "OnboardingCandidateFactsResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "height": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Height"
+          },
+          "language": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Language"
+          },
+          "width": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Width"
+          }
+        },
+        "required": [
+          "width",
+          "height",
+          "language"
+        ],
+        "title": "OnboardingCandidateFactsResponse",
+        "type": "object"
+      },
+      "OnboardingCompletionResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "build_jobs": {
+            "items": {
+              "$ref": "#/components/schemas/JobSubmissionResponse"
+            },
+            "title": "Build Jobs",
+            "type": "array"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/OnboardingStatusResponse"
+          }
+        },
+        "required": [
+          "revision",
+          "build_jobs",
+          "status"
+        ],
+        "title": "OnboardingCompletionResponse",
+        "type": "object"
+      },
+      "OnboardingDecisionResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "decision": {
+            "enum": [
+              "choose",
+              "hate"
+            ],
+            "title": "Decision",
+            "type": "string"
+          },
+          "deployment_job_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deployment Job Id"
+          },
+          "disposition": {
+            "title": "Disposition",
+            "type": "string"
+          },
+          "event_id": {
+            "title": "Event Id",
+            "type": "string"
+          },
+          "exemplar_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exemplar Id"
+          },
+          "status": {
+            "$ref": "#/components/schemas/OnboardingStatusResponse"
+          }
+        },
+        "required": [
+          "decision",
+          "event_id",
+          "exemplar_id",
+          "deployment_job_id",
+          "disposition",
+          "status"
+        ],
+        "title": "OnboardingDecisionResponse",
+        "type": "object"
+      },
+      "OnboardingDeploymentLineageResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "activity_link": {
+            "title": "Activity Link",
+            "type": "string"
+          },
+          "exemplar_id": {
+            "title": "Exemplar Id",
+            "type": "string"
+          },
+          "fence_token": {
+            "title": "Fence Token",
+            "type": "integer"
+          },
+          "job_id": {
+            "title": "Job Id",
+            "type": "string"
+          },
+          "ordinal": {
+            "title": "Ordinal",
+            "type": "integer"
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome"
+          },
+          "phase": {
+            "title": "Phase",
+            "type": "string"
+          },
+          "post_effect_validation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/OnboardingPostEffectValidationResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "predecessor_job_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Predecessor Job Id"
+          },
+          "retryable": {
+            "title": "Retryable",
+            "type": "boolean"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "job_id",
+          "predecessor_job_id",
+          "phase",
+          "outcome",
+          "fence_token",
+          "retryable",
+          "activity_link",
+          "exemplar_id",
+          "ordinal",
+          "state",
+          "post_effect_validation"
+        ],
+        "title": "OnboardingDeploymentLineageResponse",
+        "type": "object"
+      },
+      "OnboardingJobLineageResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "activity_link": {
+            "title": "Activity Link",
+            "type": "string"
+          },
+          "fence_token": {
+            "title": "Fence Token",
+            "type": "integer"
+          },
+          "job_id": {
+            "title": "Job Id",
+            "type": "string"
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome"
+          },
+          "phase": {
+            "title": "Phase",
+            "type": "string"
+          },
+          "predecessor_job_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Predecessor Job Id"
+          },
+          "retryable": {
+            "title": "Retryable",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "job_id",
+          "predecessor_job_id",
+          "phase",
+          "outcome",
+          "fence_token",
+          "retryable",
+          "activity_link"
+        ],
+        "title": "OnboardingJobLineageResponse",
+        "type": "object"
+      },
+      "OnboardingLibrariesResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "movies": {
+            "$ref": "#/components/schemas/OnboardingProfileLibraryResponse"
+          },
+          "tv": {
+            "$ref": "#/components/schemas/OnboardingProfileLibraryResponse"
+          }
+        },
+        "required": [
+          "movies",
+          "tv"
+        ],
+        "title": "OnboardingLibrariesResponse",
+        "type": "object"
+      },
+      "OnboardingLineageResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "analysis": {
+            "items": {
+              "$ref": "#/components/schemas/OnboardingJobLineageResponse"
+            },
+            "title": "Analysis",
+            "type": "array"
+          },
+          "deployment": {
+            "items": {
+              "$ref": "#/components/schemas/OnboardingDeploymentLineageResponse"
+            },
+            "title": "Deployment",
+            "type": "array"
+          }
+        },
+        "required": [
+          "analysis",
+          "deployment"
+        ],
+        "title": "OnboardingLineageResponse",
+        "type": "object"
+      },
+      "OnboardingPostEffectValidationResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "actual_checksum": {
+            "title": "Actual Checksum",
+            "type": "string"
+          },
+          "expected_checksum": {
+            "title": "Expected Checksum",
+            "type": "string"
+          },
+          "outcome": {
+            "enum": [
+              "succeeded",
+              "no_change"
+            ],
+            "title": "Outcome",
+            "type": "string"
+          },
+          "reason_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason Code"
+          },
+          "validated": {
+            "const": true,
+            "title": "Validated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "validated",
+          "outcome",
+          "reason_code",
+          "expected_checksum",
+          "actual_checksum"
+        ],
+        "title": "OnboardingPostEffectValidationResponse",
+        "type": "object"
+      },
+      "OnboardingProfileGenerationsResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "movies": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Movies"
+          },
+          "tv": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tv"
+          }
+        },
+        "title": "OnboardingProfileGenerationsResponse",
+        "type": "object"
+      },
+      "OnboardingProfileLibraryResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "active": {
+            "$ref": "#/components/schemas/OnboardingActivePublicationResponse"
+          },
+          "build": {
+            "$ref": "#/components/schemas/OnboardingBuildResponse"
+          },
+          "desired_generation": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Desired Generation"
+          },
+          "desired_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Desired Revision"
+          },
+          "rebuild_due": {
+            "title": "Rebuild Due",
+            "type": "boolean"
+          },
+          "reload_state": {
+            "$ref": "#/components/schemas/OnboardingReloadStateResponse"
+          },
+          "residual": {
+            "$ref": "#/components/schemas/OnboardingResidualResponse"
+          },
+          "update_attention": {
+            "title": "Update Attention",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "active",
+          "desired_revision",
+          "desired_generation",
+          "build",
+          "reload_state",
+          "residual",
+          "rebuild_due",
+          "update_attention"
+        ],
+        "title": "OnboardingProfileLibraryResponse",
+        "type": "object"
+      },
+      "OnboardingRejectionsResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "archived": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Archived"
+          },
+          "available": {
+            "title": "Available",
+            "type": "boolean"
+          },
+          "eligible": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Eligible"
+          },
+          "truncated": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Truncated"
+          }
+        },
+        "required": [
+          "available",
+          "eligible",
+          "archived",
+          "truncated"
+        ],
+        "title": "OnboardingRejectionsResponse",
+        "type": "object"
+      },
+      "OnboardingReloadStateResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_checksum": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Checksum"
+          },
+          "instance_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Instance Id"
+          },
+          "observed_checksum": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Observed Checksum"
+          },
+          "ready": {
+            "title": "Ready",
+            "type": "boolean"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "required": [
+          "expected_checksum",
+          "observed_checksum",
+          "ready",
+          "instance_id",
+          "reason"
+        ],
+        "title": "OnboardingReloadStateResponse",
+        "type": "object"
+      },
+      "OnboardingResidualResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "active": {
+            "title": "Active",
+            "type": "boolean"
+          },
+          "compatible": {
+            "title": "Compatible",
+            "type": "boolean"
+          },
+          "dormant": {
+            "title": "Dormant",
+            "type": "boolean"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "required": [
+          "active",
+          "compatible",
+          "dormant",
+          "reason"
+        ],
+        "title": "OnboardingResidualResponse",
+        "type": "object"
+      },
+      "OnboardingReviewActionsResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "choose": {
+            "title": "Choose",
+            "type": "boolean"
+          },
+          "hate": {
+            "title": "Hate",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "choose",
+          "hate"
+        ],
+        "title": "OnboardingReviewActionsResponse",
+        "type": "object"
+      },
+      "OnboardingReviewCandidateResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "candidate_id": {
+            "title": "Candidate Id",
+            "type": "string"
+          },
+          "eligibility": {
+            "$ref": "#/components/schemas/OnboardingCandidateEligibilityResponse"
+          },
+          "facts": {
+            "$ref": "#/components/schemas/OnboardingCandidateFactsResponse"
+          },
+          "image_url": {
+            "title": "Image Url",
+            "type": "string"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "required": [
+          "candidate_id",
+          "image_url",
+          "source",
+          "eligibility",
+          "facts"
+        ],
+        "title": "OnboardingReviewCandidateResponse",
+        "type": "object"
+      },
+      "OnboardingReviewLinksResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "activity": {
+            "title": "Activity",
+            "type": "string"
+          },
+          "detail": {
+            "title": "Detail",
+            "type": "string"
+          },
+          "run": {
+            "title": "Run",
+            "type": "string"
+          }
+        },
+        "required": [
+          "activity",
+          "detail",
+          "run"
+        ],
+        "title": "OnboardingReviewLinksResponse",
+        "type": "object"
+      },
+      "OnboardingReviewReferenceResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "analysis_job_id": {
+            "title": "Analysis Job Id",
+            "type": "string"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "url": {
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id",
+          "analysis_job_id",
+          "url"
+        ],
+        "title": "OnboardingReviewReferenceResponse",
+        "type": "object"
+      },
+      "OnboardingReviewResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "allowed_actions": {
+            "$ref": "#/components/schemas/OnboardingReviewActionsResponse"
+          },
+          "analysis_job_id": {
+            "title": "Analysis Job Id",
+            "type": "string"
+          },
+          "candidates": {
+            "items": {
+              "$ref": "#/components/schemas/OnboardingReviewCandidateResponse"
+            },
+            "title": "Candidates",
+            "type": "array"
+          },
+          "links": {
+            "$ref": "#/components/schemas/OnboardingReviewLinksResponse"
+          },
+          "rejections": {
+            "$ref": "#/components/schemas/OnboardingRejectionsResponse"
+          },
+          "review_revision": {
+            "title": "Review Revision",
+            "type": "string"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "subject": {
+            "$ref": "#/components/schemas/OnboardingReviewSubjectResponse"
+          },
+          "version": {
+            "const": 1,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version",
+          "run_id",
+          "analysis_job_id",
+          "status",
+          "subject",
+          "review_revision",
+          "candidates",
+          "rejections",
+          "allowed_actions",
+          "links"
+        ],
+        "title": "OnboardingReviewResponse",
+        "type": "object"
+      },
+      "OnboardingReviewSubjectResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "id",
+          "title"
+        ],
+        "title": "OnboardingReviewSubjectResponse",
+        "type": "object"
+      },
+      "OnboardingStartResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "analysis_job": {
+            "$ref": "#/components/schemas/JobSubmissionResponse"
+          },
+          "status": {
+            "$ref": "#/components/schemas/OnboardingStatusResponse"
+          },
+          "subject": {
+            "$ref": "#/components/schemas/OnboardingSubjectResponse"
+          }
+        },
+        "required": [
+          "subject",
+          "analysis_job",
+          "status"
+        ],
+        "title": "OnboardingStartResponse",
+        "type": "object"
+      },
+      "OnboardingStatusResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "active_jobs": {
+            "items": {
+              "$ref": "#/components/schemas/OnboardingActiveJobResponse"
+            },
+            "title": "Active Jobs",
+            "type": "array"
+          },
+          "active_negative_subjects": {
+            "title": "Active Negative Subjects",
+            "type": "integer"
+          },
+          "active_positive_subjects": {
+            "title": "Active Positive Subjects",
+            "type": "integer"
+          },
+          "build_job_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Build Job Id"
+          },
+          "build_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Build Revision"
+          },
+          "consumer_reloaded": {
+            "title": "Consumer Reloaded",
+            "type": "boolean"
+          },
+          "failure": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure"
+          },
+          "initial_profiles_ready": {
+            "title": "Initial Profiles Ready",
+            "type": "boolean"
+          },
+          "libraries": {
+            "$ref": "#/components/schemas/OnboardingLibrariesResponse"
+          },
+          "lineage": {
+            "$ref": "#/components/schemas/OnboardingLineageResponse"
+          },
+          "next_action": {
+            "title": "Next Action",
+            "type": "string"
+          },
+          "pending_positive_subjects": {
+            "title": "Pending Positive Subjects",
+            "type": "integer"
+          },
+          "personalized_scoring_available": {
+            "title": "Personalized Scoring Available",
+            "type": "boolean"
+          },
+          "profile_generations": {
+            "$ref": "#/components/schemas/OnboardingProfileGenerationsResponse"
+          },
+          "rebuild_due": {
+            "title": "Rebuild Due",
+            "type": "boolean"
+          },
+          "residual_dormant": {
+            "title": "Residual Dormant",
+            "type": "boolean"
+          },
+          "review": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/OnboardingReviewReferenceResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "collecting",
+              "eligible",
+              "building",
+              "personalized",
+              "degraded"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "thresholds": {
+            "$ref": "#/components/schemas/OnboardingThresholdsResponse"
+          }
+        },
+        "required": [
+          "state",
+          "active_positive_subjects",
+          "active_negative_subjects",
+          "pending_positive_subjects",
+          "revision",
+          "thresholds",
+          "build_revision",
+          "build_job_id",
+          "profile_generations",
+          "consumer_reloaded",
+          "next_action",
+          "failure",
+          "libraries",
+          "initial_profiles_ready",
+          "personalized_scoring_available",
+          "rebuild_due",
+          "residual_dormant",
+          "active_jobs",
+          "review",
+          "lineage"
+        ],
+        "title": "OnboardingStatusResponse",
+        "type": "object"
+      },
+      "OnboardingSubjectResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "kind": {
+            "const": "movie",
+            "title": "Kind",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "year": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Year"
+          }
+        },
+        "required": [
+          "kind",
+          "id",
+          "title",
+          "year"
+        ],
+        "title": "OnboardingSubjectResponse",
+        "type": "object"
+      },
+      "OnboardingThresholdsResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "encouraged": {
+            "title": "Encouraged",
+            "type": "integer"
+          },
+          "required": {
+            "title": "Required",
+            "type": "integer"
+          },
+          "strong_target": {
+            "title": "Strong Target",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "required",
+          "encouraged",
+          "strong_target"
+        ],
+        "title": "OnboardingThresholdsResponse",
+        "type": "object"
+      },
       "OperationsConnectionBudget": {
         "properties": {
           "configured": {
@@ -14393,7 +15622,9 @@
           "200": {
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/OnboardingDecisionResponse"
+                }
               }
             },
             "description": "Successful Response"
@@ -14422,7 +15653,9 @@
           "200": {
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/OnboardingCompletionResponse"
+                }
               }
             },
             "description": "Successful Response"
@@ -14451,7 +15684,9 @@
           "200": {
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/OnboardingDecisionResponse"
+                }
               }
             },
             "description": "Successful Response"
@@ -14492,7 +15727,9 @@
           "200": {
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/OnboardingReviewResponse"
+                }
               }
             },
             "description": "Successful Response"
@@ -14538,7 +15775,9 @@
           "200": {
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/OnboardingStartResponse"
+                }
               }
             },
             "description": "Successful Response"
@@ -14567,7 +15806,9 @@
           "200": {
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/OnboardingStatusResponse"
+                }
               }
             },
             "description": "Successful Response"

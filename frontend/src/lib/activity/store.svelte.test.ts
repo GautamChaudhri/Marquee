@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { EventSourceLike } from './client';
-import { JobProgressStore, type JobProgressStoreDeps } from './store.svelte';
+import { JobProgressStore, type JobProgressStoreDeps, type StoreCadence } from './store.svelte';
 
 // ---- deterministic harness -------------------------------------------------
 
@@ -56,6 +56,7 @@ function row(id: string, phase = 'running', sequence = 1) {
 		version: 1,
 		job_id: id,
 		job_type: 'poster_pipeline',
+		fence_token: 1,
 		label: 'Select a poster',
 		label_key: 'jobs.poster_pipeline',
 		feature_area: 'posters',
@@ -140,7 +141,7 @@ interface Harness {
 	setHidden(value: boolean): void;
 }
 
-function setup(): Harness {
+function setup(cadence: Partial<StoreCadence> = {}): Harness {
 	const clock = new FakeClock();
 	const sources: FakeEventSource[] = [];
 	const calls: Array<{ url: string; signal?: AbortSignal }> = [];
@@ -192,7 +193,7 @@ function setup(): Harness {
 	};
 
 	return {
-		store: new JobProgressStore(deps),
+		store: new JobProgressStore(deps, cadence),
 		clock,
 		sources,
 		calls,
@@ -463,6 +464,31 @@ describe('event application and reconciliation', () => {
 		await flush();
 		expect(h.calls.length - before).toBe(1);
 	});
+
+	it('ignores an unrelated global event without allocating a record or repair', async () => {
+		h.setList({ items: [row('j1')], limit: 50, next_cursor: null, view: 'queue' });
+		h.store.acquireScope('posters', { view: 'queue' });
+		await flush();
+		const before = h.calls.length;
+		h.sources[0].emit('job.failed', lifecycleFrame('unrelated-job', 12, 'job.failed'));
+		h.clock.advance(400);
+		await flush();
+		expect(h.calls.length).toBe(before);
+		expect(h.store.records.has('unrelated-job')).toBe(false);
+	});
+
+	it('inserts a previously unknown explicitly tracked job from its authoritative snapshot', async () => {
+		h.setSnapshot(snapshot('snapshot-only'));
+		h.store.track('snapshot-only');
+		h.clock.advance(400);
+		await flush();
+		expect(h.store.records.get('snapshot-only')).toMatchObject({
+			jobId: 'snapshot-only',
+			fenceToken: 1,
+			progressSequence: 2,
+			partition: 'queue'
+		});
+	});
 });
 
 describe('terminal, fence, and progress preservation', () => {
@@ -492,6 +518,31 @@ describe('terminal, fence, and progress preservation', () => {
 		expect(record?.progress?.overall?.percent).toBe(55);
 	});
 
+	it('prunes expired terminal Queue cards while retaining the bounded visible tail', async () => {
+		const bounded = setup({ terminalRetentionMs: 1, terminalRecordLimit: 1 });
+		bounded.setList({
+			items: [row('j1', 'running', 1)],
+			limit: 50,
+			next_cursor: null,
+			view: 'queue'
+		});
+		bounded.store.acquireScope('posters', { view: 'queue' });
+		await flush();
+		bounded.setSnapshot(snapshot('j1', { phase: 'terminal', outcome: 'succeeded' }));
+		bounded.sources[0].emit('job.succeeded', lifecycleFrame('j1', 6, 'job.succeeded'));
+		bounded.clock.advance(400);
+		await flush();
+		expect(bounded.store.records.has('j1')).toBe(true);
+
+		bounded.clock.advance(2);
+		bounded.setSnapshot(snapshot('j2', { phase: 'terminal', outcome: 'succeeded' }));
+		bounded.store.track('j2');
+		bounded.clock.advance(400);
+		await flush();
+		expect(bounded.store.records.has('j1')).toBe(false);
+		expect(bounded.store.records.has('j2')).toBe(true);
+	});
+
 	it('accepts a newer attempt (higher fence) and resets its progress scope', async () => {
 		h.setList({ items: [row('j1', 'running', 1)], limit: 50, next_cursor: null, view: 'queue' });
 		h.setSnapshot(snapshot('j1', { fence_token: 1, progress_sequence: 5 }));
@@ -515,6 +566,27 @@ describe('terminal, fence, and progress preservation', () => {
 		const record = h.store.records.get('j1');
 		expect(record?.fenceToken).toBe(2);
 		expect(record?.progress?.overall?.percent).toBe(5);
+	});
+
+	it('repairs a lower progress sequence when the event advances the attempt fence', async () => {
+		h.setList({ items: [row('j1', 'running', 6)], limit: 50, next_cursor: null, view: 'queue' });
+		h.setSnapshot(
+			snapshot('j1', {
+				fence_token: 2,
+				progress_sequence: 1,
+				progress: { sequence: 1, overall: { mode: 'determinate', scope_id: 'retry', percent: 5 } }
+			})
+		);
+		h.store.acquireScope('posters', { view: 'queue' });
+		await flush();
+		const before = h.calls.length;
+		const retried = JSON.parse(progressFrame('j1', 8, 1));
+		retried.canonical_version = 2;
+		h.sources[0].emit('progress.updated', JSON.stringify(retried));
+		h.clock.advance(400);
+		await flush();
+		expect(h.calls.length).toBe(before + 1);
+		expect(h.store.records.get('j1')).toMatchObject({ fenceToken: 2, progressSequence: 1 });
 	});
 
 	it('rejects a lower-fence snapshot from the prior attempt', async () => {

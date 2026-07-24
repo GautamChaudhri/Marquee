@@ -8,7 +8,6 @@
 	import ProgressBar from '$lib/components/ProgressBar.svelte';
 	import StatusDot from '$lib/components/StatusDot.svelte';
 	import Icon from '$lib/components/Icon.svelte';
-	import TasteMap from '$lib/components/TasteMap.svelte';
 	import {
 		enrichProfile,
 		getRankingResidualDetail,
@@ -50,6 +49,7 @@
 	let mapData = $state<TasteMapData | null>(initialMapData);
 	let profiles = $state<ManagedArtifactSummary[]>(initialProfiles);
 	let residuals = $state<ManagedArtifactSummary[]>(initialResiduals);
+	let mapVisible = $state(false);
 	let mapLoading = $state(false);
 	let mapError = $state<string | null>(null);
 	let detailLoading = $state(false);
@@ -68,16 +68,32 @@
 		return rows.find((row) => row.status === 'active')?.id ?? rows[0]?.id ?? null;
 	}
 
+	async function loadMap() {
+		if (mapLoading) return;
+		mapLoading = true;
+		mapError = null;
+		try {
+			mapData = await getTasteMap(fetch, library);
+		} catch (e) {
+			mapError = e instanceof Error ? e.message : 'Could not load taste map';
+		} finally {
+			mapLoading = false;
+		}
+	}
+
+	async function toggleMap() {
+		mapVisible = !mapVisible;
+		if (mapVisible && !mapData) await loadMap();
+	}
+
 	async function refresh() {
 		try {
-			const [nextStatus, nextMap, nextProfiles, nextResiduals] = await Promise.all([
+			const [nextStatus, nextProfiles, nextResiduals] = await Promise.all([
 				getTasteStatus(fetch, library),
-				getTasteMap(fetch, library).catch(() => mapData),
 				getTasteProfiles(fetch, library).then((value) => value.profiles),
 				getRankingResiduals(fetch, library).then((value) => value.residuals)
 			]);
 			status = nextStatus;
-			mapData = nextMap;
 			profiles = nextProfiles;
 			residuals = nextResiduals;
 			const nextProfileId = preferredArtifactId(nextProfiles, selectedProfileId);
@@ -95,6 +111,7 @@
 				selectedResidualId = null;
 				residualDetail = null;
 			}
+			if (mapVisible) void loadMap();
 		} catch {
 			/* keep stale */
 		}
@@ -227,6 +244,8 @@
 	function setLibrary(next: 'movies' | 'tv') {
 		if (next === library) return;
 		library = next;
+		mapData = null;
+		mapError = null;
 		const url = new URL(page.url);
 		const sp = url.searchParams;
 		sp.set('library', next);
@@ -632,6 +651,14 @@
 				{/if}
 			</div>
 			<div class="map-actions">
+				<button
+					class="map-rebuild-btn"
+					onclick={toggleMap}
+					aria-expanded={mapVisible}
+					aria-controls="taste-map-panel"
+				>
+					{mapVisible ? 'Hide map' : 'Show map'}
+				</button>
 				<button class="map-rebuild-btn" onclick={rebuildMap} disabled={mapLoading}>
 					{mapLoading ? 'Building…' : 'Rebuild map'}
 				</button>
@@ -640,7 +667,15 @@
 				</button>
 			</div>
 		</div>
-		<TasteMap {mapData} {library} loading={mapLoading} error={mapError} />
+		{#if mapVisible}
+			<div id="taste-map-panel">
+				{#await import('$lib/components/TasteMap.svelte') then module}
+					<module.default {mapData} {library} loading={mapLoading} error={mapError} />
+				{:catch}
+					<p class="state error">Taste map could not be loaded. Rebuild remains available.</p>
+				{/await}
+			</div>
+		{/if}
 	</div>
 {/if}
 

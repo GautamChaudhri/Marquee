@@ -6,11 +6,11 @@ import logging
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from marquee.api.job_submission import submission_response
+from marquee.api.job_submission import JobSubmissionResponse, submission_response
 from marquee.api.routes.pipeline import _downloaded
 from marquee.core.jobs.contracts import TriggerKind
 from marquee.core.jobs.control import JobControlError, retry
@@ -27,6 +27,7 @@ from marquee.core.onboarding_review import (
 )
 from marquee.core.taste_preferences import (
     TastePreferenceError,
+    TasteReadiness,
     derive_readiness,
     reconcile_pending_onboarding_deployments,
     record_onboarding_analysis_submission,
@@ -63,6 +64,232 @@ class HatePosterRequest(ChoosePosterRequest):
     pass
 
 
+class OnboardingResponseModel(BaseModel):
+    """Closed public response base for the onboarding API boundary."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    def __getitem__(self, key: str) -> object:
+        """Preserve mapping reads for direct legacy route consumers.
+
+        HTTP responses stay closed Pydantic documents; this shim only keeps
+        in-process callers from treating the C2 response-model migration as a
+        behavioral wire-format change.
+        """
+        return self.model_dump(mode="json")[key]
+
+
+class OnboardingSubjectResponse(OnboardingResponseModel):
+    kind: Literal["movie"]
+    id: int
+    title: str
+    year: int | None
+
+
+class OnboardingReviewSubjectResponse(OnboardingResponseModel):
+    kind: str
+    id: int | None
+    title: str
+
+
+class OnboardingThresholdsResponse(OnboardingResponseModel):
+    required: int
+    encouraged: int
+    strong_target: int
+
+
+class OnboardingActivePublicationResponse(OnboardingResponseModel):
+    generation: int | None
+    checksum: str | None
+    revision: str | None
+    compatible: bool
+
+
+class OnboardingBuildResponse(OnboardingResponseModel):
+    id: str | None
+    job_id: str | None
+    state: str | None
+    revision: str | None
+    expected_generation: int | None
+    retry_of: str | None
+    failure: str | None
+
+
+class OnboardingReloadStateResponse(OnboardingResponseModel):
+    expected_checksum: str | None
+    observed_checksum: str | None
+    ready: bool
+    instance_id: str | None
+    reason: str | None
+
+
+class OnboardingResidualResponse(OnboardingResponseModel):
+    active: bool
+    compatible: bool
+    dormant: bool
+    reason: str | None
+
+
+class OnboardingProfileLibraryResponse(OnboardingResponseModel):
+    active: OnboardingActivePublicationResponse
+    desired_revision: str | None
+    desired_generation: int | None
+    build: OnboardingBuildResponse
+    reload_state: OnboardingReloadStateResponse
+    residual: OnboardingResidualResponse
+    rebuild_due: bool
+    update_attention: bool
+
+
+class OnboardingLibrariesResponse(OnboardingResponseModel):
+    movies: OnboardingProfileLibraryResponse
+    tv: OnboardingProfileLibraryResponse
+
+
+class OnboardingProfileGenerationsResponse(OnboardingResponseModel):
+    movies: int | None = None
+    tv: int | None = None
+
+
+class OnboardingActiveJobResponse(OnboardingResponseModel):
+    job_id: str
+    job_type: str
+    phase: str
+    subject_kind: str | None
+    subject_reference: str | None
+    activity_link: str
+
+
+class OnboardingReviewReferenceResponse(OnboardingResponseModel):
+    run_id: str
+    analysis_job_id: str
+    url: str
+
+
+class OnboardingJobLineageResponse(OnboardingResponseModel):
+    job_id: str
+    predecessor_job_id: str | None
+    phase: str
+    outcome: str | None
+    fence_token: int
+    retryable: bool
+    activity_link: str
+
+
+class OnboardingPostEffectValidationResponse(OnboardingResponseModel):
+    validated: Literal[True]
+    outcome: Literal["succeeded", "no_change"]
+    reason_code: str | None
+    expected_checksum: str
+    actual_checksum: str
+
+
+class OnboardingDeploymentLineageResponse(OnboardingJobLineageResponse):
+    exemplar_id: str
+    ordinal: int
+    state: str
+    post_effect_validation: OnboardingPostEffectValidationResponse | None
+
+
+class OnboardingLineageResponse(OnboardingResponseModel):
+    analysis: list[OnboardingJobLineageResponse]
+    deployment: list[OnboardingDeploymentLineageResponse]
+
+
+class OnboardingStatusResponse(OnboardingResponseModel):
+    state: Literal["collecting", "eligible", "building", "personalized", "degraded"]
+    active_positive_subjects: int
+    active_negative_subjects: int
+    pending_positive_subjects: int
+    revision: str
+    thresholds: OnboardingThresholdsResponse
+    build_revision: str | None
+    build_job_id: str | None
+    profile_generations: OnboardingProfileGenerationsResponse
+    consumer_reloaded: bool
+    next_action: str
+    failure: str | None
+    libraries: OnboardingLibrariesResponse
+    initial_profiles_ready: bool
+    personalized_scoring_available: bool
+    rebuild_due: bool
+    residual_dormant: bool
+    active_jobs: list[OnboardingActiveJobResponse]
+    review: OnboardingReviewReferenceResponse | None
+    lineage: OnboardingLineageResponse
+
+
+class OnboardingStartResponse(OnboardingResponseModel):
+    subject: OnboardingSubjectResponse
+    analysis_job: JobSubmissionResponse
+    status: OnboardingStatusResponse
+
+
+class OnboardingCandidateEligibilityResponse(OnboardingResponseModel):
+    status: Literal["survived_objective_filters"]
+    ocr_summary: str | None
+
+
+class OnboardingCandidateFactsResponse(OnboardingResponseModel):
+    width: int | None
+    height: int | None
+    language: str | None
+
+
+class OnboardingReviewCandidateResponse(OnboardingResponseModel):
+    candidate_id: str
+    image_url: str
+    source: str
+    eligibility: OnboardingCandidateEligibilityResponse
+    facts: OnboardingCandidateFactsResponse
+
+
+class OnboardingRejectionsResponse(OnboardingResponseModel):
+    available: bool
+    eligible: int | None
+    archived: int | None
+    truncated: int | None
+
+
+class OnboardingReviewActionsResponse(OnboardingResponseModel):
+    choose: bool
+    hate: bool
+
+
+class OnboardingReviewLinksResponse(OnboardingResponseModel):
+    activity: str
+    detail: str
+    run: str
+
+
+class OnboardingReviewResponse(OnboardingResponseModel):
+    version: Literal[1]
+    run_id: str
+    analysis_job_id: str
+    status: str
+    subject: OnboardingReviewSubjectResponse
+    review_revision: str
+    candidates: list[OnboardingReviewCandidateResponse]
+    rejections: OnboardingRejectionsResponse
+    allowed_actions: OnboardingReviewActionsResponse
+    links: OnboardingReviewLinksResponse
+
+
+class OnboardingDecisionResponse(OnboardingResponseModel):
+    decision: Literal["choose", "hate"]
+    event_id: str
+    exemplar_id: str | None
+    deployment_job_id: str | None
+    disposition: str
+    status: OnboardingStatusResponse
+
+
+class OnboardingCompletionResponse(OnboardingResponseModel):
+    revision: str
+    build_jobs: list[JobSubmissionResponse]
+    status: OnboardingStatusResponse
+
+
 def _review_http_error(exc: OnboardingReviewError) -> HTTPException:
     message = str(exc)
     if "unavailable" in message and "candidate" not in message:
@@ -81,16 +308,44 @@ async def _downloaded_movies(db: AsyncSession) -> list[tuple[int, list[str] | No
     return [(row[0], row[1]) for row in rows]
 
 
-def _job_lineage_item(job: Job, *, predecessor_job_id: str | None) -> dict[str, object]:
-    return {
-        "job_id": job.id,
-        "predecessor_job_id": predecessor_job_id,
-        "phase": job.phase,
-        "outcome": job.outcome,
-        "fence_token": job.fence_token,
-        "retryable": job.phase == "terminal" and job.outcome in {"failed", "cancelled"},
-        "activity_link": f"/projection-room/jobs/{job.id}",
-    }
+def _failure_message(value: object) -> str | None:
+    """Expose one safe, stable failure summary instead of an open-ended job payload."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        for key in ("message", "detail", "reason", "error", "code"):
+            candidate = value.get(key)
+            if isinstance(candidate, str) and candidate:
+                return candidate
+    return "Profile build failed; inspect the linked job detail."
+
+
+def _profile_library_response(value: dict[str, object]) -> OnboardingProfileLibraryResponse:
+    build = value["build"]
+    if not isinstance(build, dict):
+        raise ValueError("taste readiness build state is invalid")
+    return OnboardingProfileLibraryResponse.model_validate(
+        {
+            **value,
+            "build": {**build, "failure": _failure_message(build.get("failure"))},
+        }
+    )
+
+
+def _job_lineage_item(
+    job: Job, *, predecessor_job_id: str | None
+) -> OnboardingJobLineageResponse:
+    return OnboardingJobLineageResponse(
+        job_id=job.id,
+        predecessor_job_id=predecessor_job_id,
+        phase=job.phase,
+        outcome=job.outcome,
+        fence_token=job.fence_token,
+        retryable=job.phase == "terminal" and job.outcome in {"failed", "cancelled"},
+        activity_link=f"/projection-room/jobs/{job.id}",
+    )
 
 
 def _submission_result(job: Job, *, disposition: Literal["created", "reused"]) -> SubmissionResult:
@@ -106,7 +361,7 @@ def _submission_result(job: Job, *, disposition: Literal["created", "reused"]) -
     )
 
 
-async def _onboarding_lineage_status(db: AsyncSession) -> dict[str, list[dict[str, object]]]:
+async def _onboarding_lineage_status(db: AsyncSession) -> OnboardingLineageResponse:
     analyses = list(
         await db.scalars(
             select(OnboardingAnalysisSuccessor)
@@ -121,31 +376,119 @@ async def _onboarding_lineage_status(db: AsyncSession) -> dict[str, list[dict[st
             .order_by(TasteDeploymentSuccessor.created_at, TasteDeploymentSuccessor.ordinal)
         )
     )
-    analysis_items: list[dict[str, object]] = []
+    analysis_items: list[OnboardingJobLineageResponse] = []
     for row in analyses:
         job = await db.get(Job, row.job_id)
         if job is not None:
             analysis_items.append(_job_lineage_item(job, predecessor_job_id=row.predecessor_job_id))
-    deployment_items: list[dict[str, object]] = []
+    deployment_items: list[OnboardingDeploymentLineageResponse] = []
     for row in deployments:
         job = await db.get(Job, row.job_id)
         if job is None:
             continue
         item = _job_lineage_item(job, predecessor_job_id=row.predecessor_job_id)
-        item.update(
-            {
-                "exemplar_id": row.exemplar_id,
-                "ordinal": row.ordinal,
-                "state": row.state,
-                "post_effect_validation": row.post_effect_validation,
-            }
+        deployment_items.append(
+            OnboardingDeploymentLineageResponse(
+                **item.model_dump(),
+                exemplar_id=row.exemplar_id,
+                ordinal=row.ordinal,
+                state=row.state,
+                post_effect_validation=row.post_effect_validation,
+            )
         )
-        deployment_items.append(item)
-    return {"analysis": analysis_items, "deployment": deployment_items}
+    return OnboardingLineageResponse(analysis=analysis_items, deployment=deployment_items)
 
 
-@router.get("/status")
-async def onboarding_status(db: Annotated[AsyncSession, Depends(get_db)]):
+async def _onboarding_active_jobs(
+    db: AsyncSession,
+    *,
+    readiness_libraries: dict[str, dict[str, object]],
+    lineage: OnboardingLineageResponse,
+) -> list[OnboardingActiveJobResponse]:
+    """Load only jobs linked by onboarding lineage or its two explicit profile builds."""
+    job_ids = {item.job_id for item in lineage.analysis}
+    job_ids.update(item.job_id for item in lineage.deployment)
+    for library in readiness_libraries.values():
+        build = library.get("build")
+        if isinstance(build, dict) and isinstance(build.get("job_id"), str):
+            job_ids.add(build["job_id"])
+    if not job_ids:
+        return []
+    rows = list(
+        (
+            await db.scalars(
+                select(Job)
+                .where(Job.id.in_(job_ids), Job.phase != "terminal")
+                .order_by(Job.created_at.desc())
+            )
+        ).all()
+    )
+    return [
+        OnboardingActiveJobResponse(
+            job_id=row.id,
+            job_type=row.type,
+            phase=row.phase,
+            subject_kind=row.subject_kind,
+            subject_reference=row.subject_reference,
+            activity_link=f"/projection-room?view=queue&job={row.id}",
+        )
+        for row in rows
+    ]
+
+
+def _onboarding_status_response(
+    *,
+    readiness: TasteReadiness,
+    active_jobs: list[OnboardingActiveJobResponse],
+    review: OnboardingReviewReferenceResponse | None,
+    lineage: OnboardingLineageResponse,
+) -> OnboardingStatusResponse:
+    """Project internal readiness data through the closed public onboarding contract."""
+    libraries = readiness.libraries
+    profile_generations = readiness.profile_generations
+    if not isinstance(libraries, dict) or not all(
+        isinstance(libraries.get(library), dict) for library in ("movies", "tv")
+    ):
+        raise ValueError("taste readiness libraries are invalid")
+    if not isinstance(profile_generations, dict):
+        raise ValueError("taste readiness profile generations are invalid")
+    return OnboardingStatusResponse(
+        state=readiness.state,
+        active_positive_subjects=readiness.active_positive_subjects,
+        active_negative_subjects=readiness.active_negative_subjects,
+        pending_positive_subjects=readiness.pending_positive_subjects,
+        revision=readiness.revision,
+        thresholds=OnboardingThresholdsResponse(
+            required=readiness.thresholds.required,
+            encouraged=readiness.thresholds.encouraged,
+            strong_target=readiness.thresholds.strong_target,
+        ),
+        build_revision=readiness.build_revision,
+        build_job_id=readiness.build_job_id,
+        profile_generations=OnboardingProfileGenerationsResponse(
+            movies=profile_generations.get("movies"), tv=profile_generations.get("tv")
+        ),
+        consumer_reloaded=readiness.consumer_reloaded,
+        next_action=readiness.next_action,
+        failure=_failure_message(readiness.failure),
+        libraries=OnboardingLibrariesResponse(
+            movies=_profile_library_response(libraries["movies"]),
+            tv=_profile_library_response(libraries["tv"]),
+        ),
+        initial_profiles_ready=readiness.initial_profiles_ready,
+        personalized_scoring_available=readiness.personalized_scoring_available,
+        rebuild_due=readiness.rebuild_due,
+        residual_dormant=readiness.residual_dormant,
+        active_jobs=active_jobs,
+        review=review,
+        lineage=lineage,
+    )
+
+
+@router.get("/status", response_model=OnboardingStatusResponse, status_code=200)
+async def onboarding_status(
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> OnboardingStatusResponse:
     await reconcile_pending_onboarding_deployments(db)
     await db.commit()
     readiness = await derive_readiness(db)
@@ -161,51 +504,31 @@ async def onboarding_status(db: Annotated[AsyncSession, Depends(get_db)]):
         .order_by(PipelineRun.completed_at.desc().nullslast(), PipelineRun.run_id.desc())
         .limit(1)
     )
-    active_jobs = list(
-        (
-            await db.scalars(
-                select(Job)
-                .where(
-                    Job.type.in_(("poster_pipeline", "poster_deploy", "taste_rebuild")),
-                    Job.phase != "terminal",
-                )
-                .order_by(Job.created_at.desc())
-                .limit(20)
-            )
-        ).all()
-    )
     lineage = await _onboarding_lineage_status(db)
-    return {
-        **readiness.to_dict(),
-        "active_jobs": [
-            {
-                "job_id": row.id,
-                "job_type": row.type,
-                "phase": row.phase,
-                "subject_kind": row.subject_kind,
-                "subject_reference": row.subject_reference,
-                "activity_link": f"/projection-room?view=queue&job={row.id}",
-            }
-            for row in active_jobs
-        ],
-        "review": (
-            {
-                "run_id": review.run_id,
-                "analysis_job_id": review.job_id,
-                "url": f"/onboarding?review={review.run_id}",
-            }
+    active_jobs = await _onboarding_active_jobs(
+        db, readiness_libraries=readiness.libraries, lineage=lineage
+    )
+    return _onboarding_status_response(
+        readiness=readiness,
+        active_jobs=active_jobs,
+        review=(
+            OnboardingReviewReferenceResponse(
+                run_id=review.run_id,
+                analysis_job_id=review.job_id,
+                url=f"/onboarding?review={review.run_id}",
+            )
             if review is not None
             else None
         ),
-        "lineage": lineage,
-    }
+        lineage=lineage,
+    )
 
 
-@router.post("/start")
+@router.post("/start", response_model=OnboardingStartResponse, status_code=200)
 async def onboarding_start(
     db: Annotated[AsyncSession, Depends(get_db)],
     body: StartRequest | None = None,
-):
+) -> OnboardingStartResponse:
     _body = body or StartRequest()
     downloaded = await _downloaded_movies(db)
     if not downloaded:
@@ -227,7 +550,9 @@ async def onboarding_start(
         raise HTTPException(status_code=409, detail="all downloaded movies are already confirmed")
     movie = await db.get(Movie, movie_id)
     assert movie is not None
-    subject = {"kind": "movie", "id": movie.id, "title": movie.title, "year": movie.year}
+    subject = OnboardingSubjectResponse(
+        kind="movie", id=movie.id, title=movie.title, year=movie.year
+    )
     previous = await db.scalar(
         select(OnboardingAnalysisSuccessor)
         .join(Job, Job.id == OnboardingAnalysisSuccessor.job_id)
@@ -288,18 +613,107 @@ async def onboarding_start(
         except TastePreferenceError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         await db.commit()
-    return {
-        "subject": subject,
-        "analysis_job": submission_response(submission),
-        "status": await onboarding_status(db),
-    }
+    return OnboardingStartResponse(
+        subject=subject,
+        analysis_job=submission_response(submission),
+        status=await onboarding_status(db),
+    )
 
 
-@router.get("/runs/{run_id}/review")
-async def onboarding_review(run_id: str, db: Annotated[AsyncSession, Depends(get_db)]):
+def _as_int_or_none(value: object) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _review_ocr_summary(value: object) -> str | None:
+    if isinstance(value, str) and value:
+        return value
+    if isinstance(value, dict):
+        summary = value.get("summary")
+        if isinstance(summary, str) and summary:
+            return summary
+    return None
+
+
+def _review_response(payload: dict[str, object]) -> OnboardingReviewResponse:
+    """Convert archived evidence into the closed display contract used by the browser."""
+    raw_subject = payload.get("subject")
+    subject = raw_subject if isinstance(raw_subject, dict) else {}
+    raw_candidates = payload.get("candidates")
+    if not isinstance(raw_candidates, list):
+        raise OnboardingReviewError("canonical review candidates are invalid")
+    candidates: list[OnboardingReviewCandidateResponse] = []
+    for raw_candidate in raw_candidates:
+        if not isinstance(raw_candidate, dict):
+            raise OnboardingReviewError("canonical review candidate is invalid")
+        eligibility = raw_candidate.get("eligibility")
+        facts = raw_candidate.get("facts")
+        if not isinstance(eligibility, dict) or not isinstance(facts, dict):
+            raise OnboardingReviewError("canonical review candidate fields are invalid")
+        candidates.append(
+            OnboardingReviewCandidateResponse(
+                candidate_id=str(raw_candidate["candidate_id"]),
+                image_url=str(raw_candidate["image_url"]),
+                source=str(raw_candidate["source"]),
+                eligibility=OnboardingCandidateEligibilityResponse(
+                    status="survived_objective_filters",
+                    ocr_summary=_review_ocr_summary(eligibility.get("ocr")),
+                ),
+                facts=OnboardingCandidateFactsResponse(
+                    width=_as_int_or_none(facts.get("width")),
+                    height=_as_int_or_none(facts.get("height")),
+                    language=(facts.get("language") if isinstance(facts.get("language"), str) else None),
+                ),
+            )
+        )
+    raw_rejections = payload.get("rejections")
+    raw_actions = payload.get("allowed_actions")
+    raw_links = payload.get("links")
+    if not all(isinstance(value, dict) for value in (raw_rejections, raw_actions, raw_links)):
+        raise OnboardingReviewError("canonical review metadata is invalid")
+    return OnboardingReviewResponse(
+        version=1,
+        run_id=str(payload["run_id"]),
+        analysis_job_id=str(payload["analysis_job_id"]),
+        status=str(payload["status"]),
+        subject=OnboardingReviewSubjectResponse(
+            kind=(subject.get("kind") if isinstance(subject.get("kind"), str) else "movie"),
+            id=_as_int_or_none(subject.get("id")),
+            title=(
+                subject.get("title")
+                if isinstance(subject.get("title"), str)
+                else (
+                    subject.get("display_name")
+                    if isinstance(subject.get("display_name"), str)
+                    else "Current movie"
+                )
+            ),
+        ),
+        review_revision=str(payload["review_revision"]),
+        candidates=candidates,
+        rejections=OnboardingRejectionsResponse(
+            available=bool(raw_rejections.get("available")),
+            eligible=_as_int_or_none(raw_rejections.get("eligible")),
+            archived=_as_int_or_none(raw_rejections.get("archived")),
+            truncated=_as_int_or_none(raw_rejections.get("truncated")),
+        ),
+        allowed_actions=OnboardingReviewActionsResponse(
+            choose=bool(raw_actions.get("choose")), hate=bool(raw_actions.get("hate"))
+        ),
+        links=OnboardingReviewLinksResponse(
+            activity=str(raw_links["activity"]),
+            detail=str(raw_links["detail"]),
+            run=str(raw_links["run"]),
+        ),
+    )
+
+
+@router.get("/runs/{run_id}/review", response_model=OnboardingReviewResponse, status_code=200)
+async def onboarding_review(
+    run_id: str, db: Annotated[AsyncSession, Depends(get_db)]
+) -> OnboardingReviewResponse:
     """Render neutral choice cards from the verified terminal run archive."""
     try:
-        return await load_onboarding_review(db, run_id)
+        return _review_response(await load_onboarding_review(db, run_id))
     except OnboardingReviewError as exc:
         raise _review_http_error(exc) from exc
 
@@ -309,7 +723,7 @@ async def _decision_response(
     db: AsyncSession,
     *,
     decision: Literal["choose", "hate"],
-):
+) -> OnboardingDecisionResponse:
     try:
         bound = await bind_onboarding_decision(
             db,
@@ -323,34 +737,36 @@ async def _decision_response(
     except OnboardingReviewError as exc:
         await db.rollback()
         raise _review_http_error(exc) from exc
-    return {
-        "decision": decision,
-        "event_id": bound["event_id"],
-        "exemplar_id": bound["exemplar_id"],
-        "deployment_job_id": bound["deployment_job_id"],
-        "disposition": bound["disposition"],
-        "status": await onboarding_status(db),
-    }
+    return OnboardingDecisionResponse(
+        decision=decision,
+        event_id=bound["event_id"],
+        exemplar_id=bound["exemplar_id"],
+        deployment_job_id=bound["deployment_job_id"],
+        disposition=bound["disposition"],
+        status=await onboarding_status(db),
+    )
 
 
-@router.post("/choose")
+@router.post("/choose", response_model=OnboardingDecisionResponse, status_code=200)
 async def onboarding_choose(
     body: ChoosePosterRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
-):
+) -> OnboardingDecisionResponse:
     return await _decision_response(body, db, decision="choose")
 
 
-@router.post("/hate")
+@router.post("/hate", response_model=OnboardingDecisionResponse, status_code=200)
 async def onboarding_hate(
     body: HatePosterRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
-):
+) -> OnboardingDecisionResponse:
     return await _decision_response(body, db, decision="hate")
 
 
-@router.post("/complete")
-async def onboarding_complete(db: Annotated[AsyncSession, Depends(get_db)]):
+@router.post("/complete", response_model=OnboardingCompletionResponse, status_code=200)
+async def onboarding_complete(
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> OnboardingCompletionResponse:
     readiness = await derive_readiness(db)
     if readiness.active_positive_subjects < readiness.thresholds.required:
         raise HTTPException(
@@ -365,8 +781,8 @@ async def onboarding_complete(db: Annotated[AsyncSession, Depends(get_db)]):
         db, initiator_identifier="onboarding-api"
     )
     await db.commit()
-    return {
-        "revision": revision.digest,
-        "build_jobs": [submission_response(build) for build in builds],
-        "status": await onboarding_status(db),
-    }
+    return OnboardingCompletionResponse(
+        revision=revision.digest,
+        build_jobs=[submission_response(build) for build in builds],
+        status=await onboarding_status(db),
+    )

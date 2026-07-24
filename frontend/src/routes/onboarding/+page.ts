@@ -1,6 +1,10 @@
 import type { PageLoad } from './$types';
-import { getOnboardingReview, getOnboardingStatus } from '$lib/api/onboarding';
-import type { OnboardingReview, OnboardingStatus } from '$lib/api/types';
+import {
+	getOnboardingReview,
+	getOnboardingStatus,
+	type OnboardingReview,
+	type OnboardingStatus
+} from '$lib/api/onboarding';
 
 export const load: PageLoad = async ({ fetch, url }) => {
 	let status: OnboardingStatus | null = null;

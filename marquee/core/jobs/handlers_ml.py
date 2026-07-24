@@ -713,7 +713,9 @@ async def _publish_native_ranking_residual(
     if outcome.outcome == OUTCOME_CANCELLED:
         raise asyncio.CancelledError
     summary = outcome.summary if isinstance(outcome.summary, dict) else {}
-    if outcome.outcome == "no_change":
+    if outcome.outcome != OUTCOME_SUCCEEDED:
+        raise RuntimeError(f"residual runner failed: {outcome.error or outcome.outcome}")
+    if summary.get("publication_outcome") == "no_change":
         return MlPublicationResultV1(
             outcome="no_change",
             family="ranking_residual",
@@ -729,9 +731,6 @@ async def _publish_native_ranking_residual(
                 "seed": seed,
             },
         ).model_dump(mode="json")
-    if outcome.outcome != OUTCOME_SUCCEEDED:
-        raise RuntimeError(f"residual runner failed: {outcome.error or outcome.outcome}")
-
     residual_path = workspace_dir / "residual.npz"
     residual = ResidualArtifact.load(residual_path)
     if (
