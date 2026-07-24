@@ -193,7 +193,7 @@ def build_results_payload(
     scorer: str | None,
 ) -> dict:
     """Assemble the §17.3 run-results payload from an archived run."""
-    candidates = archive.get("candidates", [])
+    candidates = diagnostic_candidates(archive)
 
     ranked = sorted(
         (c for c in candidates if c.get("rank") is not None),
@@ -270,10 +270,38 @@ def _counts_from_candidates(candidates: list[dict]) -> dict[str, int]:
     }
 
 
+def diagnostic_candidates(archive: dict) -> list[dict]:
+    """Return bounded diagnostic records, accepting pre-7B archive shape only for history."""
+    ledger = archive.get("diagnostic_ledger")
+    if isinstance(ledger, dict) and isinstance(ledger.get("candidates"), list):
+        return [candidate for candidate in ledger["candidates"] if isinstance(candidate, dict)]
+    candidates = archive.get("candidates")
+    return [candidate for candidate in candidates if isinstance(candidate, dict)] if isinstance(candidates, list) else []
+
+
 def find_candidate(archive: dict, orig_filename: str) -> dict | None:
-    for candidate in archive.get("candidates", []):
+    """Find diagnostic evidence by reference; this does not make it reviewable."""
+    for candidate in diagnostic_candidates(archive):
         if candidate.get("orig_filename") == orig_filename:
             return candidate
+    return None
+
+
+def find_review_survivor(archive: dict, reference: str) -> dict | None:
+    """Find an explicitly persisted objective survivor, never a diagnostic record."""
+    review = archive.get("review")
+    if not isinstance(review, dict):
+        return None
+    survivors = review.get("survivors")
+    if not isinstance(survivors, list):
+        return None
+    for survivor in survivors:
+        if (
+            isinstance(survivor, dict)
+            and survivor.get("reference") == reference
+            and survivor.get("objective_eligible") is True
+        ):
+            return survivor
     return None
 
 

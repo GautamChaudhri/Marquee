@@ -593,3 +593,361 @@ worktree, and continues from the recorded phase.
   profiles, residual evidence/replacement evaluation, and consumer acknowledgement/readiness
   (7B-C1–C4 and 7B-H1). Activity races, generated contract closure, and final browser/screenshot
   work remain JMC7C; no JMC7A Activity snapshot was changed.
+
+## JMC7B Phase 7B0 — fresh reconciliation and defect freeze — 2026-07-23
+
+- **Starting identity:** `job-manager` is clean at `cb89ad4a8dc4ce4c6624e2556ef5706a7998f0a7`
+  (`jmc7a: close runtime control and execution safety`), tracking `origin/job-manager`; configured
+  author and committer are Gautam Chaudhri `<gautam.chaudhri@gmail.com>`. The annotated local
+  `jmc7a-complete` tag object `a5e0409e45d871b03d2e076423b43d61650b0b60` resolves to that commit,
+  compact tree `d68a2538e49c1f3e60a3b4d45b6c15152f3d8620`, and sole parent
+  `jmc6k-complete` `9a9ac1a80eb0d4fbc11d7de6f37c1a039af6083c`. The compact tree is byte-identical
+  to recovery branch `recovery/jmc7a-20260723T212814Z` and annotated tag
+  `recovery/jmc7a-pre-squash-20260723T212814Z`; the certified pre-squash commit is
+  `531ea30536ef780333fe01213e7ea55b7da5a2b9`. The JMC7A range is linear, merge-free,
+  configured-author-only, and unpushed.
+- **Recovery-material correction:** the ledger-recorded
+  `/tmp/marquee-jmc7a-20260723T212814Z.bundle` remains present but is now owned by
+  `nobody:nobody` with mode `0600`; read-only `git bundle verify` fails even when elevated. It was
+  neither modified nor deleted. A new repository-external repair bundle,
+  `/tmp/marquee-jmc7a-reverified-20260723T222639Z.bundle`, was created directly from the immutable
+  JMC7A recovery branch/tag and verifies complete SHA-1 history with both refs. This corrects
+  recoverability without claiming that the inaccessible original bytes were verified.
+- **Schema/contracts:** static Alembic head and the disposable PostgreSQL current/check are sole and
+  clean at `0014_jmc6k`; `alembic check` reports no upgrade operations. Deterministic OpenAPI is
+  current at 191 paths, SHA-256 `2cec76614f6951ce4b94f5de750eef00c95654b639e590627143fca0c8f874e6`.
+  Generated TypeScript is byte-clean, SHA-256
+  `b0d427107096ea5b5a82a24aa8d692a96dd0a35e1c3a9c5dba0e0d916ed57497`.
+- **Inventory correction:** JMC7A's preview addition makes the current registry 44 dispatch-enabled
+  definitions and 63 total definitions, not the historical 43 enabled-definition count. This is
+  current-source evidence from `ENABLED_JOB_TYPES`/`_SPECS`; no inventory test or runtime policy was
+  changed. The historical 43-definition audit remains historical and JMC7C still owns its final
+  certification.
+- **Frozen JMC7B call graphs and defects:** `build_run_payload` serializes one filename-sorted
+  `candidates` list; `_neutral_candidate_order` mutates records but persists neither a survivor
+  product nor review revision. `_archive_candidates` slices that raw list before validation and
+  labels every artifact-valid record as survived; `bind_onboarding_decision` has one run feedback
+  slot and one direct deployment submission. `profile_input_ids` filters only namespace, so frozen
+  builder input does not preserve/consume polarity. `schedule_profile_builds` coordinates profile
+  revisions but not consumer acknowledgement. `train_residual` persists aggregate partition counts
+  and compares only the weighted baseline with a candidate; `resolve_active_publication` validates
+  row/artifact bytes then returns a physical path without a typed consumer load/install/ack step.
+  JMC7B will replace these owned shortcuts without altering JMC7A control, retry, process, or
+  preview paths.
+- **Tooling:** Serena was activated and used for the frozen symbols/call graphs; RTK was used for
+  every shell, Git, schema, and contract command. ByteRover query repeatedly lost its daemon
+  connection and swarm configuration is absent. Per its error guidance, the daemon requires user
+  repair/restart; no ByteRover state was initialized or changed, and continuation is authorized by
+  the JMC7B kickoff.
+- **Current phase:** 7B0 in progress. Historical JMC7A runtime/process/action/preview, frontend,
+  Playwright, and CPU baseline evidence is retained above; fresh focused and complete JMC7B baseline
+  gates are next.
+- **Exact next actions:** run the fresh focused JMC7A/JMC7B baseline and complete disposable-PostgreSQL
+  backend gates, then add intentional-red production-path contracts for survivor separation,
+  onboarding successor recovery, negative native profiles, residual evidence/replacement evaluation,
+  and real consumer acknowledgement before implementing Phase 7B1.
+- **Safety/accounting:** no operator database, library, media, schedule, production service, remote
+  push, activation, or unrelated work was touched. The JMC7C-owned Activity screenshot was not
+  changed or re-recorded.
+
+## JMC7B Phase 7B1 — survivor truth and neutral ordering — 2026-07-23
+
+- **Phase commits:** `3da36852a32c41a364f7e02c691b8b147c3762c9`
+  (`separate review survivors`), tree `28b041d2dad26ab1f079ce2e4b454b5d1044f7a6`, parent
+  `cb89ad4a8dc4ce4c6624e2556ef5706a7998f0a7`; and the final boundary hardening
+  `42c9a01f9e2b11e1d9c9495d38d9ea3a812ac493` (`harden review survivor boundaries`), tree
+  `f8eb9a7c27ef72feb2a33c31b0f1a557bdeb81a1`, parent `3da36852a32c41a364f7e02c691b8b147c3762c9`.
+  Both commits are single-parent, configured-author-only commits by Gautam Chaudhri
+  `<gautam.chaudhri@gmail.com>` and remain local on `job-manager`.
+- **Completed survivor contract:** runner output now persists a bounded diagnostic ledger separately
+  from an explicit neutral `review.survivors` sequence. The neutral source-family order is preserved
+  verbatim instead of filename or artifact enumeration order; each survivor has an opaque, run-bound
+  identity and may enter review only after every objective gate passed. The internal runner registers
+  bytes only for those ordered survivors; artifact attachment retains the first 100 only after the
+  survivor filter/order, records eligible/archived/truncated counts, and seals the survivor document
+  with its persisted checksum.
+- **Decision and retrieval integrity:** onboarding refuses legacy or ambiguous candidate lists,
+  validates the persisted checksum, objective facts, exact survivor position, artifact kind/status/
+  storage-key/checksum, attempt/run lineage, and confined bytes. Binding locks the PipelineRun,
+  archive artifact, and selected artifact in the same transaction before creating an event. The poster
+  endpoint resolves only explicit review survivors and performs the same artifact/attempt/metadata/
+  byte validation; diagnostics cannot be previewed as choices. Historical feedback/result archives
+  remain readable through an explicit diagnostic compatibility helper without inferring onboarding
+  membership.
+- **Focused evidence:** final 7B1 survivor/order/artifact/legacy-feedback group reports **73 passed
+  in 5.32s**. Its contracts cover mixed accepted/rejected output, resolution/style/OCR/detail
+  rejection isolation, source-diverse permutation-invariant neutral ordering, no-score ordering,
+  review truncation at 100 after eligibility, review checksum, stale-review conflict without partial
+  event, artifact/attempt lineage, corrupt bytes, rejected diagnostic retrieval, and refusal of a
+  legacy raw candidate archive. The existing JMC6J cold-start order contract supplies the restart-
+  equivalent reconstitution proof; no score, filename, or artifact iteration becomes review order.
+- **Complete gates:** fresh disposable-PostgreSQL backend certification reports **1401 passed,
+  3 skipped, 1 CPU-fallback Paddle warning in 144.60s**. The skips remain opt-in capability cases;
+  the warning is the established no-CUDA fallback. Ruff and `git diff --check` are clean. Alembic
+  current is sole head `0014_jmc6k` and `alembic check` reports no upgrade operations. OpenAPI stays
+  deterministic at 191 paths, SHA-256 `2cec76614f6951ce4b94f5de750eef00c95654b639e590627143fca0c8f874e6`;
+  generated TypeScript stays byte-identical, SHA-256
+  `b0d427107096ea5b5a82a24aa8d692a96dd0a35e1c3a9c5dba0e0d916ed57497`.
+- **Frontend/browser:** Svelte check has 0 errors and 0 warnings; Prettier/ESLint, production build,
+  and Vitest (**10 files / 112 tests**) pass. The relevant Chromium onboarding Playwright/Axe run
+  reports **3 passed**. Its initial sandbox-only socket denial was immediately rerun with the local
+  test-server permission; it is not a product failure. The JMC7C-owned Activity screenshot was not
+  modified or re-recorded.
+- **Current phase/next:** Phase 7B1 is complete. Begin 7B2 by freezing the existing analysis →
+  decision → deployment/exemplar call graph and models, then add explicit successor lineage and
+  shared-command recovery for failed/cancelled/no-change/crash-after-effect deployment states. The
+  first implementation action is to locate every reader/writer of `PipelineRun.feedback_event_id`,
+  `TasteExemplar.deployment_job_id`, and canonical poster deployment terminal evidence before adding
+  the one permitted forward migration if normalized lineage requires it.
+- **Safety/accounting:** all verification used disposable PostgreSQL and `/tmp` data only. No operator
+  database, library, media, schedule, production service, remote push, activation, or unrelated work
+  was touched. ByteRover remains unavailable pending its daemon/configuration repair; Serena and RTK
+  remained in use throughout.
+
+## JMC7B Phase 7B2 — recoverable onboarding/deployment takeover checkpoint — 2026-07-23
+
+- **Adopted worktree state:** `42c9a01` remains the last committed 7B1 boundary. The owned,
+  uncommitted 7B2 slice adds forward migration `0015_jmc7b`, append-only
+  `OnboardingAnalysisSuccessor` and `TasteDeploymentSuccessor` records, shared-command retry
+  bindings for onboarding `poster_pipeline`/`poster_deploy` jobs, bounded terminal-state repair,
+  and post-effect validation recording before exemplar activation. It has not been committed or
+  certified.
+- **Reconciliation evidence:** the existing taste-authority fixture was still modelling a selected
+  pipeline candidate as its own deployment job, which is not a valid 7B2 boundary. It now creates
+  a separate canonical `poster_deploy` job/attempt while retaining the candidate artifact on the
+  pipeline job. Focused `tests/test_jmc6j_taste_authority.py tests/test_job_commands.py -q`
+  reports **15 passed in 3.30s**. `ruff check marquee tests/test_jmc6j_taste_authority.py` and
+  `git diff --check` are clean.
+- **Current phase:** 7B2 remains in progress. The partial implementation still needs dedicated
+  public/shared-command successor tests for failed/cancelled analysis and deployment, restart
+  reconstruction, validated and unvalidated no-change, redelivery/stale-fence behavior, and
+  crash-after-effect finalization. In particular, bounded reconciliation currently records durable
+  terminal evidence but has not yet proved recovery can finish a validated effect without repeating
+  an unsafe mutation. Do not claim 7B2 certification, migration/model parity, full backend,
+  generated-contract, or lifecycle evidence.
+- **Exact next actions:** inspect the terminal delivery/result evidence and retained-artifact
+  transaction boundaries; add the 7B2 public-path successor/recovery contracts; implement only the
+  proven crash-after-effect finalization path; then run the focused suite, disposable-PostgreSQL
+  migration/model checks, full backend, and phase gates before committing. No operator resource,
+  push, schedule activation, or agent attribution has occurred.
+
+## JMC7B Phase 7B2 — successor and post-effect recovery checkpoint — 2026-07-23
+
+- **Completed slice:** retry successor binding now requires a terminal failed/cancelled canonical
+  predecessor, matching retry type, and explicit `retry_of_job_id`; it never reopens a terminal row.
+  A validated terminal succeeded or `already_identical` no-change effect may be reconciled from its
+  durable successor result: repair reuses an existing pinned artifact when present, otherwise pins
+  the retained selected bytes, and activates only after checksum-matched post-effect proof. It never
+  repeats a poster mutation. Unvalidated no-change remains pending. Negative feedback remains
+  deployment-free and cannot be forced through positive deployment-successor validation.
+- **Focused evidence:** feedback, successor, recovery/no-change, cold-start, poster mutation,
+  migration-head, and frozen-schema coverage reports **57 passed in 10.15s**; lint and diff checks
+  are clean. The first isolated full backend run reports **1405 passed, 3 skipped, 1 inherited
+  CPU-fallback warning, 1 failure**: the only failure was offline backup/restore against a cluster
+  upgraded with Alembic alone, where PgQueuer was deliberately absent. After provisioning the same
+  isolated cluster through `python -m marquee.db_migration`, that exact backup/restore test passes
+  (**1 passed in 1.44s**). Alembic current is sole head `0015_jmc7b`; `alembic check` reports no
+  new upgrade operations.
+- **Current phase/next:** 7B2 is still in progress. Add public onboarding start/status and shared
+  retry command recovery tests across API/worker restart boundaries, then certify the full fresh
+  suite on the fully provisioned isolated cluster before the phase commit. No operator resource,
+  push, activation, or unrelated work has occurred.
+
+## JMC7B Phase 7B2 — recoverable analysis, decision, and deployment — 2026-07-23
+
+- **Phase commit:** `3e7d9dd0b789d9e98ee8546c1f15a84f4112e77a` (`recover onboarding successors`),
+  tree `990676684fda5c14213356f0d5d33fa612e5b992`, parent
+  `42c9a01f9e2b11e1d9c9495d38d9ea3a812ac493`; it is a configured-author-only, local,
+  single-parent commit on `job-manager`.
+- **Completed recovery contract:** forward revision `0015_jmc7b` adds append-only analysis and
+  deployment successor records. Onboarding start reuses compatible nonterminal analysis and routes
+  failed/cancelled analysis through the shared retry command; it never resurrects a terminal job.
+  The same shared command appends deployment successors while the one pending positive exemplar
+  remains pending. Status reconstructs full successor history from PostgreSQL without browser state.
+  It runs bounded repair only: a current-fence, checksum-matched durable post-effect proof may
+  activate exactly once after succeeded/no-change or a crash-after-effect failed/cancelled delivery,
+  without replaying the poster mutation. Unvalidated no-change and stale-fence evidence remain
+  pending and cannot increment readiness.
+- **Public/restart evidence:** the added API contracts cover failed and cancelled analysis start
+  successors, compatible nonterminal reuse, public analysis and deployment retry, and fresh-session
+  status lineage. Status itself proves crash-after-effect repair and stale-fence refusal. The focused
+  7B2 regression group reports **64 passed in 5.90s**; its final successor/recovery subset reports
+  **21 passed in 2.75s**.
+- **Complete gates:** fully provisioned disposable PostgreSQL is at sole head `0015_jmc7b`; Alembic
+  model-drift check reports no upgrade operations. Fresh backend certification reports **1413
+  passed, 3 skipped, 1 inherited Paddle CPU-fallback warning in 146.25s**. Ruff over `marquee`,
+  `tests`, and `scripts`, plus `git diff --check`, are clean. Deterministic OpenAPI remains 191
+  paths with SHA-256 `2cec76614f6951ce4b94f5de750eef00c95654b639e590627143fca0c8f874e6`; regenerated
+  TypeScript is byte-identical with SHA-256
+  `b0d427107096ea5b5a82a24aa8d692a96dd0a35e1c3a9c5dba0e0d916ed57497`.
+- **Frontend/browser:** Svelte check has 0 errors and 0 warnings; Prettier/ESLint, production build,
+  and Vitest (**10 files / 112 tests**) pass. Chromium onboarding Playwright/Axe reports **3 passed**.
+  Its Node `NO_COLOR`/`FORCE_COLOR` notices are test-harness environment warnings; no application
+  warning or frontend failure was introduced. The JMC7C-owned Activity screenshot remains unchanged.
+- **Current phase/next:** 7B2 is complete. Begin 7B3 by freezing the production profile
+  snapshot→runner codec→native loader/scoring path, removing every positive-only production filter,
+  and proving an explicit negative changes the native artifact and production similarity/penalty
+  while namespace isolation, revocation, bounded duplicate/limit handling, coordinator coalescing,
+  rollback, and restart stay intact.
+- **Safety/accounting:** only disposable PostgreSQL at port 55456 and test data under `/tmp` were
+  used. No operator database, library, media, schedules, production service, remote push, or
+  activation was touched. The mandated `brv` CLI remains unavailable; the configured ByteRover MCP
+  service was used for query and queued curation `cur-1784853152517`.
+
+## JMC7B Phase 7B3 — polarity-complete native profiles — 2026-07-23
+
+- **Phase commit:** `64da5aa6241a5346c2eb133a9daab503be6aa995`
+  (`complete-polarity-profiles`), tree `2c3999fbc02264f39329ef6d327a951326afd76c`, parent
+  `8fb3e6e1400c951489267c7a4647fea17578c412`; it is a configured-author-only, local,
+  single-parent commit on `job-manager`.
+- **Completed profile contract:** `TasteProfileRevision` freezes a deterministic manifest for every
+  active exemplar: polarity, namespace, bounded weight, retained artifact/checksum, embedding
+  identity, and supersession lineage. The evidence digest now changes with all of those frozen
+  inputs. The publisher validates the immutable manifest against current active evidence, stages all
+  applicable global-plus-library positives and negatives separately, and forwards each bounded
+  basename weight through the contained runner. The native builder records positive and negative
+  weight arrays; the production `NumpyTasteStore` loads them with legacy unit-weight compatibility
+  and uses them in the same contrastive CLIP/DINO top-k penalty path. Revoked/stale evidence fails
+  closed rather than being silently rebuilt from a changed set.
+- **Production-effect proof:** `tests/test_jmc7b_profile_polarity.py` proves native hate evidence
+  is loadable and lowers the actual production style score for its target while an unrelated vector
+  remains stable; it also proves runner staging preserves the separate negative directory and exact
+  frozen maps. Manifest/namespace lineage coverage, prior coalescing/revocation contracts, native
+  runner, codec, publication, and coordinator regressions report **57 passed in 13.65s**.
+- **Complete gates:** the final JUnit-backed disposable backend run reports **1,419 tests, 0 errors,
+  0 failures, 3 skips in 148.199s**. Ruff over `marquee`, `tests`, and `scripts`, and
+  `git diff --check`, are clean. A second fresh disposable database applied the final `0015_jmc7b`
+  migration successfully and `alembic check` found no drift; migration head remains sole
+  `0015_jmc7b`. OpenAPI remains current at 191 paths. No frontend contract or presentation source
+  changed in this backend-only phase, so the certified JMC7B2 frontend/browser baseline remains
+  applicable and the inherited JMC7C Activity screenshot exception is unchanged.
+- **Current phase/next:** 7B3 is complete. Begin 7B4 by tracing the residual coordinator,
+  automatic feedback scheduling, frozen ordered evidence identity, exposure scorer inputs, and
+  candidate/active replacement evaluator. The first implementation action is to remove every
+  caller-built one-event digest and prove the coordinator owns partitions and compatibility inputs.
+- **Safety/accounting:** only disposable PostgreSQL at port 55456 and `/tmp` test data were used;
+  no operator resource, remote push, activation, or unrelated work was touched. ByteRover MCP
+  curation is queued as `cur-1784854589773`; Serena and RTK remained in use.
+
+## JMC7B Phase 7B4 — exact residual coordination and evaluation — 2026-07-23
+
+- **Phase commit:** `c1b3a837125653acec912683d56d4a6a7a3dc348`
+  (`coordinate-residual-evidence`), tree `f12fe7127d7ca6db7c610842f2979e01c99cf72d`, parent
+  `8d14edca073296c490fb248794b6456263c9e272`; it is a configured-author-only, local,
+  single-parent commit on `job-manager`.
+- **Completed residual contract:** `freeze_residual_evidence` owns the full ordered eligible event
+  snapshot, row checksum, and event-ID digest. Automatic feedback and undo no longer supply one
+  event ID as the residual revision. Scheduling idempotency binds namespace, frozen evidence,
+  active profile checksum/generation, weighted-baseline signature, and residual generation; the
+  worker independently freezes again and truthfully supersedes stale profile, baseline, or evidence
+  input. The explicit request preserves those compatibility values for retry/restart evidence.
+- **Replacement evaluation:** stored feedback exposure now separates weighted `baseline_score`,
+  active residual delta, and deployed final score. Held-out candidate scoring uses the permanent
+  weighted baseline; a compatible active native residual is staged through the contained runner and
+  evaluated independently. Candidate regression produces no-change, leaving the active artifact
+  intact. Native residual artifacts preserve exact train/validation/test subject and event IDs,
+  per-partition metrics, and a checked overlap proof in their immutable payload/metadata.
+- **Focused evidence:** residual, feedback, contract, contained-runner, request-document, and
+  native publication suites report **77 passed in 15.52s**; final focused compatibility coverage
+  reports **61 passed in 4.72s**. Ruff and diff checks are clean. OpenAPI remains current at 191
+  paths because the extended document is an internal job request, not a public route contract.
+- **Complete gate:** disposable backend JUnit reports **1,420 tests, 0 errors, 0 failures, 3 skips
+  in 141.602s**. No migration, frontend contract, or presentation source changed, so the 7B2
+  frontend/browser baseline and inherited JMC7C Activity screenshot exception remain unchanged.
+- **Current phase/next:** 7B4 is complete. Begin 7B5 by freezing all publisher/resolver/readiness
+  paths and adding a durable consumer acknowledgement authority. The first implementation action is
+  to identify every publisher-authored reload state and every runtime/readiness artifact resolver.
+- **Safety/accounting:** only disposable PostgreSQL at port 55456 and `/tmp` test data were used;
+  no operator database, library, media, schedule, production service, push, or activation occurred.
+  ByteRover MCP curation is queued as `cur-1784855464244`.
+
+## JMC7B Phase 7B5 — real consumer acknowledgement and truthful readiness — 2026-07-23
+
+- **Completed publication contract:** `MlConsumerAcknowledgement` is a normalized, immutable
+  generation/checksum/instance record tied to the exact immutable artifact. The publisher can
+  validate and activate a profile but cannot acknowledge consumption or write the legacy
+  consumer-reload state. The shared resolution service now verifies the active pointer, artifact
+  status/kind/checksum/confined bytes, metadata compatibility, and the actual production loader
+  before an installed/supplied consumer writes its acknowledgement.
+- **Runtime/readiness truth:** poster execution performs the production taste-profile load before
+  staging runner inputs, acknowledges only after those inputs are ready for the contained scoring
+  consumer, and explicitly records profile/residual fallback diagnostics. Readiness uses the same
+  loaded-publication resolver and needs a live `poster_pipeline` acknowledgement for the exact
+  movie/TV generation and checksum. A dead instance, stale acknowledgement, bad bytes, missing or
+  wrong artifact, metadata mismatch, or loader failure therefore cannot report personalized;
+  a newer unacknowledged attempt still leaves an earlier active generation intact.
+- **Focused evidence:** publication, product-effect, readiness, profile-polarity, onboarding,
+  survivor, residual, mutation, and contract suites report **67 passed**. The dedicated offline
+  backup/restore certification and frozen-deployment-table contract report **15 passed** after the
+  acknowledgement table was added to the deployment freeze.
+- **Complete gate:** a fresh disposable PostgreSQL database on port 55456 was migrated from root
+  through sole head `0015_jmc7b`, provisioned through `python -m marquee.db_migration`, and passed
+  Alembic `current` and model-drift `check`. The JUnit-backed full backend suite reports **1,421
+  tests, 0 errors, 0 failures, 3 skips**. Ruff over `marquee`, `tests`, and the migration plus
+  `git diff --check` are clean. The only initially inconsistent database was the pre-existing
+  disposable `marquee_test` fixture stamped at head without this table; certification used the
+  new clean database instead of treating that fixture as migration proof.
+- **Current phase/next:** 7B5 is complete. Begin 7B6 with a fresh, restart-safe lifecycle proof
+  spanning survivor review, successor recovery, separate profile consumer acknowledgements,
+  polarity updates, and residual replacement/rollback; then run the final repository gates and
+  JMC7C handoff material.
+- **Safety/accounting:** only disposable PostgreSQL and `/tmp` data were used. No operator
+  database, library, media, schedules, production service, remote push, or activation was touched.
+
+## JMC7B Phase 7B6 — lifecycle certification and JMC7C handoff — 2026-07-23
+
+- **Verified predecessor and phase range:** annotated `jmc7a-complete` peels to
+  `cb89ad4a8dc4ce4c6624e2556ef5706a7998f0a7`, tree
+  `d68a2538e49c1f3e60a3b4d45b6c15152f3d8620`, with sole parent
+  `jmc6k-complete` `9a9ac1a80eb0d4fbc11d7de6f37c1a039af6083c`. The unpushed JMC7B
+  range is linear, merge-free, configured-author-only, and has ten commits at this point:
+  survivor implementation `3da3685`/`42c9a01`, recovery `3e7d9dd`, polarity
+  `64da5aa`, residual coordination `c1b3a83`, B5 consumption `708a59a`, and their
+  phase-ledger commits including B5 `fecebe2`. No unrelated commit or second worktree exists.
+- **Fresh lifecycle proof:** a second disposable PostgreSQL database,
+  `jmc7b_b6_20260723` on port 55456, was migrated and provisioned through
+  `python -m marquee.db_migration`. The cross-phase lifecycle group reports **48 passed in
+  4.67s**. Together it exercises persisted neutral survivors/rejections, public terminal-analysis
+  successor/restart reconstruction, failed/cancelled deployment retry and bounded crash-after-effect
+  reconciliation, 49→50 separate movie/TV profile coordination, native positive/negative profile
+  effects, ordered residual evidence and held-out replacement/no-change behavior, and real
+  profile-load/consumer acknowledgement before poster scoring/readiness.
+- **Backend/schema gates:** the final JUnit-backed full backend run on a separately fresh,
+  fully provisioned database reports **1,421 tests, 0 errors, 0 failures, 3 skips**. Ruff over
+  `marquee`, `tests`, and `0015_jmc7b` plus `git diff --check` are clean. The sole head/current is
+  `0015_jmc7b`; model-drift check reports no upgrade operations. The historical full-migration
+  directory still has 13 pre-existing Ruff style findings in old immutable revisions; the project
+  gate and JMC7B migration scope are clean, so those were not rewritten.
+- **Contract/frontend/browser gates:** OpenAPI is current at 191 paths, SHA-256
+  `2cec76614f6951ce4b94f5de750eef00c95654b639e590627143fca0c8f874e6`; generated TypeScript is
+  byte-identical at SHA-256 `b0d427107096ea5b5a82a24aa8d692a96dd0a35e1c3a9c5dba0e0d916ed57497`.
+  Svelte check reports 0 errors/0 warnings; Prettier/ESLint pass; Vitest reports **10 files / 112
+  tests**; the production build passes; Chromium Playwright/Axe reports **14 passed**. No frontend
+  contract or presentation source was changed in JMC7B.
+- **Capability accounting:** all available opt-in live CPU smokes pass: real taste-profile build
+  (**1 passed, 1.83s**), taste-map build (**1 passed, 10.98s**), and poster-single scoring
+  (**1 passed, 1.27s**) on confined fixture bytes. `nvidia-smi` finds no usable device, so GPU and
+  real operator-library/media capabilities remain unavailable and are not claimed green.
+- **Reachability closure:** current-code scans show the profile publisher preserves separate
+  positive/negative staging and weights (the positive threshold is intentionally a readiness
+  threshold, not a polarity filter); residual execution recomputes only
+  `freeze_residual_evidence`; the publisher writes no consumer acknowledgement; poster runtime and
+  readiness call the shared loaded-publication resolver; and onboarding/deployment retry paths require
+  terminal predecessors plus explicit successor lineage rather than terminal-job reuse.
+- **Exact JMC7C handoff:** JMC7B closes 7B-C1 through 7B-C4 and 7B-H1. JMC7C inherits the compact
+  `jmc7b-complete` tree and must own Activity reconciliation, generated closed onboarding responses,
+  real browser/43-definition certification, current-document/dead-code cleanup, bundle work, and any
+  remaining operator/browser acceptance. It must not reintroduce publisher-authored consumption or
+  readiness-local artifact validation.
+- **Pre-compaction invariant:** `fecebe26b52a83e3a474d0d666215d3aff4cb0a9` is the certified
+  B5 phase tip with tree `4c34725ef5cd269e2b8b61769a4e84f5a0f68b8a`; the only content after it is
+  this final ledger. Commit this ledger using the configured author, then capture that exact
+  ledger-bearing pre-squash tip in recovery material. The compact commit must be exactly
+  `jmc7b: close onboarding publication and learning integrity`, have sole parent
+  `jmc7a-complete^{}`, and have a tree byte-identical to the captured pre-squash tip.
+- **Recovery protocol:** use timestamp `20260724T014846Z` to create branch
+  `recovery/jmc7b-20260724T014846Z`, annotated tag
+  `recovery/jmc7b-pre-squash-20260724T014846Z`, and repository-external bundle
+  `/tmp/marquee-jmc7b-20260724T014846Z.bundle`. Verify the bundle before rewriting, re-prove a clean
+  one-worktree linear range, preserve all recovery material, annotate local `jmc7b-complete`, and do
+  not edit this timeline afterward, push, activate, or touch operator resources.

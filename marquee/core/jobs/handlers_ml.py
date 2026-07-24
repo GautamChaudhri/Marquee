@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 from pathlib import Path
 
@@ -32,7 +31,7 @@ from marquee.core.jobs.ml_publication import (
 from marquee.core.jobs.runner_progress import RunnerProgressBridge
 from marquee.core.pipeline_config import pipeline_settings
 from marquee.core.taste_preferences import mark_profile_build_running, record_profile_build_terminal
-from marquee.ml.residual import ResidualArtifact, baseline_signature
+from marquee.ml.residual import ResidualArtifact, baseline_signature, freeze_residual_evidence
 from marquee.models import (
     JobArtifact,
     PosterPreferenceEvent,
@@ -133,28 +132,52 @@ async def _publish_native_taste_profile(
                 ).all()
             )
             by_id = {row.id: row for row in frozen}
+            manifest_rows = revision.exemplar_manifest
+            if len(manifest_rows) != len(revision.exemplar_ids) or any(
+                not isinstance(entry, dict) or entry.get("exemplar_id") != exemplar_id
+                for entry, exemplar_id in zip(manifest_rows, revision.exemplar_ids, strict=True)
+            ):
+                raise RuntimeError("canonical taste revision has an invalid frozen manifest")
             if len(by_id) != len(revision.exemplar_ids) or any(
                 by_id.get(exemplar_id) is None
-                or by_id[exemplar_id].checksum != checksum
-                for exemplar_id, checksum in zip(
-                    revision.exemplar_ids, revision.exemplar_checksums, strict=True
-                )
+                or by_id[exemplar_id].status != "active"
+                or by_id[exemplar_id].checksum != entry.get("checksum")
+                or by_id[exemplar_id].namespace != entry.get("namespace")
+                or by_id[exemplar_id].polarity != entry.get("polarity")
+                or float(by_id[exemplar_id].evidence_weight) != float(entry.get("weight", 0))
+                or by_id[exemplar_id].retained_artifact_id != entry.get("retained_artifact_id")
+                or by_id[exemplar_id].embedding_identity != entry.get("embedding_identity")
+                or by_id[exemplar_id].supersedes_exemplar_id != entry.get("supersedes_exemplar_id")
+                for exemplar_id, entry in zip(revision.exemplar_ids, manifest_rows, strict=True)
             ):
                 raise RuntimeError("canonical taste revision no longer matches frozen evidence")
             exemplars = [
                 row
                 for row in frozen
-                if row.namespace in {"global", library} and row.polarity == "positive"
+                if row.namespace in {"global", library}
             ]
             artifacts = {
                 row.id: await session.get(JobArtifact, row.retained_artifact_id)
                 for row in exemplars
                 if row.retained_artifact_id is not None
             }
-        if len({(row.subject_kind, row.subject_reference) for row in exemplars}) < 50:
+        if (
+            len(
+                {
+                    (row.subject_kind, row.subject_reference)
+                    for row in exemplars
+                    if row.polarity == "positive"
+                }
+            )
+            < 50
+        ):
             raise RuntimeError("canonical taste revision lacks enough applicable positive subjects")
         training_dir = workspace_dir / "training"
+        negative_dir = workspace_dir / "negative"
         training_dir.mkdir(parents=True, exist_ok=True)
+        negative_dir.mkdir(parents=True, exist_ok=True)
+        positive_weights: dict[str, float] = {}
+        negative_weights: dict[str, float] = {}
         for exemplar in sorted(exemplars, key=lambda row: row.id):
             retained = artifacts.get(exemplar.id)
             if retained is None or retained.checksum != exemplar.checksum:
@@ -162,16 +185,26 @@ async def _publish_native_taste_profile(
             await verify_physical_artifact(retained)
             _boundary, classified = physical_artifact_file(retained)
             source_path = classified.root.resolved().joinpath(*classified.key.parts)
-            copied = await context.io.copy(source_path, training_dir / f"{exemplar.id}.jpg")
+            filename = f"{exemplar.id}.jpg"
+            destination = training_dir if exemplar.polarity == "positive" else negative_dir
+            copied = await context.io.copy(source_path, destination / filename)
             if copied.sha256 != exemplar.checksum:
                 raise RuntimeError("canonical taste exemplar changed while staging")
+            if exemplar.polarity == "positive":
+                positive_weights[filename] = float(exemplar.evidence_weight)
+            else:
+                negative_weights[filename] = float(exemplar.evidence_weight)
         source_mode = "fixture"
     manifest = {
         "params": {
             "family": family,
             "library": library,
             "seed": seed,
-            "source": {"mode": source_mode},
+            "source": {
+                "mode": source_mode,
+                "positive_weights": positive_weights if revision_digest is not None else {},
+                "negative_weights": negative_weights if revision_digest is not None else {},
+            },
             "revision": revision_digest,
             "skip_ocr": True,
             "skip_dino": True,
@@ -263,19 +296,7 @@ async def _publish_native_taste_profile(
             else:
                 revision.tv_generation = activation.generation
                 revision.tv_checksum = activation.checksum
-            reloads = dict(revision.consumer_reload)
-            reloads[library] = activation.checksum
-            revision.consumer_reload = reloads
-            fully_reloaded = bool(
-                revision.movie_checksum
-                and revision.tv_checksum
-                and reloads.get("movies") == revision.movie_checksum
-                and reloads.get("tv") == revision.tv_checksum
-            )
-            if fully_reloaded:
-                revision.state = "personalized"
-                revision.failure = None
-            elif revision.state != "failed":
+            if revision.state != "failed":
                 revision.state = "published"
             await session.commit()
     if profile_build_id is not None:
@@ -287,7 +308,7 @@ async def _publish_native_taste_profile(
                 state="succeeded" if activation.activated else "superseded",
                 result_generation=activation.generation,
                 result_checksum=activation.checksum,
-                consumer_reload_checksum=activation.checksum if activation.activated else None,
+                consumer_reload_checksum=None,
             )
             await session.commit()
     summary = outcome.summary if isinstance(outcome.summary, dict) else {}
@@ -300,7 +321,11 @@ async def _publish_native_taste_profile(
         active_generation=activation.generation,
         activated=activation.activated,
         artifact_ids=(artifact.id,),
-        metrics={"exemplars": int(summary.get("exemplars", 0) or 0), "seed": seed},
+        metrics={
+            "exemplars": int(summary.get("exemplars", 0) or 0),
+            "negatives": int(summary.get("negatives", 0) or 0),
+            "seed": seed,
+        },
     ).model_dump(mode="json")
 
 
@@ -535,6 +560,9 @@ async def _publish_native_ranking_residual(
     expected_generation: int,
     seed: int,
     evidence_revision: str,
+    expected_baseline_signature: str | None = None,
+    expected_profile_checksum: str | None = None,
+    expected_profile_generation: int | None = None,
 ) -> dict[str, object]:
     """Train, evaluate, register, and atomically activate a bounded residual."""
     from marquee.core.jobs.internal_runner_host import (  # noqa: PLC0415
@@ -594,26 +622,16 @@ async def _publish_native_ranking_residual(
                 )
             ).all()
         )
-    rows = [
-        {
-            "action": event.action,
-            "subject_kind": event.subject_kind,
-            "subject_reference": event.subject_reference,
-            "revoked_event_id": event.revoked_event_id,
-            "exposed_candidates": event.exposed_candidates,
-            "training_context": event.training_context,
-        }
-        for event in events
-    ]
-    encoded = json.dumps(rows, allow_nan=False, separators=(",", ":"), sort_keys=True).encode()
+    frozen_evidence = freeze_residual_evidence(events)
+    encoded = json.dumps(
+        frozen_evidence.rows, allow_nan=False, separators=(",", ":"), sort_keys=True
+    ).encode()
     if len(encoded) > 64 * 1024 * 1024:
         raise RuntimeError("canonical preference snapshot exceeds the residual runner limit")
     await asyncio.to_thread(snapshot_path.write_text, encoded.decode("utf-8"), encoding="utf-8")
-    snapshot_checksum = hashlib.sha256(encoded).hexdigest()
-    actual_revision = hashlib.sha256(
-        json.dumps([event.id for event in events], separators=(",", ":")).encode()
-    ).hexdigest()
-    if not evidence_revision.startswith("manual:") and evidence_revision != actual_revision:
+    snapshot_checksum = frozen_evidence.checksum
+    actual_revision = frozen_evidence.digest
+    if evidence_revision != actual_revision:
         return MlPublicationResultV1(
             outcome="superseded",
             family="ranking_residual",
@@ -645,6 +663,33 @@ async def _publish_native_ranking_residual(
             "official_family": "WEIGHT_OFFICIAL_FAMILY",
         }.items()
     }
+    actual_baseline_signature = baseline_signature(weights)
+    if (
+        (expected_baseline_signature is not None and expected_baseline_signature != actual_baseline_signature)
+        or (expected_profile_checksum is not None and expected_profile_checksum != profile.checksum)
+        or (expected_profile_generation is not None and expected_profile_generation != profile.generation)
+    ):
+        return MlPublicationResultV1(
+            outcome="superseded",
+            family="ranking_residual",
+            version=current.version if current is not None else "unpublished",
+            checksum=current.checksum if current is not None else "0" * 64,
+            expected_generation=expected_generation,
+            active_generation=current_generation,
+            activated=False,
+            artifact_ids=(),
+            metrics={"seed": seed, "events": len(frozen_evidence.event_ids)},
+        ).model_dump(mode="json")
+    if current is not None:
+        active_residual = ResidualArtifact.load(current.path)
+        compatible, _reason = active_residual.compatible(
+            namespace=library,
+            baseline=baseline_signature(weights),
+            profile_checksum=profile.checksum,
+            profile_generation=profile.generation,
+        )
+        if compatible:
+            await context.io.copy(current.path, workspace_dir / "active-residual.npz")
     outcome = await run_internal_operation(
         context.process_launcher,
         operation=RunnerOperation.RANKING_RESIDUAL,
@@ -654,7 +699,7 @@ async def _publish_native_ranking_residual(
                 "seed": seed,
                 "evidence_revision": actual_revision,
                 "snapshot_checksum": snapshot_checksum,
-                "baseline_signature": baseline_signature(weights),
+                "baseline_signature": actual_baseline_signature,
                 "profile_checksum": profile.checksum,
                 "profile_generation": profile.generation,
                 "min_subjects": configuration.get("RESIDUAL_MIN_SUBJECTS", 25),
@@ -719,6 +764,7 @@ async def _publish_native_ranking_residual(
             "evaluation": summary.get("evaluation"),
             "subject_count": int(summary.get("subjects", 0) or 0),
             "pair_count": int(summary.get("pairs", 0) or 0),
+            "partitions": residual.partitions,
         },
     )
     activation = await activate_immutable_artifact(
@@ -831,6 +877,9 @@ async def execute_ranking_residual(context: ExecutionContext) -> dict[str, objec
         expected_generation=request.expected_generation,
         seed=request.seed,
         evidence_revision=request.evidence_revision,
+        expected_baseline_signature=request.baseline_signature,
+        expected_profile_checksum=request.profile_checksum,
+        expected_profile_generation=request.profile_generation,
     )
 
 

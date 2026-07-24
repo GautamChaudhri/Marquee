@@ -347,6 +347,7 @@ def build_run_payload(
     media_type: str = "movie",
     subject: dict[str, object] | None = None,
     official_pick: dict[str, object] | None = None,
+    review_survivors: list[CandidateScore] | None = None,
 ) -> dict[str, object]:
     """The full ``pipeline_run.json`` payload (also archived per run_id).
 
@@ -355,6 +356,29 @@ def build_run_payload(
     ``media_type: "movie"`` key.
     """
     from marquee.ml.taste_store import compute_taste_profile_hash  # noqa: PLC0415
+
+    diagnostics = [records[name].to_dict() for name in sorted(records)]
+    survivors = review_survivors or []
+    ordered_survivors: list[dict[str, object]] = []
+    for position, record in enumerate(survivors):
+        if (
+            record.gate_decision != "passed"
+            or record.rejection_reason is not None
+            or record.features is None
+        ):
+            raise ValueError("review survivors must pass every objective gate")
+        reference = record.orig_filename
+        opaque_id = hashlib.sha256(
+            f"jmc7b-review-v1{chr(0)}{run_id or ''}{chr(0)}{reference}".encode()
+        ).hexdigest()
+        ordered_survivors.append(
+            {
+                "candidate_id": opaque_id,
+                "reference": reference,
+                "position": position,
+                "objective_eligible": True,
+            }
+        )
 
     payload: dict[str, object] = {
         "run_id": run_id,
@@ -370,7 +394,18 @@ def build_run_payload(
         "config": pipeline_settings.snapshot(),
         "stage_timings_seconds": timings,
         "total_duration_seconds": round(total_duration, 3),
-        "candidates": [records[name].to_dict() for name in sorted(records)],
+        "diagnostic_ledger": {
+            "version": 1,
+            "candidates": diagnostics,
+        },
+        "review": {
+            "version": 1,
+            "order_algorithm": "source_family_round_robin_sha256_v1",
+            "survivors": ordered_survivors,
+            "eligible_count": len(ordered_survivors),
+            "archived_count": 0,
+            "truncated_count": 0,
+        },
         "media_type": media_type,
     }
     if subject is not None:

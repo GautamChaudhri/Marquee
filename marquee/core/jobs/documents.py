@@ -305,6 +305,9 @@ class RankingResidualTrainRequestV1(StrictDocument):
     seed: int = Field(default=0, ge=0, le=2**31 - 1)
     evidence_revision: str = Field(default="manual:unspecified", min_length=1, max_length=128)
     mutation: Literal["apply", "undo", "manual"] = "manual"
+    baseline_signature: str | None = Field(default=None, min_length=1, max_length=128)
+    profile_checksum: str | None = Field(default=None, min_length=64, max_length=64)
+    profile_generation: int | None = Field(default=None, ge=0)
 
 
 class MlPublicationResultV1(StrictDocument):

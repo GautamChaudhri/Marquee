@@ -54,6 +54,7 @@ _SCALAR_STRING_KEYS: dict[ArtifactKind, set[str]] = {
         "profile_checksum",
         "evidence_revision",
         "evaluation_json",
+        "partitions_json",
         "trained_at",
     },
     "zeroshot_axes": {"model_name"},
@@ -225,7 +226,7 @@ def validate_payload(kind: ArtifactKind, payload: dict[str, np.ndarray]) -> None
     if GENRES_JSON_KEY in payload and payload[GENRES_JSON_KEY].dtype.kind == "O":
         raise ArtifactMigrationError("genres_json must not be an object array")
 
-    if kind == "taste_profile":
+    if kind in {"taste_profile", "taste_profile_tv"}:
         embeddings = np.asarray(payload["embeddings"], dtype=np.float32)
         centroid = np.asarray(payload["centroid_emb"], dtype=np.float32)
         names = decode_unicode_list(payload["poster_names"])
@@ -239,6 +240,18 @@ def validate_payload(kind: ArtifactKind, payload: dict[str, np.ndarray]) -> None
             neg = np.asarray(payload["neg_embeddings"], dtype=np.float32)
             if neg.ndim != 2 or neg.shape[1] != 512:
                 raise ArtifactMigrationError(f"Invalid negative embeddings shape: {neg.shape}")
+            if "neg_embedding_weights" in payload:
+                neg_weights = np.asarray(payload["neg_embedding_weights"], dtype=np.float32)
+                if neg_weights.shape != (neg.shape[0],):
+                    raise ArtifactMigrationError("negative evidence weights do not match embeddings")
+                if not np.all(np.isfinite(neg_weights)) or np.any(neg_weights <= 0) or np.any(neg_weights > 1):
+                    raise ArtifactMigrationError("negative evidence weights must be finite and in (0, 1]")
+        if "embedding_weights" in payload:
+            weights = np.asarray(payload["embedding_weights"], dtype=np.float32)
+            if weights.shape != (embeddings.shape[0],):
+                raise ArtifactMigrationError("positive evidence weights do not match embeddings")
+            if not np.all(np.isfinite(weights)) or np.any(weights <= 0) or np.any(weights > 1):
+                raise ArtifactMigrationError("positive evidence weights must be finite and in (0, 1]")
         if "dino_embeddings" in payload:
             dino = np.asarray(payload["dino_embeddings"], dtype=np.float32)
             if dino.shape[0] != embeddings.shape[0]:

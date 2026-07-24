@@ -35,66 +35,101 @@ class OnboardingReviewError(ValueError):
     """A requested onboarding review or decision cannot be safely reconstructed."""
 
 
-def _candidate_id(run_id: str, reference: str) -> str:
-    return sha256(f"{run_id}:{reference}".encode()).hexdigest()[:32]
-
-
-def _review_revision(run: PipelineRun, candidates: list[dict[str, Any]]) -> str:
-    document = {
-        "version": 1,
-        "run_id": run.run_id,
-        "archive_artifact_id": run.archive_artifact_id,
-        "candidates": [
-            {
-                "candidate_id": item["candidate_id"],
-                "artifact_id": item["artifact_id"],
-                "checksum": item["checksum"],
-            }
-            for item in candidates
-        ],
+def _review_revision(review: dict[str, Any]) -> str:
+    """Validate and return the runner-persisted survivor review checksum."""
+    checksum = review.get("checksum")
+    checksum_input = {
+        "version": review.get("version"),
+        "order_algorithm": review.get("order_algorithm"),
+        "survivors": review.get("survivors"),
     }
-    return sha256(json.dumps(document, separators=(",", ":"), sort_keys=True).encode()).hexdigest()
+    expected = sha256(
+        json.dumps(checksum_input, separators=(",", ":"), sort_keys=True).encode()
+    ).hexdigest()
+    if not isinstance(checksum, str) or checksum != expected:
+        raise OnboardingReviewError("canonical review checksum is invalid")
+    return checksum
 
 
 async def _archive_candidates(
-    session: AsyncSession, run: PipelineRun
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    session: AsyncSession, run: PipelineRun, *, lock_artifacts: bool = False
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
     if run.status not in {"completed", "flagged_manual"}:
         raise OnboardingReviewError("analysis is not available for review")
+    if lock_artifacts:
+        archive_artifact = await session.scalar(
+            select(JobArtifact)
+            .where(
+                JobArtifact.id == run.archive_artifact_id,
+                JobArtifact.job_id == run.job_id,
+                JobArtifact.attempt_id == run.attempt_id,
+            )
+            .with_for_update()
+        )
+        if archive_artifact is None:
+            raise OnboardingReviewError("canonical run archive lineage is invalid")
     try:
         archive = await load_pipeline_archive(session, run)
     except ArtifactError as exc:
         raise OnboardingReviewError("canonical run archive is unavailable") from exc
     if archive is None:
         raise OnboardingReviewError("canonical run archive is unavailable")
-    raw_candidates = archive.get("candidates")
-    if not isinstance(raw_candidates, list):
-        raise OnboardingReviewError("canonical run archive has no review candidates")
+    ledger = archive.get("diagnostic_ledger")
+    review_document = archive.get("review")
+    raw_candidates = ledger.get("candidates") if isinstance(ledger, dict) else None
+    survivors = review_document.get("survivors") if isinstance(review_document, dict) else None
+    if not isinstance(raw_candidates, list) or not isinstance(survivors, list):
+        raise OnboardingReviewError("canonical run archive has no explicit review survivors")
+    if len(survivors) > _MAX_REVIEW_CANDIDATES:
+        raise OnboardingReviewError("canonical review exceeds its bounded survivor limit")
+    revision = _review_revision(review_document)
+    diagnostics_by_reference = {
+        candidate.get("orig_filename"): candidate
+        for candidate in raw_candidates
+        if isinstance(candidate, dict) and isinstance(candidate.get("orig_filename"), str)
+    }
 
     review: list[dict[str, Any]] = []
     canonical: list[dict[str, Any]] = []
     seen_references: set[str] = set()
-    for candidate in raw_candidates[:_MAX_REVIEW_CANDIDATES]:
-        if not isinstance(candidate, dict):
-            continue
-        reference = candidate.get("orig_filename")
-        artifact_id = candidate.get("artifact_id")
-        artifact_key = candidate.get("artifact_storage_key")
-        checksum = candidate.get("artifact_checksum")
+    for position, survivor in enumerate(survivors):
+        if not isinstance(survivor, dict):
+            raise OnboardingReviewError("canonical review survivor is invalid")
+        reference = survivor.get("reference")
+        candidate_id = survivor.get("candidate_id")
+        artifact_id = survivor.get("artifact_id")
+        artifact_key = survivor.get("artifact_storage_key")
+        checksum = survivor.get("artifact_checksum")
+        candidate = diagnostics_by_reference.get(reference)
         if (
             not isinstance(reference, str)
             or not re.fullmatch(r"[A-Za-z0-9._-]+", reference)
+            or not isinstance(candidate_id, str)
+            or len(candidate_id) != 64
+            or survivor.get("position") != position
+            or survivor.get("objective_eligible") is not True
+            or not isinstance(candidate, dict)
+            or candidate.get("gate_decision") != "passed"
+            or candidate.get("rejection_reason") is not None
+            or not isinstance(candidate.get("raw_features"), dict)
             or not isinstance(artifact_id, int)
             or not isinstance(artifact_key, str)
             or not isinstance(checksum, str)
             or reference in seen_references
         ):
-            continue
-        artifact = await session.get(JobArtifact, artifact_id)
+            raise OnboardingReviewError("canonical review survivor membership is invalid")
+        artifact = (
+            await session.scalar(
+                select(JobArtifact).where(JobArtifact.id == artifact_id).with_for_update()
+            )
+            if lock_artifacts
+            else await session.get(JobArtifact, artifact_id)
+        )
         metadata = artifact.artifact_metadata if artifact is not None else None
         if (
             artifact is None
             or artifact.job_id != run.job_id
+            or artifact.attempt_id != run.attempt_id
             or artifact.kind != "evidence_image"
             or artifact.status != "available"
             or artifact.storage_key is None
@@ -105,13 +140,12 @@ async def _archive_candidates(
             or metadata.get("role") != "review_candidate"
             or metadata.get("candidate_reference") != reference
         ):
-            continue
+            raise OnboardingReviewError("canonical review survivor artifact is invalid")
         try:
             await verify_physical_artifact(artifact)
         except ArtifactError:
-            continue
+            raise OnboardingReviewError("canonical review survivor bytes are unavailable") from None
         seen_references.add(reference)
-        candidate_id = _candidate_id(run.run_id, reference)
         canonical.append(
             {
                 "candidate_id": candidate_id,
@@ -138,9 +172,16 @@ async def _archive_candidates(
                 },
             }
         )
-    if not canonical:
-        raise OnboardingReviewError("canonical review candidates are unavailable")
-    return canonical, review
+    metadata = {
+        "revision": revision,
+        "rejections": {
+            "available": True,
+            "eligible": review_document.get("eligible_count"),
+            "archived": review_document.get("archived_count"),
+            "truncated": review_document.get("truncated_count"),
+        },
+    }
+    return canonical, review, metadata
 
 
 async def load_onboarding_review(session: AsyncSession, run_id: str) -> dict[str, Any]:
@@ -148,17 +189,16 @@ async def load_onboarding_review(session: AsyncSession, run_id: str) -> dict[str
     run = await session.get(PipelineRun, run_id)
     if run is None:
         raise OnboardingReviewError("pipeline run is unavailable")
-    canonical, review = await _archive_candidates(session, run)
-    revision = _review_revision(run, canonical)
+    canonical, review, metadata = await _archive_candidates(session, run)
     return {
         "version": 1,
         "run_id": run.run_id,
         "analysis_job_id": run.job_id,
         "status": run.status,
         "subject": run.subject_snapshot,
-        "review_revision": revision,
+        "review_revision": metadata["revision"],
         "candidates": review,
-        "rejections": {"available": True},
+        "rejections": metadata["rejections"],
         "allowed_actions": {
             "choose": run.feedback_event_id is None,
             "hate": run.feedback_event_id is None,
@@ -183,8 +223,8 @@ async def _decision_context(
     )
     if run is None:
         raise OnboardingReviewError("pipeline run is unavailable")
-    canonical, _review = await _archive_candidates(session, run)
-    actual_revision = _review_revision(run, canonical)
+    canonical, _review, metadata = await _archive_candidates(session, run, lock_artifacts=True)
+    actual_revision = metadata["revision"]
     if review_revision != actual_revision:
         raise OnboardingReviewError("review has changed; reload the candidate choices")
     selected = next((item for item in canonical if item["candidate_id"] == candidate_id), None)

@@ -235,6 +235,7 @@ async def run_poster_pipeline(
         total_duration=total_duration,
         run_id=run_id,
         media_type=subject.media_type,
+        review_survivors=(sync.ranked if personalization_mode == "collecting" else []),
     )
     counts = {**fetch_counts, **sync.counts}
     recommendation = (

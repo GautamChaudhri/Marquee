@@ -22,14 +22,15 @@ from marquee.api.job_submission import JobSubmissionResponse, submission_respons
 from marquee.api.library_serializers import enrich_movie
 from marquee.api.results import (
     build_results_payload,
+    diagnostic_candidates,
     feature_vector_from_archive,
-    find_candidate,
+    find_review_survivor,
     poster_url,
 )
 from marquee.api.routes.jobs import job_summary
 from marquee.api.routes.library import _coverage_by_media_file
 from marquee.config import settings
-from marquee.core.jobs.artifact_service import verify_physical_artifact
+from marquee.core.jobs.artifact_service import ArtifactError, verify_physical_artifact
 from marquee.core.jobs.batches import BatchScope, create_fixed_batch
 from marquee.core.jobs.contracts import TriggerKind
 from marquee.core.jobs.mutation_documents import (
@@ -277,10 +278,10 @@ async def get_run_poster(
     if archive is None:
         raise HTTPException(status_code=404, detail="Run archive unavailable")
 
-    candidate = find_candidate(archive, orig_filename)
+    candidate = find_review_survivor(archive, orig_filename)
     if candidate is None:
         raise HTTPException(
-            status_code=404, detail=f"No candidate {orig_filename!r} in run {run_id}"
+            status_code=404, detail=f"No reviewable candidate {orig_filename!r} in run {run_id}"
         )
 
     artifact_id = candidate.get("artifact_id")
@@ -294,34 +295,23 @@ async def get_run_poster(
         if (
             artifact is None
             or artifact.job_id != run.job_id
+            or artifact.attempt_id != run.attempt_id
+            or artifact.kind != "evidence_image"
+            or artifact.status != "available"
+            or artifact.storage_key != candidate.get("artifact_storage_key")
             or artifact.checksum != candidate.get("artifact_checksum")
+            or metadata.get("family") != "poster_pipeline"
+            or metadata.get("role") != "review_candidate"
             or metadata.get("candidate_reference") != orig_filename
         ):
             raise HTTPException(status_code=404, detail="Candidate artifact unavailable")
-        boundary, classified = await verify_physical_artifact(artifact)
+        try:
+            boundary, classified = await verify_physical_artifact(artifact)
+        except ArtifactError as exc:
+            raise HTTPException(status_code=404, detail="Candidate artifact unavailable") from exc
         return boundary.response(classified)
 
-    from marquee.core.filesystem import (  # noqa: PLC0415
-        FilesystemBoundaryError,
-        boundary_for_roots,
-    )
-
-    image_path = Path(candidate["image_path"])
-    # Confine served files to the live run tree or the legacy experiments
-    # trees — never accept the filename as a path; always resolve from the
-    # recorded record.
-    legacy_roots = {
-        "runs": settings.runs_work_path,
-        "legacy_runs": Path(__file__).resolve().parents[2] / "experiments" / "runs",
-        "legacy_api_runs": Path(__file__).resolve().parents[1] / "experiments" / "runs",
-    }
-    available_roots = {name: root for name, root in legacy_roots.items() if root.is_dir()}
-    try:
-        boundary = boundary_for_roots(available_roots, purpose="pipeline-run")
-        classified = boundary.classify(image_path, require_file=True)
-        return boundary.response(classified)
-    except FilesystemBoundaryError as exc:
-        raise HTTPException(status_code=403, detail="Poster path outside run tree") from exc
+    raise HTTPException(status_code=404, detail="Candidate artifact unavailable")
 
 
 class RescoreRequest(BaseModel):
@@ -369,7 +359,7 @@ async def rescore_run(
 
     reranked: list[dict] = []
     gated_out: list[dict] = []
-    for candidate in archive.get("candidates", []):
+    for candidate in diagnostic_candidates(archive):
         if candidate.get("rank") is None:
             continue  # only previously-ranked candidates have full features
         features = feature_vector_from_archive(candidate)

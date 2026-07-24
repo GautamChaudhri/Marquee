@@ -389,6 +389,30 @@ async def retry(
                     raise _conflict(
                         original, "action_not_allowed", str(exc), action="retry"
                     ) from exc
+            elif original.type in {"poster_pipeline", "poster_deploy"}:
+                from marquee.core.taste_preferences import (  # noqa: PLC0415
+                    TastePreferenceError,
+                    record_deployment_retry_successor,
+                    record_onboarding_analysis_retry_successor,
+                )
+
+                try:
+                    if original.type == "poster_pipeline":
+                        await record_onboarding_analysis_retry_successor(
+                            session,
+                            original_job_id=original.id,
+                            successor_job_id=replacement_id,
+                        )
+                    else:
+                        await record_deployment_retry_successor(
+                            session,
+                            original_job_id=original.id,
+                            successor_job_id=replacement_id,
+                        )
+                except TastePreferenceError as exc:
+                    raise _conflict(
+                        original, "action_not_allowed", str(exc), action="retry"
+                    ) from exc
             await job_event_writer.append(
                 session,
                 job_id=replacement_id,

@@ -69,8 +69,6 @@ async def test_feedback_successor_preserves_exact_revision_lineage(
     result = await _REAL_SCHEDULE_RESIDUAL_SUCCESSOR(
         db,
         get_namespace("movies"),
-        evidence_revision="event-123",
-        mutation="apply",
     )
 
     assert result["scheduled"] is True
@@ -78,8 +76,8 @@ async def test_feedback_successor_preserves_exact_revision_lineage(
     assert job is not None
     assert job.type == "ranking_residual_train"
     assert job.subject_reference == "ranking_residual:movies"
-    assert job.request["evidence_revision"] == "event-123"
-    assert job.request["mutation"] == "apply"
+    assert job.request["evidence_revision"] == sha256(b"[]").hexdigest()
+    assert job.request["mutation"] == "manual"
 
 
 def _archive(movie_id: int) -> dict:

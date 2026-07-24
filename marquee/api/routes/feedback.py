@@ -27,6 +27,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.api.job_submission import submission_response
+from marquee.api.results import diagnostic_candidates
 from marquee.core.jobs.contracts import TriggerKind
 from marquee.core.jobs.mutation_documents import PosterCandidateSelectionV1
 from marquee.core.jobs.pipeline_archives import load_pipeline_archive
@@ -56,7 +57,7 @@ from marquee.core.taste_preferences import (
 )
 from marquee.database import get_db
 from marquee.ml.namespaces import TasteNamespace, get_namespace
-from marquee.ml.residual import build_residual_pairs
+from marquee.ml.residual import baseline_signature, build_residual_pairs, freeze_residual_evidence
 from marquee.models import (
     JobArtifact,
     MlActivePublication,
@@ -251,9 +252,6 @@ def _normalized_for(candidate: dict) -> dict | None:
 async def _schedule_residual_successor(
     db: AsyncSession,
     namespace: TasteNamespace,
-    *,
-    evidence_revision: str,
-    mutation: str,
 ) -> dict:
     events = list(
         (
@@ -265,6 +263,7 @@ async def _schedule_residual_successor(
             )
         ).all()
     )
+    frozen_evidence = freeze_residual_evidence(events)
     pairs = build_residual_pairs(events)
     subjects = {pair.subject for pair in pairs}
     if (
@@ -274,6 +273,10 @@ async def _schedule_residual_successor(
         return {"scheduled": False, "reason": "residual evidence is below eligibility", "job": None}
     publication = await db.get(MlActivePublication, f"ranking_residual:{namespace.library}")
     generation = publication.generation if publication is not None else 0
+    profile_publication = await db.get(MlActivePublication, f"taste_profile:{namespace.library}")
+    profile_checksum = profile_publication.checksum if profile_publication is not None else None
+    profile_generation = profile_publication.generation if profile_publication is not None else None
+    baseline = baseline_signature(pipeline_settings.scorer_weights)
     if publication is not None:
         artifact = await db.get(JobArtifact, publication.artifact_id)
         metadata = artifact.artifact_metadata if artifact is not None else None
@@ -291,8 +294,10 @@ async def _schedule_residual_successor(
                 "library": namespace.library,
                 "expected_generation": int(generation or 0),
                 "seed": 0,
-                "evidence_revision": evidence_revision,
-                "mutation": mutation,
+                "evidence_revision": frozen_evidence.digest,
+                "baseline_signature": baseline,
+                "profile_checksum": profile_checksum,
+                "profile_generation": profile_generation,
             },
             subject=SubjectLocator(
                 kind="model_profile_training",
@@ -301,13 +306,19 @@ async def _schedule_residual_successor(
             trigger=TriggerKind.MANUAL,
             initiator=Initiator(kind="system", identifier="feedback-api"),
             idempotency_key=(
-                f"ranking_residual_train:{namespace.library}:{mutation}:{evidence_revision}"
+                "ranking_residual_train:"
+                + hashlib.sha256(
+                    (
+                        f"{namespace.library}:{frozen_evidence.digest}:{profile_checksum or 'unpublished'}:"
+                        f"{profile_generation or 0}:{baseline}:{generation}"
+                    ).encode()
+                ).hexdigest()
             ),
             priority=50,
         )
     return {
         "scheduled": True,
-        "reason": "coalesced residual evidence revision committed",
+        "reason": "coordinator-owned residual evidence revision committed",
         "job": submission_response(result).model_dump(mode="json"),
     }
 
@@ -386,10 +397,27 @@ async def _load_feedback_run(
         raise HTTPException(status_code=404, detail="Run archive unavailable")
 
     subject = await _load_feedback_subject(db, run)
-    by_name = {c["orig_filename"]: c for c in archive.get("candidates", [])}
+    candidates = diagnostic_candidates(archive)
+    if not candidates:
+        raise HTTPException(status_code=409, detail="Run archive has no diagnostic candidate ledger")
+    review = archive.get("review")
+    survivors = review.get("survivors") if isinstance(review, dict) else []
+    artifact_by_reference = {
+        survivor.get("reference"): survivor
+        for survivor in survivors
+        if isinstance(survivor, dict) and isinstance(survivor.get("reference"), str)
+    }
+    by_name = {
+        candidate["orig_filename"]: {
+            **candidate,
+            **artifact_by_reference.get(candidate["orig_filename"], {}),
+        }
+        for candidate in candidates
+        if isinstance(candidate, dict) and isinstance(candidate.get("orig_filename"), str)
+    }
     auto = by_name.get(run.auto_pick_filename) if run.auto_pick_filename else None
     if auto is None:
-        auto = find_auto_pick_candidate(archive.get("candidates", []))
+        auto = find_auto_pick_candidate(list(by_name.values()))
     return run, archive, subject, by_name, auto
 
 
@@ -411,7 +439,7 @@ def _canonical_subject(subject: PosterSubject) -> tuple[str, str, dict]:
 
 def _canonical_exposure(archive: dict) -> tuple[list[dict], list[str]]:
     exposed = []
-    for candidate in archive.get("candidates", [])[:100]:
+    for candidate in diagnostic_candidates(archive)[:100]:
         identity = candidate.get("orig_filename")
         if not isinstance(identity, str) or not identity:
             continue
@@ -421,7 +449,17 @@ def _canonical_exposure(archive: dict) -> tuple[list[dict], list[str]]:
                 "artifact_id": candidate.get("artifact_id"),
                 "artifact_checksum": candidate.get("artifact_checksum"),
                 "baseline_rank": candidate.get("rank"),
-                "baseline_score": candidate.get("final_score"),
+                "baseline_score": (
+                    candidate["contributions"].get("baseline_score", candidate.get("final_score"))
+                    if isinstance(candidate.get("contributions"), dict)
+                    else candidate.get("final_score")
+                ),
+                "active_residual_delta": (
+                    (candidate.get("contributions") or {}).get("residual_delta")
+                    if isinstance(candidate.get("contributions"), dict)
+                    else None
+                ),
+                "final_score": candidate.get("final_score"),
                 "normalized_features": candidate.get("normalized_features"),
                 "stage_reached": candidate.get("stage_reached"),
                 "rejection_reason": candidate.get("rejection_reason"),
@@ -718,7 +756,9 @@ async def apply_feedback_request(
             c["orig_filename"] for c in hated_cands
         }
         ranked_filenames = {
-            c["orig_filename"] for c in archive.get("candidates", []) if c.get("rank") is not None
+            c["orig_filename"]
+            for c in diagnostic_candidates(archive)
+            if c.get("rank") is not None
         }
         missing = ranked_filenames - covered
         if missing:
@@ -819,8 +859,6 @@ async def apply_feedback_request(
     residual_info = await _schedule_residual_successor(
         db,
         namespace,
-        evidence_revision=canonical_event_id,
-        mutation="apply",
     )
 
     gate_override = _gate_override_for(pick, namespace) if pick is not None else None
@@ -942,8 +980,6 @@ async def undo_feedback(
         await _schedule_residual_successor(
             db,
             namespace,
-            evidence_revision=body.event_id,
-            mutation="undo",
         )
         if namespace is not None
         else {"scheduled": False, "reason": "namespace not resolved", "job": None}

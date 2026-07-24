@@ -3,16 +3,20 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.core.jobs.artifact_service import physical_artifact_file, verify_physical_artifact
-from marquee.core.jobs.delivery import ExecutionContext
 from marquee.core.jobs.event_service import job_event_writer
-from marquee.models import Job, JobArtifact, MlActivePublication
+from marquee.models import Job, JobArtifact, MlActivePublication, MlConsumerAcknowledgement
+
+if TYPE_CHECKING:
+    from marquee.core.jobs.delivery import ExecutionContext
 
 
 class MlPublicationError(RuntimeError):
@@ -41,6 +45,7 @@ async def resolve_active_publication(
     session: AsyncSession,
     *,
     family: str,
+    expected_metadata: Mapping[str, object] | None = None,
 ) -> ActivePublication:
     """Resolve and verify the sole active artifact for one typed family namespace."""
     active = await session.scalar(
@@ -54,10 +59,23 @@ async def resolve_active_publication(
         or artifact.status != "available"
         or artifact.checksum != active.checksum
         or artifact.kind != family.partition(":")[0]
+        or (
+            expected_metadata is not None
+            and (
+                not isinstance(artifact.artifact_metadata, dict)
+                or any(
+                    artifact.artifact_metadata.get(key) != value
+                    for key, value in expected_metadata.items()
+                )
+            )
+        )
     ):
         raise MlPublicationError(f"active ML publication evidence is invalid: {family}")
-    await verify_physical_artifact(artifact)
-    _boundary, stored = physical_artifact_file(artifact)
+    try:
+        await verify_physical_artifact(artifact)
+        _boundary, stored = physical_artifact_file(artifact)
+    except Exception as exc:  # artifact boundaries expose several concrete failure types
+        raise MlPublicationError(f"active ML publication bytes are invalid: {family}") from exc
     return ActivePublication(
         family=family,
         generation=active.generation,
@@ -66,6 +84,118 @@ async def resolve_active_publication(
         artifact_id=artifact.id,
         path=stored.root.resolved() / stored.key.value,
     )
+
+
+async def resolve_loaded_publication(
+    session: AsyncSession,
+    *,
+    family: str,
+    expected_metadata: Mapping[str, object],
+    loader: Callable[[Path], dict[str, object]],
+) -> tuple[ActivePublication, dict[str, object]]:
+    """Resolve verified bytes and load them with the consumer's production loader."""
+    publication = await resolve_active_publication(
+        session,
+        family=family,
+        expected_metadata=expected_metadata,
+    )
+    try:
+        load_result = await asyncio.to_thread(loader, publication.path)
+    except Exception as exc:  # loader failures must never become a personalized fallback
+        raise MlPublicationError(f"active ML publication loader rejected: {family}") from exc
+    return publication, load_result
+
+
+async def resolve_loaded_taste_profile(
+    session: AsyncSession,
+    *,
+    library: str,
+) -> tuple[ActivePublication, dict[str, object]]:
+    """Resolve one profile through the exact loader used by poster scoring."""
+    from marquee.ml.taste_store import NumpyTasteStore
+
+    def load(path: Path) -> dict[str, object]:
+        store = NumpyTasteStore(path)
+        return {
+            "loader": "NumpyTasteStore",
+            "exemplars": store.size,
+            "negative_exemplars": store.negative_size,
+        }
+
+    return await resolve_loaded_publication(
+        session,
+        family=f"taste_profile:{library}",
+        expected_metadata={"family": "taste_profile", "library": library},
+        loader=load,
+    )
+
+
+async def resolve_loaded_ranking_residual(
+    session: AsyncSession,
+    *,
+    library: str,
+    profile_checksum: str,
+    profile_generation: int,
+    baseline: str,
+) -> tuple[ActivePublication, dict[str, object]]:
+    """Resolve a residual only when its production compatibility inputs still match."""
+    from marquee.ml.residual import ResidualArtifact
+
+    def load(path: Path) -> dict[str, object]:
+        artifact = ResidualArtifact.load(path)
+        return {
+            "loader": "ResidualArtifact.load",
+            "profile_checksum": artifact.profile_checksum,
+            "profile_generation": artifact.profile_generation,
+            "baseline_signature": artifact.baseline_signature,
+        }
+
+    return await resolve_loaded_publication(
+        session,
+        family=f"ranking_residual:{library}",
+        expected_metadata={
+            "family": "ranking_residual",
+            "library": library,
+            "profile_checksum": profile_checksum,
+            "profile_generation": profile_generation,
+            "baseline_signature": baseline,
+        },
+        loader=load,
+    )
+
+
+async def acknowledge_consumption(
+    session: AsyncSession,
+    *,
+    publication: ActivePublication,
+    consumer_role: str,
+    instance_id: str,
+    load_result: dict[str, object],
+) -> MlConsumerAcknowledgement:
+    """Record only a real successful consumer load for this exact active generation."""
+    existing = await session.scalar(
+        select(MlConsumerAcknowledgement).where(
+            MlConsumerAcknowledgement.family == publication.family,
+            MlConsumerAcknowledgement.consumer_role == consumer_role,
+            MlConsumerAcknowledgement.instance_id == instance_id,
+            MlConsumerAcknowledgement.generation == publication.generation,
+            MlConsumerAcknowledgement.checksum == publication.checksum,
+        )
+    )
+    if existing is not None:
+        return existing
+    acknowledgement = MlConsumerAcknowledgement(
+        family=publication.family,
+        consumer_role=consumer_role,
+        instance_id=instance_id,
+        generation=publication.generation,
+        checksum=publication.checksum,
+        artifact_id=publication.artifact_id,
+        load_result=load_result,
+    )
+    session.add(acknowledgement)
+    await session.flush()
+    return acknowledgement
 
 
 async def activate_immutable_artifact(

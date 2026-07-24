@@ -18,11 +18,23 @@ from marquee.core.jobs.artifact_service import (
     register_physical_artifact,
     verify_physical_artifact,
 )
+from marquee.core.jobs.ml_publication import (
+    MlPublicationError,
+    resolve_loaded_ranking_residual,
+    resolve_loaded_taste_profile,
+)
+from marquee.core.pipeline_config import pipeline_settings
+from marquee.ml.residual import baseline_signature
 from marquee.models import (
     Job,
     JobArtifact,
+    JobAttempt,
     MlActivePublication,
+    MlConsumerAcknowledgement,
+    OnboardingAnalysisSuccessor,
     PosterPreferenceEvent,
+    RuntimeInstance,
+    TasteDeploymentSuccessor,
     TasteExemplar,
     TasteProfileBuild,
     TasteProfileCoordinator,
@@ -101,12 +113,29 @@ def evidence_revision(exemplars: list[TasteExemplar]) -> str:
             row.subject_reference,
             row.checksum or "",
             f"{row.evidence_weight:.8f}",
+            row.retained_artifact_id,
+            json.dumps(row.embedding_identity, sort_keys=True, separators=(",", ":")),
+            row.supersedes_exemplar_id,
         )
         for row in exemplars
         if row.status == "active"
     )
     payload = json.dumps(rows, separators=(",", ":"), ensure_ascii=True).encode()
     return hashlib.sha256(payload).hexdigest()
+
+
+def profile_exemplar_manifest(exemplar: TasteExemplar) -> dict[str, Any]:
+    """Serialize the immutable training identity of one active exemplar."""
+    return {
+        "exemplar_id": exemplar.id,
+        "namespace": exemplar.namespace,
+        "polarity": exemplar.polarity,
+        "weight": float(exemplar.evidence_weight),
+        "retained_artifact_id": exemplar.retained_artifact_id,
+        "checksum": exemplar.checksum or "",
+        "embedding_identity": exemplar.embedding_identity,
+        "supersedes_exemplar_id": exemplar.supersedes_exemplar_id,
+    }
 
 
 def profile_input_ids(exemplars: list[TasteExemplar], library: str) -> set[str]:
@@ -239,7 +268,369 @@ async def create_pending_exemplar(
     )
     session.add(row)
     await session.flush((row,))
+    if polarity == "positive":
+        if deployment_job_id is None:  # pragma: no cover - guarded above for type narrowing
+            raise TastePreferenceError("positive exemplar requires a canonical deployment job")
+        await _record_initial_deployment_successor(
+            session,
+            exemplar=row,
+            deployment_job_id=deployment_job_id,
+        )
     return row
+
+
+def _job_state(job: Job) -> str:
+    """Project canonical job state into the bounded successor vocabulary."""
+    if job.phase != "terminal":
+        return "running" if job.phase in {"running", "stopping"} else "queued"
+    if job.outcome in {
+        "succeeded",
+        "no_change",
+        "failed",
+        "cancelled",
+        "superseded",
+        "unsafe",
+        "dead_letter",
+    }:
+        return job.outcome
+    raise TastePreferenceError("deployment terminal outcome is invalid")
+
+
+async def _record_initial_deployment_successor(
+    session: AsyncSession,
+    *,
+    exemplar: TasteExemplar,
+    deployment_job_id: str,
+) -> TasteDeploymentSuccessor:
+    existing = await session.scalar(
+        select(TasteDeploymentSuccessor).where(
+            TasteDeploymentSuccessor.exemplar_id == exemplar.id
+        )
+    )
+    if existing is not None:
+        if existing.job_id != deployment_job_id:
+            raise TastePreferenceError("positive exemplar deployment lineage conflicts")
+        return existing
+    job = await session.get(Job, deployment_job_id)
+    if job is None or job.type != "poster_deploy":
+        raise TastePreferenceError("positive exemplar deployment job is unavailable")
+    successor = TasteDeploymentSuccessor(
+        id=secrets.token_hex(16),
+        exemplar_id=exemplar.id,
+        job_id=deployment_job_id,
+        predecessor_job_id=None,
+        ordinal=0,
+        state=_job_state(job),
+    )
+    session.add(successor)
+    await session.flush((successor,))
+    return successor
+
+
+async def record_onboarding_analysis_submission(
+    session: AsyncSession,
+    *,
+    job_id: str,
+    subject_kind: str,
+    subject_reference: str,
+    predecessor_job_id: str | None = None,
+) -> OnboardingAnalysisSuccessor:
+    """Bind one onboarding analysis job to immutable predecessor lineage."""
+    if subject_kind not in {"movie", "series", "season"} or not subject_reference:
+        raise TastePreferenceError("onboarding analysis subject is invalid")
+    job = await session.get(Job, job_id)
+    if job is None or job.type != "poster_pipeline":
+        raise TastePreferenceError("onboarding analysis job is unavailable")
+    if job.subject_kind != subject_kind or job.subject_reference != subject_reference:
+        raise TastePreferenceError("onboarding analysis job subject conflicts")
+    existing = await session.scalar(
+        select(OnboardingAnalysisSuccessor)
+        .where(OnboardingAnalysisSuccessor.job_id == job_id)
+        .with_for_update()
+    )
+    if existing is not None:
+        if existing.predecessor_job_id != predecessor_job_id:
+            raise TastePreferenceError("onboarding analysis lineage conflicts")
+        return existing
+    if predecessor_job_id is not None:
+        predecessor = await session.scalar(
+            select(OnboardingAnalysisSuccessor)
+            .where(OnboardingAnalysisSuccessor.job_id == predecessor_job_id)
+            .with_for_update()
+        )
+        if (
+            predecessor is None
+            or predecessor.subject_kind != subject_kind
+            or predecessor.subject_reference != subject_reference
+        ):
+            raise TastePreferenceError("onboarding analysis predecessor is unavailable")
+    row = OnboardingAnalysisSuccessor(
+        job_id=job_id,
+        subject_kind=subject_kind,
+        subject_reference=subject_reference,
+        predecessor_job_id=predecessor_job_id,
+    )
+    session.add(row)
+    await session.flush((row,))
+    return row
+
+
+async def record_onboarding_analysis_retry_successor(
+    session: AsyncSession,
+    *,
+    original_job_id: str,
+    successor_job_id: str,
+) -> OnboardingAnalysisSuccessor | None:
+    """Extend an existing onboarding analysis only through a new canonical job."""
+    original = await session.scalar(
+        select(OnboardingAnalysisSuccessor)
+        .where(OnboardingAnalysisSuccessor.job_id == original_job_id)
+        .with_for_update()
+    )
+    if original is None:
+        return None
+    original_job = await session.get(Job, original_job_id)
+    successor_job = await session.get(Job, successor_job_id)
+    if (
+        original_job is None
+        or original_job.type != "poster_pipeline"
+        or original_job.phase != "terminal"
+        or original_job.outcome not in {"failed", "cancelled"}
+        or successor_job is None
+        or successor_job.type != "poster_pipeline"
+        or successor_job.retry_of_job_id != original_job_id
+    ):
+        raise TastePreferenceError("onboarding analysis retry successor is unavailable")
+    return await record_onboarding_analysis_submission(
+        session,
+        job_id=successor_job_id,
+        subject_kind=original.subject_kind,
+        subject_reference=original.subject_reference,
+        predecessor_job_id=original_job_id,
+    )
+
+
+async def record_deployment_retry_successor(
+    session: AsyncSession,
+    *,
+    original_job_id: str,
+    successor_job_id: str,
+) -> TasteDeploymentSuccessor | None:
+    """Append one retry successor without ever re-opening a terminal deployment."""
+    original = await session.scalar(
+        select(TasteDeploymentSuccessor)
+        .where(TasteDeploymentSuccessor.job_id == original_job_id)
+        .with_for_update()
+    )
+    if original is None:
+        return None
+    original_job = await session.get(Job, original_job_id)
+    if (
+        original_job is None
+        or original_job.type != "poster_deploy"
+        or original_job.phase != "terminal"
+        or original_job.outcome not in {"failed", "cancelled"}
+    ):
+        raise TastePreferenceError("deployment retry predecessor is unavailable")
+    exemplar = await session.scalar(
+        select(TasteExemplar)
+        .where(TasteExemplar.id == original.exemplar_id)
+        .with_for_update()
+    )
+    if exemplar is None or exemplar.polarity != "positive" or exemplar.status != "pending_deploy":
+        raise TastePreferenceError("pending onboarding deployment is unavailable")
+    successor_job = await session.get(Job, successor_job_id)
+    if successor_job is None or successor_job.type != "poster_deploy":
+        raise TastePreferenceError("deployment retry successor is unavailable")
+    if successor_job.retry_of_job_id != original_job_id:
+        raise TastePreferenceError("deployment retry successor lineage conflicts")
+    existing = await session.scalar(
+        select(TasteDeploymentSuccessor).where(TasteDeploymentSuccessor.job_id == successor_job_id)
+    )
+    if existing is not None:
+        if existing.exemplar_id != exemplar.id or existing.predecessor_job_id != original_job_id:
+            raise TastePreferenceError("deployment retry successor conflicts")
+        return existing
+    siblings = list(
+        await session.scalars(
+            select(TasteDeploymentSuccessor)
+            .where(TasteDeploymentSuccessor.exemplar_id == exemplar.id)
+            .with_for_update()
+        )
+    )
+    successor = TasteDeploymentSuccessor(
+        id=secrets.token_hex(16),
+        exemplar_id=exemplar.id,
+        job_id=successor_job_id,
+        predecessor_job_id=original_job_id,
+        ordinal=max(row.ordinal for row in siblings) + 1,
+        state=_job_state(successor_job),
+    )
+    exemplar.deployment_job_id = successor_job_id
+    session.add(successor)
+    await session.flush((successor, exemplar))
+    return successor
+
+
+def _post_effect_validation(
+    result: dict[str, Any], *, candidate_checksum: str
+) -> dict[str, Any] | None:
+    """Accept only a result that proves the candidate bytes are the current target bytes."""
+    outcome = result.get("outcome")
+    reason = result.get("reason_code")
+    validation = result.get("validation")
+    targets = result.get("target_outcomes")
+    if outcome not in {"succeeded", "no_change"} or not isinstance(validation, dict):
+        return None
+    if validation.get("verdict") != "passed" or not isinstance(targets, list) or len(targets) != 1:
+        return None
+    target = targets[0]
+    if not isinstance(target, dict):
+        return None
+    expected = target.get("expected")
+    actual = target.get("actual")
+    expected_checksum = expected.get("checksum") if isinstance(expected, dict) else None
+    actual_checksum = actual.get("checksum") if isinstance(actual, dict) else None
+    if expected_checksum != candidate_checksum or actual_checksum != candidate_checksum:
+        return None
+    if outcome == "no_change" and reason != "already_identical":
+        return None
+    return {
+        "validated": True,
+        "outcome": outcome,
+        "reason_code": reason,
+        "expected_checksum": expected_checksum,
+        "actual_checksum": actual_checksum,
+    }
+
+
+async def record_deployment_effect(
+    session: AsyncSession,
+    *,
+    deployment_job_id: str,
+    result: dict[str, Any],
+) -> tuple[TasteExemplar | None, dict[str, Any] | None]:
+    """Store the bounded post-effect proof for a pending onboarding deployment."""
+    successor = await session.scalar(
+        select(TasteDeploymentSuccessor)
+        .where(TasteDeploymentSuccessor.job_id == deployment_job_id)
+        .with_for_update()
+    )
+    if successor is None:
+        return None, None
+    exemplar = await session.scalar(
+        select(TasteExemplar)
+        .where(TasteExemplar.id == successor.exemplar_id)
+        .with_for_update()
+    )
+    if exemplar is None:
+        raise TastePreferenceError("deployment successor lost its exemplar")
+    if exemplar.status != "pending_deploy":
+        return exemplar, None
+    source = (
+        await session.get(JobArtifact, exemplar.candidate_artifact_id)
+        if exemplar.candidate_artifact_id is not None
+        else None
+    )
+    if source is None or not source.checksum:
+        raise TastePreferenceError("pending onboarding exemplar lost its selected artifact")
+    validation = _post_effect_validation(result, candidate_checksum=source.checksum)
+    successor.result = result
+    successor.post_effect_validation = validation
+    outcome = result.get("outcome")
+    if outcome in {"succeeded", "no_change"}:
+        successor.state = outcome
+        successor.completed_at = datetime.now(UTC)
+    await session.flush((successor,))
+    return exemplar, validation
+
+
+async def reconcile_pending_onboarding_deployments(
+    session: AsyncSession, *, limit: int = 100
+) -> list[TasteDeploymentSuccessor]:
+    """Bounded repair of durable successor state; this submits or retries no work."""
+    if not 1 <= limit <= 100:
+        raise TastePreferenceError("onboarding deployment repair limit is invalid")
+    rows = list(
+        await session.scalars(
+            select(TasteDeploymentSuccessor)
+            .join(TasteExemplar, TasteExemplar.id == TasteDeploymentSuccessor.exemplar_id)
+            .where(TasteExemplar.status == "pending_deploy")
+            .order_by(TasteDeploymentSuccessor.created_at, TasteDeploymentSuccessor.ordinal)
+            .limit(limit)
+            .with_for_update()
+        )
+    )
+    for row in rows:
+        job = await session.get(Job, row.job_id)
+        if job is None:
+            raise TastePreferenceError("deployment successor job is unavailable")
+        exemplar = await session.get(TasteExemplar, row.exemplar_id)
+        if exemplar is None:
+            raise TastePreferenceError("deployment successor lost its exemplar")
+        state = _job_state(job)
+        if row.state != state:
+            row.state = state
+        if job.phase == "terminal":
+            row.completed_at = job.terminal_at or row.completed_at or datetime.now(UTC)
+            if isinstance(job.result, dict) and row.result is None:
+                row.result = job.result
+        if (
+            exemplar.deployment_job_id != row.job_id
+            or exemplar.status != "pending_deploy"
+            or row.post_effect_validation is None
+            or row.post_effect_validation.get("validated") is not True
+            or job.phase != "terminal"
+            or job.outcome not in {"succeeded", "no_change", "failed", "cancelled"}
+        ):
+            continue
+        source = (
+            await session.get(JobArtifact, exemplar.candidate_artifact_id)
+            if exemplar.candidate_artifact_id is not None
+            else None
+        )
+        attempt = await session.get(JobAttempt, job.current_attempt_id)
+        if source is None or attempt is None or attempt.fence_token != job.fence_token:
+            continue
+        pinned_candidates = list(
+            await session.scalars(
+                select(JobArtifact).where(
+                    JobArtifact.job_id == job.id,
+                    JobArtifact.kind == "taste_exemplar",
+                    JobArtifact.status == "available",
+                )
+            )
+        )
+        pinned = next(
+            (
+                artifact
+                for artifact in pinned_candidates
+                if artifact.artifact_metadata.get("source_artifact_id") == source.id
+                and artifact.checksum == source.checksum
+            ),
+            None,
+        )
+        if pinned is None:
+            pinned = await pin_candidate_artifact(
+                source,
+                deployment_job_id=job.id,
+                deployment_attempt_id=attempt.id,
+                deployment_fence_token=job.fence_token,
+                session=session,
+            )
+        await activate_exemplar(
+            session,
+            exemplar_id=exemplar.id,
+            retained_artifact_id=pinned.id,
+            deployment_result={
+                **row.post_effect_validation,
+                "job_id": job.id,
+                "attempt_id": attempt.id,
+                "fence_token": job.fence_token,
+            },
+        )
+    await session.flush(rows)
+    return rows
 
 
 async def create_active_negative_exemplar(
@@ -383,8 +774,20 @@ async def activate_exemplar(
         return row
     if row.status != "pending_deploy":
         raise TastePreferenceError("only a pending exemplar can activate")
-    if deployment_result.get("outcome") != "succeeded" or not deployment_result.get("validated"):
-        raise TastePreferenceError("deployment did not complete post-effect validation")
+    outcome = deployment_result.get("outcome")
+    if row.polarity == "positive":
+        if outcome not in {"succeeded", "no_change"} or not deployment_result.get("validated"):
+            raise TastePreferenceError("deployment did not complete post-effect validation")
+        if deployment_result.get("job_id") not in {None, row.deployment_job_id}:
+            raise TastePreferenceError("deployment validation belongs to a different successor")
+        successor = await session.scalar(
+            select(TasteDeploymentSuccessor).where(
+                TasteDeploymentSuccessor.exemplar_id == row.id,
+                TasteDeploymentSuccessor.job_id == row.deployment_job_id,
+            )
+        )
+        if successor is None:
+            raise TastePreferenceError("deployment successor lineage is invalid")
     artifact = await session.get(JobArtifact, retained_artifact_id)
     if (
         artifact is None
@@ -394,9 +797,25 @@ async def activate_exemplar(
         or artifact.expires_at is not None
         or not artifact.checksum
         or artifact.storage_key is None
-        or artifact.job_id != row.deployment_job_id
+        or (row.polarity == "positive" and artifact.job_id != row.deployment_job_id)
     ):
         raise TastePreferenceError("retained exemplar artifact is invalid")
+    if row.polarity == "positive" and outcome == "no_change":
+        selected = (
+            await session.get(JobArtifact, row.candidate_artifact_id)
+            if row.candidate_artifact_id is not None
+            else None
+        )
+        expected_checksum = deployment_result.get("expected_checksum")
+        actual_checksum = deployment_result.get("actual_checksum")
+        if (
+            deployment_result.get("reason_code") != "already_identical"
+            or selected is None
+            or selected.checksum != artifact.checksum
+            or expected_checksum != artifact.checksum
+            or actual_checksum != artifact.checksum
+        ):
+            raise TastePreferenceError("no-change deployment did not prove current selected bytes")
     if row.polarity == "negative":
         duplicate_negative = await session.scalar(
             select(TasteExemplar).where(
@@ -529,6 +948,7 @@ async def snapshot_profile_revision(
     existing = await session.get(TasteProfileRevision, digest)
     if existing is not None:
         return existing
+    manifest = [profile_exemplar_manifest(row) for row in rows]
     positives = {
         (row.subject_kind, row.subject_reference)
         for row in rows
@@ -538,6 +958,7 @@ async def snapshot_profile_revision(
         digest=digest,
         exemplar_ids=[row.id for row in rows],
         exemplar_checksums=[row.checksum or "" for row in rows],
+        exemplar_manifest=manifest,
         positive_subjects=len(positives),
         state="eligible",
         consumer_reload={},
@@ -1062,36 +1483,44 @@ async def derive_readiness(
             .limit(1)
         )
         build = inflight or latest
-        active_build = (
-            await session.scalar(
-                select(TasteProfileBuild)
-                .where(
-                    TasteProfileBuild.library == library,
-                    TasteProfileBuild.state.in_(("succeeded", "no_change")),
-                    TasteProfileBuild.result_checksum
-                    == (publication.checksum if publication is not None else None),
+        active_checksum = publication.checksum if publication is not None else None
+        resolved_profile = None
+        profile_resolution_error: str | None = None
+        if publication is not None:
+            try:
+                resolved_profile, _load_result = await resolve_loaded_taste_profile(
+                    session, library=library
                 )
-                .order_by(TasteProfileBuild.completed_at.desc(), TasteProfileBuild.id.desc())
+            except MlPublicationError as exc:
+                profile_resolution_error = str(exc)
+        resolver_ready = bool(
+            publication is not None
+            and resolved_profile is not None
+            and resolved_profile.generation == publication.generation
+            and resolved_profile.checksum == publication.checksum
+        )
+        acknowledgement = (
+            await session.scalar(
+                select(MlConsumerAcknowledgement)
+                .join(RuntimeInstance, RuntimeInstance.id == MlConsumerAcknowledgement.instance_id)
+                .where(
+                    MlConsumerAcknowledgement.family == f"taste_profile:{library}",
+                    MlConsumerAcknowledgement.consumer_role == "poster_pipeline",
+                    MlConsumerAcknowledgement.generation
+                    == (publication.generation if publication is not None else -1),
+                    MlConsumerAcknowledgement.checksum == active_checksum,
+                    RuntimeInstance.readiness == "ready",
+                    RuntimeInstance.stopped_at.is_(None),
+                    RuntimeInstance.heartbeat_expires_at > datetime.now(UTC),
+                )
+                .order_by(MlConsumerAcknowledgement.loaded_at.desc(), MlConsumerAcknowledgement.id.desc())
                 .limit(1)
             )
             if publication is not None
             else None
         )
-        legacy_revision = (
-            await session.get(TasteProfileRevision, active_revision_digest)
-            if active_revision_digest is not None
-            else None
-        )
-        legacy_reload = (
-            legacy_revision.consumer_reload.get(library)
-            if legacy_revision is not None and isinstance(legacy_revision.consumer_reload, dict)
-            else None
-        )
-        reload_checksum = (
-            active_build.consumer_reload_checksum if active_build is not None else legacy_reload
-        )
-        active_checksum = publication.checksum if publication is not None else None
-        reload_ready = bool(active_checksum and reload_checksum == active_checksum)
+        reload_checksum = acknowledgement.checksum if acknowledgement is not None else None
+        reload_ready = bool(resolver_ready and acknowledgement is not None)
         active = {
             "generation": publication.generation if publication is not None else None,
             "checksum": active_checksum,
@@ -1101,19 +1530,25 @@ async def derive_readiness(
         residual_publication = await session.get(
             MlActivePublication, f"ranking_residual:{library}"
         )
-        residual_artifact = (
-            await session.get(JobArtifact, residual_publication.artifact_id)
-            if residual_publication is not None
-            else None
-        )
-        residual_metadata = (
-            residual_artifact.artifact_metadata if residual_artifact is not None else None
-        )
+        resolved_residual = None
+        residual_resolution_error: str | None = None
+        if publication is not None:
+            try:
+                resolved_residual, _residual_load_result = await resolve_loaded_ranking_residual(
+                    session,
+                    library=library,
+                    profile_checksum=publication.checksum,
+                    profile_generation=publication.generation,
+                    baseline=baseline_signature(pipeline_settings.scorer_weights),
+                )
+            except MlPublicationError as exc:
+                residual_resolution_error = str(exc)
         residual_compatible = bool(
-            residual_publication is not None
-            and isinstance(residual_metadata, dict)
-            and residual_metadata.get("profile_checksum") == active_checksum
-            and residual_metadata.get("profile_generation") == active["generation"]
+            resolver_ready
+            and residual_publication is not None
+            and resolved_residual is not None
+            and resolved_residual.generation == residual_publication.generation
+            and resolved_residual.checksum == residual_publication.checksum
         )
         residual = {
             "active": residual_publication is not None,
@@ -1139,8 +1574,14 @@ async def derive_readiness(
                 "expected_checksum": active_checksum,
                 "observed_checksum": reload_checksum,
                 "ready": reload_ready,
+                "instance_id": acknowledgement.instance_id if acknowledgement is not None else None,
+                "reason": profile_resolution_error
+                or (None if acknowledgement is not None else "consumer acknowledgement unavailable"),
             },
-            "residual": residual,
+            "residual": {
+                **residual,
+                "reason": residual_resolution_error,
+            },
             "rebuild_due": bool(desired_for_due and desired_for_due != active_revision_digest),
             "update_attention": bool(
                 active["compatible"]

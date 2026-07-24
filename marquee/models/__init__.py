@@ -48,7 +48,10 @@ from marquee.models.subtitle_managed import (
 from marquee.models.subtitle_policy import SubtitlePolicy, SubtitlePolicyBinding
 from marquee.models.system_metrics import SystemMetricsSample
 from marquee.models.taste_preference import (
+    MlConsumerAcknowledgement,
+    OnboardingAnalysisSuccessor,
     PosterPreferenceEvent,
+    TasteDeploymentSuccessor,
     TasteExemplar,
     TasteProfileBuild,
     TasteProfileCoordinator,
@@ -86,6 +89,9 @@ __all__ = [
     "SubtitlePolicyBinding",
     "SystemMetricsSample",
     "PosterPreferenceEvent",
+    "OnboardingAnalysisSuccessor",
+    "TasteDeploymentSuccessor",
+    "MlConsumerAcknowledgement",
     "TasteExemplar",
     "TasteProfileBuild",
     "TasteProfileCoordinator",

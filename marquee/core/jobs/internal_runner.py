@@ -298,13 +298,24 @@ def _run_poster_single(manifest: dict[str, Any], control: ControlWriter) -> dict
     )
 
     candidate_files: dict[str, str] = {}
-    candidates = output.payload.get("candidates")
-    if isinstance(candidates, list):
-        for index, candidate in enumerate(candidates[:100]):
-            if not isinstance(candidate, dict):
+    review = output.payload.get("review")
+    ledger = output.payload.get("diagnostic_ledger")
+    survivors = review.get("survivors") if isinstance(review, dict) else None
+    diagnostics = ledger.get("candidates") if isinstance(ledger, dict) else None
+    diagnostic_paths = {
+        candidate.get("orig_filename"): candidate.get("image_path")
+        for candidate in diagnostics
+        if isinstance(candidate, dict)
+        and isinstance(candidate.get("orig_filename"), str)
+        and isinstance(candidate.get("image_path"), str)
+    } if isinstance(diagnostics, list) else {}
+    if isinstance(survivors, list):
+        retained: list[dict[str, Any]] = []
+        for index, survivor in enumerate(survivors[:100]):
+            if not isinstance(survivor, dict):
                 continue
-            reference = candidate.get("orig_filename")
-            image_path = candidate.get("image_path")
+            reference = survivor.get("reference")
+            image_path = diagnostic_paths.get(reference)
             if not isinstance(reference, str) or not isinstance(image_path, str):
                 continue
             source_path = Path(image_path).resolve()
@@ -313,7 +324,11 @@ def _run_poster_single(manifest: dict[str, Any], control: ControlWriter) -> dict
             key = f"candidate-{index:03d}.jpg"
             shutil.copyfile(source_path, key)
             candidate_files[reference] = key
-            candidate["artifact_key"] = key
+            survivor["artifact_key"] = key
+            retained.append(survivor)
+        review["survivors"] = retained
+        review["archived_count"] = len(retained)
+        review["truncated_count"] = max(0, len(survivors) - len(retained))
 
     write_run_json(Path("run.json"), output.payload)
     files = [_announce_file("run.json", control)]
@@ -360,26 +375,41 @@ def _run_taste_profile(manifest: dict[str, Any], control: ControlWriter) -> dict
     source_mode = source.get("mode", "library")
     namespace = get_namespace(library)
     training = Path("training")
+    negative = Path("negative")
     training_dir = training if source_mode == "fixture" and training.is_dir() else None
+    negative_dir = negative if source_mode == "fixture" and negative.is_dir() else None
+    positive_weights = source.get("positive_weights") if isinstance(source.get("positive_weights"), dict) else None
+    negative_weights = source.get("negative_weights") if isinstance(source.get("negative_weights"), dict) else None
     output = Path("profile.npz")
 
     rebuild_profile(
         training_dir=training_dir,
+        negative_dir=negative_dir,
         output=output,
         skip_ocr=bool(params.get("skip_ocr", True)),
         skip_dino=bool(params.get("skip_dino", True)),
         progress_callback=_trainer_progress_forwarder(control),
         namespace=namespace,
+        positive_weights=positive_weights,
+        negative_weights=negative_weights,
     )
 
     files = [_announce_file("profile.npz", control)]
     exemplars = 0
+    negatives = 0
     with np.load(output, allow_pickle=False) as data:
         if "embeddings" in data.files:
             exemplars = int(np.asarray(data["embeddings"]).shape[0])
+        if "neg_embeddings" in data.files:
+            negatives = int(np.asarray(data["neg_embeddings"]).shape[0])
     return {
         "outcome": "succeeded",
-        "summary": {"family": "taste_profile", "library": library, "exemplars": exemplars},
+        "summary": {
+            "family": "taste_profile",
+            "library": library,
+            "exemplars": exemplars,
+            "negatives": negatives,
+        },
         "files": files,
     }
 
@@ -472,7 +502,11 @@ def _run_ranking_residual(manifest: dict[str, Any], control: ControlWriter) -> d
     from pathlib import Path  # noqa: PLC0415
     from types import SimpleNamespace  # noqa: PLC0415
 
-    from marquee.ml.residual import build_residual_pairs, train_residual  # noqa: PLC0415
+    from marquee.ml.residual import (  # noqa: PLC0415
+        ResidualArtifact,
+        build_residual_pairs,
+        train_residual,
+    )
 
     params = manifest.get("params")
     params = params if isinstance(params, dict) else {}
@@ -492,6 +526,8 @@ def _run_ranking_residual(manifest: dict[str, Any], control: ControlWriter) -> d
     control.emit({"v": PROTOCOL_VERSION, "type": "progress", "stage": "training"})
     events = [SimpleNamespace(**row) for row in rows]
     pairs = build_residual_pairs(events)
+    active_path = Path("active-residual.npz")
+    active_residual = ResidualArtifact.load(active_path) if active_path.is_file() else None
     artifact, report = train_residual(
         pairs,
         namespace=str(params.get("library", "movies")),
@@ -503,6 +539,7 @@ def _run_ranking_residual(manifest: dict[str, Any], control: ControlWriter) -> d
         min_subjects=int(params.get("min_subjects", 25)),
         min_pairs=int(params.get("min_pairs", 200)),
         min_improvement=float(params.get("min_improvement", 0.02)),
+        active_residual=active_residual,
     )
     summary = {
         "family": "ranking_residual",

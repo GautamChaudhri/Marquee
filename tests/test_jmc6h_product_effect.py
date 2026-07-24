@@ -16,7 +16,7 @@ import hashlib
 import io
 import json
 import os
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
@@ -45,7 +45,14 @@ from marquee.core.pipeline_config import pipeline_settings
 from marquee.database import _get_session_factory
 from marquee.main import app
 from marquee.ml.residual import ResidualArtifact, ResidualEvaluation
-from marquee.models import Job, JobArtifact, Movie, PipelineRun
+from marquee.models import (
+    Job,
+    JobArtifact,
+    MlConsumerAcknowledgement,
+    Movie,
+    PipelineRun,
+    RuntimeInstance,
+)
 from marquee.models.job import JobAttempt
 from marquee.models.ml_publication import MlActivePublication
 from marquee.pipeline.scorer import ResidualRuntimeContext, ResidualScorer, WeightedScorer
@@ -192,6 +199,58 @@ async def test_poster_pipeline_writes_canonical_pipeline_run_projection(
     workspace_dir = (
         context.workspace.directory.root.resolved() / context.workspace.directory.key.value
     )
+    now = datetime.now(UTC)
+    runtime = RuntimeInstance(
+        id=str(uuid4()),
+        role="worker",
+        node_label="product-effect-worker",
+        build="test",
+        host_boot_id=str(uuid4()),
+        process_id=2201,
+        process_start_ticks=1,
+        process_group_id=2201,
+        advertised_entrypoints=["cpu"],
+        capabilities={"entrypoints": ["cpu"]},
+        readiness="ready",
+        started_at=now,
+        last_heartbeat_at=now,
+        heartbeat_expires_at=now + timedelta(minutes=1),
+    )
+    db.add(runtime)
+    await db.flush()
+    attempt = await db.get(JobAttempt, context.attempt.attempt_id)
+    assert attempt is not None
+    attempt.runtime_instance_id = runtime.id
+    profile_path = data_dir / "active-profile.npz"
+    _write_valid_taste_profile(profile_path)
+    profile_bytes = profile_path.read_bytes()
+    profile_artifact = JobArtifact(
+        job_id=job_id,
+        attempt_id=attempt.id,
+        kind="taste_profile",
+        name="active-profile.npz",
+        status="available",
+        storage_key=profile_path.relative_to(data_dir).as_posix(),
+        content_type="application/octet-stream",
+        size_bytes=len(profile_bytes),
+        checksum=hashlib.sha256(profile_bytes).hexdigest(),
+        artifact_metadata={"family": "taste_profile", "library": "movies"},
+    )
+    db.add(profile_artifact)
+    await db.flush()
+    db.add(
+        MlActivePublication(
+            family="taste_profile:movies",
+            generation=1,
+            artifact_id=profile_artifact.id,
+            version="fixture-profile-v1",
+            checksum=profile_artifact.checksum,
+            job_id=job_id,
+            attempt_id=attempt.id,
+            fence_token=_FENCE,
+        )
+    )
+    await db.commit()
 
     outcome = RunnerOutcome(
         outcome="succeeded",
@@ -211,18 +270,36 @@ async def test_poster_pipeline_writes_canonical_pipeline_run_projection(
     )
 
     async def fake_run(launcher, *, operation, manifest, **kwargs):
+        assert manifest["params"]["personalization_mode"] == "personalized"
+        assert (workspace_dir / "profile.npz").is_file()
         (workspace_dir / "run.json").write_text(
             json.dumps(
                 {
                     "run_id": "fixturerun0001",
-                    "candidates": [
-                        {
-                            "orig_filename": "poster_a.jpg",
-                            "image_path": str(workspace_dir / "candidate-000.jpg"),
-                            "rank": 1,
-                            "final_score": 0.87,
-                        }
-                    ],
+                    "diagnostic_ledger": {
+                        "version": 1,
+                        "candidates": [
+                            {
+                                "orig_filename": "poster_a.jpg",
+                                "image_path": str(workspace_dir / "candidate-000.jpg"),
+                            }
+                        ],
+                    },
+                    "review": {
+                        "version": 1,
+                        "order_algorithm": "source_family_round_robin_sha256_v1",
+                        "survivors": [
+                            {
+                                "candidate_id": "a" * 64,
+                                "reference": "poster_a.jpg",
+                                "position": 0,
+                                "objective_eligible": True,
+                            }
+                        ],
+                        "eligible_count": 1,
+                        "archived_count": 0,
+                        "truncated_count": 0,
+                    },
                 }
             ),
             encoding="utf-8",
@@ -236,6 +313,7 @@ async def test_poster_pipeline_writes_canonical_pipeline_run_projection(
 
     result = await execute_poster_analysis(context)
     assert result["outcome"] == "succeeded"
+    assert result["summary"]["personalization_mode"] == "personalized"
 
     async with _get_session_factory()() as session:
         run = await session.scalar(select(PipelineRun).where(PipelineRun.job_id == job_id))
@@ -244,9 +322,18 @@ async def test_poster_pipeline_writes_canonical_pipeline_run_projection(
         )
         archive = await load_pipeline_archive(session, run)
         selected = await session.get(JobArtifact, run.selected_artifact_id)
+        acknowledgement = await session.scalar(
+            select(MlConsumerAcknowledgement).where(
+                MlConsumerAcknowledgement.family == "taste_profile:movies"
+            )
+        )
         assert run.archive_artifact_id is not None
         assert archive is not None
-        assert archive["candidates"][0]["artifact_id"] == run.selected_artifact_id
+        assert archive["review"]["survivors"][0]["artifact_id"] == run.selected_artifact_id
+        assert acknowledgement is not None
+        assert acknowledgement.instance_id == runtime.id
+        assert acknowledgement.generation == 1
+        assert acknowledgement.checksum == profile_artifact.checksum
     assert run.attempt_id == context.attempt.attempt_id
     assert run.fence_token == context.attempt.fence_token
     assert run.movie_id == movie.id
@@ -404,6 +491,7 @@ async def test_taste_rebuild_publishes_native_loadable_profile_artifact(db, data
         )
         assert active is not None, "taste_rebuild must activate a taste_profile:movies publication"
         artifact = await session.get(JobArtifact, active.artifact_id)
+        assert not list(await session.scalars(select(MlConsumerAcknowledgement)))
     assert artifact is not None
 
     assert artifact.content_type == "application/octet-stream", (
@@ -610,8 +698,7 @@ async def test_ranking_residual_publishes_native_loadable_artifact(db, data_dir,
             "library": "movies",
             "expected_generation": 0,
             "seed": 0,
-            "evidence_revision": "manual:test",
-            "mutation": "manual",
+            "evidence_revision": hashlib.sha256(b"[]").hexdigest(),
         },
         feature_area="ml_taste",
         subject_kind="model",
