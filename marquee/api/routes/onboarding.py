@@ -13,9 +13,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from marquee.api.job_submission import submission_response
 from marquee.api.routes.pipeline import _downloaded
 from marquee.core.jobs.contracts import TriggerKind
+from marquee.core.jobs.control import JobControlError, retry
 from marquee.core.jobs.submission import (
     Initiator,
     SubjectLocator,
+    SubmissionResult,
     submit_job,
 )
 from marquee.core.onboarding_review import (
@@ -24,12 +26,22 @@ from marquee.core.onboarding_review import (
     load_onboarding_review,
 )
 from marquee.core.taste_preferences import (
+    TastePreferenceError,
     derive_readiness,
+    reconcile_pending_onboarding_deployments,
+    record_onboarding_analysis_submission,
     schedule_initial_profile_build,
     snapshot_profile_revision,
 )
 from marquee.database import get_db
-from marquee.models import Job, Movie, PipelineRun, TasteExemplar
+from marquee.models import (
+    Job,
+    Movie,
+    OnboardingAnalysisSuccessor,
+    PipelineRun,
+    TasteDeploymentSuccessor,
+    TasteExemplar,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -69,8 +81,73 @@ async def _downloaded_movies(db: AsyncSession) -> list[tuple[int, list[str] | No
     return [(row[0], row[1]) for row in rows]
 
 
+def _job_lineage_item(job: Job, *, predecessor_job_id: str | None) -> dict[str, object]:
+    return {
+        "job_id": job.id,
+        "predecessor_job_id": predecessor_job_id,
+        "phase": job.phase,
+        "outcome": job.outcome,
+        "fence_token": job.fence_token,
+        "retryable": job.phase == "terminal" and job.outcome in {"failed", "cancelled"},
+        "activity_link": f"/projection-room/jobs/{job.id}",
+    }
+
+
+def _submission_result(job: Job, *, disposition: Literal["created", "reused"]) -> SubmissionResult:
+    """Present an existing canonical job through the ordinary submission contract."""
+    return SubmissionResult(
+        job_id=job.id,
+        disposition=disposition,
+        phase=job.phase,
+        snapshot_link=f"/api/jobs/{job.id}/snapshot",
+        detail_link=f"/projection-room/jobs/{job.id}",
+        activity_link=f"/projection-room?view=queue&job={job.id}",
+        idempotent=disposition == "reused",
+    )
+
+
+async def _onboarding_lineage_status(db: AsyncSession) -> dict[str, list[dict[str, object]]]:
+    analyses = list(
+        await db.scalars(
+            select(OnboardingAnalysisSuccessor)
+            .join(Job, Job.id == OnboardingAnalysisSuccessor.job_id)
+            .order_by(OnboardingAnalysisSuccessor.created_at, OnboardingAnalysisSuccessor.job_id)
+        )
+    )
+    deployments = list(
+        await db.scalars(
+            select(TasteDeploymentSuccessor)
+            .join(Job, Job.id == TasteDeploymentSuccessor.job_id)
+            .order_by(TasteDeploymentSuccessor.created_at, TasteDeploymentSuccessor.ordinal)
+        )
+    )
+    analysis_items: list[dict[str, object]] = []
+    for row in analyses:
+        job = await db.get(Job, row.job_id)
+        if job is not None:
+            analysis_items.append(_job_lineage_item(job, predecessor_job_id=row.predecessor_job_id))
+    deployment_items: list[dict[str, object]] = []
+    for row in deployments:
+        job = await db.get(Job, row.job_id)
+        if job is None:
+            continue
+        item = _job_lineage_item(job, predecessor_job_id=row.predecessor_job_id)
+        item.update(
+            {
+                "exemplar_id": row.exemplar_id,
+                "ordinal": row.ordinal,
+                "state": row.state,
+                "post_effect_validation": row.post_effect_validation,
+            }
+        )
+        deployment_items.append(item)
+    return {"analysis": analysis_items, "deployment": deployment_items}
+
+
 @router.get("/status")
 async def onboarding_status(db: Annotated[AsyncSession, Depends(get_db)]):
+    await reconcile_pending_onboarding_deployments(db)
+    await db.commit()
     readiness = await derive_readiness(db)
     review = await db.scalar(
         select(PipelineRun)
@@ -97,6 +174,7 @@ async def onboarding_status(db: Annotated[AsyncSession, Depends(get_db)]):
             )
         ).all()
     )
+    lineage = await _onboarding_lineage_status(db)
     return {
         **readiness.to_dict(),
         "active_jobs": [
@@ -119,6 +197,7 @@ async def onboarding_status(db: Annotated[AsyncSession, Depends(get_db)]):
             if review is not None
             else None
         ),
+        "lineage": lineage,
     }
 
 
@@ -148,26 +227,69 @@ async def onboarding_start(
         raise HTTPException(status_code=409, detail="all downloaded movies are already confirmed")
     movie = await db.get(Movie, movie_id)
     assert movie is not None
-    submission = await submit_job(
-        db,
-        job_type="poster_pipeline",
-        request={
-            "movie_id": movie.id,
-            "tmdb_id": movie.tmdb_id,
-            "title": movie.title,
-            "source_descriptors": [
-                {"provider": "tmdb", "reference": f"movie:{movie.tmdb_id}"}
-            ],
-        },
-        subject=SubjectLocator(kind="movie", reference=str(movie.id)),
-        trigger=TriggerKind.MANUAL,
-        initiator=Initiator(kind="user", identifier="onboarding-api"),
-        idempotency_key=f"poster_pipeline:onboarding:{movie.id}",
-        priority=80,
+    subject = {"kind": "movie", "id": movie.id, "title": movie.title, "year": movie.year}
+    previous = await db.scalar(
+        select(OnboardingAnalysisSuccessor)
+        .join(Job, Job.id == OnboardingAnalysisSuccessor.job_id)
+        .where(
+            OnboardingAnalysisSuccessor.subject_kind == "movie",
+            OnboardingAnalysisSuccessor.subject_reference == str(movie.id),
+        )
+        .order_by(OnboardingAnalysisSuccessor.created_at.desc())
+        .limit(1)
     )
-    await db.commit()
+    previous_job = await db.get(Job, previous.job_id) if previous is not None else None
+    if previous_job is not None and previous_job.phase == "terminal":
+        if previous_job.outcome not in {"failed", "cancelled"}:
+            raise HTTPException(
+                status_code=409,
+                detail="the latest onboarding analysis is terminal; review its recorded outcome first",
+            )
+        previous_job_id = previous_job.id
+        previous_fence_token = previous_job.fence_token
+        await db.rollback()
+        try:
+            retried = await retry(
+                db,
+                job_id=previous_job_id,
+                expected_fence_token=previous_fence_token,
+            )
+        except JobControlError as exc:
+            raise HTTPException(status_code=409, detail=exc.message) from exc
+        submission = _submission_result(retried.job, disposition="created")
+    elif previous_job is not None:
+        submission = _submission_result(previous_job, disposition="reused")
+        await db.commit()
+    else:
+        submission = await submit_job(
+            db,
+            job_type="poster_pipeline",
+            request={
+                "movie_id": movie.id,
+                "tmdb_id": movie.tmdb_id,
+                "title": movie.title,
+                "source_descriptors": [
+                    {"provider": "tmdb", "reference": f"movie:{movie.tmdb_id}"}
+                ],
+            },
+            subject=SubjectLocator(kind="movie", reference=str(movie.id)),
+            trigger=TriggerKind.MANUAL,
+            initiator=Initiator(kind="user", identifier="onboarding-api"),
+            idempotency_key=f"poster_pipeline:onboarding:{movie.id}",
+            priority=80,
+        )
+        try:
+            await record_onboarding_analysis_submission(
+                db,
+                job_id=submission.job_id,
+                subject_kind="movie",
+                subject_reference=str(movie.id),
+            )
+        except TastePreferenceError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        await db.commit()
     return {
-        "subject": {"kind": "movie", "id": movie.id, "title": movie.title, "year": movie.year},
+        "subject": subject,
         "analysis_job": submission_response(submission),
         "status": await onboarding_status(db),
     }

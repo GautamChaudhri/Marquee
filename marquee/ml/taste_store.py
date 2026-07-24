@@ -66,21 +66,37 @@ def weighted_topk_mean(
     similarities: np.ndarray,
     k: int,
     *,
+    evidence_weights: np.ndarray | None = None,
     weighting: str | None = None,
     temperature: float | None = None,
 ) -> float:
     """Combine the top-k cosine similarities into one style scalar."""
     if similarities.size == 0:
         return 0.0
+    if evidence_weights is not None:
+        if evidence_weights.shape != similarities.shape:
+            raise ValueError("taste evidence weights do not match similarities")
+        if (
+            not np.all(np.isfinite(evidence_weights))
+            or np.any(evidence_weights <= 0)
+            or np.any(evidence_weights > 1)
+        ):
+            raise ValueError("taste evidence weights must be finite and in (0, 1]")
     count = min(max(k, 1), int(similarities.size))
-    top = np.partition(similarities, -count)[-count:]
+    indices = np.argpartition(similarities, -count)[-count:]
+    top = similarities[indices]
+    top_evidence = evidence_weights[indices] if evidence_weights is not None else None
     mode = weighting or pipeline_settings.KNN_WEIGHTING
     if mode == "softmax" and count > 1:
         temp = temperature or pipeline_settings.KNN_SOFTMAX_TEMP
         logits = (top - top.max()) / temp
         weights = np.exp(logits)
+        if top_evidence is not None:
+            weights *= top_evidence
         weights /= weights.sum()
         return float(np.dot(weights, top))
+    if top_evidence is not None:
+        return float(np.average(top, weights=top_evidence))
     return float(top.mean())
 
 
@@ -116,7 +132,9 @@ class NumpyTasteStore(TasteStore):
         self.profile_path = Path(profile_path or pipeline_settings.TASTE_PROFILE_PATH)
         self.expected_model_name = expected_model_name or pipeline_settings.AI_MODEL
         self._embeddings: np.ndarray | None = None
+        self._embedding_weights: np.ndarray | None = None
         self._neg_embeddings: np.ndarray | None = None
+        self._neg_embedding_weights: np.ndarray | None = None
         self._dino_embeddings: np.ndarray | None = None
         self._neg_dino_embeddings: np.ndarray | None = None
         self._dino_model_name: str | None = None
@@ -143,6 +161,11 @@ class NumpyTasteStore(TasteStore):
                     f"configured={self.expected_model_name!r}. Rebuild the profile."
                 )
             self._embeddings = np.asarray(data["embeddings"], dtype=np.float32)
+            self._embedding_weights = _profile_weights(
+                data.get("embedding_weights", None),
+                self._embeddings.shape[0],
+                label="positive",
+            )
             self._centroid = np.asarray(data["centroid_emb"], dtype=np.float32)
             names = decode_unicode_list(data["poster_names"])
             kinds = decode_unicode_list(data["asset_kinds"]) if "asset_kinds" in data else ["movie"] * len(names)
@@ -159,6 +182,11 @@ class NumpyTasteStore(TasteStore):
                 if negatives.ndim != 2 or negatives.shape[1] != 512:
                     raise RuntimeError(f"Invalid negative embedding shape: {negatives.shape}")
                 self._neg_embeddings = negatives
+                self._neg_embedding_weights = _profile_weights(
+                    data.get("neg_embedding_weights", None),
+                    negatives.shape[0],
+                    label="negative",
+                )
 
             # Optional DINOv2 space (second style opinion).
             if "dino_embeddings" in data:
@@ -251,8 +279,9 @@ class NumpyTasteStore(TasteStore):
         vector = np.asarray(embedding, dtype=np.float32).reshape(1, 512)
         vector /= np.maximum(np.linalg.norm(vector, axis=1, keepdims=True), 1e-10)
         self._embeddings = np.concatenate((self._embeddings, vector), axis=0)  # type: ignore[arg-type]
+        self._embedding_weights = np.concatenate((self._embedding_weights, np.ones(1)))
         self._metadata.append(metadata)
-        self._centroid = _compute_centroid(self._embeddings)
+        self._centroid = _compute_centroid(self._embeddings, self._embedding_weights)
 
     # ------------------------------------------------------------------
     # Scoring
@@ -274,7 +303,9 @@ class NumpyTasteStore(TasteStore):
         return self._contrastive_knn(
             np.asarray(embedding, dtype=np.float32).reshape(512),
             self._embeddings,  # type: ignore[arg-type]
+            self._embedding_weights,
             self._neg_embeddings,
+            self._neg_embedding_weights,
             k,
         )
 
@@ -290,7 +321,9 @@ class NumpyTasteStore(TasteStore):
         return self._contrastive_knn(
             np.asarray(dino_embedding, dtype=np.float32).reshape(dim),
             self._dino_embeddings,
+            self._embedding_weights,
             self._neg_dino_embeddings,
+            self._neg_embedding_weights,
             k,
         )
 
@@ -298,15 +331,18 @@ class NumpyTasteStore(TasteStore):
     def _contrastive_knn(
         vector: np.ndarray,
         positives: np.ndarray,
+        positive_weights: np.ndarray | None,
         negatives: np.ndarray | None,
+        negative_weights: np.ndarray | None,
         k: int,
     ) -> float:
-        positive = weighted_topk_mean(positives @ vector, k)
+        positive = weighted_topk_mean(positives @ vector, k, evidence_weights=positive_weights)
         if negatives is None or pipeline_settings.TASTE_NEG_WEIGHT <= 0:
             return positive
         negative = weighted_topk_mean(
             negatives @ vector,
             min(k, int(negatives.shape[0])),
+            evidence_weights=negative_weights,
         )
         penalty = pipeline_settings.TASTE_NEG_WEIGHT * max(0.0, negative - positive)
         return positive - penalty
@@ -316,7 +352,17 @@ class NumpyTasteStore(TasteStore):
         return self._embeddings.copy(), list(self._metadata)  # type: ignore[union-attr]
 
 
-def _compute_centroid(vectors: np.ndarray) -> np.ndarray:
-    centroid = vectors.mean(axis=0)
+def _profile_weights(values: np.ndarray | None, count: int, *, label: str) -> np.ndarray:
+    """Load native frozen weights while retaining compatibility with legacy profiles."""
+    weights = np.ones(count, dtype=np.float32) if values is None else np.asarray(values, dtype=np.float32)
+    if weights.shape != (count,):
+        raise RuntimeError(f"{label} taste evidence weights do not match embeddings")
+    if not np.all(np.isfinite(weights)) or np.any(weights <= 0) or np.any(weights > 1):
+        raise RuntimeError(f"{label} taste evidence weights must be finite and in (0, 1]")
+    return weights
+
+
+def _compute_centroid(vectors: np.ndarray, weights: np.ndarray | None = None) -> np.ndarray:
+    centroid = vectors.mean(axis=0) if weights is None else np.average(vectors, axis=0, weights=weights)
     norm = float(np.linalg.norm(centroid))
     return (centroid / norm if norm > 1e-10 else centroid).astype(np.float32)

@@ -49,6 +49,7 @@ from marquee.core.poster_subjects import PosterSubject
 from marquee.core.taste_preferences import (
     activate_exemplar,
     pin_candidate_artifact,
+    record_deployment_effect,
     schedule_profile_builds,
 )
 from marquee.models import (
@@ -696,44 +697,44 @@ async def execute_poster_deploy(context: ExecutionContext) -> dict[str, object]:
     boundary, _destination = _boundary(subject)
     candidate = await _resolve_deploy_candidate(context, subject, boundary, request.candidate)
     result = await _execute_copy(context, request, candidate, request.candidate.source)
-    if result.get("outcome") != "succeeded":
+    async with context.session_factory() as session:
+        exemplar, validation = await record_deployment_effect(
+            session,
+            deployment_job_id=context.delivery.canonical_job_id,
+            result=result,
+        )
+        exemplar_id = exemplar.id if exemplar is not None else None
+        source_artifact_id = exemplar.candidate_artifact_id if exemplar is not None else None
+        await session.commit()
+    if exemplar_id is None or source_artifact_id is None or validation is None:
         return result
     async with context.session_factory() as session:
-        exemplar = await session.scalar(
-            select(TasteExemplar).where(
-                TasteExemplar.deployment_job_id == context.delivery.canonical_job_id,
-                TasteExemplar.status == "pending_deploy",
-            )
+        source_artifact = await session.get(JobArtifact, source_artifact_id)
+        if source_artifact is None:
+            raise PosterMutationError("pending taste exemplar lost its candidate artifact")
+        pinned = await pin_candidate_artifact(
+            source_artifact,
+            deployment_job_id=context.delivery.canonical_job_id,
+            deployment_attempt_id=context.attempt.attempt_id,
+            deployment_fence_token=context.attempt.fence_token,
+            session=session,
         )
-        source_artifact = (
-            await session.get(JobArtifact, exemplar.candidate_artifact_id)
-            if exemplar is not None and exemplar.candidate_artifact_id is not None
-            else None
-        )
-    if exemplar is None:
-        return result
-    if source_artifact is None:
-        raise PosterMutationError("pending taste exemplar lost its candidate artifact")
-    pinned = await pin_candidate_artifact(
-        source_artifact,
-        deployment_job_id=context.delivery.canonical_job_id,
-        deployment_attempt_id=context.attempt.attempt_id,
-        deployment_fence_token=context.attempt.fence_token,
-    )
+        await session.commit()
     async with context.session_factory() as session:
+        current = await session.get(TasteExemplar, exemplar_id)
+        was_active = current is not None and current.status == "active"
         activated = await activate_exemplar(
             session,
-            exemplar_id=exemplar.id,
+            exemplar_id=exemplar_id,
             retained_artifact_id=pinned.id,
             deployment_result={
-                "outcome": "succeeded",
-                "validated": True,
-                "checksum": request.candidate.expected_checksum,
+                **validation,
+                "job_id": context.delivery.canonical_job_id,
                 "attempt_id": context.attempt.attempt_id,
                 "fence_token": context.attempt.fence_token,
             },
         )
-        if activated.status == "active":
+        if activated.status == "active" and not was_active:
             namespaces = (
                 ("movies", "tv") if activated.namespace == "global" else (activated.namespace,)
             )

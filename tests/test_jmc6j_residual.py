@@ -14,6 +14,7 @@ from marquee.ml.residual import (
     ResidualPair,
     baseline_signature,
     build_residual_pairs,
+    freeze_residual_evidence,
     subject_split,
     train_residual,
 )
@@ -76,6 +77,21 @@ def test_natural_agreement_is_evidence_but_neutral_onboarding_is_not():
     assert pairs[0].baseline_margin == pytest.approx(0.2)
     assert pairs[0].confidence == "weak"
     assert build_residual_pairs([_event(neutral=True)]) == []
+
+
+def test_residual_coordinator_freezes_only_ordered_eligible_events():
+    eligible = _event()
+    eligible.id = "event-1"
+    revoked = _event()
+    revoked.id = "event-2"
+    revoked.revoked_event_id = "undo-1"
+
+    frozen = freeze_residual_evidence([eligible, revoked])
+
+    assert frozen.event_ids == ["event-1"]
+    assert frozen.rows[0]["id"] == "event-1"
+    assert frozen.digest != "event-1"
+    assert len(frozen.checksum) == 64
 
 
 def test_subject_split_never_leaks_a_subject_between_partitions():

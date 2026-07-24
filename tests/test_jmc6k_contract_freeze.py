@@ -13,12 +13,18 @@ from hashlib import sha256
 from pathlib import Path
 
 import pytest
+from fastapi import HTTPException
 from httpx import ASGITransport, AsyncClient
 from pydantic import ValidationError
+from sqlalchemy import select
 
 from marquee.config import settings
 from marquee.core.jobs.documents import TasteRebuildRequestV1
-from marquee.core.onboarding_review import bind_onboarding_decision, load_onboarding_review
+from marquee.core.onboarding_review import (
+    OnboardingReviewError,
+    bind_onboarding_decision,
+    load_onboarding_review,
+)
 from marquee.core.taste_preferences import derive_readiness
 from marquee.main import app
 from marquee.models import (
@@ -28,6 +34,7 @@ from marquee.models import (
     MlActivePublication,
     Movie,
     PipelineRun,
+    PosterPreferenceEvent,
     TasteExemplar,
 )
 
@@ -103,20 +110,52 @@ async def _canonical_review_run(db) -> PipelineRun:
     db.add(candidate)
     await db.flush()
 
-    archive = {
-        "candidates": [
+    survivor = {
+        "candidate_id": sha256(
+            b"jmc7b-review-v1\x00jmc6k-review-run\x00candidate.jpg"
+        ).hexdigest(),
+        "reference": "candidate.jpg",
+        "position": 0,
+        "objective_eligible": True,
+        "artifact_id": candidate.id,
+        "artifact_storage_key": candidate.storage_key,
+        "artifact_checksum": candidate.checksum,
+    }
+    review = {
+        "version": 1,
+        "order_algorithm": "source_family_round_robin_sha256_v1",
+        "survivors": [survivor],
+        "eligible_count": 1,
+        "archived_count": 1,
+        "truncated_count": 0,
+    }
+    review["checksum"] = sha256(
+        json.dumps(
             {
-                "orig_filename": "candidate.jpg",
-                "artifact_id": candidate.id,
-                "artifact_storage_key": candidate.storage_key,
-                "artifact_checksum": candidate.checksum,
-                "width": 1000,
-                "height": 1500,
-                "language": "en",
-                "rank": 1,
-                "final_score": 0.99,
-            }
-        ]
+                "version": review["version"],
+                "order_algorithm": review["order_algorithm"],
+                "survivors": review["survivors"],
+            },
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode()
+    ).hexdigest()
+    archive = {
+        "diagnostic_ledger": {
+            "version": 1,
+            "candidates": [
+                {
+                    "orig_filename": "candidate.jpg",
+                    "gate_decision": "passed",
+                    "rejection_reason": None,
+                    "raw_features": {"knn_sim": 0.5},
+                    "width": 1000,
+                    "height": 1500,
+                    "language": "en",
+                }
+            ],
+        },
+        "review": review,
     }
     archive_bytes = json.dumps(archive, separators=(",", ":"), sort_keys=True).encode()
     archive_key = f"test-artifacts/{job.id}/run.json"
@@ -206,6 +245,130 @@ async def test_review_is_neutral_and_hate_uses_only_canonical_archive_evidence(d
     )
     assert replay["event_id"] == result["event_id"]
     assert replay["disposition"] == "reused"
+
+
+@pytest.mark.asyncio
+async def test_review_rejects_a_survivor_that_fails_an_objective_gate(db) -> None:
+    run = await _canonical_review_run(db)
+    archive_artifact = await db.get(JobArtifact, run.archive_artifact_id)
+    assert archive_artifact is not None
+    archive_path = Path(settings.DATA_DIR) / str(archive_artifact.storage_key)
+    archive = json.loads(archive_path.read_text())
+    diagnostic = archive["diagnostic_ledger"]["candidates"][0]
+    diagnostic["gate_decision"] = "gated"
+    diagnostic["rejection_reason"] = "ocr_residual_text"
+    archive_bytes = json.dumps(archive, separators=(",", ":"), sort_keys=True).encode()
+    archive_path.write_bytes(archive_bytes)
+    archive_artifact.size_bytes = len(archive_bytes)
+    archive_artifact.checksum = sha256(archive_bytes).hexdigest()
+    await db.commit()
+
+    with pytest.raises(OnboardingReviewError, match="survivor membership"):
+        await load_onboarding_review(db, run.run_id)
+
+
+@pytest.mark.asyncio
+async def test_decision_rejects_a_survivor_artifact_from_the_wrong_attempt(db) -> None:
+    run = await _canonical_review_run(db)
+    review = await load_onboarding_review(db, run.run_id)
+    archive_artifact = await db.get(JobArtifact, run.archive_artifact_id)
+    assert archive_artifact is not None
+    archive = json.loads((Path(settings.DATA_DIR) / str(archive_artifact.storage_key)).read_text())
+    artifact_id = archive["review"]["survivors"][0]["artifact_id"]
+    candidate_artifact = await db.get(JobArtifact, artifact_id)
+    assert candidate_artifact is not None
+    candidate_artifact.attempt_id = None
+    await db.commit()
+
+    with pytest.raises(OnboardingReviewError, match="artifact is invalid"):
+        await bind_onboarding_decision(
+            db,
+            run_id=run.run_id,
+            candidate_id=review["candidates"][0]["candidate_id"],
+            review_revision=review["review_revision"],
+            idempotency_key="jmc7b-wrong-attempt",
+            decision="hate",
+        )
+    assert run.feedback_event_id is None
+    assert await db.scalar(select(PosterPreferenceEvent)) is None
+
+
+@pytest.mark.asyncio
+async def test_stale_review_cannot_create_a_partial_decision(db) -> None:
+    run = await _canonical_review_run(db)
+    review = await load_onboarding_review(db, run.run_id)
+
+    with pytest.raises(OnboardingReviewError, match="review has changed"):
+        await bind_onboarding_decision(
+            db,
+            run_id=run.run_id,
+            candidate_id=review["candidates"][0]["candidate_id"],
+            review_revision="0" * 64,
+            idempotency_key="jmc7b-stale-review",
+            decision="hate",
+        )
+    assert run.feedback_event_id is None
+    assert await db.scalar(select(PosterPreferenceEvent)) is None
+
+
+@pytest.mark.asyncio
+async def test_review_fails_closed_when_survivor_bytes_are_corrupt(db) -> None:
+    run = await _canonical_review_run(db)
+    archive_artifact = await db.get(JobArtifact, run.archive_artifact_id)
+    assert archive_artifact is not None
+    archive = json.loads((Path(settings.DATA_DIR) / str(archive_artifact.storage_key)).read_text())
+    artifact_id = archive["review"]["survivors"][0]["artifact_id"]
+    candidate_artifact = await db.get(JobArtifact, artifact_id)
+    assert candidate_artifact is not None
+    (Path(settings.DATA_DIR) / str(candidate_artifact.storage_key)).write_bytes(b"corrupt")
+
+    with pytest.raises(OnboardingReviewError, match="bytes are unavailable"):
+        await load_onboarding_review(db, run.run_id)
+
+
+@pytest.mark.asyncio
+async def test_legacy_candidate_list_is_not_inferred_as_an_onboarding_review(db) -> None:
+    run = await _canonical_review_run(db)
+    archive_artifact = await db.get(JobArtifact, run.archive_artifact_id)
+    assert archive_artifact is not None
+    archive_path = Path(settings.DATA_DIR) / str(archive_artifact.storage_key)
+    legacy = {"candidates": [{"orig_filename": "candidate.jpg"}]}
+    archive_bytes = json.dumps(legacy, separators=(",", ":"), sort_keys=True).encode()
+    archive_path.write_bytes(archive_bytes)
+    archive_artifact.size_bytes = len(archive_bytes)
+    archive_artifact.checksum = sha256(archive_bytes).hexdigest()
+    await db.commit()
+
+    with pytest.raises(OnboardingReviewError, match="explicit review survivors"):
+        await load_onboarding_review(db, run.run_id)
+
+
+@pytest.mark.asyncio
+async def test_diagnostic_rejection_can_never_be_served_as_a_review_candidate(db) -> None:
+    run = await _canonical_review_run(db)
+    archive_artifact = await db.get(JobArtifact, run.archive_artifact_id)
+    assert archive_artifact is not None
+    archive_path = Path(settings.DATA_DIR) / str(archive_artifact.storage_key)
+    archive = json.loads(archive_path.read_text())
+    archive["diagnostic_ledger"]["candidates"].append(
+        {
+            "orig_filename": "rejected.jpg",
+            "gate_decision": "gated",
+            "rejection_reason": "ocr_residual_text",
+            "raw_features": {"knn_sim": 0.2},
+        }
+    )
+    archive_bytes = json.dumps(archive, separators=(",", ":"), sort_keys=True).encode()
+    archive_path.write_bytes(archive_bytes)
+    archive_artifact.size_bytes = len(archive_bytes)
+    archive_artifact.checksum = sha256(archive_bytes).hexdigest()
+    await db.commit()
+
+    from marquee.api.routes.pipeline import get_run_poster
+
+    with pytest.raises(HTTPException, match="No reviewable candidate") as exc_info:
+        await get_run_poster(run.run_id, "rejected.jpg", db)
+    assert exc_info.value.status_code == 404
 
 
 @pytest.mark.asyncio
@@ -334,11 +497,9 @@ async def test_readiness_marks_a_profile_mismatched_residual_dormant(db) -> None
     readiness = (await derive_readiness(db)).to_dict()
 
     assert readiness["residual_dormant"] is True
-    assert readiness["libraries"]["movies"]["residual"] == {
-        "active": True,
-        "compatible": False,
-        "dormant": True,
-    }
+    residual_state = readiness["libraries"]["movies"]["residual"]
+    assert {"active": True, "compatible": False, "dormant": True}.items() <= residual_state.items()
+    assert residual_state["reason"] == "active ML publication evidence is invalid: ranking_residual:movies"
 
 
 def test_residual_runtime_context_requires_external_profile_identity() -> None:

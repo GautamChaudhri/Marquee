@@ -173,6 +173,78 @@ class TasteExemplar(Base):
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class OnboardingAnalysisSuccessor(Base):
+    """Canonical analysis lineage for one recoverable onboarding subject."""
+
+    __tablename__ = "onboarding_analysis_successors"
+    __table_args__ = (
+        CheckConstraint(
+            "subject_kind IN ('movie', 'series', 'season')",
+            name="ck_onboarding_analysis_successors_subject_kind",
+        ),
+        CheckConstraint(
+            "predecessor_job_id IS NULL OR predecessor_job_id <> job_id",
+            name="ck_onboarding_analysis_successors_not_self",
+        ),
+        Index(
+            "ix_onboarding_analysis_successors_subject_created",
+            "subject_kind",
+            "subject_reference",
+            "created_at",
+        ),
+    )
+
+    job_id: Mapped[str] = mapped_column(
+        ForeignKey("jobs.id", ondelete="RESTRICT"), primary_key=True
+    )
+    subject_kind: Mapped[str] = mapped_column(String(24), nullable=False)
+    subject_reference: Mapped[str] = mapped_column(String(96), nullable=False)
+    predecessor_job_id: Mapped[str | None] = mapped_column(
+        ForeignKey("jobs.id", ondelete="RESTRICT"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class TasteDeploymentSuccessor(Base):
+    """Append-only canonical deployment successors owned by one positive exemplar."""
+
+    __tablename__ = "taste_deployment_successors"
+    __table_args__ = (
+        UniqueConstraint("job_id", name="uq_taste_deployment_successors_job"),
+        UniqueConstraint("exemplar_id", "ordinal", name="uq_taste_deployment_successors_ordinal"),
+        CheckConstraint("ordinal >= 0", name="ck_taste_deployment_successors_ordinal"),
+        CheckConstraint(
+            "state IN ('queued', 'running', 'succeeded', 'no_change', 'failed', "
+            "'cancelled', 'superseded', 'unsafe', 'dead_letter')",
+            name="ck_taste_deployment_successors_state",
+        ),
+        CheckConstraint(
+            "predecessor_job_id IS NULL OR predecessor_job_id <> job_id",
+            name="ck_taste_deployment_successors_not_self",
+        ),
+        Index("ix_taste_deployment_successors_exemplar", "exemplar_id", "ordinal"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    exemplar_id: Mapped[str] = mapped_column(
+        ForeignKey("taste_exemplars.id", ondelete="RESTRICT"), nullable=False
+    )
+    job_id: Mapped[str] = mapped_column(ForeignKey("jobs.id", ondelete="RESTRICT"), nullable=False)
+    predecessor_job_id: Mapped[str | None] = mapped_column(
+        ForeignKey("jobs.id", ondelete="RESTRICT"), nullable=True
+    )
+    ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    state: Mapped[str] = mapped_column(String(16), nullable=False)
+    result: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    post_effect_validation: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class TasteProfileRevision(Base):
     """Frozen exemplar revision and its profile publication/reload outcome."""
 
@@ -188,6 +260,7 @@ class TasteProfileRevision(Base):
     digest: Mapped[str] = mapped_column(String(64), primary_key=True)
     exemplar_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False)
     exemplar_checksums: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    exemplar_manifest: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False, default=list)
     positive_subjects: Mapped[int] = mapped_column(Integer, nullable=False)
     state: Mapped[str] = mapped_column(String(16), nullable=False)
     build_job_id: Mapped[str | None] = mapped_column(
@@ -204,6 +277,39 @@ class TasteProfileRevision(Base):
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class MlConsumerAcknowledgement(Base):
+    """Durable evidence that a real runtime consumer loaded one active artifact."""
+
+    __tablename__ = "ml_consumer_acknowledgements"
+    __table_args__ = (
+        CheckConstraint("generation >= 1", name="ck_ml_consumer_ack_generation"),
+        CheckConstraint("length(checksum) = 64", name="ck_ml_consumer_ack_checksum"),
+        UniqueConstraint(
+            "family",
+            "consumer_role",
+            "instance_id",
+            "generation",
+            "checksum",
+            name="uq_ml_consumer_ack_identity",
+        ),
+        Index("ix_ml_consumer_ack_family_generation", "family", "generation"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    family: Mapped[str] = mapped_column(String(64), nullable=False)
+    consumer_role: Mapped[str] = mapped_column(String(64), nullable=False)
+    instance_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    generation: Mapped[int] = mapped_column(Integer, nullable=False)
+    checksum: Mapped[str] = mapped_column(String(64), nullable=False)
+    artifact_id: Mapped[int] = mapped_column(
+        ForeignKey("job_artifacts.id", ondelete="RESTRICT"), nullable=False
+    )
+    load_result: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    loaded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
     )
 
 

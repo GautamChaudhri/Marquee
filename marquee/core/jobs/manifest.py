@@ -768,7 +768,7 @@ def _retry_mode(spec: _DefinitionSpec) -> RetryMode:
     """Every registry definition declares one user-retry contract at build time."""
     if spec.job_type == "system_noop":
         return RetryMode.GENERIC
-    if spec.job_type == "taste_rebuild" or spec.job_type in PARENT_ONLY_TYPES:
+    if spec.job_type in {"poster_pipeline", "poster_deploy", "taste_rebuild"} or spec.job_type in PARENT_ONLY_TYPES:
         return RetryMode.DOMAIN_COORDINATED
     return RetryMode.UNSUPPORTED
 

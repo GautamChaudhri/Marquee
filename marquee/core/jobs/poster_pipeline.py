@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import uuid
 from datetime import UTC, datetime
@@ -27,13 +28,18 @@ from marquee.core.jobs.documents import (
     PosterPipelineResultV1,
 )
 from marquee.core.jobs.execution_progress import ExecutionProgress
-from marquee.core.jobs.ml_publication import MlPublicationError, resolve_active_publication
+from marquee.core.jobs.ml_publication import (
+    MlPublicationError,
+    acknowledge_consumption,
+    resolve_loaded_ranking_residual,
+    resolve_loaded_taste_profile,
+)
 from marquee.core.jobs.runner_progress import RunnerProgressBridge
 from marquee.core.jobs.runner_protocol import RunnerRuntimeOptions
 from marquee.core.jobs.runner_runtime import poster_runner_runtime_options
 from marquee.core.pipeline_config import pipeline_settings
 from marquee.ml.residual import baseline_signature
-from marquee.models import Job, PipelineRun
+from marquee.models import Job, JobAttempt, PipelineRun
 
 # Runner pipeline stage -> the definition's declared poster progress vocabulary.
 _STAGE_MAP = {
@@ -179,18 +185,38 @@ def _attach_candidate_artifacts(workspace_dir, artifacts: dict[str, Any]) -> Non
         document = json.loads(path.read_text())
     except (OSError, ValueError):
         return
-    candidates = document.get("candidates") if isinstance(document, dict) else None
-    if not isinstance(candidates, list):
+    review = document.get("review") if isinstance(document, dict) else None
+    survivors = review.get("survivors") if isinstance(review, dict) else None
+    if not isinstance(survivors, list):
         return
-    for candidate in candidates:
-        if not isinstance(candidate, dict):
+    retained: list[dict[str, Any]] = []
+    for survivor in survivors[:_MAX_COUNT]:
+        if not isinstance(survivor, dict):
             continue
-        artifact = artifacts.get(candidate.get("orig_filename"))
+        reference = survivor.get("reference")
+        if not isinstance(reference, str) or survivor.get("objective_eligible") is not True:
+            continue
+        artifact = artifacts.get(reference)
         if artifact is None:
             continue
-        candidate["artifact_id"] = artifact.id
-        candidate["artifact_checksum"] = artifact.checksum
-        candidate["artifact_storage_key"] = artifact.storage_key
+        survivor["position"] = len(retained)
+        survivor["artifact_id"] = artifact.id
+        survivor["artifact_checksum"] = artifact.checksum
+        survivor["artifact_storage_key"] = artifact.storage_key
+        retained.append(survivor)
+    review["survivors"] = retained
+    review["archived_count"] = len(retained)
+    review["truncated_count"] = int(review.get("truncated_count") or 0) + (
+        len(survivors) - len(retained)
+    )
+    checksum_input = {
+        "version": review.get("version"),
+        "order_algorithm": review.get("order_algorithm"),
+        "survivors": retained,
+    }
+    review["checksum"] = hashlib.sha256(
+        json.dumps(checksum_input, separators=(",", ":"), sort_keys=True).encode()
+    ).hexdigest()
     path.write_text(json.dumps(document, allow_nan=False, separators=(",", ":"), sort_keys=True))
 
 
@@ -327,13 +353,59 @@ async def execute_poster_pipeline(
     }
     workspace_dir = _workspace_dir(context)
     library = "movies" if _media_type(request) == "movie" else "tv"
+    profile_resolution_error: str | None = None
     try:
         async with context.session_factory() as session:
-            active_residual = await resolve_active_publication(
-                session, family=f"ranking_residual:{library}"
+            active_profile, profile_load_result = await resolve_loaded_taste_profile(
+                session, library=library
             )
-    except MlPublicationError:
-        active_residual = None
+    except MlPublicationError as exc:
+        active_profile = None
+        profile_load_result = None
+        profile_resolution_error = str(exc)
+    if active_profile is not None:
+        copied = await context.io.copy(active_profile.path, workspace_dir / "profile.npz")
+        if copied.sha256 != active_profile.checksum:
+            (workspace_dir / "profile.npz").unlink(missing_ok=True)
+            raise RuntimeError("active taste-profile checksum changed while staging")
+        manifest["params"]["taste_profile"] = {
+            "generation": active_profile.generation,
+            "version": active_profile.version,
+            "checksum": active_profile.checksum,
+        }
+        async with context.session_factory() as session:
+            attempt = await session.get(JobAttempt, context.attempt.attempt_id)
+            if attempt is not None and attempt.runtime_instance_id is not None:
+                await acknowledge_consumption(
+                    session,
+                    publication=active_profile,
+                    consumer_role="poster_pipeline",
+                    instance_id=attempt.runtime_instance_id,
+                    load_result={
+                        **(profile_load_result or {}),
+                        "supplied_to": "contained_poster_runner",
+                        "staged_checksum": copied.sha256,
+                    },
+                )
+                await session.commit()
+    personalization_mode = "personalized" if active_profile is not None else "collecting"
+    manifest["params"]["personalization_mode"] = personalization_mode
+    if profile_resolution_error is not None:
+        manifest["params"]["personalization_fallback"] = profile_resolution_error
+    residual_resolution_error: str | None = None
+    active_residual = None
+    if active_profile is not None:
+        try:
+            async with context.session_factory() as session:
+                active_residual, _residual_load_result = await resolve_loaded_ranking_residual(
+                    session,
+                    library=library,
+                    profile_checksum=active_profile.checksum,
+                    profile_generation=active_profile.generation,
+                    baseline=baseline_signature(pipeline_settings.scorer_weights),
+                )
+        except MlPublicationError as exc:
+            residual_resolution_error = str(exc)
     if active_residual is not None:
         copied = await context.io.copy(active_residual.path, workspace_dir / "residual.npz")
         if copied.sha256 != active_residual.checksum:
@@ -345,25 +417,8 @@ async def execute_poster_pipeline(
             "version": active_residual.version,
             "checksum": active_residual.checksum,
         }
-    try:
-        async with context.session_factory() as session:
-            active_profile = await resolve_active_publication(
-                session, family=f"taste_profile:{library}"
-            )
-    except MlPublicationError:
-        active_profile = None
-    if active_profile is not None:
-        copied = await context.io.copy(active_profile.path, workspace_dir / "profile.npz")
-        if copied.sha256 != active_profile.checksum:
-            (workspace_dir / "profile.npz").unlink(missing_ok=True)
-            raise RuntimeError("active taste-profile checksum changed while staging")
-        manifest["params"]["taste_profile"] = {
-            "generation": active_profile.generation,
-            "version": active_profile.version,
-            "checksum": active_profile.checksum,
-        }
-    personalization_mode = "personalized" if active_profile is not None else "collecting"
-    manifest["params"]["personalization_mode"] = personalization_mode
+    if residual_resolution_error is not None:
+        manifest["params"]["residual_fallback"] = residual_resolution_error
     if personalization_mode == "collecting":
         (workspace_dir / "residual.npz").unlink(missing_ok=True)
         manifest["params"].pop("ranking_residual", None)
@@ -468,6 +523,8 @@ async def execute_poster_pipeline(
             "counts": {key: int(value) for key, value in counts.items() if isinstance(value, int)},
             "scorer_name": summary.get("scorer_name"),
             "personalization_mode": result_personalization_mode,
+            "personalization_fallback": profile_resolution_error,
+            "residual_fallback": residual_resolution_error,
             "review_reason": review_reason,
         },
         subject_label=request.title,

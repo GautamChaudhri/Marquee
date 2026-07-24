@@ -6,7 +6,7 @@ import hashlib
 import json
 import math
 from collections.abc import Iterable
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -33,6 +33,47 @@ class ResidualPair:
     confidence: str
     winner_baseline_probability: float | None = None
     loser_baseline_probability: float | None = None
+    event_id: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class FrozenResidualEvidence:
+    """The complete ordered, eligible feedback identity owned by the coordinator."""
+
+    event_ids: list[str]
+    rows: list[dict[str, Any]]
+    digest: str
+    checksum: str
+
+
+def freeze_residual_evidence(events: Iterable[Any]) -> FrozenResidualEvidence:
+    """Freeze only eligible, non-revoked, actually exposed feedback in input order."""
+    rows: list[dict[str, Any]] = []
+    for event in events:
+        if not isinstance(getattr(event, "id", None), str):
+            continue
+        if not build_residual_pairs([event]):
+            continue
+        rows.append(
+            {
+                "id": event.id,
+                "action": event.action,
+                "subject_kind": event.subject_kind,
+                "subject_reference": event.subject_reference,
+                "revoked_event_id": event.revoked_event_id,
+                "exposed_candidates": event.exposed_candidates,
+                "training_context": event.training_context,
+            }
+        )
+    encoded = json.dumps(rows, allow_nan=False, separators=(",", ":"), sort_keys=True).encode()
+    event_ids = [row["id"] for row in rows]
+    digest = hashlib.sha256(json.dumps(event_ids, separators=(",", ":")).encode()).hexdigest()
+    return FrozenResidualEvidence(
+        event_ids=event_ids,
+        rows=rows,
+        digest=digest,
+        checksum=hashlib.sha256(encoded).hexdigest(),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -196,6 +237,7 @@ def build_residual_pairs(events: Iterable[Any]) -> list[ResidualPair]:
                     confidence=confidence,
                     winner_baseline_probability=winner_probability,
                     loser_baseline_probability=loser_probability,
+                    event_id=str(getattr(event, "id", "")),
                 )
             )
     return pairs
@@ -250,6 +292,7 @@ class ResidualArtifact:
     evaluation: ResidualEvaluation
     trained_at: str
     profile_generation: int = 0
+    partitions: dict[str, Any] = field(default_factory=dict)
 
     def delta(self, normalized: dict[str, float]) -> tuple[float, dict[str, float]]:
         missing = [name for name in self.feature_names if name not in normalized]
@@ -300,6 +343,7 @@ class ResidualArtifact:
                 "evaluation_json": unicode_scalar(json.dumps(asdict(self.evaluation))),
                 "trained_at": unicode_scalar(self.trained_at),
                 "profile_generation": np.int64(self.profile_generation),
+                "partitions_json": unicode_scalar(json.dumps(self.partitions, sort_keys=True)),
             },
         )
         return path
@@ -335,6 +379,11 @@ class ResidualArtifact:
                 evaluation=evaluation,
                 trained_at=decode_unicode_scalar(data["trained_at"]),
                 profile_generation=profile_generation,
+                partitions=(
+                    json.loads(decode_unicode_scalar(data["partitions_json"]))
+                    if "partitions_json" in data.files
+                    else {}
+                ),
             )
 
 
@@ -352,6 +401,7 @@ def train_residual(
     min_subjects: int = 25,
     min_pairs: int = 200,
     min_improvement: float = 0.02,
+    active_residual: ResidualArtifact | None = None,
 ) -> tuple[ResidualArtifact | None, dict[str, Any]]:
     """Fit a regularized baseline-offset pairwise residual and evaluate held-out subjects."""
     subjects = {pair.subject for pair in pairs}
@@ -385,8 +435,12 @@ def train_residual(
         if float(np.linalg.norm(step)) < 1e-8:
             break
     weights = {name: float(weight) for name, weight in zip(common, coefficients, strict=True)}
-    validation_metrics = _evaluate_partition(validation, weights, alpha=alpha, delta_max=delta_max)
-    test_metrics = _evaluate_partition(test, weights, alpha=alpha, delta_max=delta_max)
+    validation_metrics = _evaluate_partition(
+        validation, weights, alpha=alpha, delta_max=delta_max, active_residual=active_residual
+    )
+    test_metrics = _evaluate_partition(
+        test, weights, alpha=alpha, delta_max=delta_max, active_residual=active_residual
+    )
     evaluation = ResidualEvaluation(
         baseline_accuracy=validation_metrics["baseline_accuracy"],
         candidate_accuracy=validation_metrics["candidate_accuracy"],
@@ -396,18 +450,22 @@ def train_residual(
         mean_abs_adjustment=validation_metrics["mean_abs_adjustment"],
         max_abs_adjustment=validation_metrics["max_abs_adjustment"],
     )
+    partitions = _partition_manifest(train, validation, test)
+    overlap_proof = partitions.pop("overlap_proof")
+    partitions["validation"]["metrics"] = validation_metrics
+    partitions["test"]["metrics"] = test_metrics
     report = {
         "outcome": "candidate",
         "evaluation": asdict(evaluation),
         "feature_names": common,
-        "partitions": {
-            "train": {"subjects": len({pair.subject for pair in train}), "pairs": len(train)},
-            "validation": validation_metrics,
-            "test": test_metrics,
-        },
+        "partitions": partitions,
+        "partition_overlap_proof": overlap_proof,
     }
     if evaluation.improvement < min_improvement:
         return None, {**report, "outcome": "no_change", "reason": "no_held_out_improvement"}
+    active_accuracy = validation_metrics.get("active_accuracy")
+    if isinstance(active_accuracy, float) and evaluation.candidate_accuracy < active_accuracy:
+        return None, {**report, "outcome": "no_change", "reason": "active_residual_regression"}
     return (
         ResidualArtifact(
             namespace=namespace,
@@ -423,6 +481,7 @@ def train_residual(
             evaluation=evaluation,
             trained_at=datetime.now(UTC).isoformat(),
             profile_generation=profile_generation,
+            partitions={"sets": partitions, "overlap_proof": overlap_proof},
         ),
         {**report, "outcome": "activate"},
     )
@@ -456,10 +515,16 @@ def _baseline_logit_margin(pair: ResidualPair) -> float:
 
 
 def _evaluate_partition(
-    pairs: list[ResidualPair], weights: dict[str, float], *, alpha: float, delta_max: float
+    pairs: list[ResidualPair],
+    weights: dict[str, float],
+    *,
+    alpha: float,
+    delta_max: float,
+    active_residual: ResidualArtifact | None = None,
 ) -> dict[str, float | int]:
     weighted_baseline = 0.0
     weighted_candidate = 0.0
+    weighted_active = 0.0
     total_weight = 0.0
     adjustments: list[float] = []
     for pair in pairs:
@@ -483,11 +548,39 @@ def _evaluate_partition(
         total_weight += pair.weight
         weighted_baseline += pair.weight * float(winner.baseline_logit > loser.baseline_logit)
         weighted_candidate += pair.weight * float(winner.final_logit > loser.final_logit)
+        if active_residual is not None:
+            active_winner = score_residual_candidate(
+                baseline_probability=winner_probability,
+                normalized_features={name: pair.winner[name] for name in active_residual.feature_names},
+                weights={
+                    name: float(weight)
+                    for name, weight in zip(
+                        active_residual.feature_names, active_residual.weights, strict=True
+                    )
+                },
+                bias=active_residual.bias,
+                alpha=active_residual.alpha,
+                delta_max=active_residual.delta_max,
+            )
+            active_loser = score_residual_candidate(
+                baseline_probability=loser_probability,
+                normalized_features={name: pair.loser[name] for name in active_residual.feature_names},
+                weights={
+                    name: float(weight)
+                    for name, weight in zip(
+                        active_residual.feature_names, active_residual.weights, strict=True
+                    )
+                },
+                bias=active_residual.bias,
+                alpha=active_residual.alpha,
+                delta_max=active_residual.delta_max,
+            )
+            weighted_active += pair.weight * float(active_winner.final_logit > active_loser.final_logit)
         adjustments.extend((winner.delta * alpha, loser.delta * alpha))
     denominator = total_weight or 1.0
     baseline_accuracy = weighted_baseline / denominator
     candidate_accuracy = weighted_candidate / denominator
-    return {
+    result: dict[str, float | int] = {
         "subjects": len({pair.subject for pair in pairs}),
         "pairs": len(pairs),
         "baseline_accuracy": baseline_accuracy,
@@ -496,3 +589,30 @@ def _evaluate_partition(
         "mean_abs_adjustment": float(np.mean(np.abs(adjustments))),
         "max_abs_adjustment": float(np.max(np.abs(adjustments))),
     }
+    if active_residual is not None:
+        result["active_accuracy"] = weighted_active / denominator
+        result["candidate_vs_active"] = candidate_accuracy - float(result["active_accuracy"])
+    return result
+
+
+def _partition_manifest(
+    train: list[ResidualPair], validation: list[ResidualPair], test: list[ResidualPair]
+) -> dict[str, Any]:
+    groups = {"train": train, "validation": validation, "test": test}
+    manifest = {
+        name: {
+            "subject_ids": sorted({pair.subject for pair in pairs}),
+            "event_ids": sorted({pair.event_id for pair in pairs if pair.event_id}),
+            "pairs": len(pairs),
+        }
+        for name, pairs in groups.items()
+    }
+    subject_sets = [set(value["subject_ids"]) for value in manifest.values()]
+    event_sets = [set(value["event_ids"]) for value in manifest.values()]
+    manifest["overlap_proof"] = {
+        "subject_overlap": not all(not left & right for index, left in enumerate(subject_sets) for right in subject_sets[index + 1 :]),
+        "event_overlap": not all(not left & right for index, left in enumerate(event_sets) for right in event_sets[index + 1 :]),
+    }
+    if manifest["overlap_proof"]["subject_overlap"] or manifest["overlap_proof"]["event_overlap"]:
+        raise RuntimeError("residual partitions overlap")
+    return manifest

@@ -2,15 +2,22 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from hashlib import sha256
+from pathlib import Path
 from uuid import uuid4
 
+import numpy as np
 import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
+from marquee.config import settings
+from marquee.core.jobs.ml_publication import (
+    acknowledge_consumption,
+    resolve_loaded_taste_profile,
+)
 from marquee.core.taste_preferences import (
     derive_readiness,
     record_profile_build_terminal,
@@ -23,7 +30,9 @@ from marquee.models import (
     JobArtifact,
     JobAttempt,
     MlActivePublication,
+    MlConsumerAcknowledgement,
     PosterPreferenceEvent,
+    RuntimeInstance,
     TasteExemplar,
     TasteProfileBuild,
     TasteProfileCoordinator,
@@ -179,26 +188,65 @@ async def _activate_build(db, build: TasteProfileBuild, *, generation: int) -> N
     """Install a loader-confirmed publication for one coordinator fixture build."""
     job = await db.get(Job, build.job_id)
     assert job is not None
+    now = datetime.now(UTC)
+    runtime = RuntimeInstance(
+        id=str(uuid4()),
+        role="worker",
+        node_label="jmc6k-fixture",
+        build="test",
+        host_boot_id=str(uuid4()),
+        process_id=1000 + generation,
+        process_start_ticks=1,
+        process_group_id=1000 + generation,
+        advertised_entrypoints=["cpu"],
+        capabilities={"entrypoints": ["cpu"]},
+        readiness="ready",
+        started_at=now,
+        last_heartbeat_at=now,
+        heartbeat_expires_at=now + timedelta(minutes=1),
+    )
+    db.add(runtime)
+    await db.flush()
     attempt = JobAttempt(
         job_id=job.id,
         number=1,
         fence_token=1,
+        runtime_instance_id=runtime.id,
         phase="running",
-        started_at=datetime.now(UTC),
+        started_at=now,
     )
     db.add(attempt)
     await db.flush()
     job.current_attempt_id = attempt.id
-    checksum = sha256(f"jmc6k-active-{build.library}-{generation}".encode()).hexdigest()
+    storage_key = f"jmc6k/profiles/{job.id}-{build.library}-{generation}.npz"
+    profile_path = Path(settings.DATA_DIR) / storage_key
+    profile_path.parent.mkdir(parents=True, exist_ok=True)
+    embeddings = np.zeros((1, 512), dtype=np.float32)
+    embeddings[0, 0] = 1.0
+    np.savez(
+        profile_path,
+        model_name=np.asarray("clip-vit-b-32"),
+        embeddings=embeddings,
+        centroid_emb=embeddings[0],
+        poster_names=np.asarray(["fixture.jpg"]),
+        asset_kinds=np.asarray(["movie"]),
+    )
+    payload = profile_path.read_bytes()
+    checksum = sha256(payload).hexdigest()
     artifact = JobArtifact(
         job_id=job.id,
         attempt_id=attempt.id,
         kind="taste_profile",
         name=f"{build.library}-profile.npz",
         status="available",
-        virtual_source={"fixture": "jmc6k"},
+        storage_key=storage_key,
+        size_bytes=len(payload),
         checksum=checksum,
-        artifact_metadata={"revision": build.revision_digest},
+        artifact_metadata={
+            "family": "taste_profile",
+            "library": build.library,
+            "revision": build.revision_digest,
+        },
     )
     db.add(artifact)
     await db.flush()
@@ -214,10 +262,21 @@ async def _activate_build(db, build: TasteProfileBuild, *, generation: int) -> N
             fence_token=1,
         )
     )
+    db.add(
+        MlConsumerAcknowledgement(
+            family=f"taste_profile:{build.library}",
+            consumer_role="poster_pipeline",
+            instance_id=runtime.id,
+            generation=generation,
+            checksum=checksum,
+            artifact_id=artifact.id,
+            load_result={"loader": "NumpyTasteStore", "exemplars": 1},
+        )
+    )
     build.state = "succeeded"
     build.result_generation = generation
     build.result_checksum = checksum
-    build.consumer_reload_checksum = checksum
+    build.consumer_reload_checksum = None
     build.completed_at = datetime.now(UTC)
     coordinator = await db.get(TasteProfileCoordinator, build.library)
     assert coordinator is not None
@@ -415,6 +474,69 @@ async def test_active_profiles_stay_personalized_when_a_later_update_fails(
     assert readiness["libraries"]["movies"]["active"]["generation"] == 1
     assert readiness["libraries"]["movies"]["build"]["state"] == "failed"
     assert readiness["libraries"]["movies"]["update_attention"] is True
+
+
+@pytest.mark.asyncio
+async def test_readiness_requires_a_live_current_consumer_acknowledgement(
+    db, installed_pgqueuer
+) -> None:
+    await _seed_required_positive_subjects(db)
+    await schedule_initial_profile_build(db, initiator_identifier="jmc6k-test")
+    await db.commit()
+    for build in list(await db.scalars(select(TasteProfileBuild))):
+        await _activate_build(db, build, generation=1)
+
+    assert (await derive_readiness(db)).state == "personalized"
+    acknowledgement = await db.scalar(
+        select(MlConsumerAcknowledgement).where(
+            MlConsumerAcknowledgement.family == "taste_profile:movies"
+        )
+    )
+    assert acknowledgement is not None
+    previous_runtime = await db.get(RuntimeInstance, acknowledgement.instance_id)
+    assert previous_runtime is not None
+    previous_runtime.readiness = "stopped"
+    previous_runtime.stopped_at = datetime.now(UTC)
+    await db.commit()
+
+    restarted = await derive_readiness(db)
+    assert restarted.state != "personalized"
+    assert restarted.libraries["movies"]["reload_state"]["ready"] is False
+
+    now = datetime.now(UTC)
+    replacement = RuntimeInstance(
+        id=str(uuid4()),
+        role="worker",
+        node_label="jmc6k-replacement",
+        build="test",
+        host_boot_id=str(uuid4()),
+        process_id=2001,
+        process_start_ticks=1,
+        process_group_id=2001,
+        advertised_entrypoints=["cpu"],
+        capabilities={"entrypoints": ["cpu"]},
+        readiness="ready",
+        started_at=now,
+        last_heartbeat_at=now,
+        heartbeat_expires_at=now + timedelta(minutes=1),
+    )
+    db.add(replacement)
+    await db.flush()
+    publication, load_result = await resolve_loaded_taste_profile(db, library="movies")
+    await acknowledge_consumption(
+        db,
+        publication=publication,
+        consumer_role="poster_pipeline",
+        instance_id=replacement.id,
+        load_result={**load_result, "supplied_to": "contained_poster_runner"},
+    )
+    await db.commit()
+
+    assert (await derive_readiness(db)).state == "personalized"
+    publication.path.write_bytes(b"corrupt-profile-bytes")
+    corrupt = await derive_readiness(db)
+    assert corrupt.state != "personalized"
+    assert "bytes are invalid" in corrupt.libraries["movies"]["reload_state"]["reason"]
 
 
 @pytest.mark.asyncio

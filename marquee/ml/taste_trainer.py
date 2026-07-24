@@ -33,7 +33,7 @@ import logging
 import re
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 
 import cv2
@@ -343,10 +343,32 @@ def compute_dino_self_knn(dino_embeddings: np.ndarray, k: int) -> np.ndarray:
     )
 
 
-def compute_centroid(embeddings: np.ndarray) -> np.ndarray:
-    centroid = embeddings.mean(axis=0)
+def compute_centroid(embeddings: np.ndarray, weights: np.ndarray | None = None) -> np.ndarray:
+    """Return a normalized centroid, honoring frozen bounded evidence weights."""
+    if weights is None:
+        centroid = embeddings.mean(axis=0)
+    else:
+        if weights.shape != (embeddings.shape[0],):
+            raise ValueError("taste exemplar weights do not match embeddings")
+        if not np.all(np.isfinite(weights)) or np.any(weights <= 0) or np.any(weights > 1):
+            raise ValueError("taste exemplar weights must be finite and in (0, 1]")
+        centroid = np.average(embeddings, axis=0, weights=weights)
     norm = float(np.linalg.norm(centroid))
     return (centroid / norm if norm > 1e-10 else centroid).astype(np.float32)
+
+
+def _frozen_weights(paths: list[Path], weights: Mapping[str, float] | None) -> np.ndarray:
+    """Map staged basenames back to their immutable bounded evidence weights."""
+    values: list[float] = []
+    for path in paths:
+        value = 1.0 if weights is None else weights.get(path.name, 1.0)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError("taste exemplar weight must be numeric")
+        weight = float(value)
+        if not np.isfinite(weight) or not 0 < weight <= 1:
+            raise ValueError("taste exemplar weight must be finite and in (0, 1]")
+        values.append(weight)
+    return np.asarray(values, dtype=np.float32)
 
 
 # ---------------------------------------------------------------------------
@@ -435,6 +457,8 @@ def rebuild_profile(
     progress_callback: ProgressCallback | None = None,
     cancel_event: threading.Event | None = None,
     namespace: TasteNamespace | None = None,
+    positive_weights: Mapping[str, float] | None = None,
+    negative_weights: Mapping[str, float] | None = None,
 ) -> Path:
     """Build the taste profile from the training folders and save it.
 
@@ -454,6 +478,8 @@ def rebuild_profile(
         progress_callback=progress_callback,
         cancel_event=cancel_event,
         namespace=ns,
+        positive_weights=positive_weights,
+        negative_weights=negative_weights,
     )
     return _run_build(args)
 
@@ -535,6 +561,7 @@ def _run_build(args) -> Path:
         stage="clip",
         cancel_event=cancel_event,
     )
+    positive_weights = _frozen_weights(kept_paths, getattr(args, "positive_weights", None))
     raise_if_cancelled(cancel_event, "taste profile rebuild cancelled")
     logger.info("Taste profile CLIP embeddings complete: %d exemplars", len(kept_paths))
 
@@ -550,6 +577,7 @@ def _run_build(args) -> Path:
             stage="clip-negatives",
             cancel_event=cancel_event,
         )
+    negative_weights = _frozen_weights(neg_paths, getattr(args, "negative_weights", None))
 
     # ── DINOv2 space (optional) ──────────────────────────────────────
     dino_embeddings: np.ndarray | None = None
@@ -637,7 +665,8 @@ def _run_build(args) -> Path:
         "poster_names": unicode_array([p.name for p in kept_paths]),
         "asset_kinds": unicode_array(asset_kinds),
         _HASH_ARRAY_KEY: unicode_array([_file_sha256(path) for path in kept_paths]),
-        "centroid_emb": compute_centroid(embeddings),
+        "embedding_weights": positive_weights,
+        "centroid_emb": compute_centroid(embeddings, positive_weights),
         "model_name": unicode_scalar(pipeline_settings.AI_MODEL),
         CALIB_NAMES_KEY: unicode_array(calib_names),
         CALIB_VALUES_KEY: calib_values,
@@ -645,6 +674,7 @@ def _run_build(args) -> Path:
     if neg_embeddings is not None and len(neg_embeddings):
         payload["neg_embeddings"] = neg_embeddings
         payload["neg_poster_names"] = unicode_array([p.name for p in neg_paths])
+        payload["neg_embedding_weights"] = negative_weights
     if dino_embeddings is not None:
         payload["dino_embeddings"] = dino_embeddings
         payload["dino_model_name"] = unicode_scalar(dino_model_name)
