@@ -5,8 +5,8 @@
 The poster pipeline selects the best poster for a movie by applying a strict
 gate-then-rank workflow. It fetches candidate posters, removes obviously bad or
 invalid options, computes style and detail features, ranks the survivors with
-either a weighted heuristic scorer or a learned logistic head, and archives the
-full run for review. The live orchestration is centered on
+the deployed weighted baseline plus an optional bounded residual correction,
+and archives the full run for review. The live orchestration is centered on
 `marquee/pipeline/runner.py`.
 
 ## Implemented Scope
@@ -18,7 +18,7 @@ Implemented:
 - Exact duplicate removal and same-design stacking / near-duplicate handling
 - CLIP, DINOv2, face/person, visual-composition, title-geometry, and quality
   features
-- Weighted scoring and learned-head scoring with `SCORER=auto`
+- Weighted scoring and a compatible bounded residual correction
 - Run archival, review payloads, pure rescoring, feedback capture, and batch
   pipeline jobs
 
@@ -98,35 +98,18 @@ Detail phase:
 The pipeline records both raw and normalized values in the archived run data so
 review screens and rescoring can explain ranking decisions after the fact.
 
-## Taste Profile And Learned Head
+## Taste Profile And Residual Ranking
 
-Taste matching is exemplar-based, not centroid-based. The taste store in
-`marquee/ml/taste_store.py` uses k-NN over positive exemplars, supports
-negative exemplars, and can aggregate neighbors with
-`KNN_WEIGHTING=softmax` and `KNN_SOFTMAX_TEMP=0.1`.
+Taste matching is exemplar-based, not centroid-based. The deployed movie and TV
+profiles include versioned positive and negative evidence; their compatible
+publication is resolved through the canonical publication authority before
+scoring. The weighted scorer is the permanent baseline. A residual may alter
+that baseline only when its frozen evidence, compatibility, held-out evaluation,
+and bounded delta are valid. A consumer must load the publication before
+readiness can claim personalization.
 
-The learned scorer is a logistic head implemented in
-`marquee/ml/learned_head.py` and trained by
-`marquee/ml/head_trainer.py`. `select_scorer()` in
-`marquee/pipeline/scorer.py` resolves:
-
-- `SCORER=weighted` to always use hand weights
-- `SCORER=learned` to require a valid learned artifact
-- `SCORER=auto` to prefer the learned head when a compatible artifact exists
-
-The current default keeps automatic retraining off:
-`HEAD_AUTO_RETRAIN=false`. Feedback accumulates labels and exemplars, and the
-actual head retraining is queued through `/api/taste/head/retrain`.
-
-This describes the implementation at `jmc6h-complete`, not the locked target architecture. The
-post-certification source audit found that the current head replaces the weighted scorer and learns
-mostly from baseline inversions, while cold-start onboarding uses conflicting filesystem and
-publication authorities. The approved implementation plan
-[`jmc6j-taste-onboarding-and-residual-learning.md`](job-system-update/jmc6j-taste-onboarding-and-residual-learning.md)
-keeps the taste-aware weighted score as the permanent baseline, applies only a bounded
-held-out-validated residual correction, and replaces starter/taste-test onboarding with explicit
-real-library poster selection. Until JMC6J is implemented, the current behavior above remains the
-code-authoritative description.
+Historical learned-head modules and plans remain historical evidence. They are
+not a current runtime, onboarding, publication, or readiness authority.
 
 ## OCR
 
@@ -150,7 +133,8 @@ Key knobs:
 
 `WeightedScorer` renormalizes over the features actually present on each
 candidate, so optional features can drop out without breaking the score range.
-`LearnedScorer` returns the head’s estimated pick probability.
+Any compatible residual is a bounded correction to that baseline, never a
+replacement scorer.
 
 `marquee/pipeline/output.py` copies ranked survivors into the attempt workspace,
 names them with rank and score metadata, and re-downloads top-ranked designs at
@@ -177,7 +161,7 @@ The feedback system feeds both ranking and operations:
 
 - Submits deploy or reset through canonical poster mutation jobs
 - Marks a run as reviewed in the `PipelineRun` record
-- Supplies labels for future learned-head training
+- Supplies immutable evidence for profile and residual work
 
 See `library.md` for deployment behavior and `job-platform.md` for the queued
 training path.
@@ -195,8 +179,8 @@ Representative pipeline knobs in `marquee/core/pipeline_config.py`:
 - Gating: `GATE_MIN_WIDTH`, `GATE_MIN_AESTHETIC`, `GATE_MIN_KNN_SIM`,
   `GATE_FAN_JUNK_ENABLED`
 - Scoring: `SCORER`, `WEIGHT_*`, `STACK_ENABLED`, `STACK_SIGNAL`
-- Feedback/training: `HEAD_MIN_LABELS`, `HEAD_MIN_MOVIES`,
-  `HEAD_MIN_PAIRS`, `HEAD_AUTO_RETRAIN`
+- Feedback/training: versioned profile evidence and bounded residual
+  evaluation/publication controls
 - Operations: `TMDB_POSTER_SIZE`, `PIPELINE_BATCH_MAX_MOVIES`
 
 ## Cross References
@@ -209,3 +193,14 @@ Representative pipeline knobs in `marquee/core/pipeline_config.py`:
   and progress closure
 - `job-system-update/jmc6j-taste-onboarding-and-residual-learning.md` for the approved cold-start,
   continuous taste, and residual-ranking target
+- `job-system-update/jmc7-readiness-recovery-timeline.md` for the current JMC7 certification state
+
+## JMC7 certification and operator gates
+
+JMC7C certifies the deterministic local pipeline boundary through canonical
+jobs, PgQueuer delivery, durable evidence, consumers, SSE, and the built web
+application. It does not claim live operator-library, GPU, model-download, or
+destructive media-operation acceptance. Those remain separate operator gates:
+run representative movie and TV libraries with explicitly available models and
+credentials, validate restore paths on disposable copies, and activate no
+schedules until the corresponding live check has passed.

@@ -292,6 +292,19 @@ async def retrain_ranking_residual(
     _validate_library(library)
     enforce_rate_limit(limiter, "residual_retrain", settings.RATE_TASTE_RETRAIN_SECONDS)
     limiter.record("residual_retrain")
+    from marquee.ml.residual import freeze_residual_evidence  # noqa: PLC0415
+
+    events = list(
+        (
+            await db.scalars(
+                select(PosterPreferenceEvent)
+                .where(PosterPreferenceEvent.namespace == library)
+                .order_by(PosterPreferenceEvent.created_at, PosterPreferenceEvent.id)
+                .limit(100_000)
+            )
+        ).all()
+    )
+    frozen_evidence = freeze_residual_evidence(events)
     return await _submit_ml_publication(
         db,
         job_type="ranking_residual_train",
@@ -299,9 +312,7 @@ async def retrain_ranking_residual(
         library=library,
         request={
             "library": library,
-            "evidence_revision": (
-                f"manual:{int(time.time() // settings.RATE_TASTE_RETRAIN_SECONDS)}"
-            ),
+            "evidence_revision": frozen_evidence.digest,
             "mutation": "manual",
         },
         idempotency_key=(

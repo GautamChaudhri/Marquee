@@ -131,15 +131,11 @@ async def cancel(
                 try:
                     await cancel_batch_descendants(session, parent=job)
                 except (ValueError, RuntimeError) as exc:
-                    raise _conflict(
-                        job, "action_not_allowed", str(exc), action="cancel"
-                    ) from exc
+                    raise _conflict(job, "action_not_allowed", str(exc), action="cancel") from exc
                 await job_event_writer.append(
                     session,
                     job_id=job.id,
-                    event_key=(
-                        "job.cancelled" if job.phase == "terminal" else "job.stopping"
-                    ),
+                    event_key=("job.cancelled" if job.phase == "terminal" else "job.stopping"),
                     state=job.outcome or job.phase,
                     message="Batch parent cancellation requested",
                 )
@@ -155,6 +151,21 @@ async def cancel(
                 # evidence sealing, and the one canonical terminal write.
                 await pgqueuer_gateway.cancel_known_ticket(session, job_id=job.id)
                 if job.phase == "terminal":
+                    if job.type == "taste_rebuild" and job.outcome == "cancelled":
+                        from marquee.core.taste_preferences import (  # noqa: PLC0415
+                            record_profile_build_terminal,
+                        )
+
+                        profile_build_id = job.request.get("profile_build_id")
+                        if isinstance(profile_build_id, str):
+                            await record_profile_build_terminal(
+                                session,
+                                build_id=profile_build_id,
+                                job_id=job.id,
+                                state="cancelled",
+                                failure={"reason": "cancelled", "job_id": job.id},
+                                initiator_identifier="job-control",
+                            )
                     # Queued work has no admitted attempt to fence out; retain the
                     # canonical revision behavior only after durable terminal proof.
                     job.fence_token += 1
@@ -213,9 +224,7 @@ async def change_priority(
             from marquee.core.jobs.batches import reprioritize_batch_descendants
 
             try:
-                await reprioritize_batch_descendants(
-                    session, parent=job, priority=priority
-                )
+                await reprioritize_batch_descendants(session, parent=job, priority=priority)
             except (ValueError, RuntimeError, PgQueuerGatewayError) as exc:
                 raise _conflict(
                     job,
@@ -278,9 +287,7 @@ async def retry(
             try:
                 await assert_profile_build_retryable(session, job_id=original.id)
             except TastePreferenceError as exc:
-                raise _conflict(
-                    original, "action_not_allowed", str(exc), action="retry"
-                ) from exc
+                raise _conflict(original, "action_not_allowed", str(exc), action="retry") from exc
         batch = await session.get(JobBatch, original.id)
         if batch is not None:
             from marquee.core.jobs.batches import retry_batch
@@ -292,9 +299,7 @@ async def retry(
                     expected_fence_token=expected_fence_token,
                 )
             except (ValueError, RuntimeError) as exc:
-                raise _conflict(
-                    original, "action_not_allowed", str(exc), action="retry"
-                ) from exc
+                raise _conflict(original, "action_not_allowed", str(exc), action="retry") from exc
             replacement = await session.get(Job, successor.job_id)
             if replacement is None:
                 raise _conflict(
@@ -378,7 +383,9 @@ async def retry(
 
                 try:
                     if successor_profile_build_id is None:
-                        raise TastePreferenceError("profile retry successor identity is unavailable")
+                        raise TastePreferenceError(
+                            "profile retry successor identity is unavailable"
+                        )
                     await record_profile_build_retry_successor(
                         session,
                         original_job_id=original.id,

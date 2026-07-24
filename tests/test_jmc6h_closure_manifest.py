@@ -11,11 +11,11 @@ poster/ML product effects themselves are proven (and made real) by
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
 
 from marquee.core.jobs.delivery import EXECUTION_HANDLERS
 from marquee.core.jobs.manifest import JOB_DEFINITION_REGISTRY
+from tests.support.jmc6i_certification import collect_nodes, normalize_node, resolve_node
 
 _MANIFEST = Path(__file__).parent / "fixtures" / "jmc6h" / "enabled_definition_closure.json"
 
@@ -82,6 +82,8 @@ def test_jmc6h_manifest_covers_exactly_the_enabled_registry() -> None:
 def test_jmc6h_manifest_entries_carry_behavioral_fields_matching_the_registry() -> None:
     document = _document()
     entries = {entry["job_type"]: entry for entry in document["definitions"]}
+    declared_nodes = [entry["certification_test"] for entry in entries.values()]
+    collected_nodes = collect_nodes(declared_nodes)
 
     for job_type, entry in entries.items():
         definition = JOB_DEFINITION_REGISTRY.get(job_type)
@@ -97,11 +99,10 @@ def test_jmc6h_manifest_entries_carry_behavioral_fields_matching_the_registry() 
         assert entry["consumer"], job_type
         assert entry["real_product_effect"], job_type
         assert entry["certification_test"], job_type
-        references = re.findall(r"(test_[a-z0-9_]+\.py)", entry["certification_test"])
-        if not references:
-            references = [f"{entry['certification_test'].split('::', 1)[0]}.py"]
-        for reference in references:
-            assert (Path(__file__).parent / reference).is_file(), (job_type, reference)
+        node = entry["certification_test"]
+        assert "::" in node, job_type
+        assert resolve_node(node), (job_type, node)
+        assert normalize_node(node) in collected_nodes, (job_type, node)
 
 
 def test_jmc6h_placeholder_focus_leaves_are_flagged_and_have_certification_tests() -> None:

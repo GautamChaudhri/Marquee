@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onMount, untrack } from 'svelte';
 	import { SvelteMap, SvelteSet } from 'svelte/reactivity';
 	import { cancelJob } from '../client';
 	import { getJobProgressStore } from '../context';
@@ -11,6 +11,7 @@
 		query,
 		jobIds = [],
 		heading = 'Active work',
+		includeHistory = false,
 		onSettled,
 		active = $bindable(false),
 		conflicting = $bindable(false)
@@ -19,6 +20,7 @@
 		query: ListJobsQuery;
 		jobIds?: string[];
 		heading?: string;
+		includeHistory?: boolean;
 		onSettled?: (snapshot: JobSnapshotResponse) => void | Promise<void>;
 		active?: boolean;
 		conflicting?: boolean;
@@ -26,10 +28,17 @@
 
 	const store = getJobProgressStore();
 	const notified = new SvelteSet<string>();
+	const refreshedHistory = new SvelteSet<string>();
+	let historyScopeKey = $derived(`${scopeKey}:history`);
 	const records = $derived.by(() => {
 		const byId = new SvelteMap(
 			store.recordsForScope(scopeKey).map((record) => [record.jobId, record])
 		);
+		if (includeHistory) {
+			for (const record of store.recordsForScope(historyScopeKey)) {
+				byId.set(record.jobId, record);
+			}
+		}
 		for (const jobId of jobIds) {
 			const record = store.records.get(jobId);
 			if (record) byId.set(jobId, record);
@@ -60,15 +69,42 @@
 			view: 'queue',
 			limit: query.limit ?? 20
 		});
-		return () => handle.release();
+		const historyHandle = includeHistory
+			? store.acquireScope(historyScopeKey, {
+					...query,
+					view: 'history',
+					limit: query.limit ?? 20
+				})
+			: null;
+		return () => {
+			handle.release();
+			historyHandle?.release();
+		};
 	});
 
 	$effect(() => {
 		const bound = [...jobIds];
-		for (const jobId of bound) store.track(jobId);
+		untrack(() => {
+			for (const jobId of bound) store.track(jobId);
+			if (!bound.length) return;
+			store.refreshScope(scopeKey);
+			if (includeHistory) store.refreshScope(historyScopeKey);
+		});
 		return () => {
-			for (const jobId of bound) store.untrack(jobId);
+			untrack(() => {
+				for (const jobId of bound) store.untrack(jobId);
+			});
 		};
+	});
+
+	$effect(() => {
+		if (!includeHistory) return;
+		for (const jobId of jobIds) {
+			const snapshot = store.records.get(jobId)?.snapshot;
+			if (snapshot?.phase !== 'terminal' || untrack(() => refreshedHistory.has(jobId))) continue;
+			untrack(() => refreshedHistory.add(jobId));
+			untrack(() => store.refreshScope(historyScopeKey));
+		}
 	});
 
 	$effect(() => {

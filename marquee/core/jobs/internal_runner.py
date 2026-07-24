@@ -550,8 +550,13 @@ def _run_ranking_residual(manifest: dict[str, Any], control: ControlWriter) -> d
         **report,
     }
     if artifact is None:
-        return {"outcome": "no_change", "summary": summary, "files": []}
+        # ``outcome`` is the runner transport contract and therefore only
+        # reports successful execution here. The coordinator maps this explicit
+        # publication decision onto the durable no-change terminal outcome.
+        summary["publication_outcome"] = "no_change"
+        return {"outcome": "succeeded", "summary": summary, "files": []}
     artifact.save(Path("residual.npz"))
+    summary["publication_outcome"] = "succeeded"
     return {
         "outcome": "succeeded",
         "summary": summary,

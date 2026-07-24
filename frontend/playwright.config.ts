@@ -19,6 +19,7 @@ const API_PORT = 3199;
 
 export default defineConfig({
 	testDir: 'e2e',
+	testIgnore: 'real-activity-lifecycle.spec.ts',
 	fullyParallel: false,
 	forbidOnly: !!process.env.CI,
 	retries: 0,

@@ -40,7 +40,7 @@
 	}
 </script>
 
-<div class="actions" aria-label={`Available commands for ${row.subject.display_name}`}>
+<div class="actions" role="group" aria-label={`Available commands for ${row.subject.display_name}`}>
 	{#if allows('pause')}
 		<button type="button" onclick={() => run('pause')} disabled={busy !== null}>Pause</button>
 	{/if}

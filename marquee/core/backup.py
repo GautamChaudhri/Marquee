@@ -217,22 +217,6 @@ class BackupService:
             "offline_cutover_required": True,
         }
 
-    async def scheduler_loop(self) -> None:
-        if settings.DEBUG or settings.BACKUP_INTERVAL_HOURS <= 0:
-            return
-        delay = max(0, settings.BACKUP_INITIAL_DELAY_SECONDS)
-        if delay:
-            await asyncio.sleep(delay)
-        interval = max(3600, settings.BACKUP_INTERVAL_HOURS * 3600)
-        while True:
-            try:
-                await self.create_backup()
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                logger.warning("Scheduled backup failed", exc_info=True)
-            await asyncio.sleep(interval)
-
     def _timestamp(self) -> str:
         return datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
 

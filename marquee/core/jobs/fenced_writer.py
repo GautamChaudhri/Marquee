@@ -658,7 +658,10 @@ class FencedWriter:
                 event_key=f"job.{outcome}",
                 state=outcome,
                 message=f"{self.definition.job_type} {outcome}",
-                detail={"result": result} if result is not None else error,
+                # Terminal snapshots retain the full result/error. The public SSE
+                # event is only a reconciliation hint and must not duplicate a
+                # deep result document that violates its bounded detail contract.
+                detail=None,
                 canonical_version=owner.fence_token,
             )
             from marquee.core.jobs.batches import project_terminal_child

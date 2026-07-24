@@ -951,3 +951,407 @@ worktree, and continues from the recorded phase.
   `/tmp/marquee-jmc7b-20260724T014846Z.bundle`. Verify the bundle before rewriting, re-prove a clean
   one-worktree linear range, preserve all recovery material, annotate local `jmc7b-complete`, and do
   not edit this timeline afterward, push, activate, or touch operator resources.
+
+## JMC7C Phase 7C0 — fresh reconciliation and certification-gap freeze — 2026-07-23
+
+- **Starting identity:** `job-manager` is clean at annotated `jmc7b-complete`
+  `a1e455ff595c1a255ef3294999de44a1c5a5c3f9`, tree
+  `581de4824f5068b41a522f5627a00025c4f9e0c7`, with sole parent annotated
+  `jmc7a-complete` `cb89ad4a8dc4ce4c6624e2556ef5706a7998f0a7`, tree
+  `d68a2538e49c1f3e60a3b4d45b6c15152f3d8620`, whose sole parent is
+  `jmc6k-complete` `9a9ac1a80eb0d4fbc11d7de6f37c1a039af6083c`. Both completion tags are annotated;
+  each compact tree is byte-identical to its recovery branch. The ranges are compact,
+  single-parent, configured-author-only, merge-free, and local-only. `job-manager` is one commit
+  ahead of `origin/job-manager`; configured author/committer is Gautam Chaudhri
+  `<gautam.chaudhri@gmail.com>`.
+- **Recovery verification:** `recovery/jmc7a-20260723T212814Z` and
+  `recovery/jmc7b-20260724T014846Z` resolve to the recorded pre-squash tips and have the same trees
+  as their compact tags. `/tmp/marquee-jmc7a-reverified-20260723T222639Z.bundle` and
+  `/tmp/marquee-jmc7b-20260724T014846Z.bundle` both pass `git bundle verify` with complete SHA-1
+  history. The original JMC6K external bundle remains unavailable as the documented historical gap;
+  it is not represented as recovered.
+- **Schema/contracts baseline:** static Alembic head is `0015_jmc7b`. The default predecessor
+  disposable listener on 55453 was absent. A new owned UTF-8 PostgreSQL 18.3 cluster at
+  `127.0.0.1:55458`, data root `/tmp/marquee-jmc7c-pg-utf8.bfAu53`, was initialized after an
+  SQL_ASCII setup attempt exposed a Psycopg incompatibility and was stopped. It was upgraded through
+  `python -m marquee.db_migration`; `alembic current` is sole head `0015_jmc7b` and `alembic check`
+  reports no new operations. Current deterministic OpenAPI SHA-256 is
+  `2cec76614f6951ce4b94f5de750eef00c95654b639e590627143fca0c8f874e6`; generated TypeScript is
+  `b0d427107096ea5b5a82a24aa8d692a96dd0a35e1c3a9c5dba0e0d916ed57497`.
+- **Visual/browser baseline:** the checked-in Activity shell baseline was inspected. Chromium
+  `activity-shell.spec.ts` currently reports **4 passed** with the baseline unchanged. The historical
+  12,460-pixel/0.02 Activity diff recorded by the initial audit cannot currently be reproduced; no
+  baseline was re-recorded, so JMC7C must diagnose its environment/rendering cause before accepting
+  it as resolved. The existing Playwright configuration is synthetic-backend based and the existing
+  onboarding/activity specs route-intercept responses, so neither satisfies JMC7C real-lifecycle
+  certification.
+- **Frozen Activity inventory:** one browser-session `JobProgressStore` owns the EventSource,
+  scopes, repairs, records, and track set. `FeatureActivityPanel` tracks bound/command snapshots;
+  Projection Room tracks retry/bulk results. The onboarding page currently passes broad
+  `active_jobs` into that panel and independently polls `/onboarding/status` every five seconds.
+  `onboarding_status` itself finds active work by a broad job-type query. Global SSE lifecycle and
+  progress frames currently allocate a per-ID repair before proving the job is tracked/relevant;
+  `applySnapshot` can therefore insert an unrelated record. Snapshot fence ordering itself already
+  accepts a higher fence with a lower sequence, but it lacks the required relevance and bounded
+  terminal-retention policy.
+- **Frozen onboarding/closure/retirement inventory:** all six public onboarding success routes
+  return loose dictionaries and have no `response_model`; generated OpenAPI therefore exposes
+  `unknown` success bodies, while `frontend/src/lib/api/onboarding.ts` duplicates handwritten
+  start/intent/completion shapes and blind generic request calls. The JMC6H closure manifest only
+  checks that a named test file exists rather than collected executable node identity. `TasteMap`
+  already dynamically imports Plotly, but no normal-entry budget is enforced. Serena finds no
+  production reference to `BackupService.scheduler_loop`; the only static reference outside the
+  method is its retirement test. Runtime/startup reachability remains to be certified before
+  deletion.
+- **Inventory correction:** current `ENABLED_JOB_TYPES` and `JOB_DEFINITION_REGISTRY.enabled_types`
+  both contain **44** dispatch-enabled definitions because JMC7A added `letterbox_preview`; the
+  historical 43-definition audit is preserved as historical evidence. JMC7C must execute every
+  current enabled definition, including preview, rather than silently excluding it to satisfy a
+  stale count.
+- **Current phase/next:** 7C0 is in progress. Add intentional-red contracts for snapshot-only
+  insertion/filtering/bounds, closed onboarding responses/generated client use, executable
+  collection, real-app lifecycle, bundle budget, and scheduler retirement; then implement the first
+  unmet Activity reconciliation decision in 7C1. No operator database/library/media, schedule,
+  remote push, activation, baseline update, or unrelated work has been touched.
+
+### 7C0 checkpoint
+
+- **Commit/tree/parent:** `fbcafbf7f0d93a0a2a732226f37e8d8302c15cef`
+  (`freeze jmc7c certification gaps`), tree
+  `417b23f9b6ae2f9d05eb8f68c25363f00da739a4`, parent
+  `a1e455ff595c1a255ef3294999de44a1c5a5c3f9`; configured author only.
+- **Intentional-red evidence:** the Activity unit contract proves unrelated global SSE lifecycle
+  events currently schedule a snapshot repair (**33 passed, 1 failed**). The onboarding OpenAPI
+  contract and scheduler-retirement contract both fail (**2 failed**) because all six success
+  schemas are `{}`/`unknown` and `BackupService.scheduler_loop` still exists. The existing
+  snapshot-only tracked insertion and higher-fence/lower-sequence unit contracts are retained and
+  pass. These failures are owned 7C1/7C2/7C4 work, not skips or accepted release results.
+- **Current phase/next:** 7C0 freeze is complete. Start 7C1 by making explicit tracking and active
+  scopes the only event/repair allocation authority, retaining snapshot-only insertion and
+  lexicographic fence/sequence reconciliation. Then add bounded terminal pruning and remove
+  onboarding's broad active-job discovery/page-local polling.
+
+## JMC7C Phase 7C1 — Activity relevance and repair ordering — 2026-07-23
+
+- **Reconciliation authority:** the sole browser-session `JobProgressStore` now rejects global SSE
+  job frames before allocation unless their id is explicitly tracked, already materialized, or is in
+  an active visible scope. The global cursor still advances for every valid frame, so reconnect
+  replay remains monotonic without turning unrelated durable events into unbounded snapshot traffic
+  or records. Snapshot insertion remains permitted for an explicitly tracked unknown id.
+- **Attempt ordering:** progress-hint rejection is now lexicographic: a duplicate/lower sequence is
+  ignored only for the same or lower canonical fence. A higher fence is always repaired, even when
+  its progress sequence restarts at a lower value. The authoritative snapshot remains the writer of
+  record state.
+- **Terminal retention:** terminal cards in Queue-scope unions are kept for completion feedback only
+  for five minutes and at most 100 cards, then are removed from Queue scopes and pruned if no direct
+  tracking or other scope retains them. A History scope remains server-bounded and owns its visible
+  rows; no terminal completion is inferred from stream loss or page absence.
+- **Executable evidence:** `frontend/src/lib/activity/store.svelte.test.ts` now has 36 passing
+  deterministic unit tests, including the formerly red unrelated-global-event test, a higher-fence
+  lower-sequence progress repair, snapshot-only tracked insertion, and expired terminal Queue-tail
+  pruning. The frontend runner reports only its existing missing-Svelte-config notices.
+- **Tooling note:** Serena remains available for Python symbols but reports only Python as an active
+  language, so it cannot parse this repository's Svelte/TypeScript sources; direct source inspection
+  was used for the Activity edit. This is a recorded certification tooling limitation, not a waived
+  test.
+- **Current phase/next:** 7C1 reconciliation is complete. Next, close the onboarding response
+  models/OpenAPI-generated client boundary and replace page-local status polling with the shared
+  Activity store.
+
+### 7C1 checkpoint
+
+- **Commit/tree/parent:** `986bd458e22dff23ce404aa069dc2bb9d3652357`
+  (`harden activity reconciliation`), parent `fbcafbf7f0d93a0a2a732226f37e8d8302c15cef`; configured
+  author only. It includes the late-recorded 7C0 ledger plus the 7C1 implementation and tests.
+
+## JMC7C Phase 7C2 — closed onboarding contract and shared Activity ownership — 2026-07-23
+
+- **Closed success bodies:** all six public onboarding success routes now declare an explicit 200
+  status and named Pydantic response model. `OnboardingStatusResponse`, start, review, decision,
+  and completion responses are closed nested documents rather than route-local dictionaries. The
+  post-effect proof is represented as its bounded six-field validation document; raw failure and OCR
+  archive values are projected to stable display summaries instead of leaking untyped JSON.
+- **Scope ownership:** onboarding status now derives active jobs only from durable onboarding
+  analysis/deployment successor lineage and the two explicit profile-build references. The prior
+  global nonterminal query across three job types is removed. The onboarding page has no interval,
+  page-local polling, or duplicate EventSource; it keeps command-status updates and directs ongoing
+  lifecycle observation to its shared `FeatureActivityPanel` store.
+- **Generated browser boundary:** exported OpenAPI and `openapi-typescript` are current. The
+  onboarding client imports generated schemas as its sole response/request source; obsolete
+  handwritten onboarding interfaces, generic `unknown` OCR access, `Record` subject access, and the
+  anonymous start/completion/decision shapes were deleted. Both the onboarding loader and pipeline
+  movies loader use the same generated aliases.
+- **Executable evidence:** expanded JMC7C contract checks are **2 passed** (six named OpenAPI refs
+  plus generated-client source ownership); onboarding/recovery/feedback regression tests are
+  **28 passed**, deployment authority is **17 passed**, `ruff` is clean through `.venv/bin/ruff`,
+  `npm run check` is zero diagnostics, and `npm run api:check` confirms the checked-in schema. No
+  production data, media, activation, remote, or schedule was touched.
+- **Current phase/next:** 7C2 is complete. Next, replace synthetic/intercepted browser certification
+  with a disposable real FastAPI/PgQueuer/app lifecycle harness and executable definition-node
+  collection.
+
+## JMC7C Phase 7C3 — executable definition evidence and real lifecycle harness — 2026-07-23
+
+- **Real lifecycle boundary:** `frontend/playwright.real.config.ts` starts the built Svelte app and
+  a real FastAPI process on loopback, using only `marquee_test` on the owned disposable PostgreSQL
+  cluster at 55458 and `/tmp/marquee-jmc7c-browser-data`. Its seed process explicitly clears the
+  owned PgQueuer transport tables, resets application rows, refuses any data-directory value other
+  than the exact owned path, clears that exact directory, migrates the disposable database, and
+  submits a canonical `system_noop`. The FastAPI lifespan starts the embedded PgQueuer worker and
+  real SSE tailer. Empty integration credentials disable inherited `.env` integration setup; the
+  test-only Radarr path mapping confines the deployable fixture to that owned data directory. No
+  operator database, media, schedule, or route interception is involved.
+- **Browser evidence:** `real-activity-lifecycle.spec.ts` is green (**4 passed, 19.1s**). It reaches
+  the built Projection Room and observes the real canonical job through `/api/jobs`,
+  `/api/jobs/attention`, and `/api/jobs/events/stream`; it asserts the durable Activity card,
+  presenter description, actual phone-width controls, and an Axe scan of the real Activity page. It
+  also opens a seeded canonical review through the built onboarding page and submits the real
+  negative-decision route; the server records the dislike and confirms that it creates no poster
+  deployment. It then reloads the built page from the server and verifies the durable review stays
+  visible with both decisions closed. This case uses the real review archive/artifact fixture and
+  no route interception. A second review uses a valid JPEG and translated local destination inside
+  the owned data directory; its real choice produces a `poster_deploy` job, runs the worker's
+  atomic publication path, and reaches the shared Activity card as **Succeeded**. While adding that
+  case, JMC7C corrected the terminal writer so full nested result documents remain on the canonical
+  snapshot instead of being redundantly serialized into bounded SSE event detail.
+  The fast-terminal deployment edge now uses an opt-in, bounded Queue-plus-History companion scope
+  inside the same shared store and single SSE stream: direct job tracking preserves lifecycle
+  authority, while History supplies the canonical row when Queue discovery races a terminal write.
+  Imperative scope refreshes are isolated from Svelte dependency tracking, preventing an
+  abort/restart loop. The real keyboard (Enter) choice/reload proof is green in **1.2s** after
+  server startup and observes exactly **7** bounded `/api/jobs` list requests.
+  The first attempt exposed only strict Playwright locator ambiguity from the accessibility
+  announcement and card copy, corrected with exact role/text locators. The real Axe scan then found
+  an invalid action-group ARIA label and an insufficient-contrast metadata label; both were corrected
+  in the shared components. The prior stale PgQueuer message was eliminated by the owned transport
+  reset.
+- **Executable definition evidence:** the live registry has **44** enabled definitions (including
+  `letterbox_preview`, while preserving the historical 43 count). Manifest references are exact
+  collected node IDs. `tests/test_jmc7c_definition_certification.py` now executes every unique
+  declared node in fresh isolated pytest sessions and rejects missing, skipped, failed, or unreported
+  nodes. The 24 unique producer/delivery/effect/consumer scenarios declared across all 44 entries
+  pass; the manifest plus C3 gate reports **4 passed**. This replaces the former collection-only
+  proof, without substituting mocked lifecycle boundaries for a claimed route, delivery, effect, or
+  consumer.
+- **Regression evidence:** the circular import discovered while collecting the letterbox publication
+  scenario was corrected by deferring the reencode probe import to its invocation boundary;
+  letterbox reencode/publication regressions report **7 passed**. C3-specific Ruff is clean.
+- **Current phase/next:** the real lifecycle smoke and executable-definition matrix are complete.
+  The remaining C3 browser matrix (onboarding recovery, cancellation/successor, consumer
+  acknowledgement, restart, accessibility, responsive, and reviewed visual paths) remains an
+  explicit final certification gate; it is not represented by the synthetic legacy Playwright suite.
+
+## JMC7C Phase 7C4 — retirement and normal-entry bundle budget — 2026-07-23
+
+- **Dead scheduler retirement:** Serena symbol/reference analysis and static source scan found no
+  production caller, startup hook, task factory, import side effect, or test dependency for
+  `BackupService.scheduler_loop`. The method was deleted rather than preserved as a compatibility
+  alias. Both the source reachability check and JMC7C retirement contract pass (**2 passed**).
+- **Lazy visualization budget:** TasteMap is now a user-opened panel; its data request and component
+  import occur only after “Show map”. Plotly remains a dynamic import inside that lazy component.
+  `npm run build` emits Plotly as a **4,599.48 kB** dynamic chunk, while the largest normal entry or
+  route chunk is **51.21 kB**. The checked-in `npm run bundle:check` reads Vite’s manifest, requires
+  the TasteMap→Plotly dynamic edge, and enforces a **128 KiB** normal entry/route chunk ceiling;
+  it reports **39 normal chunks** within budget. Svelte check is zero diagnostics.
+- **Current documentation:** `design/poster-pipeline.md` now names deployed positive/negative
+  profiles and a bounded compatible residual as the current scoring authority. Learned-head claims
+  are explicitly historical, not live onboarding/readiness authority. Live GPU, real-library/media,
+  restore, credentials, and schedule activation remain operator-only gates.
+
+## JMC7C Phase 7C5 — final regression gate in progress — 2026-07-23
+
+- **Backend and migration gate:** the complete suite against the owned PostgreSQL 18.3 cluster at
+  `127.0.0.1:55458/marquee_test` reports **1,422 passed, 3 skipped, 1 warning** in 163.12 seconds.
+  The skipped results remain explicit capability accounting. The one warning is Paddle’s expected
+  GPU-build fallback to CPU when no usable CUDA device is configured. The test-only `marquee` role
+  was granted `CREATEDB` on that disposable cluster so migration and offline-restore tests can make
+  and remove their own fresh databases; no operator database or role was changed. `ruff check
+  marquee tests`, `git diff --check`, Alembic `heads`, `current`, and `check` are green; sole
+  head/current is `0015_jmc7b` and model drift is empty.
+- **Regression repairs found by the gate:** direct in-process callers of the now-closed onboarding
+  Pydantic responses retain read-only mapping access through the response base, while HTTP/OpenAPI
+  bodies remain typed. The JMC6K Projection Room-link regression now creates the canonical
+  `OnboardingAnalysisSuccessor` row rather than relying on the C2-retired broad active-job query.
+  The previous real browser spec was excluded from the synthetic Playwright project, so its dedicated
+  FastAPI fixture is always the lifecycle authority. An obsolete uncalled onboarding review loader
+  was deleted; full frontend lint is now clean.
+- **Frontend/browser/build gate:** Svelte check has **0 errors/0 warnings**; OpenAPI drift is clean
+  at 191 paths with SHA-256
+  `e4645cac3ef010a5f5a20c3da3207120ba89fcead6f893aebbb11b5bc23523dc`, and generated TypeScript
+  SHA-256 is `bdd7c44c9610cb69b6b678c8ebfae802e73f6d312bf0d7c8d2d25255438082af`. Prettier and
+  ESLint pass. Vitest reports **10 files / 116 tests passed**. Chromium synthetic visual/axe suite
+  reports **14 passed**; dedicated real FastAPI/PgQueuer/SSE lifecycle reports **4 passed**,
+  including a real onboarding negative decision with its no-deployment post-effect and a real
+  choice-to-successful-deployment path. The
+  production build and `npm run bundle:check` pass, preserving the 128 KiB normal-chunk ceiling and
+  manifest-proven TasteMap→Plotly lazy edge.
+- **Not yet a final tag:** the remaining stateful real-browser matrix called out in 7C3 (the broader
+  onboarding recovery, restart, acknowledgement, responsive, and visual scenarios) is still an
+  explicit certification gap. Therefore recovery bundle creation, final-only compaction, and
+  `jmc7c-complete` tagging have not been performed or claimed. No push, activation, schedule change,
+  operator-library/media operation, or external recovery rewrite has occurred.
+
+### 7C5 browser cancellation correction
+
+- **Commit/tree/parent:** `552a00c6697b1298667e8feb77e9c5c9f8a564ea`
+  (`terminalize io cancellations`), tree `cc1c52427b30e58910d80b510953f59ecd91c601`, parent
+  `4bd4f050c51e3403ea55e0d49ba80515d8159ee8`; configured author only.
+- **Reproducible defect and correction:** the new real deployment cancellation case observed a
+  canonical `poster_deploy` job remain `stopping` after `ExecutionIOCancelledError` stopped its
+  publication copy. The default delivery classifier had treated that cancellation-aware I/O signal as
+  a permanent failure, bypassing `FencedWriter.fail(cancelled=True)`. It now classifies the signal as
+  `CANCELLED`; stale-fence signals remain fenced and cannot terminalize a newer owner. The focused
+  policy regression is green (**5 passed**).
+- **Real browser evidence:** the disposable FastAPI/PostgreSQL/PgQueuer/SSE suite is green
+  (**6 passed**), including choose → deployment cancellation → durable `terminal/cancelled` → retry
+  successor with the same persisted onboarding decision and exemplar. The remaining real-browser
+  matrix is still a release gate; this checkpoint neither claims final zero-green nor changes the
+  recovery/compaction/tagging status.
+
+### 7C5 review archive and no-change browser coverage
+
+- **Commit/tree/parent:** `af078c68fb9255ffe70b1d90f3f987656d2eeada`
+  (`exercise real review failures`), tree `69a1b8c0e3ffb52ef9853d6e554b0e611c38cffa`, parent
+  `b41591476a4911bc4b32786c3bd743da29a31acf`; and
+  `10f84420db014cc81b4ab3b06b0219b4ec9bbadc` (`exercise validated no-change deployment`), tree
+  `9bab59a7befd33fb02f50978b5e52d8ece21a03d`, parent
+  `af078c68fb9255ffe70b1d90f3f987656d2eeada`; configured author only.
+- **Real browser evidence:** the disposable FastAPI/PostgreSQL/PgQueuer/SSE suite is green
+  (**9 passed**) with no route interception. It exercises a mixed review archive (one verified
+  neutral survivor only), a corrupt immutable candidate that fails closed with actionable recovery
+  UI, and a real UI choice whose byte-identical target reaches durable `terminal/no_change` and
+  promotes active positive evidence from 50 to 51.
+- **Fixture invariant:** duplicate content already active as positive evidence is correctly rejected
+  by the product's duplicate-content guard. The no-change fixture therefore uses distinct valid
+  candidate bytes, updates the signed review/archive metadata, and preinstalls exactly those bytes
+  only in its isolated configured target. The wider recovery, Activity, consumer, residual, and
+  accessibility matrix remains a release gate; this is not a completion or compaction claim.
+
+### 7C5 extended browser lifecycle and consumer-generation coverage — 2026-07-24
+
+- **Reconciled production commits:** after the preceding nine-test browser checkpoint, the unpushed,
+  configured-author-only linear range added review-deployment certification `666a8f8`, Activity
+  reconnect recovery `1cb9f90`, post-effect recovery `5eb7627`, real profile publication
+  `a779761`, unvalidated no-change recovery `98c7cd8`, residual/profile-consumer certification
+  `8ddaeeb`, and generation-three consumer coverage
+  `f401ad0b8cdca725976c087fbbaa06ceece37f6f` (tree
+  `b9c03b408613e03c0fb591085be24fab2f7586f2`, parent
+  `8ddaeebc91ab563e5a80e133cebc17aa881b1105). No recovery rewrite, tag, push, activation, or
+  operator resource mutation has occurred.
+- **Residual transport correction:** a valid residual held-out non-improvement is now represented
+  as successful internal-runner transport plus the bounded
+  `summary.publication_outcome=no_change` domain decision. The handler maps that decision to the
+  durable `no_change` terminal result. Manual residual submission freezes the exact eligible-event
+  digest rather than a wall-clock revision, so the runner cannot self-supersede a valid request.
+- **Stateful browser evidence:** the isolated built Svelte/FastAPI/PgQueuer/PostgreSQL/SSE project
+  reports **16 passed in 1.7m**, without route interception. It now covers the real retried-analysis
+  failure lineage, deployment cancellation/successor, validated and unvalidated no-change,
+  post-effect recovery, mixed/corrupt review behavior, positive/negative effects, residual
+  no-change, EventSource offline/recovery, and separate movie/TV profile publications. The
+  generation-2 path proves the coordinator's in-flight evidence coalescing; the normal forced
+  coordinator endpoint publishes generation 3. For each generation, the test invokes actual movie
+  and TV `poster_pipeline` routes on disposable subjects and proves personalized readiness only
+  after both durable consumer acknowledgements match the active publication. The external TMDB
+  discovery failure occurs only after acknowledgement and is expected for the credential-free
+  fixture.
+- **Focused regression evidence:** `ruff` for the changed fixture, Prettier, and Svelte check are
+  clean. JMC4C/JMC6H/JMC6J/JMC7C regression group: **99 passed, 3 skipped**; focused
+  residual/profile group: **25 passed**; profile-coordination and JMC7C contract/definition/
+  retirement group: **27 passed**. The initial standalone pytest attempts through the filesystem
+  sandbox timed out before setup because its PostgreSQL transport was unavailable there; the same
+  disposable 55458 database passes through the approved external RTK test proxy, so no application
+  failure is being hidden.
+- **Current phase/next:** 7C5 remains in progress. Final-only recovery, compaction, and
+  `jmc7c-complete` remain prohibited. Continue the remaining real-browser race/filter/restart,
+  partial-namespace, visual, and full zero-green gates; then repeat the complete final matrix from a
+  clean certification tree.
+
+### 7C5 queued profile-cancellation lineage and global-event filtering — 2026-07-24
+
+- **Commit/tree/parent:** `1b60feeb687a60cc929abbcc51db5e27cb787b10` (`harden profile
+  cancellation retries`), tree `4e045c6003a326e1f82f704eb0fc5124cdec3301`, parent
+  `b5a9615ae08180c5a3c69e62ae3b7d61e3876e37`; configured author only.
+- **Cancellation correction:** cancelling a queued canonical `taste_rebuild` now terminalizes its
+  corresponding `TasteProfileBuild` as `cancelled`, with durable failure provenance, before the
+  canonical fence revision advances. This makes the shared successor retry API lawful instead of
+  leaving a stale `queued` build that rejects retry. The focused profile-coordination suite is green
+  (**7 passed**).
+- **Stateful browser evidence:** the isolated built Svelte/FastAPI/PgQueuer/PostgreSQL/SSE project
+  is green at **18 passed in 1.8m**, with no HTTP route interception. It adds a fence-aware queued
+  TV cancellation and retry, proves the existing movie active profile remains valid through the
+  partial namespace failure, then proves the TV consumer acknowledgement advances readiness after
+  its successor publication. It also attaches a real independent browser `EventSource`, observes a
+  fresh unrelated global lifecycle event for a real residual job, and proves the visible filtered
+  Projection Room does not issue a repair snapshot for that job. Credential-free external TMDB
+  discovery failures still occur only after the asserted local consumer acknowledgement and are
+  expected fixture-boundary logs.
+- **Current phase/next:** the partial-namespace and foreign-event filtering gaps are closed. 7C5
+  remains in progress pending the final clean-tree OpenAPI/type/frontend/build/browser/visual,
+  database, full regression, and release-ledger gates. Recovery bundle creation, compaction, and
+  `jmc7c-complete` tagging remain prohibited until those gates are repeated successfully.
+
+### 7C5 final local certification ledger — 2026-07-24
+
+- **Range and provenance:** exact annotated base `jmc7b-complete` has tag object
+  `2bc4d6de5d5d84da144feda011195dfb05636f4a` and peels to
+  `a1e455ff595c1a255ef3294999de44a1c5a5c3f9`. The certification candidate before this
+  ledger is `9a81a681ef6e9484cebdb40512ee71304c5fe9dc` (tree
+  `fab0e056e42e02c4de4f87c73445563e3fe9d38f`, parent
+  `1b60feeb687a60cc929abbcc51db5e27cb787b10`). The exact post-base range contains **26**
+  linear, configured-author-only, unpushed commits and no merge commits. Phase commit/tree
+  prefixes, newest first, are: `9a81a68/fab0e056e42e`, `1b60fee/4e045c6003a3`,
+  `b5a9615/813f4ef7ec8f`, `f401ad0/b9c03b408613`, `8ddaeeb/b7b82b1f0e21`,
+  `98c7cd8/e043c04626af`, `a779761/3ce15398e97b`, `5eb7627/0615c98879c7`,
+  `1cb9f90/04c7af165f93`, `666a8f8/9529d5973f52`, `10f8442/9bab59a7befd`,
+  `af078c6/69a1b8c0e3ff`, `b415914/77df67563965`, `552a00c/cc1c52427b30`,
+  `4bd4f05/ff99113459a2`, `81ff992/969fccca72b5`, `8be2b00/17ec46448457`,
+  `d297a8c/fe70c90e330e`, `191f1a2/a89a9c222e54`, `a587476/aaf68657320d`,
+  `52f976a/0f79513c35fe`, `5b86d1f/7ee62190d89f`, `1e1ddfe/5ec691d04e5b`,
+  `f66fab1/580d9ef1b54`, `986bd45/70ac20deb176`, and
+  `fbcafbf/417b23f9b6ae`. Earlier checkpoints above retain each phase's parent and detailed
+  behavior; the aggregate source and Git range are clean (`git diff --check` and status).
+- **Backend and migration gates:** complete disposable PostgreSQL/DATA_DIR regression is green at
+  **1427 passed, 3 default opt-in skips, 1 expected Paddle CPU-fallback warning in 157.76s**;
+  `ruff check marquee tests` passes. The three default skips are exactly the explicit CPU live
+  capability nodes, re-run with `MARQUEE_LIVE_SMOKE=1` as **3 passed in 13.20s**. Alembic
+  `heads` and `current` are solely `0015_jmc7b (head)` and `alembic check` reports no new upgrade
+  operations. This final run includes the current JMC7A/JMC7B cancellation, contention/recovery,
+  onboarding, residual, publication, Activity, contract, retirement, and executable-certification
+  regressions; there are no unexplained failures, skips, xfails, or drift.
+- **Definition/action and Activity evidence:** the registry-aligned executable certification test
+  passes as part of the complete suite and the current manifest contains **44/44** enabled
+  producer-to-consumer scenarios (the historical 43-definition wording is preserved as history, not
+  used to suppress the newly enabled definition). Independent source recheck confirms the single
+  multiplexed Activity `EventSource`, relevance guard before foreign-event allocation/repair,
+  per-job deduplicated repair, hidden-tab cadence, terminal pruning, and fence-first/sequence-second
+  snapshot acceptance. The synthetic Activity/axe browser suite and the real filtered-SSE case
+  exercise those constraints.
+- **Contracts, frontend, visual, and bundle gates:** deterministic OpenAPI export is current at
+  **191 paths**, SHA-256 `e4645cac3ef010a5f5a20c3da3207120ba89fcead6f893aebbb11b5bc23523dc`;
+  generated TypeScript drift is clean, SHA-256
+  `bdd7c44c9610cb69b6b678c8ebfae802e73f6d312bf0d7c8d2d25255438082af`. Svelte check reports
+  **0 errors/0 warnings**; Prettier/ESLint pass; Vitest is **10 files / 116 passed**; production
+  build passes; bundle enforcement passes with **39** normal chunks at or below **131072** bytes and
+  a manifest-proven lazy TasteMap/Plotly edge. Chromium synthetic visual/accessibility coverage is
+  **14 passed**, including responsive/keyboard/focus/axe Activity and onboarding cases. Its
+  pre-existing visual baseline was retained only after the documented intentional shell diagnosis;
+  no blind screenshot rerecord occurred.
+- **Stateful lifecycle and live-boundary evidence:** the real built Svelte + FastAPI + disposable
+  PostgreSQL + PgQueuer + artifact + consumer + SSE suite is **18 passed in 1.8m** without lifecycle
+  route interception. It covers fresh/snapshot Activity, review survivor/corruption, choose/hate,
+  deployment/no-change/cancellation/retry, crash reconciliation, 49→50 onboarding, separate
+  profile generations and consumer acknowledgements, residual no-change, partial-TV retry, foreign
+  global SSE filtering without repair allocation, and native EventSource loss/reconnect. Expected
+  fixture-boundary logs are cancellation terminalization, credential-free TMDB discovery failures
+  after the asserted local acknowledgements, and degraded progress observations; each is directly
+  exercised and asserted, not ignored. CPU poster/profile/map capability smokes passed on fixture
+  bytes. GPU, non-fixture real-library, and destructive-media capabilities remain explicitly
+  unavailable/unclaimed.
+- **Retirement, safety, and next operation:** the BackupService scheduler-loop retirement and
+  current-document corrections remain covered by the complete suite; the historical missing JMC6K
+  external bundle remains an honest historical record. No production database/library/media,
+  schedule, activation, push, force-push, or recovery deletion occurred. The next and only remaining
+  local operation is final recovery material, exact soft-reset compaction, tree-identity proof, and
+  annotated local `jmc7c-complete`; no timeline edit is permitted after that tag. The independent
+  owner/Codex Outcome A/B readiness audit follows tagging—browser/operator acceptance is not
+  authorized by this certification.

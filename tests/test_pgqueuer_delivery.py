@@ -328,6 +328,28 @@ async def test_fenced_writer_rejects_stale_attempt_ownership(db, monkeypatch):
     assert job is not None and (job.phase, job.outcome) == ("running", None)
 
 
+async def test_terminal_event_keeps_deep_result_on_the_canonical_snapshot(db, monkeypatch):
+    job_id, ticket_id = await _canonical_ticket(db)
+    result = {"outcome": "succeeded", "summary": {"effect": {"evidence": {"depth": 4}}}}
+
+    async def handler(execution):
+        return result
+
+    monkeypatch.setitem(delivery._EXECUTION_HANDLERS, "system_noop", handler)
+    await deliver_control_job(_transport_job(job_id, ticket_id), _context())
+
+    await db.rollback()
+    job = await db.get(Job, job_id)
+    event = await db.scalar(
+        select(JobEvent).where(JobEvent.job_id == job_id, JobEvent.event_key == "job.succeeded")
+    )
+    assert job is not None
+    assert job.result is not None
+    assert job.result["summary"] == result["summary"]
+    assert event is not None
+    assert event.detail == {"_canonical_version": job.fence_token}
+
+
 @pytest.mark.parametrize("terminal_action", ["fail", "retry"])
 async def test_mutation_publish_intent_is_quarantined_instead_of_retried(
     db, terminal_action, monkeypatch

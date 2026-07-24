@@ -49,11 +49,13 @@ def default_failure_classifier(exc: BaseException) -> RetryClassification:
     """Bounded definition classifier for execution-kernel failures."""
     from pgqueuer import RetryRequested  # noqa: PLC0415
 
+    from marquee.core.jobs.execution_io import ExecutionIOCancelledError  # noqa: PLC0415
+
     if isinstance(exc, ClassifiedExecutionError):
         return exc.classification
     if isinstance(exc, (RetryRequested, TimeoutError)):
         return RetryClassification.TRANSIENT
-    if isinstance(exc, asyncio.CancelledError):
+    if isinstance(exc, (asyncio.CancelledError, ExecutionIOCancelledError)):
         return RetryClassification.CANCELLED
     return RetryClassification.PERMANENT
 

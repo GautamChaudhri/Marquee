@@ -413,7 +413,7 @@ class Settings(BaseSettings):
 
     @property
     def tmdb_configured(self) -> bool:
-        return self.TMDB_READ_ACCESS_TOKEN is not None
+        return bool(self.TMDB_READ_ACCESS_TOKEN)
 
     # ------------------------------------------------------------------
     # Fanart.tv
@@ -453,7 +453,7 @@ class Settings(BaseSettings):
 
     @property
     def radarr_configured(self) -> bool:
-        return self.RADARR_URL is not None and self.RADARR_API_KEY is not None
+        return bool(self.RADARR_URL and self.RADARR_API_KEY)
 
     # ------------------------------------------------------------------
     # Sonarr
@@ -469,7 +469,7 @@ class Settings(BaseSettings):
 
     @property
     def sonarr_configured(self) -> bool:
-        return self.SONARR_URL is not None and self.SONARR_API_KEY is not None
+        return bool(self.SONARR_URL and self.SONARR_API_KEY)
 
     # ------------------------------------------------------------------
     # Radarr Path Mapping (cross-host / Docker setups)

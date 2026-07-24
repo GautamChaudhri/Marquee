@@ -227,6 +227,32 @@ async def test_ranking_residual_trains_from_canonical_event_snapshot(tmp_path: P
 
 
 @pytest.mark.asyncio
+async def test_ranking_residual_no_change_preserves_successful_runner_transport(tmp_path: Path) -> None:
+    launcher, work = _launcher(tmp_path)
+    (work / "preference-events.json").write_text("[]")
+
+    outcome = await run_internal_operation(
+        launcher,
+        operation=RunnerOperation.RANKING_RESIDUAL,
+        manifest={
+            "params": {
+                "library": "movies",
+                "baseline_signature": "baseline-v1",
+                "profile_checksum": "a" * 64,
+                "evidence_revision": "b" * 64,
+                "min_subjects": 25,
+                "min_pairs": 200,
+            }
+        },
+        resolve_output=lambda key: work / key,
+    )
+
+    assert outcome.outcome == OUTCOME_SUCCEEDED, outcome.error
+    assert outcome.summary["publication_outcome"] == "no_change"
+    assert outcome.summary["event_rows"] == 0
+
+
+@pytest.mark.asyncio
 async def test_launch_rejects_unknown_operation_string(tmp_path: Path) -> None:
     launcher, _ = _launcher(tmp_path)
     with pytest.raises(ValueError):

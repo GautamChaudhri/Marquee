@@ -135,7 +135,7 @@
 		overflow-wrap: anywhere;
 	}
 	.secondary b {
-		color: var(--faint2);
+		color: var(--muted);
 		font-weight: 700;
 		text-transform: uppercase;
 	}

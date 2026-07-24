@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from marquee.core.jobs.contracts import EffectSafety, JobAction
+from marquee.core.jobs.execution_io import ExecutionIOCancelledError
 from marquee.core.jobs.policies import (
     ActionContext,
     ActionPolicy,
@@ -11,6 +12,7 @@ from marquee.core.jobs.policies import (
     RetryPolicy,
     aggregate_parent,
     allowed_actions,
+    default_failure_classifier,
 )
 
 
@@ -34,6 +36,12 @@ def test_retry_classifier_is_bounded() -> None:
     assert policy.classify(RetryClassification.TRANSIENT, 2).delay_seconds == 30
     assert policy.classify(RetryClassification.TRANSIENT, 3).classification == "permanent"
     assert policy.classify(RetryClassification.CANCELLED, 1).classification == "cancelled"
+
+
+def test_execution_io_cancellation_is_terminal_cancellation() -> None:
+    assert default_failure_classifier(ExecutionIOCancelledError("execution I/O cancelled")) == (
+        RetryClassification.CANCELLED
+    )
 
 
 def test_actions_are_computed_from_policy_and_state() -> None:

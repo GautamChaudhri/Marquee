@@ -1,11 +1,10 @@
 import type { PageLoad } from './$types';
 import { getPipelineCache, getPipelineMetrics, getReviewQueue } from '$lib/api/pipeline';
-import { getOnboardingStatus } from '$lib/api/onboarding';
+import { getOnboardingStatus, type OnboardingStatus } from '$lib/api/onboarding';
 import { listMovies } from '$lib/api/library';
 import type {
 	CacheSizes,
 	MovieListItem,
-	OnboardingStatus,
 	Paginated,
 	PipelineMetrics,
 	ReviewQueue

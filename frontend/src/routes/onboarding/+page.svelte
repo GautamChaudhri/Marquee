@@ -1,6 +1,4 @@
 <script lang="ts">
-	import { goto } from '$app/navigation';
-	import { onMount } from 'svelte';
 	import { SvelteMap } from 'svelte/reactivity';
 	import FeatureActivityPanel from '$lib/activity/components/FeatureActivityPanel.svelte';
 	import ProgressBar from '$lib/components/ProgressBar.svelte';
@@ -8,16 +6,11 @@
 	import {
 		chooseOnboardingCandidate,
 		completeOnboarding,
-		getOnboardingReview,
-		getOnboardingStatus,
 		hateOnboardingCandidate,
-		startOnboarding
+		startOnboarding,
+		type OnboardingReview,
+		type OnboardingStatus
 	} from '$lib/api/onboarding';
-	import type {
-		OnboardingProfileLibrary,
-		OnboardingReview,
-		OnboardingStatus
-	} from '$lib/api/types';
 	import { toast } from '$lib/toast';
 	import type { PageData } from './$types';
 
@@ -34,8 +27,6 @@
 	let decisionOutcome = $state<string | null>(null);
 	// svelte-ignore state_referenced_locally
 	let initiatedJobIds = $state<string[]>(status?.active_jobs.map((job) => job.job_id) ?? []);
-	let refreshVersion = 0;
-	let refreshAbort: AbortController | null = null;
 	const decisionKeys = new SvelteMap<string, string>();
 
 	const count = $derived(status?.active_positive_subjects ?? 0);
@@ -46,9 +37,10 @@
 	const canBuild = $derived(count >= required && status?.state !== 'building');
 	const profileRows = $derived(
 		status
-			? (Object.entries(status.libraries) as Array<
-					[keyof OnboardingStatus['libraries'], OnboardingProfileLibrary]
-				>)
+			? ([
+					['movies', status.libraries.movies],
+					['tv', status.libraries.tv]
+				] as const)
 			: []
 	);
 
@@ -58,52 +50,6 @@
 			...new Set([...initiatedJobIds, ...next.active_jobs.map((job) => job.job_id)])
 		].slice(0, 20);
 	}
-
-	async function loadReview(runId: string) {
-		try {
-			review = await getOnboardingReview(fetch, runId);
-			reviewError = null;
-			await goto(`/onboarding?review=${encodeURIComponent(runId)}`, {
-				replaceState: true,
-				keepFocus: true,
-				noScroll: true
-			});
-		} catch (error) {
-			review = null;
-			reviewError = error instanceof Error ? error.message : 'Could not load the candidate review';
-		}
-	}
-
-	async function refreshStatus() {
-		refreshAbort?.abort();
-		const controller = new AbortController();
-		refreshAbort = controller;
-		const version = ++refreshVersion;
-		try {
-			const next = await getOnboardingStatus(fetch, controller.signal);
-			if (version !== refreshVersion) return;
-			applyStatus(next);
-			if (next.review && review?.run_id !== next.review.run_id) {
-				await loadReview(next.review.run_id);
-			}
-		} catch (error) {
-			if (controller.signal.aborted || version !== refreshVersion) return;
-			toast(error instanceof Error ? error.message : 'Could not refresh onboarding status', 'bad');
-		} finally {
-			if (refreshAbort === controller) refreshAbort = null;
-		}
-	}
-
-	onMount(() => {
-		const timer = window.setInterval(() => {
-			if (status?.active_jobs.length) void refreshStatus();
-		}, 5000);
-		return () => {
-			refreshVersion += 1;
-			refreshAbort?.abort();
-			window.clearInterval(timer);
-		};
-	});
 
 	async function analyzeNext() {
 		busy = true;
@@ -181,19 +127,6 @@
 		}
 	}
 
-	function ocrSummary(value: unknown): string {
-		if (typeof value === 'string' && value) return value;
-		if (value && typeof value === 'object' && 'summary' in value) {
-			const summary = (value as { summary?: unknown }).summary;
-			if (typeof summary === 'string' && summary) return summary;
-		}
-		return 'Passed the recorded OCR and eligibility checks.';
-	}
-
-	function subjectTitle(subject: Record<string, unknown>) {
-		return typeof subject.title === 'string' ? subject.title : 'Current movie';
-	}
-
 	function libraryName(library: keyof OnboardingStatus['libraries']) {
 		return library === 'movies' ? 'Movie profile' : 'TV profile';
 	}
@@ -256,13 +189,13 @@
 				Build taste profiles
 			</button>
 		{/if}
-		<a class="link" href="/projection-room?feature_area=ml_taste">Open Activity and evidence →</a>
+		<a class="link" href="/projection-room?feature_area=ai_posters">Open Activity and evidence →</a>
 	</div>
 
 	{#if analysisSubject}
 		<div class="notice" aria-live="polite">
-			<strong>Analyzing {analysisSubject}.</strong> When its neutral choices are ready, this page will
-			return to the review automatically. You can also follow the analysis below.
+			<strong>Analyzing {analysisSubject}.</strong> Follow the real-time Activity card below, then refresh
+			this page when its retained neutral choices are ready.
 		</div>
 	{/if}
 
@@ -277,7 +210,7 @@
 		<section class="review" aria-labelledby="candidate-review-title" data-testid="candidate-review">
 			<header>
 				<div>
-					<h2 id="candidate-review-title">Choose a poster for {subjectTitle(review.subject)}</h2>
+					<h2 id="candidate-review-title">Choose a poster for {review.subject.title}</h2>
 					<p>
 						These choices survived the same objective checks. None is preselected; choose one you
 						genuinely prefer, or mark one you do not want.
@@ -302,13 +235,25 @@
 								<strong>Eligibility:</strong>
 								{candidate.eligibility.status.replaceAll('_', ' ')}
 							</p>
-							<p><strong>OCR:</strong> {ocrSummary(candidate.eligibility.ocr)}</p>
-							{#if Object.entries(candidate.facts).length}
+							<p>
+								<strong>OCR:</strong>
+								{candidate.eligibility.ocr_summary ??
+									'Passed the recorded OCR and eligibility checks.'}
+							</p>
+							{#if candidate.facts.width !== null || candidate.facts.height !== null || candidate.facts.language !== null}
 								<dl>
-									{#each Object.entries(candidate.facts) as [name, value] (name)}
-										<dt>{name}</dt>
-										<dd>{String(value)}</dd>
-									{/each}
+									{#if candidate.facts.width !== null}
+										<dt>width</dt>
+										<dd>{candidate.facts.width}</dd>
+									{/if}
+									{#if candidate.facts.height !== null}
+										<dt>height</dt>
+										<dd>{candidate.facts.height}</dd>
+									{/if}
+									{#if candidate.facts.language !== null}
+										<dt>language</dt>
+										<dd>{candidate.facts.language}</dd>
+									{/if}
 								</dl>
 							{/if}
 						</div>
@@ -377,9 +322,10 @@
 
 	<FeatureActivityPanel
 		scopeKey="feature:onboarding:taste"
-		query={{ feature_area: 'ml_taste' }}
+		query={{ feature_area: 'ai_posters' }}
 		jobIds={initiatedJobIds}
 		heading="Taste onboarding activity"
+		includeHistory
 	/>
 {/if}
 
