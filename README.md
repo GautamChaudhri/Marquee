@@ -35,7 +35,8 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
 pip install -e ".[all]"   # include OCR / ML extras
-uvicorn marquee.main:app --reload
+rtk .venv/bin/python -m marquee.db_migration
+rtk .venv/bin/uvicorn marquee.main:app --reload --host 127.0.0.1 --port 3165
 ```
 
 Frontend:
@@ -43,7 +44,7 @@ Frontend:
 ```bash
 cd frontend
 npm install
-npm run dev
+rtk npm run dev
 ```
 
 Container stack:
