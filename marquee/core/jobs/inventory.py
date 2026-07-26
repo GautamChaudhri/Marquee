@@ -91,7 +91,7 @@ ROUTE_CONSTRUCTED_TYPES = frozenset(
     }
 )
 
-HEALING_TYPES = frozenset({"letterbox_heal", "poster_heal"})
+HEALING_TYPES = frozenset({"poster_heal"})
 SCHEDULE_PRODUCED_TYPES = frozenset(
     {"job_retention_purge", "library_sync", "poster_heal"}
 )

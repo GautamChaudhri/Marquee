@@ -50,19 +50,14 @@ async def installed_pgqueuer(db) -> Queries:
 
 def _configuration(
     *,
-    enabled: bool = True,
     production: bool = True,
     interval: int = 15,
-    hour: int = 3,
     heal_enabled: bool = True,
     heal_interval: int = 30,
 ) -> ScheduleConfiguration:
     return ScheduleConfiguration(
         revision=1,
         sync_interval_minutes=interval,
-        audio_subs_deep_scan_enabled=enabled,
-        audio_subs_deep_scan_hour=hour,
-        audio_subs_deep_scan_batch=200,
         poster_heal_enabled=heal_enabled,
         poster_heal_interval_minutes=heal_interval,
         production_occurrences_enabled=production,
@@ -94,7 +89,6 @@ async def test_production_catalog_is_registered_but_occurrences_are_code_disable
     assert list(definitions) == [
         "library-sync",
         "poster-heal",
-        "audio-subs-deep-scan",
         "evidence-retention",
     ]
     # Every production predicate requires the explicit restart-owned master gate.
@@ -106,13 +100,6 @@ async def test_production_catalog_is_registered_but_occurrences_are_code_disable
     )
     assert not definitions["library-sync"].enabled_predicate(
         _configuration(production=True, interval=0)
-    )
-    # audio-subs-deep-scan is activated in B3 but still respects its enabled config flag.
-    assert not definitions["audio-subs-deep-scan"].enabled_predicate(
-        _configuration(enabled=False, production=True)
-    )
-    assert not definitions["audio-subs-deep-scan"].enabled_predicate(
-        _configuration(enabled=True, production=False)
     )
     assert not definitions["evidence-retention"].enabled_predicate(
         _configuration(production=False)
@@ -129,7 +116,6 @@ async def test_production_catalog_is_registered_but_occurrences_are_code_disable
     assert {(key.entrypoint, key.expression) for key in app.sm.registry} == {
         ("schedule_library_sync", "* * * * *"),
         ("schedule_poster_heal", "* * * * *"),
-        ("schedule_audio_subs_deep_scan", "0 * * * *"),
         ("schedule_evidence_retention", "17 3 * * *"),
     }
 
@@ -138,13 +124,8 @@ def test_schedule_diagnostics_report_truthful_effective_state() -> None:
     report = readiness.schedule_catalog_report()
 
     assert report["production_schedules_enabled"] is False
-    assert [item["registered"] for item in report["schedules"]] == [True, True, True, True]
-    assert [item["effectively_enabled"] for item in report["schedules"]] == [
-        False,
-        False,
-        False,
-        False,
-    ]
+    assert [item["registered"] for item in report["schedules"]] == [True, True, True]
+    assert [item["effectively_enabled"] for item in report["schedules"]] == [False, False, False]
     assert all(item["disabled_reason"] for item in report["schedules"])
 
 
@@ -280,9 +261,9 @@ def test_hourly_occurrence_is_utc_and_skips_the_wrong_hour() -> None:
     definition = next(
         item
         for item in PRODUCTION_SCHEDULE_CATALOG
-        if item.key == "audio-subs-deep-scan"
+        if item.key == "evidence-retention"
     )
-    config = _configuration(hour=3)
+    config = _configuration()
     due = normalize_due_occurrence(
         definition, _schedule(datetime(2026, 7, 13, 3, 9, tzinfo=UTC)), config
     )
@@ -342,7 +323,7 @@ async def test_fixed_schedule_disable_reenable_does_not_create_extra_jobs(
     state = {"enabled": False}
 
     def configuration() -> ScheduleConfiguration:
-        return _configuration(enabled=True, production=state["enabled"], hour=3)
+        return _configuration(production=state["enabled"])
 
     diagnostics = ScheduleDiagnostics()
     factory = _get_session_factory()
@@ -483,7 +464,7 @@ async def test_ineligible_and_disabled_occurrences_are_bounded_diagnostics(db) -
     definition = next(
         item
         for item in PRODUCTION_SCHEDULE_CATALOG
-        if item.key == "audio-subs-deep-scan"
+        if item.key == "evidence-retention"
     )
     diagnostics = ScheduleDiagnostics()
     for minute in range(MAX_SCHEDULE_DIAGNOSTICS + 1):
@@ -491,7 +472,7 @@ async def test_ineligible_and_disabled_occurrences_are_bounded_diagnostics(db) -
             definition,
             _schedule(datetime(2026, 7, 14, 4, minute % 60, tzinfo=UTC)),
             configuration_loader=lambda: _configuration(
-                enabled=True, production=False, hour=3
+                production=False
             ),
             diagnostics=diagnostics,
         )

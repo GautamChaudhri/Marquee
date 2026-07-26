@@ -91,7 +91,6 @@ from marquee.core.jobs.presenters.base import (
     present_compact_progress,
     present_status,
 )
-from marquee.core.jobs.presenters.parents import PARENT_JOB_TYPES
 from marquee.database import _get_session_factory, get_db
 from marquee.models import (
     Episode,
@@ -803,7 +802,7 @@ async def get_job_presentation(job_id: str, db: Annotated[AsyncSession, Depends(
     definition = _definition_for(job.type)
     presenter = _presenter_for(definition)
     live: dict[str, Any] = {}
-    if job.type in PARENT_JOB_TYPES:
+    if definition.child_job_types:
         live["children"] = {
             **(await _live_children_counts(db, job.id)),
             "sealed": True,

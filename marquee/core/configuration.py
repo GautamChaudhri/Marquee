@@ -94,6 +94,17 @@ APP_DATABASE_KEYS = frozenset(
     }
 )
 APP_RESTART_KEYS = frozenset({"POSTER_BACKUP_DIR"})
+# Environment-owned credentials. They are catalogued so the settings surface can report
+# them (as presence only) and so the database-write path rejects them by sensitivity
+# rather than by an unknown-key accident.
+APP_SECRET_KEYS = frozenset(
+    {
+        "API_KEY",
+        "TMDB_READ_ACCESS_TOKEN",
+        "RADARR_API_KEY",
+        "SONARR_API_KEY",
+    }
+)
 
 
 _SECRET_LIKE = re.compile(r"(?:secret|token|password|api[_-]?key)", re.IGNORECASE)
@@ -135,6 +146,7 @@ def _catalog() -> dict[str, ConfigurationKey]:
         Settings,
         database_keys=APP_DATABASE_KEYS,
         restart_keys=APP_RESTART_KEYS,
+        secret_keys=APP_SECRET_KEYS,
     )
     add_owner(
         "pipeline",

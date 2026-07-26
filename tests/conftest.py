@@ -22,57 +22,6 @@ from marquee.database import (
 pytest_plugins = ["tests.support.jmc5b_harness"]
 
 
-def pytest_configure(config):
-    """Collect executed-node evidence for JMC6I §7 executable certification."""
-    from tests.support.jmc6i_certification import ExecutionEvidence
-
-    config.jmc6i_execution_evidence = ExecutionEvidence()
-
-
-def pytest_collection_modifyitems(config, items):
-    """Record the selected node set and run the certification report last.
-
-    The certification report consumes evidence produced by every other selected
-    test, so its module is deterministically moved to the end of the session.
-    """
-    evidence = getattr(config, "jmc6i_execution_evidence", None)
-    if evidence is None:
-        return
-    for item in items:
-        evidence.mark_selected(item.nodeid)
-    certification = [
-        item for item in items if "test_jmc6i_executable_certification" in item.nodeid
-    ]
-    if certification:
-        others = [
-            item for item in items if "test_jmc6i_executable_certification" not in item.nodeid
-        ]
-        items[:] = others + certification
-
-
-_JMC6I_EVIDENCE: dict = {}
-
-
-def pytest_sessionstart(session):
-    _JMC6I_EVIDENCE["evidence"] = getattr(session.config, "jmc6i_execution_evidence", None)
-
-
-def pytest_runtest_logreport(report):
-    """Record each node's true outcome (a skip or xfail is never 'executed')."""
-    evidence = _JMC6I_EVIDENCE.get("evidence")
-    if evidence is None:
-        return
-    if report.when == "call":
-        if report.passed and not hasattr(report, "wasxfail"):
-            evidence.record(report.nodeid, "passed")
-        elif report.skipped:
-            evidence.record(report.nodeid, "skipped")
-        else:
-            evidence.record(report.nodeid, "failed")
-    elif report.when == "setup" and (report.skipped or report.failed):
-        evidence.record(report.nodeid, "skipped" if report.skipped else "failed")
-
-
 @pytest_asyncio.fixture(scope="session", autouse=True)
 async def isolated_database(tmp_path_factory):
     """Provision an isolated PostgreSQL schema for the test session."""

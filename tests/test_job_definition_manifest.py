@@ -81,7 +81,7 @@ def _subjects():
 
 
 def test_manifest_has_exactly_one_definition_for_every_inventory_source() -> None:
-    assert len(JOB_DEFINITION_REGISTRY) == 63  # +JMC7A canonical letterbox preview
+    assert len(JOB_DEFINITION_REGISTRY) == 23
     assert JOB_DEFINITION_REGISTRY.types == BUILTIN_JOB_TYPES
     for inventory in (
         REGISTERED_HANDLER_TYPES,
@@ -109,39 +109,11 @@ def test_only_noop_is_enabled_and_webhook_stays_reserved_disabled() -> None:
         "pipeline_cache_clear",
         "job_retention_purge",
         "system_metrics_purge",
-        "letterbox_apply",
-            "letterbox_remove",
-            "letterbox_reencode",
-            "letterbox_reencode_publish",
-            "letterbox_reencode_restore",
-            "letterbox_reencode_discard",
-        "letterbox_detect",
-        "letterbox_detect_episode",
-        "letterbox_detect_tv_scope",
-        "letterbox_preview",
-        "subtitle_scan",
-        "subtitle_policy_audit",
-        "dovi_analyze",
-        "dovi_convert",
-        "dovi_publish",
-        "dovi_restore",
-        "dovi_discard",
         "ranking_residual_train",
         "poster_rescan",
         "taste_map",
         "taste_enrich",
         "taste_rebuild",
-        # JMC5B B2: audio/subtitle removals, reorder, and metadata.
-        "audio_remove",
-        "track_remove",
-        "subtitle_remove",
-        "audio_reorder",
-        "subtitle_metadata",
-        "subtitle_extract",
-        "subtitle_embed",
-        "subtitle_generate",
-        "subtitle_policy",
-        "subtitle_restore",
     }
     webhook = JOB_DEFINITION_REGISTRY.get("radarr_upgrade")
     assert webhook.trigger_kinds == {TriggerKind.WEBHOOK}
@@ -659,23 +631,8 @@ def test_progress_policies_are_complete_and_native_adapters_are_truthful() -> No
         if definition.progress_policy.tool_adapter is not None
     }
     assert native == {
-        "audio_remove": "mkvmerge_gui",
-        "audio_reorder": "mkvmerge_gui",
-            "dovi_convert": "ffmpeg_progress",
-            "dovi_analyze": "ffprobe_dovi_tool",
-        "letterbox_reencode": "ffmpeg_progress",
-        "letterbox_detect": "ffprobe_ffmpeg_cropdetect",
-        "letterbox_detect_episode": "ffprobe_ffmpeg_cropdetect",
-        "letterbox_detect_tv_scope": "ffprobe_ffmpeg_cropdetect",
         "poster_pipeline": "poster_analysis_adapter",
         "poster_rescan": "bounded_filesystem_observation",
-        "subtitle_embed": "mkvmerge_gui",
-        "subtitle_extract": "mkvmerge_gui",
-        "subtitle_metadata": "mkvmerge_gui",
-        "subtitle_policy": "mkvmerge_gui",
-        "subtitle_remove": "mkvmerge_gui",
-        "subtitle_restore": "mkvmerge_gui",
-        "track_remove": "mkvmerge_gui",
         "taste_rebuild": "immutable_ml_publication",
         "taste_map": "immutable_ml_publication",
         "taste_enrich": "immutable_ml_publication",

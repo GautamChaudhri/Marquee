@@ -59,7 +59,7 @@ def _registry(*, fixed: bool, retry_children: str = "failed") -> JobDefinitionRe
         JOB_DEFINITION_REGISTRY.get("system_noop"),
         trigger_kinds=frozenset({TriggerKind.BATCH}),
     )
-    source = JOB_DEFINITION_REGISTRY.get("subtitle_generate_batch")
+    source = JOB_DEFINITION_REGISTRY.get("poster_pipeline_batch")
     parent = replace(
         source,
         parent_policy=ParentAggregationPolicy(
@@ -131,8 +131,8 @@ def test_locked_parent_outcome_matrix(outcomes, parent_cancelled, expected) -> N
 async def _open(db, key: str):
     return await open_dynamic_batch(
         db,
-        parent_job_type="subtitle_generate_batch",
-        parent_request={"scope": "test"},
+        parent_job_type="poster_pipeline_batch",
+        parent_request={"scope": "all", "selection_count": 0},
         scope=BatchScope(
             reference=f"scope:{key}",
             display_name="A3 dynamic batch",
@@ -140,7 +140,7 @@ async def _open(db, key: str):
         ),
         trigger=TriggerKind.BATCH,
         initiator=None,
-        idempotency_key=f"subtitle_generate_batch:{key}",
+        idempotency_key=f"poster_pipeline_batch:{key}",
     )
 
 
@@ -348,12 +348,12 @@ async def test_concurrent_terminal_projection_counts_each_child_once(
     async with db.begin():
         created = await create_fixed_batch(
             db,
-            parent_job_type="subtitle_generate_batch",
-            parent_request={"scope": "test"},
+            parent_job_type="poster_pipeline_batch",
+            parent_request={"scope": "all", "selection_count": 0},
             scope=BatchScope(reference="scope:terminal-race", display_name="Terminal race"),
             trigger=TriggerKind.BATCH,
             initiator=None,
-            idempotency_key="subtitle_generate_batch:terminal-race",
+            idempotency_key="poster_pipeline_batch:terminal-race",
             children=(_child("terminal-race-0"), _child("terminal-race-1", 1)),
         )
 
@@ -445,12 +445,12 @@ async def test_parent_priority_cancel_and_retry_target_only_direct_children(
     async with db.begin():
         created = await create_fixed_batch(
             db,
-            parent_job_type="subtitle_generate_batch",
-            parent_request={"scope": "test"},
+            parent_job_type="poster_pipeline_batch",
+            parent_request={"scope": "all", "selection_count": 0},
             scope=BatchScope(reference="scope:commands", display_name="Parent commands"),
             trigger=TriggerKind.BATCH,
             initiator=None,
-            idempotency_key="subtitle_generate_batch:commands",
+            idempotency_key="poster_pipeline_batch:commands",
             children=(_child("commands-0"), _child("commands-1", 1)),
         )
         cousin = await submit_job(

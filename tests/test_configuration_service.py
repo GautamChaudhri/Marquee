@@ -23,8 +23,8 @@ def test_configuration_catalog_records_owner_sensitivity_and_apply_mode():
     assert pipeline.database_owned is True
     assert pipeline.apply_mode == "next_job"
 
-    secret = CONFIGURATION_CATALOG["SUBGEN_CALLBACK_TOKEN"]
-    assert secret.owner == "subtitle"
+    secret = CONFIGURATION_CATALOG["TMDB_READ_ACCESS_TOKEN"]
+    assert secret.owner == "app"
     assert secret.sensitivity == "secret"
     assert secret.database_owned is False
 
@@ -75,7 +75,7 @@ async def test_optimistic_update_appends_revision_and_noop_does_not_churn(db):
     [
         ({"UNKNOWN_OPTION": True}, "unknown"),
         ({"api_token": "leak"}, "secret-like"),
-        ({"SUBGEN_CALLBACK_TOKEN": "leak"}, "secret"),
+        ({"TMDB_READ_ACCESS_TOKEN": "leak"}, "secret"),
         ({"CLIP_MODEL_PATH": "/tmp/model.onnx"}, "restart-owned"),
         ({"K_NEIGHBORS": 0}, "invalid pipeline"),
     ],
