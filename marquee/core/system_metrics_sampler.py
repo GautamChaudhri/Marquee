@@ -5,7 +5,7 @@ the API process. Must never create a Job, JobAttempt, or JobEvent row — those
 exist for durable, resumable, user-visible work; a 10-15s heartbeat would
 flood the job history Projection Room lets the user inspect (thousands of
 rows/day). A single ``asyncio.create_task`` loop is enough here: the sampler
-does no GPU/ffmpeg work, just a handful of psutil/NVML calls plus one INSERT
+does no GPU work, just a handful of psutil/NVML calls plus one INSERT
 per tick, so it doesn't need the WorkerSupervisor's subprocess machinery.
 """
 

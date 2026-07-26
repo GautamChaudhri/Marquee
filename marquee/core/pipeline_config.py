@@ -103,22 +103,6 @@ class PipelineSettings(BaseSettings):
     # Upper bound on movies admitted to a single cross-movie batch run, so an
     # accidental "run the whole library" can't queue an unbounded job.
     PIPELINE_BATCH_MAX_MOVIES: int = 500
-    # Radarr Overlay policy: a DoVi file only satisfies a DoVi target when it
-    # also carries an HDR fallback layer (e.g. DV HDR10), not streaming-profile
-    # DV-only files.
-    HDR_OVERLAY_DOVI_REQUIRE_FALLBACK: bool = True
-
-    # ── Official pick (design 04 §9.3) ────────────────────────────────
-    # Per-scope toggle: promote the TMDB primary poster's stack to rank 1
-    # after stacking. Seasons default ON (episodic key art is usually
-    # unambiguous); shows/movies default OFF (curation stays rank-driven).
-    OFFICIAL_PICK_MOVIE: bool = False
-    OFFICIAL_PICK_SHOW: bool = False
-    OFFICIAL_PICK_SEASON: bool = True
-    # What to do when the primary poster is absent/gated: "ranked" (default,
-    # do nothing) or "largest_stack" (promote the biggest surviving design).
-    OFFICIAL_PICK_FALLBACK: str = "ranked"
-
     # Fixed Phase-0 normalization ranges.
     NORM_KNN_MIN: float = 0.4
     NORM_KNN_MAX: float = 0.9
@@ -396,8 +380,6 @@ class PipelineSettings(BaseSettings):
             raise ValueError(f"TMDB_POSTER_SIZE must be one of {sorted(_TMDB_SIZES)}")
         if self.OCR_TEXT_MODE not in ("title_only", "textless", "custom"):
             raise ValueError("OCR_TEXT_MODE must be 'title_only', 'textless', or 'custom'")
-        if self.OFFICIAL_PICK_FALLBACK not in ("ranked", "largest_stack"):
-            raise ValueError("OFFICIAL_PICK_FALLBACK must be 'ranked' or 'largest_stack'")
         if self.DINO_ENABLED not in ("auto", "on", "off"):
             raise ValueError("DINO_ENABLED must be 'auto', 'on', or 'off'")
         if self.SCORER not in ("auto", "weighted", "residual"):

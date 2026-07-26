@@ -49,7 +49,6 @@ class Episode(Base, TimestampMixin):
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
 
-    # ── Quality / HDR-DV (Phase N) ────────────────────────────────────
     video_width: Mapped[int | None] = mapped_column(Integer, nullable=True)
     video_height: Mapped[int | None] = mapped_column(Integer, nullable=True)
 

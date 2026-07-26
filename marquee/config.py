@@ -189,7 +189,7 @@ class Settings(BaseSettings):
     JOB_ENCODE_STALL_SECONDS: int = Field(
         default=120,
         ge=30,
-        description="Maximum seconds FFmpeg may go without emitting encode progress.",
+        description="Maximum seconds a tracked encode may go without emitting progress.",
     )
     JOB_CANCEL_FORCE_SECONDS: int = Field(
         default=30,
@@ -604,8 +604,7 @@ class Settings(BaseSettings):
         default=False,
         description="Keep CLIP/DINOv2 models loaded in GPU memory between runs. "
         "Set true for back-to-back poster runs (faster), false to share GPU with "
-        "letterbox jobs (more flexible). Process-lifetime cache on small GPUs may "
-        "prevent letterbox re-encode from allocating decode buffers.",
+        "other jobs (more flexible).",
     )
 
     # ------------------------------------------------------------------
@@ -633,8 +632,7 @@ class Settings(BaseSettings):
     )
 
     # ------------------------------------------------------------------
-    # Letterbox crop detection / tag application (design 04-letterbox)
-    # ------------------------------------------------------------------
+    # Poster cache and staging
     # ------------------------------------------------------------------
     POSTER_CACHE_DIR: str = Field(
         default="data/cache/posters",

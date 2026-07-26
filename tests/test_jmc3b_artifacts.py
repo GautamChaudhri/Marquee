@@ -145,7 +145,7 @@ async def test_physical_artifact_is_confined_immutable_and_downloadable(db) -> N
 
 async def test_existing_product_and_validation_evidence_are_registered_without_copy(db) -> None:
     job, attempt = await _attempt(db, "product-evidence")
-    source = _source("managed.srt", b"1\n00:00:00,000 --> 00:00:01,000\ntext\n")
+    source = _source("original-poster.jpg", b"\xff\xd8\xff\xe0original-poster-bytes")
     payload = (settings.data_dir_path / source.key.value).read_bytes()
     checksum = hashlib.sha256(payload).hexdigest()
     row = await register_existing_physical_artifact(
@@ -153,8 +153,8 @@ async def test_existing_product_and_validation_evidence_are_registered_without_c
         attempt_id=attempt.id,
         fence_token=1,
         source=source,
-        kind="managed_sidecar",
-        name="Managed subtitle sidecar",
+        kind="product_backup",
+        name="Recoverable product backup",
         checksum=checksum,
         size_bytes=len(payload),
     )

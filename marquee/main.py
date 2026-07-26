@@ -127,7 +127,7 @@ async def lifespan(app: FastAPI):
     # Embedded job runtime — spawn the worker + scheduler as supervised child
     # processes so background work runs without a manual `python -m ...worker`.
     # Heavy work stays off the API event loop, and shutdown reaps the whole
-    # process group (workers + their ffmpeg children) so nothing is orphaned.
+    # process group (workers + their runner children) so nothing is orphaned.
     app.state.worker_supervisor = None
     if settings.JOB_EMBEDDED_WORKERS:
         from marquee.core.jobs.supervisor import WorkerSupervisor

@@ -22,7 +22,6 @@ from marquee.config import settings
 from marquee.core.jobs.artifact_service import (
     artifact_boundary,
     register_existing_physical_artifact,
-    register_physical_artifact,
     register_validation_result_artifact,
     register_virtual_artifact,
 )
@@ -911,19 +910,6 @@ def _result_physical_evidence(value: Any):
                 size_bytes,
                 "Recoverable product backup",
             )
-        elif (
-            isinstance(value.get("managed_asset_id"), str)
-            and isinstance(value.get("storage_key"), str)
-            and isinstance(checksum, str)
-            and isinstance(size_bytes, int)
-        ):
-            yield (
-                "managed_sidecar",
-                value["storage_key"],
-                checksum,
-                size_bytes,
-                "Managed subtitle sidecar",
-            )
         for child in value.values():
             yield from _result_physical_evidence(child)
     elif isinstance(value, list | tuple):
@@ -943,29 +929,16 @@ async def _register_result_evidence(
         seen.add(key)
         try:
             source = boundary.from_key("data", key)
-            if kind == "managed_sidecar":
-                await register_physical_artifact(
-                    job_id=ownership.job_id,
-                    attempt_id=ownership.attempt_id,
-                    fence_token=ownership.fence_token,
-                    source=source,
-                    kind=kind,
-                    name=name,
-                    content_type="application/x-subrip",
-                    retention_class="extended",
-                    metadata={"product_storage_key": key, "product_checksum": checksum},
-                )
-            else:
-                await register_existing_physical_artifact(
-                    job_id=ownership.job_id,
-                    attempt_id=ownership.attempt_id,
-                    fence_token=ownership.fence_token,
-                    source=source,
-                    kind=kind,
-                    name=name,
-                    checksum=checksum,
-                    size_bytes=size_bytes,
-                )
+            await register_existing_physical_artifact(
+                job_id=ownership.job_id,
+                attempt_id=ownership.attempt_id,
+                fence_token=ownership.fence_token,
+                source=source,
+                kind=kind,
+                name=name,
+                checksum=checksum,
+                size_bytes=size_bytes,
+            )
         except Exception:
             logger.error("Product evidence registration failed", exc_info=True)
             await _record_evidence_degradation(
