@@ -32,7 +32,6 @@ import type {
 	EventListResponse,
 	JobListResponse,
 	JobPresentation,
-	JobSubmissionResponse,
 	JobSnapshotResponse,
 	ListJobsQuery,
 	OperationsHistoryResponse,
@@ -201,19 +200,6 @@ export function resumeJob(fetch: Fetch, jobId: string, fence: number): Promise<C
 
 export function retryJob(fetch: Fetch, jobId: string, fence: number): Promise<CommandResponse> {
 	return command(fetch, jobId, 'retry', fence);
-}
-
-/** Confirm one immutable media mutation plan through the generated canonical contract. */
-export function confirmMutation(
-	fetch: Fetch,
-	jobId: string,
-	expectedPlanVersion: string,
-	expectedConfigurationVersion: number
-): Promise<JobSubmissionResponse> {
-	return apiSend<JobSubmissionResponse>(fetch, 'POST', `/jobs/${jobId}/mutation-confirmation`, {
-		expected_plan_version: expectedPlanVersion,
-		expected_configuration_version: expectedConfigurationVersion
-	});
 }
 
 /** `POST /api/jobs/{id}/priority` — reprioritize within the execution class. */

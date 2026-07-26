@@ -1,22 +1,13 @@
 /** Offline fixtures, used when PUBLIC_USE_MOCKS=true so screens build without a
  *  backend. Mirrors the real response shapes from ./types. */
 import type {
-	HdrPreferenceChoice,
 	MovieDetail,
 	MovieListItem,
 	MovieQuery,
 	Paginated,
 	PosterStatus,
-	HdrKind,
-	RadarrOverlayQuery,
-	RadarrOverlayResponse,
-	RadarrOverlayStatus,
 	SystemMetrics,
-	SystemMetricsHistory,
-	SubtitleInventory,
-	SubtitleGenerator,
-	SubtitlePolicy,
-	SubtitleTrack
+	SystemMetricsHistory
 } from './types';
 import { compareBySortTitle } from '../sort-title';
 
@@ -50,7 +41,7 @@ function makeItem(i: number): MovieListItem {
 		resolution: RES[i % RES.length],
 		poster_status: POSTER[i % POSTER.length],
 		poster_url: null,
-		media_file_id: i + 1,
+		media_file_id: i + 1
 	};
 }
 
@@ -154,4 +145,3 @@ export function mockMetricsHistory(
 		]
 	};
 }
-

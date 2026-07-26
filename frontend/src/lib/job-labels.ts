@@ -1,5 +1,5 @@
 const JOB_LABELS: Record<string, string> = {
-	poster_pipeline_tv_batch: 'TV poster batch',
+	poster_pipeline_tv_batch: 'TV poster batch'
 };
 
 export function humanizeJobType(type: string): string {

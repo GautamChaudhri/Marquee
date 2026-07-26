@@ -306,8 +306,8 @@
 					<span class="danger-label">Delete all deployed posters</span>
 					<span class="danger-desc">
 						Removes every <code>poster.jpg</code> next to your movies and marks all movies as missing
-						so the pipeline can re-run from scratch. Does NOT touch your taste profile, the Key Art
-						Engine, or your labels. The underlying poster cache is preserved.
+						so the pipeline can re-run from scratch. Does NOT touch your taste profile, the Key Art Engine,
+						or your labels. The underlying poster cache is preserved.
 					</span>
 				</div>
 				<button class="danger-btn" onclick={() => (resetDialogOpen = true)}>
