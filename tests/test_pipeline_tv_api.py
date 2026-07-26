@@ -129,7 +129,6 @@ def _archive_for(
                 "stack_size": 1,
             }
         ]
-        archive["official_pick"] = {"enabled": True, "applied": "primary_stack"}
     return archive
 
 
@@ -326,7 +325,6 @@ async def test_tv_review_queue_grouping_and_movie_guard(
     items = {item["series"]["title"]: item for item in body["items"]}
     assert items["Review Alpha"]["show_run"]["run_id"] == "alpha-show"
     assert items["Review Alpha"]["season_runs"][0]["flagged_no_candidates"] is True
-    assert items["Review Alpha"]["season_runs"][0]["official_pick"] is None
     assert items["Review Beta"]["seasons_only"] is False
 
     approved: list[str] = []
