@@ -8,7 +8,6 @@
 	import { clearOcrLabels } from '$lib/api/pipeline';
 	import type { KnobGroup, PipelineConfig } from '$lib/api/config';
 	import { toast } from '$lib/toast';
-	import SubtitleSettings from '$lib/components/subtitles/SubtitleSettings.svelte';
 
 	let { data } = $props();
 	let config: PipelineConfig | null = $derived(data.config);
@@ -30,7 +29,6 @@
 	let groups = $derived(config?.groups ?? []);
 	let tabs = $derived.by(() => {
 		const base = (config?.groups ?? []).map((g: KnobGroup) => ({ id: g.id, label: g.label }));
-		base.push({ id: 'subtitles', label: 'Subtitles' });
 		return base;
 	});
 
@@ -167,175 +165,171 @@
 			<TabBar {tabs} active={activeGroup} onSelect={(id: string) => (activeGroup = id)} />
 		</div>
 
-		{#if activeGroup === 'subtitles'}
-			<SubtitleSettings bind:settings={data.settings} />
-		{:else}
-			<div class="knobs-section">
-				<!-- Group description -->
-				{#each groups.filter((g: KnobGroup) => g.id === activeGroup) as group (group.id)}
-					<div class="group-header">
-						{#if group.description}
-							<p class="group-desc">{group.description}</p>
-						{/if}
-						<button
-							class="group-reset-btn"
-							onclick={resetGroupToDefaults}
-							title="Reset all knobs in this group to their defaults"
-						>
-							Reset to defaults
-						</button>
-					</div>
+		<div class="knobs-section">
+			<!-- Group description -->
+			{#each groups.filter((g: KnobGroup) => g.id === activeGroup) as group (group.id)}
+				<div class="group-header">
+					{#if group.description}
+						<p class="group-desc">{group.description}</p>
+					{/if}
+					<button
+						class="group-reset-btn"
+						onclick={resetGroupToDefaults}
+						title="Reset all knobs in this group to their defaults"
+					>
+						Reset to defaults
+					</button>
+				</div>
 
-					<!-- Knobs for this group -->
-					<div class="knob-grid">
-						{#each group.knobs as key (key)}
-							{@const m = meta[key]}
-							{@const val = currentValues[key]}
-							{@const def = knobDefault(key)}
-							{@const mod = isModified(key)}
-							{#if m}
-								<div class="knob-row" class:mod>
-									<div class="knob-label-area">
-										<span class="knob-name">{key}</span>
-										{#if m.help}<span class="knob-help">{m.help}</span>{/if}
-									</div>
+				<!-- Knobs for this group -->
+				<div class="knob-grid">
+					{#each group.knobs as key (key)}
+						{@const m = meta[key]}
+						{@const val = currentValues[key]}
+						{@const def = knobDefault(key)}
+						{@const mod = isModified(key)}
+						{#if m}
+							<div class="knob-row" class:mod>
+								<div class="knob-label-area">
+									<span class="knob-name">{key}</span>
+									{#if m.help}<span class="knob-help">{m.help}</span>{/if}
+								</div>
 
-									<div class="knob-control">
-										{#if m.kind === 'bool'}
-											<label class="toggle">
-												<input
-													type="checkbox"
-													checked={Boolean(val)}
-													onchange={(e) =>
-														(dirty = {
-															...dirty,
-															[key]: (e.target as HTMLInputElement).checked
-														})}
-												/>
-												<span class="toggle-track"></span>
-											</label>
-										{:else if m.kind === 'enum' && m.options}
-											<select
-												class="enum-select"
-												value={String(val)}
+								<div class="knob-control">
+									{#if m.kind === 'bool'}
+										<label class="toggle">
+											<input
+												type="checkbox"
+												checked={Boolean(val)}
 												onchange={(e) =>
 													(dirty = {
 														...dirty,
-														[key]: (e.target as HTMLSelectElement).value
-													})}
-											>
-												{#each m.options as opt (opt)}
-													<option value={opt}>{opt}</option>
-												{/each}
-											</select>
-										{:else if m.kind === 'weight' || m.kind === 'float' || m.kind === 'int'}
-											<div class="slider-row">
-												<input
-													type="range"
-													class="slider"
-													min={m.min ?? 0}
-													max={m.max ?? 1}
-													step={m.step ?? 0.01}
-													value={Number(val)}
-													oninput={(e) => {
-														const v =
-															m.kind === 'int'
-																? parseInt((e.target as HTMLInputElement).value)
-																: parseFloat((e.target as HTMLInputElement).value);
-														dirty = { ...dirty, [key]: v };
-													}}
-												/>
-												<span class="slider-val">
-													{typeof val === 'number'
-														? m.kind === 'int'
-															? val
-															: val.toFixed(m.step && m.step < 1 ? 3 : 1)
-														: String(val)}
-												</span>
-											</div>
-										{:else}
-											<input
-												type="text"
-												class="str-input"
-												value={String(val ?? '')}
-												oninput={(e) =>
-													(dirty = {
-														...dirty,
-														[key]: (e.target as HTMLInputElement).value
+														[key]: (e.target as HTMLInputElement).checked
 													})}
 											/>
-										{/if}
-										{#if mod}
-											<button
-												class="reset-btn"
-												title="Reset to default: {def}"
-												onclick={() => resetKnob(key)}>↺</button
-											>
-										{/if}
-									</div>
+											<span class="toggle-track"></span>
+										</label>
+									{:else if m.kind === 'enum' && m.options}
+										<select
+											class="enum-select"
+											value={String(val)}
+											onchange={(e) =>
+												(dirty = {
+													...dirty,
+													[key]: (e.target as HTMLSelectElement).value
+												})}
+										>
+											{#each m.options as opt (opt)}
+												<option value={opt}>{opt}</option>
+											{/each}
+										</select>
+									{:else if m.kind === 'weight' || m.kind === 'float' || m.kind === 'int'}
+										<div class="slider-row">
+											<input
+												type="range"
+												class="slider"
+												min={m.min ?? 0}
+												max={m.max ?? 1}
+												step={m.step ?? 0.01}
+												value={Number(val)}
+												oninput={(e) => {
+													const v =
+														m.kind === 'int'
+															? parseInt((e.target as HTMLInputElement).value)
+															: parseFloat((e.target as HTMLInputElement).value);
+													dirty = { ...dirty, [key]: v };
+												}}
+											/>
+											<span class="slider-val">
+												{typeof val === 'number'
+													? m.kind === 'int'
+														? val
+														: val.toFixed(m.step && m.step < 1 ? 3 : 1)
+													: String(val)}
+											</span>
+										</div>
+									{:else}
+										<input
+											type="text"
+											class="str-input"
+											value={String(val ?? '')}
+											oninput={(e) =>
+												(dirty = {
+													...dirty,
+													[key]: (e.target as HTMLInputElement).value
+												})}
+										/>
+									{/if}
+									{#if mod}
+										<button
+											class="reset-btn"
+											title="Reset to default: {def}"
+											onclick={() => resetKnob(key)}>↺</button
+										>
+									{/if}
 								</div>
-							{/if}
-						{/each}
-					</div>
-				{/each}
-			</div>
+							</div>
+						{/if}
+					{/each}
+				</div>
+			{/each}
+		</div>
 
-			<!-- Save bar -->
-			<div class="save-bar">
-				<button class="save-btn" disabled={dirtyCount === 0 || saving} onclick={saveChanges}>
-					{#if saving}
-						<span class="spin">⟳</span> Saving…
-					{:else}
-						Save
-						{dirtyCount > 0 ? ` (${dirtyCount} knob${dirtyCount === 1 ? '' : 's'})` : ''}
-					{/if}
-				</button>
-				<span class="save-hint"
-					>Applied to the live config — next pipeline run uses the new values.</span
-				>
-				<button
-					class="master-reset-btn"
-					disabled={saving}
-					onclick={() => (masterResetConfirm = true)}
-					title="Stage all knobs to their code defaults (hit Save to commit)"
-				>
-					Reset all to defaults
+		<!-- Save bar -->
+		<div class="save-bar">
+			<button class="save-btn" disabled={dirtyCount === 0 || saving} onclick={saveChanges}>
+				{#if saving}
+					<span class="spin">⟳</span> Saving…
+				{:else}
+					Save
+					{dirtyCount > 0 ? ` (${dirtyCount} knob${dirtyCount === 1 ? '' : 's'})` : ''}
+				{/if}
+			</button>
+			<span class="save-hint"
+				>Applied to the live config — next pipeline run uses the new values.</span
+			>
+			<button
+				class="master-reset-btn"
+				disabled={saving}
+				onclick={() => (masterResetConfirm = true)}
+				title="Stage all knobs to their code defaults (hit Save to commit)"
+			>
+				Reset all to defaults
+			</button>
+		</div>
+
+		<!-- Danger zone -->
+		<div class="danger-zone">
+			<SectionHeader title="Danger zone" subtitle="Destructive maintenance actions." />
+			<div class="danger-card">
+				<div class="danger-info">
+					<span class="danger-label">Delete all deployed posters</span>
+					<span class="danger-desc">
+						Removes every <code>poster.jpg</code> next to your movies and marks all movies as missing
+						so the pipeline can re-run from scratch. Does NOT touch your taste profile, the Key Art
+						Engine, or your labels. The underlying poster cache is preserved.
+					</span>
+				</div>
+				<button class="danger-btn" onclick={() => (resetDialogOpen = true)}>
+					Delete all deployed posters
 				</button>
 			</div>
-
-			<!-- Danger zone -->
-			<div class="danger-zone">
-				<SectionHeader title="Danger zone" subtitle="Destructive maintenance actions." />
+			{#if data.settings?.app?.debug}
 				<div class="danger-card">
 					<div class="danger-info">
-						<span class="danger-label">Delete all deployed posters</span>
+						<span class="danger-label">Clear OCR label captures</span>
 						<span class="danger-desc">
-							Removes every <code>poster.jpg</code> next to your movies and marks all movies as missing
-							so the pipeline can re-run from scratch. Does NOT touch your taste profile, the Key Art
-							Engine, or your labels. The underlying poster cache is preserved.
+							Deletes every debug-only OCR false-rejection and false-acceptance capture under
+							<code>data/debug/ocr-labels</code>. This does not touch pipeline run archives, movie
+							posters, or taste-profile data.
 						</span>
 					</div>
-					<button class="danger-btn" onclick={() => (resetDialogOpen = true)}>
-						Delete all deployed posters
+					<button class="danger-btn" onclick={() => (clearOcrDialogOpen = true)}>
+						Clear OCR label captures
 					</button>
 				</div>
-				{#if data.settings?.app?.debug}
-					<div class="danger-card">
-						<div class="danger-info">
-							<span class="danger-label">Clear OCR label captures</span>
-							<span class="danger-desc">
-								Deletes every debug-only OCR false-rejection and false-acceptance capture under
-								<code>data/debug/ocr-labels</code>. This does not touch pipeline run archives, movie
-								posters, or taste-profile data.
-							</span>
-						</div>
-						<button class="danger-btn" onclick={() => (clearOcrDialogOpen = true)}>
-							Clear OCR label captures
-						</button>
-					</div>
-				{/if}
-			</div>
-		{/if}
+			{/if}
+		</div>
 
 		<!-- Confirm dialogs -->
 		<ConfirmDialog

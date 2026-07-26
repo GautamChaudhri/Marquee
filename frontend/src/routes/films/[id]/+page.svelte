@@ -5,20 +5,12 @@
 	import type { JobSnapshotResponse } from '$lib/activity/types';
 	import { deleteMoviePoster } from '$lib/api/library';
 	import { setMovieTextProfile, type TextProfile } from '$lib/api/text-profiles';
-	import { posterStatusMeta, letterboxMeta, toneVar } from '$lib/display';
+	import { posterStatusMeta, toneVar } from '$lib/display';
 	import { ApiError } from '$lib/api/client';
 	import { toast } from '$lib/toast';
-	import type { LetterboxDetail, PipelineRunSummary, RunResults } from '$lib/api/types';
-	import {
-		getLetterboxState,
-		detectLetterbox,
-		applyLetterbox,
-		ignoreLetterbox,
-		removeLetterbox
-	} from '$lib/api/letterbox';
+	import type { PipelineRunSummary, RunResults } from '$lib/api/types';
 	import { triggerRun, listMovieRuns, getRunResults } from '$lib/api/pipeline';
 	import PosterThumb from '$lib/components/PosterThumb.svelte';
-	import HdrBadge from '$lib/components/HdrBadge.svelte';
 	import StatusDot from '$lib/components/StatusDot.svelte';
 	import TabBar from '$lib/components/TabBar.svelte';
 	import Icon from '$lib/components/Icon.svelte';
@@ -57,9 +49,6 @@
 
 	const TABS = [
 		{ id: 'poster', label: 'Poster' },
-		{ id: 'video', label: 'Video · HDR' },
-		{ id: 'subtitles', label: 'Subtitles' },
-		{ id: 'letterbox', label: 'Letterbox' },
 		{ id: 'activity', label: 'Activity' }
 	];
 
@@ -68,9 +57,7 @@
 	let pipeError = $state<string | null>(null);
 	let pipeRunId = $state<string | null>(null);
 	let posterJobIds = $state<string[]>([]);
-	let letterboxJobIds = $state<string[]>([]);
 	let posterScopeActive = $state(false);
-	let letterboxScopeActive = $state(false);
 	let runs = $state<PipelineRunSummary[]>([]);
 	let latest = $state<RunResults | null>(null);
 	let posterLoaded = false;
@@ -161,97 +148,6 @@
 		await loadRuns();
 	}
 
-	async function handleLetterboxJobSettled(snapshot: JobSnapshotResponse) {
-		lbLoading = false;
-		lbState = undefined;
-		toast(
-			`${snapshot.label} ${snapshot.status.label.toLowerCase()}`,
-			snapshot.status.outcome === 'succeeded' ? 'good' : 'bad'
-		);
-		await loadLb();
-	}
-
-	function bindLetterboxJob(result: unknown) {
-		if (typeof result !== 'object' || result === null || !('job_id' in result)) return;
-		const jobId = (result as { job_id?: unknown }).job_id;
-		if (typeof jobId === 'string') letterboxJobIds = [...letterboxJobIds, jobId];
-	}
-
-	// ── Letterbox ─────────────────────────────────────────────────────────────
-	let lbState = $state<LetterboxDetail | null | undefined>(undefined);
-	let lbLoading = $state(false);
-	let lbError = $state<string | null>(null);
-
-	async function loadLb() {
-		if (!movie || lbState !== undefined) return;
-		lbLoading = true;
-		try {
-			lbState = await getLetterboxState(fetch, movie.id);
-		} catch (e) {
-			lbError = e instanceof Error ? e.message : 'Failed to load letterbox state';
-			lbState = null;
-		} finally {
-			lbLoading = false;
-		}
-	}
-
-	async function lbDetect() {
-		if (!movie) return;
-		lbLoading = true;
-		lbError = null;
-		try {
-			const job = await detectLetterbox(fetch, movie.id);
-			bindLetterboxJob(job);
-		} catch (e) {
-			lbError = e instanceof Error ? e.message : 'Detection failed';
-		} finally {
-			lbLoading = false;
-		}
-	}
-
-	async function lbAction(action: 'apply' | 'ignore' | 'remove') {
-		if (!movie) return;
-		lbLoading = true;
-		lbError = null;
-		try {
-			if (action === 'apply') bindLetterboxJob(await applyLetterbox(fetch, movie.id));
-			else if (action === 'ignore') await ignoreLetterbox(fetch, movie.id);
-			else bindLetterboxJob(await removeLetterbox(fetch, movie.id));
-			if (action === 'ignore') {
-				lbState = undefined;
-				await loadLb();
-			}
-		} catch (e) {
-			lbError = e instanceof Error ? e.message : 'Action failed';
-			lbLoading = false;
-		}
-	}
-
-	$effect(() => {
-		if (tab === 'letterbox') loadLb();
-	});
-
-	// ── Subtitle coverage helpers ─────────────────────────────────────────────
-	type CoverageEntry = { lang: string; status: string; count: number };
-
-	function subRows(): CoverageEntry[] {
-		if (!movie?.subtitle_coverage) return [];
-		const cov = movie.subtitle_coverage as Record<string, unknown>;
-		return Object.entries(cov)
-			.filter(([k]) => k !== 'missing_preferred_languages')
-			.map(([lang, val]) => {
-				const v = val as Record<string, unknown>;
-				return { lang, status: String(v?.status ?? 'unknown'), count: Number(v?.count ?? 0) };
-			});
-	}
-
-	function missingLangs(): string[] {
-		if (!movie?.subtitle_coverage) return [];
-		const cov = movie.subtitle_coverage as Record<string, unknown>;
-		const ml = cov?.missing_preferred_languages;
-		return Array.isArray(ml) ? (ml as string[]) : [];
-	}
-
 	function basename(p: string | null | undefined): string {
 		if (!p) return '—';
 		return p.split('/').pop() ?? p;
@@ -311,7 +207,6 @@
 					year={movie.year}
 					posterStatus={movie.poster_status}
 					posterUrl={movie.poster_url}
-					hdr={movie.hdr}
 				/>
 			</div>
 
@@ -330,12 +225,6 @@
 						<span class="chip-val mono">{movie.resolution}</span>
 					</div>
 				{/if}
-				{#if movie.hdr}
-					<div class="chip">
-						<span class="chip-label">HDR</span>
-						<HdrBadge kinds={movie.hdr_tags} kind={movie.hdr} />
-					</div>
-				{/if}
 				{#if movie.container}
 					<div class="chip">
 						<span class="chip-label">Container</span>
@@ -352,18 +241,6 @@
 						{posterStatusMeta[movie.poster_status].label}
 					</span>
 				</div>
-				{#if movie.letterbox_status && movie.letterbox_status !== 'none'}
-					{@const lm = letterboxMeta(movie.letterbox_status)}
-					{#if lm}
-						<div class="chip">
-							<span class="chip-label">Letterbox</span>
-							<span class="chip-status" style="--c:{toneVar(lm.tone)}">
-								<StatusDot tone={lm.tone} size={6} />
-								{lm.label}
-							</span>
-						</div>
-					{/if}
-				{/if}
 				{#if movie.media_file_path}
 					<div class="chip chip-file">
 						<span class="chip-label">File</span>
@@ -530,212 +407,6 @@
 				</div>
 
 				<!-- ═══ VIDEO · HDR TAB ══════════════════════════════ -->
-			{:else if tab === 'video'}
-				<div class="tab-content">
-					<div class="section-label">Video specs</div>
-					<div class="card-grid">
-						<div class="info-card">
-							<div class="ic-label">Resolution</div>
-							<div class="ic-val mono">{movie.resolution ?? '—'}</div>
-							{#if movie.video_width && movie.video_height}
-								<div class="ic-sub">{movie.video_width} × {movie.video_height}</div>
-							{/if}
-						</div>
-						<div class="info-card">
-							<div class="ic-label">Dynamic range</div>
-							<div class="ic-val"><HdrBadge kinds={movie.hdr_tags} kind={movie.hdr} /></div>
-							{#if !movie.hdr}<div class="ic-sub muted">Not detected</div>{/if}
-						</div>
-						<div class="info-card">
-							<div class="ic-label">Container</div>
-							<div class="ic-val mono">{movie.container ?? '—'}</div>
-						</div>
-						{#if movie.media_file_path}
-							<div class="info-card span2">
-								<div class="ic-label">File path</div>
-								<div class="ic-val mono small" title={movie.media_file_path}>
-									{movie.media_file_path}
-								</div>
-							</div>
-						{/if}
-					</div>
-
-					<div class="infobox">
-						HDR and resolution come from Radarr's media probe at sync time. Re-sync to refresh after
-						a file upgrade.
-					</div>
-
-					<div class="placeholder-card">
-						<div class="ph-title">Radarr quality profile</div>
-						<div class="ph-body">Target HDR tier and upgrade request — coming soon.</div>
-					</div>
-				</div>
-
-				<!-- ═══ SUBTITLES TAB ════════════════════════════════ -->
-			{:else if tab === 'subtitles'}
-				<div class="tab-content">
-					<div class="section-label">Subtitle coverage</div>
-
-					{#if movie.subtitle_status === 'gap'}
-						<div class="alert-box warn">
-							Missing preferred language — re-sync or generate subtitles to fill the gap.
-						</div>
-					{:else if movie.subtitle_status === 'ok'}
-						<div class="alert-box good">All preferred languages covered.</div>
-					{/if}
-
-					{#if subRows().length > 0}
-						<div class="sub-table">
-							<div class="sub-row head">
-								<span>Language</span><span>Status</span><span>Tracks</span>
-							</div>
-							{#each subRows() as row (row.lang)}
-								<div class="sub-row">
-									<span class="mono">{row.lang}</span>
-									<span class="cell-status">
-										<StatusDot
-											tone={row.status === 'ok' || row.status === 'present'
-												? 'good'
-												: row.status === 'missing'
-													? 'bad'
-													: 'warn'}
-										/>
-										{row.status}
-									</span>
-									<span class="mono muted">{row.count}</span>
-								</div>
-							{/each}
-						</div>
-					{:else}
-						<div class="empty-state">No subtitle data — re-sync to populate.</div>
-					{/if}
-
-					{#if missingLangs().length > 0}
-						<div class="missing-langs">Missing: {missingLangs().join(', ')}</div>
-					{/if}
-
-					<div class="placeholder-card">
-						<div class="ph-title">Track listing & generation</div>
-						<div class="ph-body">
-							Individual track details and Subgen (faster-whisper) generation — coming soon.
-						</div>
-					</div>
-				</div>
-
-				<!-- ═══ LETTERBOX TAB ════════════════════════════════ -->
-			{:else if tab === 'letterbox'}
-				<div class="tab-content">
-					<div class="section-label">Letterbox detection</div>
-					<FeatureActivityPanel
-						scopeKey={`feature:film:letterbox:${movie.id}`}
-						query={{
-							feature_area: 'letterbox',
-							types: [
-								'letterbox_detect',
-								'letterbox_apply',
-								'letterbox_remove',
-								'letterbox_reencode'
-							],
-							subject_kind: 'movie',
-							subject_reference: [String(movie.id)]
-						}}
-						jobIds={letterboxJobIds}
-						bind:active={letterboxScopeActive}
-						heading="Letterbox activity"
-						onSettled={handleLetterboxJobSettled}
-					/>
-
-					{#if lbLoading && lbState === undefined}
-						<div class="empty-state">Loading…</div>
-					{:else if lbError}
-						<div class="alert-box err">{lbError}</div>
-					{:else}
-						{@const status = lbState?.status ?? 'none'}
-						{@const lm = letterboxMeta(status)}
-
-						<div class="lb-status-row">
-							<div class="status-card">
-								<div class="sc-label">Current status</div>
-								<div class="sc-val" style="--c:{toneVar(lm?.tone ?? 'muted')}">
-									<StatusDot tone={lm?.tone ?? 'muted'} />
-									{lm?.label ?? 'Not analysed'}
-								</div>
-								{#if lbState?.aspect_label}
-									<div class="sc-sub">{lbState.aspect_label}</div>
-								{/if}
-								{#if lbState?.recommended_crop_top || lbState?.recommended_crop_bottom}
-									<div class="sc-sub mono">
-										Crop: ↑{lbState.recommended_crop_top ?? 0}px ↓{lbState.recommended_crop_bottom ??
-											0}px
-									</div>
-								{/if}
-								{#if lbState?.confidence}
-									<div class="sc-sub">Confidence: {lbState.confidence}</div>
-								{/if}
-							</div>
-
-							<div class="lb-actions">
-								{#if status === 'none' || status === 'not_letterboxed' || !lbState}
-									<button
-										class="btn-gold"
-										onclick={lbDetect}
-										disabled={lbLoading || letterboxScopeActive}
-									>
-										{lbLoading ? '⟳ Detecting…' : 'Detect letterbox'}
-									</button>
-								{:else if status === 'candidate' || status === 'prefilter_candidate'}
-									<button
-										class="btn-gold"
-										onclick={() => lbAction('apply')}
-										disabled={lbLoading || letterboxScopeActive}>Apply crop tags</button
-									>
-									<button
-										class="btn-sec"
-										onclick={() => lbAction('ignore')}
-										disabled={lbLoading || letterboxScopeActive}>Skip</button
-									>
-									<button class="btn-ghost" onclick={lbDetect} disabled={lbLoading}
-										>Re-detect</button
-									>
-								{:else if status === 'tagged'}
-									<button
-										class="btn-sec"
-										onclick={() => lbAction('remove')}
-										disabled={lbLoading || letterboxScopeActive}>Remove tags</button
-									>
-									<button class="btn-ghost" onclick={lbDetect} disabled={lbLoading}
-										>Re-detect</button
-									>
-								{:else}
-									<button class="btn-ghost" onclick={lbDetect} disabled={lbLoading}
-										>Re-detect</button
-									>
-								{/if}
-							</div>
-						</div>
-
-						{#if lbState?.ineligible_reason}
-							<div class="alert-box warn">{lbState.ineligible_reason}</div>
-						{/if}
-						{#if lbState?.error}
-							<div class="alert-box err">Detection error: {lbState.error}</div>
-						{/if}
-						{#if lbState?.last_detected_at}
-							<div class="lb-meta">
-								Last detected: <span class="mono"
-									>{new Date(lbState.last_detected_at).toLocaleString()}</span
-								>
-							</div>
-						{/if}
-					{/if}
-
-					<div class="placeholder-card">
-						<div class="ph-title">Before / after preview</div>
-						<div class="ph-body">Frame comparison preview available after detection completes.</div>
-					</div>
-				</div>
-
-				<!-- ═══ ACTIVITY TAB ═════════════════════════════════ -->
 			{:else if tab === 'activity'}
 				<div class="tab-content">
 					<div class="activity-empty">
@@ -920,11 +591,6 @@
 		font-weight: 600;
 		color: var(--c, var(--text));
 	}
-	.sc-sub {
-		font-size: 11px;
-		color: var(--muted);
-		margin-top: 4px;
-	}
 	.profile-card {
 		min-width: 0;
 	}
@@ -950,118 +616,10 @@
 	}
 
 	/* ── Video tab ───────────────────────────────────────── */
-	.card-grid {
-		display: grid;
-		grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
-		gap: 10px;
-	}
-	.info-card {
-		background: var(--panel);
-		border: 1px solid var(--line);
-		border-radius: var(--radius-sm);
-		padding: 12px 14px;
-	}
-	.info-card.span2 {
-		grid-column: 1 / -1;
-	}
-	.ic-label {
-		font-size: 10.5px;
-		text-transform: uppercase;
-		letter-spacing: 0.06em;
-		color: var(--faint);
-		font-weight: 600;
-		margin-bottom: 5px;
-	}
-	.ic-val {
-		font-size: 18px;
-		font-weight: 600;
-		color: var(--text);
-		line-height: 1.2;
-	}
-	.ic-val.mono {
-		font-size: 15px;
-	}
-	.ic-val.small {
-		font-size: 11px;
-		word-break: break-all;
-		color: var(--muted);
-	}
-	.ic-sub {
-		font-size: 11.5px;
-		color: var(--muted);
-		margin-top: 3px;
-	}
-	.ic-sub.muted {
-		color: var(--faint);
-	}
-	.infobox {
-		background: var(--ink2);
-		border-left: 3px solid var(--info);
-		border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
-		padding: 10px 13px;
-		font-size: 12px;
-		color: var(--muted);
-		line-height: 1.5;
-	}
 
 	/* ── Subtitle tab ────────────────────────────────────── */
-	.sub-table {
-		border: 1px solid var(--line);
-		border-radius: var(--radius-sm);
-		background: var(--panel);
-		overflow: hidden;
-	}
-	.sub-row {
-		display: grid;
-		grid-template-columns: 1fr 1fr auto;
-		gap: 12px;
-		padding: 8px 12px;
-		border-bottom: 1px solid var(--line);
-		font-size: 13px;
-		align-items: center;
-	}
-	.sub-row:last-child {
-		border-bottom: none;
-	}
-	.sub-row.head {
-		font-size: 10px;
-		text-transform: uppercase;
-		letter-spacing: 0.06em;
-		color: var(--faint2);
-		font-weight: 700;
-		background: var(--ink2);
-	}
-	.cell-status {
-		display: flex;
-		align-items: center;
-		gap: 6px;
-		font-size: 12px;
-		text-transform: capitalize;
-		color: var(--muted);
-	}
-	.missing-langs {
-		font-size: 12px;
-		color: var(--warn);
-		padding: 6px 0;
-	}
 
 	/* ── Letterbox tab ───────────────────────────────────── */
-	.lb-status-row {
-		display: flex;
-		align-items: flex-start;
-		gap: 14px;
-		flex-wrap: wrap;
-	}
-	.lb-actions {
-		display: flex;
-		flex-direction: column;
-		gap: 8px;
-		padding-top: 4px;
-	}
-	.lb-meta {
-		font-size: 12px;
-		color: var(--faint);
-	}
 
 	/* ── Activity tab ────────────────────────────────────── */
 	.activity-empty {
@@ -1214,16 +772,6 @@
 		border-color: color-mix(in srgb, var(--bad) 30%, transparent);
 		color: var(--bad);
 	}
-	.alert-box.warn {
-		background: color-mix(in srgb, var(--warn) 10%, transparent);
-		border-color: color-mix(in srgb, var(--warn) 25%, transparent);
-		color: var(--warn);
-	}
-	.alert-box.good {
-		background: color-mix(in srgb, var(--good) 10%, transparent);
-		border-color: color-mix(in srgb, var(--good) 25%, transparent);
-		color: var(--good);
-	}
 	.info-note {
 		font-size: 12px;
 		color: var(--faint);
@@ -1292,33 +840,6 @@
 		opacity: 0.5;
 		cursor: not-allowed;
 	}
-	.btn-sec {
-		padding: 8px 16px;
-		border-radius: 8px;
-		border: 1px solid var(--line2);
-		background: var(--panel2);
-		color: var(--text);
-		font-size: 13px;
-		white-space: nowrap;
-	}
-	.btn-ghost {
-		padding: 8px 16px;
-		border-radius: 8px;
-		border: 1px solid transparent;
-		background: transparent;
-		color: var(--muted);
-		font-size: 13px;
-		white-space: nowrap;
-	}
-	.btn-ghost:hover {
-		color: var(--text);
-		background: var(--panel2);
-	}
-	.btn-sec:disabled,
-	.btn-ghost:disabled {
-		opacity: 0.4;
-		cursor: not-allowed;
-	}
 
 	/* ── Utilities ───────────────────────────────────────── */
 	.mono {
@@ -1326,18 +847,6 @@
 	}
 	.small {
 		font-size: 11px;
-	}
-	.muted {
-		color: var(--muted);
-	}
-	.empty-state {
-		padding: 32px 16px;
-		text-align: center;
-		font-size: 13px;
-		color: var(--faint);
-		border: 1px solid var(--line);
-		border-radius: var(--radius-sm);
-		background: var(--panel);
 	}
 	@keyframes spin {
 		from {

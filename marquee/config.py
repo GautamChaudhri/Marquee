@@ -136,11 +136,6 @@ class Settings(BaseSettings):
     JOB_RUNTIME_EXPIRY_SECONDS: float = Field(default=30.0, ge=3.0, le=900.0)
     JOB_RUNTIME_QUERY_LIMIT: int = Field(default=100, ge=1, le=500)
     JOB_PRODUCTION_SCHEDULES_ENABLED: bool = False
-    JOB_DOVI_CONVERSION_CERTIFIED: bool = Field(
-        default=False,
-        description="Enable Dolby Vision conversion only after an owner-approved real dovi_tool "
-        "fixture smoke certifies the deployed tool and media path.",
-    )
     JOB_WORKER_ENTRYPOINTS: str = Field(
         default="control,network,cpu,media_read,media_write,gpu,maintenance",
         description="Comma-separated PgQueuer execution classes this worker may advertise.",
@@ -346,11 +341,6 @@ class Settings(BaseSettings):
     def runs_work_path(self) -> Path:
         """Where live pipeline working output for each movie is written."""
         return self.data_dir_path / "runs" / "work"
-
-    @property
-    def letterbox_preview_path(self) -> Path:
-        """Where generated letterbox preview/thumbnail frames (webp) live."""
-        return self.data_dir_path / "cache" / "letterbox"
 
     # ------------------------------------------------------------------
     # Internal Backups
@@ -635,12 +625,6 @@ class Settings(BaseSettings):
     RATE_PIPELINE_RUN_SECONDS: int = Field(
         default=15, description="Per-movie cooldown between poster-pipeline runs."
     )
-    RATE_LETTERBOX_DETECT_SECONDS: int = Field(
-        default=20, description="Per-movie cooldown between single letterbox detections."
-    )
-    RATE_LETTERBOX_BATCH_SECONDS: int = Field(
-        default=300, description="Cooldown between batch letterbox detections."
-    )
     RATE_TASTE_RETRAIN_SECONDS: int = Field(
         default=60, description="Cooldown between ranking-residual retrains."
     )
@@ -662,140 +646,6 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------
     # Letterbox crop detection / tag application (design 04-letterbox)
     # ------------------------------------------------------------------
-    LETTERBOX_ENABLED: bool = Field(
-        default=True, description="Enable the letterbox crop-detection feature."
-    )
-    LETTERBOX_DETECT_METHOD: str = Field(
-        default="cropdetect",
-        description="Detection backend: 'cropdetect' (ffmpeg, default) or "
-        "'trim' (ImageMagick fallback for faint/color-cast bars).",
-    )
-    LETTERBOX_DETECT_NVIDIA_ACCELERATION: Literal["auto", "off"] = Field(
-        default="auto",
-        description=(
-            "Use benchmarked NVIDIA NVDEC decode before CPU cropdetect when it is faster; "
-            "'off' always uses CPU decode."
-        ),
-    )
-    LETTERBOX_TRIM_FUZZ: list[int] = Field(
-        default=[5, 15, 25],
-        description="Fuzz percentages tried by the 'trim' backend (needs ImageMagick).",
-    )
-    LETTERBOX_FFMPEG: str = Field(default="ffmpeg", description="ffmpeg binary path/name.")
-    LETTERBOX_FFPROBE: str = Field(default="ffprobe", description="ffprobe binary path/name.")
-    LETTERBOX_MKVPROPEDIT: str = Field(
-        default="mkvpropedit", description="mkvpropedit binary path/name."
-    )
-    LETTERBOX_MKVMERGE: str = Field(default="mkvmerge", description="mkvmerge binary path/name.")
-    LETTERBOX_CONVERT: str = Field(
-        default="convert", description="ImageMagick 'convert' binary (trim backend only)."
-    )
-    LETTERBOX_DOVI_TOOL: str = Field(
-        default="dovi_tool", description="dovi_tool binary path/name for Dolby Vision RPU handling."
-    )
-    LETTERBOX_REENCODE_ALLOW_CPU_FALLBACK: bool = Field(
-        default=True, description="Allow CPU encoding when no supported GPU encoder is available."
-    )
-    LETTERBOX_REENCODE_NVIDIA_ACCELERATION: Literal["auto", "off"] = Field(
-        default="auto",
-        description=(
-            "Use NVIDIA NVDEC decode and crop before NVENC encoding when FFmpeg and the "
-            "source support a zero-copy CUDA path; 'off' always uses CPU decode/crop."
-        ),
-    )
-    LETTERBOX_REENCODE_STRICT_DOVI: bool = Field(
-        default=False,
-        description="Fail permanent re-encode plans when Dolby Vision cannot be preserved.",
-    )
-    LETTERBOX_MOVIE_SAMPLES_MIN: int = Field(
-        default=5, description="Movie sampling start (minutes)."
-    )
-    LETTERBOX_MOVIE_SAMPLES_MAX: int = Field(
-        default=60, description="Movie sampling end (minutes)."
-    )
-    LETTERBOX_MOVIE_SAMPLE_STEP: int = Field(
-        default=5, description="Minutes between movie samples."
-    )
-    LETTERBOX_TV_QUICK_WINDOWS: int = Field(
-        default=3, description="Quick-pass sample window count for TV episodes."
-    )
-    LETTERBOX_TV_THOROUGH_WINDOWS: int = Field(
-        default=8, description="Thorough-pass sample window count for TV episodes."
-    )
-    LETTERBOX_TV_HEAD_SKIP_PCT: int = Field(
-        default=12, description="Percent of runtime to skip at the head for TV sampling."
-    )
-    LETTERBOX_TV_TAIL_SKIP_PCT: int = Field(
-        default=12, description="Percent of runtime to skip at the tail for TV sampling."
-    )
-    LETTERBOX_TV_SEASON_SAMPLE_EPISODES: int = Field(
-        default=3, description="Representative episodes sampled per season during TV triage."
-    )
-    LETTERBOX_WINDOW_SECONDS: int = Field(
-        default=2, description="cropdetect accumulation window per sample (seconds)."
-    )
-    LETTERBOX_CROPDETECT_LIMIT: int = Field(
-        default=24, description="cropdetect black-luma threshold (0-255)."
-    )
-    LETTERBOX_CROPDETECT_HDR_LIMIT: int = Field(
-        default=80,
-        description="cropdetect black-luma threshold for HDR/PQ/HLG sources.",
-    )
-    LETTERBOX_CROPDETECT_ROUND: int = Field(
-        default=2, description="cropdetect dimension rounding (must be even for codecs)."
-    )
-    LETTERBOX_NOISE_PX: int = Field(
-        default=4, description="Bars at or below this many px count as 'no bars'."
-    )
-    LETTERBOX_MIN_BAR_PX: int = Field(
-        default=8, description="A bar must exceed this to count as a real scope bar."
-    )
-    LETTERBOX_AGREE_PX: int = Field(
-        default=2, description="Max spread across samples for High confidence (Case C)."
-    )
-    LETTERBOX_MEDIUM_SPREAD_PX: int = Field(
-        default=20, description="Spread boundary between Medium and Low confidence."
-    )
-    LETTERBOX_VARIABLE_GAP_PX: int = Field(
-        default=40,
-        description="Bar-value gap (px) that separates two distinct aspect-ratio clusters.",
-    )
-    LETTERBOX_VARIABLE_MIN_FRACTION: float = Field(
-        default=0.2,
-        description="Min fraction of samples a bar cluster needs to count as a real AR (not an outlier).",
-    )
-    LETTERBOX_ASYM_PX: int = Field(
-        default=2, description="Top/bottom asymmetry tolerance (px) before honoring uneven bars."
-    )
-    LETTERBOX_EARLY_STOP_WINDOWS: int = Field(
-        default=3, description="Consecutive no-bar samples that trigger early termination."
-    )
-    LETTERBOX_MAX_PARALLEL: int = Field(
-        default=0, description="Batch-detect worker count; 0 = auto (cpu_count - 1)."
-    )
-    LETTERBOX_FFMPEG_CONCURRENCY: int = Field(
-        default=2,
-        description=(
-            "Max concurrent request-path ffmpeg/ffprobe ops (preview, single detect, "
-            "inspect). Bounds disk contention so probes don't dogpile or starve each "
-            "other while an encode runs. The encode worker is serialized separately."
-        ),
-    )
-    LETTERBOX_AUTO_APPLY_HIGH: bool = Field(
-        default=False, description="Opt-in: auto-apply High-confidence detections after a scan."
-    )
-    LETTERBOX_ASYMMETRIC: bool = Field(
-        default=False, description="Honor uneven top/bottom bars instead of forcing symmetry."
-    )
-    LETTERBOX_HEAL_ENABLED: bool = Field(
-        default=True, description="Run the periodic letterbox tag-drift verification scan."
-    )
-    LETTERBOX_HEAL_INTERVAL_MINUTES: int = Field(
-        default=360, description="Minutes between letterbox tag-drift scans."
-    )
-
-    # ------------------------------------------------------------------
-    # Poster Cache
     # ------------------------------------------------------------------
     POSTER_CACHE_DIR: str = Field(
         default="data/cache/posters",

@@ -365,16 +365,6 @@ async def _resolve_subject(
                     "Library synchronization",
                     "radarr and sonarr",
                 ),
-                "audio-subs-deep-scan": (
-                    "maintenance:audio-subs-deep-scan",
-                    "Audio and subtitle deep scan",
-                    "all media files",
-                ),
-                "subtitle-policy-audit": (
-                    "maintenance:subtitle-policy-audit",
-                    "Subtitle policy audit",
-                    "existing subtitle inventory",
-                ),
                 "backup-create": (
                     "maintenance:backup-create",
                     "Create system backup",

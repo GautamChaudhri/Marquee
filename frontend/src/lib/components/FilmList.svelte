@@ -1,9 +1,8 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
-	import { posterStatusMeta, letterboxMeta } from '$lib/display';
+	import { posterStatusMeta } from '$lib/display';
 	import type { MovieListItem } from '$lib/api/types';
 	import PosterThumb from './PosterThumb.svelte';
-	import HdrBadge from './HdrBadge.svelte';
 	import StatusDot from './StatusDot.svelte';
 	import Icon from './Icon.svelte';
 
@@ -16,9 +15,6 @@
 		<span>Title</span>
 		<span>Res</span>
 		<span>Poster</span>
-		<span>HDR</span>
-		<span>Subs</span>
-		<span>Letterbox</span>
 		<span></span>
 	</div>
 	{#each items as m (m.id)}
@@ -28,7 +24,6 @@
 					title={m.title}
 					posterStatus={m.poster_status}
 					posterUrl={m.poster_url}
-					hdr={m.hdr}
 				/></span
 			>
 			<span class="title">
@@ -42,14 +37,6 @@
 			<span class="cell">
 				<StatusDot tone={posterStatusMeta[m.poster_status].tone} />
 				<span class="lbl">{posterStatusMeta[m.poster_status].label}</span>
-			</span>
-			<span><HdrBadge kinds={m.hdr_tags} kind={m.hdr} /></span>
-			<span class="subs" class:gap={m.subtitle_status === 'gap'}>{m.subtitle_status ?? '—'}</span>
-			<span class="cell">
-				{#if letterboxMeta(m.letterbox_status)}
-					{@const lb = letterboxMeta(m.letterbox_status)}
-					<StatusDot tone={lb!.tone} /><span class="lbl">{lb!.label}</span>
-				{:else}<span class="muted">—</span>{/if}
 			</span>
 			<span class="chev"><Icon name="chevron" size={15} /></span>
 		</button>
@@ -65,7 +52,7 @@
 	}
 	.row {
 		display: grid;
-		grid-template-columns: 40px minmax(0, 1fr) 56px 132px 72px 64px 124px 28px;
+		grid-template-columns: 40px minmax(0, 1fr) 56px 132px 28px;
 		align-items: center;
 		gap: 12px;
 		width: 100%;
@@ -124,17 +111,6 @@
 	}
 	.lbl {
 		white-space: nowrap;
-	}
-	.subs {
-		font-size: 12px;
-		color: var(--good);
-		text-transform: capitalize;
-	}
-	.subs.gap {
-		color: var(--low);
-	}
-	.muted {
-		color: var(--faint);
 	}
 	.chev {
 		color: var(--faint);

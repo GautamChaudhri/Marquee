@@ -7,20 +7,6 @@ from dataclasses import dataclass
 from typing import Any
 
 from marquee.core.configuration import CONFIGURATION_CATALOG
-from marquee.core.jobs.audio_subtitle_documents import (
-    AudioReorderRequestV1,
-    MediaTrackMutationResultV1,
-    SubtitleBatchRequestV1,
-    SubtitleEmbedRequestV1,
-    SubtitleExtractRequestV1,
-    SubtitleGenerateRequestV1,
-    SubtitleGenerationResultV1,
-    SubtitleMetadataRequestV1,
-    SubtitlePolicyRequestV1,
-    SubtitleRestoreRequestV1,
-    SubtitleSidecarResultV1,
-    TrackRemoveRequestV1,
-)
 from marquee.core.jobs.contracts import (
     EffectSafety,
     ExecutionClass,
@@ -40,11 +26,6 @@ from marquee.core.jobs.documents import (
     BuiltInIntentV1,
     BuiltInResultV1,
     DocumentKind,
-    DoviAnalyzeRequestV1,
-    LetterboxDetectEpisodeRequestV1,
-    LetterboxDetectRequestV1,
-    LetterboxDetectTvScopeRequestV1,
-    LetterboxPreviewRequestV1,
     LibrarySyncRequestV1,
     MlPublicationResultV1,
     PosterBatchRequestV1,
@@ -55,21 +36,11 @@ from marquee.core.jobs.documents import (
     RankingResidualTrainRequestV1,
     SafeJobErrorV1,
     StrictDocument,
-    SubtitlePolicyAuditRequestV1,
-    SubtitleScanRequestV1,
     SystemNoopRequestV1,
     TasteEnrichRequestV1,
     TasteMapRequestV1,
     TasteRebuildRequestV1,
     current_adapter,
-)
-from marquee.core.jobs.dovi_conversion_documents import (
-    DoviConvertRequestV1,
-    DoviConvertResultV1,
-    DoviDecisionResultV1,
-    DoviDiscardRequestV1,
-    DoviPublishRequestV1,
-    DoviRestoreRequestV1,
 )
 from marquee.core.jobs.inventory import (
     BUILTIN_JOB_TYPES,
@@ -77,20 +48,6 @@ from marquee.core.jobs.inventory import (
     PARENT_ONLY_TYPES,
     SCHEDULE_PRODUCED_TYPES,
     WEBHOOK_RESERVED_TYPES,
-)
-from marquee.core.jobs.letterbox_mutation_documents import (
-    LetterboxApplyRequestV1,
-    LetterboxMutationResultV1,
-    LetterboxParentRequestV1,
-    LetterboxRemoveRequestV1,
-)
-from marquee.core.jobs.letterbox_reencode_documents import (
-    LetterboxReencodeDecisionResultV1,
-    LetterboxReencodeDiscardRequestV1,
-    LetterboxReencodePublishRequestV1,
-    LetterboxReencodeRequestV1,
-    LetterboxReencodeRestoreRequestV1,
-    LetterboxReencodeResultV1,
 )
 from marquee.core.jobs.mutation_documents import (
     BackupCreateRequestV1,
@@ -158,22 +115,11 @@ _U = EffectSafety.UNSAFE_MUTATION
 _SPECS = (
     _spec("system_noop", FeatureArea.SYSTEM, ExecutionClass.CONTROL, _R, "system_work", progress=ProgressStrategy.NONE),
     _spec("poster_heal", FeatureArea.AI_POSTERS, ExecutionClass.CONTROL, _R, "aggregate_batch", progress=ProgressStrategy.DETERMINATE, children=("poster_restore",)),
-    _spec("letterbox_heal", FeatureArea.LETTERBOX, ExecutionClass.CONTROL, _R, "aggregate_batch", progress=ProgressStrategy.DETERMINATE, children=("letterbox_apply", "letterbox_remove")),
-    _spec("letterbox_detect", FeatureArea.LETTERBOX, ExecutionClass.MEDIA_READ, _R, "movie", "media_file"),
-    _spec("letterbox_detect_episode", FeatureArea.LETTERBOX, ExecutionClass.MEDIA_READ, _R, "episode", "media_file"),
-    _spec("letterbox_detect_tv_scope", FeatureArea.LETTERBOX, ExecutionClass.MEDIA_READ, _R, "series", "season", "episode"),
-    _spec("letterbox_preview", FeatureArea.LETTERBOX, ExecutionClass.MEDIA_READ, _R, "movie", "episode", "media_file"),
-    _spec("letterbox_apply", FeatureArea.LETTERBOX, ExecutionClass.MEDIA_WRITE, _U, "movie", "media_file"),
-    _spec("letterbox_remove", FeatureArea.LETTERBOX, ExecutionClass.MEDIA_WRITE, _U, "movie", "media_file"),
-    _spec("letterbox_apply_tv_scope", FeatureArea.LETTERBOX, ExecutionClass.CONTROL, _R, "aggregate_batch", progress=ProgressStrategy.DETERMINATE, children=("letterbox_apply",)),
-    _spec("letterbox_revert_tv_scope", FeatureArea.LETTERBOX, ExecutionClass.CONTROL, _R, "aggregate_batch", progress=ProgressStrategy.DETERMINATE, children=("letterbox_remove",)),
     _spec("backup_create", FeatureArea.MAINTENANCE, ExecutionClass.MAINTENANCE, _U, "maintenance_scope"),
     _spec("taste_rebuild", FeatureArea.ML_TASTE, ExecutionClass.GPU, _R, "model_profile_training"),
     _spec("taste_map", FeatureArea.ML_TASTE, ExecutionClass.CPU, _R, "model_profile_training"),
     _spec("taste_enrich", FeatureArea.ML_TASTE, ExecutionClass.CPU, _R, "model_profile_training"),
     _spec("library_sync", FeatureArea.LIBRARY_INTEGRATIONS, ExecutionClass.NETWORK, _R, "maintenance_scope"),
-    _spec("subtitle_scan_all", FeatureArea.AUDIO_SUBTITLES, ExecutionClass.CONTROL, _R, "aggregate_batch", progress=ProgressStrategy.DETERMINATE, children=("subtitle_scan",)),
-    _spec("audio_subs_deep_scan", FeatureArea.AUDIO_SUBTITLES, ExecutionClass.CONTROL, _R, "aggregate_batch", progress=ProgressStrategy.DETERMINATE, children=("subtitle_scan",)),
     _spec("radarr_upgrade", FeatureArea.LIBRARY_INTEGRATIONS, ExecutionClass.NETWORK, _R, "movie"),
     _spec("poster_pipeline", FeatureArea.AI_POSTERS, ExecutionClass.GPU, _R, "movie", "series", "season", "episode"),
     _spec("poster_deploy", FeatureArea.AI_POSTERS, ExecutionClass.MEDIA_WRITE, _U, "movie", "series", "season"),
@@ -190,35 +136,6 @@ _SPECS = (
     _spec("poster_maintenance", FeatureArea.AI_POSTERS, ExecutionClass.MAINTENANCE, _U, "maintenance_scope", progress=ProgressStrategy.DETERMINATE),
     _spec("job_retention_purge", FeatureArea.MAINTENANCE, ExecutionClass.MAINTENANCE, _U, "maintenance_scope", progress=ProgressStrategy.DETERMINATE),
     _spec("system_metrics_purge", FeatureArea.MAINTENANCE, ExecutionClass.MAINTENANCE, _U, "maintenance_scope", progress=ProgressStrategy.DETERMINATE),
-    _spec("dovi_analyze", FeatureArea.HDR, ExecutionClass.MEDIA_READ, _R, "media_file", "movie", "episode"),
-    _spec("dovi_convert", FeatureArea.HDR, ExecutionClass.MEDIA_WRITE, _U, "media_file", "movie", "episode"),
-    _spec("dovi_publish", FeatureArea.HDR, ExecutionClass.MEDIA_WRITE, _U, "media_file", "movie"),
-    _spec("dovi_restore", FeatureArea.HDR, ExecutionClass.MEDIA_WRITE, _U, "media_file", "movie"),
-    _spec("dovi_discard", FeatureArea.HDR, ExecutionClass.MEDIA_WRITE, _U, "media_file", "movie"),
-    _spec("subtitle_scan", FeatureArea.AUDIO_SUBTITLES, ExecutionClass.MEDIA_READ, _R, "media_file"),
-    _spec("subtitle_policy_audit", FeatureArea.AUDIO_SUBTITLES, ExecutionClass.CPU, _R, "maintenance_scope"),
-    _spec("audio_remove", FeatureArea.AUDIO_SUBTITLES, ExecutionClass.MEDIA_WRITE, _U, "track", "media_file"),
-    _spec("track_remove", FeatureArea.AUDIO_SUBTITLES, ExecutionClass.MEDIA_WRITE, _U, "track", "media_file"),
-    _spec("subtitle_remove", FeatureArea.AUDIO_SUBTITLES, ExecutionClass.MEDIA_WRITE, _U, "track", "media_file"),
-    _spec("subtitle_embed", FeatureArea.AUDIO_SUBTITLES, ExecutionClass.MEDIA_WRITE, _U, "track", "media_file"),
-    _spec("subtitle_metadata", FeatureArea.AUDIO_SUBTITLES, ExecutionClass.MEDIA_WRITE, _U, "track", "media_file"),
-    _spec("audio_reorder", FeatureArea.AUDIO_SUBTITLES, ExecutionClass.MEDIA_WRITE, _U, "track", "media_file"),
-    _spec("subtitle_extract", FeatureArea.AUDIO_SUBTITLES, ExecutionClass.MEDIA_WRITE, _U, "track", "media_file"),
-    _spec("subtitle_generate", FeatureArea.AUDIO_SUBTITLES, ExecutionClass.MEDIA_WRITE, _U, "media_file", "episode"),
-    _spec("subtitle_policy", FeatureArea.AUDIO_SUBTITLES, ExecutionClass.MEDIA_WRITE, _U, "track", "media_file"),
-    _spec("subtitle_restore", FeatureArea.AUDIO_SUBTITLES, ExecutionClass.MEDIA_WRITE, _U, "track", "media_file"),
-    _spec("letterbox_reencode", FeatureArea.LETTERBOX, ExecutionClass.MEDIA_WRITE, _U, "media_file", "movie", "episode"),
-    _spec("letterbox_reencode_publish", FeatureArea.LETTERBOX, ExecutionClass.MEDIA_WRITE, _U, "media_file", "movie", "episode"),
-    _spec("letterbox_reencode_restore", FeatureArea.LETTERBOX, ExecutionClass.MEDIA_WRITE, _U, "media_file", "movie", "episode"),
-    _spec("letterbox_reencode_discard", FeatureArea.LETTERBOX, ExecutionClass.MEDIA_WRITE, _U, "media_file", "movie", "episode"),
-    _spec("subtitle_generate_batch", FeatureArea.AUDIO_SUBTITLES, ExecutionClass.CONTROL, _R, "aggregate_batch", progress=ProgressStrategy.DETERMINATE, children=("subtitle_generate",)),
-    _spec("subtitle_policy_batch", FeatureArea.AUDIO_SUBTITLES, ExecutionClass.CONTROL, _R, "aggregate_batch", progress=ProgressStrategy.DETERMINATE, children=("subtitle_policy",)),
-    _spec("dovi_analyze_batch", FeatureArea.HDR, ExecutionClass.CONTROL, _R, "aggregate_batch", progress=ProgressStrategy.DETERMINATE, children=("dovi_analyze",)),
-    _spec("letterbox_detect_tv_batch", FeatureArea.LETTERBOX, ExecutionClass.CONTROL, _R, "aggregate_batch", progress=ProgressStrategy.DETERMINATE, children=("letterbox_detect_tv_scope",)),
-    _spec("letterbox_detect_batch", FeatureArea.LETTERBOX, ExecutionClass.CONTROL, _R, "aggregate_batch", progress=ProgressStrategy.DETERMINATE, children=("letterbox_detect",)),
-    _spec("letterbox_apply_batch", FeatureArea.LETTERBOX, ExecutionClass.CONTROL, _R, "aggregate_batch", progress=ProgressStrategy.DETERMINATE, children=("letterbox_apply",)),
-    _spec("letterbox_reencode_tv_batch", FeatureArea.LETTERBOX, ExecutionClass.CONTROL, _R, "aggregate_batch", progress=ProgressStrategy.DETERMINATE, children=("letterbox_reencode",)),
-    _spec("letterbox_reencode_publish_batch", FeatureArea.LETTERBOX, ExecutionClass.CONTROL, _R, "aggregate_batch", progress=ProgressStrategy.DETERMINATE, children=("letterbox_reencode_publish",)),
 )
 
 _BATCH_CHILD_TYPES = frozenset(
@@ -232,23 +149,6 @@ ENABLED_JOB_TYPES: frozenset[str] = frozenset(
     {
         "system_noop",
         "library_sync",
-        "subtitle_scan",
-        "subtitle_policy_audit",
-        "letterbox_detect",
-        "letterbox_detect_episode",
-        "letterbox_detect_tv_scope",
-        "letterbox_preview",
-        "letterbox_apply",
-        "letterbox_remove",
-        "letterbox_reencode",
-        "letterbox_reencode_publish",
-        "letterbox_reencode_restore",
-        "letterbox_reencode_discard",
-        "dovi_analyze",
-        "dovi_convert",
-        "dovi_publish",
-        "dovi_restore",
-        "dovi_discard",
         "poster_pipeline",
         "poster_deploy",
         "poster_backup_subject",
@@ -264,55 +164,13 @@ ENABLED_JOB_TYPES: frozenset[str] = frozenset(
         "taste_map",
         "taste_enrich",
         "ranking_residual_train",
-        "audio_remove",
-        "track_remove",
-        "subtitle_remove",
-        "audio_reorder",
-        "subtitle_metadata",
-        "subtitle_extract",
-        "subtitle_embed",
-        "subtitle_generate",
-        "subtitle_policy",
-        "subtitle_restore",
     }
 )
 
 # Per-type request document models. Types absent here fall back to the generic BuiltInIntentV1
 # (or the tiny SystemNoopRequestV1 for system_noop). Results stay generic BuiltInResultV1.
 _REQUEST_MODELS: dict[str, type[StrictDocument]] = {
-    "audio_remove": TrackRemoveRequestV1,
-    "track_remove": TrackRemoveRequestV1,
-    "subtitle_remove": TrackRemoveRequestV1,
-    "audio_reorder": AudioReorderRequestV1,
-    "subtitle_metadata": SubtitleMetadataRequestV1,
-    "subtitle_extract": SubtitleExtractRequestV1,
-    "subtitle_embed": SubtitleEmbedRequestV1,
-    "subtitle_generate": SubtitleGenerateRequestV1,
-    "subtitle_policy": SubtitlePolicyRequestV1,
-    "subtitle_restore": SubtitleRestoreRequestV1,
-    "subtitle_policy_batch": SubtitleBatchRequestV1,
     "library_sync": LibrarySyncRequestV1,
-    "subtitle_scan": SubtitleScanRequestV1,
-    "subtitle_policy_audit": SubtitlePolicyAuditRequestV1,
-    "letterbox_detect": LetterboxDetectRequestV1,
-    "letterbox_detect_episode": LetterboxDetectEpisodeRequestV1,
-    "letterbox_detect_tv_scope": LetterboxDetectTvScopeRequestV1,
-    "letterbox_preview": LetterboxPreviewRequestV1,
-    "letterbox_apply": LetterboxApplyRequestV1,
-    "letterbox_remove": LetterboxRemoveRequestV1,
-    "letterbox_heal": LetterboxParentRequestV1,
-    "letterbox_apply_tv_scope": LetterboxParentRequestV1,
-    "letterbox_revert_tv_scope": LetterboxParentRequestV1,
-    "letterbox_apply_batch": LetterboxParentRequestV1,
-    "letterbox_reencode": LetterboxReencodeRequestV1,
-    "letterbox_reencode_publish": LetterboxReencodePublishRequestV1,
-    "letterbox_reencode_restore": LetterboxReencodeRestoreRequestV1,
-    "letterbox_reencode_discard": LetterboxReencodeDiscardRequestV1,
-    "dovi_analyze": DoviAnalyzeRequestV1,
-    "dovi_convert": DoviConvertRequestV1,
-    "dovi_publish": DoviPublishRequestV1,
-    "dovi_restore": DoviRestoreRequestV1,
-    "dovi_discard": DoviDiscardRequestV1,
     "poster_pipeline": PosterPipelineRequestV1,
     "poster_pipeline_batch": PosterBatchRequestV1,
     "poster_pipeline_tv_batch": PosterBatchRequestV1,
@@ -336,26 +194,6 @@ _REQUEST_MODELS: dict[str, type[StrictDocument]] = {
 }
 
 _RESULT_MODELS: dict[str, type[StrictDocument]] = {
-    "audio_remove": MediaTrackMutationResultV1,
-    "track_remove": MediaTrackMutationResultV1,
-    "subtitle_remove": MediaTrackMutationResultV1,
-    "audio_reorder": MediaTrackMutationResultV1,
-    "subtitle_metadata": MediaTrackMutationResultV1,
-    "subtitle_extract": SubtitleSidecarResultV1,
-    "subtitle_embed": MediaTrackMutationResultV1,
-    "subtitle_generate": SubtitleGenerationResultV1,
-    "subtitle_policy": MediaTrackMutationResultV1,
-    "subtitle_restore": MediaTrackMutationResultV1,
-    "letterbox_apply": LetterboxMutationResultV1,
-    "letterbox_remove": LetterboxMutationResultV1,
-    "letterbox_reencode": LetterboxReencodeResultV1,
-    "letterbox_reencode_publish": LetterboxReencodeDecisionResultV1,
-    "letterbox_reencode_restore": LetterboxReencodeDecisionResultV1,
-    "letterbox_reencode_discard": LetterboxReencodeDecisionResultV1,
-    "dovi_convert": DoviConvertResultV1,
-    "dovi_publish": DoviDecisionResultV1,
-    "dovi_restore": DoviDecisionResultV1,
-    "dovi_discard": DoviDecisionResultV1,
     "poster_pipeline": PosterPipelineResultV1,
     "poster_rescan": PosterRescanResultV1,
     "taste_rebuild": MlPublicationResultV1,
@@ -436,42 +274,6 @@ _SUBTITLE_POLICY_AUDIT_PROGRESS = ProgressPolicy(
         ("evaluating", "jobs.subtitle_policy_audit.progress.evaluating"),
     ),
     tool_adapter=None,
-    persistence_cadence_seconds=2,
-    meaningful_delta_percent=None,
-    max_snapshot_staleness_seconds=15,
-    eta_capability=False,
-)
-
-_LETTERBOX_DETECT_PROGRESS = ProgressPolicy(
-    strategy=ProgressStrategy.INDETERMINATE,
-    overall_unit="samples",
-    denominator_source="none",
-    current_unit="sample",
-    aggregation_strategy="none",
-    stages=(
-        ("probing", "jobs.letterbox_detect.progress.probing"),
-        ("sampling", "jobs.letterbox_detect.progress.sampling"),
-        ("validating", "jobs.letterbox_detect.progress.validating"),
-    ),
-    tool_adapter="ffprobe_ffmpeg_cropdetect",
-    persistence_cadence_seconds=2,
-    meaningful_delta_percent=None,
-    max_snapshot_staleness_seconds=15,
-    eta_capability=False,
-)
-
-_DOVI_ANALYZE_PROGRESS = ProgressPolicy(
-    strategy=ProgressStrategy.INDETERMINATE,
-    overall_unit="probe phases",
-    denominator_source="none",
-    current_unit="phase",
-    aggregation_strategy="none",
-    stages=(
-        ("probing", "jobs.dovi_analyze.progress.probing"),
-        ("analyzing", "jobs.dovi_analyze.progress.analyzing"),
-        ("validating", "jobs.dovi_analyze.progress.validating"),
-    ),
-    tool_adapter="ffprobe_dovi_tool",
     persistence_cadence_seconds=2,
     meaningful_delta_percent=None,
     max_snapshot_staleness_seconds=15,
@@ -564,74 +366,9 @@ _POSTER_MUTATION_PROGRESS = ProgressPolicy(
     eta_capability=False,
 )
 
-_LETTERBOX_MUTATION_PROGRESS = ProgressPolicy(
-    strategy=ProgressStrategy.INDETERMINATE,
-    overall_unit="files",
-    denominator_source="single_target",
-    current_unit="steps",
-    aggregation_strategy="current_target",
-    stages=tuple(
-        (stage, f"jobs.letterbox_mutation.progress.{stage}")
-        for stage in (
-            "resolving",
-            "probing",
-            "staging",
-            "editing",
-            "validating",
-            "backing_up",
-            "publishing",
-            "rescanning",
-            "finalizing",
-        )
-    ),
-    tool_adapter=None,
-    persistence_cadence_seconds=2,
-    meaningful_delta_percent=None,
-    max_snapshot_staleness_seconds=10,
-    eta_capability=False,
-)
-
-_LETTERBOX_REENCODE_PROGRESS = ProgressPolicy(
-    strategy=ProgressStrategy.HYBRID,
-    overall_unit="seconds",
-    denominator_source="source_probe_duration",
-    current_unit="seconds",
-    aggregation_strategy="current_scope",
-    stages=(("encoding", "jobs.letterbox_reencode.progress.encoding"),),
-    tool_adapter="ffmpeg_progress",
-    persistence_cadence_seconds=2,
-    meaningful_delta_percent=1,
-    max_snapshot_staleness_seconds=10,
-    eta_capability=True,
-)
-
-_DOVI_CONVERT_PROGRESS = ProgressPolicy(
-    strategy=ProgressStrategy.HYBRID,
-    overall_unit="seconds",
-    denominator_source="source_probe_duration",
-    current_unit="seconds",
-    aggregation_strategy="current_scope",
-    stages=(("encoding", "jobs.dovi_convert.progress.encoding"),),
-    tool_adapter="ffmpeg_progress",
-    persistence_cadence_seconds=2,
-    meaningful_delta_percent=1,
-    max_snapshot_staleness_seconds=10,
-    eta_capability=True,
-)
-
 # Per-type progress policy overrides. Types absent here use the generic `_progress(spec)`.
 _PROGRESS_POLICIES: dict[str, ProgressPolicy] = {
     "library_sync": _LIBRARY_SYNC_PROGRESS,
-    "subtitle_scan": _SUBTITLE_SCAN_PROGRESS,
-    "subtitle_policy_audit": _SUBTITLE_POLICY_AUDIT_PROGRESS,
-    "letterbox_detect": _LETTERBOX_DETECT_PROGRESS,
-    "letterbox_detect_episode": _LETTERBOX_DETECT_PROGRESS,
-    "letterbox_detect_tv_scope": _LETTERBOX_DETECT_PROGRESS,
-    "letterbox_apply": _LETTERBOX_MUTATION_PROGRESS,
-    "letterbox_remove": _LETTERBOX_MUTATION_PROGRESS,
-    "letterbox_reencode": _LETTERBOX_REENCODE_PROGRESS,
-    "dovi_convert": _DOVI_CONVERT_PROGRESS,
-    "dovi_analyze": _DOVI_ANALYZE_PROGRESS,
     "poster_pipeline": _POSTER_PIPELINE_PROGRESS,
     "poster_rescan": _POSTER_RESCAN_PROGRESS,
     "poster_deploy": _POSTER_MUTATION_PROGRESS,
@@ -644,18 +381,9 @@ _PROGRESS_POLICIES: dict[str, ProgressPolicy] = {
     "ranking_residual_train": _ML_PUBLICATION_PROGRESS,
 }
 
-_NATIVE_FFMPEG = frozenset({"dovi_convert", "letterbox_reencode"})
+_NATIVE_FFMPEG: frozenset[str] = frozenset()
 _NATIVE_MKVMERGE = frozenset(
     {
-        "audio_remove",
-        "track_remove",
-        "subtitle_remove",
-        "subtitle_embed",
-        "subtitle_metadata",
-        "audio_reorder",
-        "subtitle_extract",
-        "subtitle_policy",
-        "subtitle_restore",
     }
 )
 

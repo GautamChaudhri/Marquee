@@ -63,7 +63,7 @@ class ConfigurationProvider:
         return self._state
 
     def effective(self, owner: str) -> dict[str, Any]:
-        if owner not in {"app", "pipeline", "subtitle"}:
+        if owner not in {"app", "pipeline"}:
             raise ConfigurationError(f"unknown configuration owner: {owner}")
         return effective_owner_values(self.state, owner)  # type: ignore[arg-type]
 
@@ -196,7 +196,7 @@ class ConfigurationProvider:
 
     def snapshot_for(self, keys: Iterable[str]) -> ExecutionConfigurationSnapshot:
         requested = tuple(sorted(set(keys)))
-        values = self.effective("pipeline") | self.effective("subtitle")
+        values = self.effective("pipeline")
         snapshot: dict[str, Any] = {}
         for key in requested:
             entry = CONFIGURATION_CATALOG.get(key)

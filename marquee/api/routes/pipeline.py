@@ -28,7 +28,6 @@ from marquee.api.results import (
     poster_url,
 )
 from marquee.api.routes.jobs import job_summary
-from marquee.api.routes.library import _coverage_by_media_file
 from marquee.config import settings
 from marquee.core.jobs.artifact_service import ArtifactError, verify_physical_artifact
 from marquee.core.jobs.batches import BatchScope, create_fixed_batch
@@ -56,7 +55,6 @@ from marquee.models import (
     ArtworkEvent,
     Job,
     JobArtifact,
-    LetterboxState,
     MediaFile,
     Movie,
     PipelineRun,
@@ -810,17 +808,13 @@ async def review_queue(
 
     latest = _review_queue_latest()
     base = (
-        select(PipelineRun, Movie, LetterboxState)
+        select(PipelineRun, Movie)
         .join(
             latest,
             (latest.c.movie_id == PipelineRun.movie_id)
             & (latest.c.started_at == PipelineRun.started_at),
         )
         .join(Movie, Movie.id == PipelineRun.movie_id)
-        .outerjoin(
-            LetterboxState,
-            (LetterboxState.movie_id == Movie.id) & (LetterboxState.media_type == "movie"),
-        )
         .where(
             PipelineRun.feedback_event_id.is_(None),
             PipelineRun.status.in_(_REVIEW_QUEUE_STATUSES),
@@ -835,7 +829,7 @@ async def review_queue(
         )
     ).all()
 
-    movies = [movie for _, movie, _ in rows]
+    movies = [movie for _, movie in rows]
     movie_ids = [movie.id for movie in movies]
     media_rows = (
         (
@@ -852,19 +846,13 @@ async def review_queue(
         else []
     )
     mf_by_movie = {mf.movie_id: mf for mf in media_rows}
-    coverage = await _coverage_by_media_file(db, [mf.id for mf in media_rows])
 
     items = []
-    for run, movie, lb in rows:
+    for run, movie in rows:
         mf = mf_by_movie.get(movie.id)
         items.append(
             {
-                "movie": enrich_movie(
-                    movie,
-                    mf,
-                    coverage.get(mf.id) if mf else None,
-                    lb.status if lb else None,
-                ),
+                "movie": enrich_movie(movie, mf),
                 "run": {
                     "run_id": run.run_id,
                     "status": run.status,

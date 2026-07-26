@@ -15,13 +15,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.config import Settings, settings
 from marquee.core.pipeline_config import PipelineSettings, pipeline_settings
-from marquee.core.subtitles.config import SubtitleSettings, subtitle_settings
 from marquee.models.configuration import ConfigurationCurrent, ConfigurationRevision
 
 CONFIGURATION_CHANNEL = "marquee_configuration"
 CONFIGURATION_SCHEMA_VERSION = 1
 
-Owner = Literal["app", "pipeline", "subtitle"]
+Owner = Literal["app", "pipeline"]
 Sensitivity = Literal["public", "secret"]
 ApplyMode = Literal["hot", "next_job", "restart"]
 
@@ -96,36 +95,6 @@ APP_DATABASE_KEYS = frozenset(
 )
 APP_RESTART_KEYS = frozenset({"POSTER_BACKUP_DIR"})
 
-SUBTITLE_DATABASE_KEYS = frozenset(
-    {
-        "SUBTITLE_ENABLED",
-        "SUBTITLE_SCAN_CONCURRENCY",
-        "SUBTITLE_MUTATION_CONCURRENCY",
-        "SUBTITLE_GENERATION_CONCURRENCY",
-        "SUBTITLE_PREFERRED_LANGUAGES",
-        "SUBTITLE_PREFERRED_AUDIO_LANGUAGES",
-        "SUBTITLE_PREFERRED_SUBTITLE_LANGUAGES",
-        "SUBTITLE_UNKNOWN_LANGUAGE_ACTION",
-        "SUBTITLE_PROTECT_FORCED",
-        "SUBTITLE_PROTECT_LAST_FULL_DIALOGUE",
-        "SUBTITLE_BACKUP_MODE",
-        "SUBTITLE_EXTERNAL_DELETE_MODE",
-        "AUDIO_SUBS_DEEP_SCAN_ENABLED",
-        "AUDIO_SUBS_DEEP_SCAN_HOUR",
-        "AUDIO_SUBS_DEEP_SCAN_BATCH",
-        "SUBGEN_DEPLOYMENT",
-        "SUBGEN_URL",
-        "SUBGEN_PROFILE_NAME",
-        "SUBGEN_MODEL_LABEL",
-        "SUBGEN_MODE",
-        "SUBGEN_LOCAL_PATH_PREFIX",
-        "SUBGEN_REMOTE_PATH_PREFIX",
-        "SUBGEN_NAMING_TYPE",
-        "SUBGEN_NAME_INCLUDES_SUBGEN",
-        "SUBGEN_NAME_INCLUDES_MODEL",
-    }
-)
-SUBTITLE_SECRET_KEYS = frozenset({"SUBGEN_CALLBACK_TOKEN"})
 
 _SECRET_LIKE = re.compile(r"(?:secret|token|password|api[_-]?key)", re.IGNORECASE)
 
@@ -173,17 +142,6 @@ def _catalog() -> dict[str, ConfigurationKey]:
         database_keys=frozenset(PipelineSettings.model_fields) - PIPELINE_RESTART_KEYS,
         restart_keys=PIPELINE_RESTART_KEYS,
     )
-    add_owner(
-        "subtitle",
-        SubtitleSettings,
-        database_keys=SUBTITLE_DATABASE_KEYS,
-        restart_keys=(
-            frozenset(SubtitleSettings.model_fields)
-            - SUBTITLE_DATABASE_KEYS
-            - SUBTITLE_SECRET_KEYS
-        ),
-        secret_keys=SUBTITLE_SECRET_KEYS,
-    )
     return entries
 
 
@@ -192,7 +150,6 @@ CONFIGURATION_CATALOG = _catalog()
 _OWNER_BASES: dict[Owner, BaseModel] = {
     "app": settings,
     "pipeline": pipeline_settings,
-    "subtitle": subtitle_settings,
 }
 
 

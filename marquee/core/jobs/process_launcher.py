@@ -43,12 +43,10 @@ IdentityRecorder = Callable[[ProcessIdentity], Awaitable[object]]
 ExitRecorder = Callable[["ExecutionSummary"], Awaitable[object]]
 PipeSink = Callable[[str, bytes, bool], Awaitable[None]]
 
-# Closed catalog of read-only/analysis media tools migrated handlers may launch. Executable
-# paths are resolved through marquee.media.binaries (which honours the .env LETTERBOX_* paths,
-# e.g. the project-local bin/dovi_tool). No executable is ever taken from a request payload.
-TOOL_CATALOG = frozenset(
-    {"ffprobe", "ffmpeg", "mkvmerge", "mkvpropedit", "convert", "dovi_tool", "pg_dump"}
-)
+# Closed catalog of tools a handler may launch. No executable is ever taken from a request
+# payload. Poster work runs entirely inside the internal runner; pg_dump is the one external
+# binary the product still shells out to (database backups).
+TOOL_CATALOG = frozenset({"pg_dump"})
 # Bounded default in-memory capture for tool stdout that a handler parses (e.g. ffprobe JSON).
 DEFAULT_TOOL_STDOUT_LIMIT = 16 * 1024 * 1024
 
@@ -56,14 +54,7 @@ DEFAULT_TOOL_STDOUT_LIMIT = 16 * 1024 * 1024
 def _resolve_tool(tool: str) -> str:
     if tool not in TOOL_CATALOG:
         raise ProcessLaunchError(f"tool {tool!r} is not in the launcher catalog")
-    if tool == "pg_dump":
-        binary = shutil.which("pg_dump")
-        if binary is None:
-            raise ProcessLaunchError("tool 'pg_dump' is not available")
-        return binary
-    from marquee.media.binaries import resolve  # noqa: PLC0415 - avoid settings import at load
-
-    binary = resolve(tool)
+    binary = shutil.which(tool)
     if binary is None:
         raise ProcessLaunchError(f"tool {tool!r} is not available")
     return binary

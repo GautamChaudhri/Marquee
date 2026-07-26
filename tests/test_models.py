@@ -9,11 +9,6 @@ from marquee.database import _get_engine
 from marquee.models import (
     Episode,
     Movie,
-    MovieCustomFormatScore,
-    RadarrCustomFormat,
-    RadarrOverlayProfilePreference,
-    RadarrProfileFormatItem,
-    RadarrQualityProfile,
     Season,
     Series,
 )
@@ -57,11 +52,6 @@ async def test_all_tables_created(db):
     assert await _table_exists("series")
     assert await _table_exists("seasons")
     assert await _table_exists("episodes")
-    assert await _table_exists("radarr_custom_formats")
-    assert await _table_exists("radarr_quality_profiles")
-    assert await _table_exists("radarr_profile_format_items")
-    assert await _table_exists("movie_custom_format_scores")
-    assert await _table_exists("radarr_overlay_profile_preferences")
 
 
 @pytest.mark.asyncio
@@ -77,12 +67,6 @@ async def test_movie_columns(db):
     assert "folder_path" in cols
     assert "movie_file_path" in cols
     assert "radarr_id" in cols
-    assert "quality_profile_id" in cols
-    assert "quality_cutoff_met" in cols
-    assert "hdr_type_raw" in cols
-    assert "current_cf_score" in cols
-    assert "has_hdr" in cols
-    assert "has_dv" in cols
     assert "director" in cols
     assert "production_companies_json" in cols
     assert "tagline" in cols
@@ -132,8 +116,6 @@ async def test_episode_columns(db):
     assert "title" in cols
     assert "episode_file_path" in cols
     assert "sonarr_episode_id" in cols
-    assert "has_hdr" in cols
-    assert "has_dv" in cols
     # Should NOT have poster columns
     assert "poster_path" not in cols
     assert "poster_ai_selected" not in cols
@@ -303,49 +285,3 @@ async def test_partial_indexes_exist():
     assert "ix_movies_missing_poster" in movie_indexes
 
 
-@pytest.mark.asyncio
-async def test_hdr_dv_nullable():
-    """has_hdr and has_dv should be nullable (None = not yet checked)."""
-    movie = Movie(title="Test", year=2024, folder_path="/m/test")
-    assert movie.has_hdr is None
-    assert movie.has_dv is None
-
-    episode = Episode(series_id=1, season_number=1, episode_number=1)
-    assert episode.has_hdr is None
-    assert episode.has_dv is None
-
-
-@pytest.mark.asyncio
-async def test_radarr_overlay_tables_columns(db):
-    """Normalized Radarr overlay tables should expose the synced fields."""
-    assert {"id", "name", "include_when_renaming", "specifications_json", "synced_at"} <= (
-        await _column_names("radarr_custom_formats")
-    )
-    assert {
-        "id",
-        "name",
-        "upgrade_allowed",
-        "cutoff_format_score",
-        "min_format_score",
-        "synced_at",
-    } <= (await _column_names("radarr_quality_profiles"))
-    assert {"profile_id", "custom_format_id", "score"} <= (
-        await _column_names("radarr_profile_format_items")
-    )
-    assert {"movie_id", "custom_format_id", "score", "synced_at"} <= (
-        await _column_names("movie_custom_format_scores")
-    )
-    assert {"profile_id", "meet_target", "exceed_target", "updated_at"} <= (
-        await _column_names("radarr_overlay_profile_preferences")
-    )
-
-
-def test_radarr_overlay_model_repr_smoke():
-    """Model constructors should accept the synced overlay fields."""
-    assert RadarrCustomFormat(id=1, name="HDR10+", include_when_renaming=False)
-    assert RadarrQualityProfile(id=2, name="UHD", cutoff_format_score=100)
-    assert RadarrProfileFormatItem(profile_id=2, custom_format_id=1, score=10)
-    assert MovieCustomFormatScore(movie_id=4, custom_format_id=1, score=10)
-    assert RadarrOverlayProfilePreference(
-        profile_id=2, meet_target="hdr", exceed_target="dovi_fallback"
-    )

@@ -1,6 +1,6 @@
 import type { PageLoad } from './$types';
 import { listMovies } from '$lib/api/library';
-import type { HdrKind, MovieQuery, PosterStatus } from '$lib/api/types';
+import type { MovieQuery, PosterStatus } from '$lib/api/types';
 
 const PAGE_SIZE = 60;
 
@@ -11,8 +11,6 @@ export const load: PageLoad = async ({ fetch, url }) => {
 		page_size: PAGE_SIZE,
 		q: sp.get('q') || undefined,
 		poster_status: (sp.get('poster_status') as PosterStatus) || undefined,
-		hdr: (sp.get('hdr') as HdrKind) || undefined,
-		letterbox_status: sp.get('letterbox_status') || undefined,
 		sort: (sp.get('sort') as 'title' | 'year') || undefined
 	};
 	try {

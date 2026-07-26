@@ -24,9 +24,6 @@ export interface ActivityUrlState {
 const VIEWS = new Set<ActivityView>(['queue', 'history', 'operations']);
 const FEATURES = new Set([
 	'ai_posters',
-	'hdr',
-	'audio_subtitles',
-	'letterbox',
 	'library_integrations',
 	'ml_taste',
 	'maintenance',
