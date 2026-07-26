@@ -258,8 +258,6 @@ def build_results_payload(
     }
     if "subject" in archive:
         payload["subject"] = archive["subject"]
-    if "official_pick" in archive:
-        payload["official_pick"] = archive["official_pick"]
     return payload
 
 

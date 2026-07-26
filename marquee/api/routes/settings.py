@@ -64,8 +64,6 @@ async def get_settings(db: Annotated[AsyncSession, Depends(get_db)]):
         },
         "integrations": {
             "tmdb": {"configured": app_settings.tmdb_configured},
-            "fanart": {"configured": app_settings.fanart_configured},
-            "tvdb": {"configured": app_settings.tvdb_configured},
             "radarr": {
                 "configured": app_settings.radarr_configured,
                 "url_configured": _configured(app_settings.RADARR_URL),

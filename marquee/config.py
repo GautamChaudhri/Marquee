@@ -304,8 +304,6 @@ class Settings(BaseSettings):
             self.API_KEY,
             self.DB_URL,
             self.TMDB_READ_ACCESS_TOKEN,
-            self.FANART_API_KEY,
-            self.TVDB_API_KEY,
             self.RADARR_API_KEY,
             self.SONARR_API_KEY,
         )
@@ -408,27 +406,9 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------
     # Fanart.tv
     # ------------------------------------------------------------------
-    FANART_API_KEY: str | None = Field(
-        default=None,
-        description="Fanart.tv personal API key",
-    )
-
-    @property
-    def fanart_configured(self) -> bool:
-        return self.FANART_API_KEY is not None
-
     # ------------------------------------------------------------------
     # TheTVDB
     # ------------------------------------------------------------------
-    TVDB_API_KEY: str | None = Field(
-        default=None,
-        description="TheTVDB API key (v4)",
-    )
-
-    @property
-    def tvdb_configured(self) -> bool:
-        return self.TVDB_API_KEY is not None
-
     # ------------------------------------------------------------------
     # Radarr
     # ------------------------------------------------------------------

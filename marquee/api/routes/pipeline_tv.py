@@ -32,7 +32,6 @@ from marquee.api.routes.pipeline import (
 from marquee.config import settings
 from marquee.core.jobs.batches import BatchScope, create_fixed_batch
 from marquee.core.jobs.contracts import TriggerKind
-from marquee.core.jobs.pipeline_archives import load_pipeline_archive
 from marquee.core.jobs.poster_submission import (
     PosterSelectionError,
     poster_child_idempotency_key,
@@ -587,8 +586,6 @@ async def tv_review_queue(
             season = season_by_id.get(season_id)
             if season is None:
                 continue
-            archive = await load_pipeline_archive(db, run)
-            official_pick = archive.get("official_pick") if archive is not None else None
             season_entries.append(
                 {
                     "season_number": season.season_number,
@@ -600,7 +597,6 @@ async def tv_review_queue(
                         else None
                     ),
                     "flagged_no_candidates": run.status == "flagged_manual",
-                    "official_pick": official_pick,
                 }
             )
 

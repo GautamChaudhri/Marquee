@@ -346,7 +346,6 @@ def build_run_payload(
     error: str | None = None,
     media_type: str = "movie",
     subject: dict[str, object] | None = None,
-    official_pick: dict[str, object] | None = None,
     review_survivors: list[CandidateScore] | None = None,
 ) -> dict[str, object]:
     """The full ``pipeline_run.json`` payload (also archived per run_id).
@@ -410,8 +409,6 @@ def build_run_payload(
     }
     if subject is not None:
         payload["subject"] = subject
-    if official_pick is not None:
-        payload["official_pick"] = official_pick
     return payload
 
 
