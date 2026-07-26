@@ -98,6 +98,15 @@ class Settings(BaseSettings):
     HEALTH_STARTUP_ATTEMPTS: int = Field(default=3, ge=1, le=30)
     HEALTH_STARTUP_RETRY_SECONDS: float = Field(default=1.0, ge=0.0, le=30.0)
     DATA_DIR: str = "data"
+    # Cold-start onboarding ("Rank Test") is built and covered but off by default:
+    # it seeds the taste profile on a fresh install, which is not the flow while the
+    # poster engine is still under active development. Flipping this to true restores
+    # the whole flow — the frontend banner keys off the endpoint being reachable.
+    ONBOARDING_ENABLED: bool = Field(
+        default=False,
+        description="Expose the cold-start onboarding endpoints (/api/onboarding/*). "
+        "Off by default; the flow is retained but does not fire.",
+    )
     # Standalone dev: the API auto-spawns the worker + scheduler as child
     # processes so nothing has to be started by hand.  The Compose topology runs
     # dedicated worker/scheduler services, so it sets this false on the API.

@@ -19,6 +19,11 @@ from marquee.database import (
     reset_database,
 )
 
+# Onboarding ships disabled (see Settings.ONBOARDING_ENABLED), and main.py registers
+# its router at import time. Enable it here — before any test module imports
+# marquee.main — so the flow stays covered while staying off for real deployments.
+settings.ONBOARDING_ENABLED = True
+
 pytest_plugins = ["tests.support.jmc5b_harness"]
 
 

@@ -293,13 +293,14 @@ app.include_router(pipeline_router)
 app.include_router(movies_router)
 app.include_router(feedback_router)
 app.include_router(taste_router)
-app.include_router(onboarding_router)
 app.include_router(config_router)
 app.include_router(text_profiles_router)
 app.include_router(backup_router)
 app.include_router(settings_router)
 app.include_router(system_router)
 app.include_router(jobs_router)
+if settings.ONBOARDING_ENABLED:
+    app.include_router(onboarding_router)
 if settings.DEBUG:
     from marquee.api.routes.dev_ocr_labels import router as dev_ocr_labels_router  # noqa: E402
 
