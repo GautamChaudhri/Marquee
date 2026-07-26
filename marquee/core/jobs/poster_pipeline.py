@@ -17,6 +17,7 @@ import contextlib
 import hashlib
 import json
 import uuid
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any
 
@@ -66,14 +67,27 @@ def _media_type(request: PosterPipelineRequestV1) -> str:
     return "movie"
 
 
-def _subject_params(request: PosterPipelineRequestV1) -> dict[str, Any]:
+def _subject_params(
+    request: PosterPipelineRequestV1, subject: Mapping[str, Any] | None
+) -> dict[str, Any]:
+    """Freeze the subject the runner fetches for.
+
+    The season number comes from the sealed subject snapshot rather than the
+    request: TMDB addresses season art by season number, and the request only
+    carries our ``season_id``.
+    """
+    media_type = _media_type(request)
+    season_number = subject.get("season_number") if subject else None
+    if media_type == "season" and not isinstance(season_number, int):
+        raise ValueError("a season poster run requires a season number in its subject snapshot")
     return {
         "title": request.title,
-        "media_type": _media_type(request),
+        "media_type": media_type,
         "movie_id": request.movie_id,
         "tmdb_id": request.tmdb_id,
         "series_id": request.series_id,
         "season_id": request.season_id,
+        "season_number": season_number if media_type == "season" else None,
     }
 
 
@@ -345,7 +359,7 @@ async def execute_poster_pipeline(
     run_id = uuid.uuid4().hex
     manifest = {
         "params": {
-            "subject": _subject_params(request),
+            "subject": _subject_params(request, context.subject),
             "source": {"mode": "tmdb"},
             "run_id": run_id,
             "baseline_signature": baseline_signature(pipeline_settings.scorer_weights),
