@@ -199,6 +199,29 @@ def _poster_feature_runtime(personalization_mode: str) -> tuple[Any, Path | None
     )
 
 
+def _ocr_gate_context(params: dict[str, Any], subject: Any) -> Any:
+    """Rebuild the host-resolved text gate inside the runner process.
+
+    Falls back to the subject's own scope when the manifest predates the
+    ``text_gate`` params, so an in-flight job still gates a season as a season.
+    """
+    from marquee.core.text_profiles import OcrGateContext, get_active_profile  # noqa: PLC0415
+
+    gate = params.get("text_gate") if isinstance(params.get("text_gate"), dict) else {}
+    scope = gate.get("scope")
+    if scope not in ("movie", "show", "season"):
+        scope = {"series": "show", "season": "season"}.get(subject.media_type, "movie")
+    studios = gate.get("studios")
+    return OcrGateContext(
+        director=gate.get("director"),
+        studios=list(studios) if isinstance(studios, list) else None,
+        tagline=gate.get("tagline"),
+        profile=get_active_profile(scope, gate.get("profile_id")),
+        scope=scope,
+        season_number=subject.season_number,
+    )
+
+
 def _run_poster_single(manifest: dict[str, Any], control: ControlWriter) -> dict[str, Any]:
     """Run the real single-subject poster pipeline confined to the workspace.
 
@@ -290,6 +313,7 @@ def _run_poster_single(manifest: dict[str, Any], control: ControlWriter) -> dict
             source=source,
             out_dir=Path.cwd(),
             feature_extractor=extractor,
+            ocr_gate=_ocr_gate_context(params, subject),
             progress=_emit_progress,
             run_id=run_id,
             residual_path=residual_path,
