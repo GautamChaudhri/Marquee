@@ -180,15 +180,55 @@ async def init_db(retries: int = 5) -> None:
             await asyncio.sleep(wait)
 
 
-async def reset_database(db: AsyncSession) -> dict[str, str | int]:
+# Tables that describe the running system rather than its contents. A reset
+# clears application data; it must leave registration rows that live processes
+# and the migrator have already written:
+#
+#   runtime_instances — a running worker or scheduler holds its own row id for
+#       the life of the process and ``job_attempts`` references it. Deleting the
+#       row strands every in-process handle: heartbeats fail forever and each
+#       subsequent attempt dies on the foreign key.
+#   schema_contracts — written by ``marquee.db_migration``. Worker and scheduler
+#       startup verifies against it and fails closed, so clearing it blocks the
+#       next boot until the migration command is run again.
+#   worker_nodes — re-created on demand by ``record_worker_node``, but the same
+#       category, and keeping it spares a reset-shaped gap in node telemetry.
+_RUNTIME_REGISTRATION_TABLES = frozenset(
+    {
+        "runtime_instances",
+        "schema_contracts",
+        "worker_nodes",
+    }
+)
+
+# PgQueuer owns its transport tables, so they are absent from ``Base.metadata``
+# and a metadata-driven truncate would leave queue rows naming jobs that no
+# longer exist. ``pgqueuer_schedules`` is deliberately not here: the running
+# scheduler registers it once at startup, exactly like the tables above.
+_TRANSPORT_QUEUE_TABLES = ("pgqueuer", "pgqueuer_log", "pgqueuer_statistics")
+
+
+async def reset_database(
+    db: AsyncSession, *, include_runtime_registration: bool = False
+) -> dict[str, str | int]:
     """Delete all row data from every application table.
 
     PostgreSQL uses ``TRUNCATE ... RESTART IDENTITY CASCADE`` so foreign-key
     graphs clear in one statement and primary-key sequences restart.
+
+    By default the runtime registration tables are preserved and PgQueuer's
+    queue is cleared alongside the job tables, so the result is a database a
+    live worker and scheduler can keep serving without a restart. Pass
+    ``include_runtime_registration`` to empty those too — for a test fixture
+    isolating one schema, where no process is registered against the rows.
     """
     __import__("marquee.models")
 
-    tables = list(Base.metadata.sorted_tables)
+    tables = [
+        table
+        for table in Base.metadata.sorted_tables
+        if include_runtime_registration or table.name not in _RUNTIME_REGISTRATION_TABLES
+    ]
     connection = await db.connection()
     dialect = connection.dialect.name
 
@@ -201,6 +241,17 @@ async def reset_database(db: AsyncSession) -> dict[str, str | int]:
     preparer = connection.dialect.identifier_preparer
     formatted_tables = ", ".join(preparer.format_table(table) for table in tables)
     await db.execute(text(f"TRUNCATE TABLE {formatted_tables} RESTART IDENTITY CASCADE"))
+
+    # Installed by the migration command, so absent wherever the schema came
+    # from ``create_all`` alone; resolve each name against the search path.
+    transport_tables = [
+        name
+        for name in _TRANSPORT_QUEUE_TABLES
+        if await db.scalar(text("SELECT to_regclass(:name)"), {"name": name}) is not None
+    ]
+    if transport_tables:
+        formatted_transport = ", ".join(preparer.quote(name) for name in transport_tables)
+        await db.execute(text(f"TRUNCATE TABLE {formatted_transport} RESTART IDENTITY CASCADE"))
 
     table_names = {table.name for table in tables}
     if {"configuration_revisions", "configuration_current"} <= table_names:
@@ -220,7 +271,11 @@ async def reset_database(db: AsyncSession) -> dict[str, str | int]:
         )
 
     await db.commit()
-    return {"status": "reset", "dialect": dialect, "tables_cleared": len(tables)}
+    return {
+        "status": "reset",
+        "dialect": dialect,
+        "tables_cleared": len(tables) + len(transport_tables),
+    }
 
 
 async def close_db() -> None:
