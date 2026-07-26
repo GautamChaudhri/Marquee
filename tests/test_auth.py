@@ -8,7 +8,9 @@ from httpx import ASGITransport, AsyncClient
 from marquee.config import settings
 from marquee.main import app
 
-# A protected, side-effect-free GET with no DB dependency — ideal auth probe.
+# A protected, side-effect-free GET — the auth probe. Tests that expect the handler
+# to actually run take the ``db`` fixture, which seeds the configuration provider the
+# endpoint reads; auth-rejection tests never reach the handler and don't need it.
 PROTECTED = "/api/config/pipeline"
 KEY = "test-secret-key"
 
@@ -54,7 +56,7 @@ async def test_protected_requires_key(enforce):
         ({}, {"apikey": KEY}),
     ],
 )
-async def test_valid_key_accepted(enforce, headers, params):
+async def test_valid_key_accepted(db, enforce, headers, params):
     async with _client() as c:
         resp = await c.get(PROTECTED, headers=headers, params=params)
     assert resp.status_code == 200
@@ -68,7 +70,7 @@ async def test_wrong_key_rejected(enforce):
 
 
 @pytest.mark.asyncio
-async def test_loopback_bypass_when_allowed(monkeypatch):
+async def test_loopback_bypass_when_allowed(db, monkeypatch):
     monkeypatch.setattr(settings, "DEBUG", False)
     monkeypatch.setattr(settings, "API_KEY", KEY)
     monkeypatch.setattr(settings, "AUTH_ALLOW_LOCAL", True)
@@ -88,7 +90,7 @@ async def test_no_key_configured_fails_closed(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_debug_bypasses_auth(monkeypatch):
+async def test_debug_bypasses_auth(db, monkeypatch):
     monkeypatch.setattr(settings, "DEBUG", True)
     monkeypatch.setattr(settings, "API_KEY", KEY)
     monkeypatch.setattr(settings, "AUTH_ALLOW_LOCAL", False)

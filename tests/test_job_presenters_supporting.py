@@ -18,10 +18,10 @@ FIXTURES = Path(__file__).parent / "fixtures" / "jmc2c"
 BATCH_SNAPSHOT = {
     "version": 1,
     "kind": "aggregate_batch",
-    "display_id": "batch:dovi",
+    "display_id": "batch:posters",
     "display_name": "Dolby Vision analysis batch",
     "snapshot_at": "2026-07-13T09:59:00+00:00",
-    "batch_type": "dovi_analyze_batch",
+    "batch_type": "poster_pipeline_batch",
     "child_count": 24,
     "sealed": True,
     "scope_summary": "All movies with Dolby Vision",
@@ -59,13 +59,13 @@ SYSTEM_SNAPSHOT = {
 
 
 def test_every_builtin_definition_has_a_dedicated_presenter():
-    assert len(JOB_DEFINITION_REGISTRY) == 63  # +JMC7A canonical letterbox preview
+    assert len(JOB_DEFINITION_REGISTRY) == 23
     for definition in JOB_DEFINITION_REGISTRY:
         presenter = resolve_presenter(definition)
         assert not presenter.generic, definition.job_type
         assert presenter.key == definition.presenter_key
         assert presenter is not GENERIC_PRESENTER
-    assert len(JOB_PRESENTER_REGISTRY) == 63  # +JMC7A canonical letterbox preview
+    assert len(JOB_PRESENTER_REGISTRY) == 23
 
 
 def test_every_definition_renders_a_minimal_presentation():
@@ -242,175 +242,22 @@ def test_maintenance_dry_run_and_metrics():
     assert any(card.label == "Planned" and card.value.value == 1200 for card in cards.cards)
 
 
-def test_parent_batch_children_from_live_counts():
-    job = make_job(
-        type="dovi_analyze_batch",
-        feature_area="hdr",
-        presentation_family="hdr",
-        subject_kind="aggregate_batch",
-        subject_snapshot=BATCH_SNAPSHOT,
-        phase="running",
-        outcome=None,
-        terminal_at=None,
-    )
-    definition = definition_for("dovi_analyze_batch")
-    presentation = present_job(
-        job,
-        definition,
-        live={
-            "children": {
-                "total": 24,
-                "queued": 4,
-                "running": 2,
-                "succeeded": 15,
-                "no_change": 2,
-                "failed": 1,
-                "cancelled": 0,
-                "sealed": True,
-            }
-        },
-    )
-    assert presentation.action.headline == "Analyze Dolby Vision across 24 movies"
-    children = next(s for s in presentation.sections if s.kind == "children")
-    assert children.total == 24
-    assert children.failed == 1
-    assert children.children_link.href.endswith("/children")
-    assert presentation.links.children is not None
-
-
-def test_parent_batch_children_from_stored_summary_and_partial_success():
-    job = make_job(
-        type="letterbox_detect_batch",
-        feature_area="letterbox",
-        presentation_family="letterbox",
-        subject_kind="aggregate_batch",
-        subject_snapshot={**BATCH_SNAPSHOT, "batch_type": "letterbox_detect_batch"},
-        outcome="partially_succeeded",
-        result={
-            "outcome": "partially_succeeded",
-            "message": None,
-            "summary": {
-                "children": {
-                    "total": 10,
-                    "succeeded": 7,
-                    "no_change": 1,
-                    "failed": 2,
-                    "sealed": True,
-                }
-            },
-        },
-    )
-    presentation = present_job(job, definition_for("letterbox_detect_batch"))
-    assert presentation.status.label == "Partially succeeded"
-    assert presentation.status.tone == "warning"
-    assert presentation.attention.level == "warning"
-    children = next(s for s in presentation.sections if s.kind == "children")
-    assert (children.succeeded, children.no_change, children.failed) == (7, 1, 2)
-
-
 def test_parent_batch_malformed_children_warns():
     job = make_job(
-        type="letterbox_apply_batch",
-        feature_area="letterbox",
-        presentation_family="letterbox",
+        type="poster_pipeline_tv_batch",
+        feature_area="ai_posters",
+        presentation_family="ai_posters",
         subject_kind="aggregate_batch",
-        subject_snapshot={**BATCH_SNAPSHOT, "batch_type": "letterbox_apply_batch"},
+        subject_snapshot={**BATCH_SNAPSHOT, "batch_type": "poster_pipeline_tv_batch"},
         result={
             "outcome": "succeeded",
             "message": None,
             "summary": {"children": {"total": "ten"}},
         },
     )
-    presentation = present_job(job, definition_for("letterbox_apply_batch"))
+    presentation = present_job(job, definition_for("poster_pipeline_tv_batch"))
     assert not any(s.kind == "children" for s in presentation.sections)
     assert any(w.code == "malformed_evidence" for w in presentation.warnings)
-
-
-def test_letterbox_mutation_presents_requested_and_freshly_verified_crop():
-    probe = {
-        "source_signature": "mtime_ns=1:size=2048",
-        "container": "Matroska",
-        "video_track_id": 0,
-        "width": 1920,
-        "height": 1080,
-        "crop_present": True,
-        "crop_top": 140,
-        "crop_bottom": 140,
-        "crop_left": 0,
-        "crop_right": 0,
-    }
-    target = {
-        "key": "media-file:71",
-        "kind": "media_file",
-        "label": "Movie media file 71",
-        "operation": "apply",
-        "selector_facts": {"subject_kind": "movie", "subject_ids": [11]},
-    }
-    job = make_job(
-        type="letterbox_apply",
-        feature_area="letterbox",
-        presentation_family="letterbox",
-        request={
-            "media_file_id": 71,
-            "subject_kind": "movie",
-            "subject_ids": [11],
-            "before": {
-                "source_signature": "mtime_ns=1:size=2048",
-                "status": "candidate",
-                "confidence": "high",
-                "variable_ar": False,
-                "source_width": 1920,
-                "source_height": 1080,
-                "current_crop_top": None,
-                "current_crop_bottom": None,
-                "recommended_crop_top": 140,
-                "recommended_crop_bottom": 140,
-            },
-            "crop_top": 140,
-            "crop_bottom": 140,
-            "source": "api",
-        },
-        result={
-            "outcome": "no_change",
-            "reason_code": "already_applied",
-            "message": "authoritative probe already matches",
-            "requested_targets": [target],
-            "target_outcomes": [
-                {
-                    "target": target,
-                    "status": "skipped",
-                    "stage": "preflight",
-                    "reason_code": "already_applied",
-                    "message": "authoritative probe already matches",
-                    "bytes_changed": False,
-                    "product_state_changed": False,
-                }
-            ],
-            "validation": {
-                "source_probe": {},
-                "output_probe": {},
-                "verdict": "passed",
-            },
-            "atomicity": {
-                "group_id": "letterbox-apply:71",
-                "boundary": "single_target",
-                "published": False,
-                "rollback_available": False,
-                "uncertain_state": False,
-            },
-            "before_probe": probe,
-            "actual_probe": probe,
-        },
-        outcome="no_change",
-    )
-
-    presentation = present_job(job, definition_for("letterbox_apply"))
-
-    crop_text = "140 px from the top and 140 px from the bottom"
-    assert presentation.action.headline == f"Apply the letterbox crop tag: {crop_text}"
-    letterbox = next(section for section in presentation.sections if section.title == "Letterbox")
-    verified = next(fact for fact in letterbox.facts if fact.label == "Verified crop metadata")
-    assert verified.value.text == crop_text
 
 
 def test_retry_lineage_is_presented():

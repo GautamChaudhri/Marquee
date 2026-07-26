@@ -19,7 +19,6 @@ from marquee.core.jobs.presenters.base import (
     PresenterContext,
     load_context,
 )
-from marquee.core.jobs.presenters.parents import build_parent_presenters
 from marquee.core.jobs.presenters.posters import POSTER_JOB_TYPES, PosterPresenter
 from marquee.core.jobs.presenters.supporting import build_supporting_presenters
 
@@ -63,7 +62,6 @@ def _build_registry() -> Mapping[str, JobPresenter]:
     for job_type in POSTER_JOB_TYPES:
         presenters[f"jobs.{job_type}"] = PosterPresenter(job_type)
     presenters.update(build_supporting_presenters())
-    presenters.update(build_parent_presenters())
     return presenters
 
 

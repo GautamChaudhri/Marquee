@@ -238,7 +238,7 @@ def _batch_registry() -> JobDefinitionRegistry:
         trigger_kinds=frozenset({TriggerKind.BATCH}),
     )
     parent = replace(
-        JOB_DEFINITION_REGISTRY.get("subtitle_generate_batch"),
+        JOB_DEFINITION_REGISTRY.get("poster_pipeline_batch"),
         child_job_types=frozenset({"system_noop"}),
     )
     return JobDefinitionRegistry((child, parent))
@@ -248,7 +248,7 @@ def _parent(parent_id: str) -> Job:
     now = datetime.now(UTC)
     return Job(
         id=parent_id,
-        type="subtitle_generate_batch",
+        type="poster_pipeline_batch",
         request={},
         phase="queued",
         desired_state="run",

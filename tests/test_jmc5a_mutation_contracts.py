@@ -236,7 +236,7 @@ def test_presenter_exposes_validated_mutation_evidence_and_warns_on_malformed() 
 
 
 def test_enabled_mutations_cannot_use_generic_builtin_documents() -> None:
-    deferred = JOB_DEFINITION_REGISTRY.get("dovi_convert")
+    deferred = JOB_DEFINITION_REGISTRY.get("poster_deploy")
     generic_enabled = replace(
         deferred,
         enabled=True,

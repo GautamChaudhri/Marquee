@@ -54,7 +54,7 @@ def _batch_registry() -> JobDefinitionRegistry:
         trigger_kinds=frozenset({TriggerKind.BATCH}),
     )
     parent = replace(
-        JOB_DEFINITION_REGISTRY.get("subtitle_generate_batch"),
+        JOB_DEFINITION_REGISTRY.get("poster_pipeline_batch"),
         child_job_types=frozenset({"system_noop"}),
     )
     return JobDefinitionRegistry((child, parent))
@@ -87,8 +87,8 @@ def _children(prefix: str, count: int = 3) -> tuple[SubmissionIntent, ...]:
 async def _create(db, key: str, children: tuple[SubmissionIntent, ...]):
     return await create_fixed_batch(
         db,
-        parent_job_type="subtitle_generate_batch",
-        parent_request={"scope": "test"},
+        parent_job_type="poster_pipeline_batch",
+        parent_request={"scope": "all", "selection_count": 0},
         scope=BatchScope(
             reference=f"scope:{key.rsplit(':', 1)[-1]}",
             display_name="A2 fixed batch",
@@ -110,7 +110,7 @@ async def test_fixed_batch_is_atomic_ticketless_parent_with_ordered_children(
         transaction = await db.begin()
         result = await _create(
             db,
-            "subtitle_generate_batch:fixed-success",
+            "poster_pipeline_batch:fixed-success",
             _children("fixed-success"),
         )
         parent = await db.get(Job, result.parent.job_id)
@@ -188,7 +188,7 @@ async def test_empty_fixed_batch_is_terminal_no_change_and_transport_free(
     db, client, batch_registry
 ) -> None:
     async with db.begin():
-        created = await _create(db, "subtitle_generate_batch:empty", ())
+        created = await _create(db, "poster_pipeline_batch:empty", ())
     parent = await db.get(Job, created.parent.job_id)
     projection = await db.get(JobBatch, created.parent.job_id)
 
@@ -216,9 +216,9 @@ async def test_fixed_batch_exact_retry_reuses_and_semantic_change_conflicts(
 ) -> None:
     children = _children("fixed-reuse", 2)
     async with db.begin():
-        created = await _create(db, "subtitle_generate_batch:reuse", children)
+        created = await _create(db, "poster_pipeline_batch:reuse", children)
     async with db.begin():
-        reused = await _create(db, "subtitle_generate_batch:reuse", children)
+        reused = await _create(db, "poster_pipeline_batch:reuse", children)
     assert reused.parent.job_id == created.parent.job_id
     assert reused.parent.disposition == "reused"
     assert {child.job_id for child in reused.children} == {
@@ -234,7 +234,7 @@ async def test_fixed_batch_exact_retry_reuses_and_semantic_change_conflicts(
         async with db.begin():
             await _create(
                 db,
-                "subtitle_generate_batch:reuse",
+                "poster_pipeline_batch:reuse",
                 tuple(changed),
             )
 
@@ -265,7 +265,7 @@ async def test_fixed_batch_failure_rolls_back_parent_projection_children_and_tic
         async with db.begin():
             await _create(
                 db,
-                f"subtitle_generate_batch:rollback-{failure_point}",
+                f"poster_pipeline_batch:rollback-{failure_point}",
                 _children(f"rollback-{failure_point}", 2),
             )
     assert await db.scalar(select(func.count(Job.id))) == 0

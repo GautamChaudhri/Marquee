@@ -13,7 +13,6 @@ from pgqueuer.models import Context
 from pgqueuer.models import Job as PgQueuerJob
 from sqlalchemy import select
 
-from marquee.config import settings
 from marquee.core.jobs import delivery
 from marquee.core.jobs.commands import create_system_noop
 from marquee.core.jobs.delivery import deliver_job
@@ -151,20 +150,10 @@ def test_capability_advertisement_is_bounded_and_sanitized() -> None:
     snapshot = capability_snapshot(configured)
 
     assert snapshot["entrypoints"] == sorted(configured)
-    assert set(snapshot) == {
-        "entrypoints",
-        "containment",
-        "media_tools",
-        "gpu",
-        "certifications",
-    }
-    assert snapshot["certifications"] == {
-        "dovi_conversion": settings.JOB_DOVI_CONVERSION_CERTIFIED
-    }
+    assert set(snapshot) == {"entrypoints", "containment", "gpu"}
     serialized = str(snapshot).lower()
     for forbidden in ("password", "token", "api_key", "payload", "environment", "/dev/"):
         assert forbidden not in serialized
-    assert all(set(tool) == {"available", "version"} for tool in snapshot["media_tools"].values())
 
 
 @pytest.mark.asyncio

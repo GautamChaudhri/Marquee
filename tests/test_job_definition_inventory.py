@@ -72,9 +72,9 @@ def test_source_inventory_matches_freeze() -> None:
         {"job_type", "parent_type", "parent_job_type"},
     )
     assert route_types == set(ROUTE_CONSTRUCTED_TYPES)
-    assert len(MEDIA_OPERATION_TYPES) == 19
-    assert len(PARENT_ONLY_TYPES) == 18  # +C3 fixed letterbox publish parent
-    assert len(BUILTIN_JOB_TYPES) == 63  # +JMC7A canonical letterbox preview
+    assert len(MEDIA_OPERATION_TYPES) == 0
+    assert len(PARENT_ONLY_TYPES) == 5
+    assert len(BUILTIN_JOB_TYPES) == 23
 
 
 def test_stable_taxonomy_values() -> None:
@@ -82,8 +82,7 @@ def test_stable_taxonomy_values() -> None:
         "control", "network", "cpu", "media_read", "media_write", "gpu", "maintenance"
     }
     assert {item.value for item in FeatureArea} == {
-        "ai_posters", "hdr", "audio_subtitles", "letterbox", "library_integrations",
-        "ml_taste", "maintenance", "system",
+        "ai_posters", "library_integrations", "ml_taste", "maintenance", "system",
     }
     assert {item.value for item in TriggerKind} == {
         "manual", "schedule", "policy", "batch", "parent", "healing", "system", "webhook"

@@ -46,7 +46,7 @@ async def test_api_worker_and_scheduler_providers_use_same_notification_rules(db
     await update_configuration(
         db,
         expected_version=1,
-        updates={"SUBTITLE_SCAN_CONCURRENCY": 4},
+        updates={"HEAL_INTERVAL_MINUTES": 45},
         actor={"kind": "test"},
         trigger="role_cache_test",
     )
@@ -124,11 +124,11 @@ async def test_snapshot_for_is_bounded_to_public_database_execution_keys(db):
 
     empty = provider.snapshot_for(())
     assert empty.version == 1 and empty.values == {}
-    bounded = provider.snapshot_for({"K_NEIGHBORS", "SUBTITLE_SCAN_CONCURRENCY"})
-    assert list(bounded.values) == ["K_NEIGHBORS", "SUBTITLE_SCAN_CONCURRENCY"]
+    bounded = provider.snapshot_for({"K_NEIGHBORS", "GATE_MIN_WIDTH"})
+    assert list(bounded.values) == ["GATE_MIN_WIDTH", "K_NEIGHBORS"]
 
     for forbidden in (
-        "SUBGEN_CALLBACK_TOKEN",
+        "TMDB_READ_ACCESS_TOKEN",
         "CLIP_MODEL_PATH",
         "HEAL_ENABLED",
         "unknown_key",

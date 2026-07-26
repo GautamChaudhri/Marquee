@@ -68,7 +68,6 @@ async def test_review_queue_latest_unreviewed_run_per_movie(
     assert body["total"] == 1
     assert body["items"][0]["run"]["run_id"] == "old-alpha"
     assert body["items"][0]["run"]["reviewed"] is False
-    assert body["items"][0]["movie"]["hdr"] == "dovi"
     assert body["items"][0]["results_url"] == "/api/pipeline/runs/old-alpha"
 
 
