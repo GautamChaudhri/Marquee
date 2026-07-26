@@ -55,9 +55,7 @@ export type PriorityUpdateRequest = Schemas['PriorityUpdateRequest'];
 export type BulkActionRequest = Schemas['BulkActionRequest'];
 export type BulkActionResponse = Schemas['BulkActionResponse'];
 export type BulkActionItem = Schemas['BulkActionItem'];
-export type ConfirmMutationRequest = Schemas['ConfirmMutationRequest'];
 export type JobSubmissionResponse = Schemas['JobSubmissionResponse'];
-export type PlannedJobSubmissionResponse = Schemas['PlannedJobSubmissionResponse'];
 
 export type JobAction = Schemas['JobAction'];
 export type FeatureArea = Schemas['FeatureArea'];

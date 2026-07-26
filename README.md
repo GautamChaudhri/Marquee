@@ -1,30 +1,32 @@
 # Marquee
 
-AI-powered media library management for Radarr and Sonarr, centered on a
-movie-first poster pipeline and related library tooling.
+AI-assisted poster selection for Radarr and Sonarr libraries.
 
 ## Current Status
 
-Marquee is in active development. The documented product surface is movie-only
-today; TV support is planned after the movie workflows have reached the desired
-level of reliability and quality.
+In active development. The product surface is deliberately scoped to the poster
+pipeline: fetch candidates, score them against a learned taste profile, review,
+and deploy. HDR/Dolby Vision management, letterbox detection, and audio/subtitle
+management were removed to get that one capability right; they may return as
+separate features later.
 
 ## What It Does
 
-- Runs an AI-assisted poster selection pipeline with OCR, taste matching,
-  ranking, review, and deployment workflows.
-- Manages audio and subtitle inventories, cleanup policies, mutation jobs, and
-  optional AI subtitle generation through an external Subgen service.
-- Surfaces HDR and Dolby Vision information from Radarr, and provides
-  letterbox detection, crop-tag management, and re-encode planning for movies.
+- Fetches poster candidates from TMDB for movies, shows, and seasons.
+- Filters them through a staged pipeline — resolution and style gates, OCR text
+  analysis, duplicate and near-duplicate removal, then a ranking model trained
+  on your own picks.
+- Presents ranked candidates for review, and deploys the chosen artwork into the
+  media folder with the original backed up.
+- Learns from every decision: approvals, overrides, and rejections feed the
+  taste profile and the ranking head.
 
 ## Tech Stack
 
-- Backend: FastAPI, SQLAlchemy async, Alembic
-- Frontend: SvelteKit
-- Database: PostgreSQL by default, SQLite in tests and some local scenarios
+- Backend: FastAPI, SQLAlchemy async, Alembic, PgQueuer
+- Frontend: SvelteKit 5
+- Database: PostgreSQL
 - ML/runtime: ONNX Runtime, PaddleOCR, OpenCV, NumPy
-- Deployment: Docker Compose plus host-run development workflows
 
 ## Quick Start
 
@@ -34,9 +36,15 @@ Backend:
 python -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
-pip install -e ".[all]"   # include OCR / ML extras
-rtk .venv/bin/python -m marquee.db_migration
-rtk .venv/bin/uvicorn marquee.main:app --reload --host 127.0.0.1 --port 3165
+```
+
+Pick exactly one accelerator extra on Linux — `.[cpu]`, `.[nvidia]`, or
+`.[intel]`. They install conflicting `onnxruntime` builds. Apple Silicon needs
+none. Add `.[all]` for the OCR/ML extras.
+
+```bash
+python -m marquee.db_migration
+uvicorn marquee.main:app --reload --host 127.0.0.1 --port 3165
 ```
 
 Frontend:
@@ -44,7 +52,7 @@ Frontend:
 ```bash
 cd frontend
 npm install
-rtk npm run dev
+npm run dev
 ```
 
 Container stack:
@@ -53,32 +61,30 @@ Container stack:
 docker compose -f docker/docker-compose.yml up -d
 ```
 
-Set any required secrets and client settings in `.env` before starting the
-stack. When running the API directly, point `DB_URL` at a reachable database
-and run migrations as needed with `alembic upgrade head`.
-After pulling the artifact-management taste-page changes, run that migration
-before expecting taste profile / learned head management to appear in the UI.
+Copy `.env.example` to `.env` and fill in `API_KEY`, `DB_URL`,
+`TMDB_READ_ACCESS_TOKEN`, and your Radarr/Sonarr connection details before
+starting. Model files are not committed — they must be exported or downloaded
+into `marquee/ml/models/`.
 
 ## Project Structure
 
-- `marquee/` - FastAPI app, services, pipeline, ML wrappers, models, and jobs
-- `frontend/` - SvelteKit web UI
-- `design/` - core design docs, plans, and archived historical notes
-- `tests/` - pytest suite
-- `docker/` - compose files and hardware profiles
-- `alembic/` - database migrations
+- `marquee/pipeline/` — the poster selection stages
+- `marquee/ml/` — model wrappers, taste profile, ranking head
+- `marquee/core/jobs/` — the durable job platform that runs pipeline work
+- `marquee/api/` — FastAPI routes
+- `marquee/models/` — SQLAlchemy models
+- `frontend/` — SvelteKit web UI
+- `alembic/` — database migrations
+- `design/` — design docs
+- `tests/` — pytest suite
 
 ## Documentation
 
-Start with `design/overview.md`, then use the subsystem docs:
+Start with `design/overview.md`, then:
 
 - `design/poster-pipeline.md`
-- `design/hdr-overlay.md`
-- `design/letterbox.md`
-- `design/audio-subs.md`
 - `design/library.md`
 - `design/job-platform.md`
-- `design/timeline.md`
 
 ## License
 

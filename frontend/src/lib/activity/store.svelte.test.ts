@@ -242,7 +242,7 @@ describe('discovery and single stream', () => {
 
 	it('opens exactly one EventSource across many scopes', async () => {
 		h.store.acquireScope('a', { view: 'queue' });
-		h.store.acquireScope('b', { view: 'queue', feature_area: 'letterbox' });
+		h.store.acquireScope('b', { view: 'queue', feature_area: 'ai_posters' });
 		await flush();
 		expect(h.sources).toHaveLength(1);
 	});
@@ -250,7 +250,7 @@ describe('discovery and single stream', () => {
 	it('sends exact subject and job-type scope to server discovery', async () => {
 		h.store.acquireScope('movie:42', {
 			view: 'queue',
-			feature_area: 'audio_subtitles',
+			feature_area: 'ml_taste',
 			types: ['subtitle_scan', 'subtitle_remove'],
 			subject_kind: 'media_file',
 			subject_reference: ['42']

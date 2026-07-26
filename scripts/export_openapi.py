@@ -17,6 +17,9 @@ from pathlib import Path
 
 # Enable docs generation (openapi() is a no-op when docs_url=None).
 os.environ["DEBUG"] = "true"
+# Export the complete contract, including flows an operator may have gated off, so the
+# schema (and the TypeScript client generated from it) does not depend on local .env.
+os.environ["ONBOARDING_ENABLED"] = "true"
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from marquee.main import app  # noqa: E402

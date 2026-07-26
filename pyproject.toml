@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "marquee"
 version = "0.1.0"
-description = "AI-powered automatic poster finder for Plex/Jellyfin media servers"
+description = "AI-powered automatic poster selection for Plex/Jellyfin media libraries"
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
@@ -56,12 +56,6 @@ dependencies = [
     # Host telemetry for the dashboard (CPU/RAM/disk/uptime). GPU metrics use
     # nvidia-ml-py, which ships in the [nvidia] extra.
     "psutil>=5.9,<8.0",
-    # Subtitle management (design 03). System media tools are installed through
-    # the OS package manager; these are the lightweight Python parsing pieces.
-    "pysubs2>=1.6,<2.0",
-    "langcodes>=3.4,<4.0",
-    "language_data>=1.2,<2.0",
-    "charset-normalizer>=3.0,<4.0",
 ]
 
 [project.optional-dependencies]
@@ -116,29 +110,8 @@ viz = [
     "scikit-learn>=1.5",
 ]
 
-# Subtitle management (design 03). Text-subtitle parsing/preview/validation,
-# language-tag normalization + display names, and legacy-encoding detection.
-# System tools (ffmpeg, ffprobe, mkvtoolnix) are NOT pip-installable — install
-# them via the OS package manager (see the feature's install notes).
-subtitles = [
-    # Kept as a named extra for scripts/docs that already use .[subtitles].
-    # The deps are in the base install because subtitle routes import at app startup.
-]
-
-subgen = [
-    "numpy",
-    "stable-ts-whisperless",
-    "fastapi>=0.115,<0.137",  # see the base-dependencies note on the 0.137 route change
-    "requests",
-    "faster-whisper",
-    "uvicorn[standard]>=0.32,<1.0",
-    "python-multipart>=0.0.12,<1.0",
-    "ffmpeg-python",
-    "watchdog",
-]
-
 all = [
-    "marquee[dev,ml,viz,subtitles,subgen]",
+    "marquee[dev,ml,viz]",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -151,9 +124,6 @@ target-version = "py312"
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP", "B", "C4", "SIM"]
 ignore = ["E501"]
-
-[tool.ruff.lint.per-file-ignores]
-"marquee/vendor/subgen/*.py" = ["ALL"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

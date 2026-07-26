@@ -21,14 +21,12 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     MARQUEE_HW=${MARQUEE_HW}
 
-# OpenCV + Paddle native deps; OpenCL for the intel target.
+# OpenCV + Paddle native deps (libgl1/libglib/libgomp) and pg_dump for backups;
+# OpenCL for the intel target. No ffmpeg/mkvtoolnix: nothing decodes video.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libgl1 \
         libglib2.0-0 \
         libgomp1 \
-        ffmpeg \
-        imagemagick \
-        mkvtoolnix \
         postgresql-client \
     && if [ "${MARQUEE_HW}" = "intel" ]; then \
         apt-get install -y --no-install-recommends \
