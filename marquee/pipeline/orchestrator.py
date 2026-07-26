@@ -20,6 +20,7 @@ from pathlib import Path
 
 from PIL import Image
 
+from marquee.config import settings
 from marquee.core.poster_sources.tmdb import PosterCandidate, TMDBClient
 from marquee.core.text_profiles import OcrGateContext
 from marquee.models import Movie
@@ -153,7 +154,14 @@ async def run_poster_pipeline(
             "metadata_gated": 0,
         }
     else:
-        async with TMDBClient() as tmdb:
+        if not settings.TMDB_READ_ACCESS_TOKEN:
+            raise RuntimeError(
+                "TMDB_READ_ACCESS_TOKEN is not configured; the poster pipeline "
+                "cannot fetch candidates"
+            )
+        async with TMDBClient(
+            read_access_token=settings.TMDB_READ_ACCESS_TOKEN
+        ) as tmdb:
             fetch = await fetch_and_download(
                 tmdb=tmdb,
                 movie=movie,
