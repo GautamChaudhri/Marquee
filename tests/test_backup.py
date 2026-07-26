@@ -307,52 +307,29 @@ def test_only_system_noop_is_dispatch_enabled_and_executable() -> None:
         "letterbox_reencode_restore",
         "letterbox_reencode_discard",
     }
-    assert set(EXECUTION_HANDLERS) == {
-        "subtitle_policy",
-        "subtitle_restore",
-        "subtitle_generate",
-        "subtitle_extract",
-        "subtitle_embed",
-        "audio_remove",
-        "track_remove",
-        "subtitle_remove",
-        "audio_reorder",
-        "subtitle_metadata",
+    # Every family ``kernel_handlers`` binds must be executable.  Registration is a global
+    # import side effect, so a retired family's module can still self-register if another test
+    # imports it directly; this stays a subset check until those modules are gone, after which
+    # ``test_kernel_registers_only_poster_families`` asserts the exact boundary.
+    assert {
         "system_noop",
         "library_sync",
         "poster_pipeline",
-        "letterbox_detect",
-        "letterbox_detect_episode",
-        "letterbox_detect_tv_scope",
-        "letterbox_preview",
-        "subtitle_scan",
-        "subtitle_policy_audit",
-        "dovi_analyze",
-        "dovi_convert",
-        "dovi_publish",
-        "dovi_restore",
-        "dovi_discard",
-        "ranking_residual_train",
         "poster_rescan",
-        "taste_map",
-        "taste_enrich",
-        "taste_rebuild",
         "poster_deploy",
         "poster_restore",
         "poster_reset",
         "poster_backup_subject",
+        "ranking_residual_train",
+        "taste_map",
+        "taste_enrich",
+        "taste_rebuild",
         "backup_create",
         "poster_maintenance",
         "pipeline_cache_clear",
         "job_retention_purge",
         "system_metrics_purge",
-        "letterbox_apply",
-        "letterbox_remove",
-        "letterbox_reencode",
-        "letterbox_reencode_publish",
-        "letterbox_reencode_restore",
-        "letterbox_reencode_discard",
-    }
+    } <= set(EXECUTION_HANDLERS)
 
     for definition in JOB_DEFINITION_REGISTRY:
         if not definition.enabled:
