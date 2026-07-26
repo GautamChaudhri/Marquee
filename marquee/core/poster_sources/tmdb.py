@@ -104,6 +104,15 @@ class TMDBClient:
             await self._client.aclose()
             self._client = None
 
+    async def __aenter__(self) -> TMDBClient:
+        """Scope a client to one block — used by the contained pipeline runner,
+        which owns its own short-lived client rather than the app-state one."""
+        await self.connect()
+        return self
+
+    async def __aexit__(self, *_exc_info: object) -> None:
+        await self.disconnect()
+
     # ── HTTP helpers ─────────────────────────────────────────────────
 
     async def _request(self, method: str, path: str, **kwargs) -> dict | list:
