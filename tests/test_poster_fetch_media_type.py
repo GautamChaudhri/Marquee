@@ -14,8 +14,10 @@ import pytest
 # first hits it half-initialized. Importing marquee.main has the same effect.
 from marquee.core.jobs import delivery  # noqa: F401
 from marquee.core.jobs.documents import PosterPipelineRequestV1
-from marquee.core.jobs.poster_pipeline import _subject_params
+from marquee.core.jobs.internal_runner import _ocr_gate_context
+from marquee.core.jobs.poster_pipeline import _subject_params, _text_gate_params
 from marquee.models import Movie
+from marquee.pipeline.orchestrator import PosterSubjectInput
 from marquee.pipeline.runner import fetch_candidates
 
 
@@ -135,3 +137,76 @@ def test_season_run_without_a_snapshot_number_fails_at_submission():
             PosterPipelineRequestV1(season_id=9, tmdb_id=196322, title="A Show · Season 2"),
             {"kind": "season", "season_id": 9},
         )
+
+
+# ── OCR text gate scope ──────────────────────────────────────────────────
+# The gate has always had movie/show/season profiles; nothing selected one, so
+# every run used the movie default. That silently applies a user's custom movie
+# profile to TV and skips the season profile built for season art.
+
+
+def _subject(media_type: str, season_number: int | None = None) -> PosterSubjectInput:
+    return PosterSubjectInput(
+        title="A Show", media_type=media_type, tmdb_id=1, season_number=season_number
+    )
+
+
+def test_gate_context_uses_the_scope_the_host_resolved():
+    ctx = _ocr_gate_context(
+        {"text_gate": {"scope": "season", "profile_id": None, "director": "D"}},
+        _subject("season", 2),
+    )
+    assert ctx.scope == "season"
+    assert ctx.season_number == 2
+    assert ctx.director == "D"
+    # The season fallback is the profile that expects "SEASON 2" on the art.
+    assert ctx.profile.settings.allow_season is True
+    assert ctx.profile.settings.require_title is False
+
+
+def test_gate_context_falls_back_to_the_subject_scope():
+    """An in-flight job enqueued before this change still gates correctly."""
+    for media_type, expected in (("movie", "movie"), ("series", "show"), ("season", "season")):
+        ctx = _ocr_gate_context({}, _subject(media_type, 1 if media_type == "season" else None))
+        assert ctx.scope == expected
+
+
+def test_gate_context_rejects_an_unknown_scope_rather_than_trusting_it():
+    ctx = _ocr_gate_context({"text_gate": {"scope": "nonsense"}}, _subject("series"))
+    assert ctx.scope == "show"
+
+
+@pytest.mark.asyncio
+async def test_text_gate_params_resolve_per_subject(db):
+    from marquee.models import Movie, Season, Series
+
+    movie = Movie(title="A Film", year=2024, folder_path="/m/f", tmdb_id=550, director="Fincher")
+    series = Series(
+        title="A Show", year=2014, series_path="/t/s", tmdb_id=59659, director="Creator"
+    )
+    db.add_all([movie, series])
+    await db.flush()
+    season = Season(series_id=series.id, season_number=3)
+    db.add(season)
+    await db.commit()
+
+    movie_gate = await _text_gate_params(
+        db, PosterPipelineRequestV1(movie_id=movie.id, tmdb_id=550, title="A Film"), "movie"
+    )
+    assert movie_gate["scope"] == "movie"
+    assert movie_gate["director"] == "Fincher"
+
+    series_gate = await _text_gate_params(
+        db, PosterPipelineRequestV1(series_id=series.id, tmdb_id=59659, title="A Show"), "series"
+    )
+    assert series_gate["scope"] == "show"
+    assert series_gate["director"] == "Creator"
+
+    # A season carries the *series* metadata — a season row has none of its own.
+    season_gate = await _text_gate_params(
+        db,
+        PosterPipelineRequestV1(season_id=season.id, tmdb_id=59659, title="A Show · Season 3"),
+        "season",
+    )
+    assert season_gate["scope"] == "season"
+    assert season_gate["director"] == "Creator"

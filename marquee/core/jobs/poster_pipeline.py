@@ -40,7 +40,7 @@ from marquee.core.jobs.runner_protocol import RunnerRuntimeOptions
 from marquee.core.jobs.runner_runtime import poster_runner_runtime_options
 from marquee.core.pipeline_config import pipeline_settings
 from marquee.ml.residual import baseline_signature
-from marquee.models import Job, JobAttempt, PipelineRun
+from marquee.models import Job, JobAttempt, Movie, PipelineRun, Season, Series
 
 # Runner pipeline stage -> the definition's declared poster progress vocabulary.
 _STAGE_MAP = {
@@ -88,6 +88,46 @@ def _subject_params(
         "series_id": request.series_id,
         "season_id": request.season_id,
         "season_number": season_number if media_type == "season" else None,
+    }
+
+
+async def _text_gate_params(
+    session, request: PosterPipelineRequestV1, media_type: str
+) -> dict[str, Any]:
+    """Resolve the OCR text gate for this subject.
+
+    The runner is a separate process with no database, so the per-subject
+    metadata is read here and the scope is passed by name — the child reloads
+    the profile itself from the shared store.
+
+    Scope matters most for seasons: their art prints "SEASON 4", which the
+    movie-scoped ``title_only`` profile counts as residual text and rejects
+    outright at ``OCR_MAX_RESIDUAL_BOXES=0``. The season scope falls back to
+    ``title_and_season``, which expects it.
+    """
+    if media_type == "movie":
+        movie = await session.get(Movie, request.movie_id)
+        return {
+            "scope": "movie",
+            "profile_id": getattr(movie, "text_profile_id", None),
+            "director": getattr(movie, "director", None),
+            "studios": getattr(movie, "production_companies_json", None),
+            "tagline": getattr(movie, "tagline", None),
+        }
+
+    if media_type == "series":
+        series = await session.get(Series, request.series_id)
+        profile_id = getattr(series, "show_text_profile_id", None)
+    else:
+        season = await session.get(Season, request.season_id)
+        series = await session.get(Series, season.series_id) if season else None
+        profile_id = getattr(series, "season_text_profile_id", None)
+    return {
+        "scope": "show" if media_type == "series" else "season",
+        "profile_id": profile_id,
+        "director": getattr(series, "director", None),
+        "studios": getattr(series, "production_companies_json", None),
+        "tagline": getattr(series, "tagline", None),
     }
 
 
@@ -365,6 +405,10 @@ async def execute_poster_pipeline(
             "baseline_signature": baseline_signature(pipeline_settings.scorer_weights),
         }
     }
+    async with context.session_factory() as session:
+        manifest["params"]["text_gate"] = await _text_gate_params(
+            session, request, _media_type(request)
+        )
     workspace_dir = _workspace_dir(context)
     library = "movies" if _media_type(request) == "movie" else "tv"
     profile_resolution_error: str | None = None
