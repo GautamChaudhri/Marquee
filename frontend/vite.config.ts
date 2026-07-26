@@ -9,7 +9,9 @@ export default defineConfig({
 		chunkSizeWarningLimit: 5000
 	},
 	server: {
-		host: '192.168.4.199',
+		// Bind all interfaces so the dev server works on any machine; override the
+		// exposed address with `vite dev --host <ip>` when you need a specific one.
+		host: true,
 		port: 3166
 	},
 	plugins: [

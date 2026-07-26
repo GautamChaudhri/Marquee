@@ -6,8 +6,11 @@
 .codex/
 .brv/
 .serena/
+.hermes/
+.agents/
 .idea/
 .vscode/
+.github/
 .pytest_cache/
 .ruff_cache/
 __pycache__/
@@ -21,8 +24,19 @@ data/**
 !data/**/.gitkeep
 marquee/ml/models/**
 experiments/**
-!experiments/gauntlet_runner.py
 design/**
 tests/**
+screenshots/
+bin/
 CLAUDE.md
 AGENTS.md
+
+# Frontend — the web image installs from package-lock and builds from source.
+# Shipping these would bloat the build context and shadow the clean install.
+frontend/node_modules/
+frontend/build/
+frontend/.svelte-kit/
+frontend/test-results/
+frontend/playwright-report/
+frontend/e2e/
+frontend/design/
