@@ -1,0 +1,16 @@
+# NVIDIA GPU overlay. Requires the NVIDIA Container Toolkit on the host and an
+# image built with MARQUEE_HW=nvidia.
+#
+#   MARQUEE_HW=nvidia docker compose \
+#     -f docker/docker-compose.yml -f docker/compose.nvidia.yml up -d
+#
+# Only the worker gets the GPU: it is the sole owner of CLIP/DINOv2/OCR work.
+services:
+  marquee-worker:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

@@ -1,0 +1,25 @@
+# Single public origin for Marquee.
+#
+# Everything goes to the web service, including /api/* — the SvelteKit server
+# owns that proxy and attaches the API key server-side. Routing /api/* straight
+# to the backend here would strip the key and every browser call would 401.
+#
+# The API's own port is published on loopback only (see docker-compose.yml) for
+# tooling that carries its own key.
+
+:80 {
+	encode zstd gzip
+
+	# Job event streams are long-lived; never buffer or time them out.
+	@sse path /api/jobs/events/stream /api/jobs/*/logs/stream
+	reverse_proxy @sse marquee-web:3000 {
+		flush_interval -1
+	}
+
+	reverse_proxy marquee-web:3000
+
+	log {
+		output stdout
+		format console
+	}
+}
