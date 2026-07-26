@@ -488,22 +488,44 @@ class FetchOutcome:
 async def fetch_candidates(
     tmdb: TMDBClient,
     movie: Movie,
+    *,
+    media_type: str = "movie",
+    season_number: int | None = None,
 ) -> tuple[list[PosterCandidate], str | None]:
-    """Fetch TMDB poster metadata for a movie — no downloads.
+    """Fetch TMDB poster metadata for one subject — no downloads.
+
+    ``media_type`` picks the TMDB namespace. A series id sent to ``/movie`` is
+    not merely a 404: ids are allocated per namespace, so a series id that also
+    exists as a movie id returns that unrelated movie's posters.
 
     Returns ``(candidates, primary_name)``.  The caller is responsible for
     applying metadata gates and downloading the survivors.
     """
-    candidates = await tmdb.get_movie_images(movie.tmdb_id)
+    if media_type == "season":
+        if season_number is None:
+            raise ValueError("a season poster run requires the season number")
+        candidates = await tmdb.get_season_images(movie.tmdb_id, season_number)
+    elif media_type == "series":
+        candidates = await tmdb.get_tv_images(movie.tmdb_id)
+    elif media_type == "movie":
+        candidates = await tmdb.get_movie_images(movie.tmdb_id)
+    else:
+        raise ValueError(f"unsupported poster media type: {media_type!r}")
+
     try:
-        primary_name = await tmdb.get_movie_primary_poster(movie.tmdb_id)
+        if media_type == "season":
+            primary_name = await tmdb.get_season_primary_poster(movie.tmdb_id, season_number)
+        elif media_type == "series":
+            primary_name = await tmdb.get_tv_primary_poster(movie.tmdb_id)
+        else:
+            primary_name = await tmdb.get_movie_primary_poster(movie.tmdb_id)
     except Exception as exc:
         primary_name = None
         logger.warning(
             "FETCH | primary poster lookup failed (%s) — official_family disabled this run",
             exc,
         )
-    logger.info("FETCH | primary_poster=%s", primary_name)
+    logger.info("FETCH | media_type=%s primary_poster=%s", media_type, primary_name)
     return candidates, primary_name
 
 
@@ -514,11 +536,15 @@ async def fetch_and_download(
     originals_dir: Path,
     timings: dict[str, float],
     progress: ProgressCallback | None = None,
+    media_type: str = "movie",
+    season_number: int | None = None,
 ) -> FetchOutcome:
     """Stage 1: fetch candidate metadata, gate by resolution (no download),
     then download every survivor at the configured size."""
     stage_started = _stage_start("fetch", progress=progress)
-    candidates, primary_name = await fetch_candidates(tmdb, movie)
+    candidates, primary_name = await fetch_candidates(
+        tmdb, movie, media_type=media_type, season_number=season_number
+    )
 
     # Build candidate_map, records, and resolution_by_name for ALL
     # candidates (gated candidates stay in the map so downstream stages

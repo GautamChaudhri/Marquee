@@ -50,6 +50,8 @@ class PosterSubjectInput:
     tmdb_id: int | None = None
     series_id: int | None = None
     season_id: int | None = None
+    # TMDB addresses season art by season number, not by our row id.
+    season_number: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -168,6 +170,8 @@ async def run_poster_pipeline(
                 originals_dir=out_dir,
                 timings=timings,
                 progress=progress,
+                media_type=subject.media_type,
+                season_number=subject.season_number,
             )
         candidate_map = fetch.candidate_map
         records = fetch.records

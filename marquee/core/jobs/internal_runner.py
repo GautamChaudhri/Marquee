@@ -232,6 +232,7 @@ def _run_poster_single(manifest: dict[str, Any], control: ControlWriter) -> dict
         tmdb_id=subject_params.get("tmdb_id"),
         series_id=subject_params.get("series_id"),
         season_id=subject_params.get("season_id"),
+        season_number=subject_params.get("season_number"),
     )
     source = PosterSourceInput(mode=source_params.get("mode", "tmdb"))
     run_id = params.get("run_id") if isinstance(params.get("run_id"), str) else None
