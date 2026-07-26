@@ -1,6 +1,6 @@
 """Shared media-file resolution boundary (design §19.4).
 
-Every subtitle/letterbox/future media operation resolves a ``media_file_id`` to
+Media operations resolve a ``media_file_id`` to
 a validated, stat'd ``ResolvedMediaFile`` here — the one place that translates a
 source-namespace path, enforces the media-root guard, and computes the cheap
 file signature used for stale-plan detection.

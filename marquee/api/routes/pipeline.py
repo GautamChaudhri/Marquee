@@ -79,7 +79,7 @@ _STALE_BATCH_JOB_TO_RUN_STATUS = {
 def _downloaded():
     """Movie has a file on disk. Mirrors the library list's availability filter
     (``api/routes/library.py``) so the pipeline ignores undownloaded Radarr
-    movies entirely — exactly like the films list and letterbox do."""
+    movies entirely — exactly like the films list does."""
     return or_(
         Movie.movie_file_path.is_not(None),
         exists(

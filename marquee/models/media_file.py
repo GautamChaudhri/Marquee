@@ -1,6 +1,6 @@
 """MediaFile — the physical-file unit of work for media mutations.
 
-Subtitle (and future letterbox/HDR) operations modify a *file*, not a Movie or
+Media operations address a *file*, not a Movie or
 Episode row. A movie maps to one active file; a multi-episode file maps to many
 Episode rows via ``episode_media_files``. Jobs lock and fingerprint the exact
 ``MediaFile`` they mutate.

@@ -79,7 +79,6 @@ def test_section_vocabulary_is_frozen():
         "facts",
         "before_after",
         "change_list",
-        "track_table",
         "metric_cards",
         "warnings",
         "failures",

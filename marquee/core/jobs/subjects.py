@@ -107,28 +107,6 @@ class MediaFileSnapshot(SubjectSnapshotBase):
     artwork_key: str | None = None
 
 
-class TrackSnapshot(SubjectSnapshotBase):
-    kind: Literal["track"] = "track"
-    track_kind: Literal["audio", "subtitle"]
-    media_file_id: int
-    track_id: str | None = None
-    stream_index: int | None = None
-    tool_track_id: int | None = None
-    language: str = "und"
-    codec: str | None = None
-    channels: int | None = None
-    title: str | None = None
-    is_default: bool = False
-    is_forced: bool = False
-    is_sdh: bool = False
-    is_commentary: bool = False
-    embedded: bool
-    file_name: str
-    series_title: str | None = None
-    season_number: int | None = None
-    episode_number: int | None = None
-
-
 class PosterCandidateSetSnapshot(SubjectSnapshotBase):
     kind: Literal["poster_candidate_set"] = "poster_candidate_set"
     media_kind: Literal["movie", "series", "season"]
@@ -175,7 +153,6 @@ SubjectSnapshot = Annotated[
     | SeasonSnapshot
     | EpisodeSnapshot
     | MediaFileSnapshot
-    | TrackSnapshot
     | PosterCandidateSetSnapshot
     | ModelProfileTrainingSnapshot
     | AggregateBatchSnapshot

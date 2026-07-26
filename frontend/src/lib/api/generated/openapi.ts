@@ -2821,7 +2821,6 @@ export interface components {
 				| components['schemas']['FactsSection']
 				| components['schemas']['BeforeAfterSection']
 				| components['schemas']['ChangeListSection']
-				| components['schemas']['TrackTableSection']
 				| components['schemas']['MetricCardsSection']
 				| components['schemas']['WarningsSection']
 				| components['schemas']['FailuresSection']
@@ -4133,68 +4132,6 @@ export interface components {
 			 * @enum {string}
 			 */
 			type: 'timestamp';
-		};
-		/** TrackRow */
-		TrackRow: {
-			/** Channels */
-			channels?: number | null;
-			/** Codec */
-			codec?: string | null;
-			/**
-			 * Embedded
-			 * @default true
-			 */
-			embedded: boolean;
-			/**
-			 * Is Commentary
-			 * @default false
-			 */
-			is_commentary: boolean;
-			/**
-			 * Is Default
-			 * @default false
-			 */
-			is_default: boolean;
-			/**
-			 * Is Forced
-			 * @default false
-			 */
-			is_forced: boolean;
-			/**
-			 * Is Sdh
-			 * @default false
-			 */
-			is_sdh: boolean;
-			/**
-			 * Language
-			 * @default und
-			 */
-			language: string;
-			/** Outcome */
-			outcome?: ('succeeded' | 'failed' | 'skipped' | 'not_applied') | null;
-			/** Reason */
-			reason?: string | null;
-			/** Requested */
-			requested?: string | null;
-			/** Title */
-			title?: string | null;
-			/**
-			 * Track Kind
-			 * @enum {string}
-			 */
-			track_kind: 'audio' | 'subtitle';
-		};
-		/** TrackTableSection */
-		TrackTableSection: {
-			/**
-			 * @description discriminator enum property added by openapi-typescript
-			 * @enum {string}
-			 */
-			kind: 'track_table';
-			/** Title */
-			title?: string | null;
-			/** Tracks */
-			tracks: components['schemas']['TrackRow'][];
 		};
 		/**
 		 * TriggerKind

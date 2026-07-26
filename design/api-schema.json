@@ -2787,7 +2787,6 @@
                   "metric_cards": "#/components/schemas/MetricCardsSection",
                   "notice": "#/components/schemas/NoticeSection",
                   "steps": "#/components/schemas/StepsSection",
-                  "track_table": "#/components/schemas/TrackTableSection",
                   "warnings": "#/components/schemas/WarningsSection"
                 },
                 "propertyName": "kind"
@@ -2801,9 +2800,6 @@
                 },
                 {
                   "$ref": "#/components/schemas/ChangeListSection"
-                },
-                {
-                  "$ref": "#/components/schemas/TrackTableSection"
                 },
                 {
                   "$ref": "#/components/schemas/MetricCardsSection"
@@ -7050,169 +7046,6 @@
           "at"
         ],
         "title": "TimestampValue",
-        "type": "object"
-      },
-      "TrackRow": {
-        "additionalProperties": false,
-        "properties": {
-          "channels": {
-            "anyOf": [
-              {
-                "minimum": 0.0,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Channels"
-          },
-          "codec": {
-            "anyOf": [
-              {
-                "maxLength": 60,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Codec"
-          },
-          "embedded": {
-            "default": true,
-            "title": "Embedded",
-            "type": "boolean"
-          },
-          "is_commentary": {
-            "default": false,
-            "title": "Is Commentary",
-            "type": "boolean"
-          },
-          "is_default": {
-            "default": false,
-            "title": "Is Default",
-            "type": "boolean"
-          },
-          "is_forced": {
-            "default": false,
-            "title": "Is Forced",
-            "type": "boolean"
-          },
-          "is_sdh": {
-            "default": false,
-            "title": "Is Sdh",
-            "type": "boolean"
-          },
-          "language": {
-            "default": "und",
-            "maxLength": 20,
-            "title": "Language",
-            "type": "string"
-          },
-          "outcome": {
-            "anyOf": [
-              {
-                "enum": [
-                  "succeeded",
-                  "failed",
-                  "skipped",
-                  "not_applied"
-                ],
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Outcome"
-          },
-          "reason": {
-            "anyOf": [
-              {
-                "maxLength": 500,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Reason"
-          },
-          "requested": {
-            "anyOf": [
-              {
-                "maxLength": 300,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Requested"
-          },
-          "title": {
-            "anyOf": [
-              {
-                "maxLength": 300,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Title"
-          },
-          "track_kind": {
-            "enum": [
-              "audio",
-              "subtitle"
-            ],
-            "title": "Track Kind",
-            "type": "string"
-          }
-        },
-        "required": [
-          "track_kind"
-        ],
-        "title": "TrackRow",
-        "type": "object"
-      },
-      "TrackTableSection": {
-        "additionalProperties": false,
-        "properties": {
-          "kind": {
-            "const": "track_table",
-            "default": "track_table",
-            "title": "Kind",
-            "type": "string"
-          },
-          "title": {
-            "anyOf": [
-              {
-                "maxLength": 200,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Title"
-          },
-          "tracks": {
-            "items": {
-              "$ref": "#/components/schemas/TrackRow"
-            },
-            "maxItems": 200,
-            "minItems": 1,
-            "title": "Tracks",
-            "type": "array"
-          }
-        },
-        "required": [
-          "tracks"
-        ],
-        "title": "TrackTableSection",
         "type": "object"
       },
       "TriggerKind": {

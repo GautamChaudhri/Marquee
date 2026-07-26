@@ -47,32 +47,6 @@
 								>{/if}
 						</li>{/each}
 				</ul>
-			{:else if section.kind === 'track_table'}
-				<div class="table-wrap">
-					<table>
-						<thead
-							><tr
-								><th>Kind</th><th>Language</th><th>Codec</th><th>Title</th><th>Flags</th><th
-									>Outcome</th
-								></tr
-							></thead
-						><tbody
-							>{#each section.tracks as track, i (i)}<tr
-									><td>{track.track_kind}</td><td>{track.language}</td><td>{track.codec ?? '—'}</td
-									><td>{track.title ?? '—'}</td><td
-										>{[
-											track.is_default && 'default',
-											track.is_forced && 'forced',
-											track.is_sdh && 'SDH',
-											track.is_commentary && 'commentary'
-										]
-											.filter(Boolean)
-											.join(', ') || '—'}</td
-									><td>{track.outcome ?? '—'}{track.reason ? ` · ${track.reason}` : ''}</td></tr
-								>{/each}</tbody
-						>
-					</table>
-				</div>
 			{:else if section.kind === 'steps'}
 				<ol class="steps">
 					{#each section.steps as step (step.key)}<li class={step.state}>
@@ -196,25 +170,6 @@
 	}
 	a {
 		color: var(--gold);
-	}
-	.table-wrap {
-		overflow-x: auto;
-	}
-	table {
-		width: 100%;
-		border-collapse: collapse;
-		font-size: 12px;
-	}
-	th,
-	td {
-		text-align: left;
-		padding: 8px;
-		border-bottom: 1px solid var(--line2);
-	}
-	th {
-		color: var(--faint2);
-		font-size: 10px;
-		text-transform: uppercase;
 	}
 	.steps {
 		list-style: none;

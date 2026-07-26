@@ -244,42 +244,6 @@ _LIBRARY_SYNC_PROGRESS = ProgressPolicy(
     eta_capability=False,
 )
 
-# A single media-file probe has no reliable up-front total, so it narrates honest indeterminate
-# probe/inventory stages rather than a fabricated percentage.
-_SUBTITLE_SCAN_PROGRESS = ProgressPolicy(
-    strategy=ProgressStrategy.INDETERMINATE,
-    overall_unit="steps",
-    denominator_source="none",
-    current_unit="step",
-    aggregation_strategy="none",
-    stages=(
-        ("probing", "jobs.subtitle_scan.progress.probing"),
-        ("inventorying", "jobs.subtitle_scan.progress.inventorying"),
-    ),
-    tool_adapter=None,
-    persistence_cadence_seconds=2,
-    meaningful_delta_percent=None,
-    max_snapshot_staleness_seconds=15,
-    eta_capability=False,
-)
-
-_SUBTITLE_POLICY_AUDIT_PROGRESS = ProgressPolicy(
-    strategy=ProgressStrategy.INDETERMINATE,
-    overall_unit="subjects",
-    denominator_source="none",
-    current_unit="subject",
-    aggregation_strategy="none",
-    stages=(
-        ("selecting", "jobs.subtitle_policy_audit.progress.selecting"),
-        ("evaluating", "jobs.subtitle_policy_audit.progress.evaluating"),
-    ),
-    tool_adapter=None,
-    persistence_cadence_seconds=2,
-    meaningful_delta_percent=None,
-    max_snapshot_staleness_seconds=15,
-    eta_capability=False,
-)
-
 _POSTER_PIPELINE_PROGRESS = ProgressPolicy(
     strategy=ProgressStrategy.HYBRID,
     overall_unit="stages",
@@ -381,12 +345,6 @@ _PROGRESS_POLICIES: dict[str, ProgressPolicy] = {
     "ranking_residual_train": _ML_PUBLICATION_PROGRESS,
 }
 
-_NATIVE_FFMPEG: frozenset[str] = frozenset()
-_NATIVE_MKVMERGE = frozenset(
-    {
-    }
-)
-
 _PIPELINE_CONFIGURATION_KEYS = frozenset(
     key
     for key, entry in CONFIGURATION_CATALOG.items()
@@ -395,18 +353,10 @@ _PIPELINE_CONFIGURATION_KEYS = frozenset(
     and entry.database_owned
     and entry.sensitivity == "public"
 )
-_SUBTITLE_CONFIGURATION_KEYS = frozenset(
-    key
-    for key, entry in CONFIGURATION_CATALOG.items()
-    if entry.owner == "subtitle"
-    and entry.scope == "execution"
-    and entry.database_owned
-    and entry.sensitivity == "public"
+_CONFIGURATION_KEYS_BY_TYPE = dict.fromkeys(
+    {"poster_pipeline", "taste_rebuild", "taste_map", "taste_enrich", "ranking_residual_train"},
+    _PIPELINE_CONFIGURATION_KEYS,
 )
-_CONFIGURATION_KEYS_BY_TYPE = {
-    **dict.fromkeys({"poster_pipeline", "taste_rebuild", "taste_map", "taste_enrich", "ranking_residual_train"}, _PIPELINE_CONFIGURATION_KEYS),
-    **dict.fromkeys({"subtitle_scan", "subtitle_policy_audit", "audio_remove", "track_remove", "subtitle_remove", "subtitle_embed", "subtitle_metadata", "audio_reorder", "subtitle_extract", "subtitle_generate", "subtitle_policy", "subtitle_restore"}, _SUBTITLE_CONFIGURATION_KEYS),
-}
 
 
 def _triggers(job_type: str) -> frozenset[TriggerKind]:
@@ -461,10 +411,6 @@ def _progress(spec: _DefinitionSpec) -> ProgressPolicy:
             eta_capability=False,
         )
     tool_adapter = None
-    if spec.job_type in _NATIVE_FFMPEG:
-        tool_adapter = "ffmpeg_progress"
-    elif spec.job_type in _NATIVE_MKVMERGE:
-        tool_adapter = "mkvmerge_gui"
     determinate = spec.progress == ProgressStrategy.DETERMINATE
     return ProgressPolicy(
         strategy=spec.progress,
@@ -552,8 +498,6 @@ def _definition(spec: _DefinitionSpec) -> JobDefinition:
         safety_policy=(
             SafetyPolicy(media_file=True, media_write=True)
             if spec.execution == ExecutionClass.MEDIA_WRITE
-            else SafetyPolicy(media_file=True)
-            if spec.job_type == "letterbox_preview"
             else SafetyPolicy(exclusive_maintenance=True)
             if spec.execution == ExecutionClass.MAINTENANCE and spec.safety == _U
             else SafetyPolicy()

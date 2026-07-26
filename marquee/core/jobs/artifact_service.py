@@ -53,9 +53,6 @@ class ArtifactPolicy:
 
 
 ARTIFACT_POLICIES: dict[str, ArtifactPolicy] = {
-    "managed_sidecar": ArtifactPolicy(
-        ".srt", frozenset({"application/x-subrip"}), 64 * 1024 * 1024
-    ),
     "taste_profile": ArtifactPolicy(
         ".npz", frozenset({"application/octet-stream"}), 256 * 1024 * 1024
     ),
@@ -102,7 +99,7 @@ async def register_existing_physical_artifact(
     attempt_id: int,
     fence_token: int,
     source: ClassifiedPath,
-    kind: Literal["managed_sidecar", "product_backup"],
+    kind: Literal["product_backup"],
     name: str,
     checksum: str,
     size_bytes: int,
@@ -115,7 +112,7 @@ async def register_existing_physical_artifact(
         or not _IDENTITY.fullmatch(job_id)
         or attempt_id < 1
         or fence_token < 1
-        or kind not in {"managed_sidecar", "product_backup"}
+        or kind != "product_backup"
         or not _SAFE_NAME.fullmatch(name)
         or not _CHECKSUM.fullmatch(checksum)
         or size_bytes < 0
@@ -159,11 +156,7 @@ async def register_existing_physical_artifact(
             name=name,
             status="available",
             storage_key=source.key.value,
-            content_type=(
-                "application/x-subrip"
-                if kind == "managed_sidecar"
-                else "application/octet-stream"
-            ),
+            content_type="application/octet-stream",
             size_bytes=size_bytes,
             checksum=checksum,
             artifact_metadata={

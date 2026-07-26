@@ -170,28 +170,6 @@ class ChangeListSection(StrictDocument):
     items: tuple[ChangeItem, ...] = Field(min_length=1, max_length=200)
 
 
-class TrackRow(StrictDocument):
-    track_kind: Literal["audio", "subtitle"]
-    language: str = Field(default="und", max_length=20)
-    codec: str | None = Field(default=None, max_length=60)
-    channels: int | None = Field(default=None, ge=0)
-    title: str | None = Field(default=None, max_length=300)
-    is_default: bool = False
-    is_forced: bool = False
-    is_sdh: bool = False
-    is_commentary: bool = False
-    embedded: bool = True
-    requested: str | None = Field(default=None, max_length=300)
-    outcome: TargetOutcome | None = None
-    reason: str | None = Field(default=None, max_length=500)
-
-
-class TrackTableSection(StrictDocument):
-    kind: Literal["track_table"] = "track_table"
-    title: str | None = Field(default=None, max_length=200)
-    tracks: tuple[TrackRow, ...] = Field(min_length=1, max_length=200)
-
-
 class MetricCard(StrictDocument):
     label: str = Field(min_length=1, max_length=200)
     value: PresentationValue
@@ -284,7 +262,6 @@ PresentationSection = Annotated[
     FactsSection
     | BeforeAfterSection
     | ChangeListSection
-    | TrackTableSection
     | MetricCardsSection
     | WarningsSection
     | FailuresSection
@@ -301,7 +278,6 @@ SECTION_KINDS = frozenset(
         "facts",
         "before_after",
         "change_list",
-        "track_table",
         "metric_cards",
         "warnings",
         "failures",

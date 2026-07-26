@@ -47,7 +47,7 @@ PipeSink = Callable[[str, bytes, bool], Awaitable[None]]
 # payload. Poster work runs entirely inside the internal runner; pg_dump is the one external
 # binary the product still shells out to (database backups).
 TOOL_CATALOG = frozenset({"pg_dump"})
-# Bounded default in-memory capture for tool stdout that a handler parses (e.g. ffprobe JSON).
+# Bounded default in-memory capture for tool stdout that a handler parses.
 DEFAULT_TOOL_STDOUT_LIMIT = 16 * 1024 * 1024
 
 

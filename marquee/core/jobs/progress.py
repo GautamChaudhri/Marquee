@@ -224,7 +224,8 @@ class ProgressPolicy:
     current_unit: str | None
     aggregation_strategy: str
     stages: tuple[tuple[str, str], ...]
-    tool_adapter: Literal["ffmpeg_progress", "mkvmerge_gui"] | None
+    # Names the adapter that produces measurements, e.g. "poster_analysis_adapter".
+    tool_adapter: str | None
     persistence_cadence_seconds: float
     meaningful_delta_percent: float | None
     max_snapshot_staleness_seconds: float

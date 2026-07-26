@@ -32,7 +32,6 @@ from marquee.core.jobs.subjects import (
     SeasonSnapshot,
     SeriesSnapshot,
     SystemWorkSnapshot,
-    TrackSnapshot,
 )
 
 
@@ -60,13 +59,6 @@ def _subjects():
             media_kind="standalone",
             source="test",
             source_key="1",
-        ),
-        "track": TrackSnapshot(
-            **common,
-            track_kind="subtitle",
-            media_file_id=1,
-            embedded=True,
-            file_name="video.mkv",
         ),
         "poster_candidate_set": PosterCandidateSetSnapshot(
             **common, media_kind="movie", subject_id=1, title="Movie"

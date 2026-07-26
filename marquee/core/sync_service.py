@@ -242,7 +242,7 @@ class SyncService:
                 movie_file = movie_file_by_movie_id.get(radarr_id) or data.get("movieFile") or {}
                 movie.movie_file_path = movie_file.get("relativePath")
 
-                # ── Encoded video (letterbox pre-filter, design 04) ───
+                # ── Encoded video (resolution label) ──────────────────
                 width, height, container = _extract_media_info(movie_file)
                 if width and height:
                     movie.video_width = width
@@ -250,7 +250,6 @@ class SyncService:
                 if container:
                     movie.container = container
 
-                # ── HDR / Dolby Vision (frontend G2 badges) ───────────
 
                 # ── Quality ───────────────────────────────────────────
 
@@ -612,12 +611,12 @@ class SyncService:
             if fdata is not None:
                 episode.episode_file_path = fdata.get("path")
 
-                # ── HDR / Dolby Vision + resolution (plan 06) ──────────
+                # ── Encoded resolution ────────────────────────────────
                 width, height, _ = _extract_media_info(fdata)
                 episode.video_width = width
                 episode.video_height = height
             else:
-                # File was deleted — HDR/resolution truth is no longer known.
+                # File was deleted — resolution truth is no longer known.
                 episode.video_width = None
                 episode.video_height = None
 
@@ -908,7 +907,7 @@ def _extract_media_info(movie_file: dict) -> tuple[int | None, int | None, str |
     Radarr's ``mediaInfo`` may carry ``width``/``height`` directly or only a
     ``resolution`` string like ``"1920x1080"``; the container is derived from
     the file extension. All fields are best-effort — missing data just leaves
-    the pre-filter to fall back to an on-demand ffprobe.
+    callers to treat the value as unknown.
     """
     media_info = movie_file.get("mediaInfo") or {}
     width = media_info.get("width")
