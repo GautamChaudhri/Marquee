@@ -11,7 +11,6 @@ import asyncio
 import logging
 import os
 import re
-import subprocess
 from collections.abc import Callable, Iterable
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
@@ -24,7 +23,6 @@ from marquee.core import system_metrics
 from marquee.core.jobs.process_identity import capture_process_identity, containment_capabilities
 from marquee.core.jobs.worker_nodes import worker_build
 from marquee.database import _get_session_factory
-from marquee.media import binaries
 from marquee.models import RuntimeInstance
 
 logger = logging.getLogger(__name__)
@@ -32,39 +30,8 @@ logger = logging.getLogger(__name__)
 RuntimeRole = Literal["worker", "scheduler"]
 RuntimeReadiness = Literal["starting", "ready", "not_ready", "stopped"]
 _VERSION = re.compile(r"\b\d+(?:\.\d+){1,3}\b")
-_TOOL_VERSION_ARGS = {
-    "ffmpeg": ("-version",),
-    "ffprobe": ("-version",),
-    "mkvmerge": ("--version",),
-    "mkvpropedit": ("--version",),
-    "dovi_tool": ("--version",),
-}
-
-
-def _tool_version(name: str) -> str | None:
-    executable = binaries.resolve(name)
-    if executable is None:
-        return None
-    try:
-        result = subprocess.run(  # noqa: S603 - resolved configured executable, fixed flags
-            [executable, *_TOOL_VERSION_ARGS[name]],
-            capture_output=True,
-            text=True,
-            timeout=3,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return "unavailable"
-    match = _VERSION.search(f"{result.stdout}\n{result.stderr}"[:512])
-    return match.group(0) if match else "present"
-
-
 def capability_snapshot(entrypoints: Iterable[str]) -> dict[str, Any]:
     """Return bounded capability facts without paths, environment, payloads, or raw dumps."""
-    tools = {
-        name: {"available": (version := _tool_version(name)) is not None, "version": version}
-        for name in sorted(_TOOL_VERSION_ARGS)
-    }
     try:
         gpu = system_metrics.gpu_metrics()
     except (OSError, RuntimeError, ValueError):
@@ -78,11 +45,7 @@ def capability_snapshot(entrypoints: Iterable[str]) -> dict[str, Any]:
     return {
         "entrypoints": sorted(set(entrypoints)),
         "containment": containment_capabilities().public(),
-        "media_tools": tools,
         "gpu": gpu_facts,
-        "certifications": {
-            "dovi_conversion": settings.JOB_DOVI_CONVERSION_CERTIFIED,
-        },
     }
 
 

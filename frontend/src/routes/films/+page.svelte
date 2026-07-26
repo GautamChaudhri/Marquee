@@ -76,24 +76,6 @@
 		<option value="missing">No poster</option>
 	</select>
 
-	<select value={data.query.hdr ?? ''} onchange={(e) => apply({ hdr: selectVal(e) })}>
-		<option value="">HDR: any</option>
-		<option value="dovi">Dolby Vision</option>
-		<option value="hdr10">HDR10</option>
-		<option value="sdr">SDR</option>
-		<option value="unknown">Unknown</option>
-	</select>
-
-	<select
-		value={data.query.letterbox_status ?? ''}
-		onchange={(e) => apply({ letterbox_status: selectVal(e) })}
-	>
-		<option value="">Letterbox: any</option>
-		<option value="candidate">Candidate</option>
-		<option value="tagged">Tagged</option>
-		<option value="none">None</option>
-	</select>
-
 	<select value={data.query.sort ?? 'title'} onchange={(e) => apply({ sort: selectVal(e) }, false)}>
 		<option value="title">Sort: Title</option>
 		<option value="year">Sort: Year</option>

@@ -14,7 +14,6 @@
 				year={m.year}
 				posterStatus={m.poster_status}
 				posterUrl={m.poster_url}
-				hdr={m.hdr}
 			/>
 			<div class="cap">{m.title}</div>
 		</button>

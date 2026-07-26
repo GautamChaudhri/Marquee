@@ -18,7 +18,6 @@ from marquee.core.configuration import (
 from marquee.core.configuration_cache import configuration_provider
 from marquee.core.path_utils import PathValidationError
 from marquee.core.poster_files import sanitize_poster_filename
-from marquee.core.subtitles.config import SubtitleSettings
 from marquee.database import get_db
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
@@ -34,7 +33,6 @@ async def get_settings(db: Annotated[AsyncSession, Depends(get_db)]):
     state = configuration_provider.state
     provider_health = configuration_provider.health()
     app_settings = Settings(**configuration_provider.effective("app"))
-    subtitle_settings = SubtitleSettings(**configuration_provider.effective("subtitle"))
     metadata = {
         key: {
             "owner": "database" if entry.database_owned else "environment",
@@ -43,7 +41,7 @@ async def get_settings(db: Annotated[AsyncSession, Depends(get_db)]):
             "scope": entry.scope,
         }
         for key, entry in CONFIGURATION_CATALOG.items()
-        if entry.owner in {"app", "subtitle"}
+        if entry.owner == "app"
     }
     return {
         "configuration_version": state.version,
@@ -80,29 +78,6 @@ async def get_settings(db: Annotated[AsyncSession, Depends(get_db)]):
                 "api_key_configured": _configured(app_settings.SONARR_API_KEY),
                 "path_mapping_configured": app_settings.sonarr_path_configured,
             },
-            "subgen": {
-                "configured": subtitle_settings.generation_enabled,
-                "url_configured": _configured(subtitle_settings.SUBGEN_URL),
-                "callback_token_configured": _configured(subtitle_settings.SUBGEN_CALLBACK_TOKEN),
-                "deployment": subtitle_settings.subgen_deployment,
-                "url": subtitle_settings.subgen_url,
-                "profile_name": subtitle_settings.SUBGEN_PROFILE_NAME,
-                "model_label": subtitle_settings.SUBGEN_MODEL_LABEL,
-                "mode": subtitle_settings.SUBGEN_MODE,
-                "local_path_prefix": subtitle_settings.SUBGEN_LOCAL_PATH_PREFIX,
-                "remote_path_prefix": subtitle_settings.SUBGEN_REMOTE_PATH_PREFIX,
-                "embedded_port": subtitle_settings.SUBGEN_EMBEDDED_PORT,
-                "whisper_model": subtitle_settings.SUBGEN_WHISPER_MODEL,
-                "transcribe_device": subtitle_settings.SUBGEN_TRANSCRIBE_DEVICE,
-                "gpu_index": subtitle_settings.SUBGEN_GPU_INDEX,
-                "compute_type": subtitle_settings.SUBGEN_COMPUTE_TYPE,
-                "concurrent_transcriptions": (subtitle_settings.SUBGEN_CONCURRENT_TRANSCRIPTIONS),
-                "whisper_threads": subtitle_settings.SUBGEN_WHISPER_THREADS,
-                "model_path": subtitle_settings.SUBGEN_MODEL_PATH,
-                "naming_type": subtitle_settings.SUBGEN_NAMING_TYPE,
-                "name_includes_subgen": subtitle_settings.SUBGEN_NAME_INCLUDES_SUBGEN,
-                "name_includes_model": subtitle_settings.SUBGEN_NAME_INCLUDES_MODEL,
-            },
         },
         "paths": {
             "data_dir": app_settings.DATA_DIR,
@@ -126,40 +101,6 @@ async def get_settings(db: Annotated[AsyncSession, Depends(get_db)]):
             "restore_method": app_settings.POSTER_RESTORE_METHOD,
             "backup_dir": app_settings.POSTER_BACKUP_DIR,
         },
-        "letterbox": {
-            "enabled": app_settings.LETTERBOX_ENABLED,
-            "method": app_settings.LETTERBOX_DETECT_METHOD,
-            "auto_apply_high": app_settings.LETTERBOX_AUTO_APPLY_HIGH,
-            "asymmetric": app_settings.LETTERBOX_ASYMMETRIC,
-            "heal_enabled": app_settings.LETTERBOX_HEAL_ENABLED,
-            "heal_interval_minutes": app_settings.LETTERBOX_HEAL_INTERVAL_MINUTES,
-            "max_parallel": app_settings.LETTERBOX_MAX_PARALLEL,
-        },
-        "subtitles": {
-            "enabled": subtitle_settings.SUBTITLE_ENABLED,
-            "scan_concurrency": subtitle_settings.SUBTITLE_SCAN_CONCURRENCY,
-            "mutation_concurrency": subtitle_settings.SUBTITLE_MUTATION_CONCURRENCY,
-            "generation_concurrency": subtitle_settings.SUBTITLE_GENERATION_CONCURRENCY,
-            "preferred_languages": subtitle_settings.SUBTITLE_PREFERRED_LANGUAGES,
-            "preferred_audio_languages": (subtitle_settings.SUBTITLE_PREFERRED_AUDIO_LANGUAGES),
-            "preferred_subtitle_languages": (
-                subtitle_settings.SUBTITLE_PREFERRED_SUBTITLE_LANGUAGES
-            ),
-            "effective_preferred_audio_languages": (
-                subtitle_settings.effective_preferred_audio_languages
-            ),
-            "effective_preferred_subtitle_languages": (
-                subtitle_settings.effective_preferred_subtitle_languages
-            ),
-            "unknown_language_action": subtitle_settings.SUBTITLE_UNKNOWN_LANGUAGE_ACTION,
-            "protect_forced": subtitle_settings.SUBTITLE_PROTECT_FORCED,
-            "protect_last_full_dialogue": (subtitle_settings.SUBTITLE_PROTECT_LAST_FULL_DIALOGUE),
-            "backup_mode": subtitle_settings.SUBTITLE_BACKUP_MODE,
-            "external_delete_mode": subtitle_settings.SUBTITLE_EXTERNAL_DELETE_MODE,
-            "audio_subs_deep_scan_enabled": (subtitle_settings.AUDIO_SUBS_DEEP_SCAN_ENABLED),
-            "audio_subs_deep_scan_hour": subtitle_settings.AUDIO_SUBS_DEEP_SCAN_HOUR,
-            "audio_subs_deep_scan_batch": subtitle_settings.AUDIO_SUBS_DEEP_SCAN_BATCH,
-        },
         "poster_formats": {
             "movie": app_settings.MOVIE_POSTER_FORMAT,
             "series": app_settings.SERIES_POSTER_FORMAT,
@@ -167,46 +108,6 @@ async def get_settings(db: Annotated[AsyncSession, Depends(get_db)]):
         },
         "writable": True,
     }
-
-
-class SubtitlesSettingsUpdate(BaseModel):
-    enabled: bool | None = None
-    scan_concurrency: int | None = None
-    mutation_concurrency: int | None = None
-    generation_concurrency: int | None = None
-    preferred_languages: list[str] | None = None
-    preferred_audio_languages: list[str] | None = None
-    preferred_subtitle_languages: list[str] | None = None
-    unknown_language_action: str | None = None
-    protect_forced: bool | None = None
-    protect_last_full_dialogue: bool | None = None
-    backup_mode: str | None = None
-    external_delete_mode: str | None = None
-    audio_subs_deep_scan_enabled: bool | None = None
-    audio_subs_deep_scan_hour: int | None = Field(default=None, ge=0, le=23)
-    audio_subs_deep_scan_batch: int | None = Field(default=None, ge=1, le=10000)
-
-
-class SubgenSettingsUpdate(BaseModel):
-    deployment: str | None = None
-    url: str | None = None
-    profile_name: str | None = None
-    model_label: str | None = None
-    mode: str | None = None
-    local_path_prefix: str | None = None
-    remote_path_prefix: str | None = None
-    callback_token: str | None = None
-    embedded_port: int | None = Field(default=None, ge=1, le=65535)
-    whisper_model: str | None = None
-    transcribe_device: str | None = None
-    gpu_index: int | None = Field(default=None, ge=0)
-    compute_type: str | None = None
-    concurrent_transcriptions: int | None = Field(default=None, ge=1, le=32)
-    whisper_threads: int | None = Field(default=None, ge=0, le=128)
-    model_path: str | None = None
-    naming_type: str | None = None
-    name_includes_subgen: bool | None = None
-    name_includes_model: bool | None = None
 
 
 class PostersSettingsUpdate(BaseModel):
@@ -223,8 +124,6 @@ class HealSettingsUpdate(BaseModel):
 
 class SettingsUpdatePayload(BaseModel):
     expected_version: int
-    subtitles: SubtitlesSettingsUpdate | None = None
-    subgen: SubgenSettingsUpdate | None = None
     posters: PostersSettingsUpdate | None = None
     heal: HealSettingsUpdate | None = None
 
@@ -283,15 +182,6 @@ async def put_settings(
 ):
     """Append one validated configuration revision using optimistic concurrency."""
     updates: dict[str, object] = {}
-    if payload.subtitles:
-        for key, value in payload.subtitles.model_dump(exclude_unset=True).items():
-            setting_key = (
-                key.upper() if key.startswith("audio_subs_") else f"SUBTITLE_{key.upper()}"
-            )
-            updates[setting_key] = value
-    if payload.subgen:
-        for key, value in payload.subgen.model_dump(exclude_unset=True).items():
-            updates[f"SUBGEN_{key.upper()}"] = value
     if payload.posters:
         poster_update = payload.posters.model_dump(exclude_unset=True)
         if "movie_poster_format" in poster_update:

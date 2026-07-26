@@ -269,13 +269,10 @@ async def log_requests(request: Request, call_next):
 # Routers
 # ---------------------------------------------------------------------------
 
-from marquee.api.routes.audio_subs import router as audio_subs_router  # noqa: E402
 from marquee.api.routes.backup import router as backup_router  # noqa: E402
 from marquee.api.routes.config import router as config_router  # noqa: E402
 from marquee.api.routes.feedback import router as feedback_router  # noqa: E402
-from marquee.api.routes.hdr import router as hdr_router  # noqa: E402
 from marquee.api.routes.jobs import router as jobs_router  # noqa: E402
-from marquee.api.routes.letterbox import router as letterbox_router  # noqa: E402
 from marquee.api.routes.library import router as library_router  # noqa: E402
 from marquee.api.routes.onboarding import router as onboarding_router  # noqa: E402
 from marquee.api.routes.pipeline import movies_router  # noqa: E402
@@ -283,12 +280,6 @@ from marquee.api.routes.pipeline import router as pipeline_router  # noqa: E402
 from marquee.api.routes.pipeline_tv import router as pipeline_tv_router  # noqa: E402
 from marquee.api.routes.pipeline_tv import series_router as tv_series_router  # noqa: E402
 from marquee.api.routes.settings import router as settings_router  # noqa: E402
-from marquee.api.routes.subtitle_generators import (  # noqa: E402
-    router as subtitle_generators_router,
-)
-from marquee.api.routes.subtitle_policies import router as subtitle_policies_router  # noqa: E402
-from marquee.api.routes.subtitles import movies_router as subtitle_movies_router  # noqa: E402
-from marquee.api.routes.subtitles import router as subtitles_router  # noqa: E402
 from marquee.api.routes.sync import router as sync_router  # noqa: E402
 from marquee.api.routes.system import router as system_router  # noqa: E402
 from marquee.api.routes.taste import router as taste_router  # noqa: E402
@@ -306,16 +297,9 @@ app.include_router(onboarding_router)
 app.include_router(config_router)
 app.include_router(text_profiles_router)
 app.include_router(backup_router)
-app.include_router(hdr_router)
 app.include_router(settings_router)
 app.include_router(system_router)
-app.include_router(letterbox_router)
 app.include_router(jobs_router)
-app.include_router(subtitles_router)
-app.include_router(subtitle_movies_router)
-app.include_router(audio_subs_router)
-app.include_router(subtitle_policies_router)
-app.include_router(subtitle_generators_router)
 if settings.DEBUG:
     from marquee.api.routes.dev_ocr_labels import router as dev_ocr_labels_router  # noqa: E402
 

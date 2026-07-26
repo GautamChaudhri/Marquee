@@ -27,14 +27,6 @@
 			]
 		},
 		{
-			name: 'Toolbox',
-			links: [
-				{ label: 'HDR', href: '/hdr', icon: 'hdr' },
-				{ label: 'Audio & Subs', href: '/audio-subs', icon: 'subtitles' },
-				{ label: 'Letterbox', href: '/letterbox', icon: 'letterbox' }
-			]
-		},
-		{
 			name: 'System',
 			links: [
 				{

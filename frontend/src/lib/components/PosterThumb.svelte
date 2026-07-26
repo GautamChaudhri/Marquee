@@ -1,22 +1,19 @@
 <script lang="ts">
 	import { gradientFor, posterStatusMeta } from '$lib/display';
-	import type { HdrKind, PosterStatus } from '$lib/api/types';
+	import type { PosterStatus } from '$lib/api/types';
 	import StatusDot from './StatusDot.svelte';
-	import HdrBadge from './HdrBadge.svelte';
 
 	let {
 		title,
 		year,
 		posterStatus,
 		posterUrl = null,
-		hdr = null,
 		rounded = true
 	}: {
 		title: string;
 		year?: number | null;
 		posterStatus?: PosterStatus;
 		posterUrl?: string | null;
-		hdr?: HdrKind | null;
 		rounded?: boolean;
 	} = $props();
 
@@ -34,7 +31,6 @@
 	<div class="badges">
 		{#if status}<StatusDot tone={status.tone} title={status.label} />{/if}
 		<span class="spacer"></span>
-		<HdrBadge kind={hdr} />
 	</div>
 	{#if !showImg}
 		<div class="meta">

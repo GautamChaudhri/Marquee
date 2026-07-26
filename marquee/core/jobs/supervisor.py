@@ -1,4 +1,4 @@
-"""Supervise embedded worker/scheduler/Subgen subprocesses from the API lifespan."""
+"""Supervise the embedded worker/scheduler subprocesses from the API lifespan."""
 
 from __future__ import annotations
 
@@ -11,8 +11,6 @@ import sys
 import time
 
 from marquee.config import settings
-from marquee.core.subtitles.config import subtitle_settings
-from marquee.core.subtitles.embedded_subgen import EmbeddedSubgenStatus, build_spawn_spec
 
 logger = logging.getLogger(__name__)
 
@@ -32,17 +30,7 @@ def _set_pdeathsig() -> None:  # pragma: no cover
 
 
 class _Child:
-    __slots__ = (
-        "name",
-        "args",
-        "proc",
-        "fast_failures",
-        "degraded",
-        "env",
-        "capture_output",
-        "status",
-        "log_tasks",
-    )
+    __slots__ = ("name", "args", "proc", "fast_failures", "degraded", "env")
 
     def __init__(
         self,
@@ -50,7 +38,6 @@ class _Child:
         args: list[str],
         *,
         env: dict[str, str] | None = None,
-        capture_output: bool = False,
     ) -> None:
         self.name = name
         self.args = args
@@ -58,9 +45,6 @@ class _Child:
         self.fast_failures = 0
         self.degraded = False
         self.env = env
-        self.capture_output = capture_output
-        self.status = EmbeddedSubgenStatus() if name == "subgen" else None
-        self.log_tasks: list[asyncio.Task] = []
 
 
 class WorkerSupervisor:
@@ -89,15 +73,7 @@ class WorkerSupervisor:
                     env=worker_env,
                 )
             )
-        if subtitle_settings.subgen_deployment == "embedded":
-            spec = build_spawn_spec()
-            children.append(
-                _Child("subgen", spec["args"], env=spec["env"], capture_output=True)
-            )
         return children
-
-    def _child_named(self, name: str) -> _Child | None:
-        return next((child for child in self._children if child.name == name), None)
 
     async def start(self) -> None:
         self._shutting_down = False
@@ -110,65 +86,16 @@ class WorkerSupervisor:
         logger.info("Embedded job runtime started: %s", ", ".join(c.name for c in self._children))
 
     def status(self) -> dict:
-        children = []
-        for child in self._children:
-            item = {
+        children = [
+            {
                 "name": child.name,
                 "running": child.proc is not None and child.proc.returncode is None,
                 "degraded": child.degraded,
                 "fast_failures": child.fast_failures,
             }
-            if child.name == "subgen" and child.status is not None:
-                item["queue_processing"] = child.status.queue_processing
-                item["queue_queued"] = child.status.queue_queued
-                item["last_activity_line"] = child.status.last_activity_line
-            children.append(item)
+            for child in self._children
+        ]
         return {"degraded": any(c["degraded"] for c in children), "children": children}
-
-    def subgen_status(self) -> dict:
-        child = self._child_named("subgen")
-        if child is None or child.status is None:
-            return {"state": "disabled", "logs": [], "queue_processing": 0, "queue_queued": 0}
-        running = child.proc is not None and child.proc.returncode is None
-        return {
-            "state": child.status.state if child.status.state != "disabled" else ("running" if running else "starting"),
-            "running": running,
-            "degraded": child.degraded,
-            "fast_failures": child.fast_failures,
-            "queue_processing": child.status.queue_processing,
-            "queue_queued": child.status.queue_queued,
-            "last_activity_line": child.status.last_activity_line,
-            "last_download_line": child.status.last_download_line,
-            "last_model_line": child.status.last_model_line,
-        }
-
-    def subgen_logs(self, tail: int = 200) -> list[str]:
-        child = self._child_named("subgen")
-        if child is None or child.status is None:
-            return []
-        return list(child.status.logs)[-max(1, min(tail, 500)) :]
-
-    async def restart_subgen(self) -> dict:
-        child = self._child_named("subgen")
-        if child is None:
-            return {"restarted": False, "detail": "embedded subgen disabled"}
-        if child.proc is not None and child.proc.returncode is None:
-            self._signal_group(child.proc, signal.SIGTERM)
-            with contextlib.suppress(TimeoutError):
-                await asyncio.wait_for(child.proc.wait(), timeout=10)
-        await self._spawn(child)
-        return {"restarted": True}
-
-    async def _tail_stream(self, child: _Child, stream: asyncio.StreamReader | None, label: str) -> None:
-        if child.status is None or stream is None:
-            return
-        while not stream.at_eof():
-            line = await stream.readline()
-            if not line:
-                break
-            text = f"[{label}] {line.decode(errors='ignore').rstrip()}"
-            child.status.state = "running"
-            child.status.record(text)
 
     async def _spawn(self, child: _Child) -> None:
         child.proc = await asyncio.create_subprocess_exec(
@@ -177,20 +104,7 @@ class WorkerSupervisor:
             start_new_session=True,
             preexec_fn=_set_pdeathsig,
             env=child.env,
-            stdout=asyncio.subprocess.PIPE if child.capture_output else None,
-            stderr=asyncio.subprocess.PIPE if child.capture_output else None,
         )
-        for task in child.log_tasks:
-            task.cancel()
-        child.log_tasks.clear()
-        if child.capture_output and child.status is not None:
-            child.status.state = "starting"
-            child.log_tasks.append(
-                asyncio.create_task(self._tail_stream(child, child.proc.stdout, "stdout"))
-            )
-            child.log_tasks.append(
-                asyncio.create_task(self._tail_stream(child, child.proc.stderr, "stderr"))
-            )
         logger.info("Spawned %s (pid=%s)", child.name, child.proc.pid)
 
     async def _supervise(self, child: _Child) -> None:
@@ -203,9 +117,6 @@ class WorkerSupervisor:
             returncode = await proc.wait()
             if self._shutting_down:
                 return
-            if child.status is not None:
-                child.status.state = "crashed"
-                child.status.record(f"[supervisor] process exited rc={returncode}")
             ran_seconds = time.monotonic() - started
             if ran_seconds > FAST_FAILURE_WINDOW_SECONDS:
                 backoff = 1.0

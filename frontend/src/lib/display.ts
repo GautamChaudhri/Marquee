@@ -62,23 +62,6 @@ export function toneVar(tone: Tone): string {
 	return tone === 'muted' ? 'var(--faint)' : `var(--${tone})`;
 }
 
-export function letterboxMeta(status: string): { label: string; tone: Tone } | null {
-	const map: Record<string, { label: string; tone: Tone }> = {
-		candidate: { label: 'Staging', tone: 'warn' },
-		prefilter_candidate: { label: 'Candidate', tone: 'gold' },
-		prefilter_unknown: { label: 'Needs probe', tone: 'gold' },
-		not_letterboxed: { label: 'Cleared candidate', tone: 'muted' },
-		tagged: { label: 'Tagged', tone: 'good' },
-		reencoded: { label: 'Re-encoded', tone: 'good' },
-		variable_unsafe: { label: 'Not letterboxed (variable)', tone: 'muted' },
-		skipped: { label: 'Skipped', tone: 'muted' },
-		ineligible: { label: 'Ineligible', tone: 'low' },
-		errored: { label: 'Error', tone: 'bad' }
-	};
-	if (status === 'none') return null;
-	return map[status] ?? { label: status, tone: 'info' };
-}
-
 export function confidenceTone(confidence: string | null | undefined): string {
 	if (!confidence || confidence === 'none') return 'var(--faint)';
 	if (confidence === 'high') return 'var(--good)';

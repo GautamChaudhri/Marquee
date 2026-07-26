@@ -1,4 +1,4 @@
-"""System routes — cache stats, tool capabilities, queue + generator health."""
+"""System routes — cache stats, host telemetry, and queue health."""
 
 from __future__ import annotations
 
@@ -42,7 +42,6 @@ from marquee.core.jobs.readiness import connection_budget_report, schedule_catal
 from marquee.core.jobs.submission import Initiator, SubmissionError
 from marquee.core.pipeline_config import pipeline_settings
 from marquee.database import get_db, pool_stats, reset_database
-from marquee.media import binaries
 from marquee.ml.hardware import effective_ocr_workers
 from marquee.models import (
     Job,
@@ -89,7 +88,6 @@ async def system_status(request: Request, db: Annotated[AsyncSession, Depends(ge
         "cache": _cache_stats(),
         "configuration": configuration_provider.health(),
         "heal": await latest_poster_heal_summary(db),
-        "tools": binaries.availability(),
         "media_jobs": {},
         "jobs": dict(job_rows),
         "ocr": _ocr_status(),
@@ -117,17 +115,9 @@ def _sanitized_runtime_instance(
         str(key)[:50]: value for key, value in containment_items if isinstance(value, (str, bool))
     }
     availability: dict[str, bool] = {}
-    media_tools = capabilities.get("media_tools", {})
-    if isinstance(media_tools, dict):
-        for name, facts in sorted(media_tools.items())[:16]:
-            if isinstance(facts, dict):
-                availability[str(name)[:50]] = bool(facts.get("available"))
     gpu = capabilities.get("gpu")
     if isinstance(gpu, dict):
         availability["gpu"] = bool(gpu.get("available"))
-    certifications = capabilities.get("certifications")
-    if isinstance(certifications, dict):
-        availability["dovi_conversion_certified"] = bool(certifications.get("dovi_conversion"))
     return OperationsRuntimeInstance(
         role=instance.role,
         node_label=instance.node_label[:100],
@@ -585,14 +575,6 @@ async def operations_snapshot(
         ),
         contracts=transport["contracts"],
     )
-
-
-@router.get("/status/generators")
-async def generator_health():
-    """Subtitle-generation provider health + capabilities."""
-    from marquee.core.subtitles.generation import list_generators  # noqa: PLC0415
-
-    return {"generators": await list_generators()}
 
 
 @router.post("/heal", status_code=202)

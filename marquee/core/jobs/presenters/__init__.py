@@ -13,15 +13,12 @@ from typing import TYPE_CHECKING
 
 from marquee.core.jobs.definitions import JobDefinition
 from marquee.core.jobs.presentation import JobPresentation, JobRow
-from marquee.core.jobs.presenters.audio_subs import AUDIO_SUBS_JOB_TYPES, AudioSubsPresenter
 from marquee.core.jobs.presenters.base import (
     JobPresenter,
     PresentationIntegrityError,
     PresenterContext,
     load_context,
 )
-from marquee.core.jobs.presenters.hdr import HDR_JOB_TYPES, HdrPresenter
-from marquee.core.jobs.presenters.letterbox import LETTERBOX_JOB_TYPES, LetterboxPresenter
 from marquee.core.jobs.presenters.parents import build_parent_presenters
 from marquee.core.jobs.presenters.posters import POSTER_JOB_TYPES, PosterPresenter
 from marquee.core.jobs.presenters.supporting import build_supporting_presenters
@@ -65,12 +62,6 @@ def _build_registry() -> Mapping[str, JobPresenter]:
     presenters: dict[str, JobPresenter] = {}
     for job_type in POSTER_JOB_TYPES:
         presenters[f"jobs.{job_type}"] = PosterPresenter(job_type)
-    for job_type in HDR_JOB_TYPES:
-        presenters[f"jobs.{job_type}"] = HdrPresenter(job_type)
-    for job_type in AUDIO_SUBS_JOB_TYPES:
-        presenters[f"jobs.{job_type}"] = AudioSubsPresenter(job_type)
-    for job_type in LETTERBOX_JOB_TYPES:
-        presenters[f"jobs.{job_type}"] = LetterboxPresenter(job_type)
     presenters.update(build_supporting_presenters())
     presenters.update(build_parent_presenters())
     return presenters

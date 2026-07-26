@@ -63,9 +63,6 @@
 		<select name="feature_area" value={state.featureArea}>
 			<option value="">All features</option>
 			<option value="ai_posters">AI posters</option>
-			<option value="hdr">HDR / Dolby Vision</option>
-			<option value="audio_subtitles">Audio & subtitles</option>
-			<option value="letterbox">Letterbox</option>
 			<option value="library_integrations">Library</option>
 			<option value="ml_taste">Taste & ML</option>
 			<option value="maintenance">Maintenance</option>

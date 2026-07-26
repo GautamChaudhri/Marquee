@@ -128,13 +128,7 @@ export interface MovieListItem {
 	resolution: string | null;
 	poster_status: PosterStatus;
 	poster_url: string | null;
-	hdr: HdrKind | null;
-	hdr_tags: HdrKind[];
-	letterbox_status: string;
-	subtitle_status: SubtitleStatus | null;
 	media_file_id: number | null;
-	subtitle_coverage: Record<string, unknown> | null;
-	preferred_languages?: PreferredLanguageState;
 }
 
 export interface MovieDetail extends MovieListItem {
@@ -250,60 +244,6 @@ export interface RadarrOverlayResponse extends Paginated<RadarrOverlayItem> {
 
 export type DoviElType = 'FEL' | 'MEL' | null;
 
-export interface DoviConversion {
-	eligible: boolean | 'lossy';
-	target: string | null;
-	kind: 'p5_to_p81' | 'p7_strip_el' | null;
-	reason: string;
-}
-
-export interface DoviState {
-	status: 'unknown' | 'analyzing' | 'analyzed' | 'not_dovi' | 'error';
-	profile: number | null;
-	level: number | null;
-	el_present: boolean | null;
-	el_type: DoviElType;
-	bl_signal_compatibility_id: number | null;
-	source_codec: string | null;
-	rpu_summary: string | null;
-	error_reason: string | null;
-	conversion: DoviConversion;
-	last_analyzed_at: string | null;
-}
-
-export interface HdrMovieDetail {
-	movie: {
-		id: number;
-		title: string;
-		year: number;
-		tmdb_id: number | null;
-		radarr_id: number | null;
-		movie_file_path: string | null;
-		container: string | null;
-		resolution: string | null;
-		has_hdr: boolean | null;
-		has_dv: boolean | null;
-		hdr_type_raw: string | null;
-		quality_profile_id: number | null;
-	};
-	profile_name: string | null;
-	hdr_tags: HdrKind[];
-	hdr_bucket: string;
-	dovi: DoviState | null;
-	binaries: { dovi_tool: boolean; ffmpeg: boolean; ffprobe: boolean };
-	conversion_candidate: {
-		artifact_id: number;
-		artifact_size_bytes: number | null;
-		kind: 'p5_to_p81' | 'p7_strip_el';
-		original_untouched: boolean;
-	} | null;
-}
-
-// ── TV HDR (design/plans/06 §5–6, 07) ──────────────────────────────────────
-
-/** Sonarr preference-summary shape is byte-identical to the Radarr one. */
-export type SonarrOverlayProfilePreference = RadarrOverlayProfilePreference;
-
 export type ShowStatus =
 	| 'exceeds_target'
 	| 'meets_target'
@@ -313,8 +253,6 @@ export type ShowStatus =
 	| 'unknown';
 export type ShowUniformity = 'uniform' | 'uniform_by_season' | 'mixed';
 export type SeasonUniformity = 'uniform' | 'mixed';
-export type EpisodePreferenceStatus = RadarrOverlayStatus | 'unknown';
-
 export interface SeasonRollup {
 	uniformity: SeasonUniformity;
 	uniform_tags: HdrKind[] | null;
@@ -339,219 +277,10 @@ export interface ShowRollup {
 	meeting_fraction: { met: number; of: number };
 }
 
-export interface HdrTvListItem {
-	id: number;
-	title: string;
-	year: number | null;
-	poster_available: boolean;
-	profile_id: number | null;
-	profile_name: string | null;
-	profile_targets: HdrKind[];
-	meet_target: HdrPreferenceChoice | null;
-	exceed_target: HdrPreferenceChoice | null;
-	rollup: ShowRollup;
-	seasons_count: number;
-	episodes_total: number;
-}
-
-export interface HdrTvQuery {
-	page?: number;
-	page_size?: number;
-	hdr_tags?: string[];
-	preference_status?: ShowStatus;
-	uniformity?: ShowUniformity;
-	profile_id?: number;
-	dovi_no_fallback?: boolean;
-	sort_by?: 'title' | 'status' | 'coverage';
-	sort_dir?: 'asc' | 'desc';
-}
-
-export interface HdrTvListResponse extends Paginated<HdrTvListItem> {
-	distribution: Record<'hdr' | 'hdr10' | 'hdr10p' | 'dovi' | 'dovi_no_fallback' | 'sdr', number>;
-	distribution_order: string[];
-	profiles: RadarrOverlayProfile[];
-	profile_preferences: SonarrOverlayProfilePreference[];
-	applied_filters: Record<string, unknown>;
-}
-
-export interface EpisodeHdrItem {
-	id: number;
-	episode_number: number;
-	title: string | null;
-	hdr_type_raw: string | null;
-	hdr_tags: HdrKind[];
-	bucket: string;
-	resolution: string | null;
-	preference_status: EpisodePreferenceStatus;
-	dovi: DoviState | null;
-}
-
-export interface HdrTvSeason {
-	season_number: number;
-	is_specials: boolean;
-	rollup: SeasonRollup;
-	episodes: EpisodeHdrItem[];
-}
-
-export interface HdrTvDetail {
-	series: {
-		id: number;
-		title: string;
-		year: number | null;
-		tvdb_id: number | null;
-		tmdb_id: number | null;
-		quality_profile_id: number | null;
-	};
-	profile: {
-		id: number | null;
-		name: string | null;
-		targets: HdrKind[];
-		meet_target: HdrPreferenceChoice | null;
-		exceed_target: HdrPreferenceChoice | null;
-		excluded_targets: HdrPreferenceChoice[];
-	};
-	rollup: ShowRollup;
-	seasons: HdrTvSeason[];
-	binaries: { ffprobe: boolean };
-}
-
-export interface HdrSummaryDistribution {
-	sdr: number;
-	hdr: number;
-	hdr10: number;
-	hdr10p: number;
-	dovi: number;
-	dovi_no_fallback: number;
-}
-
-export interface HdrWorstOffender {
-	series_id: number;
-	title: string;
-	year: number | null;
-	status: 'gaps' | 'below_target';
-	below_count: number;
-	unknown_count: number;
-	episodes_total: number;
-	meeting_fraction: { met: number; of: number };
-}
-
-export interface HdrSummary {
-	movies: {
-		total: number;
-		distribution: HdrSummaryDistribution;
-		status_counts: Record<RadarrOverlayStatus, number>;
-		dovi_analysis: { analyzed: number; total_dovi: number };
-	};
-	tv: {
-		shows_total: number;
-		episodes_total: number;
-		episodes_unknown: number;
-		episode_distribution: HdrSummaryDistribution;
-		show_status_counts: Record<ShowStatus, number>;
-		uniformity_counts: Record<ShowUniformity, number>;
-		dovi_analysis: { analyzed: number; total_dovi: number };
-	};
-	worst_offenders: HdrWorstOffender[];
-	insights: {
-		dovi_no_fallback: { movies: number; episodes: number; shows_affected: number };
-		unanalyzed_dovi: { movies: number; episodes: number };
-		no_hdr_target: { movies: number; shows: number };
-		four_k_sdr: { movies: number; shows_affected: number; episodes: number };
-	};
-	profile_preferences: {
-		radarr: RadarrOverlayProfilePreference[];
-		sonarr: SonarrOverlayProfilePreference[];
-	};
-}
-
 export interface PipelineRunRef {
 	run_id: string;
 	events_url: string;
 	results_url: string;
-}
-
-export interface LetterboxDetail {
-	movie_id: number;
-	status: string;
-	confidence: string | null;
-	eligible: boolean | null;
-	ineligible_reason: string | null;
-	source_width: number | null;
-	source_height: number | null;
-	recommended_crop_top: number | null;
-	recommended_crop_bottom: number | null;
-	aspect_label: string | null;
-	applied_crop_top: number | null;
-	applied_crop_bottom: number | null;
-	detect_method: string | null;
-	reviewed: boolean | null;
-	last_detected_at: string | null;
-	last_applied_at: string | null;
-	error: string | null;
-	prefilter_bucket: string | null;
-	prefilter_reason: string | null;
-	prefilter_aspect_ratio?: number | null;
-	last_prefiltered_at?: string | null;
-	variable_ar?: boolean;
-	variable_ar_note?: string | null;
-	dolby_vision?: DolbyVisionInfo;
-	title?: string;
-	year?: number | null;
-	samples?: LetterboxSample[];
-	sample_previews?: LetterboxSamplePreview[];
-	preview_minute?: number;
-	reencode?: {
-		artifact: ReencodeArtifact | null;
-	} | null;
-}
-
-export interface LetterboxSample {
-	minute: number;
-	ok: boolean;
-	top_bar?: number;
-	bottom_bar?: number;
-	bar?: number;
-	error?: string | null;
-	backend?: 'cpu' | 'nvdec';
-	elapsed_ms?: number | null;
-}
-
-export interface LetterboxSamplePreview {
-	minute: number;
-	ok: boolean;
-}
-
-/** One row in a kanban column (from GET /letterbox/candidates items). */
-export interface LetterboxColumnItem extends LetterboxDetail {
-	title: string;
-	year: number | null;
-}
-
-export interface LetterboxColumn {
-	items: LetterboxColumnItem[];
-	total: number;
-}
-
-export interface LetterboxStatus {
-	enabled: boolean;
-	method: string;
-	counts: Record<string, number>;
-	full_frame?: number;
-	binaries: Record<string, boolean>;
-	honored_by?: string[];
-	not_honored_by?: string[];
-	last_scan: string | null;
-	batch_active: string | null;
-}
-
-export interface LetterboxAnalyzeSummary {
-	candidate: number;
-	not_letterboxed: number;
-	variable: number;
-	errored: number;
-	failed: number;
-	total: number;
-	completed: number;
 }
 
 export interface BatchReencodeSettings {
@@ -1456,14 +1185,6 @@ export interface MutationTrackFacts {
 	managed_key: string | null;
 }
 
-export interface MutationTrackSelector {
-	track_key: string;
-	facts: MutationTrackFacts;
-	inventory_signature: string;
-	stream_index_hint: number | null;
-	tool_track_id_hint: number | null;
-}
-
 export interface MutationTrackEntry {
 	track_key: string;
 	facts: MutationTrackFacts;
@@ -1478,52 +1199,6 @@ export interface MutationTrackInventory {
 }
 
 // ── Plans ──
-export interface TrackEdit {
-	track_id?: string;
-	stream_type?: 'audio' | 'subtitle';
-	stream_index?: number;
-	audio_stream_index?: number;
-	language_tag?: string | null;
-	title?: string | null;
-	is_default?: boolean;
-	is_forced?: boolean;
-	is_sdh?: boolean;
-	is_commentary?: boolean;
-	field?: string;
-	value?: unknown;
-}
-
-export interface SubtitlePlanRequest {
-	operation:
-		| 'audio_remove'
-		| 'subtitle_remove'
-		| 'subtitle_embed'
-		| 'subtitle_metadata'
-		| 'track_remove'
-		| 'audio_reorder';
-	track_ids: string[];
-	audio_stream_indices?: number[];
-	audio_stream_order?: number[];
-	edits?: TrackEdit[];
-	backup?: boolean;
-	allow_break?: boolean;
-}
-
-export interface SubtitlePlan {
-	job_id: string;
-	phase: 'planned';
-	disposition: 'created' | 'reused';
-	operation: string;
-	plan_version: string;
-	input_signature: string;
-	configuration_version: number;
-	plan_expires_at: string;
-	snapshot_url: string;
-	detail_url: string;
-	confirmation_url: string;
-}
-
-// ── Generators ──
 export interface SubtitleGenerator {
 	name: string;
 	type: string;
@@ -1567,24 +1242,6 @@ export interface SubtitlePolicy {
 	updated_at: string;
 }
 
-export interface PolicyAuditResultItem {
-	movie_id: number;
-	media_file_id: string;
-	removals: number;
-	protected: number;
-	review_required: number;
-	warnings: string[];
-	coverage_before: SubtitleCoverage;
-	coverage_after: SubtitleCoverage;
-}
-
-export interface PolicyAuditResult {
-	policy_id: number;
-	total_removals: number;
-	items: PolicyAuditResultItem[];
-}
-
-// ── Audio & Subtitles TV & Subgen Types ──
 export type AudioSubStatus =
 	| 'ok'
 	| 'gaps'
@@ -1593,56 +1250,6 @@ export type AudioSubStatus =
 	| 'subtitle_gap'
 	| 'both_gap'
 	| 'unknown';
-
-export interface AudioSubsSummary {
-	movies: {
-		total: number;
-		audio_ok: number;
-		audio_gap: number;
-		subtitle_ok: number;
-		subtitle_gap: number;
-		both_gap: number;
-		unknown: number;
-		forced_coverage: number;
-		sdh_coverage: number;
-		unknown_language_tracks: number;
-		generated_tracks: number;
-	};
-	tv: {
-		audio_ok: number;
-		audio_gap: number;
-		subtitle_ok: number;
-		subtitle_gap: number;
-		both_gap: number;
-		unknown: number;
-		forced_coverage: number;
-		sdh_coverage: number;
-		show_status_counts: Record<string, number>;
-		uniformity_counts: Record<string, number>;
-		dub_coverage_highlights: Array<{
-			series_id: number;
-			title: string;
-			missing_audio_languages: string[];
-			coverage: { ok: number; of: number };
-		}>;
-	};
-	preferred: {
-		audio: string[];
-		subtitles: string[];
-		shared: string[];
-	};
-	policies: {
-		active_count: number;
-		last_audit_summary: null | Record<string, unknown>;
-	};
-	generator: SubtitleGenerator[];
-	deep_scan: {
-		enabled: boolean;
-		hour: number;
-		last_run_at: string | null;
-		pending_file_count: number;
-	};
-}
 
 export interface TvShowRollup {
 	episodes_total: number;
@@ -1655,31 +1262,6 @@ export interface TvShowRollup {
 	subtitle_coverage: { ok: number; of: number };
 	status: AudioSubStatus;
 	uniformity: ShowUniformity;
-}
-
-export interface AudioSubsTvItem {
-	series_id: number;
-	title: string;
-	year: number;
-	rollup: TvShowRollup;
-	missing_languages: string[];
-	dub_coverage: { ok: number; of: number };
-	uniformity: ShowUniformity;
-	episode_fraction: string;
-	active_scan_job_ids: string[];
-	active_generation_job_ids: string[];
-}
-
-export interface AudioSubsTvIndex {
-	total: number;
-	items: AudioSubsTvItem[];
-	applied_filters: {
-		status: string | null;
-		uniformity: string | null;
-		missing_language: string | null;
-		q: string | null;
-		sort_by: 'title' | 'status' | 'coverage';
-	};
 }
 
 export interface TvEpisodeCoverage {
@@ -1703,232 +1285,6 @@ export interface TvSeasonDetail {
 	active_generation_job_ids: string[];
 }
 
-export interface AudioSubsTvDetail {
-	series: {
-		id: number;
-		title: string;
-		year: number;
-	};
-	preferred_audio_languages: string[];
-	preferred_subtitle_languages: string[];
-	rollup: TvShowRollup;
-	seasons: TvSeasonDetail[];
-}
-
-export interface SubgenGpuHardware {
-	index: number;
-	name: string;
-	vram_total: number;
-	vram_free: number;
-}
-
-export interface SubgenHardwareResponse {
-	hardware: {
-		gpus: SubgenGpuHardware[];
-		cpu_count: number;
-		ram_total: number;
-	};
-	models: Record<
-		string,
-		{
-			supported: boolean;
-			reason?: string;
-			vram_estimate_gb?: number;
-			verdict?: 'supported' | 'vram_low' | 'too_big' | 'unsupported';
-			note?: string;
-		}
-	>;
-	catalog: Array<{
-		id: string;
-		params: string;
-		vram_fp16_gb: number | null;
-		vram_int8_gb: number | null;
-		multilingual: boolean | null;
-		can_translate: boolean | null;
-		notes: string;
-		cpu_ram_int8_gb?: number | null;
-	}>;
-	recommendation: {
-		model: string;
-		device: 'cpu' | 'cuda';
-		gpu_index: number | null;
-		compute_type: string;
-		reason: string;
-	} | null;
-}
-
-export interface SubgenSettings {
-	deployment?: 'disabled' | 'external' | 'embedded';
-	url?: string | null;
-	profile_name?: string | null;
-	model_label?: string | null;
-	mode?: 'transcribe' | 'translate';
-	local_path_prefix?: string | null;
-	remote_path_prefix?: string | null;
-	whisper_model?: string | null;
-	embedded_port?: number | null;
-	transcribe_device?: 'auto' | 'cpu' | 'cuda';
-	gpu_index?: number | null;
-	compute_type?: string | null;
-	concurrent_transcriptions?: number | null;
-	whisper_threads?: number | null;
-	model_path?: string | null;
-	naming_type?: 'ISO_639_1' | 'ISO_639_2_T' | 'ISO_639_2_B' | 'NAME' | 'NATIVE';
-	name_includes_subgen?: boolean;
-	name_includes_model?: boolean;
-}
-
-// ── TV Letterbox Types ────────────────────────────────────────────────────────
-export type LetterboxTvBucket =
-	| 'widescreen'
-	| 'sampled_widescreen'
-	| 'candidate'
-	| 'tagged'
-	| 'reencoded'
-	| 'variable'
-	| 'open_matte'
-	| 'pillarbox'
-	| 'ineligible'
-	| 'error'
-	| 'unanalyzed';
-
-export type LetterboxTvVerdict = 'needs_action' | 'treated' | 'ok' | 'unanalyzed';
-export type LetterboxTvContentType = 'widescreen' | 'open_matte' | 'pillarbox';
-export type LetterboxTvUniformity = 'uniform' | 'clean_mixed' | 'dirty_mixed' | null;
-
-export interface LetterboxTvContentCount {
-	type: LetterboxTvContentType;
-	count: number;
-}
-
-export interface LetterboxTvShowRollup {
-	bucket_counts: Record<LetterboxTvBucket, number>;
-	content_types: LetterboxTvContentCount[];
-	dominant_aspect_label: string | null;
-	verdict: LetterboxTvVerdict;
-	uniformity: LetterboxTvUniformity;
-	episodes_total: number;
-	has_candidates: boolean;
-}
-
-export interface LetterboxTvListItem {
-	series_id: number;
-	title: string;
-	year: number | null;
-	episodes_total: number;
-	dominant_aspect_label: string | null;
-	rollup: LetterboxTvShowRollup;
-}
-
-export interface LetterboxTvEpisode {
-	episode_id: number;
-	season_number: number;
-	episode_number: number;
-	code: string;
-	title: string | null;
-	bucket: LetterboxTvBucket;
-	status: string | null;
-	confidence: string | null;
-	aspect_label: string | null;
-	recommended_crop_top: number | null;
-	recommended_crop_bottom: number | null;
-	applied_crop_top: number | null;
-	applied_crop_bottom: number | null;
-	resolution: string | null;
-	source_width: number | null;
-	source_height: number | null;
-	media_file_id: number | null;
-	eligible: boolean | null;
-	reviewed: boolean;
-	resolved_by: string | null;
-}
-
-export interface LetterboxTvSeason {
-	season_number: number;
-	is_specials: boolean;
-	rollup: {
-		bucket_counts: Record<LetterboxTvBucket, number>;
-		content_types: LetterboxTvContentCount[];
-		dominant_aspect_label: string | null;
-		verdict: LetterboxTvVerdict;
-		uniformity: LetterboxTvUniformity;
-		episodes_total: number;
-		has_candidates: boolean;
-	};
-	episodes: LetterboxTvEpisode[];
-}
-
-export interface LetterboxTvDetail {
-	series: {
-		id: number;
-		title: string;
-		year: number | null;
-	};
-	rollup: LetterboxTvShowRollup;
-	seasons: LetterboxTvSeason[];
-}
-
-/** Single-episode detail (GET /letterbox/tv/{seriesId}/episodes/{episodeId}) — the
- *  TV analog of LetterboxDetail, without the movie-only reencode/DoVi fields. */
-export interface LetterboxEpisodeDetail {
-	episode_id: number;
-	series_id: number;
-	season_number: number;
-	episode_number: number;
-	title: string | null;
-	series_title: string;
-	status: string;
-	confidence: string | null;
-	eligible: boolean | null;
-	ineligible_reason: string | null;
-	source_width: number | null;
-	source_height: number | null;
-	recommended_crop_top: number | null;
-	recommended_crop_bottom: number | null;
-	aspect_label: string | null;
-	applied_crop_top: number | null;
-	applied_crop_bottom: number | null;
-	detect_method: string | null;
-	reviewed: boolean | null;
-	last_detected_at: string | null;
-	last_applied_at: string | null;
-	error: string | null;
-	variable_ar?: boolean;
-	variable_ar_note?: string | null;
-	samples?: LetterboxSample[];
-	sample_previews?: LetterboxSamplePreview[];
-	preview_minute?: number;
-}
-
-export interface LetterboxSummarySection {
-	workflow_funnel: Record<string, number>;
-	verdict_breakdown: Record<string, number>;
-	aspect_distribution: Record<string, number>;
-	coverage: {
-		analyzed: number;
-		total: number;
-		percent: number;
-	};
-	shows_total?: number;
-	episodes_total?: number;
-	show_verdict_counts?: Record<string, number>;
-	uniformity_counts?: Record<string, number>;
-	reencode?: {
-		count: number;
-		space_reclaimed_bytes: number;
-		awaiting_decision: number;
-		saved_originals_on_disk: number;
-	};
-}
-
-export interface LetterboxSummaryResponse {
-	movies: LetterboxSummarySection;
-	tv: LetterboxSummarySection;
-}
-
-// ── TV Reencode / Apply / Revert payload types (Plan 13) ─────────────────────
-
-/** Skipped item in a TV batch reencode response. */
 export interface TvBatchReencodeSkipped {
 	episode_id: number;
 	code: string | null;

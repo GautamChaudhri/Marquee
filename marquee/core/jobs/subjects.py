@@ -18,7 +18,6 @@ from marquee.models import (
     Movie,
     Season,
     Series,
-    SubtitleTrack,
 )
 
 
@@ -286,33 +285,6 @@ def media_file_snapshot(
             f"movie:{movie.id}" if movie and movie.poster_path else
             f"series:{series.id}" if series and series.poster_path else None
         ),
-    )
-
-
-def subtitle_track_snapshot(
-    track: SubtitleTrack, media: MediaFileSnapshot
-) -> TrackSnapshot:
-    name = track.title or f"{track.language_tag} subtitle"
-    return TrackSnapshot(
-        display_id=f"track:{track.id}",
-        display_name=name,
-        track_kind="subtitle",
-        media_file_id=media.media_file_id,
-        track_id=track.id,
-        stream_index=track.stream_index,
-        tool_track_id=track.tool_track_id,
-        language=track.language_tag,
-        codec=track.codec,
-        title=track.title,
-        is_default=track.is_default,
-        is_forced=track.is_forced,
-        is_sdh=track.is_sdh,
-        is_commentary=track.is_commentary,
-        embedded=track.source == "embedded",
-        file_name=media.file_name,
-        series_title=media.series_title,
-        season_number=media.season_number,
-        episode_number=media.episode_number,
     )
 
 

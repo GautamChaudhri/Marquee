@@ -13,9 +13,6 @@
 		{ label: 'Television', href: '/television', icon: 'tv' },
 		{ label: 'Review queue', href: '/pipeline/movies?tab=review', icon: 'pipeline' },
 		{ label: 'Taste map', href: '/taste', icon: 'taste' },
-		{ label: 'Radarr Overlay', href: '/hdr', icon: 'hdr' },
-		{ label: 'Audio & Subs', href: '/audio-subs', icon: 'subtitles' },
-		{ label: 'Letterbox', href: '/letterbox', icon: 'letterbox' },
 		{ label: 'Activity', href: '/projection-room', icon: 'projection-room' },
 		{ label: 'Settings', href: '/settings', icon: 'settings' }
 	];

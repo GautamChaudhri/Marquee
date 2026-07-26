@@ -1,4 +1,4 @@
-"""Shared JMC5B media-mutation test harness.
+"""Shared execution-context test harness.
 
 Registered as a pytest plugin from ``tests/conftest.py`` so the fixtures resolve
 by name without cross-importing test modules.
@@ -17,12 +17,9 @@ from marquee.core.filesystem import FilesystemBoundary, RootSpec
 from marquee.core.jobs.execution_io import ExecutionIO
 from marquee.core.jobs.manifest import JOB_DEFINITION_REGISTRY
 from marquee.core.jobs.process_launcher import ProcessLauncher
-from marquee.core.jobs.track_inventory_adapter import inventory_from_probe
 from marquee.core.jobs.workspaces import AttemptWorkspaceManager
-from marquee.core.media_files import compute_signature
-from marquee.core.subtitles.probe import probe_container
 from marquee.database import _get_session_factory
-from marquee.models import Job, JobAttempt, MediaFile
+from marquee.models import Job, JobAttempt
 
 
 class Fence:
@@ -45,22 +42,6 @@ class Fence:
         return "applied"
 
 
-def real_signature(path: Path) -> str:
-    """The exact signature the handler recomputes from the live file."""
-    stat = path.stat()
-    return compute_signature(path, size=stat.st_size, mtime_ns=stat.st_mtime_ns)
-
-
-def inventory_of(path: Path, signature: str | None = None):
-    result = probe_container(path)
-    return inventory_from_probe(
-        signature=signature or real_signature(path),
-        audio_streams=result.audio_streams,
-        subtitles=result.subtitles,
-        container=result.container,
-    )
-
-
 def launcher_for(tmp_path: Path) -> ProcessLauncher:
     work = tmp_path / "work"
     work.mkdir(exist_ok=True)
@@ -72,13 +53,6 @@ def launcher_for(tmp_path: Path) -> ProcessLauncher:
         boundary=boundary,
         working_directory=boundary.classify(work),
     )
-
-
-async def media_file_row(db, path: Path) -> MediaFile:
-    row = MediaFile(source_key=f"test:{uuid4().hex}", path=str(path), source="radarr")
-    db.add(row)
-    await db.flush()
-    return row
 
 
 async def execution_context(db, tmp_path: Path, *, job_type: str, request: dict):

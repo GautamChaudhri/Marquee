@@ -342,7 +342,6 @@
 							year={item.movie.year}
 							posterStatus={item.movie.poster_status}
 							posterUrl={item.auto_pick_poster_url ?? item.movie.poster_url}
-							hdr={item.movie.hdr}
 						/>
 					</div>
 					<div class="rev-meta">
@@ -436,7 +435,6 @@
 								year={m.year}
 								posterStatus={m.poster_status}
 								posterUrl={m.poster_url}
-								hdr={m.hdr}
 							/>
 						</div>
 						<div class="mv-meta">

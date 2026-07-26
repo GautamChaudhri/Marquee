@@ -21,9 +21,6 @@ class ExecutionClass(StrEnum):
 
 class FeatureArea(StrEnum):
     AI_POSTERS = "ai_posters"
-    HDR = "hdr"
-    AUDIO_SUBTITLES = "audio_subtitles"
-    LETTERBOX = "letterbox"
     LIBRARY_INTEGRATIONS = "library_integrations"
     ML_TASTE = "ml_taste"
     MAINTENANCE = "maintenance"

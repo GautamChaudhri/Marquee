@@ -1,14 +1,11 @@
-"""Library routes — browse media with media-file linkage + subtitle coverage.
+"""Library routes — browse media with media-file linkage.
 
-Implements the design-03 stubs: each movie/episode resolves to its physical
-``media_file_id`` and carries a server-computed subtitle coverage summary (from
-the cached inventory when present) so the frontend filters from persisted data
-rather than scanning.
+Each movie/episode resolves to its physical ``media_file_id`` so the frontend
+filters and poster surfaces work from persisted data rather than scanning.
 """
 
 from __future__ import annotations
 
-import json
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
@@ -18,65 +15,25 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from marquee.api.job_submission import submission_response
 from marquee.api.library_serializers import (
     enrich_movie,
-    hdr_filter,
     poster_status_filter,
 )
 from marquee.core.jobs.poster_submission import submit_poster_leaf
 from marquee.core.jobs.submission import IdempotencyConflictError, SubmissionError
 from marquee.core.poster_subjects import PosterSubject
 from marquee.core.sort_title import title_sort_expr
-from marquee.core.subtitles import coverage as subtitle_coverage
 from marquee.core.tv_queries import season_downloaded, series_visible
 from marquee.database import get_db
 from marquee.models import (
     Episode,
     EpisodeMediaFile,
-    LetterboxState,
     MediaFile,
     Movie,
     PipelineRun,
     Season,
     Series,
-    SubtitleInventory,
 )
 
 router = APIRouter(prefix="/api/library", tags=["library"])
-
-
-async def _coverage_by_media_file(db: AsyncSession, media_file_ids: list[int]) -> dict[int, dict]:
-    if not media_file_ids:
-        return {}
-    rows = (
-        await db.execute(
-            select(
-                SubtitleInventory.media_file_id,
-                SubtitleInventory.coverage_json,
-                SubtitleInventory.audio_streams_json,
-            ).where(SubtitleInventory.media_file_id.in_(media_file_ids))
-        )
-    ).all()
-    result = {}
-    for mid, cov, audio_json in rows:
-        summary = (cov if isinstance(cov, dict) else json.loads(cov)) if cov else {}
-        audio_streams = (
-            (audio_json if isinstance(audio_json, list) else json.loads(audio_json))
-            if audio_json
-            else []
-        )
-        if summary and "audio_channels_by_language" not in summary:
-            by_language: dict[str, list[str]] = {}
-            for stream in audio_streams:
-                lang = stream.get("language_tag") or "und"
-                label = stream.get("channel_label") or subtitle_coverage.channel_label(stream)
-                if label:
-                    by_language.setdefault(lang, [])
-                    if label not in by_language[lang]:
-                        by_language[lang].append(label)
-            summary["audio_channels_by_language"] = {
-                lang: sorted(labels) for lang, labels in by_language.items()
-            }
-        result[mid] = summary
-    return result
 
 
 def _poster_summary(entity) -> dict:
@@ -146,10 +103,6 @@ async def list_movies(
     poster_status: str | None = Query(
         None, description="Filter: missing | review | approved | deployed"
     ),
-    hdr: str | None = Query(None, description="Filter: dovi | hdr10 | sdr | unknown"),
-    letterbox_status: str | None = Query(
-        None, description="Filter on LetterboxState.status, or 'none' for unanalyzed"
-    ),
     exclude_in_review: bool = Query(
         False,
         description="Exclude movies whose latest unreviewed pipeline result is already in review.",
@@ -159,16 +112,11 @@ async def list_movies(
     ),
     sort: str = Query("title", description="Sort: title | year"),
 ):
-    """List movies with media-file id, subtitle coverage, and derived display fields.
+    """List movies with media-file id and derived display fields.
 
-    Optional filters map to real columns. ``subtitle_status`` is derived from
-    JSON coverage and is intentionally *not* a server-side filter — the frontend
-    filters subtitle gaps within the returned page.
+    Optional filters map to real columns.
     """
-    base = select(Movie, LetterboxState).outerjoin(
-        LetterboxState,
-        (LetterboxState.movie_id == Movie.id) & (LetterboxState.media_type == "movie"),
-    )
+    base = select(Movie)
 
     conditions = [Movie.is_present.is_(True)]
     if not include_unavailable:
@@ -195,12 +143,6 @@ async def list_movies(
             .subquery()
         )
         conditions.append(Movie.id.not_in(select(latest_review.c.movie_id)))
-    if hdr and (pred := hdr_filter(hdr)) is not None:
-        conditions.append(pred)
-    if letterbox_status == "none":
-        conditions.append(LetterboxState.id.is_(None))
-    elif letterbox_status:
-        conditions.append(LetterboxState.status == letterbox_status)
     if conditions:
         base = base.where(*conditions)
 
@@ -216,8 +158,7 @@ async def list_movies(
         await db.execute(base.order_by(order_col).limit(page_size).offset((page - 1) * page_size))
     ).all()
 
-    movies = [m for m, _ in rows]
-    lb_by_movie = {m.id: lb for m, lb in rows}
+    movies = [m for (m,) in rows]
     movie_ids = [m.id for m in movies]
     media_rows = (
         (
@@ -235,20 +176,8 @@ async def list_movies(
         else []
     )
     mf_by_movie = {mf.movie_id: mf for mf in media_rows}
-    coverage = await _coverage_by_media_file(db, [mf.id for mf in media_rows])
 
-    items = []
-    for movie in movies:
-        mf = mf_by_movie.get(movie.id)
-        lb = lb_by_movie.get(movie.id)
-        items.append(
-            enrich_movie(
-                movie,
-                mf,
-                coverage.get(mf.id) if mf else None,
-                lb.status if lb else None,
-            )
-        )
+    items = [enrich_movie(movie, mf_by_movie.get(movie.id)) for movie in movies]
     return {"total": total, "page": page, "page_size": page_size, "items": items}
 
 
@@ -266,19 +195,13 @@ async def get_movie_poster(movie_id: int, db: Annotated[AsyncSession, Depends(ge
 
 @router.get("/movies/{movie_id}")
 async def get_movie(movie_id: int, db: Annotated[AsyncSession, Depends(get_db)]):
-    row = (
+    movie = (
         await db.execute(
-            select(Movie, LetterboxState)
-            .outerjoin(
-                LetterboxState,
-                (LetterboxState.movie_id == Movie.id) & (LetterboxState.media_type == "movie"),
-            )
-            .where(Movie.id == movie_id, Movie.is_present.is_(True))
+            select(Movie).where(Movie.id == movie_id, Movie.is_present.is_(True))
         )
-    ).first()
-    if row is None:
+    ).scalar_one_or_none()
+    if movie is None:
         raise HTTPException(status_code=404, detail=f"Movie id={movie_id} not found")
-    movie, lb = row
     mf = (
         await db.execute(
             select(MediaFile).where(
@@ -288,8 +211,7 @@ async def get_movie(movie_id: int, db: Annotated[AsyncSession, Depends(get_db)])
             )
         )
     ).scalar_one_or_none()
-    coverage = await _coverage_by_media_file(db, [mf.id] if mf else [])
-    item = enrich_movie(movie, mf, coverage.get(mf.id) if mf else None, lb.status if lb else None)
+    item = enrich_movie(movie, mf)
     item["media_file_path"] = mf.path if mf else None
     return item
 

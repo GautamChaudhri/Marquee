@@ -33,7 +33,7 @@ MAX_SCHEDULE_DIAGNOSTICS = 100
 # Production schedule keys that are certified to produce real occurrences. Grows one entry
 # per JMC4B family: `library-sync` activated in B2; `audio-subs-deep-scan` follows in B3.
 ACTIVATED_SCHEDULE_KEYS: frozenset[str] = frozenset(
-    {"library-sync", "audio-subs-deep-scan", "poster-heal", "evidence-retention"}
+    {"library-sync", "poster-heal", "evidence-retention"}
 )
 _KEY = re.compile(r"^[a-z][a-z0-9-]{0,62}[a-z0-9]$")
 
@@ -54,9 +54,6 @@ class OccurrencePolicy(StrEnum):
 class ScheduleConfiguration:
     revision: int | None
     sync_interval_minutes: int
-    audio_subs_deep_scan_enabled: bool
-    audio_subs_deep_scan_hour: int
-    audio_subs_deep_scan_batch: int
     poster_heal_enabled: bool = True
     poster_heal_interval_minutes: int = 30
     production_occurrences_enabled: bool = False
@@ -86,6 +83,9 @@ class ScheduleDefinition:
     subject_builder: SubjectBuilder
     batch_producer: BatchProducer | None = None
     interval_source: Literal["sync", "poster_heal"] = "sync"
+    # The UTC hour an HOURLY_WINDOW definition collapses its occurrences onto. Must match
+    # the hour in ``expression``; unused by the other occurrence policies.
+    window_hour: int | None = None
     production: bool = True
 
     def __post_init__(self) -> None:
@@ -95,6 +95,10 @@ class ScheduleDefinition:
             raise ValueError("schedule entrypoint is invalid")
         if not self.expression or len(self.expression) > 80:
             raise ValueError("schedule expression is invalid")
+        if self.occurrence_policy == OccurrencePolicy.HOURLY_WINDOW and (
+            self.window_hour is None or not 0 <= self.window_hour <= 23
+        ):
+            raise ValueError("hourly-window schedule requires a window_hour in 0..23")
 
     def enabled_predicate(self, configuration: ScheduleConfiguration) -> bool:
         return schedule_effective_state(self, configuration).effectively_enabled
@@ -219,13 +223,9 @@ schedule_diagnostics = ScheduleDiagnostics()
 
 def load_schedule_configuration() -> ScheduleConfiguration:
     """Read the current versioned scheduler inputs and restart-owned sync interval."""
-    subtitle = configuration_provider.effective("subtitle")
     return ScheduleConfiguration(
         revision=configuration_provider.state.version,
         sync_interval_minutes=settings.SYNC_INTERVAL_MINUTES,
-        audio_subs_deep_scan_enabled=bool(subtitle["AUDIO_SUBS_DEEP_SCAN_ENABLED"]),
-        audio_subs_deep_scan_hour=int(subtitle["AUDIO_SUBS_DEEP_SCAN_HOUR"]),
-        audio_subs_deep_scan_batch=int(subtitle["AUDIO_SUBS_DEEP_SCAN_BATCH"]),
         poster_heal_enabled=settings.HEAL_ENABLED,
         poster_heal_interval_minutes=settings.HEAL_INTERVAL_MINUTES,
         production_occurrences_enabled=settings.JOB_PRODUCTION_SCHEDULES_ENABLED,
@@ -256,7 +256,7 @@ def normalize_due_occurrence(
         bucket_minutes = epoch_minutes - epoch_minutes % interval
         return datetime.fromtimestamp(bucket_minutes * 60, tz=UTC)
     due = current.replace(minute=0, second=0)
-    if due.hour != configuration.audio_subs_deep_scan_hour:
+    if due.hour != definition.window_hour:
         return None
     return due
 
@@ -352,29 +352,6 @@ _SCHEDULER_INITIATOR = Initiator(
 )
 
 
-async def _audio_subs_deep_scan_batch(
-    session: AsyncSession,
-    configuration: ScheduleConfiguration,
-    due: datetime,
-) -> SubmissionResult:
-    """Create the scheduled deep-scan as a fixed batch of read-only subtitle scans."""
-    from marquee.core.subtitles.scan_batch import (  # noqa: PLC0415 - avoid import cycle
-        create_subtitle_scan_batch,
-    )
-
-    result = await create_subtitle_scan_batch(
-        session,
-        parent_job_type="audio_subs_deep_scan",
-        scope="all",
-        force=False,
-        limit=configuration.audio_subs_deep_scan_batch,
-        initiator=_SCHEDULER_INITIATOR,
-        trigger=TriggerKind.SCHEDULE,
-        idempotency_key=f"audio_subs_deep_scan:schedule-{_format_utc(due)}",
-    )
-    return result.parent
-
-
 async def _poster_heal_batch(
     session: AsyncSession,
     _configuration: ScheduleConfiguration,
@@ -468,21 +445,6 @@ PRODUCTION_SCHEDULE_CATALOG = ScheduleCatalog(
             batch_producer=_poster_heal_batch,
         ),
         ScheduleDefinition(
-            key="audio-subs-deep-scan",
-            entrypoint="schedule_audio_subs_deep_scan",
-            expression="0 * * * *",
-            produced_job_type="audio_subs_deep_scan",
-            trigger=TriggerKind.SCHEDULE,
-            initiator=_SCHEDULER_INITIATOR,
-            configured_predicate=lambda config: config.audio_subs_deep_scan_enabled,
-            occurrence_policy=OccurrencePolicy.HOURLY_WINDOW,
-            request_builder=lambda _config, _due: {"scope": "all"},
-            subject_builder=lambda _config, _due: SubjectLocator(
-                kind="maintenance_scope", reference="audio-subs-deep-scan"
-            ),
-            batch_producer=_audio_subs_deep_scan_batch,
-        ),
-        ScheduleDefinition(
             key="evidence-retention",
             entrypoint="schedule_evidence_retention",
             expression="17 3 * * *",
@@ -491,6 +453,7 @@ PRODUCTION_SCHEDULE_CATALOG = ScheduleCatalog(
             initiator=_SCHEDULER_INITIATOR,
             configured_predicate=lambda _config: True,
             occurrence_policy=OccurrencePolicy.HOURLY_WINDOW,
+            window_hour=3,
             request_builder=lambda _config, _due: {
                 "retention_days": 30,
                 "evidence_only": True,

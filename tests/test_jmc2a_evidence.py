@@ -16,7 +16,6 @@ from marquee.models import (
     JobAttempt,
     JobEvent,
     JobLog,
-    LetterboxEvent,
     MediaFile,
     MediaOperationDetail,
     Movie,
@@ -170,7 +169,6 @@ async def test_tv_history_survives_series_season_and_episode_deletion(db):
     )
     db.add_all([season, episode])
     await db.flush()
-    snapshot = {"kind": "series", "title": series.title, "season": 1, "episode": 1}
     await seed_canonical_pipeline_run(
         db,
         run_id="history-series",
@@ -186,28 +184,14 @@ async def test_tv_history_survives_series_season_and_episode_deletion(db):
         series_id=series.id,
         season_id=season.id,
     )
-    episode_event = LetterboxEvent(
-        media_type="episode",
-        episode_id=episode.id,
-        subject_snapshot=snapshot,
-        action="detect",
-        source="api",
-    )
-    db.add(episode_event)
-    await db.commit()
-    episode_event_id = episode_event.id
-
     await db.delete(series)
     await db.commit()
     db.expire_all()
 
     surviving_series_run = await db.get(PipelineRun, "history-series")
     surviving_season_run = await db.get(PipelineRun, "history-season")
-    surviving_episode_event = await db.get(LetterboxEvent, episode_event_id)
     assert surviving_series_run is not None and surviving_series_run.series_id is None
     assert surviving_season_run is not None and surviving_season_run.season_id is None
-    assert surviving_episode_event is not None and surviving_episode_event.episode_id is None
-    assert surviving_episode_event.subject_snapshot["title"] == "Snapshot Show"
 
 
 async def test_log_and_artifact_storage_keys_are_confined(db):
@@ -244,7 +228,6 @@ def test_worker_nodes_are_observation_only():
 def test_historical_subject_foreign_keys_null_instead_of_deleting_evidence():
     historical_subjects = {
         ArtworkEvent: {"movie_id", "series_id", "season_id"},
-        LetterboxEvent: {"movie_id", "episode_id"},
         MediaOperationDetail: {"media_file_id"},
         PipelineRun: {"movie_id", "series_id", "season_id"},
     }

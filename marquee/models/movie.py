@@ -15,7 +15,6 @@ class Movie(Base, TimestampMixin, ArtworkMixin):
     """A movie identified by Radarr or standalone filesystem scan.
 
     Poster retrieval uses ``tmdb_id`` as the universal lookup key.
-    HDR/DV tracking uses ``hdr_type_raw`` + ``has_hdr`` / ``has_dv``.
     """
 
     __tablename__ = "movies"
@@ -39,9 +38,9 @@ class Movie(Base, TimestampMixin, ArtworkMixin):
     folder_path: Mapped[str] = mapped_column(Text, nullable=False)
     movie_file_path: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    # ── Encoded video (letterbox pre-filter, design 04-letterbox §4) ──
-    # Populated from Radarr movieFile.mediaInfo during sync; lets the
-    # resolution pre-filter triage candidates with no frame decode.
+    # ── Encoded video ────────────────────────────────────────────────
+    # Populated from Radarr movieFile.mediaInfo during sync; drives the
+    # resolution label on library surfaces.
     video_width: Mapped[int | None] = mapped_column(Integer, nullable=True)
     video_height: Mapped[int | None] = mapped_column(Integer, nullable=True)
     container: Mapped[str | None] = mapped_column(
@@ -58,40 +57,6 @@ class Movie(Base, TimestampMixin, ArtworkMixin):
     last_seen_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
-
-    # ── Quality / HDR-DV (Phase N) ────────────────────────────────────
-    quality_profile_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    quality_cutoff_met: Mapped[bool | None] = mapped_column(
-        Boolean,
-        nullable=True,
-        comment="NULL=unknown, True=current file meets Radarr cutoff, False=below cutoff",
-    )
-    current_cf_score: Mapped[int | None] = mapped_column(
-        Integer,
-        nullable=True,
-        comment="Raw aggregate custom-format score from Radarr's current movieFile payload",
-    )
-    hdr_type_raw: Mapped[str | None] = mapped_column(
-        String(64),
-        nullable=True,
-        comment=(
-            "Raw Radarr dynamic-range descriptor; prefers videoDynamicRangeType and "
-            "falls back to videoDynamicRange"
-        ),
-    )
-
-    has_hdr: Mapped[bool | None] = mapped_column(
-        Boolean, nullable=True, comment="NULL=not checked, True=has HDR, False=missing HDR"
-    )
-    has_dv: Mapped[bool | None] = mapped_column(
-        Boolean, nullable=True, comment="NULL=not checked, True=has DV, False=missing DV"
-    )
-
-    # ── Audio/subtitle preference overrides ───────────────────────────
-    # NULL means inherit the global subtitle settings. Lists are normalized
-    # BCP-47 language tags and apply only to this movie.
-    preferred_audio_languages_json: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
-    preferred_subtitle_languages_json: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
 
     # ── TMDB-enriched metadata (OCR text-gate classification) ─────────
     director: Mapped[str | None] = mapped_column(
