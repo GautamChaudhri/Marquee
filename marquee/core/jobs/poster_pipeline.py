@@ -347,6 +347,13 @@ async def _write_pipeline_run(
         job = await session.get(Job, context.delivery.canonical_job_id)
         if job is None:
             raise RuntimeError("poster pipeline canonical job disappeared before projection")
+        # The request names exactly one subject, so a season analysis carries no
+        # series_id. The run is a projection, not the request: denormalize the parent
+        # series here or every TV query that groups by show silently drops seasons.
+        series_id = request.series_id
+        if series_id is None and request.season_id is not None:
+            season = await session.get(Season, request.season_id)
+            series_id = season.series_id if season is not None else None
         session.add(
             PipelineRun(
                 run_id=run_id,
@@ -354,7 +361,7 @@ async def _write_pipeline_run(
                 attempt_id=context.attempt.attempt_id,
                 fence_token=context.attempt.fence_token,
                 movie_id=request.movie_id,
-                series_id=request.series_id,
+                series_id=series_id,
                 season_id=request.season_id,
                 media_type=_media_type(request),
                 subject_snapshot=dict(context.subject) if context.subject else {},

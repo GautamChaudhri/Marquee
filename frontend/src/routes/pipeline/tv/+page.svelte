@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
-	import { SvelteSet } from 'svelte/reactivity';
+	import { SvelteMap, SvelteSet } from 'svelte/reactivity';
 	import FeatureActivityPanel from '$lib/activity/components/FeatureActivityPanel.svelte';
 	import type { JobSnapshotResponse } from '$lib/activity/types';
 	import SectionHeader from '$lib/components/SectionHeader.svelte';
@@ -47,6 +47,8 @@
 
 	let initiatedJobIds = $state<string[]>([]);
 	let batchRunning = $state(false);
+	const pendingSeriesIds = new SvelteSet<number>();
+	const pendingSeriesJobs = new SvelteMap<string, number>();
 
 	async function refresh() {
 		try {
@@ -107,26 +109,41 @@
 	}
 
 	async function startBatch(scope: 'missing' | 'all' | 'selected', seriesIds?: number[]) {
+		if (batchRunning) return;
+		batchRunning = true;
 		try {
 			const job = await runTvBatch(fetch, { scope, series_ids: seriesIds });
-			batchRunning = true;
 			initiatedJobIds = [...new Set([...initiatedJobIds, job.job_id])];
+			await refresh();
 		} catch (e) {
+			batchRunning = false;
 			toast(e instanceof Error ? e.message : 'Failed to start TV batch', 'bad');
 		}
 	}
 
 	async function startOne(seriesId: number) {
+		if (batchRunning || pendingSeriesIds.has(seriesId)) return;
+		pendingSeriesIds.add(seriesId);
 		try {
 			const job = await runSeries(fetch, seriesId, { include: 'all_missing' });
+			pendingSeriesJobs.set(job.job_id, seriesId);
 			initiatedJobIds = [...new Set([...initiatedJobIds, job.job_id])];
+			await refresh();
 		} catch (e) {
+			pendingSeriesIds.delete(seriesId);
 			toast(e instanceof Error ? e.message : 'Failed to run series', 'bad');
 		}
 	}
 
 	async function handleJobSettled(snapshot: JobSnapshotResponse) {
-		batchRunning = false;
+		const seriesId = pendingSeriesJobs.get(snapshot.job_id);
+		if (seriesId !== undefined) {
+			pendingSeriesIds.delete(seriesId);
+			pendingSeriesJobs.delete(snapshot.job_id);
+		} else {
+			batchRunning = false;
+		}
+		initiatedJobIds = initiatedJobIds.filter((jobId) => jobId !== snapshot.job_id);
 		toast(
 			`TV poster work ${snapshot.status.label.toLowerCase()}`,
 			snapshot.status.outcome === 'succeeded' ? 'good' : 'bad'
@@ -157,7 +174,11 @@
 
 <FeatureActivityPanel
 	scopeKey="feature:pipeline:tv"
-	query={{ feature_area: 'ai_posters', subject_kind: 'series' }}
+	queries={[
+		{ feature_area: 'ai_posters', type: 'poster_pipeline_tv_batch' },
+		{ feature_area: 'ai_posters', type: 'poster_pipeline', subject_kind: 'series' },
+		{ feature_area: 'ai_posters', type: 'poster_pipeline', subject_kind: 'season' }
+	]}
 	jobIds={initiatedJobIds}
 	heading="TV poster activity"
 	onSettled={handleJobSettled}
@@ -185,7 +206,7 @@
 				<label class="pick">
 					<input
 						type="checkbox"
-						disabled={item.no_tmdb}
+						disabled={item.no_tmdb || batchRunning || pendingSeriesIds.has(item.series.id)}
 						onchange={() =>
 							selected.has(item.series.id)
 								? selected.delete(item.series.id)
@@ -208,7 +229,10 @@
 					</div>
 					{#if item.no_tmdb}<span class="note">No TMDB match — run sync.</span>{/if}
 				</div>
-				<button class="btn-sec" onclick={() => startOne(item.series.id)} disabled={item.no_tmdb}
+				<button
+					class="btn-sec"
+					onclick={() => startOne(item.series.id)}
+					disabled={item.no_tmdb || batchRunning || pendingSeriesIds.has(item.series.id)}
 					>Run</button
 				>
 			</div>

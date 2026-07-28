@@ -36,8 +36,20 @@ class ArtifactMigrationResult:
 
 
 _STRING_LIST_KEYS: dict[ArtifactKind, set[str]] = {
-    "taste_profile": {"poster_names", "neg_poster_names", CALIB_NAMES_KEY, "asset_kinds"},
-    "taste_profile_tv": {"poster_names", "neg_poster_names", CALIB_NAMES_KEY, "asset_kinds"},
+    "taste_profile": {
+        "poster_names",
+        "neg_poster_names",
+        CALIB_NAMES_KEY,
+        "asset_kinds",
+        "series_titles",
+    },
+    "taste_profile_tv": {
+        "poster_names",
+        "neg_poster_names",
+        CALIB_NAMES_KEY,
+        "asset_kinds",
+        "series_titles",
+    },
     "ranking_residual": {"feature_names"},
     "zeroshot_axes": {"axis_names"},
     "taste_map": {"poster_names", "cluster_names"},
@@ -234,6 +246,17 @@ def validate_payload(kind: ArtifactKind, payload: dict[str, np.ndarray]) -> None
             raise ArtifactMigrationError(f"Invalid taste centroid shape: {centroid.shape}")
         if len(names) != embeddings.shape[0]:
             raise ArtifactMigrationError("poster_names length does not match embeddings")
+        # Per-exemplar subject tags. Present together or not at all: a profile that
+        # can name some of its posters but not others is not attributable.
+        for key in ("asset_kinds", "series_titles"):
+            if key in payload and len(decode_unicode_list(payload[key])) != embeddings.shape[0]:
+                raise ArtifactMigrationError(f"{key} length does not match embeddings")
+        if ("series_titles" in payload) != ("season_numbers" in payload):
+            raise ArtifactMigrationError("series_titles and season_numbers must travel together")
+        if "season_numbers" in payload:
+            seasons = np.asarray(payload["season_numbers"])
+            if seasons.dtype.kind not in "iu" or seasons.shape != (embeddings.shape[0],):
+                raise ArtifactMigrationError("season_numbers must be one integer per embedding")
         if "neg_embeddings" in payload:
             neg = np.asarray(payload["neg_embeddings"], dtype=np.float32)
             if neg.ndim != 2 or neg.shape[1] != 512:

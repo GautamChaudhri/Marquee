@@ -6984,7 +6984,7 @@
         "type": "object"
       },
       "TasteRetrainRequest": {
-        "description": "Manually request the canonical evidence coordinator for one library.",
+        "description": "Manually request a profile rebuild for one library.\n\nThe training source is not a caller choice — it follows from the library.\nMovies rebuild from frozen preference evidence through the coordinator; TV\nrebuilds by scanning artwork already deployed in the library.",
         "properties": {
           "library": {
             "default": "movies",
@@ -6993,12 +6993,6 @@
               "tv"
             ],
             "title": "Library",
-            "type": "string"
-          },
-          "source": {
-            "const": "canonical_revision",
-            "default": "canonical_revision",
-            "title": "Source",
             "type": "string"
           }
         },
@@ -10775,7 +10769,7 @@
     },
     "/api/pipeline/tv/run-queue": {
       "get": {
-        "description": "One row per visible series with at least one missing asset.",
+        "description": "One row per visible series with at least one asset that still needs a run.\n\nAn asset whose analysis already completed and is sitting in the review queue is\nnot waiting on a run — it is waiting on a decision. Listing it here too would\ninvite re-running work that is already done, so those assets are withheld until\nthe review is resolved.",
         "operationId": "tv_run_queue_api_pipeline_tv_run_queue_get",
         "responses": {
           "200": {
@@ -11305,7 +11299,7 @@
     },
     "/api/system/reset-db": {
       "post": {
-        "description": "Delete all application data while keeping the current schema in place.",
+        "description": "Return the installation to a clean state, keeping the current schema.\n\nLive jobs are cancelled and awaited first so nothing is left running against\ndeleted rows, and the job evidence on disk is removed with the rows that owned\nit. The response reports anything that refused to stop in time.",
         "operationId": "reset_database_endpoint_api_system_reset_db_post",
         "responses": {
           "200": {
@@ -11801,7 +11795,7 @@
     },
     "/api/taste/retrain": {
       "post": {
-        "description": "Submit the coordinator-owned canonical taste profile rebuild, if one is due.",
+        "description": "Submit a taste profile rebuild: coordinated for movies, on demand for TV.",
         "operationId": "retrain_taste_api_taste_retrain_post",
         "requestBody": {
           "content": {

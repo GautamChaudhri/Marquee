@@ -27,6 +27,7 @@ from marquee.core.taste_preferences import (
     pin_candidate_artifact,
 )
 from marquee.models import JobArtifact, Movie, PipelineRun, PosterPreferenceEvent, TasteExemplar
+from marquee.pipeline.runner import NEUTRAL_REVIEW_ORDER
 
 _MAX_REVIEW_CANDIDATES = 100
 
@@ -80,6 +81,11 @@ async def _archive_candidates(
     survivors = review_document.get("survivors") if isinstance(review_document, dict) else None
     if not isinstance(raw_candidates, list) or not isinstance(survivors, list):
         raise OnboardingReviewError("canonical run archive has no explicit review survivors")
+    # Onboarding asks for an unbiased pick, so it may only project a neutrally
+    # ordered review. Personalized runs archive survivors too — in rank order —
+    # and presenting those here would lead the very judgement being collected.
+    if review_document.get("order_algorithm") != NEUTRAL_REVIEW_ORDER:
+        raise OnboardingReviewError("canonical review is not neutrally ordered")
     if len(survivors) > _MAX_REVIEW_CANDIDATES:
         raise OnboardingReviewError("canonical review exceeds its bounded survivor limit")
     revision = _review_revision(review_document)

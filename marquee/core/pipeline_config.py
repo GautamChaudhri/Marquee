@@ -41,6 +41,12 @@ class PipelineSettings(BaseSettings):
     # exemplars than the positive ones: knn_sim -= w * max(0, neg - pos).
     # Only active when the taste profile contains negative exemplars.
     TASTE_NEG_WEIGHT: float = 1.0
+    # The TV profile trains on artwork already deployed in the library rather than
+    # on recorded preference events (see marquee.core.tv_taste_scan), so its floor
+    # counts poster files — every show.jpg and seasonNN.jpg found — not subjects.
+    # Below this the k-NN corpus is too small to express taste and the build fails
+    # loudly instead of publishing a profile that ranks on noise.
+    TV_TASTE_MIN_POSTERS: int = 50
     PREFERRED_LANG: str = "en"
 
     # ── Taste map clustering ──────────────────────────────────────────

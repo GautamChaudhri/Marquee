@@ -3,12 +3,14 @@
 	import { SvelteMap, SvelteSet } from 'svelte/reactivity';
 	import { cancelJob } from '../client';
 	import { getJobProgressStore } from '../context';
+	import type { JobRecord } from '../store.svelte';
 	import type { JobSnapshotResponse, ListJobsQuery } from '../types';
 	import JobProgressCard from './JobProgressCard.svelte';
 
 	let {
 		scopeKey,
-		query,
+		query = {},
+		queries,
 		jobIds = [],
 		heading = 'Active work',
 		includeHistory = false,
@@ -17,7 +19,8 @@
 		conflicting = $bindable(false)
 	}: {
 		scopeKey: string;
-		query: ListJobsQuery;
+		query?: ListJobsQuery;
+		queries?: ListJobsQuery[];
 		jobIds?: string[];
 		heading?: string;
 		includeHistory?: boolean;
@@ -29,14 +32,19 @@
 	const store = getJobProgressStore();
 	const notified = new SvelteSet<string>();
 	const refreshedHistory = new SvelteSet<string>();
-	let historyScopeKey = $derived(`${scopeKey}:history`);
+	const resolvedQueries = $derived(queries?.length ? queries : [query]);
+	const queueScopeKeys = $derived(
+		resolvedQueries.map((_, index) => (index === 0 ? scopeKey : `${scopeKey}:${index}`))
+	);
+	const historyScopeKeys = $derived(queueScopeKeys.map((key) => `${key}:history`));
 	const records = $derived.by(() => {
-		const byId = new SvelteMap(
-			store.recordsForScope(scopeKey).map((record) => [record.jobId, record])
-		);
+		const byId = new SvelteMap<string, JobRecord>();
+		for (const key of queueScopeKeys) {
+			for (const record of store.recordsForScope(key)) byId.set(record.jobId, record);
+		}
 		if (includeHistory) {
-			for (const record of store.recordsForScope(historyScopeKey)) {
-				byId.set(record.jobId, record);
+			for (const key of historyScopeKeys) {
+				for (const record of store.recordsForScope(key)) byId.set(record.jobId, record);
 			}
 		}
 		for (const jobId of jobIds) {
@@ -56,7 +64,19 @@
 				: []
 		);
 	});
-	const activityState = $derived(store.activityForScope(scopeKey, jobIds));
+	const activityState = $derived.by(() => {
+		const activeJobIds = new SvelteSet<string>();
+		for (const key of queueScopeKeys) {
+			for (const jobId of store.activityForScope(key, jobIds).activeJobIds) {
+				activeJobIds.add(jobId);
+			}
+		}
+		return {
+			active: activeJobIds.size > 0,
+			conflicting: activeJobIds.size > 0,
+			activeJobIds: [...activeJobIds]
+		};
+	});
 
 	$effect(() => {
 		active = activityState.active;
@@ -64,21 +84,25 @@
 	});
 
 	onMount(() => {
-		const handle = store.acquireScope(scopeKey, {
-			...query,
-			view: 'queue',
-			limit: query.limit ?? 20
-		});
-		const historyHandle = includeHistory
-			? store.acquireScope(historyScopeKey, {
-					...query,
-					view: 'history',
-					limit: query.limit ?? 20
-				})
-			: null;
+		const handles = resolvedQueries.map((item, index) =>
+			store.acquireScope(queueScopeKeys[index], {
+				...item,
+				view: 'queue',
+				limit: item.limit ?? 20
+			})
+		);
+		const historyHandles = includeHistory
+			? resolvedQueries.map((item, index) =>
+					store.acquireScope(historyScopeKeys[index], {
+						...item,
+						view: 'history',
+						limit: item.limit ?? 20
+					})
+				)
+			: [];
 		return () => {
-			handle.release();
-			historyHandle?.release();
+			for (const handle of handles) handle.release();
+			for (const handle of historyHandles) handle.release();
 		};
 	});
 
@@ -87,8 +111,10 @@
 		untrack(() => {
 			for (const jobId of bound) store.track(jobId);
 			if (!bound.length) return;
-			store.refreshScope(scopeKey);
-			if (includeHistory) store.refreshScope(historyScopeKey);
+			for (const key of queueScopeKeys) store.refreshScope(key);
+			if (includeHistory) {
+				for (const key of historyScopeKeys) store.refreshScope(key);
+			}
 		});
 		return () => {
 			untrack(() => {
@@ -103,13 +129,15 @@
 			const snapshot = store.records.get(jobId)?.snapshot;
 			if (snapshot?.phase !== 'terminal' || untrack(() => refreshedHistory.has(jobId))) continue;
 			untrack(() => refreshedHistory.add(jobId));
-			untrack(() => store.refreshScope(historyScopeKey));
+			untrack(() => {
+				for (const key of historyScopeKeys) store.refreshScope(key);
+			});
 		}
 	});
 
 	$effect(() => {
 		if (!onSettled) return;
-		for (const jobId of new Set([...records.map((record) => record.jobId), ...jobIds])) {
+		for (const jobId of jobIds) {
 			const snapshot = store.records.get(jobId)?.snapshot;
 			if (snapshot?.phase !== 'terminal' || notified.has(jobId)) continue;
 			notified.add(jobId);

@@ -454,3 +454,28 @@ async def test_poster_rescan_records_changed_then_unchanged_without_deleting(
     assert unchanged["outcome"] == "no_change"
     assert unchanged["changed"] == 0
     assert poster.is_file()
+
+
+@pytest.mark.asyncio
+async def test_tv_retrain_submits_a_library_scan_without_asking_the_coordinator(
+    client, db
+) -> None:
+    """Movies need canonical evidence to be due; TV trains on artwork already on disk."""
+    movies = await client.post("/api/taste/retrain", json={"library": "movies"})
+    assert movies.status_code == 409
+    assert "canonical taste evidence" in movies.json()["detail"]
+
+    response = await client.post("/api/taste/retrain", json={"library": "tv"})
+
+    assert response.status_code == 202, response.text
+    job = await db.get(Job, response.json()["job_id"])
+    assert job is not None
+    assert job.type == "taste_rebuild"
+    assert job.request["source"] == "library"
+    assert job.request["library"] == "tv"
+    assert job.request["expected_generation"] == 0
+    # No frozen evidence revision and no coordinator build lineage: pressing the
+    # button is the whole trigger.
+    assert job.request.get("revision") is None
+    assert job.request.get("profile_build_id") is None
+    assert job.subject_reference == "taste_profile:tv"

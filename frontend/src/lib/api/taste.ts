@@ -24,12 +24,15 @@ export function getTasteStatus(
 	return apiGet<TasteStatus>(fetchFn, '/taste/status', { library });
 }
 
-/** Request a taste-profile rebuild from canonical approved evidence. */
+/**
+ * Request a taste-profile rebuild. Movies rebuild from approved evidence; TV
+ * rebuilds by scanning the show and season artwork already deployed in the library.
+ */
 export function retrainTaste(
 	fetchFn: Fetch,
 	library: TasteLibrary = 'movies'
 ): Promise<JobSubmissionResponse> {
-	const request = { source: 'canonical_revision', library } satisfies TasteRetrainRequest;
+	const request = { library } satisfies TasteRetrainRequest;
 	return apiSend<JobSubmissionResponse>(fetchFn, 'POST', '/taste/retrain', request);
 }
 

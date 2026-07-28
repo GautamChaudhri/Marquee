@@ -291,17 +291,18 @@ async def _activate_build(db, build: TasteProfileBuild, *, generation: int) -> N
 
 
 @pytest.mark.asyncio
-async def test_initial_profile_builds_are_one_per_library_with_explicit_generation(
+async def test_initial_profile_build_covers_movies_only_with_explicit_generation(
     db, installed_pgqueuer
 ) -> None:
+    """TV trains from deployed artwork, so evidence never schedules a TV build."""
     await _seed_required_positive_subjects(db)
 
     submitted = await schedule_initial_profile_build(db, initiator_identifier="profile-build-test")
     await db.commit()
 
-    assert len(submitted) == 2
+    assert len(submitted) == 1
     builds = list(await db.scalars(select(TasteProfileBuild).order_by(TasteProfileBuild.library)))
-    assert [build.library for build in builds] == ["movies", "tv"]
+    assert [build.library for build in builds] == ["movies"]
     assert {build.expected_generation for build in builds} == {0}
     assert {build.state for build in builds} == {"queued"}
     for build in builds:
@@ -315,7 +316,7 @@ async def test_initial_profile_builds_are_one_per_library_with_explicit_generati
     readiness = (await derive_readiness(db)).to_dict()
     assert readiness["state"] == "building"
     assert readiness["libraries"]["movies"]["build"]["state"] == "queued"
-    assert readiness["libraries"]["tv"]["build"]["state"] == "queued"
+    assert readiness["libraries"]["tv"]["build"]["state"] is None
 
 
 @pytest.mark.asyncio
@@ -383,7 +384,7 @@ async def test_queued_profile_build_cancellation_records_retryable_lineage(
     await _seed_required_positive_subjects(db)
     submitted = await schedule_profile_builds(
         db,
-        namespaces=("tv",),
+        namespaces=("movies",),
         initiator_identifier="profile-build-test",
         force=True,
     )
@@ -504,7 +505,7 @@ async def test_active_profiles_stay_personalized_when_a_later_update_fails(
     await schedule_initial_profile_build(db, initiator_identifier="profile-build-test")
     await db.commit()
     initial = list(await db.scalars(select(TasteProfileBuild)))
-    assert {build.library for build in initial} == {"movies", "tv"}
+    assert {build.library for build in initial} == {"movies"}
     for build in initial:
         await _activate_build(db, build, generation=1)
 

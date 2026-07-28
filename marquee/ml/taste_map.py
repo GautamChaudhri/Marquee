@@ -258,6 +258,10 @@ def _load_profile_arrays(
                 result[key] = data[key].tolist()
         if "movie_titles" in data.files:
             result["movie_titles"] = decode_unicode_list(data["movie_titles"])
+        if "series_titles" in data.files:
+            result["series_titles"] = decode_unicode_list(data["series_titles"])
+        if "season_numbers" in data.files:
+            result["season_numbers"] = data["season_numbers"].tolist()
         if "neg_embeddings" in data.files:
             result["neg_embeddings"] = np.asarray(data["neg_embeddings"], dtype=np.float32)
         # Per-exemplar aesthetic / colorfulness from the calibration arrays.
@@ -315,6 +319,9 @@ def build_map(
                 "tmdb_ids",
                 "movie_ids",
                 "movie_titles",
+                "series_titles",
+                "season_numbers",
+                "asset_kinds",
                 "aesthetic",
                 "global_colorfulness",
             ):

@@ -181,9 +181,29 @@ class NumpyTasteStore(TasteStore):
                 raise RuntimeError(f"Invalid taste centroid shape: {self._centroid.shape}")
             if len(names) != self._embeddings.shape[0]:
                 raise RuntimeError("Taste profile poster_names length does not match embeddings")
+            # TV profiles built from the library carry the subject each poster came
+            # from; movie profiles do not, so those two keys stay absent rather than
+            # being filled with placeholders.
+            series_titles = (
+                decode_unicode_list(data["series_titles"])
+                if "series_titles" in data
+                else [""] * len(names)
+            )
+            seasons = (
+                [int(value) for value in np.asarray(data["season_numbers"]).tolist()]
+                if "season_numbers" in data
+                else [-1] * len(names)
+            )
             self._metadata = [
-                {"filename": str(name), "asset_kind": str(kind)}
-                for name, kind in zip(names, kinds, strict=True)
+                {
+                    "filename": str(name),
+                    "asset_kind": str(kind),
+                    **({"series_title": title} if title else {}),
+                    **({"season_number": season} if season >= 0 else {}),
+                }
+                for name, kind, title, season in zip(
+                    names, kinds, series_titles, seasons, strict=True
+                )
             ]
 
             if "neg_embeddings" in data:

@@ -35,6 +35,7 @@ import threading
 import time
 from collections.abc import Callable, Mapping
 from pathlib import Path
+from typing import Any
 
 import cv2
 import numpy as np
@@ -97,6 +98,13 @@ def scan_images(directory: Path) -> list[Path]:
 def title_from_filename(path: Path) -> str:
     """'Movie Title (Year).jpg' -> 'Movie Title'."""
     return _YEAR_SUFFIX.sub("", path.stem).strip()
+
+
+def _season_or_sentinel(value: Any) -> int:
+    """Season number as a plain int, or -1 for anything that is not a season."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return -1
+    return value if value >= 0 else -1
 
 
 def _file_sha256(path: Path) -> str:
@@ -459,11 +467,16 @@ def rebuild_profile(
     namespace: TasteNamespace | None = None,
     positive_weights: Mapping[str, float] | None = None,
     negative_weights: Mapping[str, float] | None = None,
+    asset_identity: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> Path:
     """Build the taste profile from the training folders and save it.
 
     Callable entry point behind ``POST /api/taste/retrain`` and the CLI. All
     arguments default to the configured paths.
+
+    ``asset_identity`` maps a staged filename to the subject it came from
+    (``asset_kind``, ``series_title``, ``season_number``). The TV library scan
+    supplies it so the built profile stays attributable per poster.
     """
     from argparse import Namespace
 
@@ -480,6 +493,7 @@ def rebuild_profile(
         namespace=ns,
         positive_weights=positive_weights,
         negative_weights=negative_weights,
+        asset_identity=asset_identity,
     )
     return _run_build(args)
 
@@ -509,6 +523,9 @@ def main() -> None:
         help="Skip DINOv2 embeddings even if the model file exists",
     )
     args = parser.parse_args()
+    # Movies only, deliberately: the TV profile is built by scanning deployed
+    # artwork (marquee.core.tv_taste_scan) through the taste_rebuild job, so a
+    # flat-directory CLI build for TV would produce an unattributable profile.
     args.namespace = get_namespace("movies")
     if args.output is None:
         args.output = args.namespace.profile_path
@@ -520,7 +537,11 @@ def _run_build(args) -> Path:
     negative_dir = args.negative_dir
     if args.training_dir is None:
         raise ValueError("canonical profile builds require an explicit frozen training directory")
-    asset_kinds = ("movie",) if ns.library == "movies" else ("show", "season")
+    kind_subdirs = ("movie",) if ns.library == "movies" else ("show", "season")
+    # Staged-in identity, keyed by filename: what subject each poster came from.
+    # The TV library scan supplies it; the flat CLI/fixture path leaves it empty
+    # and the per-kind subdirectories below are the only source of the kind tag.
+    asset_identity: Mapping[str, Mapping[str, Any]] = getattr(args, "asset_identity", None) or {}
 
     started = time.perf_counter()
     progress_callback = getattr(args, "progress_callback", None)
@@ -540,7 +561,7 @@ def _run_build(args) -> Path:
     path_to_kind: dict[Path, str] = {}
     paths = []
     subdirs_found = False
-    for kind in asset_kinds:
+    for kind in kind_subdirs:
         subdir = args.training_dir / kind
         if subdir.is_dir():
             subdirs_found = True
@@ -551,7 +572,7 @@ def _run_build(args) -> Path:
     if not subdirs_found:
         paths = scan_images(args.training_dir)
         for p in paths:
-            path_to_kind[p] = asset_kinds[0]
+            path_to_kind[p] = kind_subdirs[0]
 
     embeddings, kept_paths = extract_embeddings(
         paths,
@@ -659,7 +680,20 @@ def _run_build(args) -> Path:
         total=len(kept_paths),
         message="Saving rebuilt taste profile.",
     )
-    asset_kinds = [path_to_kind.get(p, "movie") for p in kept_paths]
+    # Identity wins over the subdirectory when the caller supplied it, so a poster
+    # stays attributable to its series and season number after the build. -1 is the
+    # "not a season" sentinel: show posters and movies both carry it.
+    asset_kinds = [
+        str(asset_identity.get(p.name, {}).get("asset_kind") or path_to_kind.get(p, "movie"))
+        for p in kept_paths
+    ]
+    series_titles = [
+        str(asset_identity.get(p.name, {}).get("series_title") or "") for p in kept_paths
+    ]
+    season_numbers = [
+        int(_season_or_sentinel(asset_identity.get(p.name, {}).get("season_number")))
+        for p in kept_paths
+    ]
     payload: dict[str, np.ndarray] = {
         "embeddings": embeddings,
         "poster_names": unicode_array([p.name for p in kept_paths]),
@@ -671,6 +705,9 @@ def _run_build(args) -> Path:
         CALIB_NAMES_KEY: unicode_array(calib_names),
         CALIB_VALUES_KEY: calib_values,
     }
+    if any(series_titles):
+        payload["series_titles"] = unicode_array(series_titles)
+        payload["season_numbers"] = np.asarray(season_numbers, dtype=np.int32)
     if neg_embeddings is not None and len(neg_embeddings):
         payload["neg_embeddings"] = neg_embeddings
         payload["neg_poster_names"] = unicode_array([p.name for p in neg_paths])

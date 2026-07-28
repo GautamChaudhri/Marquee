@@ -382,13 +382,20 @@ def _run_poster_single(manifest: dict[str, Any], control: ControlWriter) -> dict
     }
 
 
+# Source modes where the handler has already staged every training image under
+# ./training in the attempt workspace. Anything else leaves the trainer without a
+# training directory, which it rejects rather than guessing at a source.
+_STAGED_SOURCE_MODES = frozenset({"fixture", "library_scan"})
+
+
 def _run_taste_profile(manifest: dict[str, Any], control: ControlWriter) -> dict[str, Any]:
     """Run the real taste-profile trainer confined to the workspace (native .npz).
 
-    ``source.mode`` selects the exemplar source: ``fixture`` uses posters staged in
-    ``training/`` under the workspace cwd; ``library`` uses the configured training
-    directory. Output is written only to ``profile.npz`` in the workspace — never the
-    configured live taste-profile path.
+    ``source.mode`` selects the exemplar source. ``fixture`` is frozen exemplar
+    evidence and ``library_scan`` is artwork copied out of the media library; both
+    arrive pre-staged under ``training/`` in the workspace cwd, optionally split into
+    per-kind subdirectories. Output is written only to ``profile.npz`` in the
+    workspace — never the configured live taste-profile path.
     """
     from pathlib import Path  # noqa: PLC0415
 
@@ -405,13 +412,20 @@ def _run_taste_profile(manifest: dict[str, Any], control: ControlWriter) -> dict
     namespace = get_namespace(library)
     training = Path("training")
     negative = Path("negative")
-    training_dir = training if source_mode == "fixture" and training.is_dir() else None
-    negative_dir = negative if source_mode == "fixture" and negative.is_dir() else None
+    # Both staged modes mean the same thing to the runner: the handler already
+    # placed every training image under ./training. "fixture" is frozen exemplar
+    # evidence; "library_scan" is artwork copied out of the media library.
+    staged = source_mode in _STAGED_SOURCE_MODES
+    training_dir = training if staged and training.is_dir() else None
+    negative_dir = negative if staged and negative.is_dir() else None
     positive_weights = (
         source.get("positive_weights") if isinstance(source.get("positive_weights"), dict) else None
     )
     negative_weights = (
         source.get("negative_weights") if isinstance(source.get("negative_weights"), dict) else None
+    )
+    asset_identity = (
+        source.get("asset_identity") if isinstance(source.get("asset_identity"), dict) else None
     )
     output = Path("profile.npz")
 
@@ -425,6 +439,7 @@ def _run_taste_profile(manifest: dict[str, Any], control: ControlWriter) -> dict
         namespace=namespace,
         positive_weights=positive_weights,
         negative_weights=negative_weights,
+        asset_identity=asset_identity,
     )
 
     files = [_announce_file("profile.npz", control)]

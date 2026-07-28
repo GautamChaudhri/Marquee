@@ -603,5 +603,10 @@ async def trigger_heal(
 
 @router.post("/reset-db")
 async def reset_database_endpoint(db: Annotated[AsyncSession, Depends(get_db)]):
-    """Delete all application data while keeping the current schema in place."""
+    """Return the installation to a clean state, keeping the current schema.
+
+    Live jobs are cancelled and awaited first so nothing is left running against
+    deleted rows, and the job evidence on disk is removed with the rows that owned
+    it. The response reports anything that refused to stop in time.
+    """
     return await reset_database(db)

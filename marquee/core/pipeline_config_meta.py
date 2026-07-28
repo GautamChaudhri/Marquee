@@ -63,6 +63,7 @@ KNOB_GROUPS: list[dict[str, Any]] = [
             "KNN_WEIGHTING",
             "KNN_SOFTMAX_TEMP",
             "TASTE_NEG_WEIGHT",
+            "TV_TASTE_MIN_POSTERS",
             "PREFERRED_LANG",
         ],
     },
@@ -233,6 +234,7 @@ KNOB_META: dict[str, dict[str, Any]] = {
     "KNN_WEIGHTING": {"kind": "enum", "options": ["mean", "softmax"]},
     "KNN_SOFTMAX_TEMP": {"kind": "float", "min": 0.01, "max": 5, "step": 0.01},
     "TASTE_NEG_WEIGHT": {"kind": "float", "min": 0, "max": 10, "step": 0.1},
+    "TV_TASTE_MIN_POSTERS": {"kind": "int", "min": 1, "max": 10000, "step": 1},
     "PREFERRED_LANG": {
         "kind": "enum",
         "options": ["en", "fr", "de", "es", "it", "ja", "ko", "zh", "pt", "ru"],

@@ -169,3 +169,46 @@ async def test_coalescer_keeps_one_latest_tick_and_forces_shutdown_flush(db) -> 
     assert await coalescer.submit(_observation(2, ordinal=2)) is None
     final = await coalescer.close()
     assert final is not None and final.sequence == 2 and final.overall.percent == 50
+
+
+async def test_safe_write_records_a_rejected_observation_without_a_traceback(db, caplog) -> None:
+    """A wiped or superseded job must not produce one stack trace per progress beat.
+
+    ``safe_write`` exists to let the handler's media effect survive an evidence
+    failure. When a database reset removes the job under a still-running handler,
+    every beat is rejected — logging each as an exception buries real faults.
+    """
+    job_id, attempt_id = await _running_batch(db, "safe-write")
+    writer = ProgressWriter()
+
+    with caplog.at_level("DEBUG", logger="marquee.core.jobs.progress_service"):
+        result = await writer.safe_write(
+            job_id=job_id,
+            attempt_id=attempt_id,
+            fence_token=999,  # no attempt owns this fence
+            observation=_observation(1),
+        )
+
+    assert result is None
+    records = [record for record in caplog.records if record.name.endswith("progress_service")]
+    assert len(records) == 1
+    assert records[0].levelname == "WARNING"
+    assert records[0].exc_info is None
+    assert "ownership is stale" in records[0].getMessage()
+
+
+async def test_safe_write_still_reports_an_unexpected_failure_in_full(db, caplog) -> None:
+    """Only the declared rejection is routine; anything else keeps its traceback."""
+    writer = ProgressWriter()
+
+    async def explode(**_kwargs):
+        raise RuntimeError("connection pool is gone")
+
+    writer.write = explode  # type: ignore[method-assign]
+    with caplog.at_level("DEBUG", logger="marquee.core.jobs.progress_service"):
+        assert await writer.safe_write(job_id="x", attempt_id=1, fence_token=1) is None
+
+    records = [record for record in caplog.records if record.name.endswith("progress_service")]
+    assert len(records) == 1
+    assert records[0].levelname == "ERROR"
+    assert records[0].exc_info is not None

@@ -136,9 +136,19 @@ class ProgressWriter:
         )
 
     async def safe_write(self, **kwargs: Any) -> JobProgress | None:
-        """Isolate evidence failure from the handler's media effect."""
+        """Isolate evidence failure from the handler's media effect.
+
+        A rejected observation is an ordinary outcome, not a fault: the job may have
+        reached terminal, been superseded by a newer attempt, or had its rows removed
+        under a still-running handler by a database reset. Those are recorded as one
+        line rather than a stack trace, so an orphaned handler emitting a beat every
+        couple of seconds cannot bury real faults under its own traceback.
+        """
         try:
             return await self.write(**kwargs)
+        except ProgressWriteError as exc:
+            logger.warning("progress observation rejected: %s", exc)
+            return None
         except Exception:
             logger.exception("progress observation could not be persisted")
             return None

@@ -978,6 +978,13 @@ async def schedule_initial_profile_build(
 
 
 _PROFILE_LIBRARIES = ("movies", "tv")
+# Only movies are built from recorded preference evidence. The TV profile trains on
+# artwork already deployed in the library (marquee.core.tv_taste_scan), so evidence
+# accumulating against a TV subject never schedules a build — the rebuild button on
+# the taste page is its only trigger. Readiness reports both libraries individually
+# but aggregates over this set alone, because TV readiness does not depend on
+# evidence and would otherwise hold the overall state back forever.
+_COORDINATED_PROFILE_LIBRARIES = ("movies",)
 _INFLIGHT_PROFILE_BUILD_STATES = frozenset({"queued", "running"})
 _TERMINAL_PROFILE_BUILD_STATES = frozenset(
     {"succeeded", "no_change", "superseded", "failed", "cancelled"}
@@ -1252,6 +1259,8 @@ async def schedule_profile_builds(
         return ()
     submissions = []
     for library in dict.fromkeys(namespaces):
+        if library not in _COORDINATED_PROFILE_LIBRARIES:
+            continue
         coordinator = await _lock_profile_coordinator(session, library)
         publication = await session.get(MlActivePublication, f"taste_profile:{library}")
         if initial_only and publication is not None:
@@ -1587,17 +1596,19 @@ async def derive_readiness(
             ),
         }
     initial_profiles_ready = all(
-        libraries[library]["active"]["compatible"] for library in _PROFILE_LIBRARIES
+        libraries[library]["active"]["compatible"] for library in _COORDINATED_PROFILE_LIBRARIES
     )
     consumer_reloaded = initial_profiles_ready
-    rebuild_due = any(libraries[library]["rebuild_due"] for library in _PROFILE_LIBRARIES)
+    rebuild_due = any(
+        libraries[library]["rebuild_due"] for library in _COORDINATED_PROFILE_LIBRARIES
+    )
     active_builds = any(
         libraries[library]["build"]["state"] in _INFLIGHT_PROFILE_BUILD_STATES
-        for library in _PROFILE_LIBRARIES
+        for library in _COORDINATED_PROFILE_LIBRARIES
     )
     failures = [
         libraries[library]["build"]["failure"]
-        for library in _PROFILE_LIBRARIES
+        for library in _COORDINATED_PROFILE_LIBRARIES
         if libraries[library]["build"]["state"] in {"failed", "cancelled", "superseded"}
         and libraries[library]["build"]["failure"] is not None
     ]
@@ -1609,7 +1620,7 @@ async def derive_readiness(
     elif count >= thresholds.required and failures:
         state, next_action = "degraded", "retry the failed profile build"
     elif count >= thresholds.required:
-        state, next_action = "eligible", "build movie and TV taste profiles"
+        state, next_action = "eligible", "build the movie taste profile"
     else:
         state, next_action = "collecting", "choose and deploy another poster"
     return TasteReadiness(
@@ -1622,7 +1633,7 @@ async def derive_readiness(
         build_revision=next(
             (
                 libraries[library]["desired_revision"]
-                for library in _PROFILE_LIBRARIES
+                for library in _COORDINATED_PROFILE_LIBRARIES
                 if libraries[library]["desired_revision"] is not None
             ),
             None,
@@ -1630,7 +1641,7 @@ async def derive_readiness(
         build_job_id=next(
             (
                 libraries[library]["build"]["job_id"]
-                for library in _PROFILE_LIBRARIES
+                for library in _COORDINATED_PROFILE_LIBRARIES
                 if libraries[library]["build"]["job_id"] is not None
             ),
             None,

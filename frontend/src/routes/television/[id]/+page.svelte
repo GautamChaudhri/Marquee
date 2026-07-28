@@ -143,12 +143,20 @@
 	/>
 	<FeatureActivityPanel
 		scopeKey={`feature:television:posters:${series.id}`}
-		query={{
-			feature_area: 'ai_posters',
-			types: ['poster_pipeline', 'poster_deploy', 'poster_restore', 'poster_reset'],
-			subject_kind: 'series',
-			subject_reference: [String(series.id)]
-		}}
+		queries={[
+			{
+				feature_area: 'ai_posters',
+				types: ['poster_pipeline', 'poster_deploy', 'poster_restore', 'poster_reset'],
+				subject_kind: 'series',
+				subject_reference: [String(series.id)]
+			},
+			{
+				feature_area: 'ai_posters',
+				types: ['poster_pipeline', 'poster_deploy', 'poster_restore', 'poster_reset'],
+				subject_kind: 'season',
+				subject_reference: series.seasons.map((season) => String(season.id))
+			}
+		]}
 		jobIds={initiatedJobIds}
 		bind:active={scopeActive}
 		heading="Television poster activity"

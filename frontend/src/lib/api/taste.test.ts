@@ -19,7 +19,7 @@ function stub(body: unknown, recorded: Recorded[]): Fetch {
 }
 
 describe('taste profile rebuild', () => {
-	it('posts the selected library with the canonical evidence source', async () => {
+	it('posts the selected library and lets the server pick the training source', async () => {
 		const recorded: Recorded[] = [];
 		await retrainTaste(stub({ job_id: 'taste-job' }, recorded), 'tv');
 
@@ -27,7 +27,7 @@ describe('taste profile rebuild', () => {
 			{
 				url: '/api/taste/retrain',
 				method: 'POST',
-				body: { source: 'canonical_revision', library: 'tv' }
+				body: { library: 'tv' }
 			}
 		]);
 	});

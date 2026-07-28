@@ -94,6 +94,75 @@ def _validate_taste_profile(path: Path) -> None:
     NumpyTasteStore(path)._ensure_loaded()
 
 
+async def _stage_tv_library_scan(
+    context: ExecutionContext, workspace_dir: Path
+) -> tuple[dict[str, dict[str, object]], dict[str, float]]:
+    """Copy deployed TV artwork into the attempt workspace as the training set.
+
+    Positives come from the library: every ``show.jpg`` and ``seasonNN.jpg`` the
+    scanner finds, staged into per-kind subdirectories so the trainer tags each
+    poster with the kind it actually is. Negatives still come from recorded
+    evidence — a poster you rejected never lands on disk, so the library alone
+    cannot express dislike.
+
+    The scan runs here rather than in the runner because the runner is confined to
+    the workspace and cannot reach the media roots.
+    """
+    from marquee.core.tv_taste_scan import scan_tv_posters  # noqa: PLC0415
+
+    async with context.session_factory() as session:
+        records = await scan_tv_posters(session)
+    floor = pipeline_settings.TV_TASTE_MIN_POSTERS
+    if len(records) < floor:
+        raise RuntimeError(
+            f"TV taste profile needs at least {floor} deployed posters, found {len(records)}. "
+            "Add artwork to the library or lower TV_TASTE_MIN_POSTERS."
+        )
+
+    training_dir = workspace_dir / "training"
+    negative_dir = workspace_dir / "negative"
+    negative_dir.mkdir(parents=True, exist_ok=True)
+    asset_identity: dict[str, dict[str, object]] = {}
+    for record in records:
+        destination = training_dir / record.asset_kind
+        destination.mkdir(parents=True, exist_ok=True)
+        await context.io.copy(record.path, destination / record.staged_name)
+        asset_identity[record.staged_name] = record.identity()
+
+    async with context.session_factory() as session:
+        negatives = list(
+            (
+                await session.scalars(
+                    select(TasteExemplar)
+                    .where(
+                        TasteExemplar.namespace.in_(("global", "tv")),
+                        TasteExemplar.polarity == "negative",
+                        TasteExemplar.status == "active",
+                        TasteExemplar.retained_artifact_id.is_not(None),
+                    )
+                    .order_by(TasteExemplar.id)
+                )
+            ).all()
+        )
+        artifacts = {
+            row.id: await session.get(JobArtifact, row.retained_artifact_id) for row in negatives
+        }
+    negative_weights: dict[str, float] = {}
+    for exemplar in negatives:
+        retained = artifacts.get(exemplar.id)
+        if retained is None or retained.checksum != exemplar.checksum:
+            raise RuntimeError("TV taste negative exemplar artifact lineage is invalid")
+        await verify_physical_artifact(retained)
+        _boundary, classified = physical_artifact_file(retained)
+        source_path = classified.root.resolved().joinpath(*classified.key.parts)
+        filename = f"{exemplar.id}.jpg"
+        copied = await context.io.copy(source_path, negative_dir / filename)
+        if copied.sha256 != exemplar.checksum:
+            raise RuntimeError("TV taste negative exemplar changed while staging")
+        negative_weights[filename] = float(exemplar.evidence_weight)
+    return asset_identity, negative_weights
+
+
 async def _publish_native_taste_profile(
     context: ExecutionContext,
     *,
@@ -117,6 +186,9 @@ async def _publish_native_taste_profile(
     family = "taste_profile"
     workspace_dir = _ml_workspace_dir(context)
     source_mode = "library"
+    positive_weights: dict[str, float] = {}
+    negative_weights: dict[str, float] = {}
+    asset_identity: dict[str, dict[str, object]] = {}
     if revision_digest is not None:
         async with context.session_factory() as session:
             revision = await session.get(TasteProfileRevision, revision_digest)
@@ -172,8 +244,6 @@ async def _publish_native_taste_profile(
         negative_dir = workspace_dir / "negative"
         training_dir.mkdir(parents=True, exist_ok=True)
         negative_dir.mkdir(parents=True, exist_ok=True)
-        positive_weights: dict[str, float] = {}
-        negative_weights: dict[str, float] = {}
         for exemplar in sorted(exemplars, key=lambda row: row.id):
             retained = artifacts.get(exemplar.id)
             if retained is None or retained.checksum != exemplar.checksum:
@@ -191,6 +261,9 @@ async def _publish_native_taste_profile(
             else:
                 negative_weights[filename] = float(exemplar.evidence_weight)
         source_mode = "fixture"
+    elif library == "tv":
+        asset_identity, negative_weights = await _stage_tv_library_scan(context, workspace_dir)
+        source_mode = "library_scan"
     manifest = {
         "params": {
             "family": family,
@@ -198,8 +271,9 @@ async def _publish_native_taste_profile(
             "seed": seed,
             "source": {
                 "mode": source_mode,
-                "positive_weights": positive_weights if revision_digest is not None else {},
-                "negative_weights": negative_weights if revision_digest is not None else {},
+                "positive_weights": positive_weights,
+                "negative_weights": negative_weights,
+                "asset_identity": asset_identity,
             },
             "revision": revision_digest,
             "skip_ocr": True,

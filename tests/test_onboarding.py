@@ -25,7 +25,7 @@ from marquee.main import app
 from marquee.models import Job, Movie, OnboardingAnalysisSuccessor
 from marquee.pipeline.features import FeatureExtractor
 from marquee.pipeline.gate import PosterGate
-from marquee.pipeline.runner import _neutral_candidate_order
+from marquee.pipeline.runner import SCORED_REVIEW_ORDER, _neutral_candidate_order
 from marquee.pipeline.types import CandidateScore, FeatureVector
 
 
@@ -361,3 +361,39 @@ def test_onboarding_browser_client_uses_generated_contract_types() -> None:
     assert "OnboardingDecisionIntent = {" not in client
     assert "OnboardingStatus" not in legacy_types
     assert "OnboardingReview" not in legacy_types
+
+
+@pytest.mark.asyncio
+async def test_onboarding_review_refuses_a_ranked_archive(monkeypatch) -> None:
+    """A personalized run archives survivors in rank order — never show those here.
+
+    Onboarding collects an unbiased pick. Projecting a ranked list would put the
+    engine's own answer in front of the person whose judgement is being recorded,
+    and the recorded evidence would claim to be neutral.
+    """
+    from marquee.core import onboarding_review as module
+
+    ranked_archive = {
+        "diagnostic_ledger": {"candidates": [{"orig_filename": "a.jpg"}]},
+        "review": {
+            "version": 1,
+            "order_algorithm": SCORED_REVIEW_ORDER,
+            "survivors": [
+                {
+                    "candidate_id": "a" * 64,
+                    "reference": "a.jpg",
+                    "position": 0,
+                    "objective_eligible": True,
+                }
+            ],
+        },
+    }
+
+    async def fake_archive(session, run):
+        return ranked_archive
+
+    monkeypatch.setattr(module, "load_pipeline_archive", fake_archive)
+    run = SimpleNamespace(status="completed", archive_artifact_id=1, job_id="j", attempt_id=1)
+
+    with pytest.raises(module.OnboardingReviewError, match="not neutrally ordered"):
+        await module._archive_candidates(None, run)

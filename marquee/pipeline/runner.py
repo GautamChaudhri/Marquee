@@ -334,6 +334,13 @@ def _log_dedup_removal(removal: DedupRemoval) -> None:
     )
 
 
+# How the archived review survivors were ordered. Onboarding depends on the
+# neutral one: it presents candidates for an unbiased pick, so a ranked order
+# would be leading the witness.
+NEUTRAL_REVIEW_ORDER = "source_family_round_robin_sha256_v1"
+SCORED_REVIEW_ORDER = "scored_rank_v1"
+
+
 def build_run_payload(
     *,
     movie: Movie,
@@ -347,12 +354,18 @@ def build_run_payload(
     media_type: str = "movie",
     subject: dict[str, object] | None = None,
     review_survivors: list[CandidateScore] | None = None,
+    review_order_algorithm: str = NEUTRAL_REVIEW_ORDER,
 ) -> dict[str, object]:
     """The full ``pipeline_run.json`` payload (also archived per run_id).
 
     ``media_type``/``subject`` are additive TV fields (design 04 §9.2) — movie
     callers keep the default, so the payload shape only gains the new
     ``media_type: "movie"`` key.
+
+    ``review_survivors`` is the set every reviewable candidate image is registered
+    from, so it is populated on every run regardless of scoring mode.
+    ``review_order_algorithm`` names the order they arrived in, because a consumer
+    that trusts a neutral ordering must be able to tell a ranked one apart.
     """
     from marquee.ml.taste_store import compute_taste_profile_hash  # noqa: PLC0415
 
@@ -399,7 +412,7 @@ def build_run_payload(
         },
         "review": {
             "version": 1,
-            "order_algorithm": "source_family_round_robin_sha256_v1",
+            "order_algorithm": review_order_algorithm,
             "survivors": ordered_survivors,
             "eligible_count": len(ordered_survivors),
             "archived_count": 0,

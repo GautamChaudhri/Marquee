@@ -1226,7 +1226,12 @@ export interface paths {
 		};
 		/**
 		 * Tv Run Queue
-		 * @description One row per visible series with at least one missing asset.
+		 * @description One row per visible series with at least one asset that still needs a run.
+		 *
+		 *     An asset whose analysis already completed and is sitting in the review queue is
+		 *     not waiting on a run — it is waiting on a decision. Listing it here too would
+		 *     invite re-running work that is already done, so those assets are withheld until
+		 *     the review is resolved.
 		 */
 		get: operations['tv_run_queue_api_pipeline_tv_run_queue_get'];
 		put?: never;
@@ -1529,7 +1534,11 @@ export interface paths {
 		put?: never;
 		/**
 		 * Reset Database Endpoint
-		 * @description Delete all application data while keeping the current schema in place.
+		 * @description Return the installation to a clean state, keeping the current schema.
+		 *
+		 *     Live jobs are cancelled and awaited first so nothing is left running against
+		 *     deleted rows, and the job evidence on disk is removed with the rows that owned
+		 *     it. The response reports anything that refused to stop in time.
 		 */
 		post: operations['reset_database_endpoint_api_system_reset_db_post'];
 		delete?: never;
@@ -1751,7 +1760,7 @@ export interface paths {
 		put?: never;
 		/**
 		 * Retrain Taste
-		 * @description Submit the coordinator-owned canonical taste profile rebuild, if one is due.
+		 * @description Submit a taste profile rebuild: coordinated for movies, on demand for TV.
 		 */
 		post: operations['retrain_taste_api_taste_retrain_post'];
 		delete?: never;
@@ -4093,7 +4102,11 @@ export interface components {
 		};
 		/**
 		 * TasteRetrainRequest
-		 * @description Manually request the canonical evidence coordinator for one library.
+		 * @description Manually request a profile rebuild for one library.
+		 *
+		 *     The training source is not a caller choice — it follows from the library.
+		 *     Movies rebuild from frozen preference evidence through the coordinator; TV
+		 *     rebuilds by scanning artwork already deployed in the library.
 		 */
 		TasteRetrainRequest: {
 			/**
@@ -4102,12 +4115,6 @@ export interface components {
 			 * @enum {string}
 			 */
 			library: 'movies' | 'tv';
-			/**
-			 * Source
-			 * @default canonical_revision
-			 * @constant
-			 */
-			source: 'canonical_revision';
 		};
 		/** TextValue */
 		TextValue: {

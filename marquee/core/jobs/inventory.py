@@ -85,6 +85,10 @@ ROUTE_CONSTRUCTED_TYPES = frozenset(
         "poster_reset",
         "taste_map",
         "taste_enrich",
+        # Movie profile builds are submitted by the coordinator, but the TV profile
+        # trains on artwork already in the library, so /api/taste/retrain constructs
+        # that one directly.
+        "taste_rebuild",
     }
 )
 

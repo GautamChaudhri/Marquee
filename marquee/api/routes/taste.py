@@ -204,9 +204,13 @@ async def taste_status(
 
 
 class TasteRetrainRequest(BaseModel):
-    """Manually request the canonical evidence coordinator for one library."""
+    """Manually request a profile rebuild for one library.
 
-    source: Literal["canonical_revision"] = "canonical_revision"
+    The training source is not a caller choice — it follows from the library.
+    Movies rebuild from frozen preference evidence through the coordinator; TV
+    rebuilds by scanning artwork already deployed in the library.
+    """
+
     library: Literal["movies", "tv"] = "movies"
 
 
@@ -258,11 +262,27 @@ async def retrain_taste(
     db: Annotated[AsyncSession, Depends(get_db)],
     body: TasteRetrainRequest | None = None,
 ) -> JobSubmissionResponse:
-    """Submit the coordinator-owned canonical taste profile rebuild, if one is due."""
+    """Submit a taste profile rebuild: coordinated for movies, on demand for TV."""
     library = body.library if body else "movies"
     _validate_library(library)
     enforce_rate_limit(limiter, "taste_retrain", settings.RATE_TASTE_RETRAIN_SECONDS)
     limiter.record("taste_retrain")
+    if library == "tv":
+        # TV trains on artwork already deployed in the library rather than on
+        # recorded preference evidence, so there is no revision to coalesce against
+        # and no coordinator to ask. Pressing the button is the whole trigger.
+        return await _submit_ml_publication(
+            db,
+            job_type="taste_rebuild",
+            family="taste_profile",
+            library=library,
+            request={"source": "library", "library": library},
+            idempotency_key=(
+                f"taste_rebuild:tv:library:"
+                f"{int(time.time() // settings.RATE_TASTE_RETRAIN_SECONDS)}"
+            ),
+            priority=90,
+        )
     try:
         submissions = await schedule_profile_builds(
             db,

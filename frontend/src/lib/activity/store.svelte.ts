@@ -22,7 +22,7 @@
  * authoritative terminal snapshot, never on a dropped stream.
  */
 import { SvelteMap, SvelteSet } from 'svelte/reactivity';
-import type { Fetch } from '../api/client';
+import { ApiError, type Fetch } from '../api/client';
 import {
 	getSnapshot,
 	jobEventStreamUrl,
@@ -520,6 +520,13 @@ export class JobProgressStore {
 			this.#markSuccess();
 		} catch (error) {
 			if (controller.signal.aborted || this.#stopped) return;
+			// A job the server no longer knows about cannot be repaired by asking
+			// again — a database reset or a retention purge removed it. Forget the
+			// record instead of backing off forever against a permanent 404.
+			if (error instanceof ApiError && error.status === 404) {
+				this.#forgetJob(jobId);
+				return;
+			}
 			this.#handleRequestFailure(error);
 			repair.retryCancel = this.#deps.schedule(() => {
 				repair.retryCancel = null;
@@ -606,6 +613,18 @@ export class JobProgressStore {
 			updatedAt: this.#deps.now()
 		});
 		this.#pruneTerminalRecords();
+	}
+
+	/** Drop one job and every timer holding it, wherever it was referenced from. */
+	#forgetJob(jobId: string): void {
+		this.records.delete(jobId);
+		this.#trackedIds.delete(jobId);
+		for (const scope of this.#scopes.values()) scope.jobIds.delete(jobId);
+		const repair = this.#repairs.get(jobId);
+		repair?.inFlight?.abort();
+		repair?.debounceCancel?.();
+		repair?.retryCancel?.();
+		this.#repairs.delete(jobId);
 	}
 
 	#pruneUnreferencedRecords(): void {

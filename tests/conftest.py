@@ -94,7 +94,9 @@ async def db():
 
     factory = _get_session_factory()
     async with factory() as session:
-        await reset_database(session, include_runtime_registration=True)
+        # quiesce=False: no worker is running against this schema, so there is
+        # nothing to wait for and nothing to signal.
+        await reset_database(session, include_runtime_registration=True, quiesce=False)
         from marquee.core.configuration_cache import configuration_provider
 
         await configuration_provider.refresh_from_session(session, initial=True)

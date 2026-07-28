@@ -13,9 +13,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import shutil
 from collections.abc import AsyncGenerator
+from pathlib import Path
 
-from sqlalchemy import text
+from sqlalchemy import select, text, update
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
@@ -207,22 +209,124 @@ _RUNTIME_REGISTRATION_TABLES = frozenset(
 # scheduler registers it once at startup, exactly like the tables above.
 _TRANSPORT_QUEUE_TABLES = ("pgqueuer", "pgqueuer_log", "pgqueuer_statistics")
 
+# Everything under the data root that exists only to back a job row. Truncating the
+# job tables strands all of it, so a reset that leaves it behind is not a reset.
+_JOB_EVIDENCE_DIRECTORIES = ("jobs/evidence", "jobs/workspaces")
+
+# How long to let the worker tear down live jobs before wiping anyway. Cancellation
+# is cooperative: the worker has to notice the intent, stop the runner child, and
+# seal its evidence. Past this the reset proceeds and reports what was still running.
+_QUIESCE_TIMEOUT_SECONDS = 30.0
+_QUIESCE_POLL_SECONDS = 0.5
+
+
+async def _request_stop_for_live_jobs(db: AsyncSession) -> int:
+    """Signal cancellation for every job that has not reached terminal.
+
+    Sets the durable intent the delivery loop already polls, so a running handler
+    stops its runner child and releases its process group rather than being
+    orphaned by the truncate and left writing into deleted rows.
+    """
+    from marquee.models import Job  # noqa: PLC0415
+
+    result = await db.execute(
+        update(Job)
+        .where(Job.phase != "terminal", Job.desired_state != "cancel")
+        .values(desired_state="cancel")
+    )
+    await db.commit()
+    return int(result.rowcount or 0)
+
+
+async def _await_quiescence(db: AsyncSession, *, timeout_seconds: float) -> list[str]:
+    """Wait for executing jobs to release; return the ids that never did.
+
+    Only ``running`` and ``stopping`` jobs own a process. Planned and queued work has
+    no handler to unwind and its transport ticket is about to be truncated, so
+    waiting on it would just add a timeout to the common case.
+    """
+    from marquee.models import Job  # noqa: PLC0415
+
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout_seconds
+    while True:
+        await db.rollback()  # a fresh read each poll — the worker commits elsewhere
+        executing = list(
+            (await db.scalars(select(Job.id).where(Job.phase.in_(("running", "stopping"))))).all()
+        )
+        if not executing or loop.time() >= deadline:
+            return executing
+        await asyncio.sleep(_QUIESCE_POLL_SECONDS)
+
+
+def _clear_job_evidence() -> int:
+    """Remove the on-disk evidence the truncated job rows used to own."""
+    root = Path(settings.DATA_DIR)
+    removed = 0
+    for relative in _JOB_EVIDENCE_DIRECTORIES:
+        directory = root / relative
+        if not directory.is_dir() or directory.is_symlink():
+            continue
+        for child in directory.iterdir():
+            try:
+                if child.is_symlink() or child.is_file():
+                    child.unlink()
+                else:
+                    shutil.rmtree(child)
+            except OSError:
+                logger.warning("Could not remove stranded job evidence: %s", child)
+                continue
+            removed += 1
+    return removed
+
 
 async def reset_database(
-    db: AsyncSession, *, include_runtime_registration: bool = False
-) -> dict[str, str | int]:
-    """Delete all row data from every application table.
+    db: AsyncSession,
+    *,
+    include_runtime_registration: bool = False,
+    quiesce: bool = True,
+    quiesce_timeout_seconds: float | None = None,
+) -> dict[str, str | int | list[str]]:
+    """Return the installation to a clean, fresh state.
 
-    PostgreSQL uses ``TRUNCATE ... RESTART IDENTITY CASCADE`` so foreign-key
-    graphs clear in one statement and primary-key sequences restart.
+    Three things have to go, in order, or the "empty" database is not actually
+    empty of consequences:
 
-    By default the runtime registration tables are preserved and PgQueuer's
-    queue is cleared alongside the job tables, so the result is a database a
-    live worker and scheduler can keep serving without a restart. Pass
-    ``include_runtime_registration`` to empty those too — for a test fixture
-    isolating one schema, where no process is registered against the rows.
+    1. **Live work.** Cancellation is requested for every non-terminal job and the
+       platform is given until ``quiesce_timeout_seconds`` to release them. Skipping
+       this leaves handlers running against rows that no longer exist — they cannot
+       do damage (every write is fenced) but they keep runner children alive and
+       emit rejected progress until they finish on their own.
+    2. **Rows.** ``TRUNCATE ... RESTART IDENTITY CASCADE`` clears foreign-key graphs
+       in one statement and restarts primary-key sequences.
+    3. **Bytes.** Attempt workspaces and registered evidence exist only to back job
+       rows, so they are removed too; otherwise a wiped database keeps accumulating
+       artifacts nothing references.
+
+    Runtime registration is preserved by default so a live worker and scheduler keep
+    serving without a restart. Pass ``include_runtime_registration`` to empty those
+    too — for a test fixture isolating one schema, where no process is registered
+    against the rows, and where ``quiesce=False`` avoids waiting on a platform that
+    is not running.
+
+    Caches, poster backups, and model files are deliberately left alone: they are not
+    owned by any row here, and are either self-healing or a safety net.
     """
     __import__("marquee.models")
+
+    timeout = _QUIESCE_TIMEOUT_SECONDS if quiesce_timeout_seconds is None else quiesce_timeout_seconds
+    stop_requested = 0
+    still_running: list[str] = []
+    if quiesce:
+        stop_requested = await _request_stop_for_live_jobs(db)
+        still_running = await _await_quiescence(db, timeout_seconds=timeout)
+        if still_running:
+            logger.warning(
+                "Reset proceeding with %d job(s) still live after %.0fs: %s",
+                len(still_running),
+                timeout,
+                ", ".join(still_running[:10]),
+            )
 
     tables = [
         table
@@ -269,10 +373,14 @@ async def reset_database(
         )
 
     await db.commit()
+    evidence_removed = await asyncio.to_thread(_clear_job_evidence)
     return {
         "status": "reset",
         "dialect": dialect,
         "tables_cleared": len(tables) + len(transport_tables),
+        "jobs_stop_requested": stop_requested,
+        "jobs_still_running": still_running,
+        "evidence_entries_removed": evidence_removed,
     }
 
 

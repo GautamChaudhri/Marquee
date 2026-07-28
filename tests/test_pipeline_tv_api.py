@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -215,7 +216,9 @@ async def test_tv_summary_run_queue_and_batch_scopes(
         {"media_type": "season", "season_id": alpha_seasons[1].id, "number": 1},
     ]
 
-    for payload, expected_count in (({"scope": "missing"}, 2), ({"scope": "all"}, 5)):
+    # The second request overlaps the first active batch, so it queues only the
+    # three assets that are not already covered by that parent.
+    for payload, expected_count in (({"scope": "missing"}, 2), ({"scope": "all"}, 3)):
         response = await client.post("/api/pipeline/tv/batch", json=payload)
         assert response.status_code == 202, response.text
         parent = await db.get(Job, response.json()["job_id"])
@@ -261,6 +264,87 @@ async def test_series_run_all_missing_creates_canonical_season_child(
     assert child is not None
     assert child.subject_kind == "season"
     assert child.request["title"] == "Missing Only · Season 1"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_series_runs_create_one_show_and_season_batch(
+    db: AsyncSession, client: AsyncClient, tmp_path: Path, installed_pgqueuer: Queries
+):
+    series, seasons = await _seed_series(
+        db,
+        tmp_path,
+        title="One Click Show",
+        tmdb_id=501,
+        sonarr_id=12,
+        show_poster=False,
+        seasons=[{"number": 1, "episode_file_count": 8, "poster": False}],
+    )
+
+    first, second = await asyncio.gather(
+        client.post(f"/api/pipeline/tv/series/{series.id}/run", json={}),
+        client.post(f"/api/pipeline/tv/series/{series.id}/run", json={}),
+    )
+
+    assert first.status_code == 202, first.text
+    assert second.status_code == 202, second.text
+    responses = [first.json(), second.json()]
+    assert {item["disposition"] for item in responses} == {"created", "reused"}
+    assert len({item["job_id"] for item in responses}) == 1
+
+    parent_id = responses[0]["job_id"]
+    children = list(
+        (await db.execute(select(Job).where(Job.parent_id == parent_id).order_by(Job.id)))
+        .scalars()
+        .all()
+    )
+    assert {(child.subject_kind, child.subject_reference) for child in children} == {
+        ("series", str(series.id)),
+        ("season", str(seasons[0].id)),
+    }
+
+    run_queue = await client.get("/api/pipeline/tv/run-queue")
+    assert run_queue.status_code == 200
+    assert run_queue.json()["items"] == []
+
+
+@pytest.mark.asyncio
+async def test_review_waits_for_producing_child_and_parent_to_terminalize(
+    db: AsyncSession, client: AsyncClient, tmp_path: Path, installed_pgqueuer: Queries
+):
+    series, _seasons = await _seed_series(
+        db,
+        tmp_path,
+        title="Terminal Batch",
+        tmdb_id=502,
+        sonarr_id=13,
+        show_poster=False,
+        seasons=[{"number": 1, "episode_file_count": 8, "poster": False}],
+    )
+    submission = await client.post(f"/api/pipeline/tv/series/{series.id}/run", json={})
+    assert submission.status_code == 202, submission.text
+    parent = await db.get(Job, submission.json()["job_id"])
+    assert parent is not None
+
+    run = await _seed_run(db, tmp_path, run_id="terminal-show", series=series)
+    producing_child = await db.get(Job, run.job_id)
+    assert producing_child is not None
+    producing_child.parent_id = parent.id
+    producing_child.root_id = parent.id
+    await db.commit()
+
+    while_parent_active = await client.get("/api/pipeline/tv/review-queue")
+    assert while_parent_active.status_code == 200
+    assert while_parent_active.json()["total_series"] == 0
+
+    parent.phase = "terminal"
+    parent.outcome = "succeeded"
+    parent.terminal_at = datetime.now(UTC)
+    await db.commit()
+
+    after_parent = await client.get("/api/pipeline/tv/review-queue")
+    assert after_parent.status_code == 200
+    assert after_parent.json()["total_series"] == 1
+    assert after_parent.json()["items"][0]["show_run"]["run_id"] == "terminal-show"
 
 
 @pytest.mark.asyncio
@@ -420,3 +504,105 @@ async def test_use_show_poster_for_season_requires_deployed_show_poster(
     )
     assert resp.status_code == 409
     assert series.poster_path is None
+
+
+@pytest.mark.asyncio
+async def test_run_queue_withholds_assets_already_waiting_on_review(
+    client, db, tmp_path, installed_pgqueuer
+) -> None:
+    """An analysed asset waits on a decision, not on another run.
+
+    Listing it in both queues invites re-running finished work, which is what the
+    poster_path check alone does: the path stays null until the pick is deployed.
+    """
+    series, seasons = await _seed_series(
+        db,
+        tmp_path,
+        title="Queue Overlap",
+        tmdb_id=900,
+        sonarr_id=31,
+        show_poster=False,
+        seasons=[
+            {"number": 1, "episode_file_count": 6, "poster": False},
+            {"number": 2, "episode_file_count": 6, "poster": False},
+        ],
+    )
+
+    before = await client.get("/api/pipeline/tv/run-queue")
+    assert before.status_code == 200
+    assert before.json()["items"][0]["assets_to_run"] == [
+        {"media_type": "series"},
+        {"media_type": "season", "season_id": seasons[0].id, "number": 1},
+        {"media_type": "season", "season_id": seasons[1].id, "number": 2},
+    ]
+
+    await _seed_run(db, tmp_path, run_id="overlap-show", series=series, status="completed")
+    await _seed_run(
+        db, tmp_path, run_id="overlap-s1", series=series, season=seasons[0], status="completed"
+    )
+
+    after = await client.get("/api/pipeline/tv/run-queue")
+    assert after.status_code == 200
+    items = after.json()["items"]
+    assert len(items) == 1
+    assert items[0]["show_poster_missing"] is False
+    assert items[0]["assets_to_run"] == [
+        {"media_type": "season", "season_id": seasons[1].id, "number": 2}
+    ]
+
+    review_only = await client.post(
+        f"/api/pipeline/tv/series/{series.id}/run", json={"include": "show"}
+    )
+    assert review_only.status_code == 409
+    assert "awaiting review" in review_only.json()["detail"]
+
+    partial = await client.post(f"/api/pipeline/tv/series/{series.id}/run", json={})
+    assert partial.status_code == 202, partial.text
+    partial_children = list(
+        (
+            await db.execute(
+                select(Job).where(Job.parent_id == partial.json()["job_id"]).order_by(Job.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert [(child.subject_kind, child.subject_reference) for child in partial_children] == [
+        ("season", str(seasons[1].id))
+    ]
+
+    # Once the review is resolved the asset is eligible for a run again.
+    run = await db.scalar(select(PipelineRun).where(PipelineRun.run_id == "overlap-show"))
+    run.feedback_event_id = "resolved"
+    await db.commit()
+    resolved = await client.get("/api/pipeline/tv/run-queue")
+    assert resolved.json()["items"][0]["show_poster_missing"] is True
+
+
+@pytest.mark.asyncio
+async def test_review_queue_groups_season_runs_under_their_series(
+    client, db, tmp_path, installed_pgqueuer
+) -> None:
+    """Season runs must reach the review queue even when only the season ran."""
+    series, seasons = await _seed_series(
+        db,
+        tmp_path,
+        title="Seasons Only",
+        tmdb_id=901,
+        sonarr_id=32,
+        show_poster=True,
+        seasons=[{"number": 3, "episode_file_count": 6, "poster": False}],
+    )
+    await _seed_run(
+        db, tmp_path, run_id="seasons-only-s3", series=series, season=seasons[0], status="completed"
+    )
+
+    queue = await client.get("/api/pipeline/tv/review-queue")
+
+    assert queue.status_code == 200
+    body = queue.json()
+    assert body["total_series"] == 1
+    item = body["items"][0]
+    assert item["seasons_only"] is True
+    assert [entry["season_number"] for entry in item["season_runs"]] == [3]
+    assert item["season_runs"][0]["run"]["run_id"] == "seasons-only-s3"

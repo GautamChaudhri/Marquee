@@ -5,7 +5,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from marquee.pipeline.runner import build_run_payload
+from marquee.pipeline.runner import (
+    NEUTRAL_REVIEW_ORDER,
+    SCORED_REVIEW_ORDER,
+    build_run_payload,
+)
 from marquee.pipeline.types import CandidateScore, FeatureVector
 
 
@@ -190,3 +194,58 @@ def test_artifact_attachment_truncates_only_after_survivor_order(tmp_path: Path)
             ).encode()
         ).hexdigest()
     )
+
+
+def test_scored_runs_still_archive_survivors_under_a_ranked_order_label() -> None:
+    """Candidate images are registered from the survivor list, in every scoring mode.
+
+    Emptying it for personalized runs left the review UI with scores and no
+    pictures, so the list is always archived; the order label is what tells a
+    neutral review apart from a ranked one.
+    """
+    ranked = [
+        CandidateScore(
+            image_path=Path(f"poster_{index}.jpg"),
+            orig_filename=f"poster_{index}.jpg",
+            features=_features(),
+            gate_decision="passed",
+            rank=index + 1,
+        )
+        for index in range(3)
+    ]
+
+    payload = build_run_payload(
+        movie=SimpleNamespace(id=1, title="Fixture", tmdb_id=2),
+        started_at="2026-07-28T00:00:00+00:00",
+        status="completed",
+        timings={},
+        records={record.orig_filename: record for record in ranked},
+        total_duration=1.0,
+        run_id="scoredrun0001",
+        review_survivors=ranked,
+        review_order_algorithm=SCORED_REVIEW_ORDER,
+    )
+
+    review = payload["review"]
+    assert review["order_algorithm"] == SCORED_REVIEW_ORDER
+    assert review["eligible_count"] == 3
+    assert [survivor["reference"] for survivor in review["survivors"]] == [
+        "poster_0.jpg",
+        "poster_1.jpg",
+        "poster_2.jpg",
+    ]
+    assert [survivor["position"] for survivor in review["survivors"]] == [0, 1, 2]
+
+
+def test_review_order_defaults_to_neutral() -> None:
+    """The default must stay the onboarding-safe ordering."""
+    payload = build_run_payload(
+        movie=SimpleNamespace(id=1, title="Fixture", tmdb_id=2),
+        started_at="2026-07-28T00:00:00+00:00",
+        status="completed",
+        timings={},
+        records={},
+        total_duration=1.0,
+        run_id="defaultrun0001",
+    )
+    assert payload["review"]["order_algorithm"] == NEUTRAL_REVIEW_ORDER

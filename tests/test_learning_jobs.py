@@ -48,6 +48,8 @@ from marquee.models import (
     Movie,
     PipelineRun,
     RuntimeInstance,
+    Season,
+    Series,
 )
 from marquee.models.job import JobAttempt
 from marquee.models.ml_publication import MlActivePublication
@@ -837,3 +839,221 @@ async def test_ranking_residual_records_a_verified_no_change_without_failing_del
     assert result["outcome"] == "no_change"
     assert result["activated"] is False
     assert result["metrics"] == {"events": 0, "pairs": 0, "seed": 0}
+
+
+async def _seed_tv_library(db, root: Path, *, count: int) -> None:
+    """Create ``count`` series folders, each with a show poster and one season poster."""
+    for index in range(count):
+        folder = root / f"Show {index:03d}"
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / "show.jpg").write_bytes(b"show-art")
+        (folder / "season01.jpg").write_bytes(b"season-art")
+        series = Series(
+            title=f"Show {index:03d}",
+            year=2015,
+            series_path=str(folder),
+            sonarr_id=9000 + index,
+            tvdb_id=19000 + index,
+            season_count=1,
+        )
+        db.add(series)
+        await db.flush()
+        db.add(Season(series_id=series.id, season_number=1, episode_count=8, episode_file_count=8))
+    await db.commit()
+
+
+@pytest.mark.asyncio
+async def test_tv_taste_rebuild_trains_on_artwork_deployed_in_the_library(
+    db, data_dir, tmp_path, monkeypatch
+):
+    """The TV profile is built from posters on disk, tagged with the subject they came from."""
+    from marquee.config import settings
+    from marquee.core.jobs.internal_runner_host import RunnerFile, RunnerOutcome
+
+    library_root = tmp_path / "tv-library"
+    monkeypatch.setattr(settings, "MEDIA_ROOTS", [str(library_root), str(data_dir)])
+    monkeypatch.setattr(pipeline_settings, "TV_TASTE_MIN_POSTERS", 4)
+    await _seed_tv_library(db, library_root, count=3)
+
+    context = await _context(
+        db,
+        data_dir,
+        request={"source": "library", "library": "tv", "expected_generation": 0, "seed": 0},
+        job_type="taste_rebuild",
+        feature_area="ml_taste",
+        subject_kind="model",
+        subject_reference="taste_profile:tv",
+    )
+    workspace_dir = (
+        context.workspace.directory.root.resolved() / context.workspace.directory.key.value
+    )
+    seen: dict = {}
+
+    async def fake_run(launcher, *, operation, manifest, **kwargs):
+        seen["manifest"] = manifest
+        _write_valid_taste_profile(workspace_dir / "profile.npz")
+        return RunnerOutcome(
+            outcome="succeeded",
+            summary={"family": "taste_profile", "library": "tv", "exemplars": 6},
+            files=(RunnerFile("profile.npz", "0" * 64, 1),),
+            ready=True,
+            exit_code=0,
+        )
+
+    monkeypatch.setattr("marquee.core.jobs.internal_runner_host.run_internal_operation", fake_run)
+
+    result = await execute_taste_rebuild(context)
+
+    assert result["outcome"] == "succeeded"
+    assert result["activated"] is True
+    source = seen["manifest"]["params"]["source"]
+    assert source["mode"] == "library_scan"
+
+    # Every poster is staged under its own kind so the trainer tags it correctly.
+    staged_shows = sorted(p.name for p in (workspace_dir / "training" / "show").iterdir())
+    staged_seasons = sorted(p.name for p in (workspace_dir / "training" / "season").iterdir())
+    assert len(staged_shows) == 3
+    assert len(staged_seasons) == 3
+
+    identity = source["asset_identity"]
+    assert set(identity) == set(staged_shows) | set(staged_seasons)
+    assert {entry["asset_kind"] for entry in identity.values()} == {"show", "season"}
+    show_entry = identity[staged_shows[0]]
+    assert show_entry["season_number"] is None
+    assert show_entry["series_title"] == "Show 000"
+    season_entry = identity[staged_seasons[0]]
+    assert season_entry["season_number"] == 1
+    assert season_entry["series_title"] == "Show 000"
+
+    async with _get_session_factory()() as session:
+        active = await session.scalar(
+            select(MlActivePublication).where(MlActivePublication.family == "taste_profile:tv")
+        )
+    assert active is not None
+
+
+@pytest.mark.asyncio
+async def test_tv_taste_rebuild_refuses_a_library_below_the_poster_floor(
+    db, data_dir, tmp_path, monkeypatch
+):
+    from marquee.config import settings
+
+    library_root = tmp_path / "sparse-library"
+    monkeypatch.setattr(settings, "MEDIA_ROOTS", [str(library_root), str(data_dir)])
+    monkeypatch.setattr(pipeline_settings, "TV_TASTE_MIN_POSTERS", 50)
+    await _seed_tv_library(db, library_root, count=2)
+
+    context = await _context(
+        db,
+        data_dir,
+        request={"source": "library", "library": "tv", "expected_generation": 0, "seed": 0},
+        job_type="taste_rebuild",
+        feature_area="ml_taste",
+        subject_kind="model",
+        subject_reference="taste_profile:tv",
+    )
+
+    with pytest.raises(RuntimeError, match="at least 50 deployed posters, found 4"):
+        await execute_taste_rebuild(context)
+
+
+@pytest.mark.asyncio
+async def test_season_analysis_projects_its_parent_series(db, data_dir, tmp_path, monkeypatch):
+    """A season run must be attributable to its show.
+
+    ``PosterPipelineRequestV1`` allows exactly one subject, so a season request has
+    no ``series_id``. The projection has to derive it — every TV view groups runs by
+    series, and a null there makes the run invisible rather than merely unlabelled.
+    """
+    from marquee.core.jobs.internal_runner_host import RunnerFile, RunnerOutcome
+
+    root = tmp_path / "Show"
+    root.mkdir(parents=True, exist_ok=True)
+    series = Series(
+        title="Show", year=2020, series_path=str(root), sonarr_id=4242, tvdb_id=5252, tmdb_id=99
+    )
+    db.add(series)
+    await db.flush()
+    season = Season(series_id=series.id, season_number=2, episode_count=8, episode_file_count=8)
+    db.add(season)
+    await db.commit()
+
+    context = await _context(
+        db,
+        data_dir,
+        job_type="poster_pipeline",
+        request={"season_id": season.id, "tmdb_id": 99, "title": "Show · Season 2"},
+        feature_area="ai_posters",
+        subject_kind="season",
+        subject_reference=str(season.id),
+    )
+    # TMDB addresses season art by number, so the sealed snapshot carries it.
+    context.subject = {**context.subject, "season_number": season.season_number}
+    workspace_dir = (
+        context.workspace.directory.root.resolved() / context.workspace.directory.key.value
+    )
+
+    async def fake_run(launcher, *, operation, manifest, **kwargs):
+        (workspace_dir / "run.json").write_text(
+            json.dumps(
+                {
+                    "run_id": "seasonrun0001",
+                    "diagnostic_ledger": {
+                        "version": 1,
+                        "candidates": [
+                            {
+                                "orig_filename": "season_a.jpg",
+                                "image_path": str(workspace_dir / "candidate-000.jpg"),
+                            }
+                        ],
+                    },
+                    "review": {
+                        "version": 1,
+                        "order_algorithm": "source_family_round_robin_sha256_v1",
+                        "survivors": [
+                            {
+                                "candidate_id": "b" * 64,
+                                "reference": "season_a.jpg",
+                                "position": 0,
+                                "objective_eligible": True,
+                            }
+                        ],
+                        "eligible_count": 1,
+                        "archived_count": 0,
+                        "truncated_count": 0,
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        Image.new("RGB", (8, 12), color=(30, 30, 30)).save(
+            workspace_dir / "candidate-000.jpg", format="JPEG"
+        )
+        return RunnerOutcome(
+            outcome="succeeded",
+            summary={
+                "pipeline_status": "completed",
+                "run_id": "seasonrun0001",
+                "counts": {"posters_found": 1, "ranked": 1, "total": 1},
+                "recommendation": {"orig_filename": "season_a.jpg", "rank": 1, "final_score": 0.8},
+                "scorer_name": "weighted",
+                "candidate_files": {"season_a.jpg": "candidate-000.jpg"},
+            },
+            files=(RunnerFile("run.json", "0" * 64, 2),),
+            ready=True,
+            exit_code=0,
+        )
+
+    monkeypatch.setattr("marquee.core.jobs.internal_runner_host.run_internal_operation", fake_run)
+
+    result = await execute_poster_analysis(context)
+    assert result["outcome"] == "succeeded"
+
+    async with _get_session_factory()() as session:
+        run = await session.scalar(
+            select(PipelineRun).where(PipelineRun.job_id == context.delivery.canonical_job_id)
+        )
+    assert run is not None
+    assert run.media_type == "season"
+    assert run.season_id == season.id
+    assert run.series_id == series.id

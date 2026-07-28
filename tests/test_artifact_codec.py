@@ -131,3 +131,86 @@ def test_failed_migration_leaves_original_untouched(tmp_path):
     with pytest.raises(ArtifactMigrationError):
         ensure_safe_artifact(path, "taste_profile")
     assert path.read_bytes() == original
+
+
+def _tv_profile(tmp_path, **overrides):
+    """A TV profile carrying the per-poster subject tags the library scan produces."""
+    path = tmp_path / "taste_profile.tv.clip-vit-b-32.npz"
+    embeddings = np.eye(3, 512, dtype=np.float32)
+    payload = {
+        "embeddings": embeddings,
+        "poster_names": unicode_array(["show-1.jpg", "season-1-01.jpg", "show-2.jpg"]),
+        "asset_kinds": unicode_array(["show", "season", "show"]),
+        "series_titles": unicode_array(["Barry", "Barry", "Legion"]),
+        "season_numbers": np.asarray([-1, 1, -1], dtype=np.int32),
+        "centroid_emb": embeddings.mean(axis=0).astype(np.float32),
+        "model_name": unicode_scalar("clip-vit-b-32"),
+    }
+    payload.update(overrides)
+    np.savez(path, **payload)
+    return path
+
+
+def test_tv_profile_subject_tags_survive_the_production_loader(tmp_path):
+    path = _tv_profile(tmp_path)
+
+    assert ensure_safe_artifact(path, "taste_profile_tv").migrated is False
+    store = NumpyTasteStore(path)
+    store._ensure_loaded()
+
+    assert store.metadata == [
+        {"filename": "show-1.jpg", "asset_kind": "show", "series_title": "Barry"},
+        {
+            "filename": "season-1-01.jpg",
+            "asset_kind": "season",
+            "series_title": "Barry",
+            "season_number": 1,
+        },
+        {"filename": "show-2.jpg", "asset_kind": "show", "series_title": "Legion"},
+    ]
+
+
+def test_movie_profile_omits_the_tv_only_subject_tags(tmp_path):
+    """Movies carry no series identity, so those keys stay absent rather than blank."""
+    path = tmp_path / "taste_profile.clip-vit-b-32.npz"
+    embeddings = np.eye(2, 512, dtype=np.float32)
+    np.savez(
+        path,
+        embeddings=embeddings,
+        poster_names=unicode_array(["a.jpg", "b.jpg"]),
+        asset_kinds=unicode_array(["movie", "movie"]),
+        centroid_emb=embeddings.mean(axis=0).astype(np.float32),
+        model_name=unicode_scalar("clip-vit-b-32"),
+    )
+
+    store = NumpyTasteStore(path)
+    store._ensure_loaded()
+
+    assert store.metadata == [
+        {"filename": "a.jpg", "asset_kind": "movie"},
+        {"filename": "b.jpg", "asset_kind": "movie"},
+    ]
+
+
+def test_partial_subject_tags_are_rejected(tmp_path):
+    """A profile that can name only some of its posters is not attributable."""
+    path = _tv_profile(tmp_path, series_titles=unicode_array(["Barry", "Barry"]))
+
+    with pytest.raises(ArtifactMigrationError, match="series_titles length"):
+        ensure_safe_artifact(path, "taste_profile_tv")
+
+
+def test_series_titles_without_season_numbers_are_rejected(tmp_path):
+    path = tmp_path / "taste_profile.tv.clip-vit-b-32.npz"
+    embeddings = np.eye(2, 512, dtype=np.float32)
+    np.savez(
+        path,
+        embeddings=embeddings,
+        poster_names=unicode_array(["show-1.jpg", "show-2.jpg"]),
+        series_titles=unicode_array(["Barry", "Legion"]),
+        centroid_emb=embeddings.mean(axis=0).astype(np.float32),
+        model_name=unicode_scalar("clip-vit-b-32"),
+    )
+
+    with pytest.raises(ArtifactMigrationError, match="must travel together"):
+        ensure_safe_artifact(path, "taste_profile_tv")

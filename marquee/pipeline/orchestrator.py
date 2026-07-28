@@ -26,6 +26,8 @@ from marquee.core.text_profiles import OcrGateContext
 from marquee.models import Movie
 from marquee.pipeline.features import FeatureExtractor
 from marquee.pipeline.runner import (
+    NEUTRAL_REVIEW_ORDER,
+    SCORED_REVIEW_ORDER,
     ProgressCallback,
     ShouldCancel,
     _root_images,
@@ -247,7 +249,13 @@ async def run_poster_pipeline(
         total_duration=total_duration,
         run_id=run_id,
         media_type=subject.media_type,
-        review_survivors=(sync.ranked if personalization_mode == "collecting" else []),
+        # Always archived: this list is what every reviewable candidate image is
+        # registered from, so emptying it in personalized mode left the review UI
+        # with scores but no pictures. The order label carries the distinction.
+        review_survivors=sync.ranked,
+        review_order_algorithm=(
+            NEUTRAL_REVIEW_ORDER if personalization_mode == "collecting" else SCORED_REVIEW_ORDER
+        ),
     )
     counts = {**fetch_counts, **sync.counts}
     recommendation = (

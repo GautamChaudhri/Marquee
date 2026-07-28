@@ -136,6 +136,7 @@ interface Harness {
 	setList(body: unknown): void;
 	setSnapshot(body: unknown): void;
 	failNext(error?: unknown): void;
+	setSnapshotStatus(status: number): void;
 	setNeverResolve(value: boolean): void;
 	hidden: { value: boolean };
 	setHidden(value: boolean): void;
@@ -149,6 +150,7 @@ function setup(cadence: Partial<StoreCadence> = {}): Harness {
 	let listBody: unknown = { items: [], limit: 50, next_cursor: null, view: 'queue' };
 	let snapshotBody: unknown = snapshot('j1');
 	let pendingError: unknown = null;
+	let snapshotStatus = 200;
 	let neverResolve = false;
 	let visibilityCallback: (() => void) | null = null;
 
@@ -166,9 +168,10 @@ function setup(cadence: Partial<StoreCadence> = {}): Harness {
 			pendingError = null;
 			throw err;
 		}
-		const body = String(url).includes('/snapshot') ? snapshotBody : listBody;
+		const isSnapshot = String(url).includes('/snapshot');
+		const body = isSnapshot ? snapshotBody : listBody;
 		return new Response(JSON.stringify(body), {
-			status: 200,
+			status: isSnapshot ? snapshotStatus : 200,
 			headers: { 'content-type': 'application/json' }
 		});
 	};
@@ -200,6 +203,7 @@ function setup(cadence: Partial<StoreCadence> = {}): Harness {
 		setList: (body) => (listBody = body),
 		setSnapshot: (body) => (snapshotBody = body),
 		failNext: (error: unknown = new TypeError('network')) => (pendingError = error),
+		setSnapshotStatus: (status: number) => (snapshotStatus = status),
 		setNeverResolve: (value: boolean) => (neverResolve = value),
 		hidden,
 		setHidden: (value: boolean) => {
@@ -730,5 +734,45 @@ describe('connection resilience', () => {
 		await flush();
 		expect(h.sources).toHaveLength(2);
 		expect(h.sources[1].url).toBe('/api/jobs/events/stream?after=42');
+	});
+});
+
+describe('vanished jobs', () => {
+	let h: Harness;
+	beforeEach(() => (h = setup()));
+
+	it('forgets a job whose snapshot 404s instead of retrying it forever', async () => {
+		h.setList({ items: [row('j1')], limit: 50, next_cursor: null, view: 'queue' });
+		h.store.acquireScope('posters', { view: 'queue' });
+		await flush();
+		expect(h.store.records.get('j1')).toBeDefined();
+
+		// A database reset or retention purge removes the job under the poller.
+		h.setSnapshotStatus(404);
+		h.sources[0].emit('progress.updated', progressFrame('j1', 10, 2));
+		h.clock.advance(400);
+		await flush();
+
+		expect(h.store.records.get('j1')).toBeUndefined();
+
+		// No backoff timer survives to keep asking for a job that is gone.
+		const snapshotCalls = () => h.calls.filter((call) => call.url.includes('/snapshot')).length;
+		const settled = snapshotCalls();
+		h.clock.advance(120_000);
+		await flush();
+		expect(snapshotCalls()).toBe(settled);
+	});
+
+	it('keeps retrying a transient failure', async () => {
+		h.setList({ items: [row('j1')], limit: 50, next_cursor: null, view: 'queue' });
+		h.store.acquireScope('posters', { view: 'queue' });
+		await flush();
+
+		h.failNext(new TypeError('network'));
+		h.sources[0].emit('progress.updated', progressFrame('j1', 10, 2));
+		h.clock.advance(400);
+		await flush();
+
+		expect(h.store.records.get('j1')).toBeDefined();
 	});
 });
