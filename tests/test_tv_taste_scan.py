@@ -169,9 +169,7 @@ async def test_scan_follows_the_configured_filename_formats(db, tmp_path, monkey
 
 
 @pytest.mark.asyncio
-async def test_scan_skips_a_series_whose_path_does_not_validate(
-    db, tmp_path, monkeypatch
-) -> None:
+async def test_scan_skips_a_series_whose_path_does_not_validate(db, tmp_path, monkeypatch) -> None:
     """One unreachable series must not fail the whole scan."""
     monkeypatch.setattr(settings, "MEDIA_ROOTS", [str(tmp_path)])
     await _seed_series(db, tmp_path / "Good", title="Good", sonarr_id=7)

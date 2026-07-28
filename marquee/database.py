@@ -314,7 +314,9 @@ async def reset_database(
     """
     __import__("marquee.models")
 
-    timeout = _QUIESCE_TIMEOUT_SECONDS if quiesce_timeout_seconds is None else quiesce_timeout_seconds
+    timeout = (
+        _QUIESCE_TIMEOUT_SECONDS if quiesce_timeout_seconds is None else quiesce_timeout_seconds
+    )
     stop_requested = 0
     still_running: list[str] = []
     if quiesce:

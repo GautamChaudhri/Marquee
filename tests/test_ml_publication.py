@@ -457,9 +457,7 @@ async def test_poster_rescan_records_changed_then_unchanged_without_deleting(
 
 
 @pytest.mark.asyncio
-async def test_tv_retrain_submits_a_library_scan_without_asking_the_coordinator(
-    client, db
-) -> None:
+async def test_tv_retrain_submits_a_library_scan_without_asking_the_coordinator(client, db) -> None:
     """Movies need canonical evidence to be due; TV trains on artwork already on disk."""
     movies = await client.post("/api/taste/retrain", json={"library": "movies"})
     assert movies.status_code == 409
