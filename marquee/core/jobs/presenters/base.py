@@ -9,6 +9,7 @@ only the affected content; invalid required canonical documents raise
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -418,12 +419,28 @@ def present_actions(
     return tuple(sorted(allowed_actions(definition.action_policy, context)))
 
 
+_LABEL_KEY = re.compile(r"^[a-z0-9_]+(?:\.[a-z0-9_]+)+$")
+
+
+def _display_label(text: str | None) -> str | None:
+    """Render a stage label key as text.
+
+    ``ProgressPolicy`` stages carry translation keys and the progress writer
+    stores one as the headline, so the raw key reaches the UI verbatim
+    ("jobs.poster_pipeline.progress.finalizing"). Until a catalog exists, show
+    the leaf. Anything that is not a dotted key is already display text.
+    """
+    if text is None or not _LABEL_KEY.match(text):
+        return text
+    return text.rsplit(".", 1)[-1].replace("_", " ").capitalize()
+
+
 def present_compact_progress(ctx: PresenterContext) -> CompactProgress | None:
     progress = ctx.progress
     if progress is None:
         return None
     return CompactProgress(
-        headline=progress.headline,
+        headline=_display_label(progress.headline),
         stage_key=progress.stage.key,
         stage_label=progress.stage.detail or progress.stage.key.replace("_", " "),
         overall=progress.overall,
