@@ -106,7 +106,7 @@ rule can.
   cancel mid-run, and review the results later.
 
 <p align="center">
-  <img src="frontend/e2e/activity-shell.spec.ts-snapshots/projection-room-shell-chromium-linux.png" width="850" alt="Marquee Activity workspace showing durable queue, history, and operations controls">
+  <img src="docs/images/activity-workspace.png" width="850" alt="Marquee Activity workspace showing durable queue, history, and operations controls">
 </p>
 
 <p align="center"><sub>The Activity workspace keeps durable work, completed outcomes, and infrastructure diagnostics in one place.</sub></p>
