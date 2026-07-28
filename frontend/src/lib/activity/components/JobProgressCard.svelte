@@ -50,6 +50,16 @@
 	const callout = $derived(
 		activityCallout(status, attention, progress, connection, recordFreshness)
 	);
+	// A finished job keeps its last measurements on purpose (a failure must show
+	// where it stopped, not jump to 100%), so the card — not the server — decides
+	// how to draw them. Either signal alone settles it: the record can be terminal
+	// before a progress write lands, and a stored progress document is marked
+	// terminal even when it is read back through a stale row.
+	const settled = $derived(
+		status.phase === 'terminal' ||
+			progress?.freshness === 'terminal' ||
+			recordFreshness === 'terminal'
+	);
 	const metrics = $derived(metricCards(presentation));
 	const ioSummary = $derived.by(() => {
 		const values = progress?.metrics;
@@ -107,9 +117,15 @@
 	</div>
 
 	{#if progress?.overall}
-		<ProgressMeasure measurement={progress.overall} fallbackLabel="Overall progress" />
+		<ProgressMeasure
+			measurement={progress.overall}
+			fallbackLabel={settled ? 'Reached' : 'Overall progress'}
+			{settled}
+		/>
 	{/if}
-	{#if progress?.current}
+	{#if progress?.current && !settled}
+		<!-- "Now" is present tense; once the job is over there is no current work,
+		     and the outcome callout already carries what happened. -->
 		<div class="current-work">
 			{#if progress.current_subject}
 				<span class="current-subject">Now: {progress.current_subject.display_name}</span>

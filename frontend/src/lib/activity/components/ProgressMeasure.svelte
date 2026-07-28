@@ -1,8 +1,11 @@
 <script lang="ts">
 	import type { ProgressMeasurement } from '../types';
 
-	let { measurement, fallbackLabel }: { measurement: ProgressMeasurement; fallbackLabel: string } =
-		$props();
+	let {
+		measurement,
+		fallbackLabel,
+		settled = false
+	}: { measurement: ProgressMeasurement; fallbackLabel: string; settled?: boolean } = $props();
 
 	const label = $derived(measurement.label ?? fallbackLabel);
 	const count = $derived(
@@ -28,7 +31,9 @@
 		>
 			<div class="fill" style:width={`${measurement.percent}%`}></div>
 		</div>
-	{:else if measurement.mode === 'indeterminate'}
+	{:else if measurement.mode === 'indeterminate' && !settled}
+		<!-- A settled indeterminate measure has no position to draw, and the scanning
+		     track reads as work still running. The label alone is the honest render. -->
 		<div class="track indeterminate" role="progressbar" aria-label={label}>
 			<div class="fill"></div>
 		</div>

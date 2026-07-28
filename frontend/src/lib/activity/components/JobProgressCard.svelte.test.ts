@@ -261,3 +261,81 @@ describe('actions, keyboard, and restrained announcements', () => {
 		expect(document.querySelector('article')).toHaveClass('card');
 	});
 });
+
+describe('settled jobs stop advertising work in flight', () => {
+	// Reproduces a real History card: a terminal poster_pipeline that kept
+	// rendering "6 / 9 stages" plus an endlessly scanning "Now:" bar. The server
+	// retains those values on purpose and flags them `freshness: 'terminal'`;
+	// the card has to read that rather than draw them as live.
+	function terminalRow(progressOverrides = {}) {
+		const base = makeRow();
+		return makeRow({
+			status: {
+				label: 'Partially succeeded',
+				label_key: 'jobs.status.partially_succeeded',
+				phase: 'terminal',
+				outcome: 'partially_succeeded',
+				tone: 'warning'
+			},
+			terminal_at: '2026-07-16T12:02:00Z',
+			progress: {
+				...base.progress!,
+				freshness: 'terminal',
+				current_subject: subjects.season,
+				current: { scope_id: 'season-1', mode: 'indeterminate', label: 'Finalizing' },
+				...progressOverrides
+			}
+		});
+	}
+
+	it('drops the present-tense current-work block once the job is over', () => {
+		render(JobProgressCard, { props: { row: terminalRow() } });
+		expect(screen.queryByText(/^Now:/)).not.toBeInTheDocument();
+		expect(document.querySelector('.current-work')).not.toBeInTheDocument();
+	});
+
+	it('never leaves a scanning indeterminate track on a finished job', () => {
+		render(JobProgressCard, { props: { row: terminalRow() } });
+		expect(document.querySelector('.track.indeterminate')).not.toBeInTheDocument();
+	});
+
+	it('still shows where a failed job actually stopped', () => {
+		render(JobProgressCard, { props: { row: terminalRow() } });
+		// The retained determinate measure is evidence and must survive.
+		expect(screen.getByRole('progressbar', { name: 'Overall' })).toHaveAttribute(
+			'aria-valuenow',
+			'37'
+		);
+		expect(screen.getByText('3 / 8 steps')).toBeVisible();
+	});
+
+	it('settles on the record partition even if the row still claims to be running', () => {
+		// History rows are marked terminal by the store; a stale row that still
+		// says "running" must not reanimate the card.
+		const base = makeRow();
+		const row = makeRow({
+			progress: {
+				...base.progress!,
+				current_subject: subjects.season,
+				current: { scope_id: 'season-1', mode: 'indeterminate', label: 'Finalizing' }
+			}
+		});
+		render(JobProgressCard, { props: { row, recordFreshness: 'terminal' } });
+		expect(document.querySelector('.track.indeterminate')).not.toBeInTheDocument();
+		expect(screen.queryByText(/^Now:/)).not.toBeInTheDocument();
+	});
+
+	it('leaves a genuinely running job animating', () => {
+		const base = makeRow();
+		const row = makeRow({
+			progress: {
+				...base.progress!,
+				current_subject: subjects.season,
+				current: { scope_id: 'season-1', mode: 'indeterminate', label: 'Finalizing' }
+			}
+		});
+		render(JobProgressCard, { props: { row } });
+		expect(screen.getByText(`Now: ${subjects.season.display_name}`)).toBeVisible();
+		expect(document.querySelector('.track.indeterminate')).toBeInTheDocument();
+	});
+});
