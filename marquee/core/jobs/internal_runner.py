@@ -327,13 +327,17 @@ def _run_poster_single(manifest: dict[str, Any], control: ControlWriter) -> dict
     ledger = output.payload.get("diagnostic_ledger")
     survivors = review.get("survivors") if isinstance(review, dict) else None
     diagnostics = ledger.get("candidates") if isinstance(ledger, dict) else None
-    diagnostic_paths = {
-        candidate.get("orig_filename"): candidate.get("image_path")
-        for candidate in diagnostics
-        if isinstance(candidate, dict)
-        and isinstance(candidate.get("orig_filename"), str)
-        and isinstance(candidate.get("image_path"), str)
-    } if isinstance(diagnostics, list) else {}
+    diagnostic_paths = (
+        {
+            candidate.get("orig_filename"): candidate.get("image_path")
+            for candidate in diagnostics
+            if isinstance(candidate, dict)
+            and isinstance(candidate.get("orig_filename"), str)
+            and isinstance(candidate.get("image_path"), str)
+        }
+        if isinstance(diagnostics, list)
+        else {}
+    )
     if isinstance(survivors, list):
         retained: list[dict[str, Any]] = []
         for index, survivor in enumerate(survivors[:100]):
@@ -403,8 +407,12 @@ def _run_taste_profile(manifest: dict[str, Any], control: ControlWriter) -> dict
     negative = Path("negative")
     training_dir = training if source_mode == "fixture" and training.is_dir() else None
     negative_dir = negative if source_mode == "fixture" and negative.is_dir() else None
-    positive_weights = source.get("positive_weights") if isinstance(source.get("positive_weights"), dict) else None
-    negative_weights = source.get("negative_weights") if isinstance(source.get("negative_weights"), dict) else None
+    positive_weights = (
+        source.get("positive_weights") if isinstance(source.get("positive_weights"), dict) else None
+    )
+    negative_weights = (
+        source.get("negative_weights") if isinstance(source.get("negative_weights"), dict) else None
+    )
     output = Path("profile.npz")
 
     rebuild_profile(

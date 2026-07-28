@@ -165,9 +165,7 @@ class Job(Base):
     )
     root_id: Mapped[str] = mapped_column(String(32), index=True, nullable=False)
     correlation_id: Mapped[str | None] = mapped_column(String(64), index=True)
-    retry_of_job_id: Mapped[str | None] = mapped_column(
-        ForeignKey("jobs.id", ondelete="SET NULL")
-    )
+    retry_of_job_id: Mapped[str | None] = mapped_column(ForeignKey("jobs.id", ondelete="SET NULL"))
 
     # Provenance.
     trigger_kind: Mapped[str] = mapped_column(
@@ -251,8 +249,7 @@ class JobBatch(Base):
         CheckConstraint(_in_clause("mode", BATCH_MODES), name="ck_job_batches_mode"),
         CheckConstraint("generation >= 1", name="ck_job_batches_generation"),
         CheckConstraint(
-            "created_total >= 0 AND terminal_total >= 0 "
-            "AND terminal_total <= created_total",
+            "created_total >= 0 AND terminal_total >= 0 AND terminal_total <= created_total",
             name="ck_job_batches_totals",
         ),
         CheckConstraint(
@@ -285,22 +282,44 @@ class JobBatch(Base):
         ForeignKey("jobs.id", ondelete="CASCADE"), primary_key=True
     )
     mode: Mapped[str] = mapped_column(String(12), nullable=False)
-    generation: Mapped[int] = mapped_column(BigInteger, default=1, server_default="1", nullable=False)
-    sealed: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", nullable=False)
+    generation: Mapped[int] = mapped_column(
+        BigInteger, default=1, server_default="1", nullable=False
+    )
+    sealed: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
     sealed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     sealed_child_total: Mapped[int | None] = mapped_column(Integer)
-    created_total: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
-    terminal_total: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
-    succeeded_total: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    created_total: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
+    terminal_total: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
+    succeeded_total: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
     partially_succeeded_total: Mapped[int] = mapped_column(
         Integer, default=0, server_default="0", nullable=False
     )
-    no_change_total: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
-    failed_total: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
-    cancelled_total: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
-    superseded_total: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
-    dead_letter_total: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
-    unsafe_total: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    no_change_total: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
+    failed_total: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
+    cancelled_total: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
+    superseded_total: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
+    dead_letter_total: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
+    unsafe_total: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
     projection_sequence: Mapped[int] = mapped_column(
         BigInteger, default=0, server_default="0", nullable=False
     )

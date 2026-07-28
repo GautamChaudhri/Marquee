@@ -158,7 +158,7 @@ async def test_pgqueuer_bulk_enqueue_returns_ordered_one_for_one_numeric_ids(
             entrypoints = ["control", "network", "cpu"]
             payloads = [b"first", b"second", b"third"]
             priorities = [3, 2, 1]
-            dedupe_keys = [f"jmc4a-bulk-{uuid.uuid4().hex}-{index}" for index in range(3)]
+            dedupe_keys = [f"bulk-{uuid.uuid4().hex}-{index}" for index in range(3)]
 
             ids = await queries.enqueue(
                 entrypoints,
@@ -208,7 +208,7 @@ async def test_pgqueuer_bulk_enqueue_rollback_removes_every_queue_and_log_row(
                 ["control", "control"],
                 [b"rollback-first", b"rollback-second"],
                 priority=[0, 0],
-                dedupe_key=[f"jmc4a-rollback-{suffix}-1", f"jmc4a-rollback-{suffix}-2"],
+                dedupe_key=[f"rollback-{suffix}-1", f"rollback-{suffix}-2"],
             )
 
             await transaction.rollback()
@@ -229,7 +229,7 @@ async def test_pgqueuer_schedule_callback_receives_picked_utc_value_and_shared_c
     app = PgQueuer.from_asyncpg_connection(connection, resources={"marker": marker})
     received = []
     expression = "*/1 * * * * *"
-    entrypoint = f"jmc4a_schedule_{uuid.uuid4().hex}"
+    entrypoint = f"contract_schedule_{uuid.uuid4().hex}"
 
     @app.schedule(entrypoint, expression, accepts_context=True)
     async def scheduled(schedule, context: ScheduleContext) -> None:
@@ -273,7 +273,7 @@ async def test_pgqueuer_schedule_cancellation_requeues_the_picked_schedule(
     connection = await pgqueuer_contract_database.connect()
     app = PgQueuer.from_asyncpg_connection(connection)
     started = asyncio.Event()
-    entrypoint = f"jmc4a_cancel_schedule_{uuid.uuid4().hex}"
+    entrypoint = f"cancel_schedule_{uuid.uuid4().hex}"
 
     @app.schedule(entrypoint, "*/1 * * * * *")
     async def scheduled(_schedule) -> None:
@@ -311,7 +311,7 @@ async def test_pgqueuer_entrypoint_concurrency_is_database_global_across_workers
             ["cpu", "cpu"],
             [b"first", b"second"],
             priority=[0, 0],
-            dedupe_key=[f"jmc4a-concurrency-{suffix}-1", f"jmc4a-concurrency-{suffix}-2"],
+            dedupe_key=[f"concurrency-{suffix}-1", f"concurrency-{suffix}-2"],
         )
         first_app = PgQueuer.from_asyncpg_connection(first)
         second_app = PgQueuer.from_asyncpg_connection(second)

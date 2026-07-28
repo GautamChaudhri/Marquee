@@ -59,18 +59,14 @@ def validate_system_noop_payload(payload: dict[str, Any]) -> dict[str, Any]:
     except (TypeError, ValueError) as exc:
         raise JobCommandError("system_noop payload must be finite JSON") from exc
     if len(encoded) > MAX_NOOP_PAYLOAD_BYTES:
-        raise JobCommandError(
-            f"system_noop payload exceeds {MAX_NOOP_PAYLOAD_BYTES} encoded bytes"
-        )
+        raise JobCommandError(f"system_noop payload exceeds {MAX_NOOP_PAYLOAD_BYTES} encoded bytes")
     # Normalize ordering/types through the same strict JSON representation.
     return json.loads(encoded)
 
 
 def validate_system_noop_idempotency_key(idempotency_key: str) -> str:
     if not IDEMPOTENCY_PATTERN.fullmatch(idempotency_key):
-        raise JobCommandError(
-            "system_noop idempotency key must match system_noop:<stable-key>"
-        )
+        raise JobCommandError("system_noop idempotency key must match system_noop:<stable-key>")
     return idempotency_key
 
 
@@ -109,8 +105,6 @@ async def create_system_noop(
                 raise SubmissionInvariantError("canonical submission result is missing")
         return job
     except IdempotencyConflictError as exc:
-        raise JobCommandError(
-            "idempotency key already belongs to a different command"
-        ) from exc
+        raise JobCommandError("idempotency key already belongs to a different command") from exc
     except SubmissionError as exc:
         raise JobCommandError(str(exc)) from exc

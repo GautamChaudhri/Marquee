@@ -9,10 +9,6 @@
 		pipeline:
 			'<path d="M3 5h12M3 12h18M3 19h9"/><circle cx="18" cy="5" r="2"/><circle cx="12" cy="19" r="2"/>',
 		taste: '<path d="M12 3l1.8 4.6L18.5 9l-4.7 1.4L12 15l-1.8-4.6L5.5 9l4.7-1.4z"/>',
-		hdr: '<circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 0 0 18z"/>',
-		subtitles:
-			'<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M7 11h4M7 15h7M14 11h3"/>',
-		letterbox: '<path d="M6 3v15a3 3 0 0 0 3 3h12"/><path d="M18 21V6a3 3 0 0 0-3-3H3"/>',
 		'projection-room':
 			'<path d="M4 18a8 8 0 1 1 16 0"/><path d="M12 18l4.5-5.5"/><circle cx="12" cy="18" r="1.3"/>',
 		activity: '<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>',

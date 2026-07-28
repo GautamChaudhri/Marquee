@@ -205,9 +205,7 @@ def validate_database_values(values: dict[str, Any]) -> dict[str, Any]:
     normalized: dict[str, Any] = {}
     for owner, base in _OWNER_BASES.items():
         owner_updates = {
-            key: value
-            for key, value in values.items()
-            if CONFIGURATION_CATALOG[key].owner == owner
+            key: value for key, value in values.items() if CONFIGURATION_CATALOG[key].owner == owner
         }
         if not owner_updates:
             continue

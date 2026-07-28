@@ -446,7 +446,7 @@ async def test_offline_restore_certifies_fresh_disposable_targets(
     restore_root = data_dir.parent / "restore-root"
     restore_root.mkdir()
     monkeypatch.setenv("MARQUEE_RESTORE_ROOT", str(restore_root))
-    target_database = f"jmc3c_restore_{uuid.uuid4().hex[:16]}"
+    target_database = f"restore_{uuid.uuid4().hex[:16]}"
     target_data_dir = restore_root / "restored-data"
 
     backup = await backup_service.create_backup()

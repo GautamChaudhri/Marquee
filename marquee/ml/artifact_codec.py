@@ -17,9 +17,7 @@ from typing import Literal
 import numpy as np
 
 ArtifactKind = Literal[
-    "taste_profile", "taste_profile_tv",
-    "ranking_residual",
-    "zeroshot_axes", "taste_map"
+    "taste_profile", "taste_profile_tv", "ranking_residual", "zeroshot_axes", "taste_map"
 ]
 
 CALIB_NAMES_KEY = "calib_feature_names"
@@ -243,15 +241,25 @@ def validate_payload(kind: ArtifactKind, payload: dict[str, np.ndarray]) -> None
             if "neg_embedding_weights" in payload:
                 neg_weights = np.asarray(payload["neg_embedding_weights"], dtype=np.float32)
                 if neg_weights.shape != (neg.shape[0],):
-                    raise ArtifactMigrationError("negative evidence weights do not match embeddings")
-                if not np.all(np.isfinite(neg_weights)) or np.any(neg_weights <= 0) or np.any(neg_weights > 1):
-                    raise ArtifactMigrationError("negative evidence weights must be finite and in (0, 1]")
+                    raise ArtifactMigrationError(
+                        "negative evidence weights do not match embeddings"
+                    )
+                if (
+                    not np.all(np.isfinite(neg_weights))
+                    or np.any(neg_weights <= 0)
+                    or np.any(neg_weights > 1)
+                ):
+                    raise ArtifactMigrationError(
+                        "negative evidence weights must be finite and in (0, 1]"
+                    )
         if "embedding_weights" in payload:
             weights = np.asarray(payload["embedding_weights"], dtype=np.float32)
             if weights.shape != (embeddings.shape[0],):
                 raise ArtifactMigrationError("positive evidence weights do not match embeddings")
             if not np.all(np.isfinite(weights)) or np.any(weights <= 0) or np.any(weights > 1):
-                raise ArtifactMigrationError("positive evidence weights must be finite and in (0, 1]")
+                raise ArtifactMigrationError(
+                    "positive evidence weights must be finite and in (0, 1]"
+                )
         if "dino_embeddings" in payload:
             dino = np.asarray(payload["dino_embeddings"], dtype=np.float32)
             if dino.shape[0] != embeddings.shape[0]:

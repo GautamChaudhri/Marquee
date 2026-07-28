@@ -2,7 +2,7 @@
 
 ## Overview
 
-The poster pipeline selects the best poster for a movie by applying a strict
+The poster pipeline selects the best poster for a subject by applying a strict
 gate-then-rank workflow. It fetches candidate posters, removes obviously bad or
 invalid options, computes style and detail features, ranks the survivors with
 the deployed weighted baseline plus an optional bounded residual correction,
@@ -13,22 +13,21 @@ and archives the full run for review. The live orchestration is centered on
 
 Implemented:
 
-- Movie poster candidate fetch from TMDB
+- Candidate fetch from TMDB for movies, series, and seasons — TV runs use the
+  TV namespace, the TV taste profile, and the TV text profiles
 - Resolution, style, OCR, and optional fan-junk gates
 - Exact duplicate removal and same-design stacking / near-duplicate handling
 - CLIP, DINOv2, face/person, visual-composition, title-geometry, and quality
   features
 - Weighted scoring and a compatible bounded residual correction
 - Run archival, review payloads, pure rescoring, feedback capture, and batch
-  pipeline jobs
+  pipeline jobs for both movies and TV
 
 Not implemented:
 
-- TV poster selection
-- Additional live poster sources in the active pipeline
+- Episode artwork
+- Poster sources beyond TMDB
 - A VLM or judge stage
-- A fully productized ranking-v2 system beyond the experiments preserved in
-  `design/plans/30-ranking-v2-concept-notes.md`
 
 ## Stage Flow
 
@@ -100,16 +99,18 @@ review screens and rescoring can explain ranking decisions after the fact.
 
 ## Taste Profile And Residual Ranking
 
-Taste matching is exemplar-based, not centroid-based. The deployed movie and TV
+Taste matching is exemplar-based, not centroid-based: `knn_sim` is the
+similarity-weighted mean cosine similarity to the *k* nearest exemplars, so a
+varied taste is not collapsed into one bland average. The deployed movie and TV
 profiles include versioned positive and negative evidence; their compatible
 publication is resolved through the canonical publication authority before
-scoring. The weighted scorer is the permanent baseline. A residual may alter
-that baseline only when its frozen evidence, compatibility, held-out evaluation,
-and bounded delta are valid. A consumer must load the publication before
-readiness can claim personalization.
+scoring.
 
-Historical learned-head modules and plans remain historical evidence. They are
-not a current runtime, onboarding, publication, or readiness authority.
+The weighted scorer is the permanent baseline. A residual may alter that
+baseline only when its frozen evidence, compatibility, held-out evaluation, and
+bounded delta are all valid, and a consumer must load the publication before
+readiness can claim personalization. `SCORER=auto` falls back to the baseline
+whenever no compatible residual is available.
 
 ## OCR
 
@@ -183,24 +184,18 @@ Representative pipeline knobs in `marquee/core/pipeline_config.py`:
   evaluation/publication controls
 - Operations: `TMDB_POSTER_SIZE`, `PIPELINE_BATCH_MAX_MOVIES`
 
+## What Is Certified, And What Is Not
+
+The automated suite certifies the deterministic local boundary: canonical jobs,
+PgQueuer delivery, durable evidence, progress consumers, SSE, and the built web
+application. It does **not** certify live operator-library behaviour, GPU
+execution, model downloads, or destructive media operations — those remain
+manual gates. Run representative movie and TV libraries with models and
+credentials actually present, validate restore paths on disposable copies, and
+leave schedules off until the matching live check has passed.
+
 ## Cross References
 
 - `overview.md` for the application-level architecture
 - `library.md` for deployment, restore, and sync interactions
-- `job-platform.md` for how poster pipeline runs and retraining are queued
-- `timeline.md` for remaining tuning and deferred poster-pipeline work
-- `job-system-update/jmc6i-runner-progress-and-certification-closure.md` for fixed-runner cancellation
-  and progress closure
-- `job-system-update/jmc6j-taste-onboarding-and-residual-learning.md` for the approved cold-start,
-  continuous taste, and residual-ranking target
-- `job-system-update/jmc7-readiness-recovery-timeline.md` for the current JMC7 certification state
-
-## JMC7 certification and operator gates
-
-JMC7C certifies the deterministic local pipeline boundary through canonical
-jobs, PgQueuer delivery, durable evidence, consumers, SSE, and the built web
-application. It does not claim live operator-library, GPU, model-download, or
-destructive media-operation acceptance. Those remain separate operator gates:
-run representative movie and TV libraries with explicitly available models and
-credentials, validate restore paths on disposable copies, and activate no
-schedules until the corresponding live check has passed.
+- `job-platform.md` for how poster pipeline runs and learning jobs are queued

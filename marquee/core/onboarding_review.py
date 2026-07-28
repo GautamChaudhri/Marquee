@@ -243,7 +243,9 @@ async def _existing_decision(
     action: Literal["selection", "hate"],
 ) -> tuple[PosterPreferenceEvent | None, TasteExemplar | None]:
     event = await session.scalar(
-        select(PosterPreferenceEvent).where(PosterPreferenceEvent.idempotency_key == idempotency_key)
+        select(PosterPreferenceEvent).where(
+            PosterPreferenceEvent.idempotency_key == idempotency_key
+        )
     )
     if event is None:
         return None, None

@@ -88,9 +88,7 @@ class SafetyRequirements:
             gates.append(_permit(GateKind.MEDIA_WRITE, media_write_permit))
         if gpu_permit is not None:
             gates.append(_permit(GateKind.GPU, gpu_permit))
-        gates.append(
-            GateRequirement(GateKind.MAINTENANCE, "global", mode=GateMode.SHARED)
-        )
+        gates.append(GateRequirement(GateKind.MAINTENANCE, "global", mode=GateMode.SHARED))
         return cls.validate(gates)
 
     @classmethod
@@ -105,18 +103,14 @@ class SafetyRequirements:
         if len(set(items)) != len(items):
             raise InvalidSafetyRequirementsError("duplicate safety gate")
         exclusive_maintenance = any(
-            item.kind == GateKind.MAINTENANCE and item.mode == GateMode.EXCLUSIVE
-            for item in items
+            item.kind == GateKind.MAINTENANCE and item.mode == GateMode.EXCLUSIVE for item in items
         )
-        if exclusive_maintenance and (
-            len(items) != 1 or items[0].kind != GateKind.MAINTENANCE
-        ):
+        if exclusive_maintenance and (len(items) != 1 or items[0].kind != GateKind.MAINTENANCE):
             raise InvalidSafetyRequirementsError(
                 "exclusive maintenance cannot mix with lower-order gates"
             )
         if not exclusive_maintenance and not any(
-            item.kind == GateKind.MAINTENANCE and item.mode == GateMode.SHARED
-            for item in items
+            item.kind == GateKind.MAINTENANCE and item.mode == GateMode.SHARED for item in items
         ):
             raise InvalidSafetyRequirementsError("ordinary execution requires shared maintenance")
         ordered = tuple(sorted(items, key=lambda item: (item.kind, item.identity)))
@@ -125,15 +119,13 @@ class SafetyRequirements:
 
 def _permit(kind: GateKind, number: int) -> GateRequirement:
     if isinstance(number, bool) or number < 0 or number > 1023:
-        raise InvalidSafetyRequirementsError(
-            "permit number is outside the snapshotted capacity"
-        )
+        raise InvalidSafetyRequirementsError("permit number is outside the snapshotted capacity")
     return GateRequirement(kind, str(number))
 
 
 def advisory_key(requirement: GateRequirement) -> int:
     """Return a domain-separated stable signed PostgreSQL bigint key."""
-    domain = f"marquee:jmc3a:v1:{requirement.kind.name.lower()}:{requirement.identity}"
+    domain = f"marquee:safety-gate:v1:{requirement.kind.name.lower()}:{requirement.identity}"
     digest = hashlib.blake2b(domain.encode("utf-8"), digest_size=8).digest()
     return int.from_bytes(digest, byteorder="big", signed=True)
 
@@ -160,7 +152,7 @@ def requirements_for_policy(
     if not 1 <= media_write_capacity <= 1024 or not 1 <= gpu_capacity <= 1024:
         raise InvalidSafetyRequirementsError("snapshotted permit capacity is invalid")
     seed = hashlib.blake2b(
-        f"marquee:jmc3a:allocation:v1:{allocation_identity}".encode(), digest_size=8
+        f"marquee:safety-gate:allocation:v1:{allocation_identity}".encode(), digest_size=8
     ).digest()
     number = int.from_bytes(seed, "big")
     return SafetyRequirements.ordinary(
@@ -287,9 +279,7 @@ class SafetyGateService:
                     if time.monotonic() >= deadline:
                         raise SafetyGateTimeoutError("safety-gate admission deadline elapsed")
                     try:
-                        locked = bool(
-                            await connection.fetchval(query, advisory_key(requirement))
-                        )
+                        locked = bool(await connection.fetchval(query, advisory_key(requirement)))
                     except (OSError, asyncpg.PostgresError) as exc:
                         if _is_transient_connection_error(exc):
                             raise SafetyGateConnectionLostError(

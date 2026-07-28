@@ -27,7 +27,8 @@ def _tv_namespace() -> TasteNamespace:
     return TasteNamespace(
         library="tv",
         profile_path=Path(pipeline_settings.TASTE_PROFILE_TV_PATH),
-        map_history_dir=Path(pipeline_settings.TASTE_PROFILE_TV_PATH).parent / "taste_map_history_tv",
+        map_history_dir=Path(pipeline_settings.TASTE_PROFILE_TV_PATH).parent
+        / "taste_map_history_tv",
         artifact_kind_profile="taste_profile_tv",
     )
 

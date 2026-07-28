@@ -334,9 +334,7 @@ def _profile_library_response(value: dict[str, object]) -> OnboardingProfileLibr
     )
 
 
-def _job_lineage_item(
-    job: Job, *, predecessor_job_id: str | None
-) -> OnboardingJobLineageResponse:
+def _job_lineage_item(job: Job, *, predecessor_job_id: str | None) -> OnboardingJobLineageResponse:
     return OnboardingJobLineageResponse(
         job_id=job.id,
         predecessor_job_id=predecessor_job_id,
@@ -593,9 +591,7 @@ async def onboarding_start(
                 "movie_id": movie.id,
                 "tmdb_id": movie.tmdb_id,
                 "title": movie.title,
-                "source_descriptors": [
-                    {"provider": "tmdb", "reference": f"movie:{movie.tmdb_id}"}
-                ],
+                "source_descriptors": [{"provider": "tmdb", "reference": f"movie:{movie.tmdb_id}"}],
             },
             subject=SubjectLocator(kind="movie", reference=str(movie.id)),
             trigger=TriggerKind.MANUAL,
@@ -661,7 +657,9 @@ def _review_response(payload: dict[str, object]) -> OnboardingReviewResponse:
                 facts=OnboardingCandidateFactsResponse(
                     width=_as_int_or_none(facts.get("width")),
                     height=_as_int_or_none(facts.get("height")),
-                    language=(facts.get("language") if isinstance(facts.get("language"), str) else None),
+                    language=(
+                        facts.get("language") if isinstance(facts.get("language"), str) else None
+                    ),
                 ),
             )
         )
@@ -777,9 +775,7 @@ async def onboarding_complete(
             ),
         )
     revision = await snapshot_profile_revision(db, namespaces=("global",))
-    builds = await schedule_initial_profile_build(
-        db, initiator_identifier="onboarding-api"
-    )
+    builds = await schedule_initial_profile_build(db, initiator_identifier="onboarding-api")
     await db.commit()
     return OnboardingCompletionResponse(
         revision=revision.digest,

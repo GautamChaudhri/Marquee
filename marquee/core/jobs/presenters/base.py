@@ -184,9 +184,7 @@ def load_context(
     try:
         subject = SUBJECT_SNAPSHOT_ADAPTER.validate_python(job.subject_snapshot)
     except ValidationError as exc:
-        raise PresentationIntegrityError(
-            f"job {job.id} has an invalid subject snapshot"
-        ) from exc
+        raise PresentationIntegrityError(f"job {job.id} has an invalid subject snapshot") from exc
 
     request: StrictDocument | None = None
     try:
@@ -288,9 +286,7 @@ def subject_context_lines(subject: SubjectSnapshot) -> tuple[str, ...]:
         elif subject.series_title:
             lines.append(subject.series_title)
             if subject.season_number is not None and subject.episode_number is not None:
-                lines.append(
-                    f"S{subject.season_number:02d}E{subject.episode_number:02d}"
-                )
+                lines.append(f"S{subject.season_number:02d}E{subject.episode_number:02d}")
         if subject.container:
             lines.append(subject.container.upper())
     elif kind == "track":
@@ -365,9 +361,7 @@ def present_attention(ctx: PresenterContext) -> PresentationAttention:
         try:
             return PresentationAttention.model_validate(stored)
         except ValidationError:
-            ctx.warn(
-                "malformed_evidence", "The stored attention document could not be validated."
-            )
+            ctx.warn("malformed_evidence", "The stored attention document could not be validated.")
     if job.phase == "terminal":
         if job.outcome in {"failed", "dead_letter"}:
             return PresentationAttention(
@@ -390,13 +384,9 @@ def present_attention(ctx: PresenterContext) -> PresentationAttention:
             )
         return PresentationAttention()
     if job.desired_state == "pause":
-        return PresentationAttention(
-            level=AttentionLevel.NORMAL, reason=AttentionReason.HELD
-        )
+        return PresentationAttention(level=AttentionLevel.NORMAL, reason=AttentionReason.HELD)
     if ctx.progress is not None and ctx.progress.wait is not None:
-        return PresentationAttention(
-            level=AttentionLevel.NORMAL, reason=AttentionReason.WAITING
-        )
+        return PresentationAttention(level=AttentionLevel.NORMAL, reason=AttentionReason.WAITING)
     return PresentationAttention()
 
 
@@ -592,9 +582,7 @@ class JobPresenter:
                         ),
                         Fact(
                             label="Published",
-                            value=TextValue(
-                                text="Yes" if mutation.atomicity.published else "No"
-                            ),
+                            value=TextValue(text="Yes" if mutation.atomicity.published else "No"),
                         ),
                     ),
                 )
@@ -650,9 +638,7 @@ class JobPresenter:
             label_key=definition.label_key,
             feature_area=definition.feature_area,
             presentation_family=definition.presentation_family,
-            subject=present_subject(
-                ctx.subject, missing_live_subject=ctx.live_subject_missing
-            ),
+            subject=present_subject(ctx.subject, missing_live_subject=ctx.live_subject_missing),
             action=self.action(ctx),
             trigger=present_trigger(job, definition),
             attention=present_attention(ctx),
@@ -691,9 +677,7 @@ class JobPresenter:
             label_key=definition.label_key,
             feature_area=definition.feature_area,
             presentation_family=definition.presentation_family,
-            subject=present_subject(
-                ctx.subject, missing_live_subject=ctx.live_subject_missing
-            ),
+            subject=present_subject(ctx.subject, missing_live_subject=ctx.live_subject_missing),
             action_headline=self.action(ctx).headline,
             status=present_status(job),
             trigger=present_trigger(job, definition),

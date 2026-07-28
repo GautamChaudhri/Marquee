@@ -56,7 +56,7 @@ def run(behavior: CanaryBehavior) -> int:
         return 23
     if behavior == CanaryBehavior.FIXED_STAGED_FILE:
         with open("canary-output.bin", "xb") as output:
-            output.write(b"marquee-jmc3a-fixed-canary\n")
+            output.write(b"marquee-fixed-canary\n")
             output.flush()
             os.fsync(output.fileno())
         return 0

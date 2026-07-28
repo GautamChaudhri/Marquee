@@ -2,126 +2,123 @@
 
 ## Overview
 
-The library layer stores movie metadata, syncs with Radarr, serves browse and
-detail APIs, and acts as the anchor point for poster deployment, subtitle
-inventory, HDR visibility, and letterbox state. This document focuses on the
-movie workflow that is authoritative today.
+The library layer stores the movie and TV metadata Marquee works against, syncs
+it from Radarr and Sonarr, serves browse and detail APIs, and is the anchor
+point for poster deployment, restore, and audit history.
 
 ## Core Modules
 
-- `marquee/models/` defines the ORM models, including `Movie`, `MediaFile`,
-  `ArtworkEvent`, `PipelineRun`, `LetterboxState`, and subtitle/job tables.
+- `marquee/models/` defines the ORM models — `Movie`, `Series`, `Season`,
+  `Episode`, `MediaFile`, `ArtworkEvent`, `PipelineRun`, `TastePreference`,
+  `MlPublication`, `SystemMetrics`, the configuration tables, and the job
+  tables.
 - `marquee/database.py` owns the async SQLAlchemy engine and session factory.
-- `marquee/core/sync_service.py` pulls movie metadata from Radarr and writes it
-  into the local database.
+- `marquee/core/sync_service.py` pulls metadata from Radarr and Sonarr into the
+  local database.
 - `marquee/core/jobs/handlers_poster_mutations.py` is the canonical fenced
-  write path for poster deploy, reset, backup, and restore operations.
-- `marquee/core/poster_files.py` contains reusable pure filename and hash
-  helpers used by those jobs and read routes.
-- `marquee/api/routes/library.py` serves browse and detail APIs.
-- `marquee/api/library_serializers.py` enriches raw ORM rows with derived
-  fields for the frontend.
-- `marquee/api/routes/webhooks.py` responds to Radarr and Sonarr webhook
-  events.
+  write path for poster deploy, reset, backup, and restore.
+- `marquee/core/poster_files.py` holds the pure filename and hash helpers those
+  jobs and the read routes share.
+- `marquee/api/routes/library.py` serves browse and detail APIs;
+  `marquee/api/library_serializers.py` enriches ORM rows with the derived fields
+  the frontend needs.
 
 ## Persistence Model
 
-Production is designed around PostgreSQL via `DB_URL`, while tests and some
-development scenarios can use SQLite. The project also carries Alembic
-migrations under `alembic/`.
+PostgreSQL only, addressed through `DB_URL` with the `asyncpg` driver — there
+is no SQLite path, including in tests. The schema is owned by the Alembic
+migrations under `alembic/`; production never calls `create_all`.
 
-Movie-focused tables that matter most for the current product:
+Tables that matter most for the product:
 
-- `Movie` for library metadata and poster state
-- `MediaFile` for the physical movie file and technical metadata
-- `ArtworkEvent` for deploy/restore audit history
-- `PipelineRun` for poster pipeline executions
-- `LetterboxState` and `LetterboxEvent` for crop workflow state
-- `SubtitleInventory` and `SubtitleTrack` for subtitle visibility
+- `movies`, `series`, `seasons`, `episodes` — library metadata and poster state
+- `media_files` — the physical file and its technical metadata
+- `artwork_events` — deploy/restore audit history
+- `pipeline_runs` — poster pipeline executions and their archives
+- `taste_preferences` — exemplar and feedback evidence for ranking
 
-Series, season, and episode tables exist in the schema, but movie workflows are
-the actively documented path today.
+## Sync Behaviour
 
-## Sync Behavior
+`SyncService.sync_all()` runs the configured steps and returns a `SyncReport`:
 
-`SyncService.sync_all()` in `marquee/core/sync_service.py` coordinates:
+- movies from Radarr, with their movie files
+- series, seasons, and episodes from Sonarr
+- media-file upserts and poster-path checks against what is on disk
 
-- movie sync from Radarr
-- series, season, and episode sync from Sonarr
-- media-file upserts
-- HDR and custom-format overlay reference sync
-- poster-path checks against files already present on disk
+Each phase reports progress through an optional callback (so the job progress
+bar narrates what is being synced) and checks a cancellation event between
+steps. The path-validation cache is cleared afterwards, so a folder moved in
+Radarr between syncs is never served from stale state.
 
-Path translation is centralized in `marquee/config.py`. `RADARR_PATH_PREFIX`
-maps *arr-side paths to `RADARR_MEDIA_PATH`, and the same pattern exists for
-Sonarr with `SONARR_PATH_PREFIX` and `SONARR_MEDIA_PATH`.
+Path translation is centralised in `marquee/config.py`: `RADARR_PATH_PREFIX`
+maps \*arr-side paths onto `RADARR_MEDIA_PATH`, and Sonarr has the matching
+`SONARR_PATH_PREFIX` / `SONARR_MEDIA_PATH` pair.
 
-`POST /api/sync/all` is intentionally kept inline because it is network and
-database work, not GPU work or filesystem mutation.
+`POST /api/sync/all` is deliberately inline — it is network and database work,
+not GPU work or filesystem mutation. The same work also exists as the
+`library_sync` scheduled job.
 
 ## Library APIs
 
-Current browse and detail routes:
+```
+GET /api/library/movies
+GET /api/library/movies/{movie_id}
+GET /api/library/movies/{movie_id}/poster
+GET /api/library/series
+GET /api/library/series/{series_id}
+GET /api/library/series/{series_id}/poster
+GET /api/library/series/{series_id}/seasons
+GET /api/library/seasons/{season_id}/poster
+GET /api/library/episodes/{episode_id}
+GET /api/movies/{movie_id}/artwork-events
+GET /api/series/{series_id}/artwork-events
+```
 
-- `GET /api/library/movies`
-- `GET /api/library/movies/{movie_id}`
-- `GET /api/library/movies/{movie_id}/poster`
-
-The movie list supports pagination plus a real set of server-side filters for
-title query, poster status, HDR status, letterbox status, availability, and
-sort mode. Detail payloads are enriched with media-file linkage and subtitle
-coverage where available.
-
-Series and episode browse routes exist, but this doc treats them as supporting
-schema and library sync rather than as first-class feature parity.
+The list routes support pagination plus server-side filters for title query,
+poster status, availability, and sort mode. Detail payloads are enriched with
+media-file linkage and run history.
 
 ## Poster Deployment And Restore
 
 Canonical poster mutation jobs are the authoritative write path for movie and
-TV artwork.
+TV artwork. Their handlers cover:
 
-Their handlers handle:
-
-- filename rendering via `MOVIE_POSTER_FORMAT`
-- atomic copies and cached poster bytes under `data/cache/posters`
-- SHA-256 and pHash bookkeeping
+- filename rendering via `MOVIE_POSTER_FORMAT`, `SERIES_POSTER_FORMAT`, and
+  `SEASON_POSTER_FORMAT`
+- atomic copies, with cached poster bytes under `data/cache/posters`
+- SHA-256 bookkeeping
 - `ArtworkEvent` audit rows
-- restore from cache or source URL after upgrades or missing-file heal scans
+- restore from cache or source URL after an upgrade or a missing-file heal scan
 
 Every mutation is planned, fenced, backed up, validated, projected, and
-presented through the durable job lifecycle. Analysis and feedback submit work;
-they never write an operator library directly.
+presented through the durable job lifecycle. Analysis and feedback *submit*
+work; they never write into an operator library directly.
 
 ## Background Maintenance
 
-Library-facing maintenance includes:
+- `poster_heal` — recurring scan that repairs posters missing from disk
+- `poster_rescan` — reconciles library poster state after external changes
+- `backup_create` — snapshot of the database and managed data directory
+- `job_retention_purge` and `system_metrics_purge` — evidence hygiene
 
-- poster heal scans via the recurring `poster_heal` job
-- letterbox heal scans when enabled
-- system backup jobs and restore APIs
-- worker-driven remediation after webhook events or queued jobs
-
-These workflows rely on the durable job platform described in
-`job-platform.md`.
+All of these run on the platform described in `job-platform.md`.
 
 ## Important Configuration
 
-Representative library and runtime knobs in `marquee/config.py`:
+Representative knobs in `marquee/config.py`:
 
 - Core runtime: `DB_URL`, `DATA_DIR`, `JOB_EMBEDDED_WORKERS`
-- Client setup: `RADARR_URL`, `RADARR_API_KEY`, `SONARR_URL`,
-  `SONARR_API_KEY`, `TMDB_READ_ACCESS_TOKEN`
+- Clients: `RADARR_URL`, `RADARR_API_KEY`, `SONARR_URL`, `SONARR_API_KEY`,
+  `TMDB_READ_ACCESS_TOKEN`
 - Path translation: `RADARR_PATH_PREFIX`, `RADARR_MEDIA_PATH`,
   `SONARR_PATH_PREFIX`, `SONARR_MEDIA_PATH`, `MEDIA_ROOTS`
-- Poster behavior: `POSTER_CACHE_DIR`, `POSTER_STAGING_DIR`,
-  `MOVIE_POSTER_FORMAT`
+- Poster behaviour: `POSTER_CACHE_DIR`, `POSTER_STAGING_DIR`,
+  `MOVIE_POSTER_FORMAT`, `SERIES_POSTER_FORMAT`, `SEASON_POSTER_FORMAT`
 - Auth and request limits: `API_KEY`, `AUTH_ALLOW_LOCAL`,
   `MAX_REQUEST_BODY_BYTES`
 
 ## Cross References
 
-- `poster-pipeline.md` for how pipeline runs are produced and reviewed
-- `hdr-overlay.md` for synced HDR and custom-format reference data
-- `letterbox.md` for crop detection and tag management
-- `audio-subs.md` for media-file and subtitle inventory behavior
-- `job-platform.md` for recurring maintenance and queued remediation
+- `poster-pipeline.md` — how pipeline runs are produced and reviewed
+- `job-platform.md` — recurring maintenance and queued mutations
+- `overview.md` — application-level architecture

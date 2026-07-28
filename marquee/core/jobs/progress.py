@@ -158,9 +158,7 @@ class ProgressMetrics(StrictDocument):
     # percentage input, purely an observed measurement.
     items_survived: int | None = None
 
-    @field_validator(
-        "elapsed_seconds", "eta_seconds", "speed", "fps", "throughput"
-    )
+    @field_validator("elapsed_seconds", "eta_seconds", "speed", "fps", "throughput")
     @classmethod
     def finite_nonnegative(cls, value: float | None) -> float | None:
         if value is not None and (not math.isfinite(value) or value < 0):
@@ -269,7 +267,11 @@ def validate_progress_transition(
             scope.mode == MeasurementMode.DETERMINATE
             for scope in (current.overall, current.current)
         )
-        if not policy.eta_capability or not determinate or (policy.eta_requires_rate and not has_rate):
+        if (
+            not policy.eta_capability
+            or not determinate
+            or (policy.eta_requires_rate and not has_rate)
+        ):
             raise ProgressInvariantError("ETA is not credible for this progress policy/sample")
     if previous is None:
         return current
@@ -289,14 +291,8 @@ def validate_progress_transition(
                 raise ProgressInvariantError(
                     f"{name} measurement mode/unit change requires a new scope_id"
                 )
-            if (
-                before.total is not None
-                and after.total is not None
-                and after.total < before.total
-            ):
-                raise ProgressInvariantError(
-                    f"{name} total cannot shrink without a new scope_id"
-                )
+            if before.total is not None and after.total is not None and after.total < before.total:
+                raise ProgressInvariantError(f"{name} total cannot shrink without a new scope_id")
     if (
         previous.overall.percent is not None
         and current.overall.percent is not None

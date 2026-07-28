@@ -61,9 +61,7 @@ _JOINED_ARGUMENT = re.compile(
     re.IGNORECASE,
 )
 _BEARER = re.compile(r"(?i)(\bauthorization\s*:\s*bearer\s+)[^\s,;]{1,512}")
-_SECRET_HEADER = re.compile(
-    r"(?i)(\b(?:x-api-key|api-key|x-auth-token)\s*:\s*)[^\s,;]{1,512}"
-)
+_SECRET_HEADER = re.compile(r"(?i)(\b(?:x-api-key|api-key|x-auth-token)\s*:\s*)[^\s,;]{1,512}")
 _SECRET_VALUE = re.compile(
     r"(?i)(\b(?:api[_-]?key|access[_-]?token|auth[_-]?token|callback[_-]?token|password|"
     r"passwd|secret|token)\s*[=:]\s*)[^\s&;,]{1,512}"
@@ -120,9 +118,7 @@ class CentralRedactor:
 
     def __init__(self, secrets: Iterable[str] = ()) -> None:
         normalized = {
-            value
-            for value in secrets
-            if isinstance(value, str) and value and len(value) <= 2048
+            value for value in secrets if isinstance(value, str) and value and len(value) <= 2048
         }
         self._secrets = tuple(sorted(normalized, key=len, reverse=True))
         self.overlap = max((len(value) for value in self._secrets), default=0) + 1024
@@ -203,16 +199,16 @@ class AttemptLogFiles:
     def for_data_dir(cls, data_dir: str | Path) -> AttemptLogFiles:
         root = Path(data_dir).resolve(strict=True)
         return cls(
-            boundary_for_roots(
-                {"data": root}, access="read_write", purpose="attempt log evidence"
-            )
+            boundary_for_roots({"data": root}, access="read_write", purpose="attempt log evidence")
         )
 
-    def create(self, *, job_id: str, attempt_id: int, segment: int = 0) -> tuple[AttemptLogFile, int]:
+    def create(
+        self, *, job_id: str, attempt_id: int, segment: int = 0
+    ) -> tuple[AttemptLogFile, int]:
         if not _IDENTITY.fullmatch(job_id) or attempt_id < 1 or segment < 0:
             raise AttemptLogError("attempt log identity is invalid")
         directory = self.boundary.from_key(
-            self.root_name, f"jmc3/evidence/logs/{job_id}/{attempt_id}"
+            self.root_name, f"jobs/evidence/logs/{job_id}/{attempt_id}"
         )
         storage_key = f"{directory.key.value}/segment-{segment}.jsonl"
         path = self.boundary.from_key(self.root_name, storage_key)
@@ -225,7 +221,7 @@ class AttemptLogFiles:
         return AttemptLogFile(self.boundary, directory, path, storage_key), fd
 
     def ensure_writable(self) -> bool:
-        directory = self.boundary.from_key(self.root_name, "jmc3/evidence/logs")
+        directory = self.boundary.from_key(self.root_name, "jobs/evidence/logs")
         with contextlib.suppress(FileExistsError):
             self.boundary.create_directory(directory, parents=True)
         temporary, fd = self.boundary.temporary_file(directory, prefix=".readiness-")
@@ -261,9 +257,10 @@ class AttemptLogFiles:
         )
         source_fd = self.boundary.open_read(log_file.path)
         try:
-            with os.fdopen(source_fd, "rb", closefd=True) as source, os.fdopen(
-                temporary_fd, "wb", closefd=True
-            ) as target:
+            with (
+                os.fdopen(source_fd, "rb", closefd=True) as source,
+                os.fdopen(temporary_fd, "wb", closefd=True) as target,
+            ):
                 with gzip.GzipFile(fileobj=target, mode="wb", mtime=0) as compressed:
                     while chunk := source.read(64 * 1024):
                         compressed.write(chunk)
@@ -384,9 +381,7 @@ class AttemptLogFiles:
         suffix = ".jsonl.gz" if row.compression == "gzip" else ".jsonl"
         response = self.boundary.response(
             log_file.path,
-            media_type="application/gzip"
-            if row.compression == "gzip"
-            else "application/x-ndjson",
+            media_type="application/gzip" if row.compression == "gzip" else "application/x-ndjson",
             filename=f"job-{row.job_id}-attempt-{row.attempt_id}{suffix}",
         )
         response.headers["X-Content-Type-Options"] = "nosniff"
@@ -571,7 +566,7 @@ class AttemptLogSink:
                     level="warning",
                     fields={"dropped_records": self._python_dropped},
                 )
-        )
+            )
         await self._queue.put(None)
         try:
             await self._task
@@ -648,9 +643,7 @@ class AttemptLogSink:
                     if self._capture_failure:
                         return
                     for source in tuple(self._streams):
-                        await self._consume_stream(
-                            _Observation(source=source, data=b"", eof=True)
-                        )
+                        await self._consume_stream(_Observation(source=source, data=b"", eof=True))
                     return
                 if self._capture_failure:
                     continue
@@ -851,9 +844,7 @@ async def recover_abandoned_attempt_logs(
                 if row is None or row.seal_status != "recovering":
                     counts["deferred"] += 1
                     continue
-                byte_count, line_count, last_cursor, _ = await asyncio.to_thread(
-                    files.inspect, row
-                )
+                byte_count, line_count, last_cursor, _ = await asyncio.to_thread(files.inspect, row)
                 log_file = files.existing(row.storage_key)
                 checksum, stored_bytes = await asyncio.to_thread(files.seal, log_file)
             closed_at = datetime.now(UTC)

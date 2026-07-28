@@ -30,6 +30,8 @@ logger = logging.getLogger(__name__)
 RuntimeRole = Literal["worker", "scheduler"]
 RuntimeReadiness = Literal["starting", "ready", "not_ready", "stopped"]
 _VERSION = re.compile(r"\b\d+(?:\.\d+){1,3}\b")
+
+
 def capability_snapshot(entrypoints: Iterable[str]) -> dict[str, Any]:
     """Return bounded capability facts without paths, environment, payloads, or raw dumps."""
     try:
@@ -158,7 +160,9 @@ class RuntimeInstanceHandle:
         now = datetime.now(UTC)
         async with asyncio.timeout(settings.HEALTH_READY_TIMEOUT_SECONDS):
             async with self._session_factory() as session, session.begin():
-                instance = await session.get(RuntimeInstance, self.instance_id, with_for_update=True)
+                instance = await session.get(
+                    RuntimeInstance, self.instance_id, with_for_update=True
+                )
                 if instance is None:
                     raise RuntimeError("runtime instance evidence disappeared")
                 instance.readiness = readiness
@@ -173,7 +177,9 @@ class RuntimeInstanceHandle:
         now = datetime.now(UTC)
         async with asyncio.timeout(settings.HEALTH_READY_TIMEOUT_SECONDS):
             async with self._session_factory() as session, session.begin():
-                instance = await session.get(RuntimeInstance, self.instance_id, with_for_update=True)
+                instance = await session.get(
+                    RuntimeInstance, self.instance_id, with_for_update=True
+                )
                 if instance is None:
                     raise RuntimeError("runtime instance evidence disappeared")
                 if instance.readiness == "stopped":

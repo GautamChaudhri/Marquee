@@ -118,6 +118,7 @@ _QUEUE_SORTS = ("default",)
 _HISTORY_SORTS = ("default", "created", "-created")
 _RAW_KINDS = ("request", "plan", "result", "error")
 
+
 def _error(status_code: int, code: str, message: str, **fields) -> HTTPException:
     detail = JobApiErrorDetail(code=code, message=message, **fields)
     return HTTPException(status_code=status_code, detail=detail.model_dump(mode="json"))
@@ -303,9 +304,7 @@ def _sse_frame(client: EventClient, frame: JobEventFrame) -> str:
     responses={
         200: {
             "content": {
-                "text/event-stream": {
-                    "schema": {"$ref": "#/components/schemas/JobEventFrame"}
-                }
+                "text/event-stream": {"schema": {"$ref": "#/components/schemas/JobEventFrame"}}
             }
         }
     },
@@ -478,13 +477,9 @@ async def list_jobs(
         query = query.where(Job.outcome == outcome)
     if attention:
         if attention == AttentionLevel.NORMAL:
-            query = query.where(
-                or_(Job.attention.is_(None), _SEVERITY == 0)
-            )
+            query = query.where(or_(Job.attention.is_(None), _SEVERITY == 0))
         else:
-            query = query.where(
-                Job.attention.op("->>")("level") == attention.value
-            )
+            query = query.where(Job.attention.op("->>")("level") == attention.value)
     if trigger:
         query = query.where(Job.trigger_kind == trigger.value)
     if parent_id:
@@ -544,7 +539,11 @@ async def list_jobs(
             if name is not None:
                 key.append(_cursor_value(getattr(last, name)))
             elif expr is _SEVERITY:
-                level = (last.attention or {}).get("level") if isinstance(last.attention, dict) else None
+                level = (
+                    (last.attention or {}).get("level")
+                    if isinstance(last.attention, dict)
+                    else None
+                )
                 key.append({"error": 2, "warning": 1}.get(level, 0))
             elif expr is _RUNNING_FIRST:
                 key.append(0 if last.phase in ("running", "stopping") else 1)
@@ -599,9 +598,7 @@ async def activity_attention(
     )
 
 
-async def _attach_queue_ranks(
-    db: AsyncSession, items: list[JobRow], rows: list[Job]
-) -> None:
+async def _attach_queue_ranks(db: AsyncSession, items: list[JobRow], rows: list[Job]) -> None:
     """Attach exact class-local rank when it is inside the bounded active window."""
     queued = [job for job in rows if job.phase == "queued"]
     if not queued:
@@ -672,9 +669,7 @@ class JobSnapshotResponse(BaseModel):
 async def _snapshot_for_job(job: Job, db: AsyncSession) -> JobSnapshotResponse:
     definition = _definition_for(job.type)
     ctx = load_context(job, definition)
-    last_event_id = await db.scalar(
-        select(func.max(JobEvent.id)).where(JobEvent.job_id == job.id)
-    )
+    last_event_id = await db.scalar(select(func.max(JobEvent.id)).where(JobEvent.job_id == job.id))
     return JobSnapshotResponse(
         job_id=job.id,
         type=job.type,
@@ -765,9 +760,7 @@ async def _live_subject_missing(db: AsyncSession, job: Job) -> bool:
         subject_id = int(job.subject_reference)
     except ValueError:
         return False
-    row = await db.execute(
-        select(model.id, model.is_present).where(model.id == subject_id)
-    )
+    row = await db.execute(select(model.id, model.is_present).where(model.id == subject_id))
     found = row.first()
     return found is None or not found.is_present
 
@@ -865,11 +858,7 @@ async def list_job_attempts(
 ):
     await _load_job(db, job_id)
     contract = cursor_contract(view="attempts", filters={"job_id": job_id}, sort="number")
-    query = (
-        select(JobAttempt)
-        .where(JobAttempt.job_id == job_id)
-        .order_by(JobAttempt.number.asc())
-    )
+    query = select(JobAttempt).where(JobAttempt.job_id == job_id).order_by(JobAttempt.number.asc())
     if cursor:
         try:
             (after_number,) = decode_cursor(cursor, contract=contract)
@@ -1162,9 +1151,7 @@ async def list_job_events(
             stage=event.stage,
             message=event.message,
             detail={
-                key: value
-                for key, value in (event.detail or {}).items()
-                if not key.startswith("_")
+                key: value for key, value in (event.detail or {}).items() if not key.startswith("_")
             }
             or None,
             created_at=event.created_at,
@@ -1213,9 +1200,7 @@ async def list_job_artifacts(
 ):
     await _load_job(db, job_id)
     contract = cursor_contract(view="artifacts", filters={"job_id": job_id}, sort="id")
-    query = (
-        select(JobArtifact).where(JobArtifact.job_id == job_id).order_by(JobArtifact.id.asc())
-    )
+    query = select(JobArtifact).where(JobArtifact.job_id == job_id).order_by(JobArtifact.id.asc())
     if cursor:
         try:
             (after_id,) = decode_cursor(cursor, contract=contract)
@@ -1425,7 +1410,9 @@ async def list_job_children(
         key: tuple[Any, ...] = (_cursor_value(last.created_at), last.id)
         if sort == "failed_first":
             key = (
-                0 if last.outcome in {"failed", "partially_succeeded", "unsafe", "dead_letter"} else 1,
+                0
+                if last.outcome in {"failed", "partially_succeeded", "unsafe", "dead_letter"}
+                else 1,
                 *key,
             )
         next_cursor = encode_cursor(contract=contract, key=key)
@@ -1470,9 +1457,7 @@ async def get_job_raw_document(
     disposition = "attachment" if download else "inline"
     return JSONResponse(
         {"job_id": job.id, "kind": kind, "version": version, "document": document},
-        headers={
-            "Content-Disposition": f'{disposition}; filename="{job.id}-{kind}.json"'
-        },
+        headers={"Content-Disposition": f'{disposition}; filename="{job.id}-{kind}.json"'},
     )
 
 
@@ -1554,9 +1539,7 @@ def _control_http_error(exc: JobControlError) -> HTTPException:
     )
 
 
-async def _command_response(
-    result: JobControlResult, db: AsyncSession
-) -> CommandResponse:
+async def _command_response(result: JobControlResult, db: AsyncSession) -> CommandResponse:
     return CommandResponse(
         action=result.action,
         execution_class=result.execution_class,
@@ -1566,9 +1549,7 @@ async def _command_response(
     )
 
 
-async def _run_control(
-    item: BulkActionItem, db: AsyncSession
-) -> CommandResponse:
+async def _run_control(item: BulkActionItem, db: AsyncSession) -> CommandResponse:
     if item.action == "cancel":
         result = await control_cancel(
             db, job_id=item.job_id, expected_fence_token=item.expected_fence_token

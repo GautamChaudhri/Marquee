@@ -1,5 +1,4 @@
-/** Types mirroring the REAL backend shapes (design/MARQUEE_API.md).
- *  Field names match the API exactly — map to display models in components. */
+/** Handwritten view models for backend responses that are not generated from OpenAPI. */
 
 export interface Paginated<T> {
 	total: number;
@@ -29,27 +28,19 @@ export interface RuntimeSettings {
 	health: ConfigurationHealth;
 	configuration_meta: Record<string, ConfigurationKeyMeta>;
 	integrations: {
-		subgen?: {
-			configured?: boolean;
-			url_configured?: boolean;
-			callback_token_configured?: boolean;
-			deployment?: 'disabled' | 'external' | 'embedded';
-			url?: string | null;
-			profile_name?: string | null;
-			model_label?: string | null;
-			mode?: string | null;
-			local_path_prefix?: string | null;
-			remote_path_prefix?: string | null;
-			whisper_model?: string | null;
-			transcribe_device?: 'auto' | 'cpu' | 'cuda';
-			gpu_index?: number | null;
-			compute_type?: string | null;
-			concurrent_transcriptions?: number | null;
-			whisper_threads?: number | null;
-			model_path?: string | null;
-			[key: string]: unknown;
+		tmdb: { configured: boolean };
+		radarr: {
+			configured: boolean;
+			url_configured: boolean;
+			api_key_configured: boolean;
+			path_mapping_configured: boolean;
 		};
-		[key: string]: unknown;
+		sonarr: {
+			configured: boolean;
+			url_configured: boolean;
+			api_key_configured: boolean;
+			path_mapping_configured: boolean;
+		};
 	};
 	app: {
 		name: string;
@@ -65,56 +56,38 @@ export interface RuntimeSettings {
 		};
 		[key: string]: unknown;
 	};
-	paths: Record<string, unknown>;
-	sync: Record<string, unknown>;
-	letterbox: Record<string, unknown>;
-	posters?: {
-		restore_method?: 'download' | 'local';
-		backup_dir?: string;
-		[key: string]: unknown;
+	paths: {
+		data_dir: string;
+		media_roots: string[];
+		radarr_path_prefix_configured: boolean;
+		radarr_media_path_configured: boolean;
+		sonarr_path_prefix_configured: boolean;
+		sonarr_media_path_configured: boolean;
+		metrics_disk_path_configured: boolean;
+		poster_cache_dir: string;
+		poster_staging_dir: string;
 	};
-	subtitles: {
-		enabled?: boolean;
-		scan_concurrency?: number;
-		mutation_concurrency?: number;
-		generation_concurrency?: number;
-		preferred_languages?: string[];
-		preferred_audio_languages?: string[] | null;
-		preferred_subtitle_languages?: string[] | null;
-		effective_preferred_audio_languages?: string[];
-		effective_preferred_subtitle_languages?: string[];
-		unknown_language_action?: string;
-		protect_forced?: boolean;
-		protect_last_full_dialogue?: boolean;
-		backup_mode?: string;
-		external_delete_mode?: string;
-		[key: string]: unknown;
+	sync: {
+		interval_minutes: number;
+		cooldown_seconds: number;
+		heal_enabled: boolean;
+		heal_interval_minutes: number;
+		webhook_dry_run: boolean;
+	};
+	posters: {
+		restore_method: 'download' | 'local';
+		backup_dir: string;
 	};
 	poster_formats: {
-		movie?: string;
-		series?: string;
-		season?: string;
-		[key: string]: unknown;
+		movie: string;
+		series: string;
+		season: string;
 	};
 	writable: boolean;
 	[key: string]: unknown;
 }
 
 export type PosterStatus = 'missing' | 'review' | 'approved' | 'deployed';
-export type HdrKind = 'hdr' | 'hdr10' | 'hdr10p' | 'dovi' | 'dovi_no_fallback' | 'sdr';
-export type HdrPreferenceChoice =
-	| 'sdr'
-	| 'hdr'
-	| 'hdr10'
-	| 'hdr10p'
-	| 'dovi_no_fallback'
-	| 'dovi_fallback';
-export type SubtitleStatus = 'ok' | 'gap';
-export type RadarrOverlayStatus =
-	| 'below_target'
-	| 'meets_target'
-	| 'exceeds_target'
-	| 'no_hdr_target';
 
 export interface MovieListItem {
 	id: number;
@@ -176,257 +149,15 @@ export interface MovieQuery {
 	page_size?: number;
 	q?: string;
 	poster_status?: PosterStatus;
-	hdr?: HdrKind | 'unknown';
-	letterbox_status?: string;
 	exclude_in_review?: boolean;
 	include_unavailable?: boolean;
 	sort?: 'title' | 'year' | 'added';
-}
-
-export interface RadarrOverlayProfile {
-	id: number;
-	name: string;
-	cutoff_format_score: number | null;
-}
-
-export interface RadarrOverlayProfilePreference {
-	profile_id: number;
-	profile_name: string;
-	profile_targets: HdrKind[];
-	available_preference_targets: HdrPreferenceChoice[];
-	meet_target: HdrPreferenceChoice | null;
-	exceed_target: HdrPreferenceChoice | null;
-	excluded_targets: HdrPreferenceChoice[];
-}
-
-export interface RadarrOverlayItem extends MovieListItem {
-	dovi_no_fallback: boolean;
-	dovi_status?: 'unknown' | 'analyzed' | 'not_dovi' | 'error' | null;
-	dovi_profile?: number | null;
-	dovi_el_type?: DoviElType;
-	dovi_bl_signal_compatibility_id?: number | null;
-	profile_id: number | null;
-	profile_name: string | null;
-	cf_score: number | null;
-	cf_cutoff: number | null;
-	cutoff_met: boolean | null;
-	profile_targets: HdrKind[];
-	available_preference_targets: HdrPreferenceChoice[];
-	meet_target: HdrPreferenceChoice | null;
-	exceed_target: HdrPreferenceChoice | null;
-	preference_status: RadarrOverlayStatus;
-}
-
-export interface RadarrOverlayQuery {
-	page?: number;
-	page_size?: number;
-	hdr?: HdrKind | 'unknown';
-	hdr_tags?: string[];
-	cf_score_min?: number;
-	cf_score_max?: number;
-	profile_id?: number;
-	preference_status?: RadarrOverlayStatus;
-	dovi_no_fallback?: boolean;
-	sort_by?: 'title' | 'year' | 'cf_score' | 'preference_status';
-	sort_dir?: 'asc' | 'desc';
-}
-
-export interface RadarrOverlayResponse extends Paginated<RadarrOverlayItem> {
-	distribution: Record<
-		'hdr' | 'hdr10' | 'hdr10p' | 'dovi' | 'dovi_no_fallback' | 'sdr' | 'unknown',
-		number
-	>;
-	distribution_order: string[];
-	profiles: RadarrOverlayProfile[];
-	profile_preferences: RadarrOverlayProfilePreference[];
-	applied_filters: Record<string, unknown>;
-}
-
-export type DoviElType = 'FEL' | 'MEL' | null;
-
-export type ShowStatus =
-	| 'exceeds_target'
-	| 'meets_target'
-	| 'gaps'
-	| 'below_target'
-	| 'no_hdr_target'
-	| 'unknown';
-export type ShowUniformity = 'uniform' | 'uniform_by_season' | 'mixed';
-export type SeasonUniformity = 'uniform' | 'mixed';
-export interface SeasonRollup {
-	uniformity: SeasonUniformity;
-	uniform_tags: HdrKind[] | null;
-	union_tags: HdrKind[];
-	distribution: Record<string, number>;
-	status_counts: Record<string, number>;
-	episodes_total: number;
-	episodes_known: number;
-	episodes_unknown: number;
-}
-
-export interface ShowRollup {
-	status: ShowStatus;
-	uniformity: ShowUniformity;
-	union_tags: HdrKind[];
-	uniform_tags: HdrKind[] | null;
-	distribution: Record<string, number>;
-	status_counts: Record<string, number>;
-	episodes_total: number;
-	episodes_known: number;
-	episodes_unknown: number;
-	meeting_fraction: { met: number; of: number };
 }
 
 export interface PipelineRunRef {
 	run_id: string;
 	events_url: string;
 	results_url: string;
-}
-
-export interface BatchReencodeSettings {
-	quality_profile?: 'speed' | 'balanced' | 'quality' | null;
-	encoder?: string | null;
-	quality?: number | null;
-	preset?: string | null;
-	codec?: 'preserve' | 'hevc' | 'h264' | null;
-	allow_cpu?: boolean | null;
-	crop_top_override?: number | null;
-	crop_bottom_override?: number | null;
-}
-
-export interface BatchReencodeResponse {
-	job_ids: string[];
-	count: number;
-	skipped: Array<{ movie_id: number; code?: string | null; reason: string }>;
-}
-
-export interface DolbyVisionInfo {
-	present: boolean;
-	profile: number | null;
-	level: number | null;
-	el_present: boolean | null;
-	bl_signal_compatibility_id: number | null;
-	preservation: { status: string; supported: boolean; reason: string | null };
-}
-
-/** A planned permanent re-encode (POST /letterbox/movies/{id}/reencode-plan). */
-export interface ReencodePlan {
-	job_id: string;
-	status: string;
-	expires_at: string;
-	plan_version: string;
-	configuration_version: number;
-	method: string;
-	crop: { top: number; bottom: number; output_height: number };
-	source: {
-		path: string;
-		size_bytes: number;
-		codec: string | null;
-		width: number;
-		height: number;
-		pix_fmt: string | null;
-		color_transfer: string | null;
-		color_primaries: string | null;
-		color_space: string | null;
-		has_hdr: boolean;
-		has_dovi: boolean;
-		dovi_profile: number | null;
-	};
-	encoder: {
-		codec: string;
-		encoder: string;
-		family: string;
-		quality: number;
-		preset: string | null;
-		available_encoders: string[];
-		used_cpu_fallback: boolean;
-	};
-	acceleration?: {
-		enabled: boolean;
-		mode: 'nvidia_zero_copy' | 'cpu_decode_crop' | 'cpu_decode_crop_fallback';
-		decoder: string | null;
-		reason: string | null;
-	};
-	hdr: { status: string };
-	// Flattened preservation fields + profile/level (see build_plan).
-	dovi: {
-		status: string;
-		supported: boolean;
-		reason: string | null;
-		profile: number | null;
-		level: number | null;
-		el_present: boolean | null;
-	};
-	storage: {
-		estimated_temp_bytes: number;
-		free_bytes: number;
-		original_preserved_by_default: boolean;
-		replace_original_after_review: boolean;
-	};
-	warnings: ReencodeWarning[];
-	confirmation_required: boolean;
-	input_signature: string;
-}
-
-export interface ReencodeWarning {
-	code: string;
-	message: string;
-	requires_confirmation: boolean;
-}
-
-/** Overrides sent to the re-encode plan endpoint. */
-export interface ReencodeOptions {
-	top?: number | null;
-	bottom?: number | null;
-	allow_cpu_fallback?: boolean | null;
-	encoder?: string | null;
-	quality?: number | null;
-	preset?: string | null;
-	codec?: string | null;
-}
-
-export interface ReencodeArtifact {
-	id: number;
-	job_id: string | null;
-	media_type?: 'movie' | 'episode';
-	movie_id: number | null;
-	episode_id?: number | null;
-	media_file_id?: number | null;
-	status: string;
-	original_path: string;
-	candidate_path: string | null;
-	saved_original_path: string | null;
-	original_size_bytes: number | null;
-	candidate_size_bytes: number | null;
-	saved_original_size_bytes?: number | null;
-	encoder: string | null;
-	encoder_family: string | null;
-	codec: string | null;
-	crop_top: number;
-	crop_bottom: number;
-	hdr_status: string | null;
-	dovi_status: string | null;
-	detail?: {
-		plan?: ReencodePlan | null;
-		warnings?: ReencodeWarning[] | null;
-		execution?: { acceleration?: ReencodePlan['acceleration'] | null } | null;
-	} | null;
-	created_at: string | null;
-	updated_at: string | null;
-	// TV-only, joined in by GET /reencode-artifacts when media_type === 'episode'
-	series_id?: number;
-	series_title?: string;
-	episode_code?: string;
-}
-
-export interface ReencodeArtifactList {
-	summary: {
-		counts: Record<string, number>;
-		candidate_bytes: number;
-		saved_original_bytes: number;
-		total_bytes: number;
-	};
-	items: ReencodeArtifact[];
 }
 
 export interface SystemMetrics {
@@ -932,8 +663,6 @@ export interface TasteStatus {
 	rebuild?: Record<string, unknown>;
 }
 
-export type TasteSource = 'training_dir' | 'library';
-
 export type BatchScope = 'missing' | 'all' | 'selected';
 
 // ── Taste map (GET /taste/map) ─────────────────────────────────────────────
@@ -1063,245 +792,4 @@ export interface ManagedExemplarRow {
 	duplicate_count: number;
 	exists_in_training_dir: boolean;
 	thumb_url: string | null;
-}
-
-// ── Subtitle Inventory ──
-export interface SubtitleTrack {
-	id: string;
-	source: 'embedded' | 'external';
-	stream_index: number | null;
-	tool_track_id: number | null;
-	external_path: string | null;
-	codec: string | null;
-	codec_label?: string;
-	kind: 'text' | 'bitmap' | 'teletext' | 'unknown';
-	kind_label?: string;
-	language_raw: string | null;
-	language_tag: string;
-	language_source: 'metadata' | 'filename' | 'user' | 'unknown';
-	title: string | null;
-	is_default: boolean;
-	is_forced: boolean;
-	is_sdh: boolean;
-	is_commentary: boolean;
-	is_generated: boolean;
-	size_bytes: number | null;
-	per_track_actions: {
-		remove: TrackAction;
-		embed: TrackAction;
-		extract: TrackAction;
-	};
-}
-
-export interface TrackAction {
-	available: boolean;
-	reason: string | null;
-}
-
-export interface AudioStreamInfo {
-	index: number;
-	language: string;
-	language_raw?: string | null;
-	language_tag: string;
-	language_source?: 'metadata' | 'filename' | 'user' | 'unknown';
-	channels: number;
-	channel_layout?: string | null;
-	channel_label?: string | null;
-	codec: string | null;
-	codec_long_name?: string | null;
-	profile?: string | null;
-	format_label?: string | null;
-	title?: string | null;
-	tool_track_id?: number | null;
-	disposition?: Record<string, unknown>;
-	is_default?: boolean;
-	is_forced?: boolean;
-	is_sdh?: boolean;
-	is_commentary?: boolean;
-}
-
-export interface ContainerCapabilities {
-	can_remove: boolean;
-	can_embed_text: boolean;
-	can_embed_bitmap: boolean;
-	can_edit_metadata: boolean;
-}
-
-export interface SubtitleCoverage {
-	audio_languages: string[];
-	audio_channels_by_language?: Record<string, string[]>;
-	full_dialogue_languages: string[];
-	forced_only_languages: string[];
-	sdh_languages: string[];
-	commentary_present: boolean;
-	external_present: boolean;
-	embedded_present: boolean;
-	generated_present: boolean;
-	unknown_present: boolean;
-	preferred_audio_languages?: string[];
-	preferred_subtitle_languages?: string[];
-	missing_preferred_audio_languages?: string[];
-	missing_preferred_languages: string[];
-	audio_status?: 'ok' | 'gap';
-	subtitle_status?: 'ok' | 'gap';
-	status?: 'ok' | 'gap';
-	track_count: number;
-	preferences?: PreferredLanguageState;
-}
-
-export interface PreferredLanguageState {
-	shared: string[];
-	audio: string[];
-	subtitles: string[];
-	override: boolean;
-	override_audio: string[] | null;
-	override_subtitles: string[] | null;
-}
-
-export interface SubtitleInventory {
-	inventory_id: string;
-	file_path: string;
-	container: string;
-	duration_seconds: number;
-	tracks: SubtitleTrack[];
-	coverage: SubtitleCoverage;
-	capabilities: ContainerCapabilities;
-	audio_streams: AudioStreamInfo[];
-	file_signature: string;
-	scanned_at: string;
-	mutation_inventory?: MutationTrackInventory;
-}
-
-export interface MutationTrackFacts {
-	kind: 'audio' | 'subtitle';
-	source: 'embedded' | 'external';
-	language_tag: string;
-	codec: string | null;
-	channels: number | null;
-	title: string | null;
-	is_default: boolean;
-	is_forced: boolean;
-	is_hearing_impaired: boolean;
-	managed_key: string | null;
-}
-
-export interface MutationTrackEntry {
-	track_key: string;
-	facts: MutationTrackFacts;
-	stream_index: number | null;
-	tool_track_id: number | null;
-}
-
-export interface MutationTrackInventory {
-	signature: string;
-	tracks: MutationTrackEntry[];
-	container: string | null;
-}
-
-// ── Plans ──
-export interface SubtitleGenerator {
-	name: string;
-	type: string;
-	url: string;
-	online: boolean;
-	version: string | null;
-	model: string | null;
-	device: string | null;
-	capabilities: {
-		language_hint: boolean;
-		translate: boolean;
-		concurrent: number;
-	};
-}
-
-export interface GenerationRequest {
-	generator_id?: string | null;
-	language_hint?: string | null;
-	output: 'external' | 'embedded';
-}
-
-// ── Policies ──
-export interface SubtitlePolicy {
-	id: number;
-	name: string;
-	enabled: boolean;
-	revision: number;
-	mode: 'allowlist' | 'blocklist';
-	languages: string[];
-	unknown_action: 'keep' | 'review' | 'remove';
-	target_source?: 'embedded' | 'external' | 'both';
-	protect_forced: boolean;
-	protect_default: boolean;
-	protect_last_full_dialogue: boolean;
-	include_external: boolean;
-	auto_apply: boolean;
-	audit_only: boolean;
-	hardlink_action: 'block' | 'allow_break';
-	backup_mode: 'none' | 'keep_original';
-	created_at: string;
-	updated_at: string;
-}
-
-export type AudioSubStatus =
-	| 'ok'
-	| 'gaps'
-	| 'none_met'
-	| 'audio_gap'
-	| 'subtitle_gap'
-	| 'both_gap'
-	| 'unknown';
-
-export interface TvShowRollup {
-	episodes_total: number;
-	episodes_counted: number;
-	status_counts: Record<string, number>;
-	missing_languages: string[];
-	missing_audio_languages: string[];
-	missing_subtitle_languages: string[];
-	dub_coverage: { ok: number; of: number };
-	subtitle_coverage: { ok: number; of: number };
-	status: AudioSubStatus;
-	uniformity: ShowUniformity;
-}
-
-export interface TvEpisodeCoverage {
-	episode_id: number;
-	code: string;
-	title: string;
-	audio_languages: string[];
-	subtitle_languages: string[];
-	forced_languages: string[];
-	sdh_languages: string[];
-	tier: 'synced' | 'probed';
-	status: AudioSubStatus;
-	media_file_id: number | null;
-}
-
-export interface TvSeasonDetail {
-	season_number: number;
-	rollup: TvShowRollup;
-	episodes: TvEpisodeCoverage[];
-	active_scan_job_ids: string[];
-	active_generation_job_ids: string[];
-}
-
-export interface TvBatchReencodeSkipped {
-	episode_id: number;
-	code: string | null;
-	reason: string;
-	sXXeYY?: string;
-}
-
-/** Response from POST /tv/{series_id}/reencode */
-export interface TvBatchReencodeResponse {
-	job_ids: string[];
-	count: number;
-	skipped: TvBatchReencodeSkipped[];
-	parent_job_id: string;
-}
-
-/** Response from POST /tv/{series_id}/reencode-artifacts/replace-ready */
-export interface TvReplaceReadyResponse {
-	replaced: number;
-	failed: Array<{ artifact_id: number; code: string; reason: string }>;
 }

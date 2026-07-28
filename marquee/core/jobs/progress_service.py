@@ -210,7 +210,9 @@ class ProgressWriter:
                 current_subject=(
                     observation.current_subject
                     if observation.current_subject is not None
-                    else previous.current_subject if previous is not None else None
+                    else previous.current_subject
+                    if previous is not None
+                    else None
                 ),
                 overall=overall,
                 current=current,
@@ -390,7 +392,10 @@ class ProgressCoalescer:
             return True
         if self.meaningful_delta is None:
             return False
-        for before, after in ((previous.overall, current.overall), (previous.current, current.current)):
+        for before, after in (
+            (previous.overall, current.overall),
+            (previous.current, current.current),
+        ):
             if (
                 before.completed is not None
                 and before.total

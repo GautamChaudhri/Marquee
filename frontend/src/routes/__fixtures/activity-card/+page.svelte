@@ -14,7 +14,7 @@
 	const presentation = makePresentation(row);
 	const children = [
 		makeRow({ job_id: 'child-1', subject: subjects.episode }),
-		makeRow({ job_id: 'child-2', subject: subjects.track })
+		makeRow({ job_id: 'child-2', subject: subjects.posterCandidates })
 	];
 	let cancelSent = $state(false);
 	function markCancelSent(): void {

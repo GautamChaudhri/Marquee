@@ -66,14 +66,10 @@ class JobLog(Base):
     byte_count: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default="0")
     line_count: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default="0")
     last_cursor: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default="0")
-    stored_byte_count: Mapped[int] = mapped_column(
-        BigInteger, nullable=False, server_default="0"
-    )
+    stored_byte_count: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default="0")
     redacted: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="true")
     truncated: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
-    seal_status: Mapped[str] = mapped_column(
-        String(12), nullable=False, server_default="open"
-    )
+    seal_status: Mapped[str] = mapped_column(String(12), nullable=False, server_default="open")
     checksum: Mapped[str | None] = mapped_column(String(64))
     failure_code: Mapped[str | None] = mapped_column(String(40))
     opened_at: Mapped[datetime] = mapped_column(
@@ -121,7 +117,9 @@ class JobArtifact(Base):
     content_type: Mapped[str | None] = mapped_column(String(100), nullable=True)
     size_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     checksum: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    artifact_metadata: Mapped[dict[str, Any] | None] = mapped_column("metadata", JSON, nullable=True)
+    artifact_metadata: Mapped[dict[str, Any] | None] = mapped_column(
+        "metadata", JSON, nullable=True
+    )
     retention_class: Mapped[str] = mapped_column(
         String(24), nullable=False, server_default="standard"
     )
@@ -170,9 +168,7 @@ class RuntimeInstance(Base):
             "readiness IN ('starting', 'ready', 'not_ready', 'stopped')",
             name="ck_runtime_instances_readiness",
         ),
-        CheckConstraint(
-            "heartbeat_failures >= 0", name="ck_runtime_instances_heartbeat_failures"
-        ),
+        CheckConstraint("heartbeat_failures >= 0", name="ck_runtime_instances_heartbeat_failures"),
         UniqueConstraint(
             "host_boot_id",
             "process_id",
@@ -214,9 +210,7 @@ class MediaOperationDetail(Base):
 
     __tablename__ = "media_operation_details"
 
-    job_id: Mapped[str] = mapped_column(
-        ForeignKey("jobs.id", ondelete="CASCADE"), primary_key=True
-    )
+    job_id: Mapped[str] = mapped_column(ForeignKey("jobs.id", ondelete="CASCADE"), primary_key=True)
     operation_kind: Mapped[str] = mapped_column(String(60), nullable=False, index=True)
     media_file_id: Mapped[int | None] = mapped_column(
         ForeignKey("media_files.id", ondelete="SET NULL"), index=True, nullable=True

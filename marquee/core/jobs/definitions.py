@@ -163,7 +163,10 @@ class JobDefinitionRegistry:
             if definition.effect_safety == EffectSafety.UNSAFE_MUTATION:
                 request_model = definition.request.models[definition.request.current_version]
                 result_model = definition.result.models[definition.result.current_version]
-                if request_model.__name__ == "BuiltInIntentV1" or result_model.__name__ == "BuiltInResultV1":
+                if (
+                    request_model.__name__ == "BuiltInIntentV1"
+                    or result_model.__name__ == "BuiltInResultV1"
+                ):
                     raise InvalidJobDefinitionError(
                         "enabled mutations require family-specific request and result documents"
                     )
@@ -194,15 +197,15 @@ class JobDefinitionRegistry:
             raise InvalidJobDefinitionError("parent-only definitions cannot dispatch")
         if definition.retry_mode == RetryMode.GENERIC:
             if not definition.action_policy or not definition.action_policy.retry:
-                raise InvalidJobDefinitionError("generic retry definitions must expose retry policy")
+                raise InvalidJobDefinitionError(
+                    "generic retry definitions must expose retry policy"
+                )
             if definition.effect_safety == EffectSafety.UNSAFE_MUTATION:
                 raise InvalidJobDefinitionError(
                     "generic retry definitions require replay-safe effects"
                 )
             if definition.parent_policy is not None:
-                raise InvalidJobDefinitionError(
-                    "batch parents require domain-coordinated retry"
-                )
+                raise InvalidJobDefinitionError("batch parents require domain-coordinated retry")
         elif definition.retry_mode == RetryMode.DOMAIN_COORDINATED and (
             not definition.action_policy or not definition.action_policy.retry
         ):
@@ -221,9 +224,7 @@ class JobDefinitionRegistry:
             raise InvalidJobDefinitionError("invalid configuration dependency key")
         if definition.configuration_audit not in {"snapshot", "audited_empty"}:
             raise InvalidJobDefinitionError("configuration ownership audit is missing")
-        if bool(definition.configuration_keys) != (
-            definition.configuration_audit == "snapshot"
-        ):
+        if bool(definition.configuration_keys) != (definition.configuration_audit == "snapshot"):
             raise InvalidJobDefinitionError("configuration audit disagrees with dependency keys")
 
     def get(self, job_type: str) -> JobDefinition:
@@ -247,9 +248,7 @@ class JobDefinitionRegistry:
 
     @property
     def enabled_types(self) -> frozenset[str]:
-        return frozenset(
-            definition.job_type for definition in self if definition.enabled
-        )
+        return frozenset(definition.job_type for definition in self if definition.enabled)
 
     def validate_coverage(self, expected_types: Iterable[str]) -> None:
         expected = frozenset(expected_types)

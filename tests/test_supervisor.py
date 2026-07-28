@@ -109,10 +109,7 @@ def test_plan_uses_separate_pgqueuer_process_roles():
     assert scheduler.env is not None
     assert scheduler.env["MARQUEE_PROCESS_ROLE"] == "scheduler"
     assert workers
+    assert all(child.args == ["-m", "marquee.core.jobs.pgqueuer_worker"] for child in workers)
     assert all(
-        child.args == ["-m", "marquee.core.jobs.pgqueuer_worker"] for child in workers
-    )
-    assert all(
-        child.env is not None and child.env["MARQUEE_PROCESS_ROLE"] == "worker"
-        for child in workers
+        child.env is not None and child.env["MARQUEE_PROCESS_ROLE"] == "worker" for child in workers
     )

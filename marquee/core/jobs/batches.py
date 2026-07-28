@@ -87,9 +87,7 @@ class BatchProjectionResult:
     created_total: int
 
 
-def _submission_result(
-    job: Job, disposition: Literal["created", "reused"]
-) -> SubmissionResult:
+def _submission_result(job: Job, disposition: Literal["created", "reused"]) -> SubmissionResult:
     return SubmissionResult(
         job_id=job.id,
         disposition=disposition,
@@ -201,9 +199,7 @@ async def create_fixed_batch(
         raise SubmissionValidationError("caller must own an active transaction")
     ordered_children = tuple(children)
     if len(ordered_children) > MAX_FIXED_CHILDREN:
-        raise SubmissionValidationError(
-            f"fixed batch exceeds the {MAX_FIXED_CHILDREN}-child cap"
-        )
+        raise SubmissionValidationError(f"fixed batch exceeds the {MAX_FIXED_CHILDREN}-child cap")
     try:
         definition = JOB_DEFINITION_REGISTRY.get(parent_job_type)
     except JobDefinitionError as exc:
@@ -355,9 +351,7 @@ async def create_fixed_batch(
             root_id=parent_id,
             correlation_id=parent_id,
         )
-        bound_children = tuple(
-            replace(child, parent=binding) for child in ordered_children
-        )
+        bound_children = tuple(replace(child, parent=binding) for child in ordered_children)
         child_results = await submit_jobs(session, intents=bound_children)
         child_jobs = [await session.get(Job, result.job_id) for result in child_results]
         if any(child is None for child in child_jobs) or any(
@@ -566,9 +560,7 @@ async def append_dynamic_child(
         or child.job_type not in definition.child_job_types
     ):
         raise SubmissionValidationError("dynamic child provenance or policy is inconsistent")
-    existing = await session.scalar(
-        select(Job).where(Job.idempotency_key == child.idempotency_key)
-    )
+    existing = await session.scalar(select(Job).where(Job.idempotency_key == child.idempotency_key))
     if existing is None and projection.created_total >= MAX_DYNAMIC_CHILDREN:
         raise SubmissionValidationError(
             f"dynamic batch exceeds the {MAX_DYNAMIC_CHILDREN}-child cap"
@@ -704,7 +696,14 @@ async def project_batch(
         if child.outcome in {"failed", "partially_succeeded", "dead_letter", "unsafe"}
     ][:MAX_BATCH_FAILURE_ITEMS]
     failure_summary = (
-        {"items": failures, "truncated": len(failures) < counts["failed"] + counts["partially_succeeded"] + counts["dead_letter"] + counts["unsafe"]}
+        {
+            "items": failures,
+            "truncated": len(failures)
+            < counts["failed"]
+            + counts["partially_succeeded"]
+            + counts["dead_letter"]
+            + counts["unsafe"],
+        }
         if failures
         else None
     )
@@ -750,7 +749,9 @@ async def project_batch(
         if phase in {"running", "stopping", "terminal"} and parent.started_at is None:
             parent.started_at = now
         parent.terminal_at = now if terminal else None
-        parent.stopping_at = now if phase == "stopping" and parent.stopping_at is None else parent.stopping_at
+        parent.stopping_at = (
+            now if phase == "stopping" and parent.stopping_at is None else parent.stopping_at
+        )
         await job_event_writer.append(
             session,
             job_id=parent.id,
@@ -990,8 +991,7 @@ async def retry_batch(
             trigger=TriggerKind.BATCH,
             initiator=initiator,
             idempotency_key=(
-                f"{child.type}:retry-{original.id[:12]}-{child.id[:12]}-"
-                f"{expected_fence_token}"
+                f"{child.type}:retry-{original.id[:12]}-{child.id[:12]}-{expected_fence_token}"
             ),
             priority=child.priority,
         )

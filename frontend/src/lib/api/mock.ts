@@ -135,10 +135,10 @@ export function mockMetricsHistory(
 			},
 			{
 				job_id: 'job-2',
-				type: 'subtitle_generate',
-				label: 'Subtitle Generation',
+				type: 'taste_rebuild',
+				label: 'Taste Model Rebuild',
 				status: 'running',
-				subject: 'Arrival',
+				subject: 'Movies',
 				started_at: new Date(now - seconds * 0.22 * 1000).toISOString(),
 				finished_at: null
 			}

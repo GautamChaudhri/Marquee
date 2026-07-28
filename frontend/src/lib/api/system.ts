@@ -53,39 +53,45 @@ export function getSettings(fetch: Fetch): Promise<RuntimeSettings> {
 					allow_local: true
 				}
 			},
-			subtitles: {
-				enabled: true,
-				scan_concurrency: 2,
-				mutation_concurrency: 1,
-				generation_concurrency: 1,
-				preferred_languages: ['en'],
-				preferred_audio_languages: null,
-				preferred_subtitle_languages: null,
-				effective_preferred_audio_languages: ['en'],
-				effective_preferred_subtitle_languages: ['en'],
-				unknown_language_action: 'review',
-				protect_forced: true,
-				protect_last_full_dialogue: true,
-				backup_mode: 'keep_original',
-				external_delete_mode: 'quarantine'
-			},
 			integrations: {
-				subgen: {
+				tmdb: { configured: true },
+				radarr: {
 					configured: true,
-					deployment: 'external',
 					url_configured: true,
-					callback_token_configured: true,
-					url: 'http://localhost:9000',
-					profile_name: 'faster-whisper',
-					model_label: 'medium',
-					mode: 'transcribe'
+					api_key_configured: true,
+					path_mapping_configured: false
+				},
+				sonarr: {
+					configured: true,
+					url_configured: true,
+					api_key_configured: true,
+					path_mapping_configured: false
 				}
 			},
-			paths: {},
-			sync: {},
-			letterbox: {},
+			paths: {
+				data_dir: 'data',
+				media_roots: [],
+				radarr_path_prefix_configured: false,
+				radarr_media_path_configured: false,
+				sonarr_path_prefix_configured: false,
+				sonarr_media_path_configured: false,
+				metrics_disk_path_configured: false,
+				poster_cache_dir: 'data/cache/posters',
+				poster_staging_dir: 'data/staging/posters'
+			},
+			sync: {
+				interval_minutes: 60,
+				cooldown_seconds: 30,
+				heal_enabled: true,
+				heal_interval_minutes: 60,
+				webhook_dry_run: true
+			},
 			posters: { restore_method: 'download', backup_dir: 'data/backups/posters' },
-			poster_formats: {},
+			poster_formats: {
+				movie: 'poster.jpg',
+				series: 'show.jpg',
+				season: 'season{season:02d}.jpg'
+			},
 			writable: true
 		});
 	}
@@ -122,39 +128,45 @@ export function putSettings(
 						allow_local: true
 					}
 				},
-				subtitles: {
-					enabled: true,
-					scan_concurrency: 2,
-					mutation_concurrency: 1,
-					generation_concurrency: 1,
-					preferred_languages: ['en'],
-					preferred_audio_languages: null,
-					preferred_subtitle_languages: null,
-					effective_preferred_audio_languages: ['en'],
-					effective_preferred_subtitle_languages: ['en'],
-					unknown_language_action: 'review',
-					protect_forced: true,
-					protect_last_full_dialogue: true,
-					backup_mode: 'keep_original',
-					external_delete_mode: 'quarantine'
-				},
 				integrations: {
-					subgen: {
+					tmdb: { configured: true },
+					radarr: {
 						configured: true,
-						deployment: 'external',
 						url_configured: true,
-						callback_token_configured: true,
-						url: 'http://localhost:9000',
-						profile_name: 'faster-whisper',
-						model_label: 'medium',
-						mode: 'transcribe'
+						api_key_configured: true,
+						path_mapping_configured: false
+					},
+					sonarr: {
+						configured: true,
+						url_configured: true,
+						api_key_configured: true,
+						path_mapping_configured: false
 					}
 				},
-				paths: {},
-				sync: {},
-				letterbox: {},
+				paths: {
+					data_dir: 'data',
+					media_roots: [],
+					radarr_path_prefix_configured: false,
+					radarr_media_path_configured: false,
+					sonarr_path_prefix_configured: false,
+					sonarr_media_path_configured: false,
+					metrics_disk_path_configured: false,
+					poster_cache_dir: 'data/cache/posters',
+					poster_staging_dir: 'data/staging/posters'
+				},
+				sync: {
+					interval_minutes: 60,
+					cooldown_seconds: 30,
+					heal_enabled: true,
+					heal_interval_minutes: 60,
+					webhook_dry_run: true
+				},
 				posters: { restore_method: 'download', backup_dir: 'data/backups/posters' },
-				poster_formats: {},
+				poster_formats: {
+					movie: 'poster.jpg',
+					series: 'show.jpg',
+					season: 'season{season:02d}.jpg'
+				},
 				writable: true
 			}
 		});

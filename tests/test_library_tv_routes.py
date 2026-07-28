@@ -157,9 +157,7 @@ async def test_get_series_and_list_seasons_include_downloaded_specials_and_overr
     assert downloaded.status_code == 200
     assert [season["season_number"] for season in downloaded.json()["seasons"]] == [0, 1]
 
-    all_seasons = await client.get(
-        f"/api/library/series/{series.id}/seasons?downloaded_only=false"
-    )
+    all_seasons = await client.get(f"/api/library/series/{series.id}/seasons?downloaded_only=false")
     assert all_seasons.status_code == 200
     assert [season["season_number"] for season in all_seasons.json()["seasons"]] == [0, 1, 2]
     assert seasons[2].episode_file_count == 0

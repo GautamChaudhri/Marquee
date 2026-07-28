@@ -261,13 +261,11 @@ async def reset_database(
                 "(version, values, checksum, schema_version, actor, trigger) VALUES "
                 "(1, '{}'::json, "
                 "'44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a', "
-                "1, '{\"kind\":\"system\",\"id\":\"reset\"}'::json, 'reset_seed')"
+                '1, \'{"kind":"system","id":"reset"}\'::json, \'reset_seed\')'
             )
         )
         await db.execute(
-            text(
-                "INSERT INTO configuration_current (singleton_id, current_version) VALUES (1, 1)"
-            )
+            text("INSERT INTO configuration_current (singleton_id, current_version) VALUES (1, 1)")
         )
 
     await db.commit()

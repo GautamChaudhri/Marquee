@@ -168,9 +168,7 @@ class TransportIntentMonitor:
         return counts
 
 
-transport_intent_monitor = TransportIntentMonitor(
-    batch_size=settings.JOB_INTENT_MONITOR_BATCH_SIZE
-)
+transport_intent_monitor = TransportIntentMonitor(batch_size=settings.JOB_INTENT_MONITOR_BATCH_SIZE)
 
 
 async def monitor_until_shutdown(shutdown: asyncio.Event, *, interval_seconds: float) -> None:

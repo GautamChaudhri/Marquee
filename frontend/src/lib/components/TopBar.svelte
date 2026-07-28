@@ -13,9 +13,6 @@
 		shows: { title: 'Television', sub: 'Series library' },
 		pipeline: { title: 'Poster pipeline', sub: 'Run, review & tune selection' },
 		taste: { title: 'Key Art Engine', sub: 'Taste profile & bounded residual' },
-		hdr: { title: 'Radarr Overlay', sub: 'HDR targets, scores & upgrade signals' },
-		subtitles: { title: 'Subtitles', sub: 'Inventory, policies & generation' },
-		letterbox: { title: 'Letterbox', sub: 'Black-bar detection & cropping' },
 		'projection-room': { title: 'Activity', sub: 'Queue, history & operations' },
 		settings: { title: 'Settings', sub: 'Connections & preferences' }
 	};

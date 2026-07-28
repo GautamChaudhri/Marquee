@@ -14,12 +14,12 @@ const now = '2026-07-16T12:00:00Z';
 const presentation = {
 	version: 1,
 	job_id: DETAIL_JOB_ID,
-	job_type: 'subtitle_generate',
-	label: 'Generate subtitles',
-	label_key: 'jobs.subtitle_generate',
-	feature_area: 'audio_subtitles',
-	presentation_family: 'audio_subtitles',
-	presenter_key: 'jobs.subtitle_generate',
+	job_type: 'poster_pipeline',
+	label: 'Poster Pipeline',
+	label_key: 'jobs.poster_pipeline.label',
+	feature_area: 'ai_posters',
+	presentation_family: 'ai_posters',
+	presenter_key: 'jobs.poster_pipeline',
 	presenter_version: 1,
 	subject: {
 		kind: 'movie',
@@ -39,13 +39,13 @@ const presentation = {
 	},
 	trigger: { kind: 'manual', label: 'Started manually', initiator: 'Synthetic operator' },
 	action: {
-		headline: 'Subtitle generation stopped',
+		headline: 'Poster selection stopped',
 		explanation: 'Review the retained diagnostics.'
 	},
 	attention: {
 		level: 'error',
 		reason: 'failed',
-		message: 'Generation failed',
+		message: 'Poster selection failed',
 		remediation: 'Review the failed attempt log.'
 	},
 	progress: null,
@@ -54,10 +54,10 @@ const presentation = {
 	warnings: [{ code: 'fixture_warning', message: 'Synthetic warning' }],
 	failures: [
 		{
-			code: 'encoder_exit',
-			message: 'Encoder exited',
+			code: 'poster_pipeline_failed',
+			message: 'Poster pipeline failed',
 			remediation: 'Inspect stderr.',
-			stage: 'encode'
+			stage: 'scoring'
 		}
 	],
 	suggested_actions: [],
@@ -77,12 +77,12 @@ const presentation = {
 	sections: [
 		{
 			kind: 'facts',
-			title: 'Subtitle request',
+			title: 'Poster analysis',
 			facts: [{ label: 'Language', label_key: null, value: { type: 'text', text: 'English' } }]
 		},
 		{
 			kind: 'steps',
-			steps: [{ key: 'encode', label: 'Encode subtitles', state: 'failed', at: now }]
+			steps: [{ key: 'scoring', label: 'Rank candidates', state: 'failed', at: now }]
 		},
 		{ kind: 'notice', tone: 'warning', message: 'The source movie is no longer in the library.' }
 	]

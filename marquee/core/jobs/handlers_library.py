@@ -121,16 +121,10 @@ async def execute_library_sync(context: ExecutionContext) -> dict[str, Any]:
     await _emit_stage(context, stage_key="finalizing", ordinal=(ordinal := ordinal + 1))
 
     errors = (
-        report.movies.errors
-        + report.series.errors
-        + report.seasons.errors
-        + report.episodes.errors
+        report.movies.errors + report.series.errors + report.seasons.errors + report.episodes.errors
     )
     changed = (
-        report.movies.total
-        + report.series.total
-        + report.seasons.total
-        + report.episodes.total
+        report.movies.total + report.series.total + report.seasons.total + report.episodes.total
     )
     warnings: list[str] = []
     if errors:

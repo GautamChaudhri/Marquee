@@ -85,9 +85,7 @@ class TasteExemplar(Base):
         CheckConstraint(
             "namespace IN ('global', 'movies', 'tv')", name="ck_taste_exemplars_namespace"
         ),
-        CheckConstraint(
-            "polarity IN ('positive', 'negative')", name="ck_taste_exemplars_polarity"
-        ),
+        CheckConstraint("polarity IN ('positive', 'negative')", name="ck_taste_exemplars_polarity"),
         CheckConstraint(
             "status IN ('pending_deploy', 'active', 'revoked', 'invalid')",
             name="ck_taste_exemplars_status",
@@ -260,7 +258,9 @@ class TasteProfileRevision(Base):
     digest: Mapped[str] = mapped_column(String(64), primary_key=True)
     exemplar_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False)
     exemplar_checksums: Mapped[list[str]] = mapped_column(JSON, nullable=False)
-    exemplar_manifest: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False, default=list)
+    exemplar_manifest: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSON, nullable=False, default=list
+    )
     positive_subjects: Mapped[int] = mapped_column(Integer, nullable=False)
     state: Mapped[str] = mapped_column(String(16), nullable=False)
     build_job_id: Mapped[str | None] = mapped_column(
@@ -319,9 +319,7 @@ class TasteProfileBuild(Base):
     __tablename__ = "taste_profile_builds"
     __table_args__ = (
         UniqueConstraint("job_id", name="uq_taste_profile_builds_job"),
-        CheckConstraint(
-            "library IN ('movies', 'tv')", name="ck_taste_profile_builds_library"
-        ),
+        CheckConstraint("library IN ('movies', 'tv')", name="ck_taste_profile_builds_library"),
         CheckConstraint(
             "state IN ('queued', 'running', 'succeeded', 'no_change', 'superseded', 'failed', 'cancelled')",
             name="ck_taste_profile_builds_state",
@@ -358,9 +356,7 @@ class TasteProfileBuild(Base):
     )
     library: Mapped[str] = mapped_column(String(8), nullable=False)
     expected_generation: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    job_id: Mapped[str] = mapped_column(
-        ForeignKey("jobs.id", ondelete="RESTRICT"), nullable=False
-    )
+    job_id: Mapped[str] = mapped_column(ForeignKey("jobs.id", ondelete="RESTRICT"), nullable=False)
     state: Mapped[str] = mapped_column(String(16), nullable=False)
     result_generation: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     result_checksum: Mapped[str | None] = mapped_column(String(64), nullable=True)

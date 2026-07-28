@@ -100,9 +100,7 @@ class FencedWriter:
             attention=decision.attention_document(),
         )
 
-    async def fail(
-        self, exc: BaseException, *, cancelled: bool = False
-    ) -> WriteDisposition:
+    async def fail(self, exc: BaseException, *, cancelled: bool = False) -> WriteDisposition:
         outcome = "cancelled" if cancelled else "failed"
         error_payload = _safe_error(exc, cancelled=cancelled)
         error_model = self.definition.error.models[self.definition.error.current_version]
@@ -181,14 +179,10 @@ class FencedWriter:
             )
             if disposition != WriteDisposition.APPLIED:
                 return disposition
-            job = await session.scalar(
-                select(Job).where(Job.id == owner.job_id).with_for_update()
-            )
+            job = await session.scalar(select(Job).where(Job.id == owner.job_id).with_for_update())
             if job is None:
                 raise RuntimeError("fenced recovery job disappeared")
-            await progress_writer.terminalize(
-                session, job, outcome="cancelled", occurred_at=now
-            )
+            await progress_writer.terminalize(session, job, outcome="cancelled", occurred_at=now)
             attempt_result = await session.execute(
                 update(JobAttempt)
                 .where(
@@ -327,9 +321,7 @@ class FencedWriter:
                 raise RuntimeError("fenced attempt changed during stopping transaction")
         return WriteDisposition.APPLIED
 
-    async def record_process_identity(
-        self, identity: ProcessIdentity
-    ) -> WriteDisposition:
+    async def record_process_identity(self, identity: ProcessIdentity) -> WriteDisposition:
         """Persist the complete durable identity before the child start barrier opens."""
         owner = self.ownership
         factory = _get_session_factory()
@@ -617,14 +609,10 @@ class FencedWriter:
             )
             if disposition != WriteDisposition.APPLIED:
                 return disposition
-            job = await session.scalar(
-                select(Job).where(Job.id == owner.job_id).with_for_update()
-            )
+            job = await session.scalar(select(Job).where(Job.id == owner.job_id).with_for_update())
             if job is None:
                 raise RuntimeError("fenced terminal job disappeared")
-            await progress_writer.terminalize(
-                session, job, outcome=outcome, occurred_at=now
-            )
+            await progress_writer.terminalize(session, job, outcome=outcome, occurred_at=now)
             attempt_result = await session.execute(
                 update(JobAttempt)
                 .where(

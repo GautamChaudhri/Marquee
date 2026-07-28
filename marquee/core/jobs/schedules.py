@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 MAX_SCHEDULE_DIAGNOSTICS = 100
 # Production schedule keys that are certified to produce real occurrences. Grows one entry
-# per JMC4B family: `library-sync` activated in B2; `audio-subs-deep-scan` follows in B3.
+# Closed schedule families are registered explicitly; unsupported job types cannot execute.
 ACTIVATED_SCHEDULE_KEYS: frozenset[str] = frozenset(
     {"library-sync", "poster-heal", "evidence-retention"}
 )
@@ -124,9 +124,7 @@ def schedule_effective_state(
         definition.key in ACTIVATED_SCHEDULE_KEYS if definition.production else True
     )
     configured = bool(definition.configured_predicate(configuration))
-    master_enabled = (
-        configuration.production_occurrences_enabled if definition.production else True
-    )
+    master_enabled = configuration.production_occurrences_enabled if definition.production else True
     effectively_enabled = bool(
         registered and master_enabled and individually_activated and configured
     )
@@ -154,9 +152,7 @@ class ScheduleCatalog:
     def __init__(self, definitions: Sequence[ScheduleDefinition]) -> None:
         values = tuple(definitions)
         keys = [definition.key for definition in values]
-        transport_keys = [
-            (definition.entrypoint, definition.expression) for definition in values
-        ]
+        transport_keys = [(definition.entrypoint, definition.expression) for definition in values]
         if len(keys) != len(set(keys)):
             raise ValueError("schedule catalog keys must be unique")
         if len(transport_keys) != len(set(transport_keys)):
@@ -277,9 +273,7 @@ async def submit_schedule_occurrence(
     configuration = configuration_loader()
     due = normalize_due_occurrence(definition, schedule, configuration)
     diagnostic_due = (
-        due
-        if due is not None
-        else schedule.updated.astimezone(UTC).replace(microsecond=0)
+        due if due is not None else schedule.updated.astimezone(UTC).replace(microsecond=0)
     )
     if due is None:
         diagnostics.record(
@@ -329,6 +323,7 @@ def register_schedule_callbacks(
 ) -> None:
     """Register catalog callbacks without importing routes or product handlers."""
     for definition in catalog:
+
         async def callback(schedule, *, _definition=definition) -> None:
             await submit_schedule_occurrence(
                 _definition,

@@ -1,7 +1,8 @@
-"""Feedback-core tests that don't require ML extras.
+"""Feedback: approve, override, reject, undo, and review-queue disposition.
 
-Scenario mapping, canonical evidence, dedup remap, and undo are exercised directly.
-"""
+Every decision is an immutable event that both submits the poster mutation and becomes
+ranking evidence. A review-queue reset changes disposition only — it must never null the
+database poster state while the deployed file stays on disk."""
 
 from __future__ import annotations
 
@@ -17,6 +18,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
 from marquee.api.routes import feedback as feedback_route
+from marquee.api.routes.pipeline import reset_review_queue
 from marquee.config import settings
 from marquee.core.pipeline_config import pipeline_settings
 from marquee.main import app
@@ -32,6 +34,7 @@ from marquee.models import (
     TasteExemplar,
 )
 from marquee.models.job import JobAttempt
+from tests.support.canonical_poster import seed_canonical_pipeline_run
 
 _REAL_SCHEDULE_RESIDUAL_SUCCESSOR = feedback_route._schedule_residual_successor
 
@@ -62,9 +65,7 @@ async def test_feedback_successor_preserves_exact_revision_lineage(
     monkeypatch.setattr(
         feedback_route,
         "build_residual_pairs",
-        lambda _events: [
-            SimpleNamespace(subject=f"movie:{index // 8}") for index in range(200)
-        ],
+        lambda _events: [SimpleNamespace(subject=f"movie:{index // 8}") for index in range(200)],
     )
     result = await _REAL_SCHEDULE_RESIDUAL_SUCCESSOR(
         db,
@@ -414,9 +415,7 @@ async def test_explicit_hate_pins_negative_and_undo_revokes_history(client, db, 
     )
     assert response.status_code == 200
     event_id = response.json()["event_id"]
-    negative = await db.scalar(
-        select(TasteExemplar).where(TasteExemplar.polarity == "negative")
-    )
+    negative = await db.scalar(select(TasteExemplar).where(TasteExemplar.polarity == "negative"))
     assert negative is not None
     assert negative.status == "active"
     retained = await db.get(JobArtifact, negative.retained_artifact_id)
@@ -801,3 +800,43 @@ async def test_tv_feedback_undo_uses_tv_namespace(client, db, tmp_path):
     source_event = await db.get(PosterPreferenceEvent, event_id)
     assert source_event is not None
     assert source_event.revoked_event_id == undo_event.id
+
+
+@pytest.mark.asyncio
+async def test_review_reset_changes_disposition_only_not_poster_state(db):
+    movie = Movie(
+        title="Deployed Movie",
+        year=2020,
+        folder_path="/library/Deployed",
+        tmdb_id=5551,
+        poster_path="/library/Deployed/poster.jpg",
+        poster_source="tmdb",
+        poster_ai_selected=True,
+        poster_deployed_filename="poster.jpg",
+    )
+    db.add(movie)
+    await db.flush()
+    run = await seed_canonical_pipeline_run(
+        db,
+        run_id="review-reset-run",
+        movie_id=movie.id,
+        archive={"run_id": "review-reset-run", "movie_id": movie.id, "candidates": []},
+    )
+    await db.commit()
+
+    result = await reset_review_queue(db)
+
+    assert result["reset"] == 1
+    assert result["runs_cleared"] == 1
+    # H19: the reset must not clear any poster state.
+    assert result["posters_reset"] == 0
+
+    await db.refresh(run)
+    await db.refresh(movie)
+    # Review disposition changed — the run leaves the Review tab.
+    assert run.feedback_event_id is not None
+    # Deployed poster DB state is completely untouched (no DB/filesystem disagreement).
+    assert movie.poster_path == "/library/Deployed/poster.jpg"
+    assert movie.poster_deployed_filename == "poster.jpg"
+    assert movie.poster_source == "tmdb"
+    assert movie.poster_ai_selected is True

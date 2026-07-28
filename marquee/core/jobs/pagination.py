@@ -59,8 +59,6 @@ def decode_cursor(token: str, *, contract: str) -> tuple[str | int | float | Non
     if payload.get("c") != contract:
         raise InvalidCursorError("cursor was issued for a different query")
     key = payload.get("k")
-    if not isinstance(key, list) or any(
-        not isinstance(item, _ALLOWED_KEY_TYPES) for item in key
-    ):
+    if not isinstance(key, list) or any(not isinstance(item, _ALLOWED_KEY_TYPES) for item in key):
         raise InvalidCursorError("cursor key is malformed")
     return tuple(key)

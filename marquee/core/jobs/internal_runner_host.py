@@ -374,25 +374,50 @@ def _finalize(
     exit_signal = summary.exit_signal
 
     if cancelled:
-        return RunnerOutcome(OUTCOME_CANCELLED, ready=ready, warnings=warnings,
-                             exit_code=exit_code, exit_signal=exit_signal)
+        return RunnerOutcome(
+            OUTCOME_CANCELLED,
+            ready=ready,
+            warnings=warnings,
+            exit_code=exit_code,
+            exit_signal=exit_signal,
+        )
     if timed_out:
-        return RunnerOutcome(OUTCOME_TIMEOUT, ready=ready, warnings=warnings,
-                             exit_code=exit_code, exit_signal=exit_signal)
+        return RunnerOutcome(
+            OUTCOME_TIMEOUT,
+            ready=ready,
+            warnings=warnings,
+            exit_code=exit_code,
+            exit_signal=exit_signal,
+        )
     if protocol_error is not None:
-        return RunnerOutcome(OUTCOME_PROTOCOL_ERROR, ready=ready, warnings=warnings,
-                             error={"code": "ProtocolError", "message": str(protocol_error)},
-                             exit_code=exit_code, exit_signal=exit_signal)
+        return RunnerOutcome(
+            OUTCOME_PROTOCOL_ERROR,
+            ready=ready,
+            warnings=warnings,
+            error={"code": "ProtocolError", "message": str(protocol_error)},
+            exit_code=exit_code,
+            exit_signal=exit_signal,
+        )
 
     # A late fence loss after a clean result must not be reported as success.
     if should_stop is not None and should_stop():
-        return RunnerOutcome(OUTCOME_CANCELLED, ready=ready, warnings=warnings,
-                             exit_code=exit_code, exit_signal=exit_signal)
+        return RunnerOutcome(
+            OUTCOME_CANCELLED,
+            ready=ready,
+            warnings=warnings,
+            exit_code=exit_code,
+            exit_signal=exit_signal,
+        )
 
     if result_frame is None:
-        return RunnerOutcome(OUTCOME_FAILED, ready=ready, warnings=warnings,
-                             error={"code": "NoResult", "message": "runner exited without a result"},
-                             exit_code=exit_code, exit_signal=exit_signal)
+        return RunnerOutcome(
+            OUTCOME_FAILED,
+            ready=ready,
+            warnings=warnings,
+            error={"code": "NoResult", "message": "runner exited without a result"},
+            exit_code=exit_code,
+            exit_signal=exit_signal,
+        )
 
     reported = result_frame.get("outcome")
     result_summary = result_frame.get("summary")
@@ -402,23 +427,48 @@ def _finalize(
     try:
         files = _parse_files(file_frames)
     except ProtocolError as exc:
-        return RunnerOutcome(OUTCOME_PROTOCOL_ERROR, ready=ready, warnings=warnings,
-                             error={"code": "ProtocolError", "message": str(exc)},
-                             exit_code=exit_code, exit_signal=exit_signal)
+        return RunnerOutcome(
+            OUTCOME_PROTOCOL_ERROR,
+            ready=ready,
+            warnings=warnings,
+            error={"code": "ProtocolError", "message": str(exc)},
+            exit_code=exit_code,
+            exit_signal=exit_signal,
+        )
 
     if reported != OUTCOME_SUCCEEDED or exit_code != 0:
-        return RunnerOutcome(OUTCOME_FAILED, summary=result_summary, files=files, warnings=warnings,
-                             error=error or {"code": "RunnerFailed", "message": str(reported)},
-                             exit_code=exit_code, exit_signal=exit_signal, ready=ready)
+        return RunnerOutcome(
+            OUTCOME_FAILED,
+            summary=result_summary,
+            files=files,
+            warnings=warnings,
+            error=error or {"code": "RunnerFailed", "message": str(reported)},
+            exit_code=exit_code,
+            exit_signal=exit_signal,
+            ready=ready,
+        )
 
     if resolve_output is not None:
         try:
             validate_runner_files(files, resolve_output)
         except ProtocolError as exc:
-            return RunnerOutcome(OUTCOME_PROTOCOL_ERROR, summary=result_summary, files=files,
-                                 warnings=warnings,
-                                 error={"code": "ProtocolError", "message": str(exc)},
-                                 exit_code=exit_code, exit_signal=exit_signal, ready=ready)
+            return RunnerOutcome(
+                OUTCOME_PROTOCOL_ERROR,
+                summary=result_summary,
+                files=files,
+                warnings=warnings,
+                error={"code": "ProtocolError", "message": str(exc)},
+                exit_code=exit_code,
+                exit_signal=exit_signal,
+                ready=ready,
+            )
 
-    return RunnerOutcome(OUTCOME_SUCCEEDED, summary=result_summary, files=files, warnings=warnings,
-                         exit_code=exit_code, exit_signal=exit_signal, ready=ready)
+    return RunnerOutcome(
+        OUTCOME_SUCCEEDED,
+        summary=result_summary,
+        files=files,
+        warnings=warnings,
+        exit_code=exit_code,
+        exit_signal=exit_signal,
+        ready=ready,
+    )

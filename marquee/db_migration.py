@@ -1,9 +1,10 @@
-"""JMC1 database migration and schema-contract verification service."""
+"""Database migration and schema-contract verification service."""
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import hashlib
 import importlib.metadata
 import json
@@ -24,7 +25,7 @@ from marquee import __version__
 from marquee.config import settings
 from marquee.models.deployment import EXCLUDED_DEPLOYMENT_TABLES, get_deployment_metadata
 
-ALEMBIC_HEAD = "0016_poster_scope"
+ALEMBIC_HEAD = "0017_jobs_root"
 PGQUEUER_VERSION = "1.1.1"
 PGQUEUER_DURABILITY = "durable"
 MIGRATION_ADVISORY_LOCK_ID = 0x4D4152514A4D4331
@@ -114,7 +115,7 @@ def database_url() -> URL:
     """Return and validate the configured PostgreSQL/asyncpg URL."""
     url = make_url(settings.db_url_resolved)
     if url.get_backend_name() != "postgresql" or url.get_driver_name() != "asyncpg":
-        raise MigrationError("JMC1 database administration requires PostgreSQL with asyncpg")
+        raise MigrationError("database administration requires PostgreSQL with asyncpg")
     if not url.database:
         raise MigrationError("configured PostgreSQL URL has no database name")
     return url
@@ -165,8 +166,11 @@ async def release_migration_lock(connection: asyncpg.Connection) -> None:
 
 
 def _run_alembic() -> None:
-    root = Path(__file__).resolve().parent.parent
-    config = Config(str(root / "alembic.ini"))
+    package_root = Path(__file__).resolve().parent
+    config_path = package_root / "alembic.ini"
+    if not config_path.is_file():
+        config_path = package_root.parent / "alembic.ini"
+    config = Config(str(config_path))
     command.upgrade(config, "head")
 
 
@@ -474,9 +478,58 @@ async def _write_contract_markers(
         )
 
 
+def migrate_evidence_root(data_dir: str | Path) -> str:
+    """Move the job evidence root from its former ``jmc3`` name to ``jobs``.
+
+    The directory holds attempt workspaces, captured logs, and registered
+    artifacts. Alembic rewrites the stored ``storage_key`` prefixes; this moves
+    the bytes they point at. Idempotent, and safe to run when neither, either,
+    or both directories exist.
+
+    The migration advisory lock excludes a second migration, not a running
+    worker: stop the API and workers before migrating, or a worker can create an
+    attempt workspace under the old root after it has been moved.
+
+    Returns a short status for the operator: ``absent``, ``current``, ``moved``,
+    or a ``merged`` description.
+    """
+    root = Path(data_dir)
+    legacy, current = root / "jmc3", root / "jobs"
+    if not legacy.is_dir() or legacy.is_symlink():
+        return "absent" if not current.is_dir() else "current"
+    if not current.exists():
+        legacy.rename(current)
+        return "moved"
+
+    # Both exist — an interrupted move, or a downgrade and re-upgrade. Merge file
+    # by file: the migrated copy always wins, and a legacy file that would
+    # overwrite one is left in place for inspection rather than destroyed.
+    stranded = 0
+    for source in sorted(legacy.rglob("*")):
+        if source.is_symlink() or not source.is_file():
+            continue
+        destination = current / source.relative_to(legacy)
+        if destination.exists():
+            stranded += 1
+            continue
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        source.rename(destination)
+    for directory in sorted((p for p in legacy.rglob("*") if p.is_dir()), reverse=True):
+        with contextlib.suppress(OSError):
+            directory.rmdir()
+    if stranded:
+        return f"merged with {stranded} legacy file(s) left under {legacy}"
+    with contextlib.suppress(OSError):
+        legacy.rmdir()
+    return "merged"
+
+
 async def migrate_locked(connection: asyncpg.Connection) -> tuple[str, str]:
     """Apply and verify both schema owners while the caller holds the lock."""
     await asyncio.to_thread(_run_alembic)
+    evidence_root = await asyncio.to_thread(migrate_evidence_root, settings.DATA_DIR)
+    if evidence_root not in ("absent", "current"):
+        print(f"INFO  [marquee.evidence_root] {evidence_root}")
     state = await pgqueuer_install_state(connection)
     if state == "absent":
         await asyncio.to_thread(_run_pgqueuer_cli, "install", "--durability", "durable")

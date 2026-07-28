@@ -199,7 +199,4 @@ class SupportingPresenter(JobPresenter):
 
 
 def build_supporting_presenters() -> dict[str, JobPresenter]:
-    return {
-        f"jobs.{job_type}": SupportingPresenter(job_type)
-        for job_type in SUPPORTING_JOB_TYPES
-    }
+    return {f"jobs.{job_type}": SupportingPresenter(job_type) for job_type in SUPPORTING_JOB_TYPES}

@@ -124,9 +124,7 @@ async def execute_poster_rescan(context: ExecutionContext) -> dict[str, object]:
         if context.cancellation.cancel_called:
             raise asyncio.CancelledError
         try:
-            folder = safe_translate_and_validate(
-                subject.folder_raw, source=subject.path_source
-            )
+            folder = safe_translate_and_validate(subject.folder_raw, source=subject.path_source)
             expected = folder / subject.render_filename()
             exists = await asyncio.to_thread(expected.is_file)
             checksum = await asyncio.to_thread(_checksum, expected) if exists else None
@@ -150,14 +148,10 @@ async def execute_poster_rescan(context: ExecutionContext) -> dict[str, object]:
         "version": 1,
         "scope": request.scope,
         "observed": len(observations),
-        "observations": [
-            asdict(observation) for observation in observations[:_MAX_EVIDENCE_ROWS]
-        ],
+        "observations": [asdict(observation) for observation in observations[:_MAX_EVIDENCE_ROWS]],
         "warnings": warnings[:20],
     }
-    encoded = json.dumps(
-        report, allow_nan=False, separators=(",", ":"), sort_keys=True
-    ).encode()
+    encoded = json.dumps(report, allow_nan=False, separators=(",", ":"), sort_keys=True).encode()
     staged, fd = context.workspace.staging_file("poster-rescan.json")
     try:
         os.write(fd, encoded)
@@ -186,9 +180,7 @@ async def execute_poster_rescan(context: ExecutionContext) -> dict[str, object]:
             model = {"movie": Movie, "series": Series, "season": Season}[observation.media_type]
             entity = await session.get(model, observation.subject_id, with_for_update=True)
             if entity is None:
-                warnings.append(
-                    f"{observation.media_type}:{observation.subject_id}:retired"
-                )
+                warnings.append(f"{observation.media_type}:{observation.subject_id}:retired")
                 continue
             next_path = observation.expected_path if observation.exists else None
             next_checksum = observation.checksum if observation.exists else None

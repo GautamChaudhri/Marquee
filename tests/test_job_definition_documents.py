@@ -91,9 +91,7 @@ def test_only_semantically_real_upcasters_are_declared() -> None:
         models={1: RequestV1, 2: RequestV2},
         upcasters={1: lambda old: {"display_name": old.name}},
     )
-    assert adapter.validate({"name": "Marquee"}, version=1) == RequestV2(
-        display_name="Marquee"
-    )
+    assert adapter.validate({"name": "Marquee"}, version=1) == RequestV2(display_name="Marquee")
     assert adapter.upcasters.keys() == {1}
 
 
@@ -146,9 +144,7 @@ def test_registry_validates_dispatch_and_disabled_contracts() -> None:
     with pytest.raises(DisabledJobDefinitionError, match="dispatch-disabled"):
         disabled.for_dispatch("poster_pipeline", entrypoint="gpu")
     # A read-only, non-media-write, ENABLED definition may be dispatch-enabled (chunk 4).
-    read_only_enabled = JobDefinitionRegistry(
-        [_definition(job_type="library_sync", enabled=True)]
-    )
+    read_only_enabled = JobDefinitionRegistry([_definition(job_type="library_sync", enabled=True)])
     assert read_only_enabled.for_dispatch("library_sync", entrypoint="control").enabled
     # Chunk 5 mutations require the complete typed/retry/safety contract.
     with pytest.raises(InvalidJobDefinitionError, match="retry policy"):
@@ -166,7 +162,7 @@ def test_registry_validates_dispatch_and_disabled_contracts() -> None:
         JobDefinitionRegistry(
             [
                 _definition(
-                    job_type="track_remove",
+                    job_type="synthetic_media_write",
                     enabled=True,
                     execution_class=ExecutionClass.MEDIA_WRITE,
                     entrypoint="media_write",
@@ -194,5 +190,3 @@ def test_clients_have_no_fields_for_server_execution_policy() -> None:
         "progress_policy",
         "actions",
     }
-
-

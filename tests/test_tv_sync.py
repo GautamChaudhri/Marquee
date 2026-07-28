@@ -152,9 +152,7 @@ async def test_sync_tv_statistics_fallback(db: AsyncSession):
 async def test_sync_tv_tmdb_id_resolution_and_enrichment(db: AsyncSession):
     sonarr = AsyncMock()
     # No tmdbId in sonarr payload, only tvdbId
-    sonarr.get_series.return_value = [
-        _sonarr_series_data(tmdbId=None, tvdbId=79126, imdbId=None)
-    ]
+    sonarr.get_series.return_value = [_sonarr_series_data(tmdbId=None, tvdbId=79126, imdbId=None)]
     sonarr.get_episodes.return_value = []
     sonarr.get_episode_files.return_value = []
 
@@ -183,9 +181,7 @@ async def test_sync_tv_tmdb_id_resolution_and_enrichment(db: AsyncSession):
 
     # Verify metadata reset if tmdb_id changes on subsequent sync and enrichment fails
     tmdb.get_tv_details.side_effect = Exception("TMDB down")
-    sonarr.get_series.return_value = [
-        _sonarr_series_data(tmdbId=999, tvdbId=79126)
-    ]
+    sonarr.get_series.return_value = [_sonarr_series_data(tmdbId=999, tvdbId=79126)]
     await svc.sync_all()
     await db.refresh(series)
     assert series.tmdb_id == 999
@@ -219,14 +215,10 @@ async def test_tv_queries_eligibility_predicates(db: AsyncSession):
 
     # Test series_visible query
     assert (
-        await db.scalar(
-            select(Series.id).where(Series.id == visible_series.id, series_visible())
-        )
+        await db.scalar(select(Series.id).where(Series.id == visible_series.id, series_visible()))
     ) is not None
     assert (
-        await db.scalar(
-            select(Series.id).where(Series.id == invisible_series.id, series_visible())
-        )
+        await db.scalar(select(Series.id).where(Series.id == invisible_series.id, series_visible()))
     ) is None
 
 

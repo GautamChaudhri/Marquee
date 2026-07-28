@@ -1,4 +1,4 @@
-"""Offline/operator maintenance entrypoint for JMC3C backup operations."""
+"""Offline/operator maintenance entrypoint for managed backup operations."""
 
 from __future__ import annotations
 

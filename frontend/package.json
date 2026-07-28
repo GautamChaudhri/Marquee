@@ -1,7 +1,8 @@
 {
 	"name": "frontend",
 	"private": true,
-	"version": "0.0.1",
+	"version": "0.1.0",
+	"license": "GPL-3.0-only",
 	"type": "module",
 	"scripts": {
 		"dev": "vite dev",
@@ -26,7 +27,6 @@
 		"@axe-core/playwright": "4.12.1",
 		"@eslint/js": "^10.0.1",
 		"@playwright/test": "1.61.1",
-		"@sveltejs/adapter-auto": "^7.0.1",
 		"@sveltejs/adapter-node": "^5.5.4",
 		"@sveltejs/kit": "^2.63.0",
 		"@sveltejs/vite-plugin-svelte": "^7.1.2",
@@ -52,5 +52,8 @@
 	"dependencies": {
 		"plotly.js-dist-min": "^3.6.0",
 		"svelte-dnd-action": "^0.9.70"
+	},
+	"overrides": {
+		"cookie": "0.7.2"
 	}
 }

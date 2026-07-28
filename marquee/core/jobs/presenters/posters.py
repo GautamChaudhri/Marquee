@@ -86,9 +86,7 @@ class PosterPresenter(JobPresenter):
         candidate_count = ctx.summary_value("candidate_count", int)
         if self.job_type == "poster_pipeline" and isinstance(candidate_count, int):
             headline = f"Select a poster from {candidate_count} candidates"
-        return PresentationAction(
-            headline=headline, explanation=_EXPLANATIONS.get(self.job_type)
-        )
+        return PresentationAction(headline=headline, explanation=_EXPLANATIONS.get(self.job_type))
 
     def sections(self, ctx: PresenterContext) -> tuple[PresentationSection, ...]:
         sections: list[PresentationSection] = []
@@ -96,17 +94,13 @@ class PosterPresenter(JobPresenter):
 
         candidate_count = ctx.summary_value("candidate_count", int)
         if isinstance(candidate_count, int) and candidate_count >= 0:
-            facts.append(
-                Fact(label="Candidates", value=NumberValue(value=candidate_count))
-            )
+            facts.append(Fact(label="Candidates", value=NumberValue(value=candidate_count)))
         source_count = ctx.summary_value("source_count", int)
         if isinstance(source_count, int) and source_count >= 0:
             facts.append(Fact(label="Sources", value=NumberValue(value=source_count)))
         rejected = ctx.summary_value("rejected_count", int)
         if isinstance(rejected, int) and rejected >= 0:
-            facts.append(
-                Fact(label="Rejected by gates", value=NumberValue(value=rejected))
-            )
+            facts.append(Fact(label="Rejected by gates", value=NumberValue(value=rejected)))
         ranked = ctx.summary_value("ranked_count", int)
         if isinstance(ranked, int) and ranked >= 0:
             facts.append(Fact(label="Ranked", value=NumberValue(value=ranked)))
@@ -163,12 +157,8 @@ class PosterPresenter(JobPresenter):
                     rows=(
                         BeforeAfterRow(
                             label="Deployed poster",
-                            before=(
-                                TextValue(text=previous_poster) if previous_poster else None
-                            ),
-                            after=(
-                                TextValue(text=selected_poster) if selected_poster else None
-                            ),
+                            before=(TextValue(text=previous_poster) if previous_poster else None),
+                            after=(TextValue(text=selected_poster) if selected_poster else None),
                             changed=previous_poster != selected_poster,
                         ),
                     ),

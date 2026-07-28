@@ -274,7 +274,11 @@ def diagnostic_candidates(archive: dict) -> list[dict]:
     if isinstance(ledger, dict) and isinstance(ledger.get("candidates"), list):
         return [candidate for candidate in ledger["candidates"] if isinstance(candidate, dict)]
     candidates = archive.get("candidates")
-    return [candidate for candidate in candidates if isinstance(candidate, dict)] if isinstance(candidates, list) else []
+    return (
+        [candidate for candidate in candidates if isinstance(candidate, dict)]
+        if isinstance(candidates, list)
+        else []
+    )
 
 
 def find_candidate(archive: dict, orig_filename: str) -> dict | None:

@@ -68,7 +68,9 @@ def test_builtins_always_present_without_file():
 
 
 def test_create_update_delete_roundtrip():
-    created = create_profile("movie", "Director + Title", {"mode": "custom", "allow_director": True})
+    created = create_profile(
+        "movie", "Director + Title", {"mode": "custom", "allow_director": True}
+    )
     assert created.id == "director_title"
     assert created.settings.allow_director is True
 
@@ -77,7 +79,9 @@ def test_create_update_delete_roundtrip():
     assert "director_title" in profiles
     assert profiles["director_title"].settings.mode == "custom"
 
-    updated = update_profile("movie", "director_title", settings={"mode": "custom", "allow_studio": True})
+    updated = update_profile(
+        "movie", "director_title", settings={"mode": "custom", "allow_studio": True}
+    )
     assert updated.settings.allow_studio is True
     assert load_profiles("movie")["director_title"].settings.allow_studio is True
 
@@ -158,37 +162,47 @@ def test_poster_text_filter_carries_profile_payload():
 
 # ── Season OCR Classification ─────────────────────────────────────────────
 
+
 def test_season_ocr_classification():
     # Verify season designator patterns classify as "season"
     box_s3 = _box("SEASON 3")
-    assert classify_text_box(
-        box_s3,
-        image_w=500,
-        image_h=750,
-        title_box=None,
-        title_tokens=set(),
-        director_tokens=set(),
-    ) == "season"
+    assert (
+        classify_text_box(
+            box_s3,
+            image_w=500,
+            image_h=750,
+            title_box=None,
+            title_tokens=set(),
+            director_tokens=set(),
+        )
+        == "season"
+    )
 
     box_s01 = _box("s01")
-    assert classify_text_box(
-        box_s01,
-        image_w=500,
-        image_h=750,
-        title_box=None,
-        title_tokens=set(),
-        director_tokens=set(),
-    ) == "season"
+    assert (
+        classify_text_box(
+            box_s01,
+            image_w=500,
+            image_h=750,
+            title_box=None,
+            title_tokens=set(),
+            director_tokens=set(),
+        )
+        == "season"
+    )
 
     box_num = _box("3")
-    assert classify_text_box(
-        box_num,
-        image_w=500,
-        image_h=750,
-        title_box=None,
-        title_tokens=set(),
-        director_tokens=set(),
-    ) == "season"
+    assert (
+        classify_text_box(
+            box_num,
+            image_w=500,
+            image_h=750,
+            title_box=None,
+            title_tokens=set(),
+            director_tokens=set(),
+        )
+        == "season"
+    )
 
 
 # ── API Routes ────────────────────────────────────────────────────────────
@@ -216,21 +230,29 @@ async def test_api_crud_and_default(client: AsyncClient):
     assert updated.json()["settings"]["allow_studio"] is True
 
     assert (await client.put(f"/api/text-profiles/movie/default/{profile_id}")).status_code == 200
-    assert (await client.get("/api/text-profiles")).json()["scopes"]["movie"]["default_id"] == profile_id
+    assert (await client.get("/api/text-profiles")).json()["scopes"]["movie"][
+        "default_id"
+    ] == profile_id
 
     deleted = await client.delete(f"/api/text-profiles/movie/{profile_id}")
     assert deleted.status_code == 200
     assert deleted.json() == {"deleted": profile_id}
-    assert (await client.get("/api/text-profiles")).json()["scopes"]["movie"]["default_id"] == "title_only"
+    assert (await client.get("/api/text-profiles")).json()["scopes"]["movie"][
+        "default_id"
+    ] == "title_only"
 
 
 @pytest.mark.asyncio
 async def test_api_builtin_protection_and_errors(client: AsyncClient):
     assert (await client.delete("/api/text-profiles/movie/title_only")).status_code == 400
-    assert (await client.put("/api/text-profiles/movie/textless", json={"name": "No"})).status_code == 400
+    assert (
+        await client.put("/api/text-profiles/movie/textless", json={"name": "No"})
+    ).status_code == 400
     assert (await client.put("/api/text-profiles/movie/default/unknown")).status_code == 404
     assert (
-        await client.post("/api/text-profiles/movie", json={"name": "Bad", "settings": {"mode": "x"}})
+        await client.post(
+            "/api/text-profiles/movie", json={"name": "Bad", "settings": {"mode": "x"}}
+        )
     ).status_code == 400
 
 

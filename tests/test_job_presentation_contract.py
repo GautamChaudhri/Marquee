@@ -1,4 +1,8 @@
-"""JMC2C Phase C0 contract freeze: presentation vocabulary, cursors, errors."""
+"""Presentation contract: the vocabulary, cursors, and errors the UI is built against.
+
+The presentation layer is a frozen contract — job kinds, headline vocabulary, pagination
+cursors bound to their view and sort, and typed errors. A cursor minted for one view must
+not decode under another."""
 
 from datetime import UTC, datetime
 
@@ -155,11 +159,13 @@ def test_allowed_actions_are_unique_and_typed():
 
 
 def test_cursor_round_trip_binds_to_contract():
-    contract = cursor_contract(view="history", filters={"type": "dovi_convert"}, sort="-terminal_at")
+    contract = cursor_contract(
+        view="history", filters={"type": "poster_pipeline"}, sort="-terminal_at"
+    )
     token = encode_cursor(contract=contract, key=("2026-07-13T00:00:00+00:00", "job42"))
     assert decode_cursor(token, contract=contract) == ("2026-07-13T00:00:00+00:00", "job42")
 
-    other = cursor_contract(view="queue", filters={"type": "dovi_convert"}, sort="-terminal_at")
+    other = cursor_contract(view="queue", filters={"type": "poster_pipeline"}, sort="-terminal_at")
     with pytest.raises(InvalidCursorError):
         decode_cursor(token, contract=other)
 
@@ -206,7 +212,7 @@ def test_compact_progress_accepts_snapshot_measurements():
     from marquee.core.jobs.progress import ProgressMeasurement
 
     progress = CompactProgress(
-        headline="Scanning TV letterbox bars",
+        headline="Scanning TV poster candidates",
         stage_key="execute",
         stage_label="Analyzing samples",
         overall=ProgressMeasurement.determinate(

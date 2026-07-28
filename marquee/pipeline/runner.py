@@ -835,9 +835,7 @@ def run_sync_stages(
     for path in styled:
         check_cancelled()
         record = records[path.name]
-        decision = gate.evaluate_style(
-            record.features, personalization_mode=personalization_mode
-        )
+        decision = gate.evaluate_style(record.features, personalization_mode=personalization_mode)
         if decision.passed:
             style_survivors.append(path)
             continue

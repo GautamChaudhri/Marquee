@@ -1,4 +1,8 @@
-"""JMC2C Phase C2: supporting/parent presenters and complete coverage."""
+"""Supporting and parent presenters, and complete family coverage.
+
+Batch parents, maintenance scopes, and the remaining subject kinds each render through
+their own presenter. Together with the primary families this proves no registered job type
+can reach the UI without one."""
 
 import json
 from pathlib import Path
@@ -13,7 +17,7 @@ from marquee.core.jobs.presenters import (
 )
 from tests.test_job_presenters import definition_for, make_job
 
-FIXTURES = Path(__file__).parent / "fixtures" / "jmc2c"
+FIXTURES = Path(__file__).parent / "fixtures" / "job_presenters"
 
 BATCH_SNAPSHOT = {
     "version": 1,
@@ -235,9 +239,7 @@ def test_maintenance_dry_run_and_metrics():
     )
     presentation = present_job(job, definition_for("job_retention_purge"))
     facts = next(s for s in presentation.sections if s.kind == "facts")
-    assert any(
-        fact.value.type == "badge" and fact.value.text == "Dry run" for fact in facts.facts
-    )
+    assert any(fact.value.type == "badge" and fact.value.text == "Dry run" for fact in facts.facts)
     cards = next(s for s in presentation.sections if s.kind == "metric_cards")
     assert any(card.label == "Planned" and card.value.value == 1200 for card in cards.cards)
 
@@ -263,9 +265,7 @@ def test_parent_batch_malformed_children_warns():
 def test_retry_lineage_is_presented():
     job = make_job(retry_of_job_id="job0000000000000000000000000000")
     presentation = present_job(job, definition_for("poster_pipeline"))
-    lineage = [
-        s for s in presentation.sections if s.kind == "facts" and s.title == "Lineage"
-    ]
+    lineage = [s for s in presentation.sections if s.kind == "facts" and s.title == "Lineage"]
     assert len(lineage) == 1
     link = lineage[0].facts[0].value
     assert link.type == "link"

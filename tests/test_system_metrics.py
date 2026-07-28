@@ -212,9 +212,9 @@ async def test_operations_snapshot_is_typed_bounded_and_payload_free(
         "database",
         "events",
         "storage",
-            "schedules",
-            "evidence_retention",
-            "contracts",
+        "schedules",
+        "evidence_retention",
+        "contracts",
     }
     serialized = response.text.lower()
     assert "payload" not in serialized
@@ -238,7 +238,7 @@ async def test_operations_health_uses_fresh_external_runtime_evidence(
             id="00000000-0000-4000-8000-000000000001",
             role="worker",
             node_label="external-worker",
-            build="jmc6d-test",
+            build="runtime-test",
             host_boot_id="boot-test",
             process_id=4242,
             process_start_ticks=101,
@@ -275,7 +275,7 @@ async def test_operations_listener_health_rejects_scheduler_only_topology(
             id="00000000-0000-4000-8000-000000000002",
             role="scheduler",
             node_label="scheduler-only",
-            build="jmc6g-test",
+            build="metrics-test",
             host_boot_id="boot-test",
             process_id=4243,
             process_start_ticks=102,
@@ -310,9 +310,7 @@ async def test_operations_history_rejects_unbounded_window(client: AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_operations_runtime_instance_detail_is_bounded(
-    db, client: AsyncClient, monkeypatch
-):
+async def test_operations_runtime_instance_detail_is_bounded(db, client: AsyncClient, monkeypatch):
     app.state.worker_supervisor = None
     monkeypatch.setattr(settings, "JOB_RUNTIME_QUERY_LIMIT", 2)
     now = datetime.now(UTC)
@@ -322,7 +320,7 @@ async def test_operations_runtime_instance_detail_is_bounded(
                 id=f"00000000-0000-4000-8000-{index:012d}",
                 role="worker",
                 node_label=f"worker-{index}",
-                build="jmc6d-test",
+                build="runtime-test",
                 host_boot_id="boot-test",
                 process_id=6100 + index,
                 process_start_ticks=300 + index,
@@ -365,7 +363,7 @@ async def test_operations_reports_capability_mismatch_for_uncovered_entrypoints(
             id="00000000-0000-4000-8000-000000000401",
             role="worker",
             node_label="partial-worker",
-            build="jmc6d-test",
+            build="runtime-test",
             host_boot_id="boot-test",
             process_id=6401,
             process_start_ticks=401,

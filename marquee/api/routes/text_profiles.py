@@ -56,6 +56,7 @@ class SeriesProfileUpdate(BaseModel):
 
 # ── Per-Entity Overrides (placed first to prevent scope collision) ───────
 
+
 @router.get("/movie/{movie_id:int}")
 async def get_movie_text_profile(movie_id: int, db: DbSession):
     movie = await db.get(Movie, movie_id)
@@ -156,6 +157,7 @@ async def set_series_text_profile(
 
 
 # ── Global Panel CRUD (Scoped) ───────────────────────────────────────────
+
 
 @router.get("")
 async def list_text_profiles():

@@ -142,9 +142,7 @@ def profile_input_ids(exemplars: list[TasteExemplar], library: str) -> set[str]:
     """Resolve deterministic global-plus-namespace profile applicability."""
     if library not in {"movies", "tv"}:
         raise TastePreferenceError("profile library is invalid")
-    return {
-        row.id for row in exemplars if row.namespace in {"global", library}
-    }
+    return {row.id for row in exemplars if row.namespace in {"global", library}}
 
 
 def profile_rebuild_due(
@@ -303,9 +301,7 @@ async def _record_initial_deployment_successor(
     deployment_job_id: str,
 ) -> TasteDeploymentSuccessor:
     existing = await session.scalar(
-        select(TasteDeploymentSuccessor).where(
-            TasteDeploymentSuccessor.exemplar_id == exemplar.id
-        )
+        select(TasteDeploymentSuccessor).where(TasteDeploymentSuccessor.exemplar_id == exemplar.id)
     )
     if existing is not None:
         if existing.job_id != deployment_job_id:
@@ -433,9 +429,7 @@ async def record_deployment_retry_successor(
     ):
         raise TastePreferenceError("deployment retry predecessor is unavailable")
     exemplar = await session.scalar(
-        select(TasteExemplar)
-        .where(TasteExemplar.id == original.exemplar_id)
-        .with_for_update()
+        select(TasteExemplar).where(TasteExemplar.id == original.exemplar_id).with_for_update()
     )
     if exemplar is None or exemplar.polarity != "positive" or exemplar.status != "pending_deploy":
         raise TastePreferenceError("pending onboarding deployment is unavailable")
@@ -519,9 +513,7 @@ async def record_deployment_effect(
     if successor is None:
         return None, None
     exemplar = await session.scalar(
-        select(TasteExemplar)
-        .where(TasteExemplar.id == successor.exemplar_id)
-        .with_for_update()
+        select(TasteExemplar).where(TasteExemplar.id == successor.exemplar_id).with_for_update()
     )
     if exemplar is None:
         raise TastePreferenceError("deployment successor lost its exemplar")
@@ -911,7 +903,10 @@ async def revoke_exemplar(
     )
     if row is None:
         raise TastePreferenceError("exemplar is unavailable")
-    if event.action not in {"undo", "revoke"} or event.supersedes_event_id != row.preference_event_id:
+    if (
+        event.action not in {"undo", "revoke"}
+        or event.supersedes_event_id != row.preference_event_id
+    ):
         raise TastePreferenceError("revocation event does not supersede the exemplar evidence")
     if row.status == "revoked":
         return row
@@ -994,7 +989,9 @@ async def _lock_profile_coordinator(
 ) -> TasteProfileCoordinator:
     """Serialize one library at the database boundary, not in process memory."""
     if session.get_bind().dialect.name != "postgresql":
-        raise TastePreferenceError("taste profile coordination requires PostgreSQL transaction locks")
+        raise TastePreferenceError(
+            "taste profile coordination requires PostgreSQL transaction locks"
+        )
     await session.execute(
         text("SELECT pg_advisory_xact_lock(hashtext(:lock_key))"),
         {"lock_key": f"marquee:taste-profile:{library}"},
@@ -1276,9 +1273,7 @@ async def schedule_profile_builds(
     return tuple(submissions)
 
 
-async def mark_profile_build_running(
-    session: AsyncSession, *, build_id: str, job_id: str
-) -> None:
+async def mark_profile_build_running(session: AsyncSession, *, build_id: str, job_id: str) -> None:
     """Mark a queued coordinated build running; duplicate delivery is idempotent."""
     build = await session.get(TasteProfileBuild, build_id)
     if build is None or build.job_id != job_id:
@@ -1341,7 +1336,9 @@ async def record_profile_build_terminal(
     return successor
 
 
-async def assert_profile_build_retryable(session: AsyncSession, *, job_id: str) -> TasteProfileBuild | None:
+async def assert_profile_build_retryable(
+    session: AsyncSession, *, job_id: str
+) -> TasteProfileBuild | None:
     """Validate that generic job retry will create a safe canonical build successor."""
     build = await session.scalar(
         select(TasteProfileBuild).where(TasteProfileBuild.job_id == job_id).with_for_update()
@@ -1358,7 +1355,9 @@ async def assert_profile_build_retryable(session: AsyncSession, *, job_id: str) 
     publication = await session.get(MlActivePublication, f"taste_profile:{build.library}")
     active_generation = publication.generation if publication is not None else 0
     if active_generation != build.expected_generation:
-        raise TastePreferenceError("profile retry is stale against the active publication generation")
+        raise TastePreferenceError(
+            "profile retry is stale against the active publication generation"
+        )
     return build
 
 
@@ -1387,7 +1386,9 @@ async def record_profile_build_retry_successor(
     publication = await session.get(MlActivePublication, f"taste_profile:{original.library}")
     active_generation = publication.generation if publication is not None else 0
     if active_generation != original.expected_generation:
-        raise TastePreferenceError("profile retry is stale against the active publication generation")
+        raise TastePreferenceError(
+            "profile retry is stale against the active publication generation"
+        )
     successor = TasteProfileBuild(
         id=successor_build_id,
         revision_digest=original.revision_digest,
@@ -1412,21 +1413,15 @@ async def derive_readiness(
     thresholds = thresholds or ReadinessThresholds()
     rows = list(
         (
-            await session.scalars(
-                select(TasteExemplar).where(TasteExemplar.namespace == "global")
-            )
+            await session.scalars(select(TasteExemplar).where(TasteExemplar.namespace == "global"))
         ).all()
     )
     active = [row for row in rows if row.status == "active"]
     positives = {
-        (row.subject_kind, row.subject_reference)
-        for row in active
-        if row.polarity == "positive"
+        (row.subject_kind, row.subject_reference) for row in active if row.polarity == "positive"
     }
     negatives = {
-        (row.subject_kind, row.subject_reference)
-        for row in active
-        if row.polarity == "negative"
+        (row.subject_kind, row.subject_reference) for row in active if row.polarity == "negative"
     }
     pending = {
         (row.subject_kind, row.subject_reference)
@@ -1474,13 +1469,11 @@ async def derive_readiness(
                 TasteProfileBuild.revision_digest == desired_revision
             )
         latest = await session.scalar(
-            latest_statement
-            .order_by(
+            latest_statement.order_by(
                 TasteProfileBuild.completed_at.desc().nullslast(),
                 TasteProfileBuild.created_at.desc(),
                 TasteProfileBuild.id.desc(),
-            )
-            .limit(1)
+            ).limit(1)
         )
         build = inflight or latest
         active_checksum = publication.checksum if publication is not None else None
@@ -1513,7 +1506,9 @@ async def derive_readiness(
                     RuntimeInstance.stopped_at.is_(None),
                     RuntimeInstance.heartbeat_expires_at > datetime.now(UTC),
                 )
-                .order_by(MlConsumerAcknowledgement.loaded_at.desc(), MlConsumerAcknowledgement.id.desc())
+                .order_by(
+                    MlConsumerAcknowledgement.loaded_at.desc(), MlConsumerAcknowledgement.id.desc()
+                )
                 .limit(1)
             )
             if publication is not None
@@ -1527,9 +1522,7 @@ async def derive_readiness(
             "revision": active_revision_digest,
             "compatible": bool(publication is not None and active_revision_digest and reload_ready),
         }
-        residual_publication = await session.get(
-            MlActivePublication, f"ranking_residual:{library}"
-        )
+        residual_publication = await session.get(MlActivePublication, f"ranking_residual:{library}")
         resolved_residual = None
         residual_resolution_error: str | None = None
         if publication is not None:
@@ -1568,7 +1561,9 @@ async def derive_readiness(
         libraries[library] = {
             "active": active,
             "desired_revision": desired_revision,
-            "desired_generation": coordinator.desired_generation if coordinator is not None else None,
+            "desired_generation": coordinator.desired_generation
+            if coordinator is not None
+            else None,
             "build": build_state,
             "reload_state": {
                 "expected_checksum": active_checksum,
@@ -1576,7 +1571,9 @@ async def derive_readiness(
                 "ready": reload_ready,
                 "instance_id": acknowledgement.instance_id if acknowledgement is not None else None,
                 "reason": profile_resolution_error
-                or (None if acknowledgement is not None else "consumer acknowledgement unavailable"),
+                or (
+                    None if acknowledgement is not None else "consumer acknowledgement unavailable"
+                ),
             },
             "residual": {
                 **residual,

@@ -23,16 +23,12 @@ from marquee.db_migration import asyncpg_dsn
 
 def test_advisory_keys_are_stable_domain_separated_signed_bigints() -> None:
     media = GateRequirement(GateKind.MEDIA_FILE, "media:42")
-    maintenance = GateRequirement(
-        GateKind.MAINTENANCE, "global", mode=GateMode.SHARED
-    )
+    maintenance = GateRequirement(GateKind.MAINTENANCE, "global", mode=GateMode.SHARED)
 
-    assert advisory_key(media) == -3134315446457037141
-    assert advisory_key(maintenance) == -6857728655114761525
+    assert advisory_key(media) == -5370365677438561025
+    assert advisory_key(maintenance) == -7702939639969922338
     assert -(2**63) <= advisory_key(media) < 2**63
-    assert advisory_key(media) != advisory_key(
-        GateRequirement(GateKind.GPU, "media:42")
-    )
+    assert advisory_key(media) != advisory_key(GateRequirement(GateKind.GPU, "media:42"))
 
 
 def test_requirements_sort_globally_and_reject_contradictions() -> None:
@@ -103,14 +99,10 @@ async def _connection() -> asyncpg.Connection:
 async def test_same_media_gate_contends_and_connection_close_releases() -> None:
     service = SafetyGateService(connection_factory=_connection, poll_seconds=0.02)
     requirements = SafetyRequirements.ordinary(media_file_identity="media:contended")
-    first = await service.acquire(
-        requirements, cancelled=lambda: False, deadline_seconds=1
-    )
+    first = await service.acquire(requirements, cancelled=lambda: False, deadline_seconds=1)
     try:
         with pytest.raises(SafetyGateTimeoutError):
-            await service.acquire(
-                requirements, cancelled=lambda: False, deadline_seconds=0.08
-            )
+            await service.acquire(requirements, cancelled=lambda: False, deadline_seconds=0.08)
         await first.connection.close()
         replacement = await service.acquire(
             requirements, cancelled=lambda: False, deadline_seconds=1

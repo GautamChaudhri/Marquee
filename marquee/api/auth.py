@@ -1,6 +1,6 @@
 """API-key authentication dependency.
 
-A single static API key guards every route except ``/health``. The key may be
+A single static API key guards every route except the health probes. The key may be
 presented three ways so any caller works:
 
   * ``Authorization: Bearer <key>``
@@ -11,7 +11,7 @@ Enforcement is wired as a global FastAPI dependency in :mod:`marquee.main`.
 Behaviour (evaluated in order):
 
   * ``DEBUG=true``                     → bypass entirely (local development).
-  * path is ``/health``                → bypass (probes can't send a key).
+  * path is a health probe             → bypass (probes can't send a key).
   * loopback + ``AUTH_ALLOW_LOCAL``    → bypass (same-host tooling).
   * ``API_KEY`` unset (and not DEBUG)  → 503, fail closed.
   * valid key                          → allow.

@@ -82,4 +82,3 @@ class MigrationState(StrEnum):
     ENABLED = "enabled"
     DEFINED_DISABLED = "defined_disabled"
     PARENT_ONLY = "parent_only"
-

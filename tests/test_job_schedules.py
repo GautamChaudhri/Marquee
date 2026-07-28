@@ -1,0 +1,483 @@
+"""A4 code-owned catalog, UTC occurrence, and canonical callback contracts."""
+
+from __future__ import annotations
+
+import asyncio
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
+
+import pytest
+import pytest_asyncio
+from pgqueuer import Queries
+from sqlalchemy import func, select
+
+import marquee.core.jobs.submission as submission_module
+from marquee.config import settings
+from marquee.core.jobs import readiness
+from marquee.core.jobs.contracts import TriggerKind
+from marquee.core.jobs.definitions import JobDefinitionRegistry
+from marquee.core.jobs.manifest import JOB_DEFINITION_REGISTRY
+from marquee.core.jobs.pgqueuer_scheduler import create_scheduler
+from marquee.core.jobs.schedules import (
+    FIXED_TEST_SCHEDULE_CATALOG,
+    MAX_SCHEDULE_DIAGNOSTICS,
+    PRODUCTION_SCHEDULE_CATALOG,
+    ScheduleCatalog,
+    ScheduleConfiguration,
+    ScheduleDefinition,
+    ScheduleDiagnostics,
+    normalize_due_occurrence,
+    occurrence_key,
+    submit_schedule_occurrence,
+)
+from marquee.database import _get_engine, _get_session_factory
+from marquee.models import Job, Movie
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def installed_pgqueuer(db) -> Queries:
+    async with _get_engine().connect() as connection:
+        raw = await connection.get_raw_connection()
+        queries = Queries.from_asyncpg_connection(raw.driver_connection)
+        await queries.install()
+        try:
+            yield queries
+        finally:
+            await db.rollback()
+            await queries.uninstall()
+
+
+def _configuration(
+    *,
+    production: bool = True,
+    interval: int = 15,
+    heal_enabled: bool = True,
+    heal_interval: int = 30,
+) -> ScheduleConfiguration:
+    return ScheduleConfiguration(
+        revision=1,
+        sync_interval_minutes=interval,
+        poster_heal_enabled=heal_enabled,
+        poster_heal_interval_minutes=heal_interval,
+        production_occurrences_enabled=production,
+    )
+
+
+def _schedule(value: datetime):
+    return SimpleNamespace(updated=value)
+
+
+def _fixed_schedule() -> ScheduleDefinition:
+    return next(iter(FIXED_TEST_SCHEDULE_CATALOG))
+
+
+@pytest.fixture
+def schedule_enabled_noop_registry(monkeypatch) -> JobDefinitionRegistry:
+    definition = replace(
+        JOB_DEFINITION_REGISTRY.get("system_noop"),
+        trigger_kinds=frozenset({TriggerKind.SYSTEM, TriggerKind.SCHEDULE}),
+    )
+    registry = JobDefinitionRegistry((definition,))
+    monkeypatch.setattr(submission_module, "JOB_DEFINITION_REGISTRY", registry)
+    return registry
+
+
+@pytest.mark.asyncio
+async def test_production_catalog_is_registered_but_occurrences_are_code_disabled(db) -> None:
+    definitions = {definition.key: definition for definition in PRODUCTION_SCHEDULE_CATALOG}
+    assert list(definitions) == [
+        "library-sync",
+        "poster-heal",
+        "evidence-retention",
+    ]
+    # Every production predicate requires the explicit restart-owned master gate.
+    assert not definitions["library-sync"].enabled_predicate(
+        _configuration(production=False, interval=15)
+    )
+    assert definitions["library-sync"].enabled_predicate(
+        _configuration(production=True, interval=15)
+    )
+    assert not definitions["library-sync"].enabled_predicate(
+        _configuration(production=True, interval=0)
+    )
+    assert not definitions["evidence-retention"].enabled_predicate(_configuration(production=False))
+    assert definitions["evidence-retention"].enabled_predicate(_configuration(production=True))
+    async with _get_engine().connect() as connection:
+        raw = await connection.get_raw_connection()
+        app = create_scheduler(
+            raw.driver_connection,
+            catalog=PRODUCTION_SCHEDULE_CATALOG,
+        )
+    assert {(key.entrypoint, key.expression) for key in app.sm.registry} == {
+        ("schedule_library_sync", "* * * * *"),
+        ("schedule_poster_heal", "* * * * *"),
+        ("schedule_evidence_retention", "17 3 * * *"),
+    }
+
+
+def test_schedule_diagnostics_report_truthful_effective_state() -> None:
+    report = readiness.schedule_catalog_report()
+
+    assert report["production_schedules_enabled"] is False
+    assert [item["registered"] for item in report["schedules"]] == [True, True, True]
+    assert [item["effectively_enabled"] for item in report["schedules"]] == [False, False, False]
+    assert all(item["disabled_reason"] for item in report["schedules"])
+
+
+@pytest.mark.asyncio
+async def test_production_master_gate_toggle_coalesces_without_backlog_burst(db) -> None:
+    definition = next(item for item in PRODUCTION_SCHEDULE_CATALOG if item.key == "library-sync")
+    due = _schedule(datetime(2026, 7, 13, 12, 7, tzinfo=UTC))
+    enabled = {"value": False}
+
+    def configuration() -> ScheduleConfiguration:
+        return _configuration(production=enabled["value"], interval=15)
+
+    diagnostics = ScheduleDiagnostics()
+    factory = _get_session_factory()
+    assert (
+        await submit_schedule_occurrence(
+            definition,
+            due,
+            configuration_loader=configuration,
+            diagnostics=diagnostics,
+            session_factory=factory,
+        )
+        is None
+    )
+    enabled["value"] = True
+    created = await submit_schedule_occurrence(
+        definition,
+        due,
+        configuration_loader=configuration,
+        diagnostics=diagnostics,
+        session_factory=factory,
+    )
+    enabled["value"] = False
+    assert (
+        await submit_schedule_occurrence(
+            definition,
+            due,
+            configuration_loader=configuration,
+            diagnostics=diagnostics,
+            session_factory=factory,
+        )
+        is None
+    )
+    enabled["value"] = True
+    reused = await submit_schedule_occurrence(
+        definition,
+        due,
+        configuration_loader=configuration,
+        diagnostics=diagnostics,
+        session_factory=factory,
+    )
+    assert created is not None and created.disposition == "created"
+    assert reused is not None and reused.disposition == "reused"
+    assert await db.scalar(select(func.count()).select_from(Job)) == 1
+    assert [item.disposition for item in diagnostics.snapshot()] == [
+        "disabled",
+        "created",
+        "disabled",
+        "reused",
+    ]
+    assert diagnostics.snapshot()[0].reason == "production schedule master gate disabled"
+
+
+@pytest.mark.asyncio
+async def test_fixed_test_schedule_dispatches_only_through_canonical_submission(
+    db, schedule_enabled_noop_registry
+) -> None:
+    diagnostics = ScheduleDiagnostics()
+    async with _get_engine().connect() as connection:
+        raw = await connection.get_raw_connection()
+        app = create_scheduler(
+            raw.driver_connection,
+            catalog=FIXED_TEST_SCHEDULE_CATALOG,
+            configuration_loader=_configuration,
+            diagnostics=diagnostics,
+        )
+        key, executor = next(iter(app.sm.registry.items()))
+        await app.queries.insert_schedule({key: timedelta(0)})
+        picked = (await app.queries.fetch_schedule({key: timedelta(seconds=1)}))[0]
+        await app.sm.dispatch(executor, picked)
+
+    job = await db.scalar(select(Job))
+    assert job is not None
+    assert job.type == "system_noop"
+    assert job.trigger_kind == "schedule"
+    assert job.idempotency_key.startswith("schedule:fixed-noop:")
+    assert [item.disposition for item in diagnostics.snapshot()] == ["created"]
+
+
+def test_catalog_rejects_duplicate_product_or_transport_identity() -> None:
+    fixed = _fixed_schedule()
+    with pytest.raises(ValueError, match="keys must be unique"):
+        ScheduleCatalog((fixed, fixed))
+    with pytest.raises(ValueError, match="pairs must be unique"):
+        ScheduleCatalog((fixed, replace(fixed, key="fixed-noop-second")))
+
+
+def test_interval_misfires_coalesce_to_only_the_current_utc_bucket() -> None:
+    definition = next(item for item in PRODUCTION_SCHEDULE_CATALOG if item.key == "library-sync")
+    config = _configuration(interval=15)
+    first = normalize_due_occurrence(
+        definition, _schedule(datetime(2026, 7, 13, 12, 7, 42, tzinfo=UTC)), config
+    )
+    duplicate = normalize_due_occurrence(
+        definition, _schedule(datetime(2026, 7, 13, 12, 14, 59, tzinfo=UTC)), config
+    )
+    following = normalize_due_occurrence(
+        definition, _schedule(datetime(2026, 7, 13, 12, 16, tzinfo=UTC)), config
+    )
+    assert first == duplicate == datetime(2026, 7, 13, 12, 0, tzinfo=UTC)
+    assert following == datetime(2026, 7, 13, 12, 15, tzinfo=UTC)
+    assert occurrence_key(definition, first) == "schedule:library-sync:20260713T120000Z"
+
+
+def test_poster_heal_uses_its_own_interval_bucket_and_enablement() -> None:
+    definition = next(item for item in PRODUCTION_SCHEDULE_CATALOG if item.key == "poster-heal")
+    config = _configuration(interval=5, heal_interval=30)
+    due = normalize_due_occurrence(
+        definition, _schedule(datetime(2026, 7, 13, 12, 29, 59, tzinfo=UTC)), config
+    )
+    assert due == datetime(2026, 7, 13, 12, 0, tzinfo=UTC)
+    assert not definition.enabled_predicate(_configuration(heal_enabled=False))
+    assert not definition.enabled_predicate(_configuration(heal_interval=0))
+
+
+def test_hourly_occurrence_is_utc_and_skips_the_wrong_hour() -> None:
+    definition = next(
+        item for item in PRODUCTION_SCHEDULE_CATALOG if item.key == "evidence-retention"
+    )
+    config = _configuration()
+    due = normalize_due_occurrence(
+        definition, _schedule(datetime(2026, 7, 13, 3, 9, tzinfo=UTC)), config
+    )
+    assert due == datetime(2026, 7, 13, 3, 0, tzinfo=UTC)
+    assert (
+        normalize_due_occurrence(
+            definition, _schedule(datetime(2026, 7, 13, 4, 0, tzinfo=UTC)), config
+        )
+        is None
+    )
+
+
+@pytest.mark.asyncio
+async def test_fixed_callback_duplicate_restart_and_two_scheduler_race_reuse_one_job(
+    db, schedule_enabled_noop_registry
+) -> None:
+    definition = _fixed_schedule()
+    value = _schedule(datetime(2026, 7, 13, 12, 0, 1, tzinfo=UTC))
+    factory = _get_session_factory()
+    diagnostics = ScheduleDiagnostics()
+
+    first, second = await asyncio.gather(
+        submit_schedule_occurrence(
+            definition,
+            value,
+            configuration_loader=_configuration,
+            diagnostics=diagnostics,
+            session_factory=factory,
+        ),
+        submit_schedule_occurrence(
+            definition,
+            value,
+            configuration_loader=_configuration,
+            diagnostics=diagnostics,
+            session_factory=factory,
+        ),
+    )
+    assert first is not None and second is not None
+    assert {first.disposition, second.disposition} == {"created", "reused"}
+    restarted = await submit_schedule_occurrence(
+        definition,
+        value,
+        configuration_loader=_configuration,
+        diagnostics=diagnostics,
+        session_factory=factory,
+    )
+    assert restarted is not None and restarted.disposition == "reused"
+    assert await db.scalar(select(func.count()).select_from(Job)) == 1
+
+
+@pytest.mark.asyncio
+async def test_fixed_schedule_disable_reenable_does_not_create_extra_jobs(
+    db, schedule_enabled_noop_registry
+) -> None:
+    schedule_definition = _fixed_schedule()
+    value = _schedule(datetime(2026, 7, 13, 3, 5, tzinfo=UTC))
+    state = {"enabled": False}
+
+    def configuration() -> ScheduleConfiguration:
+        return _configuration(production=state["enabled"])
+
+    diagnostics = ScheduleDiagnostics()
+    factory = _get_session_factory()
+    assert (
+        await submit_schedule_occurrence(
+            schedule_definition,
+            value,
+            configuration_loader=configuration,
+            diagnostics=diagnostics,
+            session_factory=factory,
+        )
+        is None
+    )
+    state["enabled"] = True
+    created = await submit_schedule_occurrence(
+        schedule_definition,
+        value,
+        configuration_loader=configuration,
+        diagnostics=diagnostics,
+        session_factory=factory,
+    )
+    state["enabled"] = False
+    assert (
+        await submit_schedule_occurrence(
+            schedule_definition,
+            value,
+            configuration_loader=configuration,
+            diagnostics=diagnostics,
+            session_factory=factory,
+        )
+        is None
+    )
+    state["enabled"] = True
+    reused = await submit_schedule_occurrence(
+        schedule_definition,
+        value,
+        configuration_loader=configuration,
+        diagnostics=diagnostics,
+        session_factory=factory,
+    )
+    assert created is not None and created.disposition == "created"
+    assert reused is not None and reused.disposition == "reused"
+    assert await db.scalar(select(func.count()).select_from(Job)) == 1
+    assert [item.disposition for item in diagnostics.snapshot()] == [
+        "disabled",
+        "created",
+        "disabled",
+        "reused",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_poster_heal_schedule_coalesces_overlap_and_reuses_after_restart(
+    db, tmp_path, monkeypatch
+) -> None:
+    definition = next(item for item in PRODUCTION_SCHEDULE_CATALOG if item.key == "poster-heal")
+    media_root = tmp_path / "media"
+    movie_folder = media_root / "Movie"
+    movie_folder.mkdir(parents=True)
+    monkeypatch.setattr(settings, "MEDIA_ROOTS", [str(media_root)])
+    movie = Movie(
+        title="Missing",
+        year=2026,
+        radarr_id=7801,
+        folder_path=str(movie_folder),
+        poster_path=str(movie_folder / "poster.jpg"),
+    )
+    db.add(movie)
+    await db.commit()
+    factory = _get_session_factory()
+    diagnostics = ScheduleDiagnostics()
+    first, overlap = await asyncio.gather(
+        submit_schedule_occurrence(
+            definition,
+            _schedule(datetime(2026, 7, 13, 12, 1, tzinfo=UTC)),
+            configuration_loader=lambda: _configuration(heal_interval=30),
+            diagnostics=diagnostics,
+            session_factory=factory,
+        ),
+        submit_schedule_occurrence(
+            definition,
+            _schedule(datetime(2026, 7, 13, 12, 31, tzinfo=UTC)),
+            configuration_loader=lambda: _configuration(heal_interval=30),
+            diagnostics=diagnostics,
+            session_factory=factory,
+        ),
+    )
+    restarted = await submit_schedule_occurrence(
+        definition,
+        _schedule(datetime(2026, 7, 13, 12, 1, tzinfo=UTC)),
+        configuration_loader=lambda: _configuration(heal_interval=30),
+        diagnostics=diagnostics,
+        session_factory=factory,
+    )
+    assert first is not None and overlap is not None
+    assert {first.disposition, overlap.disposition} == {"created", "reused"}
+    assert overlap.job_id == first.job_id
+    assert overlap.detail_link == f"/projection-room/jobs/{first.job_id}"
+    assert restarted is not None and restarted.job_id == first.job_id
+    assert (
+        await db.scalar(select(func.count()).select_from(Job).where(Job.type == "poster_heal")) == 1
+    )
+
+
+@pytest.mark.asyncio
+async def test_poster_heal_schedule_disable_reenable_creates_one_empty_parent(db) -> None:
+    definition = next(item for item in PRODUCTION_SCHEDULE_CATALOG if item.key == "poster-heal")
+    due = _schedule(datetime(2026, 7, 13, 13, 4, tzinfo=UTC))
+    factory = _get_session_factory()
+    disabled = await submit_schedule_occurrence(
+        definition,
+        due,
+        configuration_loader=lambda: _configuration(heal_enabled=False),
+        session_factory=factory,
+    )
+    created = await submit_schedule_occurrence(
+        definition,
+        due,
+        configuration_loader=lambda: _configuration(heal_enabled=True),
+        session_factory=factory,
+    )
+    reused = await submit_schedule_occurrence(
+        definition,
+        due,
+        configuration_loader=lambda: _configuration(heal_enabled=True),
+        session_factory=factory,
+    )
+    assert disabled is None
+    assert created is not None and created.disposition == "created"
+    assert reused is not None and reused.disposition == "reused"
+    assert (
+        await db.scalar(select(func.count()).select_from(Job).where(Job.type == "poster_heal")) == 1
+    )
+
+
+@pytest.mark.asyncio
+async def test_ineligible_and_disabled_occurrences_are_bounded_diagnostics(db) -> None:
+    definition = next(
+        item for item in PRODUCTION_SCHEDULE_CATALOG if item.key == "evidence-retention"
+    )
+    diagnostics = ScheduleDiagnostics()
+    for minute in range(MAX_SCHEDULE_DIAGNOSTICS + 1):
+        await submit_schedule_occurrence(
+            definition,
+            _schedule(datetime(2026, 7, 14, 4, minute % 60, tzinfo=UTC)),
+            configuration_loader=lambda: _configuration(production=False),
+            diagnostics=diagnostics,
+        )
+    assert len(diagnostics.snapshot()) == MAX_SCHEDULE_DIAGNOSTICS
+    assert all(item.disposition == "ineligible" for item in diagnostics.snapshot())
+    assert await db.scalar(select(func.count()).select_from(Job)) == 0
+
+
+@pytest.mark.asyncio
+async def test_callback_failures_are_not_converted_to_diagnostics(db) -> None:
+    diagnostics = ScheduleDiagnostics()
+
+    def unavailable() -> ScheduleConfiguration:
+        raise RuntimeError("configuration unavailable")
+
+    with pytest.raises(RuntimeError, match="configuration unavailable"):
+        await submit_schedule_occurrence(
+            _fixed_schedule(),
+            _schedule(datetime(2026, 7, 13, 12, 0, tzinfo=UTC)),
+            configuration_loader=unavailable,
+            diagnostics=diagnostics,
+        )
+    assert diagnostics.snapshot() == ()
+    assert await db.scalar(select(func.count()).select_from(Job)) == 0

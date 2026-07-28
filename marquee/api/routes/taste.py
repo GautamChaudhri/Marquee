@@ -156,11 +156,12 @@ async def taste_status(
         ).all()
     )
     revoked = {event.revoked_event_id for event in events if event.revoked_event_id}
-    active_events = [event for event in events if event.id not in revoked and event.action != "undo"]
+    active_events = [
+        event for event in events if event.id not in revoked and event.action != "undo"
+    ]
     subject_references = {event.subject_reference for event in active_events}
     positives = sum(
-        event.action in {"approval", "selection", "override", "rank"}
-        for event in active_events
+        event.action in {"approval", "selection", "override", "rank"} for event in active_events
     )
     negatives = sum(event.action in {"hate", "reject", "reject_all"} for event in active_events)
 
@@ -407,9 +408,7 @@ async def list_ranking_residuals(
 ):
     _validate_library(library)
     return {
-        "residuals": await _publication_summaries(
-            db, kind="ranking_residual", library=library
-        ),
+        "residuals": await _publication_summaries(db, kind="ranking_residual", library=library),
         "publication_authority": publication_catalog.CATALOG_STATUS,
     }
 

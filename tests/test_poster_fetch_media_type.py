@@ -99,9 +99,7 @@ async def test_season_without_a_number_is_refused_before_any_request():
 async def test_unknown_media_type_is_refused_rather_than_defaulting_to_movie():
     tmdb = RecordingTMDB()
     with pytest.raises(ValueError, match="unsupported poster media type"):
-        await fetch_candidates(
-            tmdb, Movie(id=1, title="Thing", tmdb_id=1), media_type="episode"
-        )
+        await fetch_candidates(tmdb, Movie(id=1, title="Thing", tmdb_id=1), media_type="episode")
     assert tmdb.calls == []
 
 

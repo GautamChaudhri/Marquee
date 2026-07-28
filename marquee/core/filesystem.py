@@ -128,9 +128,7 @@ class FilesystemBoundary:
         return ClassifiedPath(root=root, key=parsed)
 
     @staticmethod
-    def _reject_symlink_components(
-        root: Path, key: ConfinedKey, *, require_exists: bool
-    ) -> None:
+    def _reject_symlink_components(root: Path, key: ConfinedKey, *, require_exists: bool) -> None:
         current = root
         for index, part in enumerate(key.parts):
             current = current / part
@@ -227,9 +225,7 @@ class FilesystemBoundary:
 
     def fsync_parent(self, classified: ClassifiedPath) -> None:
         """Durably seal directory metadata after a confined publication or deletion."""
-        root_fd, parent_fd, _leaf = self._open_parent(
-            classified.root.resolved(), classified.key
-        )
+        root_fd, parent_fd, _leaf = self._open_parent(classified.root.resolved(), classified.key)
         try:
             os.fsync(parent_fd)
         finally:
@@ -426,7 +422,9 @@ class FilesystemBoundary:
         self._reject_symlink_components(current.root.resolved(), current.key, require_exists=True)
         shutil.rmtree(target)
 
-    def extract_tar(self, archive: ClassifiedPath, destination: ClassifiedPath) -> list[ConfinedKey]:
+    def extract_tar(
+        self, archive: ClassifiedPath, destination: ClassifiedPath
+    ) -> list[ConfinedKey]:
         destination_path = destination.root.resolved() / destination.key.value
         self.classify(
             destination_path,
@@ -436,9 +434,10 @@ class FilesystemBoundary:
         )
         extracted: list[ConfinedKey] = []
         archive_fd = self.open_read(archive)
-        with os.fdopen(archive_fd, "rb", closefd=True) as stream, tarfile.open(
-            fileobj=stream, mode="r:*"
-        ) as bundle:
+        with (
+            os.fdopen(archive_fd, "rb", closefd=True) as stream,
+            tarfile.open(fileobj=stream, mode="r:*") as bundle,
+        ):
             for member in bundle.getmembers():
                 member_key = ConfinedKey.parse(member.name.rstrip("/"))
                 if member.issym() or member.islnk() or member.isdev():

@@ -1,22 +1,32 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [project]
 name = "marquee"
-version = "0.1.0"
-description = "AI-powered automatic poster selection for Plex/Jellyfin media libraries"
+dynamic = ["version"]
+description = "AI-powered poster management for Radarr and Sonarr media libraries"
 readme = "README.md"
 requires-python = ">=3.12"
-license = { text = "MIT" }
+license = "GPL-3.0-only"
+license-files = ["LICENSE"]
 authors = [
-    { name = "Gautam", email = "" }
+    { name = "Gautam Chaudhri" }
 ]
-keywords = ["media", "posters", "plex", "jellyfin", "radarr", "sonarr", "ai", "machine-learning"]
+keywords = [
+    "media",
+    "posters",
+    "plex",
+    "jellyfin",
+    "radarr",
+    "sonarr",
+    "tmdb",
+    "computer-vision",
+    "machine-learning",
+]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: End Users/Desktop",
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Topic :: Multimedia :: Graphics",
@@ -58,13 +68,21 @@ dependencies = [
     "psutil>=5.9,<8.0",
 ]
 
+[project.urls]
+Homepage = "https://github.com/GautamChaudhri/Marquee"
+Repository = "https://github.com/GautamChaudhri/Marquee"
+Issues = "https://github.com/GautamChaudhri/Marquee/issues"
+Documentation = "https://github.com/GautamChaudhri/Marquee#readme"
+
 [project.optional-dependencies]
 dev = [
     "pytest>=9.0,<10.0",
     "pytest-asyncio>=1.0,<2.0",
     "pytest-cov>=5.0,<6.0",
     "httpx>=0.28,<1.0",       # for TestClient
-    "ruff>=0.9,<1.0",
+    # Formatting is a CI contract; pin it so a formatter release cannot make
+    # an otherwise unchanged branch fail. Dependabot proposes upgrades.
+    "ruff==0.15.17",
     "tqdm>=4.65,<5.0",
 ]
 
@@ -116,6 +134,21 @@ all = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["marquee"]
+exclude = ["**/__pycache__", "**/*.pyc"]
+
+[tool.hatch.version]
+path = "marquee/__init__.py"
+
+[tool.hatch.build.targets.wheel.force-include]
+"alembic" = "marquee/alembic"
+"alembic.ini" = "marquee/alembic.ini"
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/alembic",
+    "/alembic.ini",
+    "/marquee",
+]
 
 [tool.ruff]
 line-length = 100

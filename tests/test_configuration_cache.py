@@ -52,9 +52,7 @@ async def test_api_worker_and_scheduler_providers_use_same_notification_rules(db
     )
     await db.commit()
 
-    reloaded = await asyncio.gather(
-        *(provider.handle_notification("2") for provider in providers)
-    )
+    reloaded = await asyncio.gather(*(provider.handle_notification("2") for provider in providers))
     assert reloaded == [True, True, True]
     assert {provider.state.version for provider in providers} == {2}
 

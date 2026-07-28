@@ -130,7 +130,9 @@ class ResidualScorer(PosterScorer):
             alpha=self.artifact.alpha,
             delta_max=self.artifact.delta_max,
         )
-        contributions = {f"baseline:{name}": value for name, value in baseline_contributions.items()}
+        contributions = {
+            f"baseline:{name}": value for name, value in baseline_contributions.items()
+        }
         contributions.update(
             {
                 f"residual:{name}": self.artifact.alpha * value
@@ -175,7 +177,9 @@ def select_scorer(
     except (ResidualCompatibilityError, RuntimeError) as exc:
         if mode == "residual":
             raise
-        logger.warning("SCORER | weighted (auto: residual dormant: %s) for library %s", exc, library)
+        logger.warning(
+            "SCORER | weighted (auto: residual dormant: %s) for library %s", exc, library
+        )
         return baseline
     logger.info(
         "SCORER | residual (%s) for library %s | revision=%s features=%s",

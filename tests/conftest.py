@@ -24,7 +24,7 @@ from marquee.database import (
 # marquee.main — so the flow stays covered while staying off for real deployments.
 settings.ONBOARDING_ENABLED = True
 
-pytest_plugins = ["tests.support.jmc5b_harness"]
+pytest_plugins = ["tests.support.process_harness"]
 
 
 @pytest_asyncio.fixture(scope="session", autouse=True)
