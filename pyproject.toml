@@ -55,7 +55,7 @@ dependencies = [
     "imagehash>=4.3,<5.0",
     "opencv-python>=4.8,<5.0",
     # AI / ML (Phase 3+)
-    "numpy>=1.24,<3.0",
+    "numpy>=2.5.1,<3.0",
     # macOS always gets the universal package (CoreML + CPU providers).
     # On Linux, pick exactly ONE accelerator extra: [cpu], [nvidia], or [intel]
     # — the three onnxruntime packages install the same module and conflict.
