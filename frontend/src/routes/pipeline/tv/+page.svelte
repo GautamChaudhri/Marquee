@@ -13,6 +13,7 @@
 		getTvMetrics,
 		getTvReviewQueue,
 		getTvRunQueue,
+		getTvSummary,
 		runSeries,
 		runTvBatch
 	} from '$lib/api/pipeline-tv';
@@ -23,12 +24,6 @@
 
 	type Tab = 'run' | 'review' | 'metrics';
 	let tab = $state<Tab>((page.url.searchParams.get('tab') as Tab) ?? 'run');
-	const tabs = $derived([
-		{ id: 'run', label: 'Run', count: data.runQueue.total },
-		{ id: 'review', label: 'Review', count: data.reviewQueue.total_series },
-		{ id: 'metrics', label: 'Metrics' }
-	]);
-
 	function setTab(id: string) {
 		tab = id as Tab;
 		const url = new URL(page.url);
@@ -43,7 +38,17 @@
 	let reviewQueue = $state(data.reviewQueue);
 	// svelte-ignore state_referenced_locally
 	let metrics = $state(data.metrics);
+	// svelte-ignore state_referenced_locally
+	let summary = $state(data.summary);
 	const selected = new SvelteSet<number>();
+
+	// Counts read the same local state the tab bodies render, so a refresh cannot leave
+	// a badge disagreeing with the list underneath it.
+	const tabs = $derived([
+		{ id: 'run', label: 'Run', count: runQueue.total },
+		{ id: 'review', label: 'Review', count: reviewQueue.total_series },
+		{ id: 'metrics', label: 'Metrics' }
+	]);
 
 	let initiatedJobIds = $state<string[]>([]);
 	let batchRunning = $state(false);
@@ -52,10 +57,11 @@
 
 	async function refresh() {
 		try {
-			[runQueue, reviewQueue, metrics] = await Promise.all([
+			[runQueue, reviewQueue, metrics, summary] = await Promise.all([
 				getTvRunQueue(fetch),
 				getTvReviewQueue(fetch, { page_size: 200 }),
-				getTvMetrics(fetch, { limit: 500 }).catch(() => metrics)
+				getTvMetrics(fetch, { limit: 500 }).catch(() => metrics),
+				getTvSummary(fetch).catch(() => summary)
 			]);
 		} catch {
 			/* keep stale */
@@ -167,7 +173,7 @@
 
 <SectionHeader
 	title="TV posters"
-	subtitle={`${data.summary.shows_fully_covered}/${data.summary.shows_total} shows fully covered`}
+	subtitle={`${summary.shows_fully_covered}/${summary.shows_total} shows fully covered`}
 />
 
 <TabBar {tabs} active={tab} onSelect={setTab} />

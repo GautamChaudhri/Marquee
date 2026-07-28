@@ -75,12 +75,22 @@ async function fetchWithTimeout(
 	}
 }
 
+const isEmptyValue = (v: unknown) => v === undefined || v === null || v === '';
+
+/** Array values become repeated params (`?types=a&types=b`) — the encoding FastAPI's
+ *  `Query()` list parameters expect. Joining them into one comma-separated value
+ *  makes the backend read the whole string as a single item and reject it (422). */
 function buildQuery(params?: Record<string, unknown>): string {
 	if (!params) return '';
 	const sp = new URLSearchParams();
 	for (const [k, v] of Object.entries(params)) {
-		if (v === undefined || v === null || v === '') continue;
-		sp.set(k, String(v));
+		if (isEmptyValue(v)) continue;
+		if (Array.isArray(v)) {
+			// An empty array is no filter at all — emitting a bare `k=` would send [""].
+			for (const item of v) if (!isEmptyValue(item)) sp.append(k, String(item));
+			continue;
+		}
+		sp.append(k, String(v));
 	}
 	const s = sp.toString();
 	return s ? `?${s}` : '';

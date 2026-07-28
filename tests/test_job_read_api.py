@@ -251,6 +251,31 @@ async def test_queue_exact_scope_recovers_beyond_first_page(db, client) -> None:
     assert [item["job_id"] for item in response.json()["items"]] == [matching.id]
     assert response.json()["next_cursor"] is None
 
+    # Multi-valued scope filters are repeated params, never one comma-joined value —
+    # a joined list reads as a single unknown job type and rejects the whole request.
+    repeated = await client.get(
+        "/api/jobs",
+        params=[
+            ("view", "queue"),
+            ("limit", "20"),
+            ("types", "system_noop"),
+            ("types", "poster_reset"),
+            ("subject_reference", "media-file:target"),
+            ("subject_reference", "media-file:1"),
+        ],
+    )
+    assert repeated.status_code == 200
+    assert {item["job_id"] for item in repeated.json()["items"]} == {
+        matching.id,
+        unrelated[1].id,
+    }
+
+    joined = await client.get(
+        "/api/jobs",
+        params=[("view", "queue"), ("types", "system_noop,poster_reset")],
+    )
+    assert joined.status_code == 422
+
 
 @pytest.mark.asyncio
 async def test_snapshot_presentation_and_raw_documents_are_bounded(db, client):

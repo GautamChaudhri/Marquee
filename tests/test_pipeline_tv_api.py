@@ -13,10 +13,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.api.routes import feedback as feedback_route
 from marquee.config import settings
+from marquee.core.jobs.handlers_poster_mutations import execute_poster_reset
 from marquee.database import _get_engine
 from marquee.main import app
 from marquee.models import Job, JobBatch, Movie, PipelineRun, Season, Series
 from tests.support.canonical_poster import seed_canonical_pipeline_run
+from tests.test_poster_mutations import _context as _mutation_context
 
 
 @pytest_asyncio.fixture
@@ -577,6 +579,62 @@ async def test_run_queue_withholds_assets_already_waiting_on_review(
     await db.commit()
     resolved = await client.get("/api/pipeline/tv/run-queue")
     assert resolved.json()["items"][0]["show_poster_missing"] is True
+
+
+@pytest.mark.asyncio
+async def test_poster_reset_returns_a_fully_covered_subject_to_the_run_queue(
+    db: AsyncSession,
+    client: AsyncClient,
+    tmp_path: Path,
+    installed_pgqueuer: Queries,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Deleting a deployed poster has to make that asset runnable again.
+
+    The run that chose the deleted poster can still be sitting undecided — the
+    "use show poster" fallback and any run without an auto-pick both leave one
+    behind. That undecided run withholds the asset from the run queue, so unless the
+    reset retires it the season is deleted into a dead end: no poster, no way to run.
+    """
+    monkeypatch.setattr(settings, "MEDIA_ROOTS", [str(tmp_path)])
+    series, seasons = await _seed_series(
+        db,
+        tmp_path,
+        title="Reset Requeue",
+        tmdb_id=902,
+        sonarr_id=33,
+        show_poster=True,
+        seasons=[{"number": 1, "episode_file_count": 6, "poster": True}],
+    )
+    season = seasons[0]
+    deployed = Path(series.series_path) / "season01.jpg"
+    run = await _seed_run(
+        db, tmp_path, run_id="requeue-s1", series=series, season=season, status="flagged_manual"
+    )
+
+    covered = await client.get("/api/pipeline/tv/run-queue")
+    assert covered.status_code == 200
+    assert covered.json()["items"] == []
+
+    context = await _mutation_context(
+        db, job_type="poster_reset", request={"target_kind": "season", "target_id": season.id}
+    )
+    result = await execute_poster_reset(context)
+    assert result["outcome"] == "succeeded", result
+    assert not deployed.exists()
+
+    await db.refresh(run)
+    assert run.feedback_event_id is not None
+
+    requeued = await client.get("/api/pipeline/tv/run-queue")
+    assert requeued.status_code == 200
+    items = requeued.json()["items"]
+    assert len(items) == 1
+    # Only the deleted asset comes back — the show poster is untouched.
+    assert items[0]["show_poster_missing"] is False
+    assert items[0]["assets_to_run"] == [
+        {"media_type": "season", "season_id": season.id, "number": 1}
+    ]
 
 
 @pytest.mark.asyncio

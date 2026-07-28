@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import json
 import os
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
@@ -434,6 +435,41 @@ async def _persist_before(
         apply_mutation_evidence(detail, evidence)
 
 
+_REOPENABLE_RUN_STATUSES = ("completed", "flagged_manual")
+_RUN_SUBJECT_COLUMNS = {
+    "movie": PipelineRun.movie_id,
+    "series": PipelineRun.series_id,
+    "season": PipelineRun.season_id,
+}
+
+
+async def _close_pending_reviews(session, subject: PosterSubject) -> int:
+    """Retire review decisions the reset just invalidated, and report how many.
+
+    A completed run sits in the review queue until it is decided, and the run queue
+    withholds any subject waiting on one — a subject cannot be both awaiting a decision
+    and awaiting a run. Several paths leave a deployed poster next to an undecided run
+    (the season "use show poster" fallback, a run with no auto-pick, a re-run nobody
+    reviewed). Once the poster it was judging is gone, that decision is moot, so the run
+    is stamped closed and the subject becomes eligible for a fresh run.
+    """
+    runs = (
+        await session.scalars(
+            select(PipelineRun).where(
+                PipelineRun.media_type == subject.media_type,
+                _RUN_SUBJECT_COLUMNS[subject.media_type] == subject.id,
+                PipelineRun.feedback_event_id.is_(None),
+                PipelineRun.status.in_(_REOPENABLE_RUN_STATUSES),
+            )
+        )
+    ).all()
+    # Mirrors the review-reset keys; `feedback_event_id` is String(32), this is 23.
+    reset_key = f"poster_reset_{int(time.time())}"
+    for run in runs:
+        run.feedback_event_id = reset_key
+    return len(runs)
+
+
 async def _persist_final(
     context: ExecutionContext,
     request: (
@@ -461,9 +497,11 @@ async def _persist_final(
         if entity is None:
             raise PosterMutationError("poster subject retired before state commit")
         subject = await _load_subject(session, request.target_kind, request.target_id)
+        reopened_runs = 0
         if not update_projection:
             pass
         elif isinstance(request, PosterResetRequestV1):
+            reopened_runs = await _close_pending_reviews(session, subject)
             entity.poster_path = None
             entity.poster_source = None
             entity.poster_source_url = None
@@ -494,20 +532,20 @@ async def _persist_final(
         if detail is None:
             raise PosterMutationError("mutation evidence disappeared before state commit")
         apply_mutation_evidence(detail, evidence)
+        event_detail: dict[str, object] = {
+            "job_id": context.delivery.canonical_job_id,
+            "checksum": checksum,
+            "backup_key": evidence.backup.artifact_key if evidence.backup else None,
+            "published": evidence.atomicity.published,
+        }
+        if reopened_runs:
+            event_detail["reopened_runs"] = reopened_runs
         session.add(
             ArtworkEvent(
                 **subject.event_fk_kwargs(),
                 action=context.definition.job_type.removeprefix("poster_"),
                 source="canonical_job",
-                detail=json.dumps(
-                    {
-                        "job_id": context.delivery.canonical_job_id,
-                        "checksum": checksum,
-                        "backup_key": evidence.backup.artifact_key if evidence.backup else None,
-                        "published": evidence.atomicity.published,
-                    },
-                    sort_keys=True,
-                ),
+                detail=json.dumps(event_detail, sort_keys=True),
             )
         )
 

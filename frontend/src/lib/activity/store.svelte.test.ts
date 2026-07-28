@@ -260,9 +260,26 @@ describe('discovery and single stream', () => {
 			subject_reference: ['42']
 		});
 		await flush();
-		expect(h.calls[0]?.url).toContain('types=poster_pipeline%2Cposter_restore');
+		// Repeated params, never comma-joined — the backend reads a joined value as one
+		// unknown job type and rejects the whole list with 422.
+		expect(h.calls[0]?.url).toContain('types=poster_pipeline&');
+		expect(h.calls[0]?.url).toContain('types=poster_restore');
+		expect(h.calls[0]?.url).not.toContain('%2C');
 		expect(h.calls[0]?.url).toContain('subject_kind=movie');
 		expect(h.calls[0]?.url).toContain('subject_reference=42');
+	});
+
+	it('omits an empty subject list instead of sending a blank filter', async () => {
+		// A series with no downloaded seasons yields `subject_reference: []`; a bare
+		// `subject_reference=` would reach the server as [""] and be rejected.
+		h.store.acquireScope('series:7', {
+			view: 'queue',
+			subject_kind: 'season',
+			subject_reference: []
+		});
+		await flush();
+		expect(h.calls[0]?.url).not.toContain('subject_reference');
+		expect(h.calls[0]?.url).toContain('subject_kind=season');
 	});
 
 	it('lets two independent tabs recover the same canonical active job', async () => {

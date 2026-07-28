@@ -1,3 +1,4 @@
+import { randomUuid } from '$lib/uuid';
 import { apiGet, apiSend, type Fetch } from './client';
 import type { components } from './generated/openapi';
 import type {
@@ -58,7 +59,7 @@ export function approveTvAuto(
 		body,
 		body.deploy === false
 			? undefined
-			: { 'Idempotency-Key': `poster_deploy:${crypto.randomUUID()}` }
+			: { 'Idempotency-Key': `poster_deploy:${randomUuid()}` }
 	);
 }
 
@@ -73,7 +74,7 @@ export function useShowPoster(fetchFn: Fetch, seasonId: number): Promise<JobSubm
 		`/pipeline/tv/seasons/${seasonId}/use-show-poster`,
 		{},
 		{
-			'Idempotency-Key': `poster_deploy:${crypto.randomUUID()}`
+			'Idempotency-Key': `poster_deploy:${randomUuid()}`
 		}
 	);
 }

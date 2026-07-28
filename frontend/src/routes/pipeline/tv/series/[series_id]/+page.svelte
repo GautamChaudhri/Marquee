@@ -146,11 +146,15 @@
 
 		<div class="main">
 			{#if data.selectedRunId}
-				<RunResultsView
-					data={data.runData}
-					backHref="/pipeline/tv?tab=review"
-					backLabel="TV posters"
-				/>
+				<!-- Keyed on the run: picking another season in the rail must rebuild the
+					 view, which keeps the run and the inspected poster in local state. -->
+				{#key data.selectedRunId}
+					<RunResultsView
+						data={data.runData}
+						backHref="/pipeline/tv?tab=review"
+						backLabel="TV posters"
+					/>
+				{/key}
 			{:else}
 				<div class="state">No active review runs for this series.</div>
 			{/if}

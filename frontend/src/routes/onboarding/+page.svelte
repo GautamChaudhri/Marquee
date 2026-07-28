@@ -12,6 +12,7 @@
 		type OnboardingStatus
 	} from '$lib/api/onboarding';
 	import { toast } from '$lib/toast';
+	import { randomUuid } from '$lib/uuid';
 	import type { PageData } from './$types';
 
 	let { data }: { data: PageData } = $props();
@@ -85,7 +86,7 @@
 		const key = `${review?.run_id ?? ''}:${candidateId}:${decision}`;
 		const existing = decisionKeys.get(key);
 		if (existing) return existing;
-		const created = `onboarding:${decision}:${crypto.randomUUID()}`;
+		const created = `onboarding:${decision}:${randomUuid()}`;
 		decisionKeys.set(key, created);
 		return created;
 	}

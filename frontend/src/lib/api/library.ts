@@ -1,4 +1,5 @@
 import { env } from '$env/dynamic/public';
+import { randomUuid } from '$lib/uuid';
 import { apiGet, apiSend, type Fetch } from './client';
 import { mockMovieDetail, mockMovies } from './mock';
 import type {
@@ -35,7 +36,7 @@ export function getMovie(fetch: Fetch, id: number): Promise<MovieDetail> {
 export function deleteMoviePoster(fetch: Fetch, id: number): Promise<JobSubmissionResponse> {
 	if (useMocks()) throw new Error('Poster reset jobs are unavailable in mock mode');
 	return apiSend(fetch, 'DELETE', `/library/movies/${id}/poster`, undefined, {
-		'Idempotency-Key': `poster_reset:${crypto.randomUUID()}`
+		'Idempotency-Key': `poster_reset:${randomUuid()}`
 	});
 }
 
@@ -60,12 +61,12 @@ export function getSeasonPosterUrl(id: number): string {
 
 export function deleteSeriesPoster(fetch: Fetch, id: number): Promise<JobSubmissionResponse> {
 	return apiSend(fetch, 'DELETE', `/library/series/${id}/poster`, undefined, {
-		'Idempotency-Key': `poster_reset:${crypto.randomUUID()}`
+		'Idempotency-Key': `poster_reset:${randomUuid()}`
 	});
 }
 
 export function deleteSeasonPoster(fetch: Fetch, id: number): Promise<JobSubmissionResponse> {
 	return apiSend(fetch, 'DELETE', `/library/seasons/${id}/poster`, undefined, {
-		'Idempotency-Key': `poster_reset:${crypto.randomUUID()}`
+		'Idempotency-Key': `poster_reset:${randomUuid()}`
 	});
 }

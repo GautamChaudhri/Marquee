@@ -1,3 +1,4 @@
+import { randomUuid } from '$lib/uuid';
 import { apiGet, apiSend, type Fetch } from './client';
 import type { components } from './generated/openapi';
 import type {
@@ -50,7 +51,7 @@ export function backupAllPosters(fetchFn: Fetch): Promise<JobSubmissionResponse>
 		'POST',
 		'/pipeline/backup-all',
 		{},
-		{ 'Idempotency-Key': `poster_backup_all:${crypto.randomUUID()}` }
+		{ 'Idempotency-Key': `poster_backup_all:${randomUuid()}` }
 	);
 }
 
@@ -80,7 +81,7 @@ export function approveReviewQueueAutoPicks(
 		body,
 		body.deploy === false
 			? undefined
-			: { 'Idempotency-Key': `poster_deploy:${crypto.randomUUID()}` }
+			: { 'Idempotency-Key': `poster_deploy:${randomUuid()}` }
 	);
 }
 

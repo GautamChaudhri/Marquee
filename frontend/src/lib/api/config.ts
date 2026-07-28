@@ -1,3 +1,4 @@
+import { randomUuid } from '$lib/uuid';
 import { apiGet, apiSend, type Fetch } from './client';
 import type { components } from './generated/openapi';
 import type { ConfigurationHealth } from './types';
@@ -62,6 +63,6 @@ export function resetDeployedPosters(fetchFn: Fetch): Promise<JobSubmissionRespo
 		'POST',
 		'/pipeline/posters/reset',
 		{},
-		{ 'Idempotency-Key': `poster_deploy_reset:${crypto.randomUUID()}` }
+		{ 'Idempotency-Key': `poster_deploy_reset:${randomUuid()}` }
 	);
 }

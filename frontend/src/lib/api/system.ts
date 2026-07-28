@@ -1,4 +1,5 @@
 import { env } from '$env/dynamic/public';
+import { randomUuid } from '$lib/uuid';
 import { apiGet, apiSend, type Fetch } from './client';
 import type { components } from './generated/openapi';
 import { mockMetrics, mockMetricsHistory } from './mock';
@@ -195,6 +196,6 @@ export function runHealScan(fetch: Fetch): Promise<JobSubmissionResponse> {
 		'POST',
 		'/system/heal',
 		{},
-		{ 'Idempotency-Key': `poster_heal:${crypto.randomUUID()}` }
+		{ 'Idempotency-Key': `poster_heal:${randomUuid()}` }
 	);
 }

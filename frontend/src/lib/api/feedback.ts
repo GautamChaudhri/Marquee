@@ -1,3 +1,4 @@
+import { randomUuid } from '$lib/uuid';
 import { apiSend, type Fetch } from './client';
 import type { FeedbackRequestBody, FeedbackResult } from './types';
 
@@ -7,7 +8,7 @@ import type { FeedbackRequestBody, FeedbackResult } from './types';
 export function submitFeedback(fetchFn: Fetch, body: FeedbackRequestBody): Promise<FeedbackResult> {
 	const mutation =
 		body.action !== 'reject_all' && body.deploy !== false && !body.idempotency_key
-			? { ...body, idempotency_key: `poster_deploy:${crypto.randomUUID()}` }
+			? { ...body, idempotency_key: `poster_deploy:${randomUuid()}` }
 			: body;
 	return apiSend<FeedbackResult>(fetchFn, 'POST', '/feedback', mutation);
 }

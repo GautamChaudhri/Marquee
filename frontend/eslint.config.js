@@ -37,8 +37,24 @@ export default defineConfig(
 		rules: {
 			// We use plain string routes (`/films`, `/films/${id}`) intentionally;
 			// the typed resolve() helper is overkill for this app.
-			'svelte/no-navigation-without-resolve': 'off'
+			'svelte/no-navigation-without-resolve': 'off',
+			// `crypto.randomUUID` is secure-context-only, so it is undefined when the UI
+			// is served over plain HTTP at a LAN address. Callers build idempotency keys
+			// with it, so the throw kills the request before it is sent.
+			'no-restricted-syntax': [
+				'error',
+				{
+					selector:
+						"MemberExpression[object.name='crypto'][property.name='randomUUID'], MemberExpression[object.property.name='crypto'][property.name='randomUUID']",
+					message: 'Use randomUuid() from $lib/uuid — crypto.randomUUID is secure-context-only.'
+				}
+			]
 		}
+	},
+	{
+		// The helper is the one place allowed to call it, behind a feature check.
+		files: ['src/lib/uuid.ts'],
+		rules: { 'no-restricted-syntax': 'off' }
 	},
 	{
 		files: [
