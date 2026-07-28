@@ -162,9 +162,7 @@ class RunnerProgressBridge:
 
     def _degrade(self, reason: str) -> None:
         self.degraded_frames += 1
-        logger.warning(
-            "runner progress frame degraded for %s: %s", self._progress.job_id, reason
-        )
+        logger.warning("runner progress frame degraded for %s: %s", self._progress.job_id, reason)
 
     async def on_frame(self, frame: dict[str, Any]) -> None:
         """The ``on_progress`` callable handed to ``run_internal_operation``."""

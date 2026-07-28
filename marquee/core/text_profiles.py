@@ -320,7 +320,9 @@ def _validate_name(name: str, profiles: dict[str, TextProfile], *, skip_id: str 
     return name
 
 
-def create_profile(scope: str = "movie", name: str = "", settings: dict | None = None) -> TextProfile:
+def create_profile(
+    scope: str = "movie", name: str = "", settings: dict | None = None
+) -> TextProfile:
     if scope not in SCOPES:
         settings = name
         name = scope
@@ -338,7 +340,11 @@ def create_profile(scope: str = "movie", name: str = "", settings: dict | None =
 
 
 def update_profile(
-    scope: str, profile_id: str | None = None, *, name: str | None = None, settings: dict | None = None
+    scope: str,
+    profile_id: str | None = None,
+    *,
+    name: str | None = None,
+    settings: dict | None = None,
 ) -> TextProfile:
     if scope not in SCOPES:
         profile_id = scope

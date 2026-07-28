@@ -184,9 +184,7 @@ async def list_movies(
 @router.get("/movies/{movie_id}/poster")
 async def get_movie_poster(movie_id: int, db: Annotated[AsyncSession, Depends(get_db)]):
     movie = (
-        await db.execute(
-            select(Movie).where(Movie.id == movie_id, Movie.is_present.is_(True))
-        )
+        await db.execute(select(Movie).where(Movie.id == movie_id, Movie.is_present.is_(True)))
     ).scalar_one_or_none()
     if movie is None or not movie.poster_path:
         raise HTTPException(status_code=404, detail="No poster available")
@@ -196,9 +194,7 @@ async def get_movie_poster(movie_id: int, db: Annotated[AsyncSession, Depends(ge
 @router.get("/movies/{movie_id}")
 async def get_movie(movie_id: int, db: Annotated[AsyncSession, Depends(get_db)]):
     movie = (
-        await db.execute(
-            select(Movie).where(Movie.id == movie_id, Movie.is_present.is_(True))
-        )
+        await db.execute(select(Movie).where(Movie.id == movie_id, Movie.is_present.is_(True)))
     ).scalar_one_or_none()
     if movie is None:
         raise HTTPException(status_code=404, detail=f"Movie id={movie_id} not found")
@@ -227,8 +223,7 @@ async def list_series(
     rows = (
         (
             await db.execute(
-                base
-                .order_by(title_sort_expr(Series.title))
+                base.order_by(title_sort_expr(Series.title))
                 .limit(page_size)
                 .offset((page - 1) * page_size)
             )
@@ -340,15 +335,7 @@ async def list_seasons(
     )
     if downloaded_only:
         query = query.where(season_downloaded())
-    rows = (
-        (
-            await db.execute(
-                query.order_by(Season.season_number)
-            )
-        )
-        .scalars()
-        .all()
-    )
+    rows = (await db.execute(query.order_by(Season.season_number))).scalars().all()
     return {
         "series_id": series_id,
         "seasons": [
@@ -400,9 +387,7 @@ async def delete_movie_poster(
     This is the single-movie equivalent of the global poster_deploy_reset job.
     """
     movie = (
-        await db.execute(
-            select(Movie).where(Movie.id == movie_id, Movie.is_present.is_(True))
-        )
+        await db.execute(select(Movie).where(Movie.id == movie_id, Movie.is_present.is_(True)))
     ).scalar_one_or_none()
     if movie is None:
         raise HTTPException(status_code=404, detail=f"Movie id={movie_id} not found")

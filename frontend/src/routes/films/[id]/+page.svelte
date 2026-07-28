@@ -406,7 +406,7 @@
 					{/if}
 				</div>
 
-				<!-- ═══ VIDEO · HDR TAB ══════════════════════════════ -->
+				<!-- ═══ ACTIVITY TAB ═════════════════════════════════ -->
 			{:else if tab === 'activity'}
 				<div class="tab-content">
 					<div class="activity-empty">
@@ -614,12 +614,6 @@
 		font-size: 11.5px;
 		color: var(--muted);
 	}
-
-	/* ── Video tab ───────────────────────────────────────── */
-
-	/* ── Subtitle tab ────────────────────────────────────── */
-
-	/* ── Letterbox tab ───────────────────────────────────── */
 
 	/* ── Activity tab ────────────────────────────────────── */
 	.activity-empty {

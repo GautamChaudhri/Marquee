@@ -32,9 +32,7 @@ class JobApiErrorDetail(StrictDocument):
             raise ValueError("error context is bounded to 16 entries")
         for key, item in value.items():
             lowered = key.lower()
-            if len(key) > 80 or any(
-                token in lowered for token in ("secret", "token", "password")
-            ):
+            if len(key) > 80 or any(token in lowered for token in ("secret", "token", "password")):
                 raise ValueError("error context keys must be bounded and non-secret")
             if isinstance(item, str) and len(item) > 300:
                 raise ValueError("error context strings are bounded")

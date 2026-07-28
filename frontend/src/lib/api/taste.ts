@@ -8,11 +8,11 @@ import type {
 	ManagedProfileDetail,
 	TasteMapData,
 	TasteNeighbor,
-	TasteSource,
 	TasteStatus
 } from './types';
 
 type JobSubmissionResponse = components['schemas']['JobSubmissionResponse'];
+type TasteRetrainRequest = components['schemas']['TasteRetrainRequest'];
 
 export type TasteLibrary = 'movies' | 'tv';
 
@@ -24,14 +24,13 @@ export function getTasteStatus(
 	return apiGet<TasteStatus>(fetchFn, '/taste/status', { library });
 }
 
-/** Rebuild the taste profile (initial training). `training_dir` (default) uses
- *  the curated folder; `library` rebuilds from every deployed poster. */
+/** Request a taste-profile rebuild from canonical approved evidence. */
 export function retrainTaste(
 	fetchFn: Fetch,
-	source: TasteSource = 'training_dir',
 	library: TasteLibrary = 'movies'
 ): Promise<JobSubmissionResponse> {
-	return apiSend<JobSubmissionResponse>(fetchFn, 'POST', '/taste/retrain', { source, library });
+	const request = { source: 'canonical_revision', library } satisfies TasteRetrainRequest;
+	return apiSend<JobSubmissionResponse>(fetchFn, 'POST', '/taste/retrain', request);
 }
 
 /** Train the bounded residual from canonical preference evidence. */

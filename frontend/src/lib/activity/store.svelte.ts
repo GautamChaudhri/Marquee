@@ -34,13 +34,7 @@ import { IncompatibleResponseError, parseJobEventFrame } from './validators';
 import type { CompactProgress, JobRow, JobSnapshotResponse, ListJobsQuery } from './types';
 
 export type ConnectionState =
-	| 'initial'
-	| 'loading'
-	| 'live'
-	| 'reconnecting'
-	| 'stale'
-	| 'incompatible'
-	| 'stopped';
+	'initial' | 'loading' | 'live' | 'reconnecting' | 'stale' | 'incompatible' | 'stopped';
 
 export type RecordFreshness = 'live' | 'stale' | 'terminal';
 export type Partition = 'queue' | 'history';

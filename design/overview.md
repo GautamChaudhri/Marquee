@@ -2,160 +2,143 @@
 
 ## Summary
 
-Marquee is a FastAPI application for movie-library management around a curated
-set of media workflows: AI-assisted poster selection, subtitle and audio track
-management, HDR visibility for Radarr-managed files, letterbox detection and
-crop-tag application, and durable background job execution. The backend lives
-in `marquee/`, the web UI lives in `frontend/`, and long-form reference docs
-for the major subsystems live alongside this file in `design/`.
+Marquee is a FastAPI application that selects poster artwork for a Radarr and
+Sonarr library. It fetches candidates from TMDB, gates out invalid art, ranks
+what survives against a taste profile learned from the operator's own picks,
+and deploys the chosen image into the media folder. Everything heavy runs on a
+durable job platform. The backend lives in `marquee/`, the web UI in
+`frontend/`, and the reference docs for each subsystem sit beside this file.
 
-The project is documented as movie-focused today. TV metadata is already stored
-and synced, but the poster pipeline, letterbox workflow, and the broader
-feature set described here are treated as movie-only until the same behaviors
-are implemented and proven for shows.
+The product covers **movies, series, and seasons**. Individual episode artwork
+is not part of the scope.
+
+## Scope
+
+Marquee is poster selection only. HDR and Dolby Vision management, letterbox
+detection and crop tagging, and audio/subtitle management were all removed to
+get this one capability right. If a change appears to need `ffmpeg`,
+`mkvmerge`, or track manipulation, it is out of scope.
 
 ## Current Product Surface
 
 ### Poster pipeline
 
-The poster pipeline fetches poster candidates for a movie, gates out invalid or
-off-style options, ranks the survivors, and archives the run for later review.
-It uses `marquee/pipeline/runner.py`, `marquee/pipeline/gate.py`,
-`marquee/pipeline/features.py`, `marquee/pipeline/scorer.py`, and
-`marquee/pipeline/output.py`, with ONNX and OCR helpers under `marquee/ml/`.
-See `poster-pipeline.md`.
-
-### HDR overlay
-
-The HDR overlay exposes Radarr metadata that is awkward to inspect in Radarr
-itself: dynamic-range tags, custom-format scores, profile-derived HDR targets,
-and Dolby Vision fallback analysis. The API surface is in
-`marquee/api/routes/hdr.py` and the classification logic is in
-`marquee/core/radarr_overlay.py`. The UI lives under `frontend/src/routes/hdr/`.
-See `hdr-overlay.md`.
-
-### Letterbox
-
-The letterbox feature detects black bars, stores review state, generates
-preview frames, applies or removes MKV crop tags, and can prepare or run
-permanent re-encodes. The main modules are `marquee/media/letterbox_detect.py`,
-`marquee/core/letterbox_eligibility.py`, `marquee/core/letterbox_scope.py`,
-`marquee/core/letterbox_transcode.py`, the canonical handlers under
-`marquee/core/jobs/`, and `marquee/api/routes/letterbox.py`. See `letterbox.md`.
-
-### Audio and subtitles
-
-Subtitle management models physical media files, inventories embedded and
-external subtitle tracks, evaluates policy rules, queues durable mutations, and
-can call an external Subgen service for AI subtitle generation. The core code
-is under `marquee/core/subtitles/`, with related APIs in
-`marquee/api/routes/subtitles.py`, `subtitle_policies.py`,
-`subtitle_generators.py`, and `media_jobs.py`. See `audio-subs.md`.
+Fetch candidates for a subject, gate out invalid or off-style options, rank the
+survivors, and archive the run for review. The stages live in
+`marquee/pipeline/` with the inference wrappers under `marquee/ml/`. See
+`poster-pipeline.md`.
 
 ### Library and poster deployment
 
-The library layer stores movie records, syncs from Radarr, serves browse and
-detail APIs, and manages poster deployment and restoration. The main modules
-are `marquee/core/sync_service.py`,
-`marquee/core/jobs/handlers_poster_mutations.py`,
-`marquee/api/routes/library.py`, and the canonical poster job producers. See
-`library.md`.
+Movie and TV records synced from Radarr and Sonarr, browse and detail APIs, and
+the fenced write path that deploys artwork and can restore what it replaced.
+The main modules are `marquee/core/sync_service.py`,
+`marquee/core/jobs/handlers_poster_mutations.py`, and
+`marquee/api/routes/library.py`. See `library.md`.
+
+### Taste and learning
+
+Approvals, overrides, and rejections are recorded as immutable feedback events
+and become the evidence behind the exemplar taste profile and the bounded
+ranking residual. `marquee/api/routes/feedback.py` and `taste.py` expose the
+surface; `marquee/ml/taste_store.py`, `taste_trainer.py`, `residual.py`, and
+`taste_map.py` do the work.
 
 ### Durable jobs
 
-Heavy or long-running work is decoupled from the request loop by the durable
-job platform in `marquee/core/jobs/`. Jobs are created by API routes, claimed by
-workers, and tracked with persisted progress events and resource reservations.
-See `job-platform.md`.
+Heavy or long-running work is decoupled from the request loop by the platform
+in `marquee/core/jobs/`, built on PgQueuer. Jobs are submitted by API routes,
+claimed by workers, and tracked with persisted progress events streamed to the
+UI. See `job-platform.md`.
 
 ## Architecture
 
-Marquee is organized in a few stable layers:
+Marquee is organised in a few stable layers:
 
 - `marquee/config.py` provides the singleton `settings` object for runtime
   configuration, path derivation, and Radarr/Sonarr path translation.
-- `marquee/core/pipeline_config.py` provides the separate singleton
-  `pipeline_settings` for poster-pipeline knobs, while
-  `marquee/core/subtitles/config.py` provides `subtitle_settings`.
-- `marquee/core/` contains service logic, integrations, jobs, backups, and
-  feature-specific orchestration.
-- `marquee/pipeline/` contains the poster pipeline stages and run management.
+- `marquee/core/pipeline_config.py` provides the separate `pipeline_settings`
+  singleton for the poster pipeline's thresholds, weights, and model paths.
+- `marquee/core/configuration.py` is the versioned database configuration
+  authority: `CONFIGURATION_CATALOG` is the closed set of writable keys, and a
+  stored revision containing an unknown key is rejected at startup.
+- `marquee/core/` holds service logic, integrations, jobs, and backups.
+- `marquee/pipeline/` holds the selection stages and run management.
 - `marquee/api/routes/` exposes the HTTP surface.
-- `frontend/` is a SvelteKit UI that consumes the API for films, pipeline
-  review, HDR, letterbox, subtitles, settings, onboarding, and job views.
+- `frontend/` is a SvelteKit UI consuming a TypeScript client generated from
+  the committed OpenAPI schema.
 
 `marquee/main.py` wires startup and shutdown. On startup it configures logging,
-initializes the already-migrated database, connects Radarr,
-Sonarr, and TMDB clients when configured, bootstraps job resources, optionally
-spawns embedded worker processes, and starts the system-metrics sampler.
+initialises the already-migrated database, connects the Radarr, Sonarr, and
+TMDB clients when configured, bootstraps job resources, optionally spawns the
+embedded worker and scheduler, and starts the system-metrics sampler.
 
 ## Key Design Decisions
 
-- Gate then rank. The poster pipeline first removes objectively invalid or
-  junk candidates and only then ranks the survivors relative to one another.
-- Cheapest signal first. Resolution and embedding-driven gates run before the
-  more expensive OCR and detail-feature stages.
-- Enqueue versus inline. GPU-bound, filesystem-mutating, or long-running work
-  is queued through `job_manager`; fast reads, listing, and pure rescoring stay
-  inline.
-- Path translation is centralized. `settings.translate_radarr_path()` and
-  `settings.translate_sonarr_path()` are the only supported way to map *arr
-  container paths to host-visible media paths.
-- Poster writes have one canonical fenced path through
+- **Gate then rank.** The pipeline first removes objectively invalid or junk
+  candidates against absolute thresholds, then ranks the survivors relative to
+  one another for that one title.
+- **Cheapest signal first.** Resolution and embedding-driven gates run before
+  the far more expensive OCR and detail-feature stages.
+- **Enqueue versus inline.** GPU-bound, filesystem-mutating, or long-running
+  work is queued; fast reads, listing, configuration changes, and pure
+  rescoring stay inline.
+- **Runner containment.** Pipeline inference never runs on the API or worker
+  event loop — it is fenced into its own process group by
+  `marquee/core/jobs/internal_runner.py`, which may only write inside its
+  attempt workspace.
+- **Centralised path translation.** `settings.translate_radarr_path()` and
+  `settings.translate_sonarr_path()` are the only supported way to map \*arr
+  container paths onto host-visible media paths.
+- **One canonical write path.** Poster writes go through
   `marquee/core/jobs/handlers_poster_mutations.py`, including backup,
   validation, publication, projection updates, and audit history.
 
 ## Configuration Families
 
-- `Settings` in `marquee/config.py` controls application runtime, auth,
-  database URLs, media paths, clients, rate limits, backup behavior, and
-  letterbox settings. Representative knobs include `DB_URL`,
-  `JOB_EMBEDDED_WORKERS`, `RADARR_PATH_PREFIX`, `RADARR_MEDIA_PATH`,
-  `RATE_PIPELINE_RUN_SECONDS`, `LETTERBOX_ENABLED`, and `MOVIE_POSTER_FORMAT`.
-- `PipelineSettings` in `marquee/core/pipeline_config.py` controls pipeline
-  models and thresholds. Representative knobs include `SCORER=auto`,
-  `HEAD_AUTO_RETRAIN=false`, `OCR_MAX_RESIDUAL_BOXES=0`,
-  `PIPELINE_BATCH_MAX_MOVIES=500`, `TMDB_POSTER_SIZE=w500`,
-  `K_NEIGHBORS=10`, and `HDR_OVERLAY_DOVI_REQUIRE_FALLBACK=true`.
-- `SubtitleSettings` in `marquee/core/subtitles/config.py` controls subtitle
-  concurrency, safety policy, and Subgen integration. Representative knobs
-  include `SUBTITLE_HARDLINK_POLICY=block`, `SUBTITLE_BACKUP_MODE=none`,
-  `SUBTITLE_PREFERRED_LANGUAGES=["en"]`, and `SUBGEN_URL`.
+- `Settings` (`marquee/config.py`) — application runtime, auth, database URL,
+  media paths, clients, rate limits, backups, and job platform behaviour.
+  Representative knobs: `DB_URL`, `API_KEY`, `JOB_EMBEDDED_WORKERS`,
+  `RADARR_PATH_PREFIX`, `RADARR_MEDIA_PATH`, `RATE_PIPELINE_RUN_SECONDS`,
+  `MOVIE_POSTER_FORMAT`.
+- `PipelineSettings` (`marquee/core/pipeline_config.py`) — pipeline models and
+  thresholds. Representative knobs: `SCORER=auto`, `OCR_MAX_RESIDUAL_BOXES=0`,
+  `PIPELINE_BATCH_MAX_MOVIES=500`, `TMDB_POSTER_SIZE=w500`, `K_NEIGHBORS=10`,
+  `GATE_MIN_WIDTH=500`.
 
 ## Implemented Versus Deferred
 
 Implemented today:
 
-- Movie sync, browse APIs, poster deployment and restore history
-- Movie poster pipeline runs, review queue, feedback capture, and taste tools
-- HDR overlay APIs and frontend page
-- Letterbox detect/apply/remove/reencode APIs and frontend page
-- Subtitle inventory, policy, mutation, generation, and jobs UI
-- Durable background jobs, recurring schedules, system metrics, backups
+- Movie, series, and season poster runs, single and batched, with live progress
+  and cooperative cancellation
+- Review queue, deployment with backup, restore, and immutable feedback capture
+- Taste profile building, the taste map, and bounded residual ranking over the
+  weighted baseline
+- Library sync from Radarr and Sonarr, the durable job platform, recurring
+  schedules, backups, and system metrics
 
-Deferred or intentionally incomplete:
+Deferred or intentionally off:
 
-- TV versions of the poster pipeline, letterbox workflow, and the rest of the
-  movie-centric features
-- Additional poster sources beyond TMDB in the active pipeline
-- Dedicated subtitle batch route family described in older design notes
-- Some planned ranking and UX experiments preserved under `design/plans/`
+- Cold-start onboarding ("Rank Test") is built but gated off
+  (`ONBOARDING_ENABLED=false`) until a seed bundle ships
+- Poster sources beyond TMDB
+- A VLM or judge stage in the pipeline
 
 ## Development Setup
 
-Backend:
+See the project `README.md` for the full bare-metal setup. In short:
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install -e ".[dev]"
-pip install -e ".[all]"   # when OCR / ML extras are needed
-uvicorn marquee.main:app --reload
+pip install -e ".[dev,cpu]"      # or [dev,nvidia] / [dev,intel]
+pip install -e ".[ml,viz]"       # OCR gate + model export + taste map
+python -m marquee.db_migration
+uvicorn marquee.main:app --reload --port 3165
 pytest
-ruff check marquee tests
+ruff check marquee tests scripts
 ```
-
-Frontend:
 
 ```bash
 cd frontend
@@ -163,6 +146,5 @@ npm install
 npm run dev
 ```
 
-For containerized development, use `docker/docker-compose.yml` and the desired
-hardware profile. See the project root `README.md` for a concise getting-started
-version of these commands.
+For containerised development, use `docker/docker-compose.yml` with the
+matching hardware profile.

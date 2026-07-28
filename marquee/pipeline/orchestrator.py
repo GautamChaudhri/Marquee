@@ -81,7 +81,9 @@ def _movie_of(subject: PosterSubjectInput) -> Movie:
     return Movie(id=subject.movie_id, title=subject.title, tmdb_id=subject.tmdb_id)
 
 
-def _fixture_fetch(out_dir: Path) -> tuple[
+def _fixture_fetch(
+    out_dir: Path,
+) -> tuple[
     dict[str, PosterCandidate],
     dict[str, CandidateScore],
     dict[str, tuple[int, int]],
@@ -161,9 +163,7 @@ async def run_poster_pipeline(
                 "TMDB_READ_ACCESS_TOKEN is not configured; the poster pipeline "
                 "cannot fetch candidates"
             )
-        async with TMDBClient(
-            read_access_token=settings.TMDB_READ_ACCESS_TOKEN
-        ) as tmdb:
+        async with TMDBClient(read_access_token=settings.TMDB_READ_ACCESS_TOKEN) as tmdb:
             fetch = await fetch_and_download(
                 tmdb=tmdb,
                 movie=movie,

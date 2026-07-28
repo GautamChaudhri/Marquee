@@ -71,9 +71,7 @@ async def execution_file_signature(
     )
 
 
-def _optional_signature(
-    boundary: FilesystemBoundary, path: ClassifiedPath
-) -> FileSignature | None:
+def _optional_signature(boundary: FilesystemBoundary, path: ClassifiedPath) -> FileSignature | None:
     try:
         return file_signature(boundary, path)
     except FilesystemBoundaryError:

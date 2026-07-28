@@ -22,14 +22,12 @@
 	const COLORS: Record<string, string> = {
 		poster_pipeline: 'var(--gold)',
 		poster_pipeline_batch: 'var(--gold-deep)',
-		subtitle_generate: 'var(--good)',
-		subtitle_scan: 'var(--good)',
-		subtitle_remove: '#3fa9f5',
-		audio_remove: '#0ea5a4',
-		track_remove: '#1d9bf0',
-		letterbox_reencode: '#f97316',
-		letterbox_apply: '#fb923c',
-		letterbox_remove: '#fdba74',
+		poster_pipeline_tv_batch: 'var(--gold-deep)',
+		poster_deploy: 'var(--good)',
+		poster_restore: 'var(--info)',
+		taste_rebuild: 'var(--gpu)',
+		taste_map: 'var(--accent)',
+		library_sync: 'var(--info)',
 		backup_create: '#9a6b3c'
 	};
 

@@ -56,34 +56,20 @@ ARTIFACT_POLICIES: dict[str, ArtifactPolicy] = {
     "taste_profile": ArtifactPolicy(
         ".npz", frozenset({"application/octet-stream"}), 256 * 1024 * 1024
     ),
-    "taste_map": ArtifactPolicy(
-        ".npz", frozenset({"application/octet-stream"}), 256 * 1024 * 1024
-    ),
+    "taste_map": ArtifactPolicy(".npz", frozenset({"application/octet-stream"}), 256 * 1024 * 1024),
     "ranking_residual": ArtifactPolicy(
         ".npz", frozenset({"application/octet-stream"}), 16 * 1024 * 1024
     ),
     "command_report": ArtifactPolicy(".json", frozenset({"application/json"}), 1024 * 1024),
-    "validation_report": ArtifactPolicy(
-        ".json", frozenset({"application/json"}), 1024 * 1024
-    ),
-    "backup_manifest": ArtifactPolicy(
-        ".json", frozenset({"application/json"}), 1024 * 1024
-    ),
-    "diagnostic_text": ArtifactPolicy(
-        ".txt", frozenset({"text/plain"}), 1024 * 1024
-    ),
-    "evidence_image": ArtifactPolicy(
-        ".jpg", frozenset({"image/jpeg"}), 10 * 1024 * 1024
-    ),
+    "validation_report": ArtifactPolicy(".json", frozenset({"application/json"}), 1024 * 1024),
+    "backup_manifest": ArtifactPolicy(".json", frozenset({"application/json"}), 1024 * 1024),
+    "diagnostic_text": ArtifactPolicy(".txt", frozenset({"text/plain"}), 1024 * 1024),
+    "evidence_image": ArtifactPolicy(".jpg", frozenset({"image/jpeg"}), 10 * 1024 * 1024),
     "preview_image": ArtifactPolicy(
         ".webp", frozenset({"image/webp"}), 8 * 1024 * 1024, max_active_per_job=1
     ),
-    "taste_exemplar": ArtifactPolicy(
-        ".jpg", frozenset({"image/jpeg"}), 25 * 1024 * 1024
-    ),
-    "evidence_frame": ArtifactPolicy(
-        ".png", frozenset({"image/png"}), 10 * 1024 * 1024
-    ),
+    "taste_exemplar": ArtifactPolicy(".jpg", frozenset({"image/jpeg"}), 25 * 1024 * 1024),
+    "evidence_frame": ArtifactPolicy(".png", frozenset({"image/png"}), 10 * 1024 * 1024),
     "media_candidate": ArtifactPolicy(
         ".mkv", frozenset({"video/x-matroska"}), 8 * 1024 * 1024 * 1024 * 1024
     ),
@@ -199,7 +185,7 @@ def artifact_boundary(data_dir: str | Path) -> FilesystemBoundary:
 
 def ensure_artifact_root(data_dir: str | Path) -> None:
     boundary = artifact_boundary(data_dir)
-    directory = boundary.from_key("data", "jmc3/evidence/artifacts")
+    directory = boundary.from_key("data", "jobs/evidence/artifacts")
     boundary.create_directory(directory, parents=True)
     probe, fd = boundary.temporary_file(directory, prefix=".readiness-")
     try:
@@ -277,11 +263,13 @@ async def register_physical_artifact(
 
     async def reserve(database_session: AsyncSession) -> int:
         attempt = await database_session.scalar(
-            select(JobAttempt).where(
+            select(JobAttempt)
+            .where(
                 JobAttempt.id == attempt_id,
                 JobAttempt.job_id == job_id,
                 JobAttempt.fence_token == fence_token,
-            ).with_for_update()
+            )
+            .with_for_update()
         )
         job = await database_session.scalar(select(Job).where(Job.id == job_id).with_for_update())
         if (
@@ -307,7 +295,7 @@ async def register_physical_artifact(
             kind=kind,
             name=name,
             status="pending",
-            storage_key=f"jmc3/evidence/artifacts/{job_id}/pending{policy.extension}",
+            storage_key=f"jobs/evidence/artifacts/{job_id}/pending{policy.extension}",
             content_type=content_type,
             artifact_metadata=safe_metadata,
             retention_class=retention_class,
@@ -315,7 +303,7 @@ async def register_physical_artifact(
         database_session.add(row)
         await database_session.flush((row,))
         row.storage_key = (
-            f"jmc3/evidence/artifacts/{job_id}/{row.id}/artifact-{row.id}{policy.extension}"
+            f"jobs/evidence/artifacts/{job_id}/{row.id}/artifact-{row.id}{policy.extension}"
         )
         return row.id
 
@@ -386,7 +374,7 @@ async def register_physical_artifact(
     else:
         artifact_id = await reserve(session)
 
-    directory = boundary.from_key("data", f"jmc3/evidence/artifacts/{job_id}/{artifact_id}")
+    directory = boundary.from_key("data", f"jobs/evidence/artifacts/{job_id}/{artifact_id}")
     staged: ClassifiedPath | None = None
     try:
         directory = await asyncio.to_thread(boundary.create_directory, directory, parents=True)
@@ -415,7 +403,7 @@ async def register_physical_artifact(
             os.close(write_fd)
         destination = boundary.from_key(
             "data",
-            f"jmc3/evidence/artifacts/{job_id}/{artifact_id}/artifact-{artifact_id}{policy.extension}",
+            f"jobs/evidence/artifacts/{job_id}/{artifact_id}/artifact-{artifact_id}{policy.extension}",
         )
         await asyncio.to_thread(boundary.atomic_replace, staged, destination)
         checksum = digest.hexdigest()
@@ -756,9 +744,7 @@ def _sanitize(value: Any, redactor: CentralRedactor, *, depth: int) -> Any:
 def _retention_delta(retention_class: str) -> timedelta | None:
     if retention_class == "pinned":
         return None
-    return timedelta(
-        days={"ephemeral": 7, "standard": 30, "extended": 365}[retention_class]
-    )
+    return timedelta(days={"ephemeral": 7, "standard": 30, "extended": 365}[retention_class])
 
 
 def physical_artifact_file(row: JobArtifact, *, data_dir: str | Path | None = None):
@@ -817,9 +803,7 @@ async def expire_artifacts(*, data_dir: str | Path, limit: int = 50) -> dict[str
         try:
             if key is not None:
                 classified = boundary.from_key("data", key)
-                removed = await asyncio.to_thread(
-                    boundary.delete_file, classified, missing_ok=True
-                )
+                removed = await asyncio.to_thread(boundary.delete_file, classified, missing_ok=True)
                 disposition = "deleted" if removed else "missing"
                 try:
                     fd = await asyncio.to_thread(boundary.open_read, classified)
@@ -916,9 +900,7 @@ async def expire_logs(*, data_dir: str | Path, limit: int = 50) -> dict[str, int
     for log_id, key in claimed:
         try:
             classified = boundary.from_key("data", key)
-            removed = await asyncio.to_thread(
-                boundary.delete_file, classified, missing_ok=True
-            )
+            removed = await asyncio.to_thread(boundary.delete_file, classified, missing_ok=True)
             disposition = "deleted" if removed else "missing"
             try:
                 fd = await asyncio.to_thread(boundary.open_read, classified)
@@ -936,9 +918,7 @@ async def expire_logs(*, data_dir: str | Path, limit: int = 50) -> dict[str, int
                 if row is None:
                     raise ArtifactError("log expiration claim was lost")
                 row.seal_status = "expired"
-                row.failure_code = (
-                    "retention_source_missing" if disposition == "missing" else None
-                )
+                row.failure_code = "retention_source_missing" if disposition == "missing" else None
             deleted += disposition == "deleted"
             missing += disposition == "missing"
         except Exception as exc:
@@ -974,7 +954,7 @@ async def reconcile_artifacts(*, data_dir: str | Path, limit: int = 100) -> dict
                 )
             )
         )
-    root = Path(data_dir) / "jmc3" / "evidence" / "artifacts"
+    root = Path(data_dir) / "jobs" / "evidence" / "artifacts"
     missing = sum(1 for key in list(tracked)[:limit] if not (Path(data_dir) / key).is_file())
     untracked = 0
     if root.exists():

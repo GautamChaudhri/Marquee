@@ -205,9 +205,7 @@ class ExecutionIO:
             await asyncio.to_thread(boundary.delete_file, destination, missing_ok=True)
             raise
 
-    async def read(
-        self, source: Path, *, maximum_bytes: int
-    ) -> ExecutionIOReadResult:
+    async def read(self, source: Path, *, maximum_bytes: int) -> ExecutionIOReadResult:
         before = await asyncio.to_thread(self._regular_file, source)
         if before.st_size > maximum_bytes:
             raise ExecutionIOError("execution I/O source exceeds its read bound")

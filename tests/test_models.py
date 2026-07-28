@@ -283,5 +283,3 @@ async def test_partial_indexes_exist():
 
         movie_indexes = await conn.run_sync(_sync)
     assert "ix_movies_missing_poster" in movie_indexes
-
-

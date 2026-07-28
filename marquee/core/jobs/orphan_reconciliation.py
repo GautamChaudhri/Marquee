@@ -257,10 +257,7 @@ async def assess_candidate(
             "prior mutation process/publication state is not replay-safe",
             proven_dead=proven_dead,
         )
-    if (
-        definition.effect_safety == EffectSafety.STAGED_IDEMPOTENT
-        and candidate.publication_started
-    ):
+    if definition.effect_safety == EffectSafety.STAGED_IDEMPOTENT and candidate.publication_started:
         return OrphanAssessment(
             "unsafe",
             "prior staged publication state is not replay-safe",
@@ -309,8 +306,10 @@ async def terminate_verified_orphan(
             return IdentityStatus.MISMATCH
 
     def tree_exists() -> bool:
-        return cgroup.populated() if cgroup is not None else process_group_exists(
-            identity.process_group_id
+        return (
+            cgroup.populated()
+            if cgroup is not None
+            else process_group_exists(identity.process_group_id)
         )
 
     for sig, timeout in (

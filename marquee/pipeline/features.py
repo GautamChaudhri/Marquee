@@ -119,7 +119,9 @@ class FeatureExtractor:
         self.taste_store = (
             taste_store
             if taste_store is not None
-            else None if personalization_mode == "collecting" else NumpyTasteStore()
+            else None
+            if personalization_mode == "collecting"
+            else NumpyTasteStore()
         )
         self.dino_encoder = dino_encoder or DinoImageEncoder()
         self.person_detector = person_detector or PersonDetector()
@@ -135,7 +137,9 @@ class FeatureExtractor:
         """Swap the taste store and calibration arrays without reloading ONNX sessions."""
         if self.personalization_mode == "collecting":
             raise RuntimeError("Collecting mode cannot load a taste namespace")
-        self.taste_store = NumpyTasteStore(ns.profile_path, expected_model_name=self.config.AI_MODEL)
+        self.taste_store = NumpyTasteStore(
+            ns.profile_path, expected_model_name=self.config.AI_MODEL
+        )
 
         calibration = getattr(self.taste_store, "calibration", None)
         if calibration is not None:
@@ -143,7 +147,11 @@ class FeatureExtractor:
         else:
             self._calibration = None
 
-        if getattr(self.taste_store, "has_dino", False) and self.dino_encoder.available and self.taste_store.dino_model_name == self.dino_encoder.model_name:
+        if (
+            getattr(self.taste_store, "has_dino", False)
+            and self.dino_encoder.available
+            and self.taste_store.dino_model_name == self.dino_encoder.model_name
+        ):
             self._dino_knn_range = self.taste_store.dino_knn_norm_range()
         else:
             self._dino_knn_range = None

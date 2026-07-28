@@ -1,10 +1,9 @@
-"""Streaming request-body limit enforcement at the ASGI ingress (JMC3C C3).
+"""Streaming request-body limit enforcement at the ASGI ingress.
 
-Unit cases drive the pure-ASGI middleware with scripted receive/send messages;
-integration cases mount a real FastAPI app through ``httpx`` ASGITransport to
-prove that rejection invokes no handler, that actual bytes (not Content-Length)
-are authoritative, and that response streaming is untouched.
-"""
+Unit cases drive the pure-ASGI middleware with scripted receive/send messages; integration
+cases mount a real FastAPI app through httpx ASGITransport to prove that rejection invokes
+no handler, that actual bytes rather than Content-Length are authoritative, and that
+response streaming is untouched."""
 
 from __future__ import annotations
 
@@ -54,9 +53,7 @@ def _record_app(record: dict[str, int]):
     return app
 
 
-async def _drive(
-    scope: Message, incoming: list[Message]
-) -> tuple[list[Message], dict[str, int]]:
+async def _drive(scope: Message, incoming: list[Message]) -> tuple[list[Message], dict[str, int]]:
     record = {"invoked": 0, "committed": 0}
     middleware = RequestBodyLimitMiddleware(_record_app(record))
     queue = list(incoming)
@@ -193,9 +190,7 @@ async def test_chunked_omitted_length_enforced_by_actual_bytes(
 ) -> None:
     monkeypatch.setattr(settings, "MAX_REQUEST_BODY_BYTES", 3)
     # No Content-Length header at all; over-limit only detectable by counting.
-    sent, record = await _drive(
-        _http_scope(), [_body(b"ab", more=True), _body(b"cd", more=False)]
-    )
+    sent, record = await _drive(_http_scope(), [_body(b"ab", more=True), _body(b"cd", more=False)])
     assert _status_of(sent) == 413
     assert record["invoked"] == 1  # entered, but never committed
     assert record["committed"] == 0
@@ -207,9 +202,7 @@ async def test_lying_small_content_length_is_not_trusted(
 ) -> None:
     monkeypatch.setattr(settings, "MAX_REQUEST_BODY_BYTES", 3)
     # Declared length passes the early hint but the real body is over-limit.
-    sent, record = await _drive(
-        _http_scope(**{"content-length": "2"}), [_body(b"abcdef")]
-    )
+    sent, record = await _drive(_http_scope(**{"content-length": "2"}), [_body(b"abcdef")])
     assert _status_of(sent) == 413
     assert record["committed"] == 0
 
@@ -217,9 +210,7 @@ async def test_lying_small_content_length_is_not_trusted(
 @pytest.mark.asyncio
 async def test_within_limit_streams_to_handler(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "MAX_REQUEST_BODY_BYTES", 10)
-    sent, record = await _drive(
-        _http_scope(), [_body(b"ab", more=True), _body(b"cd", more=False)]
-    )
+    sent, record = await _drive(_http_scope(), [_body(b"ab", more=True), _body(b"cd", more=False)])
     assert _status_of(sent) == 200
     assert record["committed"] == 1
 
@@ -338,8 +329,6 @@ async def test_integration_concurrent_uploads_stay_bounded(
     monkeypatch.setattr(settings, "MAX_REQUEST_BODY_BYTES", 8)
     app, calls = _build_app()
     async with _client(app) as ac:
-        results = await asyncio.gather(
-            *(ac.post("/echo", content=b"x" * 32) for _ in range(6))
-        )
+        results = await asyncio.gather(*(ac.post("/echo", content=b"x" * 32) for _ in range(6)))
     assert all(r.status_code == 413 for r in results)
     assert calls["count"] == 0

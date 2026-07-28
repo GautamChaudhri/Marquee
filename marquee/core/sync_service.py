@@ -250,7 +250,6 @@ class SyncService:
                 if container:
                     movie.container = container
 
-
                 # ── Quality ───────────────────────────────────────────
 
                 # ── Poster existence ──────────────────────────────────
@@ -367,17 +366,23 @@ class SyncService:
                     try:
                         resolved_tmdb_id = None
                         if series.tvdb_id:
-                            find_res = await self.tmdb.find_by_external_id(str(series.tvdb_id), "tvdb_id")
+                            find_res = await self.tmdb.find_by_external_id(
+                                str(series.tvdb_id), "tvdb_id"
+                            )
                             if find_res and find_res.get("tv_results"):
                                 resolved_tmdb_id = find_res["tv_results"][0]["id"]
                         elif series.imdb_id:
-                            find_res = await self.tmdb.find_by_external_id(str(series.imdb_id), "imdb_id")
+                            find_res = await self.tmdb.find_by_external_id(
+                                str(series.imdb_id), "imdb_id"
+                            )
                             if find_res and find_res.get("tv_results"):
                                 resolved_tmdb_id = find_res["tv_results"][0]["id"]
                         if resolved_tmdb_id:
                             series.tmdb_id = resolved_tmdb_id
                     except Exception as e:
-                        logger.warning("Failed to resolve TMDB ID for series sonarr_id=%s: %s", sonarr_id, e)
+                        logger.warning(
+                            "Failed to resolve TMDB ID for series sonarr_id=%s: %s", sonarr_id, e
+                        )
 
                 if previous_tmdb_id != series.tmdb_id:
                     series.director = None
@@ -408,9 +413,21 @@ class SyncService:
                 result.episodes.errors += er.errors
 
                 # Fallback: recompute counts from Episode rows if statistics is missing/zero-file-count
-                seasons = (await self.db.execute(select(Season).where(Season.series_id == series.id))).scalars().all()
+                seasons = (
+                    (await self.db.execute(select(Season).where(Season.series_id == series.id)))
+                    .scalars()
+                    .all()
+                )
                 if any(s.episode_file_count == 0 for s in seasons):
-                    episodes = (await self.db.execute(select(Episode).where(Episode.series_id == series.id))).scalars().all()
+                    episodes = (
+                        (
+                            await self.db.execute(
+                                select(Episode).where(Episode.series_id == series.id)
+                            )
+                        )
+                        .scalars()
+                        .all()
+                    )
                     episodes_by_season = {}
                     for ep in episodes:
                         episodes_by_season.setdefault(ep.season_number, []).append(ep)
@@ -839,13 +856,17 @@ async def _upsert_episode_media_files(
 
         for ep in episodes:
             stale_links = (
-                await db.execute(
-                    select(EpisodeMediaFile).where(
-                        EpisodeMediaFile.episode_id == ep.id,
-                        EpisodeMediaFile.media_file_id != media_file.id,
+                (
+                    await db.execute(
+                        select(EpisodeMediaFile).where(
+                            EpisodeMediaFile.episode_id == ep.id,
+                            EpisodeMediaFile.media_file_id != media_file.id,
+                        )
                     )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
             for stale_link in stale_links:
                 displaced_media_file_ids.add(stale_link.media_file_id)
                 await db.delete(stale_link)
@@ -861,7 +882,6 @@ async def _upsert_episode_media_files(
             ).scalar_one_or_none()
             if link is None:
                 db.add(EpisodeMediaFile(episode_id=ep.id, media_file_id=media_file.id))
-
 
     if displaced_media_file_ids:
         await db.flush()
@@ -930,8 +950,6 @@ def _extract_media_info(movie_file: dict) -> tuple[int | None, int | None, str |
         container = suffix or None
 
     return width, height, container
-
-
 
 
 @lru_cache(maxsize=1000)

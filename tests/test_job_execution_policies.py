@@ -85,7 +85,13 @@ def test_parent_aggregation_requires_sealing_and_preserves_outcome_meaning() -> 
     unsealed = aggregate_parent(("succeeded", "no_change"), sealed=False, policy=policy)
     assert not unsealed.terminal
     assert unsealed.outcome is None
-    assert aggregate_parent(("no_change", "no_change"), sealed=True, policy=policy).outcome == "no_change"
-    assert aggregate_parent(("succeeded", "failed"), sealed=True, policy=policy).outcome == "partially_succeeded"
+    assert (
+        aggregate_parent(("no_change", "no_change"), sealed=True, policy=policy).outcome
+        == "no_change"
+    )
+    assert (
+        aggregate_parent(("succeeded", "failed"), sealed=True, policy=policy).outcome
+        == "partially_succeeded"
+    )
     assert aggregate_parent(("failed", "failed"), sealed=True, policy=policy).outcome == "failed"
     assert aggregate_parent(("cancelled",), sealed=True, policy=policy).outcome == "cancelled"

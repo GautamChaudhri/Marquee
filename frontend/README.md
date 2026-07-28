@@ -1,42 +1,47 @@
-# sv
+# Marquee web UI
 
-Everything you need to build a Svelte project, powered by [`sv`](https://github.com/sveltejs/cli).
+The frontend is a Svelte 5, SvelteKit 2, and TypeScript application for library browsing, poster-pipeline
+review, taste tooling, configuration, and durable job activity. The root
+[`README.md`](../README.md) covers the complete application and local backend setup.
 
-## Creating a project
+## Development
 
-If you're seeing this, you've probably already done this step. Congrats!
+Use Node.js 22 or newer:
 
-```sh
-# create a new project
-npx sv create my-app
-```
-
-To recreate this project with the same configuration:
-
-```sh
-# recreate this project
-npx sv@0.16.1 create --template minimal --types ts --add prettier eslint --no-download-check --install npm frontend
-```
-
-## Developing
-
-Once you've created a project and installed dependencies with `npm install` (or `pnpm install` or `yarn`), start a development server:
-
-```sh
+```bash
+npm ci
 npm run dev
-
-# or start the server and open the app in a new browser tab
-npm run dev -- --open
 ```
 
-## Building
+Browser requests go through the same-origin `/api/*` SvelteKit route. That proxy talks to the
+FastAPI service and injects the server-side API key, so credentials never need to enter browser
+state. Configure the proxy with `MARQUEE_API_URL` and `MARQUEE_API_KEY`; see
+[`frontend/.env.example`](.env.example).
 
-To create a production version of your app:
+## API contract
 
-```sh
-npm run build
+`src/lib/api/generated/openapi.ts` is generated from the committed
+[`design/api-schema.json`](../design/api-schema.json). After a backend route or schema change, run:
+
+```bash
+cd ..
+python scripts/export_openapi.py
+cd frontend
+npm run api:generate
 ```
 
-You can preview the production build with `npm run preview`.
+Both artifacts are checked for drift in CI.
 
-> To deploy your app, you may need to install an [adapter](https://svelte.dev/docs/kit/adapters) for your target environment.
+## Quality gates
+
+```bash
+npm run check      # svelte-check
+npm run lint       # Prettier + ESLint
+npm run test:unit  # Vitest
+npm run build      # production adapter-node build
+npm run bundle:check # production chunk budget
+npm run test:e2e   # Playwright + axe against the synthetic backend
+```
+
+The end-to-end harness starts its own synthetic API and production build. It does not contact an
+operator database, media library, Radarr, Sonarr, or TMDB.

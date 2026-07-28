@@ -72,8 +72,7 @@ def resolve_presenter(definition: JobDefinition) -> JobPresenter:
     presenter = JOB_PRESENTER_REGISTRY.get(definition.presenter_key)
     if presenter is None:
         raise UnregisteredPresenterError(
-            f"definition {definition.job_type} has no presenter for key "
-            f"{definition.presenter_key}"
+            f"definition {definition.job_type} has no presenter for key {definition.presenter_key}"
         )
     return presenter
 

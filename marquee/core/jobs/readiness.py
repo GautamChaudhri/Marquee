@@ -91,23 +91,15 @@ def registry_compatible() -> bool:
     except (TypeError, ValueError, RuntimeError):
         return False
     registered_entrypoints = frozenset(entrypoint_concurrency_limits())
-    return (
-        JOB_DEFINITION_REGISTRY.enabled_types == ENABLED_JOB_TYPES
-        and all(
-            definition.entrypoint in registered_entrypoints
-            for definition in JOB_DEFINITION_REGISTRY
-        )
+    return JOB_DEFINITION_REGISTRY.enabled_types == ENABLED_JOB_TYPES and all(
+        definition.entrypoint in registered_entrypoints for definition in JOB_DEFINITION_REGISTRY
     )
 
 
 def worker_entrypoint_report() -> dict[str, Any]:
     limits = entrypoint_concurrency_limits()
     enabled = sorted(
-        {
-            definition.entrypoint
-            for definition in JOB_DEFINITION_REGISTRY
-            if definition.enabled
-        }
+        {definition.entrypoint for definition in JOB_DEFINITION_REGISTRY if definition.enabled}
     )
     return {
         "status": "ok" if registry_compatible() else "incompatible",
@@ -124,8 +116,7 @@ def schedule_catalog_report() -> dict[str, Any]:
     definitions = tuple(PRODUCTION_SCHEDULE_CATALOG)
     configuration = load_schedule_configuration()
     compatible = all(
-        (job_definition := JOB_DEFINITION_REGISTRY.find(definition.produced_job_type))
-        is not None
+        (job_definition := JOB_DEFINITION_REGISTRY.find(definition.produced_job_type)) is not None
         and definition.trigger in job_definition.trigger_kinds
         for definition in definitions
     )
@@ -216,22 +207,14 @@ async def check_readiness() -> dict[str, Any]:
     except (OSError, RuntimeError, ValueError):
         artifact_storage_status = "unavailable"
     components: dict[str, dict[str, Any]] = {
-        "configuration": {
-            "status": "ok" if configuration_compatible() else "incompatible"
-        },
-        "package": {
-            "status": "ok" if package_compatible() else "incompatible"
-        },
-        "definition_registry": {
-            "status": "ok" if registry_compatible() else "incompatible"
-        },
+        "configuration": {"status": "ok" if configuration_compatible() else "incompatible"},
+        "package": {"status": "ok" if package_compatible() else "incompatible"},
+        "definition_registry": {"status": "ok" if registry_compatible() else "incompatible"},
         "worker_entrypoints": worker_entrypoint_report(),
         "schedule_catalog": schedule_catalog_report(),
         "batch_projection": batch_projection_report(),
         "connection_budget": {
-            "status": "ok"
-            if connection_budget_report()["within_budget"]
-            else "incompatible",
+            "status": "ok" if connection_budget_report()["within_budget"] else "incompatible",
             **connection_budget_report(),
         },
         "database": {"status": "unavailable"},
@@ -290,9 +273,7 @@ async def check_readiness() -> dict[str, Any]:
                         "SELECT pg_advisory_unlock($1)",
                         MIGRATION_ADVISORY_LOCK_ID,
                     )
-            with contextlib.suppress(
-                OSError, asyncpg.PostgresError, RuntimeError, SQLAlchemyError
-            ):
+            with contextlib.suppress(OSError, asyncpg.PostgresError, RuntimeError, SQLAlchemyError):
                 await sqlalchemy_connection.close()
 
     ready = all(component["status"] == "ok" for component in components.values())

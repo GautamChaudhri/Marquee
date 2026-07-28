@@ -82,9 +82,7 @@ async def test_priority_is_optimistic_and_execution_class_scoped(db, client):
     assert stale.json()["detail"]["code"] == "stale_job_version"
     assert stale.json()["detail"]["current_version"] == 1
 
-    disallowed = await client.post(
-        f"/api/jobs/{job.id}/pause", json={"expected_fence_token": 1}
-    )
+    disallowed = await client.post(f"/api/jobs/{job.id}/pause", json={"expected_fence_token": 1})
     assert disallowed.status_code == 409
     assert disallowed.json()["detail"]["code"] == "action_not_allowed"
 
@@ -138,9 +136,7 @@ async def test_bulk_actions_deduplicate_and_report_partial_failure(db, client):
 
 @pytest.mark.asyncio
 async def test_cancel_returns_new_snapshot(db, client, monkeypatch):
-    job = make_job(
-        "cancel0000000000000000000000001", phase="queued", pgq_job_id=401
-    )
+    job = make_job("cancel0000000000000000000000001", phase="queued", pgq_job_id=401)
     db.add(job)
     await db.commit()
 
@@ -152,9 +148,7 @@ async def test_cancel_returns_new_snapshot(db, client, monkeypatch):
         stored.terminal_at = NOW
 
     monkeypatch.setattr(pgqueuer_gateway, "cancel_known_ticket", fake_cancel)
-    response = await client.post(
-        f"/api/jobs/{job.id}/cancel", json={"expected_fence_token": 0}
-    )
+    response = await client.post(f"/api/jobs/{job.id}/cancel", json={"expected_fence_token": 0})
     assert response.status_code == 200
     assert response.json()["snapshot"]["outcome"] == "cancelled"
     assert response.json()["snapshot"]["fence_token"] == 1
@@ -188,9 +182,7 @@ async def test_terminal_cancel_is_idempotent_without_reopening_work(db, client):
 
 @pytest.mark.asyncio
 async def test_retry_creates_successor_with_lineage(db, client, monkeypatch):
-    original = make_job(
-        "retry00000000000000000000000001", phase="terminal", outcome="failed"
-    )
+    original = make_job("retry00000000000000000000000001", phase="terminal", outcome="failed")
     original.correlation_id = "retry-correlation"
     db.add(original)
     await db.commit()
@@ -204,9 +196,7 @@ async def test_retry_creates_successor_with_lineage(db, client, monkeypatch):
         return 501
 
     monkeypatch.setattr(pgqueuer_gateway, "enqueue", fake_enqueue)
-    response = await client.post(
-        f"/api/jobs/{original.id}/retry", json={"expected_fence_token": 0}
-    )
+    response = await client.post(f"/api/jobs/{original.id}/retry", json={"expected_fence_token": 0})
     assert response.status_code == 200
     body = response.json()
     replacement_id = body["replacement_job_id"]

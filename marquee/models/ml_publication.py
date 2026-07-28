@@ -24,9 +24,7 @@ class MlActivePublication(Base):
     )
     version: Mapped[str] = mapped_column(String(96), nullable=False)
     checksum: Mapped[str] = mapped_column(String(64), nullable=False)
-    job_id: Mapped[str] = mapped_column(
-        ForeignKey("jobs.id", ondelete="RESTRICT"), nullable=False
-    )
+    job_id: Mapped[str] = mapped_column(ForeignKey("jobs.id", ondelete="RESTRICT"), nullable=False)
     attempt_id: Mapped[int] = mapped_column(
         ForeignKey("job_attempts.id", ondelete="RESTRICT"), nullable=False
     )

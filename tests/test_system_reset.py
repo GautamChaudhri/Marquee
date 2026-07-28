@@ -10,6 +10,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import func, select, text
 
 from marquee.database import _get_session_factory
+from marquee.db_migration import ALEMBIC_HEAD
 from marquee.main import app
 from marquee.models import Job, Movie, RuntimeInstance, SchemaContract, WorkerNode
 
@@ -88,7 +89,7 @@ async def test_reset_db_preserves_runtime_registration(db, client: AsyncClient):
             WorkerNode(id="test-node", capabilities={}, readiness="ready"),
             SchemaContract(
                 component="marquee",
-                expected_version="0016_poster_scope",
+                expected_version=ALEMBIC_HEAD,
                 catalog_fingerprint="f" * 64,
                 verified_at=now,
                 verifier_build="test",

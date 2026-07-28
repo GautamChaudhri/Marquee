@@ -1,4 +1,4 @@
-"""Integration coverage for JMC1's canonical transactional enqueue gateway."""
+"""Integration coverage for the canonical transactional enqueue gateway."""
 
 from __future__ import annotations
 
@@ -41,6 +41,8 @@ async def installed_pgqueuer(db) -> Queries:
         finally:
             await db.rollback()
             await queries.uninstall()
+
+
 async def _add_canonical_rows(
     session,
     *,
@@ -111,9 +113,7 @@ async def test_system_noop_commits_canonical_and_transport_rows_together(db) -> 
 
     assert job.pgq_job_id is not None
     dispatch = await db.scalar(select(JobDispatch).where(JobDispatch.job_id == job.id))
-    events = (
-        (await db.execute(select(JobEvent).where(JobEvent.job_id == job.id))).scalars().all()
-    )
+    events = (await db.execute(select(JobEvent).where(JobEvent.job_id == job.id))).scalars().all()
     row = await _transport_row(db, job.pgq_job_id)
 
     assert dispatch is not None and dispatch.pgq_job_id == job.pgq_job_id
@@ -158,16 +158,28 @@ async def test_gateway_leaves_commit_and_rollback_to_caller(db) -> None:
         )
         assert db.in_transaction()
         assert job.pgq_job_id == dispatch.pgq_job_id == ticket
-        assert await observer.scalar(text("SELECT count(*) FROM jobs WHERE id = :id"), {"id": job_id}) == 0
-        assert await observer.scalar(
-            text("SELECT count(*) FROM pgqueuer WHERE id = :id"), {"id": ticket}
-        ) == 0
+        assert (
+            await observer.scalar(text("SELECT count(*) FROM jobs WHERE id = :id"), {"id": job_id})
+            == 0
+        )
+        assert (
+            await observer.scalar(
+                text("SELECT count(*) FROM pgqueuer WHERE id = :id"), {"id": ticket}
+            )
+            == 0
+        )
 
         await transaction.commit()
-        assert await observer.scalar(text("SELECT count(*) FROM jobs WHERE id = :id"), {"id": job_id}) == 1
-        assert await observer.scalar(
-            text("SELECT count(*) FROM pgqueuer WHERE id = :id"), {"id": ticket}
-        ) == 1
+        assert (
+            await observer.scalar(text("SELECT count(*) FROM jobs WHERE id = :id"), {"id": job_id})
+            == 1
+        )
+        assert (
+            await observer.scalar(
+                text("SELECT count(*) FROM pgqueuer WHERE id = :id"), {"id": ticket}
+            )
+            == 1
+        )
         assert await db.scalar(text("SELECT 1")) == 1
     finally:
         await observer.close()
@@ -351,9 +363,7 @@ async def test_gateway_rejects_driver_mismatch_and_closed_connection(db) -> None
             return True
 
         async def connection(self):
-            return SimpleNamespace(
-                dialect=SimpleNamespace(name="sqlite", driver="aiosqlite")
-            )
+            return SimpleNamespace(dialect=SimpleNamespace(name="sqlite", driver="aiosqlite"))
 
     with pytest.raises(PgQueuerGatewayError, match="PostgreSQL with asyncpg"):
         async with pgqueuer_gateway._queries(WrongDriverSession()):
@@ -437,9 +447,7 @@ async def test_reprioritize_replaces_only_the_known_queued_ticket(
     replacement_ticket = job.pgq_job_id
     assert replacement_ticket is not None
     assert replacement_ticket != original_ticket
-    assert await installed_pgqueuer.job_status([original_ticket]) == [
-        (original_ticket, "canceled")
-    ]
+    assert await installed_pgqueuer.job_status([original_ticket]) == [(original_ticket, "canceled")]
     assert await installed_pgqueuer.job_status([replacement_ticket]) == [
         (replacement_ticket, "queued")
     ]

@@ -70,9 +70,7 @@ def test_percentages_are_server_owned_and_counts_are_validated() -> None:
             total=4,
             percent=25,
         )
-    value = ProgressMeasurement.determinate(
-        scope_id="batch", unit="items", completed=1, total=4
-    )
+    value = ProgressMeasurement.determinate(scope_id="batch", unit="items", completed=1, total=4)
     assert value.percent == 25
     with pytest.raises(ValidationError, match="server-computed"):
         ProgressMeasurement(
@@ -84,13 +82,9 @@ def test_percentages_are_server_owned_and_counts_are_validated() -> None:
             percent=80,
         )
     with pytest.raises(ProgressInvariantError):
-        ProgressMeasurement.determinate(
-            scope_id="batch", unit="items", completed=2, total=0
-        )
+        ProgressMeasurement.determinate(scope_id="batch", unit="items", completed=2, total=0)
     with pytest.raises(ProgressInvariantError):
-        ProgressMeasurement.determinate(
-            scope_id="batch", unit="items", completed=5, total=4
-        )
+        ProgressMeasurement.determinate(scope_id="batch", unit="items", completed=5, total=4)
 
 
 def test_overall_is_monotonic_and_current_reset_requires_new_scope() -> None:
@@ -123,9 +117,7 @@ def test_eta_requires_policy_denominator_and_credible_rate() -> None:
         validate_progress_transition(None, update, _policy(eta=False))
     with pytest.raises(ProgressInvariantError, match="ETA"):
         validate_progress_transition(None, update, _policy(eta=True))
-    credible = update.model_copy(
-        update={"metrics": ProgressMetrics(eta_seconds=30, speed=1.5)}
-    )
+    credible = update.model_copy(update={"metrics": ProgressMetrics(eta_seconds=30, speed=1.5)})
     assert validate_progress_transition(None, credible, _policy(eta=True)) == credible
 
 
@@ -144,9 +136,7 @@ def test_terminal_failure_retains_measurement_and_success_completes() -> None:
 def test_batch_created_can_advance_without_fake_current_percent() -> None:
     progress = _progress().model_copy(
         update={
-            "stage": ProgressStage(
-                key="batch_created", label_key="jobs.stage.batch_created"
-            ),
+            "stage": ProgressStage(key="batch_created", label_key="jobs.stage.batch_created"),
             "current": ProgressMeasurement.indeterminate(scope_id="probe:movie:1"),
         }
     )

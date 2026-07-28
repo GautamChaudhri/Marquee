@@ -110,7 +110,9 @@ async def run() -> None:
             term_seconds=settings.JOB_PROCESS_TERM_SECONDS,
         )
         if reconciliation["unsafe"]:
-            logger.error("startup orphan reconciliation quarantined %s attempts", reconciliation["unsafe"])
+            logger.error(
+                "startup orphan reconciliation quarantined %s attempts", reconciliation["unsafe"]
+            )
         workspaces = await reconcile_stale_workspaces(settings.DATA_DIR)
         if workspaces["quarantined"]:
             logger.error(
@@ -143,9 +145,7 @@ async def run() -> None:
             batch_size=settings.JOB_PGQUEUER_BATCH_SIZE,
             max_concurrent_tasks=settings.JOB_WORKER_CONCURRENCY,
             shutdown_on_listener_failure=True,
-            heartbeat_timeout=timedelta(
-                seconds=settings.JOB_PGQUEUER_HEARTBEAT_SECONDS
-            ),
+            heartbeat_timeout=timedelta(seconds=settings.JOB_PGQUEUER_HEARTBEAT_SECONDS),
         )
     finally:
         if runtime is not None:

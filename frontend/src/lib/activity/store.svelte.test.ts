@@ -250,14 +250,14 @@ describe('discovery and single stream', () => {
 	it('sends exact subject and job-type scope to server discovery', async () => {
 		h.store.acquireScope('movie:42', {
 			view: 'queue',
-			feature_area: 'ml_taste',
-			types: ['subtitle_scan', 'subtitle_remove'],
-			subject_kind: 'media_file',
+			feature_area: 'ai_posters',
+			types: ['poster_pipeline', 'poster_restore'],
+			subject_kind: 'movie',
 			subject_reference: ['42']
 		});
 		await flush();
-		expect(h.calls[0]?.url).toContain('types=subtitle_scan%2Csubtitle_remove');
-		expect(h.calls[0]?.url).toContain('subject_kind=media_file');
+		expect(h.calls[0]?.url).toContain('types=poster_pipeline%2Cposter_restore');
+		expect(h.calls[0]?.url).toContain('subject_kind=movie');
 		expect(h.calls[0]?.url).toContain('subject_reference=42');
 	});
 

@@ -119,11 +119,7 @@ class Initiator:
             if value is not None and (not value or len(value) > 200):
                 raise SubmissionValidationError("initiator identity is invalid")
         document = self.as_document()
-        if any(
-            part in key.lower()
-            for key in document
-            for part in _FORBIDDEN_INITIATOR_PARTS
-        ):
+        if any(part in key.lower() for key in document for part in _FORBIDDEN_INITIATOR_PARTS):
             raise SubmissionValidationError("initiator provenance is not safe")
 
     def as_document(self) -> dict[str, str]:
@@ -209,11 +205,7 @@ def _validate_idempotency_key(
     job_type: str, value: str, *, trigger: TriggerKind | None = None
 ) -> str:
     prefix = "schedule:" if trigger == TriggerKind.SCHEDULE else f"{job_type}:"
-    if (
-        not _IDEMPOTENCY.fullmatch(value)
-        or len(value) > 200
-        or not value.startswith(prefix)
-    ):
+    if not _IDEMPOTENCY.fullmatch(value) or len(value) > 200 or not value.startswith(prefix):
         raise SubmissionValidationError("idempotency key is invalid for this job type")
     return value
 
@@ -230,9 +222,7 @@ def _prepare(intent: SubmissionIntent, *, now: datetime) -> _PreparedSubmission:
         raise SubmissionValidationError("webhook submission is reserved")
     if intent.trigger not in definition.trigger_kinds:
         raise SubmissionValidationError("trigger is not enabled for this job type")
-    _validate_idempotency_key(
-        intent.job_type, intent.idempotency_key, trigger=intent.trigger
-    )
+    _validate_idempotency_key(intent.job_type, intent.idempotency_key, trigger=intent.trigger)
     try:
         normalized = definition.request.validate(
             intent.request, version=definition.request.current_version
@@ -268,6 +258,7 @@ async def _lock_idempotency(session: AsyncSession, key: str) -> None:
         {"key": key},
     )
 
+
 def _active_overlap_scope(
     prepared: _PreparedSubmission,
     *,
@@ -281,9 +272,7 @@ def _active_overlap_scope(
         "subject_reference": prepared.intent.subject.reference,
         "parent_id": parent_id if policy.include_parent_scope else None,
         "correlation_id": (
-            correlation_id
-            if policy.include_parent_scope and parent_id is not None
-            else None
+            correlation_id if policy.include_parent_scope and parent_id is not None else None
         ),
     }
 
@@ -338,17 +327,12 @@ async def _resolve_active_overlap(
     )
     if equivalent is not None:
         return equivalent
-    if (
-        active
-        and prepared.definition.overlap_policy.mode == ActiveOverlapMode.REJECT_CONFLICT
-    ):
+    if active and prepared.definition.overlap_policy.mode == ActiveOverlapMode.REJECT_CONFLICT:
         raise ActiveOverlapConflictError(active[0].id)
     return None
 
 
-async def _resolve_subject(
-    session: AsyncSession, locator: SubjectLocator
-) -> SubjectSnapshot:
+async def _resolve_subject(session: AsyncSession, locator: SubjectLocator) -> SubjectSnapshot:
     try:
         if locator.kind == "system_work":
             if locator.reference != "system_noop":
@@ -650,9 +634,7 @@ async def submit_job(
         )
         return _result(existing, "reused")
 
-    configuration = configuration_provider.snapshot_for(
-        prepared.definition.configuration_keys
-    )
+    configuration = configuration_provider.snapshot_for(prepared.definition.configuration_keys)
     active = await _resolve_active_overlap(
         session,
         prepared,
@@ -739,9 +721,7 @@ async def submit_jobs(
             jobs.append(existing)
             dispositions.append("reused")
             continue
-        configuration = configuration_provider.snapshot_for(
-            prepared.definition.configuration_keys
-        )
+        configuration = configuration_provider.snapshot_for(prepared.definition.configuration_keys)
         active = await _resolve_active_overlap(
             session,
             prepared,
@@ -766,9 +746,7 @@ async def submit_jobs(
         dispositions.append("created")
         enqueue_intents.append(enqueue_intent)
 
-    if len({job.root_id for job in jobs}) != 1 or len(
-        {job.correlation_id for job in jobs}
-    ) != 1:
+    if len({job.root_id for job in jobs}) != 1 or len({job.correlation_id for job in jobs}) != 1:
         raise SubmissionValidationError("bulk submission hierarchy is inconsistent")
     if len({job.configuration_version for job in jobs}) != 1:
         raise SubmissionValidationError("bulk submission configuration is inconsistent")
@@ -780,6 +758,5 @@ async def submit_jobs(
                 "canonical bulk transport dispatch could not be linked"
             ) from exc
     return tuple(
-        _result(job, disposition)
-        for job, disposition in zip(jobs, dispositions, strict=True)
+        _result(job, disposition) for job, disposition in zip(jobs, dispositions, strict=True)
     )

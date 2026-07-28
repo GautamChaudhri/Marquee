@@ -148,9 +148,7 @@ async def test_orphan_mismatch_never_signals(monkeypatch: pytest.MonkeyPatch) ->
         called = True
 
     monkeypatch.setattr(os, "killpg", signal_group)
-    status = await terminate_verified_orphan(
-        identity, cooperative_seconds=0.01, term_seconds=0.01
-    )
+    status = await terminate_verified_orphan(identity, cooperative_seconds=0.01, term_seconds=0.01)
     assert status == IdentityStatus.MISMATCH
     assert called is False
 

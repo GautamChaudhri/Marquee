@@ -34,9 +34,6 @@
 	const visible = (column: ActivityColumn) => columns.includes(column);
 	const FEATURE_LABELS: Record<string, string> = {
 		ai_posters: 'AI posters',
-		hdr: 'HDR / Dolby Vision',
-		audio_subtitles: 'Audio & subtitles',
-		letterbox: 'Letterbox',
 		library_integrations: 'Library',
 		ml_taste: 'Taste & ML',
 		maintenance: 'Maintenance',

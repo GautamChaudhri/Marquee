@@ -80,9 +80,7 @@ async def test_optimistic_update_appends_revision_and_noop_does_not_churn(db):
         ({"K_NEIGHBORS": 0}, "invalid pipeline"),
     ],
 )
-async def test_invalid_unknown_secret_and_restart_updates_create_no_revision(
-    db, updates, message
-):
+async def test_invalid_unknown_secret_and_restart_updates_create_no_revision(db, updates, message):
     with pytest.raises(ConfigurationError, match=message):
         await update_configuration(
             db,

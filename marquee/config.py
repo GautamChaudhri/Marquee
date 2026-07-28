@@ -124,7 +124,9 @@ class Settings(BaseSettings):
         "already serialize GPU/write work, so one is usually enough.",
     )
     JOB_WORKER_CONCURRENCY: int = Field(default=4, ge=1, le=32)
-    JOB_WORKER_NODE_ID: str = Field(default_factory=socket.gethostname, min_length=1, max_length=100)
+    JOB_WORKER_NODE_ID: str = Field(
+        default_factory=socket.gethostname, min_length=1, max_length=100
+    )
     JOB_CONTROL_CONCURRENCY: int = Field(default=4, ge=1, le=32)
     JOB_NETWORK_CONCURRENCY: int = Field(default=4, ge=1, le=32)
     JOB_CPU_CONCURRENCY: int = Field(default=2, ge=1, le=32)
@@ -178,9 +180,7 @@ class Settings(BaseSettings):
     JOB_LOG_METADATA_LINES: int = Field(default=256, ge=16, le=4096)
     JOB_LOG_STREAM_POLL_SECONDS: float = Field(default=0.25, ge=0.05, le=5.0)
     JOB_LOG_STREAM_QUEUE_SIZE: int = Field(default=64, ge=8, le=1024)
-    JOB_ARTIFACT_VIRTUAL_MAX_BYTES: int = Field(
-        default=1024 * 1024, ge=64 * 1024, le=1024 * 1024
-    )
+    JOB_ARTIFACT_VIRTUAL_MAX_BYTES: int = Field(default=1024 * 1024, ge=64 * 1024, le=1024 * 1024)
     JOB_ARTIFACT_STRING_CHARS: int = Field(default=16_384, ge=256, le=16_384)
     JOB_ARTIFACT_EVENT_LIMIT: int = Field(default=1000, ge=1, le=1000)
     JOB_HEARTBEAT_SECONDS: int = Field(default=10, ge=1, le=300)
@@ -264,11 +264,7 @@ class Settings(BaseSettings):
     @property
     def deployment_connection_budget(self) -> int:
         """Maximum connections for one API, configured workers, scheduler, and migration."""
-        api = (
-            self.DB_API_POOL_SIZE
-            + self.DB_API_MAX_OVERFLOW
-            + self.JOB_EVENT_LISTENER_CONNECTIONS
-        )
+        api = self.DB_API_POOL_SIZE + self.DB_API_MAX_OVERFLOW + self.JOB_EVENT_LISTENER_CONNECTIONS
         worker = (
             self.DB_WORKER_POOL_SIZE
             + self.DB_WORKER_MAX_OVERFLOW
@@ -294,9 +290,7 @@ class Settings(BaseSettings):
         if self.JOB_PGQUEUER_BATCH_SIZE > self.JOB_WORKER_CONCURRENCY:
             raise ValueError("JOB_PGQUEUER_BATCH_SIZE cannot exceed JOB_WORKER_CONCURRENCY")
         if self.JOB_SAFETY_GATE_CONNECTIONS < self.JOB_WORKER_CONCURRENCY:
-            raise ValueError(
-                "JOB_SAFETY_GATE_CONNECTIONS cannot be below JOB_WORKER_CONCURRENCY"
-            )
+            raise ValueError("JOB_SAFETY_GATE_CONNECTIONS cannot be below JOB_WORKER_CONCURRENCY")
         return self
 
     @property

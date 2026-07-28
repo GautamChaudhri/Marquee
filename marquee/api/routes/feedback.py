@@ -399,7 +399,9 @@ async def _load_feedback_run(
     subject = await _load_feedback_subject(db, run)
     candidates = diagnostic_candidates(archive)
     if not candidates:
-        raise HTTPException(status_code=409, detail="Run archive has no diagnostic candidate ledger")
+        raise HTTPException(
+            status_code=409, detail="Run archive has no diagnostic candidate ledger"
+        )
     review = archive.get("review")
     survivors = review.get("survivors") if isinstance(review, dict) else []
     artifact_by_reference = {
@@ -541,7 +543,12 @@ async def _append_canonical_feedback(
         if not isinstance(artifact_id, int):
             continue
         source = await db.get(JobArtifact, artifact_id)
-        if source is None or run.job_id is None or run.attempt_id is None or run.fence_token is None:
+        if (
+            source is None
+            or run.job_id is None
+            or run.attempt_id is None
+            or run.fence_token is None
+        ):
             continue
         hate_event = await append_preference_event(
             db,
@@ -578,7 +585,11 @@ async def _append_canonical_feedback(
             db,
             exemplar_id=negative.id,
             retained_artifact_id=pinned.id,
-            deployment_result={"outcome": "succeeded", "validated": True, "source": "explicit_hate"},
+            deployment_result={
+                "outcome": "succeeded",
+                "validated": True,
+                "source": "explicit_hate",
+            },
         )
         exemplar_ids.append(negative.id)
     if hated:
@@ -756,9 +767,7 @@ async def apply_feedback_request(
             c["orig_filename"] for c in hated_cands
         }
         ranked_filenames = {
-            c["orig_filename"]
-            for c in diagnostic_candidates(archive)
-            if c.get("rank") is not None
+            c["orig_filename"] for c in diagnostic_candidates(archive) if c.get("rank") is not None
         }
         missing = ranked_filenames - covered
         if missing:

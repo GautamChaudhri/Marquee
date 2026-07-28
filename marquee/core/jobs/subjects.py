@@ -259,8 +259,11 @@ def media_file_snapshot(
         size_bytes=media_file.size_bytes,
         container=media_file.container,
         artwork_key=(
-            f"movie:{movie.id}" if movie and movie.poster_path else
-            f"series:{series.id}" if series and series.poster_path else None
+            f"movie:{movie.id}"
+            if movie and movie.poster_path
+            else f"series:{series.id}"
+            if series and series.poster_path
+            else None
         ),
     )
 
@@ -299,9 +302,7 @@ async def build_episode_snapshot(session: AsyncSession, episode_id: int) -> Epis
     return episode_snapshot(episode, series)
 
 
-async def build_media_file_snapshot(
-    session: AsyncSession, media_file_id: int
-) -> MediaFileSnapshot:
+async def build_media_file_snapshot(session: AsyncSession, media_file_id: int) -> MediaFileSnapshot:
     """Resolve one media file with its movie or episode/series context for the subject."""
     media_file = await session.get(MediaFile, media_file_id)
     if media_file is None:
@@ -323,4 +324,3 @@ async def build_media_file_snapshot(
             if episode is not None:
                 series = await session.get(Series, episode.series_id)
     return media_file_snapshot(media_file, movie=movie, series=series, episode=episode)
-

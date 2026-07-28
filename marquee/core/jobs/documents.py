@@ -71,9 +71,7 @@ class PosterPipelineRequestV1(StrictDocument):
     episode_id: int | None = Field(default=None, ge=1)
     tmdb_id: int | None = Field(default=None, ge=1)
     title: str = Field(min_length=1, max_length=300)
-    source_descriptors: tuple[PosterSourceDescriptorV1, ...] = Field(
-        default=(), max_length=12
-    )
+    source_descriptors: tuple[PosterSourceDescriptorV1, ...] = Field(default=(), max_length=12)
     profile_version: str | None = Field(default=None, max_length=128)
     model_version: str | None = Field(default=None, max_length=128)
     prior_poster_checksum: str | None = Field(
@@ -82,7 +80,13 @@ class PosterPipelineRequestV1(StrictDocument):
 
     @model_validator(mode="after")
     def require_one_subject(self) -> PosterPipelineRequestV1:
-        if sum(value is not None for value in (self.movie_id, self.series_id, self.season_id, self.episode_id)) != 1:
+        if (
+            sum(
+                value is not None
+                for value in (self.movie_id, self.series_id, self.season_id, self.episode_id)
+            )
+            != 1
+        ):
             raise ValueError("poster analysis requires exactly one subject")
         return self
 
@@ -272,11 +276,11 @@ class SafeJobErrorV1(StrictDocument):
             raise ValueError("diagnostics must contain at most 32 entries")
         for key, item in value.items():
             normalized = key.lower()
-            if len(key) > 80 or any(token in normalized for token in ("secret", "token", "password")):
-                raise ValueError("diagnostic keys must be bounded and non-secret")
-            if isinstance(item, str) and (
-                len(item) > 500 or item.startswith(("/", "\\\\"))
+            if len(key) > 80 or any(
+                token in normalized for token in ("secret", "token", "password")
             ):
+                raise ValueError("diagnostic keys must be bounded and non-secret")
+            if isinstance(item, str) and (len(item) > 500 or item.startswith(("/", "\\\\"))):
                 raise ValueError("diagnostic strings must be bounded and path-free")
         return value
 
@@ -310,7 +314,9 @@ class DocumentAdapter:
     def supported_versions(self) -> tuple[int, ...]:
         return tuple(sorted(self.models))
 
-    def validate(self, document: Mapping[str, Any] | StrictDocument, *, version: int) -> StrictDocument:
+    def validate(
+        self, document: Mapping[str, Any] | StrictDocument, *, version: int
+    ) -> StrictDocument:
         model = self.models.get(version)
         if model is None:
             raise UnsupportedDocumentVersionError(
@@ -332,7 +338,9 @@ class DocumentAdapter:
             target_version = current_version + 1
             target_model = self.models.get(target_version)
             if target_model is None:
-                raise InvalidUpcastError(f"upcaster has no target model for version {target_version}")
+                raise InvalidUpcastError(
+                    f"upcaster has no target model for version {target_version}"
+                )
             try:
                 value = (
                     converted

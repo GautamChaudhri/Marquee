@@ -56,9 +56,7 @@ class JobEventFrame(BaseModel):
 _PUBLIC_DETAIL_KEYS: dict[str, frozenset[str]] = {
     "attempt.started": frozenset({"dispatch_generation"}),
     "attempt.interrupted": frozenset({"code", "summary"}),
-    "job.priority_changed": frozenset(
-        {"dispatch_generation", "execution_class", "priority"}
-    ),
+    "job.priority_changed": frozenset({"dispatch_generation", "execution_class", "priority"}),
     "job.queued": frozenset({"dispatch_generation"}),
     "job.retried": frozenset({"original_job_id"}),
     "job.retry_requested": frozenset({"code", "summary"}),
@@ -199,9 +197,7 @@ class JobEventTailer:
                 client.closed = True
             self._clients.clear()
 
-    async def subscribe(
-        self, after: int | None, *, invalid_cursor: bool = False
-    ) -> EventClient:
+    async def subscribe(self, after: int | None, *, invalid_cursor: bool = False) -> EventClient:
         factory = _get_session_factory()
         async with self._fanout_lock, factory() as session:
             low, high = (

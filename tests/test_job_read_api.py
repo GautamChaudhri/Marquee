@@ -114,10 +114,7 @@ async def test_queue_history_are_partitioned_and_cursor_bound(db, client):
 
 @pytest.mark.asyncio
 async def test_queue_rank_is_class_local_and_does_not_restart_on_next_page(db, client):
-    jobs = [
-        make_job(job_id=f"rank{i:028d}", phase="queued", offset=i)
-        for i in range(25)
-    ]
+    jobs = [make_job(job_id=f"rank{i:028d}", phase="queued", offset=i) for i in range(25)]
     db.add_all(jobs)
     await db.commit()
 
@@ -139,10 +136,7 @@ async def test_queue_rank_is_class_local_and_does_not_restart_on_next_page(db, c
 
 @pytest.mark.asyncio
 async def test_queue_rank_is_omitted_beyond_bounded_class_window(db, client):
-    ahead = [
-        make_job(job_id=f"bound{i:027d}", phase="queued", offset=i)
-        for i in range(1001)
-    ]
+    ahead = [make_job(job_id=f"bound{i:027d}", phase="queued", offset=i) for i in range(1001)]
     target = make_job(
         job_id="boundedranktarget000000000000001",
         phase="queued",
@@ -222,7 +216,6 @@ async def test_queue_filters_by_execution_class_and_worker(db, client):
     assert [item["job_id"] for item in response.json()["items"]] == [matching.id]
 
 
-
 @pytest.mark.asyncio
 async def test_queue_exact_scope_recovers_beyond_first_page(db, client) -> None:
     unrelated = [
@@ -291,10 +284,7 @@ async def test_superseded_media_job_and_polling_sse_routes_are_absent(client):
 
 @pytest.mark.asyncio
 async def test_read_query_budgets_hold_at_maximum_page_size(db, client):
-    jobs = [
-        make_job(job_id=f"budget{i:026d}", phase="queued", offset=i)
-        for i in range(201)
-    ]
+    jobs = [make_job(job_id=f"budget{i:026d}", phase="queued", offset=i) for i in range(201)]
     db.add_all(jobs)
     await db.commit()
 

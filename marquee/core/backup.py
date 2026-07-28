@@ -24,7 +24,7 @@ from marquee.api.results import BackupInfo, BackupResult, RestoreResult
 from marquee.config import settings
 from marquee.core.filesystem import FilesystemBoundary, FilesystemBoundaryError, RootSpec
 from marquee.core.jobs.safety_gates import SafetyGateService, SafetyRequirements
-from marquee.db_migration import connect_admin, verify_runtime_schema
+from marquee.db_migration import asyncpg_dsn, connect_admin, verify_runtime_schema
 
 logger = logging.getLogger(__name__)
 
@@ -97,10 +97,13 @@ class BackupService:
         return [(Path("cache"), "taste_map*.npz")]
 
     async def create_backup(self) -> BackupResult:
-        async with self._operation_lock, await self._safety_gates.acquire(
-            SafetyRequirements.exclusive_maintenance(),
-            cancelled=lambda: False,
-            deadline_seconds=30,
+        async with (
+            self._operation_lock,
+            await self._safety_gates.acquire(
+                SafetyRequirements.exclusive_maintenance(),
+                cancelled=lambda: False,
+                deadline_seconds=30,
+            ),
         ):
             return await self._create_backup_with_lock_held()
 
@@ -119,9 +122,7 @@ class BackupService:
                 self._allocate_backup, identity
             )
             try:
-                await self._snapshot_db_tracked(
-                    temp_root / _DB_FILENAME, process_launcher
-                )
+                await self._snapshot_db_tracked(temp_root / _DB_FILENAME, process_launcher)
                 result = await asyncio.to_thread(
                     self._complete_backup_sync,
                     identity,
@@ -133,9 +134,7 @@ class BackupService:
             except BaseException:
                 await asyncio.to_thread(shutil.rmtree, temp_root, ignore_errors=True)
                 raise
-            await asyncio.to_thread(
-                self._rotate_backups_sync, settings.BACKUP_RETENTION_DAYS
-            )
+            await asyncio.to_thread(self._rotate_backups_sync, settings.BACKUP_RETENTION_DAYS)
             return result
 
     async def _create_backup_with_lock_held(self) -> BackupResult:
@@ -181,7 +180,9 @@ class BackupService:
         allow_create_target: bool,
     ) -> dict[str, object]:
         if not allow_create_target or target_database != confirm_database_name:
-            raise OfflineRestoreError("restore requires exact database confirmation and acknowledgement")
+            raise OfflineRestoreError(
+                "restore requires exact database confirmation and acknowledgement"
+            )
         if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,62}", target_database):
             raise OfflineRestoreError("restore target database name is unsafe")
         source = self._database_url()
@@ -249,7 +250,7 @@ class BackupService:
         return backups
 
     async def _backup_identity(self) -> dict[str, object]:
-        connection = await connect_admin("marquee-jmc3c-backup")
+        connection = await connect_admin("marquee:managed-backup")
         try:
             server_version = await connection.fetchval("SHOW server_version_num")
             markers = await connection.fetch(
@@ -278,9 +279,7 @@ class BackupService:
             "configuration": {} if configuration is None else dict(configuration),
         }
 
-    def _allocate_backup(
-        self, identity: dict[str, object] | None = None
-    ) -> tuple[str, Path, Path]:
+    def _allocate_backup(self, identity: dict[str, object] | None = None) -> tuple[str, Path, Path]:
         backup_id = self._timestamp()
         self.backup_dir.mkdir(parents=True, exist_ok=True)
         (self.backup_dir / _TMP_DIR_NAME).mkdir(parents=True, exist_ok=True)
@@ -296,9 +295,7 @@ class BackupService:
         try:
             db_path = temp_root / _DB_FILENAME
             self._snapshot_db(db_path)
-            return self._complete_backup_sync(
-                identity, backup_id, temp_root, backup_root
-            )
+            return self._complete_backup_sync(identity, backup_id, temp_root, backup_root)
         except Exception:
             shutil.rmtree(temp_root, ignore_errors=True)
             raise
@@ -426,9 +423,11 @@ class BackupService:
     async def _restore_database(self, archive: Path, target_database: str) -> None:
         source = self._database_url()
         admin_url = source.set(database="postgres")
-        connection = await asyncpg.connect(admin_url.set(drivername="postgresql").render_as_string())
+        connection = await asyncpg.connect(asyncpg_dsn(admin_url))
         try:
-            exists = await connection.fetchval("SELECT 1 FROM pg_database WHERE datname = $1", target_database)
+            exists = await connection.fetchval(
+                "SELECT 1 FROM pg_database WHERE datname = $1", target_database
+            )
             if exists:
                 raise OfflineRestoreError("restore target database already exists")
             await connection.execute(f'CREATE DATABASE "{target_database}" TEMPLATE template0')
@@ -436,7 +435,9 @@ class BackupService:
             await connection.close()
         pgpass = archive.parent / ".restore.pgpass"
         try:
-            self._write_pgpass(pgpass, source)
+            # pg_restore connects to the freshly created target, not the source
+            # database, and libpq matches .pgpass entries on the database field.
+            self._write_pgpass(pgpass, source.set(database=target_database))
             environment = os.environ.copy()
             environment["PGPASSFILE"] = str(pgpass)
             result = await asyncio.to_thread(
@@ -462,7 +463,9 @@ class BackupService:
                 env=environment,
             )
             if result.returncode:
-                raise OfflineRestoreError(f"pg_restore failed: {self._bounded_stderr(result.stderr)}")
+                raise OfflineRestoreError(
+                    f"pg_restore failed: {self._bounded_stderr(result.stderr)}"
+                )
         except BaseException:
             await self._drop_owned_database(target_database)
             raise
@@ -472,7 +475,7 @@ class BackupService:
     async def _drop_owned_database(self, database: str) -> None:
         source = self._database_url()
         admin_url = source.set(database="postgres")
-        connection = await asyncpg.connect(admin_url.set(drivername="postgresql").render_as_string())
+        connection = await asyncpg.connect(asyncpg_dsn(admin_url))
         try:
             await connection.execute(f'DROP DATABASE IF EXISTS "{database}"')
         finally:
@@ -480,11 +483,13 @@ class BackupService:
 
     async def _verify_restored_database(self, database: str) -> None:
         target_url = self._database_url().set(database=database)
-        connection = await asyncpg.connect(target_url.set(drivername="postgresql").render_as_string())
+        connection = await asyncpg.connect(asyncpg_dsn(target_url))
         try:
             await verify_runtime_schema(connection)
         except Exception as exc:
-            raise OfflineRestoreError("restored database failed schema or PgQueuer certification") from exc
+            raise OfflineRestoreError(
+                "restored database failed schema or PgQueuer certification"
+            ) from exc
         finally:
             await connection.close()
 
@@ -523,8 +528,12 @@ class BackupService:
         with path.open("rb") as stream:
             while chunk := stream.read(1024 * 1024):
                 digest.update(chunk)
-        return {"name": path.name, "format": archive_format, "size": path.stat().st_size,
-                "sha256": digest.hexdigest()}
+        return {
+            "name": path.name,
+            "format": archive_format,
+            "size": path.stat().st_size,
+            "sha256": digest.hexdigest(),
+        }
 
     @staticmethod
     def _database_url() -> URL:
@@ -539,7 +548,13 @@ class BackupService:
             return
         value = ":".join(
             part.replace("\\", "\\\\").replace(":", "\\:")
-            for part in (url.host or "", str(url.port or 5432), url.database or "", url.username or "", url.password)
+            for part in (
+                url.host or "",
+                str(url.port or 5432),
+                url.database or "",
+                url.username or "",
+                url.password,
+            )
         )
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         try:
@@ -565,7 +580,7 @@ class BackupService:
                 "data": RootSpec(
                     name="data",
                     path=self.data_dir,
-                    purpose="JMC3C managed backup source",
+                    purpose="managed backup source",
                     access="read",
                     allow_symlinks=False,
                 )
@@ -576,7 +591,9 @@ class BackupService:
             try:
                 classified = boundary.classify(source.absolute(), require_file=True)
             except FilesystemBoundaryError as exc:
-                raise BackupVerificationError("managed backup member is outside the confined root") from exc
+                raise BackupVerificationError(
+                    "managed backup member is outside the confined root"
+                ) from exc
             verified.append(classified.root.resolved() / classified.key.value)
         return sorted(set(verified), key=lambda path: path.relative_to(self.data_dir).as_posix())
 
@@ -594,27 +611,29 @@ class BackupService:
             gzip.GzipFile(fileobj=raw, mode="wb", mtime=0) as zipped,
             tarfile.open(fileobj=zipped, mode="w") as archive,
         ):
-                for source in self._managed_files():
-                    member = source.relative_to(self.data_dir).as_posix()
-                    before = source.stat(follow_symlinks=False)
-                    if not source.is_file() or source.is_symlink():
-                        raise BackupVerificationError("managed backup member is not a regular file")
-                    digest = hashlib.sha256()
-                    info = tarfile.TarInfo(member)
-                    info.size = before.st_size
-                    info.mode = 0o600
-                    info.mtime = 0
-                    with source.open("rb") as stream:
-                        archive.addfile(info, _DigestReader(stream, digest, cancelled))
-                    after = source.stat(follow_symlinks=False)
-                    if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) != (
-                        after.st_dev,
-                        after.st_ino,
-                        after.st_size,
-                        after.st_mtime_ns,
-                    ):
-                        raise BackupVerificationError("managed backup member changed while captured")
-                    members.append({"key": member, "size": before.st_size, "sha256": digest.hexdigest()})
+            for source in self._managed_files():
+                member = source.relative_to(self.data_dir).as_posix()
+                before = source.stat(follow_symlinks=False)
+                if not source.is_file() or source.is_symlink():
+                    raise BackupVerificationError("managed backup member is not a regular file")
+                digest = hashlib.sha256()
+                info = tarfile.TarInfo(member)
+                info.size = before.st_size
+                info.mode = 0o600
+                info.mtime = 0
+                with source.open("rb") as stream:
+                    archive.addfile(info, _DigestReader(stream, digest, cancelled))
+                after = source.stat(follow_symlinks=False)
+                if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) != (
+                    after.st_dev,
+                    after.st_ino,
+                    after.st_size,
+                    after.st_mtime_ns,
+                ):
+                    raise BackupVerificationError("managed backup member changed while captured")
+                members.append(
+                    {"key": member, "size": before.st_size, "sha256": digest.hexdigest()}
+                )
         return {
             "backup_format_version": _BACKUP_FORMAT_VERSION,
             "backup_id": backup_id,
@@ -647,7 +666,9 @@ class BackupService:
         ):
             if not isinstance(metadata, dict) or metadata.get("name") != filename:
                 raise BackupVerificationError("backup component metadata is invalid")
-            actual = self._component_metadata(backup_root / filename, str(metadata.get("format", "")))
+            actual = self._component_metadata(
+                backup_root / filename, str(metadata.get("format", ""))
+            )
             if actual["size"] != metadata.get("size") or actual["sha256"] != metadata.get("sha256"):
                 raise BackupVerificationError("backup component checksum mismatch")
         self._validate_state_archive(backup_root / _STATE_FILENAME, manifest)
@@ -666,7 +687,9 @@ class BackupService:
                     raise BackupVerificationError("backup state archive contains an unsafe member")
                 item = expected.get(member.name)
                 if item is None or member.name in observed or member.size != item.get("size"):
-                    raise BackupVerificationError("backup state archive does not match its manifest")
+                    raise BackupVerificationError(
+                        "backup state archive does not match its manifest"
+                    )
                 digest = hashlib.sha256()
                 stream = archive.extractfile(member)
                 if stream is None:

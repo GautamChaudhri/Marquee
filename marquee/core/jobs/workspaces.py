@@ -90,9 +90,7 @@ class AttemptWorkspaceManager:
     def for_data_dir(cls, data_dir: str | Path) -> AttemptWorkspaceManager:
         root = Path(data_dir).resolve(strict=True)
         return cls(
-            boundary_for_roots(
-                {"data": root}, access="read_write", purpose="attempt workspaces"
-            )
+            boundary_for_roots({"data": root}, access="read_write", purpose="attempt workspaces")
         )
 
     def create(self, *, job_id: str, attempt_id: int, fence_token: int) -> AttemptWorkspace:
@@ -102,7 +100,7 @@ class AttemptWorkspaceManager:
             raise WorkspaceError("attempt identity is invalid")
         if isinstance(fence_token, bool) or fence_token < 1:
             raise WorkspaceError("fence token is invalid")
-        parent = self.boundary.from_key(self.root_name, f"jmc3/workspaces/{job_id}")
+        parent = self.boundary.from_key(self.root_name, f"jobs/workspaces/{job_id}")
         key = f"{parent.key.value}/{attempt_id}-{fence_token}"
         directory = self.boundary.from_key(self.root_name, key)
         try:
@@ -123,7 +121,7 @@ class AttemptWorkspaceManager:
             raise WorkspaceError("workspace identity is invalid")
         physical = (
             self.boundary.roots[self.root_name].resolved()
-            / "jmc3"
+            / "jobs"
             / "workspaces"
             / job_id
             / f"{attempt_id}-{fence_token}"
@@ -145,7 +143,7 @@ async def reconcile_stale_workspaces(data_dir: str | Path, *, limit: int = 100) 
     if limit < 1 or limit > 500:
         raise ValueError("workspace reconciliation limit is outside the bound")
     manager = AttemptWorkspaceManager.for_data_dir(data_dir)
-    base = manager.boundary.roots[manager.root_name].resolved() / "jmc3" / "workspaces"
+    base = manager.boundary.roots[manager.root_name].resolved() / "jobs" / "workspaces"
     if not base.exists():
         return {"deleted": 0, "quarantined": 0, "active": 0}
     candidates: list[tuple[str, int, int]] = []
@@ -174,20 +172,21 @@ async def reconcile_stale_workspaces(data_dir: str | Path, *, limit: int = 100) 
         }
     counts = {"deleted": 0, "quarantined": 0, "active": 0}
     for job_id, attempt_id, fence_token in candidates:
-        workspace = manager.existing(
-            job_id=job_id, attempt_id=attempt_id, fence_token=fence_token
-        )
+        workspace = manager.existing(job_id=job_id, attempt_id=attempt_id, fence_token=fence_token)
         attempt = attempts.get(attempt_id)
         exact = bool(
-            attempt is not None
-            and attempt.job_id == job_id
-            and attempt.fence_token == fence_token
+            attempt is not None and attempt.job_id == job_id and attempt.fence_token == fence_token
         )
-        if exact and attempt is not None and attempt.phase in {
-            "running",
-            "stopping",
-            "admitted",
-        }:
+        if (
+            exact
+            and attempt is not None
+            and attempt.phase
+            in {
+                "running",
+                "stopping",
+                "admitted",
+            }
+        ):
             counts["active"] += 1
             continue
         metrics = dict(attempt.metrics or {}) if exact and attempt is not None else {}

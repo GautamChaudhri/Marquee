@@ -96,7 +96,9 @@ class ConfigurationProvider:
                     raise ConfigurationUnavailableError(
                         "no valid initial configuration revision"
                     ) from exc
-                logger.error("Configuration reload rejected; retaining version %s", self._state.version)
+                logger.error(
+                    "Configuration reload rejected; retaining version %s", self._state.version
+                )
                 return self._state
             self._state = loaded
             self._status = "valid"

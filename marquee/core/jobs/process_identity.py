@@ -102,8 +102,7 @@ def create_attempt_cgroup(
         path.mkdir(mode=0o700)
         (path / "cgroup.procs").write_text(str(pid), encoding="ascii")
         members = {
-            int(value)
-            for value in (path / "cgroup.procs").read_text(encoding="ascii").splitlines()
+            int(value) for value in (path / "cgroup.procs").read_text(encoding="ascii").splitlines()
         }
     except (OSError, ValueError) as exc:
         with contextlib.suppress(OSError):

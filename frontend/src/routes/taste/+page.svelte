@@ -28,7 +28,6 @@
 		ManagedResidualDetail,
 		ManagedProfileDetail,
 		TasteMapData,
-		TasteSource,
 		TasteStatus
 	} from '$lib/api/types';
 	import type { PageData } from './$types';
@@ -117,18 +116,6 @@
 		}
 	}
 
-	const SOURCES = $derived.by<{ id: TasteSource; label: string; hint: string }[]>(() => [
-		{
-			id: 'training_dir',
-			label: 'Training folder',
-			hint:
-				library === 'movies'
-					? 'Movies: data/taste_seeding/movies'
-					: 'TV: data/taste_seeding/shows + seasons'
-		},
-		{ id: 'library', label: 'Library posters', hint: 'Every deployed poster' }
-	]);
-	let source = $state<TasteSource>('training_dir');
 	let rebuilding = $state(false);
 	let rebuildJobId = $state<string | null>(null);
 	let residualJobId = $state<string | null>(null);
@@ -138,7 +125,7 @@
 		if (rebuilding) return;
 		rebuilding = true;
 		try {
-			const job = await retrainTaste(fetch, source, library);
+			const job = await retrainTaste(fetch, library);
 			rebuildJobId = job.job_id;
 			initiatedJobIds = [...new Set([...initiatedJobIds, job.job_id])];
 			toast('Taste rebuild queued', 'info');
@@ -377,24 +364,11 @@
 
 	<div class="train-cols">
 		<section class="train-card">
-			<h3>Initial training</h3>
+			<h3>Rebuild taste profile</h3>
 			<p class="card-note">
-				Rebuild the active taste profile from your curated folder or deployed library posters.
+				Build a new immutable profile from canonical approved poster evidence for the selected
+				library.
 			</p>
-			<div class="scope-row">
-				{#each SOURCES as s (s.id)}
-					<button
-						class="scope"
-						class:on={source === s.id}
-						disabled={rebuilding}
-						onclick={() => (source = s.id)}
-						title={s.hint}
-					>
-						{s.label}
-						<small>{s.hint}</small>
-					</button>
-				{/each}
-			</div>
 			<button class="btn-gold" onclick={startRebuild} disabled={rebuilding}>
 				{rebuilding ? 'Rebuilding…' : 'Rebuild profile'}
 			</button>
@@ -820,29 +794,6 @@
 		display: flex;
 		flex-direction: column;
 		gap: 12px;
-	}
-	.scope-row {
-		display: flex;
-		gap: 8px;
-		flex-wrap: wrap;
-	}
-	.scope {
-		flex: 1;
-		min-width: 130px;
-		display: flex;
-		flex-direction: column;
-		gap: 2px;
-		padding: 9px 12px;
-		border-radius: 8px;
-		border: 1px solid var(--line2);
-		background: var(--panel2);
-		color: var(--muted);
-		text-align: left;
-	}
-	.scope.on {
-		border-color: var(--gold-deep);
-		background: var(--gold-soft);
-		color: var(--gold);
 	}
 	.card-note,
 	.manager-card p {

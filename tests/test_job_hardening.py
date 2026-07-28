@@ -18,5 +18,3 @@ def test_engine_connect_args_apply_timeouts_only_to_asyncpg(monkeypatch):
             "idle_in_transaction_session_timeout": "300000",
         }
     }
-
-

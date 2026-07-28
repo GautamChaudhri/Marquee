@@ -42,8 +42,7 @@ def _literal_keywords(paths: list[Path], names: set[str]) -> set[str]:
                     values.update(
                         candidate.value
                         for candidate in candidates
-                        if isinstance(candidate, ast.Constant)
-                        and isinstance(candidate.value, str)
+                        if isinstance(candidate, ast.Constant) and isinstance(candidate.value, str)
                     )
     return values
 
@@ -79,22 +78,50 @@ def test_source_inventory_matches_freeze() -> None:
 
 def test_stable_taxonomy_values() -> None:
     assert {item.value for item in ExecutionClass} == {
-        "control", "network", "cpu", "media_read", "media_write", "gpu", "maintenance"
+        "control",
+        "network",
+        "cpu",
+        "media_read",
+        "media_write",
+        "gpu",
+        "maintenance",
     }
     assert {item.value for item in FeatureArea} == {
-        "ai_posters", "library_integrations", "ml_taste", "maintenance", "system",
+        "ai_posters",
+        "library_integrations",
+        "ml_taste",
+        "maintenance",
+        "system",
     }
     assert {item.value for item in TriggerKind} == {
-        "manual", "schedule", "policy", "batch", "parent", "healing", "system", "webhook"
+        "manual",
+        "schedule",
+        "policy",
+        "batch",
+        "parent",
+        "healing",
+        "system",
+        "webhook",
     }
     assert {item.value for item in EffectSafety} == {
-        "read_only", "staged_idempotent", "unsafe_mutation"
+        "read_only",
+        "staged_idempotent",
+        "unsafe_mutation",
     }
     assert {item.value for item in ProgressStrategy} == {
-        "determinate", "indeterminate", "hybrid", "none"
+        "determinate",
+        "indeterminate",
+        "hybrid",
+        "none",
     }
     assert {item.value for item in AttentionLevel} == {"normal", "warning", "error"}
     assert {item.value for item in JobAction} == {
-        "cancel", "pause", "resume", "change_priority", "retry", "open_logs",
-        "open_artifacts", "open_detail",
+        "cancel",
+        "pause",
+        "resume",
+        "change_priority",
+        "retry",
+        "open_logs",
+        "open_artifacts",
+        "open_detail",
     }

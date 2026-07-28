@@ -145,7 +145,9 @@ class ExecutionProgress:
             return MeasurementMode.NONE
         return MeasurementMode.INDETERMINATE
 
-    def _overall_update(self, observed: ScopeObservation | None) -> ProgressMeasurementUpdate | None:
+    def _overall_update(
+        self, observed: ScopeObservation | None
+    ) -> ProgressMeasurementUpdate | None:
         """Fold one overall observation into the stable monotonic overall scope."""
         policy_unit = self.definition.progress_policy.overall_unit
         base_scope = f"{self.definition.job_type}:overall"
@@ -182,7 +184,9 @@ class ExecutionProgress:
                     return None
             elif previous is not None and previous.mode != MeasurementMode.DETERMINATE:
                 self._overall_epoch += 1
-            scope = base_scope if self._overall_epoch == 0 else f"{base_scope}:{self._overall_epoch}"
+            scope = (
+                base_scope if self._overall_epoch == 0 else f"{base_scope}:{self._overall_epoch}"
+            )
             self._last_overall_fraction = fraction
             return ProgressMeasurementUpdate(
                 scope_id=scope,
@@ -249,9 +253,7 @@ class ExecutionProgress:
                         return None
             self._current_scope_key = scope_key
             scope = (
-                base_scope
-                if self._current_epoch == 0
-                else f"{base_scope}:{self._current_epoch}"
+                base_scope if self._current_epoch == 0 else f"{base_scope}:{self._current_epoch}"
             )
             return ProgressMeasurementUpdate(
                 scope_id=scope,

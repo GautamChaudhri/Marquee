@@ -139,9 +139,7 @@ class MutationBackupV1(StrictDocument):
 class MutationPublishV1(StrictDocument):
     candidate_checksum: Checksum
     candidate_signature: str = Field(min_length=8, max_length=160)
-    destination_identity: str = Field(
-        min_length=1, max_length=240, pattern=r"^[A-Za-z0-9._:-]+$"
-    )
+    destination_identity: str = Field(min_length=1, max_length=240, pattern=r"^[A-Za-z0-9._:-]+$")
     fence_token: int = Field(ge=1)
     fsync_result: Literal["succeeded", "failed", "not_attempted", "unknown"]
     replace_result: Literal["succeeded", "failed", "not_attempted", "unknown"]
@@ -180,9 +178,7 @@ class MutationResultV1(StrictDocument):
     reason_code: str = Field(pattern=r"^[a-z][a-z0-9_.-]{0,79}$")
     message: str = Field(min_length=1, max_length=1000)
     requested_targets: tuple[MutationTargetV1, ...] = Field(min_length=1, max_length=10_000)
-    target_outcomes: tuple[MutationTargetOutcomeV1, ...] = Field(
-        min_length=1, max_length=10_000
-    )
+    target_outcomes: tuple[MutationTargetOutcomeV1, ...] = Field(min_length=1, max_length=10_000)
     validation: MutationValidationV1
     atomicity: MutationAtomicityV1
     backup: MutationBackupV1 | None = None
@@ -204,8 +200,7 @@ class MutationResultV1(StrictDocument):
                 raise ValueError("no_change cannot report applied changes")
         if (
             self.atomicity.boundary == "all_or_nothing"
-            and self.outcome
-            in {MutationJobOutcome.FAILED, MutationJobOutcome.CANCELLED}
+            and self.outcome in {MutationJobOutcome.FAILED, MutationJobOutcome.CANCELLED}
             and any(
                 outcome.status != MutationTargetStatus.NOT_APPLIED
                 for outcome in self.target_outcomes
@@ -385,8 +380,7 @@ class MaintenanceResultV1(StrictDocument):
     @classmethod
     def bound_counts(cls, value: dict[str, int]) -> dict[str, int]:
         if len(value) > 32 or any(
-            not _KEY.fullmatch(key) or count < 0 or count > 10_000
-            for key, count in value.items()
+            not _KEY.fullmatch(key) or count < 0 or count > 10_000 for key, count in value.items()
         ):
             raise ValueError("maintenance counts are invalid")
         return value
@@ -434,7 +428,11 @@ class MutationPreconditionError(RuntimeError):
 
 
 def require_publication_preconditions(
-    *, fence_current: bool, cancellation_requested: bool, source_current: bool, destination_confined: bool
+    *,
+    fence_current: bool,
+    cancellation_requested: bool,
+    source_current: bool,
+    destination_confined: bool,
 ) -> None:
     """Final coordinator guard immediately before calling the publication service."""
     if not fence_current:

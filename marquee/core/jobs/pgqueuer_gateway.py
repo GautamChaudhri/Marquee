@@ -159,7 +159,6 @@ class PgQueuerGateway:
             with self._active_lock:
                 self._active_raw_connections.discard(key)
 
-
     async def _live_ticket_statuses(
         self,
         session: AsyncSession,
@@ -187,8 +186,7 @@ class PgQueuerGateway:
                 raise PgQueuerInvariantError("configured PgQueuer queue relation is unsafe")
             statement = text(
                 f"SELECT id, status::text AS status FROM {queue_table} "
-                "WHERE id = ANY(:ticket_ids)"
-                + (" FOR UPDATE" if for_update else "")
+                "WHERE id = ANY(:ticket_ids)" + (" FOR UPDATE" if for_update else "")
             )
             rows = (await session.execute(statement, {"ticket_ids": list(ids)})).all()
         return {int(row.id): str(row.status) for row in rows}
@@ -312,16 +310,12 @@ class PgQueuerGateway:
         await session.flush()
         jobs = {
             job.id: job
-            for job in (
-                await session.scalars(select(Job).where(Job.id.in_(job_ids)))
-            ).all()
+            for job in (await session.scalars(select(Job).where(Job.id.in_(job_ids)))).all()
         }
         dispatches = {
             (dispatch.job_id, dispatch.generation): dispatch
             for dispatch in (
-                await session.scalars(
-                    select(JobDispatch).where(JobDispatch.job_id.in_(job_ids))
-                )
+                await session.scalars(select(JobDispatch).where(JobDispatch.job_id.in_(job_ids)))
             ).all()
         }
         event_counts = dict(
@@ -461,7 +455,6 @@ class PgQueuerGateway:
             raise PgQueuerInvariantError(
                 f"transport status {transport_status!r} cannot accept cancellation"
             )
-
 
     async def recover_admission_deferral(
         self,
@@ -685,11 +678,7 @@ class PgQueuerGateway:
         if not tickets:
             return {}
         by_ticket = await self._live_ticket_statuses(session, ticket_ids=tickets)
-        return {
-            job.id: by_ticket[job.pgq_job_id]
-            for job in jobs
-            if job.pgq_job_id in by_ticket
-        }
+        return {job.id: by_ticket[job.pgq_job_id] for job in jobs if job.pgq_job_id in by_ticket}
 
     async def queue_statistics(self, session: AsyncSession) -> list[dict]:
         """Return PgQueuer's bounded aggregate statistics, never raw rows."""

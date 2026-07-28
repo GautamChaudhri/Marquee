@@ -151,11 +151,7 @@ async def _publish_native_taste_profile(
                 for exemplar_id, entry in zip(revision.exemplar_ids, manifest_rows, strict=True)
             ):
                 raise RuntimeError("canonical taste revision no longer matches frozen evidence")
-            exemplars = [
-                row
-                for row in frozen
-                if row.namespace in {"global", library}
-            ]
+            exemplars = [row for row in frozen if row.namespace in {"global", library}]
             artifacts = {
                 row.id: await session.get(JobArtifact, row.retained_artifact_id)
                 for row in exemplars
@@ -233,7 +229,9 @@ async def _publish_native_taste_profile(
     if outcome.outcome == OUTCOME_CANCELLED:
         raise asyncio.CancelledError
     if outcome.outcome != OUTCOME_SUCCEEDED:
-        raise RuntimeError(f"taste profile runner did not succeed: {outcome.error or outcome.outcome}")
+        raise RuntimeError(
+            f"taste profile runner did not succeed: {outcome.error or outcome.outcome}"
+        )
 
     await _bridge_stage(bridge, "validating")
     profile_path = workspace_dir / "profile.npz"
@@ -276,7 +274,9 @@ async def _publish_native_taste_profile(
     _validate_taste_profile(profile_path)
     if revision_digest is not None and not activation.activated:
         async with context.session_factory() as session:
-            revision = await session.get(TasteProfileRevision, revision_digest, with_for_update=True)
+            revision = await session.get(
+                TasteProfileRevision, revision_digest, with_for_update=True
+            )
             if revision is not None:
                 revision.state = "failed"
                 revision.failure = {
@@ -287,7 +287,9 @@ async def _publish_native_taste_profile(
                 await session.commit()
     if revision_digest is not None and activation.activated:
         async with context.session_factory() as session:
-            revision = await session.get(TasteProfileRevision, revision_digest, with_for_update=True)
+            revision = await session.get(
+                TasteProfileRevision, revision_digest, with_for_update=True
+            )
             if revision is None:
                 raise RuntimeError("canonical taste revision disappeared during publication")
             if library == "movies":
@@ -571,6 +573,7 @@ async def _publish_native_ranking_residual(
         run_internal_operation,
     )
     from marquee.core.jobs.runner_protocol import RunnerOperation  # noqa: PLC0415
+
     if context.cancellation.cancel_called:
         raise asyncio.CancelledError
     async with context.session_factory() as session:
@@ -581,9 +584,7 @@ async def _publish_native_ranking_residual(
         except MlPublicationError:
             current = None
         try:
-            profile = await resolve_active_publication(
-                session, family=f"taste_profile:{library}"
-            )
+            profile = await resolve_active_publication(session, family=f"taste_profile:{library}")
         except MlPublicationError:
             return MlPublicationResultV1(
                 outcome="no_change",
@@ -665,9 +666,15 @@ async def _publish_native_ranking_residual(
     }
     actual_baseline_signature = baseline_signature(weights)
     if (
-        (expected_baseline_signature is not None and expected_baseline_signature != actual_baseline_signature)
+        (
+            expected_baseline_signature is not None
+            and expected_baseline_signature != actual_baseline_signature
+        )
         or (expected_profile_checksum is not None and expected_profile_checksum != profile.checksum)
-        or (expected_profile_generation is not None and expected_profile_generation != profile.generation)
+        or (
+            expected_profile_generation is not None
+            and expected_profile_generation != profile.generation
+        )
     ):
         return MlPublicationResultV1(
             outcome="superseded",
@@ -785,9 +792,7 @@ async def _publish_native_ranking_residual(
         metrics={
             "events": int(summary.get("event_rows", 0) or 0),
             "pairs": int(summary.get("pairs", 0) or 0),
-            "improvement": float(
-                (summary.get("evaluation") or {}).get("improvement", 0.0)
-            ),
+            "improvement": float((summary.get("evaluation") or {}).get("improvement", 0.0)),
             "seed": seed,
         },
     ).model_dump(mode="json")

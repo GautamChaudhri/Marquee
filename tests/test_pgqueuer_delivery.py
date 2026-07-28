@@ -80,7 +80,7 @@ async def _canonical_ticket(db, *, payload: dict | None = None) -> tuple[str, in
     await db.rollback()
     job = await create_system_noop(
         db,
-        payload=payload or {"echo": "jmc1"},
+        payload=payload or {"echo": "noop"},
         idempotency_key=f"system_noop:{uuid4().hex}",
     )
     dispatch = await db.scalar(
@@ -109,9 +109,7 @@ def _transport_job(
         execute_after=now,
         status="picked",
         entrypoint=entrypoint,
-        payload=(
-            f'{{"dispatch_generation":1,"job_id":"{job_id}","payload_version":1}}'.encode()
-        ),
+        payload=(f'{{"dispatch_generation":1,"job_id":"{job_id}","payload_version":1}}'.encode()),
         attempts=attempts,
         queue_manager_id=uuid4(),
         headers=None,
@@ -146,9 +144,7 @@ async def test_delivery_commits_canonical_success_before_return(db):
     await db.rollback()
     db.expire_all()
     job = await db.get(Job, job_id)
-    attempts = list(
-        await db.scalars(select(JobAttempt).where(JobAttempt.job_id == job_id))
-    )
+    attempts = list(await db.scalars(select(JobAttempt).where(JobAttempt.job_id == job_id)))
     progress_events = list(
         await db.scalars(
             select(JobEvent)
@@ -160,7 +156,7 @@ async def test_delivery_commits_canonical_success_before_return(db):
     assert (job.phase, job.outcome, job.result) == (
         "terminal",
         "succeeded",
-        {"outcome": "succeeded", "message": None, "summary": {"echo": "jmc1"}},
+        {"outcome": "succeeded", "message": None, "summary": {"echo": "noop"}},
     )
     assert len(attempts) == 1
     assert (attempts[0].phase, attempts[0].outcome) == ("finished", "succeeded")
@@ -188,9 +184,7 @@ async def test_canonical_delivery_streams_execution_io_to_presenter(
         return {"outcome": "succeeded", "summary": {"echo": "io"}}
 
     monkeypatch.setitem(delivery._EXECUTION_HANDLERS, "system_noop", handler)
-    task = asyncio.create_task(
-        deliver_control_job(_transport_job(job_id, ticket_id), _context())
-    )
+    task = asyncio.create_task(deliver_control_job(_transport_job(job_id, ticket_id), _context()))
     await copied.wait()
     release.set()
     await task
@@ -259,9 +253,7 @@ async def test_safety_wait_cancellation_creates_no_attempt(db):
         deadline_seconds=1,
     )
     context = _context()
-    task = asyncio.create_task(
-        deliver_control_job(_transport_job(job_id, ticket_id), context)
-    )
+    task = asyncio.create_task(deliver_control_job(_transport_job(job_id, ticket_id), context))
     try:
         for _ in range(100):
             await db.rollback()
@@ -276,9 +268,7 @@ async def test_safety_wait_cancellation_creates_no_attempt(db):
         await blocker.release()
 
     await db.rollback()
-    attempts = list(
-        await db.scalars(select(JobAttempt).where(JobAttempt.job_id == job_id))
-    )
+    attempts = list(await db.scalars(select(JobAttempt).where(JobAttempt.job_id == job_id)))
     assert attempts == []
 
 
@@ -293,9 +283,7 @@ async def test_fenced_writer_rejects_stale_attempt_ownership(db, monkeypatch):
         return {"outcome": "succeeded", "summary": {"echo": "held"}}
 
     monkeypatch.setitem(delivery._EXECUTION_HANDLERS, "system_noop", handler)
-    task = asyncio.create_task(
-        deliver_control_job(_transport_job(job_id, ticket_id), _context())
-    )
+    task = asyncio.create_task(deliver_control_job(_transport_job(job_id, ticket_id), _context()))
     await admitted.wait()
     await db.rollback()
     job = await db.get(Job, job_id)
@@ -310,9 +298,7 @@ async def test_fenced_writer_rejects_stale_attempt_ownership(db, monkeypatch):
     await db.commit()
 
     writer = FencedWriter(ownership, JOB_DEFINITION_REGISTRY.get("system_noop"))
-    disposition = await writer.succeed(
-        {"outcome": "succeeded", "summary": {"echo": "stale"}}
-    )
+    disposition = await writer.succeed({"outcome": "succeeded", "summary": {"echo": "stale"}})
     assert disposition == WriteDisposition.STALE
 
     release.set()
@@ -359,9 +345,7 @@ async def test_mutation_publish_intent_is_quarantined_instead_of_retried(
         return {"outcome": "succeeded", "summary": {"echo": "held"}}
 
     monkeypatch.setitem(delivery._EXECUTION_HANDLERS, "system_noop", handler)
-    task = asyncio.create_task(
-        deliver_control_job(_transport_job(job_id, ticket_id), _context())
-    )
+    task = asyncio.create_task(deliver_control_job(_transport_job(job_id, ticket_id), _context()))
     await admitted.wait()
     await db.rollback()
     job = await db.get(Job, job_id)
@@ -407,9 +391,7 @@ async def test_pause_before_admission_consumes_no_attempt(db):
     await db.rollback()
     db.expire_all()
     job = await db.get(Job, job_id)
-    attempts = list(
-        await db.scalars(select(JobAttempt).where(JobAttempt.job_id == job_id))
-    )
+    attempts = list(await db.scalars(select(JobAttempt).where(JobAttempt.job_id == job_id)))
     assert job is not None
     assert (job.phase, job.desired_state, job.pgq_job_id) == ("queued", "pause", None)
     assert attempts == []
@@ -422,9 +404,7 @@ async def test_serial_redelivery_after_terminal_commit_is_noop(db):
     await deliver_control_job(delivery, _context())
 
     await db.rollback()
-    attempts = list(
-        await db.scalars(select(JobAttempt).where(JobAttempt.job_id == job_id))
-    )
+    attempts = list(await db.scalars(select(JobAttempt).where(JobAttempt.job_id == job_id)))
     assert len(attempts) == 1
 
 
@@ -439,9 +419,7 @@ async def test_dispatch_disabled_registry_definition_is_held(db):
         await deliver_control_job(_transport_job(job_id, ticket_id), _context())
 
     await db.rollback()
-    attempts = list(
-        await db.scalars(select(JobAttempt).where(JobAttempt.job_id == job_id))
-    )
+    attempts = list(await db.scalars(select(JobAttempt).where(JobAttempt.job_id == job_id)))
     assert attempts == []
 
 
@@ -456,9 +434,7 @@ async def test_duplicate_delivery_never_guesses_running_attempt_is_abandoned(db,
         return {"outcome": "succeeded", "summary": {"echo": "held"}}
 
     monkeypatch.setitem(delivery._EXECUTION_HANDLERS, "system_noop", handler)
-    first = asyncio.create_task(
-        deliver_control_job(_transport_job(job_id, ticket_id), _context())
-    )
+    first = asyncio.create_task(deliver_control_job(_transport_job(job_id, ticket_id), _context()))
     await admitted.wait()
     retry: RetryRequested | None = None
     try:
@@ -477,9 +453,7 @@ async def test_duplicate_delivery_never_guesses_running_attempt_is_abandoned(db,
     job = await db.get(Job, job_id)
     attempts = list(
         await db.scalars(
-            select(JobAttempt)
-            .where(JobAttempt.job_id == job_id)
-            .order_by(JobAttempt.number)
+            select(JobAttempt).where(JobAttempt.job_id == job_id).order_by(JobAttempt.number)
         )
     )
     assert job is not None
@@ -532,7 +506,7 @@ async def _attach_runtime_attempt(
         id=runtime_id,
         role="worker",
         node_label="remote-runtime",
-        build="jmc6d-test",
+        build="runtime-test",
         host_boot_id=read_boot_id() if with_process_identity else "remote-boot",
         process_id=process_id,
         process_start_ticks=202,
@@ -757,8 +731,7 @@ async def test_recovery_rejects_stale_fence_without_changing_new_owner(db):
     await db.commit()
 
     assert (
-        await reconcile_candidate(candidate, cooperative_seconds=0.01, term_seconds=0.01)
-        == "stale"
+        await reconcile_candidate(candidate, cooperative_seconds=0.01, term_seconds=0.01) == "stale"
     )
     await db.rollback()
     job = await db.get(Job, job_id)
@@ -839,9 +812,7 @@ async def test_real_queue_manager_owns_retry_delay_and_second_attempt(
     job = await db.get(Job, job_id)
     attempts = list(
         await db.scalars(
-            select(JobAttempt)
-            .where(JobAttempt.job_id == job_id)
-            .order_by(JobAttempt.number)
+            select(JobAttempt).where(JobAttempt.job_id == job_id).order_by(JobAttempt.number)
         )
     )
     assert calls == 2
@@ -1056,14 +1027,15 @@ async def test_real_gate_contention_defers_without_attempt_then_executes_once(
             for _ in range(100):
                 await db.rollback()
                 job = await db.get(Job, job_id)
-                if job is not None and (job.attention or {}).get("code") == "admission_deferral_pending":
+                if (
+                    job is not None
+                    and (job.attention or {}).get("code") == "admission_deferral_pending"
+                ):
                     break
                 await asyncio.sleep(0.02)
             assert job is not None
             assert job.phase == "queued"
-            attempts = list(
-                await db.scalars(select(JobAttempt).where(JobAttempt.job_id == job_id))
-            )
+            attempts = list(await db.scalars(select(JobAttempt).where(JobAttempt.job_id == job_id)))
             assert attempts == []
             assert (job.attention or {}).get("defer_count") == 1
         finally:
@@ -1120,9 +1092,9 @@ async def test_public_cancel_during_gate_wait_creates_no_attempt(
                     break
                 await asyncio.sleep(0.02)
             assert job is not None
-            assert list(
-                await db.scalars(select(JobAttempt).where(JobAttempt.job_id == job_id))
-            ) == []
+            assert (
+                list(await db.scalars(select(JobAttempt).where(JobAttempt.job_id == job_id))) == []
+            )
 
             async with AsyncClient(
                 transport=ASGITransport(app=app),
@@ -1321,7 +1293,7 @@ async def test_polling_fallback_delivers_without_matching_notification_channel(d
         raw = await connection.get_raw_connection()
         app = PgQueuer.from_asyncpg_connection(
             raw.driver_connection,
-            channel="ch_jmc1_notifications_intentionally_missing",
+            channel="ch_notifications_intentionally_missing",
         )
 
         @app.entrypoint("control", accepts_context=True, on_failure="hold")
@@ -1350,13 +1322,12 @@ async def test_polling_fallback_delivers_without_matching_notification_channel(d
 
 async def test_real_queue_manager_holds_rejected_delivery(installed_pgqueuer):
     payload = (
-        b'{"dispatch_generation":1,"job_id":"00000000000000000000000000000000",'
-        b'"payload_version":1}'
+        b'{"dispatch_generation":1,"job_id":"00000000000000000000000000000000","payload_version":1}'
     )
     ticket_ids = await installed_pgqueuer.enqueue(
         "control",
         payload,
-        dedupe_key=f"jmc1-rejected-{uuid4().hex}",
+        dedupe_key=f"rejected-{uuid4().hex}",
     )
     async with _get_engine().connect() as connection:
         raw = await connection.get_raw_connection()
@@ -1420,7 +1391,7 @@ async def test_two_scheduler_managers_reconcile_one_test_schedule(installed_pgqu
         ]
         for app in apps:
 
-            @app.schedule("jmc1_test_schedule", "*/1 * * * * *")
+            @app.schedule("contract_test_schedule", "*/1 * * * * *")
             async def scheduled_noop(schedule):
                 nonlocal effects
                 effects += 1
@@ -1434,7 +1405,7 @@ async def test_two_scheduler_managers_reconcile_one_test_schedule(installed_pgqu
         await asyncio.wait_for(asyncio.gather(*tasks), timeout=5)
 
     rows = await installed_pgqueuer.peek_schedule()
-    assert [row.entrypoint for row in rows].count("jmc1_test_schedule") == 1
+    assert [row.entrypoint for row in rows].count("contract_test_schedule") == 1
     assert effects == 1
 
 

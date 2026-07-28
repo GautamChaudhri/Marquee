@@ -219,9 +219,7 @@ class StepsSection(StrictDocument):
     steps: tuple[Step, ...] = Field(min_length=1, max_length=50)
 
 
-ArtifactStatus = Literal[
-    "available", "missing", "expired", "quarantined", "deleted", "unavailable"
-]
+ArtifactStatus = Literal["available", "missing", "expired", "quarantined", "deleted", "unavailable"]
 
 
 class ArtifactItem(StrictDocument):

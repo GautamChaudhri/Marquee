@@ -1,4 +1,8 @@
-"""JMC2C Phase C1: presenter engine and primary-family presenter coverage."""
+"""Presenter engine and the primary job families it renders.
+
+Every job family resolves to a registered presenter, and the payload each one produces is
+compared against a committed golden fixture so a presentation change cannot land
+silently."""
 
 import json
 from datetime import UTC, datetime
@@ -20,7 +24,7 @@ from marquee.core.jobs.presenters import (
 from marquee.core.jobs.presenters.posters import POSTER_JOB_TYPES
 from marquee.models import Job
 
-FIXTURES = Path(__file__).parent / "fixtures" / "jmc2c"
+FIXTURES = Path(__file__).parent / "fixtures" / "job_presenters"
 
 T0 = datetime(2026, 7, 13, 10, 0, 0, tzinfo=UTC)
 T1 = datetime(2026, 7, 13, 10, 5, 0, tzinfo=UTC)
@@ -161,9 +165,7 @@ def test_generic_presenter_is_not_registered_for_any_builtin():
 def test_unregistered_presenter_key_raises():
     from dataclasses import replace
 
-    definition = replace(
-        definition_for("poster_pipeline"), presenter_key="jobs.not_a_real_type"
-    )
+    definition = replace(definition_for("poster_pipeline"), presenter_key="jobs.not_a_real_type")
     with pytest.raises(UnregisteredPresenterError):
         resolve_presenter(definition)
 
@@ -198,9 +200,7 @@ def test_poster_pipeline_detail_golden():
     assert presentation.presenter_key == "jobs.poster_pipeline"
     assert presentation.action.headline == "Select a poster from 47 candidates"
     assert presentation.warnings == ()
-    assert_matches_golden(
-        "poster_pipeline_detail", presentation.model_dump(mode="json")
-    )
+    assert_matches_golden("poster_pipeline_detail", presentation.model_dump(mode="json"))
 
 
 def test_poster_pipeline_no_candidate_is_distinct_no_change():
@@ -259,9 +259,7 @@ def test_malformed_optional_evidence_warns_instead_of_failing():
 def test_malformed_result_document_is_a_warning_not_an_error():
     job = make_job(result={"outcome": "succeeded", "unexpected_field": 1})
     presentation = present_job(job, definition_for("poster_pipeline"))
-    assert any(
-        "result document" in w.message for w in presentation.warnings
-    )
+    assert any("result document" in w.message for w in presentation.warnings)
 
 
 def test_invalid_subject_snapshot_is_an_integrity_error():
@@ -272,9 +270,7 @@ def test_invalid_subject_snapshot_is_an_integrity_error():
 
 def test_missing_live_subject_renders_snapshot_with_notice():
     job = make_job()
-    presentation = present_job(
-        job, definition_for("poster_pipeline"), live_subject_missing=True
-    )
+    presentation = present_job(job, definition_for("poster_pipeline"), live_subject_missing=True)
     assert presentation.subject.missing_live_subject is True
     assert presentation.subject.display_name == "Blade Runner"
     notices = [s for s in presentation.sections if s.kind == "notice"]

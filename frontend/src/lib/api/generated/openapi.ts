@@ -3186,8 +3186,7 @@ export interface components {
 			/** Phase */
 			phase: string;
 			post_effect_validation:
-				| components['schemas']['OnboardingPostEffectValidationResponse']
-				| null;
+				components['schemas']['OnboardingPostEffectValidationResponse'] | null;
 			/** Predecessor Job Id */
 			predecessor_job_id: string | null;
 			/** Retryable */
@@ -4138,14 +4137,7 @@ export interface components {
 		 * @enum {string}
 		 */
 		TriggerKind:
-			| 'manual'
-			| 'schedule'
-			| 'policy'
-			| 'batch'
-			| 'parent'
-			| 'healing'
-			| 'system'
-			| 'webhook';
+			'manual' | 'schedule' | 'policy' | 'batch' | 'parent' | 'healing' | 'system' | 'webhook';
 		/** UndoRequest */
 		UndoRequest: {
 			/** Event Id */

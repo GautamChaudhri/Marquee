@@ -151,7 +151,9 @@ class NumpyTasteStore(TasteStore):
                 f"Taste profile not found: {self.profile_path}. "
                 "Rebuild it with `python -m marquee.ml.taste_trainer`."
             )
-        _kind = "taste_profile_tv" if "taste_profile_tv" in self.profile_path.name else "taste_profile"
+        _kind = (
+            "taste_profile_tv" if "taste_profile_tv" in self.profile_path.name else "taste_profile"
+        )
         ensure_safe_artifact(self.profile_path, _kind)
         with load_npz_safe(self.profile_path) as data:
             stored_model = decode_unicode_scalar(data["model_name"])
@@ -168,14 +170,21 @@ class NumpyTasteStore(TasteStore):
             )
             self._centroid = np.asarray(data["centroid_emb"], dtype=np.float32)
             names = decode_unicode_list(data["poster_names"])
-            kinds = decode_unicode_list(data["asset_kinds"]) if "asset_kinds" in data else ["movie"] * len(names)
+            kinds = (
+                decode_unicode_list(data["asset_kinds"])
+                if "asset_kinds" in data
+                else ["movie"] * len(names)
+            )
             if self._embeddings.ndim != 2 or self._embeddings.shape[1] != 512:
                 raise RuntimeError(f"Invalid taste embedding shape: {self._embeddings.shape}")
             if self._centroid.shape != (512,):
                 raise RuntimeError(f"Invalid taste centroid shape: {self._centroid.shape}")
             if len(names) != self._embeddings.shape[0]:
                 raise RuntimeError("Taste profile poster_names length does not match embeddings")
-            self._metadata = [{"filename": str(name), "asset_kind": str(kind)} for name, kind in zip(names, kinds, strict=True)]
+            self._metadata = [
+                {"filename": str(name), "asset_kind": str(kind)}
+                for name, kind in zip(names, kinds, strict=True)
+            ]
 
             if "neg_embeddings" in data:
                 negatives = np.asarray(data["neg_embeddings"], dtype=np.float32)
@@ -354,7 +363,9 @@ class NumpyTasteStore(TasteStore):
 
 def _profile_weights(values: np.ndarray | None, count: int, *, label: str) -> np.ndarray:
     """Load native frozen weights while retaining compatibility with legacy profiles."""
-    weights = np.ones(count, dtype=np.float32) if values is None else np.asarray(values, dtype=np.float32)
+    weights = (
+        np.ones(count, dtype=np.float32) if values is None else np.asarray(values, dtype=np.float32)
+    )
     if weights.shape != (count,):
         raise RuntimeError(f"{label} taste evidence weights do not match embeddings")
     if not np.all(np.isfinite(weights)) or np.any(weights <= 0) or np.any(weights > 1):
@@ -363,6 +374,8 @@ def _profile_weights(values: np.ndarray | None, count: int, *, label: str) -> np
 
 
 def _compute_centroid(vectors: np.ndarray, weights: np.ndarray | None = None) -> np.ndarray:
-    centroid = vectors.mean(axis=0) if weights is None else np.average(vectors, axis=0, weights=weights)
+    centroid = (
+        vectors.mean(axis=0) if weights is None else np.average(vectors, axis=0, weights=weights)
+    )
     norm = float(np.linalg.norm(centroid))
     return (centroid / norm if norm > 1e-10 else centroid).astype(np.float32)

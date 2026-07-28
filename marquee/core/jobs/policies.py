@@ -129,9 +129,7 @@ def allowed_actions(policy: ActionPolicy, context: ActionContext) -> frozenset[J
         if policy.change_priority and context.phase in {"planned", "queued"}:
             actions.add(JobAction.CHANGE_PRIORITY)
         if policy.pause and context.phase in {"planned", "queued"}:
-            actions.add(
-                JobAction.RESUME if context.desired_state == "pause" else JobAction.PAUSE
-            )
+            actions.add(JobAction.RESUME if context.desired_state == "pause" else JobAction.PAUSE)
     elif policy.retry and context.retryable and context.outcome not in {"succeeded", "no_change"}:
         actions.add(JobAction.RETRY)
     return frozenset(actions)

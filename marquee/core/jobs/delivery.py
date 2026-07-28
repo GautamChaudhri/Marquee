@@ -203,11 +203,7 @@ async def _preflight(
         )
         if dispatch is None:
             raise DeliveryRejectedError("canonical dispatch does not exist")
-        if (
-            job.phase == "terminal"
-            or job.outcome is not None
-            or dispatch.disposition != "active"
-        ):
+        if job.phase == "terminal" or job.outcome is not None or dispatch.disposition != "active":
             if (
                 job.outcome == "unsafe"
                 and dispatch.disposition == "failed"
@@ -297,9 +293,7 @@ async def _defer_pre_admission(
     factory = _get_session_factory()
     exhausted = False
     async with factory() as session, session.begin():
-        job = await session.scalar(
-            select(Job).where(Job.id == payload.job_id).with_for_update()
-        )
+        job = await session.scalar(select(Job).where(Job.id == payload.job_id).with_for_update())
         dispatch = await session.scalar(
             select(JobDispatch)
             .where(
@@ -383,9 +377,7 @@ async def _defer_pre_admission(
     return None
 
 
-async def _admission_cancelled(
-    payload: TransportPayload, context: Context
-) -> bool:
+async def _admission_cancelled(payload: TransportPayload, context: Context) -> bool:
     if context.cancellation.cancel_called:
         return True
     factory = _get_session_factory()
@@ -429,9 +421,7 @@ async def _cancellation_intent_won(ownership: AttemptOwnership) -> bool:
 async def _apply_pre_admission_intent(payload: TransportPayload) -> None:
     factory = _get_session_factory()
     async with factory() as session, session.begin():
-        job = await session.scalar(
-            select(Job).where(Job.id == payload.job_id).with_for_update()
-        )
+        job = await session.scalar(select(Job).where(Job.id == payload.job_id).with_for_update())
         dispatch = await session.scalar(
             select(JobDispatch)
             .where(
@@ -663,9 +653,7 @@ async def _admit_delivery(
     recovery_attempt_id: int | None = None
     admitted: AdmittedDelivery | None = None
     async with factory() as session, session.begin():
-        job = await session.scalar(
-            select(Job).where(Job.id == payload.job_id).with_for_update()
-        )
+        job = await session.scalar(select(Job).where(Job.id == payload.job_id).with_for_update())
         dispatch = await session.scalar(
             select(JobDispatch)
             .where(
@@ -676,11 +664,7 @@ async def _admit_delivery(
         )
         if job is None or dispatch is None:
             rejection = DeliveryRejectedError("canonical admission rows disappeared")
-        elif (
-            job.phase == "terminal"
-            or job.outcome is not None
-            or dispatch.disposition != "active"
-        ):
+        elif job.phase == "terminal" or job.outcome is not None or dispatch.disposition != "active":
             pass
         elif (
             job.dispatch_generation != preflight.delivery.dispatch_generation
@@ -718,13 +702,10 @@ async def _admit_delivery(
                     else None
                 )
                 now = datetime.now(UTC)
-                if (
-                    runtime is not None
-                    and (
-                        runtime.stopped_at is not None
-                        or runtime.readiness == "stopped"
-                        or runtime.heartbeat_expires_at <= now
-                    )
+                if runtime is not None and (
+                    runtime.stopped_at is not None
+                    or runtime.readiness == "stopped"
+                    or runtime.heartbeat_expires_at <= now
                 ):
                     recovery_attempt_id = active_attempt.id
                 else:
@@ -889,9 +870,7 @@ async def _register_terminal_artifact(
         )
     except Exception:
         logger.error("Canonical %s artifact registration failed", source, exc_info=True)
-        await _record_evidence_degradation(
-            ownership, event_key="artifact.failed", source=source
-        )
+        await _record_evidence_degradation(ownership, event_key="artifact.failed", source=source)
 
 
 def _result_physical_evidence(value: Any):
@@ -917,9 +896,7 @@ def _result_physical_evidence(value: Any):
             yield from _result_physical_evidence(child)
 
 
-async def _register_result_evidence(
-    ownership: AttemptOwnership, result: Mapping[str, Any]
-) -> None:
+async def _register_result_evidence(ownership: AttemptOwnership, result: Mapping[str, Any]) -> None:
     """Register post-terminal physical and validation evidence without rerunning product work."""
     boundary = artifact_boundary(settings.DATA_DIR)
     seen: set[str] = set()
@@ -941,9 +918,7 @@ async def _register_result_evidence(
             )
         except Exception:
             logger.error("Product evidence registration failed", exc_info=True)
-            await _record_evidence_degradation(
-                ownership, event_key="artifact.failed", source=kind
-            )
+            await _record_evidence_degradation(ownership, event_key="artifact.failed", source=kind)
     try:
         await register_validation_result_artifact(
             job_id=ownership.job_id,
@@ -1014,9 +989,7 @@ async def deliver_job(
 
     admitted: AdmittedDelivery | None = None
     try:
-        admitted = await _admit_delivery(
-            transport_job, payload, preflight, runtime_instance_id
-        )
+        admitted = await _admit_delivery(transport_job, payload, preflight, runtime_instance_id)
         if admitted is None:
             await _apply_pre_admission_intent(payload)
             return
@@ -1103,9 +1076,7 @@ async def deliver_job(
                     result = await _execute_delivery(execution)
         except Exception as exc:
             reason = (
-                exc.reason or "retry requested"
-                if isinstance(exc, RetryRequested)
-                else str(exc)
+                exc.reason or "retry requested" if isinstance(exc, RetryRequested) else str(exc)
             )
             try:
                 await asyncio.shield(
@@ -1185,9 +1156,7 @@ async def deliver_job(
                         summary=reason or "execution cancelled",
                     )
                     await _register_terminal_artifact(ownership, source="error")
-                workspace.quarantine(
-                    code="cancelled", summary=reason or "execution cancelled"
-                )
+                workspace.quarantine(code="cancelled", summary=reason or "execution cancelled")
                 raise DeliveryRejectedError("execution classified as cancelled") from exc
             disposition = await writer.fail(exc)
             exhausted = failure_classification == RetryClassification.TRANSIENT

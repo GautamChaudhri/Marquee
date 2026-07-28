@@ -133,7 +133,9 @@ class WorkerSupervisor:
                     returncode,
                 )
                 return
-            logger.warning("%s exited (rc=%s); respawning in %.0fs", child.name, returncode, backoff)
+            logger.warning(
+                "%s exited (rc=%s); respawning in %.0fs", child.name, returncode, backoff
+            )
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, 30.0)
             if self._shutting_down:

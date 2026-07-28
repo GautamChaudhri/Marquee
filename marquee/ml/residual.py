@@ -184,9 +184,7 @@ def build_residual_pairs(events: Iterable[Any]) -> list[ResidualPair]:
         if event.action == "rank":
             for index, winner in enumerate(order):
                 raw.extend((winner, loser, 1.0, "strong") for loser in order[index + 1 :])
-            raw.extend(
-                (winner, loser, 1.0, "explicit") for winner in order for loser in hated
-            )
+            raw.extend((winner, loser, 1.0, "explicit") for winner in order for loser in hated)
         elif event.action == "override" and selected in usable:
             alternatives = sorted(
                 identity
@@ -221,12 +219,15 @@ def build_residual_pairs(events: Iterable[Any]) -> list[ResidualPair]:
             loser_score = loser_row.get("baseline_score")
             baseline_margin = (
                 float(winner_score) - float(loser_score)
-                if isinstance(winner_score, (int, float))
-                and isinstance(loser_score, (int, float))
+                if isinstance(winner_score, (int, float)) and isinstance(loser_score, (int, float))
                 else 0.0
             )
-            winner_probability = float(winner_score) if isinstance(winner_score, (int, float)) else None
-            loser_probability = float(loser_score) if isinstance(loser_score, (int, float)) else None
+            winner_probability = (
+                float(winner_score) if isinstance(winner_score, (int, float)) else None
+            )
+            loser_probability = (
+                float(loser_score) if isinstance(loser_score, (int, float)) else None
+            )
             pairs.append(
                 ResidualPair(
                     subject=subject,
@@ -246,7 +247,8 @@ def build_residual_pairs(events: Iterable[Any]) -> list[ResidualPair]:
 def subject_split(subjects: Iterable[str], *, seed: int) -> dict[str, str]:
     """Assign whole subjects deterministically to train/validation/test."""
     ordered = sorted(
-        set(subjects), key=lambda subject: (hashlib.sha256(f"{seed}:{subject}".encode()).digest(), subject)
+        set(subjects),
+        key=lambda subject: (hashlib.sha256(f"{seed}:{subject}".encode()).digest(), subject),
     )
     if len(ordered) < 3:
         return dict.fromkeys(ordered, "train")
@@ -351,7 +353,9 @@ class ResidualArtifact:
     @classmethod
     def load(cls, path: Path) -> ResidualArtifact:
         with load_npz_safe(path) as data:
-            evaluation = ResidualEvaluation(**json.loads(decode_unicode_scalar(data["evaluation_json"])))
+            evaluation = ResidualEvaluation(
+                **json.loads(decode_unicode_scalar(data["evaluation_json"]))
+            )
             names = decode_unicode_list(data["feature_names"])
             weights = np.asarray(data["weights"], dtype=np.float64)
             if weights.shape != (len(names),) or not np.isfinite(weights).all():
@@ -406,7 +410,12 @@ def train_residual(
     """Fit a regularized baseline-offset pairwise residual and evaluate held-out subjects."""
     subjects = {pair.subject for pair in pairs}
     if len(subjects) < min_subjects or len(pairs) < min_pairs:
-        return None, {"outcome": "no_change", "reason": "insufficient_evidence", "subjects": len(subjects), "pairs": len(pairs)}
+        return None, {
+            "outcome": "no_change",
+            "reason": "insufficient_evidence",
+            "subjects": len(subjects),
+            "pairs": len(pairs),
+        }
     common = sorted(set.intersection(*(set(pair.winner) & set(pair.loser) for pair in pairs)))
     if not common:
         return None, {"outcome": "no_change", "reason": "no_common_features"}
@@ -551,7 +560,9 @@ def _evaluate_partition(
         if active_residual is not None:
             active_winner = score_residual_candidate(
                 baseline_probability=winner_probability,
-                normalized_features={name: pair.winner[name] for name in active_residual.feature_names},
+                normalized_features={
+                    name: pair.winner[name] for name in active_residual.feature_names
+                },
                 weights={
                     name: float(weight)
                     for name, weight in zip(
@@ -564,7 +575,9 @@ def _evaluate_partition(
             )
             active_loser = score_residual_candidate(
                 baseline_probability=loser_probability,
-                normalized_features={name: pair.loser[name] for name in active_residual.feature_names},
+                normalized_features={
+                    name: pair.loser[name] for name in active_residual.feature_names
+                },
                 weights={
                     name: float(weight)
                     for name, weight in zip(
@@ -575,7 +588,9 @@ def _evaluate_partition(
                 alpha=active_residual.alpha,
                 delta_max=active_residual.delta_max,
             )
-            weighted_active += pair.weight * float(active_winner.final_logit > active_loser.final_logit)
+            weighted_active += pair.weight * float(
+                active_winner.final_logit > active_loser.final_logit
+            )
         adjustments.extend((winner.delta * alpha, loser.delta * alpha))
     denominator = total_weight or 1.0
     baseline_accuracy = weighted_baseline / denominator
@@ -610,8 +625,16 @@ def _partition_manifest(
     subject_sets = [set(value["subject_ids"]) for value in manifest.values()]
     event_sets = [set(value["event_ids"]) for value in manifest.values()]
     manifest["overlap_proof"] = {
-        "subject_overlap": not all(not left & right for index, left in enumerate(subject_sets) for right in subject_sets[index + 1 :]),
-        "event_overlap": not all(not left & right for index, left in enumerate(event_sets) for right in event_sets[index + 1 :]),
+        "subject_overlap": not all(
+            not left & right
+            for index, left in enumerate(subject_sets)
+            for right in subject_sets[index + 1 :]
+        ),
+        "event_overlap": not all(
+            not left & right
+            for index, left in enumerate(event_sets)
+            for right in event_sets[index + 1 :]
+        ),
     }
     if manifest["overlap_proof"]["subject_overlap"] or manifest["overlap_proof"]["event_overlap"]:
         raise RuntimeError("residual partitions overlap")

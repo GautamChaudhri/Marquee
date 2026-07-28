@@ -15,23 +15,27 @@ env/
 # IDE
 .idea/
 .vscode/
+*.iml
 *.swp
 *.swo
 *~
 
 # Environment
 .env
+.env.*
+!.env.example
 
 # Database
 *.db
 *.db-journal
 *.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
 
 # Data directories — keep .gitkeep, ignore generated runtime files
 data/**
 !data/.gitkeep
-!data/**/
-!data/**/.gitkeep
 
 # OS
 .DS_Store
@@ -51,6 +55,10 @@ coverage.xml
 # Ruff
 .ruff_cache/
 
+# Other local tooling
+.mypy_cache/
+*.log
+
 # Marquee specific
 marquee/**/__pycache__/
 
@@ -62,13 +70,25 @@ experiments/*
 !experiments/gauntlet_runner.py
 marquee/ml/models/
 
-# Agents
-.claude/
-CLAUDE.md
-.codex/
-AGENTS.md
-.hermes/
-.brv/
-.serena/
-screenshots
-
+# AI agent tooling and instructions (local-only, at any depth)
+**/CLAUDE.md
+**/AGENTS.md
+**/CODEX.md
+**/GEMINI.md
+**/copilot-instructions.md
+**/.claude/
+**/.agents/
+**/.codex/
+**/.cursor/
+**/.continue/
+**/.windsurf/
+**/.gemini/
+**/.cline/
+**/.roo/
+**/.hermes/
+**/.brv/
+**/.serena/
+**/.aider*
+**/.github/instructions/
+**/.github/prompts/
+screenshots/

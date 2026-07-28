@@ -5,12 +5,10 @@ export const subjects: Record<string, PresentationSubject> = {
 	series: subject('series', 'Severance', ['Series']),
 	season: subject('season', 'Severance · Season 2', ['Severance', 'Season 2']),
 	episode: subject('episode', 'Hello, Ms. Cobel', ['Severance', 'S02E01']),
-	mediaFile: subject('media_file', 'Severance.S02E01.mkv', ['Media file', 'Matroska']),
-	track: subject('track', 'English subtitles', ['Subtitle track', 'English']),
-	poster: subject('poster_generation', 'Dune poster', ['Poster', 'Candidate 3']),
-	model: subject('model_profile_training', 'Taste profile', ['Model', 'Training']),
-	maintenance: subject('maintenance', 'Library maintenance', ['System']),
-	parentBatch: subject('batch', 'Refresh movie posters', ['Batch', '18 movies'])
+	posterCandidates: subject('poster_candidate_set', 'Dune poster candidates', [
+		'Posters',
+		'Candidate set'
+	])
 };
 
 function subject(kind: string, displayName: string, context: string[]): PresentationSubject {
@@ -30,10 +28,10 @@ export function makeRow(overrides: Partial<JobRow> = {}): JobRow {
 		version: 1,
 		job_id: 'job-public-1',
 		job_type: 'poster_pipeline',
-		label: 'Refresh artwork',
-		label_key: 'jobs.poster.refresh',
+		label: 'Poster Pipeline',
+		label_key: 'jobs.poster_pipeline.label',
 		feature_area: 'ai_posters',
-		presentation_family: 'poster',
+		presentation_family: 'ai_posters',
 		subject: subjects.movie,
 		action_headline: 'Selecting the best artwork',
 		status: {
@@ -142,7 +140,7 @@ export function makePresentation(
 		label_key: row.label_key,
 		feature_area: row.feature_area,
 		presentation_family: row.presentation_family,
-		presenter_key: 'poster.default',
+		presenter_key: 'jobs.poster_pipeline',
 		presenter_version: 1,
 		subject: row.subject,
 		action: { headline: row.action_headline, explanation: null },

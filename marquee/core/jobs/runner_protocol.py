@@ -80,6 +80,7 @@ class RunnerRuntimeOptions:
             environment["CUDA_VISIBLE_DEVICES"] = self.cuda_visible_devices
         return environment
 
+
 _HEADER = struct.Struct(">I")
 
 
@@ -110,7 +111,9 @@ def encode_frame(obj: dict[str, Any]) -> bytes:
         raise ProtocolError("frame must be a versioned object")
     if not isinstance(obj.get("type"), str):
         raise ProtocolError("frame must carry a string type")
-    payload = json.dumps(obj, allow_nan=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    payload = json.dumps(obj, allow_nan=False, separators=(",", ":"), sort_keys=True).encode(
+        "utf-8"
+    )
     if len(payload) > MAX_FRAME_BYTES:
         raise ProtocolError("control frame exceeds the fixed bound")
     return _HEADER.pack(len(payload)) + payload
@@ -133,9 +136,9 @@ def decode_payload(payload: bytes) -> dict[str, Any]:
 
 def encode_manifest(manifest: dict[str, Any]) -> bytes:
     """Encode the inbound operation manifest as one length-prefixed frame."""
-    payload = json.dumps(
-        manifest, allow_nan=False, separators=(",", ":"), sort_keys=True
-    ).encode("utf-8")
+    payload = json.dumps(manifest, allow_nan=False, separators=(",", ":"), sort_keys=True).encode(
+        "utf-8"
+    )
     if len(payload) > MAX_MANIFEST_BYTES:
         raise ProtocolError("operation manifest exceeds the fixed bound")
     return _HEADER.pack(len(payload)) + payload

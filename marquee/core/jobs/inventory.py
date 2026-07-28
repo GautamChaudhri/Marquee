@@ -7,10 +7,7 @@ and parent constructors so drift fails loudly.
 
 REGISTERED_HANDLER_TYPES: frozenset[str] = frozenset()
 
-MEDIA_OPERATION_TYPES = frozenset(
-    {
-    }
-)
+MEDIA_OPERATION_TYPES = frozenset({})
 
 PARENT_ONLY_TYPES = frozenset(
     {
@@ -92,7 +89,5 @@ ROUTE_CONSTRUCTED_TYPES = frozenset(
 )
 
 HEALING_TYPES = frozenset({"poster_heal"})
-SCHEDULE_PRODUCED_TYPES = frozenset(
-    {"job_retention_purge", "library_sync", "poster_heal"}
-)
+SCHEDULE_PRODUCED_TYPES = frozenset({"job_retention_purge", "library_sync", "poster_heal"})
 WEBHOOK_RESERVED_TYPES = frozenset({"radarr_upgrade"})
